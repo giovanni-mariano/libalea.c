@@ -115,7 +115,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                                          &cell_id, &mat_id, &density);
             }
 
-            alea_raycast_result_free(result);
+            alea_raycast_result_destroy(result);
         }
     }
 

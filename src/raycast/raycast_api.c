@@ -37,6 +37,12 @@ alea_raycast_result_t* alea_raycast_result_create(void) {
     return result;
 }
 
+void alea_raycast_result_destroy(alea_raycast_result_t* result) {
+    if (!result) return;
+    alea_raycast_result_free(result);
+    free(result);
+}
+
 size_t alea_raycast_segment_count(const alea_raycast_result_t* result) {
     return result ? result->segment_count : 0;
 }

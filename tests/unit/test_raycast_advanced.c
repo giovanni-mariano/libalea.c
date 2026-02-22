@@ -368,7 +368,7 @@ TEST(ray_public_api) {
                                        &cell_id, &material_id, &density);
     ASSERT_EQ(rc, 0);
 
-    alea_raycast_result_free(result);
+    alea_raycast_result_destroy(result);
     alea_destroy(sys);
 }
 

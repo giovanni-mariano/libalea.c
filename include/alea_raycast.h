@@ -31,7 +31,7 @@ typedef struct alea_raycast_result alea_raycast_result_t;
 
 /**
  * @brief Create a new raycast result object
- * @return New result object (caller must free with alea_raycast_result_free)
+ * @return New result object (caller must destroy with alea_raycast_result_destroy)
  */
 alea_raycast_result_t* alea_raycast_result_create(void);
 
@@ -108,9 +108,14 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
 double alea_raycast_path_length(const alea_raycast_result_t* result, int material_id);
 
 /**
- * @brief Free raycast result memory
+ * @brief Free raycast result internal buffers (for stack-allocated results)
  */
 void alea_raycast_result_free(alea_raycast_result_t* result);
+
+/**
+ * @brief Destroy a heap-allocated raycast result (from alea_raycast_result_create)
+ */
+void alea_raycast_result_destroy(alea_raycast_result_t* result);
 
 #ifdef __cplusplus
 }

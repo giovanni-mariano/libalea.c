@@ -124,7 +124,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             double t;
             alea_ray_first_cell(sys, cx, cy, cz, 1, 0, 0, r * 3, &t);
 
-            alea_raycast_result_free(result);
+            alea_raycast_result_destroy(result);
         }
     }
 

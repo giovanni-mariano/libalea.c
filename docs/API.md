@@ -594,7 +594,13 @@ Total path length through a given material. Pass `material_id = -1` for total pa
 void alea_raycast_result_free(alea_raycast_result_t* result);
 ```
 
-Free result memory.
+Free result internal buffers (for stack-allocated results).
+
+```c
+void alea_raycast_result_destroy(alea_raycast_result_t* result);
+```
+
+Destroy a heap-allocated result (from `alea_raycast_result_create`). Frees internal buffers and the result struct itself.
 
 ---
 

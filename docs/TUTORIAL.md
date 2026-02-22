@@ -263,7 +263,7 @@ for (size_t i = 0; i < nseg; i++) {
            t_enter, t_exit, cell_id, material_id, density, thickness);
 }
 
-alea_raycast_result_free(result);
+alea_raycast_result_destroy(result);
 ```
 
 ### Finding the first cell along a ray
