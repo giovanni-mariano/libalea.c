@@ -1,0 +1,186 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build release
+        run: make lib cli RELEASE=1
+
+      - name: Run tests
+        run: make test-unit test-integration test-lua
+
+      - name: Package
+        run: |
+          mkdir -p dist/alea-linux-x64
+          cp bin/alea dist/alea-linux-x64/
+          cp bin/*.a dist/alea-linux-x64/
+          cp -r include dist/alea-linux-x64/
+          cp README.md LICENSE* dist/alea-linux-x64/ 2>/dev/null || true
+          cd dist && tar -czvf alea-linux-x64.tar.gz alea-linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alea-linux-x64
+          path: dist/alea-linux-x64.tar.gz
+
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build release
+        run: make lib cli RELEASE=1
+
+      - name: Run tests
+        run: make test-unit test-integration test-lua
+
+      - name: Package
+        run: |
+          mkdir -p dist/alea-linux-arm64
+          cp bin/alea dist/alea-linux-arm64/
+          cp bin/*.a dist/alea-linux-arm64/
+          cp -r include dist/alea-linux-arm64/
+          cp README.md LICENSE* dist/alea-linux-arm64/ 2>/dev/null || true
+          cd dist && tar -czvf alea-linux-arm64.tar.gz alea-linux-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alea-linux-arm64
+          path: dist/alea-linux-arm64.tar.gz
+
+  build-macos-x64:
+    runs-on: macos-13  # Intel runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build release
+        run: make lib cli RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
+
+      - name: Run tests
+        run: make test-unit test-integration test-lua
+
+      - name: Package
+        run: |
+          mkdir -p dist/alea-macos-x64
+          cp bin/alea dist/alea-macos-x64/
+          cp bin/*.a dist/alea-macos-x64/
+          cp -r include dist/alea-macos-x64/
+          cp README.md LICENSE* dist/alea-macos-x64/ 2>/dev/null || true
+          cd dist && tar -czvf alea-macos-x64.tar.gz alea-macos-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alea-macos-x64
+          path: dist/alea-macos-x64.tar.gz
+
+  build-macos-arm64:
+    runs-on: macos-latest  # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build release
+        run: make lib cli RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
+
+      - name: Run tests
+        run: make test-unit test-integration test-lua
+
+      - name: Package
+        run: |
+          mkdir -p dist/alea-macos-arm64
+          cp bin/alea dist/alea-macos-arm64/
+          cp bin/*.a dist/alea-macos-arm64/
+          cp -r include dist/alea-macos-arm64/
+          cp README.md LICENSE* dist/alea-macos-arm64/ 2>/dev/null || true
+          cd dist && tar -czvf alea-macos-arm64.tar.gz alea-macos-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alea-macos-arm64
+          path: dist/alea-macos-arm64.tar.gz
+
+  build-windows-x64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            make
+            zip
+
+      - name: Build release
+        run: make lib cli RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11"
+
+      - name: Run tests
+        run: make test-unit test-integration
+
+      - name: Package
+        run: |
+          mkdir -p dist/alea-windows-x64
+          cp bin/alea.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/alea dist/alea-windows-x64/alea.exe
+          cp bin/*.a dist/alea-windows-x64/
+          cp -r include dist/alea-windows-x64/
+          cp README.md LICENSE* dist/alea-windows-x64/ 2>/dev/null || true
+          cd dist && zip -r alea-windows-x64.zip alea-windows-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alea-windows-x64
+          path: dist/alea-windows-x64.zip
+
+  create-release:
+    needs: [build-linux-x64, build-linux-arm64, build-macos-x64, build-macos-arm64, build-windows-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/alea-linux-x64/alea-linux-x64.tar.gz
+            artifacts/alea-linux-arm64/alea-linux-arm64.tar.gz
+            artifacts/alea-macos-x64/alea-macos-x64.tar.gz
+            artifacts/alea-macos-arm64/alea-macos-arm64.tar.gz
+            artifacts/alea-windows-x64/alea-windows-x64.zip

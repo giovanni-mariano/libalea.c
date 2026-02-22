@@ -1,0 +1,24 @@
+Test file with duplicated surfaces
+c
+c Cell cards
+c
+c Cell 1 uses surfaces 1 and 3 (sphere, plane)
+1  0  -1 -3     $ interior of sphere 1, z<0
+c Cell 2 uses surfaces 2 and 3 (same sphere as 1, same plane)
+2  0  -2  3     $ interior of sphere 2 (identical to 1), z>0
+c
+c Graveyard
+99 0  1         $ outside sphere 1
+
+c Surface cards (blank line separator)
+c
+c Two identical spheres at origin with radius 10
+1  so  10       $ sphere centered at origin, r=10
+2  so  10       $ DUPLICATE: same sphere
+c
+c Plane at z=0
+3  pz  0        $ plane at z=0
+c
+c End of file
+
+

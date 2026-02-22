@@ -1,0 +1,22 @@
+Test negated plane roundtrip
+c
+c Surface 1 is a general plane with NEGATIVE first coefficient.
+c P -1 0 0 -5 means -x = -5, i.e. x = 5.
+c In MCNP: f(x,y,z) = -x - (-5) = -x + 5
+c   -1 means f < 0: -x + 5 < 0, i.e. x > 5
+c   +1 means f > 0: -x + 5 > 0, i.e. x < 5
+c
+c Cell 1: x < 5 AND inside sphere (mat 1)
+c Cell 2: x > 5 AND inside sphere (mat 2)
+c Cell 99: outside sphere (graveyard)
+c
+1 1 -1.0  1 -10
+2 2 -2.0 -1 -10
+99 0 10
+
+c Surface cards
+1 p -1 0 0 -5
+10 so 20
+
+m1 92235.80c 1.0
+m2 92238.80c 1.0

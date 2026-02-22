@@ -1,0 +1,18 @@
+Simple box test
+c
+c Cell cards
+c
+1  1  -1.0   -1 2 -3 4 -5 6   $ box cell with material 1
+99 0          1:-2:3:-4:5:-6  $ graveyard
+
+c Surface cards
+c
+1  px   50     $ x = 50
+2  px  -50     $ x = -50
+3  py   50     $ y = 50
+4  py  -50     $ y = -50
+5  pz   50     $ z = 50
+6  pz  -50     $ z = -50
+
+c Data cards
+m1  1001.80c 1.0   $ hydrogen

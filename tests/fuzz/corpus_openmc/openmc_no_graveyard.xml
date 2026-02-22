@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<model>
+  <geometry>
+    <!-- Surfaces -->
+    <surface id="1" type="sphere" coeffs="0.0 0.0 0.0 5.0"/>
+    <surface id="2" type="sphere" coeffs="0.0 0.0 0.0 10.0" boundary="vacuum"/>
+
+    <!-- Cells - NO graveyard cell defined -->
+    <cell id="1" material="1" region="-1"/>
+    <cell id="2" material="2" region="1 -2"/>
+  </geometry>
+
+  <materials>
+    <material id="1" name="fuel">
+      <density value="10.0" units="g/cc"/>
+      <nuclide name="U235" ao="0.05"/>
+      <nuclide name="U238" ao="0.95"/>
+    </material>
+    <material id="2" name="water">
+      <density value="1.0" units="g/cc"/>
+      <nuclide name="H1" ao="2.0"/>
+      <nuclide name="O16" ao="1.0"/>
+    </material>
+  </materials>
+</model>

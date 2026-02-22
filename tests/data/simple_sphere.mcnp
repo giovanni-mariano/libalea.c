@@ -1,0 +1,13 @@
+Simple sphere test
+c
+c Cell cards
+c
+1  1  -1.0   -1      $ sphere cell with material 1 (inside sphere)
+99 0          1      $ graveyard (outside sphere)
+
+c Surface cards
+c
+1  so  50           $ sphere at origin, radius 50
+
+c Data cards
+m1  1001.80c 1.0   $ hydrogen

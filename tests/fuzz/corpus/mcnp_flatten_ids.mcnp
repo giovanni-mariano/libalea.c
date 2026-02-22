@@ -1,0 +1,60 @@
+Flatten ID preservation test
+c
+c Tests that flatten preserves original MCNP cell and surface IDs.
+c
+c Universe 1: pin cell
+c   Cell 10: fuel (mat 1, inside cz 20)
+c   Cell 11: coolant (mat 2, between cz 20 and cz 30)
+c
+c Universe 2: another pin cell with different IDs
+c   Cell 20: fuel (mat 3, inside cz 50)
+c   Cell 21: cladding (mat 4, between cz 50 and cz 60)
+c
+c Universe 0 (base):
+c   Cell 100: left box [-10,0], FILL=1 (no transform)
+c   Cell 200: right box [0,10], FILL=2 (no transform)
+c   Cell 300: outer void (terminal, so 40)
+c
+c Expected after flattening:
+c   Cell 10 (fuel)     -> preserved (terminal, no transform)
+c   Cell 11 (coolant)  -> preserved
+c   Cell 20 (fuel u2)  -> preserved
+c   Cell 21 (cladding) -> preserved
+c   Cell 300 (void)    -> preserved
+c   Surface 20 (cz 0.5) -> preserved (untransformed)
+c   Surface 30 (cz 0.8) -> preserved
+c   Surface 40 (so 50)  -> preserved
+c   Surface 50 (cz 0.3) -> preserved
+c   Surface 60 (cz 0.6) -> preserved
+c
+c Cell cards
+10  1 -10.0  -20       u=1 imp:n=1  $ fuel
+11  2  -1.0   20 -30   u=1 imp:n=1  $ coolant
+12  0         30       u=1 imp:n=1
+20  3 -10.0  -50       u=2 imp:n=1  $ fuel2
+21  4  -1.0   50 -60   u=2 imp:n=1  $ cladding
+22  0         60        u=2 imp:n=1
+100 0  -1 2 -3 4 -5 6   fill=1 imp:n=1  $ left box
+200 0   1 -7 -3 4 -5 6  fill=2 imp:n=1  $ right box
+300 0  (1:-2:3:-4:5:-6) (-1:7:3:-4:5:-6) -40 imp:n=1
+400 0   40               imp:n=0  $ outer void
+
+c Surface cards
+20  c/z -5 0 0.5    $ fuel pin radius
+30  c/z -5 0  0.8    $ coolant outer radius
+50  c/z  5 0 0.3    $ fuel2 pin radius
+60  c/z  5 0 0.6    $ cladding outer radius
+1   px  0.0    $ shared boundary
+2   px -10.0   $ left wall
+7   px  10.0   $ right wall
+3   py  5.0
+4   py -5.0
+5   pz  5.0
+6   pz -5.0
+40  so  50.0   $ outer boundary
+
+c Data cards
+m1  92235.80c 1.0           $ UO2 fuel
+m2  1001.80c 2.0 8016.80c 1.0  $ water
+m3  94239.80c 1.0           $ MOX fuel
+m4  26000.50c 1.0           $ steel cladding

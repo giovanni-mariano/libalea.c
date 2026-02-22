@@ -1,0 +1,14 @@
+nested universe model
+c --- cells ---
+1 0 -10 FILL=1
+2 0 -20 U=1 FILL=2
+3 0 20 U=1
+4 1 -1.0 -30 U=2
+5 0 30 U=2
+99 0 10
+
+c --- surfaces ---
+10 SO 100
+20 SO 50
+30 SO 10
+

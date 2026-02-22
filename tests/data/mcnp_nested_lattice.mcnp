@@ -1,0 +1,37 @@
+Nested lattice test
+c --- universe 1: fuel pin (mat 1 inside cz 0.2, mat 2 outside) ---
+1 1 -1.0  -10      u=1 imp:n=1
+2 2 -1.0   10      u=1 imp:n=1
+c --- universe 3: another pin (mat 3 inside cz 0.2, mat 4 outside) ---
+3 3 -1.0  -10      u=3 imp:n=1
+4 4 -1.0   10      u=3 imp:n=1
+c --- universe 10: inner 2x2 lattice (pitch 1) ---
+c Element bounds [0,1]x[0,1] with fill=-1:0 -1:0 covers [-1,1]x[-1,1]
+200 0  11 -12 13 -14 15 -16 lat=1 u=10 fill=-1:0 -1:0 0:0
+     1 3 3 1  imp:n=1
+c --- outer 2x1 lattice (pitch 2) ---
+100 0  1 -2 3 -4 5 -6 lat=1 fill=0:1 0:0 0:0
+     10 10  imp:n=1
+
+c Surfaces
+c Outer lattice element bounds (pitch 2)
+1  px -1
+2  px  1
+3  py -1
+4  py  1
+5  pz -1
+6  pz  1
+c Inner lattice element bounds (pitch 1)
+11 px 0
+12 px 1
+13 py 0
+14 py 1
+15 pz -0.5
+16 pz  0.5
+c Fuel pin cylinder
+10 cz 0.2
+
+m1 92235.80c 1.0
+m2 1001.80c 2.0  8016.80c 1.0
+m3 94239.80c 1.0
+m4 6000.80c 1.0

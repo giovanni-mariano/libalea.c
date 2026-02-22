@@ -1,0 +1,8 @@
+bin/*
+build/*
+*.o
+.vscode/*
+vendor/*.tar.gz
+
+# Test temp files
+*_tmp.*

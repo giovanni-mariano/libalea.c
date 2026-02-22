@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+#
+# SPDX-License-Identifier: MPL-2.0
+
+version = 1
+SPDX-PackageName = "Alea"
+SPDX-PackageSupplier = "Giovanni MARIANO"
+SPDX-PackageDownloadLocation = "https://github.com/giovanni-mariano/libalea.c"
+
+[[annotations]]
+path = ".gitignore"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "tests/data/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "tests/fuzz/corpus/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "tests/fuzz/corpus_openmc/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = ".gitmodules"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "docs/**.md"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "examples/data/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "examples/lua/**.lua"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = "tests/lua/**.lua"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"

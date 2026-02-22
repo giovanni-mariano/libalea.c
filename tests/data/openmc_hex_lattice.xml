@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<geometry>
+  <surface id="1" type="z-cylinder" coeffs="0 0 0.3"/>
+  <surface id="2" type="z-plane" coeffs="-5"/>
+  <surface id="3" type="z-plane" coeffs="5"/>
+
+  <!-- universe 1: fuel pin -->
+  <cell id="1" material="1" region="-1" universe="1"/>
+  <cell id="2" material="2" region="1" universe="1"/>
+
+  <!-- universe 3: another pin -->
+  <cell id="3" material="3" region="-1" universe="3"/>
+  <cell id="4" material="4" region="1" universe="3"/>
+
+  <!-- outer cell fills with lattice -->
+  <cell id="100" fill="10" region="2 -3"/>
+
+  <hex_lattice id="10" n_rings="2" outer="1">
+    <center>0.0 0.0</center>
+    <pitch>2.0</pitch>
+    <universes>
+         3
+       1   3
+         1
+       3   1
+         3
+    </universes>
+  </hex_lattice>
+</geometry>

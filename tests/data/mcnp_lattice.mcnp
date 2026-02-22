@@ -1,0 +1,18 @@
+Test lattice
+c Cells
+1 1 -1.0  -10       u=1 imp:n=1
+2 2 -1.0   10       u=1 imp:n=1
+100 0  1 -2 3 -4 5 -6 lat=1 fill=0:2 0:2 1 2 1 2 1 2 1 2 1 imp:n=1
+
+c Surfaces
+1  px -5
+2  px  5
+3  py -5
+4  py  5
+5  pz -1
+6  pz  1
+10 cz 0.4
+
+c Data
+m1 92235.80c 1.0
+m2 1001.80c 2.0 8016.80c 1.0

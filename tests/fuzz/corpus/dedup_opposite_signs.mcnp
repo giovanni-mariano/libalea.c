@@ -1,0 +1,27 @@
+Test file with planes of opposite signs
+c
+c This tests that two planes representing the same geometry
+c but with negated coefficients are correctly deduplicated.
+c
+c In MCNP, "p a b c d" means ax + by + cz = d (not + d = 0)
+c So plane at x=5:
+c   px 5        -> x = 5
+c   p 1 0 0 5   -> 1*x + 0*y + 0*z = 5 -> x = 5 (same plane)
+c   p -1 0 0 -5 -> -x = -5 -> x = 5 (same plane, negated normal)
+c
+c Cell cards
+c
+1  0  -1 -10    $ x < 5, inside bounding sphere
+2  0  -2 -10    $ x > 5 (negative sense on negated plane means x > 5)
+c
+99 0   10       $ graveyard
+
+c Surface cards
+c
+c Plane at x=5 expressed two ways
+1  px  5        $ x = 5
+2  p  -1 0 0 -5 $ -x = -5, same as x = 5 but with negated normal
+c
+c Bounding sphere
+10 so  20       $ sphere r=20
+

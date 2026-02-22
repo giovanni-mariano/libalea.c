@@ -1,0 +1,6 @@
+[submodule "vendor/lua"]
+	path = vendor/lua
+	url = https://github.com/lua/lua.git
+[submodule "vendor/linenoise"]
+	path = vendor/linenoise
+	url = https://github.com/antirez/linenoise.git
