@@ -1,0 +1,21 @@
+# Vendored Dependencies
+#
+# This file tracks the upstream source, version, and license of each
+# vendored dependency. Update this file whenever a dependency is upgraded.
+
+lua/
+  Description: Lua programming language (used for CLI scripting interface)
+  Version:     5.4.7
+  Source:      https://www.lua.org/ftp/lua-5.4.7.tar.gz
+  Homepage:    https://www.lua.org/
+  License:     MIT
+  Fetched:     2026-02-22
+  Patches:     none
+
+linenoise/
+  Description: Small readline replacement (used for CLI line editing)
+  Version:     1.0 (unreleased, latest master)
+  Source:      https://github.com/antirez/linenoise
+  License:     BSD-2-Clause
+  Fetched:     2026-02-22
+  Patches:     none
