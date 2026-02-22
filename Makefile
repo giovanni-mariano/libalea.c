@@ -39,9 +39,13 @@ endif
 
 # Release build (set RELEASE=1)
 ifdef RELEASE
-CFLAGS += -O3 -march=native -DNDEBUG
+    ifdef PORTABLE
+        CFLAGS += -O3 -DNDEBUG
+    else
+        CFLAGS += -O3 -march=native -DNDEBUG
+    endif
 else
-CFLAGS += -O0
+    CFLAGS += -O0
 endif
 
 # ============================================================================

@@ -8,8 +8,6 @@ SPDX-License-Identifier: MPL-2.0
 
 A C library for debugging and analyzing large Constructive Solid Geometry (CSG) models used in neutron and gamma transport simulations. 
 
-This is the core C library that powers the [Alea Python bindings](https://github.com/giovanni-mariano/aleathor).
-
 **The library is under active development. The API may change.**
 
 ## Hello World
