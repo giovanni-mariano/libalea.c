@@ -1050,11 +1050,11 @@ Cooperative interruption for long-running operations. Signal-safe — can be cal
 const char* alea_version(void);
 ```
 
-Returns version string (e.g., "0.2.0").
+Returns version string (e.g., "0.1.0").
 
 ```c
 #define ALEA_VERSION_MAJOR 0
-#define ALEA_VERSION_MINOR 2
+#define ALEA_VERSION_MINOR 1
 #define ALEA_VERSION_PATCH 0
 ```
 

@@ -29,7 +29,7 @@ int main(void) {
 ```
 
 ```bash
-gcc -o check check.c -Iinclude bin/libalea_full.a -lm
+gcc -o hello hello.c -Iinclude bin/libalea_full.a -lm
 ```
 
 ## What It Does
@@ -64,14 +64,8 @@ Each release includes the `alea` CLI, `mc_convert` and `mc_plotter` tools, stati
 ### Building from Source
 
 ```bash
-git clone --recursive https://github.com/giovanni-mariano/libalea.c.git
+git clone https://github.com/giovanni-mariano/libalea.c.git
 cd libalea.c
-```
-
-If you already cloned without `--recursive`, fetch the submodules separately:
-
-```bash
-git submodule update --init --recursive
 ```
 
 Build the library, CLI, and tools:

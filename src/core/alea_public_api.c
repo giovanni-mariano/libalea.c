@@ -42,11 +42,6 @@ int export_openmc(const alea_system_t* sys, export_context_t* ctx);
 #include <unistd.h>
 #endif
 
-/* Version info - keep in sync with public header */
-#define ALEA_VERSION_MAJOR 0
-#define ALEA_VERSION_MINOR 2
-#define ALEA_VERSION_PATCH 0
-
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
 #define ALEA_VERSION_STRING \

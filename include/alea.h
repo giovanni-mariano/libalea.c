@@ -45,7 +45,7 @@ extern "C" {
  * ============================================================================ */
 
 #define ALEA_VERSION_MAJOR 0
-#define ALEA_VERSION_MINOR 2
+#define ALEA_VERSION_MINOR 1
 #define ALEA_VERSION_PATCH 0
 
 const char* alea_version(void);
