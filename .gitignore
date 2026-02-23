@@ -4,5 +4,9 @@ build/*
 .vscode/*
 vendor/*.tar.gz
 
+# Tool binaries
+tools/mc_convert
+tools/mc_plotter
+
 # Test temp files
 *_tmp.*

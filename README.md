@@ -59,7 +59,7 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | macOS Apple Silicon | `alea-macos-arm64.tar.gz` |
 | Windows x64 | `alea-windows-x64.zip` |
 
-Each release includes the `alea` CLI, static libraries, and headers.
+Each release includes the `alea` CLI, `mc_convert` and `mc_plotter` tools, static libraries, and headers.
 
 ### Building from Source
 
@@ -74,11 +74,12 @@ If you already cloned without `--recursive`, fetch the submodules separately:
 git submodule update --init --recursive
 ```
 
-Build the library and CLI:
+Build the library, CLI, and tools:
 
 ```bash
 make lib          # Build all libraries
 make cli          # Build the alea CLI tool
+make tools        # Build mc_convert and mc_plotter
 make test         # Build and run tests
 ```
 
@@ -131,6 +132,20 @@ Example session:
 
 See `examples/lua/` for complete Lua scripts demonstrating all features.
 
+## Tools
+
+Pre-built tools ship with every release and are also built via `make tools`:
+
+| Tool | Description |
+|------|-------------|
+| `mc_convert` | Convert between MCNP and OpenMC geometry formats |
+| `mc_plotter` | Render 2D cross-section slices of CSG geometry to PNG/BMP |
+
+```bash
+bin/mc_convert model.inp model.xml          # MCNP -> OpenMC
+bin/mc_plotter model.inp Z 0 -100 100 -100 100 800 output.png
+```
+
 ## Examples
 
 The `examples/` directory contains complete working programs:
@@ -138,15 +153,13 @@ The `examples/` directory contains complete working programs:
 | Example | What it shows |
 |---------|---------------|
 | `basic.c` | Build geometry from scratch, point queries, void generation, MCNP export |
-| `plotter.c` | Load MCNP file, render 2D slices to PNG/BMP with surface contours |
-| `mcnp2openmc.c` | Convert an MCNP input file to OpenMC XML |
-| `openmc2mcnp.c` | Convert an OpenMC XML file to MCNP input |
-| `dedup_inspect.c` | Inspect surface deduplication and CSG tree structure |
+| `mcnp_roundtrip.c` | Parse and re-export an MCNP input file |
+| `mcnp_volume.c` | Estimate cell volumes via Monte Carlo ray tracing |
+| `render3d.c` | Render a 3D image of the geometry |
 
 ```bash
-cd examples && make
+cd examples/c && make
 ./basic
-./plotter ../tests/data/model1.mcnp z 0 -100 100 -100 100 800 output.png
 ```
 
 ## Documentation
@@ -179,6 +192,7 @@ src/
   render/              Image output (PPM, BMP)
   lua_bind/            Lua bindings for CLI
   util/                Arena allocator, logging, vectors, math
+tools/               mc_convert, mc_plotter
 examples/
   lua/                 Lua example scripts
 tests/

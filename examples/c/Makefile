@@ -22,18 +22,12 @@ LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-arch
 LIBS_SLICE = ../../bin/libalea_slice.a ../../bin/libalea_raycast.a $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 LIBS_RENDER = ../../bin/libalea_render.a -Wl,--whole-archive ../../bin/libalea_raycast.a -Wl,--no-whole-archive $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 
-EXAMPLES = basic plotter mc_convert mcnp_roundtrip mcnp_volume render3d
+EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d
 
 all: $(EXAMPLES)
 
 basic: basic.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_CORE)
-
-plotter: plotter.c
-	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_SLICE)
-
-mc_convert: mc_convert.c
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 
 mcnp_roundtrip: mcnp_roundtrip.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_MCNP) $(LIBS_CORE)

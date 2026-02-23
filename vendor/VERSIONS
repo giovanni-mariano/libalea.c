@@ -18,7 +18,7 @@ lua/
 
 linenoise/
   Description: Small readline replacement (used for CLI line editing)
-  Version:     1.0 (unreleased, latest master)
+  Version:     commit 452e3793858a15cc006bb3aa3ea06378eb98c5b5
   Source:      https://github.com/antirez/linenoise
   License:     BSD-2-Clause
   Fetched:     2026-02-22

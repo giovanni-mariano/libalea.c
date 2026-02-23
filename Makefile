@@ -285,7 +285,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean lib lib-core modules tests structure help test cli test-lua
+.PHONY: all clean lib lib-core modules tests structure help test cli test-lua tools
 
 # Default target: core library only
 all: lib-core
@@ -302,6 +302,10 @@ lib: lib-core modules $(LIB)
 # CLI binary
 ALEA_CLI = $(BIN_DIR)/alea
 cli: lib-core modules $(ALEA_CLI)
+
+# Build tools (mc_convert, mc_plotter)
+tools: lib-core modules
+	$(MAKE) -C tools
 
 # Build all tests (requires core + modules)
 tests: lib-core modules $(ALL_TEST_BINS)
@@ -692,6 +696,7 @@ fuzz: fuzz-mcnp
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR) $(BIN_DIR)
+	@$(MAKE) -C tools clean 2>/dev/null || true
 	@echo "✓ Clean complete"
 
 distclean: clean

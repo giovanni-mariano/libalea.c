@@ -21,7 +21,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli RELEASE=1
+        run: make lib cli tools RELEASE=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -30,6 +30,8 @@ jobs:
         run: |
           mkdir -p dist/alea-linux-x64
           cp bin/alea dist/alea-linux-x64/
+          cp bin/mc_convert dist/alea-linux-x64/
+          cp bin/mc_plotter dist/alea-linux-x64/
           cp bin/*.a dist/alea-linux-x64/
           cp -r include dist/alea-linux-x64/
           cp README.md LICENSE* dist/alea-linux-x64/ 2>/dev/null || true
@@ -48,7 +50,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli RELEASE=1
+        run: make lib cli tools RELEASE=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -57,6 +59,8 @@ jobs:
         run: |
           mkdir -p dist/alea-linux-arm64
           cp bin/alea dist/alea-linux-arm64/
+          cp bin/mc_convert dist/alea-linux-arm64/
+          cp bin/mc_plotter dist/alea-linux-arm64/
           cp bin/*.a dist/alea-linux-arm64/
           cp -r include dist/alea-linux-arm64/
           cp README.md LICENSE* dist/alea-linux-arm64/ 2>/dev/null || true
@@ -75,7 +79,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
+        run: make lib cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -84,6 +88,8 @@ jobs:
         run: |
           mkdir -p dist/alea-macos-x64
           cp bin/alea dist/alea-macos-x64/
+          cp bin/mc_convert dist/alea-macos-x64/
+          cp bin/mc_plotter dist/alea-macos-x64/
           cp bin/*.a dist/alea-macos-x64/
           cp -r include dist/alea-macos-x64/
           cp README.md LICENSE* dist/alea-macos-x64/ 2>/dev/null || true
@@ -102,7 +108,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
+        run: make lib cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -111,6 +117,8 @@ jobs:
         run: |
           mkdir -p dist/alea-macos-arm64
           cp bin/alea dist/alea-macos-arm64/
+          cp bin/mc_convert dist/alea-macos-arm64/
+          cp bin/mc_plotter dist/alea-macos-arm64/
           cp bin/*.a dist/alea-macos-arm64/
           cp -r include dist/alea-macos-arm64/
           cp README.md LICENSE* dist/alea-macos-arm64/ 2>/dev/null || true
@@ -142,7 +150,7 @@ jobs:
             zip
 
       - name: Build release
-        run: make lib cli RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11"
+        run: make lib cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11"
 
       - name: Run tests
         run: make test-unit test-integration
@@ -151,6 +159,8 @@ jobs:
         run: |
           mkdir -p dist/alea-windows-x64
           cp bin/alea.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/alea dist/alea-windows-x64/alea.exe
+          cp bin/mc_convert.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_convert dist/alea-windows-x64/mc_convert.exe
+          cp bin/mc_plotter.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_plotter dist/alea-windows-x64/mc_plotter.exe
           cp bin/*.a dist/alea-windows-x64/
           cp -r include dist/alea-windows-x64/
           cp README.md LICENSE* dist/alea-windows-x64/ 2>/dev/null || true
