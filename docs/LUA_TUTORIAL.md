@@ -439,31 +439,420 @@ else
 end
 ```
 
+## 12. Ray Tracing
+
+Cast rays through geometry to find cell intersections:
+
+```lua
+sys:build_universe_index()
+
+-- Cast a ray from (-10,0,0) in direction (1,0,0) with max distance 100
+local result = sys:raycast(-10, 0, 0, 1, 0, 0, 100)
+
+-- Inspect segments
+print("Segments: " .. result:segment_count())
+for i = 1, result:segment_count() do
+    local seg = result:segment(i)  -- 1-based indexing
+    print(string.format("  [%.2f, %.2f] cell=%d mat=%d density=%.2f",
+        seg.t_enter, seg.t_exit, seg.cell_id, seg.material_id, seg.density))
+end
+
+-- Or get all segments at once
+local segs = result:segments()
+for i, seg in ipairs(segs) do
+    -- same fields: t_enter, t_exit, cell_id, material_id, density
+end
+
+-- Path length through a specific material (-1 = all)
+local pl = result:path_length(1)     -- total path in material 1
+local total = result:path_length(-1) -- total path through all materials
+```
+
+### Cell-aware raycasting
+
+Uses per-cell surface indices for better efficiency:
+
+```lua
+local result = sys:raycast_cell_aware(-10, 0, 0, 1, 0, 0, 100)
+```
+
+### Finding the first cell
+
+```lua
+local cell_id, t = sys:ray_first_cell(-10, 0, 0, 1, 0, 0, 100)
+if cell_id then
+    print("First cell: " .. cell_id .. " at distance " .. t)
+end
+```
+
+## 13. 2D Slicing
+
+Create 2D cross-sections of your geometry for visualization.
+
+### Slice views
+
+```lua
+-- Axis-aligned: axis (0=X, 1=Y, 2=Z), value, u_min, u_max, v_min, v_max
+local view = alea.slice_view_axis(2, 0.0, -10, 10, -10, 10)
+
+-- Arbitrary orientation: origin, normal, up-hint, viewport bounds
+local view = alea.slice_view(0,0,0,  0,0,1,  0,1,0,  -10,10, -10,10)
+```
+
+### Grid cell queries
+
+```lua
+sys:build_universe_index()
+
+local grid = sys:find_cells_grid(view, 256, 256)
+-- grid.cell_ids      -- flat table (256*256 elements)
+-- grid.material_ids  -- flat table
+-- grid.errors        -- flat table (0=ok, 1=overlap, 2=undefined)
+
+-- With depth control: -1=innermost, 0=root level, N=level N
+local grid = sys:find_cells_grid(view, 256, 256, 0)
+```
+
+### Analytical curves
+
+```lua
+local curves = sys:get_slice_curves(view)
+print("Curves: " .. curves:count())
+for i = 1, curves:count() do
+    local c = curves:get(i)  -- 1-based
+    print(c.type .. " surface=" .. c.surface_id)
+    -- c.data contains type-specific fields:
+    --   line: px, py, dx, dy
+    --   circle/arc: cx, cy, radius
+    --   ellipse: cx, cy, semi_a, semi_b, angle
+    --   polygon: count, closed, vertices
+end
+
+local u0, u1, v0, v1 = curves:bounds()
+```
+
+### Label positions
+
+```lua
+-- For cell/material regions
+local labels = alea.find_label_positions(grid.cell_ids, 256, 256, 100)
+for _, lbl in ipairs(labels) do
+    print(string.format("ID %d at pixel (%d, %d), size=%d px",
+        lbl.id, lbl.px, lbl.py, lbl.pixel_count))
+end
+
+-- For surface labels along curves
+local slabels = alea.find_surface_label_positions(curves,
+    -10, 10, -10, 10, 256, 256, 10)
+```
+
+### Debug tracing
+
+```lua
+alea.slice_curve_set_debug(true)       -- verbose curve generation
+alea.slice_point_trace_set_debug(true) -- verbose point queries
+```
+
+## 14. 3D Rendering
+
+Produce publication-quality 3D images of CSG models.
+
+### Basic rendering
+
+```lua
+sys:build_universe_index()
+
+local fb = sys:render{
+    width  = 800,
+    height = 600,
+    fov    = 45,
+    shadows = 1,
+    edges   = 1,
+    aa_samples = 2,
+}
+
+fb:edge_darken()
+fb:write("/tmp/render.png")
+```
+
+### Render configuration
+
+```lua
+-- Get default config
+local cfg = alea.render_config()
+
+-- All available options:
+local fb = sys:render{
+    width  = 1920,
+    height = 1080,
+
+    -- Camera
+    eye    = {50, 50, 50},
+    target = {0, 0, 0},
+    up     = {0, 0, 1},
+    fov    = 45,         -- 0 = orthographic
+    ortho_height = 20,   -- used when fov=0
+
+    -- Appearance
+    color_mode  = 0,     -- 0=material, 1=cell, 2=universe, 3=density
+    render_mode = 0,     -- 0=solid, 1=xray, 2=depth, 3=cellid, 4=matid
+    shadows = 1,
+    edges   = 1,
+    ambient = 0.2,
+    diffuse = 0.6,
+
+    -- Clipping planes: visible where n.x + d > 0
+    clips = {{0, 0, 1, 0}},  -- clip below z=0
+
+    -- Quality
+    aa_samples = 2,      -- NxN supersampling
+    universe_depth = -1,  -- -1=innermost
+
+    -- Output
+    aux_output = 1,      -- enable depth/cellid/matid/normal maps
+}
+```
+
+### Framebuffer methods
+
+```lua
+fb:width()               -- image width
+fb:height()              -- image height
+fb:edge_darken()         -- post-process edge darkening
+fb:write("file.png")     -- auto-detect format from extension
+fb:write_png("file.png")
+fb:write_bmp("file.bmp")
+fb:write_ppm("file.ppm")
+fb:write_aux("base")     -- write auxiliary maps (depth, cellid, matid, normal)
+```
+
+### Camera setup
+
+```lua
+local cam = sys:render_camera_setup{
+    eye = {50, 50, 50},
+    target = {0, 0, 0},
+}
+print("eye:", cam.eye[1], cam.eye[2], cam.eye[3])
+print("auto_fit:", cam.auto_fit)
+```
+
+### Custom colors
+
+```lua
+local cfg = alea.render_load_colors("palette.txt", {width=800, height=600})
+local fb = sys:render(cfg)
+```
+
+## 15. Mesh Export
+
+Sample CSG geometry onto a structured grid and export for mesh-based codes.
+
+### One-shot export
+
+```lua
+sys:build_universe_index()
+sys:mesh_export({
+    nx = 100, ny = 100, nz = 100,
+    format = 0,  -- 0=Gmsh, 1=VTK
+}, "output.msh")
+```
+
+### Step-by-step with inspection
+
+```lua
+local mesh = sys:mesh_sample{
+    nx = 50, ny = 50, nz = 50,
+    x_min = -10, x_max = 10,
+    y_min = -10, y_max = 10,
+    z_min = -10, z_max = 10,
+    void_material_id = 0,
+}
+
+-- Inspect results
+local info = mesh:info()
+print(string.format("Grid: %dx%dx%d", info.nx, info.ny, info.nz))
+print("Materials found: " .. info.num_materials)
+for _, mid in ipairs(info.unique_materials) do
+    print("  material " .. mid)
+end
+
+-- Access raw arrays
+local mids = mesh:material_ids()  -- flat table (nx*ny*nz)
+local cids = mesh:cell_ids()      -- flat table
+
+-- Export to different formats
+mesh:export(0, "output.msh")  -- Gmsh
+mesh:export(1, "output.vtk")  -- VTK
+```
+
+## 16. Error Handling and Logging
+
+### Error state
+
+```lua
+-- Check last error
+local msg = alea.error()       -- error message string
+local code = alea.error_code() -- numeric error code
+alea.error_clear()             -- clear error state
+```
+
+### Log levels
+
+```lua
+-- 0=none, 1=error, 2=warn (default), 3=info, 4=debug, 5=trace
+alea.log_set_level(0)    -- suppress all output
+alea.log_set_level(3)    -- show info and above
+
+local level = alea.log_get_level()
+```
+
+### Debug tracing
+
+```lua
+alea.set_debug_trace(true)   -- enable point query tracing
+```
+
+### System reset
+
+Clear a system and start over:
+
+```lua
+sys:reset()
+assert(sys:cell_count() == 0)
+```
+
+### Flatten and simplify
+
+```lua
+local stats = sys:flatten_all()
+print("Nodes: " .. stats.nodes_before .. " -> " .. stats.nodes_after)
+print("Empty cells removed: " .. stats.empty_cells_removed)
+```
+
 ## Quick Reference
 
 | Operation | Lua |
 |-----------|-----|
+| **Lifecycle** | |
 | Create system | `alea.create()` |
+| Destroy | `sys:destroy()` |
+| Reset | `sys:reset()` |
+| Clone | `sys:clone()` |
+| Version | `alea.version()` |
+| **Loading** | |
 | Load MCNP | `alea.load_mcnp(file)` |
 | Load OpenMC | `alea.load_openmc(file)` |
 | Load from string | `alea.load_mcnp_string(str)` |
+| **Export** | |
 | Export MCNP | `sys:export_mcnp(file)` |
 | Export OpenMC | `sys:export_openmc(file)` |
-| Build index | `sys:build_universe_index()` |
-| Find cell | `sys:find_cell(x, y, z)` |
-| Material at point | `sys:material_at(x, y, z)` |
-| Cell info | `sys:cell_info(idx)` |
+| **CSG Construction** | |
+| Inside surface | `sys:inside(surf_idx)` |
+| Outside surface | `sys:outside(surf_idx)` |
 | Intersection | `a * b` |
 | Union | `a + b` |
 | Difference | `a - b` |
 | Complement | `~a` |
-| Inside surface | `sys:inside(surf_idx)` |
-| Outside surface | `sys:outside(surf_idx)` |
+| Add cell | `sys:cell{id=N, region=node, ...}` |
+| **Indexing** | |
+| Build universe index | `sys:build_universe_index()` |
+| Build spatial index | `sys:build_spatial_index()` |
+| **Point Queries** | |
+| Find cell | `sys:find_cell(x, y, z)` |
+| Find cell + material | `sys:find_cell_at(x, y, z)` |
+| Material at point | `sys:material_at(x, y, z)` |
+| All cells at point | `sys:find_all_cells(x, y, z)` |
+| Point inside node | `sys:point_inside(node, x, y, z)` |
+| **Information** | |
+| Cell count | `sys:cell_count()` |
+| Surface count | `sys:surface_count()` |
+| Universe count | `sys:universe_count()` |
+| Cell info by index | `sys:cell_info(idx)` |
+| Cell info by ID | `sys:cell_find_info(cell_id)` |
+| Cell find | `sys:cell_find(cell_id)` |
+| Surface info | `sys:surface_info(idx)` |
+| Surface find | `sys:surface_find(surface_id)` |
+| Universe info | `sys:universe_info(idx)` |
+| Universe find | `sys:universe_find(universe_id)` |
+| Statistics | `sys:stats()` |
+| Print summary | `sys:print_summary()` |
+| Instance count | `sys:instance_count()` |
+| **Node Inspection** | |
+| Node operation | `sys:node_operation(node)` |
+| Node left/right | `sys:node_left(node)`, `sys:node_right(node)` |
+| Node sense | `sys:node_sense(node)` |
+| Node surface ID | `sys:node_surface_id(node)` |
+| Primitive type | `sys:node_primitive_type(node)` |
+| Primitive ID | `sys:node_primitive_id(node)` |
+| Primitive data | `sys:node_primitive_data(node)` |
+| Tree print | `sys:tree_print(node)` |
+| **Transforms** | |
 | Flatten | `sys:flatten(universe)` |
+| Flatten all | `sys:flatten_all()` |
+| Split union cells | `sys:split_union_cells()` |
+| Expand macrobodies | `sys:expand_macrobodies()` |
 | Extract universe | `sys:extract_universe(uid)` |
+| Extract region | `sys:extract_region(bbox)` |
 | Merge | `sys:merge(other, offset)` |
-| Clone | `sys:clone()` |
+| Create mixture | `sys:create_mixture(ids, fracs, new_id)` |
+| **Renumbering** | |
+| Renumber cells | `sys:renumber_cells(start)` |
+| Renumber surfaces | `sys:renumber_surfaces(start)` |
+| Offset cell IDs | `sys:offset_cell_ids(offset)` |
+| Offset surface IDs | `sys:offset_surface_ids(offset)` |
+| Offset material IDs | `sys:offset_material_ids(offset)` |
+| **Volume & BBox** | |
+| Bounding sphere | `sys:bounding_sphere(tol)` |
+| Estimate volumes | `sys:estimate_volumes(n, cx, cy, cz, r)` |
+| Instance volumes | `sys:estimate_instance_volumes(n)` |
+| Tighten bbox | `sys:tighten_cell_bbox(idx, tol)` |
+| Tighten all | `sys:tighten_all_bboxes(tol)` |
+| Cells in bbox | `sys:cells_in_bbox(bbox)` |
+| **Validation** | |
 | Validate | `sys:validate()` |
+| Find overlaps | `sys:find_overlaps()` |
+| **Raycast** | |
+| Cast ray | `sys:raycast(ox,oy,oz,dx,dy,dz,t_max)` |
+| Cell-aware raycast | `sys:raycast_cell_aware(...)` |
+| First cell on ray | `sys:ray_first_cell(...)` |
+| Segment count | `result:segment_count()` |
+| Get segment | `result:segment(i)` |
+| All segments | `result:segments()` |
+| Path length | `result:path_length(mat_id)` |
+| **2D Slicing** | |
+| Axis-aligned view | `alea.slice_view_axis(axis, val, ...)` |
+| Arbitrary view | `alea.slice_view(...)` |
+| Grid query | `sys:find_cells_grid(view, nu, nv, depth)` |
+| Grid overlaps | `sys:check_grid_overlaps(...)` |
+| Get curves | `sys:get_slice_curves(view)` |
+| Curve count | `curves:count()` |
+| Get curve | `curves:get(i)` |
+| Curve bounds | `curves:bounds()` |
+| Label positions | `alea.find_label_positions(ids, w, h, min)` |
+| Surface labels | `alea.find_surface_label_positions(...)` |
+| **3D Rendering** | |
+| Default config | `alea.render_config()` |
+| Render scene | `sys:render(config)` |
+| Camera setup | `sys:render_camera_setup(config)` |
+| Write image | `fb:write(filename)` |
+| Edge darken | `fb:edge_darken()` |
+| Write aux maps | `fb:write_aux(base)` |
+| Load colors | `alea.render_load_colors(file, cfg)` |
+| **Mesh Export** | |
+| Sample mesh | `sys:mesh_sample(config)` |
+| One-shot export | `sys:mesh_export(config, filename)` |
+| Export result | `mesh:export(format, filename)` |
+| Mesh info | `mesh:info()` |
+| Material IDs | `mesh:material_ids()` |
+| Cell IDs | `mesh:cell_ids()` |
+| **Error/Logging** | |
+| Error message | `alea.error()` |
+| Error code | `alea.error_code()` |
+| Clear error | `alea.error_clear()` |
+| Set log level | `alea.log_set_level(level)` |
+| Get log level | `alea.log_get_level()` |
+| Debug trace | `alea.set_debug_trace(bool)` |
 
 ## Next Steps
 

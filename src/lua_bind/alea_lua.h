@@ -14,12 +14,13 @@
  * Metatable names
  * ============================================================================ */
 
-#define ALEA_SYSTEM_MT     "alea.System"
-#define ALEA_NODE_MT       "alea.Node"
-#define ALEA_RAYRESULT_MT  "alea.RaycastResult"
-#define ALEA_CURVES_MT     "alea.SliceCurves"
-#define ALEA_MESHRESULT_MT "alea.MeshResult"
-#define ALEA_VOIDRESULT_MT "alea.VoidResult"
+#define ALEA_SYSTEM_MT      "alea.System"
+#define ALEA_NODE_MT        "alea.Node"
+#define ALEA_RAYRESULT_MT   "alea.RaycastResult"
+#define ALEA_CURVES_MT      "alea.SliceCurves"
+#define ALEA_MESHRESULT_MT  "alea.MeshResult"
+#define ALEA_VOIDRESULT_MT  "alea.VoidResult"
+#define ALEA_FRAMEBUFFER_MT "alea.Framebuffer"
 
 /* ============================================================================
  * Userdata types
@@ -74,6 +75,10 @@ int luaopen_alea_surfaces(lua_State* L);
 int luaopen_alea_io(lua_State* L);
 int luaopen_alea_query(lua_State* L);
 int luaopen_alea_util(lua_State* L);
+int luaopen_alea_raycast(lua_State* L);
+int luaopen_alea_slice(lua_State* L);
+int luaopen_alea_render(lua_State* L);
+int luaopen_alea_mesh(lua_State* L);
 
 /* The main module opener (called from lua_main.c) */
 int luaopen_alea(lua_State* L);

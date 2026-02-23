@@ -4,6 +4,7 @@
 
 #include "alea_lua.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* ============================================================================
  * Universe operations
@@ -221,7 +222,210 @@ static int l_offset_material_ids(lua_State* L) {
 }
 
 /* ============================================================================
- * Macrobody expansion
+ * Flatten all cells
+ * ============================================================================ */
+
+/* sys:flatten_all() -> stats table */
+static int l_flatten_all(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_simplify_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    alea_flatten_all_cells(sys, &stats);
+
+    lua_createtable(L, 0, 14);
+    lua_pushinteger(L, (lua_Integer)stats.nodes_before);            lua_setfield(L, -2, "nodes_before");
+    lua_pushinteger(L, (lua_Integer)stats.nodes_after);             lua_setfield(L, -2, "nodes_after");
+    lua_pushinteger(L, (lua_Integer)stats.complements_eliminated);  lua_setfield(L, -2, "complements_eliminated");
+    lua_pushinteger(L, (lua_Integer)stats.double_negations);        lua_setfield(L, -2, "double_negations");
+    lua_pushinteger(L, (lua_Integer)stats.idempotent_reductions);   lua_setfield(L, -2, "idempotent_reductions");
+    lua_pushinteger(L, (lua_Integer)stats.absorption_reductions);   lua_setfield(L, -2, "absorption_reductions");
+    lua_pushinteger(L, (lua_Integer)stats.subtrees_deduplicated);   lua_setfield(L, -2, "subtrees_deduplicated");
+    lua_pushinteger(L, (lua_Integer)stats.cell_complements_expanded);lua_setfield(L, -2, "cell_complements_expanded");
+    lua_pushinteger(L, (lua_Integer)stats.contradictions_found);    lua_setfield(L, -2, "contradictions_found");
+    lua_pushinteger(L, (lua_Integer)stats.tautologies_found);       lua_setfield(L, -2, "tautologies_found");
+    lua_pushinteger(L, (lua_Integer)stats.empty_cells_removed);     lua_setfield(L, -2, "empty_cells_removed");
+    lua_pushinteger(L, (lua_Integer)stats.union_branches_absorbed); lua_setfield(L, -2, "union_branches_absorbed");
+    lua_pushinteger(L, (lua_Integer)stats.union_common_factors);    lua_setfield(L, -2, "union_common_factors");
+    lua_pushinteger(L, (lua_Integer)stats.union_branches_subsumed); lua_setfield(L, -2, "union_branches_subsumed");
+    return 1;
+}
+
+/* ============================================================================
+ * Volume estimation (instance-based)
+ * ============================================================================ */
+
+/* sys:estimate_instance_volumes(n_rays) -> table of {volume, rel_error} */
+static int l_estimate_instance_volumes(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int n_rays = (int)luaL_checkinteger(L, 2);
+
+    size_t ni = alea_spatial_index_instance_count(sys);
+    if (ni == 0) {
+        lua_newtable(L);
+        return 1;
+    }
+
+    double* volumes = (double*)calloc(ni, sizeof(double));
+    double* errors  = (double*)calloc(ni, sizeof(double));
+    if (!volumes || !errors) {
+        free(volumes); free(errors);
+        return luaL_error(L, "out of memory");
+    }
+
+    int rc = alea_estimate_instance_volumes(sys, n_rays, volumes, errors);
+    if (rc != 0) {
+        free(volumes); free(errors);
+        return luaL_error(L, "estimate_instance_volumes failed: %s", alea_error());
+    }
+
+    lua_createtable(L, (int)ni, 0);
+    for (size_t i = 0; i < ni; i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushnumber(L, volumes[i]); lua_setfield(L, -2, "volume");
+        lua_pushnumber(L, errors[i]);  lua_setfield(L, -2, "rel_error");
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    free(volumes);
+    free(errors);
+    return 1;
+}
+
+/* ============================================================================
+ * Tighten single cell bbox
+ * ============================================================================ */
+
+/* sys:tighten_cell_bbox(idx, tol) -> bbox table */
+static int l_tighten_cell_bbox(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int idx = (int)luaL_checkinteger(L, 2);
+    double tol = luaL_optnumber(L, 3, 1.0);
+    alea_bbox_t out;
+    if (alea_tighten_cell_bbox(sys, (size_t)idx, tol, &out) != 0)
+        return luaL_error(L, "tighten_cell_bbox failed: %s", alea_error());
+
+    lua_createtable(L, 0, 6);
+    lua_pushnumber(L, out.min_x); lua_setfield(L, -2, "min_x");
+    lua_pushnumber(L, out.max_x); lua_setfield(L, -2, "max_x");
+    lua_pushnumber(L, out.min_y); lua_setfield(L, -2, "min_y");
+    lua_pushnumber(L, out.max_y); lua_setfield(L, -2, "max_y");
+    lua_pushnumber(L, out.min_z); lua_setfield(L, -2, "min_z");
+    lua_pushnumber(L, out.max_z); lua_setfield(L, -2, "max_z");
+    return 1;
+}
+
+/* ============================================================================
+ * Mixture creation
+ * ============================================================================ */
+
+/* sys:create_mixture(ids, fracs, new_id) -> id */
+static int l_create_mixture(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    int new_id = (int)luaL_optinteger(L, 4, 0);
+
+    lua_Integer n = luaL_len(L, 2);
+    int* ids = (int*)calloc((size_t)n, sizeof(int));
+    double* fracs = (double*)calloc((size_t)n, sizeof(double));
+    if (!ids || !fracs) {
+        free(ids); free(fracs);
+        return luaL_error(L, "out of memory");
+    }
+
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        ids[i - 1] = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_rawgeti(L, 3, i);
+        fracs[i - 1] = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+
+    int result = alea_create_mixture(sys, ids, fracs, (size_t)n, new_id);
+    free(ids);
+    free(fracs);
+    if (result < 0)
+        return luaL_error(L, "create_mixture failed: %s", alea_error());
+    lua_pushinteger(L, result);
+    return 1;
+}
+
+/* ============================================================================
+ * Extract / filter
+ * ============================================================================ */
+
+/* sys:extract_region(bbox) -> new System */
+static int l_extract_region(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    alea_bbox_t bbox;
+    lua_getfield(L, 2, "min_x"); bbox.min_x = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "max_x"); bbox.max_x = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "min_y"); bbox.min_y = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "max_y"); bbox.max_y = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "min_z"); bbox.min_z = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "max_z"); bbox.max_z = luaL_checknumber(L, -1); lua_pop(L, 1);
+
+    alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
+    ud->sys = NULL;
+    ud->owned = 1;
+    luaL_setmetatable(L, ALEA_SYSTEM_MT);
+
+    ud->sys = alea_extract_region(sys, &bbox);
+    if (!ud->sys)
+        return luaL_error(L, "extract_region failed: %s", alea_error());
+    return 1;
+}
+
+/* sys:cells_in_bbox(bbox) -> table of indices */
+static int l_cells_in_bbox(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    alea_bbox_t bbox;
+    lua_getfield(L, 2, "min_x"); bbox.min_x = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "max_x"); bbox.max_x = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "min_y"); bbox.min_y = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "max_y"); bbox.max_y = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "min_z"); bbox.min_z = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, 2, "max_z"); bbox.max_z = luaL_checknumber(L, -1); lua_pop(L, 1);
+
+    int buf[4096];
+    size_t n = alea_get_cells_in_bbox(sys, &bbox, buf, 4096);
+
+    lua_createtable(L, (int)n, 0);
+    for (size_t i = 0; i < n; i++) {
+        lua_pushinteger(L, buf[i]);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
+
+/* ============================================================================
+ * Node-level macrobody expansion
+ * ============================================================================ */
+
+/* sys:expand_macrobody_node(node) -> Node */
+static int l_expand_macrobody_node(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_node_id_t result = alea_expand_macrobody(sys, nd->id);
+    alea_push_node(L, sys, result);
+    return 1;
+}
+
+/* sys:expand_all_macrobodies_node(node) -> Node */
+static int l_expand_all_macrobodies_node(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_node_id_t result = alea_expand_all_macrobodies(sys, nd->id);
+    alea_push_node(L, sys, result);
+    return 1;
+}
+
+/* ============================================================================
+ * Macrobody expansion (system-level, already present)
  * ============================================================================ */
 
 static int l_expand_macrobodies(lua_State* L) {
@@ -300,28 +504,71 @@ static int l_void_merge(lua_State* L) {
     return 0;
 }
 
+/* void_result:get(idx) -> bbox table (1-based) */
+static int l_void_get(lua_State* L) {
+    alea_lua_void_result_t* ud = (alea_lua_void_result_t*)luaL_checkudata(L, 1, ALEA_VOIDRESULT_MT);
+    if (!ud->ptr) return luaL_error(L, "void result freed");
+    int i = (int)luaL_checkinteger(L, 2);
+    alea_bbox_t box;
+    if (alea_void_get(ud->ptr, (size_t)(i - 1), &box) != 0)
+        return luaL_error(L, "void:get: invalid index %d", i);
+
+    lua_createtable(L, 0, 6);
+    lua_pushnumber(L, box.min_x); lua_setfield(L, -2, "min_x");
+    lua_pushnumber(L, box.max_x); lua_setfield(L, -2, "max_x");
+    lua_pushnumber(L, box.min_y); lua_setfield(L, -2, "min_y");
+    lua_pushnumber(L, box.max_y); lua_setfield(L, -2, "max_y");
+    lua_pushnumber(L, box.min_z); lua_setfield(L, -2, "min_z");
+    lua_pushnumber(L, box.max_z); lua_setfield(L, -2, "max_z");
+    return 1;
+}
+
+/* void_result:to_node() -> Node */
+static int l_void_to_node(lua_State* L) {
+    alea_lua_void_result_t* ud = (alea_lua_void_result_t*)luaL_checkudata(L, 1, ALEA_VOIDRESULT_MT);
+    if (!ud->ptr) return luaL_error(L, "void result freed");
+    alea_node_id_t node = alea_void_to_node(ud->sys, ud->ptr);
+    alea_push_node(L, ud->sys, node);
+    return 1;
+}
+
+/* alea.is_macrobody(type_int) -> bool */
+static int l_is_macrobody(lua_State* L) {
+    int type = (int)luaL_checkinteger(L, 1);
+    lua_pushboolean(L, alea_is_macrobody((alea_primitive_type_t)type));
+    return 1;
+}
+
 /* ============================================================================
  * Registration
  * ============================================================================ */
 
 static const luaL_Reg util_methods[] = {
-    {"flatten",              l_flatten},
-    {"split_union_cells",    l_split_union_cells},
-    {"extract_universe",     l_extract_universe},
-    {"merge",                l_merge},
-    {"clone",                l_clone},
-    {"bounding_sphere",      l_bounding_sphere},
-    {"estimate_volumes",     l_estimate_volumes},
-    {"remove_cells_by_volume", l_remove_cells_by_volume},
-    {"tighten_all_bboxes",   l_tighten_all_bboxes},
-    {"tighten_bbox_numerical", l_tighten_bbox_numerical},
-    {"renumber_cells",       l_renumber_cells},
-    {"renumber_surfaces",    l_renumber_surfaces},
-    {"offset_cell_ids",      l_offset_cell_ids},
-    {"offset_surface_ids",   l_offset_surface_ids},
-    {"offset_material_ids",  l_offset_material_ids},
-    {"expand_macrobodies",   l_expand_macrobodies},
-    {"void_generate",        l_void_generate},
+    {"flatten",                    l_flatten},
+    {"flatten_all",                l_flatten_all},
+    {"split_union_cells",          l_split_union_cells},
+    {"extract_universe",           l_extract_universe},
+    {"merge",                      l_merge},
+    {"clone",                      l_clone},
+    {"bounding_sphere",            l_bounding_sphere},
+    {"estimate_volumes",           l_estimate_volumes},
+    {"estimate_instance_volumes",  l_estimate_instance_volumes},
+    {"remove_cells_by_volume",     l_remove_cells_by_volume},
+    {"tighten_all_bboxes",         l_tighten_all_bboxes},
+    {"tighten_cell_bbox",          l_tighten_cell_bbox},
+    {"tighten_bbox_numerical",     l_tighten_bbox_numerical},
+    {"renumber_cells",             l_renumber_cells},
+    {"renumber_surfaces",          l_renumber_surfaces},
+    {"offset_cell_ids",            l_offset_cell_ids},
+    {"offset_surface_ids",         l_offset_surface_ids},
+    {"offset_material_ids",        l_offset_material_ids},
+    {"expand_macrobodies",         l_expand_macrobodies},
+    {"expand_macrobody_node",      l_expand_macrobody_node},
+    {"expand_all_macrobodies_node",l_expand_all_macrobodies_node},
+    {"create_mixture",             l_create_mixture},
+    {"extract_region",             l_extract_region},
+    {"cells_in_bbox",              l_cells_in_bbox},
+    {"void_generate",              l_void_generate},
     {NULL, NULL}
 };
 
@@ -334,6 +581,8 @@ static const luaL_Reg void_methods[] = {
     {"count",     l_void_count},
     {"add_cells", l_void_add_cells},
     {"merge",     l_void_merge},
+    {"get",       l_void_get},
+    {"to_node",   l_void_to_node},
     {NULL, NULL}
 };
 
@@ -351,6 +600,10 @@ int luaopen_alea_util(lua_State* L) {
     luaL_setfuncs(L, void_methods, 0);
     lua_setfield(L, -2, "__index");
     lua_pop(L, 1);
+
+    /* Module-level functions on alea table (top of stack) */
+    lua_pushcfunction(L, l_is_macrobody);
+    lua_setfield(L, -2, "is_macrobody");
 
     return 0;
 }

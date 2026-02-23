@@ -44,9 +44,52 @@ static int l_system_tostring(lua_State* L) {
     return 1;
 }
 
+static int l_system_reset(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_reset(sys);
+    return 0;
+}
+
 static int l_version(lua_State* L) {
     lua_pushstring(L, alea_version());
     return 1;
+}
+
+/* ============================================================================
+ * Logging and error (module-level functions)
+ * ============================================================================ */
+
+static int l_log_set_level(lua_State* L) {
+    int level = (int)luaL_checkinteger(L, 1);
+    alea_log_set_level((alea_log_level_t)level);
+    return 0;
+}
+
+static int l_log_get_level(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)alea_log_get_level());
+    return 1;
+}
+
+static int l_error(lua_State* L) {
+    lua_pushstring(L, alea_error());
+    return 1;
+}
+
+static int l_error_code(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)alea_error_code());
+    return 1;
+}
+
+static int l_error_clear(lua_State* L) {
+    (void)L;
+    alea_error_clear();
+    return 0;
+}
+
+static int l_set_debug_trace(lua_State* L) {
+    int enable = lua_toboolean(L, 1);
+    alea_set_debug_trace(enable);
+    return 0;
 }
 
 /* ============================================================================
@@ -138,14 +181,21 @@ static const luaL_Reg system_meta[] = {
 
 static const luaL_Reg system_methods[] = {
     {"destroy",    l_system_destroy},
+    {"reset",      l_system_reset},
     {"get_config", l_system_get_config},
     {"set_config", l_system_set_config},
     {NULL, NULL}
 };
 
 static const luaL_Reg alea_funcs[] = {
-    {"create",  l_system_create},
-    {"version", l_version},
+    {"create",          l_system_create},
+    {"version",         l_version},
+    {"log_set_level",   l_log_set_level},
+    {"log_get_level",   l_log_get_level},
+    {"error",           l_error},
+    {"error_code",      l_error_code},
+    {"error_clear",     l_error_clear},
+    {"set_debug_trace", l_set_debug_trace},
     {NULL, NULL}
 };
 
@@ -174,6 +224,10 @@ int luaopen_alea(lua_State* L) {
     luaopen_alea_io(L);
     luaopen_alea_query(L);
     luaopen_alea_util(L);
+    luaopen_alea_raycast(L);
+    luaopen_alea_slice(L);
+    luaopen_alea_render(L);
+    luaopen_alea_mesh(L);
 
     /* Set as global */
     lua_pushvalue(L, -1);
