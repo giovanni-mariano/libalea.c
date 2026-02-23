@@ -18,6 +18,7 @@
 #include <string.h>
 #include <math.h>
 #include "util/math.h"
+#include "util/alea_log.h"
 
 /* ============================================================================
  * SLICE CURVES API

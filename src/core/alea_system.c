@@ -121,9 +121,11 @@ void alea_system_destroy_internals(alea_system_t* sys) {
     // Free per-cell data
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         free(sys->cells.data[i].surface_indices);
-        free(sys->cells.data[i].neighbors);
+        if (!sys->neighbor_pool)
+            free(sys->cells.data[i].neighbors);
         free(sys->cells.data[i].lat_fill);
     }
+    free(sys->neighbor_pool);
     alea_vec_free(&sys->cells);
 
     alea_vec_free(&sys->nodes);
@@ -200,13 +202,16 @@ void alea_system_reset(alea_system_t* sys) {
         free(sys->cells.data[i].surface_indices);
         sys->cells.data[i].surface_indices = NULL;
         sys->cells.data[i].surface_index_count = 0;
-        free(sys->cells.data[i].neighbors);
+        if (!sys->neighbor_pool)
+            free(sys->cells.data[i].neighbors);
         sys->cells.data[i].neighbors = NULL;
         sys->cells.data[i].neighbor_count = 0;
         free(sys->cells.data[i].lat_fill);
         sys->cells.data[i].lat_fill = NULL;
         sys->cells.data[i].lat_fill_count = 0;
     }
+    free(sys->neighbor_pool);
+    sys->neighbor_pool = NULL;
     alea_vec_clear(&sys->cells);
 
     alea_vec_clear(&sys->nodes);
@@ -1696,123 +1701,306 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     }
 
     /* Free existing adjacency data */
+    if (sys->neighbor_pool) {
+        free(sys->neighbor_pool);
+        sys->neighbor_pool = NULL;
+    }
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        free(sys->cells.data[i].neighbors);
         sys->cells.data[i].neighbors = NULL;
         sys->cells.data[i].neighbor_count = 0;
     }
     sys->cell_adjacency_built = false;
 
-    /* Create surface->cells map */
-    surface_cell_list_t* surf_map = calloc(alea_vec_count(&sys->surfaces), sizeof(surface_cell_list_t));
-    if (!surf_map) return -1;
+    size_t num_surfaces = alea_vec_count(&sys->surfaces);
+    size_t num_cells = alea_vec_count(&sys->cells);
 
-    /* For each cell, collect its surfaces with senses and add to map */
-    for (size_t ci = 0; ci < alea_vec_count(&sys->cells); ci++) {
+    /* ------------------------------------------------------------------ *
+     * Phase 1: Build flat surface→cell map (two-pass to avoid per-surface
+     * reallocs that fragment the heap)
+     * ------------------------------------------------------------------ */
+
+    /* Reusable senses buffer across all cells */
+    cell_surface_sense_t* senses_buf = NULL;
+    size_t senses_cap = 0;
+
+    /* Pass 1a: Count how many cell refs each surface will have */
+    size_t* surf_counts = calloc(num_surfaces, sizeof(size_t));
+    if (!surf_counts) { free(senses_buf); return -1; }
+
+    for (size_t ci = 0; ci < num_cells; ci++) {
         alea_cell_entry_t* cell = &sys->cells.data[ci];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        /* Collect surfaces with senses */
-        cell_surface_sense_t* senses = NULL;
         size_t sense_count = 0;
-        size_t sense_cap = 0;
-
         collect_cell_surface_senses(sys, cell->root_node_id, 1,
-                                   &senses, &sense_count, &sense_cap);
+                                   &senses_buf, &sense_count, &senses_cap);
 
-        /* Add cell references to surface map */
         for (size_t si = 0; si < sense_count; si++) {
-            uint32_t surf_idx = senses[si].surface_idx;
-            if (surf_idx >= alea_vec_count(&sys->surfaces)) continue;
-
-            surface_cell_list_t* list = &surf_map[surf_idx];
-
-            /* Grow if needed */
-            if (list->count >= list->capacity) {
-                size_t new_cap = list->capacity ? list->capacity * 2 : 4;
-                surface_cell_ref_t* new_arr = realloc(list->refs,
-                    new_cap * sizeof(surface_cell_ref_t));
-                if (!new_arr) {
-                    free(senses);
-                    goto cleanup;
-                }
-                list->refs = new_arr;
-                list->capacity = new_cap;
-            }
-
-            list->refs[list->count].cell_index = (uint32_t)ci;
-            list->refs[list->count].sense = senses[si].sense;
-            list->count++;
-        }
-
-        free(senses);
-    }
-
-    /* Build neighbor lists from surface map */
-    /* For each surface, if it has cells on both sides (opposite senses),
-     * those cells are neighbors */
-    for (size_t si = 0; si < alea_vec_count(&sys->surfaces); si++) {
-        surface_cell_list_t* list = &surf_map[si];
-
-        /* Need at least 2 cells to have neighbors */
-        if (list->count < 2) continue;
-
-        /* Find pairs with opposite senses */
-        for (size_t a = 0; a < list->count; a++) {
-            for (size_t b = a + 1; b < list->count; b++) {
-                /* Check if opposite senses */
-                if (list->refs[a].sense == list->refs[b].sense) continue;
-
-                uint32_t cell_a = list->refs[a].cell_index;
-                uint32_t cell_b = list->refs[b].cell_index;
-
-                /* Only pair cells in the same universe */
-                if (sys->cells.data[cell_a].universe_id !=
-                    sys->cells.data[cell_b].universe_id) continue;
-                int8_t sense_a = list->refs[a].sense;
-                int8_t sense_b = list->refs[b].sense;
-
-                /* Add B as neighbor of A */
-                alea_cell_entry_t* ca = &sys->cells.data[cell_a];
-                size_t na = ca->neighbor_count;
-                alea_cell_neighbor_t* new_neighbors_a = realloc(ca->neighbors,
-                    (na + 1) * sizeof(alea_cell_neighbor_t));
-                if (new_neighbors_a) {
-                    ca->neighbors = new_neighbors_a;
-                    ca->neighbors[na].surface_id = sys->surfaces.data[si].mcnp_surface_id;
-                    ca->neighbors[na].surface_index = (uint32_t)si;
-                    ca->neighbors[na].neighbor_cell_id = sys->cells.data[cell_b].mcnp_cell_id;
-                    ca->neighbors[na].neighbor_index = cell_b;
-                    ca->neighbors[na].our_sense = sense_a;
-                    ca->neighbor_count++;
-                }
-
-                /* Add A as neighbor of B */
-                alea_cell_entry_t* cb = &sys->cells.data[cell_b];
-                size_t nb = cb->neighbor_count;
-                alea_cell_neighbor_t* new_neighbors_b = realloc(cb->neighbors,
-                    (nb + 1) * sizeof(alea_cell_neighbor_t));
-                if (new_neighbors_b) {
-                    cb->neighbors = new_neighbors_b;
-                    cb->neighbors[nb].surface_id = sys->surfaces.data[si].mcnp_surface_id;
-                    cb->neighbors[nb].surface_index = (uint32_t)si;
-                    cb->neighbors[nb].neighbor_cell_id = sys->cells.data[cell_a].mcnp_cell_id;
-                    cb->neighbors[nb].neighbor_index = cell_a;
-                    cb->neighbors[nb].our_sense = sense_b;
-                    cb->neighbor_count++;
-                }
-            }
+            uint32_t surf_idx = senses_buf[si].surface_idx;
+            if (surf_idx < num_surfaces)
+                surf_counts[surf_idx]++;
         }
     }
+
+    /* Compute prefix-sum offsets and single allocation for all refs */
+    size_t* surf_offsets = malloc(num_surfaces * sizeof(size_t));
+    if (!surf_offsets) { free(surf_counts); free(senses_buf); return -1; }
+
+    size_t total_refs = 0;
+    for (size_t i = 0; i < num_surfaces; i++) {
+        surf_offsets[i] = total_refs;
+        total_refs += surf_counts[i];
+    }
+
+    surface_cell_ref_t* all_refs = NULL;
+    if (total_refs > 0) {
+        all_refs = malloc(total_refs * sizeof(surface_cell_ref_t));
+        if (!all_refs) {
+            free(surf_offsets); free(surf_counts); free(senses_buf);
+            return -1;
+        }
+    }
+
+    /* Reset counts for the filling pass */
+    memset(surf_counts, 0, num_surfaces * sizeof(size_t));
+
+    /* Pass 1b: Fill the flat refs array */
+    for (size_t ci = 0; ci < num_cells; ci++) {
+        alea_cell_entry_t* cell = &sys->cells.data[ci];
+        if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+
+        size_t sense_count = 0;
+        collect_cell_surface_senses(sys, cell->root_node_id, 1,
+                                   &senses_buf, &sense_count, &senses_cap);
+
+        for (size_t si = 0; si < sense_count; si++) {
+            uint32_t surf_idx = senses_buf[si].surface_idx;
+            if (surf_idx >= num_surfaces) continue;
+
+            size_t idx = surf_offsets[surf_idx] + surf_counts[surf_idx];
+            all_refs[idx].cell_index = (uint32_t)ci;
+            all_refs[idx].sense = senses_buf[si].sense;
+            surf_counts[surf_idx]++;
+        }
+    }
+
+    free(senses_buf);
+    senses_buf = NULL;
+
+    /* ------------------------------------------------------------------ *
+     * Phase 2: Build neighbor lists — two passes, zero pair materialization.
+     *
+     * The naive approach (enumerate all cell pairs per surface) creates
+     * O(n²) pairs for surfaces shared by many cells (up to 2638 cells on
+     * one surface → millions of pairs).  Instead we iterate per-cell:
+     *
+     * For each cell, walk its surfaces in the flat surf_map.  For each
+     * surface, scan cells on the opposite sense in the same universe.
+     * A reusable bitset (16 KB for 116K cells) deduplicates neighbors
+     * within a single cell in O(1).
+     *
+     * Pass 1: count unique neighbors per cell.
+     * Pass 2: allocate one pool, fill directly.
+     * ------------------------------------------------------------------ */
+
+    /* Build cell→surface-with-sense index so we can iterate per cell.
+     * Reuse the senses_buf approach: for each cell, collect_cell_surface_senses
+     * gives us the list of (surface_idx, sense).  We already did this twice
+     * in Phase 1.  To avoid a third traversal, build a flat cell→surface map
+     * from the existing surf_map by inverting it. */
+
+    /* cell_surf_counts[ci] = number of surface refs for cell ci */
+    size_t* cell_surf_counts = calloc(num_cells, sizeof(size_t));
+    if (!cell_surf_counts) goto cleanup;
+
+    for (size_t r = 0; r < total_refs; r++)
+        cell_surf_counts[all_refs[r].cell_index]++;
+
+    /* Prefix-sum for offsets */
+    size_t* cell_surf_offsets = malloc(num_cells * sizeof(size_t));
+    if (!cell_surf_offsets) { free(cell_surf_counts); goto cleanup; }
+    {
+        size_t off = 0;
+        for (size_t i = 0; i < num_cells; i++) {
+            cell_surf_offsets[i] = off;
+            off += cell_surf_counts[i];
+        }
+    }
+
+    /* Invert: for each surface ref, store (surface_idx, sense) keyed by cell */
+    typedef struct { uint32_t surf_idx; int8_t sense; } cell_surf_entry_t;
+    cell_surf_entry_t* cell_surf_refs = malloc(total_refs * sizeof(cell_surf_entry_t));
+    if (!cell_surf_refs) { free(cell_surf_offsets); free(cell_surf_counts); goto cleanup; }
+
+    /* Reset counts for filling */
+    memset(cell_surf_counts, 0, num_cells * sizeof(size_t));
+    for (size_t si = 0; si < num_surfaces; si++) {
+        surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
+        size_t count = surf_counts[si];
+        for (size_t r = 0; r < count; r++) {
+            uint32_t ci = refs[r].cell_index;
+            size_t idx = cell_surf_offsets[ci] + cell_surf_counts[ci];
+            cell_surf_refs[idx].surf_idx = (uint32_t)si;
+            cell_surf_refs[idx].sense = refs[r].sense;
+            cell_surf_counts[ci]++;
+        }
+    }
+
+    /* Surfaces shared by very many cells (e.g. a plane cutting through
+     * the entire reactor) create O(n²) neighbor cliques that are useless
+     * for local adjacency walking and dominate memory.  Skip them. */
+    #define ADJACENCY_MAX_CELLS_PER_SURFACE 128
+
+    /* Bitset for dedup: one bit per cell index */
+    size_t bitset_words = (num_cells + 63) / 64;
+    uint64_t* seen = calloc(bitset_words, sizeof(uint64_t));
+    if (!seen) { free(cell_surf_refs); free(cell_surf_offsets); free(cell_surf_counts); goto cleanup; }
+
+    /* Track which words we touched so we can reset in O(neighbors) not O(num_cells) */
+    size_t* dirty_words = malloc(bitset_words * sizeof(size_t));
+    if (!dirty_words) { free(seen); free(cell_surf_refs); free(cell_surf_offsets); free(cell_surf_counts); goto cleanup; }
+
+    /* ---- Pass 1: Count unique neighbors per cell ---- */
+    size_t* neighbor_count_arr = calloc(num_cells, sizeof(size_t));
+    if (!neighbor_count_arr) { free(dirty_words); free(seen); free(cell_surf_refs); free(cell_surf_offsets); free(cell_surf_counts); goto cleanup; }
+
+    for (size_t ci = 0; ci < num_cells; ci++) {
+        int my_universe = sys->cells.data[ci].universe_id;
+        size_t n_dirty = 0;
+        size_t cnt = 0;
+
+        /* Walk this cell's surfaces */
+        size_t cs_off = cell_surf_offsets[ci];
+        size_t cs_cnt = cell_surf_counts[ci];
+        for (size_t s = 0; s < cs_cnt; s++) {
+            uint32_t si = cell_surf_refs[cs_off + s].surf_idx;
+            int8_t my_sense = cell_surf_refs[cs_off + s].sense;
+
+            /* Skip surfaces shared by too many cells (global planes) */
+            size_t ref_cnt = surf_counts[si];
+            if (ref_cnt > ADJACENCY_MAX_CELLS_PER_SURFACE) continue;
+
+            /* Walk cells on this surface with opposite sense */
+            surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
+            for (size_t r = 0; r < ref_cnt; r++) {
+                if (refs[r].sense == my_sense) continue;
+                uint32_t other = refs[r].cell_index;
+                if (other == (uint32_t)ci) continue;
+                if (sys->cells.data[other].universe_id != my_universe) continue;
+
+                /* Bitset dedup */
+                size_t word = other / 64;
+                uint64_t bit = (uint64_t)1 << (other % 64);
+                if (seen[word] & bit) continue;
+                if (seen[word] == 0) dirty_words[n_dirty++] = word;
+                seen[word] |= bit;
+                cnt++;
+            }
+        }
+
+        neighbor_count_arr[ci] = cnt;
+
+        /* Reset only touched bitset words */
+        for (size_t d = 0; d < n_dirty; d++)
+            seen[dirty_words[d]] = 0;
+    }
+
+    /* Compute pool size and offsets */
+    size_t total_neighbors = 0;
+    size_t* neighbor_offsets = malloc(num_cells * sizeof(size_t));
+    if (!neighbor_offsets) { free(neighbor_count_arr); free(dirty_words); free(seen); free(cell_surf_refs); free(cell_surf_offsets); free(cell_surf_counts); goto cleanup; }
+
+    for (size_t i = 0; i < num_cells; i++) {
+        neighbor_offsets[i] = total_neighbors;
+        total_neighbors += neighbor_count_arr[i];
+    }
+
+    ALEA_LOG_INFO("Cell adjacency: %zu unique neighbors, pool %.1f MB",
+                  total_neighbors,
+                  total_neighbors * sizeof(alea_cell_neighbor_t) / (1024.0*1024.0));
+
+    /* Allocate pool */
+    alea_cell_neighbor_t* pool = NULL;
+    if (total_neighbors > 0) {
+        pool = malloc(total_neighbors * sizeof(alea_cell_neighbor_t));
+        if (!pool) { free(neighbor_offsets); free(neighbor_count_arr); free(dirty_words); free(seen); free(cell_surf_refs); free(cell_surf_offsets); free(cell_surf_counts); goto cleanup; }
+    }
+
+    /* Point each cell into its slice */
+    for (size_t i = 0; i < num_cells; i++) {
+        alea_cell_entry_t* c = &sys->cells.data[i];
+        c->neighbors = (neighbor_count_arr[i] > 0) ? pool + neighbor_offsets[i] : NULL;
+        c->neighbor_count = 0;
+    }
+
+    free(neighbor_count_arr);
+    neighbor_count_arr = NULL;
+
+    /* ---- Pass 2: Fill pool ---- */
+    for (size_t ci = 0; ci < num_cells; ci++) {
+        int my_universe = sys->cells.data[ci].universe_id;
+        alea_cell_entry_t* ca = &sys->cells.data[ci];
+        size_t n_dirty = 0;
+
+        size_t cs_off = cell_surf_offsets[ci];
+        size_t cs_cnt = cell_surf_counts[ci];
+        for (size_t s = 0; s < cs_cnt; s++) {
+            uint32_t si = cell_surf_refs[cs_off + s].surf_idx;
+            int8_t my_sense = cell_surf_refs[cs_off + s].sense;
+
+            size_t ref_cnt = surf_counts[si];
+            if (ref_cnt > ADJACENCY_MAX_CELLS_PER_SURFACE) continue;
+
+            surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
+            for (size_t r = 0; r < ref_cnt; r++) {
+                if (refs[r].sense == my_sense) continue;
+                uint32_t other = refs[r].cell_index;
+                if (other == (uint32_t)ci) continue;
+                if (sys->cells.data[other].universe_id != my_universe) continue;
+
+                size_t word = other / 64;
+                uint64_t bit = (uint64_t)1 << (other % 64);
+                if (seen[word] & bit) continue;
+                if (seen[word] == 0) dirty_words[n_dirty++] = word;
+                seen[word] |= bit;
+
+                size_t n = ca->neighbor_count;
+                ca->neighbors[n].surface_id =
+                    sys->surfaces.data[si].mcnp_surface_id;
+                ca->neighbors[n].surface_index = si;
+                ca->neighbors[n].neighbor_cell_id =
+                    sys->cells.data[other].mcnp_cell_id;
+                ca->neighbors[n].neighbor_index = other;
+                ca->neighbors[n].our_sense = my_sense;
+                ca->neighbor_count++;
+            }
+        }
+
+        for (size_t d = 0; d < n_dirty; d++)
+            seen[dirty_words[d]] = 0;
+    }
+
+    sys->neighbor_pool = pool;
+
+    free(neighbor_offsets);
+    free(dirty_words);
+    free(seen);
+    free(cell_surf_refs);
+    free(cell_surf_offsets);
+    free(cell_surf_counts);
+
+    /* Free surf_map */
+    free(all_refs);     all_refs = NULL;
+    free(surf_offsets);  surf_offsets = NULL;
+    free(surf_counts);   surf_counts = NULL;
 
     sys->cell_adjacency_built = true;
 
 cleanup:
-    /* Free surface map */
-    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        free(surf_map[i].refs);
-    }
-    free(surf_map);
+    free(all_refs);
+    free(surf_offsets);
+    free(surf_counts);
+    free(senses_buf);
 
     return sys->cell_adjacency_built ? 0 : -1;
 }

@@ -85,6 +85,28 @@ static double get_time_ms(void) {
 #include "alea.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
 
+/* Get resident set size in MB (Linux only) */
+static double get_rss_mb(void) {
+#ifdef _WIN32
+    return 0;
+#else
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    char line[256];
+    double rss = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            long kb = 0;
+            sscanf(line + 6, "%ld", &kb);
+            rss = kb / 1024.0;
+            break;
+        }
+    }
+    fclose(f);
+    return rss;
+#endif
+}
+
 /* ============================================================================
  * LABEL RENDERING - Simple 5x7 bitmap font
  * ============================================================================ */
@@ -780,6 +802,10 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         return -1;
     }
 
+    if (verbose) {
+        printf("    [RSS before grid query: %.1f MB]\n", get_rss_mb());
+    }
+
     t0 = get_time_ms();
 
     alea_slice_view_t view;
@@ -798,6 +824,7 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
     if (verbose) {
         printf("    Grid query: %.1f ms (%.2f Mpx/s)\n",
                t1 - t0, num_pixels / (t1 - t0) / 1000.0);
+        printf("    [RSS after grid query: %.1f MB]\n", get_rss_mb());
     }
 
     /* Select ID array based on color mode */
@@ -1307,6 +1334,7 @@ int main(int argc, char** argv) {
     printf("OK (%.1f ms)\n", t1 - t0);
     printf("  Cells: %zu, Surfaces: %zu\n",
            alea_cell_count(sys), alea_surface_count(sys));
+    printf("  [RSS after load: %.1f MB]\n", get_rss_mb());
 
     /* Build spatial index */
     printf("Building spatial index... ");
@@ -1320,7 +1348,8 @@ int main(int argc, char** argv) {
     }
 
     t1 = get_time_ms();
-    printf("OK (%.1f ms)\n\n", t1 - t0);
+    printf("OK (%.1f ms)\n", t1 - t0);
+    printf("  [RSS after spatial index: %.1f MB]\n\n", get_rss_mb());
 
     /* Enable curve debug output if requested */
     if (debug_curves) {

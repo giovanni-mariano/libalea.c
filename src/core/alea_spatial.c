@@ -500,6 +500,8 @@ static int spatial_index_build_impl(alea_system_t* sys) {
         return -1;
     }
 
+    ALEA_LOG_DEBUG("Spatial index: %zu instances collected", idx->instance_count);
+
     /* Build BVH over instances */
     if (build_bvh(idx) != 0) {
         alea_spatial_index_free(idx);

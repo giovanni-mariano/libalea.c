@@ -283,6 +283,7 @@ typedef struct alea_system {
 
     /* Cell adjacency (built by alea_build_cell_adjacency) */
     bool cell_adjacency_built;
+    struct alea_cell_neighbor* neighbor_pool;  /* Single allocation for all neighbor data */
 
     /* Spatial index for fast instance queries (lazy-built) */
     struct alea_spatial_index* spatial_index;
