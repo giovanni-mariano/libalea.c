@@ -446,29 +446,32 @@ node.inverted=0, surface_inverted=0 → no flip → emit +10   ✓
 
 ### Opposite normal variant
 
-If surface 20 had been defined with opposite normal (`pz -5.0` interpreted as
-`c=-1, d=5`):
+If surface 20 had been defined as a general plane with opposite normal
+(`p 0 0 -1 5`, i.e. `a=0, b=0, c=-1, d=5` — the same geometric plane z=5
+but with normal pointing in -z):
 
 ```
 canonicalize → c<0, flip → (0,0,1,-5), inverted=1
 hash(0,0,1,-5) → H1 (same!)
-hash_table: found prim 0 with dot=-1 → match_inverted=1
-inverted = !1 = 0... wait, let's trace carefully:
-
-canonicalize sets inverted=1 (because we flipped the normal)
-match_inverted=1 (opposite normal match)
-inverted = !inverted = !1 = 0
-
-Hmm — but this node's "outside" is on the -z side (original normal was -z).
-The canonical primitive's +1 sense means +z side. So the XOR should flip.
-
-Actually: the original surface had normal -z. Canonicalization flipped to +z
-and set inverted=1. Then the hash match found it's the same primitive with
-the SAME canonical normal (not opposite — the canonicalization already
-aligned them). So match_inverted=0 in this case.
-
-Final: inverted=1, surface_inverted=0 → flip → correct.
+hash_table: found prim 0, same canonical normal → match_inverted=0
+→ reuse prim 0
+surface_entry: {id=20, prim=0, pos_node=N2}
+node N2: {prim_id=0, inverted=1, sense=+1}
 ```
+
+At export time:
+
+```
+prim_to_surface[0] = 10          (lowest ID)
+prim_to_surface_inverted[0] = 0  (from surface 10's N1.inverted)
+
+Cell using +20 (node N2):
+  node.inverted=1, surface_inverted=0 → flip → emit -10   ✓
+```
+
+Node N2's original `+20` meant "outside the -z normal", which is the -z side.
+The canonical surface 10 has +z normal, so -z side is `-10`. The XOR flip
+produces the correct result.
 
 This shows why the `inverted` flag must flow through both canonicalization AND
 the dedup match to encode the complete orientation relationship.
