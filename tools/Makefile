@@ -47,19 +47,21 @@ else
   LIBS_RAYCAST = -Wl,--whole-archive $(BIN_DIR)/libalea_raycast.a -Wl,--no-whole-archive
 endif
 
-LIBS_CORE = $(BIN_DIR)/libalea.a $(OPENMP_LDFLAGS) -lm
+# All modules (matches CLI/test link order)
+LIBS_ALL = $(BIN_DIR)/libalea_mesh.a $(BIN_DIR)/libalea_render.a \
+           $(BIN_DIR)/libalea_slice.a $(LIBS_RAYCAST) \
+           $(LIBS_MCNP) $(LIBS_OPENMC) $(BIN_DIR)/libalea.a
+LDFLAGS = $(OPENMP_LDFLAGS) -lm
 
 TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter
 
 all: $(TOOLS)
 
 $(BIN_DIR)/mc_convert: mc_convert.c
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 $(BIN_DIR)/mc_plotter: mc_plotter.c
-	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< \
-		$(BIN_DIR)/libalea_slice.a $(LIBS_RAYCAST) \
-		$(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
+	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 clean:
 	rm -f $(TOOLS)
