@@ -331,7 +331,11 @@ The library is split into modules that can be linked independently:
 - **OpenMC** (`libalea_openmc.a`): OpenMC XML parsing and export.
 - **Raycast** (`libalea_raycast.a`): BVH, ray-primitive intersection, segment building.
 - **Slice** (`libalea_slice.a`): Grid queries, analytical curve extraction, label positioning.
+- **Render** (`libalea_render.a`): 3D batch renderer with Phong shading, shadow rays, cutaway views, and material coloring. Uses the Raycast pipeline. OpenMP parallelized via tile-based rendering.
+- **Mesh** (`libalea_mesh.a`): Structured hexahedral mesh sampling and export to Gmsh (.msh) and VTK (.vtk) formats.
 
 The `libalea_full.a` archive combines all modules. Use it unless binary size matters.
 
-Module boundaries follow a dependency rule: MCNP and OpenMC depend on Core, but not on each other. Raycast and Slice depend on Core but not on MCNP or OpenMC. Core depends on nothing except the util/ layer.
+The **Lua binding** layer (`src/lua_bind/`) wraps the public C API for the interactive CLI (`bin/alea`). It is compiled into the CLI binary, not shipped as a separate library.
+
+Module boundaries follow a dependency rule: MCNP and OpenMC depend on Core, but not on each other. Raycast and Slice depend on Core but not on MCNP or OpenMC. Render depends on Raycast and Core. Mesh depends on Core. Core depends on nothing except the util/ layer.

@@ -141,9 +141,9 @@ typedef enum {
 
 typedef struct {
     /* Tolerance */
-    double abs_tol;             /* 1e-6  */
-    double rel_tol;             /* 1e-9  */
-    double zero_threshold;      /* 1e-10 */
+    double abs_tol;             /* 1e-14 */
+    double rel_tol;             /* 1e-12 */
+    double zero_threshold;      /* 1e-14 */
 
     /* Behavior */
     bool dedup;                 /* true  */

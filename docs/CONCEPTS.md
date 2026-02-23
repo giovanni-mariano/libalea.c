@@ -20,7 +20,16 @@ In Alea, a surface is always one of these primitive types:
 | Quadric | Ax^2 + By^2 + ... + J = 0 | GQ, SQ |
 | Torus X/Y/Z | fourth-degree surface of revolution | TX, TY, TZ |
 
-Surfaces also have IDs. In MCNP, these are the numbers you put on surface cards (like `1 PZ 5.0`). Alea preserves these IDs through loading and export.
+Surfaces have IDs. In MCNP, these are the numbers you put on surface cards (like `1 PZ 5.0`). Alea preserves these IDs through loading and export.
+
+Surface creation functions follow the pattern `alea_*_surface()`:
+
+```c
+int idx = alea_sphere_surface(sys, /*surface_id=*/10, /*cx=*/0, /*cy=*/0, /*cz=*/0, /*r=*/5.0);
+int idx2 = alea_plane_surface(sys, /*surface_id=*/20, /*a=*/0, /*b=*/0, /*c=*/1, /*d=*/-10.0);
+```
+
+These return a surface index (position in the surfaces array), not the surface ID.
 
 ## Sense
 
@@ -29,14 +38,16 @@ Every surface divides space into two sides. In Alea (and MCNP), these sides are 
 - **Negative sense** (`sense = -1`): the inside. For a sphere, points closer to the center than the radius. For a plane, points on the side opposite to the normal vector. Written as `-S` in MCNP.
 - **Positive sense** (`sense = +1`): the outside. For a sphere, points farther from the center than the radius. Written as `+S` or just `S` in MCNP.
 
-When you create a primitive in Alea, you specify the sense:
+To build CSG trees, you create half-space nodes from surfaces:
 
 ```c
+int idx = alea_sphere_surface(sys, 10, 0, 0, 0, 5.0);
+
 // "inside the sphere" — the region where (x-cx)^2 + ... < r^2
-alea_node_id_t inside = alea_sphere(sys, 0, 0, 0, 10.0, -1);
+alea_node_id_t inside = alea_halfspace(sys, idx, -1);
 
 // "outside the sphere" — the region where (x-cx)^2 + ... > r^2
-alea_node_id_t outside = alea_sphere(sys, 0, 0, 0, 10.0, +1);
+alea_node_id_t outside = alea_halfspace(sys, idx, +1);
 ```
 
 For planes, the convention is: the normal vector `(a, b, c)` points toward the positive side. So `sense = -1` means the half-space on the opposite side of the normal.
@@ -81,6 +92,19 @@ Alea stores these as a binary tree. Each leaf is a surface half-space (primitive
 ```
 
 This tree represents "inside the sphere AND above the plane" — a hemisphere.
+
+The construction API:
+
+```c
+alea_node_id_t region = alea_intersection(sys, inside_sphere, above_plane);
+alea_node_id_t region2 = alea_union(sys, region_a, region_b);
+alea_node_id_t region3 = alea_difference(sys, region_a, region_b);
+alea_node_id_t region4 = alea_complement(sys, region_a);
+
+// N-ary variants for combining many nodes at once
+alea_node_id_t nodes[] = {a, b, c, d};
+alea_node_id_t all = alea_intersection_n(sys, nodes, 4);
+```
 
 ## Universes
 
@@ -181,6 +205,7 @@ Macrobodies are composite primitives that MCNP defines as single surface cards b
 | REC | Right elliptical cylinder | Quadric + 2 planes |
 | WED | Wedge | 5 planes |
 | RHP/HEX | Hexagonal prism | 8 planes |
+| ARB | Arbitrary polyhedron | Up to 6 faces from 8 vertices |
 
 When loading an MCNP file, macrobodies are stored as-is. You can expand them:
 
@@ -199,6 +224,107 @@ Transforms are rotation + translation operations applied to surfaces or cells.
 - **Fill transforms**: applied when instantiating a universe into a cell. In MCNP: `FILL=5 (dx dy dz ...)`.
 
 Alea applies surface and cell transforms during loading, so the internal representation is always in global coordinates. Fill transforms are handled at query time by inverse-transforming the point before descending into the filled universe.
+
+## Loading and Exporting
+
+Alea can load and export geometry in both MCNP and OpenMC formats:
+
+```c
+// Load
+alea_system_t* sys = alea_load_mcnp("model.inp");
+alea_system_t* sys = alea_load_openmc("geometry.xml");
+
+// Export
+alea_export_mcnp(sys, "output.inp");
+alea_export_openmc(sys, "model.xml");
+```
+
+The `mc_convert` tool wraps this for command-line format conversion. See [API Reference](API.md) for export options.
+
+## Spatial Index and Point Queries
+
+After loading a model, you build a spatial index (BVH — bounding volume hierarchy) that accelerates all geometric queries:
+
+```c
+alea_build_spatial_index(sys);
+```
+
+Once the index is built, you can query any point in space:
+
+```c
+int cell = alea_find_cell(sys, x, y, z);       // which cell contains this point?
+int mat  = alea_material_at(sys, x, y, z);      // what material is here?
+```
+
+The spatial index handles universe nesting, fills, and lattices transparently. A single query can descend through multiple universe levels to find the innermost cell.
+
+## Ray Tracing
+
+Alea includes a ray tracing module that casts rays through the geometry and reports every cell crossing:
+
+```c
+#include "alea_raycast.h"
+
+alea_raycast_result_t* result = alea_raycast(sys,
+    ox, oy, oz,       // ray origin
+    dx, dy, dz,       // ray direction
+    max_distance,      // maximum distance to trace
+    -1);               // universe (-1 = root)
+```
+
+Each intersection records the cell entered, the material, the distance along the ray, and the surface crossed.
+
+Ray tracing is also used internally for Monte Carlo volume estimation:
+
+```c
+double volumes[ncells], errors[ncells];
+alea_estimate_cell_volumes(sys, ox, oy, oz, radius, n_rays, volumes, errors);
+```
+
+## 2D Slice Visualization
+
+The slice module computes 2D cross-sections of the geometry. Given a cutting plane (axis-aligned or arbitrary), it queries a grid of points and produces cell/material ID arrays suitable for rendering:
+
+```c
+#include "alea_slice.h"
+
+alea_slice_view_t view;
+alea_slice_view_axis(&view, 2, z_value, x_min, x_max, y_min, y_max);  // Z plane
+
+int* cell_ids = malloc(width * height * sizeof(int));
+int* mat_ids  = malloc(width * height * sizeof(int));
+alea_find_cells_grid(sys, &view, width, height, -1, cell_ids, mat_ids, NULL);
+```
+
+The `mc_plotter` tool wraps this into a complete plotting application with PNG/BMP output, labels, contours, and batch mode.
+
+## 3D Rendering
+
+The render module produces 3D images of the geometry using ray casting with Phong shading:
+
+```c
+#include "alea_render.h"
+
+alea_render3d_params_t params = alea_render3d_default_params();
+params.width = 800;
+params.height = 600;
+alea_render3d(sys, &params, pixels);
+```
+
+Multiple color modes are supported: by material, cell, universe, or density.
+
+## Mesh Export
+
+The mesh module exports the geometry as a structured hexahedral mesh for use in external tools:
+
+```c
+#include "alea_mesh.h"
+
+alea_mesh_export_vtk(sys, &bounds, nx, ny, nz, "output.vtk");
+alea_mesh_export_gmsh(sys, &bounds, nx, ny, nz, "output.msh");
+```
+
+Supported formats: Gmsh (.msh v2.2) and VTK (.vtk).
 
 ## Surface Deduplication
 
@@ -272,11 +398,26 @@ cfg.export_materials = true;
 cfg.export_transforms = true;
 cfg.universe_depth = -1;     // -1 = all, 0 = root only
 cfg.fill_depth = 0;          // 0 = don't expand fills
+cfg.trcl_mode = 0;           // 0 = preserve TRCLs, 1 = bake into geometry
+cfg.transform_mode = 0;      // 0 = original, 1 = inline, 2 = TR cards
+
+// MCNP formatting
+cfg.mcnp_max_col = 80;       // maximum column width
+cfg.mcnp_cont_indent = 5;    // continuation line indent
 
 // Void generation
 cfg.void_max_depth = 8;
 cfg.void_min_size = 0.1;
 cfg.void_samples = 27;
+
+// Void merge (controls how void boxes are merged into cells)
+cfg.merge_cell_weight = 1.0;
+cfg.merge_surface_weight = 0.1;
+cfg.merge_max_surfaces = 24;
+cfg.merge_min_cells = 1;
+
+// Flatten
+cfg.flatten_max_depth = 0;   // 0 = unlimited
 
 alea_set_config(sys, &cfg);
 ```
@@ -300,12 +441,24 @@ if (!sys) {
 }
 ```
 
-Error codes are defined in `alea_types.h` as the `alea_error_t` enum. The most common ones:
+Error codes are defined in `alea_types.h` as the `alea_error_t` enum:
 
 | Code | Name | Meaning |
 |------|------|---------|
 | 0 | `ALEA_OK` | Success |
-| 1 | `ALEA_ERR_NULL_ARG` | You passed a NULL pointer |
-| 6 | `ALEA_ERR_FILE_NOT_FOUND` | File doesn't exist |
-| 9 | `ALEA_ERR_PARSE_ERROR` | Syntax error in input file |
-| 13 | `ALEA_ERR_INTERRUPTED` | Operation was interrupted (Ctrl+C from Python) |
+| 1 | `ALEA_ERR_NULL_ARG` | NULL pointer where not allowed |
+| 2 | `ALEA_ERR_INVALID_ID` | Node/primitive/cell ID out of range |
+| 3 | `ALEA_ERR_INVALID_ARG` | Argument value out of valid range |
+| 4 | `ALEA_ERR_INVALID_STATE` | Operation not valid in current state |
+| 5 | `ALEA_ERR_OUT_OF_MEMORY` | Memory allocation failed |
+| 6 | `ALEA_ERR_FILE_NOT_FOUND` | File does not exist |
+| 7 | `ALEA_ERR_FILE_READ` | Error reading file |
+| 8 | `ALEA_ERR_FILE_WRITE` | Error writing file |
+| 9 | `ALEA_ERR_PARSE_ERROR` | Syntax/parse error in input file |
+| 10 | `ALEA_ERR_UNSUPPORTED` | Feature not supported |
+| 11 | `ALEA_ERR_UNSUPPORTED_SURFACE` | Surface type not supported |
+| 12 | `ALEA_ERR_EXPORT_FAILED` | Export operation failed |
+| 13 | `ALEA_ERR_INTERRUPTED` | Operation interrupted (Ctrl+C) |
+| 14 | `ALEA_ERR_NOT_FOUND` | Item not found |
+| 15 | `ALEA_ERR_EMPTY` | Collection is empty |
+| 16 | `ALEA_ERR_OVERFLOW` | Buffer too small, result truncated |

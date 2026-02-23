@@ -2,7 +2,7 @@
 
 Every public function in Alea, grouped by what you're trying to do.
 
-**Headers**: `alea.h` (main), `alea_raycast.h` (ray tracing), `alea_slice.h` (visualization), `alea_types.h` (types and constants).
+**Headers**: `alea.h` (main), `alea_raycast.h` (ray tracing), `alea_slice.h` (visualization), `alea_render.h` (3D rendering), `alea_mesh.h` (mesh export), `alea_types.h` (types and constants).
 
 **Conventions**:
 - Functions returning pointers return `NULL` on error
@@ -149,6 +149,14 @@ Find every cell in the hierarchy that contains the point, from outermost to inne
 
 Use this for debugging fill/transform issues.
 
+### alea_set_debug_trace
+
+```c
+void alea_set_debug_trace(int enable);
+```
+
+Enable or disable verbose debug tracing for point queries. When enabled, prints detailed evaluation steps to stdout.
+
 ### alea_point_inside
 
 ```c
@@ -196,12 +204,33 @@ Compute the bounding sphere for the entire model by sampling rays from multiple 
 ### alea_estimate_cell_volumes
 
 ```c
-int alea_estimate_cell_volumes(const alea_system_t* sys, int n_rays,
-                               double cx, double cy, double cz, double radius,
-                               alea_cell_volume_t* volumes);
+int alea_estimate_cell_volumes(const alea_system_t* sys,
+                               double ox, double oy, double oz,
+                               double radius, int n_rays,
+                               double* volumes, double* rel_errors);
 ```
 
-Estimate cell volumes using Monte Carlo ray tracing. Casts `n_rays` random rays through a sphere of the given center and radius. The `volumes` array must be pre-allocated with `alea_cell_count(sys)` entries. Each entry contains `volume` and `rel_error` (relative error estimate).
+Estimate cell volumes using Monte Carlo ray tracing (Cauchy-Crofton method). Casts `n_rays` random rays through a sphere of the given center and radius. The `volumes` array must be pre-allocated with `alea_cell_count(sys)` entries. If `rel_errors` is non-NULL, it receives the 1-sigma relative statistical error for each cell (set to -1 for zero-volume cells).
+
+Requires the raycast module to be linked.
+
+### alea_estimate_instance_volumes
+
+```c
+int alea_estimate_instance_volumes(const alea_system_t* sys, int n_rays,
+                                   double* volumes, double* rel_errors);
+```
+
+Like `alea_estimate_cell_volumes` but resolves each ray segment to a specific cell instance via the spatial index. Distinguishes the same cell appearing in different fill contexts. Arrays must be sized to `alea_spatial_index_instance_count(sys)`. Requires the spatial index to be built.
+
+### alea_remove_cells_by_volume
+
+```c
+int alea_remove_cells_by_volume(alea_system_t* sys, const double* volumes,
+                                double threshold);
+```
+
+Remove cells whose estimated volume is at or below `threshold`. The `volumes` array comes from `alea_estimate_cell_volumes`. Returns the number of cells removed, or -1 on error.
 
 ### alea_tighten_cell_bbox
 
@@ -649,6 +678,22 @@ int alea_flatten(alea_system_t* sys, int universe_id);
 
 Expand all fills in a universe, materializing every instance with transforms applied. After flattening, all cells are in the specified universe with no fills. Modifies the system in place.
 
+### alea_flatten_all_cells
+
+```c
+void alea_flatten_all_cells(alea_system_t* sys, alea_simplify_stats_t* stats);
+```
+
+Flatten and simplify all cells. Applies NNF conversion, flattening, balancing, contradiction detection, and empty cell removal. Cells that simplify to empty are removed. Pass `stats` (or NULL) to accumulate simplification statistics.
+
+### alea_split_union_cells
+
+```c
+int alea_split_union_cells(alea_system_t* sys);
+```
+
+Split cells with top-level unions into multiple simpler cells. For each cell whose root is a union (T1 | T2 | ... | Tk), creates k new cells (one per branch), inheriting material, density, and universe from the original. The original cell is removed. New cells receive auto-assigned cell IDs. Call `alea_build_universe_index()` after splitting. Returns the number of new cells created, or -1 on error.
+
 ### alea_extract_universe
 
 ```c
@@ -737,6 +782,14 @@ void alea_print_summary(const alea_system_t* sys);
 ```
 
 Print cell/surface/material counts and other summary info to stdout.
+
+### alea_tree_print
+
+```c
+void alea_tree_print(const alea_system_t* sys, alea_node_id_t node_id);
+```
+
+Print a human-readable representation of a CSG tree to stdout. Useful for debugging cell regions.
 
 ### Statistics
 
@@ -1001,22 +1054,11 @@ The default configuration is available as `ALEA_CONFIG_DEFAULT`.
 ## Logging
 
 ```c
-void alea_log_set_level(int level);
-int alea_log_get_level(void);
+void alea_log_set_level(alea_log_level_t level);
+alea_log_level_t alea_log_get_level(void);
 ```
 
-Set/get log level. Levels: `ALEA_LOG_NONE` (0), `ALEA_LOG_ERROR` (1), `ALEA_LOG_WARN` (2), `ALEA_LOG_INFO` (3), `ALEA_LOG_DEBUG` (4), `ALEA_LOG_TRACE` (5).
-
-```c
-void alea_log_set_callback(alea_log_callback_t callback, void* user_data);
-```
-
-Set a custom log handler:
-
-```c
-typedef void (*alea_log_callback_t)(alea_log_level_t level, const char* file,
-                                        int line, const char* message, void* user_data);
-```
+Set/get log level. Levels: `ALEA_LOG_LEVEL_NONE` (0), `ALEA_LOG_LEVEL_ERROR` (1), `ALEA_LOG_LEVEL_WARN` (2), `ALEA_LOG_LEVEL_INFO` (3), `ALEA_LOG_LEVEL_DEBUG` (4), `ALEA_LOG_LEVEL_TRACE` (5).
 
 ---
 
@@ -1062,6 +1104,108 @@ Compile-time version macros.
 
 ---
 
+## 3D Rendering (alea_render.h)
+
+Produce publication-quality 3D images of CSG models with cutaway views, Phong shading, shadow rays, and material coloring. Pure CPU, OpenMP parallelized.
+
+### Configuration
+
+```c
+void render_config_init(render_config_t* cfg);
+void render_config_free(render_config_t* cfg);
+```
+
+Initialize config with defaults (1920x1080, 45-degree FOV, material coloring, solid mode). `render_config_free` releases custom color tables.
+
+Key fields in `render_config_t`: `width`, `height`, `color_mode` (`RENDER_COLOR_MATERIAL`, `RENDER_COLOR_CELL`, `RENDER_COLOR_UNIVERSE`, `RENDER_COLOR_DENSITY`), `render_mode` (`RENDER_MODE_SOLID`, `RENDER_MODE_XRAY`, `RENDER_MODE_DEPTH`, `RENDER_MODE_CELLID`, `RENDER_MODE_MATID`), clipping planes, lighting, anti-aliasing.
+
+### Camera
+
+```c
+int render_camera_setup(render_camera_t* cam, const render_config_t* cfg,
+                        const alea_system_t* sys);
+void render_camera_ray(const render_camera_t* cam, int width, int height,
+                       double px, double py,
+                       double* ox, double* oy, double* oz,
+                       double* dx, double* dy, double* dz);
+```
+
+`render_camera_setup` computes derived camera quantities. Auto-fits eye and target from the model bounding sphere if not set. `render_camera_ray` generates a ray for pixel `(px, py)`.
+
+### Framebuffer
+
+```c
+render_framebuffer_t* render_framebuffer_create(int width, int height, int aux);
+void render_framebuffer_free(render_framebuffer_t* fb);
+```
+
+Create/free a framebuffer. Set `aux=1` to allocate auxiliary buffers (cell ID, material ID, depth, normal per pixel).
+
+### Rendering
+
+```c
+int render_scene(const alea_system_t* sys, const render_config_t* cfg,
+                 const render_camera_t* cam, render_framebuffer_t* fb);
+```
+
+Main render function. Renders the model into the framebuffer.
+
+### Post-Processing and Output
+
+```c
+void render_edge_darken(render_framebuffer_t* fb);
+void render_tonemap(const render_framebuffer_t* fb, uint8_t* pixels);
+void render_get_color(int id, render_color_mode_t mode,
+                      const render_config_t* cfg, float* r, float* g, float* b);
+```
+
+`render_edge_darken` darkens pixels at cell boundaries. `render_tonemap` converts float framebuffer to 8-bit RGB. `render_get_color` looks up a color from the palette.
+
+```c
+int render_write_png(const char* filename, const uint8_t* pixels, int width, int height);
+int render_write_bmp(const char* filename, const uint8_t* pixels, int width, int height);
+int render_write_ppm(const char* filename, const uint8_t* pixels, int width, int height);
+int render_write_image(const char* filename, const uint8_t* pixels, int width, int height);
+int render_write_aux(const char* base_filename, const render_framebuffer_t* fb);
+int render_load_colors(const char* filename, render_config_t* cfg);
+```
+
+Write images in various formats. `render_write_image` auto-detects format from extension. `render_write_aux` writes auxiliary maps (depth, cell ID, material ID, normal). `render_load_colors` loads a custom color palette.
+
+---
+
+## Mesh Export (alea_mesh.h)
+
+Sample CSG geometry onto a structured hexahedral grid and export to Gmsh (.msh v2.2) or VTK (.vtk legacy) format.
+
+### Configuration
+
+```c
+void alea_mesh_config_init(alea_mesh_config_t* cfg);
+```
+
+Initialize with defaults: 10x10x10 grid, Gmsh format, auto-detected bounds with 1% padding.
+
+Key fields in `alea_mesh_config_t`: `x_min/x_max`, `y_min/y_max`, `z_min/z_max` (0,0 = auto-detect), `nx/ny/nz` (elements per axis), `x_nodes/y_nodes/z_nodes` (custom node positions, NULL = uniform), `format` (`ALEA_MESH_GMSH` or `ALEA_MESH_VTK`).
+
+### Sampling and Export
+
+```c
+alea_mesh_result_t* alea_mesh_sample(const alea_system_t* sys,
+                                     const alea_mesh_config_t* cfg);
+int alea_mesh_export(const alea_mesh_result_t* mesh,
+                     alea_mesh_format_t fmt, const char* filename);
+int alea_mesh_export_stream(const alea_mesh_result_t* mesh,
+                            alea_mesh_format_t fmt, FILE* out);
+int alea_mesh_export_system(const alea_system_t* sys,
+                            const alea_mesh_config_t* cfg, const char* filename);
+void alea_mesh_result_free(alea_mesh_result_t* mesh);
+```
+
+`alea_mesh_sample` queries material at each cell center and returns a result with grid positions, material IDs, and cell IDs. `alea_mesh_export_system` is a one-shot convenience that samples and exports in one call. The result struct contains `material_ids` and `cell_ids` arrays of size `nx*ny*nz` in Z-major order.
+
+---
+
 ## Types Quick Reference
 
 ### ID Types
@@ -1096,9 +1240,13 @@ Compile-time version macros.
 | 8 | `ALEA_ERR_FILE_WRITE` | File write error |
 | 9 | `ALEA_ERR_PARSE_ERROR` | Parse/syntax error |
 | 10 | `ALEA_ERR_UNSUPPORTED` | Unsupported feature |
-| 13 | `ALEA_ERR_INTERRUPTED` | Interrupted by user |
-| 14 | `ALEA_ERR_NOT_FOUND` | Item not found |
-| 16 | `ALEA_ERR_OVERFLOW` | Buffer too small |
+| 11 | `ALEA_ERR_UNSUPPORTED_SURFACE` | Surface type not supported |
+| 12 | `ALEA_ERR_EXPORT_FAILED` | Export operation failed |
+| 13 | `ALEA_ERR_NOT_IMPLEMENTED` | Feature not yet implemented |
+| 14 | `ALEA_ERR_INTERRUPTED` | Interrupted by user (SIGINT) |
+| 15 | `ALEA_ERR_NOT_FOUND` | Item not found |
+| 16 | `ALEA_ERR_EMPTY` | Collection is empty |
+| 17 | `ALEA_ERR_OVERFLOW` | Buffer too small |
 
 ### Primitive Types
 

@@ -132,15 +132,17 @@ for each type's parameters:
 |------------|--------------------------------------------------|
 | Plane      | a, b, c, d                                       |
 | Sphere     | center_x/y/z, radius                             |
-| Cylinder   | center_x/y, radius, z_min, z_max                 |
-| Cone       | apex_x/y/z, tan²θ, axis_min/max, sheet_selection |
+| Cylinder   | center_x/y, radius                               |
+| Cone       | apex_x/y/z, tan²θ, sheet_selection               |
 | Torus      | axis, center_x/y/z, R_major, r_minor, B          |
 | Quadric    | 10 coefficients                                  |
 | RPP        | min_x/y/z, max_x/y/z                             |
 | RCC        | base_x/y/z, height_x/y/z, radius                |
 | BOX        | corner_x/y/z, v1/v2/v3 (3×3)                    |
+| SPH        | center_x/y/z, radius                             |
 | TRC        | base_x/y/z, height_x/y/z, base_r, top_r         |
 | ELL        | v1_x/y/z, v2_x/y/z, major_axis_len              |
+| REC        | base_x/y/z, height_x/y/z, axis1_x/y/z, axis2_x/y/z |
 | WED        | vertex_x/y/z, v1/v2/v3 (3×3)                    |
 | RHP        | vertex_x/y/z, height_x/y/z, side1/2/3 (3×3)     |
 | ARB        | num_corners, num_faces, all corners, face indices |
