@@ -4,6 +4,28 @@ This document describes the surface deduplication system: how primitives are
 hashed, canonicalized, deduplicated, and how the correct cell sense is
 preserved through export to MCNP and OpenMC formats.
 
+## Why Deduplicate?
+
+Large transport models routinely contain duplicate surfaces. A tokamak model
+built by a team may define the same cylindrical boundary dozens of times
+because different authors or CAD tools wrote their sections independently.
+MCNP-to-OpenMC round-trips can introduce further duplicates when surfaces are
+re-parameterized.
+
+Without dedup:
+
+- **Exported files are bloated.** Hundreds of redundant surface cards make the
+  output harder to read, review, and diff.
+- **Surface counts grow on every round-trip.** Each load→export cycle could add
+  more IDs for the same geometry.
+- **Analysis is harder.** Two cells sharing a boundary should reference the same
+  surface ID; otherwise adjacency detection, overlap checks, and cell-aware ray
+  tracing must treat them as unrelated.
+
+Deduplication solves all three by ensuring that geometrically identical
+surfaces always share a single `primitive_id` and, at export time, a single
+surface ID.
+
 ## Overview
 
 The deduplication pipeline has three stages:
@@ -53,6 +75,11 @@ Before hashing or comparing, every primitive is put into canonical form. This
 ensures that two surfaces describing the same geometry always produce the same
 representation regardless of how the input specified them.
 
+**Why this is needed:** a plane can be described by infinitely many coefficient
+tuples — `(0, 0, 1, -5)`, `(0, 0, 2, -10)`, and `(0, 0, -1, 5)` all describe
+the plane z = 5. Without canonicalization, each would hash differently and
+appear as a distinct primitive, defeating dedup entirely.
+
 ### Planes
 
 A plane `ax + by + cz + d = 0` is canonicalized in two steps:
@@ -78,7 +105,10 @@ the primitive and is used later to correct the cell sense during export.
 ### Other primitives
 
 Spheres, cylinders, cones, tori, and general quadrics have a unique parametric
-representation and require no canonicalization (`inverted` is always 0).
+representation (center + radius, apex + half-angle, etc.) and require no
+canonicalization (`inverted` is always 0). Unlike planes, there is no scalar
+ambiguity: a sphere of radius 5 centered at the origin has exactly one
+representation.
 
 RPP (rectangular parallelepiped) swaps min/max bounds if inverted. All other
 macrobodies (RCC, BOX, WED, etc.) are already canonical by construction.
@@ -88,6 +118,11 @@ macrobodies (RCC, BOX, WED, etc.) are already canonical by construction.
 ## 2. Hash Function
 
 **File:** `src/core/alea_primitive_dedup.c` — `alea_compute_primitive_hash()`
+
+**Why hash instead of comparing directly:** comparing every new primitive
+against every existing one is O(n²) — too slow for models with thousands of
+surfaces. A hash table gives O(1) amortized lookup, reducing parse time
+from seconds to milliseconds on large models.
 
 ### Algorithm: FNV-1a with tolerance quantization
 
@@ -113,6 +148,12 @@ static uint64_t hash_double(double value, const alea_config_t* tol) {
 Each double is snapped to a grid of spacing `abs_tol` (default 1e-14). Values
 below `zero_threshold` (default 1e-14) collapse to 0. The resulting canonical
 double is reinterpreted as a 64-bit integer for hashing.
+
+**Why quantize:** floating-point arithmetic means two representations of the
+"same" surface may differ by rounding noise (e.g. 5.0 vs 4.999999999999999).
+Naive bit-exact hashing would send them to different buckets, missing the
+match. Grid-snapping ensures that values within tolerance hash identically,
+which is a necessary condition for the hash table to find all matches.
 
 #### FNV-1a core
 
@@ -174,6 +215,11 @@ call `alea_primitives_equal()` for the full tolerance check.
 
 **File:** `src/core/alea_tolerance.c` — `alea_primitives_equal()`
 
+**Why a full equality check after hashing:** the hash is a necessary but not
+sufficient condition. Quantization is lossy — two values near a grid boundary
+may snap to the same bucket despite being far apart, or different primitive
+types may collide. The full equality check eliminates these false positives.
+
 After a hash match, the full equality check compares every parameter using a
 three-tier tolerance:
 
@@ -191,6 +237,16 @@ bool alea_numbers_equal(double a, double b, const alea_config_t* tol) {
 Default tolerances: `abs_tol = 1e-14`, `rel_tol = 1e-12`,
 `zero_threshold = 1e-14`.
 
+**Why three tiers:** each tier handles a different regime. Exact comparison
+catches the common case (same input parsed twice) with zero cost. The
+zero-threshold catches numerical noise around zero, which is extremely common
+in axis-aligned geometry (e.g. a plane normal `(0, 0, 1)` parsed as
+`(1e-17, 0, 1)`). Absolute tolerance handles small values where relative
+comparison would divide by near-zero. Relative tolerance handles large values
+(coordinates in the hundreds or thousands) where an absolute difference of
+1e-14 is meaningless but a relative difference of 1e-12 catches real
+duplicates.
+
 ### Plane opposite-normal detection
 
 For planes, the equality check also detects opposite normals:
@@ -201,6 +257,14 @@ if |dot| ≈ 1:
     if dot > 0: same direction  → check d1 ≈  d2
     if dot < 0: opposite        → check d1 ≈ -d2, set match_inverted = 1
 ```
+
+**Why detect opposite normals:** canonicalization already forces the first
+non-zero coefficient positive, so two identical planes with opposite normals
+produce the same canonical coefficients. But the equality check runs on
+*canonical* data, where both normals point the same way. The opposite-normal
+case only arises when canonicalization did not flip one of them (e.g. both had
+their first non-zero coefficient positive before normalization, but opposite
+`d` values). The dot-product check catches this remaining case.
 
 When `match_inverted = 1`, the caller (`alea_get_or_create_primitive`) toggles
 the `inverted` flag on the node: `*inverted = !(*inverted)`. This encodes that
@@ -214,6 +278,12 @@ the matched primitive has an opposite normal to the one being registered.
 
 This is the single entry point for all primitive creation. Every surface
 parsed from MCNP or OpenMC goes through this function.
+
+**Why a single entry point:** funneling all primitive creation through one
+function guarantees that dedup is always applied, regardless of whether the
+surface comes from an MCNP parser, an OpenMC parser, or the programmatic API.
+It also keeps the canonicalize→hash→lookup→insert sequence in one place,
+preventing subtle bugs from duplicated logic.
 
 ```
 alea_get_or_create_primitive(sys, type, data, &inverted):
@@ -256,16 +326,21 @@ typedef struct {
 } alea_surface_entry_t;
 ```
 
-The `pos_node` field is critical for deduplication: it identifies the CSG node
-whose `inverted` flag represents the canonical orientation of this surface.
-The canonical surface map reads `pos_node->primitive.inverted` and stores it
-as `prim_to_surface_inverted[prim_id]`.
+**Why `pos_node` matters:** the `pos_node` field identifies the CSG node whose
+`inverted` flag represents the canonical orientation of this surface. At export
+time, the canonical surface map reads `pos_node->primitive.inverted` and stores
+it as `prim_to_surface_inverted[prim_id]`. This is the reference orientation
+against which all other nodes referencing the same primitive are compared —
+without it, the XOR sense correction (Section 7) would have no baseline.
 
 ### Synthetic surface entries
 
-Macrobody expansion decomposes a single MCNP surface (e.g., an RPP) into
-multiple primitive surfaces (6 planes). These child primitives initially have
-`mcnp_surface_id = 0` because they don't correspond to any input surface.
+**Why synthetic entries are needed:** macrobody expansion decomposes a single
+MCNP surface (e.g., an RPP) into multiple primitive surfaces (6 planes). These
+child primitives initially have `mcnp_surface_id = 0` because they don't
+correspond to any input surface. They must be registered so the canonical
+surface map knows about them; otherwise their `inverted` flag would default to
+0, potentially producing wrong sense in cell regions.
 
 Both export paths (`alea_export.c` and `openmc_export.c`) walk all cell trees
 and assign synthetic surface IDs to these primitives via
@@ -290,6 +365,13 @@ causing incorrect sense in cell regions.
 
 **File:** `src/core/alea_export.c` — `alea_build_canonical_surface_map()`
 
+**Why a separate export-time pass:** at parse time, multiple surface entries
+can reference the same `primitive_id` (that is the point of dedup). But an
+exported file needs a single surface ID per geometric surface. This map
+collapses all surface entries sharing a primitive into one canonical
+representative, and records the orientation baseline needed for sense
+correction.
+
 After all surface entries exist (including synthetic ones), this function
 builds two lookup arrays indexed by `primitive_id`:
 
@@ -313,6 +395,10 @@ The **lowest** `mcnp_surface_id` wins as the canonical representative for each
 primitive. All other surfaces with the same `primitive_id` are dedup'd away —
 they won't appear in the exported surface block.
 
+**Why lowest ID:** the choice is arbitrary, but picking the lowest produces
+deterministic, stable output — re-exporting the same model always yields the
+same surface numbering.
+
 ### Example
 
 ```
@@ -328,8 +414,12 @@ Surface 20: prim_id=5, pos_node has inverted=1
 
 ## 7. Cell Sense Correction (XOR Formula)
 
-When multiple surfaces collapse to the same canonical surface, a node that
-originally referenced a different orientation must have its sense corrected.
+**Why sense correction is necessary:** dedup collapses multiple surface entries
+into one. When two surfaces described the same plane but with opposite normals,
+"positive sense" meant opposite sides of the plane for each. After merging to
+a single surface, we must flip the sense on nodes that came from the
+opposite-normal variant, or the exported cell region would reference the wrong
+half-space.
 
 ### The problem
 
@@ -381,6 +471,11 @@ node.inverted  surface_inverted  sense  →  effective_sense
 ```
 
 The rule is: **flip sense when `node.inverted ⊕ surface_inverted = 1`** (XOR).
+
+**Why XOR:** the `inverted` flag encodes a sign flip. Two independent sign
+flips (one from the node, one from the canonical surface) compose by XOR —
+two flips cancel out (no net change), while one flip produces a net inversion.
+This is the simplest formula that correctly handles all four combinations.
 
 ### MCNP vs OpenMC difference
 
