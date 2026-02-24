@@ -66,7 +66,7 @@ Every cell has:
 
 - **Cell ID**: the MCNP cell number (unique identifier)
 - **Material ID**: which material fills the cell (0 = void)
-- **Density**: material density (negative = g/cm^3, positive = atoms/barn-cm, matching MCNP convention)
+- **Density**: material density (always stored as a positive value internally, with a separate `is_mass_density` flag to distinguish g/cm^3 from atoms/barn-cm; MCNP's sign convention is applied only at export time)
 - **Universe ID**: which universe the cell belongs to (default 0)
 - **Region**: a CSG tree node defining the shape
 - **Fill**: optionally, a universe that fills this cell instead of a material
@@ -265,11 +265,12 @@ Alea includes a ray tracing module that casts rays through the geometry and repo
 ```c
 #include "alea_raycast.h"
 
-alea_raycast_result_t* result = alea_raycast(sys,
+alea_raycast_result_t* result = alea_raycast_result_create();
+alea_raycast(sys,
     ox, oy, oz,       // ray origin
     dx, dy, dz,       // ray direction
     max_distance,      // maximum distance to trace
-    -1);               // universe (-1 = root)
+    result);
 ```
 
 Each intersection records the cell entered, the material, the distance along the ray, and the surface crossed.
@@ -458,7 +459,8 @@ Error codes are defined in `alea_types.h` as the `alea_error_t` enum:
 | 10 | `ALEA_ERR_UNSUPPORTED` | Feature not supported |
 | 11 | `ALEA_ERR_UNSUPPORTED_SURFACE` | Surface type not supported |
 | 12 | `ALEA_ERR_EXPORT_FAILED` | Export operation failed |
-| 13 | `ALEA_ERR_INTERRUPTED` | Operation interrupted (Ctrl+C) |
-| 14 | `ALEA_ERR_NOT_FOUND` | Item not found |
-| 15 | `ALEA_ERR_EMPTY` | Collection is empty |
-| 16 | `ALEA_ERR_OVERFLOW` | Buffer too small, result truncated |
+| 13 | `ALEA_ERR_NOT_IMPLEMENTED` | Feature not yet implemented |
+| 14 | `ALEA_ERR_INTERRUPTED` | Operation interrupted (Ctrl+C) |
+| 15 | `ALEA_ERR_NOT_FOUND` | Item not found |
+| 16 | `ALEA_ERR_EMPTY` | Collection is empty |
+| 17 | `ALEA_ERR_OVERFLOW` | Buffer too small, result truncated |

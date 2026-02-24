@@ -98,7 +98,7 @@ Group cells by universe, compute bounding boxes, resolve cell complements. **Req
 int alea_build_spatial_index(alea_system_t* sys);
 ```
 
-Build a KD-tree over cell instances for fast point queries. Called automatically on first query if not called explicitly. Useful to control when the (potentially slow) build happens.
+Build a BVH over cell instances for fast point and region queries. Called automatically on first query if not called explicitly. Useful to control when the (potentially slow) build happens.
 
 **Thread safety**: Call this before any concurrent ray tracing or point queries. The lazy build on first use is not thread-safe — concurrent calls may corrupt shared caches. A warning is logged if lazy building occurs.
 
@@ -235,7 +235,7 @@ Remove cells whose estimated volume is at or below `threshold`. The `volumes` ar
 ### alea_tighten_cell_bbox
 
 ```c
-int alea_tighten_cell_bbox(const alea_system_t* sys, int cell_index,
+int alea_tighten_cell_bbox(const alea_system_t* sys, size_t cell_index,
                            double tol, alea_bbox_t* bbox);
 ```
 
@@ -512,7 +512,7 @@ int alea_slice_curves_get(const alea_slice_curves_t* curves,
 
 Get curve data at index. The `alea_curve_t` struct contains:
 
-- `type`: one of `ALEA_CURVE_LINE`, `ALEA_CURVE_CIRCLE`, `ALEA_CURVE_ELLIPSE`, `ALEA_CURVE_LINE_SEGMENT`, `ALEA_CURVE_ARC`, `ALEA_CURVE_ELLIPSE_ARC`, `ALEA_CURVE_POLYGON`, `ALEA_CURVE_PARALLEL_LINES`
+- `type`: one of `ALEA_CURVE_NONE`, `ALEA_CURVE_POINT`, `ALEA_CURVE_LINE`, `ALEA_CURVE_LINE_SEGMENT`, `ALEA_CURVE_RAY`, `ALEA_CURVE_CIRCLE`, `ALEA_CURVE_ARC`, `ALEA_CURVE_ELLIPSE`, `ALEA_CURVE_ELLIPSE_ARC`, `ALEA_CURVE_PARABOLA`, `ALEA_CURVE_HYPERBOLA`, `ALEA_CURVE_POLYGON`, `ALEA_CURVE_QUARTIC`, `ALEA_CURVE_PARALLEL_LINES`
 - `surface_id`: which surface generated this curve
 - `data`: union with geometry-specific fields (point + direction for lines, center + radius for circles, etc.)
 - `t_min`, `t_max`: parameter range

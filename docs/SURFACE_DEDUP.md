@@ -479,17 +479,10 @@ This is the simplest formula that correctly handles all four combinations.
 
 ### MCNP vs OpenMC difference
 
-The XOR formula is the same in both exporters. The difference is in how surface
-*coefficients* are emitted:
-
-- **MCNP exporter**: un-canonicalizes plane coefficients by flipping signs
-  according to `pos_node->inverted`. The exported surface may have opposite
-  coefficients from the canonical primitive. The XOR formula accounts for this.
-
-- **OpenMC exporter**: emits canonical coefficients as-is (no
-  un-canonicalization). The XOR formula still works because
-  `prim_to_surface_inverted` records the same `pos_node->inverted` flag used
-  by the canonical surface map.
+The XOR formula is the same in both exporters. Both exporters un-canonicalize
+plane coefficients by flipping signs according to `pos_node->inverted`, so the
+exported surface restores the original orientation. The XOR formula accounts for
+this in both cases.
 
 ---
 

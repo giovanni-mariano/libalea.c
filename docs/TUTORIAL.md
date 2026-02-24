@@ -56,17 +56,18 @@ Once loaded, the most useful thing is asking "what's at this point?"
 ### Which cell contains a point?
 
 ```c
-int cell = alea_find_cell(sys, 650.0, 0.0, 0.0);
-if (cell > 0) {
-    printf("Point is in cell %d\n", cell);
+int cell_idx = alea_find_cell(sys, 650.0, 0.0, 0.0);
+if (cell_idx >= 0) {
+    int cell_id = alea_get_cell_id(sys, cell_idx);
+    printf("Point is in cell %d\n", cell_id);
 } else {
     printf("Point is in void or undefined\n");
 }
 ```
 
-`alea_find_cell` returns the MCNP cell ID of the innermost cell containing the point. It traverses the full universe hierarchy — if the point is in a cell that has `FILL=5`, it descends into universe 5, applies the inverse transform, and continues until it finds a terminal cell (one with a material or void, not another fill).
+`alea_find_cell` returns the **cell index** (position in the internal cells array) of the innermost cell containing the point. Use `alea_get_cell_id()` to convert to the MCNP cell ID, or use `alea_find_cell_at()` to get both cell ID and material in one call. The function traverses the full universe hierarchy — if the point is in a cell that has `FILL=5`, it descends into universe 5, applies the inverse transform, and continues until it finds a terminal cell (one with a material or void, not another fill).
 
-Returns 0 if no cell claims the point. This means either void or a geometry error.
+Returns -1 if no cell claims the point. This means either void or a geometry error.
 
 ### What material is there?
 

@@ -26,8 +26,7 @@ alea_system_t
 ├── mixtures[]        Material mixtures
 ├── transforms[]      Transform matrices (TR cards, TRCL, FILL transforms)
 ├── universes[]       Universe groupings (built on demand)
-├── instance_cache    Cache for materialized universe instances
-├── spatial_index     KD-tree for fast cell instance queries
+├── spatial_index     BVH over cell instances for fast spatial queries
 ├── surface_bvh       Bounding volume hierarchy for ray tracing
 ├── config            Tolerance, export options, void parameters
 ├── stats             Dedup hits, memory usage, conversion counts
@@ -112,6 +111,8 @@ Cells are looked up by ID through a hash table (`cell_index`), giving O(1) acces
 
 Large models contain many duplicate surfaces. A tokamak model might define the same cylindrical surface dozens of times with slightly different floating-point coefficients (because different CAD tools or human authors wrote them independently).
 
+For the full pipeline — canonicalization, hashing, tolerance-based equality, canonical surface maps, and the XOR sense correction formula — see [Surface Deduplication](SURFACE_DEDUP.md).
+
 Alea deduplicates automatically:
 
 1. **Canonicalize**: Normalize the primitive so the first non-zero coefficient is positive. This means `0x + 0y - 1z + 5 = 0` and `0x + 0y + 1z - 5 = 0` become the same canonical form. The `inverted` flag on the node records whether the sign was flipped.
@@ -179,9 +180,9 @@ Element computation is O(1) — no iteration over elements. A lattice with 100,0
 
 ### Spatial index
 
-For the first point query, a spatial index (KD-tree over cell instances) is built lazily. Subsequent queries use it to narrow down candidate cells, avoiding a linear scan of all cells.
+For the first point query, a spatial index (BVH over cell instances) is built lazily. Subsequent queries use it to narrow down candidate cells, avoiding a linear scan of all cells.
 
-The spatial index is particularly important for models with deep universe hierarchies, where the naive approach would test cells at every level.
+The spatial index is particularly important for models with deep universe hierarchies, where the naive approach would test cells at every level. See [Spatial Index](#spatial-index) for the full design.
 
 ## How Export Works
 
@@ -201,21 +202,15 @@ Export (`alea_export_mcnp` or `alea_export_openmc`) does:
 
 The key invariant: the `inverted` flag is never applied to surface coefficients during output. Surfaces are always emitted with their canonical coefficients. The sense in the cell expression absorbs the inversion.
 
-## Lazy Universe Instantiation
+## Lazy Universe Evaluation
 
 When you load a model with universe fills, Alea does NOT immediately materialize every universe instance. A model with 1000 uses of universe 5 would need 1000 copies of every primitive and node in universe 5 — that's expensive and usually unnecessary.
 
-Instead, Alea uses lazy instantiation:
+Instead:
 
 - **At load time**: fill parameters are stored on the cell. Nothing is expanded.
 - **At query time**: the point is inverse-transformed and the query descends into the original universe. No copies needed.
-- **At flatten time** (explicit `alea_flatten()`): instances are materialized. Each primitive is cloned and transformed to global coordinates. The instance cache prevents re-materializing the same universe+transform pair.
-
-The instance cache (`alea_instance_cache_t`) maps `(universe_id, transform_id)` to a materialized instance. Each instance stores:
-
-- A primitive remap table (old primitive IDs to new ones)
-- A node remap table
-- The set of cloned cell roots
+- **At flatten time** (explicit `alea_flatten()`): instances are materialized. Each primitive is cloned and transformed to global coordinates.
 
 ## Ray Tracing
 
@@ -230,7 +225,7 @@ Ray tracing (`alea_raycast`) finds all cells intersected by a ray, in order:
 5. Walk along the ray, at each intersection testing which cell the point is in
 6. Build segments: consecutive regions of same-cell occupancy
 
-The BVH traversal uses a bounded stack (128 entries, supporting trees up to ~64 levels deep). A warning is logged if the stack overflows.
+The BVH traversal uses a bounded stack (128 entries, supporting trees up to ~64 levels deep). A warning is logged if the stack overflows. See [Surface BVH](#surface-bvh) for details on the construction and traversal algorithm.
 
 ### Cell-aware approach
 
@@ -263,32 +258,94 @@ Ray-surface intersection routines respect all geometric constraints stored on th
 
 ## Spatial Index
 
-The spatial index (`alea_spatial_index_t`) is a KD-tree that stores **cell instances** — combinations of (cell, transform, depth) that represent a specific materialized position of a cell in global coordinates.
+**Files:** `src/core/alea_spatial.h`, `src/core/alea_spatial.c`
 
-Building the index:
+The spatial index (`alea_spatial_index_t`) is a BVH (bounding volume hierarchy) that stores **cell instances** — combinations of (cell, transform, depth) that represent a specific materialized position of a cell in global coordinates.
 
-1. Walk the universe hierarchy recursively
-2. For each terminal cell (one with a material, not a fill), record its bounding box in global coordinates
-3. For each container cell, record it too (needed for fill descent)
-4. Build a KD-tree over all instances
+**Why a BVH over instances, not over raw geometry:** a model with deep universe hierarchies and thousands of fill placements would require flattening every surface into global coordinates to build a traditional spatial index. That is expensive in both time and memory, and destroys the compact representation of shared universes. Instead, the spatial index flattens only the **bounding boxes**: for each cell instance, it records `(cell_index, transform, global_bbox)` — lightweight metadata. The actual CSG geometry stays in its original universe-local form and is evaluated on demand through the stored transform. This keeps the index small while still enabling O(log N) spatial queries.
 
-Querying:
+### Building the index
 
-1. Find all instances whose bounding box contains the query point
-2. For each candidate, evaluate the cell's CSG tree (with inverse transform if needed)
-3. Return the best match (innermost, deepest in hierarchy)
+1. Walk the universe hierarchy recursively (`collect_instances_recursive`)
+2. For each terminal cell (one with a material, not a fill), compute its bounding box in global coordinates by transforming the local bbox through the accumulated transform chain, then clip against the parent cell's bbox
+3. For each container cell, record it too (needed for fill descent during point queries)
+4. Build a BVH over all instances using **median splits** on centroids (leaf size = 4, max depth = 30)
+
+**Why median splits instead of SAH:** the spatial index is built over cell instances whose bounding boxes often overlap heavily (nested universes, lattice elements). SAH cost estimation assumes non-overlapping primitives and provides little benefit here, while median splits are simpler and faster to build — important because the index is rebuilt whenever the model changes.
+
+The build is **thread-safe**: an atomic CAS on `spatial_build_state` (0=pending → 1=building → 2=done) ensures only one thread builds while others spin-wait. The index is lazy-built on first query if not built explicitly.
+
+### Querying
+
+Four query types are available:
+
+- **Region query** (`alea_spatial_query_region`): find all terminal instances whose bbox overlaps a query bbox. Used by the slice module to find cells intersecting a cutting plane.
+- **Z-slice query** (`alea_spatial_query_slice_z`): convenience wrapper that converts a Z-plane slice into a thin bbox region query.
+- **Point query** (`alea_spatial_query_point`): find all instances (including non-terminal) at a point, sorted by depth. Used for full hierarchy traversal.
+- **Point-in-cell with coherence** (`alea_spatial_find_cells_at_point`): high-level query with a thread-local coherence cache. Caches the last found cell path so consecutive nearby queries (adjacent pixels in a grid) reuse the result without re-traversing the BVH.
 
 The spatial index avoids linear scans over cells. On a model with 10,000 cells, a point query touches maybe 5-10 cells instead of all 10,000.
+
+### Role in slice plotting
+
+The spatial index is central to both slice operations:
+
+1. **Curve computation** (`alea_compute_slice_curves_spatial`): converts the slice plane into a thin bounding box, queries the BVH to find which cell instances intersect, deduplicates hits by `(cell_index, transform)`, then computes analytical curve intersections only for those cells. Without the spatial index, every cell in the model would need to be tested.
+
+2. **Grid-based cell identification** (`alea_find_cells_grid`): uses `alea_spatial_find_cells_at_point` per pixel with the coherence cache. Combined with per-universe adjacency walking, this gives interactive-speed slicing even on models with hundreds of thousands of cells.
+
+## Surface BVH
+
+**Files:** `src/raycast/bvh.h`, `src/raycast/bvh.c`
+
+The surface BVH (`alea_bvh_t`) is a separate acceleration structure from the spatial index. It indexes **primitive surface bounding boxes** and is used exclusively for **ray-surface intersection** queries.
+
+**Why a separate BVH for surfaces:** ray tracing and spatial queries have fundamentally different access patterns. Ray tracing needs to find which surfaces a ray crosses, ordered by distance. Spatial queries need to find which cells contain a point or overlap a region. Trying to use one structure for both would either degrade ray traversal performance (because cell instances can deeply overlap) or fail at spatial queries (because surface BVHs have no concept of cell containment). Two purpose-built structures, each optimal for its query type, are simpler and faster than one compromise.
+
+### Construction
+
+The surface BVH uses **SAH (Surface Area Heuristic)** with 16 bins per axis:
+
+1. For each surface in `sys->surfaces`, compute its bounding box
+2. Recursively partition using SAH cost estimation: for each axis, bin the surfaces by centroid position, evaluate `cost = traversal_cost + (SA_left * N_left + SA_right * N_right) / SA_parent * intersect_cost`, and pick the split with minimum cost
+3. Stop splitting when leaf size ≤ 4 or depth exceeds 30
+
+**Why SAH here but not for the spatial index:** surface primitives in a ray tracing context have relatively tight, non-overlapping bounding boxes. SAH excels in this regime — it produces trees where rays traverse fewer nodes by putting large surfaces in large nodes and grouping spatially coherent surfaces together. The build cost (O(N log N) with binning) is acceptable because the BVH is built once and reused for many ray queries.
+
+The BVH nodes are **64 bytes** (cache-line-friendly): bbox + child indices + leaf metadata. Surface indices are reordered for cache locality during traversal.
+
+### Traversal
+
+`alea_bvh_traverse` does **stack-based** (not recursive) traversal:
+
+- Precomputes inverse ray direction and sign bits
+- Uses a 128-entry stack (supports ~64 tree levels)
+- Pushes the far child first so the near child is processed next
+- Calls a user callback for each candidate surface whose bbox the ray hits
+- Falls back to linear scan (`raycast_surfaces_linear`) if BVH is disabled or the build failed
+
+### Lazy build and invalidation
+
+The surface BVH is cached on `sys->surface_bvh` and lazy-built on first raycast via `alea_raycast_ensure_caches()`. The `bvh_dirty` flag triggers a rebuild when surfaces are added or modified. If the surface count changes since the last build, the BVH is also rebuilt.
 
 ## Cell Adjacency
 
 Cell adjacency is an optimization for grid-based queries (slicing). The idea: if you know pixel (i, j) is in cell A, then pixel (i+1, j) is probably in cell A or one of its neighbors.
 
-Building adjacency:
+### Building adjacency
 
 1. For each cell, find which surfaces bound it (from the CSG tree)
 2. For each surface, find which other cells use the same surface
 3. Two cells sharing a surface are neighbors
+4. Deduplicate using a bitset (one 64-bit word array, ~14.5 KB for 116K cells) with dirty-word tracking for O(neighbors) reset per cell
+
+**Why a 128-cell threshold:** surfaces shared by more than 128 cells (`ADJACENCY_MAX_CELLS_PER_SURFACE`) are skipped when building adjacency. Global planes (e.g., a bounding plane used by thousands of cells) create O(n²) cliques — every cell sharing that plane becomes a neighbor of every other. These cliques waste memory without helping local adjacency walking, because a global plane doesn't imply geometric proximity. Skipping high-fanout surfaces keeps the neighbor lists small and focused on actual geometric neighbors.
+
+### Memory layout
+
+All neighbor data uses a **pool allocator** (`sys->neighbor_pool`): a single `malloc` for the entire adjacency structure. This avoids heap fragmentation from thousands of small per-cell neighbor arrays. `alea_destroy` and `alea_reset` check `neighbor_pool` before attempting per-cell `free(neighbors)`.
+
+### Usage in grid queries
 
 During grid queries, after finding the cell for one pixel, the next pixel first checks the same cell and its neighbors before falling back to a full search. This gives ~10x speedup on grid queries because consecutive pixels almost always share a cell or neighbor.
 
@@ -339,3 +396,11 @@ The `libalea_full.a` archive combines all modules. Use it unless binary size mat
 The **Lua binding** layer (`src/lua_bind/`) wraps the public C API for the interactive CLI (`bin/alea`). It is compiled into the CLI binary, not shipped as a separate library.
 
 Module boundaries follow a dependency rule: MCNP and OpenMC depend on Core, but not on each other. Raycast and Slice depend on Core but not on MCNP or OpenMC. Render depends on Raycast and Core. Mesh depends on Core. Core depends on nothing except the util/ layer.
+
+## See Also
+
+- [Concepts](CONCEPTS.md) — domain concepts (surfaces, sense, cells, universes, lattices, materials)
+- [Surface Deduplication](SURFACE_DEDUP.md) — full dedup pipeline: canonicalization, hashing, tolerance equality, canonical surface maps, XOR sense correction
+- [API Reference](API.md) — complete public function listing
+- [Tutorial](TUTORIAL.md) — C API walkthrough with working examples
+- [Lua Tutorial](LUA_TUTORIAL.md) — Lua binding reference and examples
