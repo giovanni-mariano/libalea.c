@@ -754,6 +754,9 @@ int alea_find_cells_grid(const alea_system_t* sys,
      * because the cache only stores one cell path and would mask overlapping
      * cells at the same depth level. */
     if (out_errors) {
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(dynamic, 4)
+#endif
         for (int j = 0; j < nv; j++) {
             double v = v_min + (j + 0.5) * dv;
             for (int i = 0; i < nu; i++) {
@@ -818,6 +821,9 @@ int alea_check_grid_overlaps(const alea_system_t* sys,
     const double* u_axis = plane->u_axis;
     const double* v_axis = plane->v_axis;
 
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic, 4)
+#endif
     for (int j = 0; j < nv; j++) {
         double v = v_min + (j + 0.5) * dv;
         for (int i = 0; i < nu; i++) {
@@ -868,7 +874,14 @@ typedef struct {
     int sample_x[LABEL_MAX_SAMPLES];
     int sample_y[LABEL_MAX_SAMPLES];
     int sample_count;
+    uint32_t rng_state;       /* Per-region LCG state for reservoir sampling */
 } label_region_t;
+
+/** @brief Fast LCG — returns value in [0, bound) */
+static inline int label_rng_bounded(uint32_t* state, int bound) {
+    *state = *state * 1664525u + 1013904223u;
+    return (int)(((uint64_t)*state * (uint64_t)bound) >> 32);
+}
 
 /**
  * @brief Check if pixel is interior (all 8 neighbors have same cell ID)
@@ -897,7 +910,7 @@ static void label_region_add_interior_sample(label_region_t* r, int x, int y) {
         r->sample_count++;
     } else {
         /* Reservoir sampling: replace with probability LABEL_MAX_SAMPLES/interior_count */
-        int idx = rand() % r->interior_count;
+        int idx = label_rng_bounded(&r->rng_state, r->interior_count);
         if (idx < LABEL_MAX_SAMPLES) {
             r->sample_x[idx] = x;
             r->sample_y[idx] = y;
@@ -952,28 +965,21 @@ static void flood_fill_component(const int* ids, int* component_map,
                                   int width, int height,
                                   int start_x, int start_y,
                                   int component_id, int target_id) {
-    /* Simple queue using dynamic array */
-    int queue_cap = 1024;
+    /* Single interleaved queue [x0,y0, x1,y1, ...] for cache locality */
+    int queue_cap = 2048;  /* pairs × 2 */
     int queue_size = 0;
-    int* queue_x = malloc(queue_cap * sizeof(int));
-    int* queue_y = malloc(queue_cap * sizeof(int));
-    if (!queue_x || !queue_y) {
-        free(queue_x);
-        free(queue_y);
-        return;
-    }
+    int* queue = malloc(queue_cap * sizeof(int));
+    if (!queue) return;
 
     /* Add start point */
-    queue_x[queue_size] = start_x;
-    queue_y[queue_size] = start_y;
-    queue_size++;
+    queue[queue_size++] = start_x;
+    queue[queue_size++] = start_y;
     component_map[start_y * width + start_x] = component_id;
 
     int head = 0;
     while (head < queue_size) {
-        int x = queue_x[head];
-        int y = queue_y[head];
-        head++;
+        int x = queue[head++];
+        int y = queue[head++];
 
         /* Check 4-connected neighbors */
         const int dx[] = {-1, 1, 0, 0};
@@ -990,26 +996,20 @@ static void flood_fill_component(const int* ids, int* component_map,
                 component_map[nidx] = component_id;
 
                 /* Grow queue if needed */
-                if (queue_size >= queue_cap) {
+                if (queue_size + 2 > queue_cap) {
                     queue_cap *= 2;
-                    queue_x = realloc(queue_x, queue_cap * sizeof(int));
-                    queue_y = realloc(queue_y, queue_cap * sizeof(int));
-                    if (!queue_x || !queue_y) {
-                        free(queue_x);
-                        free(queue_y);
-                        return;
-                    }
+                    int* tmp = realloc(queue, queue_cap * sizeof(int));
+                    if (!tmp) { free(queue); return; }
+                    queue = tmp;
                 }
 
-                queue_x[queue_size] = nx;
-                queue_y[queue_size] = ny;
-                queue_size++;
+                queue[queue_size++] = nx;
+                queue[queue_size++] = ny;
             }
         }
     }
 
-    free(queue_x);
-    free(queue_y);
+    free(queue);
 }
 
 int alea_find_label_positions(
@@ -1086,6 +1086,7 @@ int alea_find_label_positions(
             /* Store cell ID (first pixel sets it) */
             if (r->id < 0) {
                 r->id = ids[idx];
+                r->rng_state = (uint32_t)(comp * 2654435761u);  /* seed from component ID */
             }
 
             /* Accumulate for centroid */

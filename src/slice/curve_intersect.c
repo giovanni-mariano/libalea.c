@@ -614,21 +614,24 @@ static bool intersect_box(const alea_box_data_t* box,
     cx /= count;
     cy /= count;
 
-    /* Simple bubble sort by angle */
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = i + 1; j < count; j++) {
-            double a1 = atan2(intersections[i][1] - cy, intersections[i][0] - cx);
-            double a2 = atan2(intersections[j][1] - cy, intersections[j][0] - cx);
-            if (a1 > a2) {
-                double tmp[2];
-                tmp[0] = intersections[i][0];
-                tmp[1] = intersections[i][1];
-                intersections[i][0] = intersections[j][0];
-                intersections[i][1] = intersections[j][1];
-                intersections[j][0] = tmp[0];
-                intersections[j][1] = tmp[1];
-            }
+    /* Pre-compute angles, then insertion sort (max 12 points) */
+    double angles[12];
+    for (int i = 0; i < count; i++)
+        angles[i] = atan2(intersections[i][1] - cy, intersections[i][0] - cx);
+
+    for (int i = 1; i < count; i++) {
+        double ka = angles[i];
+        double ku = intersections[i][0], kv = intersections[i][1];
+        int j = i - 1;
+        while (j >= 0 && angles[j] > ka) {
+            angles[j + 1] = angles[j];
+            intersections[j + 1][0] = intersections[j][0];
+            intersections[j + 1][1] = intersections[j][1];
+            j--;
         }
+        angles[j + 1] = ka;
+        intersections[j + 1][0] = ku;
+        intersections[j + 1][1] = kv;
     }
 
     curve->type = ALEA_CURVE_POLYGON;
