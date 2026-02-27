@@ -148,20 +148,13 @@ int alea_slice_curves_get(const alea_slice_curves_t* curves, size_t index, alea_
         case ALEA_CURVE_ELLIPSE:
         case ALEA_CURVE_ELLIPSE_ARC:
             out->type = (src->type == ALEA_CURVE_ELLIPSE) ? ALEA_CURVE_ELLIPSE : ALEA_CURVE_ELLIPSE_ARC;
-            /* Convert conic coefficients to canonical ellipse form */
-            {
-                alea_ellipse_2d_t ell;
-                if (alea_conic_to_ellipse(&src->data.conic, &ell)) {
-                    out->data.ellipse.center[0] = ell.center[0];
-                    out->data.ellipse.center[1] = ell.center[1];
-                    out->data.ellipse.semi_a = ell.semi_a;
-                    out->data.ellipse.semi_b = ell.semi_b;
-                    out->data.ellipse.angle = ell.angle;
-                } else {
-                    /* Conversion failed - return degenerate */
-                    out->type = ALEA_CURVE_NONE;
-                }
-            }
+            /* Canonical form already computed by finalize_conic_as_ellipse() —
+             * just copy data.ellipse directly. */
+            out->data.ellipse.center[0] = src->data.ellipse.center[0];
+            out->data.ellipse.center[1] = src->data.ellipse.center[1];
+            out->data.ellipse.semi_a = src->data.ellipse.semi_a;
+            out->data.ellipse.semi_b = src->data.ellipse.semi_b;
+            out->data.ellipse.angle = src->data.ellipse.angle;
             break;
 
         case ALEA_CURVE_POLYGON:
@@ -964,14 +957,12 @@ static void label_find_best_position(const label_region_t* r, int* out_x, int* o
 static void flood_fill_component(const int* ids, int* component_map,
                                   int width, int height,
                                   int start_x, int start_y,
-                                  int component_id, int target_id) {
-    /* Single interleaved queue [x0,y0, x1,y1, ...] for cache locality */
-    int queue_cap = 2048;  /* pairs × 2 */
+                                  int component_id, int target_id,
+                                  int* queue, int queue_cap) {
+    /* Uses caller-provided queue [x0,y0, x1,y1, ...] to avoid
+     * per-component allocation. queue_cap must be >= width*height*2. */
     int queue_size = 0;
-    int* queue = malloc(queue_cap * sizeof(int));
-    if (!queue) return;
 
-    /* Add start point */
     queue[queue_size++] = start_x;
     queue[queue_size++] = start_y;
     component_map[start_y * width + start_x] = component_id;
@@ -981,7 +972,6 @@ static void flood_fill_component(const int* ids, int* component_map,
         int x = queue[head++];
         int y = queue[head++];
 
-        /* Check 4-connected neighbors */
         const int dx[] = {-1, 1, 0, 0};
         const int dy[] = {0, 0, -1, 1};
 
@@ -994,22 +984,13 @@ static void flood_fill_component(const int* ids, int* component_map,
             int nidx = ny * width + nx;
             if (ids[nidx] == target_id && component_map[nidx] == 0) {
                 component_map[nidx] = component_id;
-
-                /* Grow queue if needed */
-                if (queue_size + 2 > queue_cap) {
-                    queue_cap *= 2;
-                    int* tmp = realloc(queue, queue_cap * sizeof(int));
-                    if (!tmp) { free(queue); return; }
-                    queue = tmp;
+                if (queue_size + 2 <= queue_cap) {
+                    queue[queue_size++] = nx;
+                    queue[queue_size++] = ny;
                 }
-
-                queue[queue_size++] = nx;
-                queue[queue_size++] = ny;
             }
         }
     }
-
-    free(queue);
 }
 
 int alea_find_label_positions(
@@ -1032,6 +1013,14 @@ int alea_find_label_positions(
     int* component_map = calloc(num_pixels, sizeof(int));
     if (!component_map) return -1;
 
+    /* Pre-allocate flood fill queue once (worst case: all pixels in one component) */
+    int queue_cap = num_pixels * 2;
+    int* queue = malloc(queue_cap * sizeof(int));
+    if (!queue) {
+        free(component_map);
+        return -1;
+    }
+
     int next_component = 1;  /* Component IDs start at 1; 0 = unlabeled */
 
     for (int y = 0; y < height; y++) {
@@ -1044,13 +1033,16 @@ int alea_find_label_positions(
 
             /* Start a new component */
             flood_fill_component(ids, component_map, width, height,
-                                x, y, next_component, id);
+                                x, y, next_component, id,
+                                queue, queue_cap);
             next_component++;
 
             if (next_component >= LABEL_MAX_REGIONS) break;
         }
         if (next_component >= LABEL_MAX_REGIONS) break;
     }
+
+    free(queue);
 
     int num_components = next_component - 1;
     if (num_components == 0) {

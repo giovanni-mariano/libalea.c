@@ -26,7 +26,8 @@
 #include <stdio.h>
 #include "util/alea_log.h"
 
-#define EPSILON 1e-10
+#include "slice/slice_epsilon.h"
+#define EPSILON SLICE_DISCRIMINANT_TOL  /* legacy alias — use named constants for new code */
 
 /* Solve quadratic ax² + bx + c = 0, return number of real roots.
  * Uses Vieta's form (same as raycast module) to avoid catastrophic
@@ -500,6 +501,32 @@ static bool intersect_cone(double apex_x, double apex_y, double apex_z,
     int qi = perp[axis][1];
 
     double apex[3] = {apex_x, apex_y, apex_z};
+
+    /* Perpendicular case: slice normal parallel to cone axis → circle */
+    double cos_angle = fabs(slice->normal[axis]);
+    if (cos_angle > 1.0 - EPSILON) {
+        /* Distance from apex to slice plane along axis */
+        double d_axis = slice->origin[axis] - apex[axis];
+        if (fabs(d_axis) < EPSILON) {
+            /* Plane through apex — single point */
+            curve->type = ALEA_CURVE_POINT;
+            alea_plane_to_2d(slice, apex_x, apex_y, apex_z,
+                           &curve->data.point[0], &curve->data.point[1]);
+            return true;
+        }
+        double radius = fabs(d_axis) * sqrt(k2);
+        double center_3d[3];
+        center_3d[axis] = slice->origin[axis];
+        center_3d[pi] = apex[pi];
+        center_3d[qi] = apex[qi];
+
+        curve->type = ALEA_CURVE_CIRCLE;
+        alea_plane_to_2d(slice, center_3d[0], center_3d[1], center_3d[2],
+                       &curve->data.circle.center[0], &curve->data.circle.center[1]);
+        curve->data.circle.radius = radius;
+        return true;
+    }
+
     double O[3] = {slice->origin[0] - apex[0],
                    slice->origin[1] - apex[1],
                    slice->origin[2] - apex[2]};
@@ -896,23 +923,27 @@ static bool intersect_rcc(const alea_rcc_data_t* rcc,
         /* Offset = sqrt(r² - d²) where d is distance from plane to axis */
         double offset = sqrt(rcc->radius * rcc->radius - dist_to_plane * dist_to_plane);
 
-        /* Store as polygon with 4 points (rectangle approximating two lines) */
-        /* This is a simplification - ideally we'd have a "two lines" type */
-        curve->type = ALEA_CURVE_POLYGON;
-        curve->data.polygon.vertex_count = 4;
-        curve->data.polygon.closed = false;
+        if (offset < EPSILON) {
+            /* Tangent — single line */
+            curve->type = ALEA_CURVE_LINE;
+            curve->data.line.point[0] = base_2d[0];
+            curve->data.line.point[1] = base_2d[1];
+            curve->data.line.direction[0] = dir_2d[0];
+            curve->data.line.direction[1] = dir_2d[1];
+            curve->data.line.a = -dir_2d[1];
+            curve->data.line.b = dir_2d[0];
+            curve->data.line.c = -(curve->data.line.a * base_2d[0] +
+                                   curve->data.line.b * base_2d[1]);
+            return true;
+        }
 
-        /* Line 1: base + offset*perp + t*dir for t in [0, h_len] */
-        curve->data.polygon.vertices[0][0] = base_2d[0] + offset * perp_2d[0];
-        curve->data.polygon.vertices[0][1] = base_2d[1] + offset * perp_2d[1];
-        curve->data.polygon.vertices[1][0] = base_2d[0] + offset * perp_2d[0] + h_len * dir_2d[0];
-        curve->data.polygon.vertices[1][1] = base_2d[1] + offset * perp_2d[1] + h_len * dir_2d[1];
-
-        /* Line 2: base - offset*perp + t*dir for t in [0, h_len] */
-        curve->data.polygon.vertices[2][0] = base_2d[0] - offset * perp_2d[0] + h_len * dir_2d[0];
-        curve->data.polygon.vertices[2][1] = base_2d[1] - offset * perp_2d[1] + h_len * dir_2d[1];
-        curve->data.polygon.vertices[3][0] = base_2d[0] - offset * perp_2d[0];
-        curve->data.polygon.vertices[3][1] = base_2d[1] - offset * perp_2d[1];
+        curve->type = ALEA_CURVE_PARALLEL_LINES;
+        curve->data.parallel_lines.point1[0] = base_2d[0] + offset * perp_2d[0];
+        curve->data.parallel_lines.point1[1] = base_2d[1] + offset * perp_2d[1];
+        curve->data.parallel_lines.point2[0] = base_2d[0] - offset * perp_2d[0];
+        curve->data.parallel_lines.point2[1] = base_2d[1] - offset * perp_2d[1];
+        curve->data.parallel_lines.direction[0] = dir_2d[0];
+        curve->data.parallel_lines.direction[1] = dir_2d[1];
 
         return true;
     }
@@ -1381,6 +1412,17 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
  * SYSTEM-WIDE CURVE COMPUTATION
  * ============================================================================ */
 
+/** Ensure room for one more curve. Returns 0 on success, -1 on OOM. */
+static int ensure_curve_capacity(alea_curve_collection_t* r) {
+    if (r->curve_count < r->curve_capacity) return 0;
+    size_t nc = r->curve_capacity * 2;
+    alea_curve_2d_t* p = realloc(r->curves, nc * sizeof(*p));
+    if (!p) return -1;
+    r->curves = p;
+    r->curve_capacity = nc;
+    return 0;
+}
+
 int alea_compute_slice_curves(const alea_system_t* sys,
                              const alea_slice_plane_t* plane,
                              alea_curve_collection_t* result) {
@@ -1406,19 +1448,10 @@ int alea_compute_slice_curves(const alea_system_t* sys,
             /* Store surface ID */
             curve.surface_id = surf->mcnp_surface_id;
 
-            /* Grow array if needed */
-            if (result->curve_count >= result->curve_capacity) {
-                size_t new_cap = result->curve_capacity * 2;
-                alea_curve_2d_t* new_curves = realloc(result->curves,
-                                                     new_cap * sizeof(alea_curve_2d_t));
-                if (!new_curves) {
-                    alea_curve_collection_free(result);
-                    return -1;
-                }
-                result->curves = new_curves;
-                result->curve_capacity = new_cap;
+            if (ensure_curve_capacity(result) != 0) {
+                alea_curve_collection_free(result);
+                return -1;
             }
-
             result->curves[result->curve_count++] = curve;
 
             /* Update bounding box */
@@ -1937,11 +1970,11 @@ void alea_curve_bbox(const alea_curve_2d_t* curve,
  * SLICE CURVES WITH SPATIAL INDEX
  * ============================================================================ */
 
-#define SPATIAL_EPSILON 1e-10
+#define SLICE_SPATIAL_TOL 1e-10
 #define MAX_SPATIAL_HITS 262144  /* 256K - increased for large models */
 
 /* Debug flag for slice curve generation - set to 1 to enable verbose output */
-static _Thread_local int g_slice_curve_debug = 0;
+static int g_slice_curve_debug = 0;
 
 void alea_slice_curve_set_debug(int enable) {
     g_slice_curve_debug = enable;
@@ -1954,35 +1987,177 @@ void alea_slice_point_trace_set_debug(int enable) {
     alea_set_debug_point_trace(enable);
 }
 
-/* Track seen surfaces to avoid duplicates */
+/* Compare two 3x4 matrices element-wise within tolerance */
+static bool matrices_equal(const double a[12], const double b[12], double tol) {
+    for (int i = 0; i < 12; i++) {
+        if (fabs(a[i] - b[i]) > tol) return false;
+    }
+    return true;
+}
+
+/* ---- Open-addressing hash set for seen surfaces ---- */
+
+#define SEEN_HASH_EMPTY  0xFFFFFFFF  /* sentinel: surf_idx can never be this */
+#define SEEN_HASH_LOAD_NUM   3       /* resize when count * 4 > capacity * 3 */
+#define SEEN_HASH_LOAD_DEN   4
+
 typedef struct {
-    uint32_t surf_idx;
-    double tx, ty, tz;  /* Translation part of transform - enough to distinguish */
-    int first_cell_id;  /* Cell ID that first processed this surface (for debug) */
-    int first_depth;    /* Depth of that cell */
-} seen_surface_t;
+    uint32_t surf_idx;               /* SEEN_HASH_EMPTY = slot unused */
+    double m[12];                    /* Full 3x4 transform */
+    int first_cell_id;
+    int first_depth;
+} seen_entry_t;
 
-ALEA_VEC_DEFINE(seen_surface_vec, seen_surface_t);
+typedef struct {
+    seen_entry_t* slots;
+    size_t capacity;                 /* Always a power of two */
+    size_t count;
+} seen_set_t;
 
-static bool surface_already_seen(seen_surface_vec_t* seen,
-                                  uint32_t surf_idx, const alea_matrix_t* transform,
-                                  int* out_first_cell_id, int* out_first_depth) {
-    double tx = transform->m[3];
-    double ty = transform->m[7];
-    double tz = transform->m[11];
+static void seen_set_init(seen_set_t* s, size_t initial_cap) {
+    /* Round up to power of two */
+    size_t cap = 64;
+    while (cap < initial_cap) cap *= 2;
+    s->slots = malloc(cap * sizeof(seen_entry_t));
+    s->capacity = cap;
+    s->count = 0;
+    for (size_t i = 0; i < cap; i++)
+        s->slots[i].surf_idx = SEEN_HASH_EMPTY;
+}
 
-    for (size_t i = 0; i < alea_vec_count(seen); i++) {
-        seen_surface_t* s = &seen->data[i];
-        if (s->surf_idx == surf_idx &&
-            fabs(s->tx - tx) < 1e-9 &&
-            fabs(s->ty - ty) < 1e-9 &&
-            fabs(s->tz - tz) < 1e-9) {
-            if (out_first_cell_id) *out_first_cell_id = s->first_cell_id;
-            if (out_first_depth) *out_first_depth = s->first_depth;
-            return true;
+static void seen_set_free(seen_set_t* s) {
+    free(s->slots);
+    s->slots = NULL;
+    s->capacity = s->count = 0;
+}
+
+/* FNV-1a hash of (surf_idx, quantized matrix) */
+static uint64_t seen_hash(uint32_t surf_idx, const double m[12]) {
+    uint64_t h = 14695981039346656037ULL;
+    /* Hash surf_idx */
+    const uint8_t* p = (const uint8_t*)&surf_idx;
+    for (size_t i = 0; i < sizeof(surf_idx); i++) {
+        h ^= p[i]; h *= 1099511628211ULL;
+    }
+    /* Quantize doubles to 1e-8 grid and hash the int64 representation.
+     * This ensures values within 1e-9 of each other may hash to the same
+     * or adjacent buckets (we still do exact comparison in the probe). */
+    for (int i = 0; i < 12; i++) {
+        int64_t q = (int64_t)(m[i] * 1e8);
+        p = (const uint8_t*)&q;
+        for (size_t j = 0; j < sizeof(q); j++) {
+            h ^= p[j]; h *= 1099511628211ULL;
         }
     }
-    return false;
+    return h;
+}
+
+static void seen_set_grow(seen_set_t* s);
+
+/* Returns true if already present. If not, inserts and returns false. */
+static bool seen_set_insert(seen_set_t* s,
+                             uint32_t surf_idx, const alea_matrix_t* transform,
+                             int cell_id, int depth,
+                             int* out_first_cell_id, int* out_first_depth) {
+    /* Grow if needed */
+    if (s->count * SEEN_HASH_LOAD_DEN >= s->capacity * SEEN_HASH_LOAD_NUM)
+        seen_set_grow(s);
+
+    uint64_t h = seen_hash(surf_idx, transform->m);
+    size_t mask = s->capacity - 1;
+    size_t idx = (size_t)(h & mask);
+
+    for (;;) {
+        seen_entry_t* e = &s->slots[idx];
+        if (e->surf_idx == SEEN_HASH_EMPTY) {
+            /* Empty slot — insert here */
+            e->surf_idx = surf_idx;
+            memcpy(e->m, transform->m, sizeof(e->m));
+            e->first_cell_id = cell_id;
+            e->first_depth = depth;
+            s->count++;
+            return false;
+        }
+        if (e->surf_idx == surf_idx &&
+            matrices_equal(e->m, transform->m, SLICE_TRANSFORM_TOL)) {
+            /* Already seen */
+            if (out_first_cell_id) *out_first_cell_id = e->first_cell_id;
+            if (out_first_depth) *out_first_depth = e->first_depth;
+            return true;
+        }
+        idx = (idx + 1) & mask;
+    }
+}
+
+static void seen_set_grow(seen_set_t* s) {
+    size_t old_cap = s->capacity;
+    seen_entry_t* old_slots = s->slots;
+
+    size_t new_cap = old_cap * 2;
+    s->slots = malloc(new_cap * sizeof(seen_entry_t));
+    s->capacity = new_cap;
+    s->count = 0;
+    for (size_t i = 0; i < new_cap; i++)
+        s->slots[i].surf_idx = SEEN_HASH_EMPTY;
+
+    for (size_t i = 0; i < old_cap; i++) {
+        if (old_slots[i].surf_idx == SEEN_HASH_EMPTY) continue;
+        alea_matrix_t tmp;
+        memcpy(tmp.m, old_slots[i].m, sizeof(tmp.m));
+        seen_set_insert(s, old_slots[i].surf_idx, &tmp,
+                        old_slots[i].first_cell_id, old_slots[i].first_depth,
+                        NULL, NULL);
+    }
+    free(old_slots);
+}
+
+/**
+ * Intersect 3D plane (a*x + b*y + c*z + d = 0) with slice plane,
+ * viewport-cull, and append a ALEA_CURVE_LINE with surface_id=0.
+ * Returns 0 on success (or cull/skip), -1 on OOM.
+ */
+static int emit_grid_line(const alea_slice_plane_t* plane,
+                           alea_curve_collection_t* result,
+                           double u_min, double u_max,
+                           double v_min, double v_max,
+                           double pa, double pb, double pc, double pd) {
+    double A = pa * plane->u_axis[0] + pb * plane->u_axis[1]
+             + pc * plane->u_axis[2];
+    double B = pa * plane->v_axis[0] + pb * plane->v_axis[1]
+             + pc * plane->v_axis[2];
+    double C = pa * plane->origin[0] + pb * plane->origin[1]
+             + pc * plane->origin[2] + pd;
+    double len = sqrt(A * A + B * B);
+    if (len < EPSILON) return 0;  /* parallel to slice */
+
+    /* Viewport cull: evaluate A*u+B*v+C at four corners */
+    double v0 = A * u_min + B * v_min + C;
+    double v1 = A * u_max + B * v_min + C;
+    double v2 = A * u_min + B * v_max + C;
+    double v3 = A * u_max + B * v_max + C;
+    if ((v0 > 0 && v1 > 0 && v2 > 0 && v3 > 0) ||
+        (v0 < 0 && v1 < 0 && v2 < 0 && v3 < 0))
+        return 0;  /* outside viewport */
+
+    alea_curve_2d_t gc;
+    memset(&gc, 0, sizeof(gc));
+    gc.type = ALEA_CURVE_LINE;
+    gc.surface_id = 0;
+    gc.data.line.a = A;
+    gc.data.line.b = B;
+    gc.data.line.c = C;
+    gc.data.line.direction[0] = -B / len;
+    gc.data.line.direction[1] =  A / len;
+    if (fabs(A) > fabs(B)) {
+        gc.data.line.point[0] = -C / A;
+        gc.data.line.point[1] = 0;
+    } else {
+        gc.data.line.point[0] = 0;
+        gc.data.line.point[1] = -C / B;
+    }
+    if (ensure_curve_capacity(result) != 0) return -1;
+    result->curves[result->curve_count++] = gc;
+    return 0;
 }
 
 int alea_compute_slice_curves_spatial(const alea_system_t* sys,
@@ -2022,26 +2197,53 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
         double z = plane->origin[2];
         query_bbox.min_x = u_min; query_bbox.max_x = u_max;
         query_bbox.min_y = v_min; query_bbox.max_y = v_max;
-        query_bbox.min_z = z - SPATIAL_EPSILON;
-        query_bbox.max_z = z + SPATIAL_EPSILON;
+        query_bbox.min_z = z - SLICE_SPATIAL_TOL;
+        query_bbox.max_z = z + SLICE_SPATIAL_TOL;
     } else if (fabs(ny) > 0.99) {
         /* Y-plane */
         double y = plane->origin[1];
         query_bbox.min_x = u_min; query_bbox.max_x = u_max;
-        query_bbox.min_y = y - SPATIAL_EPSILON;
-        query_bbox.max_y = y + SPATIAL_EPSILON;
+        query_bbox.min_y = y - SLICE_SPATIAL_TOL;
+        query_bbox.max_y = y + SLICE_SPATIAL_TOL;
         query_bbox.min_z = v_min; query_bbox.max_z = v_max;
     } else if (fabs(nx) > 0.99) {
         /* X-plane */
         double x = plane->origin[0];
-        query_bbox.min_x = x - SPATIAL_EPSILON;
-        query_bbox.max_x = x + SPATIAL_EPSILON;
+        query_bbox.min_x = x - SLICE_SPATIAL_TOL;
+        query_bbox.max_x = x + SLICE_SPATIAL_TOL;
         query_bbox.min_y = u_min; query_bbox.max_y = u_max;
         query_bbox.min_z = v_min; query_bbox.max_z = v_max;
     } else {
-        /* Arbitrary plane - use large bounds */
-        query_bbox.min_x = query_bbox.min_y = query_bbox.min_z = -1e20;
-        query_bbox.max_x = query_bbox.max_y = query_bbox.max_z = 1e20;
+        /* Arbitrary plane: compute 3D bbox of the viewport quad.
+         * Four corners: origin + u*U + v*V at (u_min,v_min), (u_max,v_min),
+         * (u_min,v_max), (u_max,v_max). */
+        double uvals[2] = {u_min, u_max};
+        double vvals[2] = {v_min, v_max};
+        query_bbox.min_x = query_bbox.min_y = query_bbox.min_z = DBL_MAX;
+        query_bbox.max_x = query_bbox.max_y = query_bbox.max_z = -DBL_MAX;
+        for (int ui = 0; ui < 2; ui++) {
+            for (int vi = 0; vi < 2; vi++) {
+                double px = plane->origin[0] + uvals[ui] * plane->u_axis[0]
+                                             + vvals[vi] * plane->v_axis[0];
+                double py = plane->origin[1] + uvals[ui] * plane->u_axis[1]
+                                             + vvals[vi] * plane->v_axis[1];
+                double pz = plane->origin[2] + uvals[ui] * plane->u_axis[2]
+                                             + vvals[vi] * plane->v_axis[2];
+                if (px < query_bbox.min_x) query_bbox.min_x = px;
+                if (px > query_bbox.max_x) query_bbox.max_x = px;
+                if (py < query_bbox.min_y) query_bbox.min_y = py;
+                if (py > query_bbox.max_y) query_bbox.max_y = py;
+                if (pz < query_bbox.min_z) query_bbox.min_z = pz;
+                if (pz > query_bbox.max_z) query_bbox.max_z = pz;
+            }
+        }
+        /* Small margin for surfaces tangent to the bbox edges */
+        query_bbox.min_x -= SLICE_SPATIAL_TOL;
+        query_bbox.max_x += SLICE_SPATIAL_TOL;
+        query_bbox.min_y -= SLICE_SPATIAL_TOL;
+        query_bbox.max_y += SLICE_SPATIAL_TOL;
+        query_bbox.min_z -= SLICE_SPATIAL_TOL;
+        query_bbox.max_z += SLICE_SPATIAL_TOL;
     }
 
     /* Query instances that intersect the slice */
@@ -2070,9 +2272,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
         bool is_duplicate = false;
         for (int k = 0; k < unique_count; k++) {
             if (hits[k].cell_index == hits[h].cell_index &&
-                fabs(hits[k].transform.m[3] - hits[h].transform.m[3]) < 1e-9 &&
-                fabs(hits[k].transform.m[7] - hits[h].transform.m[7]) < 1e-9 &&
-                fabs(hits[k].transform.m[11] - hits[h].transform.m[11]) < 1e-9) {
+                matrices_equal(hits[k].transform.m, hits[h].transform.m, SLICE_TRANSFORM_TOL)) {
                 is_duplicate = true;
                 break;
             }
@@ -2090,8 +2290,9 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
     }
     hit_count = unique_count;
 
-    /* Track seen surfaces to avoid duplicates */
-    seen_surface_vec_t seen = ALEA_VEC_INIT;
+    /* Track seen surfaces to avoid duplicates (hash set, O(1) amortized) */
+    seen_set_t seen;
+    seen_set_init(&seen, 256);
 
     if (g_slice_curve_debug) {
         ALEA_LOG_DEBUG("Processing %d cell instances for slice curves", hit_count);
@@ -2124,7 +2325,9 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
 
             /* Skip if we've already processed this surface with this transform */
             int first_cell_id = -1, first_depth = -1;
-            if (surface_already_seen(&seen, surf_idx, &hit->transform, &first_cell_id, &first_depth)) {
+            if (seen_set_insert(&seen, surf_idx, &hit->transform,
+                                hit->cell_id, hit->depth,
+                                &first_cell_id, &first_depth)) {
                 if (g_slice_curve_debug) {
                     ALEA_LOG_DEBUG("  -> SKIPPED surface %d (mcnp=%d): already seen from cell_id=%d depth=%d",
                            surf_idx, surf->mcnp_surface_id, first_cell_id, first_depth);
@@ -2175,20 +2378,12 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
             curve.surface_id = surf->mcnp_surface_id;
 
             /* Add curve to result */
-            if (result->curve_count >= result->curve_capacity) {
-                size_t new_cap = result->curve_capacity * 2;
-                alea_curve_2d_t* new_curves = realloc(result->curves,
-                                                     new_cap * sizeof(alea_curve_2d_t));
-                if (!new_curves) {
-                    alea_vec_free(&seen);
-                    free(hits);
-                    alea_curve_collection_free(result);
-                    return -1;
-                }
-                result->curves = new_curves;
-                result->curve_capacity = new_cap;
+            if (ensure_curve_capacity(result) != 0) {
+                seen_set_free(&seen);
+                free(hits);
+                alea_curve_collection_free(result);
+                return -1;
             }
-
             result->curves[result->curve_count++] = curve;
 
             if (g_slice_curve_debug) {
@@ -2208,16 +2403,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                 }
             }
 
-            /* Mark this surface+transform as seen */
-            seen_surface_t entry = {
-                .surf_idx = surf_idx,
-                .tx = hit->transform.m[3],
-                .ty = hit->transform.m[7],
-                .tz = hit->transform.m[11],
-                .first_cell_id = hit->cell_id,
-                .first_depth = hit->depth
-            };
-            alea_vec_push(&seen, entry, seen_surface_t);
+            /* (surface+transform already inserted by seen_set_insert above) */
 
             /* Update bounds */
             if (cu_min < result->u_min) result->u_min = cu_min;
@@ -2314,8 +2500,9 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                             if (surf_idx >= alea_vec_count(&sys->surfaces))
                                 continue;
 
-                            if (surface_already_seen(&seen, surf_idx,
-                                                     &elem_tr, NULL, NULL))
+                            if (seen_set_insert(&seen, surf_idx, &elem_tr,
+                                               fc_cell->mcnp_cell_id, 0,
+                                               NULL, NULL))
                                 continue;
 
                             const alea_surface_entry_t* surf =
@@ -2343,31 +2530,13 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
 
                             curve.surface_id = surf->mcnp_surface_id;
 
-                            /* Grow array if needed */
-                            if (result->curve_count >= result->curve_capacity) {
-                                size_t nc = result->curve_capacity * 2;
-                                alea_curve_2d_t* tmp = realloc(result->curves,
-                                    nc * sizeof(alea_curve_2d_t));
-                                if (!tmp) goto lat_done;
-                                result->curves = tmp;
-                                result->curve_capacity = nc;
-                            }
+                            if (ensure_curve_capacity(result) != 0) goto lat_done;
                             result->curves[result->curve_count++] = curve;
 
                             if (cu0 < result->u_min) result->u_min = cu0;
                             if (cu1 > result->u_max) result->u_max = cu1;
                             if (cv0 < result->v_min) result->v_min = cv0;
                             if (cv1 > result->v_max) result->v_max = cv1;
-
-                            seen_surface_t entry = {
-                                .surf_idx = surf_idx,
-                                .tx = elem_tr.m[3],
-                                .ty = elem_tr.m[7],
-                                .tz = elem_tr.m[11],
-                                .first_cell_id = fc_cell->mcnp_cell_id,
-                                .first_depth = 0
-                            };
-                            alea_vec_push(&seen, entry, seen_surface_t);
                         }
                     }
                 }
@@ -2393,68 +2562,25 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
         double pz = cell->lat_pitch[2];
 
 
-        /* Helper macro: intersect 3D plane (a,b,c,d) with slice, viewport-
-         * cull, and append a ALEA_CURVE_LINE with surface_id=0. */
-        #define EMIT_GRID_LINE(pa, pb, pc, pd) do {                          \
-            double A_ = (pa)*plane->u_axis[0] + (pb)*plane->u_axis[1]       \
-                      + (pc)*plane->u_axis[2];                               \
-            double B_ = (pa)*plane->v_axis[0] + (pb)*plane->v_axis[1]       \
-                      + (pc)*plane->v_axis[2];                               \
-            double C_ = (pa)*plane->origin[0] + (pb)*plane->origin[1]       \
-                      + (pc)*plane->origin[2] + (pd);                        \
-            double len_ = sqrt(A_*A_ + B_*B_);                              \
-            if (len_ < EPSILON) break; /* parallel to slice */               \
-            /* Viewport cull: evaluate A*u+B*v+C at four corners */          \
-            double v0_ = A_*u_min + B_*v_min + C_;                          \
-            double v1_ = A_*u_max + B_*v_min + C_;                          \
-            double v2_ = A_*u_min + B_*v_max + C_;                          \
-            double v3_ = A_*u_max + B_*v_max + C_;                          \
-            if ((v0_ > 0 && v1_ > 0 && v2_ > 0 && v3_ > 0) ||             \
-                (v0_ < 0 && v1_ < 0 && v2_ < 0 && v3_ < 0)) break;        \
-            alea_curve_2d_t gc;                                               \
-            memset(&gc, 0, sizeof(gc));                                      \
-            gc.type = ALEA_CURVE_LINE;                                        \
-            gc.surface_id = 0;                                               \
-            gc.data.line.a = A_;                                             \
-            gc.data.line.b = B_;                                             \
-            gc.data.line.c = C_;                                             \
-            gc.data.line.direction[0] = -B_ / len_;                          \
-            gc.data.line.direction[1] =  A_ / len_;                          \
-            if (fabs(A_) > fabs(B_)) {                                       \
-                gc.data.line.point[0] = -C_ / A_;                           \
-                gc.data.line.point[1] = 0;                                   \
-            } else {                                                         \
-                gc.data.line.point[0] = 0;                                   \
-                gc.data.line.point[1] = -C_ / B_;                           \
-            }                                                                \
-            if (result->curve_count >= result->curve_capacity) {             \
-                size_t nc_ = result->curve_capacity * 2;                     \
-                alea_curve_2d_t* tmp_ = realloc(result->curves,              \
-                    nc_ * sizeof(alea_curve_2d_t));                           \
-                if (!tmp_) goto lat_done;                                    \
-                result->curves = tmp_;                                       \
-                result->curve_capacity = nc_;                                \
-            }                                                                \
-            result->curves[result->curve_count++] = gc;                      \
-        } while (0)
+        #define GRID_LINE(a, b, c, d)                                         \
+            if (emit_grid_line(plane, result, u_min, u_max, v_min, v_max,     \
+                               (a), (b), (c), (d)) < 0)                       \
+                goto lat_done
 
         if (cell->lat_type == 1) {
             /* Rectangular lattice — axis-aligned boundary planes */
-            /* X-perpendicular: x = lower_left_x + n * pitch_x */
             for (int n = 0; n <= ni; n++) {
                 double xval = cell->lat_lower_left[0] + n * px;
-                EMIT_GRID_LINE(1.0, 0.0, 0.0, -xval);
+                GRID_LINE(1.0, 0.0, 0.0, -xval);
             }
-            /* Y-perpendicular: y = lower_left_y + n * pitch_y */
             for (int n = 0; n <= nj_grid; n++) {
                 double yval = cell->lat_lower_left[1] + n * py;
-                EMIT_GRID_LINE(0.0, 1.0, 0.0, -yval);
+                GRID_LINE(0.0, 1.0, 0.0, -yval);
             }
-            /* Z-perpendicular (skip if single layer) */
             if (nk_grid > 1) {
                 for (int n = 0; n <= nk_grid; n++) {
                     double zval = cell->lat_lower_left[2] + n * pz;
-                    EMIT_GRID_LINE(0.0, 0.0, 1.0, -zval);
+                    GRID_LINE(0.0, 0.0, 1.0, -zval);
                 }
             }
         } else {
@@ -2464,42 +2590,31 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
              * Oblique coordinates: fi = x/p - y/(p*sqrt3), fj = 2y/(p*sqrt3)
              * Boundaries at half-integer values of fi, fj, fi+fj.
              *
-             * Family 1: fi = n+0.5  =>  x/p - y/(p*sqrt3) = n+0.5
-             *           =>  x - y/sqrt3 = (n+0.5)*p
-             *           =>  1*x + (-1/sqrt3)*y + 0*z - (n+0.5)*p = 0
-             *
-             * Family 2: fj = n+0.5  =>  2y/(p*sqrt3) = n+0.5
-             *           =>  y = (n+0.5)*p*sqrt3/2
-             *           =>  0*x + 1*y + 0*z - (n+0.5)*p*sqrt3/2 = 0
-             *
-             * Family 3: fi+fj = n+0.5  =>  x/p + y/(p*sqrt3) = n+0.5
-             *           =>  x + y/sqrt3 = (n+0.5)*p
-             *           =>  1*x + (1/sqrt3)*y + 0*z - (n+0.5)*p = 0
+             * Family 1: 1*x + (-1/sqrt3)*y - (n+0.5)*p = 0
+             * Family 2: 0*x + 1*y - (n+0.5)*p*sqrt3/2 = 0
+             * Family 3: 1*x + (1/sqrt3)*y - (n+0.5)*p = 0
              */
             double inv_sqrt3 = 1.0 / M_SQRT3;
 
-            /* Family 1: fi boundaries */
             for (int n = imin - 1; n <= imax; n++) {
                 double d = (n + 0.5) * px;
-                EMIT_GRID_LINE(1.0, -inv_sqrt3, 0.0, -d);
+                GRID_LINE(1.0, -inv_sqrt3, 0.0, -d);
             }
-            /* Family 2: fj boundaries */
             for (int n = jmin - 1; n <= jmax; n++) {
                 double d = (n + 0.5) * px * M_SQRT3 * 0.5;
-                EMIT_GRID_LINE(0.0, 1.0, 0.0, -d);
+                GRID_LINE(0.0, 1.0, 0.0, -d);
             }
-            /* Family 3: fi+fj boundaries */
             for (int n = imin + jmin - 1; n <= imax + jmax; n++) {
                 double d = (n + 0.5) * px;
-                EMIT_GRID_LINE(1.0, inv_sqrt3, 0.0, -d);
+                GRID_LINE(1.0, inv_sqrt3, 0.0, -d);
             }
         }
 
-        #undef EMIT_GRID_LINE
+        #undef GRID_LINE
     }
 
 lat_done:
-    alea_vec_free(&seen);
+    seen_set_free(&seen);
     free(hits);
     return 0;
 }
