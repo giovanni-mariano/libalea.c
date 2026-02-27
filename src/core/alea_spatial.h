@@ -207,6 +207,29 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
                                     size_t max_hits);
 
 /**
+ * @brief Find cells at multiple points (batch query with coherence)
+ *
+ * Processes N points, writing one result per point into out_hits[i].
+ * Exploits spatial coherence: the cache is maintained across consecutive
+ * points, so spatially ordered inputs (e.g., scanline pixels) benefit
+ * from cache reuse.
+ *
+ * @param sys CSG system with spatial index
+ * @param points Array of 3D coordinates [x0,y0,z0, x1,y1,z1, ...]
+ * @param n_points Number of points
+ * @param out_hits Output: out_hits[i] receives the result for point i
+ * @param max_hits_per_point Maximum hierarchy depth per point
+ * @param out_counts Output: out_counts[i] = number of cells found at point i
+ * @return 0 on success, -1 on error
+ */
+int alea_spatial_find_cells_batch(const alea_system_t* sys,
+                                  const double* points,
+                                  size_t n_points,
+                                  alea_cell_hit_t* out_hits,
+                                  size_t max_hits_per_point,
+                                  int* out_counts);
+
+/**
  * @brief Reset coherence cache (call when starting new render)
  */
 void alea_spatial_reset_cache(void);

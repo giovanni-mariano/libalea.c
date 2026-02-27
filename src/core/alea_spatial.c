@@ -18,7 +18,6 @@
 #include "alea_eval.h"
 #include "core/alea_system.h"
 #include "primitives/bbox.h"
-#include <sched.h>
 #include "slice/curve_intersect.h"
 #include "primitives/primitive_desc.h"
 #include <stdlib.h>
@@ -28,9 +27,7 @@
 #include <stdio.h>
 #include "util/alea_log.h"
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+/* OpenMP removed — centroid init is too trivial to benefit from threading */
 
 #define MAX_DEPTH 32
 #define BVH_LEAF_SIZE 4
@@ -58,36 +55,27 @@ static _Thread_local size_t g_interval_culls = 0;  /* Candidates skipped by inte
  * BBOX HELPERS
  * ============================================================================ */
 
+/**
+ * Transform AABB by decomposing rotation matrix into min/max contributions.
+ * Avoids projecting all 8 corners (18 mul + 18 add vs 192 mul-adds).
+ * Matrix layout: m[row*4+col], row-major 3x4 with translation in col 3.
+ */
 static alea_bbox_t bbox_transform(const alea_bbox_t* bbox, const alea_matrix_t* mat) {
-    /* Transform all 8 corners and compute enclosing bbox */
-    double corners[8][3] = {
-        {bbox->min_x, bbox->min_y, bbox->min_z},
-        {bbox->max_x, bbox->min_y, bbox->min_z},
-        {bbox->min_x, bbox->max_y, bbox->min_z},
-        {bbox->max_x, bbox->max_y, bbox->min_z},
-        {bbox->min_x, bbox->min_y, bbox->max_z},
-        {bbox->max_x, bbox->min_y, bbox->max_z},
-        {bbox->min_x, bbox->max_y, bbox->max_z},
-        {bbox->max_x, bbox->max_y, bbox->max_z},
-    };
+    const double bmin[3] = {bbox->min_x, bbox->min_y, bbox->min_z};
+    const double bmax[3] = {bbox->max_x, bbox->max_y, bbox->max_z};
+    double rmin[3], rmax[3];
 
-    alea_bbox_t result = alea_bbox_empty();
-
-    for (int i = 0; i < 8; i++) {
-        double x = corners[i][0];
-        double y = corners[i][1];
-        double z = corners[i][2];
-        alea_matrix_transform_point(mat, &x, &y, &z);
-
-        if (x < result.min_x) result.min_x = x;
-        if (x > result.max_x) result.max_x = x;
-        if (y < result.min_y) result.min_y = y;
-        if (y > result.max_y) result.max_y = y;
-        if (z < result.min_z) result.min_z = z;
-        if (z > result.max_z) result.max_z = z;
+    for (int i = 0; i < 3; i++) {
+        rmin[i] = rmax[i] = mat->m[i * 4 + 3]; /* translation */
+        for (int j = 0; j < 3; j++) {
+            double e = mat->m[i * 4 + j] * bmin[j];
+            double f = mat->m[i * 4 + j] * bmax[j];
+            if (e < f) { rmin[i] += e; rmax[i] += f; }
+            else       { rmin[i] += f; rmax[i] += e; }
+        }
     }
 
-    return result;
+    return (alea_bbox_t){rmin[0], rmax[0], rmin[1], rmax[1], rmin[2], rmax[2]};
 }
 
 static bool bbox_intersects(const alea_bbox_t* a, const alea_bbox_t* b) {
@@ -332,22 +320,51 @@ static int find_best_split_axis(const bvh_item_t* items, size_t start, size_t en
     return 2;
 }
 
+/**
+ * Quickselect (Hoare's nth_element) — O(n) amortized median partition.
+ * After return, items[mid] is the median and all items in [start, mid)
+ * have centroid[axis] <= items[mid], all in [mid, end) have >= items[mid].
+ */
+static void quickselect(bvh_item_t* items, size_t lo, size_t hi,
+                        size_t target, int axis) {
+    while (lo + 1 < hi) {
+        /* Median-of-three pivot selection */
+        size_t mid = lo + (hi - lo) / 2;
+        if (items[mid].centroid[axis] < items[lo].centroid[axis]) {
+            bvh_item_t tmp = items[lo]; items[lo] = items[mid]; items[mid] = tmp;
+        }
+        if (items[hi-1].centroid[axis] < items[lo].centroid[axis]) {
+            bvh_item_t tmp = items[lo]; items[lo] = items[hi-1]; items[hi-1] = tmp;
+        }
+        if (items[mid].centroid[axis] < items[hi-1].centroid[axis]) {
+            bvh_item_t tmp = items[mid]; items[mid] = items[hi-1]; items[hi-1] = tmp;
+        }
+        /* Pivot is now at hi-1 */
+        double pivot = items[hi-1].centroid[axis];
+
+        size_t i = lo, j = hi - 2;
+        for (;;) {
+            while (i < hi && items[i].centroid[axis] < pivot) i++;
+            while (j > lo && items[j].centroid[axis] > pivot) j--;
+            if (i >= j) break;
+            bvh_item_t tmp = items[i]; items[i] = items[j]; items[j] = tmp;
+            i++; j--;
+        }
+        /* Place pivot */
+        bvh_item_t tmp = items[i]; items[i] = items[hi-1]; items[hi-1] = tmp;
+
+        if (i == target) return;
+        if (target < i) hi = i;
+        else lo = i + 1;
+    }
+}
+
 static void partition_items(bvh_item_t* items, size_t start, size_t end,
                            int axis, size_t* out_mid) {
-    /* Simple median split */
     size_t mid = (start + end) / 2;
-
-    /* Partial sort to get median */
-    for (size_t i = start; i < mid; i++) {
-        for (size_t j = i + 1; j < end; j++) {
-            if (items[j].centroid[axis] < items[i].centroid[axis]) {
-                bvh_item_t tmp = items[i];
-                items[i] = items[j];
-                items[j] = tmp;
-            }
-        }
+    if (end - start > 2) {
+        quickselect(items, start, end, mid, axis);
     }
-
     *out_mid = mid;
 }
 
@@ -363,10 +380,9 @@ static uint32_t build_bvh_recursive(alea_spatial_index_t* idx,
     alea_spatial_node_t* node = &idx->nodes[node_idx];
     size_t count = end - start;
 
-    node->bbox = compute_items_bbox(items, start, end);
-
     /* Create leaf if small enough */
     if (count <= BVH_LEAF_SIZE || depth > 30) {
+        node->bbox = compute_items_bbox(items, start, end);
         node->left_or_first = (uint32_t)start;
         node->count = (uint16_t)count;
         node->axis = 0;
@@ -393,8 +409,9 @@ static uint32_t build_bvh_recursive(alea_spatial_index_t* idx,
         return UINT32_MAX;
     }
 
-    /* Reacquire pointer after potential realloc */
+    /* Reacquire pointer after potential realloc; compute bbox from children */
     node = &idx->nodes[node_idx];
+    node->bbox = alea_bbox_union(&idx->nodes[left].bbox, &idx->nodes[right].bbox);
     node->left_or_first = left;
     node->right_child = right;
 
@@ -410,9 +427,6 @@ static int build_bvh(alea_spatial_index_t* idx) {
     bvh_item_t* items = malloc(idx->instance_count * sizeof(bvh_item_t));
     if (!items) return -1;
 
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-    #endif
     for (size_t i = 0; i < idx->instance_count; i++) {
         items[i].index = (uint32_t)i;
         items[i].bbox = idx->instances[i].global_bbox;
@@ -518,12 +532,8 @@ static int spatial_index_build_impl(alea_system_t* sys) {
  * Thread-safe spatial index build.
  *
  * Uses atomic CAS on sys->spatial_build_state to ensure only one thread
- * builds at a time. Other concurrent callers spin-wait until the build
+ * builds at a time. Other concurrent callers back off until the build
  * is complete.
- *
- * For best parallelism, call this from the main thread BEFORE entering
- * OpenMP parallel regions — the internal #pragma omp parallel for in
- * build_bvh will then use all available threads.
  *
  * States: 0 = not built, 1 = building, 2 = done
  */
@@ -549,9 +559,9 @@ int alea_spatial_index_build(alea_system_t* sys) {
         return rc;
     }
 
-    /* Another thread is building — spin-wait with yield */
+    /* Another thread is building — spin until done */
     while (atomic_load(&sys->spatial_build_state) == 1) {
-        sched_yield();
+        /* empty — contention is rare (build happens once) */
     }
 
     /* Check if the builder succeeded */
@@ -580,41 +590,8 @@ bool alea_spatial_index_needs_rebuild(const alea_system_t* sys) {
  * TRAVERSAL
  * ============================================================================ */
 
-typedef struct {
-    const alea_spatial_index_t* idx;
-    const alea_bbox_t* query;
-    alea_spatial_callback callback;
-    void* userdata;
-    int count;
-} traverse_ctx_t;
-
-static void traverse_recursive(traverse_ctx_t* ctx, uint32_t node_idx) {
-    if (node_idx >= ctx->idx->node_count) return;
-
-    const alea_spatial_node_t* node = &ctx->idx->nodes[node_idx];
-
-    /* Check bbox intersection */
-    if (!bbox_intersects(&node->bbox, ctx->query)) {
-        return;
-    }
-
-    if (node->count > 0) {
-        /* Leaf node */
-        for (uint16_t i = 0; i < node->count; i++) {
-            uint32_t inst_idx = ctx->idx->indices[node->left_or_first + i];
-            const alea_cell_instance_t* inst = &ctx->idx->instances[inst_idx];
-
-            if (bbox_intersects(&inst->global_bbox, ctx->query)) {
-                ctx->callback(inst, inst_idx, ctx->userdata);
-                ctx->count++;
-            }
-        }
-    } else {
-        /* Internal node */
-        traverse_recursive(ctx, node->left_or_first);
-        traverse_recursive(ctx, node->right_child);
-    }
-}
+/* Max BVH depth is 30 (from build) + 1 for safety */
+#define TRAVERSE_STACK_SIZE 32
 
 int alea_spatial_traverse(const alea_spatial_index_t* idx,
                          const alea_bbox_t* query_bbox,
@@ -623,20 +600,38 @@ int alea_spatial_traverse(const alea_spatial_index_t* idx,
     if (!idx || !query_bbox || !callback || !idx->built) {
         return -1;
     }
+    if (idx->node_count == 0) return 0;
 
-    traverse_ctx_t ctx = {
-        .idx = idx,
-        .query = query_bbox,
-        .callback = callback,
-        .userdata = userdata,
-        .count = 0
-    };
+    uint32_t stack[TRAVERSE_STACK_SIZE];
+    int sp = 0;
+    int count = 0;
+    stack[sp++] = 0; /* root */
 
-    if (idx->node_count > 0) {
-        traverse_recursive(&ctx, 0);
+    while (sp > 0) {
+        uint32_t ni = stack[--sp];
+        const alea_spatial_node_t* node = &idx->nodes[ni];
+
+        if (!bbox_intersects(&node->bbox, query_bbox))
+            continue;
+
+        if (node->count > 0) {
+            /* Leaf */
+            for (uint16_t i = 0; i < node->count; i++) {
+                uint32_t inst_idx = idx->indices[node->left_or_first + i];
+                const alea_cell_instance_t* inst = &idx->instances[inst_idx];
+                if (bbox_intersects(&inst->global_bbox, query_bbox)) {
+                    callback(inst, inst_idx, userdata);
+                    count++;
+                }
+            }
+        } else {
+            /* Internal — push right first so left is popped first */
+            if (sp < TRAVERSE_STACK_SIZE) stack[sp++] = node->right_child;
+            if (sp < TRAVERSE_STACK_SIZE) stack[sp++] = node->left_or_first;
+        }
     }
 
-    return ctx.count;
+    return count;
 }
 
 /* ============================================================================
@@ -652,6 +647,7 @@ typedef struct {
     alea_spatial_hit_t* hits;
     size_t max_hits;
     size_t hit_count;
+    bool terminal_only;
 } query_ctx_t;
 
 static void query_callback(const alea_cell_instance_t* inst, uint32_t inst_idx,
@@ -659,29 +655,7 @@ static void query_callback(const alea_cell_instance_t* inst, uint32_t inst_idx,
     query_ctx_t* ctx = (query_ctx_t*)userdata;
 
     if (ctx->hit_count >= ctx->max_hits) return;
-
-    /* Only return terminal cells (with actual geometry) */
-    if (!inst->is_terminal) return;
-
-    const alea_cell_entry_t* cell = &ctx->sys->cells.data[inst->cell_index];
-
-    alea_spatial_hit_t* hit = &ctx->hits[ctx->hit_count++];
-    hit->instance_index = inst_idx;
-    hit->cell_index = inst->cell_index;
-    hit->cell_id = cell->mcnp_cell_id;
-    hit->material_id = cell->material_id;
-    hit->universe_id = inst->universe_id;
-    hit->depth = inst->depth;
-    hit->is_terminal = inst->is_terminal;
-    hit->transform = inst->transform;
-}
-
-/* Callback for point queries - returns ALL cells (including non-terminal) */
-static void query_callback_all(const alea_cell_instance_t* inst, uint32_t inst_idx,
-                               void* userdata) {
-    query_ctx_t* ctx = (query_ctx_t*)userdata;
-
-    if (ctx->hit_count >= ctx->max_hits) return;
+    if (ctx->terminal_only && !inst->is_terminal) return;
 
     const alea_cell_entry_t* cell = &ctx->sys->cells.data[inst->cell_index];
 
@@ -715,7 +689,8 @@ int alea_spatial_query_region(const alea_system_t* sys,
         .sys = sys,
         .hits = out_hits,
         .max_hits = max_hits,
-        .hit_count = 0
+        .hit_count = 0,
+        .terminal_only = true
     };
 
     alea_spatial_traverse(idx, query_bbox, query_callback, &ctx);
@@ -746,10 +721,10 @@ static int compare_hits_by_depth_and_instance(const void* a, const void* b) {
     const alea_spatial_hit_t* ha = (const alea_spatial_hit_t*)a;
     const alea_spatial_hit_t* hb = (const alea_spatial_hit_t*)b;
     if (ha->depth != hb->depth) {
-        return ha->depth - hb->depth;
+        return (ha->depth > hb->depth) - (ha->depth < hb->depth);
     }
     /* Same depth: sort by instance_index to match universe traversal order */
-    return (int)ha->instance_index - (int)hb->instance_index;
+    return (ha->instance_index > hb->instance_index) - (ha->instance_index < hb->instance_index);
 }
 
 int alea_spatial_query_point(const alea_system_t* sys,
@@ -778,11 +753,11 @@ int alea_spatial_query_point(const alea_system_t* sys,
         .sys = sys,
         .hits = out_hits,
         .max_hits = max_hits,
-        .hit_count = 0
+        .hit_count = 0,
+        .terminal_only = false
     };
 
-    /* Use callback that returns ALL cells (including non-terminal) */
-    alea_spatial_traverse(idx, &query, query_callback_all, &ctx);
+    alea_spatial_traverse(idx, &query, query_callback, &ctx);
 
     /* Sort by depth so caller can process in hierarchy order */
     if (ctx.hit_count > 1) {
@@ -795,12 +770,6 @@ int alea_spatial_query_point(const alea_system_t* sys,
 /* ============================================================================
  * POINT-IN-CELL QUERY WITH COHERENCE CACHING
  * ============================================================================ */
-
-/* Debug counters */
-static _Thread_local size_t g_spatial_calls = 0;
-static _Thread_local size_t g_total_candidates = 0;
-static _Thread_local size_t g_total_containment_tests = 0;
-static _Thread_local size_t g_cache_hits = 0;
 
 /* Coherence cache: store last found cells to check first */
 #define MAX_CACHE_DEPTH 8
@@ -819,12 +788,19 @@ static _Thread_local cached_cell_t g_cell_cache[MAX_CACHE_DEPTH];
 static _Thread_local int g_cache_count = 0;
 static _Thread_local const alea_system_t* g_cache_system = NULL;
 
+/* Thread-local candidates buffer for point queries (freed via alea_spatial_reset_cache) */
+static _Thread_local alea_spatial_hit_t* g_tls_candidates = NULL;
+static _Thread_local size_t g_tls_candidates_cap = 0;
+
 void alea_spatial_reset_cache(void) {
     g_cache_system = NULL;
     g_cache_count = 0;
     for (int i = 0; i < MAX_CACHE_DEPTH; i++) {
         g_cell_cache[i].valid = false;
     }
+    free(g_tls_candidates);
+    g_tls_candidates = NULL;
+    g_tls_candidates_cap = 0;
 }
 
 int alea_spatial_find_cells_at_point(const alea_system_t* sys,
@@ -832,8 +808,6 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
                                     alea_cell_hit_t* out_hits,
                                     size_t max_hits) {
     if (!sys || !out_hits || max_hits == 0) return -1;
-
-    g_spatial_calls++;
 
     /* Check if cache is for a different system - invalidate if so */
     if (g_cache_system != sys) {
@@ -877,27 +851,22 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
     }
 
     if (cache_valid && hit_count > 0) {
-        g_cache_hits++;
         return (int)hit_count;
     }
 
     /* Cache miss - do full BVH query */
     hit_count = 0;
 
-    /* Use thread-local candidates buffer with lazy growth to avoid per-call malloc */
-    static _Thread_local alea_spatial_hit_t* tls_candidates = NULL;
-    static _Thread_local size_t tls_candidates_cap = 0;
-
     alea_spatial_index_t* idx = sys->spatial_index;
-    size_t max_candidates = idx ? idx->instance_count : 1024;
+    size_t max_candidates = idx ? idx->instance_count : 256;
     if (max_candidates < 256) max_candidates = 256;
 
-    if (max_candidates > tls_candidates_cap) {
-        free(tls_candidates);
-        tls_candidates = malloc(max_candidates * sizeof(alea_spatial_hit_t));
-        tls_candidates_cap = max_candidates;
+    if (max_candidates > g_tls_candidates_cap) {
+        free(g_tls_candidates);
+        g_tls_candidates = malloc(max_candidates * sizeof(alea_spatial_hit_t));
+        g_tls_candidates_cap = g_tls_candidates ? max_candidates : 0;
     }
-    alea_spatial_hit_t* candidates = tls_candidates;
+    alea_spatial_hit_t* candidates = g_tls_candidates;
     if (!candidates) return -1;
 
     int n = alea_spatial_query_point(sys, x, y, z, candidates, max_candidates);
@@ -909,7 +878,8 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
         return 0;
     }
 
-    g_total_candidates += n;
+    /* Re-read idx: alea_spatial_query_point may have built the index */
+    idx = sys->spatial_index;
 
     /* Verify containment and build hierarchy.
      * Key insight: we must track the hierarchy path. At each depth,
@@ -941,7 +911,6 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
         /* For depth > 0, check that this instance's parent matches the cell
          * we found at the previous level. This ensures we follow the correct
          * FILL chain when multiple cells fill the same universe. */
-        alea_spatial_index_t* idx = sys->spatial_index;
         if (cand->depth > 0 && last_cell_idx != UINT32_MAX) {
             alea_cell_instance_t* inst = &idx->instances[cand->instance_index];
             if (inst->parent_cell_index != last_cell_idx) {
@@ -969,7 +938,6 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
         }
 #endif
 
-        g_total_containment_tests++;
         if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
             continue;
         }
@@ -1012,4 +980,32 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
     }
 
     return (int)hit_count;
+}
+
+int alea_spatial_find_cells_batch(const alea_system_t* sys,
+                                  const double* points,
+                                  size_t n_points,
+                                  alea_cell_hit_t* out_hits,
+                                  size_t max_hits_per_point,
+                                  int* out_counts) {
+    if (!sys || !points || !out_hits || !out_counts || max_hits_per_point == 0)
+        return -1;
+
+    /* Ensure spatial index is built */
+    alea_spatial_index_t* idx = sys->spatial_index;
+    if (!idx || !idx->built) {
+        if (alea_spatial_index_build((alea_system_t*)sys) != 0)
+            return -1;
+    }
+
+    for (size_t i = 0; i < n_points; i++) {
+        double x = points[i * 3 + 0];
+        double y = points[i * 3 + 1];
+        double z = points[i * 3 + 2];
+        alea_cell_hit_t* dst = &out_hits[i * max_hits_per_point];
+        int n = alea_spatial_find_cells_at_point(sys, x, y, z, dst, max_hits_per_point);
+        out_counts[i] = (n >= 0) ? n : 0;
+    }
+
+    return 0;
 }
