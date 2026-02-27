@@ -11,6 +11,8 @@
 
 #include "raycast.h"
 #include "ray_intersect.h"
+#include "ray_epsilon.h"
+#include "ray_bbox.h"
 #include "bvh.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
@@ -25,7 +27,6 @@
 #include <stdio.h>
 
 #define INITIAL_CAPACITY 32
-#define EPSILON 1e-10
 
 /* ============================================================================
  * CACHE PRE-BUILD (thread safety)
@@ -72,7 +73,7 @@ int alea_raycast_ensure_caches(const alea_system_t* sys) {
  * RAY UTILITIES
  * ============================================================================ */
 
-void alea_ray_init(alea_ray_t* ray,
+int alea_ray_init(alea_ray_t* ray,
                   double ox, double oy, double oz,
                   double dx, double dy, double dz) {
     ray->ox = ox;
@@ -81,15 +82,33 @@ void alea_ray_init(alea_ray_t* ray,
 
     /* Normalize direction */
     double len = sqrt(dx * dx + dy * dy + dz * dz);
-    if (len > EPSILON) {
+    if (len > RAY_EPSILON) {
         ray->dx = dx / len;
         ray->dy = dy / len;
         ray->dz = dz / len;
     } else {
+        /* Zero-length direction: set fallback so struct is valid */
         ray->dx = 0;
         ray->dy = 0;
         ray->dz = 1;
     }
+
+    /* IEEE 754: 1.0/0.0 = +inf, 1.0/(-0.0) = -inf — correct for slab tests */
+    ray->inv_dx = 1.0 / ray->dx;
+    ray->inv_dy = 1.0 / ray->dy;
+    ray->inv_dz = 1.0 / ray->dz;
+
+    return (len > RAY_EPSILON) ? 0 : -1;
+}
+
+void alea_ray_init_normalized(alea_ray_t* ray,
+                              double ox, double oy, double oz,
+                              double dx, double dy, double dz) {
+    ray->ox = ox; ray->oy = oy; ray->oz = oz;
+    ray->dx = dx; ray->dy = dy; ray->dz = dz;
+    ray->inv_dx = 1.0 / dx;
+    ray->inv_dy = 1.0 / dy;
+    ray->inv_dz = 1.0 / dz;
 }
 
 /* ============================================================================
@@ -173,56 +192,38 @@ static int compare_hits(const void* a, const void* b) {
     return 0;
 }
 
-/* ============================================================================
- * BBOX RAY INTERSECTION (for culling)
- * ============================================================================ */
-
-static int ray_intersects_bbox(const alea_ray_t* ray, const alea_bbox_t* bbox,
-                               double t_min, double t_max) {
-    double tmin = t_min;
-    double tmax = t_max;
-
-    /* X slab */
-    if (fabs(ray->dx) > EPSILON) {
-        double inv_d = 1.0 / ray->dx;
-        double t1 = (bbox->min_x - ray->ox) * inv_d;
-        double t2 = (bbox->max_x - ray->ox) * inv_d;
-        if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
-        if (t1 > tmin) tmin = t1;
-        if (t2 < tmax) tmax = t2;
-        if (tmin > tmax) return 0;
-    } else {
-        if (ray->ox < bbox->min_x || ray->ox > bbox->max_x) return 0;
-    }
-
-    /* Y slab */
-    if (fabs(ray->dy) > EPSILON) {
-        double inv_d = 1.0 / ray->dy;
-        double t1 = (bbox->min_y - ray->oy) * inv_d;
-        double t2 = (bbox->max_y - ray->oy) * inv_d;
-        if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
-        if (t1 > tmin) tmin = t1;
-        if (t2 < tmax) tmax = t2;
-        if (tmin > tmax) return 0;
-    } else {
-        if (ray->oy < bbox->min_y || ray->oy > bbox->max_y) return 0;
-    }
-
-    /* Z slab */
-    if (fabs(ray->dz) > EPSILON) {
-        double inv_d = 1.0 / ray->dz;
-        double t1 = (bbox->min_z - ray->oz) * inv_d;
-        double t2 = (bbox->max_z - ray->oz) * inv_d;
-        if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
-        if (t1 > tmin) tmin = t1;
-        if (t2 < tmax) tmax = t2;
-        if (tmin > tmax) return 0;
-    } else {
-        if (ray->oz < bbox->min_z || ray->oz > bbox->max_z) return 0;
-    }
-
-    return 1;
+/* Inline comparison for insertion sort (avoids function-call overhead) */
+static inline int hit_less(const alea_ray_hit_t* a, const alea_ray_hit_t* b) {
+    if (a->t != b->t) return a->t < b->t;
+    /* DDA boundary hits (surface_id=0) sort after real surface hits */
+    return (a->surface_id != 0 && b->surface_id == 0);
 }
+
+/**
+ * Sort hits by distance. Uses insertion sort for small arrays (<=64),
+ * qsort for larger arrays. Insertion sort has lower overhead and is
+ * cache-friendly for the small arrays typical of raycast results.
+ */
+static void sort_hits(alea_ray_hit_t* hits, size_t count) {
+    if (count <= 1) return;
+
+    if (count <= 64) {
+        /* Insertion sort — O(n^2) but faster than qsort for small n */
+        for (size_t i = 1; i < count; i++) {
+            alea_ray_hit_t key = hits[i];
+            size_t j = i;
+            while (j > 0 && hit_less(&key, &hits[j - 1])) {
+                hits[j] = hits[j - 1];
+                j--;
+            }
+            hits[j] = key;
+        }
+    } else {
+        qsort(hits, count, sizeof(alea_ray_hit_t), compare_hits);
+    }
+}
+
+/* ray_bbox_slab and ray_bbox_slab_enter_exit are in ray_bbox.h */
 
 /* ============================================================================
  * MAIN RAYCAST - SURFACE INTERSECTIONS
@@ -237,34 +238,39 @@ typedef struct {
     alea_raycast_result_t* result;
 } bvh_raycast_ctx_t;
 
-/* BVH traversal callback: test surface intersection */
-static void bvh_surface_callback(uint32_t surface_idx, void* userdata) {
+/* BVH batch callback: test surface intersections for a leaf node */
+static void bvh_surface_batch_callback(const uint32_t* surface_indices,
+                                        uint16_t count, void* userdata) {
     bvh_raycast_ctx_t* ctx = (bvh_raycast_ctx_t*)userdata;
-    const alea_surface_entry_t* surf = &ctx->sys->surfaces.data[surface_idx];
-    const alea_primitive_entry_t* prim = &ctx->sys->primitives.data[surf->primitive_id];
 
-    ctx->result->surfaces_tested++;
+    for (uint16_t si = 0; si < count; si++) {
+        uint32_t surface_idx = surface_indices[si];
+        const alea_surface_entry_t* surf = &ctx->sys->surfaces.data[surface_idx];
+        const alea_primitive_entry_t* prim = &ctx->sys->primitives.data[surf->primitive_id];
 
-    /* Find intersections */
-    double t[4];
-    int count = ray_intersect_primitive(ctx->ray, prim->type, &prim->data, t);
+        ctx->result->surfaces_tested++;
 
-    /* Add valid hits */
-    for (int j = 0; j < count; j++) {
-        if (t[j] >= ctx->t_min && t[j] <= ctx->t_max) {
-            alea_ray_hit_t hit;
-            hit.t = t[j];
-            hit.surface_id = surf->mcnp_surface_id;
+        /* Find intersections */
+        double t[4];
+        int n = ray_intersect_primitive(ctx->ray, prim->type, &prim->data, t);
 
-            /* Compute normal at hit point */
-            double px, py, pz;
-            alea_ray_point_at(ctx->ray, t[j], &px, &py, &pz);
-            primitive_normal_at(prim->type, &prim->data, px, py, pz,
-                               &hit.nx, &hit.ny, &hit.nz);
+        /* Add valid hits */
+        for (int j = 0; j < n; j++) {
+            if (t[j] >= ctx->t_min && t[j] <= ctx->t_max) {
+                alea_ray_hit_t hit;
+                hit.t = t[j];
+                hit.surface_id = surf->mcnp_surface_id;
 
-            if (add_hit(ctx->result, &hit) != 0) {
-                ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
-                return;
+                /* Compute normal at hit point */
+                double px, py, pz;
+                alea_ray_point_at(ctx->ray, t[j], &px, &py, &pz);
+                primitive_normal_at(prim->type, &prim->data, px, py, pz,
+                                   &hit.nx, &hit.ny, &hit.nz);
+
+                if (add_hit(ctx->result, &hit) != 0) {
+                    ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
+                    return;
+                }
             }
         }
     }
@@ -306,19 +312,13 @@ static int raycast_surfaces_linear(const alea_system_t* sys,
     return 0;
 }
 
-int alea_raycast_surfaces(const alea_system_t* sys,
-                         const alea_ray_t* ray,
-                         double t_min, double t_max,
-                         alea_raycast_result_t* result) {
-    if (!sys || !ray || !result) return -1;
-
+/* Shared implementation: intersect, sort, dedup */
+static int raycast_surfaces_impl(const alea_system_t* sys,
+                                  const alea_ray_t* ray,
+                                  double t_min, double t_max,
+                                  alea_raycast_result_t* result) {
     alea_raycast_result_clear(result);
     result->ray = *ray;
-
-    if (alea_raycast_ensure_caches(sys)) {
-        ALEA_LOG_WARN("Lazy-building raycast caches. Call alea_build_spatial_index() "
-                     "before concurrent raycast calls to avoid data races.");
-    }
 
     /* Use BVH if available, otherwise fall back to linear scan */
     if (!BVH_DISABLED && sys->surface_bvh) {
@@ -329,22 +329,20 @@ int alea_raycast_surfaces(const alea_system_t* sys,
             .t_max = t_max,
             .result = result
         };
-        alea_bvh_traverse(sys->surface_bvh, ray, t_min, t_max,
-                         bvh_surface_callback, &ctx);
+        alea_bvh_traverse_batch(sys->surface_bvh, ray, t_min, t_max,
+                               bvh_surface_batch_callback, &ctx);
     } else {
         raycast_surfaces_linear(sys, ray, t_min, t_max, result);
     }
 
     /* Sort hits by distance */
-    if (result->hit_count > 1) {
-        qsort(result->hits, result->hit_count, sizeof(alea_ray_hit_t), compare_hits);
-    }
+    sort_hits(result->hits, result->hit_count);
 
     /* Remove duplicate hits (same t AND same surface_id within epsilon) */
     if (result->hit_count > 1) {
         size_t write = 1;
         for (size_t read = 1; read < result->hit_count; read++) {
-            int same_t = fabs(result->hits[read].t - result->hits[write - 1].t) <= EPSILON;
+            int same_t = fabs(result->hits[read].t - result->hits[write - 1].t) <= DEDUP_EPSILON;
             int same_surf = result->hits[read].surface_id == result->hits[write - 1].surface_id;
             if (!(same_t && same_surf)) {
                 result->hits[write++] = result->hits[read];
@@ -354,6 +352,28 @@ int alea_raycast_surfaces(const alea_system_t* sys,
     }
 
     return 0;
+}
+
+int alea_raycast_surfaces(const alea_system_t* sys,
+                         const alea_ray_t* ray,
+                         double t_min, double t_max,
+                         alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+
+    if (alea_raycast_ensure_caches(sys)) {
+        ALEA_LOG_WARN("Lazy-building raycast caches. Call alea_build_spatial_index() "
+                     "before concurrent raycast calls to avoid data races.");
+    }
+
+    return raycast_surfaces_impl(sys, ray, t_min, t_max, result);
+}
+
+int alea_raycast_surfaces_nocache(const alea_system_t* sys,
+                                  const alea_ray_t* ray,
+                                  double t_min, double t_max,
+                                  alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    return raycast_surfaces_impl(sys, ray, t_min, t_max, result);
 }
 
 /* ============================================================================
@@ -413,6 +433,60 @@ static void raycast_find_cell_full(const alea_system_t* sys,
     }
 }
 
+/**
+ * 3-tier cell lookup after crossing a surface:
+ * 1) Neighbor lookup (O(1) via adjacency)
+ * 2) Coherence check (O(tree_depth) — is point still in previous cell?)
+ * 3) Full point-in-cell search (O(n_candidates) via spatial index)
+ */
+static void find_cell_after_crossing(const alea_system_t* sys,
+                                     const alea_ray_t* ray,
+                                     double t_prev, double t_curr,
+                                     int prev_cell_idx,
+                                     int crossed_surface_id,
+                                     int* out_cell_id, int* out_cell_idx,
+                                     int* out_material_id, double* out_density) {
+    *out_cell_id = -1;
+    *out_cell_idx = -1;
+    *out_material_id = 0;
+    *out_density = 0;
+    int found = 0;
+
+    /* Tier 1: neighbor lookup */
+    if (prev_cell_idx >= 0 && crossed_surface_id > 0) {
+        found = raycast_find_neighbor(sys, prev_cell_idx, crossed_surface_id,
+                                      out_cell_id, out_cell_idx,
+                                      out_material_id, out_density);
+    }
+
+    int crossed_dda = (crossed_surface_id == 0);
+
+    /* Tier 2: coherence check (skip for DDA boundaries) */
+    if (!found && prev_cell_idx >= 0 && !crossed_dda) {
+        double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), SURFACE_SAMPLE_OFFSET);
+        double px, py, pz;
+        alea_ray_point_at(ray, t_sample, &px, &py, &pz);
+        const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
+        if (alea_contains_point(sys, prev_cell->root_node_id, px, py, pz)) {
+            *out_cell_id = prev_cell->mcnp_cell_id;
+            *out_cell_idx = prev_cell_idx;
+            *out_material_id = prev_cell->material_id;
+            *out_density = prev_cell->density;
+            found = 1;
+        }
+    }
+
+    /* Tier 3: full lookup */
+    if (!found) {
+        double max_offset = crossed_dda ? DDA_SAMPLE_OFFSET : SURFACE_SAMPLE_OFFSET;
+        double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), max_offset);
+        double px, py, pz;
+        alea_ray_point_at(ray, t_sample, &px, &py, &pz);
+        raycast_find_cell_full(sys, px, py, pz,
+                               out_cell_id, out_cell_idx, out_material_id, out_density);
+    }
+}
+
 int alea_raycast_to_segments(const alea_system_t* sys,
                             alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
@@ -429,59 +503,13 @@ int alea_raycast_to_segments(const alea_system_t* sys,
         double t_curr = (i < result->hit_count) ? result->hits[i].t : DBL_MAX;
 
         /* Only process if there's a real interval */
-        if (t_curr > t_prev + EPSILON) {
-            int cell_id = -1;
-            int cell_idx = -1;
-            int material_id = 0;
-            double density = 0;
-
-            /* Try neighbor lookup first (if we crossed a surface) */
-            int found = 0;
-            if (i > 0 && prev_cell_idx >= 0) {
-                int crossed_surface = result->hits[i - 1].surface_id;
-                if (crossed_surface > 0) {
-                    found = raycast_find_neighbor(sys, prev_cell_idx, crossed_surface,
-                                                  &cell_id, &cell_idx,
-                                                  &material_id, &density);
-                }
-            }
-
-            /* Check if we crossed a DDA lattice boundary (surface_id==0).
-             * When crossing a DDA boundary, we need a larger sample offset to
-             * reliably place the sample point inside the new lattice element,
-             * avoiding floating-point precision issues at element boundaries. */
-            int crossed_dda = (i > 0 && result->hits[i - 1].surface_id == 0);
-
-            /* Quick coherence check: is the sample point still in the previous cell?
-             * This is O(tree_depth) vs O(n_candidates) for the full lookup.
-             * Skip when crossing a DDA lattice boundary since lattice elements
-             * share the same CSG tree. */
-            if (!found && prev_cell_idx >= 0 && !crossed_dda) {
-                double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), 0.001);
-                double px, py, pz;
-                alea_ray_point_at(ray, t_sample, &px, &py, &pz);
-                const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
-                if (alea_contains_point(sys, prev_cell->root_node_id, px, py, pz)) {
-                    cell_id = prev_cell->mcnp_cell_id;
-                    cell_idx = prev_cell_idx;
-                    material_id = prev_cell->material_id;
-                    density = prev_cell->density;
-                    found = 1;
-                }
-            }
-
-            /* Fall back to full lookup */
-            if (!found) {
-                /* Use larger offset (0.01) when crossing DDA boundaries to avoid
-                 * floating-point precision issues at lattice element boundaries.
-                 * For regular surface crossings, use smaller offset (0.001). */
-                double max_offset = crossed_dda ? 0.01 : 0.001;
-                double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), max_offset);
-                double px, py, pz;
-                alea_ray_point_at(ray, t_sample, &px, &py, &pz);
-                raycast_find_cell_full(sys, px, py, pz,
-                                       &cell_id, &cell_idx, &material_id, &density);
-            }
+        if (t_curr > t_prev + RAY_EPSILON) {
+            int cell_id, cell_idx, material_id;
+            double density;
+            int crossed_surface = (i > 0) ? result->hits[i - 1].surface_id : -1;
+            find_cell_after_crossing(sys, ray, t_prev, t_curr,
+                                     prev_cell_idx, crossed_surface,
+                                     &cell_id, &cell_idx, &material_id, &density);
 
             /* Update tracking for next iteration */
             prev_cell_idx = cell_idx;
@@ -584,39 +612,7 @@ static void raycast_universe_surfaces(const alea_system_t* sys,
     }
 }
 
-/**
- * Ray-AABB intersection returning entry/exit t values.
- * Returns 1 if ray hits the box, 0 otherwise.
- */
-static int ray_bbox_enter_exit(const alea_ray_t* ray, const alea_bbox_t* bbox,
-                               double t_min, double t_max,
-                               double* t_enter, double* t_exit) {
-    double tmin = t_min, tmax = t_max;
-
-    for (int axis = 0; axis < 3; axis++) {
-        double o, d, bmin, bmax;
-        switch (axis) {
-            case 0: o = ray->ox; d = ray->dx; bmin = bbox->min_x; bmax = bbox->max_x; break;
-            case 1: o = ray->oy; d = ray->dy; bmin = bbox->min_y; bmax = bbox->max_y; break;
-            default: o = ray->oz; d = ray->dz; bmin = bbox->min_z; bmax = bbox->max_z; break;
-        }
-        if (fabs(d) > EPSILON) {
-            double inv_d = 1.0 / d;
-            double t1 = (bmin - o) * inv_d;
-            double t2 = (bmax - o) * inv_d;
-            if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
-            if (t1 > tmin) tmin = t1;
-            if (t2 < tmax) tmax = t2;
-            if (tmin > tmax) return 0;
-        } else {
-            if (o < bmin || o > bmax) return 0;
-        }
-    }
-
-    *t_enter = tmin;
-    *t_exit = tmax;
-    return 1;
-}
+/* ray_bbox_slab_enter_exit in ray_bbox.h replaces ray_bbox_slab_enter_exit */
 
 /**
  * DDA raycast through a rectangular lattice.
@@ -645,11 +641,11 @@ static void raycast_lattice_rect(const alea_system_t* sys,
     };
 
     double t_enter, t_exit;
-    if (!ray_bbox_enter_exit(ray, &lat_bbox, t_min, t_max, &t_enter, &t_exit))
+    if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, t_min, t_max, &t_enter, &t_exit))
         return;
 
     /* Starting point (nudge slightly inside) */
-    double start_t = t_enter + EPSILON;
+    double start_t = t_enter + RAY_EPSILON;
     double sx = ray->ox + start_t * ray->dx;
     double sy = ray->oy + start_t * ray->dy;
     double sz = ray->oz + start_t * ray->dz;
@@ -673,19 +669,19 @@ static void raycast_lattice_rect(const alea_system_t* sys,
 
     /* Distance to next grid boundary in each dimension */
     double t_next_i, t_next_j, t_next_k;
-    if (fabs(ray->dx) > EPSILON) {
+    if (fabs(ray->dx) > RAY_EPSILON) {
         double boundary = ll[0] + ((ray->dx > 0) ? (i + 1) : i) * px;
         t_next_i = (boundary - ray->ox) / ray->dx;
     } else {
         t_next_i = DBL_MAX;
     }
-    if (nj > 1 && fabs(ray->dy) > EPSILON) {
+    if (nj > 1 && fabs(ray->dy) > RAY_EPSILON) {
         double boundary = ll[1] + ((ray->dy > 0) ? (j + 1) : j) * py;
         t_next_j = (boundary - ray->oy) / ray->dy;
     } else {
         t_next_j = DBL_MAX;
     }
-    if (nk > 1 && fabs(ray->dz) > EPSILON) {
+    if (nk > 1 && fabs(ray->dz) > RAY_EPSILON) {
         double boundary = ll[2] + ((ray->dz > 0) ? (k + 1) : k) * pz;
         t_next_k = (boundary - ray->oz) / ray->dz;
     } else {
@@ -705,7 +701,7 @@ static void raycast_lattice_rect(const alea_system_t* sys,
          * between lattice elements.  surface_id=0 causes the segment
          * builder to skip the (universe-unaware) neighbor lookup and
          * fall through to a full point query. */
-        if (step > 0 && t_cur > t_enter + EPSILON) {
+        if (step > 0 && t_cur > t_enter + RAY_EPSILON) {
             alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0 };
             if (add_hit(result, &bnd) != 0) {
                 ALEA_LOG_WARN("add_hit failed (out of memory) - lattice raycast incomplete");
@@ -746,19 +742,19 @@ static void raycast_lattice_rect(const alea_system_t* sys,
          * to avoid accumulating floating-point errors. */
         if (t_next_i <= t_next_j && t_next_i <= t_next_k) {
             i += step_i;
-            if (fabs(ray->dx) > EPSILON) {
+            if (fabs(ray->dx) > RAY_EPSILON) {
                 double boundary = ll[0] + ((ray->dx > 0) ? (i + 1) : i) * px;
                 t_next_i = (boundary - ray->ox) / ray->dx;
             }
         } else if (t_next_j <= t_next_k) {
             j += step_j;
-            if (fabs(ray->dy) > EPSILON) {
+            if (fabs(ray->dy) > RAY_EPSILON) {
                 double boundary = ll[1] + ((ray->dy > 0) ? (j + 1) : j) * py;
                 t_next_j = (boundary - ray->oy) / ray->dy;
             }
         } else {
             k += step_k;
-            if (fabs(ray->dz) > EPSILON) {
+            if (fabs(ray->dz) > RAY_EPSILON) {
                 double boundary = ll[2] + ((ray->dz > 0) ? (k + 1) : k) * pz;
                 t_next_k = (boundary - ray->oz) / ray->dz;
             }
@@ -812,7 +808,7 @@ static void raycast_lattice_hex(const alea_system_t* sys,
     };
 
     double t_enter, t_exit;
-    if (!ray_bbox_enter_exit(ray, &lat_bbox, t_min, t_max, &t_enter, &t_exit))
+    if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, t_min, t_max, &t_enter, &t_exit))
         return;
 
     /* ---- oblique coordinate rates along the ray ---- */
@@ -831,26 +827,25 @@ static void raycast_lattice_hex(const alea_system_t* sys,
 
     /* Helper: compute first half-integer boundary crossing after val in
      * the direction of step.  Boundaries are at n + 0.5. */
-    #define NEXT_HALF(val, rate, t_out, dt_out) do {               \
-        if (fabs(rate) > EPSILON) {                                \
+    #define NEXT_HALF(val, rate, t_out) do {                       \
+        if (fabs(rate) > RAY_EPSILON) {                            \
             double bnd;                                            \
             if ((rate) > 0) {                                      \
                 bnd = floor((val) + 0.5) + 0.5;                   \
-                if (bnd <= (val) + EPSILON) bnd += 1.0;            \
+                if (bnd <= (val) + RAY_EPSILON) bnd += 1.0;        \
             } else {                                               \
                 bnd = ceil((val) - 0.5) - 0.5;                    \
-                if (bnd >= (val) - EPSILON) bnd -= 1.0;            \
+                if (bnd >= (val) - RAY_EPSILON) bnd -= 1.0;        \
             }                                                      \
             (t_out) = t_enter + (bnd - (val)) / (rate);            \
-            (dt_out) = fabs(1.0 / (rate));                         \
         } else {                                                   \
-            (t_out) = DBL_MAX; (dt_out) = DBL_MAX;                \
+            (t_out) = DBL_MAX;                                     \
         }                                                          \
     } while(0)
 
-    double t_next_q, dt_q;  NEXT_HALF(q0, dq, t_next_q, dt_q);
-    double t_next_r, dt_r;  NEXT_HALF(r0, dr, t_next_r, dt_r);
-    double t_next_s, dt_s;  NEXT_HALF(s0, ds, t_next_s, dt_s);
+    double t_next_q;  NEXT_HALF(q0, dq, t_next_q);
+    double t_next_r;  NEXT_HALF(r0, dr, t_next_r);
+    double t_next_s;  NEXT_HALF(s0, ds, t_next_s);
     #undef NEXT_HALF
 
     /* ---- Walk through hex elements ---- */
@@ -860,7 +855,7 @@ static void raycast_lattice_hex(const alea_system_t* sys,
     int max_steps = 3 * (ni + nj + nk) + 10;
 
     for (int step = 0; step < max_steps; step++) {
-        if (t_cur >= t_exit - EPSILON) break;
+        if (t_cur >= t_exit - RAY_EPSILON) break;
 
         /* Nearest boundary crossing among the 3 axes */
         double t_next = t_next_q;
@@ -879,9 +874,9 @@ static void raycast_lattice_hex(const alea_system_t* sys,
 
         if (univ >= 0) {
             /* Emit boundary hit when we enter a new hex element */
-            int new_elem = (fabs(ox - prev_cx) > EPSILON ||
-                            fabs(oy - prev_cy) > EPSILON);
-            if (new_elem && prev_cx < DBL_MAX && t_cur > t_enter + EPSILON) {
+            int new_elem = (fabs(ox - prev_cx) > RAY_EPSILON ||
+                            fabs(oy - prev_cy) > RAY_EPSILON);
+            if (new_elem && prev_cx < DBL_MAX && t_cur > t_enter + RAY_EPSILON) {
                 alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0 };
                 if (add_hit(result, &bnd) != 0) {
                     ALEA_LOG_WARN("add_hit failed (out of memory) - hex lattice raycast incomplete");
@@ -899,11 +894,40 @@ static void raycast_lattice_hex(const alea_system_t* sys,
                                       t_cur, t_next, result);
         }
 
-        /* Advance DDA */
+        /* Advance DDA — recompute next boundaries from current position
+         * to avoid accumulating floating-point drift from repeated += dt */
         t_cur = t_next;
-        if (fabs(t_next - t_next_q) < EPSILON) t_next_q += dt_q;
-        if (fabs(t_next - t_next_r) < EPSILON) t_next_r += dt_r;
-        if (fabs(t_next - t_next_s) < EPSILON) t_next_s += dt_s;
+        if (fabs(t_next - t_next_q) < RAY_EPSILON) {
+            double cur_q = (ray->ox + t_cur * ray->dx) * inv_p
+                         - (ray->oy + t_cur * ray->dy) * inv_ps;
+            double bnd = (dq > 0) ? floor(cur_q + 0.5) + 0.5
+                                  : ceil(cur_q - 0.5) - 0.5;
+            if ((dq > 0 && bnd <= cur_q + RAY_EPSILON) ||
+                (dq < 0 && bnd >= cur_q - RAY_EPSILON))
+                bnd += (dq > 0) ? 1.0 : -1.0;
+            t_next_q = t_cur + (bnd - cur_q) / dq;
+        }
+        if (fabs(t_next - t_next_r) < RAY_EPSILON) {
+            double cur_r = 2.0 * (ray->oy + t_cur * ray->dy) * inv_ps;
+            double bnd = (dr > 0) ? floor(cur_r + 0.5) + 0.5
+                                  : ceil(cur_r - 0.5) - 0.5;
+            if ((dr > 0 && bnd <= cur_r + RAY_EPSILON) ||
+                (dr < 0 && bnd >= cur_r - RAY_EPSILON))
+                bnd += (dr > 0) ? 1.0 : -1.0;
+            t_next_r = t_cur + (bnd - cur_r) / dr;
+        }
+        if (fabs(t_next - t_next_s) < RAY_EPSILON) {
+            double cur_q2 = (ray->ox + t_cur * ray->dx) * inv_p
+                          - (ray->oy + t_cur * ray->dy) * inv_ps;
+            double cur_r2 = 2.0 * (ray->oy + t_cur * ray->dy) * inv_ps;
+            double cur_s = -cur_q2 - cur_r2;
+            double bnd = (ds > 0) ? floor(cur_s + 0.5) + 0.5
+                                  : ceil(cur_s - 0.5) - 0.5;
+            if ((ds > 0 && bnd <= cur_s + RAY_EPSILON) ||
+                (ds < 0 && bnd >= cur_s - RAY_EPSILON))
+                bnd += (ds > 0) ? 1.0 : -1.0;
+            t_next_s = t_cur + (bnd - cur_s) / ds;
+        }
     }
 }
 
@@ -942,7 +966,9 @@ int alea_raycast(const alea_system_t* sys,
     alea_raycast_result_free(result);
 
     alea_ray_t ray;
-    alea_ray_init(&ray, ox, oy, oz, dx, dy, dz);
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) {
+        return -1;  /* Zero-length direction */
+    }
 
     /* t_max=0 means infinite */
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
@@ -954,10 +980,10 @@ int alea_raycast(const alea_system_t* sys,
 
     /* Re-sort and dedup after adding lattice hits */
     if (result->hit_count > 1) {
-        qsort(result->hits, result->hit_count, sizeof(alea_ray_hit_t), compare_hits);
+        sort_hits(result->hits, result->hit_count);
         size_t write = 1;
         for (size_t read = 1; read < result->hit_count; read++) {
-            int same_t = fabs(result->hits[read].t - result->hits[write - 1].t) <= EPSILON;
+            int same_t = fabs(result->hits[read].t - result->hits[write - 1].t) <= DEDUP_EPSILON;
             int same_surf = result->hits[read].surface_id == result->hits[write - 1].surface_id;
             if (!(same_t && same_surf)) {
                 result->hits[write++] = result->hits[read];
@@ -1025,10 +1051,7 @@ int alea_ray_is_occluded(const alea_system_t* sys,
         return 0;
 
     /* Sort hits by distance */
-    if (tls_result.hit_count > 1) {
-        qsort(tls_result.hits, tls_result.hit_count,
-              sizeof(alea_ray_hit_t), compare_hits);
-    }
+    sort_hits(tls_result.hits, tls_result.hit_count);
 
     /* Walk intervals and early-out on first non-void cell */
     double t_prev = 0;
@@ -1037,47 +1060,13 @@ int alea_ray_is_occluded(const alea_system_t* sys,
     for (size_t i = 0; i <= tls_result.hit_count; i++) {
         double t_curr = (i < tls_result.hit_count) ? tls_result.hits[i].t : effective_t_max;
 
-        if (t_curr > t_prev + EPSILON) {
-            int cell_id = -1, cell_idx = -1, material_id = 0;
-            double density = 0;
-            int found = 0;
-
-            /* Check if we crossed a DDA lattice boundary (surface_id==0) */
-            int crossed_dda = (i > 0 && tls_result.hits[i - 1].surface_id == 0);
-
-            /* Try neighbor lookup */
-            if (i > 0 && prev_cell_idx >= 0) {
-                int crossed_surface = tls_result.hits[i - 1].surface_id;
-                if (crossed_surface > 0) {
-                    found = raycast_find_neighbor(sys, prev_cell_idx, crossed_surface,
-                                                  &cell_id, &cell_idx,
-                                                  &material_id, &density);
-                }
-            }
-
-            /* Coherence check - skip when crossing DDA boundary */
-            if (!found && prev_cell_idx >= 0 && !crossed_dda) {
-                double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), 0.001);
-                double px, py, pz;
-                alea_ray_point_at(&ray, t_sample, &px, &py, &pz);
-                const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
-                if (alea_contains_point(sys, prev_cell->root_node_id, px, py, pz)) {
-                    cell_id = prev_cell->mcnp_cell_id;
-                    cell_idx = prev_cell_idx;
-                    material_id = prev_cell->material_id;
-                    found = 1;
-                }
-            }
-
-            /* Full lookup - use larger offset for DDA boundaries */
-            if (!found) {
-                double max_offset = crossed_dda ? 0.01 : 0.001;
-                double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), max_offset);
-                double px, py, pz;
-                alea_ray_point_at(&ray, t_sample, &px, &py, &pz);
-                raycast_find_cell_full(sys, px, py, pz,
-                                       &cell_id, &cell_idx, &material_id, &density);
-            }
+        if (t_curr > t_prev + RAY_EPSILON) {
+            int cell_id, cell_idx, material_id;
+            double density;
+            int crossed_surface = (i > 0) ? tls_result.hits[i - 1].surface_id : -1;
+            find_cell_after_crossing(sys, &ray, t_prev, t_curr,
+                                     prev_cell_idx, crossed_surface,
+                                     &cell_id, &cell_idx, &material_id, &density);
 
             prev_cell_idx = cell_idx;
 
@@ -1270,7 +1259,9 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
     alea_raycast_result_free(result);
 
     alea_ray_t ray;
-    alea_ray_init(&ray, ox, oy, oz, dx, dy, dz);
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) {
+        return -1;  /* Zero-length direction */
+    }
     result->ray = ray;
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
@@ -1306,22 +1297,34 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
         /* Fall back to full lookup if neighbor lookup failed or not available */
         if (!found_via_neighbor) {
             double px, py, pz;
-            alea_ray_point_at(&ray, t_current + EPSILON, &px, &py, &pz);
+            alea_ray_point_at(&ray, t_current + RAY_EPSILON, &px, &py, &pz);
             cell_idx = find_cell_at_point(sys, px, py, pz, &material_id, &density);
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
                 cell_id = sys->cells.data[cell_idx].mcnp_cell_id;
             }
         }
 
-        /* Find next surface crossing using BVH or linear scan */
+        /* Find next surface crossing:
+         * Use per-cell surface index when inside a cell (the whole point of cell-aware),
+         * fall back to global search only for void regions. */
         int hit_surface_id = -1;
-        double t_next = find_closest_intersection(sys, &ray,
-                                                  t_current + EPSILON, effective_t_max,
-                                                  &hit_surface_id);
+        double t_next;
+        if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+            sys->cells.data[cell_idx].surface_indices) {
+            t_next = raycast_cell_surfaces(sys, &ray,
+                                           &sys->cells.data[cell_idx],
+                                           t_current + RAY_EPSILON, effective_t_max,
+                                           &hit_surface_id);
+        } else {
+            t_next = find_closest_intersection(sys, &ray,
+                                               t_current + RAY_EPSILON, effective_t_max,
+                                               &hit_surface_id);
+        }
 
-        /* Ensure we make progress */
-        if (t_next <= t_current + EPSILON) {
-            t_next = t_current + EPSILON * 10;
+        /* Ensure we make progress at any scale:
+         * absolute 1e-10 dominates near origin; relative 1e-6 at large t */
+        if (t_next <= t_current + RAY_EPSILON) {
+            t_next = t_current * (1.0 + 1e-6) + RAY_EPSILON;
         }
 
         /* Add or extend segment */
@@ -1348,7 +1351,7 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
         t_current = t_next;
 
         /* If we hit nothing, we're done */
-        if (t_next >= effective_t_max - EPSILON) {
+        if (t_next >= effective_t_max - RAY_EPSILON) {
             break;
         }
     }

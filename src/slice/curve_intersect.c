@@ -29,10 +29,9 @@
 #define EPSILON 1e-10
 
 /* Solve quadratic ax² + bx + c = 0, return number of real roots.
- * NOTE: intentionally different interface from alea_solve_quadratic() in
- * util/poly_solve.c — this version uses separate out-params (x1, x2) for
- * convenience in the curve intersection code, while the canonical version
- * uses an array and a numerically stable formula suitable for raytracing. */
+ * Uses Vieta's form (same as raycast module) to avoid catastrophic
+ * cancellation when b is large: q = -0.5*(b + copysign(sqrt(disc), b)),
+ * then x1 = q/a, x2 = c/q. */
 static int solve_quadratic(double a, double b, double c, double* x1, double* x2) {
     if (fabs(a) < EPSILON) {
         /* Linear case */
@@ -49,8 +48,10 @@ static int solve_quadratic(double a, double b, double c, double* x1, double* x2)
     }
 
     double sqrt_disc = sqrt(disc);
-    *x1 = (-b - sqrt_disc) / (2*a);
-    *x2 = (-b + sqrt_disc) / (2*a);
+    double q = -0.5 * (b + copysign(sqrt_disc, b));
+    *x1 = q / a;
+    *x2 = c / q;
+    if (*x1 > *x2) { double tmp = *x1; *x1 = *x2; *x2 = tmp; }
     return 2;
 }
 
@@ -173,7 +174,7 @@ static void conic_bbox(const alea_conic_2d_t* conic, alea_curve_type_t type,
  * SLICE PLANE INITIALIZATION
  * ============================================================================ */
 
-void alea_slice_plane_init(alea_slice_plane_def_t* plane,
+void alea_slice_plane_init(alea_slice_plane_t* plane,
                           double ox, double oy, double oz,
                           double nx, double ny, double nz,
                           double ux, double uy, double uz) {
@@ -202,7 +203,7 @@ void alea_slice_plane_init(alea_slice_plane_def_t* plane,
     v3arr_normalize(plane->u_axis);
 }
 
-void alea_slice_plane_init_axis(alea_slice_plane_def_t* plane, int axis, double value) {
+void alea_slice_plane_init_axis(alea_slice_plane_t* plane, int axis, double value) {
     memset(plane, 0, sizeof(*plane));
 
     switch (axis) {
@@ -228,7 +229,7 @@ void alea_slice_plane_init_axis(alea_slice_plane_def_t* plane, int axis, double 
     }
 }
 
-void alea_plane_to_2d(const alea_slice_plane_def_t* plane,
+void alea_plane_to_2d(const alea_slice_plane_t* plane,
                      double x, double y, double z,
                      double* u, double* v) {
     /* Vector from origin to point */
@@ -241,7 +242,7 @@ void alea_plane_to_2d(const alea_slice_plane_def_t* plane,
     *v = v3arr_dot(p, plane->v_axis);
 }
 
-void alea_plane_to_3d(const alea_slice_plane_def_t* plane,
+void alea_plane_to_3d(const alea_slice_plane_t* plane,
                      double u, double v,
                      double* x, double* y, double* z) {
     *x = plane->origin[0] + u * plane->u_axis[0] + v * plane->v_axis[0];
@@ -265,7 +266,7 @@ void alea_plane_to_3d(const alea_slice_plane_def_t* plane,
  * This is a 2D line: A*u + B*v + C = 0
  */
 static bool intersect_plane(const alea_plane_data_t* surf,
-                            const alea_slice_plane_def_t* slice,
+                            const alea_slice_plane_t* slice,
                             alea_curve_2d_t* curve) {
     double A = surf->a * slice->u_axis[0] + surf->b * slice->u_axis[1] + surf->c * slice->u_axis[2];
     double B = surf->a * slice->v_axis[0] + surf->b * slice->v_axis[1] + surf->c * slice->v_axis[2];
@@ -315,7 +316,7 @@ static bool intersect_plane(const alea_plane_data_t* surf,
  * Substituting and simplifying gives a 2D circle.
  */
 static bool intersect_sphere(const alea_sphere_data_t* sphere,
-                             const alea_slice_plane_def_t* slice,
+                             const alea_slice_plane_t* slice,
                              alea_curve_2d_t* curve) {
     /* Vector from sphere center to slice origin */
     double d[3] = {
@@ -372,7 +373,7 @@ static bool intersect_sphere(const alea_sphere_data_t* sphere,
  * - Empty if plane doesn't reach cylinder
  */
 static bool intersect_cylinder_z(const alea_cylinder_z_data_t* cyl,
-                                 const alea_slice_plane_def_t* slice,
+                                 const alea_slice_plane_t* slice,
                                  alea_curve_2d_t* curve) {
     double axis[3] = {0, 0, 1};
 
@@ -496,7 +497,7 @@ static bool intersect_cylinder_z(const alea_cylinder_z_data_t* cyl,
 
 /* Similar functions for other cylinder orientations */
 static bool intersect_cylinder_x(const alea_cylinder_x_data_t* cyl,
-                                 const alea_slice_plane_def_t* slice,
+                                 const alea_slice_plane_t* slice,
                                  alea_curve_2d_t* curve) {
     double axis[3] = {1, 0, 0};
     double cos_angle = fabs(v3arr_dot(slice->normal, axis));
@@ -578,7 +579,7 @@ static bool intersect_cylinder_x(const alea_cylinder_x_data_t* cyl,
 }
 
 static bool intersect_cylinder_y(const alea_cylinder_y_data_t* cyl,
-                                 const alea_slice_plane_def_t* slice,
+                                 const alea_slice_plane_t* slice,
                                  alea_curve_2d_t* curve) {
     double axis[3] = {0, 1, 0};
     double cos_angle = fabs(v3arr_dot(slice->normal, axis));
@@ -666,7 +667,7 @@ static bool intersect_cylinder_y(const alea_cylinder_y_data_t* cyl,
  * Intersection is a conic section (ellipse, parabola, hyperbola, or lines).
  */
 static bool intersect_cone_z(const alea_cone_z_data_t* cone,
-                             const alea_slice_plane_def_t* slice,
+                             const alea_slice_plane_t* slice,
                              alea_curve_2d_t* curve) {
     double Ox = slice->origin[0] - cone->apex_x;
     double Oy = slice->origin[1] - cone->apex_y;
@@ -710,7 +711,7 @@ static bool intersect_cone_z(const alea_cone_z_data_t* cone,
 }
 
 static bool intersect_cone_x(const alea_cone_x_data_t* cone,
-                             const alea_slice_plane_def_t* slice,
+                             const alea_slice_plane_t* slice,
                              alea_curve_2d_t* curve) {
     double Ox = slice->origin[0] - cone->apex_x;
     double Oy = slice->origin[1] - cone->apex_y;
@@ -746,7 +747,7 @@ static bool intersect_cone_x(const alea_cone_x_data_t* cone,
 }
 
 static bool intersect_cone_y(const alea_cone_y_data_t* cone,
-                             const alea_slice_plane_def_t* slice,
+                             const alea_slice_plane_t* slice,
                              alea_curve_2d_t* curve) {
     double Ox = slice->origin[0] - cone->apex_x;
     double Oy = slice->origin[1] - cone->apex_y;
@@ -787,7 +788,7 @@ static bool intersect_cone_y(const alea_cone_y_data_t* cone,
  * Returns a polygon (up to 6 vertices) formed by the intersection.
  */
 static bool intersect_box(const alea_box_data_t* box,
-                          const alea_slice_plane_def_t* slice,
+                          const alea_slice_plane_t* slice,
                           alea_curve_2d_t* curve) {
     /* 12 edges of the box */
     double edges[12][2][3] = {
@@ -898,7 +899,7 @@ static bool intersect_box(const alea_box_data_t* box,
  * Result is a general conic section.
  */
 static bool intersect_quadric(const alea_quadric_data_t* quad,
-                              const alea_slice_plane_def_t* slice,
+                              const alea_slice_plane_t* slice,
                               alea_curve_2d_t* curve) {
     double A = quad->coeffs[0];
     double B = quad->coeffs[1];
@@ -1049,7 +1050,7 @@ static bool intersect_quadric(const alea_quadric_data_t* quad,
  * then transform the result back to slice plane coordinates.
  */
 static bool intersect_rcc(const alea_rcc_data_t* rcc,
-                          const alea_slice_plane_def_t* slice,
+                          const alea_slice_plane_t* slice,
                           alea_curve_2d_t* curve) {
     /* Cylinder axis direction */
     double axis[3] = {rcc->height_x, rcc->height_y, rcc->height_z};
@@ -1247,6 +1248,151 @@ static bool intersect_rcc(const alea_rcc_data_t* rcc,
 }
 
 /**
+ * @brief Intersect TRC (Truncated Right Cone) with slice plane
+ *
+ * TRC: frustum from base (radius r1) to top (radius r2), arbitrary axis.
+ * Lateral surface equation in local coords (axis=Z, base at origin):
+ *   x² + y² = (r1 + z·(r2-r1)/h)²
+ *
+ * Three cases:
+ * 1. Perpendicular (slice normal ∥ axis) → circle with radius r(z)
+ * 2. Parallel (slice normal ⊥ axis) → general conic
+ * 3. Oblique → general conic (ellipse/parabola/hyperbola)
+ */
+static bool intersect_trc(const alea_trc_data_t* trc,
+                          const alea_slice_plane_t* slice,
+                          alea_curve_2d_t* curve) {
+    /* Axis direction and length */
+    double axis[3] = {trc->height_x, trc->height_y, trc->height_z};
+    double h_len = v3arr_length(axis);
+    if (h_len < EPSILON) return false;
+
+    double axis_n[3] = {axis[0]/h_len, axis[1]/h_len, axis[2]/h_len};
+    double r1 = trc->base_radius;
+    double r2 = trc->top_radius;
+    double dr = (r2 - r1) / h_len;  /* radius slope per unit length */
+
+    /* Angle between slice normal and TRC axis */
+    double cos_angle = v3arr_dot(slice->normal, axis_n);
+    double abs_cos = fabs(cos_angle);
+
+    /* Vector from TRC base to slice origin */
+    double d_base[3] = {
+        slice->origin[0] - trc->base_x,
+        slice->origin[1] - trc->base_y,
+        slice->origin[2] - trc->base_z
+    };
+
+    if (abs_cos > 1.0 - EPSILON) {
+        /* Perpendicular case: slice normal parallel to axis → circle */
+        double da = v3arr_dot(axis_n, slice->normal);
+        if (fabs(da) < EPSILON) return false;
+
+        /* Find where axis intersects slice plane */
+        double dp = v3arr_dot(d_base, slice->normal);
+        double t = dp / da;
+
+        /* Check if intersection is within TRC bounds */
+        if (t < -EPSILON || t > h_len + EPSILON) return false;
+
+        /* Radius at this height */
+        double t_clamped = (t < 0) ? 0 : (t > h_len ? h_len : t);
+        double radius = r1 + t_clamped * dr;
+        if (radius < EPSILON) return false;
+
+        double center_3d[3] = {
+            trc->base_x + t * axis_n[0],
+            trc->base_y + t * axis_n[1],
+            trc->base_z + t * axis_n[2]
+        };
+
+        curve->type = ALEA_CURVE_CIRCLE;
+        alea_plane_to_2d(slice, center_3d[0], center_3d[1], center_3d[2],
+                       &curve->data.circle.center[0], &curve->data.circle.center[1]);
+        curve->data.circle.radius = radius;
+        return true;
+    }
+
+    /* General case (including parallel): build local coordinate system */
+    double local_z[3] = {axis_n[0], axis_n[1], axis_n[2]};
+
+    double local_x[3];
+    if (fabs(local_z[0]) < 0.9) {
+        local_x[0] = 1; local_x[1] = 0; local_x[2] = 0;
+    } else {
+        local_x[0] = 0; local_x[1] = 1; local_x[2] = 0;
+    }
+    double dot_xz = v3arr_dot(local_x, local_z);
+    local_x[0] -= dot_xz * local_z[0];
+    local_x[1] -= dot_xz * local_z[1];
+    local_x[2] -= dot_xz * local_z[2];
+    v3arr_normalize(local_x);
+
+    double local_y[3];
+    v3arr_cross(local_z, local_x, local_y);
+
+    /* Transform to local coords (relative to TRC base) */
+    double local_origin[3] = {
+        v3arr_dot(d_base, local_x),
+        v3arr_dot(d_base, local_y),
+        v3arr_dot(d_base, local_z)
+    };
+    double local_u[3] = {
+        v3arr_dot(slice->u_axis, local_x),
+        v3arr_dot(slice->u_axis, local_y),
+        v3arr_dot(slice->u_axis, local_z)
+    };
+    double local_v[3] = {
+        v3arr_dot(slice->v_axis, local_x),
+        v3arr_dot(slice->v_axis, local_y),
+        v3arr_dot(slice->v_axis, local_z)
+    };
+
+    /* TRC lateral surface: x² + y² = (r1 + z·dr)²
+     * Slice plane: P(u,v) = O + u*U + v*V (in local coords)
+     *
+     * Substitute: (Ox+u·Ux+v·Vx)² + (Oy+u·Uy+v·Vy)² = (R0 + u·Ru + v·Rv)²
+     * where R0 = r1 + Oz·dr, Ru = Uz·dr, Rv = Vz·dr
+     *
+     * Expanding Left - Right = 0 gives conic: Au² + Buv + Cv² + Du + Ev + F = 0
+     */
+    double Ox = local_origin[0], Oy = local_origin[1], Oz = local_origin[2];
+    double Ux = local_u[0], Uy = local_u[1], Uz = local_u[2];
+    double Vx = local_v[0], Vy = local_v[1], Vz = local_v[2];
+
+    double R0 = r1 + Oz * dr;
+    double Ru = Uz * dr;
+    double Rv = Vz * dr;
+
+    double A = Ux*Ux + Uy*Uy - Ru*Ru;
+    double B = 2*(Ux*Vx + Uy*Vy - Ru*Rv);
+    double C = Vx*Vx + Vy*Vy - Rv*Rv;
+    double D = 2*(Ox*Ux + Oy*Uy - R0*Ru);
+    double E = 2*(Ox*Vx + Oy*Vy - R0*Rv);
+    double F = Ox*Ox + Oy*Oy - R0*R0;
+
+    /* Classify conic */
+    double disc = B*B - 4*A*C;
+
+    if (disc < -EPSILON) {
+        curve->type = ALEA_CURVE_ELLIPSE;
+    } else if (disc > EPSILON) {
+        curve->type = ALEA_CURVE_HYPERBOLA;
+    } else {
+        curve->type = ALEA_CURVE_PARABOLA;
+    }
+
+    curve->data.conic.A = A;
+    curve->data.conic.B = B;
+    curve->data.conic.C = C;
+    curve->data.conic.D = D;
+    curve->data.conic.E = E;
+    curve->data.conic.F = F;
+
+    return true;
+}
+
+/**
  * @brief Intersect torus with slice plane
  *
  * Torus equation (axis along Z):
@@ -1260,7 +1406,7 @@ static bool intersect_rcc(const alea_rcc_data_t* rcc,
  */
 static bool intersect_torus(const alea_torus_data_t* torus,
                             alea_primitive_type_t prim_type,
-                            const alea_slice_plane_def_t* slice,
+                            const alea_slice_plane_t* slice,
                             alea_curve_2d_t* curve) {
     double R = torus->major_radius;
     double r = torus->minor_radius;
@@ -1413,7 +1559,7 @@ static bool intersect_torus(const alea_torus_data_t* torus,
 
 bool alea_intersect_primitive_plane(alea_primitive_type_t type,
                                    const alea_primitive_data_t* data,
-                                   const alea_slice_plane_def_t* plane,
+                                   const alea_slice_plane_t* plane,
                                    alea_curve_2d_t* curve) {
     memset(curve, 0, sizeof(*curve));
     curve->type = ALEA_CURVE_NONE;
@@ -1453,6 +1599,9 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
         case ALEA_PRIMITIVE_RCC:
             return intersect_rcc(&data->rcc, plane, curve);
 
+        case ALEA_PRIMITIVE_TRC:
+            return intersect_trc(&data->trc, plane, curve);
+
         case ALEA_PRIMITIVE_TORUS_X:
         case ALEA_PRIMITIVE_TORUS_Y:
         case ALEA_PRIMITIVE_TORUS_Z:
@@ -1468,7 +1617,7 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
  * ============================================================================ */
 
 int alea_compute_slice_curves(const alea_system_t* sys,
-                             const alea_slice_plane_def_t* plane,
+                             const alea_slice_plane_t* plane,
                              alea_curve_collection_t* result) {
     if (!sys || !plane || !result) return -1;
 
@@ -2043,7 +2192,7 @@ static bool surface_already_seen(seen_surface_vec_t* seen,
 }
 
 int alea_compute_slice_curves_spatial(const alea_system_t* sys,
-                                     const alea_slice_plane_def_t* plane,
+                                     const alea_slice_plane_t* plane,
                                      double u_min, double u_max,
                                      double v_min, double v_max,
                                      alea_curve_collection_t* result) {

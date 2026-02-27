@@ -10,6 +10,8 @@
  */
 
 #include "bvh.h"
+#include "ray_epsilon.h"
+#include "ray_bbox.h"
 #include "core/alea_system.h"
 #include "primitives/bbox.h"
 #include "util/alea_log.h"
@@ -17,8 +19,6 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
-
-#define EPSILON 1e-10
 
 /* ============================================================================
  * INTERNAL STRUCTURES
@@ -138,7 +138,7 @@ static double evaluate_sah_split(const bvh_surface_info_t* surfaces,
     double min_c = bbox_min_axis(centroid_bbox, axis);
     double max_c = bbox_max_axis(centroid_bbox, axis);
     double extent = max_c - min_c;
-    if (extent < EPSILON) {
+    if (extent < RAY_EPSILON) {
         *out_split_pos = min_c;  /* Median split */
         return DBL_MAX;
     }
@@ -162,29 +162,32 @@ static double evaluate_sah_split(const bvh_surface_info_t* surfaces,
         bins[b].bbox = alea_bbox_union(&bins[b].bbox, &surfaces[i].bbox);
     }
 
-    /* Compute cumulative counts and areas from left */
+    /* Precompute suffix bounding boxes and counts from right-to-left (O(bins)) */
+    alea_bbox_t suffix_bbox[BVH_SAH_BINS];
+    int suffix_count[BVH_SAH_BINS];
+
+    suffix_bbox[BVH_SAH_BINS - 1] = bins[BVH_SAH_BINS - 1].bbox;
+    suffix_count[BVH_SAH_BINS - 1] = bins[BVH_SAH_BINS - 1].count;
+    for (int i = BVH_SAH_BINS - 2; i >= 0; i--) {
+        suffix_bbox[i] = alea_bbox_union(&suffix_bbox[i + 1], &bins[i].bbox);
+        suffix_count[i] = suffix_count[i + 1] + bins[i].count;
+    }
+
+    /* Forward sweep: O(1) per split candidate */
     double costs[BVH_SAH_BINS - 1];
     alea_bbox_t left_bbox = alea_bbox_empty();
     int left_count = 0;
+    double parent_area = alea_bbox_surface_area(bounds);
 
     for (int i = 0; i < BVH_SAH_BINS - 1; i++) {
         left_bbox = alea_bbox_union(&left_bbox, &bins[i].bbox);
         left_count += bins[i].count;
 
-        /* Compute right side */
-        alea_bbox_t right_bbox = alea_bbox_empty();
-        int right_count = 0;
-        for (int j = i + 1; j < BVH_SAH_BINS; j++) {
-            right_bbox = alea_bbox_union(&right_bbox, &bins[j].bbox);
-            right_count += bins[j].count;
-        }
-
-        /* SAH cost */
         double left_area = alea_bbox_surface_area(&left_bbox);
-        double right_area = alea_bbox_surface_area(&right_bbox);
-        double parent_area = alea_bbox_surface_area(bounds);
+        double right_area = alea_bbox_surface_area(&suffix_bbox[i + 1]);
+        int right_count = suffix_count[i + 1];
 
-        if (parent_area < EPSILON) {
+        if (parent_area < RAY_EPSILON) {
             costs[i] = DBL_MAX;
         } else {
             costs[i] = BVH_TRAVERSAL_COST +
@@ -419,64 +422,7 @@ void alea_bvh_free(alea_bvh_t* bvh) {
  * RAY-AABB INTERSECTION (robust version for parallel rays)
  * ============================================================================ */
 
-static inline int ray_bbox_intersect(const alea_ray_t* ray,
-                                     const double* inv_dir,
-                                     const int* dir_is_neg,
-                                     const alea_bbox_t* bbox,
-                                     double t_min, double t_max) {
-    double tmin, tmax;
-
-    /* X slab - handle parallel rays explicitly */
-    if (fabs(ray->dx) < EPSILON) {
-        /* Ray parallel to YZ plane - check if origin is within X slab */
-        if (ray->ox < bbox->min_x || ray->ox > bbox->max_x)
-            return 0;
-        tmin = -DBL_MAX;
-        tmax = DBL_MAX;
-    } else {
-        double t1 = (bbox->min_x - ray->ox) * inv_dir[0];
-        double t2 = (bbox->max_x - ray->ox) * inv_dir[0];
-        tmin = fmin(t1, t2);
-        tmax = fmax(t1, t2);
-    }
-
-    /* Y slab */
-    if (fabs(ray->dy) < EPSILON) {
-        if (ray->oy < bbox->min_y || ray->oy > bbox->max_y)
-            return 0;
-        /* tmin/tmax unchanged */
-    } else {
-        double t1 = (bbox->min_y - ray->oy) * inv_dir[1];
-        double t2 = (bbox->max_y - ray->oy) * inv_dir[1];
-        double tymin = fmin(t1, t2);
-        double tymax = fmax(t1, t2);
-
-        if (tmin > tymax || tymin > tmax) return 0;
-        if (tymin > tmin) tmin = tymin;
-        if (tymax < tmax) tmax = tymax;
-    }
-
-    /* Z slab */
-    if (fabs(ray->dz) < EPSILON) {
-        if (ray->oz < bbox->min_z || ray->oz > bbox->max_z)
-            return 0;
-        /* tmin/tmax unchanged */
-    } else {
-        double t1 = (bbox->min_z - ray->oz) * inv_dir[2];
-        double t2 = (bbox->max_z - ray->oz) * inv_dir[2];
-        double tzmin = fmin(t1, t2);
-        double tzmax = fmax(t1, t2);
-
-        if (tmin > tzmax || tzmin > tmax) return 0;
-        if (tzmin > tmin) tmin = tzmin;
-        if (tzmax < tmax) tmax = tzmax;
-    }
-
-    /* Use slightly relaxed comparison to avoid missing surfaces at boundaries */
-    return (tmin <= t_max) && (tmax >= t_min);
-
-    (void)dir_is_neg; /* Not used in this version */
-}
+/* ray_bbox_slab from ray_bbox.h replaces the local ray_bbox_intersect */
 
 /* ============================================================================
  * TRAVERSAL
@@ -491,14 +437,7 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
         return 0;
     }
 
-    /* Precompute inverse direction and sign */
-    double inv_dir[3];
     int dir_sign[3];
-
-    inv_dir[0] = (fabs(ray->dx) > EPSILON) ? 1.0 / ray->dx : 1e10;
-    inv_dir[1] = (fabs(ray->dy) > EPSILON) ? 1.0 / ray->dy : 1e10;
-    inv_dir[2] = (fabs(ray->dz) > EPSILON) ? 1.0 / ray->dz : 1e10;
-
     dir_sign[0] = ray->dx < 0;
     dir_sign[1] = ray->dy < 0;
     dir_sign[2] = ray->dz < 0;
@@ -514,9 +453,8 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
         uint32_t node_idx = stack[--sp];
         const alea_bvh_node_t* node = &bvh->nodes[node_idx];
 
-        /* Test ray against node bbox */
-        if (!ray_bbox_intersect(ray, inv_dir, dir_sign,
-                                &node->bbox, t_min, t_max)) {
+        /* Test ray against node bbox (uses precomputed inv_d* from ray) */
+        if (!ray_bbox_slab(ray, &node->bbox, t_min, t_max)) {
             continue;
         }
 
@@ -533,6 +471,60 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
             uint32_t right = node->right_child;
 
             /* Push far child first (so near child is processed first) */
+            if (sp < BVH_MAX_STACK_DEPTH - 1) {
+                if (dir_sign[node->axis]) {
+                    stack[sp++] = left;
+                    stack[sp++] = right;
+                } else {
+                    stack[sp++] = right;
+                    stack[sp++] = left;
+                }
+            } else {
+                ALEA_LOG_WARN("BVH traversal stack overflow - results may be incomplete");
+            }
+        }
+    }
+
+    return surfaces_tested;
+}
+
+int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
+                            const alea_ray_t* ray,
+                            double t_min, double t_max,
+                            alea_bvh_batch_callback callback,
+                            void* userdata) {
+    if (!bvh || !ray || !callback || bvh->node_count == 0) {
+        return 0;
+    }
+
+    int dir_sign[3];
+    dir_sign[0] = ray->dx < 0;
+    dir_sign[1] = ray->dy < 0;
+    dir_sign[2] = ray->dz < 0;
+
+    uint32_t stack[BVH_MAX_STACK_DEPTH];
+    int sp = 0;
+    int surfaces_tested = 0;
+
+    stack[sp++] = 0;
+
+    while (sp > 0) {
+        uint32_t node_idx = stack[--sp];
+        const alea_bvh_node_t* node = &bvh->nodes[node_idx];
+
+        if (!ray_bbox_slab(ray, &node->bbox, t_min, t_max)) {
+            continue;
+        }
+
+        if (node->surface_count > 0) {
+            /* Leaf node: report batch of surfaces */
+            callback(&bvh->surface_indices[node->left_or_first],
+                     node->surface_count, userdata);
+            surfaces_tested += node->surface_count;
+        } else {
+            uint32_t left = node->left_or_first;
+            uint32_t right = node->right_child;
+
             if (sp < BVH_MAX_STACK_DEPTH - 1) {
                 if (dir_sign[node->axis]) {
                     stack[sp++] = left;

@@ -116,6 +116,27 @@ int alea_solve_cubic(double a, double b, double c, double d, double roots[3]) {
     return num_roots;
 }
 
+/**
+ * Polish roots via Newton-Raphson iteration (Horner evaluation).
+ * 2 iterations per root; guards against near-degenerate derivative.
+ */
+static void newton_polish_quartic(double a, double b, double c, double d, double e,
+                                  double* roots, int count) {
+    for (int i = 0; i < count; i++) {
+        double x = roots[i];
+        for (int iter = 0; iter < 2; iter++) {
+            /* f(x) = ax^4 + bx^3 + cx^2 + dx + e  (Horner) */
+            double f = (((a * x + b) * x + c) * x + d) * x + e;
+            /* f'(x) = 4ax^3 + 3bx^2 + 2cx + d  (Horner) */
+            double fp = ((4.0 * a * x + 3.0 * b) * x + 2.0 * c) * x + d;
+            if (fabs(fp) > 1e-30) {
+                x -= f / fp;
+            }
+        }
+        roots[i] = x;
+    }
+}
+
 int alea_solve_quartic(double a, double b, double c, double d, double e, double roots[4]) {
     if (fabs(a) < EPSILON) {
         /* Reduce to cubic */
@@ -227,6 +248,9 @@ int alea_solve_quartic(double a, double b, double c, double d, double e, double 
     for (int i = 0; i < n2; i++) {
         roots[num_roots++] = q2_roots[i] + offset;
     }
+
+    /* Polish roots via Newton-Raphson for improved accuracy */
+    newton_polish_quartic(a, b, c, d, e, roots, num_roots);
 
     sort_roots(roots, num_roots);
     return num_roots;

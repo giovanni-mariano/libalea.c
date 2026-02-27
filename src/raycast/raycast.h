@@ -24,6 +24,7 @@ extern "C" {
 typedef struct {
     double ox, oy, oz;
     double dx, dy, dz;
+    double inv_dx, inv_dy, inv_dz;  /* 1.0/d* — IEEE 754 inf for zero components */
 } alea_ray_t;
 
 typedef struct {
@@ -64,11 +65,24 @@ typedef struct alea_raycast_result alea_raycast_result_t;
 /**
  * @brief Initialize a ray
  *
- * Direction is automatically normalized.
+ * Direction is automatically normalized. Precomputes inverse direction
+ * for efficient slab tests (IEEE 754 inf for zero components).
+ *
+ * @return 0 on success, -1 if direction is zero-length (fallback (0,0,1) used)
  */
-void alea_ray_init(alea_ray_t* ray,
+int alea_ray_init(alea_ray_t* ray,
                   double ox, double oy, double oz,
                   double dx, double dy, double dz);
+
+/**
+ * @brief Initialize a ray with pre-normalized direction (skip sqrt + divides)
+ *
+ * Use when the direction is already unit-length (e.g., camera rays).
+ * Caller must ensure |dx,dy,dz| = 1 and direction is non-zero.
+ */
+void alea_ray_init_normalized(alea_ray_t* ray,
+                              double ox, double oy, double oz,
+                              double dx, double dy, double dz);
 
 /**
  * @brief Build all raycast caches (BVH, spatial index, cell adjacency)
@@ -115,6 +129,18 @@ int alea_raycast_surfaces(const alea_system_t* sys,
                          const alea_ray_t* ray,
                          double t_min, double t_max,
                          alea_raycast_result_t* result);
+
+/**
+ * @brief Cast ray and find surface intersections (skip cache check)
+ *
+ * Like alea_raycast_surfaces but assumes caches are already built.
+ * Use from tight loops (render, volume estimation) after calling
+ * alea_raycast_ensure_caches() once up front.
+ */
+int alea_raycast_surfaces_nocache(const alea_system_t* sys,
+                                  const alea_ray_t* ray,
+                                  double t_min, double t_max,
+                                  alea_raycast_result_t* result);
 
 /**
  * @brief Convert surface hits to cell segments

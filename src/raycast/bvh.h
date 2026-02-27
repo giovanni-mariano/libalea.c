@@ -89,7 +89,7 @@ alea_bvh_t* alea_bvh_build(const alea_system_t* sys);
 void alea_bvh_free(alea_bvh_t* bvh);
 
 /**
- * @brief Callback type for BVH traversal
+ * @brief Callback type for BVH traversal (per-surface)
  *
  * Called for each surface that the ray potentially intersects.
  * The callback should perform the actual surface intersection test.
@@ -100,11 +100,21 @@ void alea_bvh_free(alea_bvh_t* bvh);
 typedef void (*alea_bvh_hit_callback)(uint32_t surface_idx, void* userdata);
 
 /**
- * @brief Traverse BVH and report candidate surfaces
+ * @brief Batch callback type for BVH traversal (per-leaf)
  *
- * Traverses the BVH and calls the callback for each surface whose
- * bounding box intersects the ray. The callback should perform
- * actual intersection testing.
+ * Called once per leaf node with all surfaces in the leaf.
+ * Reduces function-call overhead for leaf nodes with up to
+ * BVH_LEAF_THRESHOLD surfaces.
+ *
+ * @param surface_indices Pointer into reordered index array
+ * @param count Number of surfaces in this leaf (1..BVH_LEAF_THRESHOLD)
+ * @param userdata User-provided context
+ */
+typedef void (*alea_bvh_batch_callback)(const uint32_t* surface_indices,
+                                        uint16_t count, void* userdata);
+
+/**
+ * @brief Traverse BVH and report candidate surfaces (per-surface callback)
  *
  * @param bvh BVH to traverse
  * @param ray Ray to test
@@ -121,16 +131,21 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
                      void* userdata);
 
 /**
- * @brief Check if BVH needs rebuild
+ * @brief Traverse BVH with batch callback (per-leaf)
  *
- * Compares stored surface count with system surface count.
+ * Like alea_bvh_traverse but calls the callback once per leaf node
+ * with all surfaces in the leaf, reducing function-call overhead.
  *
- * @param bvh BVH to check
- * @param sys CSG system
- * @return true if rebuild is needed
+ * @return Number of surfaces tested
  */
-static inline int alea_bvh_needs_rebuild(const alea_bvh_t* bvh,
-                                        const alea_system_t* sys);
+int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
+                            const alea_ray_t* ray,
+                            double t_min, double t_max,
+                            alea_bvh_batch_callback callback,
+                            void* userdata);
+
+/* alea_bvh_needs_rebuild removed: always returned 0 due to circular dependency.
+ * Rebuild check is handled directly in alea_raycast_ensure_caches(). */
 
 /**
  * @brief Get BVH statistics
@@ -144,23 +159,6 @@ void alea_bvh_stats(const alea_bvh_t* bvh,
                    size_t* out_node_count,
                    size_t* out_leaf_count,
                    size_t* out_max_depth);
-
-/* ============================================================================
- * INLINE IMPLEMENTATIONS
- * ============================================================================ */
-
-/* Forward declaration - defined in alea_system.h */
-struct alea_system;
-
-static inline int alea_bvh_needs_rebuild(const alea_bvh_t* bvh,
-                                        const alea_system_t* sys) {
-    if (!bvh) return 1;
-    if (!sys) return 0;
-    /* Need to access surface_count from sys - but we can't include alea_system.h
-     * here due to circular dependency. Caller must check this. */
-    (void)sys;
-    return 0;
-}
 
 #ifdef __cplusplus
 }

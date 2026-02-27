@@ -14,6 +14,7 @@
 #define CURVE_INTERSECT_H
 
 #include "alea_types.h"
+#include "alea_slice.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -21,29 +22,9 @@
 extern "C" {
 #endif
 
-/* ============================================================================
- * SLICE PLANE DEFINITION
- * ============================================================================ */
-
-/**
- * @brief Definition of a slice plane in 3D space
- *
- * The plane is defined by:
- * - An origin point O
- * - A normal vector N (unit length)
- * - Two orthonormal basis vectors U and V that span the plane
- *
- * Any point P on the plane can be written as: P = O + u*U + v*V
- * where (u, v) are the 2D coordinates within the plane.
- *
- * The coordinate system is right-handed: U × V = N
- */
-typedef struct {
-    double origin[3];   /* Point on the plane */
-    double normal[3];   /* Unit normal vector */
-    double u_axis[3];   /* First basis vector (horizontal in image) */
-    double v_axis[3];   /* Second basis vector (vertical in image) */
-} alea_slice_plane_def_t;
+/* alea_slice_plane_t is defined in alea_slice.h (included above).
+ * All internal code uses alea_slice_plane_t directly — no separate
+ * internal type needed since the structs were byte-identical. */
 
 /* ============================================================================
  * 2D CURVE TYPES
@@ -253,7 +234,7 @@ bool alea_conic_to_ellipse(const alea_conic_2d_t* conic, alea_ellipse_2d_t* elli
  * @param nx, ny, nz Normal vector (will be normalized)
  * @param ux, uy, uz Up vector hint (will be orthogonalized)
  */
-void alea_slice_plane_init(alea_slice_plane_def_t* plane,
+void alea_slice_plane_init(alea_slice_plane_t* plane,
                           double ox, double oy, double oz,
                           double nx, double ny, double nz,
                           double ux, double uy, double uz);
@@ -265,7 +246,7 @@ void alea_slice_plane_init(alea_slice_plane_def_t* plane,
  * @param axis 0=X (YZ plane), 1=Y (XZ plane), 2=Z (XY plane)
  * @param value Coordinate value along the axis
  */
-void alea_slice_plane_init_axis(alea_slice_plane_def_t* plane, int axis, double value);
+void alea_slice_plane_init_axis(alea_slice_plane_t* plane, int axis, double value);
 
 /**
  * @brief Transform 3D point to 2D plane coordinates
@@ -277,7 +258,7 @@ void alea_slice_plane_init_axis(alea_slice_plane_def_t* plane, int axis, double 
  * @param x, y, z 3D point
  * @param u, v Output 2D coordinates
  */
-void alea_plane_to_2d(const alea_slice_plane_def_t* plane,
+void alea_plane_to_2d(const alea_slice_plane_t* plane,
                      double x, double y, double z,
                      double* u, double* v);
 
@@ -288,7 +269,7 @@ void alea_plane_to_2d(const alea_slice_plane_def_t* plane,
  * @param u, v 2D coordinates
  * @param x, y, z Output 3D point
  */
-void alea_plane_to_3d(const alea_slice_plane_def_t* plane,
+void alea_plane_to_3d(const alea_slice_plane_t* plane,
                      double u, double v,
                      double* x, double* y, double* z);
 
@@ -303,7 +284,7 @@ void alea_plane_to_3d(const alea_slice_plane_def_t* plane,
  */
 bool alea_intersect_primitive_plane(alea_primitive_type_t type,
                                    const alea_primitive_data_t* data,
-                                   const alea_slice_plane_def_t* plane,
+                                   const alea_slice_plane_t* plane,
                                    alea_curve_2d_t* curve);
 
 /**
@@ -318,7 +299,7 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
  * @return 0 on success, -1 on error
  */
 int alea_compute_slice_curves(const alea_system_t* sys,
-                             const alea_slice_plane_def_t* plane,
+                             const alea_slice_plane_t* plane,
                              alea_curve_collection_t* result);
 
 /**
@@ -342,7 +323,7 @@ void alea_curve_collection_free(alea_curve_collection_t* result);
  * @return 0 on success, -1 on error
  */
 int alea_compute_slice_curves_spatial(const alea_system_t* sys,
-                                     const alea_slice_plane_def_t* plane,
+                                     const alea_slice_plane_t* plane,
                                      double u_min, double u_max,
                                      double v_min, double v_max,
                                      alea_curve_collection_t* result);

@@ -35,24 +35,14 @@ struct alea_slice_curves {
  * ============================================================================ */
 
 static void init_plane_from_axis(alea_slice_plane_t* plane, int axis, double value) {
-    alea_slice_plane_def_t internal;
-    alea_slice_plane_init_axis(&internal, axis, value);
-    memcpy(plane->origin, internal.origin, sizeof(plane->origin));
-    memcpy(plane->normal, internal.normal, sizeof(plane->normal));
-    memcpy(plane->u_axis, internal.u_axis, sizeof(plane->u_axis));
-    memcpy(plane->v_axis, internal.v_axis, sizeof(plane->v_axis));
+    alea_slice_plane_init_axis(plane, axis, value);
 }
 
 static void init_plane_from_vectors(alea_slice_plane_t* plane,
                                      double ox, double oy, double oz,
                                      double nx, double ny, double nz,
                                      double ux, double uy, double uz) {
-    alea_slice_plane_def_t internal;
-    alea_slice_plane_init(&internal, ox, oy, oz, nx, ny, nz, ux, uy, uz);
-    memcpy(plane->origin, internal.origin, sizeof(plane->origin));
-    memcpy(plane->normal, internal.normal, sizeof(plane->normal));
-    memcpy(plane->u_axis, internal.u_axis, sizeof(plane->u_axis));
-    memcpy(plane->v_axis, internal.v_axis, sizeof(plane->v_axis));
+    alea_slice_plane_init(plane, ox, oy, oz, nx, ny, nz, ux, uy, uz);
 }
 
 void alea_slice_view_axis(alea_slice_view_t* view,
@@ -92,12 +82,6 @@ alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
     alea_slice_curves_t* result = calloc(1, sizeof(alea_slice_curves_t));
     if (!result) return NULL;
 
-    alea_slice_plane_def_t internal_plane;
-    memcpy(internal_plane.origin, view->plane.origin, sizeof(internal_plane.origin));
-    memcpy(internal_plane.normal, view->plane.normal, sizeof(internal_plane.normal));
-    memcpy(internal_plane.u_axis, view->plane.u_axis, sizeof(internal_plane.u_axis));
-    memcpy(internal_plane.v_axis, view->plane.v_axis, sizeof(internal_plane.v_axis));
-
     if (!sys->spatial_index) {
         if (alea_build_spatial_index((alea_system_t*)sys) != 0) {
             free(result);
@@ -105,7 +89,7 @@ alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
         }
     }
 
-    int ret = alea_compute_slice_curves_spatial(sys, &internal_plane,
+    int ret = alea_compute_slice_curves_spatial(sys, &view->plane,
                                                 view->u_min, view->u_max,
                                                 view->v_min, view->v_max,
                                                 &result->internal);

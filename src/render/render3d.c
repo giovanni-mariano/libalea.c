@@ -534,42 +534,22 @@ static void render_pixel_solid(const alea_system_t* sys,
 
     /* Full raycast from origin */
     alea_raycast_result_clear(result);
-    alea_ray_t ray;
-    alea_ray_init(&ray, ox, oy, oz, dx, dy, dz);
 
-    /* Stage 1: surface intersections */
-    if (alea_raycast_surfaces(sys, &ray, 0, t_max, result) != 0)
-        return;
-
-    /* Add lattice hits if needed */
     if (sys->has_lattice) {
-        /* Walk lattice cells and add DDA hits */
-        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-            const alea_cell_entry_t* cell = &sys->cells.data[i];
-            if (cell->lat_type == 0 || !cell->lat_fill) continue;
-            /* Use internal raycast functions for lattice DDA.
-             * Since raycast_lattice_rect/hex are static in raycast.c,
-             * we rely on the full raycast path. Fallback: do full raycast. */
-        }
-        /* Fallback: use alea_raycast for models with lattices.
-         * This re-allocates, but lattice models need full traversal anyway. */
-        alea_raycast_result_free(result);
+        /* Lattice models need full traversal (surface + DDA + segments).
+         * Call alea_raycast directly to avoid a wasted surfaces-only pass. */
         if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result) != 0)
             return;
-        goto process_segments;
+    } else {
+        /* Non-lattice: use nocache + normalized init (caches pre-built) */
+        alea_ray_t ray;
+        alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+
+        if (alea_raycast_surfaces_nocache(sys, &ray, 0, t_max, result) != 0)
+            return;
+        if (alea_raycast_to_segments(sys, result) != 0)
+            return;
     }
-
-    /* Re-sort and dedup hits */
-    if (result->hit_count > 1) {
-        extern int compare_hits(const void* a, const void* b);
-        /* hits are already sorted by alea_raycast_surfaces */
-    }
-
-    /* Stage 2: convert to cell segments */
-    if (alea_raycast_to_segments(sys, result) != 0)
-        return;
-
-process_segments:;
     /* Find first non-void segment in visible region (past clips) */
     for (size_t i = 0; i < result->segment_count; i++) {
         const alea_ray_segment_t* seg = &result->segments[i];

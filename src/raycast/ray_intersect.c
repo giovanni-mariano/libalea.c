@@ -11,11 +11,49 @@
  */
 
 #include "ray_intersect.h"
+#include "ray_epsilon.h"
 #include "util/poly_solve.h"
 #include <math.h>
 #include <float.h>
 
-#define EPSILON 1e-10
+/**
+ * Numerically stable quadratic solver using Vieta's formula.
+ * Avoids catastrophic cancellation in (-b ± sqrt(disc)) / (2a).
+ * Returns number of real roots (0, 1, or 2) in t_out[].
+ */
+static inline int solve_quadratic_stable(double a, double b, double c,
+                                         double* t_out) {
+    if (fabs(a) < RAY_EPSILON) {
+        if (fabs(b) < RAY_EPSILON) return 0;
+        t_out[0] = -c / b;
+        return 1;
+    }
+
+    double discriminant = b * b - 4.0 * a * c;
+    if (discriminant < -DISCRIMINANT_TOL) return 0;
+    if (discriminant < 0) discriminant = 0;
+
+    double sqrt_disc = sqrt(discriminant);
+    double q = -0.5 * (b + copysign(sqrt_disc, b));
+
+    if (fabs(q) < DISCRIMINANT_TOL) {
+        /* Double root fallback */
+        t_out[0] = -b / (2.0 * a);
+        t_out[1] = t_out[0];
+        return 2;
+    }
+
+    t_out[0] = q / a;
+    t_out[1] = c / q;
+
+    /* Ensure t_out[0] <= t_out[1] */
+    if (t_out[0] > t_out[1]) {
+        double tmp = t_out[0];
+        t_out[0] = t_out[1];
+        t_out[1] = tmp;
+    }
+    return 2;
+}
 
 /* ============================================================================
  * PLANE
@@ -23,8 +61,8 @@
 
 int ray_intersect_plane(const alea_ray_t* ray,
                         const alea_plane_data_t* plane,
-                        double* t_out,
-                        double* nx, double* ny, double* nz) {
+                        double* restrict t_out,
+                        double* restrict nx, double* restrict ny, double* restrict nz) {
     /*
      * Plane: ax + by + cz + d = 0
      * Ray: P = O + t*D
@@ -33,7 +71,7 @@ int ray_intersect_plane(const alea_ray_t* ray,
      */
     double denom = plane->a * ray->dx + plane->b * ray->dy + plane->c * ray->dz;
 
-    if (fabs(denom) < EPSILON) {
+    if (fabs(denom) < RAY_EPSILON) {
         return 0;  /* Ray parallel to plane */
     }
 
@@ -42,13 +80,11 @@ int ray_intersect_plane(const alea_ray_t* ray,
 
     t_out[0] = -numer / denom;
 
-    /* Normal points in direction of (a,b,c) */
+    /* Normal: planes are pre-normalized by alea_canonicalize_primitive() */
     if (nx) {
-        double len = sqrt(plane->a * plane->a + plane->b * plane->b +
-                         plane->c * plane->c);
-        *nx = plane->a / len;
-        *ny = plane->b / len;
-        *nz = plane->c / len;
+        *nx = plane->a;
+        *ny = plane->b;
+        *nz = plane->c;
     }
 
     return 1;
@@ -60,7 +96,7 @@ int ray_intersect_plane(const alea_ray_t* ray,
 
 int ray_intersect_sphere(const alea_ray_t* ray,
                          const alea_sphere_data_t* sphere,
-                         double* t_out) {
+                         double* restrict t_out) {
     /*
      * Sphere: |P - C|^2 = r^2
      * Ray: P = O + t*D
@@ -75,292 +111,136 @@ int ray_intersect_sphere(const alea_ray_t* ray,
     double ly = ray->oy - sphere->center_y;
     double lz = ray->oz - sphere->center_z;
 
-    double b = lx * ray->dx + ly * ray->dy + lz * ray->dz;  /* L.D */
+    /* a = |D|^2 = 1 (normalized), b_half = L.D, c = |L|^2 - r^2 */
+    double b_half = lx * ray->dx + ly * ray->dy + lz * ray->dz;
     double c = lx * lx + ly * ly + lz * lz - sphere->radius * sphere->radius;
 
-    double discriminant = b * b - c;
+    double discriminant = b_half * b_half - c;
 
-    /* Allow small negative discriminant due to floating-point rounding errors */
-    if (discriminant < -1e-12) {
-        return 0;
-    }
+    if (discriminant < -DISCRIMINANT_TOL) return 0;
     if (discriminant < 0) discriminant = 0;
 
+    /* Stable form: q = -(b_half + sign(b_half)*sqrt(disc)) */
     double sqrt_disc = sqrt(discriminant);
-    t_out[0] = -b - sqrt_disc;
-    t_out[1] = -b + sqrt_disc;
+    double q = -(b_half + copysign(sqrt_disc, b_half));
 
+    if (fabs(q) < DISCRIMINANT_TOL) {
+        t_out[0] = -b_half;
+        t_out[1] = -b_half;
+        return 2;
+    }
+
+    t_out[0] = q;       /* q / a where a = 1 */
+    t_out[1] = c / q;   /* Vieta: t0*t1 = c/a = c */
+
+    if (t_out[0] > t_out[1]) {
+        double tmp = t_out[0];
+        t_out[0] = t_out[1];
+        t_out[1] = tmp;
+    }
     return 2;
 }
 
 /* ============================================================================
- * AXIS-ALIGNED CYLINDERS (INFINITE)
+ * AXIS-ALIGNED CYLINDERS (INFINITE) — consolidated
  * ============================================================================ */
 
-int ray_intersect_cylinder_z(const alea_ray_t* ray,
-                             const alea_cylinder_z_data_t* cyl,
-                             double* t_out) {
-    /*
-     * Cylinder along Z: (x - cx)^2 + (y - cy)^2 = r^2
-     * Substitute ray, solve quadratic in XY plane only
-     */
-    double px = ray->ox - cyl->center_x;
-    double py = ray->oy - cyl->center_y;
+/**
+ * Unified cylinder intersection: axis selects which 2D plane to project onto.
+ * axis=0 (X-axis cylinder): project onto YZ, axis=1 (Y): XZ, axis=2 (Z): XY.
+ */
+static int ray_intersect_cylinder(const alea_ray_t* ray,
+                                  int axis, double center0, double center1,
+                                  double radius, double* restrict t_out) {
+    double o[3] = { ray->ox, ray->oy, ray->oz };
+    double d[3] = { ray->dx, ray->dy, ray->dz };
+    /* Perpendicular axes: for axis X→(Y,Z), Y→(X,Z), Z→(X,Y) */
+    int a0 = (axis + 1) % 3;
+    int a1 = (axis + 2) % 3;
 
-    double a = ray->dx * ray->dx + ray->dy * ray->dy;
-    double b = 2.0 * (px * ray->dx + py * ray->dy);
-    double c = px * px + py * py - cyl->radius * cyl->radius;
+    double p0 = o[a0] - center0;
+    double p1 = o[a1] - center1;
 
-    if (fabs(a) < EPSILON) {
-        return 0;  /* Ray parallel to cylinder axis */
-    }
+    double a = d[a0] * d[a0] + d[a1] * d[a1];
+    double b = 2.0 * (p0 * d[a0] + p1 * d[a1]);
+    double c = p0 * p0 + p1 * p1 - radius * radius;
 
-    double discriminant = b * b - 4.0 * a * c;
-
-    /* Allow small negative discriminant due to floating-point rounding errors */
-    if (discriminant < -1e-12) {
-        return 0;
-    }
-    if (discriminant < 0) discriminant = 0;
-
-    double sqrt_disc = sqrt(discriminant);
-    double inv_2a = 0.5 / a;
-
-    double t_raw[2];
-    t_raw[0] = (-b - sqrt_disc) * inv_2a;
-    t_raw[1] = (-b + sqrt_disc) * inv_2a;
-
-    t_out[0] = t_raw[0];
-    t_out[1] = t_raw[1];
-    return 2;
+    return solve_quadratic_stable(a, b, c, t_out);
 }
 
 int ray_intersect_cylinder_x(const alea_ray_t* ray,
                              const alea_cylinder_x_data_t* cyl,
-                             double* t_out) {
-    /* Cylinder along X: (y - cy)^2 + (z - cz)^2 = r^2 */
-    double py = ray->oy - cyl->center_y;
-    double pz = ray->oz - cyl->center_z;
-
-    double a = ray->dy * ray->dy + ray->dz * ray->dz;
-    double b = 2.0 * (py * ray->dy + pz * ray->dz);
-    double c = py * py + pz * pz - cyl->radius * cyl->radius;
-
-    if (fabs(a) < EPSILON) {
-        return 0;
-    }
-
-    double discriminant = b * b - 4.0 * a * c;
-
-    /* Allow small negative discriminant due to floating-point rounding errors */
-    if (discriminant < -1e-12) {
-        return 0;
-    }
-    if (discriminant < 0) discriminant = 0;
-
-    double sqrt_disc = sqrt(discriminant);
-    double inv_2a = 0.5 / a;
-
-    double t_raw[2];
-    t_raw[0] = (-b - sqrt_disc) * inv_2a;
-    t_raw[1] = (-b + sqrt_disc) * inv_2a;
-
-    t_out[0] = t_raw[0];
-    t_out[1] = t_raw[1];
-    return 2;
+                             double* restrict t_out) {
+    return ray_intersect_cylinder(ray, 0, cyl->center_y, cyl->center_z, cyl->radius, t_out);
 }
 
 int ray_intersect_cylinder_y(const alea_ray_t* ray,
                              const alea_cylinder_y_data_t* cyl,
-                             double* t_out) {
-    /* Cylinder along Y: (x - cx)^2 + (z - cz)^2 = r^2 */
-    double px = ray->ox - cyl->center_x;
-    double pz = ray->oz - cyl->center_z;
+                             double* restrict t_out) {
+    return ray_intersect_cylinder(ray, 1, cyl->center_x, cyl->center_z, cyl->radius, t_out);
+}
 
-    double a = ray->dx * ray->dx + ray->dz * ray->dz;
-    double b = 2.0 * (px * ray->dx + pz * ray->dz);
-    double c = px * px + pz * pz - cyl->radius * cyl->radius;
-
-    if (fabs(a) < EPSILON) {
-        return 0;
-    }
-
-    double discriminant = b * b - 4.0 * a * c;
-
-    /* Allow small negative discriminant due to floating-point rounding errors */
-    if (discriminant < -1e-12) {
-        return 0;
-    }
-    if (discriminant < 0) discriminant = 0;
-
-    double sqrt_disc = sqrt(discriminant);
-    double inv_2a = 0.5 / a;
-
-    double t_raw[2];
-    t_raw[0] = (-b - sqrt_disc) * inv_2a;
-    t_raw[1] = (-b + sqrt_disc) * inv_2a;
-
-    t_out[0] = t_raw[0];
-    t_out[1] = t_raw[1];
-    return 2;
+int ray_intersect_cylinder_z(const alea_ray_t* ray,
+                             const alea_cylinder_z_data_t* cyl,
+                             double* restrict t_out) {
+    return ray_intersect_cylinder(ray, 2, cyl->center_x, cyl->center_y, cyl->radius, t_out);
 }
 
 /* ============================================================================
  * AXIS-ALIGNED CONES
  * ============================================================================ */
 
-int ray_intersect_cone_z(const alea_ray_t* ray,
-                         const alea_cone_z_data_t* cone,
-                         double* t_out) {
-    /*
-     * Cone along Z: (x - ax)^2 + (y - ay)^2 = k^2 * (z - az)^2
-     * where k^2 = tan^2(half-angle)
-     *
-     * Substituting ray and rearranging gives quadratic in t.
-     */
-    double px = ray->ox - cone->apex_x;
-    double py = ray->oy - cone->apex_y;
-    double pz = ray->oz - cone->apex_z;
+/**
+ * Unified cone intersection: axis selects which component is the cone axis.
+ * axis=0 (X): perp=(Y,Z), axis=1 (Y): perp=(X,Z), axis=2 (Z): perp=(X,Y).
+ * All three cone types share identical field layout (apex_x/y/z, tan_angle_sq, sheet_selection).
+ */
+static int ray_intersect_cone(const alea_ray_t* ray, int axis,
+                              double apex_x, double apex_y, double apex_z,
+                              double k2, int sheet_selection,
+                              double* restrict t_out) {
+    double p[3] = { ray->ox - apex_x, ray->oy - apex_y, ray->oz - apex_z };
+    double d[3] = { ray->dx, ray->dy, ray->dz };
+    int a0 = (axis + 1) % 3;
+    int a1 = (axis + 2) % 3;
 
-    double k2 = cone->tan_angle_sq;
-
-    double a = ray->dx * ray->dx + ray->dy * ray->dy - k2 * ray->dz * ray->dz;
-    double b = 2.0 * (px * ray->dx + py * ray->dy - k2 * pz * ray->dz);
-    double c = px * px + py * py - k2 * pz * pz;
+    double a = d[a0] * d[a0] + d[a1] * d[a1] - k2 * d[axis] * d[axis];
+    double b = 2.0 * (p[a0] * d[a0] + p[a1] * d[a1] - k2 * p[axis] * d[axis]);
+    double c = p[a0] * p[a0] + p[a1] * p[a1] - k2 * p[axis] * p[axis];
 
     double t_raw[2];
-    int raw_count = 0;
-
-    if (fabs(a) < EPSILON) {
-        /* Degenerate case: ray along cone surface */
-        if (fabs(b) < EPSILON) {
-            return 0;
-        }
-        t_raw[0] = -c / b;
-        raw_count = 1;
-    } else {
-        double discriminant = b * b - 4.0 * a * c;
-        /* Allow small negative discriminant due to floating-point rounding errors */
-        if (discriminant < -1e-12) {
-            return 0;
-        }
-        if (discriminant < 0) discriminant = 0;
-        double sqrt_disc = sqrt(discriminant);
-        double inv_2a = 0.5 / a;
-        t_raw[0] = (-b - sqrt_disc) * inv_2a;
-        t_raw[1] = (-b + sqrt_disc) * inv_2a;
-        raw_count = 2;
-    }
+    int raw_count = solve_quadratic_stable(a, b, c, t_raw);
 
     /* Filter by sheet_selection */
     int count = 0;
     for (int i = 0; i < raw_count; i++) {
-        double axis_val = pz + t_raw[i] * ray->dz;  /* z relative to apex */
-        /* Sheet selection: +1 = positive nappe, -1 = negative nappe, 0 = both */
-        if (cone->sheet_selection > 0 && axis_val < -EPSILON) continue;
-        if (cone->sheet_selection < 0 && axis_val > EPSILON) continue;
+        double axis_val = p[axis] + t_raw[i] * d[axis];
+        if (sheet_selection > 0 && axis_val < -RAY_EPSILON) continue;
+        if (sheet_selection < 0 && axis_val > RAY_EPSILON) continue;
         t_out[count++] = t_raw[i];
     }
-
     return count;
 }
 
 int ray_intersect_cone_x(const alea_ray_t* ray,
                          const alea_cone_x_data_t* cone,
-                         double* t_out) {
-    /* Cone along X: (y - ay)^2 + (z - az)^2 = k^2 * (x - ax)^2 */
-    double px = ray->ox - cone->apex_x;
-    double py = ray->oy - cone->apex_y;
-    double pz = ray->oz - cone->apex_z;
-
-    double k2 = cone->tan_angle_sq;
-
-    double a = ray->dy * ray->dy + ray->dz * ray->dz - k2 * ray->dx * ray->dx;
-    double b = 2.0 * (py * ray->dy + pz * ray->dz - k2 * px * ray->dx);
-    double c = py * py + pz * pz - k2 * px * px;
-
-    double t_raw[2];
-    int raw_count = 0;
-
-    if (fabs(a) < EPSILON) {
-        if (fabs(b) < EPSILON) {
-            return 0;
-        }
-        t_raw[0] = -c / b;
-        raw_count = 1;
-    } else {
-        double discriminant = b * b - 4.0 * a * c;
-        /* Allow small negative discriminant due to floating-point rounding errors */
-        if (discriminant < -1e-12) {
-            return 0;
-        }
-        if (discriminant < 0) discriminant = 0;
-        double sqrt_disc = sqrt(discriminant);
-        double inv_2a = 0.5 / a;
-        t_raw[0] = (-b - sqrt_disc) * inv_2a;
-        t_raw[1] = (-b + sqrt_disc) * inv_2a;
-        raw_count = 2;
-    }
-
-    /* Filter by sheet_selection */
-    int count = 0;
-    for (int i = 0; i < raw_count; i++) {
-        double axis_val = px + t_raw[i] * ray->dx;  /* x relative to apex */
-        if (cone->sheet_selection > 0 && axis_val < -EPSILON) continue;
-        if (cone->sheet_selection < 0 && axis_val > EPSILON) continue;
-        t_out[count++] = t_raw[i];
-    }
-
-    return count;
+                         double* restrict t_out) {
+    return ray_intersect_cone(ray, 0, cone->apex_x, cone->apex_y, cone->apex_z,
+                              cone->tan_angle_sq, cone->sheet_selection, t_out);
 }
 
 int ray_intersect_cone_y(const alea_ray_t* ray,
                          const alea_cone_y_data_t* cone,
-                         double* t_out) {
-    /* Cone along Y: (x - ax)^2 + (z - az)^2 = k^2 * (y - ay)^2 */
-    double px = ray->ox - cone->apex_x;
-    double py = ray->oy - cone->apex_y;
-    double pz = ray->oz - cone->apex_z;
+                         double* restrict t_out) {
+    return ray_intersect_cone(ray, 1, cone->apex_x, cone->apex_y, cone->apex_z,
+                              cone->tan_angle_sq, cone->sheet_selection, t_out);
+}
 
-    double k2 = cone->tan_angle_sq;
-
-    double a = ray->dx * ray->dx + ray->dz * ray->dz - k2 * ray->dy * ray->dy;
-    double b = 2.0 * (px * ray->dx + pz * ray->dz - k2 * py * ray->dy);
-    double c = px * px + pz * pz - k2 * py * py;
-
-    double t_raw[2];
-    int raw_count = 0;
-
-    if (fabs(a) < EPSILON) {
-        if (fabs(b) < EPSILON) {
-            return 0;
-        }
-        t_raw[0] = -c / b;
-        raw_count = 1;
-    } else {
-        double discriminant = b * b - 4.0 * a * c;
-        /* Allow small negative discriminant due to floating-point rounding errors */
-        if (discriminant < -1e-12) {
-            return 0;
-        }
-        if (discriminant < 0) discriminant = 0;
-        double sqrt_disc = sqrt(discriminant);
-        double inv_2a = 0.5 / a;
-        t_raw[0] = (-b - sqrt_disc) * inv_2a;
-        t_raw[1] = (-b + sqrt_disc) * inv_2a;
-        raw_count = 2;
-    }
-
-    /* Filter by sheet_selection */
-    int count = 0;
-    for (int i = 0; i < raw_count; i++) {
-        double axis_val = py + t_raw[i] * ray->dy;  /* y relative to apex */
-        if (cone->sheet_selection > 0 && axis_val < -EPSILON) continue;
-        if (cone->sheet_selection < 0 && axis_val > EPSILON) continue;
-        t_out[count++] = t_raw[i];
-    }
-
-    return count;
+int ray_intersect_cone_z(const alea_ray_t* ray,
+                         const alea_cone_z_data_t* cone,
+                         double* restrict t_out) {
+    return ray_intersect_cone(ray, 2, cone->apex_x, cone->apex_y, cone->apex_z,
+                              cone->tan_angle_sq, cone->sheet_selection, t_out);
 }
 
 /* ============================================================================
@@ -369,7 +249,7 @@ int ray_intersect_cone_y(const alea_ray_t* ray,
 
 int ray_intersect_box(const alea_ray_t* ray,
                       const alea_box_data_t* box,
-                      double* t_out) {
+                      double* restrict t_out) {
     /*
      * Slab method: intersect ray with each pair of parallel planes,
      * find overlapping interval.
@@ -378,7 +258,7 @@ int ray_intersect_box(const alea_ray_t* ray,
     double t_max = DBL_MAX;
 
     /* X slabs */
-    if (fabs(ray->dx) < EPSILON) {
+    if (fabs(ray->dx) < RAY_EPSILON) {
         if (ray->ox < box->min_x || ray->ox > box->max_x) {
             return 0;
         }
@@ -393,7 +273,7 @@ int ray_intersect_box(const alea_ray_t* ray,
     }
 
     /* Y slabs */
-    if (fabs(ray->dy) < EPSILON) {
+    if (fabs(ray->dy) < RAY_EPSILON) {
         if (ray->oy < box->min_y || ray->oy > box->max_y) {
             return 0;
         }
@@ -408,7 +288,7 @@ int ray_intersect_box(const alea_ray_t* ray,
     }
 
     /* Z slabs */
-    if (fabs(ray->dz) < EPSILON) {
+    if (fabs(ray->dz) < RAY_EPSILON) {
         if (ray->oz < box->min_z || ray->oz > box->max_z) {
             return 0;
         }
@@ -434,7 +314,7 @@ int ray_intersect_box(const alea_ray_t* ray,
 
 int ray_intersect_quadric(const alea_ray_t* ray,
                           const alea_quadric_data_t* q,
-                          double* t_out) {
+                          double* restrict t_out) {
     /*
      * Quadric: Ax^2 + By^2 + Cz^2 + Dxy + Eyz + Fxz + Gx + Hy + Iz + J = 0
      * Coefficients: q->coeffs[0..9] = A, B, C, D, E, F, G, H, I, J
@@ -461,30 +341,7 @@ int ray_intersect_quadric(const alea_ray_t* ray,
                D * ox * oy + E * oy * oz + F * ox * oz +
                G * ox + H * oy + I * oz + J;
 
-    if (fabs(a) < EPSILON) {
-        /* Linear case */
-        if (fabs(b) < EPSILON) {
-            return 0;
-        }
-        t_out[0] = -c / b;
-        return 1;
-    }
-
-    double discriminant = b * b - 4.0 * a * c;
-
-    /* Allow small negative discriminant due to floating-point rounding errors */
-    if (discriminant < -1e-12) {
-        return 0;
-    }
-    if (discriminant < 0) discriminant = 0;
-
-    double sqrt_disc = sqrt(discriminant);
-    double inv_2a = 0.5 / a;
-
-    t_out[0] = (-b - sqrt_disc) * inv_2a;
-    t_out[1] = (-b + sqrt_disc) * inv_2a;
-
-    return 2;
+    return solve_quadratic_stable(a, b, c, t_out);
 }
 
 /* ============================================================================
@@ -493,7 +350,7 @@ int ray_intersect_quadric(const alea_ray_t* ray,
 
 int ray_intersect_rcc(const alea_ray_t* ray,
                       const alea_rcc_data_t* rcc,
-                      double* t_out) {
+                      double* restrict t_out) {
     /*
      * RCC: cylinder from base to base+height with given radius.
      * Need to intersect with infinite cylinder along axis, then clip to caps.
@@ -508,7 +365,7 @@ int ray_intersect_rcc(const alea_ray_t* ray,
     double az = rcc->height_z;
     double height = sqrt(ax * ax + ay * ay + az * az);
 
-    if (height < EPSILON) {
+    if (height < RAY_EPSILON) {
         return 0;
     }
 
@@ -546,44 +403,37 @@ int ray_intersect_rcc(const alea_ray_t* ray,
     int cyl_hit_count = 0;
     double t_cyl[2];
 
-    if (fabs(A) > EPSILON) {
-        double discriminant = B * B - 4.0 * A * C;
-        if (discriminant >= 0) {
-            double sqrt_disc = sqrt(discriminant);
-            double inv_2A = 0.5 / A;
-            t_cyl[0] = (-B - sqrt_disc) * inv_2A;
-            t_cyl[1] = (-B + sqrt_disc) * inv_2A;
-            cyl_hit_count = 2;
-        }
-    }
+    cyl_hit_count = solve_quadratic_stable(A, B, C, t_cyl);
 
     /* Intersect with caps (planes at s=0 and s=height) */
     double t_cap[2];
     int cap_count = 0;
 
-    if (fabs(rd_dot_a) > EPSILON) {
+    if (fabs(rd_dot_a) > RAY_EPSILON) {
         /* Bottom cap: s = 0 */
         double t_bot = -d_dot_a / rd_dot_a;
-        /* Check if hit is inside radius */
-        double px = ray->ox + t_bot * ray->dx - rcc->base_x;
-        double py = ray->oy + t_bot * ray->dy - rcc->base_y;
-        double pz = ray->oz + t_bot * ray->dz - rcc->base_z;
-        double perp_sq = px * px + py * py + pz * pz -
-                        (px * ax + py * ay + pz * az) *
-                        (px * ax + py * ay + pz * az);
-        if (perp_sq <= rcc->radius * rcc->radius + EPSILON) {
+        /* Check if hit is inside radius using cross product (avoids cancellation near axis) */
+        double bx = ray->ox + t_bot * ray->dx - rcc->base_x;
+        double by = ray->oy + t_bot * ray->dy - rcc->base_y;
+        double bz = ray->oz + t_bot * ray->dz - rcc->base_z;
+        double cx0 = by * az - bz * ay;
+        double cy0 = bz * ax - bx * az;
+        double cz0 = bx * ay - by * ax;
+        double perp_sq = cx0 * cx0 + cy0 * cy0 + cz0 * cz0;
+        if (perp_sq <= rcc->radius * rcc->radius + RAY_EPSILON) {
             t_cap[cap_count++] = t_bot;
         }
 
         /* Top cap: s = height */
         double t_top = (height - d_dot_a) / rd_dot_a;
-        px = ray->ox + t_top * ray->dx - rcc->base_x - rcc->height_x;
-        py = ray->oy + t_top * ray->dy - rcc->base_y - rcc->height_y;
-        pz = ray->oz + t_top * ray->dz - rcc->base_z - rcc->height_z;
-        perp_sq = px * px + py * py + pz * pz -
-                 (px * ax + py * ay + pz * az) *
-                 (px * ax + py * ay + pz * az);
-        if (perp_sq <= rcc->radius * rcc->radius + EPSILON) {
+        double tx = ray->ox + t_top * ray->dx - rcc->base_x - rcc->height_x;
+        double ty = ray->oy + t_top * ray->dy - rcc->base_y - rcc->height_y;
+        double tz = ray->oz + t_top * ray->dz - rcc->base_z - rcc->height_z;
+        double cx1 = ty * az - tz * ay;
+        double cy1 = tz * ax - tx * az;
+        double cz1 = tx * ay - ty * ax;
+        perp_sq = cx1 * cx1 + cy1 * cy1 + cz1 * cz1;
+        if (perp_sq <= rcc->radius * rcc->radius + RAY_EPSILON) {
             t_cap[cap_count++] = t_top;
         }
     }
@@ -591,7 +441,7 @@ int ray_intersect_rcc(const alea_ray_t* ray,
     /* Collect valid hits: cylinder side hits that are within height bounds */
     for (int i = 0; i < cyl_hit_count; i++) {
         double s = d_dot_a + t_cyl[i] * rd_dot_a;
-        if (s >= -EPSILON && s <= height + EPSILON) {
+        if (s >= -RAY_EPSILON && s <= height + RAY_EPSILON) {
             t_out[count++] = t_cyl[i];
         }
     }
@@ -617,7 +467,7 @@ int ray_intersect_rcc(const alea_ray_t* ray,
 
 int ray_intersect_trc(const alea_ray_t* ray,
                       const alea_trc_data_t* trc,
-                      double* t_out) {
+                      double* restrict t_out) {
     /*
      * TRC: frustum from base (radius r1) to top (radius r2).
      * If r1 == r2, it's a cylinder.
@@ -631,7 +481,7 @@ int ray_intersect_trc(const alea_ray_t* ray,
     double az = trc->height_z;
     double height = sqrt(ax * ax + ay * ay + az * az);
 
-    if (height < EPSILON) {
+    if (height < RAY_EPSILON) {
         return 0;
     }
 
@@ -678,36 +528,24 @@ int ray_intersect_trc(const alea_ray_t* ray,
     double t_cone[2];
     int cone_count = 0;
 
-    if (fabs(A) > EPSILON) {
-        double discriminant = B * B - 4.0 * A * C;
-        if (discriminant >= 0) {
-            double sqrt_disc = sqrt(discriminant);
-            double inv_2A = 0.5 / A;
-            t_cone[0] = (-B - sqrt_disc) * inv_2A;
-            t_cone[1] = (-B + sqrt_disc) * inv_2A;
-            cone_count = 2;
-        }
-    } else if (fabs(B) > EPSILON) {
-        t_cone[0] = -C / B;
-        cone_count = 1;
-    }
+    cone_count = solve_quadratic_stable(A, B, C, t_cone);
 
     /* Check cone surface hits are within height bounds */
     for (int i = 0; i < cone_count; i++) {
         double s = d_dot_a + t_cone[i] * rd_dot_a;
-        if (s >= -EPSILON && s <= height + EPSILON) {
+        if (s >= -RAY_EPSILON && s <= height + RAY_EPSILON) {
             t_out[count++] = t_cone[i];
         }
     }
 
     /* Intersect with caps */
-    if (fabs(rd_dot_a) > EPSILON) {
+    if (fabs(rd_dot_a) > RAY_EPSILON) {
         /* Bottom cap */
         double t_bot = -d_dot_a / rd_dot_a;
         double px = perp_dx + t_bot * perp_rdx;
         double py = perp_dy + t_bot * perp_rdy;
         double pz = perp_dz + t_bot * perp_rdz;
-        if (px * px + py * py + pz * pz <= r1 * r1 + EPSILON) {
+        if (px * px + py * py + pz * pz <= r1 * r1 + RAY_EPSILON) {
             if (count < 2) t_out[count++] = t_bot;
         }
 
@@ -716,7 +554,7 @@ int ray_intersect_trc(const alea_ray_t* ray,
         px = perp_dx + t_top * perp_rdx;
         py = perp_dy + t_top * perp_rdy;
         pz = perp_dz + t_top * perp_rdz;
-        if (px * px + py * py + pz * pz <= r2 * r2 + EPSILON) {
+        if (px * px + py * py + pz * pz <= r2 * r2 + RAY_EPSILON) {
             if (count < 2) t_out[count++] = t_top;
         }
     }
@@ -737,7 +575,7 @@ int ray_intersect_trc(const alea_ray_t* ray,
 
 int ray_intersect_torus(const alea_ray_t* ray,
                         const alea_torus_data_t* torus,
-                        double* t_out) {
+                        double* restrict t_out) {
     /*
      * Torus intersection by quartic equation.
      *
@@ -808,7 +646,7 @@ int ray_intersect_torus(const alea_ray_t* ray,
     int n = alea_solve_quartic(c4, c3, c2, c1, c0, roots);
 
     /* Filter positive roots */
-    n = alea_filter_positive_roots(roots, n, EPSILON);
+    n = alea_filter_positive_roots(roots, n, RAY_EPSILON);
 
     if (n == 0) {
         return 0;
@@ -827,7 +665,7 @@ int ray_intersect_torus(const alea_ray_t* ray,
 int ray_intersect_primitive(const alea_ray_t* ray,
                             alea_primitive_type_t type,
                             const alea_primitive_data_t* data,
-                            double* t_out) {
+                            double* restrict t_out) {
     switch (type) {
         case ALEA_PRIMITIVE_PLANE:
             return ray_intersect_plane(ray, &data->plane, t_out, NULL, NULL, NULL);
@@ -886,11 +724,11 @@ void primitive_normal_at(alea_primitive_type_t type,
                          double* nx, double* ny, double* nz) {
     switch (type) {
         case ALEA_PRIMITIVE_PLANE: {
+            /* Planes are pre-normalized by alea_canonicalize_primitive() */
             const alea_plane_data_t* p = &data->plane;
-            double len = sqrt(p->a * p->a + p->b * p->b + p->c * p->c);
-            *nx = p->a / len;
-            *ny = p->b / len;
-            *nz = p->c / len;
+            *nx = p->a;
+            *ny = p->b;
+            *nz = p->c;
             break;
         }
 
@@ -901,7 +739,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double dy = py - s->center_y;
             double dz = pz - s->center_z;
             double len = sqrt(dx * dx + dy * dy + dz * dz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = dx / len;
                 *ny = dy / len;
                 *nz = dz / len;
@@ -916,7 +754,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double dx = px - c->center_x;
             double dy = py - c->center_y;
             double len = sqrt(dx * dx + dy * dy);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = dx / len;
                 *ny = dy / len;
                 *nz = 0;
@@ -931,7 +769,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double dy = py - c->center_y;
             double dz = pz - c->center_z;
             double len = sqrt(dy * dy + dz * dz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = 0;
                 *ny = dy / len;
                 *nz = dz / len;
@@ -946,7 +784,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double dx = px - c->center_x;
             double dz = pz - c->center_z;
             double len = sqrt(dx * dx + dz * dz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = dx / len;
                 *ny = 0;
                 *nz = dz / len;
@@ -966,7 +804,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double gy = 2.0 * dy;
             double gz = -2.0 * c->tan_angle_sq * dz;
             double len = sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
             } else {
                 *nx = 0; *ny = 0; *nz = 1;
@@ -984,7 +822,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double gy = 2.0 * dy;
             double gz = 2.0 * dz;
             double len = sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
             } else {
                 *nx = 1; *ny = 0; *nz = 0;
@@ -1002,7 +840,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double gy = -2.0 * c->tan_angle_sq * dy;
             double gz = 2.0 * dz;
             double len = sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
             } else {
                 *nx = 0; *ny = 1; *nz = 0;
@@ -1039,7 +877,7 @@ void primitive_normal_at(alea_primitive_type_t type,
             double gy = 2.0*B*py + D*px + E*pz + H;
             double gz = 2.0*C*pz + E*py + F*px + I;
             double len = sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
             } else {
                 *nx = 0; *ny = 0; *nz = 1;
@@ -1050,7 +888,7 @@ void primitive_normal_at(alea_primitive_type_t type,
         case ALEA_PRIMITIVE_TORUS_X:
         case ALEA_PRIMITIVE_TORUS_Y:
         case ALEA_PRIMITIVE_TORUS_Z: {
-            /* Numerical gradient for torus (analytical is complex) */
+            /* Analytical gradient of torus implicit equation */
             const alea_torus_data_t* t = &data->torus;
             double R = t->major_radius;
             double r = t->minor_radius;
@@ -1080,7 +918,7 @@ void primitive_normal_at(alea_primitive_type_t type,
                 gx = gx_l; gy = gz_l; gz = gy_l;
             }
             double len = sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > EPSILON) {
+            if (len > RAY_EPSILON) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
             } else {
                 *nx = 0; *ny = 0; *nz = 1;

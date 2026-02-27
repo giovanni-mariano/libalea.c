@@ -26,6 +26,10 @@
 #include <math.h>
 #include "util/math.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 
 
 
@@ -72,13 +76,74 @@ static double lcg_double(uint32_t* state) {
     return (double)lcg_next(state) / 4294967296.0;
 }
 
+/**
+ * Generate a random Cauchy-Crofton ray for volume estimation.
+ * Picks a uniform random direction and a random point on a disk of radius R
+ * perpendicular to that direction, centered at (cx,cy,cz).
+ */
+static void generate_cauchy_crofton_ray(uint32_t* rng,
+                                        double cx, double cy, double cz, double R,
+                                        double* rox, double* roy, double* roz,
+                                        double* ux, double* uy, double* uz) {
+    double phi = 2.0 * M_PI * lcg_double(rng);
+    double cos_theta = 2.0 * lcg_double(rng) - 1.0;
+    double sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    *ux = sin_theta * cos(phi);
+    *uy = sin_theta * sin(phi);
+    *uz = cos_theta;
+
+    /* Build orthonormal frame (v1, v2) perpendicular to u */
+    double tx, ty, tz;
+    if (fabs(*ux) < 0.9) { tx = 1; ty = 0; tz = 0; }
+    else                  { tx = 0; ty = 1; tz = 0; }
+    double v1x = *uy * tz - *uz * ty;
+    double v1y = *uz * tx - *ux * tz;
+    double v1z = *ux * ty - *uy * tx;
+    double v1_len = sqrt(v1x * v1x + v1y * v1y + v1z * v1z);
+    v1x /= v1_len; v1y /= v1_len; v1z /= v1_len;
+    double v2x = *uy * v1z - *uz * v1y;
+    double v2y = *uz * v1x - *ux * v1z;
+    double v2z = *ux * v1y - *uy * v1x;
+
+    double r_disk = R * sqrt(lcg_double(rng));
+    double angle = 2.0 * M_PI * lcg_double(rng);
+    double d1 = r_disk * cos(angle);
+    double d2 = r_disk * sin(angle);
+
+    *rox = cx + v1x * d1 + v2x * d2 - *ux * 2.0 * R;
+    *roy = cy + v1y * d1 + v2y * d2 - *uy * 2.0 * R;
+    *roz = cz + v1z * d1 + v2z * d2 - *uz * 2.0 * R;
+}
+
+/**
+ * Compute volume errors from accumulated track lengths and sum-of-squares.
+ */
+/**
+ * Compute relative errors from raw sum_L (volumes before scaling) and sum_L^2.
+ * Called before volumes[] are multiplied by scale.
+ */
+static void compute_volume_errors(const double* volumes, const double* sum_l2,
+                                  double* rel_errors, size_t count, int n_rays) {
+    for (size_t i = 0; i < count; i++) {
+        double mean_l = volumes[i] / (double)n_rays;
+        if (mean_l > 0.0) {
+            double mean_l2 = sum_l2[i] / (double)n_rays;
+            double var_l = mean_l2 - mean_l * mean_l;
+            if (var_l < 0.0) var_l = 0.0;
+            rel_errors[i] = sqrt(var_l) / (mean_l * sqrt((double)n_rays));
+        } else {
+            rel_errors[i] = -1.0;
+        }
+    }
+}
+
 int alea_estimate_cell_volumes(const alea_system_t* sys,
                               double ox, double oy, double oz,
                               double radius, int n_rays,
                               double* volumes, double* rel_errors) {
     if (!sys || radius <= 0.0 || n_rays <= 0 || !volumes) return -1;
 
-    /* Ensure all raycast caches are built (BVH, spatial index, adjacency) */
+    /* Ensure all raycast caches are built before parallel section */
     alea_raycast_ensure_caches(sys);
 
     size_t n_cells = alea_vec_count(&sys->cells);
@@ -98,120 +163,102 @@ int alea_estimate_cell_volumes(const alea_system_t* sys,
         if (!sum_l2) return -1;
     }
 
-    /* Per-ray track length accumulator for a single ray.
-     * Needed because one ray can cross a cell multiple times, and we need
-     * the total per-ray contribution L_i for that cell to compute L_i^2. */
-    double* ray_l = NULL;
-    if (rel_errors) {
-        ray_l = calloc(n_cells, sizeof(double));
-        if (!ray_l) { free(sum_l2); return -1; }
-    }
+    int error_flag = 0;
 
     /* Trace mu-random rays (Cauchy-Crofton):
-     *   1. Pick uniform random direction u
-     *   2. Pick uniform random point in disk of radius R perpendicular to u
-     *   3. Ray origin = disk_point - 2R * u  (starts well outside sphere)
-     *   4. Trace with t_max = 4R (covers full sphere diameter + margin)
-     *
-     * Volume formula: V_cell = pi * R^2 * (sum_track_length / n_rays)
-     * Error:  sigma_V = pi * R^2 / sqrt(N) * sqrt(E[L^2] - E[L]^2)
+     *   Volume formula: V_cell = pi * R^2 * (sum_track_length / n_rays)
+     *   Error:  sigma_V = pi * R^2 / sqrt(N) * sqrt(E[L^2] - E[L]^2)
      */
-    alea_raycast_result_t result;
-    alea_raycast_result_init(&result);
-    uint32_t rng = 42;  /* deterministic seed */
+    #pragma omp parallel
+    {
+        /* Thread-local accumulators */
+        double* local_vol = calloc(n_cells, sizeof(double));
+        double* local_l2 = rel_errors ? calloc(n_cells, sizeof(double)) : NULL;
+        double* ray_l = rel_errors ? calloc(n_cells, sizeof(double)) : NULL;
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
 
-    for (int ray = 0; ray < n_rays; ray++) {
-        /* Random unit direction */
-        double phi = 2.0 * M_PI * lcg_double(&rng);
-        double cos_theta = 2.0 * lcg_double(&rng) - 1.0;
-        double sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-        double ux = sin_theta * cos(phi);
-        double uy = sin_theta * sin(phi);
-        double uz = cos_theta;
-
-        /* Build orthonormal frame (v1, v2) perpendicular to u */
-        double tx, ty, tz;
-        if (fabs(ux) < 0.9) {
-            tx = 1; ty = 0; tz = 0;
-        } else {
-            tx = 0; ty = 1; tz = 0;
-        }
-        /* v1 = normalize(cross(u, t)) */
-        double v1x = uy * tz - uz * ty;
-        double v1y = uz * tx - ux * tz;
-        double v1z = ux * ty - uy * tx;
-        double v1_len = sqrt(v1x * v1x + v1y * v1y + v1z * v1z);
-        v1x /= v1_len; v1y /= v1_len; v1z /= v1_len;
-        /* v2 = cross(u, v1) */
-        double v2x = uy * v1z - uz * v1y;
-        double v2y = uz * v1x - ux * v1z;
-        double v2z = ux * v1y - uy * v1x;
-
-        /* Random point in disk of radius R */
-        double r_disk = R * sqrt(lcg_double(&rng));
-        double angle = 2.0 * M_PI * lcg_double(&rng);
-        double d1 = r_disk * cos(angle);
-        double d2 = r_disk * sin(angle);
-
-        /* Ray origin: center + disk offset - 2R along direction */
-        double rox = cx + v1x * d1 + v2x * d2 - ux * 2.0 * R;
-        double roy = cy + v1y * d1 + v2y * d2 - uy * 2.0 * R;
-        double roz = cz + v1z * d1 + v2z * d2 - uz * 2.0 * R;
-
-        if (ray_l) memset(ray_l, 0, n_cells * sizeof(double));
-
-        alea_raycast_result_clear(&result);
-        int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
-        if (rc != 0) {
-            /* Ray contributed L=0 to every cell — still counts for variance */
-            continue;
+        if (!local_vol || (rel_errors && (!local_l2 || !ray_l))) {
+            #pragma omp atomic
+            error_flag |= 1;
         }
 
-        /* Accumulate track lengths per cell */
-        for (size_t s = 0; s < result.segment_count; s++) {
-            int seg_cell_id = result.segments[s].cell_id;
-            if (seg_cell_id < 0) continue;
-            double len = result.segments[s].t_exit - result.segments[s].t_enter;
-            if (len <= 0) continue;
+        /* Per-thread deterministic seed */
+        int tid = 0;
+        #ifdef _OPENMP
+        tid = omp_get_thread_num();
+        #endif
+        uint32_t rng = 42 + (uint32_t)tid * 2654435761u;
 
-            int ci = alea_find_cell_by_id(sys, seg_cell_id);
-            if (ci >= 0 && (size_t)ci < n_cells) {
-                volumes[ci] += len;
-                if (ray_l) ray_l[ci] += len;
+        #pragma omp for schedule(dynamic, 16)
+        for (int ray = 0; ray < n_rays; ray++) {
+            if (error_flag) continue;
+
+            double rox, roy, roz, ux, uy, uz;
+            generate_cauchy_crofton_ray(&rng, cx, cy, cz, R,
+                                        &rox, &roy, &roz, &ux, &uy, &uz);
+
+            if (ray_l) memset(ray_l, 0, n_cells * sizeof(double));
+
+            alea_raycast_result_clear(&result);
+            int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
+            if (rc != 0) continue;
+
+            /* Accumulate track lengths per cell */
+            for (size_t s = 0; s < result.segment_count; s++) {
+                int seg_cell_id = result.segments[s].cell_id;
+                if (seg_cell_id < 0) continue;
+                double len = result.segments[s].t_exit - result.segments[s].t_enter;
+                if (len <= 0) continue;
+
+                int ci = alea_find_cell_by_id(sys, seg_cell_id);
+                if (ci >= 0 && (size_t)ci < n_cells) {
+                    local_vol[ci] += len;
+                    if (ray_l) ray_l[ci] += len;
+                }
+            }
+
+            /* Accumulate L^2 for this ray */
+            if (local_l2) {
+                for (size_t ci = 0; ci < n_cells; ci++) {
+                    local_l2[ci] += ray_l[ci] * ray_l[ci];
+                }
             }
         }
 
-        /* Accumulate L^2 for this ray */
-        if (sum_l2) {
-            for (size_t ci = 0; ci < n_cells; ci++) {
-                sum_l2[ci] += ray_l[ci] * ray_l[ci];
+        /* Merge thread-local results into global arrays */
+        #pragma omp critical
+        {
+            if (local_vol) {
+                for (size_t i = 0; i < n_cells; i++)
+                    volumes[i] += local_vol[i];
+            }
+            if (local_l2 && sum_l2) {
+                for (size_t i = 0; i < n_cells; i++)
+                    sum_l2[i] += local_l2[i];
             }
         }
+
+        alea_raycast_result_free(&result);
+        free(local_vol);
+        free(local_l2);
+        free(ray_l);
     }
-    alea_raycast_result_free(&result);
 
-    /* Convert accumulated track lengths to volumes and relative errors:
-     * V_cell = pi * R^2 * (sum_L / N)
-     * sigma_V = pi * R^2 / sqrt(N) * sqrt(E[L^2] - E[L]^2)
-     * rel_error = sigma_V / V = sqrt(E[L^2] - E[L]^2) / (E[L] * sqrt(N))  */
+    if (error_flag) {
+        free(sum_l2);
+        return -1;
+    }
+
     double scale = M_PI * R * R / (double)n_rays;
+    if (rel_errors) {
+        compute_volume_errors(volumes, sum_l2, rel_errors, n_cells, n_rays);
+    }
     for (size_t i = 0; i < n_cells; i++) {
-        double mean_l = volumes[i] / (double)n_rays;
-        if (rel_errors) {
-            if (mean_l > 0.0) {
-                double mean_l2 = sum_l2[i] / (double)n_rays;
-                double var_l = mean_l2 - mean_l * mean_l;
-                if (var_l < 0.0) var_l = 0.0;
-                rel_errors[i] = sqrt(var_l) / (mean_l * sqrt((double)n_rays));
-            } else {
-                rel_errors[i] = -1.0;
-            }
-        }
         volumes[i] *= scale;
     }
 
     free(sum_l2);
-    free(ray_l);
     return 0;
 }
 
@@ -259,7 +306,7 @@ int alea_estimate_instance_volumes(const alea_system_t* sys,
     size_t n_instances = sys->spatial_index->instance_count;
     if (n_instances == 0) return 0;
 
-    /* Ensure raycast caches */
+    /* Ensure raycast caches before parallel section */
     alea_raycast_ensure_caches(sys);
 
     /* Compute bounding sphere from spatial index global bounds */
@@ -267,139 +314,137 @@ int alea_estimate_instance_volumes(const alea_system_t* sys,
     double cx = (bounds->min_x + bounds->max_x) * 0.5;
     double cy = (bounds->min_y + bounds->max_y) * 0.5;
     double cz = (bounds->min_z + bounds->max_z) * 0.5;
-    double dx = bounds->max_x - bounds->min_x;
-    double dy = bounds->max_y - bounds->min_y;
-    double dz = bounds->max_z - bounds->min_z;
-    double R = 0.5 * sqrt(dx * dx + dy * dy + dz * dz) * 1.01;
+    double bx = bounds->max_x - bounds->min_x;
+    double by = bounds->max_y - bounds->min_y;
+    double bz = bounds->max_z - bounds->min_z;
+    double R = 0.5 * sqrt(bx * bx + by * by + bz * bz) * 1.01;
 
     if (R <= 0.0) return -1;
 
     memset(volumes, 0, n_instances * sizeof(double));
     if (rel_errors) memset(rel_errors, 0, n_instances * sizeof(double));
 
-    /* Allocate sum-of-squares and per-ray accumulators */
+    /* Allocate sum-of-squares for error estimation */
     double* sum_l2 = NULL;
-    double* ray_l = NULL;
     if (rel_errors) {
         sum_l2 = calloc(n_instances, sizeof(double));
-        ray_l = calloc(n_instances, sizeof(double));
-        if (!sum_l2 || !ray_l) { free(sum_l2); free(ray_l); return -1; }
+        if (!sum_l2) return -1;
     }
 
-    alea_raycast_result_t result;
-    alea_raycast_result_init(&result);
-    uint32_t rng = 42;
-
-    /* Pre-allocate hit buffer for spatial queries */
+    int error_flag = 0;
     size_t max_hits = 64;
-    alea_spatial_hit_t* hits = malloc(max_hits * sizeof(alea_spatial_hit_t));
-    if (!hits) {
-        free(sum_l2); free(ray_l);
-        return -1;
-    }
 
-    for (int ray = 0; ray < n_rays; ray++) {
-        /* Random unit direction */
-        double phi = 2.0 * M_PI * lcg_double(&rng);
-        double cos_theta = 2.0 * lcg_double(&rng) - 1.0;
-        double sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-        double ux = sin_theta * cos(phi);
-        double uy = sin_theta * sin(phi);
-        double uz = cos_theta;
+    #pragma omp parallel
+    {
+        /* Thread-local accumulators */
+        double* local_vol = calloc(n_instances, sizeof(double));
+        double* local_l2 = rel_errors ? calloc(n_instances, sizeof(double)) : NULL;
+        double* ray_l = rel_errors ? calloc(n_instances, sizeof(double)) : NULL;
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
+        alea_spatial_hit_t* hits = malloc(max_hits * sizeof(alea_spatial_hit_t));
 
-        /* Build orthonormal frame */
-        double tx, ty, tz;
-        if (fabs(ux) < 0.9) { tx = 1; ty = 0; tz = 0; }
-        else                 { tx = 0; ty = 1; tz = 0; }
-        double v1x = uy * tz - uz * ty;
-        double v1y = uz * tx - ux * tz;
-        double v1z = ux * ty - uy * tx;
-        double v1_len = sqrt(v1x * v1x + v1y * v1y + v1z * v1z);
-        v1x /= v1_len; v1y /= v1_len; v1z /= v1_len;
-        double v2x = uy * v1z - uz * v1y;
-        double v2y = uz * v1x - ux * v1z;
-        double v2z = ux * v1y - uy * v1x;
+        if (!local_vol || !hits || (rel_errors && (!local_l2 || !ray_l))) {
+            #pragma omp atomic
+            error_flag |= 1;
+        }
 
-        /* Random disk point */
-        double r_disk = R * sqrt(lcg_double(&rng));
-        double angle = 2.0 * M_PI * lcg_double(&rng);
-        double d1 = r_disk * cos(angle);
-        double d2 = r_disk * sin(angle);
+        /* Per-thread deterministic seed */
+        int tid = 0;
+        #ifdef _OPENMP
+        tid = omp_get_thread_num();
+        #endif
+        uint32_t rng = 42 + (uint32_t)tid * 2654435761u;
 
-        /* Ray origin */
-        double rox = cx + v1x * d1 + v2x * d2 - ux * 2.0 * R;
-        double roy = cy + v1y * d1 + v2y * d2 - uy * 2.0 * R;
-        double roz = cz + v1z * d1 + v2z * d2 - uz * 2.0 * R;
+        #pragma omp for schedule(dynamic, 16)
+        for (int ray = 0; ray < n_rays; ray++) {
+            if (error_flag) continue;
 
-        if (ray_l) memset(ray_l, 0, n_instances * sizeof(double));
+            double rox, roy, roz, ux, uy, uz;
+            generate_cauchy_crofton_ray(&rng, cx, cy, cz, R,
+                                        &rox, &roy, &roz, &ux, &uy, &uz);
 
-        alea_raycast_result_clear(&result);
-        int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
-        if (rc != 0) continue;
+            if (ray_l) memset(ray_l, 0, n_instances * sizeof(double));
 
-        /* For each segment, find the matching instance via spatial query */
-        for (size_t s = 0; s < result.segment_count; s++) {
-            int seg_cell_id = result.segments[s].cell_id;
-            if (seg_cell_id < 0) continue;
-            double len = result.segments[s].t_exit - result.segments[s].t_enter;
-            if (len <= 0) continue;
+            alea_raycast_result_clear(&result);
+            int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
+            if (rc != 0) continue;
 
-            /* Query at segment midpoint */
-            double t_mid = (result.segments[s].t_enter + result.segments[s].t_exit) * 0.5;
-            double px = rox + t_mid * ux;
-            double py = roy + t_mid * uy;
-            double pz = roz + t_mid * uz;
+            /* For each segment, find the matching instance via spatial query */
+            for (size_t s = 0; s < result.segment_count; s++) {
+                int seg_cell_id = result.segments[s].cell_id;
+                if (seg_cell_id < 0) continue;
+                double len = result.segments[s].t_exit - result.segments[s].t_enter;
+                if (len <= 0) continue;
 
-            int n_hits = alea_spatial_query_point(sys, px, py, pz, hits, max_hits);
-            if (n_hits <= 0) continue;
+                /* Query at segment midpoint */
+                double t_mid = (result.segments[s].t_enter + result.segments[s].t_exit) * 0.5;
+                double px = rox + t_mid * ux;
+                double py = roy + t_mid * uy;
+                double pz = roz + t_mid * uz;
 
-            /* Find deepest terminal instance matching the segment's cell ID */
-            int best_idx = -1;
-            int best_depth = -1;
-            for (int h = 0; h < n_hits; h++) {
-                if (!hits[h].is_terminal) continue;
-                if (hits[h].cell_id != seg_cell_id) continue;
-                if (hits[h].depth > best_depth) {
-                    best_depth = hits[h].depth;
-                    best_idx = (int)hits[h].instance_index;
+                int n_hits = alea_spatial_query_point(sys, px, py, pz, hits, max_hits);
+                if (n_hits <= 0) continue;
+
+                /* Find deepest terminal instance matching the segment's cell ID */
+                int best_idx = -1;
+                int best_depth = -1;
+                for (int h = 0; h < n_hits; h++) {
+                    if (!hits[h].is_terminal) continue;
+                    if (hits[h].cell_id != seg_cell_id) continue;
+                    if (hits[h].depth > best_depth) {
+                        best_depth = hits[h].depth;
+                        best_idx = (int)hits[h].instance_index;
+                    }
+                }
+
+                if (best_idx >= 0 && (size_t)best_idx < n_instances) {
+                    local_vol[best_idx] += len;
+                    if (ray_l) ray_l[best_idx] += len;
                 }
             }
 
-            if (best_idx >= 0 && (size_t)best_idx < n_instances) {
-                volumes[best_idx] += len;
-                if (ray_l) ray_l[best_idx] += len;
+            /* Accumulate L^2 for this ray */
+            if (local_l2) {
+                for (size_t i = 0; i < n_instances; i++) {
+                    local_l2[i] += ray_l[i] * ray_l[i];
+                }
             }
         }
 
-        /* Accumulate L^2 for this ray */
-        if (sum_l2) {
-            for (size_t i = 0; i < n_instances; i++) {
-                sum_l2[i] += ray_l[i] * ray_l[i];
+        /* Merge thread-local results into global arrays */
+        #pragma omp critical
+        {
+            if (local_vol) {
+                for (size_t i = 0; i < n_instances; i++)
+                    volumes[i] += local_vol[i];
+            }
+            if (local_l2 && sum_l2) {
+                for (size_t i = 0; i < n_instances; i++)
+                    sum_l2[i] += local_l2[i];
             }
         }
+
+        alea_raycast_result_free(&result);
+        free(local_vol);
+        free(local_l2);
+        free(ray_l);
+        free(hits);
     }
 
-    free(hits);
-    alea_raycast_result_free(&result);
+    if (error_flag) {
+        free(sum_l2);
+        return -1;
+    }
 
-    /* Convert to volumes and relative errors: V = pi * R^2 * sum_L / N */
     double scale = M_PI * R * R / (double)n_rays;
+    if (rel_errors) {
+        compute_volume_errors(volumes, sum_l2, rel_errors, n_instances, n_rays);
+    }
     for (size_t i = 0; i < n_instances; i++) {
-        double mean_l = volumes[i] / (double)n_rays;
-        if (rel_errors) {
-            if (mean_l > 0.0) {
-                double mean_l2 = sum_l2[i] / (double)n_rays;
-                double var_l = mean_l2 - mean_l * mean_l;
-                if (var_l < 0.0) var_l = 0.0;
-                rel_errors[i] = sqrt(var_l) / (mean_l * sqrt((double)n_rays));
-            } else {
-                rel_errors[i] = -1.0;
-            }
-        }
         volumes[i] *= scale;
     }
 
     free(sum_l2);
-    free(ray_l);
     return 0;
 }
