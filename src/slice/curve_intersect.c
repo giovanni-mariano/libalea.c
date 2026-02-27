@@ -143,29 +143,34 @@ bool alea_conic_to_ellipse(const alea_conic_2d_t* conic, alea_ellipse_2d_t* elli
 }
 
 /**
+ * @brief Try to convert a conic-form ellipse curve to canonical ellipse form.
+ *
+ * If the curve type is ALEA_CURVE_ELLIPSE and the conic can be converted
+ * to canonical form (center, semi-axes, angle), overwrite data.ellipse.
+ * On failure (degenerate conic), fall back to HYPERBOLA type so scanline
+ * rendering uses the conic path.
+ */
+static void finalize_conic_as_ellipse(alea_curve_2d_t* curve) {
+    if (curve->type != ALEA_CURVE_ELLIPSE) return;
+    alea_conic_2d_t conic = curve->data.conic;  /* save before union overwrite */
+    if (alea_conic_to_ellipse(&conic, &curve->data.ellipse)) {
+        /* Successfully converted — type stays ALEA_CURVE_ELLIPSE,
+         * data.ellipse is now valid for eval/scanline/bbox. */
+    } else {
+        /* Degenerate — restore conic and reclassify */
+        curve->data.conic = conic;
+        curve->type = ALEA_CURVE_HYPERBOLA;
+    }
+}
+
+/**
  * @brief Compute bounding box of a conic section
  */
-static void conic_bbox(const alea_conic_2d_t* conic, alea_curve_type_t type,
+static void conic_bbox(const alea_conic_2d_t* conic,
                        double* u_min, double* u_max,
                        double* v_min, double* v_max) {
-    /* Try to convert to ellipse for tight bounds */
-    if (type == ALEA_CURVE_ELLIPSE || type == ALEA_CURVE_ELLIPSE_ARC) {
-        alea_ellipse_2d_t ell;
-        if (alea_conic_to_ellipse(conic, &ell)) {
-            /* Ellipse bbox: center ± (a*|cos θ| + b*|sin θ|, a*|sin θ| + b*|cos θ|) */
-            double cos_t = cos(ell.angle);
-            double sin_t = sin(ell.angle);
-            double du = fabs(ell.semi_a * cos_t) + fabs(ell.semi_b * sin_t);
-            double dv = fabs(ell.semi_a * sin_t) + fabs(ell.semi_b * cos_t);
-            *u_min = ell.center[0] - du;
-            *u_max = ell.center[0] + du;
-            *v_min = ell.center[1] - dv;
-            *v_max = ell.center[1] + dv;
-            return;
-        }
-    }
-
-    /* For parabola/hyperbola or failed ellipse conversion, use large bounds */
+    /* Parabola/hyperbola: unbounded, use large extent */
+    (void)conic;
     *u_min = *v_min = -1e10;
     *u_max = *v_max = 1e10;
 }
@@ -362,80 +367,63 @@ static bool intersect_sphere(const alea_sphere_data_t* sphere,
 }
 
 /**
- * @brief Intersect infinite cylinder with slice plane
+ * @brief Intersect axis-aligned cylinder with slice plane (unified)
  *
- * Cylinder along Z: (x-cx)² + (y-cy)² = r²
+ * Cylinder equation for axis a: p² + q² = r²  (p, q = perpendicular coords)
  *
- * The intersection with an arbitrary plane is:
- * - Circle if plane is perpendicular to axis
- * - Ellipse if plane is oblique to axis
- * - Two parallel lines if plane contains the axis
- * - Empty if plane doesn't reach cylinder
+ * @param center_p  Cylinder center along first perpendicular axis
+ * @param center_q  Cylinder center along second perpendicular axis
+ * @param radius    Cylinder radius
+ * @param axis      Cylinder axis (0=X, 1=Y, 2=Z)
  */
-static bool intersect_cylinder_z(const alea_cylinder_z_data_t* cyl,
-                                 const alea_slice_plane_t* slice,
-                                 alea_curve_2d_t* curve) {
-    double axis[3] = {0, 0, 1};
+static bool intersect_cylinder(double center_p, double center_q, double radius,
+                               int axis,
+                               const alea_slice_plane_t* slice,
+                               alea_curve_2d_t* curve) {
+    /* Perpendicular coordinate indices: axis=0→{1,2}, axis=1→{0,2}, axis=2→{0,1} */
+    static const int perp[3][2] = {{1,2}, {0,2}, {0,1}};
+    int pi = perp[axis][0];
+    int qi = perp[axis][1];
 
-    /* Angle between slice normal and cylinder axis */
-    double cos_angle = fabs(v3arr_dot(slice->normal, axis));
+    /* Check perpendicular case: slice normal parallel to cylinder axis */
+    double cos_angle = fabs(slice->normal[axis]);
 
     if (cos_angle > 1.0 - EPSILON) {
-        /* Slice plane perpendicular to cylinder axis (XY plane) */
-        double z_plane = slice->origin[2];
+        /* Perpendicular cut → circle */
+        double center_3d[3];
+        center_3d[axis] = slice->origin[axis];
+        center_3d[pi] = center_p;
+        center_3d[qi] = center_q;
 
-        /* Intersection is a circle */
         curve->type = ALEA_CURVE_CIRCLE;
-        alea_plane_to_2d(slice, cyl->center_x, cyl->center_y, z_plane,
+        alea_plane_to_2d(slice, center_3d[0], center_3d[1], center_3d[2],
                        &curve->data.circle.center[0], &curve->data.circle.center[1]);
-        curve->data.circle.radius = cyl->radius;
+        curve->data.circle.radius = radius;
         return true;
     }
 
-    /* For oblique planes: result is an ellipse or hyperbola */
-    /* We use the general conic form */
+    /* General case: conic from substituting P(u,v) = O + u*U + v*V
+     * into cylinder eq: (P_p - center_p)² + (P_q - center_q)² = r² */
+    double Op = slice->origin[pi] - center_p;
+    double Oq = slice->origin[qi] - center_q;
+    double Up = slice->u_axis[pi];
+    double Uq = slice->u_axis[qi];
+    double Vp = slice->v_axis[pi];
+    double Vq = slice->v_axis[qi];
+    double r2 = radius * radius;
 
-    /* Let the slice plane be: O + u*U + v*V */
-    /* Cylinder equation: (x - cx)² + (y - cy)² = r² */
-    /* Substitute x = Ox + u*Ux + v*Vx, y = Oy + u*Uy + v*Vy */
-
-    double Ox = slice->origin[0] - cyl->center_x;
-    double Oy = slice->origin[1] - cyl->center_y;
-    double Ux = slice->u_axis[0];
-    double Uy = slice->u_axis[1];
-    double Vx = slice->v_axis[0];
-    double Vy = slice->v_axis[1];
-    double r2 = cyl->radius * cyl->radius;
-
-    /* (Ox + u*Ux + v*Vx)² + (Oy + u*Uy + v*Vy)² = r² */
-    /* Expanding: */
-    /* (Ux² + Uy²)u² + (Vx² + Vy²)v² + 2(Ux*Vx + Uy*Vy)uv */
-    /* + 2(Ox*Ux + Oy*Uy)u + 2(Ox*Vx + Oy*Vy)v + (Ox² + Oy² - r²) = 0 */
-
-    double A = Ux*Ux + Uy*Uy;
-    double B = 2*(Ux*Vx + Uy*Vy);
-    double C = Vx*Vx + Vy*Vy;
-    double D = 2*(Ox*Ux + Oy*Uy);
-    double E = 2*(Ox*Vx + Oy*Vy);
-    double F = Ox*Ox + Oy*Oy - r2;
+    double A = Up*Up + Uq*Uq;
+    double B = 2*(Up*Vp + Uq*Vq);
+    double C = Vp*Vp + Vq*Vq;
+    double D = 2*(Op*Up + Oq*Uq);
+    double E = 2*(Op*Vp + Oq*Vq);
+    double F = Op*Op + Oq*Oq - r2;
 
     if (fabs(A) < EPSILON && fabs(C) < EPSILON) {
-        /* Degenerate case: plane contains cylinder axis */
-        /* Two parallel lines at distance r from axis */
-        /* The line Bu + D*u + E*v + F = 0 with B*u*v term only */
-        /* This happens when slice plane contains the Z axis */
-        /* Lines are at u = ±r (in the plane's coordinate system) */
-
-        /* Distance from axis to plane origin in XY */
-        double dist_sq = Ox*Ox + Oy*Oy;
-        if (dist_sq > cyl->radius * cyl->radius + EPSILON) {
-            return false;  /* Plane doesn't intersect cylinder */
-        }
-
-        /* For simplicity, store as a conic that degenerates to two lines */
-        /* The general form Ox² + Oy² = r² projected gives us two parallel lines */
-        /* Actually return the conic form - scanline intersection handles it */
-        curve->type = ALEA_CURVE_HYPERBOLA;  /* Two branches = two lines in degenerate case */
+        /* Degenerate: plane contains cylinder axis */
+        double dist_sq = Op*Op + Oq*Oq;
+        if (dist_sq > r2 + EPSILON) return false;
+        curve->type = ALEA_CURVE_HYPERBOLA;
         curve->data.conic.A = A;
         curve->data.conic.B = B;
         curve->data.conic.C = C;
@@ -445,12 +433,10 @@ static bool intersect_cylinder_z(const alea_cylinder_z_data_t* cyl,
         return true;
     }
 
-    /* Check for degenerate case: plane parallel to cylinder axis.
-     * Case 1: C≈0, B≈0, E≈0 → equation is A*u² + D*u + F = 0 → vertical lines
-     * Case 2: A≈0, B≈0, D≈0 → equation is C*v² + E*v + F = 0 → horizontal lines */
+    /* Check for parallel lines (plane parallel to cylinder axis) */
     if (fabs(B) < EPSILON) {
         if (fabs(C) < EPSILON && fabs(E) < EPSILON && fabs(A) > EPSILON) {
-            /* Vertical parallel lines at u = u1 and u = u2 */
+            /* Vertical parallel lines: A*u² + D*u + F = 0 */
             double disc = D*D - 4*A*F;
             if (disc < 0) return false;
             double sqrt_disc = sqrt(disc);
@@ -466,91 +452,7 @@ static bool intersect_cylinder_z(const alea_cylinder_z_data_t* cyl,
             return true;
         }
         if (fabs(A) < EPSILON && fabs(D) < EPSILON && fabs(C) > EPSILON) {
-            /* Horizontal parallel lines at v = v1 and v = v2 */
-            double disc = E*E - 4*C*F;
-            if (disc < 0) return false;
-            double sqrt_disc = sqrt(disc);
-            double v1 = (-E - sqrt_disc) / (2*C);
-            double v2 = (-E + sqrt_disc) / (2*C);
-            curve->type = ALEA_CURVE_PARALLEL_LINES;
-            curve->data.parallel_lines.point1[0] = 0;
-            curve->data.parallel_lines.point1[1] = v1;
-            curve->data.parallel_lines.point2[0] = 0;
-            curve->data.parallel_lines.point2[1] = v2;
-            curve->data.parallel_lines.direction[0] = 1;
-            curve->data.parallel_lines.direction[1] = 0;
-            return true;
-        }
-    }
-
-    /* Store as general conic */
-    curve->type = ALEA_CURVE_ELLIPSE; /* Usually an ellipse for cylinders */
-    curve->data.conic.A = A;
-    curve->data.conic.B = B;
-    curve->data.conic.C = C;
-    curve->data.conic.D = D;
-    curve->data.conic.E = E;
-    curve->data.conic.F = F;
-
-    return true;
-}
-
-/* Similar functions for other cylinder orientations */
-static bool intersect_cylinder_x(const alea_cylinder_x_data_t* cyl,
-                                 const alea_slice_plane_t* slice,
-                                 alea_curve_2d_t* curve) {
-    double axis[3] = {1, 0, 0};
-    double cos_angle = fabs(v3arr_dot(slice->normal, axis));
-
-    if (cos_angle > 1.0 - EPSILON) {
-        /* Slice plane perpendicular to cylinder axis (YZ plane) */
-        double x_plane = slice->origin[0];
-
-        curve->type = ALEA_CURVE_CIRCLE;
-        alea_plane_to_2d(slice, x_plane, cyl->center_y, cyl->center_z,
-                       &curve->data.circle.center[0], &curve->data.circle.center[1]);
-        curve->data.circle.radius = cyl->radius;
-        return true;
-    }
-
-    /* General case: conic */
-    double Oy = slice->origin[1] - cyl->center_y;
-    double Oz = slice->origin[2] - cyl->center_z;
-    double Uy = slice->u_axis[1];
-    double Uz = slice->u_axis[2];
-    double Vy = slice->v_axis[1];
-    double Vz = slice->v_axis[2];
-    double r2 = cyl->radius * cyl->radius;
-
-    double A = Uy*Uy + Uz*Uz;
-    double B = 2*(Uy*Vy + Uz*Vz);
-    double C = Vy*Vy + Vz*Vz;
-    double D = 2*(Oy*Uy + Oz*Uz);
-    double E = 2*(Oy*Vy + Oz*Vz);
-    double F = Oy*Oy + Oz*Oz - r2;
-
-    /* Check for degenerate case: plane parallel to cylinder axis.
-     * Case 1: C≈0, B≈0, E≈0 → equation is A*u² + D*u + F = 0 → vertical lines
-     * Case 2: A≈0, B≈0, D≈0 → equation is C*v² + E*v + F = 0 → horizontal lines */
-    if (fabs(B) < EPSILON) {
-        if (fabs(C) < EPSILON && fabs(E) < EPSILON && fabs(A) > EPSILON) {
-            /* Vertical parallel lines at u = u1 and u = u2 */
-            double disc = D*D - 4*A*F;
-            if (disc < 0) return false;
-            double sqrt_disc = sqrt(disc);
-            double u1 = (-D - sqrt_disc) / (2*A);
-            double u2 = (-D + sqrt_disc) / (2*A);
-            curve->type = ALEA_CURVE_PARALLEL_LINES;
-            curve->data.parallel_lines.point1[0] = u1;
-            curve->data.parallel_lines.point1[1] = 0;
-            curve->data.parallel_lines.point2[0] = u2;
-            curve->data.parallel_lines.point2[1] = 0;
-            curve->data.parallel_lines.direction[0] = 0;
-            curve->data.parallel_lines.direction[1] = 1;
-            return true;
-        }
-        if (fabs(A) < EPSILON && fabs(D) < EPSILON && fabs(C) > EPSILON) {
-            /* Horizontal parallel lines at v = v1 and v = v2 */
+            /* Horizontal parallel lines: C*v² + E*v + F = 0 */
             double disc = E*E - 4*C*F;
             if (disc < 0) return false;
             double sqrt_disc = sqrt(disc);
@@ -574,167 +476,50 @@ static bool intersect_cylinder_x(const alea_cylinder_x_data_t* cyl,
     curve->data.conic.D = D;
     curve->data.conic.E = E;
     curve->data.conic.F = F;
-
-    return true;
-}
-
-static bool intersect_cylinder_y(const alea_cylinder_y_data_t* cyl,
-                                 const alea_slice_plane_t* slice,
-                                 alea_curve_2d_t* curve) {
-    double axis[3] = {0, 1, 0};
-    double cos_angle = fabs(v3arr_dot(slice->normal, axis));
-
-    if (cos_angle > 1.0 - EPSILON) {
-        double y_plane = slice->origin[1];
-
-        curve->type = ALEA_CURVE_CIRCLE;
-        alea_plane_to_2d(slice, cyl->center_x, y_plane, cyl->center_z,
-                       &curve->data.circle.center[0], &curve->data.circle.center[1]);
-        curve->data.circle.radius = cyl->radius;
-        return true;
-    }
-
-    /* General case */
-    double Ox = slice->origin[0] - cyl->center_x;
-    double Oz = slice->origin[2] - cyl->center_z;
-    double Ux = slice->u_axis[0];
-    double Uz = slice->u_axis[2];
-    double Vx = slice->v_axis[0];
-    double Vz = slice->v_axis[2];
-    double r2 = cyl->radius * cyl->radius;
-
-    double A = Ux*Ux + Uz*Uz;
-    double B = 2*(Ux*Vx + Uz*Vz);
-    double C = Vx*Vx + Vz*Vz;
-    double D = 2*(Ox*Ux + Oz*Uz);
-    double E = 2*(Ox*Vx + Oz*Vz);
-    double F = Ox*Ox + Oz*Oz - r2;
-
-    /* Check for degenerate case: plane parallel to cylinder axis.
-     * Case 1: C≈0, B≈0, E≈0 → equation is A*u² + D*u + F = 0 → vertical lines
-     * Case 2: A≈0, B≈0, D≈0 → equation is C*v² + E*v + F = 0 → horizontal lines */
-    if (fabs(B) < EPSILON) {
-        if (fabs(C) < EPSILON && fabs(E) < EPSILON && fabs(A) > EPSILON) {
-            /* Vertical parallel lines at u = u1 and u = u2 */
-            double disc = D*D - 4*A*F;
-            if (disc < 0) return false;
-            double sqrt_disc = sqrt(disc);
-            double u1 = (-D - sqrt_disc) / (2*A);
-            double u2 = (-D + sqrt_disc) / (2*A);
-            curve->type = ALEA_CURVE_PARALLEL_LINES;
-            curve->data.parallel_lines.point1[0] = u1;
-            curve->data.parallel_lines.point1[1] = 0;
-            curve->data.parallel_lines.point2[0] = u2;
-            curve->data.parallel_lines.point2[1] = 0;
-            curve->data.parallel_lines.direction[0] = 0;
-            curve->data.parallel_lines.direction[1] = 1;
-            return true;
-        }
-        if (fabs(A) < EPSILON && fabs(D) < EPSILON && fabs(C) > EPSILON) {
-            /* Horizontal parallel lines at v = v1 and v = v2 */
-            double disc = E*E - 4*C*F;
-            if (disc < 0) return false;
-            double sqrt_disc = sqrt(disc);
-            double v1 = (-E - sqrt_disc) / (2*C);
-            double v2 = (-E + sqrt_disc) / (2*C);
-            curve->type = ALEA_CURVE_PARALLEL_LINES;
-            curve->data.parallel_lines.point1[0] = 0;
-            curve->data.parallel_lines.point1[1] = v1;
-            curve->data.parallel_lines.point2[0] = 0;
-            curve->data.parallel_lines.point2[1] = v2;
-            curve->data.parallel_lines.direction[0] = 1;
-            curve->data.parallel_lines.direction[1] = 0;
-            return true;
-        }
-    }
-
-    curve->type = ALEA_CURVE_ELLIPSE;
-    curve->data.conic.A = A;
-    curve->data.conic.B = B;
-    curve->data.conic.C = C;
-    curve->data.conic.D = D;
-    curve->data.conic.E = E;
-    curve->data.conic.F = F;
+    finalize_conic_as_ellipse(curve);
 
     return true;
 }
 
 /**
- * @brief Intersect cone with slice plane
+ * @brief Intersect axis-aligned cone with slice plane (unified)
  *
- * Cone along Z: (x-ax)² + (y-ay)² = k²(z-az)²
+ * Cone equation for axis a: p² + q² = k²·a²  (p, q = perpendicular coords)
  *
- * Intersection is a conic section (ellipse, parabola, hyperbola, or lines).
+ * @param apex_x, apex_y, apex_z  Cone apex
+ * @param k2       tan²(half-angle)
+ * @param axis     Cone axis (0=X, 1=Y, 2=Z)
  */
-static bool intersect_cone_z(const alea_cone_z_data_t* cone,
-                             const alea_slice_plane_t* slice,
-                             alea_curve_2d_t* curve) {
-    double Ox = slice->origin[0] - cone->apex_x;
-    double Oy = slice->origin[1] - cone->apex_y;
-    double Oz = slice->origin[2] - cone->apex_z;
-    double Ux = slice->u_axis[0];
-    double Uy = slice->u_axis[1];
-    double Uz = slice->u_axis[2];
-    double Vx = slice->v_axis[0];
-    double Vy = slice->v_axis[1];
-    double Vz = slice->v_axis[2];
-    double k2 = cone->tan_angle_sq;
+static bool intersect_cone(double apex_x, double apex_y, double apex_z,
+                           double k2, int axis,
+                           const alea_slice_plane_t* slice,
+                           alea_curve_2d_t* curve) {
+    /* Perpendicular coordinate indices */
+    static const int perp[3][2] = {{1,2}, {0,2}, {0,1}};
+    int pi = perp[axis][0];
+    int qi = perp[axis][1];
 
-    /* (Ox + u*Ux + v*Vx)² + (Oy + u*Uy + v*Vy)² - k²(Oz + u*Uz + v*Vz)² = 0 */
+    double apex[3] = {apex_x, apex_y, apex_z};
+    double O[3] = {slice->origin[0] - apex[0],
+                   slice->origin[1] - apex[1],
+                   slice->origin[2] - apex[2]};
 
-    double A = Ux*Ux + Uy*Uy - k2*Uz*Uz;
-    double B = 2*(Ux*Vx + Uy*Vy - k2*Uz*Vz);
-    double C = Vx*Vx + Vy*Vy - k2*Vz*Vz;
-    double D = 2*(Ox*Ux + Oy*Uy - k2*Oz*Uz);
-    double E = 2*(Ox*Vx + Oy*Vy - k2*Oz*Vz);
-    double F = Ox*Ox + Oy*Oy - k2*Oz*Oz;
+    /* Cone: (O_p + u*U_p + v*V_p)² + (O_q + u*U_q + v*V_q)²
+     *     - k²*(O_a + u*U_a + v*V_a)² = 0 */
+    double Up = slice->u_axis[pi], Uq = slice->u_axis[qi], Ua = slice->u_axis[axis];
+    double Vp = slice->v_axis[pi], Vq = slice->v_axis[qi], Va = slice->v_axis[axis];
+    double Op = O[pi], Oq = O[qi], Oa = O[axis];
 
-    /* Classify conic by discriminant */
-    double disc = B*B - 4*A*C;
-
-    if (disc < -EPSILON) {
-        curve->type = ALEA_CURVE_ELLIPSE;
-    } else if (disc > EPSILON) {
-        curve->type = ALEA_CURVE_HYPERBOLA;
-    } else {
-        curve->type = ALEA_CURVE_PARABOLA;
-    }
-
-    curve->data.conic.A = A;
-    curve->data.conic.B = B;
-    curve->data.conic.C = C;
-    curve->data.conic.D = D;
-    curve->data.conic.E = E;
-    curve->data.conic.F = F;
-
-    return true;
-}
-
-static bool intersect_cone_x(const alea_cone_x_data_t* cone,
-                             const alea_slice_plane_t* slice,
-                             alea_curve_2d_t* curve) {
-    double Ox = slice->origin[0] - cone->apex_x;
-    double Oy = slice->origin[1] - cone->apex_y;
-    double Oz = slice->origin[2] - cone->apex_z;
-    double Ux = slice->u_axis[0];
-    double Uy = slice->u_axis[1];
-    double Uz = slice->u_axis[2];
-    double Vx = slice->v_axis[0];
-    double Vy = slice->v_axis[1];
-    double Vz = slice->v_axis[2];
-    double k2 = cone->tan_angle_sq;
-
-    /* (y-ay)² + (z-az)² - k²(x-ax)² = 0 */
-    double A = Uy*Uy + Uz*Uz - k2*Ux*Ux;
-    double B = 2*(Uy*Vy + Uz*Vz - k2*Ux*Vx);
-    double C = Vy*Vy + Vz*Vz - k2*Vx*Vx;
-    double D = 2*(Oy*Uy + Oz*Uz - k2*Ox*Ux);
-    double E = 2*(Oy*Vy + Oz*Vz - k2*Ox*Vx);
-    double F = Oy*Oy + Oz*Oz - k2*Ox*Ox;
+    double A = Up*Up + Uq*Uq - k2*Ua*Ua;
+    double B = 2*(Up*Vp + Uq*Vq - k2*Ua*Va);
+    double C = Vp*Vp + Vq*Vq - k2*Va*Va;
+    double D = 2*(Op*Up + Oq*Uq - k2*Oa*Ua);
+    double E = 2*(Op*Vp + Oq*Vq - k2*Oa*Va);
+    double F = Op*Op + Oq*Oq - k2*Oa*Oa;
 
     double disc = B*B - 4*A*C;
     curve->type = (disc < -EPSILON) ? ALEA_CURVE_ELLIPSE :
-                  (disc > EPSILON) ? ALEA_CURVE_HYPERBOLA : ALEA_CURVE_PARABOLA;
+                  (disc > EPSILON)  ? ALEA_CURVE_HYPERBOLA : ALEA_CURVE_PARABOLA;
 
     curve->data.conic.A = A;
     curve->data.conic.B = B;
@@ -742,42 +527,7 @@ static bool intersect_cone_x(const alea_cone_x_data_t* cone,
     curve->data.conic.D = D;
     curve->data.conic.E = E;
     curve->data.conic.F = F;
-
-    return true;
-}
-
-static bool intersect_cone_y(const alea_cone_y_data_t* cone,
-                             const alea_slice_plane_t* slice,
-                             alea_curve_2d_t* curve) {
-    double Ox = slice->origin[0] - cone->apex_x;
-    double Oy = slice->origin[1] - cone->apex_y;
-    double Oz = slice->origin[2] - cone->apex_z;
-    double Ux = slice->u_axis[0];
-    double Uy = slice->u_axis[1];
-    double Uz = slice->u_axis[2];
-    double Vx = slice->v_axis[0];
-    double Vy = slice->v_axis[1];
-    double Vz = slice->v_axis[2];
-    double k2 = cone->tan_angle_sq;
-
-    /* (x-ax)² + (z-az)² - k²(y-ay)² = 0 */
-    double A = Ux*Ux + Uz*Uz - k2*Uy*Uy;
-    double B = 2*(Ux*Vx + Uz*Vz - k2*Uy*Vy);
-    double C = Vx*Vx + Vz*Vz - k2*Vy*Vy;
-    double D = 2*(Ox*Ux + Oz*Uz - k2*Oy*Uy);
-    double E = 2*(Ox*Vx + Oz*Vz - k2*Oy*Vy);
-    double F = Ox*Ox + Oz*Oz - k2*Oy*Oy;
-
-    double disc = B*B - 4*A*C;
-    curve->type = (disc < -EPSILON) ? ALEA_CURVE_ELLIPSE :
-                  (disc > EPSILON) ? ALEA_CURVE_HYPERBOLA : ALEA_CURVE_PARABOLA;
-
-    curve->data.conic.A = A;
-    curve->data.conic.B = B;
-    curve->data.conic.C = C;
-    curve->data.conic.D = D;
-    curve->data.conic.E = E;
-    curve->data.conic.F = F;
+    finalize_conic_as_ellipse(curve);
 
     return true;
 }
@@ -1036,6 +786,7 @@ static bool intersect_quadric(const alea_quadric_data_t* quad,
     curve->data.conic.D = Dp;
     curve->data.conic.E = Ep;
     curve->data.conic.F = Fp;
+    finalize_conic_as_ellipse(curve);
 
     return true;
 }
@@ -1243,6 +994,7 @@ static bool intersect_rcc(const alea_rcc_data_t* rcc,
     curve->data.conic.D = D;
     curve->data.conic.E = E;
     curve->data.conic.F = F;
+    finalize_conic_as_ellipse(curve);
 
     return true;
 }
@@ -1388,6 +1140,7 @@ static bool intersect_trc(const alea_trc_data_t* trc,
     curve->data.conic.D = D;
     curve->data.conic.E = E;
     curve->data.conic.F = F;
+    finalize_conic_as_ellipse(curve);
 
     return true;
 }
@@ -1573,22 +1326,31 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
             return intersect_sphere(&data->sphere, plane, curve);
 
         case ALEA_PRIMITIVE_CYLINDER_X:
-            return intersect_cylinder_x(&data->cyl_x, plane, curve);
+            return intersect_cylinder(data->cyl_x.center_y, data->cyl_x.center_z,
+                                      data->cyl_x.radius, 0, plane, curve);
 
         case ALEA_PRIMITIVE_CYLINDER_Y:
-            return intersect_cylinder_y(&data->cyl_y, plane, curve);
+            return intersect_cylinder(data->cyl_y.center_x, data->cyl_y.center_z,
+                                      data->cyl_y.radius, 1, plane, curve);
 
         case ALEA_PRIMITIVE_CYLINDER_Z:
-            return intersect_cylinder_z(&data->cyl_z, plane, curve);
+            return intersect_cylinder(data->cyl_z.center_x, data->cyl_z.center_y,
+                                      data->cyl_z.radius, 2, plane, curve);
 
         case ALEA_PRIMITIVE_CONE_X:
-            return intersect_cone_x(&data->cone_x, plane, curve);
+            return intersect_cone(data->cone_x.apex_x, data->cone_x.apex_y,
+                                  data->cone_x.apex_z, data->cone_x.tan_angle_sq,
+                                  0, plane, curve);
 
         case ALEA_PRIMITIVE_CONE_Y:
-            return intersect_cone_y(&data->cone_y, plane, curve);
+            return intersect_cone(data->cone_y.apex_x, data->cone_y.apex_y,
+                                  data->cone_y.apex_z, data->cone_y.tan_angle_sq,
+                                  1, plane, curve);
 
         case ALEA_PRIMITIVE_CONE_Z:
-            return intersect_cone_z(&data->cone_z, plane, curve);
+            return intersect_cone(data->cone_z.apex_x, data->cone_z.apex_y,
+                                  data->cone_z.apex_z, data->cone_z.tan_angle_sq,
+                                  2, plane, curve);
 
         case ALEA_PRIMITIVE_RPP:
             return intersect_box(&data->box, plane, curve);
@@ -1703,19 +1465,14 @@ bool alea_curve_eval(const alea_curve_2d_t* curve, double t,
 
         case ALEA_CURVE_ELLIPSE:
         case ALEA_CURVE_ELLIPSE_ARC: {
-            /* Convert conic to canonical ellipse form, then evaluate */
-            alea_ellipse_2d_t ell;
-            if (!alea_conic_to_ellipse(&curve->data.conic, &ell)) {
-                return false;
-            }
-            /* Parametric: P(t) = center + a*cos(t)*u_axis + b*sin(t)*v_axis */
-            /* where u_axis = (cos θ, sin θ) and v_axis = (-sin θ, cos θ) */
-            double cos_a = cos(ell.angle);
-            double sin_a = sin(ell.angle);
+            /* Canonical form pre-computed by finalize_conic_as_ellipse */
+            const alea_ellipse_2d_t* ell = &curve->data.ellipse;
+            double cos_a = cos(ell->angle);
+            double sin_a = sin(ell->angle);
             double cos_t = cos(t);
             double sin_t = sin(t);
-            *u = ell.center[0] + ell.semi_a * cos_t * cos_a - ell.semi_b * sin_t * sin_a;
-            *v = ell.center[1] + ell.semi_a * cos_t * sin_a + ell.semi_b * sin_t * cos_a;
+            *u = ell->center[0] + ell->semi_a * cos_t * cos_a - ell->semi_b * sin_t * sin_a;
+            *v = ell->center[1] + ell->semi_a * cos_t * sin_a + ell->semi_b * sin_t * cos_a;
             return true;
         }
 
@@ -1794,7 +1551,28 @@ int alea_curve_scanline_intersect(const alea_curve_2d_t* curve,
         }
 
         case ALEA_CURVE_ELLIPSE:
-        case ALEA_CURVE_ELLIPSE_ARC:
+        case ALEA_CURVE_ELLIPSE_ARC: {
+            /* Canonical ellipse form: solve scanline intersection directly.
+             * Ellipse: ((u-cx)·cosθ + dv·sinθ)²/a² + (-(u-cx)·sinθ + dv·cosθ)²/b² = 1
+             * where dv = v_scanline - cy. This is a quadratic in du = u - cx. */
+            const alea_ellipse_2d_t* ell = &curve->data.ellipse;
+            double dv = v_scanline - ell->center[1];
+            double ct = cos(ell->angle), st = sin(ell->angle);
+            double inv_a2 = 1.0 / (ell->semi_a * ell->semi_a);
+            double inv_b2 = 1.0 / (ell->semi_b * ell->semi_b);
+
+            double qa = ct*ct*inv_a2 + st*st*inv_b2;
+            double qb = 2*dv*ct*st*(inv_a2 - inv_b2);
+            double qc = dv*dv*(st*st*inv_a2 + ct*ct*inv_b2) - 1.0;
+
+            double x1, x2;
+            int n = solve_quadratic(qa, qb, qc, &x1, &x2);
+
+            if (n >= 1) u_out[0] = ell->center[0] + x1;
+            if (n >= 2 && max_intersections > 1) u_out[1] = ell->center[0] + x2;
+            return (n > max_intersections) ? max_intersections : n;
+        }
+
         case ALEA_CURVE_PARABOLA:
         case ALEA_CURVE_HYPERBOLA: {
             /* General conic: A*u² + B*u*v + C*v² + D*u + E*v + F = 0 */
@@ -2043,10 +1821,23 @@ void alea_curve_bbox(const alea_curve_2d_t* curve,
             break;
 
         case ALEA_CURVE_ELLIPSE:
-        case ALEA_CURVE_ELLIPSE_ARC:
+        case ALEA_CURVE_ELLIPSE_ARC: {
+            /* Canonical form already stored in data.ellipse */
+            const alea_ellipse_2d_t* ell = &curve->data.ellipse;
+            double cos_t = cos(ell->angle);
+            double sin_t = sin(ell->angle);
+            double du = fabs(ell->semi_a * cos_t) + fabs(ell->semi_b * sin_t);
+            double dv = fabs(ell->semi_a * sin_t) + fabs(ell->semi_b * cos_t);
+            *u_min = ell->center[0] - du;
+            *u_max = ell->center[0] + du;
+            *v_min = ell->center[1] - dv;
+            *v_max = ell->center[1] + dv;
+            break;
+        }
+
         case ALEA_CURVE_PARABOLA:
         case ALEA_CURVE_HYPERBOLA:
-            conic_bbox(&curve->data.conic, curve->type, u_min, u_max, v_min, v_max);
+            conic_bbox(&curve->data.conic, u_min, u_max, v_min, v_max);
             break;
 
         case ALEA_CURVE_QUARTIC: {
