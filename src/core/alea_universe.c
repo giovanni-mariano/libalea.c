@@ -1599,7 +1599,7 @@ int alea_find_all_cells_at_point(const alea_system_t* sys,
     }
 
     /* Try fast spatial lookup with coherence caching.
-     * alea_spatial_find_cells_at_point will auto-build the spatial index if needed. */
+     * Will auto-build the spatial index if needed. */
     int result = alea_spatial_find_cells_at_point(sys, x, y, z, out_hits, max_hits);
     if (result >= 0) {
         if (!sys->has_lattice) return result;

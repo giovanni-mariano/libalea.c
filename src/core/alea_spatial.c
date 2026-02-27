@@ -17,14 +17,15 @@
 #include "alea_spatial.h"
 #include "alea_eval.h"
 #include "core/alea_system.h"
+#include "core/alea_surface.h"
 #include "primitives/bbox.h"
-#include "slice/curve_intersect.h"
 #include "primitives/primitive_desc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
+#include <assert.h>
 #include "util/alea_log.h"
 
 /* OpenMP removed — centroid init is too trivial to benefit from threading */
@@ -48,7 +49,9 @@
 #endif
 
 #if ALEA_USE_INTERVAL_CULLING
-static _Thread_local size_t g_interval_culls = 0;  /* Candidates skipped by interval test */
+#include "slice/curve_intersect.h"
+static _Thread_local size_t g_interval_culls = 0;
+size_t alea_spatial_get_interval_culls(void) { return g_interval_culls; }
 #endif
 
 /* ============================================================================
@@ -84,15 +87,6 @@ static bool bbox_intersects(const alea_bbox_t* a, const alea_bbox_t* b) {
            a->min_z <= b->max_z && a->max_z >= b->min_z;
 }
 
-/* Unused for now, but may be useful later
-static bool bbox_intersects_z_slice(const alea_bbox_t* bbox, double z,
-                                    double x_min, double x_max,
-                                    double y_min, double y_max) {
-    return bbox->min_z <= z && bbox->max_z >= z &&
-           bbox->min_x <= x_max && bbox->max_x >= x_min &&
-           bbox->min_y <= y_max && bbox->max_y >= y_min;
-}
-*/
 
 /* ============================================================================
  * INSTANCE COLLECTION (UNIVERSE TRAVERSAL)
@@ -126,7 +120,7 @@ static int ensure_instance_capacity(alea_spatial_index_t* idx, size_t needed) {
 /**
  * Compute bbox for a cell by examining its CSG tree
  */
-static alea_bbox_t compute_cell_bbox(const alea_system_t* sys, uint32_t cell_index) {
+static alea_bbox_t compute_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
 
     /* If cell has no geometry (void), return empty bbox */
@@ -143,7 +137,7 @@ static alea_bbox_t compute_cell_bbox(const alea_system_t* sys, uint32_t cell_ind
     /* Compute bbox properly using CSG tree traversal with halfspace awareness.
      * This handles intersections of halfspaces (like plane intersections)
      * correctly, giving finite bboxes for cells bounded by planes. */
-    alea_bbox_t bbox = alea_get_bbox((alea_system_t*)sys, cell->root_node_id);
+    alea_bbox_t bbox = alea_get_bbox(sys, cell->root_node_id);
 
     /* If still infinite or invalid, use a large default */
     if (bbox.min_x > bbox.max_x ||
@@ -476,7 +470,8 @@ static int spatial_index_build_impl(alea_system_t* sys) {
         }
     }
 
-    /* Ensure cell surface index is built (needed for slice operations) */
+    /* Ensure cell surface index is built (needed by slice curve generation
+     * which accesses cell->surface_indices after spatial queries) */
     if (alea_build_cell_surface_index(sys) != 0) {
         return -1;
     }
@@ -590,8 +585,9 @@ bool alea_spatial_index_needs_rebuild(const alea_system_t* sys) {
  * TRAVERSAL
  * ============================================================================ */
 
-/* Max BVH depth is 30 (from build) + 1 for safety */
-#define TRAVERSE_STACK_SIZE 32
+/* BVH build caps at depth 30. Each traversal step pushes at most 2 children
+ * and pops 1, so max stack depth = build depth + 2. */
+#define TRAVERSE_STACK_SIZE (MAX_DEPTH + 2)
 
 int alea_spatial_traverse(const alea_spatial_index_t* idx,
                          const alea_bbox_t* query_bbox,
@@ -626,8 +622,10 @@ int alea_spatial_traverse(const alea_spatial_index_t* idx,
             }
         } else {
             /* Internal — push right first so left is popped first */
-            if (sp < TRAVERSE_STACK_SIZE) stack[sp++] = node->right_child;
-            if (sp < TRAVERSE_STACK_SIZE) stack[sp++] = node->left_or_first;
+            assert(sp + 2 <= TRAVERSE_STACK_SIZE &&
+                   "BVH deeper than traversal stack");
+            stack[sp++] = node->right_child;
+            stack[sp++] = node->left_or_first;
         }
     }
 
@@ -644,14 +642,14 @@ static alea_spatial_index_t* get_spatial_index(const alea_system_t* sys) {
 
 typedef struct {
     const alea_system_t* sys;
-    alea_spatial_hit_t* hits;
+    alea_spatial_hit_t* restrict hits;
     size_t max_hits;
     size_t hit_count;
     bool terminal_only;
 } query_ctx_t;
 
-static void query_callback(const alea_cell_instance_t* inst, uint32_t inst_idx,
-                          void* userdata) {
+static void query_callback(const alea_cell_instance_t* restrict inst,
+                           uint32_t inst_idx, void* userdata) {
     query_ctx_t* ctx = (query_ctx_t*)userdata;
 
     if (ctx->hit_count >= ctx->max_hits) return;
@@ -659,7 +657,7 @@ static void query_callback(const alea_cell_instance_t* inst, uint32_t inst_idx,
 
     const alea_cell_entry_t* cell = &ctx->sys->cells.data[inst->cell_index];
 
-    alea_spatial_hit_t* hit = &ctx->hits[ctx->hit_count++];
+    alea_spatial_hit_t* restrict hit = &ctx->hits[ctx->hit_count++];
     hit->instance_index = inst_idx;
     hit->cell_index = inst->cell_index;
     hit->cell_id = cell->mcnp_cell_id;
@@ -678,11 +676,9 @@ int alea_spatial_query_region(const alea_system_t* sys,
 
     alea_spatial_index_t* idx = get_spatial_index(sys);
     if (!idx || !idx->built) {
-        alea_system_t* mutable_sys = (alea_system_t*)sys;
-        if (alea_spatial_index_build(mutable_sys) != 0) {
+        if (alea_spatial_index_build((alea_system_t*)sys) != 0)
             return -1;
-        }
-        idx = mutable_sys->spatial_index;
+        idx = ((alea_system_t*)sys)->spatial_index;
     }
 
     query_ctx_t ctx = {
@@ -704,11 +700,12 @@ int alea_spatial_query_slice_z(const alea_system_t* sys,
                               double y_min, double y_max,
                               alea_spatial_hit_t* out_hits,
                               size_t max_hits) {
-    /* Convert slice to thin bbox */
+    /* Convert slice to thin bbox (relative+absolute for large-coordinate robustness) */
+    double ez = fabs(z) * EPSILON + EPSILON;
     alea_bbox_t query = {
         .min_x = x_min, .max_x = x_max,
         .min_y = y_min, .max_y = y_max,
-        .min_z = z - EPSILON, .max_z = z + EPSILON
+        .min_z = z - ez, .max_z = z + ez
     };
 
     return alea_spatial_query_region(sys, &query, out_hits, max_hits);
@@ -735,18 +732,19 @@ int alea_spatial_query_point(const alea_system_t* sys,
 
     alea_spatial_index_t* idx = get_spatial_index(sys);
     if (!idx || !idx->built) {
-        alea_system_t* mutable_sys = (alea_system_t*)sys;
-        if (alea_spatial_index_build(mutable_sys) != 0) {
+        if (alea_spatial_index_build((alea_system_t*)sys) != 0)
             return -1;
-        }
-        idx = mutable_sys->spatial_index;
+        idx = ((alea_system_t*)sys)->spatial_index;
     }
 
-    /* Query with point bbox */
+    /* Query with point bbox (relative+absolute for large-coordinate robustness) */
+    double ex = fabs(x) * EPSILON + EPSILON;
+    double ey = fabs(y) * EPSILON + EPSILON;
+    double ez = fabs(z) * EPSILON + EPSILON;
     alea_bbox_t query = {
-        .min_x = x - EPSILON, .max_x = x + EPSILON,
-        .min_y = y - EPSILON, .max_y = y + EPSILON,
-        .min_z = z - EPSILON, .max_z = z + EPSILON
+        .min_x = x - ex, .max_x = x + ex,
+        .min_y = y - ey, .max_y = y + ey,
+        .min_z = z - ez, .max_z = z + ez
     };
 
     query_ctx_t ctx = {
@@ -888,7 +886,11 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
      *
      * IMPORTANT: When multiple cells fill the same universe with different
      * transforms, we must only consider instances whose parent matches the
-     * cell we found at the previous depth. */
+     * cell we found at the previous depth.
+     *
+     * NOTE: correctness depends on cell bboxes being conservative (over-
+     * approximating).  If a FILL cell's bbox is too tight, its children
+     * will be silently missed because expected_universe never advances. */
     int expected_universe = 0;  /* Start at universe 0 */
     int last_depth = -1;
     uint32_t last_cell_idx = UINT32_MAX;  /* Cell found at previous depth */
@@ -992,8 +994,7 @@ int alea_spatial_find_cells_batch(const alea_system_t* sys,
         return -1;
 
     /* Ensure spatial index is built */
-    alea_spatial_index_t* idx = sys->spatial_index;
-    if (!idx || !idx->built) {
+    if (!sys->spatial_index || !sys->spatial_index->built) {
         if (alea_spatial_index_build((alea_system_t*)sys) != 0)
             return -1;
     }
