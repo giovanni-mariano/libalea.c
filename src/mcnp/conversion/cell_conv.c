@@ -10,6 +10,7 @@
  */
 
 
+#include "alea.h"
 #include "cell_conv.h"
 #include "surface_conv.h"
 #include "mcnp/parser/geom_parser.h"
@@ -630,9 +631,18 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell) {
     int material_id = is_like_cell && params.has_mat ? params.material_id : cell->material_id;
     double density = is_like_cell && params.has_rho ? params.density : cell->density;
 
+    // Resolve MCNP material ID to material index (auto-register if missing)
+    int mat_index = ALEA_MATERIAL_VOID;
+    if (material_id != 0) {
+        mat_index = alea_find_material_by_id(sys, material_id);
+        if (mat_index < 0) {
+            mat_index = alea_add_material(sys, material_id);
+        }
+    }
+
     // Add cell to system (use _with_id for file loading - validation done after all cells loaded)
     int cell_idx = alea_add_cell_with_id(sys, cell->cell_id, root,
-                                        material_id, density,
+                                        mat_index, density,
                                         params.universe_id);
     if (cell_idx < 0) {
         return UINT32_MAX;
@@ -922,6 +932,7 @@ int alea_resolve_like_cells(alea_system_t* sys) {
         /* Inherit parameters from template if not overridden in BUT clause */
         if (!cell->has_mat && template_cell->material_id != 0) {
             cell->material_id = template_cell->material_id;
+            cell->material_index = template_cell->material_index;
         }
         if (!cell->has_rho && template_cell->density != 0.0) {
             cell->density = template_cell->density;

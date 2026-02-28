@@ -206,7 +206,9 @@ TEST(raycast_simple_geometry) {
     alea_node_id_t sphere = alea_surface_at(sys, surf_idx)->neg_node;
 
     /* Add cell */
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
 
     /* Cast ray through sphere */
     alea_raycast_result_t result;

@@ -83,6 +83,7 @@ alea_system_t* alea_system_create(void) {
     sys->next_inline_transform_id = 1;
     sys->next_auto_surface_id = 1;  // Start at 1 for auto-assigned surface IDs
     sys->next_auto_cell_id = 1;     // Start at 1 for auto-assigned cell IDs
+    sys->next_auto_material_id = 1; // Start at 1 for auto-assigned material IDs
     sys->source = ALEA_SOURCE_EMPTY;
     /* cell_refs is zero-initialized by calloc (equivalent to ALEA_VEC_INIT) */
 
@@ -237,7 +238,8 @@ void alea_system_reset(alea_system_t* sys) {
     alea_vec_clear(&sys->materials);
     alea_vec_clear(&sys->transforms);
     sys->next_inline_transform_id = 1;
-    
+    sys->next_auto_material_id = 1;
+
     // Free universe index internal arrays and clear vector
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         free(sys->universes.data[i].cell_indices);
@@ -752,10 +754,27 @@ int alea_find_cell_by_id(const alea_system_t* sys, int cell_id) {
  * loading all cells to check for duplicates.
  */
 int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
-                         int material_id, double density, int universe_id) {
+                         int material_index, double density, int universe_id) {
     if (!sys) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "alea_add_cell_with_id: system is NULL");
         return -1;
+    }
+
+    /* Resolve material index to MCNP material ID */
+    int mat_id = 0;
+    int mat_idx = -1;
+    if (material_index == ALEA_MATERIAL_VOID || material_index < 0) {
+        mat_id = 0;
+        mat_idx = -1;
+    } else {
+        if ((size_t)material_index >= alea_vec_count(&sys->materials)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "alea_add_cell_with_id: material index %d out of range (have %zu materials)",
+                material_index, alea_vec_count(&sys->materials));
+            return -1;
+        }
+        mat_id = sys->materials.data[material_index].material_id;
+        mat_idx = material_index;
     }
 
     int idx = (int)alea_vec_count(&sys->cells);
@@ -769,7 +788,8 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
     cell->mcnp_cell_id = cell_id;
     cell->root_node_id = root_node;
     cell->original_root_node_id = ALEA_NODE_ID_INVALID;
-    cell->material_id = material_id;
+    cell->material_id = mat_id;
+    cell->material_index = mat_idx;
     cell->is_mass_density = (density < 0) ? 1 : 0;
     cell->density = fabs(density);
     cell->universe_id = universe_id;
@@ -797,7 +817,7 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
  * If cell_id > 0 but already exists, logs warning and auto-assigns.
  */
 int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
-                 int material_id, double density, int universe_id) {
+                 int material_index, double density, int universe_id) {
     if (!sys) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "alea_add_cell: system is NULL");
         return -1;
@@ -828,6 +848,23 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
         sys->source = ALEA_SOURCE_PROGRAMMATIC;
     }
 
+    /* Resolve material index to MCNP material ID */
+    int mat_id = 0;
+    int mat_idx = -1;
+    if (material_index == ALEA_MATERIAL_VOID || material_index < 0) {
+        mat_id = 0;
+        mat_idx = -1;
+    } else {
+        if ((size_t)material_index >= alea_vec_count(&sys->materials)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "alea_add_cell: material index %d out of range (have %zu materials)",
+                material_index, alea_vec_count(&sys->materials));
+            return -1;
+        }
+        mat_id = sys->materials.data[material_index].material_id;
+        mat_idx = material_index;
+    }
+
     int idx = (int)alea_vec_count(&sys->cells);
     alea_cell_entry_t* cell = alea_vec_push_uninit(&sys->cells, alea_cell_entry_t);
     if (!cell) {
@@ -839,7 +876,8 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
     cell->mcnp_cell_id = final_cell_id;
     cell->root_node_id = root_node;
     cell->original_root_node_id = ALEA_NODE_ID_INVALID;
-    cell->material_id = material_id;
+    cell->material_id = mat_id;
+    cell->material_index = mat_idx;
     cell->is_mass_density = (density < 0) ? 1 : 0;
     cell->density = fabs(density);
     cell->universe_id = universe_id;

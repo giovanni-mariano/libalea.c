@@ -684,14 +684,16 @@ TEST(split_union_cell) {
     alea_node_id_t u1 = alea_create_union(sys, sA_neg, sB_neg);
     alea_node_id_t root = alea_create_union(sys, u1, sC_neg);
 
-    alea_add_cell(sys, 100, root, 1, -1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 100, root, m1, -1.0, 0);
     ASSERT_EQ((int)alea_vec_count(&sys->cells), 1);
 
     int created = alea_split_union_cells(sys);
     ASSERT_EQ(created, 3);
     ASSERT_EQ((int)alea_vec_count(&sys->cells), 3);
 
-    /* All new cells should have material 1 */
+    /* All new cells should have material 1 (MCNP ID) */
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         ASSERT_EQ(sys->cells.data[i].material_id, 1);
     }
@@ -709,7 +711,9 @@ TEST(split_no_union_cell) {
 
     alea_node_id_t root = alea_create_intersection(sys, sA_neg, sB_neg);
 
-    alea_add_cell(sys, 100, root, 2, -2.0, 0);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 100, root, m2, -2.0, 0);
     ASSERT_EQ((int)alea_vec_count(&sys->cells), 1);
 
     int created = alea_split_union_cells(sys);

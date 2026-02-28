@@ -33,12 +33,16 @@ static alea_system_t* create_test_geometry(void) {
     /* Cell 1: Sphere at origin, radius 5 */
     int s1_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere = alea_surface_at(sys, s1_idx)->neg_node;  /* interior */
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
 
     /* Cell 2: Box from (8, -3, -3) to (14, 3, 3) */
     int s2_idx = alea_box_surface(sys, 2, 8, 14, -3, 3, -3, 3);
     alea_node_id_t box = alea_surface_at(sys, s2_idx)->neg_node;  /* interior */
-    alea_add_cell(sys, 2, box, 2, -8.0, 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
+    alea_add_cell(sys, 2, box, m2, -8.0, 0);
 
     return sys;
 }
@@ -189,12 +193,16 @@ static alea_system_t* create_overlapping_geometry(void) {
     /* Cell 1: Sphere at origin, radius 5 */
     int s1_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere1 = alea_surface_at(sys, s1_idx)->neg_node;
-    alea_add_cell(sys, 1, sphere1, 1, -2.7, 0);
 
     /* Cell 2: Sphere at (3, 0, 0), radius 5 - overlaps with sphere1 */
     int s2_idx = alea_sphere_surface(sys, 2, 3, 0, 0, 5.0);
     alea_node_id_t sphere2 = alea_surface_at(sys, s2_idx)->neg_node;
-    alea_add_cell(sys, 2, sphere2, 2, -8.0, 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, sphere1, m1, -2.7, 0);
+    alea_add_cell(sys, 2, sphere2, m2, -8.0, 0);
 
     return sys;
 }
@@ -257,12 +265,16 @@ static void test_slice_nested_overlap(void) {
     /* Cell 1: Sphere r=5 at origin */
     int s1_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere1 = alea_surface_at(sys, s1_idx)->neg_node;
-    alea_add_cell(sys, 1, sphere1, 1, -2.7, 0);
 
     /* Cell 2: Sphere r=3 at origin — fully inside cell 1 */
     int s2_idx = alea_sphere_surface(sys, 2, 0, 0, 0, 3.0);
     alea_node_id_t sphere2 = alea_surface_at(sys, s2_idx)->neg_node;
-    alea_add_cell(sys, 2, sphere2, 2, -8.0, 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, sphere1, m1, -2.7, 0);
+    alea_add_cell(sys, 2, sphere2, m2, -8.0, 0);
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
@@ -313,7 +325,10 @@ static void test_slice_undefined_detection(void) {
     /* Single small sphere - leaves most of the slice undefined */
     int s_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 2.0);
     alea_node_id_t sphere = alea_surface_at(sys, s_idx)->neg_node;
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
@@ -400,7 +415,10 @@ static void test_curve_sphere(void) {
     /* Create a sphere cell at origin */
     int s_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere = alea_surface_at(sys, s_idx)->neg_node;
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
 
     /* Get curves from Z=0 slice */
     alea_slice_view_t view;
@@ -435,7 +453,10 @@ static void test_curve_box(void) {
     /* Create a box cell */
     int s_idx = alea_box_surface(sys, 1, -5, 5, -5, 5, -5, 5);
     alea_node_id_t box = alea_surface_at(sys, s_idx)->neg_node;
-    alea_add_cell(sys, 10, box, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 10, box, m1, -2.7, 0);
 
     /* Get curves from Z=0 slice */
     alea_slice_view_t view;
@@ -478,7 +499,10 @@ static void test_curve_cylinder(void) {
 
     alea_node_id_t capped = alea_intersection(sys, cyl, top);
     capped = alea_intersection(sys, capped, bot);
-    alea_add_cell(sys, 5, capped, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 5, capped, m1, -2.7, 0);
 
     /* Get curves from Z=0 slice (should produce a circle) */
     alea_slice_view_t view;
@@ -524,8 +548,11 @@ static void test_curve_two_cells(void) {
     alea_node_id_t cell1_geom = alea_intersection(sys, left, box);
     alea_node_id_t cell2_geom = alea_intersection(sys, right, box);
 
-    alea_add_cell(sys, 1, cell1_geom, 1, -1.0, 0);
-    alea_add_cell(sys, 2, cell2_geom, 2, -2.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, cell1_geom, m1, -1.0, 0);
+    alea_add_cell(sys, 2, cell2_geom, m2, -2.0, 0);
 
     /* Get curves from Z=0 slice */
     alea_slice_view_t view;

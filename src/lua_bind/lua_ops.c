@@ -118,7 +118,7 @@ static int l_system_cell(lua_State* L) {
     lua_pop(L, 1);
 
     lua_getfield(L, 2, "material");
-    int material = lua_isnil(L, -1) ? 0 : (int)lua_tointeger(L, -1);
+    int material = lua_isnil(L, -1) ? ALEA_MATERIAL_VOID : (int)lua_tointeger(L, -1);
     lua_pop(L, 1);
 
     lua_getfield(L, 2, "density");

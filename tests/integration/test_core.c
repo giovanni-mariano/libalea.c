@@ -26,7 +26,9 @@ TEST(lifecycle_reset) {
     int si = alea_box_surface(sys, 0, -1, 1, -1, 1, -1, 1);
     alea_node_id_t box = alea_halfspace(sys, si, -1);
     ASSERT_NE(box, ALEA_NODE_ID_INVALID);
-    alea_add_cell(sys, 1, box, 1, 1.0, 0);
+
+    int m1 = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, box, m1, 1.0, 0);
 
     alea_reset(sys);
     ASSERT_EQ(alea_cell_count(sys), 0);
@@ -47,7 +49,8 @@ TEST(primitive_box) {
     alea_node_id_t box = alea_halfspace(sys, si, -1);
     ASSERT_NE(box, ALEA_NODE_ID_INVALID);
 
-    int cell_idx = alea_add_cell(sys, 100, box, 5, 1.0, 0);
+    int m5 = alea_add_material(sys, 5);
+    int cell_idx = alea_add_cell(sys, 100, box, m5, 1.0, 0);
     ASSERT(cell_idx >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -67,7 +70,8 @@ TEST(primitive_sphere) {
     alea_node_id_t s = alea_halfspace(sys, si, -1);
     ASSERT_NE(s, ALEA_NODE_ID_INVALID);
 
-    int cell = alea_add_cell(sys, 1, s, 1, 1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int cell = alea_add_cell(sys, 1, s, m1, 1.0, 0);
     ASSERT(cell >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -86,7 +90,8 @@ TEST(primitive_cylinder) {
     alea_node_id_t cyl = alea_halfspace(sys, si, -1);
     ASSERT_NE(cyl, ALEA_NODE_ID_INVALID);
 
-    int cell = alea_add_cell(sys, 1, cyl, 1, 1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int cell = alea_add_cell(sys, 1, cyl, m1, 1.0, 0);
     ASSERT(cell >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -114,7 +119,8 @@ TEST(alea_union) {
     alea_node_id_t uni = alea_union(sys, s1, s2);
     ASSERT_NE(uni, ALEA_NODE_ID_INVALID);
 
-    int cell = alea_add_cell(sys, 1, uni, 1, 1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int cell = alea_add_cell(sys, 1, uni, m1, 1.0, 0);
     ASSERT(cell >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -138,7 +144,8 @@ TEST(alea_intersection) {
     alea_node_id_t inter = alea_intersection(sys, s1, s2);
     ASSERT_NE(inter, ALEA_NODE_ID_INVALID);
 
-    int cell = alea_add_cell(sys, 1, inter, 1, 1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int cell = alea_add_cell(sys, 1, inter, m1, 1.0, 0);
     ASSERT(cell >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -161,7 +168,8 @@ TEST(alea_difference) {
     alea_node_id_t diff = alea_difference(sys, outer, inner);
     ASSERT_NE(diff, ALEA_NODE_ID_INVALID);
 
-    int cell = alea_add_cell(sys, 1, diff, 1, 1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int cell = alea_add_cell(sys, 1, diff, m1, 1.0, 0);
     ASSERT(cell >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -182,7 +190,9 @@ TEST(find_all_cells) {
 
     int si = alea_sphere_surface(sys, 0, 0, 0, 0, 2.0);
     alea_node_id_t s = alea_halfspace(sys, si, -1);
-    int cell_idx = alea_add_cell(sys, 42, s, 99, 1.0, 0);
+
+    int m99 = alea_add_material(sys, 99);
+    int cell_idx = alea_add_cell(sys, 42, s, m99, 1.0, 0);
     ASSERT(cell_idx >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -205,8 +215,9 @@ TEST(overlap_detection) {
     alea_node_id_t a = alea_halfspace(sys, si1, -1);
     alea_node_id_t b = alea_halfspace(sys, si2, -1);
 
-    ASSERT(alea_add_cell(sys, 1, a, 1, 1.0, 0) >= 0);
-    ASSERT(alea_add_cell(sys, 2, b, 1, 1.0, 0) >= 0);
+    int m1 = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, a, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, b, m1, 1.0, 0) >= 0);
 
     int pairs[16];
     int count = alea_find_overlaps(sys, pairs, 8);
@@ -225,7 +236,9 @@ TEST(universe_flatten) {
 
     int si = alea_box_surface(sys, 0, -1, 1, -1, 1, -1, 1);
     alea_node_id_t box = alea_halfspace(sys, si, -1);
-    ASSERT(alea_add_cell(sys, 10, box, 1, 1.0, 1) >= 0);
+
+    int m1 = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 10, box, m1, 1.0, 1) >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
     ASSERT(alea_flatten(sys, 1) >= 0);
@@ -244,7 +257,9 @@ TEST(export_mcnp) {
 
     int si = alea_box_surface(sys, 0, 0, 1, 0, 1, 0, 1);
     alea_node_id_t box = alea_halfspace(sys, si, -1);
-    ASSERT(alea_add_cell(sys, 1, box, 1, 1.0, 0) >= 0);
+
+    int m1 = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, box, m1, 1.0, 0) >= 0);
 
     FILE* f = tmpfile();
     ASSERT_NOT_NULL(f);
@@ -265,7 +280,9 @@ TEST(void_generation) {
 
     int si = alea_box_surface(sys, 0, -1, 1, -1, 1, -1, 1);
     alea_node_id_t box = alea_halfspace(sys, si, -1);
-    ASSERT(alea_add_cell(sys, 1, box, 1, 1.0, 0) >= 0);
+
+    int m1 = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, box, m1, 1.0, 0) >= 0);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
 
@@ -285,11 +302,17 @@ TEST(stress_many_cells) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
+    /* Register materials 1..99; material 0 is void */
+    int mat_idx[100];
+    mat_idx[0] = ALEA_MATERIAL_VOID;
+    for (int i = 1; i < 100; ++i)
+        mat_idx[i] = alea_add_material(sys, i);
+
     for (int i = 0; i < 100; ++i) {
         int si = alea_sphere_surface(sys, 0, i * 3.0, 0, 0, 1.0);
         alea_node_id_t s = alea_halfspace(sys, si, -1);
         ASSERT_NE(s, ALEA_NODE_ID_INVALID);
-        ASSERT(alea_add_cell(sys, i + 1, s, i, 1.0, 0) >= 0);
+        ASSERT(alea_add_cell(sys, i + 1, s, mat_idx[i], 1.0, 0) >= 0);
     }
 
     ASSERT_EQ(alea_cell_count(sys), 100);

@@ -324,8 +324,17 @@ static int convert_cell(alea_system_t* sys,
         }
     }
 
+    /* Resolve MCNP material ID to material index (auto-register if missing) */
+    int mat_index = ALEA_MATERIAL_VOID;
+    if (material_id != 0) {
+        mat_index = alea_find_material_by_id(sys, material_id);
+        if (mat_index < 0) {
+            mat_index = alea_add_material(sys, material_id);
+        }
+    }
+
     /* Add cell to system */
-    int cell_idx = alea_add_cell(sys, id, root, material_id, density, universe);
+    int cell_idx = alea_add_cell(sys, id, root, mat_index, density, universe);
     if (cell_idx < 0) {
         ALEA_LOG_WARN("Failed to add cell %d", id);
         return -1;
@@ -409,13 +418,10 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
         return -1;
     }
 
-    /* Add material using vector (grows automatically) */
-    size_t mat_idx = alea_vec_count(&sys->materials);
-    alea_material_t* mat = alea_vec_push_uninit(&sys->materials, alea_material_t);
-    if (!mat) return -1;
-
-    memset(mat, 0, sizeof(*mat));
-    mat->material_id = id;
+    /* Register material via public API */
+    int mat_idx = alea_add_material(sys, id);
+    if (mat_idx < 0) return -1;
+    alea_material_t* mat = &sys->materials.data[mat_idx];
     if (name) mat->name = alea_strdup(name);
 
     /* Initialize nuclide array */
@@ -1084,6 +1090,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                         graveyard->mcnp_cell_id = graveyard_id;
                         graveyard->root_node_id = graveyard_root;
                         graveyard->material_id = 0;
+                        graveyard->material_index = -1;
                         graveyard->density = 0.0;
                         graveyard->imp_n = 0.0;
                         graveyard->imp_p = 0.0;
@@ -1114,7 +1121,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             synth_cell_id++;
             int idx = alea_add_cell_with_id(sys, synth_cell_id,
                                              ALEA_NODE_ID_INVALID,
-                                             0, 0.0, lat->id);
+                                             ALEA_MATERIAL_VOID, 0.0, lat->id);
             if (idx >= 0) {
                 alea_cell_entry_t* sc = &sys->cells.data[idx];
                 sc->lat_type = lat->lat_type;

@@ -48,6 +48,7 @@ typedef struct alea_cell_entry {
     uint32_t root_node_id;
     uint32_t original_root_node_id;  // Pre-TRCL root (ALEA_NODE_ID_INVALID if none)
     int material_id;
+    int material_index;     /* Index into sys->materials (-1 for void) */
     double density;
 
     // Particle importances
@@ -131,13 +132,13 @@ int alea_find_cell_by_id(const alea_system_t* sys, int cell_id);
  * @param sys CSG system
  * @param cell_id Requested cell ID (0 or negative for auto-assign)
  * @param root_node Root node of CSG tree
- * @param material_id Material ID (0 for void)
+ * @param material_index Material index from alea_add_material(), or ALEA_MATERIAL_VOID
  * @param density Density (g/cm3, negative for atom density)
  * @param universe_id Universe this cell belongs to
  * @return Result with cell index, or error code
  */
 int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
-                 int material_id, double density, int universe_id);
+                 int material_index, double density, int universe_id);
 
 /**
  * @brief Add a cell with explicit ID (for file loading)
@@ -148,13 +149,13 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
  * @param sys CSG system
  * @param cell_id Cell ID
  * @param root_node Root node of CSG tree
- * @param material_id Material ID (0 for void)
+ * @param material_index Material index from alea_add_material(), or ALEA_MATERIAL_VOID
  * @param density Density (g/cm3, negative for atom density)
  * @param universe_id Universe this cell belongs to
  * @return Cell index, or -1 on error
  */
 int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
-                         int material_id, double density, int universe_id);
+                         int material_index, double density, int universe_id);
 
 /**
  * @brief Validate that all cell IDs are unique

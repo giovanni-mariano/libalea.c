@@ -56,9 +56,13 @@ int main(void) {
     alea_node_id_t sphere1 = alea_surface_at(sys, s1)->neg_node;
     alea_node_id_t sphere2 = alea_surface_at(sys, s2)->neg_node;
 
+    /* Register materials */
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
     /* Add cells using copied node IDs - both in universe 0 */
-    int cell1_idx = alea_add_cell(sys, 1, sphere1, 1, 1.0, 0);
-    int cell2_idx = alea_add_cell(sys, 2, sphere2, 2, 2.0, 0);
+    int cell1_idx = alea_add_cell(sys, 1, sphere1, m1, 1.0, 0);
+    int cell2_idx = alea_add_cell(sys, 2, sphere2, m2, 2.0, 0);
 
     if (cell1_idx < 0 || cell2_idx < 0) {
         printf("[%s] Failed to add cells\n", FAIL);

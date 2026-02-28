@@ -36,6 +36,8 @@
 /* void_result_t is forward-declared in alea_types.h */
 
 
+#define ALEA_MATERIAL_VOID (-1)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -388,7 +390,7 @@ alea_node_id_t alea_intersection_n(alea_system_t* sys, const alea_node_id_t* nod
  * ============================================================================ */
 
 int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root,
-                      int material, double density, int universe);
+                      int material_index, double density, int universe);
 int alea_set_fill(alea_system_t* sys, int cell_index, int fill_universe, int transform);
 
 /* ============================================================================
@@ -642,6 +644,26 @@ alea_log_level_t alea_log_get_level(void);
 /* ============================================================================
  * MATERIAL OPERATIONS
  * ============================================================================ */
+
+/**
+ * @brief Register a material in the system
+ *
+ * Creates an empty material entry and returns its index. Use
+ * alea_material_add_nuclide() etc. on sys->materials.data[index] to populate.
+ *
+ * @param sys System
+ * @param material_id MCNP-style material ID (0 or negative for auto-assign)
+ * @return Material index (>= 0), or -1 on error
+ */
+int alea_add_material(alea_system_t* sys, int material_id);
+
+/**
+ * @brief Find a material by its MCNP ID
+ * @param sys System
+ * @param material_id MCNP material ID to search for
+ * @return Material index (>= 0), or -1 if not found
+ */
+int alea_find_material_by_id(const alea_system_t* sys, int material_id);
 
 /**
  * @brief Create a mixture of materials

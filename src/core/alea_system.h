@@ -261,6 +261,9 @@ typedef struct alea_system {
     // Auto-assigned surface ID counter (for programmatic surface creation)
     int next_auto_surface_id;
 
+    // Auto-assigned material ID counter (for programmatic material creation)
+    int next_auto_material_id;
+
     // Universe index (built after cell conversion)
     alea_universe_vec_t universes;
     universe_hashmap_t  universe_index;  // O(1) universe_id -> vec index

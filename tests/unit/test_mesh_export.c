@@ -28,7 +28,10 @@ static alea_system_t *create_sphere_scene(void) {
 
     int s1 = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere = alea_surface_at(sys, s1)->neg_node;
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
 
     alea_build_universe_index(sys);
     return sys;

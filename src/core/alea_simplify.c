@@ -2372,7 +2372,7 @@ int alea_split_union_cells(alea_system_t* sys) {
         }
 
         /* Save cell properties before creating new cells (vector may realloc) */
-        int material_id = cell->material_id;
+        int material_index = cell->material_index;
         double density = cell->density;
         unsigned int is_mass_density = cell->is_mass_density;
         int universe_id = cell->universe_id;
@@ -2386,7 +2386,7 @@ int alea_split_union_cells(alea_system_t* sys) {
         /* Create one new cell per branch */
         for (size_t b = 0; b < branches->count; b++) {
             int idx = alea_add_cell(sys, 0, branches->nodes[b],
-                                   material_id, density, universe_id);
+                                   material_index, density, universe_id);
             if (idx >= 0) {
                 alea_cell_entry_t* new_cell = &sys->cells.data[idx];
                 new_cell->is_mass_density = is_mass_density;

@@ -846,7 +846,7 @@ int alea_void_add_cells(alea_system_t* sys, void_result_t* result) {
     for (size_t i = 0; i < result->void_node_count; i++) {
         ALEA_CHECK_INTERRUPTED(-1);
         if (result->void_nodes[i] != ALEA_NODE_ID_INVALID) {
-            int cell_idx = alea_add_cell(sys, next_cell_id++, result->void_nodes[i], 0, 0.0, 0);
+            int cell_idx = alea_add_cell(sys, next_cell_id++, result->void_nodes[i], ALEA_MATERIAL_VOID, 0.0, 0);
             if (cell_idx >= 0) {
                 cells_added++;
             }

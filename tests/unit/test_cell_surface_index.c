@@ -56,7 +56,7 @@ static int test_single_cell_single_surface(void) {
 
     int s1_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t s1 = alea_surface_at(sys, s1_idx)->pos_node;
-    alea_add_cell(sys, 1, s1, 0, 0.0, 0);
+    alea_add_cell(sys, 1, s1, ALEA_MATERIAL_VOID, 0.0, 0);
 
     int rc = alea_build_cell_surface_index(sys);
     int ok = (rc == 0 &&
@@ -81,7 +81,7 @@ static int test_single_cell_multiple_surfaces(void) {
     alea_node_id_t s2 = alea_surface_at(sys, s2_idx)->pos_node;
 
     alea_node_id_t region = alea_create_intersection(sys, s1, s2);
-    alea_add_cell(sys, 1, region, 0, 0.0, 0);
+    alea_add_cell(sys, 1, region, ALEA_MATERIAL_VOID, 0.0, 0);
 
     int rc = alea_build_cell_surface_index(sys);
     int ok = (rc == 0 &&
@@ -110,14 +110,14 @@ static int test_multiple_cells_shared_surfaces(void) {
 
     // Cell 1: s1 AND s2 -> 2 surfaces
     alea_node_id_t region1 = alea_create_intersection(sys, s1, s2);
-    alea_add_cell(sys, 1, region1, 0, 0.0, 0);
+    alea_add_cell(sys, 1, region1, ALEA_MATERIAL_VOID, 0.0, 0);
 
     // Cell 2: s1 AND s3 -> 2 surfaces
     alea_node_id_t region2 = alea_create_intersection(sys, s1, s3);
-    alea_add_cell(sys, 2, region2, 0, 0.0, 0);
+    alea_add_cell(sys, 2, region2, ALEA_MATERIAL_VOID, 0.0, 0);
 
     // Cell 3: just s2 -> 1 surface
-    alea_add_cell(sys, 3, s2, 0, 0.0, 0);
+    alea_add_cell(sys, 3, s2, ALEA_MATERIAL_VOID, 0.0, 0);
 
     int rc = alea_build_cell_surface_index(sys);
 
@@ -155,7 +155,7 @@ static int test_complex_csg_tree(void) {
     alea_node_id_t r3 = alea_create_complement(sys, s4);
     alea_node_id_t region = alea_create_intersection(sys, r2, r3);
 
-    alea_add_cell(sys, 1, region, 0, 0.0, 0);
+    alea_add_cell(sys, 1, region, ALEA_MATERIAL_VOID, 0.0, 0);
 
     int rc = alea_build_cell_surface_index(sys);
 
@@ -178,7 +178,7 @@ static int test_rebuild_index(void) {
 
     int s1_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t s1 = alea_surface_at(sys, s1_idx)->pos_node;
-    alea_add_cell(sys, 1, s1, 0, 0.0, 0);
+    alea_add_cell(sys, 1, s1, ALEA_MATERIAL_VOID, 0.0, 0);
 
     // Build first time
     int rc1 = alea_build_cell_surface_index(sys);
@@ -209,7 +209,7 @@ static int test_no_duplicate_surfaces(void) {
 
     // Use same surface twice in tree: s1 AND s1 (weird but possible)
     alea_node_id_t region = alea_create_intersection(sys, s1, s1);
-    alea_add_cell(sys, 1, region, 0, 0.0, 0);
+    alea_add_cell(sys, 1, region, ALEA_MATERIAL_VOID, 0.0, 0);
 
     int rc = alea_build_cell_surface_index(sys);
 
@@ -233,7 +233,10 @@ static int test_raycast_cell_aware_basic(void) {
     // neg_node gives interior (sense=-1)
     int s1_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t inside_s1 = alea_surface_at(sys, s1_idx)->neg_node;
-    alea_add_cell(sys, 1, inside_s1, 1, 1.0, 0);  // interior of sphere
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, inside_s1, m1, 1.0, 0);  // interior of sphere
 
     // Build universe index first (needed for find_all_cells)
     alea_build_universe_index(sys);
@@ -291,8 +294,11 @@ static int test_raycast_cell_aware_multiple(void) {
     alea_node_id_t inside_s1 = alea_surface_at(sys, s1_idx)->neg_node;
     alea_node_id_t inside_s2 = alea_surface_at(sys, s2_idx)->neg_node;
 
-    alea_add_cell(sys, 1, inside_s1, 1, 1.0, 0);
-    alea_add_cell(sys, 2, inside_s2, 2, 2.0, 0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, inside_s1, m1, 1.0, 0);
+    alea_add_cell(sys, 2, inside_s2, m2, 2.0, 0);
 
     alea_build_universe_index(sys);
     alea_build_cell_surface_index(sys);

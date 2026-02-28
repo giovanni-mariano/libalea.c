@@ -63,7 +63,10 @@ static alea_system_t* build_single_sphere(void) {
     alea_system_t* sys = alea_create();
     int si = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t interior = alea_halfspace(sys, si, -1);
-    alea_add_cell(sys, 1, interior, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, interior, m1, -2.7, 0);
     return sys;
 }
 
@@ -73,6 +76,11 @@ static alea_system_t* build_single_sphere(void) {
  */
 static alea_system_t* build_concentric_shells(int n_shells) {
     alea_system_t* sys = alea_create();
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    int m3 = alea_add_material(sys, 3);
+    int mats[3] = {m1, m2, m3};
 
     alea_node_id_t prev_inner = 0;
     for (int i = 0; i < n_shells; i++) {
@@ -88,7 +96,7 @@ static alea_system_t* build_concentric_shells(int n_shells) {
                 alea_sphere_surface(sys, 100 + i, 0, 0, 0, 1.0 + (i - 1) * 0.5), +1);
             region = alea_intersection(sys, inside, outside_prev);
         }
-        alea_add_cell(sys, i + 1, region, (i % 3) + 1, -2.7, 0);
+        alea_add_cell(sys, i + 1, region, mats[i % 3], -2.7, 0);
         prev_inner = inside;
     }
     (void)prev_inner;
@@ -104,6 +112,11 @@ static alea_system_t* build_box_grid(int n) {
     int surf_id = 1;
     int cell_id = 1;
 
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    int m3 = alea_add_material(sys, 3);
+    int mats[3] = {m1, m2, m3};
+
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             for (int k = 0; k < n; k++) {
@@ -115,7 +128,7 @@ static alea_system_t* build_box_grid(int n) {
                                           x0, x1, y0, y1, z0, z1);
                 alea_node_id_t inside = alea_halfspace(sys, si, -1);
                 alea_add_cell(sys, cell_id++, inside,
-                              ((i + j + k) % 3) + 1, -2.7, 0);
+                              mats[(i + j + k) % 3], -2.7, 0);
             }
         }
     }
@@ -130,6 +143,9 @@ static alea_system_t* build_mixed_primitives(int n_spheres) {
     int surf_id = 1;
     int cell_id = 1;
 
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
     /* Scatter spheres */
     for (int i = 0; i < n_spheres; i++) {
         double angle = 2.0 * M_PI * i / n_spheres;
@@ -137,7 +153,7 @@ static alea_system_t* build_mixed_primitives(int n_spheres) {
         double cy = 10.0 * sin(angle);
         int si = alea_sphere_surface(sys, surf_id++, cx, cy, 0, 1.5);
         alea_node_id_t inside = alea_halfspace(sys, si, -1);
-        alea_add_cell(sys, cell_id++, inside, 1, -2.7, 0);
+        alea_add_cell(sys, cell_id++, inside, m1, -2.7, 0);
     }
 
     /* Central cylinder */
@@ -152,7 +168,7 @@ static alea_system_t* build_mixed_primitives(int n_spheres) {
 
     alea_node_id_t capped = alea_intersection(sys,
         alea_intersection(sys, cyl_in, below_top), above_bot);
-    alea_add_cell(sys, cell_id++, capped, 2, -8.0, 0);
+    alea_add_cell(sys, cell_id++, capped, m2, -8.0, 0);
 
     return sys;
 }

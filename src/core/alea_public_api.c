@@ -875,10 +875,12 @@ alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) 
         }
 
         int idx = alea_add_cell(extracted, cell->mcnp_cell_id, new_root,
-                               cell->material_id, cell->density, cell->universe_id);
+                               ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
         if (idx >= 0) {
             /* Copy additional cell fields */
             alea_cell_entry_t* dst_cell = &extracted->cells.data[idx];
+            dst_cell->material_id = cell->material_id;
+            dst_cell->material_index = cell->material_index;
             dst_cell->is_mass_density = cell->is_mass_density;
             dst_cell->original_root_node_id = cell->original_root_node_id;
             dst_cell->imp_n = cell->imp_n;
@@ -1388,6 +1390,45 @@ int alea_void_merge(alea_system_t* sys, void_result_t* result) {
  * MATERIAL OPERATIONS
  * ============================================================================ */
 
+int alea_add_material(alea_system_t* sys, int material_id) {
+    if (!sys) return -1;
+
+    int final_id;
+    if (material_id <= 0) {
+        final_id = sys->next_auto_material_id++;
+    } else {
+        /* Check for duplicate MCNP ID */
+        if (alea_find_material_by_id(sys, material_id) >= 0) {
+            ALEA_LOG_WARN("Material ID %d already exists, auto-assigning new ID %d",
+                         material_id, sys->next_auto_material_id);
+            final_id = sys->next_auto_material_id++;
+        } else {
+            final_id = material_id;
+            if (material_id >= sys->next_auto_material_id) {
+                sys->next_auto_material_id = material_id + 1;
+            }
+        }
+    }
+
+    int idx = (int)alea_vec_count(&sys->materials);
+    alea_material_t* mat = alea_vec_push_uninit(&sys->materials, alea_material_t);
+    if (!mat) return -1;
+
+    memset(mat, 0, sizeof(*mat));
+    mat->material_id = final_id;
+    return idx;
+}
+
+int alea_find_material_by_id(const alea_system_t* sys, int material_id) {
+    if (!sys) return -1;
+    for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
+        if (sys->materials.data[i].material_id == material_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 int alea_create_mixture(alea_system_t* sys, const int* mat_ids,
                             const double* fractions, size_t count, int new_mat_id) {
     if (!sys || !mat_ids || !fractions || count == 0) return -1;
@@ -1454,10 +1495,12 @@ alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* 
                                                           cell->root_node_id, remap);
 
         int idx = alea_add_cell(extracted, cell->mcnp_cell_id, new_root,
-                               cell->material_id, cell->density, cell->universe_id);
+                               ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
         if (idx >= 0) {
             /* Copy additional cell fields */
             alea_cell_entry_t* dst_cell = &extracted->cells.data[idx];
+            dst_cell->material_id = cell->material_id;
+            dst_cell->material_index = cell->material_index;
             dst_cell->is_mass_density = cell->is_mass_density;
             dst_cell->original_root_node_id = cell->original_root_node_id;
             dst_cell->imp_n = cell->imp_n;

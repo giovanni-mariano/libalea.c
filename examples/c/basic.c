@@ -50,8 +50,11 @@ int main(void) {
     /* Subtract cylinder from sphere: sphere AND NOT(cylinder) */
     alea_node_id_t region = alea_difference(sys, outer, hole);
 
-    /* Add as cell 1 with material 1, density 10.0 g/cc, universe 0 */
-    int cell_idx = alea_add_cell(sys, 1, region, 1, 10.0, 0);
+    /* Register material 1 (fuel) */
+    int m1 = alea_add_material(sys, 1);
+
+    /* Add as cell 1 with material m1, density 10.0 g/cc, universe 0 */
+    int cell_idx = alea_add_cell(sys, 1, region, m1, 10.0, 0);
     if (cell_idx < 0) {
         fprintf(stderr, "Failed to add cell\n");
         alea_destroy(sys);

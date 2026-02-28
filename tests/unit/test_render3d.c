@@ -28,12 +28,16 @@ static alea_system_t* create_test_scene(void) {
     /* Cell 1: Sphere at origin, radius 5 */
     int s1 = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere = alea_surface_at(sys, s1)->neg_node;
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
 
     /* Cell 2: Box from (10,-3,-3) to (16,3,3) */
     int s2 = alea_box_surface(sys, 2, 10, 16, -3, 3, -3, 3);
     alea_node_id_t box = alea_surface_at(sys, s2)->neg_node;
-    alea_add_cell(sys, 2, box, 2, -8.0, 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
+    alea_add_cell(sys, 2, box, m2, -8.0, 0);
 
     alea_build_universe_index(sys);
     alea_build_spatial_index(sys);
@@ -477,7 +481,10 @@ TEST(clip_plane_cuts_geometry) {
 
     int s = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
     alea_node_id_t sphere = alea_surface_at(sys, s)->neg_node;
-    alea_add_cell(sys, 1, sphere, 1, -2.7, 0);
+
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
     alea_build_universe_index(sys);
     alea_build_spatial_index(sys);
 

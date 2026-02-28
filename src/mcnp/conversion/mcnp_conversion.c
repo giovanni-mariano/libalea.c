@@ -9,6 +9,7 @@
  * Converts MCNP geometry, materials, and transforms into a alea_system_t
  * using automatic deduplication and dynamic array growth.
  */
+#include "alea.h"
 #include "mcnp/parser/mcnp_parser.h"
 #include "surface_conv.h"
 #include "cell_conv.h"
@@ -110,12 +111,10 @@ static int convert_material(alea_system_t* sys, const mcnp_material_t* mcnp_mat)
     ALEA_LOG_INFO("Converting material M%d", mcnp_mat->material_id);
     ALEA_LOG_INFO("Material count: %zu\n", alea_vec_count(&sys->materials));
 
-    /* Allocate new material slot (vector grows automatically) */
-    alea_material_t* mat = alea_vec_push_uninit(&sys->materials, alea_material_t);
-    if (!mat) return -1;
-
-    memset(mat, 0, sizeof(alea_material_t));
-    mat->material_id = mcnp_mat->material_id;
+    /* Register material via public API */
+    int mat_idx = alea_add_material(sys, mcnp_mat->material_id);
+    if (mat_idx < 0) return -1;
+    alea_material_t* mat = &sys->materials.data[mat_idx];
 
     /* Initialize arrays with initial capacity */
     mat->nuclide_capacity = 8;
@@ -440,9 +439,19 @@ alea_system_t* mcnp_convert_file(const char* filename) {
 
        
 
-    // Build surface lookup table 
+    // Build surface lookup table
     alea_build_surface_lookup(sys);
-    
+
+    // Convert all materials (before cells, so cell conversion can resolve material indices)
+    ALEA_LOG_INFO("\nConverting materials...\n");
+    for (size_t i = 0; i < mcnp->material_count; i++) {
+        if (g_alea_interrupted) goto interrupted;
+        if (convert_material(sys, mcnp->materials[i]) < 0) {
+            ALEA_LOG_WARN("Warning: Failed to convert material M%d\n",
+                    mcnp->materials[i]->material_id);
+        }
+    }
+
     // Convert all cells
     ALEA_LOG_INFO("\nConverting cells...\n");
     for (size_t i = 0; i < mcnp->cell_count; i++) {
@@ -499,16 +508,6 @@ alea_system_t* mcnp_convert_file(const char* filename) {
     int vacuum_count = detect_vacuum_boundaries(sys);
     if (vacuum_count > 0) {
         ALEA_LOG_INFO("Marked %d vacuum boundary surfaces\n", vacuum_count);
-    }
-
-    // Convert all materials
-    ALEA_LOG_INFO("\nConverting materials...\n");
-    for (size_t i = 0; i < mcnp->material_count; i++) {
-        if (g_alea_interrupted) goto interrupted;
-        if (convert_material(sys, mcnp->materials[i]) < 0) {
-            ALEA_LOG_WARN("Warning: Failed to convert material M%d\n",
-                    mcnp->materials[i]->material_id);
-        }
     }
     
     

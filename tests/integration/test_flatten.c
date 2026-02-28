@@ -43,16 +43,22 @@ TEST(flatten_nested_universes) {
     /* Universe 1: Two spheres at different positions */
     int si1 = alea_sphere_surface(sys, 0, -3, 0, 0, 2.0);
     alea_node_id_t s1 = alea_halfspace(sys, si1, -1);
-    ASSERT(alea_add_cell(sys, 10, s1, 1, -1.0, 1) >= 0);
 
     int si2 = alea_sphere_surface(sys, 0, 3, 0, 0, 2.0);
     alea_node_id_t s2 = alea_halfspace(sys, si2, -1);
-    ASSERT(alea_add_cell(sys, 11, s2, 2, -1.0, 1) >= 0);
 
     /* Universe 0: Container with FILL */
     int sib = alea_box_surface(sys, 0, -10, 10, -10, 10, -10, 10);
     alea_node_id_t box = alea_halfspace(sys, sib, -1);
-    int cell1_idx = alea_add_cell(sys, 1, box, 0, 0.0, 0);
+
+    /* Register materials */
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    ASSERT(alea_add_cell(sys, 10, s1, m1, -1.0, 1) >= 0);
+    ASSERT(alea_add_cell(sys, 11, s2, m2, -1.0, 1) >= 0);
+
+    int cell1_idx = alea_add_cell(sys, 1, box, ALEA_MATERIAL_VOID, 0.0, 0);
     ASSERT(cell1_idx >= 0);
     ASSERT_EQ(alea_set_cell_fill(sys, cell1_idx, 1, 0), 0);
 
@@ -99,12 +105,17 @@ TEST(flatten_simple_fill) {
     /* Universe 1: single sphere */
     int si = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
     alea_node_id_t s = alea_halfspace(sys, si, -1);
-    ASSERT(alea_add_cell(sys, 10, s, 1, -1.0, 1) >= 0);
 
     /* Universe 0: container with fill */
     int sib = alea_box_surface(sys, 0, -10, 10, -10, 10, -10, 10);
     alea_node_id_t box = alea_halfspace(sys, sib, -1);
-    int cell_idx = alea_add_cell(sys, 1, box, 0, 0.0, 0);
+
+    /* Register materials */
+    int m1 = alea_add_material(sys, 1);
+
+    ASSERT(alea_add_cell(sys, 10, s, m1, -1.0, 1) >= 0);
+
+    int cell_idx = alea_add_cell(sys, 1, box, ALEA_MATERIAL_VOID, 0.0, 0);
     ASSERT(cell_idx >= 0);
     ASSERT_EQ(alea_set_cell_fill(sys, cell_idx, 1, 0), 0);
 
@@ -142,16 +153,22 @@ TEST(flatten_removes_empty_cells) {
     /* Universe 1: two spheres, one far away */
     int siA = alea_sphere_surface(sys, 0, 0, 0, 0, 1.0);
     alea_node_id_t sA = alea_halfspace(sys, siA, -1);
-    ASSERT(alea_add_cell(sys, 10, sA, 1, -1.0, 1) >= 0);
 
     int siB = alea_sphere_surface(sys, 0, 100, 0, 0, 1.0);
     alea_node_id_t sB = alea_halfspace(sys, siB, -1);
-    ASSERT(alea_add_cell(sys, 11, sB, 2, -2.0, 1) >= 0);
 
     /* Universe 0: parent sphere filled with universe 1 */
     int sip = alea_sphere_surface(sys, 0, 0, 0, 0, 3.0);
     alea_node_id_t parent = alea_halfspace(sys, sip, -1);
-    int cell_idx = alea_add_cell(sys, 1, parent, 0, 0.0, 0);
+
+    /* Register materials */
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    ASSERT(alea_add_cell(sys, 10, sA, m1, -1.0, 1) >= 0);
+    ASSERT(alea_add_cell(sys, 11, sB, m2, -2.0, 1) >= 0);
+
+    int cell_idx = alea_add_cell(sys, 1, parent, ALEA_MATERIAL_VOID, 0.0, 0);
     ASSERT(cell_idx >= 0);
     ASSERT_EQ(alea_set_cell_fill(sys, cell_idx, 1, 0), 0);
 

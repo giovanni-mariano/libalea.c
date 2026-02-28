@@ -103,7 +103,9 @@ static alea_system_t* create_tetrahedron(void) {
     alea_node_id_t i2 = alea_intersection(sys, pz, pd);
     alea_node_id_t root = alea_intersection(sys, i1, i2);
 
-    alea_add_cell(sys, 1, root, 1, -1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, root, m1, -1.0, 0);
     alea_build_universe_index(sys);
     return sys;
 }
@@ -166,7 +168,9 @@ TEST(vertex_enum_axis_box) {
     alea_node_id_t i4 = alea_intersection(sys, i1, i2);
     alea_node_id_t root = alea_intersection(sys, i4, i3);
 
-    alea_add_cell(sys, 1, root, 1, -1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, root, m1, -1.0, 0);
     alea_build_universe_index(sys);
 
     alea_bbox_t tight;
@@ -203,7 +207,9 @@ TEST(octree_oblique_slab) {
     alea_node_id_t p2 = alea_halfspace(sys, s1, +1);  /* x+y+z+5 >= 0 → x+y+z >= -5 */
     alea_node_id_t root = alea_intersection(sys, p1, p2);
 
-    alea_add_cell(sys, 1, root, 1, -1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, root, m1, -1.0, 0);
     alea_build_universe_index(sys);
 
     /* The analytical bbox for this is infinite (oblique planes) */
@@ -249,7 +255,9 @@ TEST(numerical_mixed_cell) {
     alea_node_id_t i3 = alea_intersection(sys, i1, i2);
     alea_node_id_t root = alea_intersection(sys, i3, cyl);
 
-    alea_add_cell(sys, 1, root, 1, -1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, root, m1, -1.0, 0);
     alea_build_universe_index(sys);
 
     /* LP should fail (has cylinder), octree should work */
@@ -279,7 +287,6 @@ TEST(numerical_in_bounding_sphere) {
     /* Cell 1: simple sphere (finite analytical bbox) */
     int ss = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
     alea_node_id_t sph = alea_halfspace(sys, ss, -1);
-    alea_add_cell(sys, 1, sph, 1, -1.0, 0);
 
     /* Cell 2: tetrahedron from oblique plane (would be skipped without numerical) */
     int s0 = alea_plane_surface(sys, 0, 1, 0, 0, 0);
@@ -294,7 +301,12 @@ TEST(numerical_in_bounding_sphere) {
     alea_node_id_t t1 = alea_intersection(sys, px, py);
     alea_node_id_t t2 = alea_intersection(sys, pz, pd);
     alea_node_id_t tet = alea_intersection(sys, t1, t2);
-    alea_add_cell(sys, 2, tet, 2, -1.0, 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+
+    alea_add_cell(sys, 1, sph, m1, -1.0, 0);
+    alea_add_cell(sys, 2, tet, m2, -1.0, 0);
 
     alea_build_universe_index(sys);
 
@@ -321,7 +333,7 @@ TEST(graveyard_cell_skipped) {
     /* Create a complement cell (outside a sphere) — truly infinite */
     int ss = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
     alea_node_id_t sph = alea_halfspace(sys, ss, +1);  /* outside sphere */
-    alea_add_cell(sys, 999, sph, 0, 0, 0);
+    alea_add_cell(sys, 999, sph, ALEA_MATERIAL_VOID, 0, 0);
     alea_build_universe_index(sys);
 
     /* Numerical tightening: octree finds content (outside sphere is everywhere) */
@@ -382,7 +394,9 @@ TEST(tighten_all_with_lp) {
     alea_node_id_t i3 = alea_intersection(sys, i1, i2);
     alea_node_id_t root = alea_intersection(sys, i3, pz1);
 
-    alea_add_cell(sys, 1, root, 1, -1.0, 0);
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, root, m1, -1.0, 0);
     alea_build_universe_index(sys);
 
     int tightened = alea_tighten_all_bboxes(sys, 1.0);
