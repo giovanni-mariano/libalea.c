@@ -19,14 +19,14 @@ extern "C" {
  * Uses adaptive octree subdivision to efficiently identify void regions.
  *
  * Key design principle: CONSERVATIVE classification.
- * - Octree sampling is an OPTIMIZATION to skip definitely-solid regions
+ * - Octree probing is an OPTIMIZATION to skip definitely-solid regions
  * - It is NOT the source of truth for void identification
- * - Only boxes where ALL samples are in the SAME material cell are skipped
- * - Any box with ANY void sample, or mixed cells, is kept as a candidate
+ * - Only boxes where ALL probes are in the SAME material cell are skipped
+ * - Any box with ANY void probe, or mixed cells, is kept as a candidate
  * - CSG math (complement intersection + simplification) decides what's void
  *
  * This approach may process more boxes than strictly necessary, but it
- * guarantees we never miss void regions due to sampling artifacts.
+ * guarantees we never miss void regions due to probing artifacts.
  */
 
 /* Forward declaration */
@@ -62,7 +62,7 @@ typedef struct octree_node {
 
 typedef struct octree_config {
     int max_depth;          // Maximum subdivision depth (default: 8)
-    int samples_per_node;   // Sample points per node for classification (default: 27)
+    int probes_per_node;    // Probe points per node for classification (default: 27)
     double min_size;        // Minimum node size, stop subdividing (default: 0.1)
     double void_threshold;  // DEPRECATED: no longer used (conservative approach)
     bool consolidated;      // If true, create ONE void cell instead of subdividing (default: false)
@@ -70,7 +70,7 @@ typedef struct octree_config {
 
 #define OCTREE_DEFAULT_CONFIG ((octree_config_t){ \
     .max_depth = 8, \
-    .samples_per_node = 27, \
+    .probes_per_node = 27, \
     .min_size = 0.1, \
     .void_threshold = 0.0 /* ignored */ \
 })

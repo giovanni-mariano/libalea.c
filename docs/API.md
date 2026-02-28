@@ -720,7 +720,7 @@ Copy all cells, surfaces, materials, and transforms from `source` into `target`,
 void_result_t* alea_void_generate(alea_system_t* sys, const alea_bbox_t* bounds);
 ```
 
-Find void regions within the bounding box using octree subdivision. Returns an opaque result. Void generation parameters come from `sys->config` (`void_max_depth`, `void_min_size`, `void_samples`).
+Find void regions within the bounding box using octree subdivision. Returns an opaque result. Void generation parameters come from `sys->config` (`void_max_depth`, `void_min_size`, `void_probes`).
 
 ### alea_void_add_cells
 

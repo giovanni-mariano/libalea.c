@@ -352,7 +352,7 @@ alea_set_config(sys, &cfg);
 
 A void region is a part of 3D space that no cell claims. In a well-defined MCNP model, every point should be inside exactly one cell. Void regions indicate geometry errors — or they indicate you haven't defined the outer boundary yet.
 
-Alea's void generation uses an octree. It recursively subdivides a bounding box, sampling points in each sub-box to determine if the region is solid (inside a cell), void (no cell claims it), or mixed (partially covered). Void sub-boxes are collected and can be added as void cells to the model.
+Alea's void generation uses an octree. It recursively subdivides a bounding box, probing points on a regular grid in each sub-box to determine if the region is solid (inside a cell), void (no cell claims it), or mixed (partially covered). Void sub-boxes are collected and can be added as void cells to the model.
 
 The octree parameters are configurable:
 
@@ -360,7 +360,7 @@ The octree parameters are configurable:
 alea_config_t cfg = alea_get_config(sys);
 cfg.void_max_depth = 8;    // maximum octree depth (higher = finer resolution)
 cfg.void_min_size = 0.1;   // minimum sub-box size in cm
-cfg.void_samples = 27;     // sample points per sub-box (3x3x3)
+cfg.void_probes = 27;      // probe points per sub-box (3x3x3)
 alea_set_config(sys, &cfg);
 ```
 
@@ -409,7 +409,7 @@ cfg.mcnp_cont_indent = 5;    // continuation line indent
 // Void generation
 cfg.void_max_depth = 8;
 cfg.void_min_size = 0.1;
-cfg.void_samples = 27;
+cfg.void_probes = 27;
 
 // Void merge (controls how void boxes are merged into cells)
 cfg.merge_cell_weight = 1.0;

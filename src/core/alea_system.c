@@ -55,7 +55,7 @@ const alea_config_t ALEA_CONFIG_DEFAULT = {
     /* Void generation */
     .void_max_depth = 8,
     .void_min_size = 0.1,
-    .void_samples = 27,
+    .void_probes = 27,
 
     /* Void merge */
     .merge_cell_weight = 1.0,

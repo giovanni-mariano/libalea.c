@@ -603,7 +603,7 @@ int alea_export_stream(const alea_system_t* sys, alea_export_format_t format, FI
  * VOID GENERATION
  *
  * Void options are read from sys->config (void_max_depth, void_min_size,
- * void_samples, merge_cell_weight, merge_surface_weight, etc.).
+ * void_probes, merge_cell_weight, merge_surface_weight, etc.).
  * ============================================================================ */
 
 void_result_t* alea_void_generate(alea_system_t* sys, const alea_bbox_t* bounds);

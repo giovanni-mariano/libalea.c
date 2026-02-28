@@ -15,7 +15,7 @@
  * - Simplification eliminates surfaces that don't affect each region
  * - If simplification returns INVALID (empty), the region had no void
  *
- * Key insight: the octree sampling is an OPTIMIZATION to skip definitely-solid
+ * Key insight: the octree probing is an OPTIMIZATION to skip definitely-solid
  * regions, not the source of truth. Let the CSG math decide what's void.
  */
 
@@ -87,22 +87,22 @@ static alea_bbox_t get_child_bbox(const alea_bbox_t* parent, int octant) {
 }
 
 /**
- * Sample points in a node and classify.
+ * Probe points on a regular grid within a node and classify.
  *
- * CONSERVATIVE approach: we only return "definitely solid" if ALL samples
- * are in the SAME material cell. Any void sample means we must consider
+ * CONSERVATIVE approach: we only return "definitely solid" if ALL probes
+ * are in the SAME material cell. Any void probe means we must consider
  * this box as a void candidate.
  *
  * Returns:
- *   >= 0: all samples in same material cell (cell_index) - SAFE to skip
- *   -1: all samples are void - definitely contains void
+ *   >= 0: all probes in same material cell (cell_index) - SAFE to skip
+ *   -1: all probes are void - definitely contains void
  *   -2: mixed (some void, some solid, or multiple cells) - MUST check
  */
-static int sample_node(const alea_system_t* sys, const alea_bbox_t* bbox,
-                       int samples_per_axis, int* void_count, int* total) {
-    double dx = (bbox->max_x - bbox->min_x) / (samples_per_axis - 1);
-    double dy = (bbox->max_y - bbox->min_y) / (samples_per_axis - 1);
-    double dz = (bbox->max_z - bbox->min_z) / (samples_per_axis - 1);
+static int probe_node(const alea_system_t* sys, const alea_bbox_t* bbox,
+                      int probes_per_axis, int* void_count, int* total) {
+    double dx = (bbox->max_x - bbox->min_x) / (probes_per_axis - 1);
+    double dy = (bbox->max_y - bbox->min_y) / (probes_per_axis - 1);
+    double dz = (bbox->max_z - bbox->min_z) / (probes_per_axis - 1);
 
     if (dx <= 0) dx = 1e-10;
     if (dy <= 0) dy = 1e-10;
@@ -113,11 +113,11 @@ static int sample_node(const alea_system_t* sys, const alea_bbox_t* bbox,
     int count = 0;
     int mixed = 0;
 
-    for (int iz = 0; iz < samples_per_axis && !mixed; iz++) {
+    for (int iz = 0; iz < probes_per_axis && !mixed; iz++) {
         double z = bbox->min_z + iz * dz;
-        for (int iy = 0; iy < samples_per_axis && !mixed; iy++) {
+        for (int iy = 0; iy < probes_per_axis && !mixed; iy++) {
             double y = bbox->min_y + iy * dy;
-            for (int ix = 0; ix < samples_per_axis && !mixed; ix++) {
+            for (int ix = 0; ix < probes_per_axis && !mixed; ix++) {
                 double x = bbox->min_x + ix * dx;
                 count++;
 
@@ -151,9 +151,8 @@ static int sample_node(const alea_system_t* sys, const alea_bbox_t* bbox,
 /**
  * Recursive octree building
  *
- * CONSERVATIVE: Only classify as SOLID if we have HIGH CONFIDENCE that
- * the entire box is inside a single material cell. Any hint of void
- * means we keep it as a candidate.
+ * CONSERVATIVE: Only classify as SOLID if all probes land in the same
+ * material cell. Any hint of void means we keep it as a candidate.
  */
 static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
                                     const octree_config_t* config,
@@ -166,16 +165,16 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
     double sz = node->bbox.max_z - node->bbox.min_z;
     double min_dim = sx < sy ? (sx < sz ? sx : sz) : (sy < sz ? sy : sz);
 
-    int samples = (config->samples_per_node <= 27) ? 3 :
-                  (int)cbrt(config->samples_per_node);
-    if (samples < 2) samples = 2;
+    int probes = (config->probes_per_node <= 27) ? 3 :
+                 (int)cbrt(config->probes_per_node);
+    if (probes < 2) probes = 2;
 
     int void_count, total;
-    int cell_result = sample_node(sys, &node->bbox, samples, &void_count, &total);
+    int cell_result = probe_node(sys, &node->bbox, probes, &void_count, &total);
 
-    // Classify based on sampling - CONSERVATIVE approach
+    // Classify based on probing - CONSERVATIVE approach
     if (cell_result == -1) {
-        // All samples are void - definitely contains void
+        // All probes are void - definitely contains void
         node->classification = OCTREE_VOID;
         node->cell_index = -1;
         result->octree_void_count++;
@@ -183,7 +182,7 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
     }
 
     if (cell_result >= 0) {
-        // All samples in same material cell.
+        // All probes in same material cell.
         // This is the ONLY case where we can confidently skip.
         node->classification = OCTREE_SOLID;
         node->cell_index = cell_result;
@@ -191,7 +190,7 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
         return;
     }
 
-    // Mixed: some void samples, or multiple cells.
+    // Mixed: some void probes, or multiple cells.
     // We CANNOT discard this box - it might contain void.
 
     bool should_subdivide = (node->depth < config->max_depth) &&
