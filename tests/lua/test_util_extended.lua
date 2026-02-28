@@ -4,9 +4,11 @@
 local sys = alea.create()
 local s1 = sys:sphere(1, 0, 0, 0, 5)
 local s2 = sys:sphere(2, 0, 0, 0, 8)
-sys:cell{id = 1, region = sys:inside(s1), material = 1, density = 10.0}
-sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = 2, density = 5.0}
-sys:cell{id = 3, region = sys:outside(s2), material = 0, density = 0.0}
+local m1 = sys:material(1)
+local m2 = sys:material(2)
+sys:cell{id = 1, region = sys:inside(s1), material = m1, density = 10.0}
+sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = m2, density = 5.0}
+sys:cell{id = 3, region = sys:outside(s2), material = -1, density = 0.0}
 sys:build_universe_index()
 
 -- flatten_all
@@ -55,8 +57,9 @@ assert(alea.is_macrobody(2) == false, "SPHERE (2) should not be a macrobody")
 -- Use a simple box geometry for void generation (sphere geometry is too expensive)
 local vsys = alea.create()
 local box_s = vsys:box(0, -1, 1, -1, 1, -1, 1)
-vsys:cell{id = 1, region = vsys:inside(box_s), material = 1, density = 1.0}
-vsys:cell{id = 2, region = vsys:outside(box_s), material = 0, density = 0.0}
+local vm1 = vsys:material(1)
+vsys:cell{id = 1, region = vsys:inside(box_s), material = vm1, density = 1.0}
+vsys:cell{id = 2, region = vsys:outside(box_s), material = -1, density = 0.0}
 vsys:build_universe_index()
 
 local vr = vsys:void_generate{

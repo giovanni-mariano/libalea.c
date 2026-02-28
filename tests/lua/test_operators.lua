@@ -42,7 +42,8 @@ local in_ = alea.intersection_n(sys, {a, b, c})
 assert(in_, "intersection_n works")
 
 -- Create cell with complex region
-local idx = sys:cell{id=1, region=chain, material=1, density=1.0}
+local m1 = sys:material(1)
+local idx = sys:cell{id=1, region=chain, material=m1, density=1.0}
 assert(idx >= 0, "cell from chained ops")
 
 -- Node inspection

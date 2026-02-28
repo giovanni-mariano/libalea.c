@@ -4,9 +4,11 @@
 local sys = alea.create()
 local s1 = sys:sphere(1, 0, 0, 0, 5)
 local s2 = sys:sphere(2, 0, 0, 0, 8)
-sys:cell{id = 10, region = sys:inside(s1), material = 1, density = 10.0, universe = 0}
-sys:cell{id = 20, region = sys:outside(s1) * sys:inside(s2), material = 2, density = 5.0, universe = 0}
-sys:cell{id = 30, region = sys:outside(s2), material = 0, density = 0.0, universe = 0}
+local m1 = sys:material(1)
+local m2 = sys:material(2)
+sys:cell{id = 10, region = sys:inside(s1), material = m1, density = 10.0, universe = 0}
+sys:cell{id = 20, region = sys:outside(s1) * sys:inside(s2), material = m2, density = 5.0, universe = 0}
+sys:cell{id = 30, region = sys:outside(s2), material = -1, density = 0.0, universe = 0}
 sys:build_universe_index()
 
 -- find_cell_at

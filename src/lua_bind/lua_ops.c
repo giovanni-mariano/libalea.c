@@ -101,6 +101,17 @@ static int l_system_outside(lua_State* L) {
     return 1;
 }
 
+/* sys:material(id) -> material_index */
+static int l_system_material(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int mat_id = (int)luaL_checkinteger(L, 2);
+    int idx = alea_add_material(sys, mat_id);
+    if (idx < 0)
+        return luaL_error(L, "add_material failed: %s", alea_error());
+    lua_pushinteger(L, idx);
+    return 1;
+}
+
 /* sys:cell{id=N, region=Node, material=M, density=D, universe=U} */
 static int l_system_cell(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
@@ -225,6 +236,7 @@ static const luaL_Reg system_ops_methods[] = {
     {"half",     l_system_half},
     {"inside",   l_system_inside},
     {"outside",  l_system_outside},
+    {"material", l_system_material},
     {"cell",     l_system_cell},
     {"set_fill", l_system_set_fill},
     {NULL, NULL}

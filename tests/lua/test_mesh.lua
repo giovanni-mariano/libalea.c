@@ -3,8 +3,9 @@
 -- Build a sphere geometry
 local sys = alea.create()
 local s1 = sys:sphere(1, 0, 0, 0, 5)
-sys:cell{id = 1, region = sys:inside(s1),  material = 1, density = 10.0}
-sys:cell{id = 2, region = sys:outside(s1), material = 0, density = 0.0}
+local m1 = sys:material(1)
+sys:cell{id = 1, region = sys:inside(s1),  material = m1, density = 10.0}
+sys:cell{id = 2, region = sys:outside(s1), material = -1, density = 0.0}
 sys:build_universe_index()
 
 -- Mesh sample

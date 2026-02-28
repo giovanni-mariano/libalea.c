@@ -27,8 +27,12 @@ assert(region, "difference returns a Node")
 local str = tostring(region)
 assert(str:find("Node"), "Node tostring contains 'Node'")
 
+-- Add material
+local mat = sys:material(1)  -- register material with MCNP ID 1, returns index
+assert(mat >= 0, "material returns valid index")
+
 -- Create cell
-local idx = sys:cell{id=1, region=region, material=1, density=10.0}
+local idx = sys:cell{id=1, region=region, material=mat, density=10.0}
 assert(idx >= 0, "cell returns valid index")
 assert(sys:cell_count() == 1, "one cell created")
 
