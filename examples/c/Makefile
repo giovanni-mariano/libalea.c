@@ -22,7 +22,7 @@ LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-arch
 LIBS_SLICE = ../../bin/libalea_slice.a ../../bin/libalea_raycast.a $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 LIBS_RENDER = ../../bin/libalea_render.a -Wl,--whole-archive ../../bin/libalea_raycast.a -Wl,--no-whole-archive $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 
-EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d
+EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo
 
 all: $(EXAMPLES)
 
@@ -37,6 +37,9 @@ mcnp_volume: mcnp_volume.c
 
 render3d: render3d.c
 	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_RENDER)
+
+void_demo: void_demo.c
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_CORE)
 
 clean:
 	rm -f $(EXAMPLES) *.inp *.ppm *.bmp *.png

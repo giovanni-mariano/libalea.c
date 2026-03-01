@@ -360,7 +360,7 @@ The octree parameters are configurable:
 alea_config_t cfg = alea_get_config(sys);
 cfg.void_max_depth = 8;    // maximum octree depth (higher = finer resolution)
 cfg.void_min_size = 0.1;   // minimum sub-box size in cm
-cfg.void_probes = 27;      // probe points per sub-box (3x3x3)
+cfg.void_probes_per_axis = 3; // probe points per axis (3 → 3x3x3 grid)
 alea_set_config(sys, &cfg);
 ```
 
@@ -409,7 +409,7 @@ cfg.mcnp_cont_indent = 5;    // continuation line indent
 // Void generation
 cfg.void_max_depth = 8;
 cfg.void_min_size = 0.1;
-cfg.void_probes = 27;
+cfg.void_probes_per_axis = 3;
 
 // Void merge (controls how void boxes are merged into cells)
 cfg.merge_cell_weight = 1.0;

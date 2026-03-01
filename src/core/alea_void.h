@@ -62,18 +62,27 @@ typedef struct octree_node {
 
 typedef struct octree_config {
     int max_depth;          // Maximum subdivision depth (default: 8)
-    int probes_per_node;    // Probe points per node for classification (default: 27)
+    int probes_per_axis;    // Probe points per axis for classification (default: 3)
     double min_size;        // Minimum node size, stop subdividing (default: 0.1)
-    double void_threshold;  // DEPRECATED: no longer used (conservative approach)
-    bool consolidated;      // If true, create ONE void cell instead of subdividing (default: false)
 } octree_config_t;
 
 #define OCTREE_DEFAULT_CONFIG ((octree_config_t){ \
     .max_depth = 8, \
-    .probes_per_node = 27, \
-    .min_size = 0.1, \
-    .void_threshold = 0.0 /* ignored */ \
+    .probes_per_axis = 3, \
+    .min_size = 0.1 \
 })
+
+// ============================================================================
+// VOID REGION
+// ============================================================================
+
+/**
+ * @brief A void region: CSG node + bounding box
+ */
+typedef struct {
+    alea_node_id_t node;
+    alea_bbox_t bbox;
+} void_region_t;
 
 // ============================================================================
 // OCTREE RESULT
@@ -89,17 +98,12 @@ typedef struct void_result {
     // This is the exact analytical definition of void
     alea_node_id_t global_void;
 
-    // Regional void CSG nodes: each is (global_void ∩ region_box), simplified.
+    // Regional void regions: each is (global_void ∩ region_box).
     // These are CSG tree node IDs, NOT cells. Use alea_void_add_cells() to
     // register them as actual cells in the system.
-    alea_node_id_t* void_nodes;
-    size_t void_node_count;
-    size_t void_node_capacity;
-
-    // Bounding boxes corresponding to void_nodes (same indexing).
-    alea_bbox_t* void_boxes;
-    size_t void_box_count;
-    size_t void_box_capacity;
+    void_region_t* void_regions;
+    size_t void_region_count;
+    size_t void_region_capacity;
 
     // Statistics
     size_t total_nodes;           // Total octree nodes created
@@ -109,7 +113,7 @@ typedef struct void_result {
     size_t max_depth_reached;     // Times we hit max depth limit
     size_t empty_regions_skipped; // Candidate boxes that CSG determined were solid
     size_t boxes_before_merge;    // Candidate boxes from octree
-    size_t boxes_after_merge;     // After any merging (currently disabled)
+    size_t boxes_after_merge;     // After any merging
     size_t surfaces_created;      // Plane surfaces created for void boxes
 } void_result_t;
 

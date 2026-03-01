@@ -1338,8 +1338,7 @@ void_result_t* alea_void_generate(alea_system_t* sys,
     octree_config_t local_config = {
         .max_depth = sys->config.void_max_depth,
         .min_size = sys->config.void_min_size,
-        .probes_per_node = sys->config.void_probes,
-        .void_threshold = 0.9
+        .probes_per_axis = sys->config.void_probes_per_axis,
     };
     return alea_generate_void_octree(sys, bounds, &local_config);
 }
@@ -1347,13 +1346,13 @@ void_result_t* alea_void_generate(alea_system_t* sys,
 
 size_t alea_void_count(const void_result_t* result) {
     if (!result) return 0;
-    return result->void_node_count;
+    return result->void_region_count;
 }
 
 int alea_void_get(const void_result_t* result, size_t index, alea_bbox_t* box) {
     if (!result || !box) return -1;
-    if (index >= result->void_box_count) return -1;
-    *box = result->void_boxes[index];
+    if (index >= result->void_region_count) return -1;
+    *box = result->void_regions[index].bbox;
     return 0;
 }
 

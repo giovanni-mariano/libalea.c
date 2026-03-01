@@ -91,10 +91,9 @@ alea_node_id_t alea_create_difference(
 
 /**
  * @brief Create n-ary union (A ∪ B ∪ C ∪ ...)
- * 
- * Builds a left-balanced tree of union operations.
- * More efficient than manually creating nested unions.
- * 
+ *
+ * Builds a balanced binary tree of union operations.
+ *
  * @param node_ids Array of node IDs to union
  * @param count Number of nodes
  * @return Root of union tree, or ALEA_NODE_ID_INVALID on error
@@ -107,9 +106,9 @@ alea_node_id_t alea_create_union_many(
 
 /**
  * @brief Create n-ary intersection (A ∩ B ∩ C ∩ ...)
- * 
- * Builds a left-balanced tree of intersection operations.
- * 
+ *
+ * Builds a balanced binary tree of intersection operations.
+ *
  * @param node_ids Array of node IDs to intersect
  * @param count Number of nodes
  * @return Root of intersection tree, or ALEA_NODE_ID_INVALID on error

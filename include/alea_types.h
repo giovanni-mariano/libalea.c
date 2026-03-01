@@ -163,7 +163,7 @@ typedef struct {
     /* Void generation */
     int void_max_depth;         /* 8    */
     double void_min_size;       /* 0.1  */
-    int void_probes;            /* 27   */
+    int void_probes_per_axis;   /* 3    */
 
     /* Void merge */
     double merge_cell_weight;   /* 1.0  */

@@ -135,6 +135,22 @@ alea_node_id_t alea_create_difference(
 // N-ARY OPERATIONS
 // ============================================================================
 
+/* Recursive helper: build balanced binary tree of unions */
+static alea_node_id_t union_balanced(
+    alea_system_t* sys,
+    const alea_node_id_t* ids,
+    size_t lo,
+    size_t hi
+) {
+    if (hi - lo == 1) return ids[lo];
+    size_t mid = lo + (hi - lo) / 2;
+    alea_node_id_t left = union_balanced(sys, ids, lo, mid);
+    if (left == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+    alea_node_id_t right = union_balanced(sys, ids, mid, hi);
+    if (right == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+    return alea_create_union(sys, left, right);
+}
+
 alea_node_id_t alea_create_union_many(
     alea_system_t* sys,
     const alea_node_id_t* node_ids,
@@ -143,23 +159,30 @@ alea_node_id_t alea_create_union_many(
     if (count == 0 || !node_ids) {
         return ALEA_NODE_ID_INVALID;
     }
-    
+
     if (count == 1) {
         return node_ids[0];
     }
-    
-    // Build left-balanced tree
-    // For [A, B, C, D]: ((A ∪ B) ∪ C) ∪ D
-    alea_node_id_t result = node_ids[0];
-    
-    for (size_t i = 1; i < count; i++) {
-        result = alea_create_union(sys, result, node_ids[i]);
-        if (result == ALEA_NODE_ID_INVALID) {
-            return ALEA_NODE_ID_INVALID;
-        }
-    }
-    
-    return result;
+
+    // Build balanced binary tree
+    // For [A, B, C, D]: (A ∪ B) ∪ (C ∪ D)
+    return union_balanced(sys, node_ids, 0, count);
+}
+
+/* Recursive helper: build balanced binary tree of intersections */
+static alea_node_id_t intersection_balanced(
+    alea_system_t* sys,
+    const alea_node_id_t* ids,
+    size_t lo,
+    size_t hi
+) {
+    if (hi - lo == 1) return ids[lo];
+    size_t mid = lo + (hi - lo) / 2;
+    alea_node_id_t left = intersection_balanced(sys, ids, lo, mid);
+    if (left == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+    alea_node_id_t right = intersection_balanced(sys, ids, mid, hi);
+    if (right == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+    return alea_create_intersection(sys, left, right);
 }
 
 alea_node_id_t alea_create_intersection_many(
@@ -170,22 +193,13 @@ alea_node_id_t alea_create_intersection_many(
     if (count == 0 || !node_ids) {
         return ALEA_NODE_ID_INVALID;
     }
-    
+
     if (count == 1) {
         return node_ids[0];
     }
-    
-    // Build left-balanced tree
-    alea_node_id_t result = node_ids[0];
-    
-    for (size_t i = 1; i < count; i++) {
-        result = alea_create_intersection(sys, result, node_ids[i]);
-        if (result == ALEA_NODE_ID_INVALID) {
-            return ALEA_NODE_ID_INVALID;
-        }
-    }
-    
-    return result;
+
+    // Build balanced binary tree
+    return intersection_balanced(sys, node_ids, 0, count);
 }
 
 alea_node_id_t alea_create_symmetric_difference(
