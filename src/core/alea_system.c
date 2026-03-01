@@ -62,6 +62,7 @@ const alea_config_t ALEA_CONFIG_DEFAULT = {
     .merge_surface_weight = 0.1,
     .merge_max_surfaces = 24,
     .merge_min_cells = 1,
+    .void_consolidate = 100,
 
     /* Flatten */
     .flatten_max_depth = 0,

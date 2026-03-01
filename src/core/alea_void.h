@@ -158,6 +158,21 @@ alea_node_id_t alea_void_to_node(alea_system_t* sys, const void_result_t* result
 int alea_void_add_cells(alea_system_t* sys, void_result_t* result);
 
 /**
+ * @brief Add a graveyard cell enclosing the void bounds
+ *
+ * Creates a sphere that fully encloses the void bounding box, and registers
+ * a cell outside the sphere with IMP:N=0, IMP:P=0. This is the standard
+ * MCNP "rest of the world" cell that kills escaped particles.
+ *
+ * Must be called after alea_void_add_cells().
+ *
+ * @param sys CSG system
+ * @param result Void generation result (uses root->bbox for bounds)
+ * @return 1 on success, -1 on error
+ */
+int alea_void_add_graveyard(alea_system_t* sys, void_result_t* result);
+
+/**
  * @brief Configuration for void cell merging
  */
 typedef struct {
@@ -165,6 +180,8 @@ typedef struct {
     double surface_weight;        /**< Cost per surface (default: 0.1) */
     int max_surfaces_per_cell;    /**< Hard limit on surfaces per cell (default: 24) */
     int min_cells;                /**< Stop merging below this count (default: 1) */
+    bool use_greedy;              /**< true = old O(n^3) greedy, false = face-sorted O(n log^2 n) (default: false) */
+    int consolidate_max_surfaces; /**< Consolidate void into single cell if it has ≤ this many surfaces (0 = off, default: 100) */
 } alea_void_merge_config_t;
 
 /**

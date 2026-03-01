@@ -2,12 +2,17 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#define _POSIX_C_SOURCE 199309L
+
 /*
  * test_void.c - Void generation integration tests using the public alea API
  */
 
 #include "alea_test.h"
 #include "alea.h"
+#include "core/alea_void.h"
+#include "core/alea_system.h"
+#include <time.h>
 
 /* Reduce octree depth for fast tests (default 8 is too slow for CI) */
 static void set_fast_void_config(alea_system_t* sys) {
@@ -270,6 +275,286 @@ TEST(void_null_safety) {
 
     alea_void_free(vr);
     alea_destroy(sys);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Benchmark: face-sorted vs greedy merge                                    */
+/* ------------------------------------------------------------------------- */
+
+static double now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+/* Helper: create sphere system for benchmarking */
+static alea_system_t* make_sphere_system(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.void_max_depth = 4;
+    cfg.void_min_size = 0.5;
+    alea_set_config(sys, &cfg);
+
+    int si = alea_sphere_surface(sys, 0, 0, 0, 0, 3.0);
+    alea_node_id_t s = alea_halfspace(sys, si, -1);
+
+    int m1 = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, s, m1, 1.0, 0);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Per-region complement filtering                                            */
+/* ------------------------------------------------------------------------- */
+
+TEST(void_per_region_filtering) {
+    /*
+     * Two spheres far apart. Void regions near sphere A should NOT reference
+     * sphere B's surfaces (and vice versa). With per-region filtering, each
+     * void cell only includes overlapping cells, bounding complexity.
+     *
+     * We verify: (1) correct point classification, (2) void generation works,
+     * (3) merge+add produces valid cells covering the void space.
+     */
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.void_max_depth = 4;
+    cfg.void_min_size = 0.5;
+    alea_set_config(sys, &cfg);
+
+    /* Sphere A: R=2 at (-10, 0, 0) */
+    int s1 = alea_sphere_surface(sys, 0, -10, 0, 0, 2.0);
+    alea_node_id_t n1 = alea_halfspace(sys, s1, -1);
+    int m1 = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, n1, m1, 1.0, 0);
+
+    /* Sphere B: R=2 at (+10, 0, 0) */
+    int s2 = alea_sphere_surface(sys, 0, 10, 0, 0, 2.0);
+    alea_node_id_t n2 = alea_halfspace(sys, s2, -1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 2, n2, m2, 1.0, 0);
+
+    alea_build_universe_index(sys);
+
+    /* Generate void with bounds covering both spheres and the gap */
+    alea_bbox_t bounds = {-14, 14, -4, 4, -4, 4};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 0);
+
+    /* Merge (no consolidation — we want to verify per-region cells) */
+    alea_void_merge_config_t mcfg = ALEA_VOID_MERGE_DEFAULT;
+    mcfg.consolidate_max_surfaces = 0;
+    int merged = alea_merge_void_cells(sys, vr, &mcfg);
+    ASSERT(merged > 0);
+
+    /* Add void cells and verify point classification */
+    alea_void_add_cells(sys, vr);
+    alea_build_universe_index(sys);
+
+    /* Inside sphere A = material 1 */
+    ASSERT_EQ(alea_material_at(sys, -10, 0, 0), 1);
+
+    /* Inside sphere B = material 2 */
+    ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 2);
+
+    /* Midpoint between spheres = void */
+    int mid_cell = alea_find_cell(sys, 0, 0, 0);
+    ASSERT(mid_cell >= 0);
+    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 0);
+
+    /* Far corners = void */
+    int corner_cell = alea_find_cell(sys, -13, 3, 3);
+    ASSERT(corner_cell >= 0);
+    ASSERT_EQ(alea_material_at(sys, -13, 3, 3), 0);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Void consolidation                                                         */
+/* ------------------------------------------------------------------------- */
+
+TEST(void_consolidate) {
+    alea_system_t* sys = make_sphere_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+
+    size_t before = alea_void_count(vr);
+    ASSERT(before > 1);
+
+    /* Merge with consolidation (default) */
+    alea_void_merge_config_t cfg = ALEA_VOID_MERGE_DEFAULT;
+    cfg.consolidate_max_surfaces = 100;
+    int ret = alea_merge_void_cells(sys, vr, &cfg);
+    ASSERT(ret > 0);
+    ASSERT_EQ(alea_void_count(vr), 1);
+
+    /* Add the single consolidated void cell */
+    alea_void_add_cells(sys, vr);
+    alea_build_universe_index(sys);
+
+    /* Point inside sphere = material */
+    int cell = alea_find_cell(sys, 0, 0, 0);
+    ASSERT(cell >= 0);
+    int mat = alea_material_at(sys, 0, 0, 0);
+    ASSERT(mat > 0);
+
+    /* Point outside sphere but inside bounds = void */
+    int void_cell = alea_find_cell(sys, 4.5, 4.5, 4.5);
+    ASSERT(void_cell >= 0);
+    int void_mat = alea_material_at(sys, 4.5, 4.5, 4.5);
+    ASSERT_EQ(void_mat, 0);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+TEST(void_consolidate_disabled) {
+    alea_system_t* sys = make_sphere_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+
+    size_t before = alea_void_count(vr);
+    ASSERT(before > 1);
+
+    /* Merge with consolidation disabled */
+    alea_void_merge_config_t cfg = ALEA_VOID_MERGE_DEFAULT;
+    cfg.consolidate_max_surfaces = 0;
+    int ret = alea_merge_void_cells(sys, vr, &cfg);
+    ASSERT(ret > 0);
+
+    /* Without consolidation, count should still be > 1
+     * (merge reduces but doesn't collapse to 1 for sphere) */
+    ASSERT(alea_void_count(vr) > 1);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Benchmark                                                                  */
+/* ------------------------------------------------------------------------- */
+
+TEST(void_graveyard) {
+    alea_system_t* sys = make_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+
+    alea_void_add_cells(sys, vr);
+
+    size_t cells_before = alea_cell_count(sys);
+    int ret = alea_void_add_graveyard(sys, vr);
+    ASSERT_EQ(ret, 1);
+    /* Adds 2 cells: shell (bbox→sphere) + graveyard (outside sphere) */
+    ASSERT_EQ(alea_cell_count(sys), cells_before + 2);
+
+    alea_build_universe_index(sys);
+
+    /* Point far outside sphere should be in graveyard cell (IMP:N=0) */
+    int grav_cell = alea_find_cell(sys, 100, 100, 100);
+    ASSERT(grav_cell >= 0);
+
+    int material_id;
+    ASSERT_EQ(alea_cell_get(sys, (size_t)grav_cell, NULL, &material_id,
+                             NULL, NULL, NULL, NULL), 0);
+    ASSERT_EQ(material_id, 0);
+
+    alea_cell_entry_t* cell = &sys->cells.data[grav_cell];
+    ASSERT(cell->has_imp_n);
+    ASSERT(cell->imp_n == 0.0);
+    ASSERT(cell->has_imp_p);
+    ASSERT(cell->imp_p == 0.0);
+
+    /* Point outside bbox but inside sphere should be in shell cell (IMP:N=1)
+     * Bounds [-5,5]^3, sphere R ≈ 8.83. Point (7,0,0): outside box, inside sphere. */
+    int shell_cell = alea_find_cell(sys, 7, 0, 0);
+    ASSERT(shell_cell >= 0);
+    ASSERT_NE(shell_cell, grav_cell);
+
+    ASSERT_EQ(alea_cell_get(sys, (size_t)shell_cell, NULL, &material_id,
+                             NULL, NULL, NULL, NULL), 0);
+    ASSERT_EQ(material_id, 0);
+
+    /* Shell has default importance (1.0), not graveyard's 0.0 */
+    alea_cell_entry_t* shell = &sys->cells.data[shell_cell];
+    ASSERT(shell->imp_n == 1.0);
+
+    /* Point inside material cell is still found correctly */
+    int mat_cell = alea_find_cell(sys, 0, 0, 0);
+    ASSERT(mat_cell >= 0);
+    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Benchmark                                                                  */
+/* ------------------------------------------------------------------------- */
+
+TEST(void_merge_benchmark) {
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    alea_void_merge_config_t merge_cfg = ALEA_VOID_MERGE_DEFAULT;
+    merge_cfg.consolidate_max_surfaces = 0;  /* Benchmark merge algorithms only */
+
+    /* --- Face-sorted merge --- */
+    alea_system_t* sys1 = make_sphere_system();
+    ASSERT_NOT_NULL(sys1);
+    void_result_t* vr1 = alea_void_generate(sys1, &bounds);
+    ASSERT_NOT_NULL(vr1);
+
+    size_t before1 = alea_void_count(vr1);
+    ASSERT(before1 > 0);
+
+    merge_cfg.use_greedy = false;
+    double t0 = now_sec();
+    int r1 = alea_merge_void_cells(sys1, vr1, &merge_cfg);
+    double t_face = now_sec() - t0;
+    ASSERT(r1 > 0);
+    size_t after_face = alea_void_count(vr1);
+
+    /* --- Greedy merge --- */
+    alea_system_t* sys2 = make_sphere_system();
+    ASSERT_NOT_NULL(sys2);
+    void_result_t* vr2 = alea_void_generate(sys2, &bounds);
+    ASSERT_NOT_NULL(vr2);
+
+    size_t before2 = alea_void_count(vr2);
+    ASSERT_EQ(before1, before2);
+
+    merge_cfg.use_greedy = true;
+    t0 = now_sec();
+    int r2 = alea_merge_void_cells(sys2, vr2, &merge_cfg);
+    double t_greedy = now_sec() - t0;
+    ASSERT(r2 > 0);
+    size_t after_greedy = alea_void_count(vr2);
+
+    printf("  Void merge benchmark (sphere R=3, bounds [-5,5]^3, depth=4):\n");
+    printf("    Regions before merge: %zu\n", before1);
+    printf("    Face-sorted: %zu regions in %.3f ms\n", after_face, t_face * 1000);
+    printf("    Greedy:      %zu regions in %.3f ms\n", after_greedy, t_greedy * 1000);
+    printf("    Speedup:     %.1fx\n", t_greedy / (t_face > 1e-9 ? t_face : 1e-9));
+
+    alea_void_free(vr1);
+    alea_destroy(sys1);
+    alea_void_free(vr2);
+    alea_destroy(sys2);
 }
 
 TEST_MAIN()

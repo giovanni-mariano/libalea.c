@@ -39,7 +39,7 @@ render3d: render3d.c
 	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_RENDER)
 
 void_demo: void_demo.c
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_CORE)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_MCNP) $(LIBS_CORE)
 
 clean:
 	rm -f $(EXAMPLES) *.inp *.ppm *.bmp *.png

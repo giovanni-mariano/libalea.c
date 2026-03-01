@@ -170,6 +170,8 @@ typedef struct {
     double merge_surface_weight;/* 0.1  */
     int merge_max_surfaces;     /* 24   */
     int merge_min_cells;        /* 1    */
+    bool merge_use_greedy;      /* false */
+    int void_consolidate;       /* 100 (0 = off) */
 
     /* Flatten */
     int flatten_max_depth;      /* 0 = unlimited */

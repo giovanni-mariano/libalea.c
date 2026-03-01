@@ -435,6 +435,8 @@ static int create_surface_entry(alea_system_t* sys,
 
     if (surface_id <= 0) {
         surface_id = sys->next_auto_surface_id++;
+    } else if (surface_id >= sys->next_auto_surface_id) {
+        sys->next_auto_surface_id = surface_id + 1;
     }
 
     /* Get or create primitive (with automatic deduplication) */
@@ -1372,7 +1374,9 @@ int alea_void_merge(alea_system_t* sys, void_result_t* result) {
         .cell_weight = sys->config.merge_cell_weight,
         .surface_weight = sys->config.merge_surface_weight,
         .max_surfaces_per_cell = sys->config.merge_max_surfaces,
-        .min_cells = sys->config.merge_min_cells
+        .min_cells = sys->config.merge_min_cells,
+        .use_greedy = sys->config.merge_use_greedy,
+        .consolidate_max_surfaces = sys->config.void_consolidate
     };
 
     return alea_merge_void_cells(sys, result, &internal_config);

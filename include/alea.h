@@ -608,6 +608,7 @@ int alea_export_stream(const alea_system_t* sys, alea_export_format_t format, FI
 
 void_result_t* alea_void_generate(alea_system_t* sys, const alea_bbox_t* bounds);
 int alea_void_add_cells(alea_system_t* sys, void_result_t* result);
+int alea_void_add_graveyard(alea_system_t* sys, void_result_t* result);
 size_t alea_void_count(const void_result_t* result);
 int alea_void_get(const void_result_t* result, size_t index, alea_bbox_t* box);
 void alea_void_free(void_result_t* result);
