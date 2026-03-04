@@ -36,12 +36,34 @@ extern "C" {
  * ============================================================================ */
 
 /**
+ * @brief X-macro table for simple keyword=value cell parameters.
+ *
+ * Each entry: X(field, type, keyword, export_precision)
+ * Adding a new parameter = adding one line here. The struct fields,
+ * has_* flags, parser, copy, merge, and export are all auto-generated.
+ *
+ * Complex params (IMP:*, FILL, TRCL, LAT, U, MAT, RHO) stay manual.
+ */
+#define MCNP_CELL_SIMPLE_PARAMS(X) \
+    X(vol,   double, "VOL",   6)   \
+    X(tmp,   double, "TMP",   10)  \
+    X(pwt,   double, "PWT",   4)   \
+    X(nonu,  int,    "NONU",  0)   \
+    X(pd,    double, "PD",    4)   \
+    X(elpt,  double, "ELPT",  6)   \
+    X(unc,   int,    "UNC",   0)   \
+    X(bflcl, int,    "BFLCL", 0)
+
+/**
  * @brief MCNP-specific cell parameters (parallel array to sys->cells)
  */
 typedef struct {
     double imp_n, imp_p, imp_e;
-    double vol;
-    double tmp;                     /* Temperature in MeV (MCNP native unit) */
+
+    #define X_FIELD(name, type, kw, prec) type name;
+    MCNP_CELL_SIMPLE_PARAMS(X_FIELD)
+    #undef X_FIELD
+
     int trcl;
     int trcl_inline;
     int trcl_degrees;
@@ -57,8 +79,11 @@ typedef struct {
     unsigned int has_imp_n : 1;
     unsigned int has_imp_p : 1;
     unsigned int has_imp_e : 1;
-    unsigned int has_vol : 1;
-    unsigned int has_tmp : 1;
+
+    #define X_HAS(name, type, kw, prec) unsigned int has_##name : 1;
+    MCNP_CELL_SIMPLE_PARAMS(X_HAS)
+    #undef X_HAS
+
     unsigned int has_trcl : 1;
     unsigned int has_mat : 1;
     unsigned int has_rho : 1;

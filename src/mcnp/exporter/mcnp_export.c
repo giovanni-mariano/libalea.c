@@ -392,17 +392,18 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
         mcnp_str_double(&s, mp->imp_e, 4);
     }
 
-    /* VOL= - volume override */
-    if (mp && mp->has_vol) {
-        mcnp_str_puts(&s, " VOL=");
-        mcnp_str_double(&s, mp->vol, 6);
-    }
-
-    /* TMP= - temperature */
-    if (mp && mp->has_tmp) {
-        mcnp_str_puts(&s, " TMP=");
-        mcnp_str_double(&s, mp->tmp, 10);
-    }
+    /* Simple keyword=value params (VOL, TMP, PWT, NONU, PD, ELPT, UNC, BFLCL) */
+    #define MCNP_EXPORT_double(s, val, prec) mcnp_str_double(s, val, prec)
+    #define MCNP_EXPORT_int(s, val, prec)    mcnp_str_int(s, val)
+    #define X_EXPORT(name, type, kw, prec) \
+        if (mp && mp->has_##name) { \
+            mcnp_str_puts(&s, " " kw "="); \
+            MCNP_EXPORT_##type(&s, mp->name, prec); \
+        }
+    MCNP_CELL_SIMPLE_PARAMS(X_EXPORT)
+    #undef X_EXPORT
+    #undef MCNP_EXPORT_double
+    #undef MCNP_EXPORT_int
 
     /* U= - universe membership */
     if (cell->universe_id != 0) {

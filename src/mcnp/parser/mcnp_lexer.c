@@ -57,8 +57,9 @@ size_t mcnp_lexer_get_next_token(const char** cursor, const char** token_start) 
 int mcnp_lexer_is_parameter_keyword(const char* token, size_t len) {
     (void)len;  /* Token is null-terminated, length available for future bounds checking */
     const char* keywords[] = {
-        "imp:", "u=", "vol=", "fill=", "lat=", "tmp=", "pwt=", 
-        "ext:", "fcl=", "wwn", "dxc=", "trcl", "mat=", "rho="
+        "imp:", "u=", "vol=", "fill=", "lat=", "tmp=", "pwt=",
+        "ext:", "fcl=", "wwn", "dxc=", "trcl", "mat=", "rho=",
+        "nonu=", "pd=", "elpt=", "unc=", "bflcl=", "cosy="
         // NOTE: some keywords like 'imp' are followed by a colon, some by equals.
         // The comparison length handles this.
     };

@@ -29,7 +29,11 @@
  */
 typedef struct {
     double imp_n, imp_p, imp_e;
-    double vol, tmp;
+
+    #define X_FIELD(name, type, kw, prec) type name;
+    MCNP_CELL_SIMPLE_PARAMS(X_FIELD)
+    #undef X_FIELD
+
     int universe_id, fill_universe, fill_transform, lat_type;
 
     // Material/density overrides (for LIKE BUT)
@@ -59,8 +63,11 @@ typedef struct {
     unsigned int has_imp_n : 1;
     unsigned int has_imp_p : 1;
     unsigned int has_imp_e : 1;
-    unsigned int has_vol : 1;
-    unsigned int has_tmp : 1;
+
+    #define X_HAS(name, type, kw, prec) unsigned int has_##name : 1;
+    MCNP_CELL_SIMPLE_PARAMS(X_HAS)
+    #undef X_HAS
+
     unsigned int has_universe : 1;
     unsigned int has_fill : 1;
     unsigned int has_lat : 1;

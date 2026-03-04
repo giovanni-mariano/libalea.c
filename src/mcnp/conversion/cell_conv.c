@@ -481,18 +481,21 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
             out_params->lat_type = parse_int_value(&p);
             out_params->has_lat = 1;
         }
-        // VOL= - Volume override
-        else if (match_prefix(p, "VOL")) {
-            p += 3;
-            out_params->vol = parse_double_value(&p);
-            out_params->has_vol = 1;
-        }
-        // TMP= - Temperature
-        else if (match_prefix(p, "TMP")) {
-            p += 3;
-            out_params->tmp = parse_double_value(&p);
-            out_params->has_tmp = 1;
-        }
+        // Simple keyword=value params (VOL, TMP, PWT, NONU, PD, ELPT, UNC, BFLCL)
+        #define MCNP_PARSE_double parse_double_value
+        #define MCNP_PARSE_int    parse_int_value
+        #define X_PARSE(name, type, kw, prec) \
+            else if (match_prefix(p, kw)) { \
+                p += sizeof(kw) - 1; \
+                if (out_params->has_##name) \
+                    ALEA_LOG_WARN("Cell parameter " kw " specified twice, using last value"); \
+                out_params->name = (type)MCNP_PARSE_##type(&p); \
+                out_params->has_##name = 1; \
+            }
+        MCNP_CELL_SIMPLE_PARAMS(X_PARSE)
+        #undef X_PARSE
+        #undef MCNP_PARSE_double
+        #undef MCNP_PARSE_int
         // *TRCL= - Cell transformation (angles in degrees)
         else if (match_prefix(p, "*TRCL")) {
             p += 5;
@@ -614,14 +617,13 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             params.imp_e = but_params.imp_e;
             params.has_imp_e = 1;
         }
-        if (but_params.has_vol) {
-            params.vol = but_params.vol;
-            params.has_vol = 1;
-        }
-        if (but_params.has_tmp) {
-            params.tmp = but_params.tmp;
-            params.has_tmp = 1;
-        }
+        #define X_MERGE(name, type, kw, prec) \
+            if (but_params.has_##name) { \
+                params.name = but_params.name; \
+                params.has_##name = 1; \
+            }
+        MCNP_CELL_SIMPLE_PARAMS(X_MERGE)
+        #undef X_MERGE
         if (but_params.has_lat) {
             params.lat_type = but_params.lat_type;
             params.has_lat = 1;
@@ -711,11 +713,11 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             mp->has_imp_p = params.has_imp_p;
             mp->has_imp_e = params.has_imp_e;
 
-            // Volume and temperature (MCNP native MeV)
-            mp->vol = params.vol;
-            mp->has_vol = params.has_vol;
-            mp->tmp = params.tmp;
-            mp->has_tmp = params.has_tmp;
+            // Simple keyword=value params (VOL, TMP, PWT, etc.)
+            #define X_COPY(name, type, kw, prec) \
+                mp->name = params.name; mp->has_##name = params.has_##name;
+            MCNP_CELL_SIMPLE_PARAMS(X_COPY)
+            #undef X_COPY
 
             // FILL transform original data (for export)
             mp->fill_transform_inline = params.fill_transform_inline;
