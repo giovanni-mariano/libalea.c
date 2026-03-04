@@ -51,36 +51,40 @@ static const char* skip_ws(const char* p) {
 /**
  * @brief Parse a double value, handling optional '=' prefix
  */
-static double parse_double_value(const char** cursor) {
+static double parse_double_value(const char** cursor, int* ok) {
     const char* p = *cursor;
     p = skip_ws(p);
     if (*p == '=') p++;
     p = skip_ws(p);
-    
+
     char* end;
     double val = strtod(p, &end);
     if (end > p) {
         *cursor = end;
+        if (ok) *ok = 1;
         return val;
     }
+    if (ok) *ok = 0;
     return 0.0;
 }
 
 /**
  * @brief Parse an integer value, handling optional '=' prefix
  */
-static int parse_int_value(const char** cursor) {
+static int parse_int_value(const char** cursor, int* ok) {
     const char* p = *cursor;
     p = skip_ws(p);
     if (*p == '=') p++;
     p = skip_ws(p);
-    
+
     char* end;
     long val = strtol(p, &end, 10);
     if (end > p) {
         *cursor = end;
+        if (ok) *ok = 1;
         return (int)val;
     }
+    if (ok) *ok = 0;
     return 0;
 }
 
@@ -408,20 +412,22 @@ static void parse_trcl_param(const char** cursor, alea_cell_params_t* params, in
     *cursor = p;
 }
 
-int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params) {
+int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params,
+                          int cell_id) {
     if (!out_params) return -1;
-    
+
     // Initialize output structure
     memset(out_params, 0, sizeof(alea_cell_params_t));
     out_params->imp_n = 1.0;  // Default importance
     out_params->imp_p = 1.0;
     out_params->imp_e = 1.0;
-    
+
     if (!params_str || !*params_str) {
         return 0;  // No parameters to parse
     }
-    
+
     const char* p = params_str;
+    int ok;
     
     while (*p) {
         p = skip_ws(p);
@@ -443,18 +449,28 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
             }
 
             // Parse the value
-            double imp_val = parse_double_value(&p);
+            double imp_val = parse_double_value(&p, &ok);
+            if (!ok) {
+                ALEA_LOG_WARN("Cell %d: invalid value for IMP parameter", cell_id);
+                continue;
+            }
 
             // Apply to selected particle types
             if (set_n) {
+                if (out_params->has_imp_n)
+                    ALEA_LOG_WARN("Cell %d: IMP:N specified twice, using last value", cell_id);
                 out_params->imp_n = imp_val;
                 out_params->has_imp_n = 1;
             }
             if (set_p) {
+                if (out_params->has_imp_p)
+                    ALEA_LOG_WARN("Cell %d: IMP:P specified twice, using last value", cell_id);
                 out_params->imp_p = imp_val;
                 out_params->has_imp_p = 1;
             }
             if (set_e) {
+                if (out_params->has_imp_e)
+                    ALEA_LOG_WARN("Cell %d: IMP:E specified twice, using last value", cell_id);
                 out_params->imp_e = imp_val;
                 out_params->has_imp_e = 1;
             }
@@ -462,23 +478,33 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
         // U= - Universe
         else if (match_prefix(p, "U=") || (match_prefix(p, "U") && (p[1] == '=' || isspace((unsigned char)p[1])))) {
             p++;  // Skip 'U'
-            out_params->universe_id = parse_int_value(&p);
+            if (out_params->has_universe)
+                ALEA_LOG_WARN("Cell %d: U specified twice, using last value", cell_id);
+            out_params->universe_id = parse_int_value(&p, &ok);
+            if (!ok) ALEA_LOG_WARN("Cell %d: invalid value for U parameter", cell_id);
             out_params->has_universe = 1;
         }
         // *FILL= - Fill with universe (angles in degrees)
         else if (match_prefix(p, "*FILL")) {
             p += 5;
+            if (out_params->has_fill)
+                ALEA_LOG_WARN("Cell %d: FILL specified twice, using last value", cell_id);
             parse_fill_param(&p, out_params, 1);  // degrees=1
         }
         // FILL= - Fill with universe
         else if (match_prefix(p, "FILL")) {
             p += 4;
+            if (out_params->has_fill)
+                ALEA_LOG_WARN("Cell %d: FILL specified twice, using last value", cell_id);
             parse_fill_param(&p, out_params, 0);  // degrees=0
         }
         // LAT= - Lattice type
         else if (match_prefix(p, "LAT")) {
             p += 3;
-            out_params->lat_type = parse_int_value(&p);
+            if (out_params->has_lat)
+                ALEA_LOG_WARN("Cell %d: LAT specified twice, using last value", cell_id);
+            out_params->lat_type = parse_int_value(&p, &ok);
+            if (!ok) ALEA_LOG_WARN("Cell %d: invalid value for LAT parameter", cell_id);
             out_params->has_lat = 1;
         }
         // Simple keyword=value params (VOL, TMP, PWT, NONU, PD, ELPT, UNC, BFLCL)
@@ -488,8 +514,9 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
             else if (match_prefix(p, kw)) { \
                 p += sizeof(kw) - 1; \
                 if (out_params->has_##name) \
-                    ALEA_LOG_WARN("Cell parameter " kw " specified twice, using last value"); \
-                out_params->name = (type)MCNP_PARSE_##type(&p); \
+                    ALEA_LOG_WARN("Cell %d: " kw " specified twice, using last value", cell_id); \
+                out_params->name = (type)MCNP_PARSE_##type(&p, &ok); \
+                if (!ok) ALEA_LOG_WARN("Cell %d: invalid value for " kw " parameter", cell_id); \
                 out_params->has_##name = 1; \
             }
         MCNP_CELL_SIMPLE_PARAMS(X_PARSE)
@@ -499,23 +526,33 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
         // *TRCL= - Cell transformation (angles in degrees)
         else if (match_prefix(p, "*TRCL")) {
             p += 5;
+            if (out_params->has_trcl)
+                ALEA_LOG_WARN("Cell %d: TRCL specified twice, using last value", cell_id);
             parse_trcl_param(&p, out_params, 1);  // degrees=1
         }
         // TRCL= - Cell transformation
         else if (match_prefix(p, "TRCL")) {
             p += 4;
+            if (out_params->has_trcl)
+                ALEA_LOG_WARN("Cell %d: TRCL specified twice, using last value", cell_id);
             parse_trcl_param(&p, out_params, 0);  // degrees=0
         }
         // MAT= - Material override (for LIKE BUT)
         else if (match_prefix(p, "MAT")) {
             p += 3;
-            out_params->material_id = parse_int_value(&p);
+            if (out_params->has_mat)
+                ALEA_LOG_WARN("Cell %d: MAT specified twice, using last value", cell_id);
+            out_params->material_id = parse_int_value(&p, &ok);
+            if (!ok) ALEA_LOG_WARN("Cell %d: invalid value for MAT parameter", cell_id);
             out_params->has_mat = 1;
         }
         // RHO= - Density override (for LIKE BUT)
         else if (match_prefix(p, "RHO")) {
             p += 3;
-            out_params->density = parse_double_value(&p);
+            if (out_params->has_rho)
+                ALEA_LOG_WARN("Cell %d: RHO specified twice, using last value", cell_id);
+            out_params->density = parse_double_value(&p, &ok);
+            if (!ok) ALEA_LOG_WARN("Cell %d: invalid value for RHO parameter", cell_id);
             out_params->has_rho = 1;
         }
         // Skip unknown token
@@ -563,13 +600,13 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
 
     // Parse cell parameters (U=, FILL=, IMP:N=, etc.)
     alea_cell_params_t params;
-    parse_cell_parameters(cell->parameters, &params);
+    parse_cell_parameters(cell->parameters, &params, cell->cell_id);
 
     // For LIKE cells, parse BUT clause parameters (override template values)
     if (is_like_cell && but_clause) {
         alea_cell_params_t but_params;
         memset(&but_params, 0, sizeof(but_params));
-        parse_cell_parameters(but_clause, &but_params);
+        parse_cell_parameters(but_clause, &but_params, cell->cell_id);
 
         // Merge BUT parameters into params (BUT takes priority)
         if (but_params.has_mat) {

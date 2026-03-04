@@ -79,7 +79,8 @@ typedef struct {
 /**
  * @brief Parse MCNP cell parameters string
  */
-int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params);
+int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params,
+                          int cell_id);
 
 /**
  * @brief Convert an MCNP cell to a CSG tree
