@@ -69,13 +69,12 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
     for (size_t cell_idx = 0; cell_idx < alea_vec_count(&sys->cells); cell_idx++) {
         alea_node_id_t root = sys->cells.data[cell_idx].root_node_id;
 
-        /* Traverse tree (simple stack-based traversal) */
-        alea_node_id_t stack[1024];
-        int stack_top = 0;
-        stack[stack_top++] = root;
+        /* Traverse tree (stack-based traversal with dynamic stack) */
+        alea_uint32_vec_t stack = ALEA_VEC_INIT;
+        alea_vec_push(&stack, root, alea_node_id_t);
 
-        while (stack_top > 0) {
-            alea_node_id_t node_id = stack[--stack_top];
+        while (alea_vec_count(&stack) > 0) {
+            alea_node_id_t node_id = alea_vec_pop(&stack);
             if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes)) continue;
 
             const alea_node_t* node = &sys->nodes.data[node_id];
@@ -91,14 +90,13 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
                     }
                 }
             } else {
-                if (op != ALEA_OP_COMPLEMENT && stack_top < 1024) {
-                    stack[stack_top++] = node->operation.right;
+                if (op != ALEA_OP_COMPLEMENT) {
+                    alea_vec_push(&stack, node->operation.right, alea_node_id_t);
                 }
-                if (stack_top < 1024) {
-                    stack[stack_top++] = node->operation.left;
-                }
+                alea_vec_push(&stack, node->operation.left, alea_node_id_t);
             }
         }
+        alea_vec_free(&stack);
     }
 
     /* Count used primitives */

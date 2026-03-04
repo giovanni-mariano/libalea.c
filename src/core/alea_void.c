@@ -100,6 +100,7 @@ static alea_bbox_t get_child_bbox(const alea_bbox_t* parent, int octant) {
  */
 static int probe_node(const alea_system_t* sys, const alea_bbox_t* bbox,
                       int probes_per_axis, int* void_count, int* total) {
+    if (probes_per_axis < 2) probes_per_axis = 2;
     double dx = (bbox->max_x - bbox->min_x) / (probes_per_axis - 1);
     double dy = (bbox->max_y - bbox->min_y) / (probes_per_axis - 1);
     double dz = (bbox->max_z - bbox->min_z) / (probes_per_axis - 1);

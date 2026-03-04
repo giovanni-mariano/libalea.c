@@ -54,7 +54,12 @@ typedef struct { \
 \
 static inline name##_t name##_create(size_t initial_cap) { \
     name##_t map; \
-    map.capacity = initial_cap < 8 ? 8 : initial_cap; \
+    size_t _cap = initial_cap < 8 ? 8 : initial_cap; \
+    /* Round up to next power of two */ \
+    _cap--; _cap |= _cap >> 1; _cap |= _cap >> 2; \
+    _cap |= _cap >> 4; _cap |= _cap >> 8; _cap |= _cap >> 16; \
+    _cap |= _cap >> 32; _cap++; \
+    map.capacity = _cap; \
     map.count = 0; \
     map.entries = (name##_entry_t*)malloc(map.capacity * sizeof(name##_entry_t)); \
     if (map.entries) { \

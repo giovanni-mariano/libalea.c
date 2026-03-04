@@ -977,7 +977,8 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture) {
 
 /* Comparison function for qsort */
 static int compare_cell_ids(const void* a, const void* b) {
-    return *(const int*)a - *(const int*)b;
+    int ia = *(const int*)a, ib = *(const int*)b;
+    return (ia > ib) - (ia < ib);
 }
 
 int alea_validate_cell_ids(alea_system_t* sys) {
