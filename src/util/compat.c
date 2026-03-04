@@ -7,9 +7,20 @@
  * @brief Portable replacements for POSIX functions
  */
 
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "compat.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 char* alea_strdup(const char* s) {
     if (!s) return NULL;
@@ -19,6 +30,22 @@ char* alea_strdup(const char* s) {
         memcpy(copy, s, len);
     }
     return copy;
+}
+
+FILE* alea_tmpfile(char* path_out) {
+#ifdef _WIN32
+    char tmp_dir[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, tmp_dir) == 0) return NULL;
+    if (GetTempFileNameA(tmp_dir, "alea", 0, path_out) == 0) return NULL;
+    return fopen(path_out, "w");
+#else
+    strcpy(path_out, "/tmp/alea_XXXXXX");
+    int fd = mkstemp(path_out);
+    if (fd < 0) return NULL;
+    FILE* f = fdopen(fd, "w");
+    if (!f) { close(fd); remove(path_out); return NULL; }
+    return f;
+#endif
 }
 
 int alea_strcasecmp(const char* s1, const char* s2) {

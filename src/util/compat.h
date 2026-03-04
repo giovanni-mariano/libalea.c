@@ -14,6 +14,7 @@
 #define ALEA_COMPAT_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +34,13 @@ char* alea_strdup(const char* s);
  * @return <0 if s1<s2, 0 if equal, >0 if s1>s2
  */
 int alea_strcasecmp(const char* s1, const char* s2);
+
+/**
+ * @brief Create and open a temporary file with a unique name
+ * @param path_out Buffer to receive the temp file path (at least 256 bytes)
+ * @return FILE* open for writing, or NULL on failure. Caller must fclose().
+ */
+FILE* alea_tmpfile(char* path_out);
 
 #ifdef __cplusplus
 }

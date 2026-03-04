@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "util/compat.h"
 
 const mcnp_export_config_t MCNP_EXPORT_CONFIG_DEFAULT = {
     .surface_policy = 0,    /* ALEA_EMIT_MACROBODY */
@@ -182,10 +183,8 @@ mcnp_model_t* mcnp_load_string(const char* input, size_t len) {
     size_t actual_len = len > 0 ? len : strlen(input);
 
     /* Write to temp file and use mcnp_load */
-    char* tmppath = tmpnam(NULL);
-    if (!tmppath) return NULL;
-
-    FILE* f = fopen(tmppath, "w");
+    char tmppath[256];
+    FILE* f = alea_tmpfile(tmppath);
     if (!f) return NULL;
 
     fwrite(input, 1, actual_len, f);

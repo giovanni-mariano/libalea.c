@@ -84,7 +84,38 @@ static double get_time_ms(void) {
 
 #include "alea.h"
 #include "alea_mcnp.h"
+#include "alea_openmc.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
+
+typedef struct {
+    alea_system_t* sys;
+    mcnp_model_t* mcnp;
+    openmc_model_t* openmc;
+} loaded_model_t;
+
+static int ends_with(const char* s, const char* suffix) {
+    size_t slen = strlen(s), xlen = strlen(suffix);
+    return slen >= xlen && strcmp(s + slen - xlen, suffix) == 0;
+}
+
+static int load_model(const char* path, loaded_model_t* m) {
+    memset(m, 0, sizeof(*m));
+    if (ends_with(path, ".xml")) {
+        m->openmc = openmc_load(path);
+        if (!m->openmc) return -1;
+        m->sys = m->openmc->sys;
+    } else {
+        m->mcnp = mcnp_load(path);
+        if (!m->mcnp) return -1;
+        m->sys = m->mcnp->sys;
+    }
+    return 0;
+}
+
+static void destroy_model(loaded_model_t* m) {
+    if (m->mcnp)   mcnp_model_destroy(m->mcnp);
+    if (m->openmc)  openmc_model_destroy(m->openmc);
+}
 
 /* Get resident set size in MB (Linux only) */
 static double get_rss_mb(void) {
@@ -1127,13 +1158,13 @@ static int run_batch(const char* batch_file, const char* input_file) {
     fflush(stdout);
     double t0 = get_time_ms();
 
-    mcnp_model_t* model = mcnp_load(input_file);
-    if (!model) {
+    loaded_model_t model;
+    if (load_model(input_file, &model) != 0) {
         printf("FAILED: %s\n", alea_error());
         fclose(f);
         return 1;
     }
-    alea_system_t* sys = model->sys;
+    alea_system_t* sys = model.sys;
 
     double t1 = get_time_ms();
     printf("OK (%.1f ms)\n", t1 - t0);
@@ -1147,7 +1178,7 @@ static int run_batch(const char* batch_file, const char* input_file) {
 
     if (alea_build_spatial_index(sys) != 0) {
         printf("FAILED\n");
-        mcnp_model_destroy(model);
+        destroy_model(&model);
         fclose(f);
         return 1;
     }
@@ -1181,7 +1212,7 @@ static int run_batch(const char* batch_file, const char* input_file) {
     }
 
     fclose(f);
-    mcnp_model_destroy(model);
+    destroy_model(&model);
 
     printf("\nBatch complete: %d plots, %d errors\n", plot_count, error_count);
     return error_count > 0 ? 1 : 0;
@@ -1326,12 +1357,12 @@ int main(int argc, char** argv) {
     fflush(stdout);
     double t0 = get_time_ms();
 
-    mcnp_model_t* model = mcnp_load(input_file);
-    if (!model) {
+    loaded_model_t model;
+    if (load_model(input_file, &model) != 0) {
         printf("FAILED: %s\n", alea_error());
         return 1;
     }
-    alea_system_t* sys = model->sys;
+    alea_system_t* sys = model.sys;
 
     double t1 = get_time_ms();
     printf("OK (%.1f ms)\n", t1 - t0);
@@ -1346,7 +1377,7 @@ int main(int argc, char** argv) {
 
     if (alea_build_spatial_index(sys) != 0) {
         printf("FAILED\n");
-        mcnp_model_destroy(model);
+        destroy_model(&model);
         return 1;
     }
 
@@ -1395,7 +1426,7 @@ int main(int argc, char** argv) {
     printf("Rendering...\n");
     int rc = render_plot(sys, &plot, 1);
 
-    mcnp_model_destroy(model);
+    destroy_model(&model);
 
     if (rc == 0) {
         printf("\nDone: %s\n", output_file);
