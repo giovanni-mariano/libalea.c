@@ -28,7 +28,9 @@
 
 typedef struct {
     alea_system_t* sys;
-    int owned;          /* 1 if we should alea_destroy() on __gc */
+    void* mcnp_model;    /* mcnp_model_t* if loaded from MCNP, NULL otherwise */
+    void* openmc_model;  /* openmc_model_t* if loaded from OpenMC, NULL otherwise */
+    int owned;            /* 1 if we should destroy on __gc */
 } alea_lua_system_t;
 
 typedef struct {

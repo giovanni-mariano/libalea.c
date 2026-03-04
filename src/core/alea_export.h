@@ -158,36 +158,10 @@ typedef struct export_context {
     /* Format-specific data (e.g., OpenMC material-density map) */
     void* mat_map;                     /* For OpenMC: pointer to mat_density_map_t */
 
+    /* Module model data (e.g., mcnp_model_t* for MCNP export) */
+    const void* module_data;
+
 } export_context_t;
-
-/* ============================================================================
- * PUBLIC API
- * ============================================================================ */
-
-/**
- * @brief Export system to file
- * 
- * @param sys CSG system to export
- * @param format Output format
- * @param filename Output filename
- * @param policy Macrobody handling policy
- * @param deduplicate Enable export-time surface deduplication
- * @return 0 on success, -1 on error
- */
-int alea_export(const alea_system_t* sys, 
-               alea_export_format_t format,
-               const char* filename,
-               alea_surface_emit_policy_t surface_policy,
-               bool deduplicate);
-
-/**
- * @brief Export system to open file stream
- */
-int alea_export_to_stream(const alea_system_t* sys,
-                         alea_export_format_t format,
-                         FILE* out,
-                         alea_surface_emit_policy_t surface_policy,
-                         bool deduplicate);
 
 /* ============================================================================
  * EXPORT CONTEXT MANAGEMENT
@@ -251,6 +225,11 @@ const macrobody_decomposition_t* find_decomposition(const export_context_t* ctx,
  * @return Number of cells with expanded macrobodies
  */
 int alea_expand_macrobodies_in_cells(alea_system_t* sys);
+
+/**
+ * @brief Compute next synthetic surface ID (max existing + 1000)
+ */
+int alea_next_synthetic_surface_id(const alea_system_t* sys);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS (used by format-specific exporters)

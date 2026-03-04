@@ -14,37 +14,41 @@ The most common starting point is an existing MCNP input file:
 
 ```c
 #include <alea.h>
+#include <alea_mcnp.h>
 #include <stdio.h>
 
 int main(void) {
-    alea_system_t* sys = alea_load_mcnp("iter_blanket.inp");
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load("iter_blanket.inp");
+    if (!model) {
         fprintf(stderr, "Load failed: %s\n", alea_error());
         return 1;
     }
+    alea_system_t* sys = model->sys;
 
     // Build the index — required before any queries
     alea_build_universe_index(sys);
 
     alea_print_summary(sys);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
     return 0;
 }
 ```
 
-`alea_load_mcnp` parses the cell cards, surface cards, data cards (materials, transforms), and builds the internal CSG tree. It handles `LIKE BUT`, cell complements (`#cell`), macrobodies, and universe fills.
+`mcnp_load` parses the cell cards, surface cards, data cards (materials, transforms), and builds the internal CSG tree. It handles `LIKE BUT`, cell complements (`#cell`), macrobodies, and universe fills.
 
-For OpenMC:
+For OpenMC (requires `alea_openmc.h`):
 
 ```c
-alea_system_t* sys = alea_load_openmc("geometry.xml");
+openmc_model_t* model = openmc_load("geometry.xml");
+alea_system_t* sys = model->sys;
 ```
 
 You can also load from a string instead of a file:
 
 ```c
 const char* input = "1 1 -10.0 -1\n2 0 1\n\n1 SO 5.0\n\n";
-alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
+mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+alea_system_t* sys = model->sys;
 ```
 
 **Important**: Always call `alea_build_universe_index(sys)` after loading. Without it, point queries, overlap detection, and slicing will not work correctly.
@@ -383,23 +387,29 @@ alea_set_fill(sys, cell_idx, 1, 0);  // fill with universe 1, no transform
 
 ## 6. Exporting
 
-### To MCNP
+### To MCNP (alea_mcnp.h)
 
 ```c
-alea_export_mcnp(sys, "output.inp");
+mcnp_export_system(sys, "output.inp");
 ```
 
-### To OpenMC
+Or with a model for full control over export settings:
 
 ```c
-alea_export_openmc(sys, "geometry.xml");
+mcnp_export(model, "output.inp");
+```
+
+### To OpenMC (alea_openmc.h)
+
+```c
+openmc_export_system(sys, "geometry.xml");
 ```
 
 ### To a file stream
 
 ```c
 FILE* f = fopen("output.inp", "w");
-alea_export_mcnp_stream(sys, f);
+mcnp_export_system_stream(sys, f);
 fclose(f);
 ```
 
@@ -416,7 +426,7 @@ cfg.universe_depth = -1;               // export all universes
 cfg.fill_depth = 0;                    // don't expand fills
 alea_set_config(sys, &cfg);
 
-alea_export_mcnp(sys, "output.inp");
+mcnp_export_system(sys, "output.inp");
 ```
 
 The `surface_policy` setting matters most:
@@ -456,32 +466,32 @@ alea_void_merge(sys, voids);  // reduce count by merging adjacent regions
 
 ## 8. Format Conversion
 
-Converting between MCNP and OpenMC is a two-liner:
+Converting between MCNP and OpenMC:
 
 ```c
 // MCNP to OpenMC
-alea_system_t* sys = alea_load_mcnp("input.inp");
-alea_export_openmc(sys, "geometry.xml");
-alea_destroy(sys);
+mcnp_model_t* model = mcnp_load("input.inp");
+openmc_export_system(model->sys, "geometry.xml");
+mcnp_model_destroy(model);
 
 // OpenMC to MCNP
-alea_system_t* sys2 = alea_load_openmc("geometry.xml");
-alea_export_mcnp(sys2, "output.inp");
-alea_destroy(sys2);
+openmc_model_t* omc = openmc_load("geometry.xml");
+mcnp_export_system(omc->sys, "output.inp");
+openmc_model_destroy(omc);
 ```
 
 For merging multiple models:
 
 ```c
-alea_system_t* a = alea_load_mcnp("model_a.inp");
-alea_system_t* b = alea_load_mcnp("model_b.inp");
+mcnp_model_t* a = mcnp_load("model_a.inp");
+mcnp_model_t* b = mcnp_load("model_b.inp");
 
 // Merge b into a, offsetting all IDs by 100000 to avoid collisions
-alea_merge(a, b, 100000);
+alea_merge(a->sys, b->sys, 100000);
 
-alea_export_mcnp(a, "combined.inp");
-alea_destroy(a);
-alea_destroy(b);
+mcnp_export_system(a->sys, "combined.inp");
+mcnp_model_destroy(a);
+mcnp_model_destroy(b);
 ```
 
 ## 9. Flattening and Manipulation
@@ -502,7 +512,7 @@ Pull one universe out into its own system:
 
 ```c
 alea_system_t* sub = alea_extract_universe(sys, 5);  // universe 5
-alea_export_mcnp(sub, "universe_5.inp");
+mcnp_export_system(sub, "universe_5.inp");
 alea_destroy(sub);
 ```
 

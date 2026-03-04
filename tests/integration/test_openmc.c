@@ -8,10 +8,11 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "core/alea_universe.h"
-#include "openmc/openmc_conversion.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -20,27 +21,27 @@
 /* ========================================================================= */
 
 TEST(openmc_parse_simple) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_simple.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_simple.xml");
+    if (!omc) SKIP("Test data file not found");
 
-    ASSERT(alea_cell_count(sys) > 0);
-    alea_destroy(sys);
+    ASSERT(alea_cell_count(omc->sys) > 0);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_parse_lattice_rect) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_lattice.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_lattice.xml");
+    if (!omc) SKIP("Test data file not found");
 
-    ASSERT(alea_cell_count(sys) > 0);
-    alea_destroy(sys);
+    ASSERT(alea_cell_count(omc->sys) > 0);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_parse_lattice_hex) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_hex_lattice.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_hex_lattice.xml");
+    if (!omc) SKIP("Test data file not found");
 
-    ASSERT(alea_cell_count(sys) > 0);
-    alea_destroy(sys);
+    ASSERT(alea_cell_count(omc->sys) > 0);
+    openmc_model_destroy(omc);
 }
 
 /* ========================================================================= */
@@ -61,14 +62,15 @@ TEST(openmc_sphere) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 0);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_cylinder_z) {
@@ -85,14 +87,15 @@ TEST(openmc_cylinder_z) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 5, 0, 0), 0);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_plane) {
@@ -109,14 +112,15 @@ TEST(openmc_plane) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 3), 1);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 7), 0);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_region_intersection) {
@@ -135,8 +139,9 @@ TEST(openmc_region_intersection) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     /* Below z=0 and inside sphere → mat 1 */
@@ -144,7 +149,7 @@ TEST(openmc_region_intersection) {
     /* Above z=0 → void */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 3), 0);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_region_union) {
@@ -163,15 +168,16 @@ TEST(openmc_region_union) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, -5, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 5, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 0);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 TEST(openmc_complement) {
@@ -193,15 +199,16 @@ TEST(openmc_complement) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     /* Complement of inside sphere → outside sphere → mat 2 */
     ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 2);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 /* ========================================================================= */
@@ -224,8 +231,9 @@ TEST(openmc_fill_universe) {
         "  <nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
         " </materials>\n"
         "</model>\n";
-    alea_system_t* sys = openmc_convert_string(xml, strlen(xml));
-    if (!sys) SKIP("OpenMC string parse not supported");
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    if (!omc) SKIP("OpenMC string parse not supported");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     /* Verify cell 1 has fill_universe=2 */
@@ -240,7 +248,7 @@ TEST(openmc_fill_universe) {
     ASSERT_EQ(alea_find_cell_lazy(sys, 0, 0, 0, &cell_id, &material, NULL), 0);
     ASSERT_EQ(material, 1);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 /* ========================================================================= */
@@ -259,39 +267,39 @@ static int mcnp_to_openmc_roundtrip(const char* mcnp_input, const char* label,
                                      double x_in, double y_in, double z_in,
                                      double x_out, double y_out, double z_out) {
     /* Parse MCNP */
-    alea_system_t* sys1 = alea_load_mcnp_string(mcnp_input, strlen(mcnp_input));
-    if (!sys1) {
+    mcnp_model_t* model1 = mcnp_load_string(mcnp_input, strlen(mcnp_input));
+    if (!model1) {
         printf("    FAIL: %s: MCNP parse failed: %s\n", label, alea_error());
         return 0;
     }
-    alea_build_universe_index(sys1);
+    alea_build_universe_index(model1->sys);
 
-    int mat_in  = alea_material_at(sys1, x_in, y_in, z_in);
-    int mat_out = alea_material_at(sys1, x_out, y_out, z_out);
+    int mat_in  = alea_material_at(model1->sys, x_in, y_in, z_in);
+    int mat_out = alea_material_at(model1->sys, x_out, y_out, z_out);
 
     /* Export to OpenMC */
     const char* tmpfile = "test_cone_sheet_rt_tmp.xml";
-    int rc = alea_export_openmc(sys1, tmpfile);
+    int rc = openmc_export_system(model1->sys, tmpfile);
     if (rc != 0) {
         printf("    FAIL: %s: OpenMC export failed: %s\n", label, alea_error());
-        alea_destroy(sys1);
+        mcnp_model_destroy(model1);
         return 0;
     }
-    alea_destroy(sys1);
+    mcnp_model_destroy(model1);
 
     /* Re-parse OpenMC XML */
-    alea_system_t* sys2 = openmc_convert_file(tmpfile);
-    if (!sys2) {
+    openmc_model_t* omc2 = openmc_load(tmpfile);
+    if (!omc2) {
         printf("    FAIL: %s: OpenMC re-parse failed: %s\n", label, alea_error());
         remove(tmpfile);
         return 0;
     }
-    alea_build_universe_index(sys2);
+    alea_build_universe_index(omc2->sys);
 
-    int mat_in2  = alea_material_at(sys2, x_in, y_in, z_in);
-    int mat_out2 = alea_material_at(sys2, x_out, y_out, z_out);
+    int mat_in2  = alea_material_at(omc2->sys, x_in, y_in, z_in);
+    int mat_out2 = alea_material_at(omc2->sys, x_out, y_out, z_out);
 
-    alea_destroy(sys2);
+    openmc_model_destroy(omc2);
     remove(tmpfile);
 
     if (mat_in != mat_in2) {
@@ -419,33 +427,35 @@ TEST(openmc_union_intersection_parens) {
 }
 
 TEST(openmc_export_roundtrip) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_simple.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_simple.xml");
+    if (!omc) SKIP("Test data file not found");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
     int mat_origin = alea_material_at(sys, 0, 0, 0);
 
     /* Export to MCNP */
     const char* tmpfile = "test_openmc_rt_tmp.mcnp";
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, tmpfile, ALEA_EMIT_MACROBODY, false);
+    int rc = mcnp_export_system(sys, tmpfile);
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 
     /* Re-parse as MCNP */
-    alea_system_t* sys2 = alea_load_mcnp(tmpfile);
-    ASSERT_NOT_NULL(sys2);
-    alea_build_universe_index(sys2);
+    mcnp_model_t* model2 = mcnp_load(tmpfile);
+    ASSERT_NOT_NULL(model2);
+    alea_build_universe_index(model2->sys);
 
-    int mat_origin2 = alea_material_at(sys2, 0, 0, 0);
+    int mat_origin2 = alea_material_at(model2->sys, 0, 0, 0);
     ASSERT_EQ(mat_origin, mat_origin2);
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove(tmpfile);
 }
 
 TEST(openmc_hex_lattice_roundtrip) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_hex_lattice.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_hex_lattice.xml");
+    if (!omc) SKIP("Test data file not found");
+    alea_system_t* sys = omc->sys;
     alea_build_universe_index(sys);
 
     /* Verify parse: origin point query */
@@ -455,48 +465,48 @@ TEST(openmc_hex_lattice_roundtrip) {
 
     /* Export to OpenMC XML */
     const char* tmpfile = "test_hex_lat_rt_tmp.xml";
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_OPENMC, tmpfile, 0, false);
+    int rc = openmc_export_system(sys, tmpfile);
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 
     /* Re-parse the exported file */
-    alea_system_t* sys2 = openmc_convert_file(tmpfile);
-    ASSERT_NOT_NULL(sys2);
-    alea_build_universe_index(sys2);
+    openmc_model_t* omc2 = openmc_load(tmpfile);
+    ASSERT_NOT_NULL(omc2);
+    alea_build_universe_index(omc2->sys);
 
     /* Same point queries should produce the same materials */
-    ASSERT_EQ(alea_find_cell_lazy(sys2, 0, 0, 0, &cell_id, &mat, NULL), 0);
+    ASSERT_EQ(alea_find_cell_lazy(omc2->sys, 0, 0, 0, &cell_id, &mat, NULL), 0);
     ASSERT_EQ(mat, 1);
 
     /* Element (1,0): center at (2,0) → univ 3 → mat 3 */
-    ASSERT_EQ(alea_find_cell_lazy(sys2, 2, 0, 0, &cell_id, &mat, NULL), 0);
+    ASSERT_EQ(alea_find_cell_lazy(omc2->sys, 2, 0, 0, &cell_id, &mat, NULL), 0);
     ASSERT_EQ(mat, 3);
 
-    alea_destroy(sys2);
+    openmc_model_destroy(omc2);
     remove(tmpfile);
 
     /* --- MCNP roundtrip: parse OpenMC → export MCNP → re-parse → verify --- */
-    alea_system_t* sys3 = openmc_convert_file("tests/data/openmc_hex_lattice.xml");
-    ASSERT_NOT_NULL(sys3);
-    alea_build_universe_index(sys3);
+    openmc_model_t* omc3 = openmc_load("tests/data/openmc_hex_lattice.xml");
+    ASSERT_NOT_NULL(omc3);
+    alea_build_universe_index(omc3->sys);
 
     const char* mcnp_file = "test_hex_lat_rt_tmp.mcnp";
-    rc = alea_export(sys3, ALEA_EXPORT_FORMAT_MCNP, mcnp_file, ALEA_EMIT_MACROBODY, false);
+    rc = mcnp_export_system(omc3->sys, mcnp_file);
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys3);
+    openmc_model_destroy(omc3);
 
-    alea_system_t* sys4 = alea_load_mcnp(mcnp_file);
-    ASSERT_NOT_NULL(sys4);
-    alea_build_universe_index(sys4);
+    mcnp_model_t* model4 = mcnp_load(mcnp_file);
+    ASSERT_NOT_NULL(model4);
+    alea_build_universe_index(model4->sys);
 
     /* Same point queries should work after MCNP roundtrip */
-    ASSERT_EQ(alea_find_cell_lazy(sys4, 0, 0, 0, &cell_id, &mat, NULL), 0);
+    ASSERT_EQ(alea_find_cell_lazy(model4->sys, 0, 0, 0, &cell_id, &mat, NULL), 0);
     ASSERT_EQ(mat, 1);
 
-    ASSERT_EQ(alea_find_cell_lazy(sys4, 2, 0, 0, &cell_id, &mat, NULL), 0);
+    ASSERT_EQ(alea_find_cell_lazy(model4->sys, 2, 0, 0, &cell_id, &mat, NULL), 0);
     ASSERT_EQ(mat, 3);
 
-    alea_destroy(sys4);
+    mcnp_model_destroy(model4);
     remove(mcnp_file);
 }
 

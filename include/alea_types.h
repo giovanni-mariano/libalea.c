@@ -150,15 +150,10 @@ typedef struct {
     int log_level;              /* ALEA_LOG_WARN (2) */
 
     /* Export */
-    int surface_policy;         /* ALEA_EMIT_MACROBODY (0) */
     bool export_materials;      /* true  */
     bool export_transforms;     /* true  */
     int universe_depth;         /* -1 (all) */
     int fill_depth;             /* 0 (no expansion) */
-    int trcl_mode;              /* 0=preserve (default), 1=bake */
-    int transform_mode;         /* 0=original, 1=inline, 2=cards */
-    int mcnp_max_col;           /* 80  */
-    int mcnp_cont_indent;       /* 5   */
 
     /* Void generation */
     int void_max_depth;         /* 8    */
@@ -389,6 +384,8 @@ typedef struct {
     int fill_transform;     /**< Transform applied to fill (0 = none) */
     alea_node_id_t root;     /**< Root node of CSG tree */
     alea_bbox_t bbox;        /**< Bounding box */
+    double temperature;     /**< Temperature in Kelvin (0.0 = not set) */
+    bool has_temperature;   /**< true if temperature was explicitly set */
     int lat_type;           /**< Lattice type: 0=none, 1=rect, 2=hex */
     int lat_fill_dims[6];   /**< Lattice dimensions: imin,imax,jmin,jmax,kmin,kmax */
     const int* lat_fill;    /**< Array of universe IDs (NULL if no lattice) */

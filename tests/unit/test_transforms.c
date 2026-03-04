@@ -8,6 +8,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_transform.h"
 #include <string.h>
@@ -276,15 +277,15 @@ TEST(transform_surface_with_tr) {
         "\n"
         "TR1 10 0 0\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
-    ASSERT_NOT_NULL(sys);
-    alea_build_universe_index(sys);
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_build_universe_index(model->sys);
 
     /* Sphere should be centered at (10,0,0) */
-    ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 1);
-    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 0);
+    ASSERT_EQ(alea_material_at(model->sys, 10, 0, 0), 1);
+    ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 0);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

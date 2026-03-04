@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_lua.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
 #include <string.h>
 
 /* ============================================================================
@@ -12,6 +14,7 @@
 static int l_system_create(lua_State* L) {
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
     ud->sys = alea_create();
+    ud->mcnp_model = NULL;
     ud->owned = 1;
     if (!ud->sys)
         return luaL_error(L, "alea_create failed: %s", alea_error());
@@ -21,8 +24,16 @@ static int l_system_create(lua_State* L) {
 
 static int l_system_destroy(lua_State* L) {
     alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (ud->sys && ud->owned) {
-        alea_destroy(ud->sys);
+    if (ud->owned) {
+        if (ud->mcnp_model) {
+            mcnp_model_destroy((mcnp_model_t*)ud->mcnp_model);
+            ud->mcnp_model = NULL;
+        } else if (ud->openmc_model) {
+            openmc_model_destroy((openmc_model_t*)ud->openmc_model);
+            ud->openmc_model = NULL;
+        } else if (ud->sys) {
+            alea_destroy(ud->sys);
+        }
     }
     ud->sys = NULL;
     return 0;
@@ -107,15 +118,10 @@ static int l_system_get_config(lua_State* L) {
     lua_pushnumber(L, cfg.zero_threshold); lua_setfield(L, -2, "zero_threshold");
     lua_pushboolean(L, cfg.dedup);         lua_setfield(L, -2, "dedup");
     lua_pushinteger(L, cfg.log_level);     lua_setfield(L, -2, "log_level");
-    lua_pushinteger(L, cfg.surface_policy);lua_setfield(L, -2, "surface_policy");
     lua_pushboolean(L, cfg.export_materials); lua_setfield(L, -2, "export_materials");
     lua_pushboolean(L, cfg.export_transforms);lua_setfield(L, -2, "export_transforms");
     lua_pushinteger(L, cfg.universe_depth);lua_setfield(L, -2, "universe_depth");
     lua_pushinteger(L, cfg.fill_depth);    lua_setfield(L, -2, "fill_depth");
-    lua_pushinteger(L, cfg.trcl_mode);     lua_setfield(L, -2, "trcl_mode");
-    lua_pushinteger(L, cfg.transform_mode);lua_setfield(L, -2, "transform_mode");
-    lua_pushinteger(L, cfg.mcnp_max_col);  lua_setfield(L, -2, "mcnp_max_col");
-    lua_pushinteger(L, cfg.mcnp_cont_indent); lua_setfield(L, -2, "mcnp_cont_indent");
 
     return 1;
 }
@@ -150,15 +156,10 @@ static int l_system_set_config(lua_State* L) {
     READ_OPT_NUM(zero_threshold);
     READ_OPT_BOOL(dedup);
     READ_OPT_INT(log_level);
-    READ_OPT_INT(surface_policy);
     READ_OPT_BOOL(export_materials);
     READ_OPT_BOOL(export_transforms);
     READ_OPT_INT(universe_depth);
     READ_OPT_INT(fill_depth);
-    READ_OPT_INT(trcl_mode);
-    READ_OPT_INT(transform_mode);
-    READ_OPT_INT(mcnp_max_col);
-    READ_OPT_INT(mcnp_cont_indent);
 
     alea_set_config(sys, &cfg);
     return 0;

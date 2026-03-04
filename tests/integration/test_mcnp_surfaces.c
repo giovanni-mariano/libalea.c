@@ -12,6 +12,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "core/alea_eval.h"
@@ -31,11 +32,12 @@
 static int roundtrip_check(const char* mcnp_input, const char* label,
                            double test_x, double test_y, double test_z) {
     /* --- Parse original --- */
-    alea_system_t* sys1 = alea_load_mcnp_string(mcnp_input, strlen(mcnp_input));
-    if (!sys1) {
+    mcnp_model_t* model1 = mcnp_load_string(mcnp_input, strlen(mcnp_input));
+    if (!model1) {
         printf("    FAIL: %s: parse failed: %s\n", label, alea_error());
         return 0;
     }
+    alea_system_t* sys1 = model1->sys;
     alea_build_universe_index(sys1);
 
     /* Query material at test point in original */
@@ -43,26 +45,27 @@ static int roundtrip_check(const char* mcnp_input, const char* label,
 
     /* --- Export (non-dedup) --- */
     const char* tmpfile = "test_rt_surf_tmp.mcnp";
-    int rc = alea_export(sys1, ALEA_EXPORT_FORMAT_MCNP, tmpfile, ALEA_EMIT_MACROBODY, false);
+    int rc = mcnp_export_system(sys1, tmpfile);
     if (rc != 0) {
         printf("    FAIL: %s: export failed\n", label);
-        alea_destroy(sys1);
+        mcnp_model_destroy(model1);
         return 0;
     }
-    alea_destroy(sys1);
+    mcnp_model_destroy(model1);
 
     /* --- Re-parse exported file --- */
-    alea_system_t* sys2 = alea_load_mcnp(tmpfile);
-    if (!sys2) {
+    mcnp_model_t* model2 = mcnp_load(tmpfile);
+    if (!model2) {
         printf("    FAIL: %s: re-parse failed: %s\n", label, alea_error());
         remove(tmpfile);
         return 0;
     }
+    alea_system_t* sys2 = model2->sys;
     alea_build_universe_index(sys2);
 
     int mat2 = alea_material_at(sys2, test_x, test_y, test_z);
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove(tmpfile);
 
     if (mat1 != mat2) {
@@ -82,11 +85,12 @@ static int roundtrip_surface(const char* mcnp_input, const char* label,
                              double in_x, double in_y, double in_z,
                              double out_x, double out_y, double out_z) {
     /* --- Parse original --- */
-    alea_system_t* sys1 = alea_load_mcnp_string(mcnp_input, strlen(mcnp_input));
-    if (!sys1) {
+    mcnp_model_t* model1 = mcnp_load_string(mcnp_input, strlen(mcnp_input));
+    if (!model1) {
         printf("    FAIL: %s: parse failed: %s\n", label, alea_error());
         return 0;
     }
+    alea_system_t* sys1 = model1->sys;
     alea_build_universe_index(sys1);
 
     int mat_in1 = alea_material_at(sys1, in_x, in_y, in_z);
@@ -94,27 +98,28 @@ static int roundtrip_surface(const char* mcnp_input, const char* label,
 
     /* --- Export --- */
     const char* tmpfile = "test_rt_surf_tmp.mcnp";
-    int rc = alea_export(sys1, ALEA_EXPORT_FORMAT_MCNP, tmpfile, ALEA_EMIT_MACROBODY, false);
+    int rc = mcnp_export_system(sys1, tmpfile);
     if (rc != 0) {
         printf("    FAIL: %s: export failed\n", label);
-        alea_destroy(sys1);
+        mcnp_model_destroy(model1);
         return 0;
     }
-    alea_destroy(sys1);
+    mcnp_model_destroy(model1);
 
     /* --- Re-parse --- */
-    alea_system_t* sys2 = alea_load_mcnp(tmpfile);
-    if (!sys2) {
+    mcnp_model_t* model2 = mcnp_load(tmpfile);
+    if (!model2) {
         printf("    FAIL: %s: re-parse failed: %s\n", label, alea_error());
         remove(tmpfile);
         return 0;
     }
+    alea_system_t* sys2 = model2->sys;
     alea_build_universe_index(sys2);
 
     int mat_in2 = alea_material_at(sys2, in_x, in_y, in_z);
     int mat_out2 = alea_material_at(sys2, out_x, out_y, out_z);
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove(tmpfile);
 
     if (mat_in1 != mat_in2) {
@@ -143,17 +148,18 @@ static int roundtrip_surface(const char* mcnp_input, const char* label,
 static int parse_and_eval_surface(const char* mcnp_input, const char* label,
                                    double in_x, double in_y, double in_z,
                                    double out_x, double out_y, double out_z) {
-    alea_system_t* sys = alea_load_mcnp_string(mcnp_input, strlen(mcnp_input));
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load_string(mcnp_input, strlen(mcnp_input));
+    if (!model) {
         printf("    FAIL: %s: parse failed: %s\n", label, alea_error());
         return 0;
     }
+    alea_system_t* sys = model->sys;
     alea_build_universe_index(sys);
 
     int mat_in = alea_material_at(sys, in_x, in_y, in_z);
     int mat_out = alea_material_at(sys, out_x, out_y, out_z);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     if (mat_in != 1) {
         printf("    FAIL: %s: inside point should have mat=1, got %d\n", label, mat_in);
@@ -636,22 +642,26 @@ TEST(roundtrip_sphere_dedup) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys1 = alea_load_mcnp_string(input, strlen(input));
-    ASSERT_NOT_NULL(sys1);
+    mcnp_model_t* model1 = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model1);
+    alea_system_t* sys1 = model1->sys;
     alea_build_universe_index(sys1);
     int mat1 = alea_material_at(sys1, 0, 0, 0);
 
-    int rc = alea_export(sys1, ALEA_EXPORT_FORMAT_MCNP, "test_dedup_rt_tmp.mcnp",
-                        ALEA_EMIT_MACROBODY, true);
+    alea_config_t cfg = alea_get_config(sys1);
+    cfg.dedup = true;
+    alea_set_config(sys1, &cfg);
+    int rc = mcnp_export_system(sys1, "test_dedup_rt_tmp.mcnp");
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys1);
+    mcnp_model_destroy(model1);
 
-    alea_system_t* sys2 = alea_load_mcnp("test_dedup_rt_tmp.mcnp");
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load("test_dedup_rt_tmp.mcnp");
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
     alea_build_universe_index(sys2);
     int mat2 = alea_material_at(sys2, 0, 0, 0);
     ASSERT_EQ(mat1, mat2);
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove("test_dedup_rt_tmp.mcnp");
 }
 

@@ -227,10 +227,6 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
                 } else {
                     alea_matrix_identity(&fill_mat);
                 }
-            } else if (cell->fill_transform_inline && cell->fill_transform_count > 0) {
-                alea_matrix_from_mcnp(&fill_mat, cell->fill_transform_data,
-                                    cell->fill_transform_count,
-                                    cell->fill_transform_degrees);
             } else {
                 alea_matrix_identity(&fill_mat);
             }

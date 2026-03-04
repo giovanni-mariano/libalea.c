@@ -276,9 +276,11 @@ typedef struct alea_system {
     // Statistics
     alea_stats_t stats;
 
-    /* Error state */
-    alea_error_t last_error;
-    char error_message[256];
+    /* Cell event callbacks (NULL = no-op, set by module models) */
+    void* cell_hook_userdata;
+    void (*on_cell_added)(void* ud, size_t new_index);
+    void (*on_cell_copied)(void* ud, size_t dst_index, size_t src_index);
+    void (*on_cell_removed)(void* ud, size_t index);
 
     /* BVH acceleration (lazy-built, cached) */
     struct alea_bvh* surface_bvh;

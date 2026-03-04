@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <alea.h>
+#include <alea_mcnp.h>
 
 int main(void) {
     printf("Alea %s - Basic Example\n\n", alea_version());
@@ -144,13 +145,15 @@ int main(void) {
         printf("  Void generation failed\n");
     }
 
-    /* Export to MCNP format */
+    /* Export to MCNP format (generic export, no MCNP model needed) */
     const char* output_file = "basic_output.inp";
-    if (alea_export_mcnp(sys, output_file) == 0) {
+    FILE* fout = fopen(output_file, "w");
+    if (fout && mcnp_export_system_stream(sys, fout) == 0) {
         printf("\nExported to: %s\n", output_file);
     } else {
         fprintf(stderr, "\nFailed to export: %s\n", alea_error());
     }
+    if (fout) fclose(fout);
 
     /* Cleanup */
     alea_destroy(sys);

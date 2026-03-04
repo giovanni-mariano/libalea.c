@@ -12,7 +12,6 @@
 
 #include "alea.h"
 #include "core/alea_system.h"
-#include "core/alea_export.h"
 #include "core/alea_materials.h"
 #include "core/alea_ops.h"
 #include "core/alea_eval.h"
@@ -24,15 +23,13 @@
 #include "primitives/bbox.h"
 #include "util/alea_log.h"
 
-/* Format module functions (weak stubs in alea_module_stubs.c provide fallbacks) */
-alea_system_t* mcnp_convert_file(const char* filename);
-alea_system_t* openmc_convert_file(const char* filename);
-int export_mcnp(const alea_system_t* sys, export_context_t* ctx);
-int export_openmc(const alea_system_t* sys, export_context_t* ctx);
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "util/arena.h"
+#include "util/str_builder.h"
+#include "util/compat.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -293,82 +290,10 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config) {
 
 /* ============================================================================
  * LOADING
+ *
+ * MCNP loading: mcnp_load() in alea_mcnp.h
+ * OpenMC loading: openmc_load() in alea_openmc.h
  * ============================================================================ */
-
-alea_system_t* alea_load_mcnp(const char* filename) {
-    if (!filename) {
-        alea_set_error_detail(ALEA_ERR_NULL_ARG, "NULL filename");
-        return NULL;
-    }
-
-    alea_system_t* sys = mcnp_convert_file(filename);
-    if (!sys) {
-        alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "Failed to parse MCNP file");
-        return NULL;
-    }
-
-    if (alea_validate_cell_ids(sys) < 0) {
-        alea_set_error_detail(ALEA_ERR_INVALID_ID, "Duplicate cell IDs");
-        alea_system_destroy(sys);
-        return NULL;
-    }
-
-    sys->source = ALEA_SOURCE_MCNP;
-    return sys;
-}
-
-alea_system_t* alea_load_mcnp_string(const char* input, size_t length) {
-    if (!input || length == 0) {
-        alea_set_error_detail(ALEA_ERR_NULL_ARG, "NULL or empty input string");
-        return NULL;
-    }
-
-    /* Write to temporary file and use existing parser */
-    char tmppath[256];
-#ifdef _WIN32
-    const char* tmpdir = getenv("TEMP");
-    if (!tmpdir) tmpdir = getenv("TMP");
-    if (!tmpdir) tmpdir = ".";
-    snprintf(tmppath, sizeof(tmppath), "%s\\alea_mcnp_%d.tmp", tmpdir, (int)getpid());
-#else
-    snprintf(tmppath, sizeof(tmppath), "/tmp/alea_mcnp_%d.tmp", (int)getpid());
-#endif
-
-    FILE* f = fopen(tmppath, "wb");
-    if (!f) {
-        alea_set_error_detail(ALEA_ERR_FILE_WRITE, "Failed to create temporary file");
-        return NULL;
-    }
-
-    size_t written = fwrite(input, 1, length, f);
-    fclose(f);
-
-    if (written != length) {
-        remove(tmppath);
-        alea_set_error_detail(ALEA_ERR_FILE_WRITE, "Failed to write to temporary file");
-        return NULL;
-    }
-
-    alea_system_t* sys = alea_load_mcnp(tmppath);
-    remove(tmppath);
-    return sys;
-}
-
-alea_system_t* alea_load_openmc(const char* filename) {
-    if (!filename) {
-        alea_set_error_detail(ALEA_ERR_NULL_ARG, "NULL filename");
-        return NULL;
-    }
-
-    alea_system_t* sys = openmc_convert_file(filename);
-    if (!sys) {
-        alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "Failed to parse OpenMC file");
-        return NULL;
-    }
-
-    sys->source = ALEA_SOURCE_OPENMC;
-    return sys;
-}
 
 /* ============================================================================
  * INDEXING
@@ -879,35 +804,16 @@ alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) 
         int idx = alea_add_cell(extracted, cell->mcnp_cell_id, new_root,
                                ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
         if (idx >= 0) {
-            /* Copy additional cell fields */
+            /* Copy core cell fields */
             alea_cell_entry_t* dst_cell = &extracted->cells.data[idx];
             dst_cell->material_id = cell->material_id;
             dst_cell->material_index = cell->material_index;
             dst_cell->is_mass_density = cell->is_mass_density;
             dst_cell->original_root_node_id = cell->original_root_node_id;
-            dst_cell->imp_n = cell->imp_n;
-            dst_cell->imp_p = cell->imp_p;
-            dst_cell->imp_e = cell->imp_e;
-            dst_cell->has_imp_n = cell->has_imp_n;
-            dst_cell->has_imp_p = cell->has_imp_p;
-            dst_cell->has_imp_e = cell->has_imp_e;
-            dst_cell->vol = cell->vol;
-            dst_cell->has_vol = cell->has_vol;
-            dst_cell->tmp = cell->tmp;
-            dst_cell->has_tmp = cell->has_tmp;
-            dst_cell->trcl = cell->trcl;
-            dst_cell->trcl_inline = cell->trcl_inline;
-            dst_cell->trcl_degrees = cell->trcl_degrees;
-            dst_cell->trcl_count = cell->trcl_count;
-            dst_cell->has_trcl = cell->has_trcl;
-            memcpy(dst_cell->trcl_data, cell->trcl_data, sizeof(cell->trcl_data));
+            dst_cell->temperature = cell->temperature;
+            dst_cell->has_temperature = cell->has_temperature;
             dst_cell->fill_universe = cell->fill_universe;
             dst_cell->fill_transform = cell->fill_transform;
-            dst_cell->fill_transform_inline = cell->fill_transform_inline;
-            dst_cell->fill_transform_degrees = cell->fill_transform_degrees;
-            dst_cell->fill_transform_count = cell->fill_transform_count;
-            memcpy(dst_cell->fill_transform_data, cell->fill_transform_data,
-                   sizeof(cell->fill_transform_data));
         }
     }
 
@@ -1158,175 +1064,10 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index) {
 
 /* ============================================================================
  * EXPORT
- * ============================================================================ */
-
-static int find_max_surface_id(const alea_system_t* sys) {
-    int max_id = 0;
-    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id > max_id) {
-            max_id = sys->surfaces.data[i].mcnp_surface_id;
-        }
-    }
-    return max_id;
-}
-
-int alea_export_mcnp_stream(const alea_system_t* sys, FILE* out) {
-    if (!sys || !out) return -1;
-
-    int next_id = find_max_surface_id(sys) + 1;
-    export_context_t* ctx = export_context_create(
-        ALEA_EXPORT_FORMAT_MCNP,
-        (alea_surface_emit_policy_t)sys->config.surface_policy,
-        out,
-        sys->config.dedup,
-        next_id,
-        sys->config.universe_depth,
-        sys->config.fill_depth
-    );
-    if (!ctx) return -1;
-    ctx->trcl_export_mode = (alea_trcl_export_mode_t)sys->config.trcl_mode;
-    ctx->transform_export_mode = (alea_transform_export_mode_t)sys->config.transform_mode;
-    ctx->mcnp_max_col = sys->config.mcnp_max_col;
-    ctx->mcnp_cont_indent = sys->config.mcnp_cont_indent;
-
-    int ret = export_mcnp(sys, ctx);
-    export_context_destroy(ctx);
-    return ret;
-}
-
-int alea_export_mcnp(const alea_system_t* sys, const char* filename) {
-    if (!sys || !filename) return -1;
-
-    FILE* f = fopen(filename, "w");
-    if (!f) return -1;
-
-    int ret = alea_export_mcnp_stream(sys, f);
-    fclose(f);
-    return ret;
-}
-
-/**
- * @brief Write surface deduplication report
  *
- * For each original surface that was merged into another canonical surface,
- * writes a line:  original_id -> canonical_id (sign)
- */
-static void write_dedup_report(const alea_system_t* sys, const export_context_t* ctx,
-                               const char* xml_filename) {
-    if (!ctx->deduplicate || !ctx->prim_to_surface || ctx->dedup_hits == 0) return;
-
-    /* Build report filename: replace .xml with .dedup, or append .dedup */
-    char report_path[1024];
-    size_t len = strlen(xml_filename);
-    if (len > 4 && strcmp(xml_filename + len - 4, ".xml") == 0) {
-        snprintf(report_path, sizeof(report_path), "%.*s.dedup", (int)(len - 4), xml_filename);
-    } else {
-        snprintf(report_path, sizeof(report_path), "%s.dedup", xml_filename);
-    }
-
-    FILE* rf = fopen(report_path, "w");
-    if (!rf) return;
-
-    fprintf(rf, "# Surface deduplication report\n");
-    fprintf(rf, "# original_surface -> canonical_surface  sign\n");
-    fprintf(rf, "#\n");
-
-    size_t dedup_count = 0;
-    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        const alea_surface_entry_t* surf = &sys->surfaces.data[i];
-        uint32_t prim_id = surf->primitive_id;
-        int orig_id = surf->mcnp_surface_id;
-
-        if (prim_id >= ctx->prim_to_surface_size) continue;
-        int canon_id = ctx->prim_to_surface[prim_id];
-        if (canon_id < 0 || canon_id == orig_id) continue;
-
-        /* Determine sign: does the canonical surface have the same orientation? */
-        int8_t orig_inv = 0;
-        if (surf->pos_node < alea_vec_count(&sys->nodes)) {
-            orig_inv = sys->nodes.data[surf->pos_node].primitive.inverted;
-        }
-        int8_t canon_inv = ctx->prim_to_surface_inverted[prim_id];
-        const char* sign = (orig_inv == canon_inv) ? "+" : "-";
-
-        fprintf(rf, "%d -> %d  %s\n", orig_id, canon_id, sign);
-        dedup_count++;
-    }
-
-    fprintf(rf, "#\n");
-    fprintf(rf, "# %zu surfaces deduplicated\n", dedup_count);
-    fclose(rf);
-
-    ALEA_LOG_INFO("Deduplication report written to %s (%zu entries)", report_path, dedup_count);
-}
-
-int alea_export_openmc(const alea_system_t* sys, const char* filename) {
-    if (!sys || !filename) return -1;
-
-    FILE* f = fopen(filename, "w");
-    if (!f) return -1;
-
-    int next_id = find_max_surface_id(sys) + 1;
-    /* OpenMC always uses ALEA_EMIT_SURFACES for primitive decomposition */
-    export_context_t* ctx = export_context_create(
-        ALEA_EXPORT_FORMAT_OPENMC,
-        ALEA_EMIT_SURFACES,
-        f,
-        sys->config.dedup,
-        next_id,
-        sys->config.universe_depth,
-        sys->config.fill_depth
-    );
-    if (!ctx) {
-        fclose(f);
-        return -1;
-    }
-
-    int ret = export_openmc(sys, ctx);
-
-    /* Write dedup report if surfaces were deduplicated */
-    if (ret == 0) {
-        write_dedup_report(sys, ctx, filename);
-    }
-
-    export_context_destroy(ctx);
-    fclose(f);
-    return ret;
-}
-
-int alea_export_stream(const alea_system_t* sys, alea_export_format_t format,
-                           FILE* out) {
-    if (!sys || !out) return -1;
-
-    int next_id = find_max_surface_id(sys) + 1;
-    alea_surface_emit_policy_t policy = (format == ALEA_EXPORT_FORMAT_OPENMC) ?
-                                   ALEA_EMIT_SURFACES : (alea_surface_emit_policy_t)sys->config.surface_policy;
-
-    export_context_t* ctx = export_context_create(
-        format, policy, out, sys->config.dedup,
-        next_id, sys->config.universe_depth, sys->config.fill_depth
-    );
-    if (!ctx) return -1;
-    ctx->trcl_export_mode = (alea_trcl_export_mode_t)sys->config.trcl_mode;
-    ctx->transform_export_mode = (alea_transform_export_mode_t)sys->config.transform_mode;
-    ctx->mcnp_max_col = sys->config.mcnp_max_col;
-    ctx->mcnp_cont_indent = sys->config.mcnp_cont_indent;
-
-    int ret;
-    switch (format) {
-        case ALEA_EXPORT_FORMAT_MCNP:
-            ret = export_mcnp(sys, ctx);
-            break;
-        case ALEA_EXPORT_FORMAT_OPENMC:
-            ret = export_openmc(sys, ctx);
-            break;
-        default:
-            ret = -1;
-            break;
-    }
-    export_context_destroy(ctx);
-    return ret;
-}
+ * MCNP export: mcnp_export() in alea_mcnp.h
+ * OpenMC export: openmc_export() in alea_openmc.h
+ * ============================================================================ */
 
 /* ============================================================================
  * VOID GENERATION
@@ -1500,35 +1241,16 @@ alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* 
         int idx = alea_add_cell(extracted, cell->mcnp_cell_id, new_root,
                                ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
         if (idx >= 0) {
-            /* Copy additional cell fields */
+            /* Copy core cell fields */
             alea_cell_entry_t* dst_cell = &extracted->cells.data[idx];
             dst_cell->material_id = cell->material_id;
             dst_cell->material_index = cell->material_index;
             dst_cell->is_mass_density = cell->is_mass_density;
             dst_cell->original_root_node_id = cell->original_root_node_id;
-            dst_cell->imp_n = cell->imp_n;
-            dst_cell->imp_p = cell->imp_p;
-            dst_cell->imp_e = cell->imp_e;
-            dst_cell->has_imp_n = cell->has_imp_n;
-            dst_cell->has_imp_p = cell->has_imp_p;
-            dst_cell->has_imp_e = cell->has_imp_e;
-            dst_cell->vol = cell->vol;
-            dst_cell->has_vol = cell->has_vol;
-            dst_cell->tmp = cell->tmp;
-            dst_cell->has_tmp = cell->has_tmp;
-            dst_cell->trcl = cell->trcl;
-            dst_cell->trcl_inline = cell->trcl_inline;
-            dst_cell->trcl_degrees = cell->trcl_degrees;
-            dst_cell->trcl_count = cell->trcl_count;
-            dst_cell->has_trcl = cell->has_trcl;
-            memcpy(dst_cell->trcl_data, cell->trcl_data, sizeof(cell->trcl_data));
+            dst_cell->temperature = cell->temperature;
+            dst_cell->has_temperature = cell->has_temperature;
             dst_cell->fill_universe = cell->fill_universe;
             dst_cell->fill_transform = cell->fill_transform;
-            dst_cell->fill_transform_inline = cell->fill_transform_inline;
-            dst_cell->fill_transform_degrees = cell->fill_transform_degrees;
-            dst_cell->fill_transform_count = cell->fill_transform_count;
-            memcpy(dst_cell->fill_transform_data, cell->fill_transform_data,
-                   sizeof(cell->fill_transform_data));
         }
     }
 
@@ -1605,6 +1327,8 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     info->universe_id = c->universe_id;
     info->fill_universe = c->fill_universe;
     info->fill_transform = c->fill_transform;
+    info->temperature = c->temperature;
+    info->has_temperature = c->has_temperature;
     info->root = c->root_node_id;
 
     /* Get bbox from root node if available */
@@ -1979,4 +1703,151 @@ int alea_node_surface_id(const alea_system_t* sys, alea_node_id_t node) {
     const alea_node_t* n = &sys->nodes.data[node];
     if (ALEA_GET_OPERATION(n) != ALEA_OP_PRIMITIVE) return 0;
     return n->primitive.mcnp_surface_id;
+}
+
+/* ============================================================================
+ * CSG EXPRESSION STRINGIFIER
+ * ============================================================================ */
+
+typedef enum { CTX_TOP, CTX_UNION, CTX_INTERSECTION } expr_ctx_t;
+
+static bool cell_expr_recursive(const alea_system_t* sys, uint32_t node_id,
+                                const char* union_op, const char* inter_op,
+                                const char* compl_op,
+                                str_builder_t* sb, expr_ctx_t ctx) {
+    if (node_id == ALEA_NODE_ID_INVALID) return false;
+    if (node_id >= alea_vec_count(&sys->nodes)) return false;
+
+    const alea_node_t* node = &sys->nodes.data[node_id];
+    alea_operation_t op = ALEA_GET_OPERATION(node);
+
+    if (op == ALEA_OP_PRIMITIVE) {
+        int surface_id = node->primitive.mcnp_surface_id;
+        if (node->primitive.sense < 0)
+            surface_id = -surface_id;
+        str_builder_int(sb, surface_id);
+        return true;
+    }
+
+    if (op == ALEA_OP_COMPLEMENT) {
+        uint32_t left = node->operation.left;
+        if (left >= alea_vec_count(&sys->nodes)) return false;
+
+        const alea_node_t* child = &sys->nodes.data[left];
+        alea_operation_t child_op = ALEA_GET_OPERATION(child);
+
+        /* Complement of a primitive: just flip the sign */
+        if (child_op == ALEA_OP_PRIMITIVE) {
+            int surface_id = child->primitive.mcnp_surface_id;
+            /* Complement flips: positive sense -> negative surface_id, and vice versa */
+            if (child->primitive.sense > 0)
+                surface_id = -surface_id;
+            str_builder_int(sb, surface_id);
+            return true;
+        }
+
+        /* Complex expression: compl_op(inner) */
+        str_builder_puts(sb, compl_op);
+        str_builder_putc(sb, '(');
+        if (!cell_expr_recursive(sys, left, union_op, inter_op, compl_op, sb, CTX_TOP))
+            return false;
+        str_builder_putc(sb, ')');
+        return true;
+    }
+
+    if (op == ALEA_OP_UNION) {
+        uint32_t left = node->operation.left;
+        uint32_t right = node->operation.right;
+
+        bool need_parens = (ctx == CTX_INTERSECTION);
+        if (need_parens) str_builder_putc(sb, '(');
+
+        if (!cell_expr_recursive(sys, left, union_op, inter_op, compl_op, sb, CTX_UNION))
+            return false;
+        str_builder_puts(sb, union_op);
+        if (!cell_expr_recursive(sys, right, union_op, inter_op, compl_op, sb, CTX_UNION))
+            return false;
+
+        if (need_parens) str_builder_putc(sb, ')');
+        return true;
+    }
+
+    if (op == ALEA_OP_INTERSECTION) {
+        uint32_t left = node->operation.left;
+        uint32_t right = node->operation.right;
+
+        bool need_parens = (ctx == CTX_UNION);
+        if (need_parens) str_builder_putc(sb, '(');
+
+        if (!cell_expr_recursive(sys, left, union_op, inter_op, compl_op, sb, CTX_INTERSECTION))
+            return false;
+        str_builder_puts(sb, inter_op);
+        if (!cell_expr_recursive(sys, right, union_op, inter_op, compl_op, sb, CTX_INTERSECTION))
+            return false;
+
+        if (need_parens) str_builder_putc(sb, ')');
+        return true;
+    }
+
+    if (op == ALEA_OP_DIFFERENCE) {
+        uint32_t left = node->operation.left;
+        uint32_t right = node->operation.right;
+
+        /* A - B = A inter compl(B) */
+        if (!cell_expr_recursive(sys, left, union_op, inter_op, compl_op, sb, CTX_INTERSECTION))
+            return false;
+
+        str_builder_puts(sb, inter_op);
+        str_builder_puts(sb, compl_op);
+
+        /* Always parenthesize the right side unless it's a primitive */
+        if (right < alea_vec_count(&sys->nodes)) {
+            const alea_node_t* rn = &sys->nodes.data[right];
+            alea_operation_t rop = ALEA_GET_OPERATION(rn);
+            if (rop != ALEA_OP_PRIMITIVE) {
+                str_builder_putc(sb, '(');
+                if (!cell_expr_recursive(sys, right, union_op, inter_op, compl_op, sb, CTX_TOP))
+                    return false;
+                str_builder_putc(sb, ')');
+            } else {
+                if (!cell_expr_recursive(sys, right, union_op, inter_op, compl_op, sb, CTX_TOP))
+                    return false;
+            }
+        } else {
+            return false;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+char* alea_cell_expr(const alea_system_t* sys, size_t cell_index,
+                     const char* union_op, const char* inter_op,
+                     const char* compl_op) {
+    if (!sys || !union_op || !inter_op || !compl_op) return NULL;
+    if (cell_index >= alea_vec_count(&sys->cells)) return NULL;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    if (cell->root_node_id == ALEA_NODE_ID_INVALID) return NULL;
+
+    arena_t arena;
+    if (!arena_init_with_size(&arena, 4096)) return NULL;
+
+    str_builder_t sb;
+    str_builder_init(&sb, &arena, 256);
+
+    bool ok = cell_expr_recursive(sys, cell->root_node_id,
+                                  union_op, inter_op, compl_op,
+                                  &sb, CTX_TOP);
+
+    char* result = NULL;
+    if (ok && !str_builder_error(&sb)) {
+        str_builder_finish(&sb);
+        const char* s = str_builder_get(&sb);
+        if (s) result = alea_strdup(s);
+    }
+
+    arena_free(&arena);
+    return result;
 }

@@ -1040,12 +1040,8 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                 alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
                 if (cell->material_id == 0) {
                     graveyard_exists = 1;
-                    if (!cell->has_imp_n) {
-                        cell->imp_n = 0.0;
-                        cell->imp_p = 0.0;
-                        cell->has_imp_n = 1;
-                        cell->has_imp_p = 1;
-                    }
+                    /* Graveyard already exists; no-op.
+                       MCNP importances live in mcnp_model_t, not cell entries. */
                 }
             }
 
@@ -1092,11 +1088,9 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                         graveyard->material_id = 0;
                         graveyard->material_index = -1;
                         graveyard->density = 0.0;
-                        graveyard->imp_n = 0.0;
-                        graveyard->imp_p = 0.0;
-                        graveyard->has_imp_n = 1;
-                        graveyard->has_imp_p = 1;
                         graveyard->universe_id = 0;
+                        /* Graveyard identified by vacuum boundary surfaces;
+                           MCNP importances live in mcnp_model_t, not cell entries. */
 
                         ALEA_LOG_INFO("Created graveyard cell %d from %zu vacuum surfaces",
                                      graveyard_id, vacuum_surface_count);
@@ -1177,7 +1171,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
  * PUBLIC API
  * ============================================================================ */
 
-alea_system_t* openmc_convert_file(const char* filename) {
+openmc_model_t* openmc_convert_to_model(const char* filename) {
     if (!filename) {
         ALEA_LOG_ERROR("NULL filename");
         return NULL;
@@ -1198,10 +1192,19 @@ alea_system_t* openmc_convert_file(const char* filename) {
     alea_system_t* sys = convert_document(doc);
     openmc_xml_doc_free(doc);
 
-    return sys;
+    if (!sys) return NULL;
+
+    openmc_model_t* model = calloc(1, sizeof(openmc_model_t));
+    if (!model) {
+        alea_system_destroy(sys);
+        return NULL;
+    }
+    model->sys = sys;
+    model->owns_sys = 1;
+    return model;
 }
 
-alea_system_t* openmc_convert_string(const char* xml_content, size_t length) {
+openmc_model_t* openmc_convert_string_to_model(const char* xml_content, size_t length) {
     if (!xml_content) return NULL;
 
     openmc_xml_doc_t* doc = openmc_xml_parse_string(xml_content, length);
@@ -1213,5 +1216,14 @@ alea_system_t* openmc_convert_string(const char* xml_content, size_t length) {
     alea_system_t* sys = convert_document(doc);
     openmc_xml_doc_free(doc);
 
-    return sys;
+    if (!sys) return NULL;
+
+    openmc_model_t* model = calloc(1, sizeof(openmc_model_t));
+    if (!model) {
+        alea_system_destroy(sys);
+        return NULL;
+    }
+    model->sys = sys;
+    model->owns_sys = 1;
+    return model;
 }

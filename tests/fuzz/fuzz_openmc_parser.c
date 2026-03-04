@@ -22,6 +22,8 @@
 #include <unistd.h>
 
 #include "alea.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
 #include "alea_raycast.h"
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
@@ -41,10 +43,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     close(fd);
 
     /* Parse the XML */
-    alea_system_t *sys = alea_load_openmc(tmpname);
+    openmc_model_t *omc_model = openmc_load(tmpname);
     unlink(tmpname);
 
-    if (!sys) return 0;
+    if (!omc_model) return 0;
+    alea_system_t *sys = omc_model->sys;
 
     /* ========================================================================
      * Phase 1: Indexing
@@ -135,16 +138,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
      * ======================================================================== */
     FILE *devnull = fopen("/dev/null", "w");
     if (devnull) {
-        alea_export_openmc_stream(sys, devnull);
+        openmc_export_system_stream(sys, devnull);
         fclose(devnull);
     }
 
     devnull = fopen("/dev/null", "w");
     if (devnull) {
-        alea_export_mcnp_stream(sys, devnull);
+        mcnp_export_system_stream(sys, devnull);
         fclose(devnull);
     }
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc_model);
     return 0;
 }

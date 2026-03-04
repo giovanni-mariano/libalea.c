@@ -54,14 +54,6 @@ ALEA_VEC_DEFINE(alea_surface_vec, alea_surface_entry_t);
  */
 int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* surf);
 
-/**
- * @brief Convert MCNP cell to CSG tree
- *
- * @param sys CSG system
- * @param cell MCNP cell
- * @return Root node ID, or ALEA_NODE_ID_INVALID on failure
- */
-uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell);
 
 // ============================================================================
 // API - SURFACE UTILITIES

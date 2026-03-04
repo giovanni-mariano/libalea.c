@@ -529,7 +529,8 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
 // ============================================================================
 // CELL CONVERSION
 
-uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell) {
+uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
+                           mcnp_model_t* model) {
     if (!sys || !cell) return UINT32_MAX;
 
     // Parse the geometry expression using geometry parser
@@ -648,29 +649,19 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell) {
         return UINT32_MAX;
     }
 
-    // Update MCNP-specific fields
+    // Write core fields to cell entry
     alea_cell_entry_t* entry = &sys->cells.data[cell_idx];
-
-    // Particle importances
-    entry->imp_n = params.imp_n;
-    entry->imp_p = params.imp_p;
-    entry->imp_e = params.imp_e;
-    entry->has_imp_n = params.has_imp_n;
-    entry->has_imp_p = params.has_imp_p;
-    entry->has_imp_e = params.has_imp_e;
-
-    // Cell parameters
-    entry->vol = params.vol;
-    entry->tmp = params.tmp;
-    entry->has_vol = params.has_vol;
-    entry->has_tmp = params.has_tmp;
-
-    // Universe and FILL
     entry->fill_universe = params.fill_universe;
     entry->fill_transform = params.fill_transform;
     entry->lat_type = params.lat_type;
 
-    // Handle inline FILL transforms
+    // Temperature: convert MCNP MeV to Kelvin
+    if (params.has_tmp) {
+        entry->temperature = params.tmp / 8.617333262e-11;
+        entry->has_temperature = 1;
+    }
+
+    // Handle inline FILL transforms (registered in sys, ID stored in entry)
     if (params.fill_transform_inline && params.fill_transform_count > 0) {
         int tr_id = alea_add_inline_transform(
             sys,
@@ -685,13 +676,6 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell) {
             ALEA_LOG_WARN("Failed to add inline FILL transform for cell %d",
                     cell->cell_id);
         }
-    }
-
-    entry->fill_transform_inline = params.fill_transform_inline;
-    entry->fill_transform_degrees = params.fill_transform_degrees;
-    entry->fill_transform_count = params.fill_transform_count;
-    for (int i = 0; i < params.fill_transform_count && i < 12; i++) {
-        entry->fill_transform_data[i] = params.fill_transform_data[i];
     }
 
     // Lattice FILL array (transfer ownership of array)
@@ -715,42 +699,60 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell) {
         }
     }
 
-    // TRCL - cell transformation
-    entry->trcl = params.trcl;
-    entry->trcl_degrees = params.trcl_degrees;
-    entry->has_trcl = params.has_trcl;
+    // Write MCNP-specific fields to model params
+    if (model) {
+        mcnp_cell_params_t* mp = mcnp_cell_params(model, (size_t)cell_idx);
+        if (mp) {
+            // Particle importances
+            mp->imp_n = params.imp_n;
+            mp->imp_p = params.imp_p;
+            mp->imp_e = params.imp_e;
+            mp->has_imp_n = params.has_imp_n;
+            mp->has_imp_p = params.has_imp_p;
+            mp->has_imp_e = params.has_imp_e;
 
-    // Handle inline TRCL transforms
-    if (params.trcl_inline && params.trcl_count > 0) {
-        int trcl_id = alea_add_inline_transform(
-            sys,
-            params.trcl_data,
-            params.trcl_count,
-            params.trcl_degrees
-        );
-        if (trcl_id > 0) {
-            entry->trcl = trcl_id;
-        } else {
-            entry->trcl = 0;
-            ALEA_LOG_WARN("Failed to add inline TRCL transform for cell %d",
-                    cell->cell_id);
+            // Volume and temperature (MCNP native MeV)
+            mp->vol = params.vol;
+            mp->has_vol = params.has_vol;
+            mp->tmp = params.tmp;
+            mp->has_tmp = params.has_tmp;
+
+            // FILL transform original data (for export)
+            mp->fill_transform_inline = params.fill_transform_inline;
+            mp->fill_transform_degrees = params.fill_transform_degrees;
+            mp->fill_transform_count = params.fill_transform_count;
+            for (int i = 0; i < params.fill_transform_count && i < 12; i++) {
+                mp->fill_transform_data[i] = params.fill_transform_data[i];
+            }
+
+            // TRCL - cell transformation
+            mp->trcl = params.trcl;
+            mp->trcl_degrees = params.trcl_degrees;
+            mp->has_trcl = params.has_trcl;
+            if (params.trcl_inline && params.trcl_count > 0) {
+                int trcl_id = alea_add_inline_transform(
+                    sys, params.trcl_data, params.trcl_count, params.trcl_degrees);
+                if (trcl_id > 0) {
+                    mp->trcl = trcl_id;
+                } else {
+                    mp->trcl = 0;
+                    ALEA_LOG_WARN("Failed to add inline TRCL transform for cell %d",
+                            cell->cell_id);
+                }
+            }
+            mp->trcl_inline = params.trcl_inline;
+            mp->trcl_count = params.trcl_count;
+            for (int i = 0; i < params.trcl_count && i < 12; i++) {
+                mp->trcl_data[i] = params.trcl_data[i];
+            }
+
+            // LIKE BUT - store template cell ID for later resolution
+            mp->like_cell_id = like_cell_id;
+            if (is_like_cell) {
+                mp->has_mat = params.has_mat;
+                mp->has_rho = params.has_rho;
+            }
         }
-    }
-
-    entry->trcl_inline = params.trcl_inline;
-    entry->trcl_degrees = params.trcl_degrees;
-    entry->trcl_count = params.trcl_count;
-    for (int i = 0; i < params.trcl_count && i < 12; i++) {
-        entry->trcl_data[i] = params.trcl_data[i];
-    }
-
-    // LIKE BUT - store template cell ID for later resolution
-    entry->like_cell_id = like_cell_id;
-
-    // For LIKE cells, track which values were explicitly set in BUT clause
-    if (is_like_cell) {
-        entry->has_mat = params.has_mat;
-        entry->has_rho = params.has_rho;
     }
 
     sys->stats.cells_converted++;
@@ -787,35 +789,36 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell) {
 // TRCL TRANSFORM APPLICATION
 // ============================================================================
 
-int alea_apply_trcl_transforms(alea_system_t* sys) {
-    if (!sys) return -1;
+int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
+    if (!sys || !model) return -1;
 
     int count = 0;
 
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
+        const mcnp_cell_params_t* mp = mcnp_cell_params_const(model, i);
 
         /* Skip cells without TRCL */
-        if (!cell->has_trcl) continue;
+        if (!mp || !mp->has_trcl) continue;
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
         /* Build transform matrix from TRCL data */
         alea_matrix_t mat;
 
-        if (cell->trcl > 0) {
+        if (mp->trcl > 0) {
             /* TRCL references a TRn card */
-            const alea_transform_t* tr = alea_get_transform(sys, cell->trcl);
+            const alea_transform_t* tr = alea_get_transform(sys, mp->trcl);
             if (!tr) {
                 ALEA_LOG_WARN("Cell %d: TRCL=%d references unknown transform, skipping",
-                            cell->mcnp_cell_id, cell->trcl);
+                            cell->mcnp_cell_id, mp->trcl);
                 continue;
             }
             /* Use tr->cosines which has pre-computed direction cosines */
             alea_matrix_from_mcnp(&mat, tr->cosines, tr->value_count, false);
-        } else if (cell->trcl_inline && cell->trcl_count > 0) {
+        } else if (mp->trcl_inline && mp->trcl_count > 0) {
             /* Inline TRCL data */
-            alea_matrix_from_mcnp(&mat, cell->trcl_data, cell->trcl_count,
-                                cell->trcl_degrees);
+            alea_matrix_from_mcnp(&mat, mp->trcl_data, mp->trcl_count,
+                                mp->trcl_degrees);
         } else {
             /* has_trcl is set but no actual transform data - skip */
             continue;
@@ -874,46 +877,40 @@ int alea_apply_trcl_transforms(alea_system_t* sys) {
 // ============================================================================
 
 /**
- * @brief Find cell entry by MCNP cell ID
- */
-static alea_cell_entry_t* find_cell_by_id(alea_system_t* sys, int mcnp_cell_id) {
-    int idx = alea_find_cell_by_id(sys, mcnp_cell_id);
-    return (idx >= 0) ? &sys->cells.data[idx] : NULL;
-}
-
-/**
  * @brief Clone a CSG tree within the same system (no transform)
  */
 static alea_node_id_t clone_tree_simple(alea_system_t* sys, alea_node_id_t root_id) {
     return alea_clone_tree_transformed(sys, root_id, NULL, NULL, NULL, 0);
 }
 
-int alea_resolve_like_cells(alea_system_t* sys) {
-    if (!sys) return -1;
+int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
+    if (!sys || !model) return -1;
 
     int count = 0;
 
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
+        mcnp_cell_params_t* mp = mcnp_cell_params(model, i);
 
         /* Skip cells that aren't LIKE cells */
-        if (cell->like_cell_id == 0) continue;
+        if (!mp || mp->like_cell_id == 0) continue;
 
         /* Already resolved? */
         if (cell->root_node_id != ALEA_NODE_ID_INVALID) continue;
 
         /* Find template cell */
-        alea_cell_entry_t* template_cell = find_cell_by_id(sys, cell->like_cell_id);
-        if (!template_cell) {
+        int template_idx = alea_find_cell_by_id(sys, mp->like_cell_id);
+        if (template_idx < 0) {
             ALEA_LOG_WARN("Cell %d: LIKE references unknown cell %d",
-                        cell->mcnp_cell_id, cell->like_cell_id);
+                        cell->mcnp_cell_id, mp->like_cell_id);
             continue;
         }
+        alea_cell_entry_t* template_cell = &sys->cells.data[template_idx];
 
         /* Template must have valid geometry */
         if (template_cell->root_node_id == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_WARN("Cell %d: LIKE references cell %d with no geometry",
-                        cell->mcnp_cell_id, cell->like_cell_id);
+                        cell->mcnp_cell_id, mp->like_cell_id);
             continue;
         }
 
@@ -922,39 +919,42 @@ int alea_resolve_like_cells(alea_system_t* sys) {
 
         if (new_root == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_WARN("Cell %d: Failed to clone geometry from cell %d",
-                        cell->mcnp_cell_id, cell->like_cell_id);
+                        cell->mcnp_cell_id, mp->like_cell_id);
             continue;
         }
 
         /* Update cell with cloned tree */
         cell->root_node_id = new_root;
 
-        /* Inherit parameters from template if not overridden in BUT clause */
-        if (!cell->has_mat && template_cell->material_id != 0) {
+        /* Inherit core parameters from template if not overridden in BUT clause */
+        if (!mp->has_mat && template_cell->material_id != 0) {
             cell->material_id = template_cell->material_id;
             cell->material_index = template_cell->material_index;
         }
-        if (!cell->has_rho && template_cell->density != 0.0) {
+        if (!mp->has_rho && template_cell->density != 0.0) {
             cell->density = template_cell->density;
         }
 
-        /* Inherit other parameters if not set */
-        if (!cell->has_imp_n && template_cell->has_imp_n) {
-            cell->imp_n = template_cell->imp_n;
-            cell->has_imp_n = 1;
-        }
-        if (!cell->has_imp_p && template_cell->has_imp_p) {
-            cell->imp_p = template_cell->imp_p;
-            cell->has_imp_p = 1;
-        }
-        if (!cell->has_imp_e && template_cell->has_imp_e) {
-            cell->imp_e = template_cell->imp_e;
-            cell->has_imp_e = 1;
+        /* Inherit MCNP-specific parameters from template */
+        const mcnp_cell_params_t* template_mp = mcnp_cell_params_const(model, (size_t)template_idx);
+        if (template_mp) {
+            if (!mp->has_imp_n && template_mp->has_imp_n) {
+                mp->imp_n = template_mp->imp_n;
+                mp->has_imp_n = 1;
+            }
+            if (!mp->has_imp_p && template_mp->has_imp_p) {
+                mp->imp_p = template_mp->imp_p;
+                mp->has_imp_p = 1;
+            }
+            if (!mp->has_imp_e && template_mp->has_imp_e) {
+                mp->imp_e = template_mp->imp_e;
+                mp->has_imp_e = 1;
+            }
         }
 
         /* Clear LIKE reference - resolved */
-        int template_id = cell->like_cell_id;  // Save for logging
-        cell->like_cell_id = 0;
+        int template_id = mp->like_cell_id;  // Save for logging
+        mp->like_cell_id = 0;
 
         count++;
         ALEA_LOG_DEBUG("Cell %d: Resolved LIKE %d (new root node %u, mat=%d, dens=%.4g)",

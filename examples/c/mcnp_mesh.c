@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <alea.h>
+#include <alea_mcnp.h>
 #include <alea_mesh.h>
 
 static void print_usage(const char *prog) {
@@ -119,11 +120,12 @@ int main(int argc, char **argv) {
 
     /* Load */
     printf("Loading: %s\n", input_file);
-    alea_system_t *sys = alea_load_mcnp(input_file);
-    if (!sys) {
+    mcnp_model_t *model = mcnp_load(input_file);
+    if (!model) {
         fprintf(stderr, "Error: %s\n", alea_error());
         return 1;
     }
+    alea_system_t *sys = model->sys;
     printf("Cells: %zu\n", alea_cell_count(sys));
 
     alea_build_universe_index(sys);
@@ -140,7 +142,7 @@ int main(int argc, char **argv) {
     alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
     if (!mesh) {
         fprintf(stderr, "Error: mesh sampling failed\n");
-        alea_destroy(sys);
+        mcnp_model_destroy(model);
         return 1;
     }
 
@@ -158,13 +160,13 @@ int main(int argc, char **argv) {
     if (rc != 0) {
         fprintf(stderr, "Error: export failed\n");
         alea_mesh_result_free(mesh);
-        alea_destroy(sys);
+        mcnp_model_destroy(model);
         return 1;
     }
 
     printf("Done.\n");
 
     alea_mesh_result_free(mesh);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
     return 0;
 }

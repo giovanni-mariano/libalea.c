@@ -11,6 +11,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include <string.h>
@@ -20,10 +21,10 @@
 /* Helper: parse and verify                                                  */
 /* ========================================================================= */
 
-static alea_system_t* parse_mcnp(const char* input) {
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
-    if (sys) alea_build_universe_index(sys);
-    return sys;
+static mcnp_model_t* parse_mcnp(const char* input) {
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    if (model) alea_build_universe_index(model->sys);
+    return model;
 }
 
 /* ========================================================================= */
@@ -37,14 +38,15 @@ TEST(cell_void) {
         "\n"
         "1 SO 5.0\n"
         "\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_cell_count(sys), 1);
     /* Void cell: material = 0 */
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
     ASSERT_EQ(info.material_id, 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_material_atom_dens) {
@@ -56,14 +58,15 @@ TEST(cell_material_atom_dens) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
     ASSERT_EQ(info.material_id, 1);
     ASSERT_NEAR(info.density, 0.05, 1e-6);
     ASSERT_FALSE(info.is_mass_density);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_material_mass_dens) {
@@ -75,14 +78,15 @@ TEST(cell_material_mass_dens) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
     ASSERT_EQ(info.material_id, 1);
     ASSERT_NEAR(info.density, 7.8, 1e-6);
     ASSERT_TRUE(info.is_mass_density);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_imp_n) {
@@ -94,10 +98,10 @@ TEST(cell_imp_n) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_imp_combined) {
@@ -109,10 +113,10 @@ TEST(cell_imp_combined) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_vol) {
@@ -124,10 +128,10 @@ TEST(cell_vol) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_tmp) {
@@ -139,10 +143,10 @@ TEST(cell_tmp) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_universe) {
@@ -154,12 +158,13 @@ TEST(cell_universe) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
     ASSERT_EQ(info.universe_id, 5);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_fill_simple) {
@@ -173,12 +178,13 @@ TEST(cell_fill_simple) {
         "2 SO 3.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 1, &info), 0);
     ASSERT_EQ(info.fill_universe, 3);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_fill_transform) {
@@ -193,8 +199,9 @@ TEST(cell_fill_transform) {
         "2 SO 3.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Verify fill_transform is set on cell 1 */
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 1, &info), 0);
@@ -204,7 +211,7 @@ TEST(cell_fill_transform) {
     int cell_id, material;
     ASSERT_EQ(alea_find_cell_lazy(sys, 5.0, 0, 0, &cell_id, &material, NULL), 0);
     ASSERT_EQ(material, 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_lat_rect) {
@@ -226,12 +233,13 @@ TEST(cell_lat_rect) {
         "100 SO 50.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 1, &info), 0);
     ASSERT_EQ(info.lat_type, 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_trcl_id) {
@@ -244,12 +252,13 @@ TEST(cell_trcl_id) {
         "\n"
         "TR1 10 0 0\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Sphere at (10,0,0) */
     ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_trcl_inline_trans) {
@@ -261,11 +270,12 @@ TEST(cell_trcl_inline_trans) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_material_at(sys, 10, 20, 30), 1);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(cell_multiple_params) {
@@ -277,13 +287,14 @@ TEST(cell_multiple_params) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
     ASSERT_EQ(info.universe_id, 2);
     ASSERT_EQ(info.material_id, 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -301,15 +312,16 @@ TEST(like_but_basic) {
         "2 S 10.0 0.0 0.0 3.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Verify LIKE BUT created cell 2 with same material */
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 2, &info), 0);
     ASSERT_EQ(info.material_id, 1);
     /* Cell 1 at origin */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(like_but_mat_override) {
@@ -324,15 +336,16 @@ TEST(like_but_mat_override) {
         "\n"
         "M1 92235.80c 1.0\n"
         "M2 26056.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Cell 1 at origin has material 1 */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     /* Verify LIKE BUT overrode material to 2 on cell 2 */
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 2, &info), 0);
     ASSERT_EQ(info.material_id, 2);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(like_but_imp_override) {
@@ -346,10 +359,10 @@ TEST(like_but_imp_override) {
         "2 S 10.0 0.0 0.0 3.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 3);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 3);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -368,15 +381,16 @@ TEST(geom_simple_intersection) {
         "3 CZ 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Inside: z=5, r=0 → inside cz, below pz 10, above pz 0 */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 5), 1);
     /* Outside: z=15 → above pz 10 */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 15), 0);
     /* Outside: r=7 → outside cz */
     ASSERT_EQ(alea_material_at(sys, 7, 0, 5), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(geom_union) {
@@ -390,15 +404,16 @@ TEST(geom_union) {
         "2 S 5.0 0.0 0.0 3.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Center of first sphere */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     /* Center of second sphere */
     ASSERT_EQ(alea_material_at(sys, 5, 0, 0), 1);
     /* Far away */
     ASSERT_EQ(alea_material_at(sys, 20, 0, 0), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(geom_complement_cell) {
@@ -415,15 +430,16 @@ TEST(geom_complement_cell) {
         "M1 92235.80c 1.0\n"
         "M2 26056.80c 1.0\n"
         "M3 1001.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Inside cell 1 → mat 1 */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     /* Inside cell 2 → mat 2 */
     ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 2);
     /* Between them → mat 3 (complement of both) */
     ASSERT_EQ(alea_material_at(sys, 5, 0, 0), 3);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(geom_complement_surface) {
@@ -437,13 +453,14 @@ TEST(geom_complement_surface) {
         "2 PZ 0.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Between planes: z=5 → mat 1 */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 5), 1);
     /* Below plane 2: z=-5 → void (complement) */
     ASSERT_EQ(alea_material_at(sys, 0, 0, -5), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(geom_nested_parens) {
@@ -459,15 +476,16 @@ TEST(geom_nested_parens) {
         "4 PZ 15.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* z=5 → in first term (0 < z < 10) */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 5), 1);
     /* z=17 → in second term (15 < z < 20) */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 17), 1);
     /* z=12 → outside both */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 12), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(geom_deep_nesting) {
@@ -483,13 +501,14 @@ TEST(geom_deep_nesting) {
         "4 PX 0.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Inside all: z in (0,10), r < 5, x > 0 → at (2, 0, 5) */
     ASSERT_EQ(alea_material_at(sys, 2, 0, 5), 1);
     /* Outside r: at (7, 0, 5) */
     ASSERT_EQ(alea_material_at(sys, 7, 0, 5), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -507,23 +526,24 @@ TEST(cell_roundtrip_params) {
         "3 CZ 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
 
     const char* tmpfile = "test_cell_rt_tmp.mcnp";
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, tmpfile, ALEA_EMIT_MACROBODY, false);
+    int rc = mcnp_export(model, tmpfile);
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
-    alea_system_t* sys2 = alea_load_mcnp(tmpfile);
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load(tmpfile);
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
     alea_build_universe_index(sys2);
 
     /* Geometry preserved */
     ASSERT_EQ(alea_material_at(sys2, 0, 0, 5), 1);
     ASSERT_EQ(alea_material_at(sys2, 0, 0, 15), 0);
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove(tmpfile);
 }
 
@@ -538,8 +558,9 @@ TEST(cell_difference_roundtrip) {
         "2 SO 2.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
 
     /* Between radii: mat 1 */
     ASSERT_EQ(alea_material_at(sys, 3.0, 0, 0), 1);
@@ -550,16 +571,17 @@ TEST(cell_difference_roundtrip) {
 
     /* Roundtrip */
     const char* tmpfile = "test_diff_rt_tmp.mcnp";
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, tmpfile, ALEA_EMIT_MACROBODY, false);
+    int rc = mcnp_export_system(sys, tmpfile);
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
-    alea_system_t* sys2 = alea_load_mcnp(tmpfile);
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load(tmpfile);
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
     alea_build_universe_index(sys2);
     ASSERT_EQ(alea_material_at(sys2, 3.0, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys2, 0, 0, 0), 0);
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove(tmpfile);
 }
 

@@ -6,12 +6,13 @@
 #define MCNP_CONVERSION_H
 
 #include "core/alea_system.h"
+#include "mcnp/mcnp_model.h"
 
 // ============================================================================
 // CONVERSION FUNCTIONS
 // ============================================================================
 
-// Convert an MCNP file to CSG system
-alea_system_t* mcnp_convert_file(const char* filename);
+// Convert an MCNP file to mcnp_model_t (owns system + cell params)
+mcnp_model_t* mcnp_convert_to_model(const char* filename);
 
 #endif // MCNP_CONVERSION_H

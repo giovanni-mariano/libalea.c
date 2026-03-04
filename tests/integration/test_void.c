@@ -475,13 +475,22 @@ TEST(void_graveyard) {
                              NULL, NULL, NULL, NULL), 0);
     ASSERT_EQ(material_id, 0);
 
+    /* Graveyard cell is identified by having vacuum boundary surfaces.
+     * (MCNP importances like IMP:N=0 now live in mcnp_model_t, not cell entries) */
+    alea_build_cell_surface_index(sys);
     alea_cell_entry_t* cell = &sys->cells.data[grav_cell];
-    ASSERT(cell->has_imp_n);
-    ASSERT(cell->imp_n == 0.0);
-    ASSERT(cell->has_imp_p);
-    ASSERT(cell->imp_p == 0.0);
+    int has_vacuum_surf = 0;
+    for (size_t si = 0; si < cell->surface_index_count; si++) {
+        uint32_t surf_idx = cell->surface_indices[si];
+        if (surf_idx < alea_vec_count(&sys->surfaces) &&
+            sys->surfaces.data[surf_idx].boundary_type == ALEA_BOUNDARY_VACUUM) {
+            has_vacuum_surf = 1;
+            break;
+        }
+    }
+    ASSERT(has_vacuum_surf);
 
-    /* Point outside bbox but inside sphere should be in shell cell (IMP:N=1)
+    /* Point outside bbox but inside sphere should be in shell cell
      * Bounds [-5,5]^3, sphere R ≈ 8.83. Point (7,0,0): outside box, inside sphere. */
     int shell_cell = alea_find_cell(sys, 7, 0, 0);
     ASSERT(shell_cell >= 0);
@@ -490,10 +499,6 @@ TEST(void_graveyard) {
     ASSERT_EQ(alea_cell_get(sys, (size_t)shell_cell, NULL, &material_id,
                              NULL, NULL, NULL, NULL), 0);
     ASSERT_EQ(material_id, 0);
-
-    /* Shell has default importance (1.0), not graveyard's 0.0 */
-    alea_cell_entry_t* shell = &sys->cells.data[shell_cell];
-    ASSERT(shell->imp_n == 1.0);
 
     /* Point inside material cell is still found correctly */
     int mat_cell = alea_find_cell(sys, 0, 0, 0);

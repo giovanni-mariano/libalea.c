@@ -47,6 +47,8 @@ static double get_time_ms(void) {
 #endif
 
 #include "alea.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
 #include "alea_raycast.h"
 #include "alea_render.h"
 
@@ -316,10 +318,14 @@ int main(int argc, char** argv) {
     double t0 = get_time_ms();
 
     alea_system_t* sys = NULL;
+    mcnp_model_t* model = NULL;
+    openmc_model_t* omc_model = NULL;
     if (ends_with(input_file, ".xml")) {
-        sys = alea_load_openmc(input_file);
+        omc_model = openmc_load(input_file);
+        if (omc_model) sys = omc_model->sys;
     } else {
-        sys = alea_load_mcnp(input_file);
+        model = mcnp_load(input_file);
+        if (model) sys = model->sys;
     }
 
     if (!sys) {
@@ -352,7 +358,7 @@ int main(int argc, char** argv) {
     render_camera_t cam;
     if (render_camera_setup(&cam, &cfg, sys) != 0) {
         fprintf(stderr, "Error: camera setup failed\n");
-        alea_destroy(sys);
+        if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
     }
 
@@ -423,7 +429,7 @@ int main(int argc, char** argv) {
     if (!fb) {
         fprintf(stderr, "Error: failed to allocate framebuffer (%dx%d)\n",
                 cfg.width, cfg.height);
-        alea_destroy(sys);
+        if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
     }
 
@@ -434,7 +440,7 @@ int main(int argc, char** argv) {
     if (rc != 0) {
         fprintf(stderr, "Error: rendering failed\n");
         render_framebuffer_free(fb);
-        alea_destroy(sys);
+        if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
     }
 
@@ -502,7 +508,7 @@ int main(int argc, char** argv) {
     if (!pixels) {
         fprintf(stderr, "Error: failed to allocate pixel buffer\n");
         render_framebuffer_free(fb);
-        alea_destroy(sys);
+        if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
     }
 
@@ -533,7 +539,7 @@ int main(int argc, char** argv) {
     free(pixels);
     render_framebuffer_free(fb);
     render_config_free(&cfg);
-    alea_destroy(sys);
+    if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
 
     return 0;
 }

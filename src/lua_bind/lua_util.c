@@ -35,6 +35,8 @@ static int l_extract_universe(lua_State* L) {
     int uid = (int)luaL_checkinteger(L, 2);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
     ud->sys = NULL;
+    ud->mcnp_model = NULL;
+    ud->openmc_model = NULL;
     ud->owned = 1;
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
     ud->sys = alea_extract_universe(sys, uid);
@@ -58,6 +60,8 @@ static int l_clone(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
     ud->sys = NULL;
+    ud->mcnp_model = NULL;
+    ud->openmc_model = NULL;
     ud->owned = 1;
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
     ud->sys = alea_clone(sys);
@@ -369,6 +373,8 @@ static int l_extract_region(lua_State* L) {
 
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
     ud->sys = NULL;
+    ud->mcnp_model = NULL;
+    ud->openmc_model = NULL;
     ud->owned = 1;
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
 

@@ -9,6 +9,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "alea_raycast.h"
 #include "core/alea_system.h"
 #include "raycast/raycast.h"
@@ -19,10 +20,10 @@
 /* Helpers                                                                   */
 /* ========================================================================= */
 
-static alea_system_t* parse_mcnp(const char* input) {
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
-    if (sys) alea_build_universe_index(sys);
-    return sys;
+static mcnp_model_t* parse_mcnp(const char* input) {
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    if (model) alea_build_universe_index(model->sys);
+    return model;
 }
 
 /* ========================================================================= */
@@ -39,7 +40,8 @@ TEST(ray_torus_z_hit) {
         "1 TZ 0.0 0.0 0.0 5.0 1.0 1.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray along X through tube at (5, 0, 0): origin (3,0,0), dir (1,0,0) */
@@ -56,7 +58,7 @@ TEST(ray_torus_z_hit) {
     ASSERT(found_mat1 >= 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_torus_z_miss) {
@@ -68,7 +70,8 @@ TEST(ray_torus_z_miss) {
         "1 TZ 0.0 0.0 0.0 5.0 1.0 1.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray along Z at origin: passes through hole of torus */
@@ -85,7 +88,7 @@ TEST(ray_torus_z_miss) {
     ASSERT_EQ(found_mat1, 0);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -101,7 +104,8 @@ TEST(ray_from_inside) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray starting inside sphere, going outward */
@@ -115,7 +119,7 @@ TEST(ray_from_inside) {
     ASSERT_EQ(result.segments[0].material_id, 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_negative_direction) {
@@ -127,7 +131,8 @@ TEST(ray_negative_direction) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray in -X direction from outside */
@@ -144,7 +149,7 @@ TEST(ray_negative_direction) {
     ASSERT(found_mat1 >= 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_grazing_sphere) {
@@ -156,7 +161,8 @@ TEST(ray_grazing_sphere) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray tangent to sphere: origin at (0, 5, 0), dir (1, 0, 0) */
@@ -168,7 +174,7 @@ TEST(ray_grazing_sphere) {
     /* Just verify no crash - tangent rays are numerically tricky */
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -184,7 +190,8 @@ TEST(ray_rcc_hit) {
         "1 RCC 0.0 0.0 0.0 0.0 0.0 10.0 3.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     alea_raycast_result_t result;
@@ -199,7 +206,7 @@ TEST(ray_rcc_hit) {
     ASSERT(found_mat1 >= 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_trc_hit) {
@@ -211,7 +218,8 @@ TEST(ray_trc_hit) {
         "1 TRC 0.0 0.0 0.0 0.0 0.0 10.0 3.0 1.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     alea_raycast_result_t result;
@@ -226,7 +234,7 @@ TEST(ray_trc_hit) {
     ASSERT(found_mat1 >= 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_trc_miss) {
@@ -238,7 +246,8 @@ TEST(ray_trc_miss) {
         "1 TRC 0.0 0.0 0.0 0.0 0.0 10.0 3.0 1.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray missing the TRC entirely */
@@ -254,7 +263,7 @@ TEST(ray_trc_miss) {
     ASSERT_EQ(found_mat1, 0);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_wed_hit) {
@@ -266,7 +275,8 @@ TEST(ray_wed_hit) {
         "1 WED 0.0 0.0 0.0 4.0 0.0 0.0 0.0 4.0 0.0 0.0 0.0 4.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Verify geometry via point queries along ray path.
@@ -276,7 +286,7 @@ TEST(ray_wed_hit) {
     ASSERT_EQ(alea_material_at(sys, 0.5, 0.5, 3), 1);   /* inside wedge */
     ASSERT_EQ(alea_material_at(sys, 0.5, 0.5, 5), 0);   /* after wedge */
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_rhp_hit) {
@@ -289,7 +299,8 @@ TEST(ray_rhp_hit) {
         " 2.0 0.0 0.0 -1.0 1.732050808 0.0 -1.0 -1.732050808 0.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Verify geometry via point queries along ray path.
@@ -300,7 +311,7 @@ TEST(ray_rhp_hit) {
     ASSERT_EQ(alea_material_at(sys, 0, 0, 11), 0);   /* above prism */
     ASSERT_EQ(alea_material_at(sys, 10, 10, 5), 0);  /* outside laterally */
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -317,7 +328,8 @@ TEST(ray_quadric_ellipsoid) {
         "1 GQ 1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 -25.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     alea_raycast_result_t result;
@@ -332,7 +344,7 @@ TEST(ray_quadric_ellipsoid) {
     ASSERT(found_mat1 >= 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -348,7 +360,8 @@ TEST(ray_public_api) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     alea_raycast_result_t* result = alea_raycast_result_create();
@@ -369,7 +382,7 @@ TEST(ray_public_api) {
     ASSERT_EQ(rc, 0);
 
     alea_raycast_result_destroy(result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(ray_first_cell) {
@@ -381,7 +394,8 @@ TEST(ray_first_cell) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
+    mcnp_model_t* model = parse_mcnp(input);
+    alea_system_t* sys = model ? model->sys : NULL;
     ASSERT_NOT_NULL(sys);
 
     /* Ray starts inside the sphere → first cell is the material cell at t=0 */
@@ -390,7 +404,7 @@ TEST(ray_first_cell) {
     ASSERT(cell >= 0);
     ASSERT_NEAR(t, 0.0, 0.1);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

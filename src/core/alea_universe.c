@@ -730,13 +730,10 @@ int alea_copy_referenced_transforms(alea_system_t* dst, const alea_system_t* src
         } \
     } while(0)
 
-    /* From cells: trcl and fill_transform */
+    /* From cells: fill_transform */
     for (size_t i = 0; i < alea_vec_count(&dst->cells); i++) {
         const alea_cell_entry_t* cell = &dst->cells.data[i];
-        if (cell->has_trcl && !cell->trcl_inline && cell->trcl != 0) {
-            ADD_NEEDED_ID(cell->trcl);
-        }
-        if (cell->fill_universe > 0 && !cell->fill_transform_inline && cell->fill_transform != 0) {
+        if (cell->fill_universe > 0 && cell->fill_transform != 0) {
             ADD_NEEDED_ID(cell->fill_transform);
         }
     }
@@ -1864,16 +1861,8 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
             new_cell->universe_id = 0;  /* All cells go to universe 0 */
             new_cell->fill_universe = 0;
             new_cell->fill_transform = 0;
-            new_cell->imp_n = cell->imp_n;
-            new_cell->imp_p = cell->imp_p;
-            new_cell->imp_e = cell->imp_e;
-            new_cell->has_imp_n = cell->has_imp_n;
-            new_cell->has_imp_p = cell->has_imp_p;
-            new_cell->has_imp_e = cell->has_imp_e;
-            new_cell->vol = cell->vol;
-            new_cell->tmp = cell->tmp;
-            new_cell->has_vol = cell->has_vol;
-            new_cell->has_tmp = cell->has_tmp;
+            new_cell->temperature = cell->temperature;
+            new_cell->has_temperature = cell->has_temperature;
         }
     }
     

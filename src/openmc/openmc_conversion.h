@@ -10,7 +10,7 @@
 #ifndef OPENMC_CONVERSION_H
 #define OPENMC_CONVERSION_H
 
-#include "core/alea_system.h"
+#include "openmc_model.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,20 +21,20 @@ extern "C" {
  * ============================================================================ */
 
 /**
- * @brief Convert OpenMC XML file to CSG system
+ * @brief Convert OpenMC XML file to model
  *
  * Parses an OpenMC geometry XML file (typically geometry.xml or model.xml)
- * and creates a CSG system with equivalent geometry.
+ * and creates a model with equivalent geometry.
  *
  * @param filename Path to XML file
- * @return New CSG system or NULL on error
+ * @return New model or NULL on error
  */
-alea_system_t* openmc_convert_file(const char* filename);
+openmc_model_t* openmc_convert_to_model(const char* filename);
 
 /**
- * @brief Convert OpenMC XML string to CSG system
+ * @brief Convert OpenMC XML string to model
  */
-alea_system_t* openmc_convert_string(const char* xml_content, size_t length);
+openmc_model_t* openmc_convert_string_to_model(const char* xml_content, size_t length);
 
 #ifdef __cplusplus
 }

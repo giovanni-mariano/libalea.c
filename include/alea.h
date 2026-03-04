@@ -10,17 +10,16 @@
  * Prefix: alea_ for all public functions.
  *
  * Basic usage:
- *   alea_system_t* sys = alea_load_mcnp("input.inp");
- *   if (!sys) {
- *       fprintf(stderr, "Error: %s\n", alea_error());
- *       return 1;
- *   }
- *
+ *   // Programmatic geometry
+ *   alea_system_t* sys = alea_create();
  *   alea_build_universe_index(sys);
  *   int cell = alea_find_cell(sys, 0.0, 0.0, 0.0);
- *
- *   alea_export_mcnp(sys, "output.inp");
  *   alea_destroy(sys);
+ *
+ * For MCNP I/O, include "alea_mcnp.h" and link libalea_mcnp.a:
+ *   mcnp_model_t* model = mcnp_load("input.inp");
+ *   mcnp_export(model, "output.inp");
+ *   mcnp_model_destroy(model);
  */
 
 #ifndef ALEA_H
@@ -73,7 +72,7 @@ void alea_error_clear(void);
  *   // Before long operation:
  *   old_handler = signal(SIGINT, sigint_handler);
  *   Py_BEGIN_ALLOW_THREADS
- *   result = alea_load_mcnp(filename);
+ *   result = mcnp_load(filename);  // from alea_mcnp.h
  *   Py_END_ALLOW_THREADS
  *   signal(SIGINT, old_handler);
  *   alea_clear_interrupt();
@@ -132,11 +131,10 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config);
 
 /* ============================================================================
  * LOADING
+ *
+ * For MCNP: use mcnp_load() from alea_mcnp.h (link libalea_mcnp.a)
+ * For OpenMC: use openmc_load() from alea_openmc.h (link libalea_openmc.a)
  * ============================================================================ */
-
-alea_system_t* alea_load_mcnp(const char* filename);
-alea_system_t* alea_load_mcnp_string(const char* input, size_t length);
-alea_system_t* alea_load_openmc(const char* filename);
 
 /* ============================================================================
  * INDEXING
@@ -590,14 +588,12 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index);
 /* ============================================================================
  * EXPORT
  *
- * All export options are read from sys->config (surface_policy, dedup,
- * export_materials, export_transforms, universe_depth, fill_depth).
+ * For MCNP: use mcnp_export() from alea_mcnp.h (link libalea_mcnp.a)
+ * For OpenMC: use openmc_export() from alea_openmc.h (link libalea_openmc.a)
+ *
+ * Generic export options are read from sys->config (dedup, universe_depth,
+ * fill_depth, export_materials, export_transforms).
  * ============================================================================ */
-
-int alea_export_mcnp(const alea_system_t* sys, const char* filename);
-int alea_export_mcnp_stream(const alea_system_t* sys, FILE* out);
-int alea_export_openmc(const alea_system_t* sys, const char* filename);
-int alea_export_stream(const alea_system_t* sys, alea_export_format_t format, FILE* out);
 
 /* ============================================================================
  * VOID GENERATION
@@ -738,6 +734,26 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
  * @return 0 on success, -1 if not found
  */
 int alea_cell_find_info(const alea_system_t* sys, int cell_id, alea_cell_info_t* info);
+
+/**
+ * @brief Get CSG expression string for a cell
+ *
+ * Walks the CSG tree and builds a human-readable expression using the
+ * provided operator symbols. The caller must free() the returned string.
+ *
+ * Example (MCNP-style): alea_cell_expr(sys, i, ":", " ", "#")
+ * Example (OpenMC-style): alea_cell_expr(sys, i, " | ", " ", "~")
+ *
+ * @param sys System
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param union_op String to emit between union operands (e.g. ":" or " | ")
+ * @param inter_op String to emit between intersection operands (e.g. " ")
+ * @param compl_op String to emit before complement operands (e.g. "#" or "~")
+ * @return malloc'd string (caller frees), or NULL on error
+ */
+char* alea_cell_expr(const alea_system_t* sys, size_t cell_index,
+                     const char* union_op, const char* inter_op,
+                     const char* compl_op);
 
 /**
  * @brief Get cell indices in a universe

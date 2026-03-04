@@ -60,6 +60,7 @@ PRIMITIVES_DIR = $(SRC_DIR)/primitives
 MCNP_PARSER_DIR = $(SRC_DIR)/mcnp/parser
 MCNP_CONV_DIR = $(SRC_DIR)/mcnp/conversion
 MCNP_EXPO_DIR = $(SRC_DIR)/mcnp/exporter
+MCNP_MODEL_DIR = $(SRC_DIR)/mcnp
 
 OPENMC_DIR = $(SRC_DIR)/openmc
 RAYCAST_DIR = $(SRC_DIR)/raycast
@@ -148,6 +149,9 @@ MCNP_EXPO_SRCS = \
 	$(MCNP_EXPO_DIR)/mcnp_str.c \
 	$(MCNP_EXPO_DIR)/mcnp_export.c
 
+MCNP_MODEL_SRCS = \
+	$(MCNP_MODEL_DIR)/mcnp_model.c
+
 OPENMC_EXPO_SRCS = \
 	$(OPENMC_DIR)/openmc_xml.c \
 	$(OPENMC_DIR)/openmc_export.c
@@ -184,11 +188,14 @@ CORE_LIB_SRCS = \
 	$(UTIL_SRCS) \
 	$(PRIMITIVES_SRCS)
 
-# MCNP module sources (parser + conversion + exporter)
-MCNP_MODULE_SRCS = $(MCNP_PARSER_SRCS) $(MCNP_GEOM_SRCS) $(MCNP_CONV_SRCS) $(MCNP_EXPO_SRCS)
+# MCNP module sources (parser + conversion + exporter + model)
+MCNP_MODULE_SRCS = $(MCNP_PARSER_SRCS) $(MCNP_GEOM_SRCS) $(MCNP_CONV_SRCS) $(MCNP_EXPO_SRCS) $(MCNP_MODEL_SRCS)
 
-# OpenMC module sources (parser + conversion + exporter)
-OPENMC_MODULE_SRCS = $(OPENMC_EXPO_SRCS) $(OPENMC_PARSE_SRCS)
+# OpenMC model
+OPENMC_MODEL_SRCS = $(OPENMC_DIR)/openmc_model.c
+
+# OpenMC module sources (parser + conversion + exporter + model)
+OPENMC_MODULE_SRCS = $(OPENMC_EXPO_SRCS) $(OPENMC_PARSE_SRCS) $(OPENMC_MODEL_SRCS)
 
 # Module sources (optional, visualization-related)
 MODULE_RAYCAST_SRCS = $(RAYCAST_SRCS)
@@ -218,8 +225,10 @@ MCNP_PARSER_OBJS = $(MCNP_PARSER_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_GEOM_OBJS = $(MCNP_GEOM_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_CONV_OBJS = $(MCNP_CONV_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_EXPO_OBJS = $(MCNP_EXPO_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+MCNP_MODEL_OBJS = $(MCNP_MODEL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 OPENMC_EXPO_OBJS = $(OPENMC_EXPO_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 OPENMC_PARSE_OBJS = $(OPENMC_PARSE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+OPENMC_MODEL_OBJS = $(OPENMC_MODEL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 RAYCAST_OBJS = $(RAYCAST_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 SLICE_OBJS = $(SLICE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 RENDER_OBJS = $(RENDER_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
@@ -229,10 +238,10 @@ MESH_OBJS = $(MESH_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS)
 
 # MCNP module objects
-MCNP_MODULE_OBJS = $(MCNP_PARSER_OBJS) $(MCNP_GEOM_OBJS) $(MCNP_CONV_OBJS) $(MCNP_EXPO_OBJS)
+MCNP_MODULE_OBJS = $(MCNP_PARSER_OBJS) $(MCNP_GEOM_OBJS) $(MCNP_CONV_OBJS) $(MCNP_EXPO_OBJS) $(MCNP_MODEL_OBJS)
 
 # OpenMC module objects
-OPENMC_MODULE_OBJS = $(OPENMC_EXPO_OBJS) $(OPENMC_PARSE_OBJS)
+OPENMC_MODULE_OBJS = $(OPENMC_EXPO_OBJS) $(OPENMC_PARSE_OBJS) $(OPENMC_MODEL_OBJS)
 
 # Module objects
 MODULE_RAYCAST_OBJS = $(RAYCAST_OBJS)
@@ -322,6 +331,7 @@ structure:
 	@mkdir -p $(BUILD_DIR)/mcnp/geometry
 	@mkdir -p $(BUILD_DIR)/mcnp/conversion
 	@mkdir -p $(BUILD_DIR)/mcnp/exporter
+	@mkdir -p $(BUILD_DIR)/mcnp
 	@mkdir -p $(BUILD_DIR)/openmc
 	@mkdir -p $(BUILD_DIR)/raycast
 	@mkdir -p $(BUILD_DIR)/slice
@@ -419,6 +429,11 @@ $(BUILD_DIR)/mcnp/conversion/%.o: $(MCNP_CONV_DIR)/%.c | $(BUILD_DIR)/mcnp/conve
 
 # MCNP exporter
 $(BUILD_DIR)/mcnp/exporter/%.o: $(MCNP_EXPO_DIR)/%.c | $(BUILD_DIR)/mcnp/exporter
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# MCNP model
+$(BUILD_DIR)/mcnp/%.o: $(MCNP_MODEL_DIR)/%.c | $(BUILD_DIR)/mcnp
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 

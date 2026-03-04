@@ -11,14 +11,15 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include <string.h>
 #include <stdio.h>
 
-static alea_system_t* parse_mcnp(const char* input) {
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
-    if (sys) alea_build_universe_index(sys);
-    return sys;
+static mcnp_model_t* parse_mcnp(const char* input) {
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    if (model) alea_build_universe_index(model->sys);
+    return model;
 }
 
 /* ========================================================================= */
@@ -36,11 +37,12 @@ TEST(continuation_5_blanks) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_cell_count(sys), 2);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(continuation_ampersand) {
@@ -54,10 +56,10 @@ TEST(continuation_ampersand) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -77,10 +79,10 @@ TEST(comment_c_column1) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(comment_dollar) {
@@ -93,11 +95,12 @@ TEST(comment_dollar) {
         "1 SO 5.0 $ sphere of radius 5\n"
         "\n"
         "M1 92235.80c 1.0 $ uranium\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_cell_count(sys), 2);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -114,10 +117,10 @@ TEST(blank_line_separator) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(trailing_whitespace) {
@@ -130,10 +133,10 @@ TEST(trailing_whitespace) {
         "1 SO 5.0   \n"
         "\n"
         "M1 92235.80c 1.0   \n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -150,10 +153,10 @@ TEST(case_insensitive) {
         "1 so 5.0\n"
         "\n"
         "m1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -169,13 +172,14 @@ TEST(large_cell_id) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_cell_count(sys), 2);
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 99999, &info), 0);
     ASSERT_EQ(info.material_id, 1);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(large_surface_id) {
@@ -187,10 +191,10 @@ TEST(large_surface_id) {
         "99999 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 1);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -208,13 +212,14 @@ TEST(negative_surface_sense) {
         "\n"
         "M1 92235.80c 1.0\n"
         "M2 26056.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Inside sphere → mat 1 */
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     /* Outside sphere → mat 2 */
     ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 2);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -233,12 +238,13 @@ TEST(multiple_materials) {
         "\n"
         "M1 92235.80c 0.05 92238.80c 0.95\n"
         "M2 26056.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 5, 0, 0), 2);
     ASSERT_EQ(alea_material_at(sys, 15, 0, 0), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(material_nuclides) {
@@ -251,10 +257,10 @@ TEST(material_nuclides) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 0.05 92238.80c 0.95\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 1);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -272,12 +278,13 @@ TEST(transform_card_cosines) {
         "\n"
         "TR1 10 0 0 1 0 0 0 1 0 0 0 1\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     /* Pure translation to (10,0,0) */
     ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 1);
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(transform_card_angles) {
@@ -291,11 +298,11 @@ TEST(transform_card_angles) {
         "\n"
         "*TR1 10 0 0 0 90 90 90 0 90 90 90 0\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
     /* Translation to (10,0,0) with identity rotation */
-    ASSERT_EQ(alea_material_at(sys, 10, 0, 0), 1);
-    alea_destroy(sys);
+    ASSERT_EQ(alea_material_at(model->sys, 10, 0, 0), 1);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -312,10 +319,10 @@ TEST(empty_params) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(alea_cell_count(sys), 2);
-    alea_destroy(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    mcnp_model_destroy(model);
 }
 
 TEST(surface_with_transform) {
@@ -329,13 +336,13 @@ TEST(surface_with_transform) {
         "\n"
         "TR1 10 0 0\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = parse_mcnp(input);
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
     /* PZ 5.0 translated by TR1 → plane at z=5 shifted by (10,0,0) */
     /* Actually the plane normal is along z, so the translation in x/y
        doesn't change the z-intercept. The plane is still at z=5+0=5. */
-    ASSERT_EQ(alea_material_at(sys, 10, 0, 3), 1);
-    alea_destroy(sys);
+    ASSERT_EQ(alea_material_at(model->sys, 10, 0, 3), 1);
+    mcnp_model_destroy(model);
 }
 
 /* ========================================================================= */
@@ -343,8 +350,8 @@ TEST(surface_with_transform) {
 /* ========================================================================= */
 
 TEST(parse_empty_string) {
-    alea_system_t* sys = alea_load_mcnp_string("", 0);
-    ASSERT_NULL(sys);
+    mcnp_model_t* model = mcnp_load_string("", 0);
+    ASSERT_NULL(model);
 }
 
 TEST(parse_missing_surface) {
@@ -357,9 +364,9 @@ TEST(parse_missing_surface) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
     /* Should either fail or handle gracefully */
-    if (sys) alea_destroy(sys);
+    if (model) mcnp_model_destroy(model);
     /* Test passes if no crash */
 }
 

@@ -12,7 +12,8 @@
  *
  * Example workflow:
  * @code
- *   alea_system_t* sys = alea_load_mcnp("model.i");
+ *   mcnp_model_t* model = mcnp_load("model.i");
+ *   alea_system_t* sys = model->sys;
  *   alea_build_universe_index(sys);
  *
  *   alea_mesh_config_t cfg;

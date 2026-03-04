@@ -26,21 +26,8 @@ void alea_bvh_free(struct alea_bvh* bvh) {
     (void)bvh;  /* No-op when raycast module not linked */
 }
 
-/* MCNP module stubs */
-
-__attribute__((weak))
-int export_mcnp(const alea_system_t* sys, struct export_context* ctx) {
-    (void)sys; (void)ctx;
-    ALEA_LOG_ERROR("MCNP module not linked");
-    return -1;
-}
-
-__attribute__((weak))
-alea_system_t* mcnp_convert_file(const char* filename) {
-    (void)filename;
-    ALEA_LOG_ERROR("MCNP module not linked");
-    return NULL;
-}
+/* MCNP and OpenMC export stubs removed — export functions now live
+   in the respective modules (alea_mcnp.h / alea_openmc.h). */
 
 /* Raycast volume estimation stubs */
 
@@ -73,18 +60,3 @@ int alea_remove_cells_by_volume(alea_system_t* sys,
     return -1;
 }
 
-/* OpenMC module stubs */
-
-__attribute__((weak))
-int export_openmc(const alea_system_t* sys, struct export_context* ctx) {
-    (void)sys; (void)ctx;
-    ALEA_LOG_ERROR("OpenMC module not linked");
-    return -1;
-}
-
-__attribute__((weak))
-alea_system_t* openmc_convert_file(const char* filename) {
-    (void)filename;
-    ALEA_LOG_ERROR("OpenMC module not linked");
-    return NULL;
-}

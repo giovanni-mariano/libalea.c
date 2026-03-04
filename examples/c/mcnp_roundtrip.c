@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <alea.h>
+#include <alea_mcnp.h>
 
 int main(int argc, char** argv) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
@@ -33,31 +34,31 @@ int main(int argc, char** argv) {
 
     /* Load MCNP input */
     printf("Loading: %s\n", input_file);
-    alea_system_t* sys = alea_load_mcnp(input_file);
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load(input_file);
+    if (!model) {
         fprintf(stderr, "Error: %s\n", alea_error());
         return 1;
     }
 
-    alea_print_summary(sys);
+    alea_print_summary(model->sys);
 
     /* Export back to MCNP */
     int rc;
     if (output_file) {
         printf("\nExporting to: %s\n", output_file);
-        rc = alea_export_mcnp(sys, output_file);
+        rc = mcnp_export(model, output_file);
     } else {
         printf("\n--- MCNP output ---\n");
-        rc = alea_export_mcnp_stream(sys, stdout);
+        rc = mcnp_export_stream(model, stdout);
     }
 
     if (rc != 0) {
         fprintf(stderr, "Export failed: %s\n", alea_error());
-        alea_destroy(sys);
+        mcnp_model_destroy(model);
         return 1;
     }
 
     printf("Done.\n");
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
     return 0;
 }

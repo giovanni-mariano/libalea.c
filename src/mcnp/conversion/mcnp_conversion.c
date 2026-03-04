@@ -11,6 +11,7 @@
  */
 #include "alea.h"
 #include "mcnp/parser/mcnp_parser.h"
+#include "mcnp/mcnp_model.h"
 #include "surface_conv.h"
 #include "cell_conv.h"
 #include "core/alea_cell_complement.h"
@@ -220,7 +221,7 @@ static int parse_transform_definition(alea_transform_t* tr, const char* definiti
  * @param sys CSG system with cells already converted
  * @return Number of surfaces marked as vacuum, or -1 on error
  */
-static int detect_vacuum_boundaries(alea_system_t* sys) {
+static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* model) {
     if (!sys) return -1;
 
     /* Test points at "infinity" in 6 directions (9.9e5 cm = ~10 km) */
@@ -245,7 +246,8 @@ static int detect_vacuum_boundaries(alea_system_t* sys) {
             alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
             /* Check if this is graveyard: material=0 and IMP:N=0 */
-            if (cell->material_id == 0 && cell->has_imp_n && cell->imp_n == 0.0) {
+            const mcnp_cell_params_t* mp = model ? mcnp_cell_params_const(model, (size_t)cell_idx) : NULL;
+            if (cell->material_id == 0 && mp && mp->has_imp_n && mp->imp_n == 0.0) {
                 graveyard_cell_id = cell->mcnp_cell_id;
                 graveyard_cell_idx = cell_idx;
             }
@@ -362,19 +364,19 @@ static void reserve_from_mcnp(alea_system_t* sys, const mcnp_context_t* mcnp) {
 // COMPLETE FILE CONVERSION
 // ============================================================================
 
-alea_system_t* mcnp_convert_file(const char* filename) {
+mcnp_model_t* mcnp_convert_to_model(const char* filename) {
     if (!filename) return NULL;
-    
+
     // Parse MCNP file
     mcnp_context_t* mcnp = NULL;
     if (!mcnp_parse_file(filename, &mcnp) || !mcnp) {
         ALEA_LOG_ERROR("Failed to parse MCNP file: %s\n", filename);
         return NULL;
     }
-    
+
     ALEA_LOG_DEBUG("Parsed MCNP file: %zu surfaces, %zu cells, %zu materials\n",
            mcnp->surface_count, mcnp->cell_count, mcnp->material_count);
-    
+
     // Create CSG system with automatic sizing
     alea_system_t* sys = alea_system_create();
     if (!sys) {
@@ -382,6 +384,19 @@ alea_system_t* mcnp_convert_file(const char* filename) {
         mcnp_context_destroy(mcnp);
         return NULL;
     }
+
+    // Create model early, register hooks so cell additions auto-grow params
+    mcnp_model_t* model = calloc(1, sizeof(mcnp_model_t));
+    if (!model) {
+        alea_system_destroy(sys);
+        mcnp_context_destroy(mcnp);
+        return NULL;
+    }
+    model->sys = sys;
+    model->owns_sys = 1;
+    model->export_config = MCNP_EXPORT_CONFIG_DEFAULT;
+    mcnp_model_reserve_params(model, mcnp->cell_count);
+    mcnp_model_register_hooks(model);
 
     // Pre-allocate vectors based on parsed counts to avoid reallocations
     reserve_from_mcnp(sys, mcnp);
@@ -394,7 +409,7 @@ alea_system_t* mcnp_convert_file(const char* filename) {
         memset(&alea_tr, 0, sizeof(alea_tr));
         alea_tr.transform_id = tr->transform_id;
         alea_tr.from_inline = 0;
-        
+
         if (tr->definition && parse_transform_definition(&alea_tr, tr->definition, tr->is_star) == 0) {
             alea_add_transform(sys, tr->transform_id, alea_tr.data, alea_tr.value_count, alea_tr.degrees);
         } else {
@@ -430,14 +445,12 @@ alea_system_t* mcnp_convert_file(const char* filename) {
             ALEA_LOG_ERROR("Failed to convert surface %d",
                     mcnp->surfaces[i]->surface_id);
             alea_bitset_destroy(&surf_seen);
-            alea_system_destroy(sys);
+            mcnp_model_destroy(model);
             mcnp_context_destroy(mcnp);
             return NULL;
         }
     }
     alea_bitset_destroy(&surf_seen);
-
-       
 
     // Build surface lookup table
     alea_build_surface_lookup(sys);
@@ -452,11 +465,11 @@ alea_system_t* mcnp_convert_file(const char* filename) {
         }
     }
 
-    // Convert all cells
+    // Convert all cells (hooks auto-grow model->cell_params)
     ALEA_LOG_INFO("\nConverting cells...\n");
     for (size_t i = 0; i < mcnp->cell_count; i++) {
         if (g_alea_interrupted) goto interrupted;
-        if (alea_convert_cell(sys, mcnp->cells[i]) == UINT32_MAX) {
+        if (alea_convert_cell(sys, mcnp->cells[i], model) == UINT32_MAX) {
             ALEA_LOG_WARN("Warning: Failed to convert cell %d\n",
                     mcnp->cells[i]->cell_id);
         }
@@ -472,14 +485,14 @@ alea_system_t* mcnp_convert_file(const char* filename) {
 
     // Resolve LIKE BUT cells (must happen before TRCL transforms)
     ALEA_LOG_INFO("\nResolving LIKE BUT cells...\n");
-    int like_count = alea_resolve_like_cells(sys);
+    int like_count = alea_resolve_like_cells(sys, model);
     if (like_count < 0) {
         ALEA_LOG_WARN("Warning: Error resolving LIKE cells\n");
     }
 
     // Apply TRCL transforms to cells
     ALEA_LOG_INFO("\nApplying TRCL transforms...\n");
-    int trcl_count = alea_apply_trcl_transforms(sys);
+    int trcl_count = alea_apply_trcl_transforms(sys, model);
     if (trcl_count < 0) {
         ALEA_LOG_WARN("Warning: Error applying TRCL transforms\n");
     }
@@ -505,26 +518,24 @@ alea_system_t* mcnp_convert_file(const char* filename) {
 
     // Detect vacuum boundaries from graveyard cell
     ALEA_LOG_INFO("\nDetecting vacuum boundaries...\n");
-    int vacuum_count = detect_vacuum_boundaries(sys);
+    int vacuum_count = detect_vacuum_boundaries(sys, model);
     if (vacuum_count > 0) {
         ALEA_LOG_INFO("Marked %d vacuum boundary surfaces\n", vacuum_count);
     }
-    
-    
-    
+
     // Print statistics
-    //printf("\n");
     alea_system_print_stats(sys);
 
     // Cleanup MCNP context
     mcnp_context_destroy(mcnp);
 
-    return sys;
+    return model;
 
 interrupted:
     alea_set_error_detail(ALEA_ERR_INTERRUPTED, "MCNP conversion interrupted");
-    alea_system_destroy(sys);
+    mcnp_model_destroy(model);
     mcnp_context_destroy(mcnp);
     return NULL;
 }
+
 

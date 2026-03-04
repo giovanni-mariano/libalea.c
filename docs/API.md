@@ -52,31 +52,41 @@ Clear all data but keep allocated memory. Faster than destroy + create if you're
 
 ## Loading Models
 
-### alea_load_mcnp
+Loading functions live in format-specific headers (`alea_mcnp.h`, `alea_openmc.h`).
+
+### mcnp_load (alea_mcnp.h)
 
 ```c
-alea_system_t* alea_load_mcnp(const char* filename);
+mcnp_model_t* mcnp_load(const char* filename);
 ```
 
-Parse an MCNP input file and build a system. Handles cell cards, surface cards, data cards (materials, transforms), `LIKE BUT`, cell complements (`#cell`), macrobodies, universe fills, and lattices.
+Parse an MCNP input file and build a model. Handles cell cards, surface cards, data cards (materials, transforms), `LIKE BUT`, cell complements (`#cell`), macrobodies, universe fills, and lattices.
 
-Returns NULL on parse error. Call `alea_error()` for details including line number.
+Returns NULL on parse error. Call `alea_error()` for details including line number. The returned model owns the system (`model->sys`).
 
-### alea_load_mcnp_string
+### mcnp_load_string (alea_mcnp.h)
 
 ```c
-alea_system_t* alea_load_mcnp_string(const char* input, size_t length);
+mcnp_model_t* mcnp_load_string(const char* input, size_t length);
 ```
 
-Same as `alea_load_mcnp` but reads from a string buffer instead of a file.
+Same as `mcnp_load` but reads from a string buffer instead of a file.
 
-### alea_load_openmc
+### openmc_load (alea_openmc.h)
 
 ```c
-alea_system_t* alea_load_openmc(const char* filename);
+openmc_model_t* openmc_load(const char* filename);
 ```
 
 Parse an OpenMC XML geometry file. Expects a `geometry.xml` (or similar) containing `<surface>`, `<cell>`, and `<lattice>` elements.
+
+### openmc_load_string (alea_openmc.h)
+
+```c
+openmc_model_t* openmc_load_string(const char* input, size_t length);
+```
+
+Same as `openmc_load` but reads from a string buffer instead of a file.
 
 ---
 
@@ -635,36 +645,43 @@ Destroy a heap-allocated result (from `alea_raycast_result_create`). Frees inter
 
 ## Export
 
-### alea_export_mcnp
+Export functions live in format-specific headers (`alea_mcnp.h`, `alea_openmc.h`).
+
+### mcnp_export / mcnp_export_stream (alea_mcnp.h)
 
 ```c
-int alea_export_mcnp(const alea_system_t* sys, const char* filename);
-int alea_export_mcnp_stream(const alea_system_t* sys, FILE* out);
+int mcnp_export(const mcnp_model_t* model, const char* filename);
+int mcnp_export_stream(const mcnp_model_t* model, FILE* out);
 ```
 
-Write the geometry to an MCNP input file. Export options come from `sys->config`:
+Write the geometry to an MCNP input file. Export options come from `model->export_config` and `model->sys->config`.
 
-- `surface_policy`: `ALEA_EMIT_MACROBODY` or `ALEA_EMIT_SURFACES`
-- `export_materials`: include `Mn` cards
-- `export_transforms`: include `TRn` cards
-- `universe_depth`: -1 = all, 0 = root only
-- `fill_depth`: 0 = don't expand fills
-
-### alea_export_openmc
+### mcnp_export_system / mcnp_export_system_stream (alea_mcnp.h)
 
 ```c
-int alea_export_openmc(const alea_system_t* sys, const char* filename);
+int mcnp_export_system(const alea_system_t* sys, const char* filename);
+int mcnp_export_system_stream(const alea_system_t* sys, FILE* out);
+```
+
+Convenience functions for exporting a bare `alea_system_t*` with default MCNP settings.
+
+### openmc_export / openmc_export_stream (alea_openmc.h)
+
+```c
+int openmc_export(const openmc_model_t* model, const char* filename);
+int openmc_export_stream(const openmc_model_t* model, FILE* out);
 ```
 
 Write the geometry to an OpenMC XML file.
 
-### alea_export_stream
+### openmc_export_system / openmc_export_system_stream (alea_openmc.h)
 
 ```c
-int alea_export_stream(const alea_system_t* sys, alea_export_format_t format, FILE* out);
+int openmc_export_system(const alea_system_t* sys, const char* filename);
+int openmc_export_system_stream(const alea_system_t* sys, FILE* out);
 ```
 
-Write to an arbitrary stream. `format`: `ALEA_EXPORT_FORMAT_MCNP` or `ALEA_EXPORT_FORMAT_OPENMC`.
+Convenience functions for exporting a bare `alea_system_t*` with default OpenMC settings.
 
 ---
 

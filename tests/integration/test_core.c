@@ -8,6 +8,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 
 /* ------------------------------------------------------------------------- */
 /* System Lifecycle Tests                                                     */
@@ -263,7 +264,7 @@ TEST(export_mcnp) {
 
     FILE* f = tmpfile();
     ASSERT_NOT_NULL(f);
-    int rc = alea_export_mcnp_stream(sys, f);
+    int rc = mcnp_export_system_stream(sys, f);
     ASSERT_EQ(rc, 0);
     fclose(f);
 

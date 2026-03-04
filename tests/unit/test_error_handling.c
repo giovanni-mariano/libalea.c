@@ -8,6 +8,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_eval.h"
 #include <string.h>
@@ -34,18 +35,18 @@ TEST(null_find_cell) {
 }
 
 TEST(null_export) {
-    int result = alea_export_mcnp(NULL, "null_test_tmp.mcnp");
+    int result = mcnp_export(NULL, "null_test_tmp.mcnp");
     ASSERT(result != 0);
 }
 
 TEST(null_load_mcnp) {
-    alea_system_t* sys = alea_load_mcnp(NULL);
-    ASSERT_NULL(sys);
+    mcnp_model_t* model = mcnp_load(NULL);
+    ASSERT_NULL(model);
 }
 
 TEST(null_load_mcnp_string) {
-    alea_system_t* sys = alea_load_mcnp_string(NULL, 0);
-    ASSERT_NULL(sys);
+    mcnp_model_t* model = mcnp_load_string(NULL, 0);
+    ASSERT_NULL(model);
 }
 
 /* ========================================================================= */
@@ -89,17 +90,17 @@ TEST(invalid_surface_id) {
 /* ========================================================================= */
 
 TEST(parse_empty_string) {
-    alea_system_t* sys = alea_load_mcnp_string("", 0);
-    ASSERT_NULL(sys);
+    mcnp_model_t* model = mcnp_load_string("", 0);
+    ASSERT_NULL(model);
 }
 
 TEST(parse_title_only) {
     const char* input = "Title only\n";
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
     /* Should parse but have no cells */
-    if (sys) {
-        ASSERT_EQ(alea_cell_count(sys), 0);
-        alea_destroy(sys);
+    if (model) {
+        ASSERT_EQ(alea_cell_count(model->sys), 0);
+        mcnp_model_destroy(model);
     }
 }
 
@@ -112,9 +113,9 @@ TEST(parse_bad_surface_type) {
         "1 XYZZY 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
     /* Should either fail to parse or handle gracefully */
-    if (sys) alea_destroy(sys);
+    if (model) mcnp_model_destroy(model);
     /* Pass if no crash */
 }
 
@@ -127,9 +128,10 @@ TEST(empty_system_export) {
     ASSERT_NOT_NULL(sys);
 
     /* Export empty system */
-    int rc = alea_export_mcnp(sys, "test_empty_tmp.mcnp");
+    FILE* f = tmpfile();
+    int rc = f ? mcnp_export_system_stream(sys, f) : -1;
+    if (f) fclose(f);
     /* Should succeed with empty output or return error */
-    remove("test_empty_tmp.mcnp");
 
     alea_destroy(sys);
     (void)rc; /* May succeed or fail, just don't crash */
@@ -200,22 +202,22 @@ TEST(system_clone) {
         "1 SO 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
-    alea_system_t* sys = alea_load_mcnp_string(input, strlen(input));
-    ASSERT_NOT_NULL(sys);
-    alea_build_universe_index(sys);
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_build_universe_index(model->sys);
 
-    alea_system_t* clone = alea_clone(sys);
+    alea_system_t* clone = alea_clone(model->sys);
     ASSERT_NOT_NULL(clone);
     alea_build_universe_index(clone);
 
     /* Both should give same answers */
-    ASSERT_EQ(alea_material_at(sys, 0, 0, 0),
+    ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0),
               alea_material_at(clone, 0, 0, 0));
-    ASSERT_EQ(alea_material_at(sys, 10, 0, 0),
+    ASSERT_EQ(alea_material_at(model->sys, 10, 0, 0),
               alea_material_at(clone, 10, 0, 0));
 
     alea_destroy(clone);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

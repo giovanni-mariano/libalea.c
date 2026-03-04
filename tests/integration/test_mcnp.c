@@ -11,8 +11,8 @@
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "core/alea_universe.h"
-#include "mcnp/conversion/mcnp_conversion.h"
-#include "openmc/openmc_conversion.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
 #include "raycast/raycast.h"
 
 /* ------------------------------------------------------------------------- */
@@ -46,8 +46,9 @@ TEST(trcl_inline_translation) {
     fprintf(f, "%s", TRCL_INLINE_INPUT);
     fclose(f);
 
-    alea_system_t* sys = mcnp_convert_file("test_trcl_inline_tmp.mcnp");
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = mcnp_load("test_trcl_inline_tmp.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
 
     /* Origin should be void (sphere translated away) */
     int origin_mat = alea_material_at(sys, 0, 0, 0);
@@ -65,7 +66,7 @@ TEST(trcl_inline_translation) {
     int far_mat = alea_material_at(sys, 10, 6, 0);
     ASSERT_EQ(far_mat, 0);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
     remove("test_trcl_inline_tmp.mcnp");
 }
 
@@ -75,8 +76,9 @@ TEST(trcl_with_tr_card) {
     fprintf(f, "%s", TRCL_TR_INPUT);
     fclose(f);
 
-    alea_system_t* sys = mcnp_convert_file("test_trcl_tr_tmp.mcnp");
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = mcnp_load("test_trcl_tr_tmp.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
 
     /* Origin should be void (sphere translated away) */
     int origin_mat = alea_material_at(sys, 0, 0, 0);
@@ -86,7 +88,7 @@ TEST(trcl_with_tr_card) {
     int center_mat = alea_material_at(sys, 20, 0, 0);
     ASSERT_EQ(center_mat, 1);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
     remove("test_trcl_tr_tmp.mcnp");
 }
 
@@ -95,17 +97,19 @@ TEST(trcl_with_tr_card) {
 /* ------------------------------------------------------------------------- */
 
 TEST(parse_simple_sphere) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/simple_sphere.mcnp");
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = mcnp_load("tests/data/simple_sphere.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT(alea_cell_count(sys) > 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST(parse_simple_box) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/simple_box.mcnp");
-    ASSERT_NOT_NULL(sys);
+    mcnp_model_t* model = mcnp_load("tests/data/simple_box.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
     ASSERT(alea_cell_count(sys) > 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -113,10 +117,11 @@ TEST(parse_simple_box) {
 /* ------------------------------------------------------------------------- */
 
 TEST(dedup_identical_spheres) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/dedup_test.mcnp");
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load("tests/data/dedup_test.mcnp");
+    if (!model) {
         SKIP("Test data file not found");
     }
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
@@ -127,15 +132,18 @@ TEST(dedup_identical_spheres) {
     ASSERT(cell_upper >= 0);
 
     /* Export with dedup enabled */
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, "test_dedup_tmp.mcnp",
-                        ALEA_EMIT_MACROBODY, true);
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.dedup = true;
+    alea_set_config(sys, &cfg);
+    int rc = mcnp_export_system(sys, "test_dedup_tmp.mcnp");
     ASSERT_EQ(rc, 0);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     /* Roundtrip: load exported file and verify */
-    alea_system_t* sys2 = mcnp_convert_file("test_dedup_tmp.mcnp");
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load("test_dedup_tmp.mcnp");
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
 
     alea_build_universe_index(sys2);
     cell_lower = alea_identify_cell_at_point(sys2, 0, 0, -5);
@@ -143,15 +151,16 @@ TEST(dedup_identical_spheres) {
     ASSERT(cell_lower >= 0);
     ASSERT(cell_upper >= 0);
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove("test_dedup_tmp.mcnp");
 }
 
 TEST(dedup_opposite_planes) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/dedup_opposite_signs.mcnp");
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load("tests/data/dedup_opposite_signs.mcnp");
+    if (!model) {
         SKIP("Test data file not found");
     }
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
@@ -160,15 +169,18 @@ TEST(dedup_opposite_planes) {
     ASSERT(cell_left >= 0);
     ASSERT(cell_right >= 0);
 
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, "test_dedup_opposite_tmp.mcnp",
-                        ALEA_EMIT_MACROBODY, true);
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.dedup = true;
+    alea_set_config(sys, &cfg);
+    int rc = mcnp_export_system(sys, "test_dedup_opposite_tmp.mcnp");
     ASSERT_EQ(rc, 0);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     /* Roundtrip verification */
-    alea_system_t* sys2 = mcnp_convert_file("test_dedup_opposite_tmp.mcnp");
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load("test_dedup_opposite_tmp.mcnp");
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
 
     alea_build_universe_index(sys2);
     cell_left = alea_identify_cell_at_point(sys2, 0, 0, 0);
@@ -176,7 +188,7 @@ TEST(dedup_opposite_planes) {
     ASSERT(cell_left >= 0);
     ASSERT(cell_right >= 0);
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove("test_dedup_opposite_tmp.mcnp");
 }
 
@@ -191,8 +203,9 @@ TEST(dedup_opposite_planes) {
 /* ------------------------------------------------------------------------- */
 
 TEST(negated_plane_roundtrip) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/mcnp_negated_plane.mcnp");
-    if (!sys) SKIP("Test data file not found");
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_negated_plane.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
@@ -205,14 +218,14 @@ TEST(negated_plane_roundtrip) {
     ASSERT_EQ(mat_right, 2);
 
     /* Export without dedup (exercises un-canonicalization of negated plane) */
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, "test_negated_plane_tmp.mcnp",
-                        ALEA_EMIT_MACROBODY, false);
+    int rc = mcnp_export_system(sys, "test_negated_plane_tmp.mcnp");
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     /* Roundtrip: re-parse the exported file */
-    alea_system_t* sys2 = mcnp_convert_file("test_negated_plane_tmp.mcnp");
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load("test_negated_plane_tmp.mcnp");
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
 
     alea_build_universe_index(sys2);
 
@@ -225,26 +238,30 @@ TEST(negated_plane_roundtrip) {
     ASSERT_MSG(mat_right2 == 2,
         "x=10 should have mat 2 (x > 5) after roundtrip");
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove("test_negated_plane_tmp.mcnp");
 }
 
 /* Also test with dedup enabled */
 TEST(negated_plane_roundtrip_dedup) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/mcnp_negated_plane.mcnp");
-    if (!sys) SKIP("Test data file not found");
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_negated_plane.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
     /* Export with dedup */
-    int rc = alea_export(sys, ALEA_EXPORT_FORMAT_MCNP, "test_negated_plane_dedup_tmp.mcnp",
-                        ALEA_EMIT_MACROBODY, true);
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.dedup = true;
+    alea_set_config(sys, &cfg);
+    int rc = mcnp_export_system(sys, "test_negated_plane_dedup_tmp.mcnp");
     ASSERT_EQ(rc, 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     /* Roundtrip verification */
-    alea_system_t* sys2 = mcnp_convert_file("test_negated_plane_dedup_tmp.mcnp");
-    ASSERT_NOT_NULL(sys2);
+    mcnp_model_t* model2 = mcnp_load("test_negated_plane_dedup_tmp.mcnp");
+    ASSERT_NOT_NULL(model2);
+    alea_system_t* sys2 = model2->sys;
 
     alea_build_universe_index(sys2);
 
@@ -256,7 +273,7 @@ TEST(negated_plane_roundtrip_dedup) {
     ASSERT_MSG(mat_right == 2,
         "x=10 should have mat 2 (x > 5) after dedup roundtrip");
 
-    alea_destroy(sys2);
+    mcnp_model_destroy(model2);
     remove("test_negated_plane_dedup_tmp.mcnp");
 }
 
@@ -265,13 +282,14 @@ TEST(negated_plane_roundtrip_dedup) {
 /* ------------------------------------------------------------------------- */
 
 TEST(lattice_mcnp_parse) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/mcnp_lattice.mcnp");
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice.mcnp");
+    if (!model) {
         SKIP("Test data file not found");
     }
+    alea_system_t* sys = model->sys;
 
     ASSERT(alea_cell_count(sys) > 0);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /*
@@ -283,8 +301,9 @@ TEST(lattice_mcnp_parse) {
  * Checkerboard fill: 1 3 1 / 3 1 3 / 1 3 1
  */
 TEST(lattice_eval_point_query) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/mcnp_lattice_eval.mcnp");
-    if (!sys) SKIP("Test data file not found");
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
@@ -317,7 +336,7 @@ TEST(lattice_eval_point_query) {
     /* Outside lattice bounds → void */
     ASSERT_EQ(alea_find_cell_lazy(sys, 10, 0, 0, &cell_id, &material, NULL), -1);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /*
@@ -328,8 +347,9 @@ TEST(lattice_eval_point_query) {
  * Element (0,0) at origin → univ 1, (1,0) at (2,0) → univ 3, etc.
  */
 TEST(lattice_hex_eval) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_hex_lattice.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_hex_lattice.xml");
+    if (!omc) SKIP("Test data file not found");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
 
@@ -355,7 +375,7 @@ TEST(lattice_hex_eval) {
     ASSERT_EQ(alea_find_cell_lazy(sys, 0.5, 0.5, 0, &cell_id, &material, NULL), 0);
     ASSERT_EQ(material, 2);
 
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 /*
@@ -367,8 +387,9 @@ TEST(lattice_hex_eval) {
  * Expected: mat2, mat1, mat2, mat4, mat3, mat4, mat2, mat1, mat2
  */
 TEST(lattice_raycast) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/mcnp_lattice_eval.mcnp");
-    if (!sys) SKIP("Test data file not found");
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
@@ -411,7 +432,7 @@ TEST(lattice_raycast) {
     ASSERT(found_mat3 >= 1);  /* Element (1,0) */
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 /*
@@ -424,8 +445,9 @@ TEST(lattice_raycast) {
  *           boundary, outside cyl (univ 3), inside cyl (univ 3), ...
  */
 TEST(lattice_hex_raycast) {
-    alea_system_t* sys = openmc_convert_file("tests/data/openmc_hex_lattice.xml");
-    if (!sys) SKIP("Test data file not found");
+    openmc_model_t* omc = openmc_load("tests/data/openmc_hex_lattice.xml");
+    if (!omc) SKIP("Test data file not found");
+    alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
 
@@ -454,7 +476,7 @@ TEST(lattice_hex_raycast) {
     ASSERT(found_mat3 >= 1);
 
     alea_raycast_result_free(&result);
-    alea_destroy(sys);
+    openmc_model_destroy(omc);
 }
 
 /*
@@ -475,8 +497,9 @@ TEST(lattice_hex_raycast) {
  * Universe 3: mat 3 inside cz 0.2, mat 4 outside.
  */
 TEST(lattice_nested) {
-    alea_system_t* sys = mcnp_convert_file("tests/data/mcnp_nested_lattice.mcnp");
-    if (!sys) SKIP("Test data file not found");
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_nested_lattice.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
 
@@ -519,7 +542,7 @@ TEST(lattice_nested) {
     /* ---- Outside lattice bounds → void ---- */
     ASSERT_EQ(alea_find_cell_lazy(sys, 10, 0, 0, &cell_id, &material, NULL), -1);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

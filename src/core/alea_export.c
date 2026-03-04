@@ -25,10 +25,14 @@
 #include <stdio.h>
 #include "util/alea_log.h"
 
-/* Format-specific export functions (implemented in separate modules,
-   weak stubs in alea_module_stubs.c provide fallbacks) */
-int export_mcnp(const alea_system_t* sys, export_context_t* ctx);
-int export_openmc(const alea_system_t* sys, export_context_t* ctx);
+int alea_next_synthetic_surface_id(const alea_system_t* sys) {
+    int max_id = 0;
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        if (sys->surfaces.data[i].mcnp_surface_id > max_id)
+            max_id = sys->surfaces.data[i].mcnp_surface_id;
+    }
+    return max_id + 1;
+}
 
 /* ============================================================================
  * EXPORT CONTEXT
@@ -54,6 +58,10 @@ export_context_t* export_context_create(alea_export_format_t format,
 
     ctx->next_synthetic_surface_id = next_synthetic_surface_id;
 
+    /* MCNP formatting defaults */
+    ctx->mcnp_max_col = 80;
+    ctx->mcnp_cont_indent = 5;
+
     return ctx;
 }
 
@@ -71,61 +79,6 @@ void export_context_destroy(export_context_t* ctx) {
     arena_free(&ctx->arena);
 
     free(ctx);
-}
-
-/* ============================================================================
- * HIGH-LEVEL EXPORT FUNCTIONS
- * ============================================================================ */
-
-int alea_export(const alea_system_t* sys,
-               alea_export_format_t format,
-               const char* filename,
-               alea_surface_emit_policy_t surface_policy,
-               bool deduplicate) {
-    if (!sys || !filename) return -1;
-
-    FILE* f = fopen(filename, "w");
-    if (!f) return -1;
-
-    int ret = alea_export_to_stream(sys, format, f, surface_policy, deduplicate);
-    fclose(f);
-    return ret;
-}
-
-int alea_export_to_stream(const alea_system_t* sys,
-                         alea_export_format_t format,
-                         FILE* out,
-                         alea_surface_emit_policy_t surface_policy,
-                         bool deduplicate) {
-    if (!sys || !out) return -1;
-
-    /* Find max surface ID for synthetic surface generation */
-    int max_id = 0;
-    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id > max_id) {
-            max_id = sys->surfaces.data[i].mcnp_surface_id;
-        }
-    }
-    int next_synthetic_id = max_id + 1000;
-
-    export_context_t* ctx = export_context_create(format, surface_policy, out,
-                                                   deduplicate, next_synthetic_id, -1, 0);
-    if (!ctx) return -1;
-    ctx->mcnp_max_col = sys->config.mcnp_max_col;
-    ctx->mcnp_cont_indent = sys->config.mcnp_cont_indent;
-
-    int ret = -1;
-    switch (format) {
-        case ALEA_EXPORT_FORMAT_MCNP:
-            ret = export_mcnp(sys, ctx);
-            break;
-        case ALEA_EXPORT_FORMAT_OPENMC:
-            ret = export_openmc(sys, ctx);
-            break;
-    }
-
-    export_context_destroy(ctx);
-    return ret;
 }
 
 /* ============================================================================
@@ -435,7 +388,7 @@ void alea_assign_missing_surface_ids(alea_system_t* sys, export_context_t* ctx) 
 
         /* Use original (pre-TRCL) tree when preserving TRCL */
         uint32_t export_root = cell->root_node_id;
-        if (cell->has_trcl && cell->original_root_node_id != ALEA_NODE_ID_INVALID
+        if (cell->original_root_node_id != ALEA_NODE_ID_INVALID
             && ctx->trcl_export_mode == ALEA_TRCL_EXPORT_PRESERVE) {
             export_root = cell->original_root_node_id;
         }

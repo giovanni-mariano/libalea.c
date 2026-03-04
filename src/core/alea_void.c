@@ -851,18 +851,14 @@ int alea_void_add_graveyard(alea_system_t* sys, void_result_t* result) {
 
     ALEA_LOG_INFO("Shell cell %d: void between bbox and sphere, IMP:N=1", cell_id);
 
-    /* Graveyard cell: outside the sphere (void, IMP:N=0) */
+    /* Graveyard cell: outside the sphere (void)
+     * Graveyard is identified by vacuum boundary on sphere surface (line 835).
+     * MCNP module's on_cell_added callback sets IMP:N=0 on graveyard params. */
     cell_id = alea_max_cell_id(sys) + 1;
     int grav_idx = alea_add_cell(sys, cell_id, outside_sphere, ALEA_MATERIAL_VOID, 0.0, 0);
     if (grav_idx < 0) return -1;
 
-    alea_cell_entry_t* grav = &sys->cells.data[grav_idx];
-    grav->imp_n = 0.0;
-    grav->imp_p = 0.0;
-    grav->has_imp_n = 1;
-    grav->has_imp_p = 1;
-
-    ALEA_LOG_INFO("Graveyard cell %d: sphere at (%.2f, %.2f, %.2f) R=%.2f, IMP:N=0",
+    ALEA_LOG_INFO("Graveyard cell %d: sphere at (%.2f, %.2f, %.2f) R=%.2f",
                   cell_id, cx, cy, cz, radius);
 
     return 1;

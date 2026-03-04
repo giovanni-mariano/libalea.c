@@ -27,7 +27,7 @@ EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo
 all: $(EXAMPLES)
 
 basic: basic.c
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_CORE)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_MCNP) $(LIBS_CORE)
 
 mcnp_roundtrip: mcnp_roundtrip.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_MCNP) $(LIBS_CORE)

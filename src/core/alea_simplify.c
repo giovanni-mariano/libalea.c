@@ -2376,12 +2376,9 @@ int alea_split_union_cells(alea_system_t* sys) {
         double density = cell->density;
         unsigned int is_mass_density = cell->is_mass_density;
         int universe_id = cell->universe_id;
-        double imp_n = cell->imp_n;
-        double imp_p = cell->imp_p;
-        double imp_e = cell->imp_e;
-        unsigned int has_imp_n = cell->has_imp_n;
-        unsigned int has_imp_p = cell->has_imp_p;
-        unsigned int has_imp_e = cell->has_imp_e;
+        double temperature = cell->temperature;
+        unsigned int has_temperature = cell->has_temperature;
+        size_t original_idx = i;
 
         /* Create one new cell per branch */
         for (size_t b = 0; b < branches->count; b++) {
@@ -2390,12 +2387,12 @@ int alea_split_union_cells(alea_system_t* sys) {
             if (idx >= 0) {
                 alea_cell_entry_t* new_cell = &sys->cells.data[idx];
                 new_cell->is_mass_density = is_mass_density;
-                new_cell->imp_n = imp_n;
-                new_cell->imp_p = imp_p;
-                new_cell->imp_e = imp_e;
-                new_cell->has_imp_n = has_imp_n;
-                new_cell->has_imp_p = has_imp_p;
-                new_cell->has_imp_e = has_imp_e;
+                new_cell->temperature = temperature;
+                new_cell->has_temperature = has_temperature;
+                /* on_cell_added callback was already fired by alea_add_cell;
+                 * notify copy so module can copy params from original cell */
+                if (sys->on_cell_copied)
+                    sys->on_cell_copied(sys->cell_hook_userdata, (size_t)idx, original_idx);
                 new_cells_created++;
             }
         }

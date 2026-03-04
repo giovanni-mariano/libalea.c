@@ -22,6 +22,7 @@
 
 #include <stdio.h>
 #include <alea.h>
+#include <alea_mcnp.h>
 
 static void print_separator(void) {
     printf("────────────────────────────────────────────────\n");
@@ -142,10 +143,14 @@ int main(void) {
     alea_void_add_cells(sys, vr);
     alea_build_universe_index(sys);
 
-    if (alea_export_mcnp(sys, "void_before_merge.inp") == 0) {
-        printf("Written: void_before_merge.inp (%zu cells)\n", alea_cell_count(sys));
-    } else {
-        fprintf(stderr, "MCNP export failed: %s\n", alea_error());
+    {
+        FILE* fout = fopen("void_before_merge.inp", "w");
+        if (fout && mcnp_export_system_stream(sys, fout) == 0) {
+            printf("Written: void_before_merge.inp (%zu cells)\n", alea_cell_count(sys));
+        } else {
+            fprintf(stderr, "MCNP export failed: %s\n", alea_error());
+        }
+        if (fout) fclose(fout);
     }
 
     alea_void_free(vr);
@@ -232,10 +237,14 @@ int main(void) {
     printf("MCNP export (after merge + simplify)\n");
     print_separator();
 
-    if (alea_export_mcnp(sys, "void_after_merge.inp") == 0) {
-        printf("Written: void_after_merge.inp (%zu cells)\n", alea_cell_count(sys));
-    } else {
-        fprintf(stderr, "MCNP export failed: %s\n", alea_error());
+    {
+        FILE* fout = fopen("void_after_merge.inp", "w");
+        if (fout && mcnp_export_system_stream(sys, fout) == 0) {
+            printf("Written: void_after_merge.inp (%zu cells)\n", alea_cell_count(sys));
+        } else {
+            fprintf(stderr, "MCNP export failed: %s\n", alea_error());
+        }
+        if (fout) fclose(fout);
     }
 
     /* ── Point verification ── */

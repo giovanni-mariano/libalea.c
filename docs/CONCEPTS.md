@@ -230,13 +230,17 @@ Alea applies surface and cell transforms during loading, so the internal represe
 Alea can load and export geometry in both MCNP and OpenMC formats:
 
 ```c
-// Load
-alea_system_t* sys = alea_load_mcnp("model.inp");
-alea_system_t* sys = alea_load_openmc("geometry.xml");
+// Load (alea_mcnp.h / alea_openmc.h)
+mcnp_model_t* model = mcnp_load("model.inp");
+openmc_model_t* omc = openmc_load("geometry.xml");
 
 // Export
-alea_export_mcnp(sys, "output.inp");
-alea_export_openmc(sys, "model.xml");
+mcnp_export(model, "output.inp");
+openmc_export(omc, "model.xml");
+
+// Or export a bare system with defaults
+mcnp_export_system(sys, "output.inp");
+openmc_export_system(sys, "model.xml");
 ```
 
 The `mc_convert` tool wraps this for command-line format conversion. See [API Reference](API.md) for export options.
@@ -435,8 +439,8 @@ Most Alea functions use simple return conventions:
 - Call `alea_error_code()` to get a machine-readable error code
 
 ```c
-alea_system_t* sys = alea_load_mcnp("missing.inp");
-if (!sys) {
+mcnp_model_t* model = mcnp_load("missing.inp");
+if (!model) {
     printf("Error %d: %s\n", alea_error_code(), alea_error());
     // prints: "Error 6: File not found: missing.inp"
 }

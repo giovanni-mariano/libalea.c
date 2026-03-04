@@ -42,15 +42,10 @@ const alea_config_t ALEA_CONFIG_DEFAULT = {
     .log_level = 2, /* ALEA_LOG_WARN */
 
     /* Export */
-    .surface_policy = ALEA_EMIT_MACROBODY,
     .export_materials = true,
     .export_transforms = true,
     .universe_depth = -1,
     .fill_depth = 0,
-    .trcl_mode = 0, /* ALEA_TRCL_EXPORT_PRESERVE */
-    .transform_mode = 0, /* ALEA_TR_EXPORT_ORIGINAL */
-    .mcnp_max_col = 80,
-    .mcnp_cont_indent = 5,
 
     /* Void generation */
     .void_max_depth = 8,
@@ -794,9 +789,6 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
     cell->is_mass_density = (density < 0) ? 1 : 0;
     cell->density = fabs(density);
     cell->universe_id = universe_id;
-    cell->imp_n = 1.0;
-    cell->imp_p = 1.0;
-    cell->imp_e = 1.0;
 
     sys->universe_index_built = false;
 
@@ -807,6 +799,10 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
 
     /* Insert into cell hash map */
     cell_hashmap_put(&sys->cell_index, cell_id, idx);
+
+    /* Notify module hooks */
+    if (sys->on_cell_added)
+        sys->on_cell_added(sys->cell_hook_userdata, (size_t)idx);
 
     return idx;
 }
@@ -882,14 +878,15 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
     cell->is_mass_density = (density < 0) ? 1 : 0;
     cell->density = fabs(density);
     cell->universe_id = universe_id;
-    cell->imp_n = 1.0;
-    cell->imp_p = 1.0;
-    cell->imp_e = 1.0;
 
     sys->universe_index_built = false;
 
     /* Insert into cell hash map */
     cell_hashmap_put(&sys->cell_index, final_cell_id, idx);
+
+    /* Notify module hooks */
+    if (sys->on_cell_added)
+        sys->on_cell_added(sys->cell_hook_userdata, (size_t)idx);
 
     return idx;
 }

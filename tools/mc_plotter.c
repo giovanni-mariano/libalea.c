@@ -83,6 +83,7 @@ static double get_time_ms(void) {
 #endif
 
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
 
 /* Get resident set size in MB (Linux only) */
@@ -1126,12 +1127,13 @@ static int run_batch(const char* batch_file, const char* input_file) {
     fflush(stdout);
     double t0 = get_time_ms();
 
-    alea_system_t* sys = alea_load_mcnp(input_file);
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load(input_file);
+    if (!model) {
         printf("FAILED: %s\n", alea_error());
         fclose(f);
         return 1;
     }
+    alea_system_t* sys = model->sys;
 
     double t1 = get_time_ms();
     printf("OK (%.1f ms)\n", t1 - t0);
@@ -1145,7 +1147,7 @@ static int run_batch(const char* batch_file, const char* input_file) {
 
     if (alea_build_spatial_index(sys) != 0) {
         printf("FAILED\n");
-        alea_destroy(sys);
+        mcnp_model_destroy(model);
         fclose(f);
         return 1;
     }
@@ -1179,7 +1181,7 @@ static int run_batch(const char* batch_file, const char* input_file) {
     }
 
     fclose(f);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     printf("\nBatch complete: %d plots, %d errors\n", plot_count, error_count);
     return error_count > 0 ? 1 : 0;
@@ -1324,11 +1326,12 @@ int main(int argc, char** argv) {
     fflush(stdout);
     double t0 = get_time_ms();
 
-    alea_system_t* sys = alea_load_mcnp(input_file);
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load(input_file);
+    if (!model) {
         printf("FAILED: %s\n", alea_error());
         return 1;
     }
+    alea_system_t* sys = model->sys;
 
     double t1 = get_time_ms();
     printf("OK (%.1f ms)\n", t1 - t0);
@@ -1343,7 +1346,7 @@ int main(int argc, char** argv) {
 
     if (alea_build_spatial_index(sys) != 0) {
         printf("FAILED\n");
-        alea_destroy(sys);
+        mcnp_model_destroy(model);
         return 1;
     }
 
@@ -1392,7 +1395,7 @@ int main(int argc, char** argv) {
     printf("Rendering...\n");
     int rc = render_plot(sys, &plot, 1);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 
     if (rc == 0) {
         printf("\nDone: %s\n", output_file);

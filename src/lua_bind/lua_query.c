@@ -165,6 +165,9 @@ static int l_cell_info(lua_State* L) {
     lua_pushinteger(L, info.fill_universe);  lua_setfield(L, -2, "fill_universe");
     lua_pushinteger(L, info.fill_transform); lua_setfield(L, -2, "fill_transform");
     lua_pushinteger(L, info.lat_type);       lua_setfield(L, -2, "lat_type");
+    if (info.has_temperature) {
+        lua_pushnumber(L, info.temperature); lua_setfield(L, -2, "temperature");
+    }
 
     /* bbox subtable */
     lua_createtable(L, 0, 6);
@@ -327,6 +330,9 @@ static int l_cell_find_info(lua_State* L) {
     lua_pushinteger(L, info.fill_universe);  lua_setfield(L, -2, "fill_universe");
     lua_pushinteger(L, info.fill_transform); lua_setfield(L, -2, "fill_transform");
     lua_pushinteger(L, info.lat_type);       lua_setfield(L, -2, "lat_type");
+    if (info.has_temperature) {
+        lua_pushnumber(L, info.temperature); lua_setfield(L, -2, "temperature");
+    }
 
     lua_createtable(L, 0, 6);
     lua_pushnumber(L, info.bbox.min_x); lua_setfield(L, -2, "min_x");

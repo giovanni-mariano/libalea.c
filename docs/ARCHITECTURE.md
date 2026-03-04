@@ -186,7 +186,7 @@ The spatial index is particularly important for models with deep universe hierar
 
 ## How Export Works
 
-Export (`alea_export_mcnp` or `alea_export_openmc`) does:
+Export (`mcnp_export` or `openmc_export`) does:
 
 1. **Build canonical surface map**: assign each primitive a unique export surface ID. If dedup is enabled, identical primitives share an ID.
 

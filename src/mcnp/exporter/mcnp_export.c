@@ -15,6 +15,7 @@
 
 #include "mcnp_export.h"
 #include "mcnp_str.h"
+#include "mcnp/mcnp_model.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "core/alea_materials.h"
@@ -347,7 +348,8 @@ static int alea_tree_to_mcnp_expr(const alea_system_t* sys,
  * @brief Write a cell card with proper 80-column wrapping
  */
 static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
-                                  const char* expr, const alea_system_t* sys,
+                                  size_t cell_index, const char* expr,
+                                  const alea_system_t* sys,
                                   export_context_t* ctx) {
 
     mcnp_str_t s;
@@ -372,30 +374,34 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
 
     mcnp_str_newline(&s);
 
+    /* Read MCNP-specific params from model if available */
+    const mcnp_model_t* model = (const mcnp_model_t*)ctx->module_data;
+    const mcnp_cell_params_t* mp = model ? mcnp_cell_params_const(model, cell_index) : NULL;
+
     /* IMP:N - neutron importance (default 1.0) */
     mcnp_str_puts(&s, " IMP:N=");
-    mcnp_str_double(&s, cell->has_imp_n ? cell->imp_n : 1.0, 4);
+    mcnp_str_double(&s, (mp && mp->has_imp_n) ? mp->imp_n : 1.0, 4);
 
     /* IMP:P - photon importance (default 1.0) */
     mcnp_str_puts(&s, " IMP:P=");
-    mcnp_str_double(&s, cell->has_imp_p ? cell->imp_p : 1.0, 4);
+    mcnp_str_double(&s, (mp && mp->has_imp_p) ? mp->imp_p : 1.0, 4);
 
     /* IMP:E - electron importance */
-    if (cell->has_imp_e) {
+    if (mp && mp->has_imp_e) {
         mcnp_str_puts(&s, " IMP:E=");
-        mcnp_str_double(&s, cell->imp_e, 4);
+        mcnp_str_double(&s, mp->imp_e, 4);
     }
 
     /* VOL= - volume override */
-    if (cell->has_vol) {
+    if (mp && mp->has_vol) {
         mcnp_str_puts(&s, " VOL=");
-        mcnp_str_double(&s, cell->vol, 6);
+        mcnp_str_double(&s, mp->vol, 6);
     }
 
     /* TMP= - temperature */
-    if (cell->has_tmp) {
+    if (mp && mp->has_tmp) {
         mcnp_str_puts(&s, " TMP=");
-        mcnp_str_double(&s, cell->tmp, 10);
+        mcnp_str_double(&s, mp->tmp, 10);
     }
 
     /* U= - universe membership */
@@ -411,7 +417,7 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
             tr = alea_get_transform(sys, cell->fill_transform);
         }
 
-        int use_degrees = tr ? tr->degrees : cell->fill_transform_degrees;
+        int use_degrees = tr ? tr->degrees : (mp ? mp->fill_transform_degrees : 0);
 
         if (use_degrees) {
             mcnp_str_puts(&s, " *FILL=");
@@ -481,10 +487,10 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
     }
 
     /* TRCL= or *TRCL= - cell transformation */
-    if (cell->has_trcl && cell->trcl != 0
+    if (mp && mp->has_trcl && mp->trcl != 0
         && ctx->trcl_export_mode != ALEA_TRCL_EXPORT_BAKE) {
-        const alea_transform_t* tr = alea_get_transform(sys, cell->trcl);
-        int use_degrees = tr ? tr->degrees : cell->trcl_degrees;
+        const alea_transform_t* tr = alea_get_transform(sys, mp->trcl);
+        int use_degrees = tr ? tr->degrees : mp->trcl_degrees;
 
         if (use_degrees) {
             mcnp_str_puts(&s, " *TRCL=");
@@ -504,7 +510,7 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
             }
             mcnp_str_putc(&s, ')');
         } else {
-            mcnp_str_int(&s, cell->trcl);
+            mcnp_str_int(&s, mp->trcl);
         }
     }
 
@@ -865,7 +871,9 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
 
         /* Use original (pre-TRCL) tree when preserving TRCL */
         uint32_t export_root = cell->root_node_id;
-        if (cell->has_trcl && cell->original_root_node_id != ALEA_NODE_ID_INVALID
+        const mcnp_model_t* exp_model = (const mcnp_model_t*)ctx->module_data;
+        const mcnp_cell_params_t* exp_mp = exp_model ? mcnp_cell_params_const(exp_model, i) : NULL;
+        if (exp_mp && exp_mp->has_trcl && cell->original_root_node_id != ALEA_NODE_ID_INVALID
             && ctx->trcl_export_mode == ALEA_TRCL_EXPORT_PRESERVE) {
             export_root = cell->original_root_node_id;
         }
@@ -878,7 +886,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
             continue;
         }
 
-        write_mcnp_cell_line(ctx->out, cell, s.sb.buf, sys, ctx);
+        write_mcnp_cell_line(ctx->out, cell, i, s.sb.buf, sys, ctx);
         ctx->cells_written++;
     }
 

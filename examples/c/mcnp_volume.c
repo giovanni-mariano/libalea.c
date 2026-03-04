@@ -21,6 +21,7 @@
 #include <string.h>
 #include <math.h>
 #include <alea.h>
+#include <alea_mcnp.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -134,11 +135,12 @@ int main(int argc, char** argv) {
 
     /* Load MCNP input */
     printf("Loading: %s\n", input_file);
-    alea_system_t* sys = alea_load_mcnp(input_file);
-    if (!sys) {
+    mcnp_model_t* model = mcnp_load(input_file);
+    if (!model) {
         fprintf(stderr, "Error: %s\n", alea_error());
         return 1;
     }
+    alea_system_t* sys = model->sys;
 
     size_t nc = alea_cell_count(sys);
     printf("Cells: %zu\n", nc);
@@ -158,7 +160,7 @@ int main(int argc, char** argv) {
         printf("Computing bounding sphere (tol=%.2f)...\n", tol);
         if (alea_compute_bounding_sphere(sys, tol, &cx, &cy, &cz, &radius) != 0) {
             fprintf(stderr, "Error: could not compute bounding sphere\n");
-            alea_destroy(sys);
+            mcnp_model_destroy(model);
             return 1;
         }
         printf("Bounding sphere: center=(%.2f,%.2f,%.2f) R=%.2f\n",
@@ -177,7 +179,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Error: out of memory\n");
         free(volumes);
         free(rel_errors);
-        alea_destroy(sys);
+        mcnp_model_destroy(model);
         return 1;
     }
 
@@ -200,6 +202,6 @@ int main(int argc, char** argv) {
 
     free(volumes);
     free(rel_errors);
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
     return 0;
 }

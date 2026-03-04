@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <alea.h>
+#include <alea_mcnp.h>
+#include <alea_openmc.h>
 
 enum format { FMT_AUTO, FMT_MCNP, FMT_OPENMC };
 
@@ -104,17 +106,26 @@ int main(int argc, char** argv) {
     printf("Alea %s - MC format converter\n\n", alea_version());
 
     /* Load */
-    alea_system_t* sys;
+    mcnp_model_t* mcnp_model = NULL;
+    openmc_model_t* omc_model = NULL;
+    alea_system_t* sys = NULL;
+
     if (in_fmt == FMT_OPENMC) {
         printf("Loading OpenMC XML: %s\n", input_file);
-        sys = alea_load_openmc(input_file);
+        omc_model = openmc_load(input_file);
+        if (!omc_model) {
+            fprintf(stderr, "Error: %s\n", alea_error());
+            return 1;
+        }
+        sys = omc_model->sys;
     } else {
         printf("Loading MCNP input: %s\n", input_file);
-        sys = alea_load_mcnp(input_file);
-    }
-    if (!sys) {
-        fprintf(stderr, "Error: %s\n", alea_error());
-        return 1;
+        mcnp_model = mcnp_load(input_file);
+        if (!mcnp_model) {
+            fprintf(stderr, "Error: %s\n", alea_error());
+            return 1;
+        }
+        sys = mcnp_model->sys;
     }
 
     if (no_dedup) {
@@ -129,18 +140,24 @@ int main(int argc, char** argv) {
     int rc;
     if (out_fmt == FMT_OPENMC) {
         printf("\nExporting to OpenMC XML: %s\n", output_file);
-        rc = alea_export_openmc(sys, output_file);
+        rc = openmc_export_system(sys, output_file);
+    } else if (mcnp_model) {
+        printf("\nExporting to MCNP: %s\n", output_file);
+        rc = mcnp_export(mcnp_model, output_file);
     } else {
         printf("\nExporting to MCNP: %s\n", output_file);
-        rc = alea_export_mcnp(sys, output_file);
+        rc = mcnp_export_system(sys, output_file);
     }
     if (rc != 0) {
         fprintf(stderr, "Export failed: %s\n", alea_error());
-        alea_destroy(sys);
-        return 1;
     }
 
+    if (mcnp_model)
+        mcnp_model_destroy(mcnp_model);
+    if (omc_model)
+        openmc_model_destroy(omc_model);
+
+    if (rc != 0) return 1;
     printf("Done.\n");
-    alea_destroy(sys);
     return 0;
 }

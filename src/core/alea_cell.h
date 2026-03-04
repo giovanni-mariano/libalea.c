@@ -50,44 +50,15 @@ typedef struct alea_cell_entry {
     int material_id;
     int material_index;     /* Index into sys->materials (-1 for void) */
     double density;
-
-    // Particle importances
-    double imp_n;           // Neutron importance (IMP:N)
-    double imp_p;           // Photon importance (IMP:P)
-    double imp_e;           // Electron importance (IMP:E)
-
-    // Cell parameters
-    double vol;             // Volume override (VOL=)
-    double tmp;             // Temperature in MeV (TMP=)
-    int trcl;               // Cell transformation ID (TRCL=)
-    int trcl_inline;        // 1 = inline TRCL data, 0 = transform ID reference
-    int trcl_degrees;       // 1 = *TRCL (angles in degrees)
-    int trcl_count;         // Number of values: 0, 3 (translation), or 12 (full)
-    double trcl_data[12];   // TRCL inline transform data
-
-    // Flags for which parameters were explicitly set
-    unsigned int has_imp_n : 1;
-    unsigned int has_imp_p : 1;
-    unsigned int has_imp_e : 1;
-    unsigned int has_vol : 1;
-    unsigned int has_tmp : 1;
-    unsigned int has_trcl : 1;
-    unsigned int has_mat : 1;   // For LIKE BUT: MAT was explicitly set
-    unsigned int has_rho : 1;   // For LIKE BUT: RHO was explicitly set
     unsigned int is_mass_density : 1;  // 1 = g/cm³, 0 = atoms/b-cm
+
+    // Temperature (Kelvin, 0.0 = not set)
+    double temperature;
+    unsigned int has_temperature : 1;
 
     int universe_id;        // Which universe this cell belongs to (0 = base)
     int fill_universe;      // If >0, this cell is filled with this universe
     int fill_transform;     // Transform ID to apply to filled universe
-
-    // Inline transform support for FILL
-    int fill_transform_inline;      // 1 = inline transform data, 0 = transform ID reference
-    int fill_transform_degrees;     // 1 = *FILL (angles in degrees), 0 = FILL (cosines)
-    int fill_transform_count;       // Number of values: 0, 3 (translation), or 12 (full)
-    double fill_transform_data[12]; // ox oy oz [b1..b9]
-
-    // LIKE BUT support
-    int like_cell_id;           // Template cell ID for LIKE (0 = not a LIKE cell)
 
     // Lattice support
     int lat_type;               // 0=none, 1=rect, 2=hex
