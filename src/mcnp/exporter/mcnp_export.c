@@ -1164,6 +1164,97 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
         mcnp_str_write(&s, ctx->out);
     }
 
+    /* Mixtures — each mixture becomes a synthetic material card */
+    for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
+        ALEA_CHECK_INTERRUPTED(-1);
+        const alea_mixture_t* mix = &sys->mixtures.data[i];
+
+        mcnp_str_t s;
+        mcnp_str_init(&s, &ctx->arena, 1024, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
+
+        /* Use mixture_id as the material number */
+        int mix_mat_id = mix->mixture_id;
+
+        /* Header comment with mixture composition */
+        {
+            mcnp_str_t hdr;
+            mcnp_str_init(&hdr, &ctx->arena, 256, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
+            if (mix->name && mix->name[0]) {
+                mcnp_str_comment(&hdr, mix->name);
+            }
+            char comp_line[128];
+            snprintf(comp_line, sizeof(comp_line), "Mixture M%d:", mix_mat_id);
+            mcnp_str_comment(&hdr, comp_line);
+            for (size_t c = 0; c < alea_vec_count(&mix->components); c++) {
+                const alea_mixture_comp_t* comp = &mix->components.data[c];
+                snprintf(comp_line, sizeof(comp_line), "  %.4g of M%d",
+                         comp->fraction, comp->material_id);
+                mcnp_str_comment(&hdr, comp_line);
+            }
+            mcnp_str_write(&hdr, ctx->out);
+        }
+
+        mcnp_str_putc(&s, 'M');
+        mcnp_str_int(&s, mix_mat_id);
+
+        /* Write nuclides from each component, scaled by component fraction */
+        bool first_nuc = true;
+        for (size_t c = 0; c < alea_vec_count(&mix->components); c++) {
+            const alea_mixture_comp_t* comp = &mix->components.data[c];
+
+            /* Find the component material */
+            const alea_material_t* comp_mat = NULL;
+            for (size_t m = 0; m < alea_vec_count(&sys->materials); m++) {
+                if (sys->materials.data[m].material_id == comp->material_id) {
+                    comp_mat = &sys->materials.data[m];
+                    break;
+                }
+            }
+            if (!comp_mat) {
+                ALEA_LOG_WARN("Mixture M%d: component M%d not found, skipping",
+                             mix_mat_id, comp->material_id);
+                continue;
+            }
+
+            for (size_t j = 0; j < alea_vec_count(&comp_mat->nuclides); j++) {
+                const alea_nuclide_t* nuc = &comp_mat->nuclides.data[j];
+
+                if (!first_nuc) mcnp_str_newline(&s);
+                first_nuc = false;
+
+                mcnp_str_putc(&s, ' ');
+                mcnp_str_int(&s, nuc->zaid);
+                if (nuc->library) {
+                    mcnp_str_putc(&s, '.');
+                    mcnp_str_puts(&s, nuc->library);
+                }
+                mcnp_str_putc(&s, ' ');
+                if (comp_mat->is_weight_fraction) {
+                    mcnp_str_putc(&s, '-');
+                }
+                mcnp_str_double(&s, nuc->fraction * comp->fraction, 6);
+
+                /* Inline comment: element info + source material */
+                int Z = alea_zaid_to_Z(nuc->zaid);
+                int A = alea_zaid_to_A(nuc->zaid);
+                const alea_element_t* elem = alea_get_element(Z);
+                if (elem) {
+                    char sym_upper[4];
+                    for (int k = 0; elem->symbol[k] && k < 3; k++) {
+                        sym_upper[k] = (char)toupper((unsigned char)elem->symbol[k]);
+                        sym_upper[k+1] = '\0';
+                    }
+                    char comment[80];
+                    snprintf(comment, sizeof(comment), "%s %d from M%d",
+                             sym_upper, A, comp->material_id);
+                    mcnp_str_inline_comment(&s, comment);
+                }
+            }
+        }
+
+        mcnp_str_write(&s, ctx->out);
+    }
+
     mcnp_str_comment(&cs, "END Material Section");
     mcnp_str_comment(&cs, "");
     mcnp_str_comment(&cs, "Transform Cards");

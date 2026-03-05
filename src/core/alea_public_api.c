@@ -802,6 +802,22 @@ int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_inde
     return 0;
 }
 
+int alea_cell_set_mixture(alea_system_t* sys, int cell_index, int mixture_id) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    if (alea_find_mixture_by_id(sys, mixture_id) < 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+            "alea_cell_set_mixture: mixture ID %d not found", mixture_id);
+        return -1;
+    }
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    cell->material_id = mixture_id;
+    cell->material_index = -1;  /* Not a direct material */
+    return 0;
+}
+
 int alea_cell_set_density(alea_system_t* sys, int cell_index, double density) {
     if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
         return -1;
@@ -1411,6 +1427,16 @@ bool alea_material_is_weight_fraction(const alea_system_t* sys, int mat_index) {
 /* ============================================================================
  * MIXTURE QUERY OPERATIONS
  * ============================================================================ */
+
+int alea_find_mixture_by_id(const alea_system_t* sys, int mixture_id) {
+    if (!sys) return -1;
+    for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
+        if (sys->mixtures.data[i].mixture_id == mixture_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
 
 size_t alea_mixture_count(const alea_system_t* sys) {
     return sys ? alea_vec_count(&sys->mixtures) : 0;

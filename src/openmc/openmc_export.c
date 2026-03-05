@@ -626,10 +626,131 @@ static const alea_material_t* find_material_by_id(const alea_system_t* sys, int 
  *
  * Used for each unique (material_id, density) pair.
  */
+static const alea_mixture_t* find_mixture_by_id(const alea_system_t* sys, int mixture_id) {
+    for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
+        if (sys->mixtures.data[i].mixture_id == mixture_id) {
+            return &sys->mixtures.data[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief Write a mixture as a material entry to XML
+ *
+ * Combines nuclides from all component materials, scaling fractions.
+ */
+static bool write_mixture_entry(const alea_system_t* sys, openmc_xml_t* xml,
+                                arena_t* arena, const mat_density_entry_t* entry,
+                                const alea_mixture_t* mix) {
+    /* <material id="N"> */
+    if (!openmc_xml_start_element(xml, "material")) return false;
+    if (!openmc_xml_attribute_i(xml, "id", entry->openmc_material_id)) return false;
+
+    char mat_name[128];
+    if (mix->name && mix->name[0]) {
+        snprintf(mat_name, sizeof(mat_name), "%s", mix->name);
+    } else {
+        snprintf(mat_name, sizeof(mat_name), "Mixture_M%d", mix->mixture_id);
+    }
+    if (!openmc_xml_attribute(xml, "name", mat_name)) return false;
+    if (!openmc_xml_end_start_tag(xml, false)) return false;
+
+    /* <density> */
+    if (entry->density != 0.0) {
+        if (!openmc_xml_start_element(xml, "density")) return false;
+        if (!openmc_xml_attribute_f(xml, "value", entry->density, 10, false)) return false;
+        if (entry->is_mass_density) {
+            if (!openmc_xml_attribute(xml, "units", "g/cc")) return false;
+        } else {
+            if (!openmc_xml_attribute(xml, "units", "atom/b-cm")) return false;
+        }
+        if (!openmc_xml_end_start_tag(xml, true)) return false;
+    }
+
+    /* Count total nuclides across all components */
+    size_t total_nuclides = 0;
+    for (size_t c = 0; c < alea_vec_count(&mix->components); c++) {
+        const alea_material_t* comp_mat = find_material_by_id(sys, mix->components.data[c].material_id);
+        if (comp_mat) total_nuclides += alea_vec_count(&comp_mat->nuclides);
+    }
+    if (total_nuclides == 0) {
+        if (!openmc_xml_end_element(xml, "material")) return false;
+        return true;
+    }
+
+    /* Collect scaled fractions */
+    double* fractions = (double*)arena_alloc(arena, total_nuclides * sizeof(double));
+    if (!fractions) return false;
+
+    size_t idx = 0;
+    bool is_weight = false;
+    for (size_t c = 0; c < alea_vec_count(&mix->components); c++) {
+        const alea_mixture_comp_t* comp = &mix->components.data[c];
+        const alea_material_t* comp_mat = find_material_by_id(sys, comp->material_id);
+        if (!comp_mat) continue;
+        if (comp_mat->is_weight_fraction) is_weight = true;
+        for (size_t j = 0; j < alea_vec_count(&comp_mat->nuclides); j++) {
+            fractions[idx++] = comp_mat->nuclides.data[j].fraction * comp->fraction;
+        }
+    }
+
+    /* Normalize */
+    double* normalized = (double*)arena_alloc(arena, total_nuclides * sizeof(double));
+    if (!normalized) return false;
+    normalize_fractions(fractions, total_nuclides, normalized);
+
+    /* Write nuclides */
+    const char* fraction_attr = is_weight ? "wo" : "ao";
+    idx = 0;
+    for (size_t c = 0; c < alea_vec_count(&mix->components); c++) {
+        const alea_mixture_comp_t* comp = &mix->components.data[c];
+        const alea_material_t* comp_mat = find_material_by_id(sys, comp->material_id);
+        if (!comp_mat) continue;
+        for (size_t j = 0; j < alea_vec_count(&comp_mat->nuclides); j++) {
+            const alea_nuclide_t* nuc = &comp_mat->nuclides.data[j];
+            char nuclide_name[32];
+            if (zaid_to_openmc_name(nuc->zaid, nuclide_name, sizeof(nuclide_name)) < 0) {
+                ALEA_LOG_WARN("Failed to convert ZAID %d", nuc->zaid);
+                idx++;
+                continue;
+            }
+            if (!openmc_xml_start_element(xml, "nuclide")) return false;
+            if (!openmc_xml_attribute(xml, "name", nuclide_name)) return false;
+            if (!openmc_xml_attribute_f(xml, fraction_attr, normalized[idx], 10, false)) return false;
+            if (!openmc_xml_end_start_tag(xml, true)) return false;
+            idx++;
+        }
+    }
+
+    /* Thermal scattering laws from all components */
+    for (size_t c = 0; c < alea_vec_count(&mix->components); c++) {
+        const alea_material_t* comp_mat = find_material_by_id(sys, mix->components.data[c].material_id);
+        if (!comp_mat) continue;
+        for (size_t t = 0; t < alea_vec_count(&comp_mat->thermal_laws); t++) {
+            const alea_thermal_law_t* law = &comp_mat->thermal_laws.data[t];
+            if (law->identifier && law->identifier[0]) {
+                if (!openmc_xml_start_element(xml, "sab")) return false;
+                if (!openmc_xml_attribute(xml, "name", law->identifier)) return false;
+                if (!openmc_xml_end_start_tag(xml, true)) return false;
+            }
+        }
+    }
+
+    if (!openmc_xml_end_element(xml, "material")) return false;
+    return true;
+}
+
 static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
                                   arena_t* arena, const mat_density_entry_t* entry) {
     const alea_material_t* mat = find_material_by_id(sys, entry->mcnp_material_id);
-    if (!mat || alea_vec_count(&mat->nuclides) == 0) return true;  /* Skip empty/unknown materials */
+    if (!mat) {
+        /* Check if it's a mixture */
+        const alea_mixture_t* mix = find_mixture_by_id(sys, entry->mcnp_material_id);
+        if (mix) return write_mixture_entry(sys, xml, arena, entry, mix);
+        return true;  /* Unknown material, skip */
+    }
+    if (alea_vec_count(&mat->nuclides) == 0) return true;  /* Skip empty materials */
 
     /* <material id="N"> */
     if (!openmc_xml_start_element(xml, "material")) return false;

@@ -8,6 +8,9 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
+#include <string.h>
 
 /* ========================================================================= */
 /* Material lifecycle                                                        */
@@ -288,6 +291,213 @@ TEST(mixture_invalid_queries) {
     ASSERT_EQ(alea_mixture_component_count(sys, 0), 0);
     ASSERT_EQ(alea_mixture_component_get(sys, 0, 0, NULL, NULL), -1);
     ASSERT_EQ(alea_mixture_count(NULL), 0);
+
+    alea_destroy(sys);
+}
+
+TEST(mixture_find_by_id) {
+    alea_system_t* sys = alea_create();
+    alea_add_material(sys, 1);
+    alea_add_material(sys, 2);
+
+    int mat_ids[] = {1, 2};
+    double fracs[] = {0.5, 0.5};
+    int mix_id = alea_create_mixture(sys, mat_ids, fracs, 2, 100);
+    ASSERT_EQ(mix_id, 100);
+
+    ASSERT_EQ(alea_find_mixture_by_id(sys, 100), 0);
+    ASSERT_EQ(alea_find_mixture_by_id(sys, 999), -1);
+    ASSERT_EQ(alea_find_mixture_by_id(NULL, 100), -1);
+
+    alea_destroy(sys);
+}
+
+TEST(mixture_with_populated_materials) {
+    alea_system_t* sys = alea_create();
+
+    /* Material 1: U-235 enriched uranium */
+    int m0 = alea_add_material(sys, 1);
+    alea_material_add_nuclide(sys, m0, 92235, ".80c", 0.04);
+    alea_material_add_nuclide(sys, m0, 92238, ".80c", 0.96);
+
+    /* Material 2: oxygen */
+    int m1 = alea_add_material(sys, 2);
+    alea_material_add_nuclide(sys, m1, 8016, ".80c", 1.0);
+
+    /* Mixture: 70% mat1 + 30% mat2 */
+    int mat_ids[] = {1, 2};
+    double fracs[] = {0.7, 0.3};
+    int mix_id = alea_create_mixture(sys, mat_ids, fracs, 2, 100);
+    ASSERT_EQ(mix_id, 100);
+
+    /* Query back mixture components */
+    int idx = alea_find_mixture_by_id(sys, 100);
+    ASSERT(idx >= 0);
+    ASSERT_EQ(alea_mixture_component_count(sys, idx), 2);
+
+    int comp_mat;
+    double comp_frac;
+    alea_mixture_component_get(sys, idx, 0, &comp_mat, &comp_frac);
+    ASSERT_EQ(comp_mat, 1);
+    ASSERT_NEAR(comp_frac, 0.7, 1e-10);
+
+    alea_mixture_component_get(sys, idx, 1, &comp_mat, &comp_frac);
+    ASSERT_EQ(comp_mat, 2);
+    ASSERT_NEAR(comp_frac, 0.3, 1e-10);
+
+    alea_destroy(sys);
+}
+
+/* Helper: read FILE* into malloc'd string */
+static char* read_file_to_string(FILE* f) {
+    rewind(f);
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+    char* buf = malloc(len + 1);
+    if (!buf) return NULL;
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    return buf;
+}
+
+/* Helper: create a minimal exportable system with a mixture */
+static alea_system_t* create_mixture_system(void) {
+    alea_system_t* sys = alea_create();
+
+    /* Materials */
+    int m0 = alea_add_material(sys, 1);
+    alea_material_add_nuclide(sys, m0, 92235, "80c", 0.04);
+    alea_material_add_nuclide(sys, m0, 92238, "80c", 0.96);
+    alea_material_set_weight_fraction(sys, m0, true);
+
+    int m1 = alea_add_material(sys, 2);
+    alea_material_add_nuclide(sys, m1, 8016, "80c", 1.0);
+    alea_material_set_weight_fraction(sys, m1, true);
+
+    /* Mixture: 60% mat1 + 40% mat2, ID=100 */
+    int mat_ids[] = {1, 2};
+    double mix_fracs[] = {0.6, 0.4};
+    alea_create_mixture(sys, mat_ids, mix_fracs, 2, 100);
+
+    /* Geometry: one sphere, two cells */
+    int si = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
+    alea_node_id_t inside = alea_halfspace(sys, si, -1);
+    alea_node_id_t outside = alea_halfspace(sys, si, +1);
+
+    /* Cell 1: inside sphere, use mixture with density */
+    int c0 = alea_add_cell(sys, 1, inside, -1, 0, 0);
+    alea_cell_set_mixture(sys, c0, 100);
+    alea_cell_set_density(sys, c0, -7.0);
+
+    /* Cell 2: outside sphere, void */
+    alea_add_cell(sys, 2, outside, -1, 0, 0);
+
+    return sys;
+}
+
+TEST(mixture_mcnp_export) {
+    alea_system_t* sys = create_mixture_system();
+
+    FILE* f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    int rc = mcnp_export_system_stream(sys, f);
+    ASSERT_EQ(rc, 0);
+
+    char* output = read_file_to_string(f);
+    fclose(f);
+    ASSERT_NOT_NULL(output);
+
+    /* Verify mixture material card M100 appears */
+    ASSERT(strstr(output, "M100") != NULL);
+
+    /* Verify base materials are also exported */
+    ASSERT(strstr(output, "M1") != NULL);
+    ASSERT(strstr(output, "M2") != NULL);
+
+    /* Verify mixture header comment */
+    ASSERT(strstr(output, "Mixture M100") != NULL);
+
+    /* Verify nuclides from component materials appear in mixture */
+    /* U-235 from M1 should be in the mixture card */
+    ASSERT(strstr(output, "92235") != NULL);
+    /* O-16 from M2 should be in the mixture card */
+    ASSERT(strstr(output, "8016") != NULL);
+
+    free(output);
+    alea_destroy(sys);
+}
+
+TEST(mixture_openmc_export) {
+    alea_system_t* sys = create_mixture_system();
+
+    FILE* f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    int rc = openmc_export_system_stream(sys, f);
+    ASSERT_EQ(rc, 0);
+
+    char* output = read_file_to_string(f);
+    fclose(f);
+    ASSERT_NOT_NULL(output);
+
+    /* Verify the output is valid XML with materials */
+    ASSERT(strstr(output, "<materials>") != NULL);
+
+    /* Verify nuclides appear */
+    ASSERT(strstr(output, "U235") != NULL || strstr(output, "92235") != NULL);
+    ASSERT(strstr(output, "O16") != NULL || strstr(output, "8016") != NULL);
+
+    free(output);
+    alea_destroy(sys);
+}
+
+TEST(mixture_multiple_components) {
+    alea_system_t* sys = alea_create();
+
+    /* Create 3 materials */
+    int m0 = alea_add_material(sys, 1);
+    alea_material_add_nuclide(sys, m0, 1001, NULL, 0.5);
+    alea_material_add_nuclide(sys, m0, 1002, NULL, 0.5);
+
+    int m1 = alea_add_material(sys, 2);
+    alea_material_add_nuclide(sys, m1, 8016, NULL, 1.0);
+
+    int m2 = alea_add_material(sys, 3);
+    alea_material_add_nuclide(sys, m2, 26056, NULL, 1.0);
+
+    /* Mixture of all three */
+    int mat_ids[] = {1, 2, 3};
+    double fracs[] = {0.5, 0.3, 0.2};
+    int mix_id = alea_create_mixture(sys, mat_ids, fracs, 3, 50);
+    ASSERT_EQ(mix_id, 50);
+
+    int idx = alea_find_mixture_by_id(sys, 50);
+    ASSERT_EQ(alea_mixture_component_count(sys, idx), 3);
+
+    int comp_mat;
+    double comp_frac;
+    alea_mixture_component_get(sys, idx, 2, &comp_mat, &comp_frac);
+    ASSERT_EQ(comp_mat, 3);
+    ASSERT_NEAR(comp_frac, 0.2, 1e-10);
+
+    alea_destroy(sys);
+}
+
+TEST(mixture_duplicate_id) {
+    alea_system_t* sys = alea_create();
+    alea_add_material(sys, 1);
+
+    int ids[] = {1};
+    double fracs[] = {1.0};
+
+    /* First mixture with explicit ID */
+    int id1 = alea_create_mixture(sys, ids, fracs, 1, 50);
+    ASSERT_EQ(id1, 50);
+
+    /* Second mixture with same ID — should still succeed (no dedup check) */
+    int id2 = alea_create_mixture(sys, ids, fracs, 1, 50);
+    ASSERT_EQ(id2, 50);
+    ASSERT_EQ(alea_mixture_count(sys), 2);
 
     alea_destroy(sys);
 }

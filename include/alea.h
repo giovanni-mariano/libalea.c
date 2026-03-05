@@ -402,6 +402,14 @@ int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char*
 int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_index);
 
 /**
+ * @brief Set cell material to a mixture
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param mixture_id Mixture ID from alea_create_mixture()
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_set_mixture(alea_system_t* sys, int cell_index, int mixture_id);
+
+/**
  * @brief Set cell density
  * @param cell_index Cell index (0 to alea_cell_count-1)
  * @param density Signed density: negative = g/cm3, positive = atoms/b-cm, 0 = void
@@ -825,6 +833,12 @@ bool alea_material_is_weight_fraction(const alea_system_t* sys, int mat_index);
  */
 int alea_create_mixture(alea_system_t* sys, const int* mat_ids,
                             const double* fractions, size_t count, int new_mat_id);
+
+/**
+ * @brief Find mixture index by ID
+ * @return Mixture index, or -1 if not found
+ */
+int alea_find_mixture_by_id(const alea_system_t* sys, int mixture_id);
 
 /**
  * @brief Get number of mixtures in the system
