@@ -8,9 +8,6 @@
 #include "core/alea_system.h"
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file bbox.h
@@ -270,8 +267,5 @@ int alea_tighten_bbox_numerical(const alea_system_t* sys,
                                double tol,
                                alea_bbox_t* out);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // BBOX_H

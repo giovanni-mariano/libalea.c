@@ -7,9 +7,6 @@
 
 #include "core/alea_system.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file alea_macrobody.h
@@ -128,8 +125,5 @@ int alea_expand_1sheet_cone_immediate(alea_system_t* sys,
                                       alea_node_id_t* out_neg_node,
                                       alea_node_id_t* out_pos_node);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ALEA_MACROBODY_H

@@ -16,9 +16,6 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @brief Portable strdup - duplicate a string
@@ -42,8 +39,5 @@ int alea_strcasecmp(const char* s1, const char* s2);
  */
 FILE* alea_tmpfile(char* path_out);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_COMPAT_H */

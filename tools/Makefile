@@ -36,21 +36,17 @@ ifdef RELEASE
   endif
 endif
 
-# Platform-specific whole-archive flags
+# Platform-specific whole-archive flags for format modules
 ifeq ($(UNAME_S),Darwin)
   LIBS_MCNP = -Wl,-force_load,$(BIN_DIR)/libalea_mcnp.a
   LIBS_OPENMC = -Wl,-force_load,$(BIN_DIR)/libalea_openmc.a
-  LIBS_RAYCAST = -Wl,-force_load,$(BIN_DIR)/libalea_raycast.a
 else
   LIBS_MCNP = -Wl,--whole-archive $(BIN_DIR)/libalea_mcnp.a -Wl,--no-whole-archive
   LIBS_OPENMC = -Wl,--whole-archive $(BIN_DIR)/libalea_openmc.a -Wl,--no-whole-archive
-  LIBS_RAYCAST = -Wl,--whole-archive $(BIN_DIR)/libalea_raycast.a -Wl,--no-whole-archive
 endif
 
-# All modules (matches CLI/test link order)
-LIBS_ALL = $(BIN_DIR)/libalea_mesh.a $(BIN_DIR)/libalea_render.a \
-           $(BIN_DIR)/libalea_slice.a $(LIBS_RAYCAST) \
-           $(LIBS_MCNP) $(LIBS_OPENMC) $(BIN_DIR)/libalea.a
+# All libraries
+LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(BIN_DIR)/libalea.a
 LDFLAGS = $(OPENMP_LDFLAGS) -lm
 
 TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter

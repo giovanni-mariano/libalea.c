@@ -15,9 +15,6 @@
 #include <stdio.h>
 #include "util/str_builder.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @brief MCNP string builder
@@ -124,8 +121,5 @@ const char* mcnp_str_get(mcnp_str_t* s);
  */
 bool mcnp_str_write(mcnp_str_t* s, FILE* out);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* MCNP_STR_H */

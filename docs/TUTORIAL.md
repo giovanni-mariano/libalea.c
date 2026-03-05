@@ -8,6 +8,8 @@ All code compiles with:
 gcc -o example example.c -I../include ../bin/libalea_full.a -lm
 ```
 
+`libalea_full.a` bundles the core library with the MCNP and OpenMC modules. Build it with `make full`. If you only need the core (no MCNP/OpenMC I/O), link against `libalea.a` instead.
+
 ## 1. Loading a Model
 
 The most common starting point is an existing MCNP input file:
@@ -220,7 +222,7 @@ for (size_t i = 0; i < ncurves; i++) {
 alea_slice_curves_free(curves);
 ```
 
-The typical workflow combines both: use the grid for pixel coloring, and overlay the curves for crisp surface boundaries. The `examples/plotter.c` program does exactly this.
+The typical workflow combines both: use the grid for pixel coloring, and overlay the curves for crisp surface boundaries. The `tools/mc_plotter.c` program does exactly this.
 
 ### Label positioning
 
@@ -528,4 +530,4 @@ alea_offset_cell_ids(sys, 10000);  // add 10000 to all cell IDs
 
 - Read [Concepts](CONCEPTS.md) to understand sense, universes, lattices, and other domain concepts
 - Read the [API Reference](API.md) for the complete function listing
-- Look at the examples in the `examples/` directory, especially `plotter.c` for visualization
+- Look at `tools/mc_plotter.c` for a complete visualization example, and the `examples/c/` directory for other usage patterns

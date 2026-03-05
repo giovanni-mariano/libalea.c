@@ -15,9 +15,6 @@
 #include <stdio.h>
 #include "util/str_builder.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 typedef struct {
   str_builder_t sb;       /* Underlying buffer management */
@@ -62,7 +59,4 @@ bool   openmc_xml_error(const openmc_xml_t* x);
 const char* openmc_xml_get(openmc_xml_t* x);
 bool   openmc_xml_write(openmc_xml_t* x, FILE* out);
 
-#ifdef __cplusplus
-}
-#endif
 #endif /* OPENMC_XML_H */

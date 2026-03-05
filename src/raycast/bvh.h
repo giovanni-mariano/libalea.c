@@ -10,9 +10,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file bvh.h
@@ -160,8 +157,5 @@ void alea_bvh_stats(const alea_bvh_t* bvh,
                    size_t* out_leaf_count,
                    size_t* out_max_depth);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_BVH_H */

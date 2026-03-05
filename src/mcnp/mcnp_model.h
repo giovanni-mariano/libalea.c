@@ -14,9 +14,6 @@
 
 #include "alea_mcnp.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @brief Internal: Full MCNP file conversion returning model
@@ -26,8 +23,5 @@ extern "C" {
  */
 mcnp_model_t* mcnp_convert_to_model(const char* filename);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* MCNP_MODEL_H */

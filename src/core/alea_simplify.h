@@ -25,9 +25,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 typedef struct alea_system alea_system_t;
 
@@ -172,8 +169,5 @@ void alea_flatten_all_cells(
     alea_simplify_stats_t* stats
 );
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ALEA_SIMPLIFY_H

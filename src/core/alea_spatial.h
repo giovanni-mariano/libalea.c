@@ -25,9 +25,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* Forward declarations */
 typedef struct alea_system alea_system_t;
@@ -257,8 +254,5 @@ int alea_spatial_traverse(const alea_spatial_index_t* idx,
                          alea_spatial_callback callback,
                          void* userdata);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_SPATIAL_H */

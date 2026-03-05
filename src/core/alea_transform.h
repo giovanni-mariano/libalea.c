@@ -16,9 +16,6 @@
 #include "alea_types.h"
 #include "util/alea_vec.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // ============================================================================
 // TRANSFORM TYPE
@@ -163,8 +160,5 @@ bool alea_transform_is_translation_only(const alea_transform_t* tr);
  */
 void alea_finalize_transform_ids(alea_system_t* sys);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_TRANSFORM_H */

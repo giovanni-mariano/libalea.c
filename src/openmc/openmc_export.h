@@ -13,9 +13,6 @@
 #include "core/alea_export.h"
 #include "core/alea_system.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @brief Export CSG system to OpenMC model.xml format
@@ -37,8 +34,5 @@ extern "C" {
  */
 int export_openmc(const alea_system_t* sys, export_context_t* ctx);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* OPENMC_EXPORT_H */

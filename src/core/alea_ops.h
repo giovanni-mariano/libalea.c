@@ -20,9 +20,6 @@
 
 #include "core/alea_system.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // ============================================================================
 // BOOLEAN OPERATIONS
@@ -148,8 +145,5 @@ alea_node_id_t alea_create_complement(
     alea_node_id_t operand
 );
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ALEA_OPS_H

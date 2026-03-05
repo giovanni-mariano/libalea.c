@@ -10,9 +10,6 @@
 #include <stdio.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file alea_export.h
@@ -258,8 +255,5 @@ int alea_expand_macrobodies_tree_level(alea_system_t* sys, export_context_t* ctx
 bool alea_should_export_cell(const alea_system_t* sys, const alea_cell_entry_t* cell,
                             int max_depth, int* depth_cache, size_t cache_size);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_EXPORT_H */

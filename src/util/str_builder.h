@@ -18,9 +18,6 @@
 #include <stdio.h>
 #include "arena.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 typedef struct {
     char* buf;              /* Output buffer */
@@ -85,8 +82,5 @@ bool str_builder_error(const str_builder_t* sb);
  */
 const char* str_builder_get(str_builder_t* sb);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* STR_BUILDER_H */

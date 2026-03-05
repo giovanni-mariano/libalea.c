@@ -9,9 +9,6 @@
 #include <stddef.h>
 #include <time.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file mcnp_parser.h
@@ -192,8 +189,5 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context);
  */
 void mcnp_context_print_summary(const mcnp_context_t* ctx);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // MCNP_PARSER_H

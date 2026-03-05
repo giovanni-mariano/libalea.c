@@ -15,9 +15,6 @@
 #include "alea_types.h"
 #include "util/alea_vec.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // Forward declarations 
 typedef struct mcnp_surface mcnp_surface_t;
@@ -73,8 +70,5 @@ int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* surf);
  */
 int alea_build_cell_surface_index(alea_system_t* sys);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_SURFACE_H */

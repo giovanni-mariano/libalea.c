@@ -8,9 +8,6 @@
 #include "alea_types.h"
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file alea_void.h
@@ -234,8 +231,5 @@ void octree_destroy(octree_node_t* node);
  */
 void alea_void_print_stats(const void_result_t* result);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_VOID_H */

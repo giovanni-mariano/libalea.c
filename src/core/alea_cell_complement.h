@@ -17,9 +17,6 @@
 #include "alea_types.h"
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* Forward declaration */
 typedef struct alea_system alea_system_t;
@@ -74,8 +71,5 @@ bool alea_cell_complements_resolved(const alea_system_t* sys);
  */
 void alea_free_cell_refs(alea_system_t* sys);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_CELL_COMPLEMENT_H */

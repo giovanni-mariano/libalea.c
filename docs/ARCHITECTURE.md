@@ -379,23 +379,19 @@ The Python binding installs a SIGINT handler that sets this flag. After the oper
 
 The flag is signal-safe: it's a `sig_atomic_t`, written atomically, checked with a simple comparison. No mutexes, no race conditions.
 
-## Module Separation
+## Library Structure
 
-The library is split into modules that can be linked independently:
+The library is split into a core library and optional format modules:
 
-- **Core** (`libalea.a`): CSG evaluation, tree operations, export framework, dedup. No format-specific code.
-- **MCNP** (`libalea_mcnp.a`): MCNP lexer, parser, cell/surface conversion, MCNP export formatting.
-- **OpenMC** (`libalea_openmc.a`): OpenMC XML parsing and export.
-- **Raycast** (`libalea_raycast.a`): BVH, ray-primitive intersection, segment building.
-- **Slice** (`libalea_slice.a`): Grid queries, analytical curve extraction, label positioning.
-- **Render** (`libalea_render.a`): 3D batch renderer with Phong shading, shadow rays, cutaway views, and material coloring. Uses the Raycast pipeline. OpenMP parallelized via tile-based rendering.
-- **Mesh** (`libalea_mesh.a`): Structured hexahedral mesh sampling and export to Gmsh (.msh) and VTK (.vtk) formats.
+- **Core** (`libalea.a`): The complete geometry engine — CSG evaluation, tree operations, export framework, dedup, primitives, bounding boxes, raycast (BVH, ray-primitive intersection, segment building), slice (grid queries, analytical curve extraction, label positioning), render (3D batch renderer with Phong shading, shadow rays, cutaway views, OpenMP parallelized), and mesh export (structured hexahedral mesh sampling, Gmsh/VTK output).
+- **MCNP** (`libalea_mcnp.a`): Optional module. MCNP lexer, parser, cell/surface conversion, MCNP export formatting.
+- **OpenMC** (`libalea_openmc.a`): Optional module. OpenMC XML parsing and export.
 
-The `libalea_full.a` archive combines all modules. Use it unless binary size matters.
+Link against `libalea.a` for everything except MCNP/OpenMC I/O. Add the format modules only if you need to read or write those formats. For convenience, `libalea_full.a` bundles everything (core + MCNP + OpenMC) into a single archive.
 
 The **Lua binding** layer (`src/lua_bind/`) wraps the public C API for the interactive CLI (`bin/alea`). It is compiled into the CLI binary, not shipped as a separate library.
 
-Module boundaries follow a dependency rule: MCNP and OpenMC depend on Core, but not on each other. Raycast and Slice depend on Core but not on MCNP or OpenMC. Render depends on Raycast and Core. Mesh depends on Core. Core depends on nothing except the util/ layer.
+The source is organized by concern (`src/core/`, `src/primitives/`, `src/raycast/`, `src/slice/`, `src/render/`, `src/mesh/`, `src/util/`) but all compile into the single `libalea.a`. Only `src/mcnp/` and `src/openmc/` produce separate archives.
 
 ## See Also
 

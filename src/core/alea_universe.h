@@ -9,9 +9,6 @@
 #include "util/alea_vec.h"
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file alea_universe.h
@@ -268,9 +265,6 @@ alea_node_id_t alea_clone_tree_to_system(alea_system_t* dst,
                                         alea_node_id_t src_root,
                                         primitive_remap_t* remap);
 
-#ifdef __cplusplus
-}
-#endif
 
 /* Lattice index lookup (used by raycast DDA) */
 struct alea_cell_entry;

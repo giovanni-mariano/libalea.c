@@ -17,9 +17,6 @@
 
 #include "alea_types.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ============================================================================
  * INTERVAL ARITHMETIC TYPES
@@ -193,8 +190,5 @@ alea_interval_t alea_primitive_interval_eval(
     const alea_bbox_t* box
 );
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* PRIMITIVE_DESC_H */

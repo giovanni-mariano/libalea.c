@@ -12,9 +12,6 @@
 
 #include "openmc_model.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ============================================================================
  * CONVERSION FUNCTIONS
@@ -36,8 +33,5 @@ openmc_model_t* openmc_convert_to_model(const char* filename);
  */
 openmc_model_t* openmc_convert_string_to_model(const char* xml_content, size_t length);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* OPENMC_CONVERSION_H */

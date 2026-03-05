@@ -23,9 +23,6 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @brief Log levels (in order of severity)
@@ -186,8 +183,5 @@ static inline int alea_log_enabled(alea_log_level_t level) {
 #define LOG_D ALEA_LOG_DEBUG
 #define LOG_T ALEA_LOG_TRACE
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ALEA_LOG_H

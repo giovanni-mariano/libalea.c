@@ -5,9 +5,6 @@
 #ifndef ALEA_POLY_SOLVE_H
 #define ALEA_POLY_SOLVE_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file poly_solve.h
@@ -60,8 +57,5 @@ int alea_solve_quartic(double a, double b, double c, double d, double e, double 
  */
 int alea_filter_positive_roots(double* roots, int count, double min_t);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_POLY_SOLVE_H */

@@ -264,7 +264,7 @@ The spatial index handles universe nesting, fills, and lattices transparently. A
 
 ## Ray Tracing
 
-Alea includes a ray tracing module that casts rays through the geometry and reports every cell crossing:
+Alea includes ray tracing that casts rays through the geometry and reports every cell crossing:
 
 ```c
 #include "alea_raycast.h"
@@ -288,7 +288,7 @@ alea_estimate_cell_volumes(sys, ox, oy, oz, radius, n_rays, volumes, errors);
 
 ## 2D Slice Visualization
 
-The slice module computes 2D cross-sections of the geometry. Given a cutting plane (axis-aligned or arbitrary), it queries a grid of points and produces cell/material ID arrays suitable for rendering:
+Alea computes 2D cross-sections of the geometry. Given a cutting plane (axis-aligned or arbitrary), it queries a grid of points and produces cell/material ID arrays suitable for rendering:
 
 ```c
 #include "alea_slice.h"
@@ -305,28 +305,39 @@ The `mc_plotter` tool wraps this into a complete plotting application with PNG/B
 
 ## 3D Rendering
 
-The render module produces 3D images of the geometry using ray casting with Phong shading:
+Alea produces 3D images of the geometry using ray casting with Phong shading:
 
 ```c
 #include "alea_render.h"
 
-alea_render3d_params_t params = alea_render3d_default_params();
-params.width = 800;
-params.height = 600;
-alea_render3d(sys, &params, pixels);
+render_config_t cfg;
+render_config_init(&cfg);
+cfg.width = 800;
+cfg.height = 600;
+
+render_camera_t cam;
+render_camera_setup(&cam, &cfg, sys);
+
+render_framebuffer_t* fb = render_framebuffer_create(cfg.width, cfg.height, 0);
+render_scene(sys, &cfg, &cam, fb);
+render_write_png("output.png", fb);
+render_framebuffer_free(fb);
 ```
 
 Multiple color modes are supported: by material, cell, universe, or density.
 
 ## Mesh Export
 
-The mesh module exports the geometry as a structured hexahedral mesh for use in external tools:
+Alea exports the geometry as a structured hexahedral mesh for use in external tools:
 
 ```c
 #include "alea_mesh.h"
 
-alea_mesh_export_vtk(sys, &bounds, nx, ny, nz, "output.vtk");
-alea_mesh_export_gmsh(sys, &bounds, nx, ny, nz, "output.msh");
+alea_mesh_config_t cfg;
+alea_mesh_config_init(&cfg);
+cfg.nx = cfg.ny = cfg.nz = 100;
+
+alea_mesh_export_system(sys, &cfg, "output.msh");  // format auto-detected from extension
 ```
 
 Supported formats: Gmsh (.msh v2.2) and VTK (.vtk).
@@ -390,25 +401,19 @@ All behavior is controlled through a single `alea_config_t` struct:
 alea_config_t cfg = alea_get_config(sys);
 
 // Tolerances
-cfg.abs_tol = 1e-6;          // absolute tolerance for surface matching
-cfg.rel_tol = 1e-9;          // relative tolerance
-cfg.zero_threshold = 1e-10;  // values smaller than this are treated as zero
+cfg.abs_tol = 1e-6;            // absolute tolerance for surface matching
+cfg.rel_tol = 1e-9;            // relative tolerance
+cfg.zero_threshold = 1e-10;    // values smaller than this are treated as zero
 
-// Surface dedup
-cfg.dedup = true;
+// Behavior
+cfg.dedup = true;              // surface deduplication
+cfg.log_level = 2;             // 0=none, 1=error, 2=warn, 3=info, 4=debug
 
 // Export
-cfg.surface_policy = ALEA_EMIT_MACROBODY;  // or ALEA_EMIT_SURFACES
 cfg.export_materials = true;
 cfg.export_transforms = true;
-cfg.universe_depth = -1;     // -1 = all, 0 = root only
-cfg.fill_depth = 0;          // 0 = don't expand fills
-cfg.trcl_mode = 0;           // 0 = preserve TRCLs, 1 = bake into geometry
-cfg.transform_mode = 0;      // 0 = original, 1 = inline, 2 = TR cards
-
-// MCNP formatting
-cfg.mcnp_max_col = 80;       // maximum column width
-cfg.mcnp_cont_indent = 5;    // continuation line indent
+cfg.universe_depth = -1;       // -1 = all, 0 = root only
+cfg.fill_depth = 0;            // 0 = don't expand fills
 
 // Void generation
 cfg.void_max_depth = 8;
@@ -420,12 +425,16 @@ cfg.merge_cell_weight = 1.0;
 cfg.merge_surface_weight = 0.1;
 cfg.merge_max_surfaces = 24;
 cfg.merge_min_cells = 1;
+cfg.merge_use_greedy = false;
+cfg.void_consolidate = 100;    // 0 = off
 
 // Flatten
-cfg.flatten_max_depth = 0;   // 0 = unlimited
+cfg.flatten_max_depth = 0;     // 0 = unlimited
 
 alea_set_config(sys, &cfg);
 ```
+
+MCNP-specific export options (surface policy, column width, continuation indent, TRCL mode, transform mode) are configured separately via `mcnp_export_config_t` in `alea_mcnp.h`.
 
 See the [API Reference](API.md) for the complete list of configuration fields.
 

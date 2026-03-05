@@ -46,9 +46,6 @@ ALEA_VEC_DEFINE(alea_mixture_vec, alea_mixture_t);
 ALEA_VEC_DEFINE(alea_cell_ref_vec, alea_cell_ref_t);
 ALEA_VEC_DEFINE(alea_material_vec, alea_material_t);
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file alea_system.h
@@ -681,8 +678,5 @@ void alea_set_error(alea_error_t code, const char* fmt, ...);
 
 const char* alea_get_error(void);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ALEA_SYSTEM_H

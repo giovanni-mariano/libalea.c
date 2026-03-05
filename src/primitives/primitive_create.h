@@ -31,9 +31,6 @@
 #include "core/alea_system.h"
 #include "bbox.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // ============================================================================
 // LEVEL 1: PRIMITIVE DATA CREATION
@@ -199,8 +196,5 @@ alea_primitive_data_t alea_make_torus_z(
     double axial_semiwidth_B
 );
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // PRIMITIVE_CREATE_H

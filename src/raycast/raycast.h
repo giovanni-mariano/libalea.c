@@ -8,9 +8,6 @@
 #include "alea_types.h"
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file raycast.h
@@ -240,8 +237,5 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
                            double t_max,
                            alea_raycast_result_t* result);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_RAYCAST_INTERNAL_H */

@@ -23,9 +23,6 @@
 #include "core/alea_system.h"
 #include "util/arena.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ============================================================================
  * REGION PARSE CONTEXT
@@ -84,8 +81,5 @@ alea_node_id_t openmc_parse_region(openmc_region_ctx_t* ctx, const char* region_
  */
 const char* openmc_region_get_error(const openmc_region_ctx_t* ctx);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* OPENMC_REGION_H */

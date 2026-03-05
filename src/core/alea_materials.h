@@ -19,9 +19,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ============================================================================
  * NUCLIDE DEFINITION
@@ -315,8 +312,5 @@ void alea_mixture_destroy(alea_mixture_t* mix);
 int alea_mixture_add_component(alea_mixture_t* mix, int material_id,
                               double fraction);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_MATERIALS_H */

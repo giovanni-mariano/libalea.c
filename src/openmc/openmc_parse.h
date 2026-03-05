@@ -18,9 +18,6 @@
 #include <stdbool.h>
 #include "util/arena.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* ============================================================================
  * XML ATTRIBUTE
@@ -159,8 +156,5 @@ size_t openmc_parse_doubles(const char* str, double* out_values, size_t max_valu
  */
 size_t openmc_parse_ints(const char* str, int* out_values, size_t max_values);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* OPENMC_PARSE_H */

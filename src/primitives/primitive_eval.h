@@ -9,9 +9,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file primitive_eval.h
@@ -100,8 +97,5 @@ static inline bool alea_primitive_contains(
     return alea_primitive_eval(type, data, x, y, z) < 0.0;
 }
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // PRIMITIVE_EVAL_H

@@ -8,9 +8,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * @file arena.h
@@ -117,8 +114,5 @@ size_t arena_total_allocated(const arena_t* arena);
  */
 size_t arena_used(const arena_t* arena);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ARENA_H

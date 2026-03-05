@@ -17,9 +17,6 @@
 #include "mcnp_str.h"
 #include <stdio.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* Forward declarations */
 typedef struct export_context export_context_t;
@@ -35,8 +32,5 @@ typedef struct export_context export_context_t;
  */
 int export_mcnp(const alea_system_t* sys, export_context_t* ctx);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* MCNP_EXPORT_H */

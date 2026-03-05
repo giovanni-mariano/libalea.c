@@ -18,9 +18,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* alea_slice_plane_t is defined in alea_slice.h (included above).
  * All internal code uses alea_slice_plane_t directly — no separate
@@ -393,8 +390,5 @@ void alea_curve_bbox(const alea_curve_2d_t* curve,
                     double* u_min, double* u_max,
                     double* v_min, double* v_max);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* CURVE_INTERSECT_H */

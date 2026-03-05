@@ -23,9 +23,6 @@
 #include <stdbool.h>
 #include "alea_types.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // Forward declaration
 typedef struct alea_system alea_system_t;
@@ -216,8 +213,5 @@ alea_perf_counters_t alea_perf_get(void);
  */
 void alea_perf_print(void);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif // ALEA_EVAL_H

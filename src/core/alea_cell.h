@@ -15,9 +15,6 @@
 #include "alea_types.h"
 #include "util/alea_vec.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 // ============================================================================
 // CELL ADJACENCY
@@ -167,8 +164,5 @@ int alea_set_cell_fill(alea_system_t* sys, int cell_index, int fill_universe, in
  */
 size_t alea_cell_count(const alea_system_t* sys);
 
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ALEA_CELL_H */
