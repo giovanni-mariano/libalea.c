@@ -36,7 +36,7 @@
  * Format: ZAID.LIB fraction ZAID.LIB fraction ...
  * e.g., "92235.80c -0.04 92238.80c -0.96"
  *
- * Uses alea_material_add_nuclide() from the materials API.
+ * Uses alea_mat_add_nuclide() from the materials API.
  */
 static int parse_material_definition(alea_material_t* mat, const char* definition) {
     if (!mat || !definition) return -1;
@@ -92,12 +92,12 @@ static int parse_material_definition(alea_material_t* mat, const char* definitio
         }
 
         /* Add nuclide using the materials API */
-        if (alea_material_add_nuclide(mat, zaid, library[0] ? library : NULL, fraction) < 0) {
+        if (alea_mat_add_nuclide(mat, zaid, library[0] ? library : NULL, fraction) < 0) {
             return -1;
         }
     }
 
-    return mat->nuclide_count > 0 ? 0 : -1;
+    return alea_vec_count(&mat->nuclides) > 0 ? 0 : -1;
 }
 
 /**
@@ -117,22 +117,6 @@ static int convert_material(alea_system_t* sys, const mcnp_material_t* mcnp_mat)
     if (mat_idx < 0) return -1;
     alea_material_t* mat = &sys->materials.data[mat_idx];
 
-    /* Initialize arrays with initial capacity */
-    mat->nuclide_capacity = 8;
-    mat->nuclides = calloc(mat->nuclide_capacity, sizeof(alea_nuclide_t));
-    if (!mat->nuclides) {
-        alea_vec_pop_discard(&sys->materials);  /* Rollback */
-        return -1;
-    }
-
-    mat->element_capacity = 4;
-    mat->elements = calloc(mat->element_capacity, sizeof(alea_element_comp_t));
-    if (!mat->elements) {
-        free(mat->nuclides);
-        alea_vec_pop_discard(&sys->materials);  /* Rollback */
-        return -1;
-    }
-
     /* Parse the material definition */
     if (mcnp_mat->definition) {
         if (parse_material_definition(mat, mcnp_mat->definition) < 0) {
@@ -147,7 +131,7 @@ static int convert_material(alea_system_t* sys, const mcnp_material_t* mcnp_mat)
     }
 
     ALEA_LOG_INFO("Converted material M%d: %zu nuclides (%s fractions)\n",
-           mat->material_id, mat->nuclide_count,
+           mat->material_id, alea_vec_count(&mat->nuclides),
            mat->is_weight_fraction ? "weight" : "atom");
 
     return 0;

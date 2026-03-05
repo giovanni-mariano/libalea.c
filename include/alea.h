@@ -684,7 +684,7 @@ alea_log_level_t alea_log_get_level(void);
  * @brief Register a material in the system
  *
  * Creates an empty material entry and returns its index. Use
- * alea_material_add_nuclide() etc. on sys->materials.data[index] to populate.
+ * alea_material_add_nuclide() etc. to populate it.
  *
  * @param sys System
  * @param material_id MCNP-style material ID (0 or negative for auto-assign)
@@ -694,26 +694,165 @@ int alea_add_material(alea_system_t* sys, int material_id);
 
 /**
  * @brief Find a material by its MCNP ID
- * @param sys System
- * @param material_id MCNP material ID to search for
  * @return Material index (>= 0), or -1 if not found
  */
 int alea_find_material_by_id(const alea_system_t* sys, int material_id);
 
 /**
+ * @brief Get number of materials in the system
+ */
+size_t alea_material_count(const alea_system_t* sys);
+
+/**
+ * @brief Get material MCNP ID by index
+ * @return Material ID, or -1 on error
+ */
+int alea_material_get_id(const alea_system_t* sys, int mat_index);
+
+/**
+ * @brief Add a nuclide to a material
+ * @param mat_index Material index from alea_add_material()
+ * @param zaid ZAID (ZZAAA or ZZAAAI format, e.g. 92235 for U-235)
+ * @param library Cross-section library suffix (e.g. ".80c"), or NULL
+ * @param fraction Atom or weight fraction (always positive)
+ * @return 0 on success, -1 on error
+ */
+int alea_material_add_nuclide(alea_system_t* sys, int mat_index,
+                              int zaid, const char* library, double fraction);
+
+/**
+ * @brief Add an element to a material (natural isotopic composition)
+ * @param mat_index Material index from alea_add_material()
+ * @param Z Atomic number (1-118)
+ * @param library Library suffix for generated nuclides, or NULL
+ * @param fraction Atom or weight fraction
+ * @return 0 on success, -1 on error
+ */
+int alea_material_add_element(alea_system_t* sys, int mat_index,
+                              int Z, const char* library, double fraction);
+
+/**
+ * @brief Set material standard density
+ * @param mat_index Material index
+ * @param density Density (g/cm3 if positive, atoms/b-cm if negative)
+ * @return 0 on success, -1 on error
+ */
+int alea_material_set_density(alea_system_t* sys, int mat_index, double density);
+
+/**
+ * @brief Set whether fractions are weight or atom fractions
+ * @param mat_index Material index
+ * @param is_weight true = weight fractions, false = atom fractions
+ * @return 0 on success, -1 on error
+ */
+int alea_material_set_weight_fraction(alea_system_t* sys, int mat_index, bool is_weight);
+
+/**
+ * @brief Expand element components to explicit nuclides
+ *
+ * Replaces element entries with individual nuclide entries based on
+ * natural isotopic abundances.
+ *
+ * @return 0 on success, -1 on error
+ */
+int alea_material_expand_elements(alea_system_t* sys, int mat_index);
+
+/**
+ * @brief Get nuclide count for a material
+ * @return Number of nuclides, or 0 on error
+ */
+size_t alea_material_nuclide_count(const alea_system_t* sys, int mat_index);
+
+/**
+ * @brief Get nuclide data from a material
+ * @param nuc_index Nuclide index (0 to nuclide_count-1)
+ * @param zaid Output: ZAID (can be NULL)
+ * @param library Output: library suffix pointer (can be NULL, do not free)
+ * @param fraction Output: fraction (can be NULL)
+ * @return 0 on success, -1 on error
+ */
+int alea_material_nuclide_get(const alea_system_t* sys, int mat_index,
+                              size_t nuc_index, int* zaid,
+                              const char** library, double* fraction);
+
+/**
+ * @brief Get element count for a material
+ * @return Number of elements, or 0 on error
+ */
+size_t alea_material_element_count(const alea_system_t* sys, int mat_index);
+
+/**
+ * @brief Get element data from a material
+ * @param elem_index Element index (0 to element_count-1)
+ * @param Z Output: atomic number (can be NULL)
+ * @param library Output: library suffix pointer (can be NULL, do not free)
+ * @param fraction Output: fraction (can be NULL)
+ * @return 0 on success, -1 on error
+ */
+int alea_material_element_get(const alea_system_t* sys, int mat_index,
+                              size_t elem_index, int* Z,
+                              const char** library, double* fraction);
+
+/**
+ * @brief Get material density
+ * @param density Output: density value
+ * @param has_density Output: whether density was set (can be NULL)
+ * @return 0 on success, -1 on error
+ */
+int alea_material_get_density(const alea_system_t* sys, int mat_index,
+                              double* density, bool* has_density);
+
+/**
+ * @brief Check if material uses weight fractions
+ * @return true if weight fractions, false if atom fractions or on error
+ */
+bool alea_material_is_weight_fraction(const alea_system_t* sys, int mat_index);
+
+/* ============================================================================
+ * MIXTURE OPERATIONS
+ * ============================================================================ */
+
+/**
  * @brief Create a mixture of materials
  *
- * Creates a new material as a weighted mixture of existing materials.
+ * Creates a new mixture as a weighted combination of existing materials.
  *
- * @param sys System
  * @param mat_ids Array of material IDs to mix
  * @param fractions Weight fractions
  * @param count Number of materials to mix
  * @param new_mat_id ID for the new mixture (0 for auto-assign)
- * @return Assigned material ID on success, -1 on error
+ * @return Assigned mixture ID on success, -1 on error
  */
 int alea_create_mixture(alea_system_t* sys, const int* mat_ids,
                             const double* fractions, size_t count, int new_mat_id);
+
+/**
+ * @brief Get number of mixtures in the system
+ */
+size_t alea_mixture_count(const alea_system_t* sys);
+
+/**
+ * @brief Get mixture ID by index
+ * @return Mixture ID, or -1 on error
+ */
+int alea_mixture_get_id(const alea_system_t* sys, int mix_index);
+
+/**
+ * @brief Get number of components in a mixture
+ * @return Number of components, or 0 on error
+ */
+size_t alea_mixture_component_count(const alea_system_t* sys, int mix_index);
+
+/**
+ * @brief Get mixture component data
+ * @param comp_index Component index (0 to component_count-1)
+ * @param material_id Output: material ID of this component (can be NULL)
+ * @param fraction Output: fraction of this component (can be NULL)
+ * @return 0 on success, -1 on error
+ */
+int alea_mixture_component_get(const alea_system_t* sys, int mix_index,
+                               size_t comp_index, int* material_id,
+                               double* fraction);
 
 /* ============================================================================
  * EXTRACT / FILTER

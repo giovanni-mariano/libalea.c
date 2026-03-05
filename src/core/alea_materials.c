@@ -43,17 +43,15 @@ alea_material_t* alea_material_create(int material_id) {
     if (!mat) return NULL;
 
     mat->material_id = material_id;
-    mat->nuclide_capacity = 8;
-    mat->nuclides = calloc(mat->nuclide_capacity, sizeof(alea_nuclide_t));
-    if (!mat->nuclides) {
+    alea_result_t r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
+    if (ALEA_IS_ERR(r)) {
         free(mat);
         return NULL;
     }
 
-    mat->element_capacity = 4;
-    mat->elements = calloc(mat->element_capacity, sizeof(alea_element_comp_t));
-    if (!mat->elements) {
-        free(mat->nuclides);
+    r = alea_vec_reserve(&mat->elements, 4, alea_element_comp_t);
+    if (ALEA_IS_ERR(r)) {
+        alea_vec_free(&mat->nuclides);
         free(mat);
         return NULL;
     }
@@ -64,95 +62,77 @@ alea_material_t* alea_material_create(int material_id) {
 void alea_material_destroy(alea_material_t* mat) {
     if (!mat) return;
 
-    for (size_t i = 0; i < mat->nuclide_count; i++) {
-        free(mat->nuclides[i].library);
+    for (size_t i = 0; i < alea_vec_count(&mat->nuclides); i++) {
+        free(mat->nuclides.data[i].library);
     }
-    free(mat->nuclides);
+    alea_vec_free(&mat->nuclides);
 
-    for (size_t i = 0; i < mat->element_count; i++) {
-        free(mat->elements[i].library);
+    for (size_t i = 0; i < alea_vec_count(&mat->elements); i++) {
+        free(mat->elements.data[i].library);
     }
-    free(mat->elements);
+    alea_vec_free(&mat->elements);
 
-    for (size_t i = 0; i < mat->thermal_count; i++) {
-        free(mat->thermal_laws[i].identifier);
+    for (size_t i = 0; i < alea_vec_count(&mat->thermal_laws); i++) {
+        free(mat->thermal_laws.data[i].identifier);
     }
-    free(mat->thermal_laws);
+    alea_vec_free(&mat->thermal_laws);
 
     free(mat->name);
     free(mat->comments);
     free(mat);
 }
 
-int alea_material_add_nuclide(alea_material_t* mat, int zaid,
+int alea_mat_add_nuclide(alea_material_t* mat, int zaid,
                              const char* library, double fraction) {
     if (!mat) return -1;
 
-    /* Grow array if needed */
-    if (mat->nuclide_count >= mat->nuclide_capacity) {
-        size_t new_cap = mat->nuclide_capacity * 2;
-        alea_nuclide_t* new_arr = realloc(mat->nuclides,
-                                         new_cap * sizeof(alea_nuclide_t));
-        if (!new_arr) return -1;
-        mat->nuclides = new_arr;
-        mat->nuclide_capacity = new_cap;
-    }
+    alea_nuclide_t* nuc = alea_vec_push_uninit(&mat->nuclides, alea_nuclide_t);
+    if (!nuc) return -1;
 
-    alea_nuclide_t* nuc = &mat->nuclides[mat->nuclide_count];
     nuc->zaid = zaid;
     nuc->library = library ? alea_strdup(library) : NULL;
     nuc->fraction = fraction;
-    mat->nuclide_count++;
 
     mat->properties_valid = false;
     return 0;
 }
 
-int alea_material_add_element(alea_material_t* mat, int Z,
+int alea_mat_add_element(alea_material_t* mat, int Z,
                              const char* library, double fraction) {
     if (!mat) return -1;
 
     /* Verify element exists */
     if (!alea_get_element(Z)) return -1;
 
-    /* Grow array if needed */
-    if (mat->element_count >= mat->element_capacity) {
-        size_t new_cap = mat->element_capacity * 2;
-        alea_element_comp_t* new_arr = realloc(mat->elements,
-                                              new_cap * sizeof(alea_element_comp_t));
-        if (!new_arr) return -1;
-        mat->elements = new_arr;
-        mat->element_capacity = new_cap;
-    }
+    alea_element_comp_t* elem = alea_vec_push_uninit(&mat->elements, alea_element_comp_t);
+    if (!elem) return -1;
 
-    alea_element_comp_t* elem = &mat->elements[mat->element_count];
     elem->atomic_number = Z;
     elem->library = library ? alea_strdup(library) : NULL;
     elem->fraction = fraction;
-    mat->element_count++;
 
     mat->properties_valid = false;
     return 0;
 }
 
-void alea_material_set_density(alea_material_t* mat, double density) {
+void alea_mat_set_density(alea_material_t* mat, double density) {
     if (!mat) return;
     mat->standard_density = density;
     mat->has_standard_density = true;
 }
 
-int alea_material_expand_elements(alea_material_t* mat) {
-    if (!mat || mat->element_count == 0) return 0;
+int alea_mat_expand_elements(alea_material_t* mat) {
+    if (!mat || alea_vec_count(&mat->elements) == 0) return 0;
 
     /* For each element, add its isotopes as nuclides */
-    for (size_t i = 0; i < mat->element_count; i++) {
-        const alea_element_comp_t* ec = &mat->elements[i];
+    for (size_t i = 0; i < alea_vec_count(&mat->elements); i++) {
+        const alea_element_comp_t* ec = &mat->elements.data[i];
         const alea_element_t* elem = alea_get_element(ec->atomic_number);
 
         if (!elem || !elem->isotopes || elem->isotope_count == 0) {
             /* No isotope data - add as single nuclide with A=0 (natural) */
             int zaid = ec->atomic_number * 1000;  /* ZZ000 format for natural */
-            if (alea_material_add_nuclide(mat, zaid, ec->library,
+            if (alea_mat_add_nuclide(mat, zaid, ec->library,
                                          ec->fraction) < 0) {
                 return -1;
             }
@@ -169,17 +149,17 @@ int alea_material_expand_elements(alea_material_t* mat) {
             int zaid = alea_make_zaid(ec->atomic_number, iso->mass_number);
             double frac = ec->fraction * iso->abundance;
 
-            if (alea_material_add_nuclide(mat, zaid, ec->library, frac) < 0) {
+            if (alea_mat_add_nuclide(mat, zaid, ec->library, frac) < 0) {
                 return -1;
             }
         }
     }
 
     /* Clear element list (already expanded) */
-    for (size_t i = 0; i < mat->element_count; i++) {
-        free(mat->elements[i].library);
+    for (size_t i = 0; i < alea_vec_count(&mat->elements); i++) {
+        free(mat->elements.data[i].library);
     }
-    mat->element_count = 0;
+    alea_vec_clear(&mat->elements);
 
     return 0;
 }
@@ -193,9 +173,8 @@ alea_mixture_t* alea_mixture_create(int mixture_id) {
     if (!mix) return NULL;
 
     mix->mixture_id = mixture_id;
-    mix->component_capacity = 4;
-    mix->components = calloc(mix->component_capacity, sizeof(alea_mixture_comp_t));
-    if (!mix->components) {
+    alea_result_t r = alea_vec_reserve(&mix->components, 4, alea_mixture_comp_t);
+    if (ALEA_IS_ERR(r)) {
         free(mix);
         return NULL;
     }
@@ -205,7 +184,7 @@ alea_mixture_t* alea_mixture_create(int mixture_id) {
 
 void alea_mixture_destroy(alea_mixture_t* mix) {
     if (!mix) return;
-    free(mix->components);
+    alea_vec_free(&mix->components);
     free(mix->name);
     free(mix->comments);
     free(mix);
@@ -215,20 +194,11 @@ int alea_mixture_add_component(alea_mixture_t* mix, int material_id,
                               double fraction) {
     if (!mix) return -1;
 
-    /* Grow array if needed */
-    if (mix->component_count >= mix->component_capacity) {
-        size_t new_cap = mix->component_capacity * 2;
-        alea_mixture_comp_t* new_arr = realloc(mix->components,
-                                              new_cap * sizeof(alea_mixture_comp_t));
-        if (!new_arr) return -1;
-        mix->components = new_arr;
-        mix->component_capacity = new_cap;
-    }
+    alea_mixture_comp_t* comp = alea_vec_push_uninit(&mix->components, alea_mixture_comp_t);
+    if (!comp) return -1;
 
-    alea_mixture_comp_t* comp = &mix->components[mix->component_count];
     comp->material_id = material_id;
     comp->fraction = fraction;
-    mix->component_count++;
 
     return 0;
 }

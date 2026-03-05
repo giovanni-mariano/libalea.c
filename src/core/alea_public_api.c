@@ -166,36 +166,39 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         alea_material_t* m = &clone->materials.data[i];
         const alea_material_t* s = &sys->materials.data[i];
         /* NULL everything first so destroy is safe on partial failure */
-        m->nuclides = NULL;
-        m->elements = NULL;
-        m->thermal_laws = NULL;
+        alea_vec_init(&m->nuclides);
+        alea_vec_init(&m->elements);
+        alea_vec_init(&m->thermal_laws);
         m->name = NULL;
         m->comments = NULL;
         /* Deep-copy nuclides */
-        if (s->nuclides && s->nuclide_count > 0) {
-            m->nuclides = malloc(s->nuclide_count * sizeof(alea_nuclide_t));
-            if (!m->nuclides) goto clone_error;
-            memcpy(m->nuclides, s->nuclides, s->nuclide_count * sizeof(alea_nuclide_t));
-            for (size_t j = 0; j < s->nuclide_count; j++) {
-                m->nuclides[j].library = clone_str(s->nuclides[j].library);
+        if (alea_vec_count(&s->nuclides) > 0) {
+            alea_result_t r = alea_vec_reserve(&m->nuclides, alea_vec_count(&s->nuclides), alea_nuclide_t);
+            if (ALEA_IS_ERR(r)) goto clone_error;
+            memcpy(m->nuclides.data, s->nuclides.data, alea_vec_count(&s->nuclides) * sizeof(alea_nuclide_t));
+            m->nuclides.count = alea_vec_count(&s->nuclides);
+            for (size_t j = 0; j < alea_vec_count(&s->nuclides); j++) {
+                m->nuclides.data[j].library = clone_str(s->nuclides.data[j].library);
             }
         }
         /* Deep-copy elements */
-        if (s->elements && s->element_count > 0) {
-            m->elements = malloc(s->element_count * sizeof(alea_element_comp_t));
-            if (!m->elements) goto clone_error;
-            memcpy(m->elements, s->elements, s->element_count * sizeof(alea_element_comp_t));
-            for (size_t j = 0; j < s->element_count; j++) {
-                m->elements[j].library = clone_str(s->elements[j].library);
+        if (alea_vec_count(&s->elements) > 0) {
+            alea_result_t r = alea_vec_reserve(&m->elements, alea_vec_count(&s->elements), alea_element_comp_t);
+            if (ALEA_IS_ERR(r)) goto clone_error;
+            memcpy(m->elements.data, s->elements.data, alea_vec_count(&s->elements) * sizeof(alea_element_comp_t));
+            m->elements.count = alea_vec_count(&s->elements);
+            for (size_t j = 0; j < alea_vec_count(&s->elements); j++) {
+                m->elements.data[j].library = clone_str(s->elements.data[j].library);
             }
         }
         /* Deep-copy thermal laws */
-        if (s->thermal_laws && s->thermal_count > 0) {
-            m->thermal_laws = malloc(s->thermal_count * sizeof(alea_thermal_law_t));
-            if (!m->thermal_laws) goto clone_error;
-            memcpy(m->thermal_laws, s->thermal_laws, s->thermal_count * sizeof(alea_thermal_law_t));
-            for (size_t j = 0; j < s->thermal_count; j++) {
-                m->thermal_laws[j].identifier = clone_str(s->thermal_laws[j].identifier);
+        if (alea_vec_count(&s->thermal_laws) > 0) {
+            alea_result_t r = alea_vec_reserve(&m->thermal_laws, alea_vec_count(&s->thermal_laws), alea_thermal_law_t);
+            if (ALEA_IS_ERR(r)) goto clone_error;
+            memcpy(m->thermal_laws.data, s->thermal_laws.data, alea_vec_count(&s->thermal_laws) * sizeof(alea_thermal_law_t));
+            m->thermal_laws.count = alea_vec_count(&s->thermal_laws);
+            for (size_t j = 0; j < alea_vec_count(&s->thermal_laws); j++) {
+                m->thermal_laws.data[j].identifier = clone_str(s->thermal_laws.data[j].identifier);
             }
         }
         m->name = clone_str(s->name);
@@ -215,13 +218,14 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     for (size_t i = 0; i < alea_vec_count(&clone->mixtures); i++) {
         alea_mixture_t* m = &clone->mixtures.data[i];
         const alea_mixture_t* s = &sys->mixtures.data[i];
-        m->components = NULL;
+        alea_vec_init(&m->components);
         m->name = NULL;
         m->comments = NULL;
-        if (s->components && s->component_count > 0) {
-            m->components = malloc(s->component_count * sizeof(alea_mixture_comp_t));
-            if (!m->components) goto clone_error;
-            memcpy(m->components, s->components, s->component_count * sizeof(alea_mixture_comp_t));
+        if (alea_vec_count(&s->components) > 0) {
+            alea_result_t r = alea_vec_reserve(&m->components, alea_vec_count(&s->components), alea_mixture_comp_t);
+            if (ALEA_IS_ERR(r)) goto clone_error;
+            memcpy(m->components.data, s->components.data, alea_vec_count(&s->components) * sizeof(alea_mixture_comp_t));
+            m->components.count = alea_vec_count(&s->components);
         }
         m->name = clone_str(s->name);
         m->comments = clone_str(s->comments);
@@ -1317,7 +1321,140 @@ int alea_create_mixture(alea_system_t* sys, const int* mat_ids,
 
     int result = alea_add_mixture(sys, mix);
     alea_mixture_destroy(mix);
-    return (result == 0) ? new_mat_id : -1;
+    return (result >= 0) ? new_mat_id : -1;
+}
+
+size_t alea_material_count(const alea_system_t* sys) {
+    return sys ? alea_vec_count(&sys->materials) : 0;
+}
+
+int alea_material_get_id(const alea_system_t* sys, int mat_index) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    return sys->materials.data[mat_index].material_id;
+}
+
+int alea_material_add_nuclide(alea_system_t* sys, int mat_index,
+                              int zaid, const char* library, double fraction) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    return alea_mat_add_nuclide(&sys->materials.data[mat_index], zaid, library, fraction);
+}
+
+int alea_material_add_element(alea_system_t* sys, int mat_index,
+                              int Z, const char* library, double fraction) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    return alea_mat_add_element(&sys->materials.data[mat_index], Z, library, fraction);
+}
+
+int alea_material_set_density(alea_system_t* sys, int mat_index, double density) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    alea_mat_set_density(&sys->materials.data[mat_index], density);
+    return 0;
+}
+
+int alea_material_set_weight_fraction(alea_system_t* sys, int mat_index, bool is_weight) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    sys->materials.data[mat_index].is_weight_fraction = is_weight;
+    return 0;
+}
+
+int alea_material_expand_elements(alea_system_t* sys, int mat_index) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    return alea_mat_expand_elements(&sys->materials.data[mat_index]);
+}
+
+size_t alea_material_nuclide_count(const alea_system_t* sys, int mat_index) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return 0;
+    return alea_vec_count(&sys->materials.data[mat_index].nuclides);
+}
+
+int alea_material_nuclide_get(const alea_system_t* sys, int mat_index,
+                              size_t nuc_index, int* zaid,
+                              const char** library, double* fraction) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    const alea_material_t* mat = &sys->materials.data[mat_index];
+    if (nuc_index >= alea_vec_count(&mat->nuclides)) return -1;
+    const alea_nuclide_t* nuc = &mat->nuclides.data[nuc_index];
+    if (zaid) *zaid = nuc->zaid;
+    if (library) *library = nuc->library;
+    if (fraction) *fraction = nuc->fraction;
+    return 0;
+}
+
+size_t alea_material_element_count(const alea_system_t* sys, int mat_index) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return 0;
+    return alea_vec_count(&sys->materials.data[mat_index].elements);
+}
+
+int alea_material_element_get(const alea_system_t* sys, int mat_index,
+                              size_t elem_index, int* Z,
+                              const char** library, double* fraction) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    const alea_material_t* mat = &sys->materials.data[mat_index];
+    if (elem_index >= alea_vec_count(&mat->elements)) return -1;
+    const alea_element_comp_t* elem = &mat->elements.data[elem_index];
+    if (Z) *Z = elem->atomic_number;
+    if (library) *library = elem->library;
+    if (fraction) *fraction = elem->fraction;
+    return 0;
+}
+
+int alea_material_get_density(const alea_system_t* sys, int mat_index,
+                              double* density, bool* has_density) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    const alea_material_t* mat = &sys->materials.data[mat_index];
+    if (density) *density = mat->standard_density;
+    if (has_density) *has_density = mat->has_standard_density;
+    return 0;
+}
+
+bool alea_material_is_weight_fraction(const alea_system_t* sys, int mat_index) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return false;
+    return sys->materials.data[mat_index].is_weight_fraction;
+}
+
+/* ============================================================================
+ * MIXTURE QUERY OPERATIONS
+ * ============================================================================ */
+
+size_t alea_mixture_count(const alea_system_t* sys) {
+    return sys ? alea_vec_count(&sys->mixtures) : 0;
+}
+
+int alea_mixture_get_id(const alea_system_t* sys, int mix_index) {
+    if (!sys || mix_index < 0 || (size_t)mix_index >= alea_vec_count(&sys->mixtures))
+        return -1;
+    return sys->mixtures.data[mix_index].mixture_id;
+}
+
+size_t alea_mixture_component_count(const alea_system_t* sys, int mix_index) {
+    if (!sys || mix_index < 0 || (size_t)mix_index >= alea_vec_count(&sys->mixtures))
+        return 0;
+    return alea_vec_count(&sys->mixtures.data[mix_index].components);
+}
+
+int alea_mixture_component_get(const alea_system_t* sys, int mix_index,
+                               size_t comp_index, int* material_id,
+                               double* fraction) {
+    if (!sys || mix_index < 0 || (size_t)mix_index >= alea_vec_count(&sys->mixtures))
+        return -1;
+    const alea_mixture_t* mix = &sys->mixtures.data[mix_index];
+    if (comp_index >= alea_vec_count(&mix->components)) return -1;
+    const alea_mixture_comp_t* comp = &mix->components.data[comp_index];
+    if (material_id) *material_id = comp->material_id;
+    if (fraction) *fraction = comp->fraction;
+    return 0;
 }
 
 /* ============================================================================

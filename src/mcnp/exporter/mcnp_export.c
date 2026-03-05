@@ -1113,8 +1113,8 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
         mcnp_str_putc(&s, 'M');
         mcnp_str_int(&s, mat->material_id);
 
-        for (size_t j = 0; j < mat->nuclide_count; j++) {
-            const alea_nuclide_t* nuc = &mat->nuclides[j];
+        for (size_t j = 0; j < alea_vec_count(&mat->nuclides); j++) {
+            const alea_nuclide_t* nuc = &mat->nuclides.data[j];
 
             mcnp_str_putc(&s, ' ');
             mcnp_str_int(&s, nuc->zaid);
@@ -1133,9 +1133,9 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
             const alea_element_t* elem = alea_get_element(Z);
             if (elem) {
                 double elem_sum = 0.0;
-                for (size_t k = 0; k < mat->nuclide_count; k++) {
-                    if (alea_zaid_to_Z(mat->nuclides[k].zaid) == Z) {
-                        elem_sum += mat->nuclides[k].fraction;
+                for (size_t k = 0; k < alea_vec_count(&mat->nuclides); k++) {
+                    if (alea_zaid_to_Z(mat->nuclides.data[k].zaid) == Z) {
+                        elem_sum += mat->nuclides.data[k].fraction;
                     }
                 }
 
@@ -1158,7 +1158,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
                 mcnp_str_inline_comment(&s, comment);
             }
 
-            if (j < mat->nuclide_count-1) mcnp_str_newline(&s);
+            if (j < alea_vec_count(&mat->nuclides)-1) mcnp_str_newline(&s);
         }
 
         mcnp_str_write(&s, ctx->out);

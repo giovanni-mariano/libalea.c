@@ -490,71 +490,85 @@ static int copy_material(alea_material_t* dst, const alea_material_t* src) {
     }
     
     /* Copy nuclides */
-    if (src->nuclide_count > 0) {
-        dst->nuclides = malloc(src->nuclide_count * sizeof(alea_nuclide_t));
-        if (!dst->nuclides) {
+    if (alea_vec_count(&src->nuclides) > 0) {
+        alea_result_t r = alea_vec_reserve(&dst->nuclides, alea_vec_count(&src->nuclides), alea_nuclide_t);
+        if (ALEA_IS_ERR(r)) {
             free(dst->name);
             free(dst->comments);
             return -1;
         }
-        
-        dst->nuclide_capacity = src->nuclide_count;
-        dst->nuclide_count = src->nuclide_count;
-        
-        for (size_t i = 0; i < src->nuclide_count; i++) {
-            if (copy_nuclide(&dst->nuclides[i], &src->nuclides[i]) != 0) {
+
+        for (size_t i = 0; i < alea_vec_count(&src->nuclides); i++) {
+            alea_nuclide_t* nuc = alea_vec_push_uninit(&dst->nuclides, alea_nuclide_t);
+            if (copy_nuclide(nuc, &src->nuclides.data[i]) != 0) {
                 /* Cleanup on error */
-                for (size_t j = 0; j < i; j++) {
-                    free(dst->nuclides[j].library);
+                alea_vec_pop_discard(&dst->nuclides);
+                for (size_t j = 0; j < alea_vec_count(&dst->nuclides); j++) {
+                    free(dst->nuclides.data[j].library);
                 }
-                free(dst->nuclides);
+                alea_vec_free(&dst->nuclides);
                 free(dst->name);
                 free(dst->comments);
                 return -1;
             }
         }
     }
-    
+
     /* Copy thermal laws */
-    if (src->thermal_count > 0) {
-        dst->thermal_laws = malloc(src->thermal_count * sizeof(alea_thermal_law_t));
-        if (!dst->thermal_laws) {
-            /* Cleanup nuclides */
-            for (size_t i = 0; i < dst->nuclide_count; i++) {
-                free(dst->nuclides[i].library);
+    if (alea_vec_count(&src->thermal_laws) > 0) {
+        alea_result_t r = alea_vec_reserve(&dst->thermal_laws, alea_vec_count(&src->thermal_laws), alea_thermal_law_t);
+        if (ALEA_IS_ERR(r)) {
+            for (size_t i = 0; i < alea_vec_count(&dst->nuclides); i++) {
+                free(dst->nuclides.data[i].library);
             }
-            free(dst->nuclides);
+            alea_vec_free(&dst->nuclides);
             free(dst->name);
             free(dst->comments);
             return -1;
         }
-        
-        dst->thermal_count = src->thermal_count;
-        
-        for (size_t i = 0; i < src->thermal_count; i++) {
-            if (copy_thermal_law(&dst->thermal_laws[i], &src->thermal_laws[i]) != 0) {
-                /* Cleanup on error */
-                for (size_t j = 0; j < i; j++) {
-                    free(dst->thermal_laws[j].identifier);
+
+        for (size_t i = 0; i < alea_vec_count(&src->thermal_laws); i++) {
+            alea_thermal_law_t* law = alea_vec_push_uninit(&dst->thermal_laws, alea_thermal_law_t);
+            if (copy_thermal_law(law, &src->thermal_laws.data[i]) != 0) {
+                alea_vec_pop_discard(&dst->thermal_laws);
+                for (size_t j = 0; j < alea_vec_count(&dst->thermal_laws); j++) {
+                    free(dst->thermal_laws.data[j].identifier);
                 }
-                free(dst->thermal_laws);
-                for (size_t j = 0; j < dst->nuclide_count; j++) {
-                    free(dst->nuclides[j].library);
+                alea_vec_free(&dst->thermal_laws);
+                for (size_t j = 0; j < alea_vec_count(&dst->nuclides); j++) {
+                    free(dst->nuclides.data[j].library);
                 }
-                free(dst->nuclides);
+                alea_vec_free(&dst->nuclides);
                 free(dst->name);
                 free(dst->comments);
                 return -1;
             }
         }
     }
-    
+
     return 0;
 }
 
 /**
  * @brief Copy all materials from source to destination system
  */
+static void free_material_internals(alea_material_t* m) {
+    for (size_t k = 0; k < alea_vec_count(&m->nuclides); k++) {
+        free(m->nuclides.data[k].library);
+    }
+    alea_vec_free(&m->nuclides);
+    for (size_t k = 0; k < alea_vec_count(&m->elements); k++) {
+        free(m->elements.data[k].library);
+    }
+    alea_vec_free(&m->elements);
+    for (size_t k = 0; k < alea_vec_count(&m->thermal_laws); k++) {
+        free(m->thermal_laws.data[k].identifier);
+    }
+    alea_vec_free(&m->thermal_laws);
+    free(m->name);
+    free(m->comments);
+}
+
 static int copy_materials(alea_system_t* dst, const alea_system_t* src) {
     if (alea_vec_empty(&src->materials)) {
         return 0;  /* No materials to copy */
@@ -564,45 +578,22 @@ static int copy_materials(alea_system_t* dst, const alea_system_t* src) {
     for (size_t i = 0; i < alea_vec_count(&src->materials); i++) {
         alea_material_t* mat = alea_vec_push_uninit(&dst->materials, alea_material_t);
         if (!mat) {
-            /* Cleanup on error - free internal arrays of already copied materials */
-            for (size_t j = 0; j < alea_vec_count(&dst->materials); j++) {
-                alea_material_t* m = &dst->materials.data[j];
-                for (size_t k = 0; k < m->nuclide_count; k++) {
-                    free(m->nuclides[k].library);
-                }
-                free(m->nuclides);
-                for (size_t k = 0; k < m->thermal_count; k++) {
-                    free(m->thermal_laws[k].identifier);
-                }
-                free(m->thermal_laws);
-                free(m->name);
-                free(m->comments);
-            }
-            alea_vec_free(&dst->materials);
-            return -1;
+            goto cleanup;
         }
         if (copy_material(mat, &src->materials.data[i]) != 0) {
-            /* Rollback this element and cleanup */
             alea_vec_pop_discard(&dst->materials);
-            for (size_t j = 0; j < alea_vec_count(&dst->materials); j++) {
-                alea_material_t* m = &dst->materials.data[j];
-                for (size_t k = 0; k < m->nuclide_count; k++) {
-                    free(m->nuclides[k].library);
-                }
-                free(m->nuclides);
-                for (size_t k = 0; k < m->thermal_count; k++) {
-                    free(m->thermal_laws[k].identifier);
-                }
-                free(m->thermal_laws);
-                free(m->name);
-                free(m->comments);
-            }
-            alea_vec_free(&dst->materials);
-            return -1;
+            goto cleanup;
         }
     }
 
     return 0;
+
+cleanup:
+    for (size_t j = 0; j < alea_vec_count(&dst->materials); j++) {
+        free_material_internals(&dst->materials.data[j]);
+    }
+    alea_vec_free(&dst->materials);
+    return -1;
 }
 
 /* ============================================================================
@@ -679,14 +670,16 @@ int alea_copy_referenced_mixtures(alea_system_t* dst, const alea_system_t* src) 
         *dst_mix = *mix;
 
         /* Deep copy allocated fields */
-        if (mix->components && mix->component_count > 0) {
-            dst_mix->components = malloc(mix->component_count * sizeof(alea_mixture_comp_t));
-            if (!dst_mix->components) {
+        alea_vec_init(&dst_mix->components);
+        if (alea_vec_count(&mix->components) > 0) {
+            alea_result_t r = alea_vec_reserve(&dst_mix->components, alea_vec_count(&mix->components), alea_mixture_comp_t);
+            if (ALEA_IS_ERR(r)) {
                 alea_vec_pop_discard(&dst->mixtures);
                 return -1;
             }
-            memcpy(dst_mix->components, mix->components,
-                   mix->component_count * sizeof(alea_mixture_comp_t));
+            memcpy(dst_mix->components.data, mix->components.data,
+                   alea_vec_count(&mix->components) * sizeof(alea_mixture_comp_t));
+            dst_mix->components.count = alea_vec_count(&mix->components);
         }
         if (mix->name) {
             dst_mix->name = alea_strdup(mix->name);

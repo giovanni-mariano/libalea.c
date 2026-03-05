@@ -132,20 +132,21 @@ void alea_system_destroy_internals(alea_system_t* sys) {
     alea_vec_free(&sys->surfaces);
     /* Free internal arrays of each material before freeing the vector */
     for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
-        for (size_t j = 0; j < sys->materials.data[i].nuclide_count; j++) {
-            free(sys->materials.data[i].nuclides[j].library);
+        alea_material_t* m = &sys->materials.data[i];
+        for (size_t j = 0; j < alea_vec_count(&m->nuclides); j++) {
+            free(m->nuclides.data[j].library);
         }
-        free(sys->materials.data[i].nuclides);
-        for (size_t j = 0; j < sys->materials.data[i].element_count; j++) {
-            free(sys->materials.data[i].elements[j].library);
+        alea_vec_free(&m->nuclides);
+        for (size_t j = 0; j < alea_vec_count(&m->elements); j++) {
+            free(m->elements.data[j].library);
         }
-        free(sys->materials.data[i].elements);
-        for (size_t j = 0; j < sys->materials.data[i].thermal_count; j++) {
-            free(sys->materials.data[i].thermal_laws[j].identifier);
+        alea_vec_free(&m->elements);
+        for (size_t j = 0; j < alea_vec_count(&m->thermal_laws); j++) {
+            free(m->thermal_laws.data[j].identifier);
         }
-        free(sys->materials.data[i].thermal_laws);
-        free(sys->materials.data[i].name);
-        free(sys->materials.data[i].comments);
+        alea_vec_free(&m->thermal_laws);
+        free(m->name);
+        free(m->comments);
     }
     alea_vec_free(&sys->materials);
     alea_vec_free(&sys->transforms);
@@ -180,7 +181,7 @@ void alea_system_destroy_internals(alea_system_t* sys) {
 
     // Free mixtures
     for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
-        free(sys->mixtures.data[i].components);
+        alea_vec_free(&sys->mixtures.data[i].components);
         free(sys->mixtures.data[i].name);
         free(sys->mixtures.data[i].comments);
     }
@@ -222,20 +223,21 @@ void alea_system_reset(alea_system_t* sys) {
     alea_vec_clear(&sys->surfaces);
     /* Free internal arrays of each material before clearing vector */
     for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
-        for (size_t j = 0; j < sys->materials.data[i].nuclide_count; j++) {
-            free(sys->materials.data[i].nuclides[j].library);
+        alea_material_t* m = &sys->materials.data[i];
+        for (size_t j = 0; j < alea_vec_count(&m->nuclides); j++) {
+            free(m->nuclides.data[j].library);
         }
-        free(sys->materials.data[i].nuclides);
-        for (size_t j = 0; j < sys->materials.data[i].element_count; j++) {
-            free(sys->materials.data[i].elements[j].library);
+        alea_vec_free(&m->nuclides);
+        for (size_t j = 0; j < alea_vec_count(&m->elements); j++) {
+            free(m->elements.data[j].library);
         }
-        free(sys->materials.data[i].elements);
-        for (size_t j = 0; j < sys->materials.data[i].thermal_count; j++) {
-            free(sys->materials.data[i].thermal_laws[j].identifier);
+        alea_vec_free(&m->elements);
+        for (size_t j = 0; j < alea_vec_count(&m->thermal_laws); j++) {
+            free(m->thermal_laws.data[j].identifier);
         }
-        free(sys->materials.data[i].thermal_laws);
-        free(sys->materials.data[i].name);
-        free(sys->materials.data[i].comments);
+        alea_vec_free(&m->thermal_laws);
+        free(m->name);
+        free(m->comments);
     }
     alea_vec_clear(&sys->materials);
     alea_vec_clear(&sys->transforms);
@@ -469,9 +471,9 @@ size_t alea_system_memory_usage(const alea_system_t* sys) {
     /* Per-material internal arrays */
     for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
         const alea_material_t* m = &sys->materials.data[i];
-        total += m->nuclide_count * sizeof(alea_nuclide_t);
-        total += m->element_count * sizeof(alea_element_comp_t);
-        total += m->thermal_count * sizeof(alea_thermal_law_t);
+        total += m->nuclides.capacity * sizeof(alea_nuclide_t);
+        total += m->elements.capacity * sizeof(alea_element_comp_t);
+        total += m->thermal_laws.capacity * sizeof(alea_thermal_law_t);
     }
 
     /* Per-cell internal arrays */
@@ -956,22 +958,20 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture) {
     dst->mixture_id = mixture->mixture_id;
     dst->mcnp_material_id = mixture->mcnp_material_id;
     dst->is_weight_fraction = mixture->is_weight_fraction;
-    dst->component_count = mixture->component_count;
-    dst->component_capacity = mixture->component_count;
 
-    /* Copy components array */
-    if (mixture->component_count > 0) {
-        dst->components = malloc(mixture->component_count * sizeof(alea_mixture_comp_t));
-        if (!dst->components) {
+    /* Copy components array via vec */
+    alea_vec_init(&dst->components);
+    size_t comp_count = alea_vec_count(&mixture->components);
+    if (comp_count > 0) {
+        alea_result_t r = alea_vec_reserve(&dst->components, comp_count, alea_mixture_comp_t);
+        if (ALEA_IS_ERR(r)) {
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "alea_add_mixture: failed to allocate mixture components");
-            /* Rollback: remove the element we just added */
             alea_vec_pop_discard(&sys->mixtures);
             return -1;
         }
-        memcpy(dst->components, mixture->components,
-               mixture->component_count * sizeof(alea_mixture_comp_t));
-    } else {
-        dst->components = NULL;
+        memcpy(dst->components.data, mixture->components.data,
+               comp_count * sizeof(alea_mixture_comp_t));
+        dst->components.count = comp_count;
     }
 
     /* Copy strings if present */

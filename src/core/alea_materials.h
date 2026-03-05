@@ -18,6 +18,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include "util/alea_vec.h"
 
 
 /* ============================================================================
@@ -95,6 +96,11 @@ typedef struct {
     int zaid_match;         /* Which ZAID this applies to (0 = match by Z) */
 } alea_thermal_law_t;
 
+/* Dynamic array types for material sub-arrays */
+ALEA_VEC_DEFINE(alea_nuclide_vec, alea_nuclide_t);
+ALEA_VEC_DEFINE(alea_element_comp_vec, alea_element_comp_t);
+ALEA_VEC_DEFINE(alea_thermal_law_vec, alea_thermal_law_t);
+
 /* ============================================================================
  * MATERIAL DEFINITION
  * ============================================================================ */
@@ -113,14 +119,10 @@ typedef struct alea_material {
     int material_id;                /* MCNP Mn number */
 
     /* Explicit nuclide composition */
-    alea_nuclide_t* nuclides;
-    size_t nuclide_count;
-    size_t nuclide_capacity;
+    alea_nuclide_vec_t nuclides;
 
     /* Element-based composition (alternative) */
-    alea_element_comp_t* elements;
-    size_t element_count;
-    size_t element_capacity;
+    alea_element_comp_vec_t elements;
 
     /* Fraction interpretation */
     bool is_weight_fraction;        /* true = weight, false = atom fractions */
@@ -130,8 +132,7 @@ typedef struct alea_material {
     bool has_standard_density;
 
     /* Thermal scattering (MT card) */
-    alea_thermal_law_t* thermal_laws;
-    size_t thermal_count;
+    alea_thermal_law_vec_t thermal_laws;
 
     /* Metadata */
     char* name;                     /* User-friendly name */
@@ -154,6 +155,8 @@ typedef struct {
     double fraction;        /* Fraction in mixture (weight or atom) */
 } alea_mixture_comp_t;
 
+ALEA_VEC_DEFINE(alea_mixture_comp_vec, alea_mixture_comp_t);
+
 /**
  * @brief Mixture of materials
  *
@@ -167,9 +170,7 @@ typedef struct {
 typedef struct {
     int mixture_id;                 /* Unique ID for this mixture */
 
-    alea_mixture_comp_t* components;
-    size_t component_count;
-    size_t component_capacity;
+    alea_mixture_comp_vec_t components;
 
     bool is_weight_fraction;        /* Interpretation of fractions */
 
@@ -247,44 +248,26 @@ alea_material_t* alea_material_create(int material_id);
 void alea_material_destroy(alea_material_t* mat);
 
 /**
- * @brief Add a nuclide to a material
- * @param mat Material to modify
- * @param zaid ZAID of nuclide
- * @param library Library suffix (e.g., ".80c"), can be NULL
- * @param fraction Atom or weight fraction
- * @return 0 on success, -1 on error
+ * @brief Add a nuclide to a material (internal, operates on material pointer)
  */
-int alea_material_add_nuclide(alea_material_t* mat, int zaid,
-                             const char* library, double fraction);
+int alea_mat_add_nuclide(alea_material_t* mat, int zaid,
+                         const char* library, double fraction);
 
 /**
- * @brief Add an element to a material (natural composition)
- * @param mat Material to modify
- * @param Z Atomic number
- * @param library Library suffix for generated nuclides
- * @param fraction Atom or weight fraction
- * @return 0 on success, -1 on error
+ * @brief Add an element to a material (internal, operates on material pointer)
  */
-int alea_material_add_element(alea_material_t* mat, int Z,
-                             const char* library, double fraction);
+int alea_mat_add_element(alea_material_t* mat, int Z,
+                         const char* library, double fraction);
 
 /**
- * @brief Set material density
- * @param mat Material
- * @param density Density (g/cm³ if positive, atoms/b-cm if negative)
+ * @brief Set material density (internal, operates on material pointer)
  */
-void alea_material_set_density(alea_material_t* mat, double density);
+void alea_mat_set_density(alea_material_t* mat, double density);
 
 /**
- * @brief Expand element components to explicit nuclides
- *
- * Replaces element_count entries with nuclide entries based on
- * natural isotopic abundances.
- *
- * @param mat Material to expand
- * @return 0 on success, -1 on error
+ * @brief Expand element components to explicit nuclides (internal)
  */
-int alea_material_expand_elements(alea_material_t* mat);
+int alea_mat_expand_elements(alea_material_t* mat);
 
 /* ============================================================================
  * MIXTURE OPERATIONS

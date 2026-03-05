@@ -424,10 +424,9 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
     alea_material_t* mat = &sys->materials.data[mat_idx];
     if (name) mat->name = alea_strdup(name);
 
-    /* Initialize nuclide array */
-    mat->nuclide_capacity = 8;
-    mat->nuclides = (alea_nuclide_t*)calloc(mat->nuclide_capacity, sizeof(alea_nuclide_t));
-    if (!mat->nuclides) return -1;
+    /* Pre-allocate nuclide array */
+    alea_result_t r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
+    if (ALEA_IS_ERR(r)) return -1;
 
     /* Note: Density is stored per-cell in alea_system, not per-material.
        OpenMC materials have a density element, but we skip it here.
@@ -453,7 +452,7 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
             int zaid = openmc_name_to_zaid(nuc_name);
             if (zaid > 0) {
                 double fraction = (wo != 0.0) ? wo : ao;
-                alea_material_add_nuclide(mat, zaid, NULL, fraction);
+                alea_mat_add_nuclide(mat, zaid, NULL, fraction);
             } else {
                 ALEA_LOG_WARN("Failed to parse nuclide name: %s", nuc_name);
             }
@@ -463,16 +462,19 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
     /* Process S(a,b) thermal scattering */
     size_t sab_count = openmc_xml_count_children(mat_elem, "sab");
     if (sab_count > 0) {
-        mat->thermal_laws = (alea_thermal_law_t*)calloc(sab_count, sizeof(alea_thermal_law_t));
-        if (mat->thermal_laws) {
-            for (size_t i = 0; i < mat_elem->child_count && mat->thermal_count < sab_count; i++) {
+        alea_result_t rs = alea_vec_reserve(&mat->thermal_laws, sab_count, alea_thermal_law_t);
+        if (ALEA_IS_OK(rs)) {
+            for (size_t i = 0; i < mat_elem->child_count && alea_vec_count(&mat->thermal_laws) < sab_count; i++) {
                 openmc_xml_element_t* child = mat_elem->children[i];
                 if (strcmp(child->tag_name, "sab") != 0) continue;
 
                 const char* sab_name = openmc_xml_get_attr(child, "name");
                 if (sab_name) {
-                    alea_thermal_law_t* law = &mat->thermal_laws[mat->thermal_count++];
-                    law->identifier = alea_strdup(sab_name);
+                    alea_thermal_law_t* law = alea_vec_push_uninit(&mat->thermal_laws, alea_thermal_law_t);
+                    if (law) {
+                        law->identifier = alea_strdup(sab_name);
+                        law->zaid_match = 0;
+                    }
                 }
             }
         }

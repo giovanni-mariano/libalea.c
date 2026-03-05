@@ -629,7 +629,7 @@ static const alea_material_t* find_material_by_id(const alea_system_t* sys, int 
 static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
                                   arena_t* arena, const mat_density_entry_t* entry) {
     const alea_material_t* mat = find_material_by_id(sys, entry->mcnp_material_id);
-    if (!mat || mat->nuclide_count == 0) return true;  /* Skip empty/unknown materials */
+    if (!mat || alea_vec_count(&mat->nuclides) == 0) return true;  /* Skip empty/unknown materials */
 
     /* <material id="N"> */
     if (!openmc_xml_start_element(xml, "material")) return false;
@@ -663,17 +663,18 @@ static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
     }
 
     /* Normalize fractions */
-    double* normalized = (double*)arena_alloc(arena, mat->nuclide_count * sizeof(double));
+    size_t nuc_count = alea_vec_count(&mat->nuclides);
+    double* normalized = (double*)arena_alloc(arena, nuc_count * sizeof(double));
     if (!normalized) return false;
 
-    double* orig_fractions = (double*)arena_alloc(arena, mat->nuclide_count * sizeof(double));
+    double* orig_fractions = (double*)arena_alloc(arena, nuc_count * sizeof(double));
     if (!orig_fractions) return false;
 
-    for (size_t i = 0; i < mat->nuclide_count; i++) {
-        orig_fractions[i] = mat->nuclides[i].fraction;
+    for (size_t i = 0; i < nuc_count; i++) {
+        orig_fractions[i] = mat->nuclides.data[i].fraction;
     }
 
-    double orig_sum = normalize_fractions(orig_fractions, mat->nuclide_count, normalized);
+    double orig_sum = normalize_fractions(orig_fractions, nuc_count, normalized);
 
     /* Warn if fractions were significantly off from 1.0 */
     if (fabs(orig_sum - 1.0) > 0.01) {
@@ -684,8 +685,8 @@ static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
     /* Export nuclides */
     const char* fraction_attr = mat->is_weight_fraction ? "wo" : "ao";
 
-    for (size_t i = 0; i < mat->nuclide_count; i++) {
-        const alea_nuclide_t* nuc = &mat->nuclides[i];
+    for (size_t i = 0; i < nuc_count; i++) {
+        const alea_nuclide_t* nuc = &mat->nuclides.data[i];
 
         char nuclide_name[32];
         if (zaid_to_openmc_name(nuc->zaid, nuclide_name, sizeof(nuclide_name)) < 0) {
@@ -701,8 +702,8 @@ static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
     }
 
     /* Thermal scattering laws (S(a,b) tables) */
-    for (size_t t = 0; t < mat->thermal_count; t++) {
-        const alea_thermal_law_t* law = &mat->thermal_laws[t];
+    for (size_t t = 0; t < alea_vec_count(&mat->thermal_laws); t++) {
+        const alea_thermal_law_t* law = &mat->thermal_laws.data[t];
         if (law->identifier && law->identifier[0]) {
             /* <sab name="c_H_in_H2O" /> */
             if (!openmc_xml_start_element(xml, "sab")) return false;
