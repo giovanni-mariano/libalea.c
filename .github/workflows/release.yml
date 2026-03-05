@@ -21,7 +21,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli tools RELEASE=1
+        run: make full cli tools RELEASE=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -50,7 +50,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli tools RELEASE=1
+        run: make full cli tools RELEASE=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -79,7 +79,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
+        run: make full cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -108,7 +108,7 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make lib cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
+        run: make full cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11 -fPIC"
 
       - name: Run tests
         run: make test-unit test-integration test-lua
@@ -150,7 +150,7 @@ jobs:
             zip
 
       - name: Build release
-        run: make lib cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11"
+        run: make full cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11"
 
       - name: Run tests
         run: make test-unit test-integration

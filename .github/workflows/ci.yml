@@ -25,7 +25,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y valgrind libomp-dev
 
       - name: Build (debug)
-        run: make lib cli tools CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make full cli tools CC=${{ matrix.compiler }} USE_OPENMP=1
 
       - name: Run unit tests
         run: make test-unit CC=${{ matrix.compiler }} USE_OPENMP=1
@@ -37,7 +37,7 @@ jobs:
         run: make test-lua CC=${{ matrix.compiler }} USE_OPENMP=1
 
       - name: Build (release)
-        run: make clean && make lib cli tools RELEASE=1 CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make clean && make full cli tools RELEASE=1 CC=${{ matrix.compiler }} USE_OPENMP=1
 
       - name: Valgrind check (gcc only)
         if: matrix.compiler == 'gcc'
@@ -54,13 +54,13 @@ jobs:
         run: brew install libomp
 
       - name: Build
-        run: make lib cli tools USE_OPENMP=1
+        run: make full cli tools USE_OPENMP=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua USE_OPENMP=1
 
       - name: Build (release)
-        run: make clean && make lib cli tools RELEASE=1 USE_OPENMP=1
+        run: make clean && make full cli tools RELEASE=1 USE_OPENMP=1
 
   build-windows:
     runs-on: windows-latest
@@ -83,7 +83,7 @@ jobs:
             make
 
       - name: Build
-        run: make lib cli tools USE_OPENMP=1
+        run: make full cli tools USE_OPENMP=1
 
       - name: Run tests
         run: make test-unit test-integration USE_OPENMP=1
