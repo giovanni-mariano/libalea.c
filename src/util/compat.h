@@ -33,6 +33,15 @@ char* alea_strdup(const char* s);
 int alea_strcasecmp(const char* s1, const char* s2);
 
 /**
+ * @brief Case-insensitive string comparison (bounded)
+ * @param s1 First string
+ * @param s2 Second string
+ * @param n Maximum number of characters to compare
+ * @return <0 if s1<s2, 0 if equal, >0 if s1>s2
+ */
+int alea_strncasecmp(const char* s1, const char* s2, size_t n);
+
+/**
  * @brief Create and open a temporary file with a unique name
  * @param path_out Buffer to receive the temp file path (at least 256 bytes)
  * @return FILE* open for writing, or NULL on failure. Caller must fclose().

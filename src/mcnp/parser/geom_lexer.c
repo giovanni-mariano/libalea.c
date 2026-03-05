@@ -14,8 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <ctype.h>
+#include "util/compat.h"
 #include <math.h>
 
 /**
@@ -257,21 +257,21 @@ const geometry_token_t* geom_lexer_next_token(geometry_lexer_t* lexer) {
         size_t word_len = word_end - word_start;
         
         // Case-insensitive keyword matching
-        if (word_len >= 4 && strncasecmp(word_start, "LIKE", 4) == 0) {
+        if (word_len >= 4 && alea_strncasecmp(word_start, "LIKE", 4) == 0) {
             lexer->token.type = GEOM_TOKEN_LIKE;
-        } else if (word_len >= 3 && strncasecmp(word_start, "BUT", 3) == 0) {
+        } else if (word_len >= 3 && alea_strncasecmp(word_start, "BUT", 3) == 0) {
             lexer->token.type = GEOM_TOKEN_BUT;
-        } else if (word_len >= 4 && strncasecmp(word_start, "FILL", 4) == 0) {
+        } else if (word_len >= 4 && alea_strncasecmp(word_start, "FILL", 4) == 0) {
             lexer->token.type = GEOM_TOKEN_FILL;
-        } else if (word_len >= 5 && strncasecmp(word_start, "*FILL", 5) == 0) {
+        } else if (word_len >= 5 && alea_strncasecmp(word_start, "*FILL", 5) == 0) {
             lexer->token.type = GEOM_TOKEN_FILL;
-        } else if (word_len >= 2 && strncasecmp(word_start, "U=", 2) == 0) {
+        } else if (word_len >= 2 && alea_strncasecmp(word_start, "U=", 2) == 0) {
             lexer->token.type = GEOM_TOKEN_UNIVERSE;
-        } else if (word_len >= 4 && strncasecmp(word_start, "MAT=", 4) == 0) {
+        } else if (word_len >= 4 && alea_strncasecmp(word_start, "MAT=", 4) == 0) {
             lexer->token.type = GEOM_TOKEN_MATERIAL;
-        } else if (word_len >= 4 && strncasecmp(word_start, "RHO=", 4) == 0) {
+        } else if (word_len >= 4 && alea_strncasecmp(word_start, "RHO=", 4) == 0) {
             lexer->token.type = GEOM_TOKEN_DENSITY;
-        } else if (word_len >= 4 && strncasecmp(word_start, "IMP:", 4) == 0) {
+        } else if (word_len >= 4 && alea_strncasecmp(word_start, "IMP:", 4) == 0) {
             lexer->token.type = GEOM_TOKEN_IMPORTANCE;
         } else {
             // Unknown keyword - treat as intersection for now

@@ -24,11 +24,7 @@
 #include <stdio.h>
 #include "util/math.h"
 
-#ifndef _WIN32
-#include <strings.h>
-#else
-#define strcasecmp _stricmp
-#endif
+#include "util/compat.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -1139,9 +1135,9 @@ int render_write_image(const char* filename, const uint8_t* pixels,
     const char* ext = strrchr(filename, '.');
     if (!ext) return render_write_png(filename, pixels, width, height);
 
-    if (strcasecmp(ext, ".bmp") == 0)
+    if (alea_strcasecmp(ext, ".bmp") == 0)
         return render_write_bmp(filename, pixels, width, height);
-    if (strcasecmp(ext, ".ppm") == 0)
+    if (alea_strcasecmp(ext, ".ppm") == 0)
         return render_write_ppm(filename, pixels, width, height);
     return render_write_png(filename, pixels, width, height);
 }

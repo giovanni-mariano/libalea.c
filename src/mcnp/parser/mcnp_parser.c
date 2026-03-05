@@ -15,15 +15,13 @@
 // Platform-specific includes for memory-mapped files
 #ifdef _WIN32
 #include <windows.h>
-#include <strings.h>
-#define strncasecmp _strnicmp
 #else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <strings.h>
 #endif
+#include "util/compat.h"
 
 /* ========================================================================== */
 /* INTERNAL STATE AND HELPERS                                                 */
@@ -466,7 +464,7 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
 
     // Detect LIKE BUT cells: "cell_id LIKE ref_id BUT ..."
     // "LIKE" appears where material_id would normally be
-    int is_like_card = (token_len == 4 && strncasecmp(token_buf, "LIKE", 4) == 0);
+    int is_like_card = (token_len == 4 && alea_strncasecmp(token_buf, "LIKE", 4) == 0);
 
     if (!is_like_card) {
         cell->material_id = strtol(token_buf, NULL, 10);

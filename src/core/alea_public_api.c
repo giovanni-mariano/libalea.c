@@ -32,14 +32,6 @@
 #include "util/str_builder.h"
 #include "util/compat.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#include <process.h>
-#define getpid _getpid
-#else
-#include <unistd.h>
-#endif
-
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
 #define ALEA_VERSION_STRING \
@@ -116,14 +108,6 @@ void alea_destroy(alea_system_t* sys) {
     } \
 } while(0)
 
-static char* clone_str(const char* s) {
-    if (!s) return NULL;
-    size_t len = strlen(s);
-    char* copy = malloc(len + 1);
-    if (copy) memcpy(copy, s, len + 1);
-    return copy;
-}
-
 alea_system_t* alea_clone(const alea_system_t* sys) {
     if (!sys) return NULL;
 
@@ -178,7 +162,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
             memcpy(m->nuclides.data, s->nuclides.data, alea_vec_count(&s->nuclides) * sizeof(alea_nuclide_t));
             m->nuclides.count = alea_vec_count(&s->nuclides);
             for (size_t j = 0; j < alea_vec_count(&s->nuclides); j++) {
-                m->nuclides.data[j].library = clone_str(s->nuclides.data[j].library);
+                m->nuclides.data[j].library = alea_strdup(s->nuclides.data[j].library);
             }
         }
         /* Deep-copy elements */
@@ -188,7 +172,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
             memcpy(m->elements.data, s->elements.data, alea_vec_count(&s->elements) * sizeof(alea_element_comp_t));
             m->elements.count = alea_vec_count(&s->elements);
             for (size_t j = 0; j < alea_vec_count(&s->elements); j++) {
-                m->elements.data[j].library = clone_str(s->elements.data[j].library);
+                m->elements.data[j].library = alea_strdup(s->elements.data[j].library);
             }
         }
         /* Deep-copy thermal laws */
@@ -198,11 +182,11 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
             memcpy(m->thermal_laws.data, s->thermal_laws.data, alea_vec_count(&s->thermal_laws) * sizeof(alea_thermal_law_t));
             m->thermal_laws.count = alea_vec_count(&s->thermal_laws);
             for (size_t j = 0; j < alea_vec_count(&s->thermal_laws); j++) {
-                m->thermal_laws.data[j].identifier = clone_str(s->thermal_laws.data[j].identifier);
+                m->thermal_laws.data[j].identifier = alea_strdup(s->thermal_laws.data[j].identifier);
             }
         }
-        m->name = clone_str(s->name);
-        m->comments = clone_str(s->comments);
+        m->name = alea_strdup(s->name);
+        m->comments = alea_strdup(s->comments);
     }
 
     /* Clone universes: shallow copy then NULL out index data */
@@ -227,8 +211,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
             memcpy(m->components.data, s->components.data, alea_vec_count(&s->components) * sizeof(alea_mixture_comp_t));
             m->components.count = alea_vec_count(&s->components);
         }
-        m->name = clone_str(s->name);
-        m->comments = clone_str(s->comments);
+        m->name = alea_strdup(s->name);
+        m->comments = alea_strdup(s->comments);
     }
 
     /* Clone surface lookup if present */

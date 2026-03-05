@@ -5,14 +5,7 @@
 #include "mcnp_lexer.h"
 #include <ctype.h>
 #include <string.h>
-
-// Platform-specific case-insensitive comparison
-#ifdef _WIN32
-#include <strings.h>
-#define strncasecmp _strnicmp
-#else
-#include <strings.h>
-#endif
+#include "util/compat.h"
 
 /**
  * @brief Get the next non-whitespace token from a string.
@@ -69,7 +62,7 @@ int mcnp_lexer_is_parameter_keyword(const char* token, size_t len) {
         size_t keyword_len = strlen(keywords[i]);
         
         // Use case-insensitive comparison
-        if (strncasecmp(token, keywords[i], keyword_len) == 0) {
+        if (alea_strncasecmp(token, keywords[i], keyword_len) == 0) {
             return 1; // Match found
         }
     }
