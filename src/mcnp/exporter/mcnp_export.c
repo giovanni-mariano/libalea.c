@@ -350,7 +350,8 @@ static int alea_tree_to_mcnp_expr(const alea_system_t* sys,
 static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
                                   size_t cell_index, const char* expr,
                                   const alea_system_t* sys,
-                                  export_context_t* ctx) {
+                                  export_context_t* ctx,
+                                  const char* inline_comment) {
 
     mcnp_str_t s;
     mcnp_str_init(&s, &ctx->arena, EXPR_BUF_SIZE, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
@@ -513,6 +514,10 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
         } else {
             mcnp_str_int(&s, mp->trcl);
         }
+    }
+
+    if (inline_comment && *inline_comment) {
+        mcnp_str_inline_comment(&s, inline_comment);
     }
 
     mcnp_str_write(&s, out);
@@ -887,7 +892,28 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
             continue;
         }
 
-        write_mcnp_cell_line(ctx->out, cell, i, s.sb.buf, sys, ctx);
+        // Emit "C" comment lines before the cell card
+        if (cell->comments && *cell->comments) {
+            mcnp_str_t cs_cell;
+            mcnp_str_init(&cs_cell, &ctx->arena, 1024, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
+            // Write each line as-is (they already have "c " prefix from parsing)
+            const char* cp = cell->comments;
+            while (*cp) {
+                const char* nl = strchr(cp, '\n');
+                size_t line_len = nl ? (size_t)(nl - cp) : strlen(cp);
+                // Write the raw comment line directly
+                str_builder_write(&cs_cell.sb, cp, line_len);
+                str_builder_putc(&cs_cell.sb, '\n');
+                cs_cell.col = 1;
+                cp = nl ? nl + 1 : cp + line_len;
+            }
+            str_builder_finish(&cs_cell.sb);
+            if (cs_cell.sb.len > 0) {
+                fprintf(ctx->out, "%s", cs_cell.sb.buf);
+            }
+        }
+
+        write_mcnp_cell_line(ctx->out, cell, i, s.sb.buf, sys, ctx, cell->inline_comment);
         ctx->cells_written++;
     }
 

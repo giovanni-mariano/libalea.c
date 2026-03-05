@@ -75,6 +75,10 @@ typedef struct alea_cell_entry {
     // Cell adjacency (built by alea_build_cell_adjacency)
     struct alea_cell_neighbor* neighbors;  // Array of neighboring cells
     size_t neighbor_count;                // Number of neighbors
+
+    // Comments (preserved from MCNP input)
+    char* comments;        // "C" comment lines before the cell (NULL if none)
+    char* inline_comment;  // Inline "$" comment from last line (NULL if none)
 } alea_cell_entry_t;
 
 ALEA_VEC_DEFINE(alea_cell_vec, alea_cell_entry_t);

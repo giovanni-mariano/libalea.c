@@ -2325,6 +2325,8 @@ void alea_flatten_all_cells(
             free(cell->surface_indices);
             free(cell->neighbors);
             free(cell->lat_fill);
+            free(cell->comments);
+            free(cell->inline_comment);
             removed++;
         } else {
             if (write != i) {
@@ -2414,6 +2416,8 @@ int alea_split_union_cells(alea_system_t* sys) {
             free(cell->surface_indices);
             free(cell->neighbors);
             free(cell->lat_fill);
+            free(cell->comments);
+            free(cell->inline_comment);
         } else {
             if (write != i) {
                 sys->cells.data[write] = sys->cells.data[i];

@@ -39,6 +39,7 @@ typedef struct mcnp_cell {
     char* geometry_definition; // The raw geometry string (e.g., "-1 2 -3")
     char* parameters;          // Other parameters like IMP:N, U, etc.
     char* comments;
+    char* inline_comment;   // Inline $ comment from the last line of the cell card
 } mcnp_cell_t;
 
 /**

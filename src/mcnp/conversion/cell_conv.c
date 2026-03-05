@@ -16,6 +16,7 @@
 #include "mcnp/parser/geom_parser.h"
 #include "core/alea_universe.h"
 #include "util/alea_log.h"
+#include "util/compat.h"
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -699,6 +700,12 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         entry->temperature = params.tmp / 8.617333262e-11;
         entry->has_temperature = 1;
     }
+
+    // Copy comments from parsed cell
+    if (cell->comments)
+        entry->comments = alea_strdup(cell->comments);
+    if (cell->inline_comment)
+        entry->inline_comment = alea_strdup(cell->inline_comment);
 
     // Handle inline FILL transforms (registered in sys, ID stored in entry)
     if (params.fill_transform_inline && params.fill_transform_count > 0) {

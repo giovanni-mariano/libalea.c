@@ -121,6 +121,8 @@ void alea_system_destroy_internals(alea_system_t* sys) {
         if (!sys->neighbor_pool)
             free(sys->cells.data[i].neighbors);
         free(sys->cells.data[i].lat_fill);
+        free(sys->cells.data[i].comments);
+        free(sys->cells.data[i].inline_comment);
     }
     free(sys->neighbor_pool);
     alea_vec_free(&sys->cells);
@@ -206,6 +208,10 @@ void alea_system_reset(alea_system_t* sys) {
         free(sys->cells.data[i].lat_fill);
         sys->cells.data[i].lat_fill = NULL;
         sys->cells.data[i].lat_fill_count = 0;
+        free(sys->cells.data[i].comments);
+        sys->cells.data[i].comments = NULL;
+        free(sys->cells.data[i].inline_comment);
+        sys->cells.data[i].inline_comment = NULL;
     }
     free(sys->neighbor_pool);
     sys->neighbor_pool = NULL;

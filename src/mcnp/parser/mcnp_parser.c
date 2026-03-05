@@ -201,6 +201,12 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
     str_builder_t line_sb;
     str_builder_init(&line_sb, &ctx->arena, 4096);
 
+    // --- String builders for accumulating "C" comment lines before cells ---
+    str_builder_t comment_sb;       // Comments before the current card
+    str_builder_init(&comment_sb, &ctx->arena, 1024);
+    str_builder_t peek_comment_sb;  // Comments consumed during look-ahead (for next card)
+    str_builder_init(&peek_comment_sb, &ctx->arena, 512);
+
     while (current < end) {
         const char* line_start = current;
         const char* line_end = strchr(line_start, '\n');
@@ -236,17 +242,33 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
         if (is_blank) {
             if (state == STATE_CELL_BLOCK) state = STATE_SURFACE_BLOCK;
             else if (state == STATE_SURFACE_BLOCK) state = STATE_DATA_BLOCK;
+            str_builder_reset(&comment_sb);
+            str_builder_reset(&peek_comment_sb);
             current = line_end + 1;
             continue;
         }
-        if (is_comment) { current = line_end + 1; continue; }
+        if (is_comment) {
+            // Accumulate "C" comment lines (preserve full line from trimmed_start)
+            if (state == STATE_CELL_BLOCK) {
+                str_builder_write(&comment_sb, trimmed_start, line_end - trimmed_start);
+                str_builder_putc(&comment_sb, '\n');
+            }
+            current = line_end + 1;
+            continue;
+        }
 
         size_t initial_len = line_end - line_start;
+
+        // Track the last inline $ comment across all physical lines of this card
+        const char* last_dollar_start = NULL;
+        const char* last_dollar_end = NULL;
 
         // Strip inline comment from this line (if any)
         const char* comment_pos = (const char*)memchr(line_start, '$', initial_len);
         if (comment_pos) {
             initial_len = comment_pos - line_start;
+            last_dollar_start = comment_pos + 1;
+            last_dollar_end = line_end;
         }
 
         str_builder_reset(&line_sb);
@@ -267,11 +289,17 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
             (void)(peek_trimmed_start == next_line_end);  /* peek_is_blank - reserved for future use */
             int peek_is_comment = (peek_trimmed_start < next_line_end && tolower((unsigned char)*peek_trimmed_start) == 'c' && isspace((unsigned char)*(peek_trimmed_start+1)));
 
-            // If the peeked line is a comment skip it and continue looking for continuations.
+            // If the peeked line is a comment, accumulate for the *next* card
+            // and continue looking for continuations of the current card.
             if (peek_is_comment) {
-                peek_pos = next_line_end + 1; // Consume the line
-                line_num++;                  // Increment line counter
-                continue;                    // Continue the look-ahead loop
+                if (state == STATE_CELL_BLOCK) {
+                    str_builder_write(&peek_comment_sb, peek_trimmed_start,
+                                      next_line_end - peek_trimmed_start);
+                    str_builder_putc(&peek_comment_sb, '\n');
+                }
+                peek_pos = next_line_end + 1;
+                line_num++;
+                continue;
             }
                         
             // Now, check if the non-comment is a continuation
@@ -290,12 +318,22 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
             int is_continuation = (indent == 5);
 
             if (is_continuation || ends_with_ampersand) {
+                // Comments peeked before this continuation are mid-card; discard them
+                str_builder_reset(&peek_comment_sb);
+
                 size_t continuation_len = next_line_end - next_line_start;
 
                 // Strip inline comment from continuation line (if any)
                 const char* cont_comment_pos = (const char*)memchr(next_line_start, '$', continuation_len);
                 if (cont_comment_pos) {
                     continuation_len = cont_comment_pos - next_line_start;
+                    last_dollar_start = cont_comment_pos + 1;
+                    last_dollar_end = next_line_end;
+                } else {
+                    // This continuation has no $, so it becomes the "last line"
+                    // and clears any previous $ capture
+                    last_dollar_start = NULL;
+                    last_dollar_end = NULL;
                 }
 
                 // Append a space to replace the newline/&
@@ -346,6 +384,36 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
                 break;
             }
             default: break;
+        }
+
+        // Attach accumulated comments to the just-parsed cell
+        if (state == STATE_CELL_BLOCK && success && ctx->cell_count > 0) {
+            mcnp_cell_t* last_cell = ctx->cells[ctx->cell_count - 1];
+            if (comment_sb.len > 0) {
+                str_builder_finish(&comment_sb);
+                last_cell->comments = arena_strdup(&ctx->arena, comment_sb.buf);
+            }
+            if (last_dollar_start) {
+                // Trim leading/trailing whitespace from the $ comment text
+                while (last_dollar_start < last_dollar_end && isspace((unsigned char)*last_dollar_start))
+                    last_dollar_start++;
+                const char* dollar_trim_end = last_dollar_end;
+                while (dollar_trim_end > last_dollar_start && isspace((unsigned char)*(dollar_trim_end - 1)))
+                    dollar_trim_end--;
+                if (dollar_trim_end > last_dollar_start) {
+                    size_t dlen = dollar_trim_end - last_dollar_start;
+                    char* buf = (char*)arena_alloc(&ctx->arena, dlen + 1);
+                    memcpy(buf, last_dollar_start, dlen);
+                    buf[dlen] = '\0';
+                    last_cell->inline_comment = buf;
+                }
+            }
+        }
+        str_builder_reset(&comment_sb);
+        // Transfer any peeked comments (consumed during look-ahead) for the next card
+        if (peek_comment_sb.len > 0) {
+            str_builder_write(&comment_sb, peek_comment_sb.buf, peek_comment_sb.len);
+            str_builder_reset(&peek_comment_sb);
         }
 
         if (!success) { ALEA_LOG_ERROR("ERROR: Parsing failed on logical line starting near line %d.\n", line_num); break; }

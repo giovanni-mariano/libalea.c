@@ -814,6 +814,8 @@ alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) 
             dst_cell->has_temperature = cell->has_temperature;
             dst_cell->fill_universe = cell->fill_universe;
             dst_cell->fill_transform = cell->fill_transform;
+            dst_cell->comments = cell->comments ? alea_strdup(cell->comments) : NULL;
+            dst_cell->inline_comment = cell->inline_comment ? alea_strdup(cell->inline_comment) : NULL;
         }
     }
 
@@ -884,6 +886,9 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         } else {
             cell.lat_fill = NULL;
         }
+        /* Deep-copy comment strings */
+        cell.comments = cell.comments ? alea_strdup(cell.comments) : NULL;
+        cell.inline_comment = cell.inline_comment ? alea_strdup(cell.inline_comment) : NULL;
         int idx = (int)alea_vec_count(&target->cells);
         alea_vec_push(&target->cells, cell, alea_cell_entry_t);
         cell_hashmap_put(&target->cell_index, cell.mcnp_cell_id, idx);
@@ -1251,6 +1256,8 @@ alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* 
             dst_cell->has_temperature = cell->has_temperature;
             dst_cell->fill_universe = cell->fill_universe;
             dst_cell->fill_transform = cell->fill_transform;
+            dst_cell->comments = cell->comments ? alea_strdup(cell->comments) : NULL;
+            dst_cell->inline_comment = cell->inline_comment ? alea_strdup(cell->inline_comment) : NULL;
         }
     }
 
