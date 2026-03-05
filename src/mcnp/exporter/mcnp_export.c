@@ -896,12 +896,16 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
         if (cell->comments && *cell->comments) {
             mcnp_str_t cs_cell;
             mcnp_str_init(&cs_cell, &ctx->arena, 1024, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
-            // Write each line as-is (they already have "c " prefix from parsing)
             const char* cp = cell->comments;
             while (*cp) {
                 const char* nl = strchr(cp, '\n');
                 size_t line_len = nl ? (size_t)(nl - cp) : strlen(cp);
-                // Write the raw comment line directly
+                // Add "c " prefix if line doesn't already have it
+                bool has_prefix = (line_len >= 1 && (cp[0] == 'c' || cp[0] == 'C') &&
+                                   (line_len == 1 || cp[1] == ' ' || cp[1] == '\n'));
+                if (!has_prefix && line_len > 0) {
+                    str_builder_write(&cs_cell.sb, "c ", 2);
+                }
                 str_builder_write(&cs_cell.sb, cp, line_len);
                 str_builder_putc(&cs_cell.sb, '\n');
                 cs_cell.col = 1;

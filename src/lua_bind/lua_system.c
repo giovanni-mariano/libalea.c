@@ -230,6 +230,7 @@ int luaopen_alea(lua_State* L) {
     luaopen_alea_slice(L);
     luaopen_alea_render(L);
     luaopen_alea_mesh(L);
+    luaopen_alea_materials(L);
 
     /* Set as global */
     lua_pushvalue(L, -1);

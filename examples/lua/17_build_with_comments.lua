@@ -33,8 +33,8 @@ sys:cell{
     id       = 1,
     region   = fuel_r,
     material = mat_uo2,
-    density  = -10.97,
-    comment  = "c Fuel pellet\nc Material: UO2 enriched 4.0%\nc Density: 10.97 g/cm3\n",
+    density  = 10.97,
+    comment  = "Fuel pellet\nMaterial: UO2 enriched 4.0%\nDensity: 10.97 g/cm3\n",
     inline_comment = "UO2 fuel"
 }
 
@@ -42,8 +42,8 @@ sys:cell{
     id       = 2,
     region   = clad_r,
     material = mat_zr,
-    density  = -6.56,
-    comment  = "c Cladding\nc Material: Zircaloy-4\n",
+    density  = 6.56,
+    comment  = "Cladding\nMaterial: Zircaloy-4\n",
     inline_comment = "Zr clad"
 }
 
@@ -51,21 +51,21 @@ sys:cell{
     id       = 3,
     region   = cool_r,
     material = mat_h2o,
-    density  = -1.0,
-    comment  = "c Coolant channel\nc Material: Light water\n",
+    density  = 1.0,
+    comment  = "Coolant channel\nMaterial: Light water\n",
     inline_comment = "H2O coolant"
 }
 
 sys:cell{
     id       = 4,
     region   = void_r,
-    comment  = "c Void region outside coolant\n",
+    comment  = "Void region outside coolant\n",
 }
 
 sys:cell{
     id       = 5,
     region   = grav_r,
-    comment  = "c Graveyard\n",
+    comment  = "Graveyard\n",
     inline_comment = "kill zone"
 }
 
