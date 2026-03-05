@@ -2376,6 +2376,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
             }
 
             curve.surface_id = surf->mcnp_surface_id;
+            curve.universe_id = cell->universe_id;
 
             /* Add curve to result */
             if (ensure_curve_capacity(result) != 0) {
@@ -2529,6 +2530,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                                 continue;
 
                             curve.surface_id = surf->mcnp_surface_id;
+                            curve.universe_id = fc_cell->universe_id;
 
                             if (ensure_curve_capacity(result) != 0) goto lat_done;
                             result->curves[result->curve_count++] = curve;

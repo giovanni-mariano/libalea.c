@@ -12,6 +12,7 @@
 #include "openmc_model.h"
 #include "alea.h"
 #include "core/alea_system.h"
+#include "core/alea_spatial.h"
 #include "core/alea_export.h"
 #include "util/alea_log.h"
 #include <stdlib.h>
@@ -122,6 +123,10 @@ openmc_model_t* openmc_load(const char* filename) {
     if (!model) return NULL;
 
     model->sys->source = ALEA_SOURCE_OPENMC;
+
+    alea_build_cell_adjacency(model->sys);
+    alea_spatial_index_build(model->sys);
+
     return model;
 }
 
@@ -132,6 +137,10 @@ openmc_model_t* openmc_load_string(const char* input, size_t len) {
     if (!model) return NULL;
 
     model->sys->source = ALEA_SOURCE_OPENMC;
+
+    alea_build_cell_adjacency(model->sys);
+    alea_spatial_index_build(model->sys);
+
     return model;
 }
 

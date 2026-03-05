@@ -184,6 +184,7 @@ typedef struct {
     alea_curve_data_t data;
     alea_curve_bounds_t bounds;
     int surface_id;         /* MCNP surface ID this curve came from */
+    int universe_id;        /* Universe ID this curve belongs to */
     int sense;              /* +1 or -1: which side is "inside" */
 } alea_curve_2d_t;
 

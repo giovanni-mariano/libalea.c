@@ -218,6 +218,35 @@ int alea_check_grid_overlaps(const alea_system_t* sys,
                                   const int* cell_ids,
                                   uint8_t* errors);
 
+/**
+ * @brief Detect nested overlaps by probing pixels along surface curves
+ *
+ * Efficient alternative to alea_check_grid_overlaps(): instead of
+ * re-querying every pixel, only probes pixels where a surface curve
+ * crosses the grid without a cell-ID transition (i.e., same cell on
+ * both sides). These are the only places where a fully-nested overlap
+ * (e.g., sphere inside sphere) can hide.
+ *
+ * Call after alea_find_cells_grid() and alea_get_slice_curves().
+ *
+ * @param sys CSG system
+ * @param view Slice view (plane + viewport bounds)
+ * @param curves Previously computed curves for this view
+ * @param nu Grid width
+ * @param nv Grid height
+ * @param universe_depth Which level of universe hierarchy (-1 for innermost)
+ * @param cell_ids Cell ID grid from alea_find_cells_grid()
+ * @param errors Error grid to update (size nu*nv)
+ * @return Number of new overlap pixels found, or -1 on error
+ */
+int alea_check_grid_overlaps_curves(const alea_system_t* sys,
+                                    const alea_slice_view_t* view,
+                                    const alea_slice_curves_t* curves,
+                                    int nu, int nv,
+                                    int universe_depth,
+                                    const int* cell_ids,
+                                    uint8_t* errors);
+
 /* ============================================================================
  * LABEL POSITION COMPUTATION
  * ============================================================================ */
@@ -315,6 +344,87 @@ void alea_slice_curves_bounds(const alea_slice_curves_t* curves,
  * @brief Free curves result
  */
 void alea_slice_curves_free(alea_slice_curves_t* curves);
+
+/* ============================================================================
+ * ANALYTICAL ERROR LINE CHECKING
+ * ============================================================================ */
+
+/** Error type for analytical error lines */
+typedef enum {
+    ALEA_SLICE_ERR_OVERLAP = 1,  /**< Multiple cells on one/both sides */
+    ALEA_SLICE_ERR_GAP     = 2   /**< No cell on one/both sides */
+} alea_slice_error_type_t;
+
+/** A segment of a curve identified as an error */
+typedef struct {
+    size_t curve_index;            /**< Index into curves collection */
+    int surface_id;                /**< Surface ID for reference */
+    alea_slice_error_type_t type;  /**< OVERLAP or GAP */
+    double t_start, t_end;         /**< Parameter range of error segment */
+} alea_slice_error_t;
+
+/** Result of error line checking */
+typedef struct {
+    alea_slice_error_t* errors;
+    size_t error_count;
+} alea_slice_error_result_t;
+
+/**
+ * @brief Check surface curves for geometry errors (overlaps/gaps)
+ *
+ * Samples points along each curve, offsets to both sides, and checks
+ * if exactly one cell exists on each side. Returns segments where
+ * errors are detected.
+ *
+ * Uses CSG point-containment queries. Prefer alea_check_slice_errors_grid()
+ * when a cell grid is already available.
+ *
+ * @param sys CSG system
+ * @param view Slice view
+ * @param curves Previously computed curves from alea_get_slice_curves()
+ * @param universe_depth Which level of universe hierarchy (-1 for innermost)
+ * @return Error result (must be freed with alea_slice_errors_free), or NULL
+ */
+alea_slice_error_result_t* alea_check_slice_errors(
+    const alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    int universe_depth);
+
+/**
+ * @brief Check surface curves for geometry errors using a pre-computed grid
+ *
+ * Fast version that uses O(1) pixel lookups in the cell grid for the common
+ * case. Falls back to a single CSG query only when both sides of a curve
+ * show the same cell (possible nested overlap, e.g., sphere inside sphere).
+ *
+ * The grid must come from alea_find_cells_grid() for the same view.
+ *
+ * Classification per sample:
+ * - Both sides have different cells → OK (real boundary)
+ * - One/both sides void (cell_id < 0) → GAP
+ * - Grid pixel flagged as overlap → OVERLAP
+ * - Same cell both sides → CSG fallback to check for nested overlap
+ *
+ * @param sys CSG system (for nested overlap fallback, can be NULL to skip)
+ * @param view Slice view (must match grid)
+ * @param curves Previously computed curves
+ * @param cell_ids Cell ID grid from alea_find_cells_grid() (size nu*nv)
+ * @param grid_errors Error grid from alea_find_cells_grid() (size nu*nv, can be NULL)
+ * @param nu Grid width
+ * @param nv Grid height
+ * @return Error result (must be freed with alea_slice_errors_free), or NULL
+ */
+alea_slice_error_result_t* alea_check_slice_errors_grid(
+    const alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    const int* cell_ids,
+    const uint8_t* grid_errors,
+    int nu, int nv);
+
+/** Free error result */
+void alea_slice_errors_free(alea_slice_error_result_t* result);
 
 /* ============================================================================
  * DEBUG UTILITIES

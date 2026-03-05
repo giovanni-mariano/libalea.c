@@ -216,6 +216,11 @@ void alea_slice_curves_free(alea_slice_curves_t* curves) {
 #define GRID_ERR_OVERLAP   1
 #define GRID_ERR_UNDEFINED 2
 
+/* Forward declarations for functions used across sections */
+static void get_clipped_param_range(const alea_curve_2d_t* curve,
+                                    const alea_slice_view_t* view,
+                                    double* t_lo, double* t_hi);
+
 /* ============================================================================
  * PER-UNIVERSE ADJACENCY HINTS
  * ============================================================================ */
@@ -848,6 +853,162 @@ int alea_check_grid_overlaps(const alea_system_t* sys,
 }
 
 /* ============================================================================
+ * CURVE-GUIDED OVERLAP DETECTION
+ * ============================================================================ */
+
+/**
+ * Check a single pixel for nested overlap via full hierarchy query.
+ * Returns 1 if overlap found and error grid updated, 0 otherwise.
+ */
+static int probe_pixel_for_overlap(const alea_system_t* sys,
+                                   const alea_slice_plane_t* plane,
+                                   double u_min, double v_min,
+                                   double du, double dv,
+                                   int nu, int nv,
+                                   int universe_depth,
+                                   const int* cell_ids,
+                                   uint8_t* errors,
+                                   int pi, int pj) {
+    if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) return 0;
+    int idx = pj * nu + pi;
+    if (cell_ids[idx] < 0) return 0;    /* void */
+    if (errors[idx] != GRID_ERR_NONE) return 0;  /* already flagged */
+
+    double u = u_min + (pi + 0.5) * du;
+    double v = v_min + (pj + 0.5) * dv;
+
+    double gx = plane->origin[0] + u * plane->u_axis[0] + v * plane->v_axis[0];
+    double gy = plane->origin[1] + u * plane->u_axis[1] + v * plane->v_axis[1];
+    double gz = plane->origin[2] + u * plane->u_axis[2] + v * plane->v_axis[2];
+
+    alea_cell_hit_t hits[32];
+    int num_hits = alea_find_all_cells_at_point_recursive(sys, gx, gy, gz, hits, 32);
+    if (num_hits <= 1) return 0;
+
+    int target_depth = (universe_depth < 0)
+        ? hits[num_hits - 1].depth : universe_depth;
+    int count = 0;
+    for (int h = 0; h < num_hits; h++)
+        if (hits[h].depth == target_depth) count++;
+    if (count > 1) {
+        errors[idx] = GRID_ERR_OVERLAP;
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * Check if pixel (pi,pj) is a cell-ID boundary in the grid.
+ */
+static bool pixel_is_boundary(const int* cell_ids, int nu, int nv, int pi, int pj) {
+    int idx = pj * nu + pi;
+    int cell = cell_ids[idx];
+    if (pi + 1 < nu && cell_ids[idx + 1]       != cell) return true;
+    if (pj + 1 < nv && cell_ids[(pj+1)*nu + pi] != cell) return true;
+    if (pi > 0     && cell_ids[idx - 1]         != cell) return true;
+    if (pj > 0     && cell_ids[(pj-1)*nu + pi] != cell) return true;
+    return false;
+}
+
+int alea_check_grid_overlaps_curves(const alea_system_t* sys,
+                                    const alea_slice_view_t* view,
+                                    const alea_slice_curves_t* curves,
+                                    int nu, int nv,
+                                    int universe_depth,
+                                    const int* cell_ids,
+                                    uint8_t* errors) {
+    if (!sys || !view || !curves || !cell_ids || !errors || nu <= 0 || nv <= 0)
+        return -1;
+
+    const alea_curve_collection_t* coll = &curves->internal;
+    if (coll->curve_count == 0) return 0;
+
+    const alea_slice_plane_t* plane = &view->plane;
+    double u_min = view->u_min, u_max = view->u_max;
+    double v_min = view->v_min, v_max = view->v_max;
+    double du = (u_max - u_min) / nu;
+    double dv = (v_max - v_min) / nv;
+    double inv_du = 1.0 / du;
+    double inv_dv = 1.0 / dv;
+
+    /* Bitmap to avoid re-probing the same pixel from multiple curves */
+    size_t bitmap_size = ((size_t)nu * nv + 7) / 8;
+    uint8_t* probed = calloc(bitmap_size, 1);
+    if (!probed) return -1;
+
+    double sample_spacing = fmin(du, dv) * 0.7;  /* sub-pixel stepping */
+
+    int new_overlaps = 0;
+
+    for (size_t ci = 0; ci < coll->curve_count; ci++) {
+        const alea_curve_2d_t* curve = &coll->curves[ci];
+
+        if (curve->type == ALEA_CURVE_NONE || curve->type == ALEA_CURVE_POINT)
+            continue;
+
+        /* For parametric curves: walk the parameter range and rasterize */
+        if (curve->type == ALEA_CURVE_QUARTIC || curve->type == ALEA_CURVE_POLYGON)
+            continue;  /* TODO: handle these if needed */
+
+        double t_lo, t_hi;
+        get_clipped_param_range(curve, view, &t_lo, &t_hi);
+        if (t_lo >= t_hi) continue;
+
+        double arc_approx = t_hi - t_lo;
+        if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ARC) {
+            arc_approx = (t_hi - t_lo) * curve->data.circle.radius;
+        } else if (curve->type == ALEA_CURVE_ELLIPSE || curve->type == ALEA_CURVE_ELLIPSE_ARC) {
+            double avg_r = (curve->data.ellipse.semi_a + curve->data.ellipse.semi_b) * 0.5;
+            arc_approx = (t_hi - t_lo) * avg_r;
+        }
+
+        int n_samples = (int)(arc_approx / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 10000) n_samples = 10000;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double t = t_lo + (t_hi - t_lo) * s / n_samples;
+
+            double u, v;
+            if (!alea_curve_eval(curve, t, &u, &v)) continue;
+            if (u < u_min || u > u_max || v < v_min || v > v_max) continue;
+
+            int pi = (int)((u - u_min) * inv_du);
+            int pj = (int)((v - v_min) * inv_dv);
+            if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) continue;
+
+            /* Skip boundary pixels — already checked by pass 2 */
+            if (pixel_is_boundary(cell_ids, nu, nv, pi, pj)) continue;
+
+            /* Probe this pixel and its immediate neighbors (to catch
+             * near-boundary cases where the curve is between pixels) */
+            for (int dj = -1; dj <= 1; dj++) {
+                for (int di = -1; di <= 1; di++) {
+                    int qi = pi + di, qj = pj + dj;
+                    if (qi < 0 || qi >= nu || qj < 0 || qj >= nv) continue;
+
+                    size_t bit_idx = (size_t)qj * nu + qi;
+                    size_t byte_idx = bit_idx / 8;
+                    uint8_t bit_mask = 1u << (bit_idx % 8);
+                    if (probed[byte_idx] & bit_mask) continue;
+                    probed[byte_idx] |= bit_mask;
+
+                    /* Skip if already a boundary pixel */
+                    if (pixel_is_boundary(cell_ids, nu, nv, qi, qj)) continue;
+
+                    new_overlaps += probe_pixel_for_overlap(
+                        sys, plane, u_min, v_min, du, dv,
+                        nu, nv, universe_depth, cell_ids, errors, qi, qj);
+                }
+            }
+        }
+    }
+
+    free(probed);
+    return new_overlaps;
+}
+
+/* ============================================================================
  * LABEL POSITION COMPUTATION
  *
  * Uses connected component labeling to handle:
@@ -1351,5 +1512,895 @@ int alea_find_surface_label_positions(
     *out_labels = labels;
     *out_count = temp_count;
     return 0;
+}
+
+/* ============================================================================
+ * ANALYTICAL ERROR LINE CHECKING
+ * ============================================================================ */
+
+/**
+ * Count cells at a specific depth in the hit array.
+ * depth == -1 means innermost (max depth hit).
+ * Returns the number of distinct cells at that depth.
+ */
+/**
+ * Classify a sample point on a curve by offsetting to both sides and
+ * counting cells. Returns 0 = OK, ALEA_SLICE_ERR_OVERLAP, or ALEA_SLICE_ERR_GAP.
+ */
+/**
+ * Count how many cells in a given universe contain a 3D point.
+ * Returns the count (0 = gap, 1 = OK, >1 = overlap).
+ *
+ * Uses the spatial index (BVH + coherence cache) for fast lookup
+ * instead of brute-forcing all cells in the universe.
+ */
+static int count_cells_in_universe_at_point(const alea_system_t* sys,
+                                             int universe_id,
+                                             double x, double y, double z) {
+    alea_cell_hit_t hits[16];
+    int n = alea_spatial_find_cells_at_point(sys, x, y, z, hits, 16);
+    if (n <= 0) return 0;
+
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (hits[i].universe_id == universe_id) {
+            count++;
+            if (count > 1) return count;  /* Early exit on overlap */
+        }
+    }
+    return count;
+}
+
+static int classify_sample(const alea_system_t* sys,
+                           const alea_slice_view_t* view,
+                           double u, double v,
+                           double nu, double nv,
+                           double eps,
+                           int universe_id) {
+    const alea_slice_plane_t* pl = &view->plane;
+
+    /* Offset points in 2D */
+    double u_plus  = u + eps * nu;
+    double v_plus  = v + eps * nv;
+    double u_minus = u - eps * nu;
+    double v_minus = v - eps * nv;
+
+    /* Convert to 3D */
+    double x_plus  = pl->origin[0] + u_plus * pl->u_axis[0] + v_plus * pl->v_axis[0];
+    double y_plus  = pl->origin[1] + u_plus * pl->u_axis[1] + v_plus * pl->v_axis[1];
+    double z_plus  = pl->origin[2] + u_plus * pl->u_axis[2] + v_plus * pl->v_axis[2];
+
+    double x_minus = pl->origin[0] + u_minus * pl->u_axis[0] + v_minus * pl->v_axis[0];
+    double y_minus = pl->origin[1] + u_minus * pl->u_axis[1] + v_minus * pl->v_axis[1];
+    double z_minus = pl->origin[2] + u_minus * pl->u_axis[2] + v_minus * pl->v_axis[2];
+
+    /* Count cells in this universe on both sides */
+    int cells_plus  = count_cells_in_universe_at_point(sys, universe_id,
+                                                        x_plus, y_plus, z_plus);
+    int cells_minus = count_cells_in_universe_at_point(sys, universe_id,
+                                                        x_minus, y_minus, z_minus);
+
+    if (cells_plus > 1 || cells_minus > 1)
+        return ALEA_SLICE_ERR_OVERLAP;
+    if (cells_plus == 0 || cells_minus == 0)
+        return ALEA_SLICE_ERR_GAP;
+    return 0; /* OK */
+}
+
+/**
+ * Compute parameter range for a curve clipped to the viewport.
+ * For bounded curves, returns the stored bounds.
+ * For infinite curves (LINE, PARABOLA, HYPERBOLA), clips to viewport.
+ */
+static void get_clipped_param_range(const alea_curve_2d_t* curve,
+                                    const alea_slice_view_t* view,
+                                    double* t_lo, double* t_hi) {
+    switch (curve->type) {
+        case ALEA_CURVE_LINE: {
+            /* For infinite lines, find parameter range that covers viewport */
+            const alea_line_2d_t* ln = &curve->data.line;
+            double du = ln->direction[0];
+            double dv = ln->direction[1];
+
+            /* Find t range where point + t*dir intersects viewport */
+            double t_min_val = -1e10, t_max_val = 1e10;
+
+            if (fabs(du) > 1e-15) {
+                double t1 = (view->u_min - ln->point[0]) / du;
+                double t2 = (view->u_max - ln->point[0]) / du;
+                if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+                if (t1 > t_min_val) t_min_val = t1;
+                if (t2 < t_max_val) t_max_val = t2;
+            }
+            if (fabs(dv) > 1e-15) {
+                double t1 = (view->v_min - ln->point[1]) / dv;
+                double t2 = (view->v_max - ln->point[1]) / dv;
+                if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+                if (t1 > t_min_val) t_min_val = t1;
+                if (t2 < t_max_val) t_max_val = t2;
+            }
+
+            *t_lo = t_min_val;
+            *t_hi = t_max_val;
+            return;
+        }
+
+        case ALEA_CURVE_PARALLEL_LINES:
+        case ALEA_CURVE_RAY: {
+            /* For rays and parallel lines, clip similar to lines */
+            const alea_line_2d_t* ln = &curve->data.line;
+            double du = ln->direction[0];
+            double dv = ln->direction[1];
+            double t_min_val = -1e10, t_max_val = 1e10;
+
+            if (fabs(du) > 1e-15) {
+                double t1 = (view->u_min - ln->point[0]) / du;
+                double t2 = (view->u_max - ln->point[0]) / du;
+                if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+                if (t1 > t_min_val) t_min_val = t1;
+                if (t2 < t_max_val) t_max_val = t2;
+            }
+            if (fabs(dv) > 1e-15) {
+                double t1 = (view->v_min - ln->point[1]) / dv;
+                double t2 = (view->v_max - ln->point[1]) / dv;
+                if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+                if (t1 > t_min_val) t_min_val = t1;
+                if (t2 < t_max_val) t_max_val = t2;
+            }
+
+            if (curve->type == ALEA_CURVE_RAY && t_min_val < curve->bounds.t_min)
+                t_min_val = curve->bounds.t_min;
+
+            *t_lo = t_min_val;
+            *t_hi = t_max_val;
+            return;
+        }
+
+        case ALEA_CURVE_CIRCLE:
+        case ALEA_CURVE_ELLIPSE:
+            /* Full closed curves: parameter range is [0, 2*PI] */
+            *t_lo = 0;
+            *t_hi = 2.0 * M_PI;
+            return;
+
+        default:
+            /* Bounded curves: use stored parameter range */
+            *t_lo = curve->bounds.t_min;
+            *t_hi = curve->bounds.t_max;
+            return;
+    }
+}
+
+/**
+ * Check if a 2D point is inside the viewport (with small margin).
+ */
+static bool point_in_viewport(double u, double v, const alea_slice_view_t* view) {
+    return u >= view->u_min && u <= view->u_max &&
+           v >= view->v_min && v <= view->v_max;
+}
+
+/* Dynamic array for error segments */
+typedef struct {
+    alea_slice_error_t* data;
+    size_t count;
+    size_t capacity;
+} error_vec_t;
+
+static void error_vec_push(error_vec_t* vec, const alea_slice_error_t* err) {
+    if (vec->count >= vec->capacity) {
+        vec->capacity = vec->capacity ? vec->capacity * 2 : 32;
+        vec->data = realloc(vec->data, vec->capacity * sizeof(alea_slice_error_t));
+    }
+    vec->data[vec->count++] = *err;
+}
+
+/**
+ * Process a single parametric curve: sample, classify, merge error segments.
+ */
+static void check_parametric_curve(const alea_system_t* sys,
+                                   const alea_slice_view_t* view,
+                                   const alea_curve_2d_t* curve,
+                                   size_t curve_index,
+                                   double sample_spacing,
+                                   double eps,
+                                   int universe_id,
+                                   error_vec_t* errors) {
+    double t_lo, t_hi;
+    get_clipped_param_range(curve, view, &t_lo, &t_hi);
+
+    if (t_lo >= t_hi) return;
+
+    double arc_approx = t_hi - t_lo;
+    /* For angular curves (circle/ellipse), scale by radius */
+    if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ARC) {
+        arc_approx = (t_hi - t_lo) * curve->data.circle.radius;
+    } else if (curve->type == ALEA_CURVE_ELLIPSE || curve->type == ALEA_CURVE_ELLIPSE_ARC) {
+        double avg_r = (curve->data.ellipse.semi_a + curve->data.ellipse.semi_b) * 0.5;
+        arc_approx = (t_hi - t_lo) * avg_r;
+    }
+
+    int n_samples = (int)(arc_approx / sample_spacing);
+    if (n_samples < 2) n_samples = 2;
+    if (n_samples > 2000) n_samples = 2000;
+
+    double dt_finite = (t_hi - t_lo) * 1e-6;
+    if (dt_finite < 1e-15) dt_finite = 1e-15;
+
+
+    /* Track current error segment */
+    int cur_type = 0;      /* 0 = OK or not started */
+    double seg_t_start = 0;
+
+    for (int i = 0; i <= n_samples; i++) {
+        double t = t_lo + (t_hi - t_lo) * i / n_samples;
+
+        double u, v;
+        if (!alea_curve_eval(curve, t, &u, &v))
+            continue;
+
+        if (!point_in_viewport(u, v, view))
+            continue;
+
+        /* Compute tangent via finite difference */
+        double u1, v1, u2, v2;
+        double t_back = t - dt_finite;
+        double t_fwd  = t + dt_finite;
+        if (t_back < t_lo) t_back = t_lo;
+        if (t_fwd > t_hi) t_fwd = t_hi;
+
+        if (!alea_curve_eval(curve, t_back, &u1, &v1) ||
+            !alea_curve_eval(curve, t_fwd,  &u2, &v2))
+            continue;
+
+        double tang_u = u2 - u1;
+        double tang_v = v2 - v1;
+        double tang_len = sqrt(tang_u * tang_u + tang_v * tang_v);
+        if (tang_len < 1e-20) continue;
+
+        /* Normal = (-tang_v, tang_u) / len */
+        double nu = -tang_v / tang_len;
+        double nv =  tang_u / tang_len;
+
+        int classification = classify_sample(sys, view, u, v, nu, nv,
+                                             eps, universe_id);
+
+        if (classification != cur_type) {
+            /* Close previous segment if it was an error */
+            if (cur_type != 0) {
+                alea_slice_error_t err = {
+                    .curve_index = curve_index,
+                    .surface_id = curve->surface_id,
+                    .type = (alea_slice_error_type_t)cur_type,
+                    .t_start = seg_t_start,
+                    .t_end = t
+                };
+                error_vec_push(errors, &err);
+            }
+            cur_type = classification;
+            seg_t_start = t;
+        }
+    }
+
+    /* Close final segment */
+    if (cur_type != 0) {
+        alea_slice_error_t err = {
+            .curve_index = curve_index,
+            .surface_id = curve->surface_id,
+            .type = (alea_slice_error_type_t)cur_type,
+            .t_start = seg_t_start,
+            .t_end = t_hi
+        };
+        error_vec_push(errors, &err);
+    }
+}
+
+/**
+ * Process a quartic (torus) curve via scanline sampling.
+ */
+static void check_quartic_curve(const alea_system_t* sys,
+                                const alea_slice_view_t* view,
+                                const alea_curve_2d_t* curve,
+                                size_t curve_index,
+                                double sample_spacing,
+                                double eps,
+                                int universe_id,
+                                error_vec_t* errors) {
+    /* Get bounding box for this curve */
+    double bbox_umin, bbox_umax, bbox_vmin, bbox_vmax;
+    alea_curve_bbox(curve, &bbox_umin, &bbox_umax, &bbox_vmin, &bbox_vmax);
+
+    /* Clip to viewport */
+    double v_lo = fmax(bbox_vmin, view->v_min);
+    double v_hi = fmin(bbox_vmax, view->v_max);
+    if (v_lo >= v_hi) return;
+
+    int n_scanlines = (int)((v_hi - v_lo) / sample_spacing);
+    if (n_scanlines < 2) n_scanlines = 2;
+    if (n_scanlines > 2000) n_scanlines = 2000;
+
+    for (int i = 0; i <= n_scanlines; i++) {
+        double v_scan = v_lo + (v_hi - v_lo) * i / n_scanlines;
+
+        double u_vals[16];
+        int n_isect = alea_curve_scanline_intersect(curve, v_scan, u_vals, 16);
+
+        for (int j = 0; j < n_isect; j++) {
+            double u = u_vals[j];
+            if (u < view->u_min || u > view->u_max) continue;
+
+            /* For quartic, estimate normal from scanline direction (vertical) */
+            /* Use a small offset in v to approximate tangent */
+            double u_vals2[16];
+            double dv = sample_spacing * 0.01;
+            int n2 = alea_curve_scanline_intersect(curve, v_scan + dv, u_vals2, 16);
+
+            /* Find closest u in the next scanline */
+            double tang_u = 0, tang_v = dv;
+            double best_dist = 1e20;
+            for (int k = 0; k < n2; k++) {
+                double dist = fabs(u_vals2[k] - u);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    tang_u = u_vals2[k] - u;
+                }
+            }
+
+            double tang_len = sqrt(tang_u * tang_u + tang_v * tang_v);
+            if (tang_len < 1e-20) {
+                /* Fallback: use horizontal normal */
+                tang_u = 0;
+                tang_v = 1;
+                tang_len = 1;
+            }
+
+            double nu = -tang_v / tang_len;
+            double nv =  tang_u / tang_len;
+
+            int classification = classify_sample(sys, view, u, v_scan,
+                                                 nu, nv, eps, universe_id);
+
+            if (classification != 0) {
+                /* For quartic, use v as parameter proxy */
+                alea_slice_error_t err = {
+                    .curve_index = curve_index,
+                    .surface_id = curve->surface_id,
+                    .type = (alea_slice_error_type_t)classification,
+                    .t_start = v_scan,
+                    .t_end = v_scan
+                };
+                error_vec_push(errors, &err);
+            }
+        }
+    }
+}
+
+/**
+ * Process a polygon curve: check each edge.
+ */
+static void check_polygon_curve(const alea_system_t* sys,
+                                const alea_slice_view_t* view,
+                                const alea_curve_2d_t* curve,
+                                size_t curve_index,
+                                double sample_spacing,
+                                double eps,
+                                int universe_id,
+                                error_vec_t* errors) {
+    const alea_polygon_2d_t* poly = &curve->data.polygon;
+    int nv = poly->vertex_count;
+    if (nv < 2) return;
+
+    int n_edges = poly->closed ? nv : (nv - 1);
+
+    for (int e = 0; e < n_edges; e++) {
+        int i0 = e;
+        int i1 = (e + 1) % nv;
+        double x0 = poly->vertices[i0][0], y0 = poly->vertices[i0][1];
+        double x1 = poly->vertices[i1][0], y1 = poly->vertices[i1][1];
+
+        double edge_len = sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+        if (edge_len < 1e-15) continue;
+
+        int n_samples = (int)(edge_len / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 500) n_samples = 500;
+
+        /* Edge normal */
+        double dx = x1 - x0, dy = y1 - y0;
+        double nu = -dy / edge_len;
+        double nv_dir = dx / edge_len;
+
+        int cur_type = 0;
+        double seg_t_start = 0;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double frac = (double)s / n_samples;
+            double u = x0 + frac * dx;
+            double v = y0 + frac * dy;
+            double t_param = i0 + frac;
+
+            if (!point_in_viewport(u, v, view))
+                continue;
+
+            int classification = classify_sample(sys, view, u, v,
+                                                 nu, nv_dir, eps,
+                                                 universe_id);
+
+            if (classification != cur_type) {
+                if (cur_type != 0) {
+                    alea_slice_error_t err = {
+                        .curve_index = curve_index,
+                        .surface_id = curve->surface_id,
+                        .type = (alea_slice_error_type_t)cur_type,
+                        .t_start = seg_t_start,
+                        .t_end = t_param
+                    };
+                    error_vec_push(errors, &err);
+                }
+                cur_type = classification;
+                seg_t_start = t_param;
+            }
+        }
+
+        if (cur_type != 0) {
+            alea_slice_error_t err = {
+                .curve_index = curve_index,
+                .surface_id = curve->surface_id,
+                .type = (alea_slice_error_type_t)cur_type,
+                .t_start = seg_t_start,
+                .t_end = (double)(i0 + 1)
+            };
+            error_vec_push(errors, &err);
+        }
+    }
+}
+
+alea_slice_error_result_t* alea_check_slice_errors(
+    const alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    int universe_depth)
+{
+    (void)universe_depth;  /* universe_id is now stored per-curve */
+    if (!sys || !view || !curves) return NULL;
+
+    const alea_curve_collection_t* coll = &curves->internal;
+    if (coll->curve_count == 0) return NULL;
+
+    /* Reset spatial coherence cache so it starts fresh for curve walking */
+    alea_spatial_reset_cache();
+
+    /* Compute viewport-derived parameters */
+    double vp_width  = view->u_max - view->u_min;
+    double vp_height = view->v_max - view->v_min;
+    double vp_diag = sqrt(vp_width * vp_width + vp_height * vp_height);
+
+    double sample_spacing = vp_diag / 200.0;
+    double eps = vp_diag * 1e-6;
+
+    error_vec_t errvec = { NULL, 0, 0 };
+
+    for (size_t i = 0; i < coll->curve_count; i++) {
+        const alea_curve_2d_t* curve = &coll->curves[i];
+
+        switch (curve->type) {
+            case ALEA_CURVE_NONE:
+            case ALEA_CURVE_POINT:
+                /* Skip: no meaningful boundary to check */
+                continue;
+
+            case ALEA_CURVE_QUARTIC:
+                check_quartic_curve(sys, view, curve, i, sample_spacing,
+                                    eps, curve->universe_id, &errvec);
+                continue;
+
+            case ALEA_CURVE_POLYGON:
+                check_polygon_curve(sys, view, curve, i, sample_spacing,
+                                    eps, curve->universe_id, &errvec);
+                continue;
+
+            default:
+                check_parametric_curve(sys, view, curve, i, sample_spacing,
+                                       eps, curve->universe_id, &errvec);
+                continue;
+        }
+    }
+
+    /* Build result */
+    alea_slice_error_result_t* result = malloc(sizeof(alea_slice_error_result_t));
+    if (!result) {
+        free(errvec.data);
+        return NULL;
+    }
+
+    result->errors = errvec.data;
+    result->error_count = errvec.count;
+    return result;
+}
+
+/* ============================================================================
+ * GRID-BASED ERROR CHECKING (fast O(1) per sample)
+ * ============================================================================ */
+
+/** Grid context passed to grid-based classify */
+typedef struct {
+    const int* cell_ids;
+    const uint8_t* grid_errors;
+    int nu, nv;
+    double u_min, v_min;
+    double inv_du, inv_dv;  /* 1/du, 1/dv for fast coord→pixel */
+    /* For CSG fallback on same-cell cases (nested overlaps) */
+    const alea_system_t* sys;
+    const alea_slice_plane_t* plane;
+} grid_ctx_t;
+
+/** Map 2D coordinate to pixel index, return -1 if out of bounds */
+static inline int grid_pixel_at(const grid_ctx_t* g, double u, double v) {
+    int i = (int)((u - g->u_min) * g->inv_du);
+    int j = (int)((v - g->v_min) * g->inv_dv);
+    if (i < 0 || i >= g->nu || j < 0 || j >= g->nv) return -1;
+    return j * g->nu + i;
+}
+
+/**
+ * Grid-based classification of a sample point on a curve.
+ * Returns 0=OK/skip, ALEA_SLICE_ERR_OVERLAP, or ALEA_SLICE_ERR_GAP.
+ *
+ * For the common case (different cells on each side), this is pure O(1)
+ * grid lookup. When both sides show the same cell (possible nested overlap),
+ * falls back to a single CSG query to check for multiple cells.
+ */
+static int classify_sample_grid(const grid_ctx_t* g,
+                                double u, double v,
+                                double nu, double nv,
+                                double eps,
+                                int universe_id) {
+    double u_plus  = u + eps * nu;
+    double v_plus  = v + eps * nv;
+    double u_minus = u - eps * nu;
+    double v_minus = v - eps * nv;
+
+    int idx_plus  = grid_pixel_at(g, u_plus, v_plus);
+    int idx_minus = grid_pixel_at(g, u_minus, v_minus);
+
+    /* Out of grid bounds → can't classify */
+    if (idx_plus < 0 || idx_minus < 0) return 0;
+
+    /* Check grid-level overlap flags first */
+    if (g->grid_errors) {
+        if (g->grid_errors[idx_plus] == GRID_ERR_OVERLAP ||
+            g->grid_errors[idx_minus] == GRID_ERR_OVERLAP)
+            return ALEA_SLICE_ERR_OVERLAP;
+    }
+
+    int cell_plus  = g->cell_ids[idx_plus];
+    int cell_minus = g->cell_ids[idx_minus];
+
+    /* Different cells on each side → proper boundary, OK */
+    if (cell_plus != cell_minus && cell_plus >= 0 && cell_minus >= 0)
+        return 0;
+
+    /* One or both sides void → gap */
+    if (cell_plus < 0 || cell_minus < 0)
+        return ALEA_SLICE_ERR_GAP;
+
+    /* Same cell on both sides — this curve might be inside a nested overlap
+     * (e.g., inner sphere fully inside outer sphere). The grid only stores
+     * the "winning" cell so it can't see the overlap. Do a single CSG query
+     * on one side to check if multiple cells claim this region. */
+    if (g->sys && g->plane) {
+        const alea_slice_plane_t* pl = g->plane;
+        double x = pl->origin[0] + u_plus * pl->u_axis[0] + v_plus * pl->v_axis[0];
+        double y = pl->origin[1] + u_plus * pl->u_axis[1] + v_plus * pl->v_axis[1];
+        double z = pl->origin[2] + u_plus * pl->u_axis[2] + v_plus * pl->v_axis[2];
+
+        int count = count_cells_in_universe_at_point(g->sys, universe_id, x, y, z);
+        if (count > 1) return ALEA_SLICE_ERR_OVERLAP;
+    }
+
+    return 0;
+}
+
+/** Grid-based version of check_parametric_curve */
+static void check_parametric_curve_grid(const grid_ctx_t* g,
+                                        const alea_slice_view_t* view,
+                                        const alea_curve_2d_t* curve,
+                                        size_t curve_index,
+                                        double sample_spacing,
+                                        double eps,
+                                        error_vec_t* errors) {
+    double t_lo, t_hi;
+    get_clipped_param_range(curve, view, &t_lo, &t_hi);
+    if (t_lo >= t_hi) return;
+
+    double arc_approx = t_hi - t_lo;
+    if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ARC) {
+        arc_approx = (t_hi - t_lo) * curve->data.circle.radius;
+    } else if (curve->type == ALEA_CURVE_ELLIPSE || curve->type == ALEA_CURVE_ELLIPSE_ARC) {
+        double avg_r = (curve->data.ellipse.semi_a + curve->data.ellipse.semi_b) * 0.5;
+        arc_approx = (t_hi - t_lo) * avg_r;
+    }
+
+    int n_samples = (int)(arc_approx / sample_spacing);
+    if (n_samples < 2) n_samples = 2;
+    if (n_samples > 2000) n_samples = 2000;
+
+    double dt_finite = (t_hi - t_lo) * 1e-6;
+    if (dt_finite < 1e-15) dt_finite = 1e-15;
+
+    int cur_type = 0;
+    double seg_t_start = 0;
+
+    for (int i = 0; i <= n_samples; i++) {
+        double t = t_lo + (t_hi - t_lo) * i / n_samples;
+
+        double u, v;
+        if (!alea_curve_eval(curve, t, &u, &v)) continue;
+        if (!point_in_viewport(u, v, view)) continue;
+
+        double u1, v1, u2, v2;
+        double t_back = t - dt_finite;
+        double t_fwd  = t + dt_finite;
+        if (t_back < t_lo) t_back = t_lo;
+        if (t_fwd > t_hi) t_fwd = t_hi;
+
+        if (!alea_curve_eval(curve, t_back, &u1, &v1) ||
+            !alea_curve_eval(curve, t_fwd,  &u2, &v2))
+            continue;
+
+        double tang_u = u2 - u1;
+        double tang_v = v2 - v1;
+        double tang_len = sqrt(tang_u * tang_u + tang_v * tang_v);
+        if (tang_len < 1e-20) continue;
+
+        double nu = -tang_v / tang_len;
+        double nv =  tang_u / tang_len;
+
+        int classification = classify_sample_grid(g, u, v, nu, nv, eps, curve->universe_id);
+
+        if (classification != cur_type) {
+            if (cur_type != 0) {
+                alea_slice_error_t err = {
+                    .curve_index = curve_index,
+                    .surface_id = curve->surface_id,
+                    .type = (alea_slice_error_type_t)cur_type,
+                    .t_start = seg_t_start,
+                    .t_end = t
+                };
+                error_vec_push(errors, &err);
+            }
+            cur_type = classification;
+            seg_t_start = t;
+        }
+    }
+
+    if (cur_type != 0) {
+        alea_slice_error_t err = {
+            .curve_index = curve_index,
+            .surface_id = curve->surface_id,
+            .type = (alea_slice_error_type_t)cur_type,
+            .t_start = seg_t_start,
+            .t_end = t_hi
+        };
+        error_vec_push(errors, &err);
+    }
+}
+
+/** Grid-based version of check_quartic_curve */
+static void check_quartic_curve_grid(const grid_ctx_t* g,
+                                     const alea_slice_view_t* view,
+                                     const alea_curve_2d_t* curve,
+                                     size_t curve_index,
+                                     double sample_spacing,
+                                     double eps,
+                                     error_vec_t* errors) {
+    double bbox_umin, bbox_umax, bbox_vmin, bbox_vmax;
+    alea_curve_bbox(curve, &bbox_umin, &bbox_umax, &bbox_vmin, &bbox_vmax);
+
+    double v_lo = fmax(bbox_vmin, view->v_min);
+    double v_hi = fmin(bbox_vmax, view->v_max);
+    if (v_lo >= v_hi) return;
+
+    int n_scanlines = (int)((v_hi - v_lo) / sample_spacing);
+    if (n_scanlines < 2) n_scanlines = 2;
+    if (n_scanlines > 2000) n_scanlines = 2000;
+
+    for (int i = 0; i <= n_scanlines; i++) {
+        double v_scan = v_lo + (v_hi - v_lo) * i / n_scanlines;
+
+        double u_vals[16];
+        int n_isect = alea_curve_scanline_intersect(curve, v_scan, u_vals, 16);
+
+        for (int j = 0; j < n_isect; j++) {
+            double u = u_vals[j];
+            if (u < view->u_min || u > view->u_max) continue;
+
+            double u_vals2[16];
+            double dv = sample_spacing * 0.01;
+            int n2 = alea_curve_scanline_intersect(curve, v_scan + dv, u_vals2, 16);
+
+            double tang_u = 0, tang_v = dv;
+            double best_dist = 1e20;
+            for (int k = 0; k < n2; k++) {
+                double dist = fabs(u_vals2[k] - u);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    tang_u = u_vals2[k] - u;
+                }
+            }
+
+            double tang_len = sqrt(tang_u * tang_u + tang_v * tang_v);
+            if (tang_len < 1e-20) { tang_u = 0; tang_v = 1; tang_len = 1; }
+
+            double nu = -tang_v / tang_len;
+            double nv =  tang_u / tang_len;
+
+            int classification = classify_sample_grid(g, u, v_scan, nu, nv, eps, curve->universe_id);
+
+            if (classification != 0) {
+                alea_slice_error_t err = {
+                    .curve_index = curve_index,
+                    .surface_id = curve->surface_id,
+                    .type = (alea_slice_error_type_t)classification,
+                    .t_start = v_scan,
+                    .t_end = v_scan
+                };
+                error_vec_push(errors, &err);
+            }
+        }
+    }
+}
+
+/** Grid-based version of check_polygon_curve */
+static void check_polygon_curve_grid(const grid_ctx_t* g,
+                                     const alea_slice_view_t* view,
+                                     const alea_curve_2d_t* curve,
+                                     size_t curve_index,
+                                     double sample_spacing,
+                                     double eps,
+                                     error_vec_t* errors) {
+    const alea_polygon_2d_t* poly = &curve->data.polygon;
+    int nverts = poly->vertex_count;
+    if (nverts < 2) return;
+
+    int n_edges = poly->closed ? nverts : (nverts - 1);
+
+    for (int e = 0; e < n_edges; e++) {
+        int i0 = e;
+        int i1 = (e + 1) % nverts;
+        double x0 = poly->vertices[i0][0], y0 = poly->vertices[i0][1];
+        double x1 = poly->vertices[i1][0], y1 = poly->vertices[i1][1];
+
+        double edge_len = sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+        if (edge_len < 1e-15) continue;
+
+        int n_samples = (int)(edge_len / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 500) n_samples = 500;
+
+        double dx = x1 - x0, dy = y1 - y0;
+        double nu = -dy / edge_len;
+        double nv_dir = dx / edge_len;
+
+        int cur_type = 0;
+        double seg_t_start = 0;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double frac = (double)s / n_samples;
+            double u = x0 + frac * dx;
+            double v = y0 + frac * dy;
+            double t_param = i0 + frac;
+
+            if (!point_in_viewport(u, v, view)) continue;
+
+            int classification = classify_sample_grid(g, u, v,
+                                                      nu, nv_dir, eps,
+                                                      curve->universe_id);
+
+            if (classification != cur_type) {
+                if (cur_type != 0) {
+                    alea_slice_error_t err = {
+                        .curve_index = curve_index,
+                        .surface_id = curve->surface_id,
+                        .type = (alea_slice_error_type_t)cur_type,
+                        .t_start = seg_t_start,
+                        .t_end = t_param
+                    };
+                    error_vec_push(errors, &err);
+                }
+                cur_type = classification;
+                seg_t_start = t_param;
+            }
+        }
+
+        if (cur_type != 0) {
+            alea_slice_error_t err = {
+                .curve_index = curve_index,
+                .surface_id = curve->surface_id,
+                .type = (alea_slice_error_type_t)cur_type,
+                .t_start = seg_t_start,
+                .t_end = (double)(i0 + 1)
+            };
+            error_vec_push(errors, &err);
+        }
+    }
+}
+
+alea_slice_error_result_t* alea_check_slice_errors_grid(
+    const alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    const int* cell_ids,
+    const uint8_t* grid_errors,
+    int nu, int nv)
+{
+    if (!view || !curves || !cell_ids || nu <= 0 || nv <= 0) return NULL;
+
+    const alea_curve_collection_t* coll = &curves->internal;
+    if (coll->curve_count == 0) return NULL;
+
+    /* Set up grid context */
+    double u_range = view->u_max - view->u_min;
+    double v_range = view->v_max - view->v_min;
+
+    grid_ctx_t g = {
+        .cell_ids    = cell_ids,
+        .grid_errors = grid_errors,
+        .nu = nu,
+        .nv = nv,
+        .u_min = view->u_min,
+        .v_min = view->v_min,
+        .inv_du = nu / u_range,
+        .inv_dv = nv / v_range,
+        .sys   = sys,
+        .plane = &view->plane,
+    };
+
+    /* Offset must be at least 1.5 pixels so the two lookups land in different
+     * pixels even when the normal is diagonal */
+    double pixel_size = fmin(u_range / nu, v_range / nv);
+    double eps = pixel_size * 1.5;
+
+    double vp_diag = sqrt(u_range * u_range + v_range * v_range);
+    double sample_spacing = vp_diag / 200.0;
+
+    error_vec_t errvec = { NULL, 0, 0 };
+
+    for (size_t i = 0; i < coll->curve_count; i++) {
+        const alea_curve_2d_t* curve = &coll->curves[i];
+
+        switch (curve->type) {
+            case ALEA_CURVE_NONE:
+            case ALEA_CURVE_POINT:
+                continue;
+            case ALEA_CURVE_QUARTIC:
+                check_quartic_curve_grid(&g, view, curve, i,
+                                         sample_spacing, eps, &errvec);
+                continue;
+            case ALEA_CURVE_POLYGON:
+                check_polygon_curve_grid(&g, view, curve, i,
+                                         sample_spacing, eps, &errvec);
+                continue;
+            default:
+                check_parametric_curve_grid(&g, view, curve, i,
+                                            sample_spacing, eps, &errvec);
+                continue;
+        }
+    }
+
+    alea_slice_error_result_t* result = malloc(sizeof(alea_slice_error_result_t));
+    if (!result) {
+        free(errvec.data);
+        return NULL;
+    }
+
+    result->errors = errvec.data;
+    result->error_count = errvec.count;
+    return result;
+}
+
+void alea_slice_errors_free(alea_slice_error_result_t* result) {
+    if (!result) return;
+    free(result->errors);
+    free(result);
 }
 

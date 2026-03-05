@@ -44,6 +44,7 @@
  *   --contours=cells        Draw contours at cell boundaries (default)
  *   --contours=materials    Draw contours at material boundaries
  *   --ticks                 Show axis tick labels
+ *   --errors                Show analytical error lines (overlaps/gaps)
  *
  * Batch file format (one plot per line):
  *   Z value u_min u_max v_min v_max WxH output.png [options]
@@ -660,6 +661,7 @@ typedef struct {
     color_mode_t color_mode;
     contour_mode_t contour_mode;
     int show_ticks;         /* Draw axis tick labels */
+    int show_errors;        /* Draw analytical error lines (overlaps/gaps) */
 
     /* For arbitrary planes */
     double origin[3];
@@ -803,6 +805,111 @@ static void get_axis_labels(slice_type_t type, const char** u_label, const char*
     }
 }
 
+/* Evaluate a public alea_curve_t at parameter t, returning (u,v) coordinates.
+ * Returns 1 on success, 0 if the curve type cannot be evaluated. */
+static int eval_public_curve(const alea_curve_t* c, double t, double* u, double* v) {
+    switch (c->type) {
+        case ALEA_CURVE_LINE:
+        case ALEA_CURVE_LINE_SEGMENT:
+        case ALEA_CURVE_RAY:
+            *u = c->data.line.point[0] + t * c->data.line.direction[0];
+            *v = c->data.line.point[1] + t * c->data.line.direction[1];
+            return 1;
+        case ALEA_CURVE_CIRCLE:
+        case ALEA_CURVE_ARC:
+            *u = c->data.circle.center[0] + c->data.circle.radius * cos(t);
+            *v = c->data.circle.center[1] + c->data.circle.radius * sin(t);
+            return 1;
+        case ALEA_CURVE_ELLIPSE:
+        case ALEA_CURVE_ELLIPSE_ARC: {
+            double ca = cos(c->data.ellipse.angle);
+            double sa = sin(c->data.ellipse.angle);
+            double ct = cos(t);
+            double st = sin(t);
+            *u = c->data.ellipse.center[0] + c->data.ellipse.semi_a * ct * ca
+                                            - c->data.ellipse.semi_b * st * sa;
+            *v = c->data.ellipse.center[1] + c->data.ellipse.semi_a * ct * sa
+                                            + c->data.ellipse.semi_b * st * ca;
+            return 1;
+        }
+        case ALEA_CURVE_POLYGON: {
+            int n = c->data.polygon.count;
+            if (n < 2) return 0;
+            /* t is an edge-interpolation parameter: integer part = segment index */
+            int seg = (int)t;
+            double frac = t - seg;
+            if (seg < 0) { seg = 0; frac = 0; }
+            if (seg >= n - 1) { seg = n - 2; frac = 1.0; }
+            *u = c->data.polygon.vertices[seg][0]
+               + frac * (c->data.polygon.vertices[seg + 1][0] - c->data.polygon.vertices[seg][0]);
+            *v = c->data.polygon.vertices[seg][1]
+               + frac * (c->data.polygon.vertices[seg + 1][1] - c->data.polygon.vertices[seg][1]);
+            return 1;
+        }
+        default:
+            return 0;
+    }
+}
+
+/* Draw analytical error lines (overlaps/gaps) onto the pixel buffer */
+static void draw_error_lines(uint8_t* pixels, int width, int height,
+                              const plot_params_t* p,
+                              const alea_slice_curves_t* curves,
+                              const alea_slice_error_result_t* errs) {
+    double du = (p->u_max - p->u_min) / width;
+    double dv = (p->v_max - p->v_min) / height;
+
+    for (size_t i = 0; i < errs->error_count; i++) {
+        const alea_slice_error_t* e = &errs->errors[i];
+
+        /* Get the public curve */
+        alea_curve_t curve;
+        if (alea_slice_curves_get(curves, e->curve_index, &curve) != 0)
+            continue;
+
+        /* Choose color: red for overlap, orange for gap */
+        uint8_t r, g, b;
+        if (e->type == ALEA_SLICE_ERR_OVERLAP) {
+            r = 255; g = 0; b = 0;
+        } else {
+            r = 255; g = 165; b = 0;
+        }
+
+        /* Sample the curve in [t_start, t_end] */
+        double t_range = e->t_end - e->t_start;
+        /* Use enough samples for ~1 pixel spacing */
+        int n_samples = (int)(t_range / (du < dv ? du : dv) * 2);
+        if (n_samples < 20) n_samples = 20;
+        if (n_samples > 2000) n_samples = 2000;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double t = e->t_start + t_range * s / n_samples;
+            double u, v;
+            if (!eval_public_curve(&curve, t, &u, &v))
+                continue;
+
+            /* Convert (u,v) to pixel coordinates */
+            int px = (int)((u - p->u_min) / du);
+            int py_grid = (int)((v - p->v_min) / dv);
+            int py = height - 1 - py_grid;  /* flip to image coords */
+
+            /* Draw 3x3 dot */
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int x = px + dx;
+                    int y = py + dy;
+                    if (x < 0 || x >= width || y < 0 || y >= height)
+                        continue;
+                    int pidx = (y * width + x) * 3;
+                    pixels[pidx + 0] = r;
+                    pixels[pidx + 1] = g;
+                    pixels[pidx + 2] = b;
+                }
+            }
+        }
+    }
+}
+
 /* Render a single plot and save to file */
 static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) {
     double t0, t1;
@@ -882,9 +989,51 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         }
     }
 
+    /* Detect nested overlaps using curves if error display is on */
+    alea_slice_curves_t* err_curves = NULL;
+    if (p->show_errors) {
+        t0 = get_time_ms();
+        err_curves = get_curves_for_plot(sys, p);
+        if (err_curves) {
+            int new_overlaps = alea_check_grid_overlaps_curves(
+                sys, &view, err_curves, p->width, p->height,
+                -1, cell_ids, errors);
+            t1 = get_time_ms();
+            if (verbose) {
+                printf("    Nested overlap check: %d new overlap pixels (%.1f ms)\n",
+                       new_overlaps, t1 - t0);
+            }
+        }
+    }
+
     /* Draw contours (grid is in math order, pixels in image order) */
     const int* boundary_ids = (p->contour_mode == CONTOUR_BY_MATERIAL) ? material_ids : cell_ids;
     draw_contours_ex(pixels, boundary_ids, errors, p->width, p->height);
+
+    /* Draw analytical error lines if requested */
+    if (p->show_errors && err_curves) {
+        t0 = get_time_ms();
+        alea_slice_error_result_t* err_result =
+            alea_check_slice_errors_grid(sys, &view, err_curves,
+                                         cell_ids, errors,
+                                         p->width, p->height);
+        if (err_result) {
+            if (verbose) {
+                printf("    Error check: %zu error segments found\n",
+                       err_result->error_count);
+            }
+            if (err_result->error_count > 0) {
+                draw_error_lines(pixels, p->width, p->height, p,
+                                 err_curves, err_result);
+            }
+            alea_slice_errors_free(err_result);
+        }
+        t1 = get_time_ms();
+        if (verbose) {
+            printf("    Error lines: %.1f ms\n", t1 - t0);
+        }
+    }
+    if (err_curves) alea_slice_curves_free(err_curves);
 
     /* Draw labels if requested */
     if (p->labels.show_cells) {
@@ -960,6 +1109,7 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
  *   labels=cells,materials,surfaces  - Show labels
  *   color=cells|materials            - Color by cell or material ID
  *   ticks                            - Show axis tick labels
+ *   errors                           - Show analytical error lines
  *
  * Lines starting with # are comments
  * Empty lines are skipped
@@ -1020,6 +1170,11 @@ static void parse_options(const char* line, plot_params_t* p) {
     /* Look for ticks */
     if (strstr(line, "ticks")) {
         p->show_ticks = 1;
+    }
+
+    /* Look for errors */
+    if (strstr(line, "errors")) {
+        p->show_errors = 1;
     }
 }
 
@@ -1326,6 +1481,8 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(argv[i], "--ticks") == 0) {
             plot.show_ticks = 1;
+        } else if (strcmp(argv[i], "--errors") == 0) {
+            plot.show_errors = 1;
         } else if (strcmp(argv[i], "--debug") == 0) {
             debug_curves = 1;
         } else if (strncmp(argv[i], "--trace=", 8) == 0) {
@@ -1344,6 +1501,7 @@ int main(int argc, char** argv) {
     printf("Color by:   %s\n", plot.color_mode == COLOR_BY_MATERIAL ? "materials" : "cells");
     printf("Contours:   %s\n", plot.contour_mode == CONTOUR_BY_MATERIAL ? "materials" : "cells");
     if (plot.show_ticks) printf("Ticks:      enabled\n");
+    if (plot.show_errors) printf("Errors:     enabled\n");
     if (plot.labels.show_cells || plot.labels.show_materials || plot.labels.show_surfaces) {
         printf("Labels:     %s%s%s\n",
                plot.labels.show_cells ? "cells " : "",

@@ -13,6 +13,7 @@
 #include "mcnp_model.h"
 #include "alea.h"
 #include "core/alea_system.h"
+#include "core/alea_spatial.h"
 #include "core/alea_export.h"
 #include "util/alea_log.h"
 #include <stdlib.h>
@@ -173,6 +174,11 @@ mcnp_model_t* mcnp_load(const char* filename) {
     }
 
     model->sys->source = ALEA_SOURCE_MCNP;
+
+    /* Build spatial index and cell adjacency eagerly so queries don't
+     * pay for lazy initialization on the first call. */
+    alea_build_cell_adjacency(model->sys);
+    alea_spatial_index_build(model->sys);
 
     return model;
 }
