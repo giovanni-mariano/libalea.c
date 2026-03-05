@@ -158,6 +158,19 @@ static int l_system_cell(lua_State* L) {
         lua_pop(L, 1);
     }
 
+    /* Optional: comments */
+    lua_getfield(L, 2, "comment");
+    if (lua_isstring(L, -1)) {
+        alea_cell_set_comment(sys, idx, lua_tostring(L, -1));
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, 2, "inline_comment");
+    if (lua_isstring(L, -1)) {
+        alea_cell_set_inline_comment(sys, idx, lua_tostring(L, -1));
+    }
+    lua_pop(L, 1);
+
     lua_pushinteger(L, idx);
     return 1;
 }

@@ -183,6 +183,14 @@ static int l_cell_info(lua_State* L) {
     alea_push_node(L, sys, info.root);
     lua_setfield(L, -2, "root");
 
+    /* comments */
+    if (info.comments) {
+        lua_pushstring(L, info.comments);  lua_setfield(L, -2, "comments");
+    }
+    if (info.inline_comment) {
+        lua_pushstring(L, info.inline_comment); lua_setfield(L, -2, "inline_comment");
+    }
+
     return 1;
 }
 
@@ -345,6 +353,14 @@ static int l_cell_find_info(lua_State* L) {
 
     alea_push_node(L, sys, info.root);
     lua_setfield(L, -2, "root");
+
+    if (info.comments) {
+        lua_pushstring(L, info.comments);  lua_setfield(L, -2, "comments");
+    }
+    if (info.inline_comment) {
+        lua_pushstring(L, info.inline_comment); lua_setfield(L, -2, "inline_comment");
+    }
+
     return 1;
 }
 

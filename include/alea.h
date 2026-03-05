@@ -390,6 +390,8 @@ alea_node_id_t alea_intersection_n(alea_system_t* sys, const alea_node_id_t* nod
 int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root,
                       int material_index, double density, int universe);
 int alea_set_fill(alea_system_t* sys, int cell_index, int fill_universe, int transform);
+int alea_cell_set_comment(alea_system_t* sys, int cell_index, const char* comment);
+int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char* comment);
 
 /* ============================================================================
  * UNIVERSE OPERATIONS

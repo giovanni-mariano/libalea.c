@@ -154,6 +154,9 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         } else {
             c->lat_fill = NULL;
         }
+        /* Deep-copy comment strings */
+        c->comments = s->comments ? alea_strdup(s->comments) : NULL;
+        c->inline_comment = s->inline_comment ? alea_strdup(s->inline_comment) : NULL;
     }
 
     /* Clone materials: shallow copy then deep-copy internal arrays */
@@ -766,6 +769,24 @@ int alea_set_fill(alea_system_t* sys, int cell_index, int fill_universe, int tra
     return 0;
 }
 
+int alea_cell_set_comment(alea_system_t* sys, int cell_index, const char* comment) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    free(cell->comments);
+    cell->comments = comment ? alea_strdup(comment) : NULL;
+    return 0;
+}
+
+int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char* comment) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    free(cell->inline_comment);
+    cell->inline_comment = comment ? alea_strdup(comment) : NULL;
+    return 0;
+}
+
 /* ============================================================================
  * UNIVERSE OPERATIONS
  * ============================================================================ */
@@ -1353,6 +1374,10 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     info->lat_fill_count = c->lat_fill_count;
     memcpy(info->lat_pitch, c->lat_pitch, sizeof(info->lat_pitch));
     memcpy(info->lat_lower_left, c->lat_lower_left, sizeof(info->lat_lower_left));
+
+    /* Comments */
+    info->comments = c->comments;
+    info->inline_comment = c->inline_comment;
     return 0;
 }
 

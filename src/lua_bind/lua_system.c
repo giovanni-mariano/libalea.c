@@ -15,6 +15,7 @@ static int l_system_create(lua_State* L) {
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
     ud->sys = alea_create();
     ud->mcnp_model = NULL;
+    ud->openmc_model = NULL;
     ud->owned = 1;
     if (!ud->sys)
         return luaL_error(L, "alea_create failed: %s", alea_error());

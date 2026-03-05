@@ -392,6 +392,8 @@ typedef struct {
     size_t lat_fill_count;  /**< Number of elements in lat_fill */
     double lat_pitch[3];    /**< Element pitch in each dimension */
     double lat_lower_left[3]; /**< Lower-left corner of the lattice */
+    const char* comments;     /**< "C" comment lines before cell (NULL if none) */
+    const char* inline_comment; /**< Inline "$" comment (NULL if none) */
 } alea_cell_info_t;
 
 /** @brief Surface information (read-only view) */
