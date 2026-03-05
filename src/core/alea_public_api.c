@@ -26,6 +26,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "util/arena.h"
 #include "util/str_builder.h"
@@ -784,6 +785,96 @@ int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char*
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     free(cell->inline_comment);
     cell->inline_comment = comment ? alea_strdup(comment) : NULL;
+    return 0;
+}
+
+/* ============================================================================
+ * CELL PROPERTY SETTERS
+ * ============================================================================ */
+
+int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_index) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+
+    if (material_index == ALEA_MATERIAL_VOID || material_index < 0) {
+        cell->material_id = 0;
+        cell->material_index = -1;
+    } else {
+        if ((size_t)material_index >= alea_vec_count(&sys->materials)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "alea_cell_set_material: material index %d out of range (have %zu materials)",
+                material_index, alea_vec_count(&sys->materials));
+            return -1;
+        }
+        cell->material_id = sys->materials.data[material_index].material_id;
+        cell->material_index = material_index;
+    }
+    return 0;
+}
+
+int alea_cell_set_density(alea_system_t* sys, int cell_index, double density) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    cell->is_mass_density = (density < 0) ? 1 : 0;
+    cell->density = fabs(density);
+    return 0;
+}
+
+int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    sys->cells.data[cell_index].universe_id = universe_id;
+    sys->universe_index_built = false;
+    return 0;
+}
+
+/* ============================================================================
+ * CELL REMOVAL
+ * ============================================================================ */
+
+int alea_cell_remove(alea_system_t* sys, int cell_index) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    size_t n_cells = alea_vec_count(&sys->cells);
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+
+    /* Notify hook before removal */
+    if (sys->on_cell_removed)
+        sys->on_cell_removed(sys->cell_hook_userdata, (size_t)cell_index);
+
+    /* Remove from cell ID hashmap */
+    cell_hashmap_remove(&sys->cell_index, cell->mcnp_cell_id);
+
+    /* Free per-cell allocations (skip neighbors if pool-allocated) */
+    free(cell->surface_indices);
+    if (!sys->neighbor_pool)
+        free(cell->neighbors);
+    free(cell->lat_fill);
+    free(cell->comments);
+    free(cell->inline_comment);
+
+    /* Compact: shift remaining cells down */
+    size_t last = n_cells - 1;
+    if ((size_t)cell_index < last) {
+        memmove(&sys->cells.data[cell_index],
+                &sys->cells.data[cell_index + 1],
+                (last - (size_t)cell_index) * sizeof(alea_cell_entry_t));
+    }
+    sys->cells.count = last;
+
+    /* Rebuild hashmap — indices shifted */
+    cell_hashmap_clear(&sys->cell_index);
+    for (size_t i = 0; i < last; i++) {
+        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mcnp_cell_id, (int)i);
+    }
+
+    sys->universe_index_built = false;
     return 0;
 }
 

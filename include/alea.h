@@ -393,6 +393,42 @@ int alea_set_fill(alea_system_t* sys, int cell_index, int fill_universe, int tra
 int alea_cell_set_comment(alea_system_t* sys, int cell_index, const char* comment);
 int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char* comment);
 
+/**
+ * @brief Set cell material
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param material_index Material index from alea_add_material(), or ALEA_MATERIAL_VOID (-1) for void
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_index);
+
+/**
+ * @brief Set cell density
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param density Signed density: negative = g/cm3, positive = atoms/b-cm, 0 = void
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_set_density(alea_system_t* sys, int cell_index, double density);
+
+/**
+ * @brief Set cell universe membership
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param universe_id Universe ID (0 = base universe)
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id);
+
+/**
+ * @brief Remove a cell by index
+ *
+ * Frees per-cell allocations, compacts the array, and rebuilds the
+ * cell ID hashmap. Triggers on_cell_removed hook before removal.
+ * Invalidates the universe index.
+ *
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_remove(alea_system_t* sys, int cell_index);
+
 /* ============================================================================
  * UNIVERSE OPERATIONS
  * ============================================================================ */

@@ -546,6 +546,38 @@ int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char*
 
 Set inline comment ("$" comment in MCNP) for a cell.
 
+### alea_cell_set_material
+
+```c
+int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_index);
+```
+
+Set cell material. Pass `ALEA_MATERIAL_VOID` (-1) for void. Derives the MCNP material ID from the material index automatically.
+
+### alea_cell_set_density
+
+```c
+int alea_cell_set_density(alea_system_t* sys, int cell_index, double density);
+```
+
+Set cell density. Signed convention: negative = g/cm3, positive = atoms/b-cm, 0 = void.
+
+### alea_cell_set_universe
+
+```c
+int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id);
+```
+
+Set which universe the cell belongs to. Invalidates the universe index.
+
+### alea_cell_remove
+
+```c
+int alea_cell_remove(alea_system_t* sys, int cell_index);
+```
+
+Remove a cell by index. Frees per-cell allocations, compacts the array, rebuilds the cell ID hashmap, and triggers the `on_cell_removed` hook. Invalidates the universe index.
+
 ---
 
 ## Universe Operations
