@@ -577,10 +577,12 @@ test-lua: cli
 # Valgrind (memory leak and error detection)
 # ============================================================================
 
-VALGRIND = valgrind --leak-check=full --errors-for-leak-kinds=definite --error-exitcode=1
+VALGRIND = valgrind --leak-check=full --errors-for-leak-kinds=definite,indirect,possible \
+	--track-origins=yes --error-exitcode=1 \
+	--suppressions=valgrind.supp
 
 .PHONY: test-valgrind
-test-valgrind: tests
+test-valgrind: tests cli
 	@echo ""
 	@echo "=== Running Unit Tests under Valgrind ==="
 	@for test in $(UNIT_TEST_BINS); do \
@@ -600,7 +602,16 @@ test-valgrind: tests
 		fi \
 	done
 	@echo ""
-	@echo "✓ All tests passed under Valgrind (no leaks, no errors)!"
+	@echo "=== Running Lua Tests under Valgrind ==="
+	@for test in tests/lua/test_*.lua; do \
+		if [ -f $$test ]; then \
+			echo ""; \
+			echo "Running $$test..."; \
+			$(VALGRIND) $(ALEA_CLI) $$test || exit 1; \
+		fi \
+	done
+	@echo ""
+	@echo "All tests passed under Valgrind (no leaks, no errors)!"
 
 # ============================================================================
 # Fuzzing (requires clang with libFuzzer)

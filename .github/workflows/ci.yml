@@ -36,12 +36,12 @@ jobs:
       - name: Run Lua tests
         run: make test-lua CC=${{ matrix.compiler }} USE_OPENMP=1
 
-      - name: Build (release)
-        run: make clean && make full cli tools RELEASE=1 CC=${{ matrix.compiler }} USE_OPENMP=1
-
       - name: Valgrind check (gcc only)
         if: matrix.compiler == 'gcc'
-        run: make test-valgrind CC=${{ matrix.compiler }} USE_OPENMP=1 || true
+        run: make test-valgrind CC=${{ matrix.compiler }} USE_OPENMP=1
+
+      - name: Build (release)
+        run: make clean && make full cli tools RELEASE=1 CC=${{ matrix.compiler }} USE_OPENMP=1
 
   build-macos:
     runs-on: macos-latest

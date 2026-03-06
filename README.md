@@ -6,7 +6,7 @@ SPDX-License-Identifier: MPL-2.0
 
 # libalea.c
 
-A C library for debugging and analyzing large Constructive Solid Geometry (CSG) models used in neutron and gamma transport simulations. 
+A C library for building, debugging, and analyzing Constructive Solid Geometry (CSG) models used in neutron and gamma transport simulations.
 
 **The library is under active development. The API may change.**
 
@@ -14,22 +14,24 @@ A C library for debugging and analyzing large Constructive Solid Geometry (CSG) 
 
 ```c
 #include <alea.h>
+#include <alea_mcnp.h>
 #include <stdio.h>
 
 int main(void) {
-    alea_system_t* sys = alea_load_mcnp("geometry.inp");
+    mcnp_model_t* model = mcnp_load("geometry.inp");
+    alea_system_t* sys = model->sys;
     alea_build_universe_index(sys);
 
     int cell = alea_find_cell(sys, 100.0, 0.0, 0.0);
     int mat  = alea_material_at(sys, 100.0, 0.0, 0.0);
     printf("Cell %d, material %d\n", cell, mat);
 
-    alea_destroy(sys);
+    mcnp_model_destroy(model);
 }
 ```
 
 ```bash
-gcc -o hello hello.c -Iinclude bin/libalea_full.a -lm
+gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 ```
 
 ## What It Does
@@ -39,17 +41,18 @@ gcc -o hello hello.c -Iinclude bin/libalea_full.a -lm
 - **Detect** overlapping cells and undefined regions
 - **Trace** rays through the model and report every cell crossing
 - **Visualize** 2D cross-sections with exact analytical surface boundaries
+- **Render** 3D images with Phong shading, cutaway views, and shadow rays
+- **Export** structured hex meshes to Gmsh (.msh) and VTK (.vtk) formats (exp.)
 - **Generate** void regions to fill gaps in the geometry
 - **Convert** between MCNP and OpenMC formats
 - **Build** geometry programmatically with boolean operations
-
-
+- **Materials** definition with nuclide/element composition and mixture support
 
 ## Installation
 
 ### Pre-built Binaries
 
-Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-mariano/libalea.c/releases):
+Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-mariano/libalea/releases):
 
 | Platform | Archive |
 |----------|---------|
@@ -64,14 +67,16 @@ Each release includes the `alea` CLI, `mc_convert` and `mc_plotter` tools, stati
 ### Building from Source
 
 ```bash
-git clone https://github.com/giovanni-mariano/libalea.c.git
-cd libalea.c
+git clone https://github.com/giovanni-mariano/libalea.git
+cd libalea
 ```
 
 Build the library, CLI, and tools:
 
 ```bash
-make lib          # Build all libraries
+make              # Build core library (libalea.a)
+make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a)
+make full         # Build everything into libalea_full.a
 make cli          # Build the alea CLI tool
 make tools        # Build mc_convert and mc_plotter
 make test         # Build and run tests
@@ -80,28 +85,34 @@ make test         # Build and run tests
 Optional flags:
 
 ```bash
-make USE_OPENMP=1 lib cli    # Enable OpenMP parallelization
-make RELEASE=1 lib cli       # Optimized build
+make USE_OPENMP=1 full cli    # Enable OpenMP parallelization
+make RELEASE=1 full cli       # Optimized build
 ```
 
 ### Dependencies
 
 - C11 compiler (gcc or clang)
 - Standard math library (`-lm`)
-- Optional: OpenMP for parallel slice rendering and ray tracing
+- Optional: OpenMP for parallel rendering and ray tracing
 
 ### Libraries Produced
 
 | Library | Contents |
 |---------|----------|
-| `libalea.a` | Core engine (CSG evaluation, export, dedup) |
-| `libalea_mcnp.a` | MCNP parser and exporter |
-| `libalea_openmc.a` | OpenMC XML parser and exporter |
-| `libalea_raycast.a` | Ray tracing module |
-| `libalea_slice.a` | 2D slice and visualization module |
+| `libalea.a` | Core engine: CSG evaluation, primitives, raycast, slice, 3D render, mesh export |
+| `libalea_mcnp.a` | MCNP parser, converter, and exporter |
+| `libalea_openmc.a` | OpenMC XML parser, converter, and exporter |
 | `libalea_full.a` | Everything in one archive |
 
-Link against `libalea_full.a` unless you need to minimize binary size.
+Link against the core library plus the format modules you need:
+
+```bash
+# MCNP support
+gcc -o myapp myapp.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
+
+# Full library (core + all formats)
+gcc -o myapp myapp.c -Iinclude bin/libalea_full.a -lm
+```
 
 ## CLI Tool
 
@@ -142,19 +153,48 @@ bin/mc_plotter model.inp Z 0 -100 100 -100 100 800 output.png
 
 ## Examples
 
-The `examples/` directory contains complete working programs:
+### C Examples
+
+The `examples/c/` directory contains complete working programs:
 
 | Example | What it shows |
 |---------|---------------|
 | `basic.c` | Build geometry from scratch, point queries, void generation, MCNP export |
 | `mcnp_roundtrip.c` | Parse and re-export an MCNP input file |
 | `mcnp_volume.c` | Estimate cell volumes via Monte Carlo ray tracing |
+| `mcnp_mesh.c` | Export MCNP geometry as a structured hex mesh (Gmsh/VTK) |
 | `render3d.c` | Render a 3D image of the geometry |
+| `void_demo.c` | Void generation with explicit bounds and multiple cells |
 
 ```bash
 cd examples/c && make
 ./basic
 ```
+
+### Lua Examples
+
+The `examples/lua/` directory contains scripts for use with the `alea` CLI:
+
+| Script | What it shows |
+|--------|---------------|
+| `01_hello.lua` | Load a model and query a point |
+| `02_build_geometry.lua` | Programmatic geometry construction |
+| `03_point_queries.lua` | Cell and material queries |
+| `04_model_inspection.lua` | Inspect cells, surfaces, universes |
+| `05_format_conversion.lua` | MCNP/OpenMC conversion |
+| `06_volume_estimation.lua` | Monte Carlo volume estimation |
+| `07_overlap_check.lua` | Detect overlapping cells |
+| `08_flatten_and_simplify.lua` | Flatten universes and simplify CSG |
+| `09_universe_extract_merge.lua` | Extract and merge universes |
+| `10_parametric_geometry.lua` | Parametric model generation |
+| `11_raycast.lua` | Ray tracing through geometry |
+| `12_slice.lua` | 2D cross-section slicing |
+| `13_render.lua` | 3D rendering |
+| `14_mesh.lua` | Mesh export |
+| `15_analysis_pipeline.lua` | Full analysis workflow |
+| `16_cell_comments.lua` | Cell comment handling |
+| `17_build_with_comments.lua` | Building geometry with comments |
+| `18_materials_and_mixtures.lua` | Material and mixture definitions |
 
 ## Documentation
 
@@ -172,22 +212,31 @@ Start with the **Tutorial** (C) or **Lua Tutorial** if you're new. Refer to **Co
 
 ```
 include/               Public headers
-  alea.h               Main API
+  alea.h               Main API (CSG engine, queries, void, materials)
   alea_types.h         Type definitions
-  alea_raycast.h       Ray tracing
-  alea_slice.h         2D visualization
+  alea_raycast.h       Ray tracing API
+  alea_slice.h         2D slice/visualization API
+  alea_render.h        3D rendering API
+  alea_mesh.h          Mesh export API
+  alea_mcnp.h          MCNP module API
+  alea_openmc.h        OpenMC module API
 src/
-  core/                CSG engine, evaluation, export, dedup
-  primitives/          Geometric primitives (plane, sphere, cylinder, ...)
+  core/                CSG engine, evaluation, export, dedup, void, materials
+  primitives/          Geometric primitives (plane, sphere, cylinder, cone, torus, ...)
   mcnp/                MCNP parser, converter, exporter
+    parser/            Lexer and parser
+    conversion/        Surface and cell conversion
+    exporter/          MCNP output formatting
   openmc/              OpenMC XML parser, converter, exporter
   raycast/             Ray-geometry intersection, BVH
-  slice/               2D slice curves, grid queries
-  render/              Image output (PPM, BMP)
+  slice/               2D slice curves, analytical intersection
+  render/              3D batch renderer (Phong, shadows, cutaway)
+  mesh/                Structured hex mesh export (Gmsh, VTK)
   lua_bind/            Lua bindings for CLI
   util/                Arena allocator, logging, vectors, math
 tools/               mc_convert, mc_plotter
 examples/
+  c/                   C example programs
   lua/                 Lua example scripts
 tests/
   unit/                Unit tests
@@ -204,4 +253,4 @@ This package was developed with support of AI tools.
 
 ## License
 
-Mozilla Public License 2.0 (MPL-2.0). See [LICENSES/MPL-2.0.txt](LICENSE) for details.
+Mozilla Public License 2.0 (MPL-2.0). See [LICENSE](LICENSES/MPL-2.0.txt) for details.
