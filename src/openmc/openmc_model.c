@@ -50,7 +50,7 @@ static void write_dedup_report(const alea_system_t* sys, const export_context_t*
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         uint32_t prim_id = surf->primitive_id;
-        int orig_id = surf->mcnp_surface_id;
+        int orig_id = surf->mc_surface_id;
 
         if (prim_id >= ctx->prim_to_surface_size) continue;
         int canon_id = ctx->prim_to_surface[prim_id];

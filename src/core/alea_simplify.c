@@ -549,12 +549,12 @@ static alea_node_id_t get_opposite_sense_node(
         return ALEA_NODE_ID_INVALID;
     }
 
-    int mcnp_id = node->primitive.mcnp_surface_id;
+    int mcnp_id = node->primitive.mc_surface_id;
     int8_t sense = node->primitive.sense;
 
     // Find surface entry by MCNP ID
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id == mcnp_id) {
+        if (sys->surfaces.data[i].mc_surface_id == mcnp_id) {
             // Return the opposite sense node based on current node's sense
             if (sense > 0) {
                 return sys->surfaces.data[i].neg_node;
@@ -608,7 +608,7 @@ static alea_node_id_t to_nnf(
                 }
                 // Fallback: shouldn't happen if surfaces are set up correctly
                 ALEA_LOG_WARN("couldn't find opposite sense for surface %d",
-                        node->primitive.mcnp_surface_id);
+                        node->primitive.mc_surface_id);
                 return node_id;
             }
             return node_id;
@@ -996,7 +996,7 @@ static int compare_dedup_keys(const void* a_ptr, const void* b_ptr) {
  * After flatten, different node IDs can reference the same (primitive_id, sense).
  * This compares by (primitive_id, sense) for primitives, by node_id for non-primitives.
  *
- * A secondary pass also deduplicates by (mcnp_surface_id, sense) to catch cases
+ * A secondary pass also deduplicates by (mc_surface_id, sense) to catch cases
  * where primitive dedup didn't merge identical geometry (e.g., floating-point
  * differences from transform application).
  *
@@ -2220,7 +2220,7 @@ void alea_simplify_all_cells(
         
         if (new_root == ALEA_NODE_ID_INVALID) {
             total.empty_cells_removed++;
-            ALEA_LOG_INFO("Cell %d simplified to empty set", cell->mcnp_cell_id);
+            ALEA_LOG_INFO("Cell %d simplified to empty set", cell->mc_cell_id);
         }
         
         cell->root_node_id = new_root;
@@ -2307,7 +2307,7 @@ void alea_flatten_all_cells(
 
         if (cell_is_provably_empty(sys, cell->root_node_id, bbox, 4)) {
             ALEA_LOG_INFO("Cell %d is provably empty (interval subdivision)",
-                         cell->mcnp_cell_id);
+                         cell->mc_cell_id);
             cell->root_node_id = ALEA_NODE_ID_INVALID;
             interval_detected++;
         }

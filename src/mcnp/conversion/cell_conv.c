@@ -856,7 +856,7 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
             const alea_transform_t* tr = alea_get_transform(sys, mp->trcl);
             if (!tr) {
                 ALEA_LOG_WARN("Cell %d: TRCL=%d references unknown transform, skipping",
-                            cell->mcnp_cell_id, mp->trcl);
+                            cell->mc_cell_id, mp->trcl);
                 continue;
             }
             /* Use tr->cosines which has pre-computed direction cosines */
@@ -898,7 +898,7 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
 
         if (new_root == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_WARN("Cell %d: Failed to apply TRCL transform",
-                        cell->mcnp_cell_id);
+                        cell->mc_cell_id);
             cell->original_root_node_id = ALEA_NODE_ID_INVALID;
             continue;
         }
@@ -908,7 +908,7 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
 
         count++;
         ALEA_LOG_DEBUG("Cell %d: Applied TRCL transform (new root node %u)",
-                     cell->mcnp_cell_id, new_root);
+                     cell->mc_cell_id, new_root);
     }
 
     if (count > 0) {
@@ -948,7 +948,7 @@ int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
         int template_idx = alea_find_cell_by_id(sys, mp->like_cell_id);
         if (template_idx < 0) {
             ALEA_LOG_WARN("Cell %d: LIKE references unknown cell %d",
-                        cell->mcnp_cell_id, mp->like_cell_id);
+                        cell->mc_cell_id, mp->like_cell_id);
             continue;
         }
         alea_cell_entry_t* template_cell = &sys->cells.data[template_idx];
@@ -956,7 +956,7 @@ int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
         /* Template must have valid geometry */
         if (template_cell->root_node_id == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_WARN("Cell %d: LIKE references cell %d with no geometry",
-                        cell->mcnp_cell_id, mp->like_cell_id);
+                        cell->mc_cell_id, mp->like_cell_id);
             continue;
         }
 
@@ -965,7 +965,7 @@ int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
 
         if (new_root == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_WARN("Cell %d: Failed to clone geometry from cell %d",
-                        cell->mcnp_cell_id, mp->like_cell_id);
+                        cell->mc_cell_id, mp->like_cell_id);
             continue;
         }
 
@@ -1004,7 +1004,7 @@ int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
 
         count++;
         ALEA_LOG_DEBUG("Cell %d: Resolved LIKE %d (new root node %u, mat=%d, dens=%.4g)",
-                     cell->mcnp_cell_id, template_id, new_root,
+                     cell->mc_cell_id, template_id, new_root,
                      cell->material_id, cell->density);
     }
 

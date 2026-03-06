@@ -152,7 +152,7 @@ void alea_system_destroy_internals(alea_system_t* sys) {
     alea_vec_free(&sys->transforms);
     free(sys->surface_lookup);
     free(sys->prim_to_surface);
-    free(sys->mcnp_id_to_surface);
+    free(sys->mc_id_to_surface);
 
     if (sys->primitive_index) {
         primitive_hash_table_destroy(sys->primitive_index);
@@ -266,9 +266,9 @@ void alea_system_reset(alea_system_t* sys) {
     sys->prim_to_surface_size = 0;
 
     // Free mcnp-id-to-surface map
-    free(sys->mcnp_id_to_surface);
-    sys->mcnp_id_to_surface = NULL;
-    sys->mcnp_id_to_surface_size = 0;
+    free(sys->mc_id_to_surface);
+    sys->mc_id_to_surface = NULL;
+    sys->mc_id_to_surface_size = 0;
 
     // Clear hash tables
     if (sys->primitive_index) {
@@ -320,7 +320,7 @@ alea_node_id_t alea_clone_primitive(alea_system_t* sys, alea_node_id_t node_id, 
 
     alea_node_id_t new_id = alea_add_primitive_node(sys, src->primitive.primitive_id, sense,
                                                    src->primitive.inverted,
-                                                   src->primitive.mcnp_surface_id);
+                                                   src->primitive.mc_surface_id);
     if (new_id == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
 
     /* Copy material_id from source (alea_add_primitive_node doesn't set this) */
@@ -370,7 +370,7 @@ alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
             int orig_surf_id = -1;
             for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
                 if (sys->surfaces.data[i].primitive_id == existing) {
-                    orig_surf_id = sys->surfaces.data[i].mcnp_surface_id;
+                    orig_surf_id = sys->surfaces.data[i].mc_surface_id;
                     break;
                 }
             }
@@ -411,7 +411,7 @@ const alea_primitive_entry_t* alea_get_primitive(const alea_system_t* sys, uint3
 
 alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id,
                                       int8_t sense, int8_t inverted,
-                                      int32_t mcnp_surface_id) {
+                                      int32_t mc_surface_id) {
     if (!sys || primitive_id >= alea_vec_count(&sys->primitives)) return ALEA_NODE_ID_INVALID;
 
     alea_node_id_t node_id = alea_alloc_node(sys);
@@ -423,7 +423,7 @@ alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id
     node->primitive.prim_type = sys->primitives.data[primitive_id].type;
     node->primitive.sense = sense;
     node->primitive.inverted = inverted;
-    node->primitive.mcnp_surface_id = mcnp_surface_id;
+    node->primitive.mc_surface_id = mc_surface_id;
 
     /* Compute bounding box (sense-aware for proper halfspace bounds) */
     /* Note: inverted flips the effective sense */
@@ -744,7 +744,7 @@ int alea_find_cell_by_id(const alea_system_t* sys, int cell_id) {
     }
     /* Fallback linear scan if hash map not available */
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        if (sys->cells.data[i].mcnp_cell_id == cell_id) {
+        if (sys->cells.data[i].mc_cell_id == cell_id) {
             return (int)i;
         }
     }
@@ -789,7 +789,7 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
     }
     memset(cell, 0, sizeof(*cell));
 
-    cell->mcnp_cell_id = cell_id;
+    cell->mc_cell_id = cell_id;
     cell->root_node_id = root_node;
     cell->original_root_node_id = ALEA_NODE_ID_INVALID;
     cell->material_id = mat_id;
@@ -878,7 +878,7 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
     }
     memset(cell, 0, sizeof(*cell));
 
-    cell->mcnp_cell_id = final_cell_id;
+    cell->mc_cell_id = final_cell_id;
     cell->root_node_id = root_node;
     cell->original_root_node_id = ALEA_NODE_ID_INVALID;
     cell->material_id = mat_id;
@@ -904,8 +904,8 @@ int alea_max_cell_id(const alea_system_t* sys) {
 
     int max_id = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        if (sys->cells.data[i].mcnp_cell_id > max_id) {
-            max_id = sys->cells.data[i].mcnp_cell_id;
+        if (sys->cells.data[i].mc_cell_id > max_id) {
+            max_id = sys->cells.data[i].mc_cell_id;
         }
     }
     return max_id;
@@ -956,7 +956,7 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture) {
 
     /* Deep copy the mixture */
     dst->mixture_id = mixture->mixture_id;
-    dst->mcnp_material_id = mixture->mcnp_material_id;
+    dst->mc_material_id = mixture->mc_material_id;
     dst->is_weight_fraction = mixture->is_weight_fraction;
 
     /* Copy components array via vec */
@@ -1004,7 +1004,7 @@ int alea_validate_cell_ids(alea_system_t* sys) {
     }
 
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        ids[i] = sys->cells.data[i].mcnp_cell_id;
+        ids[i] = sys->cells.data[i].mc_cell_id;
     }
 
     /* Sort and check for adjacent duplicates */
@@ -1449,7 +1449,7 @@ static int ensure_prim_to_surface_map(alea_system_t* sys) {
  * Build/rebuild the mcnp-surface-id-to-surface mapping stored in sys
  * This provides O(1) lookup by MCNP surface ID instead of O(n) linear search.
  */
-static int ensure_mcnp_id_to_surface_map(alea_system_t* sys) {
+static int ensure_mc_id_to_surface_map(alea_system_t* sys) {
     size_t surf_count = alea_vec_count(&sys->surfaces);
 
     if (surf_count == 0) {
@@ -1457,47 +1457,47 @@ static int ensure_mcnp_id_to_surface_map(alea_system_t* sys) {
     }
 
     /* Find max MCNP surface ID to size the array */
-    int max_mcnp_id = 0;
+    int max_mc_id = 0;
     for (size_t i = 0; i < surf_count; i++) {
-        int id = sys->surfaces.data[i].mcnp_surface_id;
-        if (id > max_mcnp_id) {
-            max_mcnp_id = id;
+        int id = sys->surfaces.data[i].mc_surface_id;
+        if (id > max_mc_id) {
+            max_mc_id = id;
         }
     }
 
-    if (max_mcnp_id <= 0) {
+    if (max_mc_id <= 0) {
         return 0;  /* No valid MCNP surface IDs */
     }
 
-    size_t needed_size = (size_t)(max_mcnp_id + 1);
+    size_t needed_size = (size_t)(max_mc_id + 1);
 
     /* Check if map needs rebuilding */
-    if (sys->mcnp_id_to_surface && sys->mcnp_id_to_surface_size >= needed_size) {
+    if (sys->mc_id_to_surface && sys->mc_id_to_surface_size >= needed_size) {
         return 0;  /* Already built and big enough */
     }
 
     /* Free old map */
-    free(sys->mcnp_id_to_surface);
-    sys->mcnp_id_to_surface = NULL;
-    sys->mcnp_id_to_surface_size = 0;
+    free(sys->mc_id_to_surface);
+    sys->mc_id_to_surface = NULL;
+    sys->mc_id_to_surface_size = 0;
 
     /* Allocate new map */
-    sys->mcnp_id_to_surface = malloc(needed_size * sizeof(uint32_t));
-    if (!sys->mcnp_id_to_surface) {
+    sys->mc_id_to_surface = malloc(needed_size * sizeof(uint32_t));
+    if (!sys->mc_id_to_surface) {
         return -1;
     }
-    sys->mcnp_id_to_surface_size = needed_size;
+    sys->mc_id_to_surface_size = needed_size;
 
     /* Initialize to "no surface" */
     for (size_t i = 0; i < needed_size; i++) {
-        sys->mcnp_id_to_surface[i] = UINT32_MAX;
+        sys->mc_id_to_surface[i] = UINT32_MAX;
     }
 
     /* Build mapping from surfaces */
     for (size_t i = 0; i < surf_count; i++) {
-        int mcnp_id = sys->surfaces.data[i].mcnp_surface_id;
+        int mcnp_id = sys->surfaces.data[i].mc_surface_id;
         if (mcnp_id > 0 && (size_t)mcnp_id < needed_size) {
-            sys->mcnp_id_to_surface[mcnp_id] = (uint32_t)i;
+            sys->mc_id_to_surface[mcnp_id] = (uint32_t)i;
         }
     }
 
@@ -1509,19 +1509,19 @@ static int ensure_mcnp_id_to_surface_map(alea_system_t* sys) {
  * Returns UINT32_MAX if not found
  * Uses O(1) lookup table if available, falls back to O(n) search otherwise.
  */
-static uint32_t find_surface_by_mcnp_id(alea_system_t* sys, int mcnp_surface_id) {
-    if (mcnp_surface_id <= 0) {
+static uint32_t find_surface_by_mc_id(alea_system_t* sys, int mc_surface_id) {
+    if (mc_surface_id <= 0) {
         return UINT32_MAX;
     }
 
     /* Use lookup table if available */
-    if (sys->mcnp_id_to_surface && (size_t)mcnp_surface_id < sys->mcnp_id_to_surface_size) {
-        return sys->mcnp_id_to_surface[mcnp_surface_id];
+    if (sys->mc_id_to_surface && (size_t)mc_surface_id < sys->mc_id_to_surface_size) {
+        return sys->mc_id_to_surface[mc_surface_id];
     }
 
     /* Fallback: linear search (should not happen if map is built) */
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id == mcnp_surface_id) {
+        if (sys->surfaces.data[i].mc_surface_id == mc_surface_id) {
             return (uint32_t)i;
         }
     }
@@ -1531,10 +1531,10 @@ static uint32_t find_surface_by_mcnp_id(alea_system_t* sys, int mcnp_surface_id)
 /**
  * Helper: recursively collect surface indices from a CSG tree
  *
- * Uses node->primitive.mcnp_surface_id to find the correct surface,
+ * Uses node->primitive.mc_surface_id to find the correct surface,
  * which handles cases where multiple surfaces share the same primitive
  * due to primitive deduplication. Falls back to prim_to_surface if
- * mcnp_surface_id is not set.
+ * mc_surface_id is not set.
  */
 static void collect_surfaces_recursive(alea_system_t* sys,
                                        alea_node_id_t node_id,
@@ -1550,11 +1550,11 @@ static void collect_surfaces_recursive(alea_system_t* sys,
     if (op == ALEA_OP_PRIMITIVE) {
         uint32_t surf_idx = UINT32_MAX;
 
-        /* First try: use node's mcnp_surface_id for correct surface lookup
+        /* First try: use node's mc_surface_id for correct surface lookup
          * This handles primitive deduplication correctly */
-        int mcnp_id = node->primitive.mcnp_surface_id;
+        int mcnp_id = node->primitive.mc_surface_id;
         if (mcnp_id > 0) {
-            surf_idx = find_surface_by_mcnp_id(sys, mcnp_id);
+            surf_idx = find_surface_by_mc_id(sys, mcnp_id);
         }
 
         /* Fallback: use prim_to_surface if mcnp_id not set or not found */
@@ -1615,7 +1615,7 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
     }
 
     /* Build/update MCNP surface ID -> surface index map for O(1) lookup */
-    if (ensure_mcnp_id_to_surface_map(sys) != 0) {
+    if (ensure_mc_id_to_surface_map(sys) != 0) {
         return -1;
     }
 
@@ -2009,10 +2009,10 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
 
                 size_t n = ca->neighbor_count;
                 ca->neighbors[n].surface_id =
-                    sys->surfaces.data[si].mcnp_surface_id;
+                    sys->surfaces.data[si].mc_surface_id;
                 ca->neighbors[n].surface_index = si;
                 ca->neighbors[n].neighbor_cell_id =
-                    sys->cells.data[other].mcnp_cell_id;
+                    sys->cells.data[other].mc_cell_id;
                 ca->neighbors[n].neighbor_index = other;
                 ca->neighbors[n].our_sense = my_sense;
                 ca->neighbor_count++;

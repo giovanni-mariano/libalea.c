@@ -411,7 +411,7 @@ typedef struct {
  * - neg_node: negative sense (inside, -S in MCNP)
  */
 typedef struct {
-    int mcnp_surface_id;            /**< Surface ID (always positive) */
+    int mc_surface_id;            /**< Surface ID (always positive) */
     alea_primitive_id_t primitive_id; /**< Primitive in GLOBAL coordinates */
     alea_node_id_t pos_node;         /**< +S node (sense = +1) */
     alea_node_id_t neg_node;         /**< -S node (sense = -1) */

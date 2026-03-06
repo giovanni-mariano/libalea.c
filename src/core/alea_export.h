@@ -38,7 +38,7 @@ typedef struct alea_cell_entry alea_cell_entry_t;
 typedef struct {
     uint32_t primitive_id;      /* Index into sys->primitives */
     int export_id;              /* Surface ID in output file */
-    int original_mcnp_id;       /* Original ID if from input, -1 if synthetic */
+    int original_mc_id;       /* Original ID if from input, -1 if synthetic */
     bool emitted;               /* Already written to output? */
 } export_surface_t;
 
@@ -127,7 +127,7 @@ typedef struct export_context {
      * -1 = fully flatten */
     int fill_depth;
     
-    /* Dedup map: primitive_id -> canonical mcnp_surface_id */
+    /* Dedup map: primitive_id -> canonical mc_surface_id */
     int* prim_to_surface;
     size_t prim_to_surface_size;
 

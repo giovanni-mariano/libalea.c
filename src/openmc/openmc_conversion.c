@@ -262,7 +262,7 @@ static alea_node_id_t convert_surface(alea_system_t* sys,
         return ALEA_NODE_ID_INVALID;
     }
     memset(entry, 0, sizeof(*entry));
-    entry->mcnp_surface_id = id;
+    entry->mc_surface_id = id;
     entry->primitive_id = prim_id;
     entry->pos_node = pos_node;
     entry->neg_node = neg_node;
@@ -1075,8 +1075,8 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                     /* Find next available cell ID */
                     int max_cell_id = 0;
                     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-                        if (sys->cells.data[i].mcnp_cell_id > max_cell_id) {
-                            max_cell_id = sys->cells.data[i].mcnp_cell_id;
+                        if (sys->cells.data[i].mc_cell_id > max_cell_id) {
+                            max_cell_id = sys->cells.data[i].mc_cell_id;
                         }
                     }
                     int graveyard_id = max_cell_id + 1;
@@ -1085,7 +1085,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                     alea_cell_entry_t* graveyard = alea_vec_push_uninit(&sys->cells, alea_cell_entry_t);
                     if (graveyard) {
                         memset(graveyard, 0, sizeof(*graveyard));
-                        graveyard->mcnp_cell_id = graveyard_id;
+                        graveyard->mc_cell_id = graveyard_id;
                         graveyard->root_node_id = graveyard_root;
                         graveyard->material_id = 0;
                         graveyard->material_index = -1;

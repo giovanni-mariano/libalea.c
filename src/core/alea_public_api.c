@@ -245,7 +245,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     /* Rebuild cell hash map for cloned system */
     cell_hashmap_clear(&clone->cell_index);
     for (size_t i = 0; i < alea_vec_count(&clone->cells); i++) {
-        cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mcnp_cell_id, (int)i);
+        cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mc_cell_id, (int)i);
     }
 
     /* Note: primitive_index, instance_cache, surface_bvh, spatial_index
@@ -374,7 +374,7 @@ static int create_surface_entry(alea_system_t* sys,
     if (!surf) return -1;
 
     *surf = (alea_surface_entry_t){
-        .mcnp_surface_id = surface_id,
+        .mc_surface_id = surface_id,
         .primitive_id = prim_id,
         .pos_node = pos_node,
         .neg_node = neg_node,
@@ -853,7 +853,7 @@ int alea_cell_remove(alea_system_t* sys, int cell_index) {
         sys->on_cell_removed(sys->cell_hook_userdata, (size_t)cell_index);
 
     /* Remove from cell ID hashmap */
-    cell_hashmap_remove(&sys->cell_index, cell->mcnp_cell_id);
+    cell_hashmap_remove(&sys->cell_index, cell->mc_cell_id);
 
     /* Free per-cell allocations (skip neighbors if pool-allocated) */
     free(cell->surface_indices);
@@ -875,7 +875,7 @@ int alea_cell_remove(alea_system_t* sys, int cell_index) {
     /* Rebuild hashmap — indices shifted */
     cell_hashmap_clear(&sys->cell_index);
     for (size_t i = 0; i < last; i++) {
-        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mcnp_cell_id, (int)i);
+        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     }
 
     sys->universe_index_built = false;
@@ -917,7 +917,7 @@ alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) 
             new_root = alea_clone_tree_to_system(extracted, sys, cell->root_node_id, remap);
         }
 
-        int idx = alea_add_cell(extracted, cell->mcnp_cell_id, new_root,
+        int idx = alea_add_cell(extracted, cell->mc_cell_id, new_root,
                                ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
         if (idx >= 0) {
             /* Copy core cell fields */
@@ -979,7 +979,7 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
     int cells_added = 0;
     for (size_t i = 0; i < alea_vec_count(&source->cells); i++) {
         alea_cell_entry_t cell = source->cells.data[i];
-        cell.mcnp_cell_id += id_offset;
+        cell.mc_cell_id += id_offset;
         if (cell.root_node_id != ALEA_NODE_ID_INVALID) {
             cell.root_node_id += (uint32_t)node_offset;
         }
@@ -1007,14 +1007,14 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         cell.inline_comment = cell.inline_comment ? alea_strdup(cell.inline_comment) : NULL;
         int idx = (int)alea_vec_count(&target->cells);
         alea_vec_push(&target->cells, cell, alea_cell_entry_t);
-        cell_hashmap_put(&target->cell_index, cell.mcnp_cell_id, idx);
+        cell_hashmap_put(&target->cell_index, cell.mc_cell_id, idx);
         cells_added++;
     }
 
     /* Copy surfaces with adjusted IDs */
     for (size_t i = 0; i < alea_vec_count(&source->surfaces); i++) {
         alea_surface_entry_t surf = source->surfaces.data[i];
-        surf.mcnp_surface_id += id_offset;
+        surf.mc_surface_id += id_offset;
         surf.pos_node += (uint32_t)node_offset;
         surf.neg_node += (uint32_t)node_offset;
         alea_vec_push(&target->surfaces, surf, alea_surface_entry_t);
@@ -1502,7 +1502,7 @@ alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* 
         alea_node_id_t new_root = alea_clone_tree_to_system(extracted, sys,
                                                           cell->root_node_id, remap);
 
-        int idx = alea_add_cell(extracted, cell->mcnp_cell_id, new_root,
+        int idx = alea_add_cell(extracted, cell->mc_cell_id, new_root,
                                ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
         if (idx >= 0) {
             /* Copy core cell fields */
@@ -1567,7 +1567,7 @@ int alea_cell_get(const alea_system_t* sys, size_t index,
     if (index >= alea_vec_count(&sys->cells)) return -1;
 
     const alea_cell_entry_t* c = &sys->cells.data[index];
-    if (cell_id) *cell_id = c->mcnp_cell_id;
+    if (cell_id) *cell_id = c->mc_cell_id;
     if (material_id) *material_id = c->material_id;
     if (density) *density = c->density;
     if (universe_id) *universe_id = c->universe_id;
@@ -1586,7 +1586,7 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     if (index >= alea_vec_count(&sys->cells)) return -1;
 
     const alea_cell_entry_t* c = &sys->cells.data[index];
-    info->cell_id = c->mcnp_cell_id;
+    info->cell_id = c->mc_cell_id;
     info->material_id = c->material_id;
     info->density = c->density;
     info->is_mass_density = c->is_mass_density;
@@ -1653,7 +1653,7 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
     if (index >= alea_vec_count(&sys->surfaces)) return -1;
 
     const alea_surface_entry_t* s = &sys->surfaces.data[index];
-    if (surface_id) *surface_id = s->mcnp_surface_id;
+    if (surface_id) *surface_id = s->mc_surface_id;
     if (pos_node) *pos_node = s->pos_node;
     if (neg_node) *neg_node = s->neg_node;
     if (boundary_type) *boundary_type = s->boundary_type;
@@ -1666,14 +1666,14 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
 int alea_surface_find(const alea_system_t* sys, int surface_id) {
     if (!sys) return -1;
     /* Fast path: O(1) direct-address table (built after surface conversion) */
-    if (surface_id > 0 && sys->mcnp_id_to_surface &&
-        (size_t)surface_id < sys->mcnp_id_to_surface_size) {
-        uint32_t idx = sys->mcnp_id_to_surface[surface_id];
+    if (surface_id > 0 && sys->mc_id_to_surface &&
+        (size_t)surface_id < sys->mc_id_to_surface_size) {
+        uint32_t idx = sys->mc_id_to_surface[surface_id];
         return (idx != UINT32_MAX) ? (int)idx : -1;
     }
     /* Fallback: linear scan (table not yet built or ID out of range) */
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id == surface_id)
+        if (sys->surfaces.data[i].mc_surface_id == surface_id)
             return (int)i;
     }
     return -1;
@@ -1720,7 +1720,7 @@ int alea_find_cell_at(const alea_system_t* sys, double x, double y, double z,
     int idx = alea_identify_cell_at_point(sys, x, y, z);
     if (idx < 0) return -1;
 
-    if (out_cell_id) *out_cell_id = sys->cells.data[idx].mcnp_cell_id;
+    if (out_cell_id) *out_cell_id = sys->cells.data[idx].mc_cell_id;
     if (out_material) *out_material = sys->cells.data[idx].material_id;
     return 0;
 }
@@ -1736,7 +1736,7 @@ void alea_set_debug_trace(int enable) {
 int alea_get_cell_id(const alea_system_t* sys, int cell_index) {
     if (!sys) return -1;
     if (cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells)) return -1;
-    return sys->cells.data[cell_index].mcnp_cell_id;
+    return sys->cells.data[cell_index].mc_cell_id;
 }
 
 /* ============================================================================
@@ -1746,14 +1746,14 @@ int alea_get_cell_id(const alea_system_t* sys, int cell_index) {
 int alea_renumber_cells(alea_system_t* sys, int start_id) {
     if (!sys) return -1;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        sys->cells.data[i].mcnp_cell_id = start_id + (int)i;
+        sys->cells.data[i].mc_cell_id = start_id + (int)i;
     }
     sys->next_auto_cell_id = start_id + (int)alea_vec_count(&sys->cells);
 
     /* Rebuild cell hash map */
     cell_hashmap_clear(&sys->cell_index);
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mcnp_cell_id, (int)i);
+        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     }
     return 0;
 }
@@ -1761,7 +1761,7 @@ int alea_renumber_cells(alea_system_t* sys, int start_id) {
 int alea_renumber_surfaces(alea_system_t* sys, int start_id) {
     if (!sys) return -1;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        sys->surfaces.data[i].mcnp_surface_id = start_id + (int)i;
+        sys->surfaces.data[i].mc_surface_id = start_id + (int)i;
     }
     sys->next_auto_surface_id = start_id + (int)alea_vec_count(&sys->surfaces);
     return 0;
@@ -1770,14 +1770,14 @@ int alea_renumber_surfaces(alea_system_t* sys, int start_id) {
 int alea_offset_cell_ids(alea_system_t* sys, int offset) {
     if (!sys) return -1;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        sys->cells.data[i].mcnp_cell_id += offset;
+        sys->cells.data[i].mc_cell_id += offset;
     }
     sys->next_auto_cell_id += offset;
 
     /* Rebuild cell hash map */
     cell_hashmap_clear(&sys->cell_index);
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mcnp_cell_id, (int)i);
+        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     }
     return 0;
 }
@@ -1785,7 +1785,7 @@ int alea_offset_cell_ids(alea_system_t* sys, int offset) {
 int alea_offset_surface_ids(alea_system_t* sys, int offset) {
     if (!sys) return -1;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        sys->surfaces.data[i].mcnp_surface_id += offset;
+        sys->surfaces.data[i].mc_surface_id += offset;
     }
     sys->next_auto_surface_id += offset;
     return 0;
@@ -1972,7 +1972,7 @@ int alea_node_surface_id(const alea_system_t* sys, alea_node_id_t node) {
     if (!sys || node >= alea_vec_count(&sys->nodes)) return 0;
     const alea_node_t* n = &sys->nodes.data[node];
     if (ALEA_GET_OPERATION(n) != ALEA_OP_PRIMITIVE) return 0;
-    return n->primitive.mcnp_surface_id;
+    return n->primitive.mc_surface_id;
 }
 
 /* ============================================================================
@@ -1992,7 +1992,7 @@ static bool cell_expr_recursive(const alea_system_t* sys, uint32_t node_id,
     alea_operation_t op = ALEA_GET_OPERATION(node);
 
     if (op == ALEA_OP_PRIMITIVE) {
-        int surface_id = node->primitive.mcnp_surface_id;
+        int surface_id = node->primitive.mc_surface_id;
         if (node->primitive.sense < 0)
             surface_id = -surface_id;
         str_builder_int(sb, surface_id);
@@ -2008,7 +2008,7 @@ static bool cell_expr_recursive(const alea_system_t* sys, uint32_t node_id,
 
         /* Complement of a primitive: just flip the sign */
         if (child_op == ALEA_OP_PRIMITIVE) {
-            int surface_id = child->primitive.mcnp_surface_id;
+            int surface_id = child->primitive.mc_surface_id;
             /* Complement flips: positive sense -> negative surface_id, and vice versa */
             if (child->primitive.sense > 0)
                 surface_id = -surface_id;

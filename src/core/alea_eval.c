@@ -68,7 +68,7 @@ static inline double eval_primitive_node(
     // Debug trace for specific cell
     if (g_debug_point_trace && g_trace_cell_id != 0 && final_dist <= 0) {
         ALEA_LOG_DEBUG("surf=%d prim=%u type=%d sense=%d inverted=%d raw=%.4f final=%.4f",
-               node->primitive.mcnp_surface_id, node->primitive.primitive_id,
+               node->primitive.mc_surface_id, node->primitive.primitive_id,
                prim->type, node->primitive.sense, node->primitive.inverted,
                distance, final_dist);
     }

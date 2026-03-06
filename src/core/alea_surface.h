@@ -28,7 +28,7 @@ typedef struct mcnp_cell mcnp_cell_t;
  * @brief Maps MCNP surface ID to primitive ID
  */
 typedef struct {
-    int mcnp_surface_id;
+    int mc_surface_id;
     uint32_t primitive_id;           // should the name be node_id?
     int transform_id;           // 0 = none, >0 = TRn was applied
     bool inverted;

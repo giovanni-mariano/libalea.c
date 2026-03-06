@@ -232,7 +232,7 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
             /* Check if this is graveyard: material=0 and IMP:N=0 */
             const mcnp_cell_params_t* mp = model ? mcnp_cell_params_const(model, (size_t)cell_idx) : NULL;
             if (cell->material_id == 0 && mp && mp->has_imp_n && mp->imp_n == 0.0) {
-                graveyard_cell_id = cell->mcnp_cell_id;
+                graveyard_cell_id = cell->mc_cell_id;
                 graveyard_cell_idx = cell_idx;
             }
         }
@@ -249,10 +249,10 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
                 alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
                 if (cell->material_id == 0) {
-                    graveyard_cell_id = cell->mcnp_cell_id;
+                    graveyard_cell_id = cell->mc_cell_id;
                     graveyard_cell_idx = cell_idx;
                     ALEA_LOG_DEBUG("Using void cell %d at infinity as graveyard (no explicit IMP:N=0)",
-                                  cell->mcnp_cell_id);
+                                  cell->mc_cell_id);
                 }
             }
         }
@@ -286,7 +286,7 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
                 surf->boundary_type = ALEA_BOUNDARY_VACUUM;
                 marked++;
                 ALEA_LOG_DEBUG("Marked surface %d as vacuum boundary",
-                             surf->mcnp_surface_id);
+                             surf->mc_surface_id);
             }
         }
     }
@@ -495,7 +495,7 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
         cell->lat_lower_left[2] = bb.min_z + cell->lat_fill_dims[4] * cell->lat_pitch[2];
 
         ALEA_LOG_DEBUG("Lattice cell %d: pitch=(%.4f, %.4f, %.4f) lower_left=(%.4f, %.4f, %.4f)",
-                     cell->mcnp_cell_id,
+                     cell->mc_cell_id,
                      cell->lat_pitch[0], cell->lat_pitch[1], cell->lat_pitch[2],
                      cell->lat_lower_left[0], cell->lat_lower_left[1], cell->lat_lower_left[2]);
     }

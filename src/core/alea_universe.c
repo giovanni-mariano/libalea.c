@@ -84,9 +84,9 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
                 uint32_t prim_id = node->primitive.primitive_id;
                 if (prim_id <= max_prim_id) {
                     alea_bitset_set(&prim_used, prim_id);
-                    /* Record preferred surface ID from original mcnp_surface_id if set */
-                    if (node->primitive.mcnp_surface_id > 0 && preferred[prim_id] == 0) {
-                        preferred[prim_id] = node->primitive.mcnp_surface_id;
+                    /* Record preferred surface ID from original mc_surface_id if set */
+                    if (node->primitive.mc_surface_id > 0 && preferred[prim_id] == 0) {
+                        preferred[prim_id] = node->primitive.mc_surface_id;
                     }
                 }
             } else {
@@ -263,7 +263,7 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
         alea_surface_entry_t* surf = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
         if (!surf) continue;
         memset(surf, 0, sizeof(alea_surface_entry_t));
-        surf->mcnp_surface_id = surf_id;
+        surf->mc_surface_id = surf_id;
         surf->primitive_id = prim_id;
         surf->pos_node = pos_node;
         surf->neg_node = neg_node;
@@ -283,7 +283,7 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
         if (ALEA_GET_OPERATION(node) == ALEA_OP_PRIMITIVE) {
             uint32_t prim_id = node->primitive.primitive_id;
             if (prim_id <= max_prim_id && prim_to_surf[prim_id] > 0) {
-                node->primitive.mcnp_surface_id = prim_to_surf[prim_id];
+                node->primitive.mc_surface_id = prim_to_surf[prim_id];
             }
         }
     }
@@ -305,7 +305,7 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
     }
 
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        int id = sys->surfaces.data[i].mcnp_surface_id;
+        int id = sys->surfaces.data[i].mc_surface_id;
         if (id >= 0 && (size_t)id < sys->surface_lookup_size)
             sys->surface_lookup[id] = (alea_node_id_t)i;
     }
@@ -400,7 +400,7 @@ int alea_copy_surfaces_with_remap(alea_system_t* dst,
         if (new_prim_id == ALEA_PRIMITIVE_ID_INVALID) {
             /* Primitive wasn't used in flattened geometry - skip this surface */
             ALEA_LOG_WARN("Surface %d references unused primitive %u, skipping",
-                    src_surf->mcnp_surface_id, src_surf->primitive_id);
+                    src_surf->mc_surface_id, src_surf->primitive_id);
             continue;
         }
 
@@ -654,10 +654,10 @@ int alea_copy_referenced_mixtures(alea_system_t* dst, const alea_system_t* src) 
     for (size_t i = 0; i < alea_vec_count(&src->mixtures); i++) {
         const alea_mixture_t* mix = &src->mixtures.data[i];
 
-        /* Check if this mixture's mcnp_material_id matches any cell material_id */
+        /* Check if this mixture's mc_material_id matches any cell material_id */
         bool needed = false;
         for (size_t c = 0; c < cell_count; c++) {
-            if (dst->cells.data[c].material_id == mix->mcnp_material_id) {
+            if (dst->cells.data[c].material_id == mix->mc_material_id) {
                 needed = true;
                 break;
             }
@@ -780,7 +780,7 @@ int alea_copy_referenced_cell_refs(alea_system_t* dst, const alea_system_t* src)
         bool has_referencing = false;
         bool has_referenced = false;
         for (size_t c = 0; c < alea_vec_count(&dst->cells); c++) {
-            int cid = dst->cells.data[c].mcnp_cell_id;
+            int cid = dst->cells.data[c].mc_cell_id;
             if (cid == ref->referencing_cell_id) has_referencing = true;
             if (cid == ref->referenced_cell_id) has_referenced = true;
             if (has_referencing && has_referenced) break;
@@ -1146,12 +1146,12 @@ static alea_node_id_t clone_tree_impl(alea_system_t* dst, const alea_system_t* s
             }
         }
 
-        /* Preserve mcnp_surface_id when no transform, clear when transformed */
-        int mcnp_surf_id = mat ? 0 : node->primitive.mcnp_surface_id;
+        /* Preserve mc_surface_id when no transform, clear when transformed */
+        int mc_surf_id = mat ? 0 : node->primitive.mc_surface_id;
 
         int8_t xored_inverted = node->primitive.inverted ^ transform_inverted;
         alea_node_id_t dst_node = alea_add_primitive_node(
-            dst, dst_prim_id, node->primitive.sense, xored_inverted, mcnp_surf_id);
+            dst, dst_prim_id, node->primitive.sense, xored_inverted, mc_surf_id);
         if (dst_node == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_ERROR("clone_tree_ex: add_primitive_node failed (node %u)", root);
             return ALEA_NODE_ID_INVALID;
@@ -1404,7 +1404,7 @@ static int find_cell_recursive(const alea_system_t* sys,
 
             /* Terminal cell */
             } else {
-                if (out_cell_id) *out_cell_id = cell->mcnp_cell_id;
+                if (out_cell_id) *out_cell_id = cell->mc_cell_id;
                 if (out_material) *out_material = cell->material_id;
                 return 0;
             }
@@ -1474,7 +1474,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
             /* Record the lattice cell itself */
             if (*hit_count < max_hits) {
                 alea_cell_hit_t* hit = &out_hits[*hit_count];
-                hit->cell_id = cell->mcnp_cell_id;
+                hit->cell_id = cell->mc_cell_id;
                 hit->cell_index = (int)cell_idx;
                 hit->material_id = cell->material_id;
                 hit->universe_id = cell->universe_id;
@@ -1504,7 +1504,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
         /* Point is inside this cell - record it */
         if (*hit_count < max_hits) {
             alea_cell_hit_t* hit = &out_hits[*hit_count];
-            hit->cell_id = cell->mcnp_cell_id;
+            hit->cell_id = cell->mc_cell_id;
             hit->cell_index = (int)cell_idx;
             hit->material_id = cell->material_id;
             hit->universe_id = cell->universe_id;
@@ -1517,7 +1517,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
 
             if (g_debug_point_trace) {
                 ALEA_LOG_DEBUG("  -> Found cell %d (mat=%d) in universe %d, fill=%d",
-                       cell->mcnp_cell_id, cell->material_id, universe_id, cell->fill_universe);
+                       cell->mc_cell_id, cell->material_id, universe_id, cell->fill_universe);
             }
         }
 
@@ -1716,7 +1716,7 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
 
             if (composed_ptr && !alea_matrix_invert(composed_ptr)) {
                 ALEA_LOG_ERROR("Singular matrix for cell %d fill_transform %d",
-                        cell->mcnp_cell_id, cell->fill_transform);
+                        cell->mc_cell_id, cell->fill_transform);
                 ctx->error = -1;
                 return;
             }
@@ -1836,15 +1836,15 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
             memset(new_cell, 0, sizeof(*new_cell));
 
             /* Best-effort: reuse original MCNP cell ID if available and not taken */
-            int preferred_id = cell->mcnp_cell_id;
+            int preferred_id = cell->mc_cell_id;
             if (preferred_id > 0 && !cell_id_is_used(ctx, preferred_id)) {
-                new_cell->mcnp_cell_id = preferred_id;
+                new_cell->mc_cell_id = preferred_id;
             } else {
                 while (cell_id_is_used(ctx, ctx->next_cell_id))
                     ctx->next_cell_id++;
-                new_cell->mcnp_cell_id = ctx->next_cell_id++;
+                new_cell->mc_cell_id = ctx->next_cell_id++;
             }
-            cell_id_mark_used(ctx, new_cell->mcnp_cell_id);
+            cell_id_mark_used(ctx, new_cell->mc_cell_id);
             new_cell->root_node_id = final_root;
             new_cell->material_id = cell->material_id;
             new_cell->density = cell->density;

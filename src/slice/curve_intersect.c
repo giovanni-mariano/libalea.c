@@ -1446,7 +1446,7 @@ int alea_compute_slice_curves(const alea_system_t* sys,
         alea_curve_2d_t curve;
         if (alea_intersect_primitive_plane(prim->type, &prim->data, plane, &curve)) {
             /* Store surface ID */
-            curve.surface_id = surf->mcnp_surface_id;
+            curve.surface_id = surf->mc_surface_id;
 
             if (ensure_curve_capacity(result) != 0) {
                 alea_curve_collection_free(result);
@@ -2330,7 +2330,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                                 &first_cell_id, &first_depth)) {
                 if (g_slice_curve_debug) {
                     ALEA_LOG_DEBUG("  -> SKIPPED surface %d (mcnp=%d): already seen from cell_id=%d depth=%d",
-                           surf_idx, surf->mcnp_surface_id, first_cell_id, first_depth);
+                           surf_idx, surf->mc_surface_id, first_cell_id, first_depth);
                 }
                 continue;
             }
@@ -2346,7 +2346,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                                         &transformed_type, &transformed_data)) {
                 if (g_slice_curve_debug) {
                     ALEA_LOG_DEBUG("  -> surface %d (mcnp=%d): transform failed",
-                           surf_idx, surf->mcnp_surface_id);
+                           surf_idx, surf->mc_surface_id);
                 }
                 continue;
             }
@@ -2357,7 +2357,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                                                plane, &curve)) {
                 if (g_slice_curve_debug) {
                     ALEA_LOG_DEBUG("  -> surface %d (mcnp=%d): no intersection with plane",
-                           surf_idx, surf->mcnp_surface_id);
+                           surf_idx, surf->mc_surface_id);
                 }
                 continue;
             }
@@ -2370,12 +2370,12 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                 cv_max < v_min || cv_min > v_max) {
                 if (g_slice_curve_debug) {
                     ALEA_LOG_DEBUG("  -> surface %d (mcnp=%d): culled (outside viewport)",
-                           surf_idx, surf->mcnp_surface_id);
+                           surf_idx, surf->mc_surface_id);
                 }
                 continue;
             }
 
-            curve.surface_id = surf->mcnp_surface_id;
+            curve.surface_id = surf->mc_surface_id;
             curve.universe_id = cell->universe_id;
 
             /* Add curve to result */
@@ -2395,7 +2395,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                 };
                 const char* type_name = (curve.type < 14) ? type_names[curve.type] : "UNKNOWN";
                 ALEA_LOG_DEBUG("  -> ADDED surface %d (mcnp=%d) as curve type=%s bbox=(%.2f,%.2f)-(%.2f,%.2f)",
-                       surf_idx, surf->mcnp_surface_id, type_name, cu_min, cv_min, cu_max, cv_max);
+                       surf_idx, surf->mc_surface_id, type_name, cu_min, cv_min, cu_max, cv_max);
                 if (curve.type == ALEA_CURVE_QUARTIC) {
                     ALEA_LOG_DEBUG("     QUARTIC mode=%d: c1=(%.2f,%.2f) r1=%.2f, c2=(%.2f,%.2f) r2=%.2f",
                            curve.data.torus.mode,
@@ -2502,7 +2502,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                                 continue;
 
                             if (seen_set_insert(&seen, surf_idx, &elem_tr,
-                                               fc_cell->mcnp_cell_id, 0,
+                                               fc_cell->mc_cell_id, 0,
                                                NULL, NULL))
                                 continue;
 
@@ -2529,7 +2529,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                                 cv1 < v_min || cv0 > v_max)
                                 continue;
 
-                            curve.surface_id = surf->mcnp_surface_id;
+                            curve.surface_id = surf->mc_surface_id;
                             curve.universe_id = fc_cell->universe_id;
 
                             if (ensure_curve_capacity(result) != 0) goto lat_done;

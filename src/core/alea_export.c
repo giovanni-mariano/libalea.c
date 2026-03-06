@@ -28,8 +28,8 @@
 int alea_next_synthetic_surface_id(const alea_system_t* sys) {
     int max_id = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id > max_id)
-            max_id = sys->surfaces.data[i].mcnp_surface_id;
+        if (sys->surfaces.data[i].mc_surface_id > max_id)
+            max_id = sys->surfaces.data[i].mc_surface_id;
     }
     return max_id + 1;
 }
@@ -328,7 +328,7 @@ static void assign_surface_ids_recursive(alea_system_t* sys, export_context_t* c
     alea_operation_t op = ALEA_GET_OPERATION(node);
 
     if (op == ALEA_OP_PRIMITIVE) {
-        if (node->primitive.mcnp_surface_id == 0) {
+        if (node->primitive.mc_surface_id == 0) {
             alea_primitive_id_t prim_id = node->primitive.primitive_id;
 
             if (prim_id >= *map_size) {
@@ -343,10 +343,10 @@ static void assign_surface_ids_recursive(alea_system_t* sys, export_context_t* c
             }
 
             if ((*prim_surf_map)[prim_id] != 0) {
-                node->primitive.mcnp_surface_id = (*prim_surf_map)[prim_id];
+                node->primitive.mc_surface_id = (*prim_surf_map)[prim_id];
             } else {
                 int new_id = ctx->next_synthetic_surface_id++;
-                node->primitive.mcnp_surface_id = new_id;
+                node->primitive.mc_surface_id = new_id;
                 (*prim_surf_map)[prim_id] = new_id;
                 ctx->synthetic_surfaces_created++;
 
@@ -355,7 +355,7 @@ static void assign_surface_ids_recursive(alea_system_t* sys, export_context_t* c
                 alea_surface_entry_t* entry = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
                 if (entry) {
                     memset(entry, 0, sizeof(*entry));
-                    entry->mcnp_surface_id = new_id;
+                    entry->mc_surface_id = new_id;
                     entry->primitive_id = prim_id;
                     entry->pos_node = node_id;
                     entry->neg_node = ALEA_NODE_ID_INVALID;
@@ -438,7 +438,7 @@ void alea_build_canonical_surface_map(export_context_t* ctx, const alea_system_t
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         uint32_t prim_id = surf->primitive_id;
-        int mcnp_id = surf->mcnp_surface_id;
+        int mcnp_id = surf->mc_surface_id;
 
         if (ctx->prim_to_surface[prim_id] < 0 ||
             mcnp_id < ctx->prim_to_surface[prim_id]) {
@@ -457,7 +457,7 @@ void alea_build_canonical_surface_map(export_context_t* ctx, const alea_system_t
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         uint32_t prim_id = surf->primitive_id;
         if (ctx->prim_to_surface[prim_id] >= 0 &&
-            ctx->prim_to_surface[prim_id] != surf->mcnp_surface_id) {
+            ctx->prim_to_surface[prim_id] != surf->mc_surface_id) {
             ctx->dedup_hits++;
         }
     }

@@ -67,7 +67,7 @@ static void create_sphere(alea_system_t* sys, int id, double cx, double cy, doub
     alea_surface_entry_t* surf = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
     if (surf) {
         memset(surf, 0, sizeof(*surf));
-        surf->mcnp_surface_id = id;
+        surf->mc_surface_id = id;
         surf->primitive_id = prim_id;
         surf->pos_node = *pos;
         surf->neg_node = *neg;
@@ -292,7 +292,7 @@ static void create_plane(alea_system_t* sys, int id, double a, double b, double 
     alea_surface_entry_t* surf = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
     if (surf) {
         memset(surf, 0, sizeof(*surf));
-        surf->mcnp_surface_id = id;
+        surf->mc_surface_id = id;
         surf->primitive_id = prim_id;
         surf->pos_node = *pos;
         surf->neg_node = *neg;
@@ -317,7 +317,7 @@ static void create_cylinder_z(alea_system_t* sys, int id, double cx, double cy, 
     alea_surface_entry_t* surf = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
     if (surf) {
         memset(surf, 0, sizeof(*surf));
-        surf->mcnp_surface_id = id;
+        surf->mc_surface_id = id;
         surf->primitive_id = prim_id;
         surf->pos_node = *pos;
         surf->neg_node = *neg;

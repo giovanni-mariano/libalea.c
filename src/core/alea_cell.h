@@ -41,7 +41,7 @@ typedef struct alea_cell_neighbor {
  * @brief Cell information
  */
 typedef struct alea_cell_entry {
-    int mcnp_cell_id;
+    int mc_cell_id;
     uint32_t root_node_id;
     uint32_t original_root_node_id;  // Pre-TRCL root (ALEA_NODE_ID_INVALID if none)
     int material_id;

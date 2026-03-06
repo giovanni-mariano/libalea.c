@@ -59,10 +59,10 @@ int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* mcnp_surf);
  * @brief Find primitive ID for an MCNP surface ID
  * 
  * @param sys CSG system
- * @param mcnp_surface_id MCNP surface ID (can be positive or negative)
+ * @param mc_surface_id MCNP surface ID (can be positive or negative)
  * @return Primitive ID, or UINT32_MAX if not found
  */
-uint32_t alea_find_surface_primitive(const alea_system_t* sys, int mcnp_surface_id);
+uint32_t alea_find_surface_primitive(const alea_system_t* sys, int mc_surface_id);
 
 /**
  * @brief Determine sense from MCNP surface ID
@@ -71,20 +71,20 @@ uint32_t alea_find_surface_primitive(const alea_system_t* sys, int mcnp_surface_
  *   Positive surface ID = outside  (positive sense)
  *   Negative surface ID = inside (negative sense)
  * 
- * @param mcnp_surface_id MCNP surface ID
+ * @param mc_surface_id MCNP surface ID
  * @return true for outside (positive), false for inside (negative)
  */
-bool alea_surface_sense(int mcnp_surface_id);
+bool alea_surface_sense(int mc_surface_id);
 
 /**
  * Get the appropriate sense node for a signed surface reference.
  * 
  * @param sys System
- * @param mcnp_surface_id Signed surface ID:
+ * @param mc_surface_id Signed surface ID:
  *        +5 → positive sense (outside)
  *        -5 → negative sense (inside)
  * @return Node ID, or ALEA_NODE_ID_INVALID if not found
  */
-alea_node_id_t alea_surface_node(const alea_system_t* sys, int mcnp_surface_id, bool negative);
+alea_node_id_t alea_surface_node(const alea_system_t* sys, int mc_surface_id, bool negative);
 
 #endif // SURFACE_CONV_H

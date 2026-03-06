@@ -51,7 +51,7 @@ struct alea_node {
             alea_primitive_type_t prim_type;
             int8_t sense;      // +1 or -1
             int8_t inverted;   // canonicalization flag
-            int mcnp_surface_id;
+            int mc_surface_id;
         } primitive;
 
         struct {               // internal node
@@ -80,7 +80,7 @@ A surface entry (`alea_surface_entry_t`) maps an MCNP surface ID to a primitive 
 
 ```c
 struct alea_surface_entry {
-    int mcnp_surface_id;
+    int mc_surface_id;
     alea_primitive_id_t primitive_id;
     alea_node_id_t pos_node;           // +S (sense = +1)
     alea_node_id_t neg_node;           // -S (sense = -1)

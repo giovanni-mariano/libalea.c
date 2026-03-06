@@ -61,7 +61,7 @@ static int get_cell_complement_ref(const alea_system_t* sys, uint32_t node_id) {
  * @brief Get the MCNP surface ID to use for a primitive node in cell expressions.
  *
  * When deduplication is enabled, returns the CANONICAL surface ID
- * (the one that was actually exported), not the original mcnp_surface_id
+ * (the one that was actually exported), not the original mc_surface_id
  * stored in the node.
  */
 static int find_surface_id_for_node(export_context_t* ctx,
@@ -87,7 +87,7 @@ static int find_surface_id_for_node(export_context_t* ctx,
     }
 
     /* No dedup or not in map - use the ID stored in the node */
-    return node->primitive.mcnp_surface_id;
+    return node->primitive.mc_surface_id;
 }
 
 /* ============================================================================
@@ -357,7 +357,7 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
     mcnp_str_init(&s, &ctx->arena, EXPR_BUF_SIZE, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
 
     /* Write cell ID and material */
-    mcnp_str_int(&s, cell->mcnp_cell_id);
+    mcnp_str_int(&s, cell->mc_cell_id);
     mcnp_str_putc(&s, ' ');
 
     if (cell->material_id == 0) {
@@ -888,7 +888,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
         mcnp_str_init_unwrapped(&s, &ctx->arena, EXPR_BUF_SIZE);
         int len = alea_tree_to_mcnp_expr(sys, ctx, export_root, &s);
         if (len < 0) {
-            ALEA_LOG_ERROR("Error converting cell %d to expression", cell->mcnp_cell_id);
+            ALEA_LOG_ERROR("Error converting cell %d to expression", cell->mc_cell_id);
             continue;
         }
 
@@ -938,11 +938,11 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
             ALEA_CHECK_INTERRUPTED(-1);
             const alea_surface_entry_t* surface = &sys->surfaces.data[i];
 
-            int mcnp_id = surface->mcnp_surface_id;
+            int mcnp_id = surface->mc_surface_id;
             uint32_t prim_id = surface->primitive_id;
 
             /* Only emit the canonical surface for each primitive (the one whose
-               mcnp_surface_id matches prim_to_surface[prim_id]).  Cell expressions
+               mc_surface_id matches prim_to_surface[prim_id]).  Cell expressions
                reference prim_to_surface[prim_id], so we must emit that ID. */
             if (prim_id < ctx->prim_to_surface_size &&
                 ctx->prim_to_surface[prim_id] >= 0 &&
@@ -1011,7 +1011,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
                 }
             }
 
-            write_mcnp_surface(ctx->out, &ctx->arena, surface->mcnp_surface_id, export_transform_id,
+            write_mcnp_surface(ctx->out, &ctx->arena, surface->mc_surface_id, export_transform_id,
                 surface->boundary_type, surface->periodic_surface_id, export_type, &export_data, inverted,
                 ctx->mcnp_max_col, ctx->mcnp_cont_indent);
             ctx->surfaces_written++;
@@ -1035,7 +1035,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
                 for (size_t n = 0; n < alea_vec_count(&sys->nodes); n++) {
                     const alea_node_t* node = &sys->nodes.data[n];
                     if (ALEA_GET_OPERATION(node) == ALEA_OP_PRIMITIVE &&
-                        node->primitive.mcnp_surface_id == surf_id) {
+                        node->primitive.mc_surface_id == surf_id) {
                         const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
                         write_mcnp_surface(ctx->out, &ctx->arena, surf_id, 0, ALEA_BOUNDARY_TRANSMISSIVE, 0,
                                            prim->type, &prim->data, node->primitive.inverted,
@@ -1058,8 +1058,8 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
 
         int max_registered_id = 0;
         for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-            if (sys->surfaces.data[i].mcnp_surface_id > max_registered_id) {
-                max_registered_id = sys->surfaces.data[i].mcnp_surface_id;
+            if (sys->surfaces.data[i].mc_surface_id > max_registered_id) {
+                max_registered_id = sys->surfaces.data[i].mc_surface_id;
             }
         }
 
@@ -1068,7 +1068,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
             registered = calloc(max_registered_id + 1, sizeof(bool));
             if (registered) {
                 for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-                    registered[sys->surfaces.data[i].mcnp_surface_id] = true;
+                    registered[sys->surfaces.data[i].mc_surface_id] = true;
                 }
             }
         }
@@ -1079,7 +1079,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
                 const alea_node_t* node = &sys->nodes.data[n];
                 if (ALEA_GET_OPERATION(node) != ALEA_OP_PRIMITIVE) continue;
 
-                int surf_id = node->primitive.mcnp_surface_id;
+                int surf_id = node->primitive.mc_surface_id;
                 if (surf_id <= 0) continue;
                 if (written_ids[surf_id]) continue;
 

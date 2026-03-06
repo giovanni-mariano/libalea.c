@@ -456,7 +456,7 @@ static void find_cell_multilevel(const alea_system_t* sys,
             const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
             if (hits_found < MAX_HINT_DEPTH) {
                 alea_cell_hit_t* hit = &local_hits[hits_found];
-                hit->cell_id = cell->mcnp_cell_id;
+                hit->cell_id = cell->mc_cell_id;
                 hit->cell_index = cell_idx;
                 hit->material_id = cell->material_id;
                 hit->universe_id = current_universe;
@@ -471,7 +471,7 @@ static void find_cell_multilevel(const alea_system_t* sys,
             /* Check for target depth */
             if (universe_depth >= 0 && depth >= universe_depth) {
                 /* Reached target depth */
-                *out_cell_id = cell->mcnp_cell_id;
+                *out_cell_id = cell->mc_cell_id;
                 if (out_material_id) *out_material_id = cell->material_id;
                 if (out_hint) {
                     multilevel_hint_from_hits(sys, local_hits, hits_found, out_hint);
@@ -512,7 +512,7 @@ static void find_cell_multilevel(const alea_system_t* sys,
             } else {
                 /* Terminal cell (no fill) - this is the innermost */
                 if (universe_depth < 0) {
-                    *out_cell_id = cell->mcnp_cell_id;
+                    *out_cell_id = cell->mc_cell_id;
                     if (out_material_id) *out_material_id = cell->material_id;
                     if (out_hint) {
                         multilevel_hint_from_hits(sys, local_hits, hits_found, out_hint);

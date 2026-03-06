@@ -259,7 +259,7 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
             if (t[j] >= ctx->t_min && t[j] <= ctx->t_max) {
                 alea_ray_hit_t hit;
                 hit.t = t[j];
-                hit.surface_id = surf->mcnp_surface_id;
+                hit.surface_id = surf->mc_surface_id;
 
                 /* Compute normal at hit point */
                 double px, py, pz;
@@ -295,7 +295,7 @@ static int raycast_surfaces_linear(const alea_system_t* sys,
             if (t[j] >= t_min && t[j] <= t_max) {
                 alea_ray_hit_t hit;
                 hit.t = t[j];
-                hit.surface_id = surf->mcnp_surface_id;
+                hit.surface_id = surf->mc_surface_id;
 
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
@@ -399,7 +399,7 @@ static int raycast_find_neighbor(const alea_system_t* sys,
     }
 
     const alea_cell_entry_t* neighbor = &sys->cells.data[neighbor_idx];
-    *out_cell_id = neighbor->mcnp_cell_id;
+    *out_cell_id = neighbor->mc_cell_id;
     *out_cell_idx = neighbor_idx;
     *out_material_id = neighbor->material_id;
     *out_density = neighbor->density;
@@ -468,7 +468,7 @@ static void find_cell_after_crossing(const alea_system_t* sys,
         alea_ray_point_at(ray, t_sample, &px, &py, &pz);
         const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
         if (alea_contains_point(sys, prev_cell->root_node_id, px, py, pz)) {
-            *out_cell_id = prev_cell->mcnp_cell_id;
+            *out_cell_id = prev_cell->mc_cell_id;
             *out_cell_idx = prev_cell_idx;
             *out_material_id = prev_cell->material_id;
             *out_density = prev_cell->density;
@@ -566,7 +566,7 @@ static void raycast_tree_primitives(const alea_system_t* sys,
             if (t[j] >= t_min && t[j] <= t_max) {
                 alea_ray_hit_t hit;
                 hit.t = t[j];
-                hit.surface_id = node->primitive.mcnp_surface_id;
+                hit.surface_id = node->primitive.mc_surface_id;
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
                 primitive_normal_at(prim->type, &prim->data, px, py, pz,
@@ -1139,7 +1139,7 @@ static double raycast_cell_surfaces(const alea_system_t* sys,
         for (int j = 0; j < count; j++) {
             if (t[j] > t_min && t[j] < t_max && t[j] < closest_t) {
                 closest_t = t[j];
-                *out_surface_id = surf->mcnp_surface_id;
+                *out_surface_id = surf->mc_surface_id;
             }
         }
     }
@@ -1198,7 +1198,7 @@ static void find_closest_callback(uint32_t surface_idx, void* userdata) {
     for (int j = 0; j < count; j++) {
         if (t[j] > ctx->t_min && t[j] < ctx->closest_t) {
             ctx->closest_t = t[j];
-            ctx->closest_surface_id = surf->mcnp_surface_id;
+            ctx->closest_surface_id = surf->mc_surface_id;
         }
     }
 }
@@ -1241,7 +1241,7 @@ static double find_closest_intersection(const alea_system_t* sys,
         for (int j = 0; j < count; j++) {
             if (t[j] > t_min && t[j] < closest_t) {
                 closest_t = t[j];
-                *out_surface_id = surf->mcnp_surface_id;
+                *out_surface_id = surf->mc_surface_id;
             }
         }
     }
@@ -1300,7 +1300,7 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
             alea_ray_point_at(&ray, t_current + RAY_EPSILON, &px, &py, &pz);
             cell_idx = find_cell_at_point(sys, px, py, pz, &material_id, &density);
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
-                cell_id = sys->cells.data[cell_idx].mcnp_cell_id;
+                cell_id = sys->cells.data[cell_idx].mc_cell_id;
             }
         }
 

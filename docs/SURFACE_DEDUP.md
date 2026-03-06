@@ -313,7 +313,7 @@ dedup match (if any).
 
 ```c
 typedef struct {
-    int mcnp_surface_id;              // unique ID in exported file
+    int mc_surface_id;              // unique ID in exported file
     alea_primitive_id_t primitive_id;  // index into sys->primitives
     alea_node_id_t pos_node;          // node with sense=+1 (outside)
     alea_node_id_t neg_node;          // node with sense=-1 (inside)
@@ -337,7 +337,7 @@ without it, the XOR sense correction (Section 7) would have no baseline.
 
 **Why synthetic entries are needed:** macrobody expansion decomposes a single
 MCNP surface (e.g., an RPP) into multiple primitive surfaces (6 planes). These
-child primitives initially have `mcnp_surface_id = 0` because they don't
+child primitives initially have `mc_surface_id = 0` because they don't
 correspond to any input surface. They must be registered so the canonical
 surface map knows about them; otherwise their `inverted` flag would default to
 0, potentially producing wrong sense in cell regions.
@@ -349,7 +349,7 @@ entry is also pushed to `sys->surfaces`:
 
 ```c
 alea_surface_entry_t* entry = alea_vec_push_uninit(&sys->surfaces, ...);
-entry->mcnp_surface_id = new_id;
+entry->mc_surface_id = new_id;
 entry->primitive_id    = prim_id;
 entry->pos_node        = node_id;   // ← records the canonical inverted flag
 entry->neg_node        = ALEA_NODE_ID_INVALID;
@@ -376,7 +376,7 @@ After all surface entries exist (including synthetic ones), this function
 builds two lookup arrays indexed by `primitive_id`:
 
 ```
-prim_to_surface[prim_id]          → canonical mcnp_surface_id
+prim_to_surface[prim_id]          → canonical mc_surface_id
 prim_to_surface_inverted[prim_id] → inverted flag from canonical pos_node
 ```
 
@@ -385,13 +385,13 @@ prim_to_surface_inverted[prim_id] → inverted flag from canonical pos_node
 ```
 for each surface entry in sys->surfaces:
     prim_id = entry.primitive_id
-    if this is the first entry for prim_id, or entry.mcnp_surface_id is
+    if this is the first entry for prim_id, or entry.mc_surface_id is
     lower than the current canonical:
-        prim_to_surface[prim_id] = entry.mcnp_surface_id
+        prim_to_surface[prim_id] = entry.mc_surface_id
         prim_to_surface_inverted[prim_id] = nodes[entry.pos_node].inverted
 ```
 
-The **lowest** `mcnp_surface_id` wins as the canonical representative for each
+The **lowest** `mc_surface_id` wins as the canonical representative for each
 primitive. All other surfaces with the same `primitive_id` are dedup'd away —
 they won't appear in the exported surface block.
 

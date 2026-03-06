@@ -243,7 +243,7 @@ int alea_copy_surfaces_with_remap(alea_system_t* dst,
 int alea_copy_referenced_materials(alea_system_t* dst, const alea_system_t* src);
 
 /**
- * @brief Copy only mixtures whose mcnp_material_id matches a material in dst cells
+ * @brief Copy only mixtures whose mc_material_id matches a material in dst cells
  */
 int alea_copy_referenced_mixtures(alea_system_t* dst, const alea_system_t* src);
 

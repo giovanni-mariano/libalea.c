@@ -121,7 +121,7 @@ typedef struct alea_node {
             alea_primitive_type_t prim_type;
             int8_t sense;               /* +1 outside, -1 inside */
             int8_t inverted;            /* 1 if normal was flipped during canonicalization */
-            int mcnp_surface_id;        /* MCNP surface ID for export */
+            int mc_surface_id;        /* MCNP surface ID for export */
         } primitive;
 
         // For operation nodes (union/intersection/difference)
@@ -234,9 +234,9 @@ typedef struct alea_system {
     uint32_t* prim_to_surface;      // prim_to_surface[prim_id] = surface index (UINT32_MAX if none)
     size_t prim_to_surface_size;
 
-    // Reverse mapping: mcnp_surface_id -> surface index (for fast lookup)
-    uint32_t* mcnp_id_to_surface;   // mcnp_id_to_surface[mcnp_id] = surface index (UINT32_MAX if none)
-    size_t mcnp_id_to_surface_size;
+    // Reverse mapping: mc_surface_id -> surface index (for fast lookup)
+    uint32_t* mc_id_to_surface;   // mc_id_to_surface[mcnp_id] = surface index (UINT32_MAX if none)
+    size_t mc_id_to_surface_size;
 
     alea_material_vec_t materials;
 
@@ -525,12 +525,12 @@ alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
  * @param primitive_id Primitive ID to reference
  * @param sense -1 for interior, +1 for exterior
  * @param inverted Whether the normal was flipped during canonicalization
- * @param mcnp_surface_id MCNP surface ID for tracking (0 if none)
+ * @param mc_surface_id MCNP surface ID for tracking (0 if none)
  * @return Node ID
  */
 alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id,
                                       int8_t sense, int8_t inverted,
-                                      int32_t mcnp_surface_id);
+                                      int32_t mc_surface_id);
 
 /**
  * @brief Get pointer to a primitive entry

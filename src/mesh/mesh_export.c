@@ -155,7 +155,7 @@ alea_mesh_result_t *alea_mesh_sample(const alea_system_t *sys,
                     cell_ids[idx] = -1;
                 } else {
                     mat_ids[idx] = sys->cells.data[cell_idx].material_id;
-                    cell_ids[idx] = sys->cells.data[cell_idx].mcnp_cell_id;
+                    cell_ids[idx] = sys->cells.data[cell_idx].mc_cell_id;
                 }
             }
         }

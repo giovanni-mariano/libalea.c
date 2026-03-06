@@ -272,8 +272,8 @@ int alea_build_surface_lookup(alea_system_t* sys) {
     // Find maximum surface ID
     int max_id = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id > max_id) {
-            max_id = sys->surfaces.data[i].mcnp_surface_id;
+        if (sys->surfaces.data[i].mc_surface_id > max_id) {
+            max_id = sys->surfaces.data[i].mc_surface_id;
         }
     }
 
@@ -293,7 +293,7 @@ int alea_build_surface_lookup(alea_system_t* sys) {
 
     // Fill lookup table
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        int id = sys->surfaces.data[i].mcnp_surface_id;
+        int id = sys->surfaces.data[i].mc_surface_id;
         sys->surface_lookup[id] = i;
     }
 
@@ -307,27 +307,27 @@ int alea_build_surface_lookup(alea_system_t* sys) {
  * Get the appropriate sense node for a signed surface reference.
  * 
  * @param sys System
- * @param mcnp_surface_id Signed surface ID:
+ * @param mc_surface_id Signed surface ID:
  *        +5 → positive sense (outside)
  *        -5 → negative sense (inside)
  * @return Node ID, or ALEA_NODE_ID_INVALID if not found
  */
-alea_node_id_t alea_surface_node(const alea_system_t* sys, int mcnp_surface_id, bool negative) {
+alea_node_id_t alea_surface_node(const alea_system_t* sys, int mc_surface_id, bool negative) {
     if (!sys || !sys->surface_lookup) {
         return ALEA_NODE_ID_INVALID;
     }
     
     ALEA_LOG_INFO("Looking up surface node for MCNP ID %d (negative=%d)",
-           mcnp_surface_id, negative);
-    //int abs_id = negative ? mcnp_surface_id : -mcnp_surface_id;
+           mc_surface_id, negative);
+    //int abs_id = negative ? mc_surface_id : -mc_surface_id;
     
     // Bounds check
-    if ((size_t)mcnp_surface_id >= sys->surface_lookup_size) {
+    if ((size_t)mc_surface_id >= sys->surface_lookup_size) {
         return ALEA_NODE_ID_INVALID;
     }
     
     // Lookup
-    size_t idx = sys->surface_lookup[mcnp_surface_id];
+    size_t idx = sys->surface_lookup[mc_surface_id];
     if (idx == UINT32_MAX) {
         return ALEA_NODE_ID_INVALID;
     }
@@ -1010,7 +1010,7 @@ int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* surf) {
         return -1;
     }
     *surf_entry = (alea_surface_entry_t){
-        .mcnp_surface_id = surf->surface_id,
+        .mc_surface_id = surf->surface_id,
         .primitive_id = prim_id,
         .pos_node = pos_node,
         .neg_node = neg_node,
@@ -1037,13 +1037,13 @@ int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* surf) {
 // LOOKUP FUNCTIONS
 // ============================================================================
 
-uint32_t alea_find_surface_primitive(const alea_system_t* sys, int mcnp_surface_id) {
+uint32_t alea_find_surface_primitive(const alea_system_t* sys, int mc_surface_id) {
     if (!sys) return UINT32_MAX;
 
-    int abs_id = abs(mcnp_surface_id);
+    int abs_id = abs(mc_surface_id);
 
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id == abs_id) {
+        if (sys->surfaces.data[i].mc_surface_id == abs_id) {
             return sys->surfaces.data[i].primitive_id;
         }
     }
@@ -1051,8 +1051,8 @@ uint32_t alea_find_surface_primitive(const alea_system_t* sys, int mcnp_surface_
     return UINT32_MAX;
 }
 
-bool alea_surface_sense(int mcnp_surface_id) {
+bool alea_surface_sense(int mc_surface_id) {
     // In MCNP: positive ID means outside  (positive sense)
     //          negative ID means inside (negative sense)
-    return mcnp_surface_id > 0;
+    return mc_surface_id > 0;
 }

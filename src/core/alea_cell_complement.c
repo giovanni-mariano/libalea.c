@@ -129,7 +129,7 @@ int alea_resolve_cell_complements(alea_system_t* sys) {
         /* Find the referenced cell's root node */
         alea_node_id_t cell_root = ALEA_NODE_ID_INVALID;
         for (size_t c = 0; c < alea_vec_count(&sys->cells); c++) {
-            if (sys->cells.data[c].mcnp_cell_id == ref->referenced_cell_id) {
+            if (sys->cells.data[c].mc_cell_id == ref->referenced_cell_id) {
                 cell_root = sys->cells.data[c].root_node_id;
                 break;
             }

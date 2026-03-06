@@ -32,7 +32,7 @@
  * @brief Entry for unique (material_id, density) pair
  */
 typedef struct {
-    int mcnp_material_id;     /* Original MCNP material ID */
+    int mc_material_id;     /* Original MCNP material ID */
     double density;           /* Cell density (always positive) */
     bool is_mass_density;     /* true = g/cm³, false = atoms/b-cm */
     int openmc_material_id;   /* Synthetic OpenMC material ID */
@@ -78,7 +78,7 @@ static int mat_density_map_get(mat_density_map_t* map, int mcnp_mat_id, double d
 
     /* Search for existing entry */
     for (size_t i = 0; i < map->count; i++) {
-        if (map->entries[i].mcnp_material_id == mcnp_mat_id &&
+        if (map->entries[i].mc_material_id == mcnp_mat_id &&
             fabs(map->entries[i].density - density) < DENSITY_TOLERANCE) {
             return map->entries[i].openmc_material_id;
         }
@@ -95,14 +95,14 @@ static int mat_density_map_get(mat_density_map_t* map, int mcnp_mat_id, double d
     }
 
     mat_density_entry_t* entry = &map->entries[map->count++];
-    entry->mcnp_material_id = mcnp_mat_id;
+    entry->mc_material_id = mcnp_mat_id;
     entry->density = density;
     entry->is_mass_density = is_mass_density;
 
     /* Check if this is the first use of this material */
     int uses_count = 0;
     for (size_t i = 0; i < map->count - 1; i++) {
-        if (map->entries[i].mcnp_material_id == mcnp_mat_id) {
+        if (map->entries[i].mc_material_id == mcnp_mat_id) {
             uses_count++;
             break;
         }
@@ -447,7 +447,7 @@ static bool tree_to_openmc_region(const alea_system_t* sys,
     switch (op) {
         case ALEA_OP_PRIMITIVE: {
             /* In OpenMC: -N means inside (negative half-space), N means outside */
-            int surf_id = node->primitive.mcnp_surface_id;
+            int surf_id = node->primitive.mc_surface_id;
 
             /* Compute effective sense relative to the EXPORTED surface coefficients.
                Surface export un-canonicalizes plane coefficients using the surface's
@@ -491,7 +491,7 @@ static bool tree_to_openmc_region(const alea_system_t* sys,
 
             /* Optimization: complement of single primitive just flips sign */
             if (child_op == ALEA_OP_PRIMITIVE) {
-                int surf_id = child->primitive.mcnp_surface_id;
+                int surf_id = child->primitive.mc_surface_id;
                 int effective_sense = child->primitive.sense;
 
                 /* Use canonical surface ID when deduplication is enabled */
@@ -743,10 +743,10 @@ static bool write_mixture_entry(const alea_system_t* sys, openmc_xml_t* xml,
 
 static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
                                   arena_t* arena, const mat_density_entry_t* entry) {
-    const alea_material_t* mat = find_material_by_id(sys, entry->mcnp_material_id);
+    const alea_material_t* mat = find_material_by_id(sys, entry->mc_material_id);
     if (!mat) {
         /* Check if it's a mixture */
-        const alea_mixture_t* mix = find_mixture_by_id(sys, entry->mcnp_material_id);
+        const alea_mixture_t* mix = find_mixture_by_id(sys, entry->mc_material_id);
         if (mix) return write_mixture_entry(sys, xml, arena, entry, mix);
         return true;  /* Unknown material, skip */
     }
@@ -758,14 +758,14 @@ static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
 
     /* Name: include original material ID and density for synthetic materials */
     char mat_name[128];
-    if (entry->openmc_material_id != entry->mcnp_material_id) {
+    if (entry->openmc_material_id != entry->mc_material_id) {
         /* Synthetic material - note the original */
         snprintf(mat_name, sizeof(mat_name), "M%d_rho%.4g",
-                 entry->mcnp_material_id, entry->density);
+                 entry->mc_material_id, entry->density);
     } else if (mat->name && mat->name[0]) {
         snprintf(mat_name, sizeof(mat_name), "%s", mat->name);
     } else {
-        snprintf(mat_name, sizeof(mat_name), "M%d", entry->mcnp_material_id);
+        snprintf(mat_name, sizeof(mat_name), "M%d", entry->mc_material_id);
     }
     if (!openmc_xml_attribute(xml, "name", mat_name)) return false;
 
@@ -1005,7 +1005,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         const alea_cell_entry_t* c = &sys->cells.data[i];
         if (c->universe_id > max_id) max_id = c->universe_id;
         if (c->fill_universe > max_id) max_id = c->fill_universe;
-        if (c->mcnp_cell_id > max_id) max_id = c->mcnp_cell_id;
+        if (c->mc_cell_id > max_id) max_id = c->mc_cell_id;
         for (size_t u = 0; u < c->lat_fill_count; u++) {
             if (c->lat_fill[u] > max_id) max_id = c->lat_fill[u];
         }
@@ -1088,7 +1088,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
     /* Deferred lattice emission data */
     typedef struct {
         int lattice_id;
-        int mcnp_cell_id;
+        int mc_cell_id;
         double pitch[3];
         int dims[3];
         double lower_left[3];
@@ -1122,7 +1122,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         int lattice_id = cell->universe_id;
         if (lattice_id <= 0) {
             ALEA_LOG_WARN("Lattice cell %d has no universe assignment, skipping",
-                    cell->mcnp_cell_id);
+                    cell->mc_cell_id);
             continue;
         }
 
@@ -1262,7 +1262,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         }
         lattice_emit_t* le = &lattices[lattice_count++];
         le->lattice_id = lattice_id;
-        le->mcnp_cell_id = cell->mcnp_cell_id;
+        le->mc_cell_id = cell->mc_cell_id;
         le->pitch[0] = pitch_x; le->pitch[1] = pitch_y; le->pitch[2] = pitch_z;
         le->dims[0] = ni; le->dims[1] = nj; le->dims[2] = nk;
         le->lower_left[0] = ll_x; le->lower_left[1] = ll_y; le->lower_left[2] = ll_z;
@@ -1276,7 +1276,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         le->center[2] = center[2];
 
         ALEA_LOG_DEBUG("Prepared lattice %d from cell %d: %dx%dx%d%s",
-                     lattice_id, cell->mcnp_cell_id, ni, nj, nk,
+                     lattice_id, cell->mc_cell_id, ni, nj, nk,
                      needs_translation ? " (with center translation)" : "");
     }
 
@@ -1305,7 +1305,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         if (cell->root_node_id != ALEA_NODE_ID_INVALID) {
             if (!tree_to_openmc_region(sys, ctx, cell->root_node_id, &region_sb, OPENMC_CTX_TOP)) {
                 ALEA_LOG_WARN("Failed to convert CSG tree for cell %d",
-                        cell->mcnp_cell_id);
+                        cell->mc_cell_id);
                 continue;
             }
         }
@@ -1350,7 +1350,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         }
 
         /* id */
-        if (!openmc_xml_attribute_i(xml, "id", cell->mcnp_cell_id)) return false;
+        if (!openmc_xml_attribute_i(xml, "id", cell->mc_cell_id)) return false;
 
         /* material — skip for fill cells (OpenMC: material and fill are exclusive) */
         if (cell->fill_universe == 0) {
@@ -1361,7 +1361,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
                 if (ctx->mat_map) {
                     const mat_density_map_t* map = ctx->mat_map;
                     for (size_t m = 0; m < map->count; m++) {
-                        if (map->entries[m].mcnp_material_id == cell->material_id &&
+                        if (map->entries[m].mc_material_id == cell->material_id &&
                             fabs(map->entries[m].density - cell->density) < DENSITY_TOLERANCE) {
                             openmc_mat_id = map->entries[m].openmc_material_id;
                             break;
@@ -1431,7 +1431,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
             if (!openmc_xml_attribute_i(xml, "id", le->lattice_id)) return false;
             {
                 char lat_name[64];
-                snprintf(lat_name, sizeof(lat_name), "lattice_cell_%d", le->mcnp_cell_id);
+                snprintf(lat_name, sizeof(lat_name), "lattice_cell_%d", le->mc_cell_id);
                 if (!openmc_xml_attribute(xml, "name", lat_name)) return false;
             }
             if (!openmc_xml_attribute_i(xml, "n_rings", n_rings)) return false;
@@ -1482,7 +1482,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
             if (!openmc_xml_attribute_i(xml, "id", le->lattice_id)) return false;
             {
                 char lat_name[64];
-                snprintf(lat_name, sizeof(lat_name), "lattice_cell_%d", le->mcnp_cell_id);
+                snprintf(lat_name, sizeof(lat_name), "lattice_cell_%d", le->mc_cell_id);
                 if (!openmc_xml_attribute(xml, "name", lat_name)) return false;
             }
             if (!openmc_xml_end_start_tag(xml, false)) return false;
@@ -1557,13 +1557,13 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         if (g_alea_interrupted) { alea_bitset_destroy(&prim_emitted); return false; }
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
-        int surf_id = surf->mcnp_surface_id;
+        int surf_id = surf->mc_surface_id;
 
         uint32_t prim_id = surf->primitive_id;
         if (prim_id == ALEA_PRIMITIVE_ID_INVALID || prim_id >= alea_vec_count(&sys->primitives)) continue;
 
         /* When dedup is enabled, only emit the canonical surface for each primitive
-           (the one whose mcnp_surface_id matches prim_to_surface[prim_id]).
+           (the one whose mc_surface_id matches prim_to_surface[prim_id]).
            Cell expressions use prim_to_surface[prim_id], so we must emit that ID. */
         if (ctx->deduplicate && ctx->prim_to_surface &&
             prim_id < ctx->prim_to_surface_size &&
@@ -1572,7 +1572,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         }
 
         /* Only skip duplicate primitives when dedup is enabled — without dedup,
-           each surface entry must be emitted with its own mcnp_surface_id */
+           each surface entry must be emitted with its own mc_surface_id */
         if (ctx->deduplicate) {
             if (alea_bitset_test(&prim_emitted, prim_id)) continue;
             alea_bitset_set(&prim_emitted, prim_id);
@@ -1643,8 +1643,8 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
     /* Build set of registered surface IDs for quick lookup */
     int max_registered_id = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (sys->surfaces.data[i].mcnp_surface_id > max_registered_id) {
-            max_registered_id = sys->surfaces.data[i].mcnp_surface_id;
+        if (sys->surfaces.data[i].mc_surface_id > max_registered_id) {
+            max_registered_id = sys->surfaces.data[i].mc_surface_id;
         }
     }
 
@@ -1653,7 +1653,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         registered = calloc(max_registered_id + 1, sizeof(bool));
         if (registered) {
             for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-                registered[sys->surfaces.data[i].mcnp_surface_id] = true;
+                registered[sys->surfaces.data[i].mc_surface_id] = true;
             }
         }
     }
@@ -1665,7 +1665,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
             const alea_node_t* node = &sys->nodes.data[n];
             if (ALEA_GET_OPERATION(node) != ALEA_OP_PRIMITIVE) continue;
 
-            int surf_id = node->primitive.mcnp_surface_id;
+            int surf_id = node->primitive.mc_surface_id;
             if (surf_id <= 0) continue;
             if (written_synth[surf_id]) continue;
             if (registered && surf_id <= max_registered_id && registered[surf_id]) continue;
@@ -1771,7 +1771,7 @@ static void assign_surface_ids_recursive_openmc(alea_system_t* sys, int* next_id
     alea_operation_t op = ALEA_GET_OPERATION(node);
 
     if (op == ALEA_OP_PRIMITIVE) {
-        if (node->primitive.mcnp_surface_id == 0) {
+        if (node->primitive.mc_surface_id == 0) {
             alea_primitive_id_t prim_id = node->primitive.primitive_id;
 
             /* Grow map if needed */
@@ -1788,10 +1788,10 @@ static void assign_surface_ids_recursive_openmc(alea_system_t* sys, int* next_id
 
             /* Check if we already assigned an ID to this primitive */
             if ((*prim_surf_map)[prim_id] != 0) {
-                node->primitive.mcnp_surface_id = (*prim_surf_map)[prim_id];
+                node->primitive.mc_surface_id = (*prim_surf_map)[prim_id];
             } else {
                 int new_id = (*next_id)++;
-                node->primitive.mcnp_surface_id = new_id;
+                node->primitive.mc_surface_id = new_id;
                 (*prim_surf_map)[prim_id] = new_id;
 
                 /* Register a surface entry so the canonical surface map
@@ -1799,7 +1799,7 @@ static void assign_surface_ids_recursive_openmc(alea_system_t* sys, int* next_id
                 alea_surface_entry_t* entry = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
                 if (entry) {
                     memset(entry, 0, sizeof(*entry));
-                    entry->mcnp_surface_id = new_id;
+                    entry->mc_surface_id = new_id;
                     entry->primitive_id = prim_id;
                     entry->pos_node = node_id;
                     entry->neg_node = ALEA_NODE_ID_INVALID;

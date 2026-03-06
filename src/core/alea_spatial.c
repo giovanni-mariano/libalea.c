@@ -656,7 +656,7 @@ static void query_callback(const alea_cell_instance_t* restrict inst,
     alea_spatial_hit_t* restrict hit = &ctx->hits[ctx->hit_count++];
     hit->instance_index = inst_idx;
     hit->cell_index = inst->cell_index;
-    hit->cell_id = cell->mcnp_cell_id;
+    hit->cell_id = cell->mc_cell_id;
     hit->material_id = cell->material_id;
     hit->universe_id = inst->universe_id;
     hit->depth = inst->depth;

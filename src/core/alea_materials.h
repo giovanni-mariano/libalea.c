@@ -175,7 +175,7 @@ typedef struct {
     bool is_weight_fraction;        /* Interpretation of fractions */
 
     /* When exported, gets assigned an MCNP material number */
-    int mcnp_material_id;
+    int mc_material_id;
 
     /* Metadata */
     char* name;
