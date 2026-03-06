@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+#
+# SPDX-License-Identifier: MPL-2.0
+
 # Valgrind suppression file for libalea
 #
 # Suppresses known false positives from system libraries and embedded Lua.
