@@ -1,0 +1,41 @@
+# Valgrind suppression file for libalea
+#
+# Suppresses known false positives from system libraries and embedded Lua.
+# Add new suppressions here rather than weakening Valgrind flags.
+
+# Lua internal allocator - Lua manages its own GC and may hold reachable
+# memory at exit that Valgrind reports as "possibly lost".
+{
+   lua_newstate_possible
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:luaM_malloc_
+   ...
+}
+{
+   lua_newstate_realloc_possible
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:luaM_realloc_
+   ...
+}
+
+# dlopen/dlclose can leave reachable blocks
+{
+   dlopen_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:dlopen@@*
+   ...
+}
+{
+   dlclose_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:dlclose
+   ...
+}
