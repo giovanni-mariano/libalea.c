@@ -26,6 +26,31 @@
    ...
 }
 
+# OpenMP (libgomp) thread pool - TLS allocated by pthread_create is kept
+# alive for thread reuse and reported as "possibly lost" at exit.
+{
+   gomp_thread_pool_possible
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:allocate_dtv
+   fun:_dl_allocate_tls
+   fun:allocate_stack
+   fun:pthread_create@@GLIBC_2.34
+   ...
+}
+{
+   gomp_thread_pool_possible_alt
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   fun:allocate_stack
+   fun:pthread_create*
+   ...
+   obj:*/libgomp.so*
+   ...
+}
+
 # dlopen/dlclose can leave reachable blocks
 {
    dlopen_reachable
