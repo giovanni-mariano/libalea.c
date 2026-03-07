@@ -20,7 +20,6 @@ A C library for building, debugging, and analyzing Constructive Solid Geometry (
 int main(void) {
     mcnp_model_t* model = mcnp_load("geometry.inp");
     alea_system_t* sys = model->sys;
-    alea_build_universe_index(sys);
 
     int cell = alea_find_cell(sys, 100.0, 0.0, 0.0);
     int mat  = alea_material_at(sys, 100.0, 0.0, 0.0);

@@ -315,16 +315,16 @@ TEST(sort_small_hit_array) {
     };
 
     for (int i = 0; i < 5; i++) {
-        result.hits[i] = hits[i];
+        result.hits.data[i] = hits[i];
     }
-    result.hit_count = 5;
+    result.hits.count = 5;
 
     /* Trigger sort via a full system raycast isn't needed — just verify
      * the hits can be read back. The actual sort is tested implicitly
      * by any full raycast test that produces >1 hit. */
 
     /* Verify we can construct and clean up a result */
-    ASSERT_EQ(result.hit_count, 5);
+    ASSERT_EQ(result.hits.count, 5);
     alea_raycast_result_free(&result);
 }
 

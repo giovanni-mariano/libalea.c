@@ -831,6 +831,8 @@ typedef struct {
     alea_node_id_t cloned_root;   /* Result in dst system */
 } parent_clone_entry_t;
 
+ALEA_VEC_DEFINE(parent_clone_vec, parent_clone_entry_t);
+
 /**
  * @brief Context for recursive flattening into new system
  */
@@ -843,9 +845,7 @@ typedef struct {
     parent_geom_t* parent_stack;
     primitive_remap_t* remap;
     /* Parent clone cache */
-    parent_clone_entry_t* parent_cache;
-    size_t parent_cache_count;
-    size_t parent_cache_capacity;
+    parent_clone_vec_t parent_cache;
     /* Used cell ID tracking for best-effort preservation */
     uint32_t* used_cell_ids;     /* Bitset: bit N set => cell ID N is taken */
     size_t used_cell_ids_size;   /* Number of uint32_t words in bitset */
@@ -1345,8 +1345,8 @@ static int find_cell_recursive(const alea_system_t* sys,
     if (!univ) return -1;
     
     /* Test each cell in universe */
-    for (size_t i = 0; i < univ->cell_count; i++) {
-        size_t cell_idx = univ->cell_indices[i];
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
         
         /* Lattice cell: bounds check replaces CSG containment test */
@@ -1459,8 +1459,8 @@ static int find_all_cells_recursive(const alea_system_t* sys,
     if (!univ) return -1;
 
     /* Test each cell in this universe */
-    for (size_t i = 0; i < univ->cell_count; i++) {
-        size_t cell_idx = univ->cell_indices[i];
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
         /* Lattice cell: use lattice bounds instead of CSG containment */
@@ -1670,12 +1670,12 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
     }
     /* Debug: can enable if needed
     printf("Flattening universe %d at depth %d with %zu cells\n",
-           universe_id, depth, univ->cell_count);
+           universe_id, depth, univ->cell_indices.count);
     fflush(stdout);
     */
 
-    for (size_t i = 0; i < univ->cell_count; i++) {
-        size_t cell_idx = univ->cell_indices[i];
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
         
         /* Bounds check - detect corruption early */
         if (cell_idx >= alea_vec_count(&ctx->src->cells)) {
@@ -1775,8 +1775,8 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
             for (parent_geom_t* parent = ctx->parent_stack; parent != NULL; parent = parent->next) {
                 /* Check parent clone cache first */
                 alea_node_id_t parent_root = ALEA_NODE_ID_INVALID;
-                for (size_t ci = 0; ci < ctx->parent_cache_count; ci++) {
-                    parent_clone_entry_t* e = &ctx->parent_cache[ci];
+                for (size_t ci = 0; ci < ctx->parent_cache.count; ci++) {
+                    parent_clone_entry_t* e = &ctx->parent_cache.data[ci];
                     if (e->src_node_id == parent->node_id &&
                         memcmp(e->transform_m, parent->transform.m, sizeof(e->transform_m)) == 0) {
                         parent_root = e->cloned_root;
@@ -1796,19 +1796,9 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
                         return;
                     }
 
-                    /* Grow cache if needed */
-                    if (ctx->parent_cache_count >= ctx->parent_cache_capacity) {
-                        size_t new_cap = ctx->parent_cache_capacity ? ctx->parent_cache_capacity * 2 : 16;
-                        parent_clone_entry_t* new_buf = realloc(
-                            ctx->parent_cache, new_cap * sizeof(parent_clone_entry_t));
-                        if (new_buf) {
-                            ctx->parent_cache = new_buf;
-                            ctx->parent_cache_capacity = new_cap;
-                        }
-                        /* If realloc fails, we just skip caching — not fatal */
-                    }
-                    if (ctx->parent_cache_count < ctx->parent_cache_capacity) {
-                        parent_clone_entry_t* entry = &ctx->parent_cache[ctx->parent_cache_count++];
+                    /* Cache the clone result */
+                    parent_clone_entry_t* entry = alea_vec_push_uninit(&ctx->parent_cache, parent_clone_entry_t);
+                    if (entry) {
                         entry->src_node_id = parent->node_id;
                         memcpy(entry->transform_m, parent->transform.m, sizeof(entry->transform_m));
                         entry->cloned_root = parent_root;
@@ -1921,15 +1911,13 @@ static alea_system_t* flatten_to_new(alea_system_t* src,
         .error = 0,
         .parent_stack = NULL,
         .remap = remap,
-        .parent_cache = NULL,
-        .parent_cache_count = 0,
-        .parent_cache_capacity = 0,
+        .parent_cache = ALEA_VEC_INIT,
         .used_cell_ids = NULL,
         .used_cell_ids_size = 0
     };
 
     flatten_recursive_to_new(&ctx, cfg.starting_universe_id, NULL, 0);
-    free(ctx.parent_cache);
+    alea_vec_free(&ctx.parent_cache);
     free(ctx.used_cell_ids);
     alea_destroy_remap_table(remap);
     if (ctx.error || g_alea_interrupted) {

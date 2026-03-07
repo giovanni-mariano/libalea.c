@@ -252,17 +252,17 @@ static int test_raycast_cell_aware_basic(void) {
 
     // Should have segments: void -> cell -> void
     // Ray enters sphere at t=5, exits at t=15
-    int ok = (rc == 0 && result.segment_count >= 1);
+    int ok = (rc == 0 && result.segments.count >= 1);
 
     // Find the cell segment
     int found_cell = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].cell_id == 1) {
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].cell_id == 1) {
             found_cell = 1;
             // Check approximate entry/exit (sphere at origin, r=5)
             // Entry should be around t=5, exit around t=15
-            double t_enter = result.segments[i].t_enter;
-            double t_exit = result.segments[i].t_exit;
+            double t_enter = result.segments.data[i].t_enter;
+            double t_exit = result.segments.data[i].t_exit;
             if (fabs(t_enter - 5.0) > 0.1 || fabs(t_exit - 15.0) > 0.1) {
                 printf("(t_enter=%.2f, t_exit=%.2f) ", t_enter, t_exit);
                 ok = 0;
@@ -311,9 +311,9 @@ static int test_raycast_cell_aware_multiple(void) {
 
     // Should hit cell 1 then cell 2
     int found_cell1 = 0, found_cell2 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].cell_id == 1) found_cell1 = 1;
-        if (result.segments[i].cell_id == 2) found_cell2 = 1;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].cell_id == 1) found_cell1 = 1;
+        if (result.segments.data[i].cell_id == 2) found_cell2 = 1;
     }
 
     int ok = (rc == 0 && found_cell1 && found_cell2);

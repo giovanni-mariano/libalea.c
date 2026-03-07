@@ -192,9 +192,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     /* Clone universes: shallow copy then NULL out index data */
     CLONE_VEC(clone->universes, sys->universes, alea_universe_t);
     for (size_t i = 0; i < alea_vec_count(&clone->universes); i++) {
-        clone->universes.data[i].cell_indices = NULL;
-        clone->universes.data[i].cell_count = 0;
-        clone->universes.data[i].cell_capacity = 0;
+        alea_vec_init(&clone->universes.data[i].cell_indices);
     }
 
     /* Clone mixtures: shallow copy then deep-copy internal arrays */
@@ -1210,13 +1208,13 @@ void_result_t* alea_void_generate(alea_system_t* sys,
 
 size_t alea_void_count(const void_result_t* result) {
     if (!result) return 0;
-    return result->void_region_count;
+    return result->void_regions.count;
 }
 
 int alea_void_get(const void_result_t* result, size_t index, alea_bbox_t* box) {
     if (!result || !box) return -1;
-    if (index >= result->void_region_count) return -1;
-    *box = result->void_regions[index].bbox;
+    if (index >= result->void_regions.count) return -1;
+    *box = result->void_regions.data[index].bbox;
     return 0;
 }
 
@@ -1690,7 +1688,7 @@ int alea_universe_get(const alea_system_t* sys, size_t index,
 
     const alea_universe_t* u = &sys->universes.data[index];
     if (universe_id) *universe_id = u->universe_id;
-    if (cell_count) *cell_count = u->cell_count;
+    if (cell_count) *cell_count = u->cell_indices.count;
     if (bbox) *bbox = u->bbox;
     return 0;
 }
@@ -1857,7 +1855,7 @@ size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id
 
 size_t alea_spatial_index_instance_count(const alea_system_t* sys) {
     if (!sys || !sys->spatial_index) return 0;
-    return sys->spatial_index->instance_count;
+    return sys->spatial_index->instances.count;
 }
 
 /* ============================================================================

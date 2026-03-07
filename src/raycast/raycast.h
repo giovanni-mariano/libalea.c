@@ -6,6 +6,7 @@
 #define ALEA_RAYCAST_INTERNAL_H
 
 #include "alea_types.h"
+#include "util/alea_vec.h"
 #include <stddef.h>
 
 
@@ -39,15 +40,14 @@ typedef struct {
     int enter_hit_index;  /* Index into hits[] for the surface at t_enter, or -1 */
 } alea_ray_segment_t;
 
+ALEA_VEC_DEFINE(alea_ray_hit_vec, alea_ray_hit_t);
+ALEA_VEC_DEFINE(alea_ray_segment_vec, alea_ray_segment_t);
+
 /* Use struct tag matching the public API forward declaration */
 struct alea_raycast_result {
     alea_ray_t ray;
-    alea_ray_hit_t* hits;
-    size_t hit_count;
-    size_t hit_capacity;
-    alea_ray_segment_t* segments;
-    size_t segment_count;
-    size_t segment_capacity;
+    alea_ray_hit_vec_t hits;
+    alea_ray_segment_vec_t segments;
     int surfaces_tested;
     int bbox_culled;
 };

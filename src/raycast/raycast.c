@@ -120,58 +120,33 @@ void alea_raycast_result_init(alea_raycast_result_t* result) {
 }
 
 void alea_raycast_result_free(alea_raycast_result_t* result) {
-    free(result->hits);
-    free(result->segments);
-    memset(result, 0, sizeof(*result));
+    alea_vec_free(&result->hits);
+    alea_vec_free(&result->segments);
+    result->surfaces_tested = 0;
+    result->bbox_culled = 0;
 }
 
 void alea_raycast_result_clear(alea_raycast_result_t* result) {
-    result->hit_count = 0;
-    result->segment_count = 0;
+    alea_vec_clear(&result->hits);
+    alea_vec_clear(&result->segments);
     result->surfaces_tested = 0;
     result->bbox_culled = 0;
 }
 
 void alea_raycast_result_reserve(alea_raycast_result_t* result,
                                 size_t hit_cap, size_t seg_cap) {
-    if (hit_cap > result->hit_capacity) {
-        alea_ray_hit_t* new_hits = realloc(result->hits, hit_cap * sizeof(alea_ray_hit_t));
-        if (new_hits) {
-            result->hits = new_hits;
-            result->hit_capacity = hit_cap;
-        }
-    }
-    if (seg_cap > result->segment_capacity) {
-        alea_ray_segment_t* new_segs = realloc(result->segments, seg_cap * sizeof(alea_ray_segment_t));
-        if (new_segs) {
-            result->segments = new_segs;
-            result->segment_capacity = seg_cap;
-        }
-    }
+    alea_vec_reserve(&result->hits, hit_cap, alea_ray_hit_t);
+    alea_vec_reserve(&result->segments, seg_cap, alea_ray_segment_t);
 }
 
 static int add_hit(alea_raycast_result_t* result, const alea_ray_hit_t* hit) {
-    if (result->hit_count >= result->hit_capacity) {
-        size_t new_cap = result->hit_capacity ? result->hit_capacity * 2 : INITIAL_CAPACITY;
-        alea_ray_hit_t* new_hits = realloc(result->hits, new_cap * sizeof(alea_ray_hit_t));
-        if (!new_hits) return -1;
-        result->hits = new_hits;
-        result->hit_capacity = new_cap;
-    }
-    result->hits[result->hit_count++] = *hit;
-    return 0;
+    alea_size_result_t res = alea_vec_push(&result->hits, *hit, alea_ray_hit_t);
+    return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
 static int add_segment(alea_raycast_result_t* result, const alea_ray_segment_t* seg) {
-    if (result->segment_count >= result->segment_capacity) {
-        size_t new_cap = result->segment_capacity ? result->segment_capacity * 2 : INITIAL_CAPACITY;
-        alea_ray_segment_t* new_segs = realloc(result->segments, new_cap * sizeof(alea_ray_segment_t));
-        if (!new_segs) return -1;
-        result->segments = new_segs;
-        result->segment_capacity = new_cap;
-    }
-    result->segments[result->segment_count++] = *seg;
-    return 0;
+    alea_size_result_t res = alea_vec_push(&result->segments, *seg, alea_ray_segment_t);
+    return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
 /* ============================================================================
@@ -336,19 +311,19 @@ static int raycast_surfaces_impl(const alea_system_t* sys,
     }
 
     /* Sort hits by distance */
-    sort_hits(result->hits, result->hit_count);
+    sort_hits(result->hits.data, result->hits.count);
 
     /* Remove duplicate hits (same t AND same surface_id within epsilon) */
-    if (result->hit_count > 1) {
+    if (result->hits.count > 1) {
         size_t write = 1;
-        for (size_t read = 1; read < result->hit_count; read++) {
-            int same_t = fabs(result->hits[read].t - result->hits[write - 1].t) <= DEDUP_EPSILON;
-            int same_surf = result->hits[read].surface_id == result->hits[write - 1].surface_id;
+        for (size_t read = 1; read < result->hits.count; read++) {
+            int same_t = fabs(result->hits.data[read].t - result->hits.data[write - 1].t) <= DEDUP_EPSILON;
+            int same_surf = result->hits.data[read].surface_id == result->hits.data[write - 1].surface_id;
             if (!(same_t && same_surf)) {
-                result->hits[write++] = result->hits[read];
+                result->hits.data[write++] = result->hits.data[read];
             }
         }
-        result->hit_count = write;
+        result->hits.count = write;
     }
 
     return 0;
@@ -491,7 +466,7 @@ int alea_raycast_to_segments(const alea_system_t* sys,
                             alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
 
-    result->segment_count = 0;
+    result->segments.count = 0;
 
     const alea_ray_t* ray = &result->ray;
     double t_prev = 0;
@@ -499,14 +474,14 @@ int alea_raycast_to_segments(const alea_system_t* sys,
     int prev_cell_idx = -1; /* Track cell index for neighbor lookup */
 
     /* Process intervals between hits */
-    for (size_t i = 0; i <= result->hit_count; i++) {
-        double t_curr = (i < result->hit_count) ? result->hits[i].t : DBL_MAX;
+    for (size_t i = 0; i <= result->hits.count; i++) {
+        double t_curr = (i < result->hits.count) ? result->hits.data[i].t : DBL_MAX;
 
         /* Only process if there's a real interval */
         if (t_curr > t_prev + RAY_EPSILON) {
             int cell_id, cell_idx, material_id;
             double density;
-            int crossed_surface = (i > 0) ? result->hits[i - 1].surface_id : -1;
+            int crossed_surface = (i > 0) ? result->hits.data[i - 1].surface_id : -1;
             find_cell_after_crossing(sys, ray, t_prev, t_curr,
                                      prev_cell_idx, crossed_surface,
                                      &cell_id, &cell_idx, &material_id, &density);
@@ -515,9 +490,9 @@ int alea_raycast_to_segments(const alea_system_t* sys,
             prev_cell_idx = cell_idx;
 
             /* Extend previous segment or start new one */
-            if (cell_id == prev_cell_id && result->segment_count > 0) {
+            if (cell_id == prev_cell_id && result->segments.count > 0) {
                 /* Extend */
-                result->segments[result->segment_count - 1].t_exit = t_curr;
+                result->segments.data[result->segments.count - 1].t_exit = t_curr;
             } else {
                 /* New segment */
                 alea_ray_segment_t seg;
@@ -604,8 +579,8 @@ static void raycast_universe_surfaces(const alea_system_t* sys,
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return;
 
-    for (size_t c = 0; c < univ->cell_count; c++) {
-        size_t cell_idx = univ->cell_indices[c];
+    for (size_t c = 0; c < univ->cell_indices.count; c++) {
+        size_t cell_idx = univ->cell_indices.data[c];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
         raycast_tree_primitives(sys, local_ray, cell->root_node_id,
                                 t_min, t_max, result);
@@ -979,17 +954,17 @@ int alea_raycast(const alea_system_t* sys,
     raycast_add_lattice_hits(sys, &ray, 0, effective_t_max, result);
 
     /* Re-sort and dedup after adding lattice hits */
-    if (result->hit_count > 1) {
-        sort_hits(result->hits, result->hit_count);
+    if (result->hits.count > 1) {
+        sort_hits(result->hits.data, result->hits.count);
         size_t write = 1;
-        for (size_t read = 1; read < result->hit_count; read++) {
-            int same_t = fabs(result->hits[read].t - result->hits[write - 1].t) <= DEDUP_EPSILON;
-            int same_surf = result->hits[read].surface_id == result->hits[write - 1].surface_id;
+        for (size_t read = 1; read < result->hits.count; read++) {
+            int same_t = fabs(result->hits.data[read].t - result->hits.data[write - 1].t) <= DEDUP_EPSILON;
+            int same_surf = result->hits.data[read].surface_id == result->hits.data[write - 1].surface_id;
             if (!(same_t && same_surf)) {
-                result->hits[write++] = result->hits[read];
+                result->hits.data[write++] = result->hits.data[read];
             }
         }
-        result->hit_count = write;
+        result->hits.count = write;
     }
 
     return alea_raycast_to_segments(sys, result);
@@ -1010,12 +985,12 @@ int alea_ray_first_cell(const alea_system_t* sys,
     }
 
     int first_cell = -1;
-    if (result.segment_count > 0) {
+    if (result.segments.count > 0) {
         /* Find first non-void segment */
-        for (size_t i = 0; i < result.segment_count; i++) {
-            if (result.segments[i].cell_id >= 0) {
-                first_cell = result.segments[i].cell_id;
-                if (out_t) *out_t = result.segments[i].t_enter;
+        for (size_t i = 0; i < result.segments.count; i++) {
+            if (result.segments.data[i].cell_id >= 0) {
+                first_cell = result.segments.data[i].cell_id;
+                if (out_t) *out_t = result.segments.data[i].t_enter;
                 break;
             }
         }
@@ -1051,19 +1026,19 @@ int alea_ray_is_occluded(const alea_system_t* sys,
         return 0;
 
     /* Sort hits by distance */
-    sort_hits(tls_result.hits, tls_result.hit_count);
+    sort_hits(tls_result.hits.data, tls_result.hits.count);
 
     /* Walk intervals and early-out on first non-void cell */
     double t_prev = 0;
     int prev_cell_idx = -1;
 
-    for (size_t i = 0; i <= tls_result.hit_count; i++) {
-        double t_curr = (i < tls_result.hit_count) ? tls_result.hits[i].t : effective_t_max;
+    for (size_t i = 0; i <= tls_result.hits.count; i++) {
+        double t_curr = (i < tls_result.hits.count) ? tls_result.hits.data[i].t : effective_t_max;
 
         if (t_curr > t_prev + RAY_EPSILON) {
             int cell_id, cell_idx, material_id;
             double density;
-            int crossed_surface = (i > 0) ? tls_result.hits[i - 1].surface_id : -1;
+            int crossed_surface = (i > 0) ? tls_result.hits.data[i - 1].surface_id : -1;
             find_cell_after_crossing(sys, &ray, t_prev, t_curr,
                                      prev_cell_idx, crossed_surface,
                                      &cell_id, &cell_idx, &material_id, &density);
@@ -1087,8 +1062,8 @@ double alea_raycast_path_length(const alea_raycast_result_t* result,
     if (!result) return 0;
 
     double total = 0;
-    for (size_t i = 0; i < result->segment_count; i++) {
-        const alea_ray_segment_t* seg = &result->segments[i];
+    for (size_t i = 0; i < result->segments.count; i++) {
+        const alea_ray_segment_t* seg = &result->segments.data[i];
 
         /* Skip infinite segments */
         if (seg->t_exit >= DBL_MAX - 1) continue;
@@ -1328,9 +1303,9 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
         }
 
         /* Add or extend segment */
-        if (cell_idx == prev_cell_idx && result->segment_count > 0) {
+        if (cell_idx == prev_cell_idx && result->segments.count > 0) {
             /* Extend previous segment */
-            result->segments[result->segment_count - 1].t_exit = t_next;
+            result->segments.data[result->segments.count - 1].t_exit = t_next;
         } else {
             /* Create new segment */
             alea_ray_segment_t seg;

@@ -48,14 +48,14 @@ void alea_raycast_result_destroy(alea_raycast_result_t* result) {
 }
 
 size_t alea_raycast_segment_count(const alea_raycast_result_t* result) {
-    return result ? result->segment_count : 0;
+    return result ? result->segments.count : 0;
 }
 
 int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                                  double* t_enter, double* t_exit,
                                  int* cell_id, int* material_id, double* density) {
-    if (!result || index >= result->segment_count) return -1;
-    alea_ray_segment_t* seg = &result->segments[index];
+    if (!result || index >= result->segments.count) return -1;
+    alea_ray_segment_t* seg = &result->segments.data[index];
     if (t_enter) *t_enter = seg->t_enter;
     if (t_exit) *t_exit = seg->t_exit;
     if (cell_id) *cell_id = seg->cell_id;
@@ -205,10 +205,10 @@ int alea_estimate_cell_volumes(const alea_system_t* sys,
             if (rc != 0) continue;
 
             /* Accumulate track lengths per cell */
-            for (size_t s = 0; s < result.segment_count; s++) {
-                int seg_cell_id = result.segments[s].cell_id;
+            for (size_t s = 0; s < result.segments.count; s++) {
+                int seg_cell_id = result.segments.data[s].cell_id;
                 if (seg_cell_id < 0) continue;
-                double len = result.segments[s].t_exit - result.segments[s].t_enter;
+                double len = result.segments.data[s].t_exit - result.segments.data[s].t_enter;
                 if (len <= 0) continue;
 
                 int ci = alea_find_cell_by_id(sys, seg_cell_id);
@@ -303,7 +303,7 @@ int alea_estimate_instance_volumes(const alea_system_t* sys,
     if (!sys || n_rays <= 0 || !volumes) return -1;
     if (!sys->spatial_index || !sys->spatial_index->built) return -1;
 
-    size_t n_instances = sys->spatial_index->instance_count;
+    size_t n_instances = sys->spatial_index->instances.count;
     if (n_instances == 0) return 0;
 
     /* Ensure raycast caches before parallel section */
@@ -371,14 +371,14 @@ int alea_estimate_instance_volumes(const alea_system_t* sys,
             if (rc != 0) continue;
 
             /* For each segment, find the matching instance via spatial query */
-            for (size_t s = 0; s < result.segment_count; s++) {
-                int seg_cell_id = result.segments[s].cell_id;
+            for (size_t s = 0; s < result.segments.count; s++) {
+                int seg_cell_id = result.segments.data[s].cell_id;
                 if (seg_cell_id < 0) continue;
-                double len = result.segments[s].t_exit - result.segments[s].t_enter;
+                double len = result.segments.data[s].t_exit - result.segments.data[s].t_enter;
                 if (len <= 0) continue;
 
                 /* Query at segment midpoint */
-                double t_mid = (result.segments[s].t_enter + result.segments[s].t_exit) * 0.5;
+                double t_mid = (result.segments.data[s].t_enter + result.segments.data[s].t_exit) * 0.5;
                 double px = rox + t_mid * ux;
                 double py = roy + t_mid * uy;
                 double pz = roz + t_mid * uz;

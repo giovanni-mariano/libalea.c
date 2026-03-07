@@ -702,38 +702,30 @@ static alea_node_id_t to_nnf(
 // TERM COLLECTION FOR FLATTENING
 // ============================================================================
 
+ALEA_VEC_DEFINE(node_id_vec, alea_node_id_t);
+
 typedef struct {
-    alea_node_id_t* nodes;
-    size_t count;
-    size_t capacity;
+    node_id_vec_t vec;
 } node_list_t;
 
 static node_list_t* node_list_create(size_t initial_cap) {
     node_list_t* list = malloc(sizeof(node_list_t));
     if (!list) return NULL;
-    list->nodes = malloc(initial_cap * sizeof(alea_node_id_t));
-    if (!list->nodes) { free(list); return NULL; }
-    list->count = 0;
-    list->capacity = initial_cap;
+    alea_vec_init(&list->vec);
+    alea_result_t res = alea_vec_reserve(&list->vec, initial_cap, alea_node_id_t);
+    if (ALEA_IS_ERR(res)) { free(list); return NULL; }
     return list;
 }
 
 static void node_list_destroy(node_list_t* list) {
     if (!list) return;
-    free(list->nodes);
+    alea_vec_free(&list->vec);
     free(list);
 }
 
 static bool node_list_add(node_list_t* list, alea_node_id_t node_id) {
-    if (list->count >= list->capacity) {
-        size_t new_cap = list->capacity * 2;
-        alea_node_id_t* new_nodes = realloc(list->nodes, new_cap * sizeof(alea_node_id_t));
-        if (!new_nodes) return false;
-        list->nodes = new_nodes;
-        list->capacity = new_cap;
-    }
-    list->nodes[list->count++] = node_id;
-    return true;
+    alea_size_result_t res = alea_vec_push(&list->vec, node_id, alea_node_id_t);
+    return ALEA_IS_OK(res);
 }
 
 /**
@@ -786,9 +778,9 @@ static bool nodes_are_complements(const alea_system_t* sys, alea_node_id_t a, al
  * Returns true if A and ¬A both appear.
  */
 static bool has_contradiction(const alea_system_t* sys, const node_list_t* list) {
-    for (size_t i = 0; i < list->count; i++) {
-        for (size_t j = i + 1; j < list->count; j++) {
-            if (nodes_are_complements(sys, list->nodes[i], list->nodes[j])) {
+    for (size_t i = 0; i < list->vec.count; i++) {
+        for (size_t j = i + 1; j < list->vec.count; j++) {
+            if (nodes_are_complements(sys, list->vec.data[i], list->vec.data[j])) {
                 return true;
             }
         }
@@ -871,11 +863,11 @@ static bool extract_literal_set(const alea_system_t* sys, alea_node_id_t node_id
         if (!terms) return false;
         collect_terms(sys, node_id, ALEA_OP_INTERSECTION, terms);
 
-        out->items = malloc(terms->count * sizeof(literal_t));
+        out->items = malloc(terms->vec.count * sizeof(literal_t));
         if (!out->items) { node_list_destroy(terms); return false; }
 
-        for (size_t i = 0; i < terms->count; i++) {
-            const alea_node_t* tn = &sys->nodes.data[terms->nodes[i]];
+        for (size_t i = 0; i < terms->vec.count; i++) {
+            const alea_node_t* tn = &sys->nodes.data[terms->vec.data[i]];
             if (ALEA_GET_OPERATION(tn) != ALEA_OP_PRIMITIVE) {
                 free(out->items);
                 out->items = NULL;
@@ -888,7 +880,7 @@ static bool extract_literal_set(const alea_system_t* sys, alea_node_id_t node_id
             out->items[i].prim_id = tn->primitive.primitive_id;
             out->items[i].eff_sense = eff;
         }
-        out->count = terms->count;
+        out->count = terms->vec.count;
         node_list_destroy(terms);
         qsort(out->items, out->count, sizeof(literal_t), compare_literals);
         return true;
@@ -1003,13 +995,13 @@ static int compare_dedup_keys(const void* a_ptr, const void* b_ptr) {
  * Returns number of duplicates removed.
  */
 static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* list) {
-    if (list->count < 2) return 0;
+    if (list->vec.count < 2) return 0;
 
-    dedup_key_t* keys = malloc(list->count * sizeof(dedup_key_t));
+    dedup_key_t* keys = malloc(list->vec.count * sizeof(dedup_key_t));
     if (!keys) return 0;
 
-    for (size_t i = 0; i < list->count; i++) {
-        alea_node_id_t nid = list->nodes[i];
+    for (size_t i = 0; i < list->vec.count; i++) {
+        alea_node_id_t nid = list->vec.data[i];
         const alea_node_t* node = &sys->nodes.data[nid];
         keys[i].node_id = nid;
 
@@ -1027,14 +1019,14 @@ static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* 
         }
     }
 
-    qsort(keys, list->count, sizeof(dedup_key_t), compare_dedup_keys);
+    qsort(keys, list->vec.count, sizeof(dedup_key_t), compare_dedup_keys);
 
     // After sorting, duplicates are adjacent
-    list->nodes[0] = keys[0].node_id;
+    list->vec.data[0] = keys[0].node_id;
     size_t write = 1;
     size_t removed = 0;
 
-    for (size_t read = 1; read < list->count; read++) {
+    for (size_t read = 1; read < list->vec.count; read++) {
         bool dup = false;
         if (keys[read].is_primitive && keys[read - 1].is_primitive) {
             dup = (keys[read].primitive_id == keys[read - 1].primitive_id &&
@@ -1044,13 +1036,13 @@ static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* 
         }
 
         if (!dup) {
-            list->nodes[write++] = keys[read].node_id;
+            list->vec.data[write++] = keys[read].node_id;
         } else {
             removed++;
         }
     }
 
-    list->count = write;
+    list->vec.count = write;
     free(keys);
 
     // Secondary pass: geometric identity dedup.
@@ -1058,14 +1050,14 @@ static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* 
     // different primitive_ids that represent the same surface. This handles cases
     // where transform roundtrips or separate creation paths produced duplicate
     // primitives that the hash-based dedup at creation time didn't merge.
-    if (list->count >= 2) {
+    if (list->vec.count >= 2) {
         size_t write2 = 0;
-        for (size_t i = 0; i < list->count; i++) {
-            alea_node_id_t nid = list->nodes[i];
+        for (size_t i = 0; i < list->vec.count; i++) {
+            alea_node_id_t nid = list->vec.data[i];
             const alea_node_t* node = &sys->nodes.data[nid];
 
             if (ALEA_GET_OPERATION(node) != ALEA_OP_PRIMITIVE) {
-                list->nodes[write2++] = nid;
+                list->vec.data[write2++] = nid;
                 continue;
             }
 
@@ -1076,7 +1068,7 @@ static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* 
 
             bool dup = false;
             for (size_t j = 0; j < write2; j++) {
-                const alea_node_t* kept = &sys->nodes.data[list->nodes[j]];
+                const alea_node_t* kept = &sys->nodes.data[list->vec.data[j]];
                 if (ALEA_GET_OPERATION(kept) != ALEA_OP_PRIMITIVE) continue;
 
                 int8_t k_sense = kept->primitive.sense;
@@ -1108,12 +1100,12 @@ static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* 
             }
 
             if (!dup) {
-                list->nodes[write2++] = nid;
+                list->vec.data[write2++] = nid;
             } else {
                 removed++;
             }
         }
-        list->count = write2;
+        list->vec.count = write2;
     }
 
     return removed;
@@ -1340,17 +1332,17 @@ static size_t remove_subsumed_terms(
     node_list_t* terms,
     alea_simplify_stats_t* stats
 ) {
-    if (terms->count < 2) return 0;
+    if (terms->vec.count < 2) return 0;
 
-    alea_bitset_t redundant = alea_bitset_create(terms->count);
+    alea_bitset_t redundant = alea_bitset_create(terms->vec.count);
     if (!redundant.words) return 0;
 
     size_t removed = 0;
 
-    for (size_t i = 0; i < terms->count; i++) {
+    for (size_t i = 0; i < terms->vec.count; i++) {
         if (alea_bitset_test(&redundant, i)) continue;
 
-        alea_node_id_t nid_i = terms->nodes[i];
+        alea_node_id_t nid_i = terms->vec.data[i];
         const alea_node_t* ni = &sys->nodes.data[nid_i];
         if (ALEA_GET_OPERATION(ni) != ALEA_OP_PRIMITIVE) continue;
 
@@ -1359,10 +1351,10 @@ static size_t remove_subsumed_terms(
         if (ni->primitive.inverted) sense_i = -sense_i;
         const alea_primitive_entry_t* prim_i = &sys->primitives.data[pid_i];
 
-        for (size_t j = i + 1; j < terms->count; j++) {
+        for (size_t j = i + 1; j < terms->vec.count; j++) {
             if (alea_bitset_test(&redundant, j)) continue;
 
-            alea_node_id_t nid_j = terms->nodes[j];
+            alea_node_id_t nid_j = terms->vec.data[j];
             const alea_node_t* nj = &sys->nodes.data[nid_j];
             if (ALEA_GET_OPERATION(nj) != ALEA_OP_PRIMITIVE) continue;
 
@@ -1396,12 +1388,12 @@ static size_t remove_subsumed_terms(
 
     if (removed > 0) {
         size_t write = 0;
-        for (size_t i = 0; i < terms->count; i++) {
+        for (size_t i = 0; i < terms->vec.count; i++) {
             if (!alea_bitset_test(&redundant, i)) {
-                terms->nodes[write++] = terms->nodes[i];
+                terms->vec.data[write++] = terms->vec.data[i];
             }
         }
-        terms->count = write;
+        terms->vec.count = write;
         if (stats) stats->absorption_reductions += removed;
     }
 
@@ -1432,30 +1424,30 @@ static size_t remove_absorbed_union_branches(
     node_list_t* terms,
     alea_simplify_stats_t* stats
 ) {
-    if (terms->count < 2) return 0;
+    if (terms->vec.count < 2) return 0;
 
     /* Extract literal sets for all branches */
-    literal_set_t* sets = calloc(terms->count, sizeof(literal_set_t));
-    alea_bitset_t valid = alea_bitset_create(terms->count);
+    literal_set_t* sets = calloc(terms->vec.count, sizeof(literal_set_t));
+    alea_bitset_t valid = alea_bitset_create(terms->vec.count);
     if (!sets || !valid.words) { free(sets); alea_bitset_destroy(&valid); return 0; }
 
-    for (size_t i = 0; i < terms->count; i++) {
-        if (extract_literal_set(sys, terms->nodes[i], &sets[i]))
+    for (size_t i = 0; i < terms->vec.count; i++) {
+        if (extract_literal_set(sys, terms->vec.data[i], &sets[i]))
             alea_bitset_set(&valid, i);
     }
 
-    alea_bitset_t redundant = alea_bitset_create(terms->count);
+    alea_bitset_t redundant = alea_bitset_create(terms->vec.count);
     if (!redundant.words) {
-        for (size_t i = 0; i < terms->count; i++) if (alea_bitset_test(&valid, i)) literal_set_free(&sets[i]);
+        for (size_t i = 0; i < terms->vec.count; i++) if (alea_bitset_test(&valid, i)) literal_set_free(&sets[i]);
         free(sets); alea_bitset_destroy(&valid);
         return 0;
     }
 
     size_t removed = 0;
 
-    for (size_t i = 0; i < terms->count; i++) {
+    for (size_t i = 0; i < terms->vec.count; i++) {
         if (!alea_bitset_test(&valid, i) || alea_bitset_test(&redundant, i)) continue;
-        for (size_t j = 0; j < terms->count; j++) {
+        for (size_t j = 0; j < terms->vec.count; j++) {
             if (i == j || !alea_bitset_test(&valid, j) || alea_bitset_test(&redundant, j)) continue;
 
             /* If Ti ⊆ Tj, then Ti (fewer constraints) absorbs Tj */
@@ -1468,17 +1460,17 @@ static size_t remove_absorbed_union_branches(
 
     if (removed > 0) {
         size_t write = 0;
-        for (size_t i = 0; i < terms->count; i++) {
+        for (size_t i = 0; i < terms->vec.count; i++) {
             if (!alea_bitset_test(&redundant, i)) {
-                terms->nodes[write++] = terms->nodes[i];
+                terms->vec.data[write++] = terms->vec.data[i];
             }
         }
-        terms->count = write;
+        terms->vec.count = write;
         if (stats) stats->union_branches_absorbed += removed;
     }
 
     /* Clean up: free all literal sets (including redundant ones) */
-    size_t orig_count = terms->count + removed;
+    size_t orig_count = terms->vec.count + removed;
     for (size_t i = 0; i < orig_count; i++) {
         if (alea_bitset_test(&valid, i)) literal_set_free(&sets[i]);
     }
@@ -1501,14 +1493,14 @@ static alea_node_id_t factor_common_union_literals(
     node_list_t* terms,
     alea_simplify_stats_t* stats
 ) {
-    if (terms->count < 2) return ALEA_NODE_ID_INVALID;
+    if (terms->vec.count < 2) return ALEA_NODE_ID_INVALID;
 
     /* Extract literal sets for all branches */
-    literal_set_t* sets = calloc(terms->count, sizeof(literal_set_t));
+    literal_set_t* sets = calloc(terms->vec.count, sizeof(literal_set_t));
     if (!sets) return ALEA_NODE_ID_INVALID;
 
-    for (size_t i = 0; i < terms->count; i++) {
-        if (!extract_literal_set(sys, terms->nodes[i], &sets[i])) {
+    for (size_t i = 0; i < terms->vec.count; i++) {
+        if (!extract_literal_set(sys, terms->vec.data[i], &sets[i])) {
             /* Not all branches are pure literal sets — can't factor */
             for (size_t j = 0; j <= i; j++) literal_set_free(&sets[j]);
             free(sets);
@@ -1521,14 +1513,14 @@ static alea_node_id_t factor_common_union_literals(
     /* Start with first set, intersect with each subsequent */
     common.items = malloc(sets[0].count * sizeof(literal_t));
     if (!common.items) {
-        for (size_t i = 0; i < terms->count; i++) literal_set_free(&sets[i]);
+        for (size_t i = 0; i < terms->vec.count; i++) literal_set_free(&sets[i]);
         free(sets);
         return ALEA_NODE_ID_INVALID;
     }
     memcpy(common.items, sets[0].items, sets[0].count * sizeof(literal_t));
     common.count = sets[0].count;
 
-    for (size_t i = 1; i < terms->count && common.count > 0; i++) {
+    for (size_t i = 1; i < terms->vec.count && common.count > 0; i++) {
         literal_set_t new_common;
         literal_set_intersect(&common, &sets[i], &new_common);
         free(common.items);
@@ -1538,7 +1530,7 @@ static alea_node_id_t factor_common_union_literals(
     if (common.count == 0) {
         /* No common factors */
         literal_set_free(&common);
-        for (size_t i = 0; i < terms->count; i++) literal_set_free(&sets[i]);
+        for (size_t i = 0; i < terms->vec.count; i++) literal_set_free(&sets[i]);
         free(sets);
         return ALEA_NODE_ID_INVALID;
     }
@@ -1548,7 +1540,7 @@ static alea_node_id_t factor_common_union_literals(
     alea_node_id_t* common_nodes = malloc(common.count * sizeof(alea_node_id_t));
     if (!common_nodes) {
         literal_set_free(&common);
-        for (size_t i = 0; i < terms->count; i++) literal_set_free(&sets[i]);
+        for (size_t i = 0; i < terms->vec.count; i++) literal_set_free(&sets[i]);
         free(sets);
         return ALEA_NODE_ID_INVALID;
     }
@@ -1559,30 +1551,30 @@ static alea_node_id_t factor_common_union_literals(
         if (!first_terms) {
             free(common_nodes);
             literal_set_free(&common);
-            for (size_t i = 0; i < terms->count; i++) literal_set_free(&sets[i]);
+            for (size_t i = 0; i < terms->vec.count; i++) literal_set_free(&sets[i]);
             free(sets);
             return ALEA_NODE_ID_INVALID;
         }
 
-        const alea_node_t* first_node = &sys->nodes.data[terms->nodes[0]];
+        const alea_node_t* first_node = &sys->nodes.data[terms->vec.data[0]];
         alea_operation_t first_op = ALEA_GET_OPERATION(first_node);
         if (first_op == ALEA_OP_INTERSECTION) {
-            collect_terms(sys, terms->nodes[0], ALEA_OP_INTERSECTION, first_terms);
+            collect_terms(sys, terms->vec.data[0], ALEA_OP_INTERSECTION, first_terms);
         } else {
             /* Single primitive */
-            node_list_add(first_terms, terms->nodes[0]);
+            node_list_add(first_terms, terms->vec.data[0]);
         }
 
         for (size_t c = 0; c < common.count; c++) {
             common_nodes[c] = ALEA_NODE_ID_INVALID;
-            for (size_t t = 0; t < first_terms->count; t++) {
-                const alea_node_t* tn = &sys->nodes.data[first_terms->nodes[t]];
+            for (size_t t = 0; t < first_terms->vec.count; t++) {
+                const alea_node_t* tn = &sys->nodes.data[first_terms->vec.data[t]];
                 if (ALEA_GET_OPERATION(tn) != ALEA_OP_PRIMITIVE) continue;
                 int8_t eff = tn->primitive.sense;
                 if (tn->primitive.inverted) eff = -eff;
                 if (tn->primitive.primitive_id == common.items[c].prim_id &&
                     eff == common.items[c].eff_sense) {
-                    common_nodes[c] = first_terms->nodes[t];
+                    common_nodes[c] = first_terms->vec.data[t];
                     break;
                 }
             }
@@ -1591,11 +1583,11 @@ static alea_node_id_t factor_common_union_literals(
     }
 
     /* Build remainder union: for each branch, remove common literals */
-    alea_node_id_t* remainder_nodes = malloc(terms->count * sizeof(alea_node_id_t));
+    alea_node_id_t* remainder_nodes = malloc(terms->vec.count * sizeof(alea_node_id_t));
     if (!remainder_nodes) {
         free(common_nodes);
         literal_set_free(&common);
-        for (size_t i = 0; i < terms->count; i++) literal_set_free(&sets[i]);
+        for (size_t i = 0; i < terms->vec.count; i++) literal_set_free(&sets[i]);
         free(sets);
         return ALEA_NODE_ID_INVALID;
     }
@@ -1603,7 +1595,7 @@ static alea_node_id_t factor_common_union_literals(
     bool has_empty_remainder = false;
     size_t remainder_count = 0;
 
-    for (size_t i = 0; i < terms->count; i++) {
+    for (size_t i = 0; i < terms->vec.count; i++) {
         literal_set_t diff;
         literal_set_difference(&sets[i], &common, &diff);
 
@@ -1622,17 +1614,17 @@ static alea_node_id_t factor_common_union_literals(
             free(remainder_nodes);
             free(common_nodes);
             literal_set_free(&common);
-            for (size_t j = 0; j < terms->count; j++) literal_set_free(&sets[j]);
+            for (size_t j = 0; j < terms->vec.count; j++) literal_set_free(&sets[j]);
             free(sets);
             return ALEA_NODE_ID_INVALID;
         }
 
-        const alea_node_t* bnode = &sys->nodes.data[terms->nodes[i]];
+        const alea_node_t* bnode = &sys->nodes.data[terms->vec.data[i]];
         alea_operation_t bop = ALEA_GET_OPERATION(bnode);
         if (bop == ALEA_OP_INTERSECTION) {
-            collect_terms(sys, terms->nodes[i], ALEA_OP_INTERSECTION, branch_terms);
+            collect_terms(sys, terms->vec.data[i], ALEA_OP_INTERSECTION, branch_terms);
         } else {
-            node_list_add(branch_terms, terms->nodes[i]);
+            node_list_add(branch_terms, terms->vec.data[i]);
         }
 
         alea_node_id_t* diff_nodes = malloc(diff.count * sizeof(alea_node_id_t));
@@ -1642,21 +1634,21 @@ static alea_node_id_t factor_common_union_literals(
             free(remainder_nodes);
             free(common_nodes);
             literal_set_free(&common);
-            for (size_t j = 0; j < terms->count; j++) literal_set_free(&sets[j]);
+            for (size_t j = 0; j < terms->vec.count; j++) literal_set_free(&sets[j]);
             free(sets);
             return ALEA_NODE_ID_INVALID;
         }
 
         for (size_t d = 0; d < diff.count; d++) {
             diff_nodes[d] = ALEA_NODE_ID_INVALID;
-            for (size_t t = 0; t < branch_terms->count; t++) {
-                const alea_node_t* tn = &sys->nodes.data[branch_terms->nodes[t]];
+            for (size_t t = 0; t < branch_terms->vec.count; t++) {
+                const alea_node_t* tn = &sys->nodes.data[branch_terms->vec.data[t]];
                 if (ALEA_GET_OPERATION(tn) != ALEA_OP_PRIMITIVE) continue;
                 int8_t eff = tn->primitive.sense;
                 if (tn->primitive.inverted) eff = -eff;
                 if (tn->primitive.primitive_id == diff.items[d].prim_id &&
                     eff == diff.items[d].eff_sense) {
-                    diff_nodes[d] = branch_terms->nodes[t];
+                    diff_nodes[d] = branch_terms->vec.data[t];
                     break;
                 }
             }
@@ -1673,7 +1665,7 @@ static alea_node_id_t factor_common_union_literals(
 
     /* Clean up literal sets */
     literal_set_free(&common);
-    for (size_t i = 0; i < terms->count; i++) literal_set_free(&sets[i]);
+    for (size_t i = 0; i < terms->vec.count; i++) literal_set_free(&sets[i]);
     free(sets);
 
     alea_node_id_t result;
@@ -1708,37 +1700,37 @@ static size_t remove_geometrically_subsumed_branches(
     node_list_t* terms,
     alea_simplify_stats_t* stats
 ) {
-    if (terms->count < 2) return 0;
+    if (terms->vec.count < 2) return 0;
 
-    alea_bitset_t redundant = alea_bitset_create(terms->count);
+    alea_bitset_t redundant = alea_bitset_create(terms->vec.count);
     if (!redundant.words) return 0;
 
     size_t removed = 0;
 
-    for (size_t i = 0; i < terms->count; i++) {
+    for (size_t i = 0; i < terms->vec.count; i++) {
         if (alea_bitset_test(&redundant, i)) continue;
 
         /* Build union of all other non-redundant branches */
-        node_list_t* others = node_list_create(terms->count);
+        node_list_t* others = node_list_create(terms->vec.count);
         if (!others) continue;
 
-        for (size_t j = 0; j < terms->count; j++) {
+        for (size_t j = 0; j < terms->vec.count; j++) {
             if (j != i && !alea_bitset_test(&redundant, j)) {
-                node_list_add(others, terms->nodes[j]);
+                node_list_add(others, terms->vec.data[j]);
             }
         }
 
-        if (others->count == 0) {
+        if (others->vec.count == 0) {
             node_list_destroy(others);
             continue;
         }
 
         alea_node_id_t others_union = build_balanced_tree(
-            (alea_system_t*)sys, others->nodes, others->count, ALEA_OP_UNION);
+            (alea_system_t*)sys, others->vec.data, others->vec.count, ALEA_OP_UNION);
         node_list_destroy(others);
 
         /* Build difference: Ti - union(others) = Ti ∩ ¬union(others) */
-        alea_node_id_t ti = terms->nodes[i];
+        alea_node_id_t ti = terms->vec.data[i];
         alea_node_id_t diff = alea_create_difference((alea_system_t*)sys, ti, others_union);
 
         /* Get bbox for Ti */
@@ -1756,12 +1748,12 @@ static size_t remove_geometrically_subsumed_branches(
 
     if (removed > 0) {
         size_t write = 0;
-        for (size_t i = 0; i < terms->count; i++) {
+        for (size_t i = 0; i < terms->vec.count; i++) {
             if (!alea_bitset_test(&redundant, i)) {
-                terms->nodes[write++] = terms->nodes[i];
+                terms->vec.data[write++] = terms->vec.data[i];
             }
         }
-        terms->count = write;
+        terms->vec.count = write;
         if (stats) stats->union_branches_subsumed += removed;
     }
 
@@ -1875,8 +1867,8 @@ static bool compute_intersection_bbox(
 
     bool found_bound = false;
 
-    for (size_t i = 0; i < terms->count; i++) {
-        alea_node_id_t tid = terms->nodes[i];
+    for (size_t i = 0; i < terms->vec.count; i++) {
+        alea_node_id_t tid = terms->vec.data[i];
         if (tid >= alea_vec_count(&sys->nodes)) continue;
 
         const alea_node_t* node = &sys->nodes.data[tid];
@@ -1962,8 +1954,8 @@ static alea_node_id_t flatten_and_optimize(
     // Recursively simplify each collected term (handles nested union/intersection)
     {
         size_t write = 0;
-        for (size_t i = 0; i < terms->count; i++) {
-            alea_node_id_t simplified = simplify_recursive(sys, terms->nodes[i], stats);
+        for (size_t i = 0; i < terms->vec.count; i++) {
+            alea_node_id_t simplified = simplify_recursive(sys, terms->vec.data[i], stats);
 
             if (simplified == RESULT_EMPTY) {
                 if (op == ALEA_OP_INTERSECTION) {
@@ -1983,11 +1975,11 @@ static alea_node_id_t flatten_and_optimize(
                 continue;
             }
 
-            terms->nodes[write++] = simplified;
+            terms->vec.data[write++] = simplified;
         }
-        terms->count = write;
+        terms->vec.count = write;
 
-        if (terms->count == 0) {
+        if (terms->vec.count == 0) {
             node_list_destroy(terms);
             return (op == ALEA_OP_INTERSECTION) ? RESULT_UNIVERSE : RESULT_EMPTY;
         }
@@ -2015,16 +2007,16 @@ static alea_node_id_t flatten_and_optimize(
     // ========================================================================
     // UNION OPTIMIZATION (algebraic absorption, factoring, geometric subsumption)
     // ========================================================================
-    if (op == ALEA_OP_UNION && terms->count > 1) {
+    if (op == ALEA_OP_UNION && terms->vec.count > 1) {
         remove_absorbed_union_branches(sys, terms, stats);
-        if (terms->count > 1) {
+        if (terms->vec.count > 1) {
             alea_node_id_t factored = factor_common_union_literals(sys, terms, stats);
             if (factored != ALEA_NODE_ID_INVALID) {
                 node_list_destroy(terms);
                 return simplify_recursive(sys, factored, stats);
             }
         }
-        if (terms->count > 1) {
+        if (terms->vec.count > 1) {
             remove_geometrically_subsumed_branches(sys, terms, stats);
         }
     }
@@ -2033,9 +2025,9 @@ static alea_node_id_t flatten_and_optimize(
     // ITERATIVE GEOMETRIC REDUNDANCY PRUNING (only for intersections)
     // ========================================================================
     #define MAX_SIMPLIFY_PASSES 8
-    if (op == ALEA_OP_INTERSECTION && terms->count > 1) {
+    if (op == ALEA_OP_INTERSECTION && terms->vec.count > 1) {
         for (int pass = 0; pass < MAX_SIMPLIFY_PASSES; pass++) {
-            size_t before = terms->count;
+            size_t before = terms->vec.count;
 
             // Step 1: Recompute tight intersection bbox
             alea_bbox_t tight_box;
@@ -2047,8 +2039,8 @@ static alea_node_id_t flatten_and_optimize(
 
             // Step 2: Check each term for geometric redundancy against bbox
             size_t write = 0;
-            for (size_t i = 0; i < terms->count; i++) {
-                alea_node_id_t tid = terms->nodes[i];
+            for (size_t i = 0; i < terms->vec.count; i++) {
+                alea_node_id_t tid = terms->vec.data[i];
                 const alea_node_t* tn = &sys->nodes.data[tid];
 
                 if (ALEA_GET_OPERATION(tn) == ALEA_OP_PRIMITIVE) {
@@ -2066,14 +2058,14 @@ static alea_node_id_t flatten_and_optimize(
                     }
                 }
 
-                terms->nodes[write++] = tid;
+                terms->vec.data[write++] = tid;
             }
-            terms->count = write;
+            terms->vec.count = write;
 
             // Step 3: Pairwise containment pruning
             remove_subsumed_terms(sys, terms, stats);
 
-            if (terms->count >= before) break;  // Fixed point reached
+            if (terms->vec.count >= before) break;  // Fixed point reached
         }
     }
     #undef MAX_SIMPLIFY_PASSES
@@ -2081,18 +2073,18 @@ static alea_node_id_t flatten_and_optimize(
     // ========================================================================
     // BUILD RESULT
     // ========================================================================
-    if (terms->count == 0) {
+    if (terms->vec.count == 0) {
         node_list_destroy(terms);
         return (op == ALEA_OP_INTERSECTION) ? RESULT_UNIVERSE : RESULT_EMPTY;
     }
 
-    if (terms->count == 1) {
-        alea_node_id_t result = terms->nodes[0];
+    if (terms->vec.count == 1) {
+        alea_node_id_t result = terms->vec.data[0];
         node_list_destroy(terms);
         return result;
     }
 
-    alea_node_id_t result = build_balanced_tree(sys, terms->nodes, terms->count, op);
+    alea_node_id_t result = build_balanced_tree(sys, terms->vec.data, terms->vec.count, op);
     node_list_destroy(terms);
 
     return result;
@@ -2368,7 +2360,7 @@ int alea_split_union_cells(alea_system_t* sys) {
 
         collect_terms(sys, cell->root_node_id, ALEA_OP_UNION, branches);
 
-        if (branches->count <= 1) {
+        if (branches->vec.count <= 1) {
             node_list_destroy(branches);
             continue;
         }
@@ -2383,8 +2375,8 @@ int alea_split_union_cells(alea_system_t* sys) {
         size_t original_idx = i;
 
         /* Create one new cell per branch */
-        for (size_t b = 0; b < branches->count; b++) {
-            int idx = alea_add_cell(sys, 0, branches->nodes[b],
+        for (size_t b = 0; b < branches->vec.count; b++) {
+            int idx = alea_add_cell(sys, 0, branches->vec.data[b],
                                    material_index, density, universe_id);
             if (idx >= 0) {
                 alea_cell_entry_t* new_cell = &sys->cells.data[idx];

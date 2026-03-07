@@ -7,6 +7,7 @@
 
 #include "alea_types.h"
 #include "raycast.h"
+#include "util/alea_vec.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -39,14 +40,14 @@ typedef struct {
     uint8_t pad;               /* Padding for alignment */
 } alea_bvh_node_t;
 
+ALEA_VEC_DEFINE(alea_bvh_node_vec, alea_bvh_node_t);
+
 /**
  * @brief Complete BVH structure
  */
 typedef struct alea_bvh {
-    alea_bvh_node_t* nodes;      /* Node array */
+    alea_bvh_node_vec_t nodes;   /* Node array */
     uint32_t* surface_indices;  /* Reordered surface indices */
-    size_t node_count;          /* Number of nodes used */
-    size_t node_capacity;       /* Capacity of node array */
     size_t surface_count;       /* Number of surfaces when built */
 } alea_bvh_t;
 

@@ -106,12 +106,12 @@ alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
 }
 
 size_t alea_slice_curves_count(const alea_slice_curves_t* curves) {
-    return curves ? curves->internal.curve_count : 0;
+    return curves ? curves->internal.curves.count : 0;
 }
 
 int alea_slice_curves_get(const alea_slice_curves_t* curves, size_t index, alea_curve_t* out) {
-    if (!curves || !out || index >= curves->internal.curve_count) return -1;
-    const alea_curve_2d_t* src = &curves->internal.curves[index];
+    if (!curves || !out || index >= curves->internal.curves.count) return -1;
+    const alea_curve_2d_t* src = &curves->internal.curves.data[index];
     memset(out, 0, sizeof(*out));
 
     out->surface_id = src->surface_id;
@@ -373,8 +373,8 @@ static int find_cell_in_universe_with_hint(const alea_system_t* sys,
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
 
-    for (size_t i = 0; i < univ->cell_count; i++) {
-        size_t cell_idx = univ->cell_indices[i];
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
@@ -921,7 +921,7 @@ int alea_check_grid_overlaps_curves(const alea_system_t* sys,
         return -1;
 
     const alea_curve_collection_t* coll = &curves->internal;
-    if (coll->curve_count == 0) return 0;
+    if (coll->curves.count == 0) return 0;
 
     const alea_slice_plane_t* plane = &view->plane;
     double u_min = view->u_min, u_max = view->u_max;
@@ -940,8 +940,8 @@ int alea_check_grid_overlaps_curves(const alea_system_t* sys,
 
     int new_overlaps = 0;
 
-    for (size_t ci = 0; ci < coll->curve_count; ci++) {
-        const alea_curve_2d_t* curve = &coll->curves[ci];
+    for (size_t ci = 0; ci < coll->curves.count; ci++) {
+        const alea_curve_2d_t* curve = &coll->curves.data[ci];
 
         if (curve->type == ALEA_CURVE_NONE || curve->type == ALEA_CURVE_POINT)
             continue;
@@ -1680,18 +1680,10 @@ static bool point_in_viewport(double u, double v, const alea_slice_view_t* view)
 }
 
 /* Dynamic array for error segments */
-typedef struct {
-    alea_slice_error_t* data;
-    size_t count;
-    size_t capacity;
-} error_vec_t;
+ALEA_VEC_DEFINE(error_vec, alea_slice_error_t);
 
 static void error_vec_push(error_vec_t* vec, const alea_slice_error_t* err) {
-    if (vec->count >= vec->capacity) {
-        vec->capacity = vec->capacity ? vec->capacity * 2 : 32;
-        vec->data = realloc(vec->data, vec->capacity * sizeof(alea_slice_error_t));
-    }
-    vec->data[vec->count++] = *err;
+    alea_vec_push(vec, *err, alea_slice_error_t);
 }
 
 /**
@@ -1964,7 +1956,7 @@ alea_slice_error_result_t* alea_check_slice_errors(
     if (!sys || !view || !curves) return NULL;
 
     const alea_curve_collection_t* coll = &curves->internal;
-    if (coll->curve_count == 0) return NULL;
+    if (coll->curves.count == 0) return NULL;
 
     /* Reset spatial coherence cache so it starts fresh for curve walking */
     alea_spatial_reset_cache();
@@ -1977,10 +1969,10 @@ alea_slice_error_result_t* alea_check_slice_errors(
     double sample_spacing = vp_diag / 200.0;
     double eps = vp_diag * 1e-6;
 
-    error_vec_t errvec = { NULL, 0, 0 };
+    error_vec_t errvec = ALEA_VEC_INIT;
 
-    for (size_t i = 0; i < coll->curve_count; i++) {
-        const alea_curve_2d_t* curve = &coll->curves[i];
+    for (size_t i = 0; i < coll->curves.count; i++) {
+        const alea_curve_2d_t* curve = &coll->curves.data[i];
 
         switch (curve->type) {
             case ALEA_CURVE_NONE:
@@ -2336,7 +2328,7 @@ alea_slice_error_result_t* alea_check_slice_errors_grid(
     if (!view || !curves || !cell_ids || nu <= 0 || nv <= 0) return NULL;
 
     const alea_curve_collection_t* coll = &curves->internal;
-    if (coll->curve_count == 0) return NULL;
+    if (coll->curves.count == 0) return NULL;
 
     /* Set up grid context */
     double u_range = view->u_max - view->u_min;
@@ -2363,10 +2355,10 @@ alea_slice_error_result_t* alea_check_slice_errors_grid(
     double vp_diag = sqrt(u_range * u_range + v_range * v_range);
     double sample_spacing = vp_diag / 200.0;
 
-    error_vec_t errvec = { NULL, 0, 0 };
+    error_vec_t errvec = ALEA_VEC_INIT;
 
-    for (size_t i = 0; i < coll->curve_count; i++) {
-        const alea_curve_2d_t* curve = &coll->curves[i];
+    for (size_t i = 0; i < coll->curves.count; i++) {
+        const alea_curve_2d_t* curve = &coll->curves.data[i];
 
         switch (curve->type) {
             case ALEA_CURVE_NONE:

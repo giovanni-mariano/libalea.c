@@ -168,7 +168,7 @@ void alea_system_destroy_internals(alea_system_t* sys) {
 
     // Free universe index (each universe has internal arrays)
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-        free(sys->universes.data[i].cell_indices);
+        alea_vec_free(&sys->universes.data[i].cell_indices);
     }
     alea_vec_free(&sys->universes);
 
@@ -246,8 +246,7 @@ void alea_system_reset(alea_system_t* sys) {
 
     // Free universe index internal arrays and clear vector
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-        free(sys->universes.data[i].cell_indices);
-        sys->universes.data[i].cell_indices = NULL;
+        alea_vec_free(&sys->universes.data[i].cell_indices);
     }
     alea_vec_clear(&sys->universes);
     universe_hashmap_clear(&sys->universe_index);
@@ -490,7 +489,7 @@ size_t alea_system_memory_usage(const alea_system_t* sys) {
     /* Per-universe internal arrays */
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         const alea_universe_t* u = &sys->universes.data[i];
-        total += u->cell_capacity * sizeof(size_t);
+        total += u->cell_indices.capacity * sizeof(size_t);
     }
 
     return total;
@@ -708,12 +707,12 @@ static alea_universe_t* find_or_create_universe(alea_system_t* sys, int universe
 
     memset(u, 0, sizeof(alea_universe_t));
     u->universe_id = universe_id;
-    u->cell_indices = malloc(INITIAL_UNIVERSE_CELLS_CAPACITY * sizeof(size_t));
-    if (!u->cell_indices) {
+    alea_vec_init(&u->cell_indices);
+    alea_result_t vres = alea_vec_reserve(&u->cell_indices, INITIAL_UNIVERSE_CELLS_CAPACITY, size_t);
+    if (ALEA_IS_ERR(vres)) {
         alea_vec_pop_discard(&sys->universes);  // Rollback
         return NULL;
     }
-    u->cell_capacity = INITIAL_UNIVERSE_CELLS_CAPACITY;
     u->bbox = (alea_bbox_t){1e30, -1e30, 1e30, -1e30, 1e30, -1e30};  // Empty bbox
 
     universe_hashmap_put(&sys->universe_index, universe_id, new_index);
@@ -721,15 +720,8 @@ static alea_universe_t* find_or_create_universe(alea_system_t* sys, int universe
 }
 
 static int add_cell_to_universe(alea_universe_t* u, size_t cell_index) {
-    if (u->cell_count >= u->cell_capacity) {
-        size_t new_capacity = u->cell_capacity * 2;
-        size_t* new_indices = realloc(u->cell_indices, new_capacity * sizeof(size_t));
-        if (!new_indices) return -1;
-        u->cell_indices = new_indices;
-        u->cell_capacity = new_capacity;
-    }
-    u->cell_indices[u->cell_count++] = cell_index;
-    return 0;
+    alea_size_result_t res = alea_vec_push(&u->cell_indices, cell_index, size_t);
+    return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
 /**
@@ -1037,7 +1029,7 @@ int alea_build_universe_index(alea_system_t* sys) {
 
     // Clear existing index (free internal arrays first)
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-        free(sys->universes.data[i].cell_indices);
+        alea_vec_free(&sys->universes.data[i].cell_indices);
     }
     alea_vec_clear(&sys->universes);
     universe_hashmap_clear(&sys->universe_index);
@@ -1084,7 +1076,7 @@ int alea_build_universe_index(alea_system_t* sys) {
     ALEA_LOG_INFO("Built universe index: %zu universes", alea_vec_count(&sys->universes));
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         ALEA_LOG_INFO("  Universe %d: %zu cells",
-               sys->universes.data[i].universe_id, sys->universes.data[i].cell_count);
+               sys->universes.data[i].universe_id, sys->universes.data[i].cell_indices.count);
     }
 
     return 0;
@@ -1114,9 +1106,9 @@ int alea_get_universe_cells(const alea_system_t* sys, int universe_id,
     const alea_universe_t* u = alea_get_universe(sys, universe_id);
     if (!u) return 0;
     
-    size_t count = (u->cell_count < max_cells) ? u->cell_count : max_cells;
+    size_t count = (u->cell_indices.count < max_cells) ? u->cell_indices.count : max_cells;
     for (size_t i = 0; i < count; i++) {
-        out_cells[i] = &sys->cells.data[u->cell_indices[i]];
+        out_cells[i] = &sys->cells.data[u->cell_indices.data[i]];
     }
     return (int)count;
 }
@@ -1138,8 +1130,8 @@ int alea_identify_cell_at_point(const alea_system_t* sys, double x, double y, do
         if (!base) return -1;
 
         
-        for (size_t i = 0; i < base->cell_count; i++) {
-            size_t cell_idx = base->cell_indices[i];
+        for (size_t i = 0; i < base->cell_indices.count; i++) {
+            size_t cell_idx = base->cell_indices.data[i];
             const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
             if (alea_contains_point(sys, cell->root_node_id, x, y, z)) {
                 return (int)cell_idx;

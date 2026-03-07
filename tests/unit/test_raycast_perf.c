@@ -320,7 +320,7 @@ TEST(perf_concentric_shells_20) {
         bench_random_ray(&rng, 15.0, &ox, &oy, &oz, &dx, &dy, &dz);
         alea_raycast_result_free(&result);
         alea_raycast(sys, ox, oy, oz, dx, dy, dz, 100, &result);
-        total_segs += result.segment_count;
+        total_segs += result.segments.count;
     }
     BENCH_END("20 concentric shells", N);
     printf("[avg %.1f segs]  ", (double)total_segs / N);
@@ -345,7 +345,7 @@ TEST(perf_box_grid_5x5x5) {
         bench_random_ray(&rng, 8.0, &ox, &oy, &oz, &dx, &dy, &dz);
         alea_raycast_result_free(&result);
         alea_raycast(sys, ox, oy, oz, dx, dy, dz, 100, &result);
-        total_hits += result.hit_count;
+        total_hits += result.hits.count;
     }
     BENCH_END("5x5x5 box grid (125 cells, BVH)", N);
     printf("[avg %.1f hits]  ", (double)total_hits / N);

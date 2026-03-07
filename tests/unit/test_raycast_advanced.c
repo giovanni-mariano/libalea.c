@@ -52,8 +52,8 @@ TEST(ray_torus_z_hit) {
 
     /* Should hit the torus tube */
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT(found_mat1 >= 1);
 
@@ -82,8 +82,8 @@ TEST(ray_torus_z_miss) {
 
     /* Should NOT find material 1 (going through the hole) */
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT_EQ(found_mat1, 0);
 
@@ -115,8 +115,8 @@ TEST(ray_from_inside) {
     ASSERT_EQ(rc, 0);
 
     /* First segment should be material 1 (inside sphere) */
-    ASSERT(result.segment_count >= 1);
-    ASSERT_EQ(result.segments[0].material_id, 1);
+    ASSERT(result.segments.count >= 1);
+    ASSERT_EQ(result.segments.data[0].material_id, 1);
 
     alea_raycast_result_free(&result);
     mcnp_model_destroy(model);
@@ -143,8 +143,8 @@ TEST(ray_negative_direction) {
 
     /* Should hit sphere */
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT(found_mat1 >= 1);
 
@@ -200,8 +200,8 @@ TEST(ray_rcc_hit) {
     ASSERT_EQ(rc, 0);
 
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT(found_mat1 >= 1);
 
@@ -228,8 +228,8 @@ TEST(ray_trc_hit) {
     ASSERT_EQ(rc, 0);
 
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT(found_mat1 >= 1);
 
@@ -257,8 +257,8 @@ TEST(ray_trc_miss) {
     ASSERT_EQ(rc, 0);
 
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT_EQ(found_mat1, 0);
 
@@ -338,8 +338,8 @@ TEST(ray_quadric_ellipsoid) {
     ASSERT_EQ(rc, 0);
 
     int found_mat1 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
     }
     ASSERT(found_mat1 >= 1);
 

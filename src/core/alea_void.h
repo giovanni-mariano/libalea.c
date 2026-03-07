@@ -6,6 +6,7 @@
 #define ALEA_VOID_H
 
 #include "alea_types.h"
+#include "util/alea_vec.h"
 #include <stddef.h>
 
 
@@ -81,6 +82,8 @@ typedef struct {
     alea_bbox_t bbox;
 } void_region_t;
 
+ALEA_VEC_DEFINE(void_region_vec, void_region_t);
+
 // ============================================================================
 // OCTREE RESULT
 // ============================================================================
@@ -98,9 +101,7 @@ typedef struct void_result {
     // Regional void regions: each is (global_void ∩ region_box).
     // These are CSG tree node IDs, NOT cells. Use alea_void_add_cells() to
     // register them as actual cells in the system.
-    void_region_t* void_regions;
-    size_t void_region_count;
-    size_t void_region_capacity;
+    void_region_vec_t void_regions;
 
     // Statistics
     size_t total_nodes;           // Total octree nodes created

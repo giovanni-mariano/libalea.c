@@ -107,15 +107,9 @@ static alea_bbox_t compute_centroids_bbox(const bvh_surface_info_t* surfaces,
  * ============================================================================ */
 
 static uint32_t alloc_node(alea_bvh_t* bvh) {
-    if (bvh->node_count >= bvh->node_capacity) {
-        size_t new_cap = bvh->node_capacity * 2;
-        alea_bvh_node_t* new_nodes = realloc(bvh->nodes,
-                                            new_cap * sizeof(alea_bvh_node_t));
-        if (!new_nodes) return UINT32_MAX;
-        bvh->nodes = new_nodes;
-        bvh->node_capacity = new_cap;
-    }
-    return (uint32_t)bvh->node_count++;
+    alea_bvh_node_t* node = alea_vec_push_uninit(&bvh->nodes, alea_bvh_node_t);
+    if (!node) return UINT32_MAX;
+    return (uint32_t)(bvh->nodes.count - 1);
 }
 
 /* ============================================================================
@@ -260,7 +254,7 @@ static uint32_t build_recursive(bvh_build_ctx_t* ctx,
     uint32_t node_idx = alloc_node(ctx->bvh);
     if (node_idx == UINT32_MAX) return UINT32_MAX;
 
-    alea_bvh_node_t* node = &ctx->bvh->nodes[node_idx];
+    alea_bvh_node_t* node = &ctx->bvh->nodes.data[node_idx];
     size_t count = end - start;
 
     /* Compute bounding box for this node */
@@ -324,7 +318,7 @@ static uint32_t build_recursive(bvh_build_ctx_t* ctx,
     }
 
     /* Store both child indices - must reacquire pointer after recursion (may have reallocated) */
-    node = &ctx->bvh->nodes[node_idx];
+    node = &ctx->bvh->nodes.data[node_idx];
     node->left_or_first = left_idx;
     node->right_child = right_idx;
 
@@ -369,14 +363,13 @@ alea_bvh_t* alea_bvh_build(const alea_system_t* sys) {
 
     /* Allocate initial node array */
     size_t initial_capacity = alea_vec_count(&sys->surfaces) * 2;
-    bvh->nodes = malloc(initial_capacity * sizeof(alea_bvh_node_t));
-    if (!bvh->nodes) {
+    alea_vec_init(&bvh->nodes);
+    alea_result_t vres = alea_vec_reserve(&bvh->nodes, initial_capacity, alea_bvh_node_t);
+    if (ALEA_IS_ERR(vres)) {
         free(surfaces);
         free(bvh);
         return NULL;
     }
-    bvh->node_capacity = initial_capacity;
-    bvh->node_count = 0;
 
     /* Build tree */
     bvh_build_ctx_t ctx = {
@@ -413,7 +406,7 @@ alea_bvh_t* alea_bvh_build(const alea_system_t* sys) {
 
 void alea_bvh_free(alea_bvh_t* bvh) {
     if (!bvh) return;
-    free(bvh->nodes);
+    alea_vec_free(&bvh->nodes);
     free(bvh->surface_indices);
     free(bvh);
 }
@@ -433,7 +426,7 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
                      double t_min, double t_max,
                      alea_bvh_hit_callback callback,
                      void* userdata) {
-    if (!bvh || !ray || !callback || bvh->node_count == 0) {
+    if (!bvh || !ray || !callback || bvh->nodes.count == 0) {
         return 0;
     }
 
@@ -451,7 +444,7 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
 
     while (sp > 0) {
         uint32_t node_idx = stack[--sp];
-        const alea_bvh_node_t* node = &bvh->nodes[node_idx];
+        const alea_bvh_node_t* node = &bvh->nodes.data[node_idx];
 
         /* Test ray against node bbox (uses precomputed inv_d* from ray) */
         if (!ray_bbox_slab(ray, &node->bbox, t_min, t_max)) {
@@ -493,7 +486,7 @@ int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
                             double t_min, double t_max,
                             alea_bvh_batch_callback callback,
                             void* userdata) {
-    if (!bvh || !ray || !callback || bvh->node_count == 0) {
+    if (!bvh || !ray || !callback || bvh->nodes.count == 0) {
         return 0;
     }
 
@@ -510,7 +503,7 @@ int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
 
     while (sp > 0) {
         uint32_t node_idx = stack[--sp];
-        const alea_bvh_node_t* node = &bvh->nodes[node_idx];
+        const alea_bvh_node_t* node = &bvh->nodes.data[node_idx];
 
         if (!ray_bbox_slab(ray, &node->bbox, t_min, t_max)) {
             continue;
@@ -548,9 +541,9 @@ int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
 
 static void stats_recursive(const alea_bvh_t* bvh, uint32_t node_idx,
                             int depth, size_t* leaf_count, size_t* max_depth) {
-    if (node_idx >= bvh->node_count) return;
+    if (node_idx >= bvh->nodes.count) return;
 
-    const alea_bvh_node_t* node = &bvh->nodes[node_idx];
+    const alea_bvh_node_t* node = &bvh->nodes.data[node_idx];
 
     if ((size_t)depth > *max_depth) {
         *max_depth = depth;
@@ -575,7 +568,7 @@ void alea_bvh_stats(const alea_bvh_t* bvh,
         return;
     }
 
-    if (out_node_count) *out_node_count = bvh->node_count;
+    if (out_node_count) *out_node_count = bvh->nodes.count;
 
     if (out_leaf_count || out_max_depth) {
         size_t leaf_count = 0;

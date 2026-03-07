@@ -285,17 +285,17 @@ static alea_node_id_t create_box_from_planes(
  */
 static alea_node_id_t compute_global_void(alea_system_t* sys, int universe_id) {
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
-    if (!univ || univ->cell_count == 0) {
+    if (!univ || univ->cell_indices.count == 0) {
         return ALEA_NODE_ID_INVALID;
     }
 
     /* Collect root nodes of all material cells */
-    alea_node_id_t* cell_roots = malloc(univ->cell_count * sizeof(alea_node_id_t));
+    alea_node_id_t* cell_roots = malloc(univ->cell_indices.count * sizeof(alea_node_id_t));
     if (!cell_roots) return ALEA_NODE_ID_INVALID;
 
     size_t valid_count = 0;
-    for (size_t i = 0; i < univ->cell_count; i++) {
-        size_t cell_idx = univ->cell_indices[i];
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
         /* Skip void cells (material_id == 0) and invalid cells */
@@ -376,18 +376,18 @@ typedef struct {
 static int collect_cell_bboxes(alea_system_t* sys, int universe_id,
                                cell_bbox_entry_t** out_entries, size_t* out_count) {
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
-    if (!univ || univ->cell_count == 0) {
+    if (!univ || univ->cell_indices.count == 0) {
         *out_entries = NULL;
         *out_count = 0;
         return 0;
     }
 
-    cell_bbox_entry_t* entries = malloc(univ->cell_count * sizeof(cell_bbox_entry_t));
+    cell_bbox_entry_t* entries = malloc(univ->cell_indices.count * sizeof(cell_bbox_entry_t));
     if (!entries) return -1;
 
     size_t count = 0;
-    for (size_t i = 0; i < univ->cell_count; i++) {
-        size_t cell_idx = univ->cell_indices[i];
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
         /* Skip void cells and invalid cells */
@@ -575,19 +575,10 @@ static int create_void_nodes_filtered(
         }
 
         /* Store the void region */
-        if (result->void_region_count >= result->void_region_capacity) {
-            size_t new_cap = result->void_region_capacity == 0 ? 64 :
-                             result->void_region_capacity * 2;
-            void_region_t* new_regions = realloc(result->void_regions,
-                                                 new_cap * sizeof(void_region_t));
-            if (!new_regions) return -1;
-            result->void_regions = new_regions;
-            result->void_region_capacity = new_cap;
-        }
-
-        result->void_regions[result->void_region_count].node = regional_void;
-        result->void_regions[result->void_region_count].bbox = boxes[i];
-        result->void_region_count++;
+        void_region_t* vr = alea_vec_push_uninit(&result->void_regions, void_region_t);
+        if (!vr) return -1;
+        vr->node = regional_void;
+        vr->bbox = boxes[i];
     }
 
     result->surfaces_created = alea_vec_count(&sys->surfaces) - surfaces_before;
@@ -693,7 +684,7 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     ALEA_LOG_INFO("Void CSG processing (per-region filtering):");
     ALEA_LOG_INFO("  Candidate boxes checked: %zu", box_count);
     ALEA_LOG_INFO("  Material cells for filtering: %zu", cell_bbox_count);
-    ALEA_LOG_INFO("  Actual void regions found: %zu", result->void_region_count);
+    ALEA_LOG_INFO("  Actual void regions found: %zu", result->void_regions.count);
     ALEA_LOG_INFO("  Empty candidates (octree was conservative): %zu", result->empty_regions_skipped);
     ALEA_LOG_INFO("  Plane surfaces created: %zu", result->surfaces_created);
 
@@ -703,23 +694,23 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
 }
 
 alea_node_id_t alea_void_to_node(alea_system_t* sys, const void_result_t* result) {
-    if (!sys || !result || !result->void_regions || result->void_region_count == 0) {
+    if (!sys || !result || !result->void_regions.data || result->void_regions.count == 0) {
         return ALEA_NODE_ID_INVALID;
     }
 
-    if (result->void_region_count == 1) {
-        return result->void_regions[0].node;
+    if (result->void_regions.count == 1) {
+        return result->void_regions.data[0].node;
     }
 
     /* Build array of node IDs for union */
-    alea_node_id_t* nodes = malloc(result->void_region_count * sizeof(alea_node_id_t));
+    alea_node_id_t* nodes = malloc(result->void_regions.count * sizeof(alea_node_id_t));
     if (!nodes) return ALEA_NODE_ID_INVALID;
 
-    for (size_t i = 0; i < result->void_region_count; i++) {
-        nodes[i] = result->void_regions[i].node;
+    for (size_t i = 0; i < result->void_regions.count; i++) {
+        nodes[i] = result->void_regions.data[i].node;
     }
 
-    alea_node_id_t result_node = alea_create_union_many(sys, nodes, result->void_region_count);
+    alea_node_id_t result_node = alea_create_union_many(sys, nodes, result->void_regions.count);
     free(nodes);
 
     return result_node;
@@ -729,17 +720,17 @@ void alea_void_result_destroy(void_result_t* result) {
     if (!result) return;
 
     octree_destroy(result->root);
-    free(result->void_regions);
+    alea_vec_free(&result->void_regions);
     free(result);
 }
 
 size_t alea_void_box_count(const void_result_t* result) {
-    return result ? result->void_region_count : 0;
+    return result ? result->void_regions.count : 0;
 }
 
 int alea_void_box_get(const void_result_t* result, size_t index, alea_bbox_t* box) {
-    if (!result || !box || index >= result->void_region_count) return -1;
-    *box = result->void_regions[index].bbox;
+    if (!result || !box || index >= result->void_regions.count) return -1;
+    *box = result->void_regions.data[index].bbox;
     return 0;
 }
 
@@ -753,22 +744,22 @@ void alea_void_print_stats(const void_result_t* result) {
     ALEA_LOG_INFO("  Partial void nodes: %zu", result->partial_nodes);
     ALEA_LOG_INFO("  Max depth reached: %zu times", result->max_depth_reached);
 
-    if (result->void_regions && result->void_region_count > 0) {
+    if (result->void_regions.data && result->void_regions.count > 0) {
         ALEA_LOG_INFO("  Boxes before collapse: %zu", result->boxes_before_merge);
         ALEA_LOG_INFO("  Boxes after collapse: %zu (%.1f%% reduction)",
                result->boxes_after_merge,
                result->boxes_before_merge > 0 ?
                    100.0 * (1.0 - (double)result->boxes_after_merge / result->boxes_before_merge) : 0.0);
-        ALEA_LOG_INFO("  Void cells created: %zu (using plane surfaces)", result->void_region_count);
+        ALEA_LOG_INFO("  Void cells created: %zu (using plane surfaces)", result->void_regions.count);
         ALEA_LOG_INFO("  Empty regions skipped: %zu", result->empty_regions_skipped);
         ALEA_LOG_INFO("  Plane surfaces created: %zu", result->surfaces_created);
     }
 
     /* Volume estimation */
-    if (result->void_region_count > 0 && result->root) {
+    if (result->void_regions.count > 0 && result->root) {
         double total_vol = 0;
-        for (size_t i = 0; i < result->void_region_count; i++) {
-            const alea_bbox_t* b = &result->void_regions[i].bbox;
+        for (size_t i = 0; i < result->void_regions.count; i++) {
+            const alea_bbox_t* b = &result->void_regions.data[i].bbox;
             total_vol += (b->max_x - b->min_x) *
                          (b->max_y - b->min_y) *
                          (b->max_z - b->min_z);
@@ -786,15 +777,15 @@ void alea_void_print_stats(const void_result_t* result) {
 
 int alea_void_add_cells(alea_system_t* sys, void_result_t* result) {
     if (!sys || !result) return -1;
-    if (!result->void_regions || result->void_region_count == 0) return 0;
+    if (!result->void_regions.data || result->void_regions.count == 0) return 0;
 
     int next_cell_id = alea_max_cell_id(sys) + 1;
 
     int cells_added = 0;
-    for (size_t i = 0; i < result->void_region_count; i++) {
+    for (size_t i = 0; i < result->void_regions.count; i++) {
         ALEA_CHECK_INTERRUPTED(-1);
-        if (result->void_regions[i].node != ALEA_NODE_ID_INVALID) {
-            int cell_idx = alea_add_cell(sys, next_cell_id++, result->void_regions[i].node, ALEA_MATERIAL_VOID, 0.0, 0);
+        if (result->void_regions.data[i].node != ALEA_NODE_ID_INVALID) {
+            int cell_idx = alea_add_cell(sys, next_cell_id++, result->void_regions.data[i].node, ALEA_MATERIAL_VOID, 0.0, 0);
             if (cell_idx >= 0) {
                 cells_added++;
             }
@@ -985,21 +976,21 @@ static int compact_and_finish(void_result_t* result, alea_bitset_t* alive,
     for (size_t read_idx = 0; read_idx < original_n; read_idx++) {
         if (alea_bitset_test(alive, read_idx)) {
             if (write_idx != read_idx) {
-                result->void_regions[write_idx] = result->void_regions[read_idx];
+                result->void_regions.data[write_idx] = result->void_regions.data[read_idx];
             }
             write_idx++;
         }
     }
-    result->void_region_count = write_idx;
+    result->void_regions.count = write_idx;
 
     ALEA_LOG_INFO("Void merge: reduced to %zu cells (%.1f%% reduction)",
-           result->void_region_count,
-           100.0 * (1.0 - (double)result->void_region_count / original_n));
+           result->void_regions.count,
+           100.0 * (1.0 - (double)result->void_regions.count / original_n));
 
     alea_bitset_destroy(alive);
     free(surfaces_arr);
 
-    return (int)result->void_region_count;
+    return (int)result->void_regions.count;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1009,7 +1000,7 @@ static int compact_and_finish(void_result_t* result, alea_bitset_t* alive,
 static int merge_void_cells_greedy(alea_system_t* sys,
                                    void_result_t* result,
                                    const alea_void_merge_config_t* cfg) {
-    size_t n = result->void_region_count;
+    size_t n = result->void_regions.count;
 
     alea_bitset_t alive = alea_bitset_create(n);
     int* surfaces = calloc(n, sizeof(int));
@@ -1023,7 +1014,7 @@ static int merge_void_cells_greedy(alea_system_t* sys,
     size_t alive_count = n;
     for (size_t i = 0; i < n; i++) {
         alea_bitset_set(&alive, i);
-        surfaces[i] = count_surfaces(sys, result->void_regions[i].node);
+        surfaces[i] = count_surfaces(sys, result->void_regions.data[i].node);
     }
 
     ALEA_LOG_INFO("Void merge (greedy): starting with %zu cells", n);
@@ -1043,14 +1034,14 @@ static int merge_void_cells_greedy(alea_system_t* sys,
             for (size_t j = i + 1; j < n; j++) {
                 if (!alea_bitset_test(&alive, j)) continue;
 
-                if (!boxes_adjacent(&result->void_regions[i].bbox,
-                                    &result->void_regions[j].bbox)) {
+                if (!boxes_adjacent(&result->void_regions.data[i].bbox,
+                                    &result->void_regions.data[j].bbox)) {
                     continue;
                 }
 
                 alea_bbox_t merged_bbox;
-                bool is_box = boxes_can_form_box(&result->void_regions[i].bbox,
-                                                  &result->void_regions[j].bbox,
+                bool is_box = boxes_can_form_box(&result->void_regions.data[i].bbox,
+                                                  &result->void_regions.data[j].bbox,
                                                   &merged_bbox);
                 int new_surfaces = is_box ? 6 : surfaces[i] + surfaces[j];
 
@@ -1078,11 +1069,11 @@ static int merge_void_cells_greedy(alea_system_t* sys,
                    best_i, best_j, best_delta);
 
             alea_node_id_t merged_node = alea_create_union(sys,
-                result->void_regions[best_i].node,
-                result->void_regions[best_j].node);
+                result->void_regions.data[best_i].node,
+                result->void_regions.data[best_j].node);
 
-            alea_bbox_t* bi = &result->void_regions[best_i].bbox;
-            const alea_bbox_t* bj = &result->void_regions[best_j].bbox;
+            alea_bbox_t* bi = &result->void_regions.data[best_i].bbox;
+            const alea_bbox_t* bj = &result->void_regions.data[best_j].bbox;
             bi->min_x = fmin(bi->min_x, bj->min_x);
             bi->max_x = fmax(bi->max_x, bj->max_x);
             bi->min_y = fmin(bi->min_y, bj->min_y);
@@ -1091,7 +1082,7 @@ static int merge_void_cells_greedy(alea_system_t* sys,
             bi->max_z = fmax(bi->max_z, bj->max_z);
 
             surfaces[best_i] = best_is_box ? 6 : surfaces[best_i] + surfaces[best_j];
-            result->void_regions[best_i].node = merged_node;
+            result->void_regions.data[best_i].node = merged_node;
 
             alea_bitset_clear(&alive, best_j);
             alive_count--;
@@ -1173,7 +1164,7 @@ static bool faces_aligned_2d(const face_entry_t* a, const face_entry_t* b) {
 static int merge_void_cells_face_sorted(alea_system_t* sys,
                                         void_result_t* result,
                                         const alea_void_merge_config_t* cfg) {
-    size_t n = result->void_region_count;
+    size_t n = result->void_regions.count;
 
     alea_bitset_t alive = alea_bitset_create(n);
     int* surfaces = calloc(n, sizeof(int));
@@ -1187,7 +1178,7 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
     size_t alive_count = n;
     for (size_t i = 0; i < n; i++) {
         alea_bitset_set(&alive, i);
-        surfaces[i] = count_surfaces(sys, result->void_regions[i].node);
+        surfaces[i] = count_surfaces(sys, result->void_regions.data[i].node);
     }
 
     ALEA_LOG_INFO("Void merge (face-sorted): starting with %zu cells", n);
@@ -1242,7 +1233,7 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
                 if (!tmp) goto cleanup;
                 faces = tmp;
             }
-            emit_faces(&result->void_regions[i].bbox, (uint32_t)i,
+            emit_faces(&result->void_regions.data[i].bbox, (uint32_t)i,
                        faces, &face_count);
         }
 
@@ -1281,8 +1272,8 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
 
                     /* This is a box merge candidate */
                     alea_bbox_t merged_bbox;
-                    if (!boxes_can_form_box(&result->void_regions[bi].bbox,
-                                           &result->void_regions[bj].bbox,
+                    if (!boxes_can_form_box(&result->void_regions.data[bi].bbox,
+                                           &result->void_regions.data[bj].bbox,
                                            &merged_bbox)) {
                         continue;
                     }
@@ -1341,8 +1332,8 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
                         candidates = tmp;
                     }
 
-                    alea_bbox_t union_bbox = result->void_regions[bi].bbox;
-                    const alea_bbox_t* bbj = &result->void_regions[bj].bbox;
+                    alea_bbox_t union_bbox = result->void_regions.data[bi].bbox;
+                    const alea_bbox_t* bbj = &result->void_regions.data[bj].bbox;
                     union_bbox.min_x = fmin(union_bbox.min_x, bbj->min_x);
                     union_bbox.max_x = fmax(union_bbox.max_x, bbj->max_x);
                     union_bbox.min_y = fmin(union_bbox.min_y, bbj->min_y);
@@ -1376,11 +1367,11 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
                    candidates[c].is_box ? "box" : "union");
 
             alea_node_id_t merged_node = alea_create_union(sys,
-                result->void_regions[ci].node,
-                result->void_regions[cj].node);
+                result->void_regions.data[ci].node,
+                result->void_regions.data[cj].node);
 
-            result->void_regions[ci].node = merged_node;
-            result->void_regions[ci].bbox = candidates[c].merged_bbox;
+            result->void_regions.data[ci].node = merged_node;
+            result->void_regions.data[ci].bbox = candidates[c].merged_bbox;
             surfaces[ci] = candidates[c].is_box ? 6 : surfaces[ci] + surfaces[cj];
 
             alea_bitset_clear(&alive, cj);
@@ -1411,12 +1402,12 @@ cleanup:
 
 static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
                                      int max_surfaces) {
-    if (result->void_region_count <= 1) return;
+    if (result->void_regions.count <= 1) return;
 
     /* 1. Compute combined bbox = union of all remaining void region bboxes */
-    alea_bbox_t combined = result->void_regions[0].bbox;
-    for (size_t i = 1; i < result->void_region_count; i++) {
-        combined = alea_bbox_union(&combined, &result->void_regions[i].bbox);
+    alea_bbox_t combined = result->void_regions.data[0].bbox;
+    for (size_t i = 1; i < result->void_regions.count; i++) {
+        combined = alea_bbox_union(&combined, &result->void_regions.data[i].bbox);
     }
 
     /* 2. Compute global_void lazily (only needed for consolidation) */
@@ -1433,7 +1424,7 @@ static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
                                                &combined);
     if (node == ALEA_NODE_ID_INVALID) {
         ALEA_LOG_INFO("void consolidation: node invalid, keeping %zu regions",
-                      result->void_region_count);
+                      result->void_regions.count);
         return;
     }
 
@@ -1441,20 +1432,20 @@ static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
     int nsurfaces = count_surfaces(sys, node);
     if (nsurfaces > max_surfaces) {
         ALEA_LOG_INFO("void consolidation: %d surfaces > limit %d, keeping %zu regions",
-                      nsurfaces, max_surfaces, result->void_region_count);
+                      nsurfaces, max_surfaces, result->void_regions.count);
         return;
     }
 
     /* 6. Accept: replace all regions with this single one */
     ALEA_LOG_INFO("void consolidation: %zu regions -> 1 (%d surfaces, "
                   "bbox [%.1f,%.1f]x[%.1f,%.1f]x[%.1f,%.1f])",
-                  result->void_region_count, nsurfaces,
+                  result->void_regions.count, nsurfaces,
                   combined.min_x, combined.max_x,
                   combined.min_y, combined.max_y,
                   combined.min_z, combined.max_z);
-    result->void_regions[0].node = node;
-    result->void_regions[0].bbox = combined;
-    result->void_region_count = 1;
+    result->void_regions.data[0].node = node;
+    result->void_regions.data[0].bbox = combined;
+    result->void_regions.count = 1;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1465,7 +1456,7 @@ int alea_merge_void_cells(alea_system_t* sys,
                          void_result_t* result,
                          const alea_void_merge_config_t* config) {
     if (!sys || !result) return -1;
-    if (result->void_region_count == 0) return 0;
+    if (result->void_regions.count == 0) return 0;
 
     const alea_void_merge_config_t* cfg = config ? config : &ALEA_VOID_MERGE_DEFAULT;
 
@@ -1477,9 +1468,9 @@ int alea_merge_void_cells(alea_system_t* sys,
     }
 
     if (ret >= 0 && cfg->consolidate_max_surfaces > 0 &&
-        result->void_region_count > 1) {
+        result->void_regions.count > 1) {
         consolidate_void_regions(sys, result, cfg->consolidate_max_surfaces);
-        ret = (int)result->void_region_count;
+        ret = (int)result->void_regions.count;
     }
 
     return ret;

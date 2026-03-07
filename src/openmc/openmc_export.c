@@ -41,10 +41,10 @@ typedef struct {
 /**
  * @brief Material-density mapping for OpenMC export
  */
+ALEA_VEC_DEFINE(mat_density_vec, mat_density_entry_t);
+
 typedef struct {
-    mat_density_entry_t* entries;
-    size_t count;
-    size_t capacity;
+    mat_density_vec_t entries;
     int next_synthetic_id;    /* Next ID for synthetic materials */
 } mat_density_map_t;
 
@@ -56,17 +56,12 @@ static inline double snap_zero(double v, double threshold) {
 }
 
 static void mat_density_map_init(mat_density_map_t* map, int start_id) {
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
+    alea_vec_init(&map->entries);
     map->next_synthetic_id = start_id;
 }
 
 static void mat_density_map_free(mat_density_map_t* map) {
-    free(map->entries);
-    map->entries = NULL;
-    map->count = 0;
-    map->capacity = 0;
+    alea_vec_free(&map->entries);
 }
 
 /**
@@ -77,32 +72,24 @@ static int mat_density_map_get(mat_density_map_t* map, int mcnp_mat_id, double d
     if (mcnp_mat_id == 0) return 0;
 
     /* Search for existing entry */
-    for (size_t i = 0; i < map->count; i++) {
-        if (map->entries[i].mc_material_id == mcnp_mat_id &&
-            fabs(map->entries[i].density - density) < DENSITY_TOLERANCE) {
-            return map->entries[i].openmc_material_id;
+    for (size_t i = 0; i < map->entries.count; i++) {
+        if (map->entries.data[i].mc_material_id == mcnp_mat_id &&
+            fabs(map->entries.data[i].density - density) < DENSITY_TOLERANCE) {
+            return map->entries.data[i].openmc_material_id;
         }
     }
 
     /* Create new entry */
-    if (map->count >= map->capacity) {
-        size_t new_cap = map->capacity == 0 ? 16 : map->capacity * 2;
-        mat_density_entry_t* new_entries = realloc(map->entries,
-                                                    new_cap * sizeof(mat_density_entry_t));
-        if (!new_entries) return mcnp_mat_id;  /* Fallback to original ID */
-        map->entries = new_entries;
-        map->capacity = new_cap;
-    }
-
-    mat_density_entry_t* entry = &map->entries[map->count++];
+    mat_density_entry_t* entry = alea_vec_push_uninit(&map->entries, mat_density_entry_t);
+    if (!entry) return mcnp_mat_id;  /* Fallback to original ID */
     entry->mc_material_id = mcnp_mat_id;
     entry->density = density;
     entry->is_mass_density = is_mass_density;
 
     /* Check if this is the first use of this material */
     int uses_count = 0;
-    for (size_t i = 0; i < map->count - 1; i++) {
-        if (map->entries[i].mc_material_id == mcnp_mat_id) {
+    for (size_t i = 0; i < map->entries.count - 1; i++) {
+        if (map->entries.data[i].mc_material_id == mcnp_mat_id) {
             uses_count++;
             break;
         }
@@ -849,15 +836,15 @@ static bool write_material_entry(const alea_system_t* sys, openmc_xml_t* xml,
  */
 static bool write_materials_section(const alea_system_t* sys, openmc_xml_t* xml,
                                      arena_t* arena, const mat_density_map_t* map) {
-    if (map->count == 0) return true;  /* No materials to export */
+    if (map->entries.count == 0) return true;  /* No materials to export */
 
     /* <materials> */
     if (!openmc_xml_start_element(xml, "materials")) return false;
     if (!openmc_xml_end_start_tag(xml, false)) return false;
 
     /* Export each unique (material, density) pair */
-    for (size_t i = 0; i < map->count; i++) {
-        if (!write_material_entry(sys, xml, arena, &map->entries[i])) {
+    for (size_t i = 0; i < map->entries.count; i++) {
+        if (!write_material_entry(sys, xml, arena, &map->entries.data[i])) {
             return false;
         }
     }
@@ -1360,10 +1347,10 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
                 int openmc_mat_id = cell->material_id;
                 if (ctx->mat_map) {
                     const mat_density_map_t* map = ctx->mat_map;
-                    for (size_t m = 0; m < map->count; m++) {
-                        if (map->entries[m].mc_material_id == cell->material_id &&
-                            fabs(map->entries[m].density - cell->density) < DENSITY_TOLERANCE) {
-                            openmc_mat_id = map->entries[m].openmc_material_id;
+                    for (size_t m = 0; m < map->entries.count; m++) {
+                        if (map->entries.data[m].mc_material_id == cell->material_id &&
+                            fabs(map->entries.data[m].density - cell->density) < DENSITY_TOLERANCE) {
+                            openmc_mat_id = map->entries.data[m].openmc_material_id;
                             break;
                         }
                     }
@@ -1862,10 +1849,10 @@ int export_openmc(const alea_system_t* sys, export_context_t* ctx) {
     build_mat_density_map(sys, &mat_map);
     ctx->mat_map = &mat_map;
 
-    if (mat_map.count > alea_vec_count(&sys->materials)) {
+    if (mat_map.entries.count > alea_vec_count(&sys->materials)) {
         ALEA_LOG_INFO("Created %zu OpenMC materials from %zu MCNP materials "
                     "(some materials used with multiple densities)",
-                    mat_map.count, alea_vec_count(&sys->materials));
+                    mat_map.entries.count, alea_vec_count(&sys->materials));
     }
 
     openmc_xml_t xml;

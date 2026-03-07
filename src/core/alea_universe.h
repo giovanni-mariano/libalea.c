@@ -33,9 +33,7 @@ typedef struct alea_material alea_material_t;
  */
 typedef struct {
     int universe_id;
-    size_t* cell_indices;    // Indices into sys->cells
-    size_t cell_count;
-    size_t cell_capacity;
+    alea_size_vec_t cell_indices;
     alea_bbox_t bbox;         // Bounding box of all cells
 } alea_universe_t;
 

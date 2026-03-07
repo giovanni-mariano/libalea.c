@@ -218,12 +218,12 @@ TEST(raycast_simple_geometry) {
     ASSERT_EQ(rc, 0);
 
     /* Should have 2 hits (enter and exit) */
-    ASSERT_EQ(result.hit_count, 2);
-    ASSERT_NEAR(result.hits[0].t, 5.0, EPS);
-    ASSERT_NEAR(result.hits[1].t, 15.0, EPS);
+    ASSERT_EQ(result.hits.count, 2);
+    ASSERT_NEAR(result.hits.data[0].t, 5.0, EPS);
+    ASSERT_NEAR(result.hits.data[1].t, 15.0, EPS);
 
     /* Should have segments */
-    ASSERT(result.segment_count >= 1);
+    ASSERT(result.segments.count >= 1);
 
     alea_raycast_result_free(&result);
     alea_destroy(sys);
@@ -238,13 +238,13 @@ TEST(raycast_path_length) {
     alea_ray_segment_t seg2 = {5, 10, 2, 2, -8.0, -1};
     alea_ray_segment_t seg3 = {10, 15, 3, 1, -2.7, -1};
 
-    result.segments = malloc(3 * sizeof(alea_ray_segment_t));
-    ASSERT_NOT_NULL(result.segments);
-    result.segments[0] = seg1;
-    result.segments[1] = seg2;
-    result.segments[2] = seg3;
-    result.segment_count = 3;
-    result.segment_capacity = 3;
+    result.segments.data = malloc(3 * sizeof(alea_ray_segment_t));
+    ASSERT_NOT_NULL(result.segments.data);
+    result.segments.data[0] = seg1;
+    result.segments.data[1] = seg2;
+    result.segments.data[2] = seg3;
+    result.segments.count = 3;
+    result.segments.capacity = 3;
 
     /* Total path length through material 1 */
     double len1 = alea_raycast_path_length(&result, 1);

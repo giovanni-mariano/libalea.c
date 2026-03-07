@@ -1414,13 +1414,9 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
 
 /** Ensure room for one more curve. Returns 0 on success, -1 on OOM. */
 static int ensure_curve_capacity(alea_curve_collection_t* r) {
-    if (r->curve_count < r->curve_capacity) return 0;
-    size_t nc = r->curve_capacity * 2;
-    alea_curve_2d_t* p = realloc(r->curves, nc * sizeof(*p));
-    if (!p) return -1;
-    r->curves = p;
-    r->curve_capacity = nc;
-    return 0;
+    if (r->curves.count < r->curves.capacity) return 0;
+    alea_result_t res = alea_vec_reserve(&r->curves, r->curves.capacity * 2, alea_curve_2d_t);
+    return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
 int alea_compute_slice_curves(const alea_system_t* sys,
@@ -1431,9 +1427,9 @@ int alea_compute_slice_curves(const alea_system_t* sys,
     memset(result, 0, sizeof(*result));
 
     /* Initial allocation */
-    result->curve_capacity = 64;
-    result->curves = calloc(result->curve_capacity, sizeof(alea_curve_2d_t));
-    if (!result->curves) return -1;
+    alea_vec_init(&result->curves);
+    alea_result_t vres = alea_vec_reserve(&result->curves, 64, alea_curve_2d_t);
+    if (ALEA_IS_ERR(vres)) return -1;
 
     result->u_min = result->v_min = DBL_MAX;
     result->u_max = result->v_max = -DBL_MAX;
@@ -1452,7 +1448,7 @@ int alea_compute_slice_curves(const alea_system_t* sys,
                 alea_curve_collection_free(result);
                 return -1;
             }
-            result->curves[result->curve_count++] = curve;
+            result->curves.data[result->curves.count++] = curve;
 
             /* Update bounding box */
             double cu_min, cu_max, cv_min, cv_max;
@@ -1469,7 +1465,7 @@ int alea_compute_slice_curves(const alea_system_t* sys,
 
 void alea_curve_collection_free(alea_curve_collection_t* result) {
     if (result) {
-        free(result->curves);
+        alea_vec_free(&result->curves);
         memset(result, 0, sizeof(*result));
     }
 }
@@ -2156,7 +2152,7 @@ static int emit_grid_line(const alea_slice_plane_t* plane,
         gc.data.line.point[1] = -C / B;
     }
     if (ensure_curve_capacity(result) != 0) return -1;
-    result->curves[result->curve_count++] = gc;
+    result->curves.data[result->curves.count++] = gc;
     return 0;
 }
 
@@ -2179,9 +2175,9 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
     memset(result, 0, sizeof(*result));
 
     /* Initial allocation */
-    result->curve_capacity = 64;
-    result->curves = calloc(result->curve_capacity, sizeof(alea_curve_2d_t));
-    if (!result->curves) return -1;
+    alea_vec_init(&result->curves);
+    alea_result_t vres = alea_vec_reserve(&result->curves, 64, alea_curve_2d_t);
+    if (ALEA_IS_ERR(vres)) return -1;
 
     result->u_min = result->v_min = DBL_MAX;
     result->u_max = result->v_max = -DBL_MAX;
@@ -2253,14 +2249,14 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
 
     alea_spatial_hit_t* hits = malloc(max_hits * sizeof(alea_spatial_hit_t));
     if (!hits) {
-        free(result->curves);
+        alea_vec_free(&result->curves);
         return -1;
     }
 
     int hit_count = alea_spatial_query_region(sys, &query_bbox, hits, max_hits);
     if (hit_count < 0) {
         free(hits);
-        free(result->curves);
+        alea_vec_free(&result->curves);
         return -1;
     }
 
@@ -2385,7 +2381,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                 alea_curve_collection_free(result);
                 return -1;
             }
-            result->curves[result->curve_count++] = curve;
+            result->curves.data[result->curves.count++] = curve;
 
             if (g_slice_curve_debug) {
                 const char* type_names[] = {
@@ -2489,8 +2485,8 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                     elem_tr.m[11] = cz;
 
                     /* Stamp each surface of every cell in the fill universe */
-                    for (size_t fi = 0; fi < fill_univ->cell_count; fi++) {
-                        size_t fc = fill_univ->cell_indices[fi];
+                    for (size_t fi = 0; fi < fill_univ->cell_indices.count; fi++) {
+                        size_t fc = fill_univ->cell_indices.data[fi];
                         const alea_cell_entry_t* fc_cell =
                             &sys->cells.data[fc];
                         if (!fc_cell->surface_indices) continue;
@@ -2533,7 +2529,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
                             curve.universe_id = fc_cell->universe_id;
 
                             if (ensure_curve_capacity(result) != 0) goto lat_done;
-                            result->curves[result->curve_count++] = curve;
+                            result->curves.data[result->curves.count++] = curve;
 
                             if (cu0 < result->u_min) result->u_min = cu0;
                             if (cu1 > result->u_max) result->u_max = cu1;

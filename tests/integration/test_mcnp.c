@@ -401,19 +401,19 @@ TEST(lattice_raycast) {
     ASSERT_EQ(rc, 0);
 
     /* Debug: print what we got */
-    printf("  hits=%zu segments=%zu\n", result.hit_count, result.segment_count);
-    for (size_t i = 0; i < result.segment_count; i++) {
+    printf("  hits=%zu segments=%zu\n", result.hits.count, result.segments.count);
+    for (size_t i = 0; i < result.segments.count; i++) {
         printf("  seg[%zu]: t=[%.4f, %.4f] cell=%d mat=%d\n",
-               i, result.segments[i].t_enter, result.segments[i].t_exit,
-               result.segments[i].cell_id, result.segments[i].material_id);
+               i, result.segments.data[i].t_enter, result.segments.data[i].t_exit,
+               result.segments.data[i].cell_id, result.segments.data[i].material_id);
     }
-    for (size_t i = 0; i < result.hit_count; i++) {
+    for (size_t i = 0; i < result.hits.count; i++) {
         printf("  hit[%zu]: t=%.6f surf=%d\n",
-               i, result.hits[i].t, result.hits[i].surface_id);
+               i, result.hits.data[i].t, result.hits.data[i].surface_id);
     }
 
     /* We should have segments with correct materials */
-    ASSERT(result.segment_count >= 5);
+    ASSERT(result.segments.count >= 5);
 
     /* Verify path through cylinder intersections:
      * Cylinder r=0.3 at each element center (0, 2, 4).
@@ -422,9 +422,9 @@ TEST(lattice_raycast) {
      * Entry at x=3.7 (t=5.2), exit at x=4.3 (t=5.8) for element 2
      */
     int found_mat1 = 0, found_mat3 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
-        if (result.segments[i].material_id == 3) found_mat3++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
+        if (result.segments.data[i].material_id == 3) found_mat3++;
     }
 
     /* Should find material 1 (univ 1 cylinder) and material 3 (univ 3 cylinder) */
@@ -459,18 +459,18 @@ TEST(lattice_hex_raycast) {
     ASSERT_EQ(rc, 0);
 
     printf("  hex hits=%zu segments=%zu\n",
-           result.hit_count, result.segment_count);
-    for (size_t i = 0; i < result.segment_count; i++) {
+           result.hits.count, result.segments.count);
+    for (size_t i = 0; i < result.segments.count; i++) {
         printf("  seg[%zu]: t=[%.4f, %.4f] cell=%d mat=%d\n",
-               i, result.segments[i].t_enter, result.segments[i].t_exit,
-               result.segments[i].cell_id, result.segments[i].material_id);
+               i, result.segments.data[i].t_enter, result.segments.data[i].t_exit,
+               result.segments.data[i].cell_id, result.segments.data[i].material_id);
     }
 
     /* Should find both material 1 (univ 1 cyl) and material 3 (univ 3 cyl) */
     int found_mat1 = 0, found_mat3 = 0;
-    for (size_t i = 0; i < result.segment_count; i++) {
-        if (result.segments[i].material_id == 1) found_mat1++;
-        if (result.segments[i].material_id == 3) found_mat3++;
+    for (size_t i = 0; i < result.segments.count; i++) {
+        if (result.segments.data[i].material_id == 1) found_mat1++;
+        if (result.segments.data[i].material_id == 3) found_mat3++;
     }
     ASSERT(found_mat1 >= 1);
     ASSERT(found_mat3 >= 1);

@@ -10,6 +10,7 @@
 #include "alea_macrobody.h"
 #include "alea_simplify.h"
 #include "primitives/bbox.h"
+#include "util/alea_vec.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -35,29 +36,20 @@ typedef struct {
 /**
  * @brief Expansion cache - maps primitive IDs to expanded node pairs
  */
-typedef struct {
-    expansion_cache_entry_t* entries;
-    size_t count;
-    size_t capacity;
-} expansion_cache_t;
+ALEA_VEC_DEFINE(expansion_cache, expansion_cache_entry_t);
 
 static void cache_init(expansion_cache_t* cache) {
-    cache->entries = NULL;
-    cache->count = 0;
-    cache->capacity = 0;
+    alea_vec_init(cache);
 }
 
 static void cache_free(expansion_cache_t* cache) {
-    free(cache->entries);
-    cache->entries = NULL;
-    cache->count = 0;
-    cache->capacity = 0;
+    alea_vec_free(cache);
 }
 
 static expansion_cache_entry_t* cache_find(expansion_cache_t* cache, alea_primitive_id_t prim_id) {
     for (size_t i = 0; i < cache->count; i++) {
-        if (cache->entries[i].prim_id == prim_id) {
-            return &cache->entries[i];
+        if (cache->data[i].prim_id == prim_id) {
+            return &cache->data[i];
         }
     }
     return NULL;
@@ -65,20 +57,11 @@ static expansion_cache_entry_t* cache_find(expansion_cache_t* cache, alea_primit
 
 static expansion_cache_entry_t* cache_add(expansion_cache_t* cache, alea_primitive_id_t prim_id,
                                            alea_node_id_t neg_node, alea_node_id_t pos_node) {
-    if (cache->count >= cache->capacity) {
-        size_t new_cap = cache->capacity ? cache->capacity * 2 : 16;
-        expansion_cache_entry_t* new_entries = realloc(cache->entries,
-                                                        new_cap * sizeof(expansion_cache_entry_t));
-        if (!new_entries) return NULL;
-        cache->entries = new_entries;
-        cache->capacity = new_cap;
-    }
-
-    expansion_cache_entry_t* entry = &cache->entries[cache->count++];
-    entry->prim_id = prim_id;
-    entry->neg_node = neg_node;
-    entry->pos_node = pos_node;
-    return entry;
+    expansion_cache_entry_t entry = { .prim_id = prim_id, .neg_node = neg_node, .pos_node = pos_node };
+    expansion_cache_entry_t* ptr = alea_vec_push_uninit(cache, expansion_cache_entry_t);
+    if (!ptr) return NULL;
+    *ptr = entry;
+    return ptr;
 }
 
 /* ============================================================================

@@ -66,20 +66,19 @@ typedef struct {
     uint8_t pad;
 } alea_spatial_node_t;
 
+ALEA_VEC_DEFINE(alea_cell_instance_vec, alea_cell_instance_t);
+ALEA_VEC_DEFINE(alea_spatial_node_vec, alea_spatial_node_t);
+
 /**
  * @brief Spatial index over cell instances
  */
 typedef struct alea_spatial_index {
     /* Cell instances (flattened bboxes, not geometry) */
-    alea_cell_instance_t* instances;
-    size_t instance_count;
-    size_t instance_capacity;
+    alea_cell_instance_vec_t instances;
 
     /* BVH over instances */
-    alea_spatial_node_t* nodes;
+    alea_spatial_node_vec_t nodes;
     uint32_t* indices;         /* Reordered instance indices */
-    size_t node_count;
-    size_t node_capacity;
 
     /* Global bounds */
     alea_bbox_t bounds;

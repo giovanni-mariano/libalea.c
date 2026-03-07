@@ -547,8 +547,8 @@ static void render_pixel_solid(const alea_system_t* sys,
             return;
     }
     /* Find first non-void segment in visible region (past clips) */
-    for (size_t i = 0; i < result->segment_count; i++) {
-        const alea_ray_segment_t* seg = &result->segments[i];
+    for (size_t i = 0; i < result->segments.count; i++) {
+        const alea_ray_segment_t* seg = &result->segments.data[i];
 
         /* Skip void segments and void-material cells (graveyard etc.) */
         if (seg->cell_id < 0 || seg->material_id == 0) continue;
@@ -591,17 +591,17 @@ static void render_pixel_solid(const alea_system_t* sys,
             /* Find surface normal from hit list (O(1) via enter_hit_index) */
             double nx = 0, ny = 0, nz = 1;
             if (seg->enter_hit_index >= 0 &&
-                (size_t)seg->enter_hit_index < result->hit_count) {
-                nx = result->hits[seg->enter_hit_index].nx;
-                ny = result->hits[seg->enter_hit_index].ny;
-                nz = result->hits[seg->enter_hit_index].nz;
+                (size_t)seg->enter_hit_index < result->hits.count) {
+                nx = result->hits.data[seg->enter_hit_index].nx;
+                ny = result->hits.data[seg->enter_hit_index].ny;
+                nz = result->hits.data[seg->enter_hit_index].nz;
             } else {
                 /* Fallback: linear search (cross-section or cell-aware path) */
-                for (size_t h = 0; h < result->hit_count; h++) {
-                    if (fabs(result->hits[h].t - t_hit) < 1e-6) {
-                        nx = result->hits[h].nx;
-                        ny = result->hits[h].ny;
-                        nz = result->hits[h].nz;
+                for (size_t h = 0; h < result->hits.count; h++) {
+                    if (fabs(result->hits.data[h].t - t_hit) < 1e-6) {
+                        nx = result->hits.data[h].nx;
+                        ny = result->hits.data[h].ny;
+                        nz = result->hits.data[h].nz;
                         break;
                     }
                 }
@@ -697,8 +697,8 @@ static void render_pixel_xray(const alea_system_t* sys,
     float accum_alpha = 0;
     float scale = cfg->xray_density_scale;
 
-    for (size_t i = 0; i < result->segment_count; i++) {
-        const alea_ray_segment_t* seg = &result->segments[i];
+    for (size_t i = 0; i < result->segments.count; i++) {
+        const alea_ray_segment_t* seg = &result->segments.data[i];
         if (seg->cell_id < 0 || seg->material_id == 0) continue;
         double len = seg->t_exit - seg->t_enter;
         if (len <= 0 || len > 1e10) continue;

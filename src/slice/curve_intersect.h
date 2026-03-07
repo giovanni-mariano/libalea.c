@@ -15,6 +15,7 @@
 
 #include "alea_types.h"
 #include "alea_slice.h"
+#include "util/alea_vec.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -192,10 +193,10 @@ typedef struct {
 /**
  * @brief Result of intersecting all surfaces with a slice plane
  */
+ALEA_VEC_DEFINE(alea_curve_vec, alea_curve_2d_t);
+
 typedef struct {
-    alea_curve_2d_t* curves;
-    size_t curve_count;
-    size_t curve_capacity;
+    alea_curve_vec_t curves;
 
     /* Bounding box in plane coordinates */
     double u_min, u_max;
