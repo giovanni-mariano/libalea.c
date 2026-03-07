@@ -20,13 +20,13 @@
 #include <stdio.h>
 
 /* Forward declaration for the OpenMC export function */
-extern int export_openmc(const alea_system_t* sys, export_context_t* ctx);
+extern int export_openmc(alea_system_t* sys, export_context_t* ctx);
 
 /* ============================================================================
  * DEDUP REPORT (shared utility, moved from alea_public_api.c)
  * ============================================================================ */
 
-static void write_dedup_report(const alea_system_t* sys, const export_context_t* ctx,
+static void write_dedup_report(alea_system_t* sys, const export_context_t* ctx,
                                const char* xml_filename) {
     if (!ctx->deduplicate || !ctx->prim_to_surface || ctx->dedup_hits == 0) return;
 
@@ -78,7 +78,7 @@ static void write_dedup_report(const alea_system_t* sys, const export_context_t*
  * INTERNAL: Create export context for OpenMC
  * ============================================================================ */
 
-static export_context_t* create_openmc_export_ctx(const alea_system_t* sys, FILE* out) {
+static export_context_t* create_openmc_export_ctx(alea_system_t* sys, FILE* out) {
     int next_id = alea_next_synthetic_surface_id(sys);
     /* OpenMC always uses ALEA_EMIT_SURFACES for primitive decomposition */
     export_context_t* ctx = export_context_create(
@@ -178,7 +178,7 @@ int openmc_export_stream(const openmc_model_t* model, FILE* out) {
     return ret;
 }
 
-int openmc_export_system(const alea_system_t* sys, const char* filename) {
+int openmc_export_system(alea_system_t* sys, const char* filename) {
     if (!sys || !filename) return -1;
 
     FILE* f = fopen(filename, "w");
@@ -201,7 +201,7 @@ int openmc_export_system(const alea_system_t* sys, const char* filename) {
     return ret;
 }
 
-int openmc_export_system_stream(const alea_system_t* sys, FILE* out) {
+int openmc_export_system_stream(alea_system_t* sys, FILE* out) {
     if (!sys || !out) return -1;
 
     export_context_t* ctx = create_openmc_export_ctx(sys, out);

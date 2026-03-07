@@ -147,13 +147,13 @@ int alea_build_spatial_index(alea_system_t* sys);
  * GEOMETRY QUERIES
  * ============================================================================ */
 
-int alea_find_cell(const alea_system_t* sys, double x, double y, double z);
-int alea_find_all_cells(const alea_system_t* sys, double x, double y, double z,
+int alea_find_cell(alea_system_t* sys, double x, double y, double z);
+int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
                             alea_cell_hit_t* hits, size_t max_hits);
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z);
-int alea_material_at(const alea_system_t* sys, double x, double y, double z);
-int alea_find_overlaps(const alea_system_t* sys, int* pairs, size_t max_pairs);
+int alea_material_at(alea_system_t* sys, double x, double y, double z);
+int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 
 /* ============================================================================
  * CSG CONSTRUCTION - SURFACES
@@ -523,7 +523,7 @@ void alea_tree_print(const alea_system_t* sys, alea_node_id_t node_id);
  * @param radius   Output: radius of bounding sphere
  * @return 0 on success, -1 on error (no bounded cells)
  */
-int alea_compute_bounding_sphere(const alea_system_t* sys,
+int alea_compute_bounding_sphere(alea_system_t* sys,
                                       double tol,
                                       double* cx, double* cy, double* cz,
                                       double* radius);
@@ -548,7 +548,7 @@ int alea_compute_bounding_sphere(const alea_system_t* sys,
  * @param rel_errors Output array of size alea_cell_count(sys), or NULL
  * @return 0 on success, -1 on error
  */
-int alea_estimate_cell_volumes(const alea_system_t* sys,
+int alea_estimate_cell_volumes(alea_system_t* sys,
                                    double ox, double oy, double oz,
                                    double radius, int n_rays,
                                    double* volumes,
@@ -572,7 +572,7 @@ int alea_estimate_cell_volumes(const alea_system_t* sys,
  * @param rel_errors Output array of same size, or NULL
  * @return 0 on success, -1 on error
  */
-int alea_estimate_instance_volumes(const alea_system_t* sys,
+int alea_estimate_instance_volumes(alea_system_t* sys,
                                        int n_rays,
                                        double* volumes,
                                        double* rel_errors);
@@ -980,7 +980,7 @@ int alea_universe_find(const alea_system_t* sys, int universe_id);
 /**
  * @brief Find cell and get both cell ID and material
  */
-int alea_find_cell_at(const alea_system_t* sys, double x, double y, double z,
+int alea_find_cell_at(alea_system_t* sys, double x, double y, double z,
                            int* out_cell_id, int* out_material);
 
 /**

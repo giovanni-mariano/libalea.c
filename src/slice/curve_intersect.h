@@ -297,7 +297,7 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
  * @param result Output structure (caller provides, curves will be allocated)
  * @return 0 on success, -1 on error
  */
-int alea_compute_slice_curves(const alea_system_t* sys,
+int alea_compute_slice_curves(alea_system_t* sys,
                              const alea_slice_plane_t* plane,
                              alea_curve_collection_t* result);
 
@@ -321,7 +321,7 @@ void alea_curve_collection_free(alea_curve_collection_t* result);
  * @param result Output curves (caller provides, will be populated)
  * @return 0 on success, -1 on error
  */
-int alea_compute_slice_curves_spatial(const alea_system_t* sys,
+int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                      const alea_slice_plane_t* plane,
                                      double u_min, double u_max,
                                      double v_min, double v_max,

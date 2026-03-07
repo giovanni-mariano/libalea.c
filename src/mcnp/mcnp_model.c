@@ -214,7 +214,7 @@ int mcnp_export(const mcnp_model_t* model, const char* filename) {
 }
 
 /* Forward declaration for the MCNP export function */
-extern int export_mcnp(const alea_system_t* sys, export_context_t* ctx);
+extern int export_mcnp(alea_system_t* sys, export_context_t* ctx);
 
 int mcnp_export_stream(const mcnp_model_t* model, FILE* out) {
     if (!model || !out || !model->sys) return -1;
@@ -242,7 +242,7 @@ int mcnp_export_stream(const mcnp_model_t* model, FILE* out) {
     return ret;
 }
 
-int mcnp_export_system(const alea_system_t* sys, const char* filename) {
+int mcnp_export_system(alea_system_t* sys, const char* filename) {
     if (!sys || !filename) return -1;
 
     FILE* f = fopen(filename, "w");
@@ -253,7 +253,7 @@ int mcnp_export_system(const alea_system_t* sys, const char* filename) {
     return ret;
 }
 
-int mcnp_export_system_stream(const alea_system_t* sys, FILE* out) {
+int mcnp_export_system_stream(alea_system_t* sys, FILE* out) {
     if (!sys || !out) return -1;
 
     export_context_t* ctx = export_context_create(

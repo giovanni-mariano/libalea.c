@@ -137,7 +137,7 @@ static void compute_volume_errors(const double* volumes, const double* sum_l2,
     }
 }
 
-int alea_estimate_cell_volumes(const alea_system_t* sys,
+int alea_estimate_cell_volumes(alea_system_t* sys,
                               double ox, double oy, double oz,
                               double radius, int n_rays,
                               double* volumes, double* rel_errors) {
@@ -297,7 +297,7 @@ int alea_remove_cells_by_volume(alea_system_t* sys,
  * appearing in multiple fill contexts.
  * ============================================================================ */
 
-int alea_estimate_instance_volumes(const alea_system_t* sys,
+int alea_estimate_instance_volumes(alea_system_t* sys,
                                    int n_rays,
                                    double* volumes, double* rel_errors) {
     if (!sys || n_rays <= 0 || !volumes) return -1;

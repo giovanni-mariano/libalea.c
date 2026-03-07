@@ -1419,7 +1419,7 @@ static int ensure_curve_capacity(alea_curve_collection_t* r) {
     return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
-int alea_compute_slice_curves(const alea_system_t* sys,
+int alea_compute_slice_curves(alea_system_t* sys,
                              const alea_slice_plane_t* plane,
                              alea_curve_collection_t* result) {
     if (!sys || !plane || !result) return -1;
@@ -2156,7 +2156,7 @@ static int emit_grid_line(const alea_slice_plane_t* plane,
     return 0;
 }
 
-int alea_compute_slice_curves_spatial(const alea_system_t* sys,
+int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                      const alea_slice_plane_t* plane,
                                      double u_min, double u_max,
                                      double v_min, double v_max,
@@ -2165,8 +2165,7 @@ int alea_compute_slice_curves_spatial(const alea_system_t* sys,
 
     /* Build spatial index if needed */
     if (alea_spatial_index_needs_rebuild(sys)) {
-        alea_system_t* mutable_sys = (alea_system_t*)sys;
-        if (alea_spatial_index_build(mutable_sys) != 0) {
+        if (alea_spatial_index_build(sys) != 0) {
             /* Build failed - fall back to non-spatial method */
             return alea_compute_slice_curves(sys, plane, result);
         }

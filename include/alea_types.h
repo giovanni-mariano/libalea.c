@@ -188,20 +188,6 @@ typedef enum {
     ALEA_OP_COMPLEMENT          // Boolean complement (NOT A)
 } alea_operation_t;
 
-/**
- * @brief CSG node types (alternative/simplified enum)
- * 
- * Note: This is kept for compatibility, but alea_node_t uses alea_operation_t
- * in its packed type_and_flags field.
- */
-typedef enum {
-    ALEA_NODE_PRIMITIVE,      // Leaf node (primitive surface)
-    ALEA_NODE_UNION,          // Boolean union (OR)
-    ALEA_NODE_INTERSECTION,   // Boolean intersection (AND)
-    ALEA_NODE_DIFFERENCE,     // Boolean difference (A - B)
-    ALEA_NODE_COMPLEMENT      // Boolean complement (NOT A)
-} alea_node_type_t;
-
 
 typedef enum {
     ALEA_BOUNDARY_TRANSMISSIVE = 0,

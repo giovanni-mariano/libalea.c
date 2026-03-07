@@ -82,13 +82,13 @@ int openmc_export_stream(const openmc_model_t* model, FILE* out);
  * @brief Export a bare system to OpenMC file (convenience, uses default config)
  * @return 0 on success, -1 on error
  */
-int openmc_export_system(const alea_system_t* sys, const char* filename);
+int openmc_export_system(alea_system_t* sys, const char* filename);
 
 /**
  * @brief Export a bare system to OpenMC stream (convenience, uses default config)
  * @return 0 on success, -1 on error
  */
-int openmc_export_system_stream(const alea_system_t* sys, FILE* out);
+int openmc_export_system_stream(alea_system_t* sys, FILE* out);
 
 /* ============================================================================
  * MODEL MANAGEMENT

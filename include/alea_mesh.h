@@ -90,7 +90,7 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg);
  * @param cfg Sampling configuration
  * @return Allocated result (caller must free with alea_mesh_result_free), or NULL on error
  */
-alea_mesh_result_t *alea_mesh_sample(const alea_system_t *sys,
+alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                              const alea_mesh_config_t *cfg);
 
 /**
@@ -111,7 +111,7 @@ int alea_mesh_export_stream(const alea_mesh_result_t *mesh,
  * @brief One-shot: sample CSG geometry and export to file
  * @return 0 on success, -1 on error
  */
-int alea_mesh_export_system(const alea_system_t *sys,
+int alea_mesh_export_system(alea_system_t *sys,
                              const alea_mesh_config_t *cfg,
                              const char *filename);
 

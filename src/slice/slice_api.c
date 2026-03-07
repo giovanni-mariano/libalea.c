@@ -75,7 +75,7 @@ void alea_slice_view_init(alea_slice_view_t* view,
  * ANALYTICAL CURVE API
  * ============================================================================ */
 
-alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
+alea_slice_curves_t* alea_get_slice_curves(alea_system_t* sys,
                                                     const alea_slice_view_t* view) {
     if (!sys || !view) return NULL;
 
@@ -83,7 +83,7 @@ alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
     if (!result) return NULL;
 
     if (!sys->spatial_index) {
-        if (alea_build_spatial_index((alea_system_t*)sys) != 0) {
+        if (alea_build_spatial_index(sys) != 0) {
             free(result);
             return NULL;
         }
@@ -274,7 +274,7 @@ static void multilevel_hint_init(alea_multilevel_hint_t* hint) {
  * @param num_hits Number of hits
  * @param hint Output multi-level hint structure
  */
-static void multilevel_hint_from_hits(const alea_system_t* sys,
+static void multilevel_hint_from_hits(alea_system_t* sys,
                                        const alea_cell_hit_t* hits,
                                        int num_hits,
                                        alea_multilevel_hint_t* hint) {
@@ -327,7 +327,7 @@ static void multilevel_hint_from_hits(const alea_system_t* sys,
  * @param hint_cell_idx Previous cell index at this depth (for adjacency walking)
  * @return Cell index found, or -1 if not found
  */
-static int find_cell_in_universe_with_hint(const alea_system_t* sys,
+static int find_cell_in_universe_with_hint(alea_system_t* sys,
                                             double lx, double ly, double lz,
                                             int universe_id,
                                             int hint_cell_idx) {
@@ -404,7 +404,7 @@ static int find_cell_in_universe_with_hint(const alea_system_t* sys,
  * @param out_material_id Output material ID (can be NULL)
  * @param out_error Output error code (can be NULL)
  */
-static void find_cell_multilevel(const alea_system_t* sys,
+static void find_cell_multilevel(alea_system_t* sys,
                                   double gx, double gy, double gz,
                                   int universe_depth,
                                   const alea_multilevel_hint_t* prev_hint,
@@ -605,7 +605,7 @@ static void find_cell_multilevel(const alea_system_t* sys,
     if (out_material_id) *out_material_id = hits[target_idx].material_id;
 }
 
-int alea_find_cells_grid(const alea_system_t* sys,
+int alea_find_cells_grid(alea_system_t* sys,
                               const alea_slice_view_t* view,
                               int nu, int nv,
                               int universe_depth,
@@ -624,14 +624,14 @@ int alea_find_cells_grid(const alea_system_t* sys,
 
     /* Build cell adjacency if not already built - needed for ALL depths now */
     if (!sys->cell_adjacency_built) {
-        alea_build_cell_adjacency((alea_system_t*)sys);
+        alea_build_cell_adjacency(sys);
     }
 
     /* Build spatial index eagerly before the parallel region so that:
      * (a) the internal #pragma omp parallel for gets full thread parallelism
      *     (no nesting penalty)
      * (b) OpenMP workers don't race into the lazy-build path */
-    alea_spatial_index_build((alea_system_t*)sys);
+    alea_spatial_index_build(sys);
 
     double du = (u_max - u_min) / nu;
     double dv = (v_max - v_min) / nv;
@@ -796,7 +796,7 @@ int alea_find_cells_grid(const alea_system_t* sys,
  * FULL-GRID OVERLAP CHECK
  * ============================================================================ */
 
-int alea_check_grid_overlaps(const alea_system_t* sys,
+int alea_check_grid_overlaps(alea_system_t* sys,
                                   const alea_slice_view_t* view,
                                   int nu, int nv,
                                   int universe_depth,
@@ -860,7 +860,7 @@ int alea_check_grid_overlaps(const alea_system_t* sys,
  * Check a single pixel for nested overlap via full hierarchy query.
  * Returns 1 if overlap found and error grid updated, 0 otherwise.
  */
-static int probe_pixel_for_overlap(const alea_system_t* sys,
+static int probe_pixel_for_overlap(alea_system_t* sys,
                                    const alea_slice_plane_t* plane,
                                    double u_min, double v_min,
                                    double du, double dv,
@@ -910,7 +910,7 @@ static bool pixel_is_boundary(const int* cell_ids, int nu, int nv, int pi, int p
     return false;
 }
 
-int alea_check_grid_overlaps_curves(const alea_system_t* sys,
+int alea_check_grid_overlaps_curves(alea_system_t* sys,
                                     const alea_slice_view_t* view,
                                     const alea_slice_curves_t* curves,
                                     int nu, int nv,
@@ -1534,7 +1534,7 @@ int alea_find_surface_label_positions(
  * Uses the spatial index (BVH + coherence cache) for fast lookup
  * instead of brute-forcing all cells in the universe.
  */
-static int count_cells_in_universe_at_point(const alea_system_t* sys,
+static int count_cells_in_universe_at_point(alea_system_t* sys,
                                              int universe_id,
                                              double x, double y, double z) {
     alea_cell_hit_t hits[16];
@@ -1551,7 +1551,7 @@ static int count_cells_in_universe_at_point(const alea_system_t* sys,
     return count;
 }
 
-static int classify_sample(const alea_system_t* sys,
+static int classify_sample(alea_system_t* sys,
                            const alea_slice_view_t* view,
                            double u, double v,
                            double nu, double nv,
@@ -1689,7 +1689,7 @@ static void error_vec_push(error_vec_t* vec, const alea_slice_error_t* err) {
 /**
  * Process a single parametric curve: sample, classify, merge error segments.
  */
-static void check_parametric_curve(const alea_system_t* sys,
+static void check_parametric_curve(alea_system_t* sys,
                                    const alea_slice_view_t* view,
                                    const alea_curve_2d_t* curve,
                                    size_t curve_index,
@@ -1789,7 +1789,7 @@ static void check_parametric_curve(const alea_system_t* sys,
 /**
  * Process a quartic (torus) curve via scanline sampling.
  */
-static void check_quartic_curve(const alea_system_t* sys,
+static void check_quartic_curve(alea_system_t* sys,
                                 const alea_slice_view_t* view,
                                 const alea_curve_2d_t* curve,
                                 size_t curve_index,
@@ -1869,7 +1869,7 @@ static void check_quartic_curve(const alea_system_t* sys,
 /**
  * Process a polygon curve: check each edge.
  */
-static void check_polygon_curve(const alea_system_t* sys,
+static void check_polygon_curve(alea_system_t* sys,
                                 const alea_slice_view_t* view,
                                 const alea_curve_2d_t* curve,
                                 size_t curve_index,
@@ -1947,7 +1947,7 @@ static void check_polygon_curve(const alea_system_t* sys,
 }
 
 alea_slice_error_result_t* alea_check_slice_errors(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     int universe_depth)
@@ -2021,7 +2021,7 @@ typedef struct {
     double u_min, v_min;
     double inv_du, inv_dv;  /* 1/du, 1/dv for fast coord→pixel */
     /* For CSG fallback on same-cell cases (nested overlaps) */
-    const alea_system_t* sys;
+    alea_system_t* sys;
     const alea_slice_plane_t* plane;
 } grid_ctx_t;
 
@@ -2318,7 +2318,7 @@ static void check_polygon_curve_grid(const grid_ctx_t* g,
 }
 
 alea_slice_error_result_t* alea_check_slice_errors_grid(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     const int* cell_ids,

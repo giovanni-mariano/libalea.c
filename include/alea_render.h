@@ -190,7 +190,7 @@ void render_config_free(render_config_t* cfg);
  */
 int render_camera_setup(render_camera_t* cam,
                         const render_config_t* cfg,
-                        const alea_system_t* sys);
+                        alea_system_t* sys);
 
 /**
  * @brief Generate camera ray for pixel (px, py) with sub-pixel offset (sx, sy)
@@ -222,7 +222,7 @@ void render_framebuffer_free(render_framebuffer_t* fb);
  * @param fb Output framebuffer
  * @return 0 on success, -1 on error
  */
-int render_scene(const alea_system_t* sys,
+int render_scene(alea_system_t* sys,
                  const render_config_t* cfg,
                  const render_camera_t* cam,
                  render_framebuffer_t* fb);

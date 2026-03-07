@@ -45,7 +45,7 @@ alea_raycast_result_t* alea_raycast_result_create(void);
  * @param result Output result
  * @return 0 on success, -1 on error
  */
-int alea_raycast(const alea_system_t* sys,
+int alea_raycast(alea_system_t* sys,
                      double ox, double oy, double oz,
                      double dx, double dy, double dz,
                      double t_max,
@@ -57,7 +57,7 @@ int alea_raycast(const alea_system_t* sys,
  * More efficient than global surface testing. Tracks through cells
  * one at a time, testing only surfaces belonging to each cell.
  */
-int alea_raycast_cell_aware(const alea_system_t* sys,
+int alea_raycast_cell_aware(alea_system_t* sys,
                                 double ox, double oy, double oz,
                                 double dx, double dy, double dz,
                                 double t_max,
@@ -73,7 +73,7 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
  * @param out_t Output: distance to first hit (can be NULL)
  * @return Cell ID of first cell hit, or -1 if none
  */
-int alea_ray_first_cell(const alea_system_t* sys,
+int alea_ray_first_cell(alea_system_t* sys,
                             double ox, double oy, double oz,
                             double dx, double dy, double dz,
                             double t_max, double* out_t);

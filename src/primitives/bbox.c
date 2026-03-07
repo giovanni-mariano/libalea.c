@@ -464,7 +464,7 @@ void alea_tighten_tree_bbox(const alea_system_t* sys,
     }
 }
 
-int alea_compute_bounding_sphere(const alea_system_t* sys,
+int alea_compute_bounding_sphere(alea_system_t* sys,
                                  double tol,
                                  double* cx, double* cy, double* cz,
                                  double* radius) {

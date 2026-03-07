@@ -183,7 +183,7 @@ void alea_slice_view_init(alea_slice_view_t* view,
  * @param out_errors Output error codes (size nu*nv, can be NULL)
  *                   0=ok, 1=overlap, 2=undefined
  */
-int alea_find_cells_grid(const alea_system_t* sys,
+int alea_find_cells_grid(alea_system_t* sys,
                               const alea_slice_view_t* view,
                               int nu, int nv,
                               int universe_depth,
@@ -211,7 +211,7 @@ int alea_find_cells_grid(const alea_system_t* sys,
  * @param errors Error grid to update (size nu*nv, must be pre-initialized)
  * @return 0 on success, -1 on error
  */
-int alea_check_grid_overlaps(const alea_system_t* sys,
+int alea_check_grid_overlaps(alea_system_t* sys,
                                   const alea_slice_view_t* view,
                                   int nu, int nv,
                                   int universe_depth,
@@ -239,7 +239,7 @@ int alea_check_grid_overlaps(const alea_system_t* sys,
  * @param errors Error grid to update (size nu*nv)
  * @return Number of new overlap pixels found, or -1 on error
  */
-int alea_check_grid_overlaps_curves(const alea_system_t* sys,
+int alea_check_grid_overlaps_curves(alea_system_t* sys,
                                     const alea_slice_view_t* view,
                                     const alea_slice_curves_t* curves,
                                     int nu, int nv,
@@ -316,7 +316,7 @@ int alea_find_surface_label_positions(
  * @param view Slice view (plane + viewport bounds)
  * @return Opaque curves object (must be freed with alea_slice_curves_free)
  */
-alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
+alea_slice_curves_t* alea_get_slice_curves(alea_system_t* sys,
                                                     const alea_slice_view_t* view);
 
 /**
@@ -386,7 +386,7 @@ typedef struct {
  * @return Error result (must be freed with alea_slice_errors_free), or NULL
  */
 alea_slice_error_result_t* alea_check_slice_errors(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     int universe_depth);
@@ -416,7 +416,7 @@ alea_slice_error_result_t* alea_check_slice_errors(
  * @return Error result (must be freed with alea_slice_errors_free), or NULL
  */
 alea_slice_error_result_t* alea_check_slice_errors_grid(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     const int* cell_ids,

@@ -160,13 +160,13 @@ int mcnp_export_stream(const mcnp_model_t* model, FILE* out);
  * @brief Export a bare system to MCNP file (convenience, uses default config)
  * @return 0 on success, -1 on error
  */
-int mcnp_export_system(const alea_system_t* sys, const char* filename);
+int mcnp_export_system(alea_system_t* sys, const char* filename);
 
 /**
  * @brief Export a bare system to MCNP stream (convenience, uses default config)
  * @return 0 on success, -1 on error
  */
-int mcnp_export_system_stream(const alea_system_t* sys, FILE* out);
+int mcnp_export_system_stream(alea_system_t* sys, FILE* out);
 
 /* ============================================================================
  * MODEL MANAGEMENT

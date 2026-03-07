@@ -114,7 +114,7 @@ void render_config_free(render_config_t* cfg) {
 
 int render_camera_setup(render_camera_t* cam,
                         const render_config_t* cfg,
-                        const alea_system_t* sys) {
+                        alea_system_t* sys) {
     memset(cam, 0, sizeof(*cam));
 
     cam->up[0] = cfg->up[0];
@@ -451,7 +451,7 @@ void render_framebuffer_free(render_framebuffer_t* fb) {
  * Render a single pixel in solid/cutaway mode.
  * Uses a thread-local alea_raycast_result_t for buffer reuse.
  */
-static void render_pixel_solid(const alea_system_t* sys,
+static void render_pixel_solid(alea_system_t* sys,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
                                double px, double py,
@@ -670,7 +670,7 @@ static void render_pixel_solid(const alea_system_t* sys,
  * PER-PIXEL RENDERING (X-RAY MODE)
  * ============================================================================ */
 
-static void render_pixel_xray(const alea_system_t* sys,
+static void render_pixel_xray(alea_system_t* sys,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
                                double px, double py,
@@ -733,7 +733,7 @@ static void render_pixel_xray(const alea_system_t* sys,
  * TILE-BASED PARALLEL RENDERING
  * ============================================================================ */
 
-int render_scene(const alea_system_t* sys,
+int render_scene(alea_system_t* sys,
                  const render_config_t* cfg,
                  const render_camera_t* cam,
                  render_framebuffer_t* fb) {

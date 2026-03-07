@@ -144,7 +144,7 @@ typedef struct {
  * @param max_hits Maximum hits to return
  * @return Number of hits, or -1 on error
  */
-int alea_spatial_query_region(const alea_system_t* sys,
+int alea_spatial_query_region(alea_system_t* sys,
                              const alea_bbox_t* query_bbox,
                              alea_spatial_hit_t* out_hits,
                              size_t max_hits);
@@ -161,7 +161,7 @@ int alea_spatial_query_region(const alea_system_t* sys,
  * @param max_hits Maximum hits to return
  * @return Number of hits, or -1 on error
  */
-int alea_spatial_query_slice_z(const alea_system_t* sys,
+int alea_spatial_query_slice_z(alea_system_t* sys,
                               double z,
                               double x_min, double x_max,
                               double y_min, double y_max,
@@ -180,7 +180,7 @@ int alea_spatial_query_slice_z(const alea_system_t* sys,
  * @param max_hits Maximum hits to return
  * @return Number of candidates, or -1 on error
  */
-int alea_spatial_query_point(const alea_system_t* sys,
+int alea_spatial_query_point(alea_system_t* sys,
                             double x, double y, double z,
                             alea_spatial_hit_t* out_hits,
                             size_t max_hits);
@@ -197,7 +197,7 @@ int alea_spatial_query_point(const alea_system_t* sys,
  * @param max_hits Maximum hits to return
  * @return Number of cells found, or -1 on error
  */
-int alea_spatial_find_cells_at_point(const alea_system_t* sys,
+int alea_spatial_find_cells_at_point(alea_system_t* sys,
                                     double x, double y, double z,
                                     alea_cell_hit_t* out_hits,
                                     size_t max_hits);
@@ -218,7 +218,7 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
  * @param out_counts Output: out_counts[i] = number of cells found at point i
  * @return 0 on success, -1 on error
  */
-int alea_spatial_find_cells_batch(const alea_system_t* sys,
+int alea_spatial_find_cells_batch(alea_system_t* sys,
                                   const double* points,
                                   size_t n_points,
                                   alea_cell_hit_t* out_hits,

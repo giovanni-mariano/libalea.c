@@ -1821,7 +1821,7 @@ static void assign_missing_surface_ids_openmc(alea_system_t* sys, int* next_id) 
     free(prim_surf_map);
 }
 
-int export_openmc(const alea_system_t* sys, export_context_t* ctx) {
+int export_openmc(alea_system_t* sys, export_context_t* ctx) {
     if (!sys || !ctx || !ctx->out) return -1;
 
     arena_t arena;
@@ -1829,14 +1829,14 @@ int export_openmc(const alea_system_t* sys, export_context_t* ctx) {
 
     /* OpenMC doesn't support macrobodies - replace them with expanded primitives */
     /* This uses pre-computed expanded nodes from surface entries */
-    int expanded = alea_expand_macrobodies_in_cells((alea_system_t*)sys);
+    int expanded = alea_expand_macrobodies_in_cells(sys);
     if (expanded > 0) {
         ALEA_LOG_DEBUG("Expanded %d cells with macrobodies for OpenMC export", expanded);
     }
 
     /* Assign surface IDs to primitives from immediate macrobody expansion */
     /* Uses ctx->next_synthetic_surface_id which is set from max surface ID in alea_api.c */
-    assign_missing_surface_ids_openmc((alea_system_t*)sys, &ctx->next_synthetic_surface_id);
+    assign_missing_surface_ids_openmc(sys, &ctx->next_synthetic_surface_id);
 
     /* Build canonical surface map so cell expressions use deduplicated surface IDs */
     if (ctx->deduplicate) {

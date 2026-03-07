@@ -98,7 +98,7 @@ static alea_bbox_t get_child_bbox(const alea_bbox_t* parent, int octant) {
  *   -1: all probes are void - definitely contains void
  *   -2: mixed (some void, some solid, or multiple cells) - MUST check
  */
-static int probe_node(const alea_system_t* sys, const alea_bbox_t* bbox,
+static int probe_node(alea_system_t* sys, const alea_bbox_t* bbox,
                       int probes_per_axis, int* void_count, int* total) {
     if (probes_per_axis < 2) probes_per_axis = 2;
     double dx = (bbox->max_x - bbox->min_x) / (probes_per_axis - 1);

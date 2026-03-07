@@ -408,7 +408,7 @@ size_t alea_universe_count(const alea_system_t* sys);
  * @brief Get material ID at a point
  * @return Material ID, or ALEA_MATERIAL_NONE if in void
  */
-alea_material_id_t alea_material_at_point(const alea_system_t* sys, double x, double y, double z);
+alea_material_id_t alea_material_at_point(alea_system_t* sys, double x, double y, double z);
 
 /**
  * @brief Add a mixture to the system
@@ -438,7 +438,7 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture);
  * @param z Z coordinate
  * @return Cell index (into sys->cells), or -1 if in void
  */
-int alea_identify_cell_at_point(const alea_system_t* sys, double x, double y, double z);
+int alea_identify_cell_at_point(alea_system_t* sys, double x, double y, double z);
 
 /**
  * @brief Find overlapping cells
@@ -451,7 +451,7 @@ int alea_identify_cell_at_point(const alea_system_t* sys, double x, double y, do
  * @param max_pairs Maximum pairs to return
  * @return Number of overlapping pairs found
  */
-int alea_find_overlaps(const alea_system_t* sys, int* out_pairs, size_t max_pairs);
+int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs);
 
 // ============================================================================
 // API - NODE OPERATIONS

@@ -32,7 +32,7 @@
  * @param ctx Export context with output stream
  * @return 0 on success, -1 on error
  */
-int export_openmc(const alea_system_t* sys, export_context_t* ctx);
+int export_openmc(alea_system_t* sys, export_context_t* ctx);
 
 
 #endif /* OPENMC_EXPORT_H */

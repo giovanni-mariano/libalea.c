@@ -143,7 +143,7 @@ int alea_find_cell_lazy(const alea_system_t* sys,
  * @param max_hits Maximum entries in out_hits
  * @return Number of cells found (hierarchy depth), or -1 on error
  */
-int alea_find_all_cells_at_point(const alea_system_t* sys,
+int alea_find_all_cells_at_point(alea_system_t* sys,
                                 double x, double y, double z,
                                 alea_cell_hit_t* out_hits,
                                 size_t max_hits);

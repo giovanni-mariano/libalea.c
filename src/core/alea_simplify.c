@@ -1696,7 +1696,7 @@ static alea_node_id_t factor_common_union_literals(
  * Returns number of branches removed.
  */
 static size_t remove_geometrically_subsumed_branches(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     node_list_t* terms,
     alea_simplify_stats_t* stats
 ) {
@@ -1726,12 +1726,12 @@ static size_t remove_geometrically_subsumed_branches(
         }
 
         alea_node_id_t others_union = build_balanced_tree(
-            (alea_system_t*)sys, others->vec.data, others->vec.count, ALEA_OP_UNION);
+            sys, others->vec.data, others->vec.count, ALEA_OP_UNION);
         node_list_destroy(others);
 
         /* Build difference: Ti - union(others) = Ti ∩ ¬union(others) */
         alea_node_id_t ti = terms->vec.data[i];
-        alea_node_id_t diff = alea_create_difference((alea_system_t*)sys, ti, others_union);
+        alea_node_id_t diff = alea_create_difference(sys, ti, others_union);
 
         /* Get bbox for Ti */
         const alea_node_t* ti_node = &sys->nodes.data[ti];

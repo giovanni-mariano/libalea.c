@@ -607,12 +607,12 @@ int alea_spatial_traverse(const alea_spatial_index_t* idx,
  * QUERY API
  * ============================================================================ */
 
-static alea_spatial_index_t* get_spatial_index(const alea_system_t* sys) {
+static alea_spatial_index_t* get_spatial_index(alea_system_t* sys) {
     return sys ? sys->spatial_index : NULL;
 }
 
 typedef struct {
-    const alea_system_t* sys;
+    alea_system_t* sys;
     alea_spatial_hit_t* restrict hits;
     size_t max_hits;
     size_t hit_count;
@@ -639,7 +639,7 @@ static void query_callback(const alea_cell_instance_t* restrict inst,
     hit->transform = inst->transform;
 }
 
-int alea_spatial_query_region(const alea_system_t* sys,
+int alea_spatial_query_region(alea_system_t* sys,
                              const alea_bbox_t* query_bbox,
                              alea_spatial_hit_t* out_hits,
                              size_t max_hits) {
@@ -647,9 +647,9 @@ int alea_spatial_query_region(const alea_system_t* sys,
 
     alea_spatial_index_t* idx = get_spatial_index(sys);
     if (!idx || !idx->built) {
-        if (alea_spatial_index_build((alea_system_t*)sys) != 0)
+        if (alea_spatial_index_build(sys) != 0)
             return -1;
-        idx = ((alea_system_t*)sys)->spatial_index;
+        idx = sys->spatial_index;
     }
 
     query_ctx_t ctx = {
@@ -665,7 +665,7 @@ int alea_spatial_query_region(const alea_system_t* sys,
     return (int)ctx.hit_count;
 }
 
-int alea_spatial_query_slice_z(const alea_system_t* sys,
+int alea_spatial_query_slice_z(alea_system_t* sys,
                               double z,
                               double x_min, double x_max,
                               double y_min, double y_max,
@@ -695,7 +695,7 @@ static int compare_hits_by_depth_and_instance(const void* a, const void* b) {
     return (ha->instance_index > hb->instance_index) - (ha->instance_index < hb->instance_index);
 }
 
-int alea_spatial_query_point(const alea_system_t* sys,
+int alea_spatial_query_point(alea_system_t* sys,
                             double x, double y, double z,
                             alea_spatial_hit_t* out_hits,
                             size_t max_hits) {
@@ -703,9 +703,9 @@ int alea_spatial_query_point(const alea_system_t* sys,
 
     alea_spatial_index_t* idx = get_spatial_index(sys);
     if (!idx || !idx->built) {
-        if (alea_spatial_index_build((alea_system_t*)sys) != 0)
+        if (alea_spatial_index_build(sys) != 0)
             return -1;
-        idx = ((alea_system_t*)sys)->spatial_index;
+        idx = sys->spatial_index;
     }
 
     /* Query with point bbox (relative+absolute for large-coordinate robustness) */
@@ -755,7 +755,7 @@ typedef struct {
 
 static _Thread_local cached_cell_t g_cell_cache[MAX_CACHE_DEPTH];
 static _Thread_local int g_cache_count = 0;
-static _Thread_local const alea_system_t* g_cache_system = NULL;
+static _Thread_local alea_system_t* g_cache_system = NULL;
 
 /* Thread-local candidates buffer for point queries (freed via alea_spatial_reset_cache) */
 static _Thread_local alea_spatial_hit_t* g_tls_candidates = NULL;
@@ -772,7 +772,7 @@ void alea_spatial_reset_cache(void) {
     g_tls_candidates_cap = 0;
 }
 
-int alea_spatial_find_cells_at_point(const alea_system_t* sys,
+int alea_spatial_find_cells_at_point(alea_system_t* sys,
                                     double x, double y, double z,
                                     alea_cell_hit_t* out_hits,
                                     size_t max_hits) {
@@ -955,7 +955,7 @@ int alea_spatial_find_cells_at_point(const alea_system_t* sys,
     return (int)hit_count;
 }
 
-int alea_spatial_find_cells_batch(const alea_system_t* sys,
+int alea_spatial_find_cells_batch(alea_system_t* sys,
                                   const double* points,
                                   size_t n_points,
                                   alea_cell_hit_t* out_hits,
@@ -966,7 +966,7 @@ int alea_spatial_find_cells_batch(const alea_system_t* sys,
 
     /* Ensure spatial index is built */
     if (!sys->spatial_index || !sys->spatial_index->built) {
-        if (alea_spatial_index_build((alea_system_t*)sys) != 0)
+        if (alea_spatial_index_build(sys) != 0)
             return -1;
     }
 

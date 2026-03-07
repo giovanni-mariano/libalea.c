@@ -89,7 +89,7 @@ static int *collect_unique(const int *arr, int count, int *out_num) {
  * Sampling
  * ============================================================================ */
 
-alea_mesh_result_t *alea_mesh_sample(const alea_system_t *sys,
+alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                              const alea_mesh_config_t *cfg) {
     if (!sys || !cfg) return NULL;
     if (cfg->nx <= 0 || cfg->ny <= 0 || cfg->nz <= 0) return NULL;
@@ -127,13 +127,12 @@ alea_mesh_result_t *alea_mesh_sample(const alea_system_t *sys,
         return NULL;
     }
 
-    /* Ensure indices are built (cast away const — same pattern as slice_api.c) */
-    alea_system_t *sys_mut = (alea_system_t *)sys;
-    if (!sys_mut->universe_index_built)
-        alea_build_universe_index(sys_mut);
-    if (!sys_mut->cell_adjacency_built)
-        alea_build_cell_adjacency(sys_mut);
-    alea_spatial_index_build(sys_mut);
+    /* Ensure indices are built */
+    if (!sys->universe_index_built)
+        alea_build_universe_index(sys);
+    if (!sys->cell_adjacency_built)
+        alea_build_cell_adjacency(sys);
+    alea_spatial_index_build(sys);
 
     /* Sample cell centers */
     int void_mat = cfg->void_material_id;
@@ -359,7 +358,7 @@ int alea_mesh_export(const alea_mesh_result_t *mesh,
     return rc;
 }
 
-int alea_mesh_export_system(const alea_system_t *sys,
+int alea_mesh_export_system(alea_system_t *sys,
                              const alea_mesh_config_t *cfg,
                              const char *filename) {
     if (!sys || !cfg || !filename) return -1;

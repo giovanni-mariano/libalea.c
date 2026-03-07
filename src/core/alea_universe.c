@@ -1570,7 +1570,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
     return 0;
 }
 
-int alea_find_all_cells_at_point(const alea_system_t* sys,
+int alea_find_all_cells_at_point(alea_system_t* sys,
                                 double x, double y, double z,
                                 alea_cell_hit_t* out_hits,
                                 size_t max_hits) {

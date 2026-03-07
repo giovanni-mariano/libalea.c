@@ -86,7 +86,7 @@ void alea_ray_init_normalized(alea_ray_t* ray,
  *
  * Call once before tracing rays. Avoids lazy-build warnings.
  */
-int alea_raycast_ensure_caches(const alea_system_t* sys);
+int alea_raycast_ensure_caches(alea_system_t* sys);
 
 /**
  * @brief Initialize raycast result (call before first use)
@@ -122,7 +122,7 @@ void alea_raycast_result_reserve(alea_raycast_result_t* result,
  * @param result Output: surface hits
  * @return 0 on success, -1 on error
  */
-int alea_raycast_surfaces(const alea_system_t* sys,
+int alea_raycast_surfaces(alea_system_t* sys,
                          const alea_ray_t* ray,
                          double t_min, double t_max,
                          alea_raycast_result_t* result);
@@ -134,7 +134,7 @@ int alea_raycast_surfaces(const alea_system_t* sys,
  * Use from tight loops (render, volume estimation) after calling
  * alea_raycast_ensure_caches() once up front.
  */
-int alea_raycast_surfaces_nocache(const alea_system_t* sys,
+int alea_raycast_surfaces_nocache(alea_system_t* sys,
                                   const alea_ray_t* ray,
                                   double t_min, double t_max,
                                   alea_raycast_result_t* result);
@@ -149,7 +149,7 @@ int alea_raycast_surfaces_nocache(const alea_system_t* sys,
  * @param result Raycast result (hits must be populated)
  * @return 0 on success, -1 on error
  */
-int alea_raycast_to_segments(const alea_system_t* sys,
+int alea_raycast_to_segments(alea_system_t* sys,
                             alea_raycast_result_t* result);
 
 /**
@@ -157,7 +157,7 @@ int alea_raycast_to_segments(const alea_system_t* sys,
  *
  * Convenience function that does alea_raycast_surfaces + alea_raycast_to_segments.
  */
-int alea_raycast(const alea_system_t* sys,
+int alea_raycast(alea_system_t* sys,
                 double ox, double oy, double oz,
                 double dx, double dy, double dz,
                 double t_max,
@@ -187,7 +187,7 @@ static inline void alea_ray_point_at(const alea_ray_t* ray, double t,
  * @param out_t Output: distance to first hit (if found)
  * @return Cell ID of first cell hit, or -1 if none
  */
-int alea_ray_first_cell(const alea_system_t* sys,
+int alea_ray_first_cell(alea_system_t* sys,
                        double ox, double oy, double oz,
                        double dx, double dy, double dz,
                        double t_max,
@@ -201,7 +201,7 @@ int alea_ray_first_cell(const alea_system_t* sys,
  *
  * @return 1 if occluded, 0 if clear
  */
-int alea_ray_is_occluded(const alea_system_t* sys,
+int alea_ray_is_occluded(alea_system_t* sys,
                         double ox, double oy, double oz,
                         double dx, double dy, double dz,
                         double t_max);
@@ -231,7 +231,7 @@ double alea_raycast_path_length(const alea_raycast_result_t* result,
  * @param result Output: cell segments
  * @return 0 on success, -1 on error
  */
-int alea_raycast_cell_aware(const alea_system_t* sys,
+int alea_raycast_cell_aware(alea_system_t* sys,
                            double ox, double oy, double oz,
                            double dx, double dy, double dz,
                            double t_max,

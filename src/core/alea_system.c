@@ -917,7 +917,7 @@ int alea_set_cell_fill(alea_system_t* sys, int cell_index, int fill_universe, in
 
 /* alea_cell_count, alea_universe_count defined in alea_public_api.c */
 
-alea_material_id_t alea_material_at_point(const alea_system_t* sys, double x, double y, double z) {
+alea_material_id_t alea_material_at_point(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return ALEA_MATERIAL_NONE;
 
     int cell_idx = alea_identify_cell_at_point(sys, x, y, z);
@@ -1113,13 +1113,13 @@ int alea_get_universe_cells(const alea_system_t* sys, int universe_id,
     return (int)count;
 }
 
-int alea_identify_cell_at_point(const alea_system_t* sys, double x, double y, double z) {
+int alea_identify_cell_at_point(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return -1;
 
     // Test all cells in base universe (universe 0)
     // If universe index not built, test all cells with universe_id == 0
     if (!sys->universe_index_built) {
-        if (alea_build_universe_index((alea_system_t*)sys) < 0) {
+        if (alea_build_universe_index(sys) < 0) {
             return -1;
         }
     }
@@ -1152,7 +1152,7 @@ int alea_identify_cell_at_point(const alea_system_t* sys, double x, double y, do
     return -1;  // In void
 }
 
-int alea_find_overlaps(const alea_system_t* sys, int* out_pairs, size_t max_pairs) {
+int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {
     if (!sys || !out_pairs || max_pairs == 0) return 0;
     
     size_t found = 0;

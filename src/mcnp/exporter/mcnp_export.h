@@ -30,7 +30,7 @@ typedef struct export_context export_context_t;
  * @param ctx Export context
  * @return 0 on success, -1 on error
  */
-int export_mcnp(const alea_system_t* sys, export_context_t* ctx);
+int export_mcnp(alea_system_t* sys, export_context_t* ctx);
 
 
 #endif /* MCNP_EXPORT_H */

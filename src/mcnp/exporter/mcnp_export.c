@@ -816,7 +816,7 @@ static int write_mcnp_surface(FILE* out,
  * MCNP EXPORT - MAIN FUNCTION
  * ============================================================================ */
 
-int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
+int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
     /* Reusable builder for section comments */
     mcnp_str_t cs;
     mcnp_str_init(&cs, &ctx->arena, 256, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
@@ -830,7 +830,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
     mcnp_str_reset(&cs);
 
     /* Assign surface IDs to primitives from expanded macrobodies */
-    alea_assign_missing_surface_ids((alea_system_t*)sys, ctx);
+    alea_assign_missing_surface_ids(sys, ctx);
 
     /* Build canonical surface map if deduplicating */
     if (ctx->deduplicate) {
@@ -839,7 +839,7 @@ int export_mcnp(const alea_system_t* sys, export_context_t* ctx) {
 
     /* Macrobody expansion when ALEA_EMIT_SURFACES policy is set */
     if (ctx->surface_policy == ALEA_EMIT_SURFACES) {
-        int expanded = alea_expand_macrobodies_tree_level((alea_system_t*)sys, ctx);
+        int expanded = alea_expand_macrobodies_tree_level(sys, ctx);
         if (expanded < 0) {
             ALEA_LOG_ERROR("Tree-level macrobody expansion failed");
             return -1;

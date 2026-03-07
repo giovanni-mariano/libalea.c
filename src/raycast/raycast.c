@@ -36,35 +36,34 @@
  * point so that OpenMP threads never race on lazy initialisation.
  * ============================================================================ */
 
-int alea_raycast_ensure_caches(const alea_system_t* sys) {
-    alea_system_t* m = (alea_system_t*)sys;
+int alea_raycast_ensure_caches(alea_system_t* sys) {
     int did_build = 0;
 
 #if !BVH_DISABLED
-    if (m->bvh_dirty ||
-        (m->surface_bvh &&
-         m->surface_bvh->surface_count != alea_vec_count(&sys->surfaces))) {
-        if (m->surface_bvh) {
-            alea_bvh_free(m->surface_bvh);
-            m->surface_bvh = NULL;
+    if (sys->bvh_dirty ||
+        (sys->surface_bvh &&
+         sys->surface_bvh->surface_count != alea_vec_count(&sys->surfaces))) {
+        if (sys->surface_bvh) {
+            alea_bvh_free(sys->surface_bvh);
+            sys->surface_bvh = NULL;
         }
         if (alea_vec_count(&sys->surfaces) > 0) {
-            m->surface_bvh = alea_bvh_build(sys);
+            sys->surface_bvh = alea_bvh_build(sys);
         }
-        m->bvh_dirty = false;
+        sys->bvh_dirty = false;
         did_build = 1;
     }
 #endif
 
-    if (!m->spatial_index || !m->spatial_index->built) {
-        alea_spatial_index_build(m);
+    if (!sys->spatial_index || !sys->spatial_index->built) {
+        alea_spatial_index_build(sys);
         did_build = 1;
     }
 
-    if (!m->cell_adjacency_built) {
+    if (!sys->cell_adjacency_built) {
         did_build = 1;
     }
-    alea_build_cell_adjacency(m);
+    alea_build_cell_adjacency(sys);
 
     return did_build;
 }
@@ -206,7 +205,7 @@ static void sort_hits(alea_ray_hit_t* hits, size_t count) {
 
 /* Context for BVH traversal callback */
 typedef struct {
-    const alea_system_t* sys;
+    alea_system_t* sys;
     const alea_ray_t* ray;
     double t_min;
     double t_max;
@@ -252,7 +251,7 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
 }
 
 /* Linear scan fallback (used when BVH not available) */
-static int raycast_surfaces_linear(const alea_system_t* sys,
+static int raycast_surfaces_linear(alea_system_t* sys,
                                    const alea_ray_t* ray,
                                    double t_min, double t_max,
                                    alea_raycast_result_t* result) {
@@ -288,7 +287,7 @@ static int raycast_surfaces_linear(const alea_system_t* sys,
 }
 
 /* Shared implementation: intersect, sort, dedup */
-static int raycast_surfaces_impl(const alea_system_t* sys,
+static int raycast_surfaces_impl(alea_system_t* sys,
                                   const alea_ray_t* ray,
                                   double t_min, double t_max,
                                   alea_raycast_result_t* result) {
@@ -329,7 +328,7 @@ static int raycast_surfaces_impl(const alea_system_t* sys,
     return 0;
 }
 
-int alea_raycast_surfaces(const alea_system_t* sys,
+int alea_raycast_surfaces(alea_system_t* sys,
                          const alea_ray_t* ray,
                          double t_min, double t_max,
                          alea_raycast_result_t* result) {
@@ -343,7 +342,7 @@ int alea_raycast_surfaces(const alea_system_t* sys,
     return raycast_surfaces_impl(sys, ray, t_min, t_max, result);
 }
 
-int alea_raycast_surfaces_nocache(const alea_system_t* sys,
+int alea_raycast_surfaces_nocache(alea_system_t* sys,
                                   const alea_ray_t* ray,
                                   double t_min, double t_max,
                                   alea_raycast_result_t* result) {
@@ -359,7 +358,7 @@ int alea_raycast_surfaces_nocache(const alea_system_t* sys,
  * @brief Find cell via neighbor lookup (O(1) when adjacency is built)
  * @return 1 if found, 0 if full lookup needed
  */
-static int raycast_find_neighbor(const alea_system_t* sys,
+static int raycast_find_neighbor(alea_system_t* sys,
                                  int current_cell_idx,
                                  int surface_id,
                                  int* out_cell_id, int* out_cell_idx,
@@ -384,7 +383,7 @@ static int raycast_find_neighbor(const alea_system_t* sys,
 /**
  * @brief Full cell lookup via point-in-cell search
  */
-static void raycast_find_cell_full(const alea_system_t* sys,
+static void raycast_find_cell_full(alea_system_t* sys,
                                    double px, double py, double pz,
                                    int* out_cell_id, int* out_cell_idx,
                                    int* out_material_id, double* out_density) {
@@ -414,7 +413,7 @@ static void raycast_find_cell_full(const alea_system_t* sys,
  * 2) Coherence check (O(tree_depth) — is point still in previous cell?)
  * 3) Full point-in-cell search (O(n_candidates) via spatial index)
  */
-static void find_cell_after_crossing(const alea_system_t* sys,
+static void find_cell_after_crossing(alea_system_t* sys,
                                      const alea_ray_t* ray,
                                      double t_prev, double t_curr,
                                      int prev_cell_idx,
@@ -462,7 +461,7 @@ static void find_cell_after_crossing(const alea_system_t* sys,
     }
 }
 
-int alea_raycast_to_segments(const alea_system_t* sys,
+int alea_raycast_to_segments(alea_system_t* sys,
                             alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
 
@@ -523,7 +522,7 @@ int alea_raycast_to_segments(const alea_system_t* sys,
  * Adds hits to result. Duplicates from shared surfaces are handled by
  * the global dedup pass after all hits are collected.
  */
-static void raycast_tree_primitives(const alea_system_t* sys,
+static void raycast_tree_primitives(alea_system_t* sys,
                                     const alea_ray_t* ray,
                                     alea_node_id_t node_id,
                                     double t_min, double t_max,
@@ -571,7 +570,7 @@ static void raycast_tree_primitives(const alea_system_t* sys,
  * The ray is in element-local coordinates (origin shifted by -element_center).
  * Since translation preserves t, hits can be added directly to the result.
  */
-static void raycast_universe_surfaces(const alea_system_t* sys,
+static void raycast_universe_surfaces(alea_system_t* sys,
                                       const alea_ray_t* local_ray,
                                       int universe_id,
                                       double t_min, double t_max,
@@ -594,7 +593,7 @@ static void raycast_universe_surfaces(const alea_system_t* sys,
  * Steps through elements along the ray, raycasting base universe surfaces
  * in each element's local coordinate system.
  */
-static void raycast_lattice_rect(const alea_system_t* sys,
+static void raycast_lattice_rect(alea_system_t* sys,
                                  const alea_ray_t* ray,
                                  const alea_cell_entry_t* lat_cell,
                                  double t_min, double t_max,
@@ -742,7 +741,7 @@ static void raycast_lattice_rect(const alea_system_t* sys,
  * surfaces in each element.  Uses 3-axis DDA on the oblique hex
  * coordinate system (fi, fj, fi+fj) to find element transitions.
  */
-static void raycast_lattice_hex(const alea_system_t* sys,
+static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_ray_t* ray,
                                 const alea_cell_entry_t* lat_cell,
                                 double t_min, double t_max,
@@ -910,7 +909,7 @@ static void raycast_lattice_hex(const alea_system_t* sys,
  * Add lattice surface hits for all lattice cells the ray may cross.
  * Called after alea_raycast_surfaces() and before sorting/dedup.
  */
-static void raycast_add_lattice_hits(const alea_system_t* sys,
+static void raycast_add_lattice_hits(alea_system_t* sys,
                                      const alea_ray_t* ray,
                                      double t_min, double t_max,
                                      alea_raycast_result_t* result) {
@@ -930,7 +929,7 @@ static void raycast_add_lattice_hits(const alea_system_t* sys,
  * CONVENIENCE FUNCTIONS
  * ============================================================================ */
 
-int alea_raycast(const alea_system_t* sys,
+int alea_raycast(alea_system_t* sys,
                 double ox, double oy, double oz,
                 double dx, double dy, double dz,
                 double t_max,
@@ -970,7 +969,7 @@ int alea_raycast(const alea_system_t* sys,
     return alea_raycast_to_segments(sys, result);
 }
 
-int alea_ray_first_cell(const alea_system_t* sys,
+int alea_ray_first_cell(alea_system_t* sys,
                        double ox, double oy, double oz,
                        double dx, double dy, double dz,
                        double t_max,
@@ -1000,7 +999,7 @@ int alea_ray_first_cell(const alea_system_t* sys,
     return first_cell;
 }
 
-int alea_ray_is_occluded(const alea_system_t* sys,
+int alea_ray_is_occluded(alea_system_t* sys,
                         double ox, double oy, double oz,
                         double dx, double dy, double dz,
                         double t_max) {
@@ -1087,7 +1086,7 @@ double alea_raycast_path_length(const alea_raycast_result_t* result,
  * Test ray against a specific cell's surfaces only.
  * Returns closest hit distance, or DBL_MAX if no hit.
  */
-static double raycast_cell_surfaces(const alea_system_t* sys,
+static double raycast_cell_surfaces(alea_system_t* sys,
                                     const alea_ray_t* ray,
                                     const alea_cell_entry_t* cell,
                                     double t_min, double t_max,
@@ -1125,7 +1124,7 @@ static double raycast_cell_surfaces(const alea_system_t* sys,
 /**
  * Find the cell at a point, returning cell index or -1 for void.
  */
-static int find_cell_at_point(const alea_system_t* sys,
+static int find_cell_at_point(alea_system_t* sys,
                               double px, double py, double pz,
                               int* out_material_id,
                               double* out_density) {
@@ -1152,7 +1151,7 @@ static int find_cell_at_point(const alea_system_t* sys,
  * Context for finding closest intersection during BVH traversal.
  */
 typedef struct {
-    const alea_system_t* sys;
+    alea_system_t* sys;
     const alea_ray_t* ray;
     double t_min;
     double closest_t;
@@ -1181,7 +1180,7 @@ static void find_closest_callback(uint32_t surface_idx, void* userdata) {
 /**
  * Find the closest surface intersection using BVH or linear scan.
  */
-static double find_closest_intersection(const alea_system_t* sys,
+static double find_closest_intersection(alea_system_t* sys,
                                         const alea_ray_t* ray,
                                         double t_min, double t_max,
                                         int* out_surface_id) {
@@ -1223,7 +1222,7 @@ static double find_closest_intersection(const alea_system_t* sys,
     return closest_t;
 }
 
-int alea_raycast_cell_aware(const alea_system_t* sys,
+int alea_raycast_cell_aware(alea_system_t* sys,
                            double ox, double oy, double oz,
                            double dx, double dy, double dz,
                            double t_max,
