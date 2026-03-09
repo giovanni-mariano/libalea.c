@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @file test_fendl.c
+ * @file test_fendl32c.c
  * @brief Test loading real FENDL-3.2c ACE data
  */
 
