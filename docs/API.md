@@ -2,7 +2,7 @@
 
 Every public function in Alea, grouped by what you're trying to do.
 
-**Headers**: `alea.h` (main), `alea_types.h` (types and constants), `alea_raycast.h` (ray tracing), `alea_slice.h` (visualization), `alea_render.h` (3D rendering), `alea_mesh.h` (mesh export), `alea_mcnp.h` (MCNP I/O), `alea_openmc.h` (OpenMC I/O).
+**Headers**: `alea.h` (main), `alea_types.h` (types and constants), `alea_raycast.h` (ray tracing), `alea_slice.h` (visualization), `alea_render.h` (3D rendering), `alea_mesh.h` (mesh export), `alea_mcnp.h` (MCNP I/O), `alea_openmc.h` (OpenMC I/O), `alea_nucdata.h` (nuclear data).
 
 **Conventions**:
 - Functions returning pointers return `NULL` on error
@@ -1896,3 +1896,309 @@ openmc_model_t* openmc_model_wrap(alea_system_t* sys);
 ```
 
 Create a non-owning wrapper around an existing system.
+
+---
+
+## Nuclear Data (`alea_nucdata.h`)
+
+Nuclear data module for ACE-format cross sections, reaction classification, and data decoding. All functions are declared in `alea_nucdata.h` with types in `alea_nucdata_types.h`. Energies are in MeV, cross sections in barns (microscopic) or cm⁻¹ (macroscopic). All functions are thread-safe for read-only access to loaded nuclides.
+
+All objects are user-owned — no hidden state or caches. The user loads an xsdir, loads nuclides from it, and frees them when done.
+
+```c
+alea_nuc_xsdir_t* xsdir = alea_nuc_xsdir_load("/path/to/xsdir");
+alea_nuc_nuclide_t* u235 = alea_nuc_load_nuclide(xsdir, "92235.80c");
+double sigma = alea_nuc_xs_total(u235, 1.0);
+alea_nuc_nuclide_free(u235);
+alea_nuc_xsdir_free(xsdir);
+```
+
+### Cross-Section Directory (xsdir)
+
+#### alea_nuc_xsdir_load
+
+```c
+alea_nuc_xsdir_t* alea_nuc_xsdir_load(const char* path);
+```
+
+Load an xsdir or xsdata file. Returns user-owned xsdir, or NULL on error.
+
+#### alea_nuc_xsdir_load_dir
+
+```c
+alea_nuc_xsdir_t* alea_nuc_xsdir_load_dir(const char* dirpath);
+```
+
+Load all `.xsd` files from a directory (FENDL-style per-nuclide xsdir). Returns user-owned xsdir, or NULL on error.
+
+#### alea_nuc_xsdir_free
+
+```c
+void alea_nuc_xsdir_free(alea_nuc_xsdir_t* xsdir);
+```
+
+Free an xsdir and all its entries.
+
+#### alea_nuc_xsdir_find
+
+```c
+const alea_nuc_xsdir_entry_t* alea_nuc_xsdir_find(const alea_nuc_xsdir_t* xsdir, const char* zaid);
+```
+
+Find an xsdir entry by ZAID string (e.g. `"92235.80c"`). Returns NULL if not found.
+
+#### alea_nuc_xsdir_count
+
+```c
+size_t alea_nuc_xsdir_count(const alea_nuc_xsdir_t* xsdir);
+```
+
+Number of entries in the loaded xsdir.
+
+### ACE Table I/O
+
+#### alea_nuc_ace_read
+
+```c
+alea_error_t alea_nuc_ace_read(const char* path, int address, int file_type, alea_nuc_ace_table_t* table);
+```
+
+Read raw ACE table from file. `file_type` is 1 (ASCII) or 2 (binary). `address` is the start line or byte offset.
+
+#### alea_nuc_ace_free
+
+```c
+void alea_nuc_ace_free(alea_nuc_ace_table_t* table);
+```
+
+Free ACE table internals. Does not free the struct itself.
+
+### Nuclide Loading
+
+#### alea_nuc_load_nuclide
+
+```c
+alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const char* zaid);
+```
+
+Load and decode a nuclide by ZAID. Caller owns the returned nuclide and must free it with `alea_nuc_nuclide_free()`.
+
+#### alea_nuc_nuclide_free
+
+```c
+void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc);
+```
+
+Free a nuclide and all its data.
+
+### Microscopic Cross Sections
+
+All take a nuclide pointer and energy in MeV, return barns.
+
+| Function | Description |
+|----------|-------------|
+| `alea_nuc_xs_total(nuc, energy)` | Total cross section |
+| `alea_nuc_xs_absorption(nuc, energy)` | Absorption cross section (capture + fission) |
+| `alea_nuc_xs_elastic(nuc, energy)` | Elastic scattering cross section |
+| `alea_nuc_xs_reaction(nuc, mt, energy)` | Cross section for a specific MT reaction number |
+| `alea_nuc_xs_heating(nuc, energy)` | Heating number (MeV-barn). Works for both neutron and photon nuclides |
+| `alea_nuc_heating_per_collision(nuc, energy)` | Average energy deposited per collision (MeV) = heating / sigma_total |
+
+### Photon Cross Sections
+
+Log-log interpolation on photoatomic data. Takes energy in MeV, returns barns.
+
+| Function | Description |
+|----------|-------------|
+| `alea_nuc_photon_xs_incoherent(nuc, energy)` | Compton (incoherent) scattering |
+| `alea_nuc_photon_xs_coherent(nuc, energy)` | Rayleigh (coherent) scattering |
+| `alea_nuc_photon_xs_photoelectric(nuc, energy)` | Photoelectric absorption |
+| `alea_nuc_photon_xs_pair(nuc, energy)` | Pair production (including triplet) |
+
+### Energy Grid Utilities
+
+#### alea_nuc_energy_lookup
+
+```c
+int alea_nuc_energy_lookup(const double* energy_grid, int n, double E, double* frac);
+```
+
+Binary search on an ascending energy grid. Returns index `i` where `grid[i] <= E < grid[i+1]` and interpolation fraction in `frac`. Returns -1 if out of range.
+
+#### alea_nuc_interp_loglog
+
+```c
+double alea_nuc_interp_loglog(const double* grid, const double* values, int n, double x);
+```
+
+Log-log interpolation on a grid. Falls back to lin-lin for zero or negative values.
+
+### URR Probability Tables
+
+#### alea_nuc_urr_factors
+
+```c
+int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi, double factors[5]);
+```
+
+Sample URR probability band using random number `xi`. Writes 5 multiplicative factors to `factors`: [total, elastic, fission, capture, heating]. Returns 1 if URR applies, 0 otherwise.
+
+### Material Composition
+
+#### alea_nuc_material_create
+
+```c
+alea_nuc_material_t* alea_nuc_material_create(void);
+```
+
+Create an empty material.
+
+#### alea_nuc_material_destroy
+
+```c
+void alea_nuc_material_destroy(alea_nuc_material_t* mat);
+```
+
+Free the material (does not free its nuclides).
+
+#### alea_nuc_material_add
+
+```c
+alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t* nuclide, double number_density);
+```
+
+Add a nuclide with number density in atoms/barn-cm.
+
+### Macroscopic Cross Sections
+
+Σ_macro = Σᵢ Nᵢ · σᵢ(E). Returns cm⁻¹.
+
+| Function | Description |
+|----------|-------------|
+| `alea_nuc_mat_xs_total(mat, energy)` | Macroscopic total cross section |
+| `alea_nuc_mat_xs_absorption(mat, energy)` | Macroscopic absorption cross section |
+| `alea_nuc_mat_xs_elastic(mat, energy)` | Macroscopic elastic cross section |
+| `alea_nuc_mean_free_path(mat, energy)` | Mean free path (cm) = 1 / Σ_total |
+| `alea_nuc_sample_distance(mat, energy, xi)` | Sample distance to next collision: −ln(1−ξ) / Σ_total |
+
+### Nuclide and Reaction Selection
+
+#### alea_nuc_sample_nuclide
+
+```c
+int alea_nuc_sample_nuclide(const alea_nuc_material_t* mat, double energy, double xi, alea_nuc_nuclide_t** out_nuclide);
+```
+
+Sample which nuclide is hit in a material. Returns component index.
+
+#### alea_nuc_sample_reaction
+
+```c
+int alea_nuc_sample_reaction(const alea_nuc_nuclide_t* nuc, double energy, double xi, int* out_mt);
+```
+
+Sample which reaction (MT) occurs on a nuclide. Returns reaction index (0 = elastic).
+
+### Reaction Classification
+
+| Function | Description |
+|----------|-------------|
+| `alea_nuc_reaction_classify(mt)` | Classify by MT number. Returns `ALEA_NUC_RXN_ABSORPTION`, `ALEA_NUC_RXN_SCATTER`, or `ALEA_NUC_RXN_MULTIPLY` |
+| `alea_nuc_reaction_yield(nuc, mt, energy)` | Average neutron yield for a reaction |
+
+### Fission
+
+#### alea_nuc_nu_bar
+
+```c
+double alea_nuc_nu_bar(const alea_nuc_nuclide_t* nuc, double energy);
+```
+
+Average number of neutrons per fission, ν̄(E). Supports polynomial and tabular representations.
+
+### Multigroup
+
+Collapse continuous-energy data into group constants.
+
+#### alea_nuc_mg_create
+
+```c
+alea_nuc_multigroup_t* alea_nuc_mg_create(int n_groups, const double* bounds);
+```
+
+Create multigroup structure. `bounds` has `n_groups+1` entries in descending order (MeV).
+
+#### alea_nuc_mg_destroy
+
+```c
+void alea_nuc_mg_destroy(alea_nuc_multigroup_t* mg);
+```
+
+Free multigroup data.
+
+#### alea_nuc_mg_collapse
+
+```c
+alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nuclide_t* nuc);
+```
+
+Collapse pointwise cross sections into group constants using 1/E flux weighting. Fills sigma_t, sigma_a, sigma_s, sigma_f, nu_sigma_f, chi, and the scattering matrix.
+
+#### alea_nuc_mg_scatter / alea_nuc_mg_scatter_adjoint
+
+```c
+double alea_nuc_mg_scatter(const alea_nuc_multigroup_t* mg, int g_from, int g_to);
+double alea_nuc_mg_scatter_adjoint(const alea_nuc_multigroup_t* mg, int g_from, int g_to);
+```
+
+Forward and adjoint (transposed) scattering transfer cross sections.
+
+#### alea_nuc_mg_sample_scatter
+
+```c
+int alea_nuc_mg_sample_scatter(const alea_nuc_multigroup_t* mg, int g_from, double xi, int adjoint);
+```
+
+Sample outgoing group from scattering CDF. Set `adjoint=1` for transposed matrix.
+
+### Doppler Broadening
+
+#### alea_nuc_doppler_broaden
+
+```c
+alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target);
+```
+
+Broaden cross sections in-place to temperature `kT_target` (MeV). Can only broaden to higher temperatures. Modifies total, absorption, elastic, heating, and per-reaction cross sections.
+
+### Utility
+
+#### alea_nuc_parse_zaid
+
+```c
+alea_error_t alea_nuc_parse_zaid(const char* zaid, int* Z, int* A, int* meta, alea_nuc_table_type_t* type);
+```
+
+Parse ZAID string (e.g. `"92235.80c"`) into atomic number, mass number, metastable state, and table type.
+
+#### alea_error_string
+
+```c
+const char* alea_error_string(alea_error_t err);
+```
+
+Human-readable error message for an error code.
+
+### Nuclear Data Error Codes
+
+| Code | Meaning |
+|------|---------|
+| `ALEA_OK` | Success |
+| `ALEA_ERR_NULL_ARG` | NULL pointer argument |
+| `ALEA_ERR_FILE_NOT_FOUND` | File does not exist |
+| `ALEA_ERR_FILE_READ` | I/O error reading file |
+| `ALEA_ERR_PARSE_ERROR` | Parse error in file format |
+| `ALEA_ERR_OUT_OF_MEMORY` | Memory allocation failure |
+| `ALEA_ERR_NOT_FOUND` | ZAID not found in xsdir |
+| `ALEA_ERR_INVALID_ARG` | Invalid data format |
+| `ALEA_ERR_UNSUPPORTED` | Unsupported operation (e.g. broadening to lower T) |

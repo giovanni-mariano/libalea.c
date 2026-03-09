@@ -386,12 +386,83 @@ The library is split into a core library and optional format modules:
 - **Core** (`libalea.a`): The complete geometry engine — CSG evaluation, tree operations, export framework, dedup, primitives, bounding boxes, raycast (BVH, ray-primitive intersection, segment building), slice (grid queries, analytical curve extraction, label positioning), render (3D batch renderer with Phong shading, shadow rays, cutaway views, OpenMP parallelized), and mesh export (structured hexahedral mesh sampling, Gmsh/VTK output).
 - **MCNP** (`libalea_mcnp.a`): Optional module. MCNP lexer, parser, cell/surface conversion, MCNP export formatting.
 - **OpenMC** (`libalea_openmc.a`): Optional module. OpenMC XML parsing and export.
+- **Nuclear Data** (`libalea_nucdata.a`): Optional module. ACE-format nuclear data reader, cross-section lookup, reaction classification, Doppler broadening, multigroup collapse.
 
-Link against `libalea.a` for everything except MCNP/OpenMC I/O. Add the format modules only if you need to read or write those formats. For convenience, `libalea_full.a` bundles everything (core + MCNP + OpenMC) into a single archive.
+Link against `libalea.a` for everything except format/physics modules. Add the format modules only if you need to read or write those formats. Add `libalea_nucdata.a` for nuclear data and transport physics. For convenience, `libalea_full.a` bundles everything (core + MCNP + OpenMC) into a single archive.
 
 The **Lua binding** layer (`src/lua_bind/`) wraps the public C API for the interactive CLI (`bin/alea`). It is compiled into the CLI binary, not shipped as a separate library.
 
-The source is organized by concern (`src/core/`, `src/primitives/`, `src/raycast/`, `src/slice/`, `src/render/`, `src/mesh/`, `src/util/`) but all compile into the single `libalea.a`. Only `src/mcnp/` and `src/openmc/` produce separate archives.
+The source is organized by concern (`src/core/`, `src/primitives/`, `src/raycast/`, `src/slice/`, `src/render/`, `src/mesh/`, `src/util/`) but all compile into the single `libalea.a`. Format modules (`src/mcnp/`, `src/openmc/`) and the nuclear data module (`src/nucdata/`) produce separate archives.
+
+## Nuclear Data Module
+
+The nuclear data module (`libalea_nucdata.a`) reads ACE nuclear data files and provides cross-section lookups, reaction classification, and data decoding. It sits between raw evaluated nuclear data and the geometry engine.
+
+```
+  xsdir/xsdata          ACE files (.c, .p)
+       |                      |
+       v                      v
+  +---------------+     +--------------+
+  | alea_nuc_xsdir|----->| ace_reader  |
+  +---------------+     +--------------+
+       |                      |
+       v                      v
+  +-----------------+    +------------+
+  | load_nuclide()  |--->| xs_decode  |
+  +-----------------+    +------------+
+                               |
+              +----------+     |
+              | nuclide  |<----+
+              +----------+
+              /    |    \
+             v     v     v
+         lookup  reaction  material
+```
+
+### Source Organization
+
+| File | Role |
+|------|------|
+| `alea_nucdata.h` | Public API header |
+| `alea_nucdata_types.h` | Type definitions — structs, enums, constants |
+| `nuclear_internal.h` | Internal helpers shared between source files (not public) |
+| `constants.h` | Physical and algorithmic constants |
+| `context.c` | ZAID parsing, nuclide free |
+| `ace_reader.c` | Read ACE files — Type 1 (ASCII) and Type 2 (binary) |
+| `xsdir.c` | Parse xsdir/xsdata directory files |
+| `xs_decode.c` | Decode XSS array into nuclide structure: ESZ, SIG, NU, URR, photon blocks |
+| `angular.c` | Decode angular distributions from ACE AND block |
+| `energy_dist.c` | Decode energy distributions from ACE DLW block (Laws 3, 4, 7, 9, 11, 44, 61, 66) |
+| `lookup.c` | Energy grid binary search, cross-section interpolation, URR factors, photon XS |
+| `reaction.c` | Reaction classification, neutron yield (TYR), ν̄ evaluation |
+| `material.c` | Material composition, macroscopic cross sections, nuclide/reaction sampling |
+| `multigroup.c` | Collapse pointwise data to multigroup constants |
+| `doppler.c` | On-the-fly Doppler broadening with exact kernel |
+
+### Data Pipeline
+
+**1. Loading: xsdir → ACE → nuclide.** The user first loads an xsdir file, which maps ZAID strings like `"92235.80c"` to ACE file paths and byte offsets. Then `alea_nuc_load_nuclide` reads the ACE file and decodes the physics.
+
+ACE tables use Fortran-style 1-based indexing throughout. The NXS array (16 ints) gives table dimensions, the JXS array (32 ints) gives block locators into the XSS data array. The internal `xss()` helper converts 1-based indices to 0-based with bounds checking.
+
+**2. Decode: XSS blocks.** `xs_decode.c` extracts physics blocks — ESZ (energy grid + principal cross sections), SIG (non-elastic reactions), NU (fission nu-bar), photon data, and URR probability tables. After decoding, an MT-to-reaction lookup table is built for O(1) reaction finding. Angular and energy distributions are decoded lazily on first collision sample.
+
+**3. Runtime: lookups and sampling.** All cross-section lookups start with a binary search on the nuclide's energy grid. Reaction sampling does one O(log N) search then walks all reaction cross sections using direct sub-grid indexing — no per-reaction binary search. This is the hot path in transport.
+
+### Key Design Decisions
+
+- **Flat arrays, not trees**: cross sections are flat `double*` arrays indexed by the energy grid. Cache-friendly sequential access, simple interpolation, no pointer chasing.
+- **MT lookup table**: 1000-element table maps MT directly to reaction index. 4 KB cost, O(1) lookup.
+- **Log-space photon storage**: pre-stored `ln(energy)` and `ln(sigma)` arrays. Runtime interpolation is linear in log space + one `exp()` — ~3x faster than naive log-log.
+- **Bounds-checked XSS access**: all access goes through `xss()`, `xss_int()`, `xss_copy()` helpers that validate indices.
+- **User-owned objects**: no hidden context or cache. The user loads an xsdir, loads nuclides from it, and frees them when done. Multiple xsdir files can coexist.
+
+### Performance
+
+- **Single binary search** per collision event for reaction sampling
+- **Sub-grid indexing**: each reaction's threshold offset converts main-grid index to sub-array index without additional searches
+- **Doppler broadening**: O(N × W) where W is the local integration window width (~50-200 points at room temperature)
+- **Memory**: loaded nuclide dominated by XSS array (0.5-5 MB for neutron tables). Decoded structures add ~30-50% overhead.
 
 ## See Also
 

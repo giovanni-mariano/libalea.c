@@ -63,6 +63,7 @@ MCNP_EXPO_DIR = $(SRC_DIR)/mcnp/exporter
 MCNP_MODEL_DIR = $(SRC_DIR)/mcnp
 
 OPENMC_DIR = $(SRC_DIR)/openmc
+NUCDATA_DIR = $(SRC_DIR)/nucdata
 RAYCAST_DIR = $(SRC_DIR)/raycast
 SLICE_DIR = $(SRC_DIR)/slice
 RENDER_DIR = $(SRC_DIR)/render
@@ -116,7 +117,8 @@ UTIL_SRCS = \
 	$(UTIL_DIR)/str_builder.c \
 	$(UTIL_DIR)/alea_log.c \
 	$(UTIL_DIR)/poly_solve.c \
-	$(UTIL_DIR)/compat.c
+	$(UTIL_DIR)/compat.c \
+	$(UTIL_DIR)/alea_svg.c
 
 # Primitives
 PRIMITIVES_SRCS = \
@@ -150,6 +152,21 @@ MCNP_EXPO_SRCS = \
 
 MCNP_MODEL_SRCS = \
 	$(MCNP_MODEL_DIR)/mcnp_model.c
+
+# Nuclear data module
+NUCDATA_SRCS = \
+	$(NUCDATA_DIR)/context.c \
+	$(NUCDATA_DIR)/ace_reader.c \
+	$(NUCDATA_DIR)/xsdir.c \
+	$(NUCDATA_DIR)/xs_decode.c \
+	$(NUCDATA_DIR)/lookup.c \
+	$(NUCDATA_DIR)/material.c \
+	$(NUCDATA_DIR)/reaction.c \
+	$(NUCDATA_DIR)/angular.c \
+	$(NUCDATA_DIR)/energy_dist.c \
+	$(NUCDATA_DIR)/doppler.c \
+	$(NUCDATA_DIR)/multigroup.c \
+	$(NUCDATA_DIR)/material_bridge.c
 
 OPENMC_EXPO_SRCS = \
 	$(OPENMC_DIR)/openmc_xml.c \
@@ -220,6 +237,7 @@ MCNP_GEOM_OBJS = $(MCNP_GEOM_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_CONV_OBJS = $(MCNP_CONV_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_EXPO_OBJS = $(MCNP_EXPO_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_MODEL_OBJS = $(MCNP_MODEL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+NUCDATA_OBJS = $(NUCDATA_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 OPENMC_EXPO_OBJS = $(OPENMC_EXPO_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 OPENMC_PARSE_OBJS = $(OPENMC_PARSE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 OPENMC_MODEL_OBJS = $(OPENMC_MODEL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
@@ -253,6 +271,7 @@ LIB_CORE = $(BIN_DIR)/libalea.a
 # Format modules (optional)
 LIB_MCNP = $(BIN_DIR)/libalea_mcnp.a
 LIB_OPENMC = $(BIN_DIR)/libalea_openmc.a
+LIB_NUCDATA = $(BIN_DIR)/libalea_nucdata.a
 
 # Full library (everything)
 LIB = $(BIN_DIR)/libalea_full.a
@@ -285,7 +304,7 @@ all: lib-core
 lib-core: structure $(LIB_CORE)
 
 # Build optional format modules
-modules: structure $(LIB_MCNP) $(LIB_OPENMC)
+modules: structure $(LIB_MCNP) $(LIB_OPENMC) $(LIB_NUCDATA)
 
 # Build everything (core + modules + full archive)
 full: lib-core modules $(LIB)
@@ -307,6 +326,7 @@ tests: lib-core modules $(ALL_TEST_BINS)
 
 # Directory creation rules (order-only prerequisites for parallel safety)
 BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
+	$(BUILD_DIR)/nucdata \
 	$(BUILD_DIR)/mcnp/parser $(BUILD_DIR)/mcnp/geometry $(BUILD_DIR)/mcnp/conversion \
 	$(BUILD_DIR)/mcnp/exporter $(BUILD_DIR)/mcnp $(BUILD_DIR)/openmc \
 	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
@@ -333,6 +353,12 @@ $(LIB_MCNP): $(MCNP_MODULE_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
 	@ar rcs $@ $^
 	@echo "✓ Built MCNP module: $@"
+
+# Nuclear data module (optional)
+$(LIB_NUCDATA): $(NUCDATA_OBJS) | $(BIN_DIR)
+	@echo "AR  $@"
+	@ar rcs $@ $^
+	@echo "✓ Built nucdata module: $@"
 
 # OpenMC module (optional)
 $(LIB_OPENMC): $(OPENMC_MODULE_OBJS) | $(BIN_DIR)
@@ -389,6 +415,11 @@ $(BUILD_DIR)/mcnp/%.o: $(MCNP_MODEL_DIR)/%.c | $(BUILD_DIR)/mcnp
 
 # OpenMC
 $(BUILD_DIR)/openmc/%.o: $(OPENMC_DIR)/%.c | $(BUILD_DIR)/openmc
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Nuclear data
+$(BUILD_DIR)/nucdata/%.o: $(NUCDATA_DIR)/%.c | $(BUILD_DIR)/nucdata
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
@@ -465,12 +496,12 @@ $(BUILD_DIR)/linenoise/linenoise.o: $(LINENOISE_DIR)/linenoise.c | $(BUILD_DIR)/
 # Platform-specific whole-archive flags for format modules
 CLI_UNAME_S := $(shell uname -s)
 ifeq ($(CLI_UNAME_S),Darwin)
-  CLI_LIBS = -Wl,-force_load,$(LIB_MCNP) -Wl,-force_load,$(LIB_OPENMC) $(LIB_CORE)
+  CLI_LIBS = -Wl,-force_load,$(LIB_MCNP) -Wl,-force_load,$(LIB_OPENMC) -Wl,-force_load,$(LIB_NUCDATA) $(LIB_CORE)
 else
-  CLI_LIBS = -Wl,--whole-archive $(LIB_MCNP) $(LIB_OPENMC) -Wl,--no-whole-archive $(LIB_CORE)
+  CLI_LIBS = -Wl,--whole-archive $(LIB_MCNP) $(LIB_OPENMC) $(LIB_NUCDATA) -Wl,--no-whole-archive $(LIB_CORE)
 endif
 
-$(ALEA_CLI): $(LUA_BIND_DIR)/lua_main.c $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) | $(BIN_DIR)
+$(ALEA_CLI): $(LUA_BIND_DIR)/lua_main.c $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_NUCDATA) | $(BIN_DIR)
 	@echo "LD  $@"
 	@$(CC) $(CFLAGS) $(INCLUDES) -I$(LUA_DIR) $(LINENOISE_INC) $< $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) \
 		$(CLI_LIBS) $(CLI_LDFLAGS) -o $@
@@ -487,18 +518,18 @@ TEST_CFLAGS = $(filter-out -DNDEBUG,$(CFLAGS))
 # Platform-specific whole-archive flags for format modules
 TEST_UNAME_S := $(shell uname -s)
 ifeq ($(TEST_UNAME_S),Darwin)
-  TEST_LIBS = -Wl,-force_load,$(LIB_MCNP) -Wl,-force_load,$(LIB_OPENMC) $(LIB_CORE)
+  TEST_LIBS = -Wl,-force_load,$(LIB_MCNP) -Wl,-force_load,$(LIB_OPENMC) -Wl,-force_load,$(LIB_NUCDATA) $(LIB_CORE)
 else
-  TEST_LIBS = -Wl,--whole-archive $(LIB_MCNP) $(LIB_OPENMC) -Wl,--no-whole-archive $(LIB_CORE)
+  TEST_LIBS = -Wl,--whole-archive $(LIB_MCNP) $(LIB_OPENMC) $(LIB_NUCDATA) -Wl,--no-whole-archive $(LIB_CORE)
 endif
 
 # Unit tests
-$(BIN_DIR)/tests/unit/%: $(UNIT_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) | $(BIN_DIR)/tests/unit
+$(BIN_DIR)/tests/unit/%: $(UNIT_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_NUCDATA) | $(BIN_DIR)/tests/unit
 	@echo "LD  $@"
 	@$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) $< $(TEST_LIBS) $(LDFLAGS) -o $@
 
 # Integration tests
-$(BIN_DIR)/tests/integration/%: $(INTEGRATION_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) | $(BIN_DIR)/tests/integration
+$(BIN_DIR)/tests/integration/%: $(INTEGRATION_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_NUCDATA) | $(BIN_DIR)/tests/integration
 	@echo "LD  $@"
 	@$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) $< $(TEST_LIBS) $(LDFLAGS) -o $@
 

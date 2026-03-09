@@ -20,6 +20,7 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <dirent.h>
 #endif
 
 char* alea_strdup(const char* s) {
@@ -76,3 +77,85 @@ int alea_strncasecmp(const char* s1, const char* s2, size_t n) {
     }
     return 0;
 }
+
+/* --- Portable directory iteration --- */
+
+#ifdef _WIN32
+
+struct alea_dir {
+    HANDLE handle;
+    WIN32_FIND_DATAA data;
+    bool first;
+};
+
+alea_dir_t* alea_dir_open(const char* path) {
+    if (!path) return NULL;
+
+    /* Build search pattern: path\* */
+    size_t len = strlen(path);
+    char* pattern = malloc(len + 3);
+    if (!pattern) return NULL;
+    memcpy(pattern, path, len);
+    /* Normalize trailing separator */
+    if (len > 0 && path[len - 1] != '\\' && path[len - 1] != '/')
+        pattern[len++] = '\\';
+    pattern[len] = '*';
+    pattern[len + 1] = '\0';
+
+    alea_dir_t* dir = malloc(sizeof(*dir));
+    if (!dir) { free(pattern); return NULL; }
+
+    dir->handle = FindFirstFileA(pattern, &dir->data);
+    free(pattern);
+    if (dir->handle == INVALID_HANDLE_VALUE) { free(dir); return NULL; }
+
+    dir->first = true;
+    return dir;
+}
+
+const char* alea_dir_next(alea_dir_t* dir) {
+    if (!dir) return NULL;
+    if (dir->first) {
+        dir->first = false;
+        return dir->data.cFileName;
+    }
+    if (FindNextFileA(dir->handle, &dir->data))
+        return dir->data.cFileName;
+    return NULL;
+}
+
+void alea_dir_close(alea_dir_t* dir) {
+    if (!dir) return;
+    FindClose(dir->handle);
+    free(dir);
+}
+
+#else /* POSIX */
+
+struct alea_dir {
+    DIR* dp;
+};
+
+alea_dir_t* alea_dir_open(const char* path) {
+    if (!path) return NULL;
+    DIR* dp = opendir(path);
+    if (!dp) return NULL;
+    alea_dir_t* dir = malloc(sizeof(*dir));
+    if (!dir) { closedir(dp); return NULL; }
+    dir->dp = dp;
+    return dir;
+}
+
+const char* alea_dir_next(alea_dir_t* dir) {
+    if (!dir) return NULL;
+    struct dirent* de = readdir(dir->dp);
+    return de ? de->d_name : NULL;
+}
+
+void alea_dir_close(alea_dir_t* dir) {
+    if (!dir) return;
+    closedir(dir->dp);
+    free(dir);
+}
+
+#endif /* _WIN32 */

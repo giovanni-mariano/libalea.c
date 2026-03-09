@@ -20,6 +20,7 @@ LIBS_CORE = ../../bin/libalea.a $(OPENMP_FLAGS) -lm
 LIBS_MCNP = -Wl,--whole-archive ../../bin/libalea_mcnp.a -Wl,--no-whole-archive
 LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-archive
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
+LIBS_NUCDATA = ../../bin/libalea_nucdata.a $(LIBS_CORE)
 
 EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo
 

@@ -477,3 +477,175 @@ Error codes are defined in `alea_types.h` as the `alea_error_t` enum:
 | 15 | `ALEA_ERR_NOT_FOUND` | Item not found |
 | 16 | `ALEA_ERR_EMPTY` | Collection is empty |
 | 17 | `ALEA_ERR_OVERFLOW` | Buffer too small, result truncated |
+
+---
+
+## Nuclear Data Concepts
+
+This section explains the nuclear physics and data format concepts behind the nuclear data module (`libalea_nucdata.a`).
+
+### The ACE Format
+
+ACE (A Compact ENDF) is the standard data format for Monte Carlo transport codes. It originated at Los Alamos for MCNP and is now used by OpenMC, Serpent, and others. An ACE file encodes everything a transport code needs about a nuclide: energy grids, cross sections, angular distributions, energy distributions, fission data, and more.
+
+Each ACE table is identified by a ZAID string like `92235.80c`:
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `92235` | ZZAAA | Z=92 (uranium), A=235 |
+| `.80c` | .LLt | Library 80, continuous-energy neutron |
+
+The suffix letter identifies the table type:
+
+| Suffix | Type | Description |
+|--------|------|-------------|
+| `.c` | Continuous-energy neutron | Full energy-dependent neutron interactions |
+| `.p` | Photoatomic | Photon interactions with atoms |
+| `.u` | Photonuclear | Photon-induced nuclear reactions |
+| `.t` | Thermal S(α,β) | Bound-atom scattering at low energies |
+| `.e` | Electron | Electron/positron interactions |
+
+The module supports `.c` and `.p` tables.
+
+Each ACE table has three index structures:
+
+- **NXS[16]**: Table dimensions — energy grid size, number of reactions, etc.
+- **JXS[32]**: Block locators — byte offsets into the XSS data array.
+- **XSS[N]**: The data itself — a flat array of doubles containing all physics data.
+
+All indices are **1-based** (Fortran convention). The library converts to 0-based internally.
+
+Key blocks for neutron tables:
+
+| Block | JXS index | Contents |
+|-------|-----------|----------|
+| ESZ | JXS[1] | Energy grid, σ_total, σ_abs, σ_elastic, heating |
+| NU | JXS[2] | ν̄ (neutrons per fission) |
+| MTR | JXS[3] | MT reaction numbers for non-elastic reactions |
+| SIG | JXS[7] | Non-elastic reaction cross sections |
+| AND | JXS[8] | Angular distributions |
+| DLW | JXS[11] | Energy distributions (outgoing spectra) |
+| URR | JXS[23] | Unresolved resonance probability tables |
+
+### The xsdir File
+
+A transport code doesn't read ACE files directly by name. Instead, an **xsdir** (cross-section directory) file maps ZAIDs to file locations:
+
+```
+92235.80c  235.043930  endf80/092_U_235.ace  0  1  1  85947  0  0  2.5301E-08
+```
+
+Fields: ZAID, atomic weight ratio, filename, access route, file type (1=ASCII, 2=binary), address, table length, record length, entries per record, temperature (kT in MeV).
+
+### Cross Sections
+
+A **cross section** σ(E) gives the probability of a nuclear reaction per unit path length per target atom. Units: barns (1 barn = 10⁻²⁴ cm²).
+
+The ACE ESZ block provides four principal cross sections on a common energy grid:
+
+- **σ_total**: Sum of all interactions. Determines collision rate.
+- **σ_absorption**: Reactions that remove the neutron (capture, fission, etc.).
+- **σ_elastic**: Elastic scattering — neutron bounces off nucleus.
+- **heating**: Energy deposited per collision (MeV-barn).
+
+Each non-elastic reaction has an MT number from the ENDF convention:
+
+| MT | Reaction | Class |
+|----|----------|-------|
+| 2 | Elastic scattering | Scatter |
+| 16 | (n,2n) | Multiply |
+| 17 | (n,3n) | Multiply |
+| 18 | Total fission | Multiply |
+| 51-91 | Inelastic levels and continuum | Scatter |
+| 102 | Radiative capture (n,γ) | Absorption |
+| 103 | (n,p) proton emission | Absorption |
+| 107 | (n,α) | Absorption |
+
+Reaction cross sections are stored on **sub-grids**: each reaction's XS array starts at its energy threshold and shares indices with the main grid above that threshold.
+
+#### Interpolation
+
+Neutron cross sections use **linear-linear** interpolation between grid points. Photon cross sections use **log-log** interpolation:
+
+```
+Linear:   σ(E) = σᵢ + f · (σᵢ₊₁ - σᵢ),      f = (E - Eᵢ) / (Eᵢ₊₁ - Eᵢ)
+Log-log:  σ(E) = σᵢ · (σᵢ₊₁/σᵢ)^g,           g = ln(E/Eᵢ) / ln(Eᵢ₊₁/Eᵢ)
+```
+
+### Elastic Scattering Kinematics
+
+When a neutron of energy E scatters elastically off a nucleus with atomic weight ratio A:
+
+- **Minimum outgoing energy**: E_out = α·E, where α = ((A−1)/(A+1))²
+- **Maximum outgoing energy**: E_out = E (glancing collision)
+
+For hydrogen (A=1), α = 0 — a neutron can lose all its energy in one collision. For uranium (A=238), α = 0.983 — very little energy loss per collision.
+
+### Angular Distributions
+
+The AND block provides angular distributions at discrete incident energies in three formats:
+
+1. **Isotropic**: μ_cm uniform on [−1, 1]
+2. **Equiprobable bins**: 32 cosine values dividing [−1, 1] into equal-probability bins
+3. **Tabular**: Full PDF and CDF on a cosine grid with CDF inversion
+
+At runtime, the library uses stochastic interpolation between the two bracketing incident energies.
+
+### Energy Distributions
+
+The DLW block encodes outgoing energy distributions using several "laws":
+
+| Law | Name | Use |
+|-----|------|-----|
+| 3 | Level scattering | Discrete inelastic levels |
+| 4 | Continuous tabular | General-purpose tabulated spectra |
+| 7 | Maxwell fission | Fission spectrum (simple) |
+| 9 | Evaporation | Neutron evaporation from compound nucleus |
+| 11 | Watt fission | Watt spectrum: χ(E) ∼ exp(−E/a) · sinh(√(bE)) |
+| 44 | Kalbach-Mann | Tabular energy with Kalbach angular |
+| 61 | Correlated energy-angle | Tabular with per-bin angular distributions |
+| 66 | N-body phase space | Multi-body breakup |
+
+### Fission
+
+Fissile nuclides have special data:
+
+- **ν̄(E)**: average neutrons per fission. ~2.4 for U-235 thermal, rising to ~4 at 10 MeV. Stored as polynomial or tabular.
+- **Fission spectrum χ(E)**: energy distribution of emitted neutrons. Common model is the Watt spectrum: χ(E) ∼ exp(−E/a) · sinh(√(bE)).
+
+### Photon Interactions
+
+Photoatomic tables (`.p` suffix) contain four interaction types:
+
+- **Compton (incoherent) scattering — MT 504**: photon scatters off electron, losing energy. Klein-Nishina cross section with composition-rejection sampling.
+- **Rayleigh (coherent) scattering — MT 502**: elastic scattering off atom, no energy change. Angular distribution from atomic form factor F(q,Z).
+- **Photoelectric absorption — MT 522**: photon fully absorbed. Dominant below ~100 keV.
+- **Pair production — MT 516**: above 1.022 MeV, photon converts to electron-positron pair. Two 0.511 MeV annihilation photons created.
+
+### Unresolved Resonance Region (URR)
+
+In the unresolved resonance region (typically 1 keV to 1 MeV for heavy nuclides), individual resonances are too dense to resolve. **Probability tables** encode the statistical distribution of cross-section values. A random number selects a band giving multiplicative factors for total, elastic, fission, capture, and heating cross sections, preserving self-shielding effects.
+
+### Doppler Broadening
+
+Cross sections at temperature T₀ must be adjusted for temperature T > T₀. The thermal motion of target nuclei smears resonance peaks:
+
+```
+σ_D(E) = 1/(y√π) · ∫ y'·σ(E')·[exp(−(y'−y)²) − exp(−(y'+y)²)] dy'
+```
+
+where y = √(AWR·E/ΔkT) and ΔkT = kT_new − kT_old. Broadening can only increase temperature.
+
+### Multigroup Cross Sections
+
+Multigroup methods discretize the energy variable into G groups with boundaries in descending order. Group-averaged cross sections:
+
+```
+σ_g = ∫σ(E)·φ(E)dE / ∫φ(E)dE
+```
+
+The module uses 1/E weighting (φ(E) ∼ 1/E). The scattering transfer matrix, fission spectrum χ[g], and adjoint scattering matrix are all computed during collapse.
+
+### Nuclear Materials
+
+A material is a mixture of nuclides, each with a number density Nᵢ in atoms/barn-cm. Macroscopic cross section: Σ(E) = Σᵢ Nᵢ · σᵢ(E). Mean free path: λ = 1/Σ. Distance to next collision: s = −ln(1−ξ)/Σ_total(E).

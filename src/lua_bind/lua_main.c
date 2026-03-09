@@ -104,7 +104,6 @@ static void inject_param(lua_State* L, const char* kv) {
  * ============================================================================ */
 
 static void create_arg_table(lua_State* L, int argc, char** argv, int script_idx) {
-    lua_getglobal(L, "alea");
     lua_newtable(L);
     if (script_idx < argc) {
         lua_pushstring(L, argv[script_idx]);
@@ -114,8 +113,16 @@ static void create_arg_table(lua_State* L, int argc, char** argv, int script_idx
         lua_pushstring(L, argv[i]);
         lua_rawseti(L, -2, i - script_idx);
     }
+
+    /* Set as global 'arg' (standard Lua convention) */
+    lua_pushvalue(L, -1);
+    lua_setglobal(L, "arg");
+
+    /* Also set as alea.arg */
+    lua_getglobal(L, "alea");
+    lua_pushvalue(L, -2);
     lua_setfield(L, -2, "arg");
-    lua_pop(L, 1);
+    lua_pop(L, 2); /* pop alea table and original table */
 }
 
 /* ============================================================================

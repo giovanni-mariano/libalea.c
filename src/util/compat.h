@@ -13,6 +13,7 @@
 #ifndef ALEA_COMPAT_H
 #define ALEA_COMPAT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 
@@ -48,5 +49,29 @@ int alea_strncasecmp(const char* s1, const char* s2, size_t n);
  */
 FILE* alea_tmpfile(char* path_out);
 
+/**
+ * @brief Opaque directory handle for portable directory iteration
+ */
+typedef struct alea_dir alea_dir_t;
+
+/**
+ * @brief Open a directory for iteration
+ * @param path Directory path
+ * @return Handle, or NULL on failure
+ */
+alea_dir_t* alea_dir_open(const char* path);
+
+/**
+ * @brief Read the next entry name from an open directory
+ * @param dir Handle from alea_dir_open
+ * @return Entry name (valid until next call or close), or NULL when done
+ */
+const char* alea_dir_next(alea_dir_t* dir);
+
+/**
+ * @brief Close a directory handle
+ * @param dir Handle from alea_dir_open
+ */
+void alea_dir_close(alea_dir_t* dir);
 
 #endif /* ALEA_COMPAT_H */
