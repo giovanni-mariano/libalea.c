@@ -42,11 +42,11 @@ typedef struct alea_system alea_system_t;
  */
 typedef struct {
     uint32_t cell_index;       /* Index in sys->cells */
-    alea_matrix_t transform;    /* Transform from cell-local to global coords */
     alea_bbox_t global_bbox;    /* Bounding box in global coordinates */
     int universe_id;           /* Universe this instance belongs to */
     int depth;                 /* Nesting depth (0 = base universe) */
     bool is_terminal;          /* True if no FILL (actual geometry) */
+    uint32_t transform_index;  /* Index into spatial_index->transforms */
     uint32_t parent_cell_index; /* Index of parent FILL cell (UINT32_MAX if none) */
 } alea_cell_instance_t;
 
@@ -68,6 +68,7 @@ typedef struct {
 
 ALEA_VEC_DEFINE(alea_cell_instance_vec, alea_cell_instance_t);
 ALEA_VEC_DEFINE(alea_spatial_node_vec, alea_spatial_node_t);
+ALEA_VEC_DEFINE(alea_matrix_vec, alea_matrix_t);
 
 /**
  * @brief Spatial index over cell instances
@@ -75,6 +76,7 @@ ALEA_VEC_DEFINE(alea_spatial_node_vec, alea_spatial_node_t);
 typedef struct alea_spatial_index {
     /* Cell instances (flattened bboxes, not geometry) */
     alea_cell_instance_vec_t instances;
+    alea_matrix_vec_t transforms;
 
     /* BVH over instances */
     alea_spatial_node_vec_t nodes;

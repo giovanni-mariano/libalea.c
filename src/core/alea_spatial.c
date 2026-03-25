@@ -125,6 +125,20 @@ static int ensure_instance_capacity(alea_spatial_index_t* idx, size_t needed) {
     return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
+static int ensure_transform_capacity(alea_spatial_index_t* idx, size_t needed) {
+    size_t min_cap = idx->transforms.count + needed;
+    if (min_cap <= idx->transforms.capacity) return 0;
+    alea_result_t res = alea_vec_reserve(&idx->transforms, min_cap, alea_matrix_t);
+    return ALEA_IS_ERR(res) ? -1 : 0;
+}
+
+static const alea_matrix_t* spatial_instance_transform(const alea_spatial_index_t* idx,
+                                                       const alea_cell_instance_t* inst) {
+    if (!idx || !inst) return NULL;
+    if (inst->transform_index >= idx->transforms.count) return NULL;
+    return &idx->transforms.data[inst->transform_index];
+}
+
 /**
  * Compute bbox for a cell by examining its CSG tree
  */
@@ -268,9 +282,23 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
         }
 
         /* Add instance */
-        if (ensure_instance_capacity(ctx->idx, 1) != 0) {
+        if (ensure_instance_capacity(ctx->idx, 1) != 0 ||
+            ensure_transform_capacity(ctx->idx, 1) != 0) {
             ctx->error = -1;
             return;
+        }
+
+        uint32_t transform_index = (uint32_t)ctx->idx->transforms.count;
+        alea_matrix_t* transform = alea_vec_push_uninit(&ctx->idx->transforms, alea_matrix_t);
+        if (!transform) {
+            ctx->error = -1;
+            return;
+        }
+
+        if (accumulated) {
+            *transform = *accumulated;
+        } else {
+            alea_matrix_identity(transform);
         }
 
         alea_cell_instance_t* inst = &ctx->idx->instances.data[ctx->idx->instances.count++];
@@ -279,13 +307,8 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
         inst->universe_id = universe_id;
         inst->depth = depth;
         inst->is_terminal = (cell->fill_universe <= 0);
+        inst->transform_index = transform_index;
         inst->parent_cell_index = parent_cell_idx;
-
-        if (accumulated) {
-            inst->transform = *accumulated;
-        } else {
-            alea_matrix_identity(&inst->transform);
-        }
 
         /* Update global bounds */
         ctx->idx->bounds = alea_bbox_union(&ctx->idx->bounds, &global_bbox);
@@ -538,7 +561,10 @@ static int build_bvh(alea_spatial_index_t* idx) {
 static int spatial_index_build_impl(alea_system_t* sys) {
     double t_start = monotonic_seconds();
 
+    ALEA_LOG_INFO("Spatial index phase: start");
+
     /* Ensure universe index is built */
+    ALEA_LOG_INFO("Spatial index phase: ensure universe index");
     if (!sys->universe_index_built) {
         if (alea_build_universe_index(sys) != 0) {
             return -1;
@@ -547,16 +573,19 @@ static int spatial_index_build_impl(alea_system_t* sys) {
 
     /* Ensure cell surface index is built (needed by slice curve generation
      * which accesses cell->surface_indices after spatial queries) */
+    ALEA_LOG_INFO("Spatial index phase: ensure cell surface index");
     if (alea_build_cell_surface_index(sys) != 0) {
         return -1;
     }
 
     /* Free existing index if any */
+    ALEA_LOG_INFO("Spatial index phase: reset existing index");
     if (sys->spatial_index) {
         alea_spatial_index_free(sys->spatial_index);
         sys->spatial_index = NULL;
     }
 
+    ALEA_LOG_INFO("Spatial index phase: count instances");
     double t_count_start = monotonic_seconds();
     count_ctx_t count_ctx = {
         .sys = sys,
@@ -570,12 +599,17 @@ static int spatial_index_build_impl(alea_system_t* sys) {
     double t_count_end = monotonic_seconds();
 
     /* Allocate new index */
+    ALEA_LOG_INFO("Spatial index phase: allocate index storage");
     alea_spatial_index_t* idx = calloc(1, sizeof(alea_spatial_index_t));
     if (!idx) return -1;
 
     alea_vec_init(&idx->instances);
+    alea_vec_init(&idx->transforms);
     alea_result_t ires = alea_vec_reserve(&idx->instances, count_ctx.total_instances, alea_cell_instance_t);
-    if (ALEA_IS_ERR(ires)) {
+    alea_result_t tres = alea_vec_reserve(&idx->transforms, count_ctx.total_instances, alea_matrix_t);
+    if (ALEA_IS_ERR(ires) || ALEA_IS_ERR(tres)) {
+        alea_vec_free(&idx->transforms);
+        alea_vec_free(&idx->instances);
         free(idx);
         return -1;
     }
@@ -583,6 +617,7 @@ static int spatial_index_build_impl(alea_system_t* sys) {
     idx->bounds = alea_bbox_empty();
 
     /* Collect all instances by traversing universe hierarchy */
+    ALEA_LOG_INFO("Spatial index phase: collect instances");
     double t_collect_start = monotonic_seconds();
     collect_ctx_t ctx = {
         .sys = sys,
@@ -601,6 +636,7 @@ static int spatial_index_build_impl(alea_system_t* sys) {
 
     size_t estimated_nodes = estimate_bvh_node_count(idx->instances.count);
     size_t instance_bytes = idx->instances.capacity * sizeof(alea_cell_instance_t);
+    size_t transform_bytes = idx->transforms.capacity * sizeof(alea_matrix_t);
     size_t item_bytes = idx->instances.count * sizeof(bvh_item_t);
     size_t node_bytes = estimated_nodes * sizeof(alea_spatial_node_t);
     size_t index_bytes = idx->instances.count * sizeof(uint32_t);
@@ -608,14 +644,16 @@ static int spatial_index_build_impl(alea_system_t* sys) {
     ALEA_LOG_INFO("Spatial index build: %zu instances (%zu terminal, %zu container), max depth %d",
                   count_ctx.total_instances, count_ctx.terminal_instances,
                   count_ctx.container_instances, count_ctx.max_depth);
-    ALEA_LOG_INFO("Spatial index memory estimate: instances=%.1f MiB, bvh_refs=%.1f MiB, nodes=%.1f MiB, indices=%.1f MiB, peak~=%.1f MiB",
-                  bytes_to_mib(instance_bytes), bytes_to_mib(item_bytes),
-                  bytes_to_mib(node_bytes), bytes_to_mib(index_bytes),
-                  bytes_to_mib(instance_bytes + item_bytes + node_bytes + index_bytes));
+    ALEA_LOG_INFO("Spatial index memory estimate: hot_instances=%.1f MiB, transforms=%.1f MiB, bvh_refs=%.1f MiB, nodes=%.1f MiB, indices=%.1f MiB, peak~=%.1f MiB",
+                  bytes_to_mib(instance_bytes), bytes_to_mib(transform_bytes),
+                  bytes_to_mib(item_bytes), bytes_to_mib(node_bytes),
+                  bytes_to_mib(index_bytes),
+                  bytes_to_mib(instance_bytes + transform_bytes + item_bytes + node_bytes + index_bytes));
     ALEA_LOG_DEBUG("Spatial index timing: count=%.3fs collect=%.3fs",
                    t_count_end - t_count_start, t_collect_end - t_collect_start);
 
     /* Build BVH over instances */
+    ALEA_LOG_INFO("Spatial index phase: build bvh");
     double t_bvh_start = monotonic_seconds();
     if (build_bvh(idx) != 0) {
         alea_spatial_index_free(idx);
@@ -675,6 +713,7 @@ int alea_spatial_index_build(alea_system_t* sys) {
 void alea_spatial_index_free(alea_spatial_index_t* idx) {
     if (!idx) return;
     alea_vec_free(&idx->instances);
+    alea_vec_free(&idx->transforms);
     alea_vec_free(&idx->nodes);
     free(idx->indices);
     free(idx);
@@ -751,6 +790,7 @@ static alea_spatial_index_t* get_spatial_index(alea_system_t* sys) {
 
 typedef struct {
     alea_system_t* sys;
+    const alea_spatial_index_t* idx;
     alea_spatial_hit_t* restrict hits;
     size_t max_hits;
     size_t hit_count;
@@ -765,6 +805,8 @@ static void query_callback(const alea_cell_instance_t* restrict inst,
     if (ctx->terminal_only && !inst->is_terminal) return;
 
     const alea_cell_entry_t* cell = &ctx->sys->cells.data[inst->cell_index];
+    const alea_matrix_t* transform = spatial_instance_transform(ctx->idx, inst);
+    if (!transform) return;
 
     alea_spatial_hit_t* restrict hit = &ctx->hits[ctx->hit_count++];
     hit->instance_index = inst_idx;
@@ -774,7 +816,7 @@ static void query_callback(const alea_cell_instance_t* restrict inst,
     hit->universe_id = inst->universe_id;
     hit->depth = inst->depth;
     hit->is_terminal = inst->is_terminal;
-    hit->transform = inst->transform;
+    hit->transform = *transform;
 }
 
 int alea_spatial_query_region(alea_system_t* sys,
@@ -792,6 +834,7 @@ int alea_spatial_query_region(alea_system_t* sys,
 
     query_ctx_t ctx = {
         .sys = sys,
+        .idx = idx,
         .hits = out_hits,
         .max_hits = max_hits,
         .hit_count = 0,
@@ -858,6 +901,7 @@ int alea_spatial_query_point(alea_system_t* sys,
 
     query_ctx_t ctx = {
         .sys = sys,
+        .idx = idx,
         .hits = out_hits,
         .max_hits = max_hits,
         .hit_count = 0,
