@@ -191,14 +191,23 @@ void openmc_xml_init(openmc_xml_t* x, arena_t* arena, size_t initial_capacity)
 void openmc_xml_init_ex(openmc_xml_t* x, arena_t* arena, size_t initial_capacity,
                         int max_col, int indent_width, bool pretty)
 {
+  memset(x, 0, sizeof(*x));
   str_builder_init(&x->sb, arena, initial_capacity);
   x->col = 1;
   x->max_col = max_col;
   x->indent_width = indent_width;
-  x->indent_level = 0;
   x->pretty = pretty;
-  x->no_wrap = false;
-  x->in_open_tag = false;
+}
+
+void openmc_xml_init_stream_ex(openmc_xml_t* x, FILE* stream, size_t buf_size,
+                               int max_col, int indent_width, bool pretty)
+{
+  memset(x, 0, sizeof(*x));
+  str_builder_init_stream(&x->sb, buf_size, stream);
+  x->col = 1;
+  x->max_col = max_col;
+  x->indent_width = indent_width;
+  x->pretty = pretty;
 }
 
 bool openmc_xml_start_document(openmc_xml_t* x, const char* version, const char* encoding)
@@ -400,9 +409,19 @@ const char* openmc_xml_get(openmc_xml_t* x)
 
 bool openmc_xml_write(openmc_xml_t* x, FILE* out)
 {
-  if (x->sb.error || !out) return false;
-  openmc_xml_finish(x);
+  if (x->sb.error) return false;
 
+  /* Stream mode: flush any remaining buffered bytes then free the buffer. */
+  if (x->sb.stream) {
+    if (!str_builder_flush(&x->sb)) return false;
+    fputc('\n', x->sb.stream);
+    str_builder_destroy(&x->sb);
+    return true;
+  }
+
+  /* Arena mode: write the accumulated buffer in one shot. */
+  if (!out) return false;
+  openmc_xml_finish(x);
   size_t wrote = fwrite(x->sb.buf, 1, x->sb.len, out);
   if (wrote != x->sb.len) return false;
   fputc('\n', out);

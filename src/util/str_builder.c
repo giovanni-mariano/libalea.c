@@ -11,11 +11,34 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static bool ensure_space(str_builder_t* sb, size_t n)
 {
     if (sb->error) return false;
     if (sb->len + n + 1 <= sb->capacity) return true;
+
+    /* Stream mode: flush current buffer to file and reuse it. */
+    if (sb->stream) {
+        if (sb->len > 0) {
+            size_t wrote = fwrite(sb->buf, 1, sb->len, sb->stream);
+            if (wrote != sb->len) { sb->error = true; return false; }
+            sb->len = 0;
+            if (sb->capacity > 0) sb->buf[0] = '\0';
+        }
+        /* After flush the buffer is empty; if n still doesn't fit (single
+         * write larger than the buffer), grow it once with realloc. */
+        if (n + 1 <= sb->capacity) return true;
+        size_t new_cap = sb->capacity;
+        while (new_cap < n + 1) new_cap *= 2;
+        char* new_buf = (char*)realloc(sb->buf, new_cap);
+        if (!new_buf) { sb->error = true; return false; }
+        sb->buf = new_buf;
+        sb->capacity = new_cap;
+        return true;
+    }
+
+    /* Arena mode: allocate a larger block (old block stays in arena). */
     if (!sb->arena) { sb->error = true; return false; }
 
     size_t new_cap = sb->capacity ? sb->capacity * 2 : 256;
@@ -35,6 +58,7 @@ static bool ensure_space(str_builder_t* sb, size_t n)
 void str_builder_init(str_builder_t* sb, arena_t* arena, size_t initial_capacity)
 {
     sb->arena = arena;
+    sb->stream = NULL;   /* must be NULL so ensure_space uses arena path */
     sb->buf = (char*)arena_alloc(arena, initial_capacity);
     sb->capacity = sb->buf ? initial_capacity : 0;
     sb->len = 0;
@@ -146,4 +170,38 @@ const char* str_builder_get(str_builder_t* sb)
 {
     str_builder_finish(sb);
     return sb->buf;
+}
+
+void str_builder_init_stream(str_builder_t* sb, size_t buf_size, FILE* stream)
+{
+    memset(sb, 0, sizeof(*sb));
+    sb->stream = stream;
+    sb->buf = (char*)malloc(buf_size);
+    if (sb->buf) {
+        sb->capacity = buf_size;
+        sb->buf[0] = '\0';
+    } else {
+        sb->error = true;
+    }
+}
+
+bool str_builder_flush(str_builder_t* sb)
+{
+    if (!sb->stream || sb->len == 0) return !sb->error;
+    size_t wrote = fwrite(sb->buf, 1, sb->len, sb->stream);
+    if (wrote != sb->len) { sb->error = true; return false; }
+    sb->len = 0;
+    if (sb->capacity > 0) sb->buf[0] = '\0';
+    return true;
+}
+
+void str_builder_destroy(str_builder_t* sb)
+{
+    if (sb->stream) {
+        free(sb->buf);
+        sb->buf = NULL;
+        sb->capacity = 0;
+        sb->len = 0;
+    }
+    /* Arena-backed builders: the arena itself is freed by the caller. */
 }

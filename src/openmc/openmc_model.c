@@ -124,8 +124,9 @@ openmc_model_t* openmc_load(const char* filename) {
 
     model->sys->source = ALEA_SOURCE_OPENMC;
 
+    /* Build cell adjacency eagerly; spatial index is built lazily on first
+     * query (raycasting, slicing, rendering) — not needed for pure conversion. */
     alea_build_cell_adjacency(model->sys);
-    alea_spatial_index_build(model->sys);
 
     return model;
 }
@@ -139,7 +140,6 @@ openmc_model_t* openmc_load_string(const char* input, size_t len) {
     model->sys->source = ALEA_SOURCE_OPENMC;
 
     alea_build_cell_adjacency(model->sys);
-    alea_spatial_index_build(model->sys);
 
     return model;
 }

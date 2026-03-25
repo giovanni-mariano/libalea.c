@@ -129,6 +129,10 @@ typedef struct mcnp_context {
     // Parse statistics
     size_t parse_errors;
     size_t parse_warnings;
+
+    // Scratch arena for temporary per-card allocations (line_copy, geo_sb, param_sb).
+    // Reset after each card is fully processed so it doesn't accumulate.
+    arena_t scratch;
 } mcnp_context_t;
 
 /* ========================================================================== */

@@ -139,6 +139,14 @@ mcnp_context_t* mcnp_context_create(const char* filename) {
         return NULL;
     }
 
+    // Initialize a scratch arena for temporary per-card allocations.
+    // 4 MB initial block is enough for any single logical card.
+    if (!arena_init_with_size(&ctx->scratch, 4 * 1024 * 1024)) {
+        arena_free(&ctx->arena);
+        free(ctx);
+        return NULL;
+    }
+
     // Allocate the initial filename and title card from the new arena
     if (filename) {
         ctx->source_filename = arena_strdup(&ctx->arena, filename);
@@ -168,7 +176,8 @@ void mcnp_context_destroy(mcnp_context_t* ctx) {
     // This one call frees the memory for the arena buffer, which contains
     // ALL cells, surfaces, materials, strings, and comments. No loops needed.
     arena_free(&ctx->arena);
-    
+    arena_free(&ctx->scratch);
+
     // Free the context struct itself.
     free(ctx);
 }
@@ -195,15 +204,14 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
     const char* end = mf.content + mf.size;
     int line_num = 0;
 
-    // --- String builder for assembling logical lines ---
+    // --- String builders backed by scratch arena (reclaimed between cards) ---
     str_builder_t line_sb;
-    str_builder_init(&line_sb, &ctx->arena, 4096);
+    str_builder_init(&line_sb, &ctx->scratch, 4096);
 
-    // --- String builders for accumulating "C" comment lines before cells ---
     str_builder_t comment_sb;       // Comments before the current card
-    str_builder_init(&comment_sb, &ctx->arena, 1024);
+    str_builder_init(&comment_sb, &ctx->scratch, 1024);
     str_builder_t peek_comment_sb;  // Comments consumed during look-ahead (for next card)
-    str_builder_init(&peek_comment_sb, &ctx->arena, 512);
+    str_builder_init(&peek_comment_sb, &ctx->scratch, 512);
 
     while (current < end) {
         const char* line_start = current;
@@ -414,6 +422,34 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
             str_builder_reset(&peek_comment_sb);
         }
 
+        // Reset the scratch arena to reclaim per-card temporaries (geo_sb, param_sb,
+        // line_copy, etc.).  Peek comments now in comment_sb must survive the reset.
+        {
+            char  peek_static[4096];
+            char* peek_save = NULL;
+            size_t peek_len = comment_sb.len;
+            if (peek_len > 0) {
+                if (peek_len < sizeof(peek_static)) {
+                    memcpy(peek_static, comment_sb.buf, peek_len + 1);
+                    peek_save = peek_static;
+                } else {
+                    peek_save = (char*)malloc(peek_len + 1);
+                    if (peek_save) memcpy(peek_save, comment_sb.buf, peek_len + 1);
+                    else peek_len = 0; /* malloc failed: drop comments rather than crash */
+                }
+            }
+
+            arena_reset(&ctx->scratch);
+            str_builder_init(&line_sb, &ctx->scratch, 4096);
+            str_builder_init(&comment_sb, &ctx->scratch, 1024);
+            str_builder_init(&peek_comment_sb, &ctx->scratch, 512);
+
+            if (peek_len > 0 && peek_save) {
+                str_builder_write(&comment_sb, peek_save, peek_len);
+                if (peek_save != peek_static) free(peek_save);
+            }
+        }
+
         if (!success) { ALEA_LOG_ERROR("ERROR: Parsing failed on logical line starting near line %d.\n", line_num); break; }
         current = peek_pos;
     }
@@ -438,14 +474,12 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
     if (!cell) { ALEA_LOG_ERROR("Out of memory allocating cell"); return 0; }
     memset(cell, 0, sizeof(*cell));
     
-    // Comments have already been stripped during line assembly
-    
-    char* line_copy = (char*)arena_alloc(&ctx->arena, len + 1);
-    if (!line_copy) { ALEA_LOG_ERROR("Out of memory for cell line copy"); return 0; }
-    memcpy(line_copy, line, len);
-    line_copy[len] = '\0';
+    (void)len; /* len was used for line_copy; lexer reads via pointer only */
 
-    const char* cursor = line_copy;
+    // Comments have already been stripped during line assembly.
+    // The lexer only advances the cursor pointer without modifying the string,
+    // so we can read directly from the caller's buffer — no copy needed.
+    const char* cursor = line;
     const char* token_start = NULL;
     size_t token_len;
     char token_buf[128];
@@ -484,8 +518,8 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
 
     // --- Separate Geometry from Parameters using lexer ---
     str_builder_t geo_sb, param_sb;
-    str_builder_init(&geo_sb, &ctx->arena, 1024);
-    str_builder_init(&param_sb, &ctx->arena, 1024);
+    str_builder_init(&geo_sb, &ctx->scratch, 1024);
+    str_builder_init(&param_sb, &ctx->scratch, 1024);
     int in_parameters = 0;  // Flag: once we hit a parameter keyword, everything is parameters
 
     // For LIKE cells, prepend "LIKE" to geometry since it was consumed as the material token
@@ -540,7 +574,7 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
         len = comment_start_ptr - line;
     }
 
-    char* line_copy = (char*)arena_alloc(&ctx->arena, len + 1);
+    char* line_copy = (char*)arena_alloc(&ctx->scratch, len + 1);
     if (!line_copy) { ALEA_LOG_ERROR("Out of memory for surface line copy"); return 0; }
     memcpy(line_copy, line, len);
     line_copy[len] = '\0';
@@ -594,7 +628,8 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
         // Next token must be mnemonic A
         token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
         if (token_len > 0) {
-            surf->mnemonic = arena_strdup(&ctx->arena, token_start);
+            surf->mnemonic = (char*)arena_alloc(&ctx->arena, token_len + 1);
+            memcpy(surf->mnemonic, token_start, token_len);
             surf->mnemonic[token_len] = '\0';
         }
     } else {
@@ -602,7 +637,8 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
         cursor = next_token_start_pos; // Rewind
         token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
         if (token_len > 0) {
-            surf->mnemonic = arena_strdup(&ctx->arena, token_start);
+            surf->mnemonic = (char*)arena_alloc(&ctx->arena, token_len + 1);
+            memcpy(surf->mnemonic, token_start, token_len);
             surf->mnemonic[token_len] = '\0';
         }
     }

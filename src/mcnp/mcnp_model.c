@@ -175,10 +175,9 @@ mcnp_model_t* mcnp_load(const char* filename) {
 
     model->sys->source = ALEA_SOURCE_MCNP;
 
-    /* Build spatial index and cell adjacency eagerly so queries don't
-     * pay for lazy initialization on the first call. */
+    /* Build cell adjacency eagerly; spatial index is built lazily on first
+     * query (raycasting, slicing, rendering) — not needed for pure conversion. */
     alea_build_cell_adjacency(model->sys);
-    alea_spatial_index_build(model->sys);
 
     return model;
 }

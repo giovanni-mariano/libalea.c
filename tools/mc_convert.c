@@ -12,6 +12,8 @@
  *   -if, --input-format  FORMAT   Input format:  mcnp | openmc (auto-detected)
  *   -of, --output-format FORMAT   Output format: mcnp | openmc (auto-detected)
  *   --no-dedup                     Disable surface deduplication
+ *   -v,  --verbose                Set log level to INFO
+ *   -vv                           Set log level to DEBUG
  *   -h,  --help                   Show this help
  *
  * When formats are not specified, auto-detection uses file extension:
@@ -37,6 +39,8 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -if, --input-format  FORMAT   mcnp | openmc (auto-detected)\n");
     fprintf(stderr, "  -of, --output-format FORMAT   mcnp | openmc (auto-detected)\n");
     fprintf(stderr, "  --no-dedup                     Disable surface deduplication\n");
+    fprintf(stderr, "  -v,  --verbose                Set log level to INFO\n");
+    fprintf(stderr, "  -vv                           Set log level to DEBUG\n");
     fprintf(stderr, "  -h,  --help                   Show this help\n");
     fprintf(stderr, "\nAuto-detection uses file extension (.xml = OpenMC, otherwise MCNP).\n");
 }
@@ -60,6 +64,7 @@ int main(int argc, char** argv) {
     const char* input_file = NULL;
     const char* output_file = NULL;
     int no_dedup = 0;
+    int verbosity = 0;
 
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
@@ -68,6 +73,10 @@ int main(int argc, char** argv) {
             return 0;
         } else if (strcmp(argv[i], "--no-dedup") == 0) {
             no_dedup = 1;
+        } else if (strcmp(argv[i], "-vv") == 0) {
+            verbosity = 2;
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            if (verbosity < 1) verbosity = 1;
         } else if (strcmp(argv[i], "-if") == 0 || strcmp(argv[i], "--input-format") == 0) {
             if (++i >= argc) { fprintf(stderr, "Error: %s requires an argument\n", argv[i-1]); return 1; }
             in_fmt = parse_format(argv[i]);
@@ -104,6 +113,11 @@ int main(int argc, char** argv) {
         output_file = (out_fmt == FMT_OPENMC) ? "model.xml" : "output.inp";
 
     printf("Alea %s - MC format converter\n\n", alea_version());
+
+    if (verbosity == 1)
+        alea_log_set_level(3);  /* INFO */
+    else if (verbosity >= 2)
+        alea_log_set_level(4);  /* DEBUG */
 
     /* Load */
     mcnp_model_t* mcnp_model = NULL;

@@ -32,6 +32,16 @@ void   openmc_xml_init(openmc_xml_t* x, arena_t* arena, size_t initial_capacity)
 void   openmc_xml_init_ex(openmc_xml_t* x, arena_t* arena, size_t initial_capacity,
                           int max_col, int indent_width, bool pretty);
 
+/**
+ * @brief Initialize in streaming mode.
+ *
+ * Uses a fixed @p buf_size malloc'd buffer.  Content is flushed directly to
+ * @p stream whenever the buffer fills, keeping peak memory bounded.
+ * Call openmc_xml_write() at the end to flush any remaining bytes.
+ */
+void   openmc_xml_init_stream_ex(openmc_xml_t* x, FILE* stream, size_t buf_size,
+                                 int max_col, int indent_width, bool pretty);
+
 /* ---- document ---- */
 bool   openmc_xml_start_document(openmc_xml_t* x, const char* version, const char* encoding);
 

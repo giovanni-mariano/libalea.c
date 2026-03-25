@@ -1856,7 +1856,10 @@ int export_openmc(alea_system_t* sys, export_context_t* ctx) {
     }
 
     openmc_xml_t xml;
-    openmc_xml_init_ex(&xml, &arena, 16384, 100, 2, true);
+    /* Stream directly to the output file with a 1 MB write buffer.
+     * This prevents the entire XML document from accumulating in memory
+     * alongside the CSG system during export. */
+    openmc_xml_init_stream_ex(&xml, ctx->out, 1024 * 1024, 100, 2, true);
 
     /* XML declaration */
     if (!openmc_xml_start_document(&xml, "1.0", "utf-8")) {

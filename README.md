@@ -203,6 +203,8 @@ The `examples/lua/` directory contains scripts for use with the `alea` CLI:
 | `16_cell_comments.lua` | Cell comment handling |
 | `17_build_with_comments.lua` | Building geometry with comments |
 | `18_materials_and_mixtures.lua` | Material and mixture definitions |
+| `19_nucdata.lua` | Nuclear data: load ACE cross sections, query, build materials |
+| `20_nucdata_plots.lua` | Nuclear data SVG plotting |
 
 ## Documentation
 

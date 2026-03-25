@@ -301,8 +301,14 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
 // ============================================================================
 
 /**
- * Count whitespace-separated tokens in a string, excluding parentheses.
- * Parentheses are grouping only, they don't create CSG nodes.
+ * Count operand tokens in an MCNP geometry string.
+ *
+ * Only surface/cell references create CSG leaf nodes; the ':' union operator
+ * is a pure delimiter and must NOT be counted.  For N operands the CSG binary
+ * tree has exactly 2N-1 nodes (N leaves + N-1 internal), so the caller
+ * multiplies this count by 2 to get a tight upper bound.
+ *
+ * Excluded from count: whitespace, '(', ')', ':'.
  */
 static size_t count_tokens(const char* str) {
     if (!str || !*str) return 0;
@@ -311,7 +317,7 @@ static size_t count_tokens(const char* str) {
     bool in_token = false;
 
     for (const char* p = str; *p; p++) {
-        if (*p == ' ' || *p == '\t' || *p == '(' || *p == ')') {
+        if (*p == ' ' || *p == '\t' || *p == '(' || *p == ')' || *p == ':') {
             in_token = false;
         } else if (!in_token) {
             in_token = true;
