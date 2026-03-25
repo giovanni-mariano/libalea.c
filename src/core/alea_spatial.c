@@ -26,6 +26,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <assert.h>
+#include <sys/time.h>
 #include "util/alea_log.h"
 
 /* OpenMP removed — centroid init is too trivial to benefit from threading */
@@ -98,6 +99,25 @@ typedef struct {
     int error;
 } collect_ctx_t;
 
+typedef struct {
+    alea_system_t* sys;
+    size_t total_instances;
+    size_t terminal_instances;
+    size_t container_instances;
+    int max_depth;
+    int error;
+} count_ctx_t;
+
+static double monotonic_seconds(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+}
+
+static double bytes_to_mib(size_t bytes) {
+    return (double)bytes / (1024.0 * 1024.0);
+}
+
 static int ensure_instance_capacity(alea_spatial_index_t* idx, size_t needed) {
     size_t min_cap = idx->instances.count + needed;
     if (min_cap <= idx->instances.capacity) return 0;
@@ -137,6 +157,76 @@ static alea_bbox_t compute_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
     }
 
     return bbox;
+}
+
+static void count_instances_recursive(count_ctx_t* ctx,
+                                      int universe_id,
+                                      const alea_matrix_t* accumulated,
+                                      int depth,
+                                      const alea_bbox_t* parent_global_bbox) {
+    if (ctx->error) return;
+    if (g_alea_interrupted) { ctx->error = -1; return; }
+    if (depth >= MAX_DEPTH) return;
+
+    if (depth > ctx->max_depth) {
+        ctx->max_depth = depth;
+    }
+
+    const alea_universe_t* univ = alea_get_universe(ctx->sys, universe_id);
+    if (!univ) return;
+
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
+        const alea_cell_entry_t* cell = &ctx->sys->cells.data[cell_idx];
+
+        alea_bbox_t local_bbox = compute_cell_bbox(ctx->sys, (uint32_t)cell_idx);
+        alea_bbox_t global_bbox;
+
+        if (accumulated) {
+            global_bbox = bbox_transform(&local_bbox, accumulated);
+        } else {
+            global_bbox = local_bbox;
+        }
+
+        if (parent_global_bbox) {
+            global_bbox = alea_bbox_intersection(&global_bbox, parent_global_bbox);
+            if (!alea_bbox_is_valid(&global_bbox)) continue;
+        }
+
+        ctx->total_instances++;
+        if (cell->fill_universe > 0) ctx->container_instances++;
+        else ctx->terminal_instances++;
+
+        if (cell->fill_universe > 0) {
+            alea_matrix_t fill_mat;
+
+            if (cell->fill_transform > 0) {
+                const alea_transform_t* tr = alea_get_transform(ctx->sys,
+                                                              cell->fill_transform);
+                if (tr) {
+                    alea_matrix_from_mcnp(&fill_mat, tr->cosines,
+                                        tr->value_count, false);
+                } else {
+                    alea_matrix_identity(&fill_mat);
+                }
+            } else {
+                alea_matrix_identity(&fill_mat);
+            }
+
+            alea_matrix_t new_accumulated;
+            if (accumulated) {
+                alea_matrix_multiply(&new_accumulated, accumulated, &fill_mat);
+            } else {
+                new_accumulated = fill_mat;
+            }
+
+            alea_matrix_invert(&new_accumulated);
+
+            count_instances_recursive(ctx, cell->fill_universe,
+                                      &new_accumulated, depth + 1,
+                                      &global_bbox);
+        }
+    }
 }
 
 /**
@@ -244,7 +334,6 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
 
 typedef struct {
     uint32_t index;
-    alea_bbox_t bbox;
     double centroid[3];
 } bvh_item_t;
 
@@ -255,10 +344,13 @@ static int ensure_node_capacity(alea_spatial_index_t* idx, size_t needed) {
     return ALEA_IS_ERR(res) ? -1 : 0;
 }
 
-static alea_bbox_t compute_items_bbox(const bvh_item_t* items, size_t start, size_t end) {
+static alea_bbox_t compute_items_bbox(const alea_spatial_index_t* idx,
+                                      const bvh_item_t* items,
+                                      size_t start, size_t end) {
     alea_bbox_t result = alea_bbox_empty();
     for (size_t i = start; i < end; i++) {
-        result = alea_bbox_union(&result, &items[i].bbox);
+        const alea_bbox_t* bbox = &idx->instances.data[items[i].index].global_bbox;
+        result = alea_bbox_union(&result, bbox);
     }
     return result;
 }
@@ -334,6 +426,15 @@ static void partition_items(bvh_item_t* items, size_t start, size_t end,
     *out_mid = mid;
 }
 
+static size_t estimate_bvh_node_count(size_t item_count) {
+    if (item_count == 0) return 0;
+    if (item_count <= BVH_LEAF_SIZE) return 1;
+
+    size_t left = item_count / 2;
+    size_t right = item_count - left;
+    return 1 + estimate_bvh_node_count(left) + estimate_bvh_node_count(right);
+}
+
 static uint32_t build_bvh_recursive(alea_spatial_index_t* idx,
                                     bvh_item_t* items,
                                     size_t start, size_t end,
@@ -348,7 +449,7 @@ static uint32_t build_bvh_recursive(alea_spatial_index_t* idx,
 
     /* Create leaf if small enough */
     if (count <= BVH_LEAF_SIZE || depth > 30) {
-        node->bbox = compute_items_bbox(items, start, end);
+        node->bbox = compute_items_bbox(idx, items, start, end);
         node->left_or_first = (uint32_t)start;
         node->count = (uint16_t)count;
         node->axis = 0;
@@ -389,21 +490,22 @@ static int build_bvh(alea_spatial_index_t* idx) {
         return 0;
     }
 
-    /* Prepare items with centroids */
+    /* Prepare centroid refs rather than copying full bboxes */
     bvh_item_t* items = malloc(idx->instances.count * sizeof(bvh_item_t));
     if (!items) return -1;
 
     for (size_t i = 0; i < idx->instances.count; i++) {
+        const alea_bbox_t* bbox = &idx->instances.data[i].global_bbox;
         items[i].index = (uint32_t)i;
-        items[i].bbox = idx->instances.data[i].global_bbox;
-        items[i].centroid[0] = (items[i].bbox.min_x + items[i].bbox.max_x) * 0.5;
-        items[i].centroid[1] = (items[i].bbox.min_y + items[i].bbox.max_y) * 0.5;
-        items[i].centroid[2] = (items[i].bbox.min_z + items[i].bbox.max_z) * 0.5;
+        items[i].centroid[0] = (bbox->min_x + bbox->max_x) * 0.5;
+        items[i].centroid[1] = (bbox->min_y + bbox->max_y) * 0.5;
+        items[i].centroid[2] = (bbox->min_z + bbox->max_z) * 0.5;
     }
 
-    /* Allocate initial nodes */
+    /* Reserve the exact node count produced by this median-split builder. */
     alea_vec_init(&idx->nodes);
-    alea_result_t nres = alea_vec_reserve(&idx->nodes, idx->instances.count * 2, alea_spatial_node_t);
+    size_t estimated_nodes = estimate_bvh_node_count(idx->instances.count);
+    alea_result_t nres = alea_vec_reserve(&idx->nodes, estimated_nodes, alea_spatial_node_t);
     if (ALEA_IS_ERR(nres)) {
         free(items);
         return -1;
@@ -434,6 +536,8 @@ static int build_bvh(alea_spatial_index_t* idx) {
  * Internal build — does the actual work.
  */
 static int spatial_index_build_impl(alea_system_t* sys) {
+    double t_start = monotonic_seconds();
+
     /* Ensure universe index is built */
     if (!sys->universe_index_built) {
         if (alea_build_universe_index(sys) != 0) {
@@ -453,12 +557,24 @@ static int spatial_index_build_impl(alea_system_t* sys) {
         sys->spatial_index = NULL;
     }
 
+    double t_count_start = monotonic_seconds();
+    count_ctx_t count_ctx = {
+        .sys = sys,
+        .max_depth = -1,
+        .error = 0
+    };
+    count_instances_recursive(&count_ctx, 0, NULL, 0, NULL);
+    if (count_ctx.error) {
+        return -1;
+    }
+    double t_count_end = monotonic_seconds();
+
     /* Allocate new index */
     alea_spatial_index_t* idx = calloc(1, sizeof(alea_spatial_index_t));
     if (!idx) return -1;
 
     alea_vec_init(&idx->instances);
-    alea_result_t ires = alea_vec_reserve(&idx->instances, 256, alea_cell_instance_t);
+    alea_result_t ires = alea_vec_reserve(&idx->instances, count_ctx.total_instances, alea_cell_instance_t);
     if (ALEA_IS_ERR(ires)) {
         free(idx);
         return -1;
@@ -467,6 +583,7 @@ static int spatial_index_build_impl(alea_system_t* sys) {
     idx->bounds = alea_bbox_empty();
 
     /* Collect all instances by traversing universe hierarchy */
+    double t_collect_start = monotonic_seconds();
     collect_ctx_t ctx = {
         .sys = sys,
         .idx = idx,
@@ -480,16 +597,37 @@ static int spatial_index_build_impl(alea_system_t* sys) {
         return -1;
     }
 
-    ALEA_LOG_DEBUG("Spatial index: %zu instances collected", idx->instances.count);
+    double t_collect_end = monotonic_seconds();
+
+    size_t estimated_nodes = estimate_bvh_node_count(idx->instances.count);
+    size_t instance_bytes = idx->instances.capacity * sizeof(alea_cell_instance_t);
+    size_t item_bytes = idx->instances.count * sizeof(bvh_item_t);
+    size_t node_bytes = estimated_nodes * sizeof(alea_spatial_node_t);
+    size_t index_bytes = idx->instances.count * sizeof(uint32_t);
+
+    ALEA_LOG_INFO("Spatial index build: %zu instances (%zu terminal, %zu container), max depth %d",
+                  count_ctx.total_instances, count_ctx.terminal_instances,
+                  count_ctx.container_instances, count_ctx.max_depth);
+    ALEA_LOG_INFO("Spatial index memory estimate: instances=%.1f MiB, bvh_refs=%.1f MiB, nodes=%.1f MiB, indices=%.1f MiB, peak~=%.1f MiB",
+                  bytes_to_mib(instance_bytes), bytes_to_mib(item_bytes),
+                  bytes_to_mib(node_bytes), bytes_to_mib(index_bytes),
+                  bytes_to_mib(instance_bytes + item_bytes + node_bytes + index_bytes));
+    ALEA_LOG_DEBUG("Spatial index timing: count=%.3fs collect=%.3fs",
+                   t_count_end - t_count_start, t_collect_end - t_collect_start);
 
     /* Build BVH over instances */
+    double t_bvh_start = monotonic_seconds();
     if (build_bvh(idx) != 0) {
         alea_spatial_index_free(idx);
         return -1;
     }
+    double t_bvh_end = monotonic_seconds();
 
     idx->built = true;
     sys->spatial_index = idx;
+
+    ALEA_LOG_INFO("Spatial index ready: %zu nodes, total build %.3fs (bvh %.3fs)",
+                  idx->nodes.count, t_bvh_end - t_start, t_bvh_end - t_bvh_start);
 
     return 0;
 }
