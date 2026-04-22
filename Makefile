@@ -724,7 +724,7 @@ tree:
 # ============================================================================
 
 help:
-	@echo "MCNP-CSG Project Makefile - Flattened Architecture"
+	@echo "Alea Project Makefile"
 	@echo ""
 	@echo "Main Targets:"
 	@echo "  all              - Build library (default)"

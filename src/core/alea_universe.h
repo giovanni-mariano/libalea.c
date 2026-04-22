@@ -148,6 +148,21 @@ int alea_find_all_cells_at_point(alea_system_t* sys,
                                 alea_cell_hit_t* out_hits,
                                 size_t max_hits);
 
+/**
+ * @brief Find the deepest hierarchy-aware cell hit for a point
+ *
+ * Uses the same fill/lattice-aware semantics as `alea_find_all_cells_at_point()`
+ * and returns the innermost hit in the ordered stack.
+ *
+ * @param sys CSG system
+ * @param x,y,z Point in global coordinates
+ * @param out_hit Receives the deepest hit on success
+ * @return 0 on success, -1 if the point is in void or on error
+ */
+int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       alea_cell_hit_t* out_hit);
+
 /* Debug version that always uses recursive path (for comparison) */
 int alea_find_all_cells_at_point_recursive(const alea_system_t* sys,
                                           double x, double y, double z,

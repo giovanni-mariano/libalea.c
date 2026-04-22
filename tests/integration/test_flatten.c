@@ -136,6 +136,40 @@ TEST(flatten_simple_fill) {
     alea_destroy(sys);
 }
 
+TEST(point_query_public_api_uses_deepest_fill_hit) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int child_surface = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
+    alea_node_id_t child_node = alea_halfspace(sys, child_surface, -1);
+
+    int box_surface = alea_box_surface(sys, 0, -10, 10, -10, 10, -10, 10);
+    alea_node_id_t box_node = alea_halfspace(sys, box_surface, -1);
+
+    int mat1 = alea_add_material(sys, 1);
+    ASSERT(mat1 >= 0);
+
+    int child_idx = alea_add_cell(sys, 10, child_node, mat1, -1.0, 1);
+    ASSERT(child_idx >= 0);
+
+    int parent_idx = alea_add_cell(sys, 1, box_node, ALEA_MATERIAL_VOID, 0.0, 0);
+    ASSERT(parent_idx >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, parent_idx, 1, 0), 0);
+
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    int cell_id = -1;
+    int material = -1;
+
+    ASSERT_EQ(alea_find_cell(sys, 0, 0, 0), child_idx);
+    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
+    ASSERT_EQ(alea_find_cell_at(sys, 0, 0, 0, &cell_id, &material), 0);
+    ASSERT_EQ(cell_id, 10);
+    ASSERT_EQ(material, 1);
+
+    alea_destroy(sys);
+}
+
 /*
  * Test: Empty cells from fill universes are removed after flatten + simplify.
  *

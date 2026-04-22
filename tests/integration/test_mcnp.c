@@ -339,6 +339,29 @@ TEST(lattice_eval_point_query) {
     mcnp_model_destroy(model);
 }
 
+TEST(lattice_public_point_query_matches_deepest_hit) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_build_universe_index(sys);
+
+    int cell_id = -1;
+    int material = -1;
+
+    ASSERT_EQ(alea_material_at(sys, 2, 0, 0), 3);
+    ASSERT_EQ(alea_find_cell_at(sys, 2, 0, 0, &cell_id, &material), 0);
+    ASSERT_EQ(cell_id, 3);
+    ASSERT_EQ(material, 3);
+
+    ASSERT_EQ(alea_material_at(sys, 2.5, 0.5, 0), 4);
+    ASSERT_EQ(alea_find_cell_at(sys, 2.5, 0.5, 0, &cell_id, &material), 0);
+    ASSERT_EQ(cell_id, 4);
+    ASSERT_EQ(material, 4);
+
+    mcnp_model_destroy(model);
+}
+
 /*
  * Hex lattice point query via OpenMC.
  *

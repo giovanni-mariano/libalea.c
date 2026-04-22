@@ -920,10 +920,12 @@ int alea_set_cell_fill(alea_system_t* sys, int cell_index, int fill_universe, in
 alea_material_id_t alea_material_at_point(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return ALEA_MATERIAL_NONE;
 
-    int cell_idx = alea_identify_cell_at_point(sys, x, y, z);
-    if (cell_idx < 0) return ALEA_MATERIAL_NONE;
+    alea_cell_hit_t hit;
+    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
+        return ALEA_MATERIAL_NONE;
+    }
 
-    return sys->cells.data[cell_idx].material_id;
+    return hit.material_id;
 }
 
 /* ============================================================================
@@ -1116,40 +1118,11 @@ int alea_get_universe_cells(const alea_system_t* sys, int universe_id,
 int alea_identify_cell_at_point(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return -1;
 
-    // Test all cells in base universe (universe 0)
-    // If universe index not built, test all cells with universe_id == 0
-    if (!sys->universe_index_built) {
-        if (alea_build_universe_index(sys) < 0) {
-            return -1;
-        }
+    alea_cell_hit_t hit;
+    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
+        return -1;
     }
-    
-    if (sys->universe_index_built) {
-        const alea_universe_t* base = alea_get_universe(sys, 0);
-        
-        if (!base) return -1;
-
-        
-        for (size_t i = 0; i < base->cell_indices.count; i++) {
-            size_t cell_idx = base->cell_indices.data[i];
-            const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-            if (alea_contains_point(sys, cell->root_node_id, x, y, z)) {
-                return (int)cell_idx;
-            }
-        }
-    } else {
-        // Linear search through all cells
-        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-            const alea_cell_entry_t* cell = &sys->cells.data[i];
-            if (cell->universe_id != 0) continue;
-            
-            if (alea_contains_point(sys, cell->root_node_id, x, y, z)) {
-                return (int)i;
-            }
-        }
-    }
-    
-    return -1;  // In void
+    return hit.cell_index;
 }
 
 int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {

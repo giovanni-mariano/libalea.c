@@ -1328,8 +1328,10 @@ static int find_cell_recursive(const alea_system_t* sys,
                             const alea_matrix_t* accumulated_transform,
                             int depth,
                             int max_depth,
+                            int* out_cell_index,
                             int* out_cell_id,
-                            int* out_material) {
+                            int* out_material,
+                            int* out_depth) {
     if (max_depth > 0 && depth >= max_depth) {
         return -1;  /* Max depth exceeded */
     }
@@ -1362,7 +1364,7 @@ static int find_cell_recursive(const alea_system_t* sys,
             int result = find_cell_recursive(
                 sys, elx, ely, elz, fill_univ,
                 NULL, depth + 1, max_depth,
-                out_cell_id, out_material);
+                out_cell_index, out_cell_id, out_material, out_depth);
             if (result == 0) return 0;
             continue;
         }
@@ -1398,14 +1400,16 @@ static int find_cell_recursive(const alea_system_t* sys,
                 int result = find_cell_recursive(
                     sys, x, y, z, cell->fill_universe,
                     &new_accumulated, depth + 1, max_depth,
-                    out_cell_id, out_material);
+                    out_cell_index, out_cell_id, out_material, out_depth);
 
                 if (result == 0) return 0;
 
             /* Terminal cell */
             } else {
+                if (out_cell_index) *out_cell_index = (int)cell_idx;
                 if (out_cell_id) *out_cell_id = cell->mc_cell_id;
                 if (out_material) *out_material = cell->material_id;
+                if (out_depth) *out_depth = depth;
                 return 0;
             }
         }
@@ -1420,15 +1424,21 @@ int alea_find_cell_lazy(const alea_system_t* sys,
                        int* out_material,
                        int* out_depth) {
     if (!sys) return -1;
+    if (!sys->universe_index_built) {
+        if (alea_build_universe_index((alea_system_t*)sys) != 0) {
+            return -1;
+        }
+    }
     
     int cell_id = -1, material = 0;
+    int depth = -1;
     int result = find_cell_recursive(
         sys, x, y, z, 0, NULL, 0, MAX_FLATTEN_DEPTH,
-        &cell_id, &material);
+        NULL, &cell_id, &material, &depth);
     
     if (out_cell_id) *out_cell_id = cell_id;
     if (out_material) *out_material = material;
-    if (out_depth) *out_depth = 0;  /* TODO: track actual depth */
+    if (out_depth) *out_depth = depth;
 
     return result;
 }
@@ -1570,14 +1580,20 @@ static int find_all_cells_recursive(const alea_system_t* sys,
     return 0;
 }
 
-int alea_find_all_cells_at_point(alea_system_t* sys,
-                                double x, double y, double z,
-                                alea_cell_hit_t* out_hits,
-                                size_t max_hits) {
+static int find_all_cells_at_point_impl(alea_system_t* sys,
+                                        double x, double y, double z,
+                                        alea_cell_hit_t* out_hits,
+                                        size_t max_hits,
+                                        bool force_recursive) {
     if (!sys || !out_hits || max_hits == 0) return -1;
+    if (!sys->universe_index_built) {
+        if (alea_build_universe_index(sys) != 0) {
+            return -1;
+        }
+    }
 
     /* If debug trace is enabled, use recursive path to get trace output */
-    if (g_debug_point_trace) {
+    if (force_recursive || g_debug_point_trace) {
         size_t hit_count = 0;
         int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
                                               0, NULL, 0,
@@ -1625,20 +1641,86 @@ int alea_find_all_cells_at_point(alea_system_t* sys,
     return (int)hit_count;
 }
 
+int alea_find_all_cells_at_point(alea_system_t* sys,
+                                double x, double y, double z,
+                                alea_cell_hit_t* out_hits,
+                                size_t max_hits) {
+    return find_all_cells_at_point_impl(sys, x, y, z, out_hits, max_hits, false);
+}
+
+int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       alea_cell_hit_t* out_hit) {
+    if (!sys || !out_hit) return -1;
+
+    if (!sys->universe_index_built) {
+        if (alea_build_universe_index(sys) != 0) {
+            return -1;
+        }
+    }
+
+    bool has_hierarchy = false;
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->fill_universe > 0 || (cell->lat_type != 0 && cell->lat_fill)) {
+            has_hierarchy = true;
+            break;
+        }
+    }
+
+    if (!has_hierarchy) {
+        const alea_universe_t* base = alea_get_universe(sys, 0);
+        if (!base) return -1;
+
+        for (size_t i = 0; i < base->cell_indices.count; i++) {
+            size_t cell_idx = base->cell_indices.data[i];
+            const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+            if (!alea_contains_point(sys, cell->root_node_id, x, y, z)) continue;
+
+            out_hit->cell_id = cell->mc_cell_id;
+            out_hit->cell_index = (int)cell_idx;
+            out_hit->material_id = cell->material_id;
+            out_hit->universe_id = cell->universe_id;
+            out_hit->fill_universe = cell->fill_universe;
+            out_hit->depth = 0;
+            out_hit->local_x = x;
+            out_hit->local_y = y;
+            out_hit->local_z = z;
+            return 0;
+        }
+
+        return -1;
+    }
+
+    int cell_index = -1;
+    int depth = -1;
+    if (find_cell_recursive(sys, x, y, z, 0, NULL, 0, MAX_FLATTEN_DEPTH,
+                            &cell_index, &out_hit->cell_id,
+                            &out_hit->material_id, &depth) != 0) {
+        return -1;
+    }
+
+    if (cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells)) {
+        return -1;
+    }
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    out_hit->cell_index = cell_index;
+    out_hit->universe_id = cell->universe_id;
+    out_hit->fill_universe = cell->fill_universe;
+    out_hit->depth = depth;
+    out_hit->local_x = x;
+    out_hit->local_y = y;
+    out_hit->local_z = z;
+    return 0;
+}
+
 /* Debug version that always uses recursive path */
 int alea_find_all_cells_at_point_recursive(const alea_system_t* sys,
                                           double x, double y, double z,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits) {
-    if (!sys || !out_hits || max_hits == 0) return -1;
-
-    size_t hit_count = 0;
-    int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
-                                          0, NULL, 0,
-                                          out_hits, max_hits, &hit_count);
-
-    if (result < 0) return -1;
-    return (int)hit_count;
+    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits, max_hits, true);
 }
 
 /* ============================================================================

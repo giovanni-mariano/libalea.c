@@ -303,7 +303,12 @@ int alea_build_spatial_index(alea_system_t* sys) {
 
 int alea_find_cell(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return -1;
-    return alea_identify_cell_at_point(sys, x, y, z);
+
+    alea_cell_hit_t hit;
+    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
+        return -1;
+    }
+    return hit.cell_index;
 }
 
 int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
@@ -321,9 +326,12 @@ bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
 
 int alea_material_at(alea_system_t* sys, double x, double y, double z) {
     if (!sys) return -1;
-    int cell_idx = alea_identify_cell_at_point(sys, x, y, z);
-    if (cell_idx < 0) return 0;  /* void */
-    return sys->cells.data[cell_idx].material_id;
+
+    alea_cell_hit_t hit;
+    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
+        return 0;  /* void */
+    }
+    return hit.material_id;
 }
 
 
@@ -1715,11 +1723,13 @@ int alea_find_cell_at(alea_system_t* sys, double x, double y, double z,
                            int* out_cell_id, int* out_material) {
     if (!sys) return -1;
 
-    int idx = alea_identify_cell_at_point(sys, x, y, z);
-    if (idx < 0) return -1;
+    alea_cell_hit_t hit;
+    if (alea_find_deepest_cell_hit_at_point(sys, x, y, z, &hit) != 0) {
+        return -1;
+    }
 
-    if (out_cell_id) *out_cell_id = sys->cells.data[idx].mc_cell_id;
-    if (out_material) *out_material = sys->cells.data[idx].material_id;
+    if (out_cell_id) *out_cell_id = hit.cell_id;
+    if (out_material) *out_material = hit.material_id;
     return 0;
 }
 
