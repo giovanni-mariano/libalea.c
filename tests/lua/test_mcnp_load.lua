@@ -27,10 +27,9 @@ end
 -- Build index and query
 sys:build_universe_index()
 print("\nPoint query at origin:")
-local idx = sys:find_cell(0, 0, 0)
-if idx then
-    local info = sys:cell_info(idx)
-    print(string.format("  cell_id=%d material=%d", info.cell_id, info.material_id))
+local cell_id, material = sys:find_cell_at(0, 0, 0)
+if cell_id then
+    print(string.format("  cell_id=%d material=%d", cell_id, material))
 else
     print("  no cell found at origin")
 end

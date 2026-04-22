@@ -256,8 +256,8 @@ alea_build_spatial_index(sys);
 Once the index is built, you can query any point in space:
 
 ```c
-int cell = alea_find_cell(sys, x, y, z);       // which cell contains this point?
-int mat  = alea_material_at(sys, x, y, z);      // what material is here?
+int cell_id, material_id;
+alea_find_cell_at(sys, x, y, z, &cell_id, &material_id);
 ```
 
 The spatial index handles universe nesting, fills, and lattices transparently. A single query can descend through multiple universe levels to find the innermost cell.

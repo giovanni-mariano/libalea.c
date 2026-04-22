@@ -13,8 +13,8 @@ sys:print_summary()
 -- Build indices for queries
 sys:build_universe_index()
 
--- Single-cell query at the origin
-print("\n--- find_cell ---")
+-- Preferred single-point query
+print("\n--- find_cell_at ---")
 local test_points = {
     {0, 0, 0},
     {10, 0, 0},
@@ -24,21 +24,21 @@ local test_points = {
 
 for _, pt in ipairs(test_points) do
     local x, y, z = pt[1], pt[2], pt[3]
-    local idx = sys:find_cell(x, y, z)
-    if idx then
-        local info = sys:cell_info(idx)
+    local cell_id, material_id = sys:find_cell_at(x, y, z)
+    if cell_id then
+        local info = sys:cell_find_info(cell_id)
         print(string.format("  (%6.1f, %6.1f, %6.1f) -> cell %d (mat %d, universe %d)",
-            x, y, z, info.cell_id, info.material_id, info.universe_id))
+            x, y, z, info.cell_id, material_id, info.universe_id))
     else
         print(string.format("  (%6.1f, %6.1f, %6.1f) -> no cell found", x, y, z))
     end
 end
 
--- Material query
-print("\n--- material_at ---")
-local mat = sys:material_at(0, 0, 0)
-if mat then
-    print(string.format("  Material at origin: %d", mat))
+-- Preferred compact single-point result
+print("\n--- single-point result ---")
+local cell_id, mat = sys:find_cell_at(0, 0, 0)
+if cell_id then
+    print(string.format("  Origin -> cell %d material %d", cell_id, mat))
 else
     print("  No material at origin")
 end

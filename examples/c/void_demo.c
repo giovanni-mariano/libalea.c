@@ -271,8 +271,12 @@ int main(void) {
 
     for (size_t i = 0; i < sizeof(points)/sizeof(points[0]); i++) {
         double x = points[i].x, y = points[i].y, z = points[i].z;
-        int cell = alea_find_cell(sys, x, y, z);
-        int mat = alea_material_at(sys, x, y, z);
+        int cell = -1;
+        int mat = 0;
+        int cell_id = -1;
+        if (alea_find_cell_at(sys, x, y, z, &cell_id, &mat) == 0) {
+            cell = alea_cell_find(sys, cell_id);
+        }
 
         const char* kind = (cell < 0) ? "MISS" :
                            (mat == 0) ? "void" : "mat";

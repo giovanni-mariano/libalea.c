@@ -139,21 +139,24 @@ sys:build_universe_index()
 ### Find cell at a point
 
 ```lua
-local idx = sys:find_cell(x, y, z)
-if idx then
-    local info = sys:cell_info(idx)
+local cell_id, material_id = sys:find_cell_at(x, y, z)
+if cell_id then
+    local info = sys:cell_find_info(cell_id)
     print("Cell ID: " .. info.cell_id)
-    print("Material: " .. info.material_id)
+    print("Material: " .. material_id)
 else
     print("No cell found (void or undefined)")
 end
 ```
 
-### Material at a point
+### Convenience wrappers
 
 ```lua
+local idx = sys:find_cell(x, y, z)      -- legacy convenience wrapper
 local mat = sys:material_at(0, 0, 0)
 ```
+
+For new Lua code, prefer `sys:find_cell_at(x, y, z)`.
 
 ### Full hierarchy traversal
 
@@ -759,8 +762,8 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Build universe index | `sys:build_universe_index()` |
 | Build spatial index | `sys:build_spatial_index()` |
 | **Point Queries** | |
-| Find cell | `sys:find_cell(x, y, z)` |
 | Find cell + material | `sys:find_cell_at(x, y, z)` |
+| Find cell | `sys:find_cell(x, y, z)` |
 | Material at point | `sys:material_at(x, y, z)` |
 | All cells at point | `sys:find_all_cells(x, y, z)` |
 | Point inside node | `sys:point_inside(node, x, y, z)` |

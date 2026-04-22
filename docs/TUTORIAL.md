@@ -59,35 +59,38 @@ alea_system_t* sys = model->sys;
 
 Once loaded, the most useful thing is asking "what's at this point?"
 
-### Which cell contains a point?
+### Which cell and material are at a point?
 
 ```c
-int cell_idx = alea_find_cell(sys, 650.0, 0.0, 0.0);
-if (cell_idx >= 0) {
-    int cell_id = alea_get_cell_id(sys, cell_idx);
+int cell_id, material;
+if (alea_find_cell_at(sys, 650.0, 0.0, 0.0, &cell_id, &material) == 0) {
     printf("Point is in cell %d\n", cell_id);
+    printf("Material is %d\n", material);
 } else {
     printf("Point is in void or undefined\n");
 }
 ```
 
-`alea_find_cell` returns the **cell index** (position in the internal cells array) of the innermost cell containing the point. Use `alea_get_cell_id()` to convert to the MCNP cell ID, or use `alea_find_cell_at()` to get both cell ID and material in one call. The function traverses the full universe hierarchy — if the point is in a cell that has `FILL=5`, it descends into universe 5, applies the inverse transform, and continues until it finds a terminal cell (one with a material or void, not another fill).
+`alea_find_cell_at()` is the preferred single-point query API. It traverses the full universe hierarchy — if the point is in a cell that has `FILL=5`, it descends into universe 5, applies the inverse transform, and continues until it finds a terminal cell (one with a material or void, not another fill).
 
 Returns -1 if no cell claims the point. This means either void or a geometry error.
 
-### What material is there?
+### Convenience wrappers
 
 ```c
+int cell_idx = alea_find_cell(sys, 650.0, 0.0, 0.0);  /* internal cell index */
 int mat = alea_material_at(sys, 650.0, 0.0, 0.0);
 ```
 
-Returns the material number (MCNP `m` card number). Returns 0 for void cells.
+`alea_find_cell()` and `alea_material_at()` are still available as convenience wrappers, but for new code prefer `alea_find_cell_at()`.
 
 ### Both at once
 
 ```c
 int cell_id, material;
-alea_find_cell_at(sys, 650.0, 0.0, 0.0, &cell_id, &material);
+if (alea_find_cell_at(sys, 650.0, 0.0, 0.0, &cell_id, &material) == 0) {
+    printf("cell=%d material=%d\n", cell_id, material);
+}
 ```
 
 ### The full hierarchy

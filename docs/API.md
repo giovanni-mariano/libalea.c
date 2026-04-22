@@ -236,7 +236,9 @@ Build or rebuild the spatial index (BVH). Called automatically by `alea_build_un
 int alea_find_cell(const alea_system_t* sys, double x, double y, double z);
 ```
 
-Find the cell containing a point. Returns cell ID (MCNP-numbered) or -1 if not found (void).
+Legacy convenience wrapper for single-point queries. Prefer `alea_find_cell_at()` for resolved point answers, or `alea_find_all_cells()` when hierarchy detail is needed.
+
+Returns the internal cell index, or `-1` if not found.
 
 ### alea_find_all_cells
 
@@ -262,7 +264,9 @@ Test if a point is inside a CSG node's region.
 int alea_material_at(const alea_system_t* sys, double x, double y, double z);
 ```
 
-Get material ID at a point. Returns material ID, 0 for void, or -1 on error.
+Legacy convenience wrapper for single-point queries. Prefer `alea_find_cell_at()`.
+
+Returns material ID, `0` for void, or `-1` on error.
 
 ### alea_find_overlaps
 
@@ -279,7 +283,7 @@ int alea_find_cell_at(const alea_system_t* sys, double x, double y, double z,
                       int* out_cell_id, int* out_material);
 ```
 
-Find cell and get both cell ID and material in one call.
+Preferred single-point query API. Finds the resolved cell and returns both cell ID and material in one call.
 
 ### alea_set_debug_trace
 

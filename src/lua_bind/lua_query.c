@@ -28,7 +28,8 @@ static int l_build_spatial_index(lua_State* L) {
  * Point queries
  * ============================================================================ */
 
-/* sys:find_cell(x, y, z) -> cell_index or nil */
+/* sys:find_cell(x, y, z) -> cell_index or nil
+ * Legacy convenience wrapper. Prefer sys:find_cell_at(x, y, z). */
 static int l_find_cell(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     double x = luaL_checknumber(L, 2);
@@ -43,7 +44,8 @@ static int l_find_cell(lua_State* L) {
     return 1;
 }
 
-/* sys:material_at(x, y, z) -> material_id or nil */
+/* sys:material_at(x, y, z) -> material_id or nil
+ * Legacy convenience wrapper. Prefer sys:find_cell_at(x, y, z). */
 static int l_material_at(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     double x = luaL_checknumber(L, 2);

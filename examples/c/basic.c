@@ -92,8 +92,12 @@ int main(void) {
         double y = test_points[i].y;
         double z = test_points[i].z;
 
-        int cell = alea_find_cell(sys, x, y, z);
-        int mat = alea_material_at(sys, x, y, z);
+        int cell = -1;
+        int mat = 0;
+        int cell_id = -1;
+        if (alea_find_cell_at(sys, x, y, z, &cell_id, &mat) == 0) {
+            cell = alea_cell_find(sys, cell_id);
+        }
 
         printf("(%5.1f, %5.1f, %5.1f) %-15s  %8d  %8d\n",
                x, y, z, test_points[i].desc, cell, mat);

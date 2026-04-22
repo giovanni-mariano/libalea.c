@@ -13,7 +13,8 @@
  *   // Programmatic geometry
  *   alea_system_t* sys = alea_create();
  *   alea_build_universe_index(sys);
- *   int cell = alea_find_cell(sys, 0.0, 0.0, 0.0);
+ *   int cell_id, material_id;
+ *   alea_find_cell_at(sys, 0.0, 0.0, 0.0, &cell_id, &material_id);
  *   alea_destroy(sys);
  *
  * For MCNP I/O, include "alea_mcnp.h" and link libalea_mcnp.a:
@@ -147,11 +148,16 @@ int alea_build_spatial_index(alea_system_t* sys);
  * GEOMETRY QUERIES
  * ============================================================================ */
 
+/* Legacy convenience wrapper.
+ * Prefer `alea_find_cell_at()` for single-point queries, or
+ * `alea_find_all_cells()` when hierarchy detail is needed. */
 int alea_find_cell(alea_system_t* sys, double x, double y, double z);
 int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
                             alea_cell_hit_t* hits, size_t max_hits);
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z);
+/* Legacy convenience wrapper.
+ * Prefer `alea_find_cell_at()` for single-point queries. */
 int alea_material_at(alea_system_t* sys, double x, double y, double z);
 int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 
