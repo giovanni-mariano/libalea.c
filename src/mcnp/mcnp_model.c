@@ -156,6 +156,9 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
         }
     }
 
+    /* Keep params synchronized with future cell mutations on the wrapped system. */
+    mcnp_model_register_hooks(model);
+
     return model;
 }
 

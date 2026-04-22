@@ -480,6 +480,40 @@ TEST(model_hooks_sync) {
     mcnp_model_destroy(model);
 }
 
+TEST(model_wrap_hooks_sync) {
+    alea_system_t* sys = alea_system_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat_idx = alea_add_material(sys, 1);
+    ASSERT(mat_idx >= 0);
+
+    int surf_idx = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 5.0);
+    ASSERT(surf_idx >= 0);
+
+    alea_node_id_t root = alea_halfspace(sys, surf_idx, -1);
+    ASSERT(root != ALEA_NODE_ID_INVALID);
+
+    int idx0 = alea_add_cell(sys, 1, root, mat_idx, 1.0, 0);
+    ASSERT(idx0 >= 0);
+
+    mcnp_model_t* model = mcnp_model_wrap(sys);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ((int)model->cell_params_count, 1);
+
+    int idx1 = alea_add_cell(sys, 2, root, 0, 0.0, 0);
+    ASSERT(idx1 >= 0);
+    ASSERT_EQ((int)model->cell_params_count, 2);
+
+    const mcnp_cell_params_t* p1 = mcnp_cell_params_const(model, 1);
+    ASSERT_NOT_NULL(p1);
+    ASSERT_NEAR(p1->imp_n, 1.0, 1e-6);
+    ASSERT_NEAR(p1->imp_p, 1.0, 1e-6);
+    ASSERT_NEAR(p1->imp_e, 1.0, 1e-6);
+
+    mcnp_model_destroy(model);
+    alea_system_destroy(sys);
+}
+
 /* ========================================================================= */
 /* Export without model: defaults used                                       */
 /* ========================================================================= */
