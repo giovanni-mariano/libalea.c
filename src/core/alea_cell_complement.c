@@ -167,7 +167,8 @@ int alea_resolve_cell_complements(alea_system_t* sys) {
     }
     
     if (errors > 0) {
-        ALEA_LOG_WARN("%d cell complement references could not be resolved", errors);
+        ALEA_LOG_ERROR("%d cell complement references could not be resolved", errors);
+        return -1;
     }
     
     if (resolved > 0) {

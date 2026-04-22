@@ -460,8 +460,11 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
     for (size_t i = 0; i < mcnp->cell_count; i++) {
         if (g_alea_interrupted) goto interrupted;
         if (alea_convert_cell(sys, mcnp->cells[i], model) == UINT32_MAX) {
-            ALEA_LOG_WARN("Warning: Failed to convert cell %d\n",
-                    mcnp->cells[i]->cell_id);
+            ALEA_LOG_ERROR("Failed to convert cell %d",
+                           mcnp->cells[i]->cell_id);
+            mcnp_model_destroy(model);
+            mcnp_context_destroy(mcnp);
+            return NULL;
         }
     }
 
@@ -469,7 +472,10 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
         ALEA_LOG_INFO("\nResolving cell complement references...\n");
         int resolved = alea_resolve_cell_complements(sys);
         if (resolved < 0) {
-            ALEA_LOG_ERROR("Error resolving cell complements\n");
+            ALEA_LOG_ERROR("Error resolving cell complements");
+            mcnp_model_destroy(model);
+            mcnp_context_destroy(mcnp);
+            return NULL;
         }
     }
 
@@ -477,14 +483,20 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
     ALEA_LOG_INFO("\nResolving LIKE BUT cells...\n");
     int like_count = alea_resolve_like_cells(sys, model);
     if (like_count < 0) {
-        ALEA_LOG_WARN("Warning: Error resolving LIKE cells\n");
+        ALEA_LOG_ERROR("Error resolving LIKE cells");
+        mcnp_model_destroy(model);
+        mcnp_context_destroy(mcnp);
+        return NULL;
     }
 
     // Apply TRCL transforms to cells
     ALEA_LOG_INFO("\nApplying TRCL transforms...\n");
     int trcl_count = alea_apply_trcl_transforms(sys, model);
     if (trcl_count < 0) {
-        ALEA_LOG_WARN("Warning: Error applying TRCL transforms\n");
+        ALEA_LOG_ERROR("Error applying TRCL transforms");
+        mcnp_model_destroy(model);
+        mcnp_context_destroy(mcnp);
+        return NULL;
     }
 
     // Compute lattice pitch and lower_left from cell bounding boxes
@@ -527,5 +539,4 @@ interrupted:
     mcnp_context_destroy(mcnp);
     return NULL;
 }
-
 

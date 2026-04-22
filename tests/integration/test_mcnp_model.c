@@ -317,6 +317,50 @@ TEST(model_fill_transform) {
 }
 
 /* ========================================================================= */
+/* Fatal geometry errors fail closed                                         */
+/* ========================================================================= */
+
+TEST(model_fail_closed_unresolved_complement) {
+    const char* input =
+        "Complement failure test\n"
+        "1 1 -1.0 -1 #99\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = load_model(input);
+    ASSERT_NULL(model);
+}
+
+TEST(model_fail_closed_like_unknown_template) {
+    const char* input =
+        "LIKE failure test\n"
+        "1 1 -1.0 -1\n"
+        "2 LIKE 99 BUT TRCL=(10 0 0)\n"
+        "3 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = load_model(input);
+    ASSERT_NULL(model);
+}
+
+TEST(model_fail_closed_unknown_trcl_transform) {
+    const char* input =
+        "TRCL failure test\n"
+        "1 1 -1.0 -1 TRCL=99\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = load_model(input);
+    ASSERT_NULL(model);
+}
+
+/* ========================================================================= */
 /* Roundtrip: load → export → reload via model                               */
 /* ========================================================================= */
 

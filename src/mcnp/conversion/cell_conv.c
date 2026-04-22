@@ -855,9 +855,9 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
             /* TRCL references a TRn card */
             const alea_transform_t* tr = alea_get_transform(sys, mp->trcl);
             if (!tr) {
-                ALEA_LOG_WARN("Cell %d: TRCL=%d references unknown transform, skipping",
-                            cell->mc_cell_id, mp->trcl);
-                continue;
+                ALEA_LOG_ERROR("Cell %d: TRCL=%d references unknown transform",
+                               cell->mc_cell_id, mp->trcl);
+                return -1;
             }
             /* Use tr->cosines which has pre-computed direction cosines */
             alea_matrix_from_mcnp(&mat, tr->cosines, tr->value_count, false);
@@ -897,10 +897,10 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
         free(prim_inverted);
 
         if (new_root == ALEA_NODE_ID_INVALID) {
-            ALEA_LOG_WARN("Cell %d: Failed to apply TRCL transform",
-                        cell->mc_cell_id);
+            ALEA_LOG_ERROR("Cell %d: Failed to apply TRCL transform",
+                           cell->mc_cell_id);
             cell->original_root_node_id = ALEA_NODE_ID_INVALID;
-            continue;
+            return -1;
         }
 
         /* Update cell to use transformed tree (for evaluation) */
@@ -947,26 +947,26 @@ int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
         /* Find template cell */
         int template_idx = alea_find_cell_by_id(sys, mp->like_cell_id);
         if (template_idx < 0) {
-            ALEA_LOG_WARN("Cell %d: LIKE references unknown cell %d",
-                        cell->mc_cell_id, mp->like_cell_id);
-            continue;
+            ALEA_LOG_ERROR("Cell %d: LIKE references unknown cell %d",
+                           cell->mc_cell_id, mp->like_cell_id);
+            return -1;
         }
         alea_cell_entry_t* template_cell = &sys->cells.data[template_idx];
 
         /* Template must have valid geometry */
         if (template_cell->root_node_id == ALEA_NODE_ID_INVALID) {
-            ALEA_LOG_WARN("Cell %d: LIKE references cell %d with no geometry",
-                        cell->mc_cell_id, mp->like_cell_id);
-            continue;
+            ALEA_LOG_ERROR("Cell %d: LIKE references cell %d with no geometry",
+                           cell->mc_cell_id, mp->like_cell_id);
+            return -1;
         }
 
         /* Clone the template's CSG tree */
         alea_node_id_t new_root = clone_tree_simple(sys, template_cell->root_node_id);
 
         if (new_root == ALEA_NODE_ID_INVALID) {
-            ALEA_LOG_WARN("Cell %d: Failed to clone geometry from cell %d",
-                        cell->mc_cell_id, mp->like_cell_id);
-            continue;
+            ALEA_LOG_ERROR("Cell %d: Failed to clone geometry from cell %d",
+                           cell->mc_cell_id, mp->like_cell_id);
+            return -1;
         }
 
         /* Update cell with cloned tree */

@@ -203,6 +203,7 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
     const char* current = mf.content;
     const char* end = mf.content + mf.size;
     int line_num = 0;
+    int had_fatal_error = 0;
 
     // --- String builders backed by scratch arena (reclaimed between cards) ---
     str_builder_t line_sb;
@@ -450,11 +451,20 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
             }
         }
 
-        if (!success) { ALEA_LOG_ERROR("ERROR: Parsing failed on logical line starting near line %d.\n", line_num); break; }
+        if (!success) {
+            ALEA_LOG_ERROR("ERROR: Parsing failed on logical line starting near line %d.\n", line_num);
+            had_fatal_error = 1;
+            break;
+        }
         current = peek_pos;
     }
 
     unmap_file(&mf);
+    if (had_fatal_error) {
+        mcnp_context_destroy(ctx);
+        *out_context = NULL;
+        return 0;
+    }
     *out_context = ctx;
     ALEA_LOG_INFO("Parsing complete. Cells: %zu, Surfaces: %zu, Materials: %zu\n", ctx->cell_count, ctx->surface_count, ctx->material_count);
     return 1;
@@ -486,13 +496,13 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
 
     // --- ID, Material, Density using lexer ---
     token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-    if (token_len == 0) { ALEA_LOG_WARN("Truncated cell card: no cell ID"); return 1; }
+    if (token_len == 0) { ALEA_LOG_ERROR("Truncated cell card: no cell ID"); return 0; }
     if (token_len >= sizeof(token_buf)) { ALEA_LOG_WARN("Cell card: token too long (%zu)", token_len); return 0; }
     memcpy(token_buf, token_start, token_len); token_buf[token_len] = '\0';
     cell->cell_id = strtol(token_buf, NULL, 10);
 
     token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-    if (token_len == 0) { ALEA_LOG_WARN("Cell %d: missing material ID", cell->cell_id); return 1; }
+    if (token_len == 0) { ALEA_LOG_ERROR("Cell %d: missing material ID", cell->cell_id); return 0; }
     if (token_len >= sizeof(token_buf)) { ALEA_LOG_WARN("Cell %d: material token too long (%zu)", cell->cell_id, token_len); return 0; }
     memcpy(token_buf, token_start, token_len); token_buf[token_len] = '\0';
 
@@ -508,7 +518,7 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
 
     if (!is_like_card && cell->material_id != 0) {
         token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-        if (token_len == 0) { ALEA_LOG_WARN("Cell %d: missing density for material %d", cell->cell_id, cell->material_id); return 1; }
+        if (token_len == 0) { ALEA_LOG_ERROR("Cell %d: missing density for material %d", cell->cell_id, cell->material_id); return 0; }
         if (token_len >= sizeof(token_buf)) { ALEA_LOG_WARN("Cell %d: density token too long (%zu)", cell->cell_id, token_len); return 0; }
         memcpy(token_buf, token_start, token_len); token_buf[token_len] = '\0';
         cell->density = strtod(token_buf, NULL);
@@ -586,7 +596,7 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
 
     // --- Token 1: J (Surface ID with optional prefix) using lexer ---
     token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-    if (token_len == 0) { ALEA_LOG_WARN("Truncated surface card: no surface ID"); return 1; }
+    if (token_len == 0) { ALEA_LOG_ERROR("Truncated surface card: no surface ID"); return 0; }
 
     // Check for prefixes
     if (*token_start == '*') {
@@ -598,8 +608,8 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
     }
     
     if (token_len == 0 || token_len >= sizeof(token_buf)) {
-        ALEA_LOG_WARN("Surface card: invalid surface ID token (len=%zu)", token_len);
-        return 1;
+        ALEA_LOG_ERROR("Surface card: invalid surface ID token (len=%zu)", token_len);
+        return 0;
     }
     memcpy(token_buf, token_start, token_len);
     token_buf[token_len] = '\0';
@@ -608,7 +618,7 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
     // --- Token 2: Could be N (optional) or A (mnemonic) ---
     const char* next_token_start_pos = cursor;
     token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-    if (token_len == 0) { ALEA_LOG_WARN("Surface %d: missing type mnemonic", surf->surface_id); return 1; }
+    if (token_len == 0) { ALEA_LOG_ERROR("Surface %d: missing type mnemonic", surf->surface_id); return 0; }
 
     // Try to parse as number
     char* endptr;
@@ -627,20 +637,24 @@ static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len)
         }
         // Next token must be mnemonic A
         token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-        if (token_len > 0) {
-            surf->mnemonic = (char*)arena_alloc(&ctx->arena, token_len + 1);
-            memcpy(surf->mnemonic, token_start, token_len);
-            surf->mnemonic[token_len] = '\0';
+        if (token_len == 0) {
+            ALEA_LOG_ERROR("Surface %d: missing type mnemonic", surf->surface_id);
+            return 0;
         }
+        surf->mnemonic = (char*)arena_alloc(&ctx->arena, token_len + 1);
+        memcpy(surf->mnemonic, token_start, token_len);
+        surf->mnemonic[token_len] = '\0';
     } else {
         // Was NOT a number, so it IS the mnemonic A
         cursor = next_token_start_pos; // Rewind
         token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
-        if (token_len > 0) {
-            surf->mnemonic = (char*)arena_alloc(&ctx->arena, token_len + 1);
-            memcpy(surf->mnemonic, token_start, token_len);
-            surf->mnemonic[token_len] = '\0';
+        if (token_len == 0) {
+            ALEA_LOG_ERROR("Surface %d: missing type mnemonic", surf->surface_id);
+            return 0;
         }
+        surf->mnemonic = (char*)arena_alloc(&ctx->arena, token_len + 1);
+        memcpy(surf->mnemonic, token_start, token_len);
+        surf->mnemonic[token_len] = '\0';
     }
     
     // --- Remaining text: coefficients ---

@@ -365,9 +365,33 @@ TEST(parse_missing_surface) {
         "\n"
         "M1 92235.80c 1.0\n";
     mcnp_model_t* model = mcnp_load_string(input, strlen(input));
-    /* Should either fail or handle gracefully */
-    if (model) mcnp_model_destroy(model);
-    /* Test passes if no crash */
+    ASSERT_NULL(model);
+}
+
+TEST(parse_malformed_cell_missing_density) {
+    const char* input =
+        "Test malformed cell\n"
+        "1 1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NULL(model);
+}
+
+TEST(parse_malformed_surface_missing_mnemonic) {
+    const char* input =
+        "Test malformed surface\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NULL(model);
 }
 
 TEST_MAIN()
