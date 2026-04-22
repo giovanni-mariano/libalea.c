@@ -252,6 +252,90 @@ TEST(openmc_fill_universe) {
 }
 
 /* ========================================================================= */
+/* Fail-closed import and graveyard invariants                               */
+/* ========================================================================= */
+
+TEST(openmc_invalid_surface_type_fails) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<model>\n"
+        " <geometry>\n"
+        "  <surface id=\"1\" type=\"not-a-surface\" coeffs=\"0.0 0.0 0.0 5.0\" />\n"
+        "  <cell id=\"1\" material=\"1\" region=\"-1\" />\n"
+        " </geometry>\n"
+        " <materials>\n"
+        "  <material id=\"1\"><nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
+        " </materials>\n"
+        "</model>\n";
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    ASSERT_NULL(omc);
+}
+
+TEST(openmc_invalid_region_fails) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<model>\n"
+        " <geometry>\n"
+        "  <surface id=\"1\" type=\"sphere\" coeffs=\"0.0 0.0 0.0 5.0\" />\n"
+        "  <cell id=\"1\" material=\"1\" region=\"-99\" />\n"
+        " </geometry>\n"
+        " <materials>\n"
+        "  <material id=\"1\"><nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
+        " </materials>\n"
+        "</model>\n";
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    ASSERT_NULL(omc);
+}
+
+TEST(openmc_duplicate_surface_id_fails) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<model>\n"
+        " <geometry>\n"
+        "  <surface id=\"1\" type=\"sphere\" coeffs=\"0.0 0.0 0.0 5.0\" />\n"
+        "  <surface id=\"1\" type=\"sphere\" coeffs=\"10.0 0.0 0.0 5.0\" />\n"
+        "  <cell id=\"1\" material=\"1\" region=\"-1\" />\n"
+        " </geometry>\n"
+        " <materials>\n"
+        "  <material id=\"1\"><nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
+        " </materials>\n"
+        "</model>\n";
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    ASSERT_NULL(omc);
+}
+
+TEST(openmc_vacuum_graveyard_uses_normal_cell_insertion) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<model>\n"
+        " <geometry>\n"
+        "  <surface id=\"1\" type=\"sphere\" coeffs=\"0.0 0.0 0.0 5.0\" boundary=\"vacuum\" />\n"
+        "  <cell id=\"1\" material=\"1\" region=\"-1\" />\n"
+        " </geometry>\n"
+        " <materials>\n"
+        "  <material id=\"1\"><nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
+        " </materials>\n"
+        "</model>\n";
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    ASSERT_NOT_NULL(omc);
+
+    alea_system_t* sys = omc->sys;
+    alea_build_universe_index(sys);
+
+    alea_cell_info_t info;
+    ASSERT_EQ(alea_cell_find_info(sys, 2, &info), 0);
+    ASSERT_EQ(info.material_id, 0);
+
+    int cell_id = -1;
+    int material = -1;
+    ASSERT_EQ(alea_find_cell_lazy(sys, 1.0e6, 0.0, 0.0, &cell_id, &material, NULL), 0);
+    ASSERT_EQ(cell_id, 2);
+    ASSERT_EQ(material, 0);
+
+    openmc_model_destroy(omc);
+}
+
+/* ========================================================================= */
 /* Export roundtrip                                                          */
 /* ========================================================================= */
 

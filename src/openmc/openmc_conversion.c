@@ -926,6 +926,11 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
     /* Create CSG system (uses ALEA_CONFIG_DEFAULT) */
     alea_system_t* sys = alea_system_create();
     if (!sys) return NULL;
+    int fatal_error = 0;
+    size_t rect_lat_count = 0;
+    size_t hex_lat_count = 0;
+    size_t lattice_count = 0;
+    openmc_lattice_t** lattices = NULL;
 
     /* Create arena for temporary allocations */
     arena_t arena;
@@ -948,17 +953,21 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
         int peek_id = openmc_xml_get_attr_int(surfaces[i], "id", -1);
         if (peek_id >= 0 && (size_t)peek_id < region_ctx.surface_map_size &&
             region_ctx.surface_node_map[peek_id].pos_node != ALEA_NODE_ID_INVALID) {
-            ALEA_LOG_WARN("Duplicate surface id=%d, skipping", peek_id);
-            continue;
+            ALEA_LOG_ERROR("Duplicate surface id=%d", peek_id);
+            fatal_error = 1;
+            break;
         }
 
         int surface_id = -1;
         alea_node_id_t neg_node = ALEA_NODE_ID_INVALID;
         alea_node_id_t pos_node = convert_surface(sys, surfaces[i], &surface_id, &neg_node);
-        if (pos_node != ALEA_NODE_ID_INVALID && surface_id >= 0) {
-            openmc_region_register_surface(&region_ctx, surface_id, pos_node, neg_node);
+        if (pos_node == ALEA_NODE_ID_INVALID || surface_id < 0) {
+            fatal_error = 1;
+            break;
         }
+        openmc_region_register_surface(&region_ctx, surface_id, pos_node, neg_node);
     }
+    if (fatal_error) goto fail;
 
     /* ==================== CONVERT MATERIALS ==================== */
     if (materials) {
@@ -975,10 +984,9 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
     }
 
     /* ==================== PARSE LATTICES ==================== */
-    size_t rect_lat_count = openmc_xml_count_children(geometry, "lattice");
-    size_t hex_lat_count = openmc_xml_count_children(geometry, "hex_lattice");
-    size_t lattice_count = rect_lat_count + hex_lat_count;
-    openmc_lattice_t** lattices = NULL;
+    rect_lat_count = openmc_xml_count_children(geometry, "lattice");
+    hex_lat_count = openmc_xml_count_children(geometry, "hex_lattice");
+    lattice_count = rect_lat_count + hex_lat_count;
     if (lattice_count > 0) {
         ALEA_LOG_INFO("Parsing %zu lattices (%zu rect, %zu hex)...",
                      lattice_count, rect_lat_count, hex_lat_count);
@@ -1017,8 +1025,12 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
     openmc_xml_find_children(geometry, "cell", cells, cell_count);
 
     for (size_t i = 0; i < cell_count; i++) {
-        convert_cell(sys, cells[i], &region_ctx);
+        if (convert_cell(sys, cells[i], &region_ctx) < 0) {
+            fatal_error = 1;
+            break;
+        }
     }
+    if (fatal_error) goto fail;
 
     /* ==================== CREATE GRAVEYARD CELL IF NEEDED ==================== */
     /* In OpenMC, vacuum boundaries are explicit on surfaces but no graveyard cell
@@ -1082,25 +1094,25 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                     int graveyard_id = max_cell_id + 1;
 
                     /* Add graveyard cell */
-                    alea_cell_entry_t* graveyard = alea_vec_push_uninit(&sys->cells, alea_cell_entry_t);
-                    if (graveyard) {
-                        memset(graveyard, 0, sizeof(*graveyard));
-                        graveyard->mc_cell_id = graveyard_id;
-                        graveyard->root_node_id = graveyard_root;
-                        graveyard->material_id = 0;
-                        graveyard->material_index = -1;
-                        graveyard->density = 0.0;
-                        graveyard->universe_id = 0;
-                        /* Graveyard identified by vacuum boundary surfaces;
-                           MCNP importances live in mcnp_model_t, not cell entries. */
-
-                        ALEA_LOG_INFO("Created graveyard cell %d from %zu vacuum surfaces",
-                                     graveyard_id, vacuum_surface_count);
+                    int graveyard_idx = alea_add_cell_with_id(sys, graveyard_id,
+                                                              graveyard_root,
+                                                              ALEA_MATERIAL_VOID,
+                                                              0.0, 0);
+                    if (graveyard_idx < 0) {
+                        ALEA_LOG_ERROR("Failed to create graveyard cell %d", graveyard_id);
+                        fatal_error = 1;
+                        goto fail;
                     }
+                    /* Graveyard identified by vacuum boundary surfaces;
+                       MCNP importances live in mcnp_model_t, not cell entries. */
+
+                    ALEA_LOG_INFO("Created graveyard cell %d from %zu vacuum surfaces",
+                                  graveyard_id, vacuum_surface_count);
                 }
             }
         }
     }
+    if (fatal_error) goto fail;
 
     /* ==================== CREATE SYNTHETIC LATTICE CELLS ==================== */
     /* OpenMC has separate <cell fill="10"> + <lattice id="10"> entities.
@@ -1118,33 +1130,43 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             int idx = alea_add_cell_with_id(sys, synth_cell_id,
                                              ALEA_NODE_ID_INVALID,
                                              ALEA_MATERIAL_VOID, 0.0, lat->id);
-            if (idx >= 0) {
-                alea_cell_entry_t* sc = &sys->cells.data[idx];
-                sc->lat_type = lat->lat_type;
-                memcpy(sc->lat_fill_dims, lat->dims, sizeof(lat->dims));
-                if (lat->universes && lat->universe_count > 0) {
-                    sc->lat_fill = malloc(lat->universe_count * sizeof(int));
-                    if (sc->lat_fill) {
-                        memcpy(sc->lat_fill, lat->universes,
-                               lat->universe_count * sizeof(int));
-                        sc->lat_fill_count = lat->universe_count;
-                    }
-                }
-                memcpy(sc->lat_pitch, lat->pitch, sizeof(lat->pitch));
-                memcpy(sc->lat_lower_left, lat->lower_left,
-                       sizeof(lat->lower_left));
-
-                /* Build element geometry so MCNP export can emit a valid cell */
-                alea_node_id_t elem_root = build_lattice_element_tree(sys, lat);
-                if (elem_root != ALEA_NODE_ID_INVALID) {
-                    /* Re-fetch pointer (surface creation may grow vectors) */
-                    sc = &sys->cells.data[idx];
-                    sc->root_node_id = elem_root;
-                }
-
-                ALEA_LOG_DEBUG("Created synthetic lattice cell %d for lattice %d (universe %d)",
-                             synth_cell_id, lat->id, lat->id);
+            if (idx < 0) {
+                ALEA_LOG_ERROR("Failed to create synthetic lattice cell %d for lattice %d",
+                               synth_cell_id, lat->id);
+                fatal_error = 1;
+                break;
             }
+            alea_cell_entry_t* sc = &sys->cells.data[idx];
+            sc->lat_type = lat->lat_type;
+            memcpy(sc->lat_fill_dims, lat->dims, sizeof(lat->dims));
+            if (lat->universes && lat->universe_count > 0) {
+                sc->lat_fill = malloc(lat->universe_count * sizeof(int));
+                if (!sc->lat_fill) {
+                    ALEA_LOG_ERROR("Failed to allocate lattice fill array for lattice %d", lat->id);
+                    fatal_error = 1;
+                    break;
+                }
+                memcpy(sc->lat_fill, lat->universes,
+                       lat->universe_count * sizeof(int));
+                sc->lat_fill_count = lat->universe_count;
+            }
+            memcpy(sc->lat_pitch, lat->pitch, sizeof(lat->pitch));
+            memcpy(sc->lat_lower_left, lat->lower_left,
+                   sizeof(lat->lower_left));
+
+            /* Build element geometry so MCNP export can emit a valid cell */
+            alea_node_id_t elem_root = build_lattice_element_tree(sys, lat);
+            if (elem_root == ALEA_NODE_ID_INVALID) {
+                ALEA_LOG_ERROR("Failed to build synthetic lattice geometry for lattice %d", lat->id);
+                fatal_error = 1;
+                break;
+            }
+            /* Re-fetch pointer (surface creation may grow vectors) */
+            sc = &sys->cells.data[idx];
+            sc->root_node_id = elem_root;
+
+            ALEA_LOG_DEBUG("Created synthetic lattice cell %d for lattice %d (universe %d)",
+                           synth_cell_id, lat->id, lat->id);
         }
         /* Parent cells keep fill_universe → lattice ID (no apply_lattice_to_cell) */
 
@@ -1155,6 +1177,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             }
         }
     }
+    if (fatal_error) goto fail;
 
     /* Cleanup */
     arena_free(&arena);
@@ -1167,6 +1190,18 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                  alea_vec_count(&sys->surfaces), alea_vec_count(&sys->cells), alea_vec_count(&sys->materials));
 
     return sys;
+
+fail:
+    if (lattices && lattice_count > 0) {
+        for (size_t i = 0; i < lattice_count; i++) {
+            if (lattices[i] && lattices[i]->universes) {
+                free(lattices[i]->universes);
+            }
+        }
+    }
+    arena_free(&arena);
+    alea_system_destroy(sys);
+    return NULL;
 }
 
 /* ============================================================================
