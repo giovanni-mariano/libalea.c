@@ -9,6 +9,7 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_mcnp.h"
+#include "core/alea_system.h"
 
 /* ------------------------------------------------------------------------- */
 /* System Lifecycle Tests                                                     */
@@ -79,6 +80,23 @@ TEST(primitive_sphere) {
 
     ASSERT_EQ(alea_find_cell(sys, 0, 0, 0), cell);
     ASSERT_EQ(alea_find_cell(sys, 5, 0, 0), -1);
+
+    alea_destroy(sys);
+}
+
+TEST(primitive_ref_count_tracks_nodes_only) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int s1 = alea_sphere_surface(sys, 0, 0, 0, 0, 2.0);
+    ASSERT(s1 >= 0);
+    ASSERT_EQ(alea_vec_count(&sys->primitives), 1);
+    ASSERT_EQ(sys->primitives.data[0].ref_count, 2);
+
+    int s2 = alea_sphere_surface(sys, 0, 0, 0, 0, 2.0);
+    ASSERT(s2 >= 0);
+    ASSERT_EQ(alea_vec_count(&sys->primitives), 1);
+    ASSERT_EQ(sys->primitives.data[0].ref_count, 4);
 
     alea_destroy(sys);
 }

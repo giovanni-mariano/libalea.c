@@ -353,8 +353,8 @@ alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
                                                   type, data, hash, &match_inverted);
 
     if (existing != UINT32_MAX) {
-        // Found duplicate!
-        sys->primitives.data[existing].ref_count++;
+        // Found duplicate. Reusing a primitive does not change node ownership;
+        // ref_count tracks only primitive nodes that actually reference it.
         sys->stats.dedup_hits++;
         sys->stats.dedup_saved_bytes += sizeof(alea_primitive_entry_t);
 
@@ -391,7 +391,7 @@ alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
 
     prim->type = type;
     prim->data = *data;
-    prim->ref_count = 1;
+    prim->ref_count = 0;
 
     // Add to hash table
     primitive_hash_table_insert(sys->primitive_index, id, hash);
