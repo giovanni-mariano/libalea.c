@@ -26,6 +26,24 @@
 #include "alea_openmc.h"
 #include "alea_raycast.h"
 
+static void fuzz_check_cell_lookup(alea_system_t *sys, size_t limit) {
+    size_t n_cells = alea_cell_count(sys);
+    for (size_t i = 0; i < n_cells && i < limit; i++) {
+        alea_cell_info_t info;
+        if (alea_cell_get_info(sys, i, &info) != 0) abort();
+
+        alea_cell_info_t by_id;
+        if (alea_cell_find_info(sys, info.cell_id, &by_id) != 0) abort();
+        if (by_id.cell_id != info.cell_id) abort();
+        if (by_id.root != info.root) abort();
+    }
+}
+
+static void fuzz_check_mcnp_model_sync(mcnp_model_t *model) {
+    if (!model || !model->sys) abort();
+    if (model->cell_params_count != alea_cell_count(model->sys)) abort();
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     /* Skip empty or huge inputs */
     if (size == 0 || size > 1024 * 1024) return 0;
@@ -34,6 +52,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     mcnp_model_t *model = mcnp_load_string((const char *)data, size);
     if (!model) return 0;
     alea_system_t *sys = model->sys;
+    fuzz_check_mcnp_model_sync(model);
 
     /* ========================================================================
      * Phase 1: Indexing
@@ -53,6 +72,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         alea_cell_info_t info;
         alea_cell_get_info(sys, i, &info);
     }
+    fuzz_check_cell_lookup(sys, 32);
 
     /* ========================================================================
      * Phase 3: Point queries
@@ -73,6 +93,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
         alea_find_cell(sys, x, y, z);
         alea_material_at(sys, x, y, z);
+
+        int cell_id = -1;
+        int material_id = -1;
+        alea_find_cell_at(sys, x, y, z, &cell_id, &material_id);
 
         alea_cell_hit_t hits[16];
         alea_find_all_cells(sys, x, y, z, hits, 16);
@@ -137,6 +161,24 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (n_cells > 0 && n_cells < 1000) {
         alea_system_t *copy = alea_clone(sys);
         if (copy) {
+            mcnp_model_t *wrapped = mcnp_model_wrap(copy);
+            if (wrapped) {
+                fuzz_check_mcnp_model_sync(wrapped);
+
+                alea_cell_info_t info;
+                if (alea_cell_get_info(copy, 0, &info) == 0 &&
+                    info.root != ALEA_NODE_ID_INVALID) {
+                    int new_id = 1000000000 - (int)n_cells;
+                    if (alea_add_cell(copy, new_id, info.root,
+                                      ALEA_MATERIAL_VOID, 0.0,
+                                      info.universe_id) >= 0) {
+                        fuzz_check_mcnp_model_sync(wrapped);
+                    }
+                }
+
+                mcnp_model_destroy(wrapped);
+            }
+
             alea_flatten(copy, 0);
 
             /* Simplify the flattened geometry */

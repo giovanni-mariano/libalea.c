@@ -26,26 +26,24 @@
 #include "alea_openmc.h"
 #include "alea_raycast.h"
 
+static void fuzz_check_cell_lookup(alea_system_t *sys, size_t limit) {
+    size_t n_cells = alea_cell_count(sys);
+    for (size_t i = 0; i < n_cells && i < limit; i++) {
+        alea_cell_info_t info;
+        if (alea_cell_get_info(sys, i, &info) != 0) abort();
+
+        alea_cell_info_t by_id;
+        if (alea_cell_find_info(sys, info.cell_id, &by_id) != 0) abort();
+        if (by_id.cell_id != info.cell_id) abort();
+        if (by_id.root != info.root) abort();
+    }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     /* Skip empty or huge inputs */
     if (size == 0 || size > 1024 * 1024) return 0;
 
-    /* OpenMC parser needs a file, so write to temp file */
-    char tmpname[] = "/tmp/fuzz_openmc_XXXXXX";
-    int fd = mkstemp(tmpname);
-    if (fd < 0) return 0;
-
-    if (write(fd, data, size) != (ssize_t)size) {
-        close(fd);
-        unlink(tmpname);
-        return 0;
-    }
-    close(fd);
-
-    /* Parse the XML */
-    openmc_model_t *omc_model = openmc_load(tmpname);
-    unlink(tmpname);
-
+    openmc_model_t *omc_model = openmc_load_string((const char *)data, size);
     if (!omc_model) return 0;
     alea_system_t *sys = omc_model->sys;
 
@@ -66,6 +64,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         alea_cell_info_t info;
         alea_cell_get_info(sys, i, &info);
     }
+    fuzz_check_cell_lookup(sys, 32);
 
     /* ========================================================================
      * Phase 3: Point queries
@@ -84,6 +83,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
         alea_find_cell(sys, x, y, z);
         alea_material_at(sys, x, y, z);
+
+        int cell_id = -1;
+        int material_id = -1;
+        alea_find_cell_at(sys, x, y, z, &cell_id, &material_id);
 
         alea_cell_hit_t hits[16];
         alea_find_all_cells(sys, x, y, z, hits, 16);

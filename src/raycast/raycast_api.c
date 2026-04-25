@@ -18,6 +18,7 @@
 #define _USE_MATH_DEFINES
 #include "alea.h"
 #include "raycast.h"
+#include "bvh.h"
 #include "core/alea_system.h"
 #include "core/alea_spatial.h"
 #include "primitives/bbox.h"
@@ -274,9 +275,14 @@ int alea_remove_cells_by_volume(alea_system_t* sys,
     int removed = 0;
     for (size_t i = 0; i < n_cells; i++) {
         if (volumes[i] <= threshold) {
+            if (sys->on_cell_removed)
+                sys->on_cell_removed(sys->cell_hook_userdata, i);
             free(sys->cells.data[i].surface_indices);
-            free(sys->cells.data[i].neighbors);
+            if (!sys->neighbor_pool)
+                free(sys->cells.data[i].neighbors);
             free(sys->cells.data[i].lat_fill);
+            free(sys->cells.data[i].comments);
+            free(sys->cells.data[i].inline_comment);
             removed++;
         } else {
             if (write != i)
@@ -285,6 +291,45 @@ int alea_remove_cells_by_volume(alea_system_t* sys,
         }
     }
     sys->cells.count = write;
+
+    if (removed > 0) {
+        cell_hashmap_clear(&sys->cell_index);
+        for (size_t i = 0; i < write; i++) {
+            cell_hashmap_put(&sys->cell_index,
+                             sys->cells.data[i].mc_cell_id,
+                             (int)i);
+            free(sys->cells.data[i].surface_indices);
+            sys->cells.data[i].surface_indices = NULL;
+            sys->cells.data[i].surface_index_count = 0;
+            if (!sys->neighbor_pool)
+                free(sys->cells.data[i].neighbors);
+            sys->cells.data[i].neighbors = NULL;
+            sys->cells.data[i].neighbor_count = 0;
+        }
+
+        free(sys->neighbor_pool);
+        sys->neighbor_pool = NULL;
+        sys->cell_adjacency_built = false;
+
+        for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
+            alea_vec_free(&sys->universes.data[i].cell_indices);
+        }
+        alea_vec_clear(&sys->universes);
+        universe_hashmap_clear(&sys->universe_index);
+        sys->universe_index_built = false;
+
+        if (sys->spatial_index) {
+            alea_spatial_index_free(sys->spatial_index);
+            sys->spatial_index = NULL;
+        }
+        alea_spatial_reset_cache();
+
+        if (sys->surface_bvh) {
+            alea_bvh_free(sys->surface_bvh);
+            sys->surface_bvh = NULL;
+        }
+        sys->bvh_dirty = true;
+    }
 
     return removed;
 }
