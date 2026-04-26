@@ -42,6 +42,29 @@ static double parse_coefficient(const char** cursor) {
     return value;
 }
 
+static bool torus_is_sphere(double major_radius, double axial_semiwidth,
+                            double minor_radius) {
+    if (axial_semiwidth <= 0.0 || minor_radius <= 0.0) return false;
+
+    double scale = fmax(fabs(axial_semiwidth), fabs(minor_radius));
+    if (scale < 1.0) scale = 1.0;
+    const double eps = 1e-12 * scale;
+
+    return fabs(major_radius) <= eps &&
+           fabs(axial_semiwidth - minor_radius) <= eps;
+}
+
+static void set_sphere_from_torus(alea_primitive_type_t* out_type,
+                                  alea_primitive_data_t* out_data,
+                                  double cx, double cy, double cz,
+                                  double radius) {
+    *out_type = ALEA_PRIMITIVE_SPHERE;
+    out_data->sphere.center_x = cx;
+    out_data->sphere.center_y = cy;
+    out_data->sphere.center_z = cz;
+    out_data->sphere.radius = radius;
+}
+
 /**
  * @brief Count how many valid numeric coefficients exist in a string
  */
@@ -776,34 +799,64 @@ static bool surface_to_primitive(
     // ========================================================================
     
     } else if (alea_strcasecmp(mnemonic, "tx") == 0) {
-        *out_type = ALEA_PRIMITIVE_TORUS_X;
-        out_data->torus.axis = ALEA_AXIS_X;
-        out_data->torus.center_x = parse_coefficient(&cursor);
-        out_data->torus.center_y = parse_coefficient(&cursor);
-        out_data->torus.center_z = parse_coefficient(&cursor);
-        out_data->torus.major_radius = parse_coefficient(&cursor);
-        out_data->torus.axial_semiwidth_B = parse_coefficient(&cursor);
-        out_data->torus.minor_radius = parse_coefficient(&cursor);
+        double cx = parse_coefficient(&cursor);
+        double cy = parse_coefficient(&cursor);
+        double cz = parse_coefficient(&cursor);
+        double major_radius = parse_coefficient(&cursor);
+        double axial_semiwidth = parse_coefficient(&cursor);
+        double minor_radius = parse_coefficient(&cursor);
+        if (torus_is_sphere(major_radius, axial_semiwidth, minor_radius)) {
+            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth);
+        } else {
+            *out_type = ALEA_PRIMITIVE_TORUS_X;
+            out_data->torus.axis = ALEA_AXIS_X;
+            out_data->torus.center_x = cx;
+            out_data->torus.center_y = cy;
+            out_data->torus.center_z = cz;
+            out_data->torus.major_radius = major_radius;
+            out_data->torus.axial_semiwidth_B = axial_semiwidth;
+            out_data->torus.minor_radius = minor_radius;
+        }
     
     } else if (alea_strcasecmp(mnemonic, "ty") == 0) {
-        *out_type = ALEA_PRIMITIVE_TORUS_Y;
-        out_data->torus.axis = ALEA_AXIS_Y;
-        out_data->torus.center_x = parse_coefficient(&cursor);
-        out_data->torus.center_y = parse_coefficient(&cursor);
-        out_data->torus.center_z = parse_coefficient(&cursor);
-        out_data->torus.major_radius = parse_coefficient(&cursor);
-        out_data->torus.axial_semiwidth_B = parse_coefficient(&cursor);
-        out_data->torus.minor_radius = parse_coefficient(&cursor);
+        double cx = parse_coefficient(&cursor);
+        double cy = parse_coefficient(&cursor);
+        double cz = parse_coefficient(&cursor);
+        double major_radius = parse_coefficient(&cursor);
+        double axial_semiwidth = parse_coefficient(&cursor);
+        double minor_radius = parse_coefficient(&cursor);
+        if (torus_is_sphere(major_radius, axial_semiwidth, minor_radius)) {
+            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth);
+        } else {
+            *out_type = ALEA_PRIMITIVE_TORUS_Y;
+            out_data->torus.axis = ALEA_AXIS_Y;
+            out_data->torus.center_x = cx;
+            out_data->torus.center_y = cy;
+            out_data->torus.center_z = cz;
+            out_data->torus.major_radius = major_radius;
+            out_data->torus.axial_semiwidth_B = axial_semiwidth;
+            out_data->torus.minor_radius = minor_radius;
+        }
     
     } else if (alea_strcasecmp(mnemonic, "tz") == 0) {
-        *out_type = ALEA_PRIMITIVE_TORUS_Z;
-        out_data->torus.axis = ALEA_AXIS_Z;
-        out_data->torus.center_x = parse_coefficient(&cursor);
-        out_data->torus.center_y = parse_coefficient(&cursor);
-        out_data->torus.center_z = parse_coefficient(&cursor);
-        out_data->torus.major_radius = parse_coefficient(&cursor);
-        out_data->torus.axial_semiwidth_B = parse_coefficient(&cursor);
-        out_data->torus.minor_radius = parse_coefficient(&cursor);
+        double cx = parse_coefficient(&cursor);
+        double cy = parse_coefficient(&cursor);
+        double cz = parse_coefficient(&cursor);
+        double major_radius = parse_coefficient(&cursor);
+        double axial_semiwidth = parse_coefficient(&cursor);
+        double minor_radius = parse_coefficient(&cursor);
+        if (torus_is_sphere(major_radius, axial_semiwidth, minor_radius)) {
+            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth);
+        } else {
+            *out_type = ALEA_PRIMITIVE_TORUS_Z;
+            out_data->torus.axis = ALEA_AXIS_Z;
+            out_data->torus.center_x = cx;
+            out_data->torus.center_y = cy;
+            out_data->torus.center_z = cz;
+            out_data->torus.major_radius = major_radius;
+            out_data->torus.axial_semiwidth_B = axial_semiwidth;
+            out_data->torus.minor_radius = minor_radius;
+        }
     
     // ========================================================================
     // QUADRIC SURFACES
@@ -892,26 +945,27 @@ int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* surf) {
         
         const alea_transform_t* tr = alea_get_transform(sys, surf->transform_id);
         
-        if (tr) {
-            
-            if (!alea_apply_transform_to_primitive(tr, local_type, &local_data,
-                                                   &global_type, &global_data)) {
-                // Transform failed (e.g., rotated box not supported)
-                // Fall back to keeping local coords with transform reference
-                ALEA_LOG_WARN("Could not apply transform %d to surface %d, "
-                        "keeping local coordinates", surf->transform_id, surf->surface_id);
-                global_type = local_type;
-                global_data = local_data;
-            } else {
-                transform_applied = true;
-                if (global_type != local_type) {
-                    ALEA_LOG_INFO("Surface %d: transformed from type %d to type %d",
-                           surf->surface_id, local_type, global_type);
-                }
-            }
-        } else {
-            ALEA_LOG_WARN("Transform %d not found for surface %d",
-                    surf->transform_id, surf->surface_id);
+        if (!tr) {
+            sys->stats.failed_surfaces++;
+            alea_set_error_detail(ALEA_ERR_INVALID_ID,
+                    "Surface %d references unknown transform TR%d",
+                    surf->surface_id, surf->transform_id);
+            return -1;
+        }
+
+        if (!alea_apply_transform_to_primitive(tr, local_type, &local_data,
+                                               &global_type, &global_data)) {
+            sys->stats.failed_surfaces++;
+            alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                    "Surface %d uses transform TR%d, but primitive type %d cannot be transformed exactly",
+                    surf->surface_id, surf->transform_id, local_type);
+            return -1;
+        }
+
+        transform_applied = true;
+        if (global_type != local_type) {
+            ALEA_LOG_INFO("Surface %d: transformed from type %d to type %d",
+                   surf->surface_id, local_type, global_type);
         }
     }
     

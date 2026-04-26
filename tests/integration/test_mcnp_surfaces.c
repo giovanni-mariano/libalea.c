@@ -509,6 +509,60 @@ TEST(roundtrip_ty) {
     ASSERT(roundtrip_surface(input, "TY", 5.0, 0, 0, 0, 0, 0));
 }
 
+TEST(degenerate_torus_becomes_sphere) {
+    const char* input =
+        "Test degenerate torus sphere\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 TZ 1.0 2.0 3.0 0.0 2.0 2.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), 1);
+
+    alea_primitive_id_t prim_id = sys->surfaces.data[0].primitive_id;
+    ASSERT_EQ(sys->primitives.data[prim_id].type, ALEA_PRIMITIVE_SPHERE);
+    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.center_x, 1.0, 1e-12);
+    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.center_y, 2.0, 1e-12);
+    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.center_z, 3.0, 1e-12);
+    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.radius, 2.0, 1e-12);
+
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_material_at(sys, 1.0, 2.0, 3.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 4.0, 2.0, 3.0), 0);
+    mcnp_model_destroy(model);
+}
+
+TEST(transformed_degenerate_torus_becomes_sphere) {
+    const char* input =
+        "Test transformed degenerate torus sphere\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 1 TZ 0.0 0.0 0.0 0.0 1.0 1.0\n"
+        "\n"
+        "TR1 0 0 0  1 0 0  0 0.7071067811865476 0.7071067811865476  0 -0.7071067811865476 0.7071067811865476\n"
+        "M1 92235.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), 1);
+
+    alea_primitive_id_t prim_id = sys->surfaces.data[0].primitive_id;
+    ASSERT_EQ(sys->primitives.data[prim_id].type, ALEA_PRIMITIVE_SPHERE);
+    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.radius, 1.0, 1e-12);
+
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_material_at(sys, 0.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 2.0, 0.0, 0.0), 0);
+    mcnp_model_destroy(model);
+}
+
 /* ========================================================================= */
 /* Macrobody tests                                                           */
 /* ========================================================================= */
@@ -682,6 +736,38 @@ TEST(surface_with_transform) {
         "M1 92235.80c 1.0\n";
     /* Sphere centered at (10,0,0) due to TR1 */
     ASSERT(roundtrip_surface(input, "surface_TR", 10.0, 0, 0, 0, 0, 0));
+}
+
+TEST(surface_with_unknown_transform_fails) {
+    const char* input =
+        "Test unknown surface TR\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 99 SO 5.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NULL(model);
+    ASSERT_NOT_NULL(strstr(alea_error(), "Surface 1 references unknown transform TR99"));
+}
+
+TEST(surface_with_unsupported_transform_fails) {
+    const char* input =
+        "Test unsupported surface TR\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 1 TZ 0.0 0.0 0.0 5.0 1.0 1.0\n"
+        "\n"
+        "TR1 0 0 0  1 0 0  0 0.7071067811865476 0.7071067811865476  0 -0.7071067811865476 0.7071067811865476\n"
+        "M1 92235.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NULL(model);
+    ASSERT_NOT_NULL(strstr(alea_error(), "Surface 1 uses transform TR1"));
+    ASSERT_NOT_NULL(strstr(alea_error(), "cannot be transformed exactly"));
 }
 
 TEST_MAIN()
