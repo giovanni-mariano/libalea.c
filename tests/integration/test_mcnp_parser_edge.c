@@ -305,6 +305,40 @@ TEST(transform_card_angles) {
     mcnp_model_destroy(model);
 }
 
+TEST(transform_card_m_flag_identity) {
+    const char* input =
+        "Test TR m flag\n"
+        "1 1 -1.0 -1 TRCL=1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "TR1 10 0 0 1 0 0 0 1 0 0 0 1 1\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_material_at(model->sys, 10, 0, 0), 1);
+    ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 0);
+    mcnp_model_destroy(model);
+}
+
+TEST(transform_card_m_minus_one) {
+    const char* input =
+        "Test TR m=-1\n"
+        "1 1 -1.0 -1 TRCL=1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "TR1 -10 0 0 1 0 0 0 1 0 0 0 1 -1\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_material_at(model->sys, 10, 0, 0), 1);
+    ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 0);
+    mcnp_model_destroy(model);
+}
+
 /* ========================================================================= */
 /* Empty parameter tests                                                     */
 /* ========================================================================= */

@@ -570,14 +570,248 @@ static void populate_transform_data(alea_transform_t* tr, const double* data,
     }
 }
 
+static double local_vec3_dot(const double a[3], const double b[3]) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+static void local_vec3_cross(const double a[3], const double b[3], double out[3]) {
+    out[0] = a[1]*b[2] - a[2]*b[1];
+    out[1] = a[2]*b[0] - a[0]*b[2];
+    out[2] = a[0]*b[1] - a[1]*b[0];
+}
+
+static bool local_vec3_normalize(double v[3]) {
+    double n2 = local_vec3_dot(v, v);
+    if (n2 <= 1e-24 || !isfinite(n2)) return false;
+    double inv_n = 1.0 / sqrt(n2);
+    v[0] *= inv_n;
+    v[1] *= inv_n;
+    v[2] *= inv_n;
+    return true;
+}
+
+static bool complete_one_vector(const double* r, double R[9]) {
+    double c0[3] = {r[0], r[1], r[2]};
+    if (!local_vec3_normalize(c0)) return false;
+
+    double helper[3] = {1.0, 0.0, 0.0};
+    if (fabs(c0[0]) < fabs(c0[1]) && fabs(c0[0]) < fabs(c0[2])) {
+        helper[0] = 1.0; helper[1] = 0.0; helper[2] = 0.0;
+    } else if (fabs(c0[1]) < fabs(c0[2])) {
+        helper[0] = 0.0; helper[1] = 1.0; helper[2] = 0.0;
+    } else {
+        helper[0] = 0.0; helper[1] = 0.0; helper[2] = 1.0;
+    }
+
+    double c1[3], c2[3];
+    local_vec3_cross(helper, c0, c1);
+    if (!local_vec3_normalize(c1)) return false;
+    local_vec3_cross(c0, c1, c2);
+    if (!local_vec3_normalize(c2)) return false;
+
+    R[0] = c0[0]; R[1] = c0[1]; R[2] = c0[2];
+    R[3] = c1[0]; R[4] = c1[1]; R[5] = c1[2];
+    R[6] = c2[0]; R[7] = c2[1]; R[8] = c2[2];
+    return true;
+}
+
+static bool complete_two_vectors(const double* r, double R[9]) {
+    double c0[3] = {r[0], r[1], r[2]};
+    double c1[3] = {r[3], r[4], r[5]};
+    if (!local_vec3_normalize(c0) || !local_vec3_normalize(c1)) return false;
+    if (fabs(local_vec3_dot(c0, c1)) > 1e-8) return false;
+
+    double c2[3];
+    local_vec3_cross(c0, c1, c2);
+    if (!local_vec3_normalize(c2)) return false;
+
+    R[0] = c0[0]; R[1] = c0[1]; R[2] = c0[2];
+    R[3] = c1[0]; R[4] = c1[1]; R[5] = c1[2];
+    R[6] = c2[0]; R[7] = c2[1]; R[8] = c2[2];
+    return true;
+}
+
+static bool complete_five_values(const double* r, double R[9]) {
+    double c0[3] = {r[0], r[1], r[2]};
+    if (!local_vec3_normalize(c0)) return false;
+    if (fabs(c0[2]) < 1e-12) return false;
+
+    double c1[3] = {r[3], r[4], 0.0};
+    c1[2] = -(c0[0]*c1[0] + c0[1]*c1[1]) / c0[2];
+    if (!local_vec3_normalize(c1)) return false;
+    if (fabs(local_vec3_dot(c0, c1)) > 1e-8) return false;
+
+    double c2[3];
+    local_vec3_cross(c0, c1, c2);
+    if (!local_vec3_normalize(c2)) return false;
+
+    R[0] = c0[0]; R[1] = c0[1]; R[2] = c0[2];
+    R[3] = c1[0]; R[4] = c1[1]; R[5] = c1[2];
+    R[6] = c2[0]; R[7] = c2[1]; R[8] = c2[2];
+    return true;
+}
+
+int alea_normalize_mcnp_transform_values(const double* data, int value_count,
+                                        int degrees, double out[12],
+                                        int* out_count) {
+    if (!data || !out || !out_count || value_count < 3 || value_count > 13) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "transform: value_count must be between 3 and 13, got %d",
+                value_count);
+        return -1;
+    }
+
+    for (int i = 0; i < value_count; i++) {
+        if (!isfinite(data[i])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                    "transform: value %d is not finite", i);
+            return -1;
+        }
+    }
+
+    int m = 1;
+    int count = value_count;
+    int rot_count = count - 3;
+    if ((count == 4 || count == 7 || count == 9 || count == 10 || count == 13) &&
+        (data[count - 1] == 1.0 || data[count - 1] == -1.0)) {
+        m = (int)data[count - 1];
+        count--;
+        rot_count = count - 3;
+    }
+
+    if (rot_count != 0 && rot_count != 3 && rot_count != 5 &&
+        rot_count != 6 && rot_count != 9) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "transform: expected 0, 3, 5, 6, or 9 rotation entries, got %d",
+                rot_count);
+        return -1;
+    }
+
+    double R[9] = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    double r[9] = {0};
+    for (int i = 0; i < rot_count; i++) {
+        r[i] = degrees ? cos(DEG_TO_RAD(data[3 + i])) : data[3 + i];
+        if (!isfinite(r[i])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                    "transform: rotation entry %d is not finite", i);
+            return -1;
+        }
+    }
+
+    bool ok = true;
+    if (rot_count == 9) {
+        memcpy(R, r, sizeof(R));
+    } else if (rot_count == 6) {
+        ok = complete_two_vectors(r, R);
+    } else if (rot_count == 5) {
+        ok = complete_five_values(r, R);
+    } else if (rot_count == 3) {
+        ok = complete_one_vector(r, R);
+    }
+    if (!ok) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "transform: could not complete partial rotation matrix");
+        return -1;
+    }
+
+    double d[3] = {data[0], data[1], data[2]};
+    double T[3];
+    if (m == -1) {
+        T[0] = -(R[0]*d[0] + R[3]*d[1] + R[6]*d[2]);
+        T[1] = -(R[1]*d[0] + R[4]*d[1] + R[7]*d[2]);
+        T[2] = -(R[2]*d[0] + R[5]*d[1] + R[8]*d[2]);
+    } else {
+        T[0] = d[0];
+        T[1] = d[1];
+        T[2] = d[2];
+    }
+
+    out[0] = T[0]; out[1] = T[1]; out[2] = T[2];
+    if (rot_count == 0) {
+        *out_count = 3;
+        for (int i = 3; i < 12; i++) out[i] = 0.0;
+        return 0;
+    }
+
+    for (int i = 0; i < 9; i++) out[3 + i] = R[i];
+    *out_count = 12;
+    return 0;
+}
+
+static bool validate_transform_values(const char* caller, const double* data,
+                                      int value_count, int degrees) {
+    if (value_count < 1 || value_count > 12 ||
+        (value_count > 3 && value_count != 12)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "%s: value_count must be 1-3 for translation or 12 for rotation, got %d",
+                caller, value_count);
+        return false;
+    }
+
+    for (int i = 0; i < value_count; i++) {
+        if (!isfinite(data[i])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                    "%s: transform value %d is not finite", caller, i);
+            return false;
+        }
+    }
+
+    if (value_count <= 3) return true;
+
+    double b[9];
+    for (int i = 0; i < 9; i++) {
+        b[i] = degrees ? cos(DEG_TO_RAD(data[3 + i])) : data[3 + i];
+        if (!isfinite(b[i])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                    "%s: transform cosine %d is not finite", caller, i);
+            return false;
+        }
+    }
+
+    /* MCNP stores the three auxiliary basis vectors as columns:
+     * [b1,b2,b3], [b4,b5,b6], [b7,b8,b9]. */
+    double c0[3] = {b[0], b[1], b[2]};
+    double c1[3] = {b[3], b[4], b[5]};
+    double c2[3] = {b[6], b[7], b[8]};
+    double n0 = c0[0]*c0[0] + c0[1]*c0[1] + c0[2]*c0[2];
+    double n1 = c1[0]*c1[0] + c1[1]*c1[1] + c1[2]*c1[2];
+    double n2 = c2[0]*c2[0] + c2[1]*c2[1] + c2[2]*c2[2];
+    double d01 = c0[0]*c1[0] + c0[1]*c1[1] + c0[2]*c1[2];
+    double d02 = c0[0]*c2[0] + c0[1]*c2[1] + c0[2]*c2[2];
+    double d12 = c1[0]*c2[0] + c1[1]*c2[1] + c1[2]*c2[2];
+    double det = c0[0]*(c1[1]*c2[2] - c1[2]*c2[1])
+               - c1[0]*(c0[1]*c2[2] - c0[2]*c2[1])
+               + c2[0]*(c0[1]*c1[2] - c0[2]*c1[1]);
+    const double tol = 1e-8;
+
+    if (fabs(n0 - 1.0) > tol || fabs(n1 - 1.0) > tol ||
+        fabs(n2 - 1.0) > tol || fabs(d01) > tol ||
+        fabs(d02) > tol || fabs(d12) > tol ||
+        fabs(fabs(det) - 1.0) > tol) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "%s: transform rotation must be finite, orthonormal, and invertible "
+                "(norms %.12g %.12g %.12g, dots %.12g %.12g %.12g, det %.12g)",
+                caller, n0, n1, n2, d01, d02, d12, det);
+        return false;
+    }
+
+    return true;
+}
+
 int alea_add_transform(alea_system_t* sys, int transform_id,
                       const double* data, int value_count, int degrees) {
     if (!sys || !data) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "alea_add_transform: NULL argument");
         return -1;
     }
-    if (value_count != 3 && value_count != 12) {
-        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "alea_add_transform: value_count must be 3 or 12, got %d", value_count);
+    double normalized[12];
+    int normalized_count = 0;
+    if (alea_normalize_mcnp_transform_values(data, value_count, degrees,
+                                             normalized, &normalized_count) != 0) {
+        return -1;
+    }
+    if (!validate_transform_values("alea_add_transform", normalized,
+                                   normalized_count, 0)) {
         return -1;
     }
 
@@ -586,9 +820,9 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
         if (sys->transforms.data[i].transform_id == transform_id) {
             // Update existing transform
             alea_transform_t* tr = &sys->transforms.data[i];
-            populate_transform_data(tr, data, value_count, degrees);
-            tr->value_count = value_count;
-            tr->degrees = degrees;
+            populate_transform_data(tr, normalized, normalized_count, 0);
+            tr->value_count = normalized_count;
+            tr->degrees = 0;
             return 0;
         }
     }
@@ -601,15 +835,15 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
     }
 
     tr->transform_id = transform_id;
-    tr->value_count = value_count;
-    tr->degrees = degrees;
+    tr->value_count = normalized_count;
+    tr->degrees = 0;
     tr->from_inline = 0;
 
-    populate_transform_data(tr, data, value_count, degrees);
+    populate_transform_data(tr, normalized, normalized_count, 0);
 
     ALEA_LOG_INFO("Added transform TR%d (%d values, %s)",
            transform_id, value_count,
-           degrees ? "degrees" : "cosines");
+           "normalized cosines");
 
     return 0;
 }
@@ -620,27 +854,33 @@ int alea_add_inline_transform(alea_system_t* sys, const double* data,
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "alea_add_inline_transform: NULL argument");
         return -1;
     }
-    if (value_count < 1 || value_count > 12) {
-        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "alea_add_inline_transform: value_count must be 1-12, got %d", value_count);
+    double normalized[12];
+    int normalized_count = 0;
+    if (alea_normalize_mcnp_transform_values(data, value_count, degrees,
+                                             normalized, &normalized_count) != 0) {
+        return -1;
+    }
+    if (!validate_transform_values("alea_add_inline_transform", normalized,
+                                   normalized_count, 0)) {
         return -1;
     }
 
     // Build candidate cosines for comparison
     alea_transform_t candidate;
     memset(&candidate, 0, sizeof(candidate));
-    candidate.value_count = value_count;
-    candidate.degrees = degrees;
-    populate_transform_data(&candidate, data, value_count, degrees);
+    candidate.value_count = normalized_count;
+    candidate.degrees = 0;
+    populate_transform_data(&candidate, normalized, normalized_count, 0);
 
     // Deduplicate: scan existing inline transforms for a match on cosines
     static const double TRANSFORM_TOL = 1e-10;
     for (size_t i = 0; i < alea_vec_count(&sys->transforms); i++) {
         const alea_transform_t* existing = &sys->transforms.data[i];
         if (!existing->from_inline) continue;
-        if (existing->value_count != value_count) continue;
+        if (existing->value_count != normalized_count) continue;
 
         bool match = true;
-        for (int j = 0; j < value_count; j++) {
+        for (int j = 0; j < normalized_count; j++) {
             if (fabs(existing->cosines[j] - candidate.cosines[j]) > TRANSFORM_TOL) {
                 match = false;
                 break;
@@ -670,8 +910,8 @@ int alea_add_inline_transform(alea_system_t* sys, const double* data,
     memcpy(tr->cosines, candidate.cosines, sizeof(tr->cosines));
 
     ALEA_LOG_INFO("Added inline transform (assigned ID %d, %d values, %s)",
-           assigned_id, value_count,
-           degrees ? "degrees" : "cosines");
+           assigned_id, normalized_count,
+           "normalized cosines");
 
     return assigned_id;
 }

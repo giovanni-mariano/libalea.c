@@ -218,10 +218,14 @@ static void count_instances_recursive(count_ctx_t* ctx,
                 const alea_transform_t* tr = alea_get_transform(ctx->sys,
                                                               cell->fill_transform);
                 if (tr) {
-                    alea_matrix_from_mcnp(&fill_mat, tr->cosines,
-                                        tr->value_count, false);
+                    if (!alea_matrix_from_mcnp(&fill_mat, tr->cosines,
+                                               tr->value_count, false)) {
+                        ctx->error = -1;
+                        return;
+                    }
                 } else {
-                    alea_matrix_identity(&fill_mat);
+                    ctx->error = -1;
+                    return;
                 }
             } else {
                 alea_matrix_identity(&fill_mat);
@@ -234,7 +238,10 @@ static void count_instances_recursive(count_ctx_t* ctx,
                 new_accumulated = fill_mat;
             }
 
-            alea_matrix_invert(&new_accumulated);
+            if (!alea_matrix_invert(&new_accumulated)) {
+                ctx->error = -1;
+                return;
+            }
 
             count_instances_recursive(ctx, cell->fill_universe,
                                       &new_accumulated, depth + 1,
@@ -323,10 +330,14 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
                                                               cell->fill_transform);
                 if (tr) {
                     /* Use tr->cosines which has pre-computed direction cosines */
-                    alea_matrix_from_mcnp(&fill_mat, tr->cosines,
-                                        tr->value_count, false);
+                    if (!alea_matrix_from_mcnp(&fill_mat, tr->cosines,
+                                               tr->value_count, false)) {
+                        ctx->error = -1;
+                        return;
+                    }
                 } else {
-                    alea_matrix_identity(&fill_mat);
+                    ctx->error = -1;
+                    return;
                 }
             } else {
                 alea_matrix_identity(&fill_mat);
@@ -340,7 +351,10 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
                 new_accumulated = fill_mat;
             }
 
-            alea_matrix_invert(&new_accumulated);
+            if (!alea_matrix_invert(&new_accumulated)) {
+                ctx->error = -1;
+                return;
+            }
 
             /* Recurse - pass current cell as parent with its global bbox */
             collect_instances_recursive(ctx, cell->fill_universe,

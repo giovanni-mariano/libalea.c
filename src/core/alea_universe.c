@@ -893,8 +893,13 @@ void alea_matrix_identity(alea_matrix_t* mat) {
     mat->has_inverse = true;
 }
 
-void alea_matrix_from_mcnp(alea_matrix_t* mat, const double* data, 
+bool alea_matrix_from_mcnp(alea_matrix_t* mat, const double* data,
                           int count, bool degrees) {
+    if (!mat || !data || count < 1 || count > 12 ||
+        (count > 3 && count != 12)) {
+        return false;
+    }
+
     alea_matrix_identity(mat);
     
     if (count >= 3) {
@@ -957,7 +962,7 @@ void alea_matrix_from_mcnp(alea_matrix_t* mat, const double* data,
     }
     
     mat->has_inverse = false;
-    alea_matrix_invert(mat);
+    return alea_matrix_invert(mat);
 }
 
 void alea_matrix_multiply(alea_matrix_t* result, 
@@ -1339,6 +1344,7 @@ static int find_cell_recursive(const alea_system_t* sys,
     /* Transform point to this universe's coordinate system */
     double lx = x, ly = y, lz = z;
     if (accumulated_transform) {
+        if (!accumulated_transform->has_inverse) return -1;
         alea_matrix_transform_point_inverse(accumulated_transform, &lx, &ly, &lz);
     }
     
@@ -1380,10 +1386,12 @@ static int find_cell_recursive(const alea_system_t* sys,
                 if (cell->fill_transform > 0) {
                     const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
                     if (tr) {
-                        alea_matrix_from_mcnp(&fill_transform, tr->cosines,
-                                            tr->value_count, false);
+                        if (!alea_matrix_from_mcnp(&fill_transform, tr->cosines,
+                                                   tr->value_count, false)) {
+                            return -1;
+                        }
                     } else {
-                        alea_matrix_identity(&fill_transform);
+                        return -1;
                     }
                 } else {
                     alea_matrix_identity(&fill_transform);
@@ -1395,7 +1403,7 @@ static int find_cell_recursive(const alea_system_t* sys,
                 } else {
                     new_accumulated = fill_transform;
                 }
-                alea_matrix_invert(&new_accumulated);
+                if (!alea_matrix_invert(&new_accumulated)) return -1;
 
                 int result = find_cell_recursive(
                     sys, x, y, z, cell->fill_universe,
@@ -1498,11 +1506,13 @@ static int find_all_cells_recursive(const alea_system_t* sys,
 
             /* Recurse into fill universe at element-local coords */
             double elx = lx - ox, ely = ly - oy, elz = lz - oz;
-            find_all_cells_recursive(sys, gx, gy, gz,
-                                    elx, ely, elz,
-                                    fill_univ, NULL,
-                                    depth + 1,
-                                    out_hits, max_hits, hit_count);
+            if (find_all_cells_recursive(sys, gx, gy, gz,
+                                         elx, ely, elz,
+                                         fill_univ, NULL,
+                                         depth + 1,
+                                         out_hits, max_hits, hit_count) < 0) {
+                return -1;
+            }
             continue;
         }
 
@@ -1538,10 +1548,12 @@ static int find_all_cells_recursive(const alea_system_t* sys,
             if (cell->fill_transform > 0) {
                 const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
                 if (tr) {
-                    alea_matrix_from_mcnp(&fill_transform, tr->cosines,
-                                        tr->value_count, false);
+                    if (!alea_matrix_from_mcnp(&fill_transform, tr->cosines,
+                                               tr->value_count, false)) {
+                        return -1;
+                    }
                 } else {
-                    alea_matrix_identity(&fill_transform);
+                    return -1;
                 }
             } else {
                 alea_matrix_identity(&fill_transform);
@@ -1557,7 +1569,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
 
             /* Transform point to fill universe coordinates */
             double fill_x = gx, fill_y = gy, fill_z = gz;
-            alea_matrix_invert(&new_accumulated);
+            if (!alea_matrix_invert(&new_accumulated)) return -1;
             alea_matrix_transform_point_inverse(&new_accumulated, &fill_x, &fill_y, &fill_z);
 
             if (g_debug_point_trace) {
@@ -1566,12 +1578,14 @@ static int find_all_cells_recursive(const alea_system_t* sys,
             }
 
             /* Recurse */
-            find_all_cells_recursive(sys, gx, gy, gz,
-                                    fill_x, fill_y, fill_z,
-                                    cell->fill_universe,
-                                    &new_accumulated,
-                                    depth + 1,
-                                    out_hits, max_hits, hit_count);
+            if (find_all_cells_recursive(sys, gx, gy, gz,
+                                         fill_x, fill_y, fill_z,
+                                         cell->fill_universe,
+                                         &new_accumulated,
+                                         depth + 1,
+                                         out_hits, max_hits, hit_count) < 0) {
+                return -1;
+            }
         }
 
         /* Continue checking other cells - they might overlap */
@@ -1776,9 +1790,18 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
                 const alea_transform_t* tr = alea_get_transform(ctx->src, cell->fill_transform);
                 if (tr) {
                     /* Use tr->cosines which has pre-computed direction cosines */
-                    alea_matrix_from_mcnp(&fill_matrix, tr->cosines, tr->value_count, false);
+                    if (!alea_matrix_from_mcnp(&fill_matrix, tr->cosines,
+                                               tr->value_count, false)) {
+                        ALEA_LOG_ERROR("Invalid matrix for cell %d fill_transform %d",
+                                cell->mc_cell_id, cell->fill_transform);
+                        ctx->error = -1;
+                        return;
+                    }
                 } else {
-                    alea_matrix_identity(&fill_matrix);
+                    ALEA_LOG_ERROR("Unknown transform %d for cell %d",
+                            cell->fill_transform, cell->mc_cell_id);
+                    ctx->error = -1;
+                    return;
                 }
             } else {
                 alea_matrix_identity(&fill_matrix);

@@ -74,7 +74,7 @@ typedef struct {
 /**
  * @brief Initialize matrix from MCNP transform data
  */
-void alea_matrix_from_mcnp(alea_matrix_t* mat, const double* data,
+bool alea_matrix_from_mcnp(alea_matrix_t* mat, const double* data,
                           int count, bool degrees);
 
 /**

@@ -266,6 +266,107 @@ TEST(transform_inline) {
     alea_destroy(sys);
 }
 
+TEST(transform_full_12_with_m_flag) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    double data[13] = {10,0,0, 1,0,0, 0,1,0, 0,0,1, 1};
+    int rc = alea_add_transform(sys, 1, data, 13, 0);
+    ASSERT_EQ(rc, 0);
+
+    const alea_transform_t* tr = alea_get_transform(sys, 1);
+    ASSERT_NOT_NULL(tr);
+    ASSERT_EQ(tr->value_count, 12);
+    ASSERT_FALSE(tr->degrees);
+
+    double x = 0, y = 0, z = 0;
+    alea_transform_point(tr, &x, &y, &z);
+    ASSERT_NEAR(x, 10.0, 1e-10);
+    ASSERT_NEAR(y, 0.0, 1e-10);
+    ASSERT_NEAR(z, 0.0, 1e-10);
+
+    alea_destroy(sys);
+}
+
+TEST(transform_m_minus_one_normalizes_translation) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    double data[13] = {-10,0,0, 1,0,0, 0,1,0, 0,0,1, -1};
+    int rc = alea_add_transform(sys, 1, data, 13, 0);
+    ASSERT_EQ(rc, 0);
+
+    const alea_transform_t* tr = alea_get_transform(sys, 1);
+    ASSERT_NOT_NULL(tr);
+
+    double x = 0, y = 0, z = 0;
+    alea_transform_point(tr, &x, &y, &z);
+    ASSERT_NEAR(x, 10.0, 1e-10);
+    ASSERT_NEAR(y, 0.0, 1e-10);
+    ASSERT_NEAR(z, 0.0, 1e-10);
+
+    alea_destroy(sys);
+}
+
+TEST(transform_partial_vectors_complete) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    double one_vector[6] = {0,0,0, 1,0,0};
+    ASSERT_EQ(alea_add_transform(sys, 1, one_vector, 6, 0), 0);
+
+    double two_vectors[9] = {0,0,0, 1,0,0, 0,1,0};
+    ASSERT_EQ(alea_add_transform(sys, 2, two_vectors, 9, 0), 0);
+
+    const alea_transform_t* tr1 = alea_get_transform(sys, 1);
+    const alea_transform_t* tr2 = alea_get_transform(sys, 2);
+    ASSERT_NOT_NULL(tr1);
+    ASSERT_NOT_NULL(tr2);
+    ASSERT_EQ(tr1->value_count, 12);
+    ASSERT_EQ(tr2->value_count, 12);
+
+    double x1 = 1, y1 = 2, z1 = 3;
+    double x2 = 1, y2 = 2, z2 = 3;
+    alea_transform_point(tr1, &x1, &y1, &z1);
+    alea_transform_point(tr2, &x2, &y2, &z2);
+    ASSERT_NEAR(x1, 1.0, 1e-10);
+    ASSERT_NEAR(y1, 2.0, 1e-10);
+    ASSERT_NEAR(z1, 3.0, 1e-10);
+    ASSERT_NEAR(x2, 1.0, 1e-10);
+    ASSERT_NEAR(y2, 2.0, 1e-10);
+    ASSERT_NEAR(z2, 3.0, 1e-10);
+
+    alea_destroy(sys);
+}
+
+TEST(transform_rejects_singular_rotation) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    double data[12] = {
+        0, 0, 0,
+        1, 0, 0,
+        1, 0, 0,
+        0, 0, 1
+    };
+    ASSERT_EQ(alea_add_transform(sys, 1, data, 12, 0), -1);
+    ASSERT_NOT_NULL(strstr(alea_error(), "orthonormal"));
+    ASSERT_NULL(alea_get_transform(sys, 1));
+
+    alea_destroy(sys);
+}
+
+TEST(transform_rejects_partial_rotation) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    double data[4] = {1, 2, 3, 4};
+    ASSERT_EQ(alea_add_inline_transform(sys, data, 4, 0), -1);
+    ASSERT_NOT_NULL(strstr(alea_error(), "rotation entries"));
+
+    alea_destroy(sys);
+}
+
 TEST(transform_surface_with_tr) {
     /* Test surface with TRn reference via MCNP parse */
     const char* input =

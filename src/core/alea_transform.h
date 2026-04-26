@@ -75,6 +75,18 @@ int alea_add_inline_transform(alea_system_t* sys, const double* data,
                              int value_count, int degrees);
 
 /**
+ * @brief Normalize MCNP transform values to internal x_main = R*x_aux + T form.
+ *
+ * Accepts MCNP displacement plus 0, 3, 5, 6, or 9 rotation entries, with an
+ * optional trailing m value (+1 or -1). Output is always either a 3-value
+ * translation or a 12-value transform in direction cosines with m normalized
+ * into the displacement.
+ */
+int alea_normalize_mcnp_transform_values(const double* data, int value_count,
+                                        int degrees, double out[12],
+                                        int* out_count);
+
+/**
  * @brief Get a transform by ID
  *
  * @param sys CSG system

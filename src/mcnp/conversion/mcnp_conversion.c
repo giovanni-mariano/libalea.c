@@ -142,15 +142,15 @@ static int convert_material(alea_system_t* sys, const mcnp_material_t* mcnp_mat)
 // ============================================================================
 
 /**
- * Parse TRn card definition
- * Format: ox oy oz [b1 b2 b3 b4 b5 b6 b7 b8 b9] [M]
- * M=1 means degrees for rotation matrix
+ * Parse TRn card definition into raw MCNP transform values.
+ * Format: ox oy oz [rotation entries] [m]
  */
-static int parse_transform_definition(alea_transform_t* tr, const char* definition, int is_star) {
-    if (!tr || !definition) return -1;
+static int parse_transform_definition(double* values, int* value_count,
+                                      int* degrees, const char* definition,
+                                      int is_star) {
+    if (!values || !value_count || !degrees || !definition) return -1;
     
     const char* p = definition;
-    double values[13];  /* Up to 12 values + possible M flag */
     int count = 0;
     
     while (*p && count < 13) {
@@ -166,26 +166,9 @@ static int parse_transform_definition(alea_transform_t* tr, const char* definiti
     }
     
     if (count < 3) return -1;  /* Need at least ox oy oz */
-    
-    /* Check for M flag at end */
-    int m_flag = 0;
-    if (count == 4 || count == 13) {
-        int last = (int)values[count-1];
-        if (last == 1) {
-            m_flag = 1;
-            count--;
-        }
-    }
-    
-    tr->value_count = (count <= 3) ? 3 : 12;
-    tr->degrees = is_star || m_flag;
-    
-    for (int i = 0; i < count && i < 12; i++) {
-        tr->data[i] = values[i];
-    }
-    for (int i = count; i < 12; i++) {
-        tr->data[i] = 0.0;
-    }
+
+    *value_count = count;
+    *degrees = is_star;
     
     return 0;
 }
@@ -395,15 +378,20 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
     ALEA_LOG_INFO("\nConverting transforms...\n");
     for (size_t i = 0; i < mcnp->transform_count; i++) {
         mcnp_transform_t* tr = mcnp->transforms[i];
-        alea_transform_t alea_tr;
-        memset(&alea_tr, 0, sizeof(alea_tr));
-        alea_tr.transform_id = tr->transform_id;
-        alea_tr.from_inline = 0;
+        double values[13];
+        int value_count = 0;
+        int degrees = 0;
 
-        if (tr->definition && parse_transform_definition(&alea_tr, tr->definition, tr->is_star) == 0) {
-            alea_add_transform(sys, tr->transform_id, alea_tr.data, alea_tr.value_count, alea_tr.degrees);
-        } else {
-            ALEA_LOG_WARN("Warning: Failed to parse transform TR%d\n", tr->transform_id);
+        if (!tr->definition ||
+            parse_transform_definition(values, &value_count, &degrees,
+                                       tr->definition, tr->is_star) != 0 ||
+            alea_add_transform(sys, tr->transform_id, values,
+                               value_count, degrees) != 0) {
+            ALEA_LOG_ERROR("Failed to convert transform TR%d: %s",
+                           tr->transform_id, alea_error());
+            mcnp_model_destroy(model);
+            mcnp_context_destroy(mcnp);
+            return NULL;
         }
     }
 
@@ -539,4 +527,3 @@ interrupted:
     mcnp_context_destroy(mcnp);
     return NULL;
 }
-

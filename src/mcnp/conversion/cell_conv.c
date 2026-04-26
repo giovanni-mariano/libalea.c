@@ -263,14 +263,14 @@ static void parse_lattice_fill(const char** cursor, alea_cell_params_t* params) 
  *   FILL=n              - Simple fill with universe n
  *   FILL=n (t)          - Fill with universe n, apply transform TRt (reference)
  *   FILL=n (ox oy oz)   - Fill with inline translation
- *   FILL=n (ox oy oz b1 b2 b3 b4 b5 b6 b7 b8 b9) - Fill with inline full transform
+ *   FILL=n (ox oy oz [rotation entries] [m]) - Fill with inline transform
  *   FILL=i1:i2 j1:j2 [k1:k2] u1 u2 ... - Lattice fill array
  *   *FILL=n (...)       - Same as above but angles in degrees
  *
  * Detection logic for parentheses content:
  *   - 1 value that looks like integer: transform reference
  *   - 3 values: inline translation
- *   - 12 values: inline full transform
+ *   - 3-13 values: inline transform
  */
 static void parse_fill_param(const char** cursor, alea_cell_params_t* params, int degrees) {
     const char* p = *cursor;
@@ -306,11 +306,11 @@ static void parse_fill_param(const char** cursor, alea_cell_params_t* params, in
         p = skip_ws(p);
 
         // Parse all values inside parentheses
-        double values[12];
+        double values[13];
         int count = 0;
         int has_decimal = 0;
 
-        while (count < 12 && *p && *p != ')') {
+        while (count < 13 && *p && *p != ')') {
             const char* val_start = p;
             double val = strtod(p, &end);
             if (end == p) break;  // No more numbers
@@ -338,18 +338,11 @@ static void parse_fill_param(const char** cursor, alea_cell_params_t* params, in
             params->fill_transform = (int)values[0];
             params->fill_transform_inline = 0;
             params->fill_transform_count = 0;
-        } else if (count == 3 || count == 12) {
+        } else if (count >= 3) {
             // Inline transform
             params->fill_transform_inline = 1;
             params->fill_transform_count = count;
             for (int i = 0; i < count; i++) {
-                params->fill_transform_data[i] = values[i];
-            }
-        } else if (count > 0) {
-            // Unexpected count - store what we have
-            params->fill_transform_inline = 1;
-            params->fill_transform_count = count;
-            for (int i = 0; i < count && i < 12; i++) {
                 params->fill_transform_data[i] = values[i];
             }
         }
@@ -364,7 +357,7 @@ static void parse_fill_param(const char** cursor, alea_cell_params_t* params, in
  * Formats supported:
  *   TRCL=n              - Apply transform TRn
  *   TRCL=(ox oy oz)     - Inline translation
- *   TRCL=(ox oy oz b1 b2 b3 b4 b5 b6 b7 b8 b9) - Inline full transform
+ *   TRCL=(ox oy oz [rotation entries] [m]) - Inline transform
  *   *TRCL=...           - Same but angles in degrees
  */
 static void parse_trcl_param(const char** cursor, alea_cell_params_t* params, int degrees) {
@@ -379,9 +372,9 @@ static void parse_trcl_param(const char** cursor, alea_cell_params_t* params, in
     // Check if it starts with parenthesis (inline transform) or number (TR reference)
     if (*p == '(') {
         // Inline transform
-        double values[12];
+        double values[13];
         int is_reference;
-        int count = parse_transform_parens(&p, values, 12, &is_reference);
+        int count = parse_transform_parens(&p, values, 13, &is_reference);
 
         if (count > 0) {
             if (is_reference) {
@@ -393,7 +386,7 @@ static void parse_trcl_param(const char** cursor, alea_cell_params_t* params, in
                 // Inline transform data
                 params->trcl_inline = 1;
                 params->trcl_count = count;
-                for (int i = 0; i < count && i < 12; i++) {
+                for (int i = 0; i < count && i < 13; i++) {
                     params->trcl_data[i] = values[i];
                 }
             }
@@ -628,7 +621,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             params.fill_transform_inline = but_params.fill_transform_inline;
             params.fill_transform_degrees = but_params.fill_transform_degrees;
             params.fill_transform_count = but_params.fill_transform_count;
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < 13; i++) {
                 params.fill_transform_data[i] = but_params.fill_transform_data[i];
             }
             params.has_fill = 1;
@@ -638,7 +631,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             params.trcl_inline = but_params.trcl_inline;
             params.trcl_degrees = but_params.trcl_degrees;
             params.trcl_count = but_params.trcl_count;
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < 13; i++) {
                 params.trcl_data[i] = but_params.trcl_data[i];
             }
             params.has_trcl = 1;
@@ -718,9 +711,9 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         if (tr_id > 0) {
             entry->fill_transform = tr_id;
         } else {
-            entry->fill_transform = 0;
-            ALEA_LOG_WARN("Failed to add inline FILL transform for cell %d",
-                    cell->cell_id);
+            ALEA_LOG_ERROR("Cell %d: invalid inline FILL transform: %s",
+                    cell->cell_id, alea_error());
+            return UINT32_MAX;
         }
     }
 
@@ -767,7 +760,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             mp->fill_transform_inline = params.fill_transform_inline;
             mp->fill_transform_degrees = params.fill_transform_degrees;
             mp->fill_transform_count = params.fill_transform_count;
-            for (int i = 0; i < params.fill_transform_count && i < 12; i++) {
+            for (int i = 0; i < params.fill_transform_count && i < 13; i++) {
                 mp->fill_transform_data[i] = params.fill_transform_data[i];
             }
 
@@ -781,14 +774,14 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                 if (trcl_id > 0) {
                     mp->trcl = trcl_id;
                 } else {
-                    mp->trcl = 0;
-                    ALEA_LOG_WARN("Failed to add inline TRCL transform for cell %d",
-                            cell->cell_id);
+                    ALEA_LOG_ERROR("Cell %d: invalid inline TRCL transform: %s",
+                            cell->cell_id, alea_error());
+                    return UINT32_MAX;
                 }
             }
             mp->trcl_inline = params.trcl_inline;
             mp->trcl_count = params.trcl_count;
-            for (int i = 0; i < params.trcl_count && i < 12; i++) {
+            for (int i = 0; i < params.trcl_count && i < 13; i++) {
                 mp->trcl_data[i] = params.trcl_data[i];
             }
 
@@ -860,11 +853,19 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
                 return -1;
             }
             /* Use tr->cosines which has pre-computed direction cosines */
-            alea_matrix_from_mcnp(&mat, tr->cosines, tr->value_count, false);
+            if (!alea_matrix_from_mcnp(&mat, tr->cosines, tr->value_count, false)) {
+                ALEA_LOG_ERROR("Cell %d: TRCL=%d is not invertible",
+                               cell->mc_cell_id, mp->trcl);
+                return -1;
+            }
         } else if (mp->trcl_inline && mp->trcl_count > 0) {
             /* Inline TRCL data */
-            alea_matrix_from_mcnp(&mat, mp->trcl_data, mp->trcl_count,
-                                mp->trcl_degrees);
+            if (!alea_matrix_from_mcnp(&mat, mp->trcl_data, mp->trcl_count,
+                                       mp->trcl_degrees)) {
+                ALEA_LOG_ERROR("Cell %d: inline TRCL is not invertible",
+                               cell->mc_cell_id);
+                return -1;
+            }
         } else {
             /* has_trcl is set but no actual transform data - skip */
             continue;

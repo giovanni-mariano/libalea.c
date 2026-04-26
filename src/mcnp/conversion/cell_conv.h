@@ -44,7 +44,7 @@ typedef struct {
     int fill_transform_inline;
     int fill_transform_degrees;
     int fill_transform_count;
-    double fill_transform_data[12];
+    double fill_transform_data[13];
 
     // Lattice FILL support
     int lat_fill_dims[6];
@@ -57,7 +57,7 @@ typedef struct {
     int trcl_inline;
     int trcl_degrees;
     int trcl_count;
-    double trcl_data[12];
+    double trcl_data[13];
 
     // Flags indicating which parameters were present
     unsigned int has_imp_n : 1;

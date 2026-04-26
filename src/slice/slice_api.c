@@ -302,7 +302,10 @@ static void multilevel_hint_from_hits(alea_system_t* sys,
                 if (tr) {
                     alea_matrix_t fill_mat;
                     /* Use tr->cosines which has pre-computed direction cosines */
-                    alea_matrix_from_mcnp(&fill_mat, tr->cosines, tr->value_count, false);
+                    if (!alea_matrix_from_mcnp(&fill_mat, tr->cosines,
+                                               tr->value_count, false)) {
+                        return;
+                    }
                     alea_matrix_t new_acc;
                     alea_matrix_multiply(&new_acc, &accumulated, &fill_mat);
                     accumulated = new_acc;
@@ -487,10 +490,12 @@ static void find_cell_multilevel(alea_system_t* sys,
                     const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
                     if (tr) {
                         /* Use tr->cosines which has pre-computed direction cosines */
-                        alea_matrix_from_mcnp(&fill_transform, tr->cosines,
-                                            tr->value_count, false);
+                        if (!alea_matrix_from_mcnp(&fill_transform, tr->cosines,
+                                                   tr->value_count, false)) {
+                            break;
+                        }
                     } else {
-                        alea_matrix_identity(&fill_transform);
+                        break;
                     }
                 } else {
                     alea_matrix_identity(&fill_transform);
@@ -504,7 +509,7 @@ static void find_cell_multilevel(alea_system_t* sys,
                 /* Transform point to fill universe coordinates */
                 /* Use a copy for inversion to preserve accumulated for next iteration */
                 alea_matrix_t inv_accumulated = accumulated;
-                alea_matrix_invert(&inv_accumulated);
+                if (!alea_matrix_invert(&inv_accumulated)) break;
                 lx = gx; ly = gy; lz = gz;
                 alea_matrix_transform_point_inverse(&inv_accumulated, &lx, &ly, &lz);
 
@@ -2395,4 +2400,3 @@ void alea_slice_errors_free(alea_slice_error_result_t* result) {
     free(result->errors);
     free(result);
 }
-

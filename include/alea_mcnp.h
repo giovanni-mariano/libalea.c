@@ -68,11 +68,11 @@ typedef struct {
     int trcl_inline;
     int trcl_degrees;
     int trcl_count;
-    double trcl_data[12];
+    double trcl_data[13];
     int fill_transform_inline;
     int fill_transform_degrees;
     int fill_transform_count;
-    double fill_transform_data[12];
+    double fill_transform_data[13];
     int like_cell_id;
 
     /* Flags indicating which parameters were explicitly set */

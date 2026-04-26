@@ -360,6 +360,21 @@ TEST(model_fail_closed_unknown_trcl_transform) {
     ASSERT_NULL(model);
 }
 
+TEST(model_fail_closed_singular_transform_card) {
+    const char* input =
+        "Singular TR failure test\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 1 SO 5.0\n"
+        "\n"
+        "TR1 0 0 0  1 0 0  1 0 0  0 0 1\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = load_model(input);
+    ASSERT_NULL(model);
+    ASSERT_NOT_NULL(strstr(alea_error(), "orthonormal"));
+}
+
 /* ========================================================================= */
 /* Roundtrip: load → export → reload via model                               */
 /* ========================================================================= */
