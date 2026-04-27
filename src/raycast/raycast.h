@@ -219,8 +219,10 @@ double alea_raycast_path_length(const alea_raycast_result_t* result,
 /**
  * @brief Cell-aware raycast using per-cell surface index
  *
- * More efficient than global surface testing. Tracks through cells
- * one at a time, testing only surfaces belonging to each cell.
+ * Semantic equivalent of alea_raycast(). For non-lattice models this can
+ * track through cells one at a time using only surfaces belonging to each
+ * cell. For lattice models it delegates to the canonical DDA-aware raycast
+ * pipeline so lattice element-boundary hits are not skipped.
  *
  * Requires alea_build_cell_surface_index() to have been called first.
  *

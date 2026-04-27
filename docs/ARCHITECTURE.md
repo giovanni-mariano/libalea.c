@@ -229,7 +229,8 @@ The BVH traversal uses a bounded stack (128 entries, supporting trees up to ~64 
 
 ### Cell-aware approach
 
-`alea_raycast_cell_aware` is faster for large models:
+`alea_raycast_cell_aware` is semantically equivalent to `alea_raycast`. For
+non-lattice models it is faster for large models:
 
 1. Find which cell the ray origin is in
 2. For that cell, test only its surfaces for intersection
@@ -237,7 +238,7 @@ The BVH traversal uses a bounded stack (128 entries, supporting trees up to ~64 
 4. Step past it, find the next cell
 5. Repeat until t_max
 
-This avoids testing all surfaces globally. The per-cell surface list is built by `alea_build_cell_surface_index`, which walks each cell's CSG tree and collects referenced surface indices.
+This avoids testing all surfaces globally. The per-cell surface list is built by `alea_build_cell_surface_index`, which walks each cell's CSG tree and collects referenced surface indices. For lattice models the cell-aware entry point uses the canonical DDA-aware path so synthetic lattice element-boundary hits are preserved.
 
 ### Lattice DDA
 

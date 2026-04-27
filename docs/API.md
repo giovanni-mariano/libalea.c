@@ -1243,7 +1243,10 @@ int alea_raycast_cell_aware(const alea_system_t* sys,
                             alea_raycast_result_t* result);
 ```
 
-Cell-aware raycast using per-cell surface index. More efficient than global surface testing — tracks through cells one at a time, testing only surfaces belonging to each cell.
+Cell-aware raycast using per-cell surface index. It is semantically equivalent to
+`alea_raycast`. For non-lattice models it may track through cells one at a time,
+testing only surfaces belonging to each cell. For lattice models it uses the
+canonical lattice-aware path so DDA element-boundary hits are included.
 
 ### alea_ray_first_cell
 

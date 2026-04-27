@@ -96,6 +96,44 @@ TEST(trcl_with_tr_card) {
 /* MCNP File Parsing Tests                                                    */
 /* ------------------------------------------------------------------------- */
 
+static void assert_raycast_results_equivalent(alea_system_t* sys,
+                                              double ox, double oy, double oz,
+                                              double dx, double dy, double dz,
+                                              double t_max) {
+    alea_raycast_result_t canonical;
+    alea_raycast_result_t cell_aware;
+    alea_raycast_result_init(&canonical);
+    alea_raycast_result_init(&cell_aware);
+
+    ASSERT_EQ(alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, &canonical), 0);
+    ASSERT_EQ(alea_raycast_cell_aware(sys, ox, oy, oz, dx, dy, dz, t_max,
+                                      &cell_aware), 0);
+
+    ASSERT_EQ(canonical.hits.count, cell_aware.hits.count);
+    for (size_t i = 0; i < canonical.hits.count; i++) {
+        ASSERT_NEAR(canonical.hits.data[i].t, cell_aware.hits.data[i].t, 1e-9);
+        ASSERT_EQ(canonical.hits.data[i].surface_id,
+                  cell_aware.hits.data[i].surface_id);
+    }
+
+    ASSERT_EQ(canonical.segments.count, cell_aware.segments.count);
+    for (size_t i = 0; i < canonical.segments.count; i++) {
+        ASSERT_NEAR(canonical.segments.data[i].t_enter,
+                    cell_aware.segments.data[i].t_enter, 1e-9);
+        ASSERT_NEAR(canonical.segments.data[i].t_exit,
+                    cell_aware.segments.data[i].t_exit, 1e-9);
+        ASSERT_EQ(canonical.segments.data[i].cell_id,
+                  cell_aware.segments.data[i].cell_id);
+        ASSERT_EQ(canonical.segments.data[i].material_id,
+                  cell_aware.segments.data[i].material_id);
+        ASSERT_NEAR(canonical.segments.data[i].density,
+                    cell_aware.segments.data[i].density, 1e-12);
+    }
+
+    alea_raycast_result_free(&canonical);
+    alea_raycast_result_free(&cell_aware);
+}
+
 TEST(parse_simple_sphere) {
     mcnp_model_t* model = mcnp_load("tests/data/simple_sphere.mcnp");
     ASSERT_NOT_NULL(model);
@@ -415,6 +453,7 @@ TEST(lattice_raycast) {
     alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
+    assert_raycast_results_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
@@ -473,6 +512,7 @@ TEST(lattice_hex_raycast) {
     alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
+    assert_raycast_results_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);

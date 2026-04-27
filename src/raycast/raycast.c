@@ -925,6 +925,52 @@ static void raycast_add_lattice_hits(alea_system_t* sys,
     }
 }
 
+static bool system_has_lattice_cells(const alea_system_t* sys) {
+    if (!sys) return false;
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->lat_type != 0 && cell->lat_fill && cell->lat_fill_count > 0)
+            return true;
+    }
+    return false;
+}
+
+static int dedup_sorted_hits(alea_raycast_result_t* result) {
+    if (!result) return -1;
+    sort_hits(result->hits.data, result->hits.count);
+
+    if (result->hits.count > 1) {
+        size_t write = 1;
+        for (size_t read = 1; read < result->hits.count; read++) {
+            int same_t = fabs(result->hits.data[read].t -
+                              result->hits.data[write - 1].t) <= DEDUP_EPSILON;
+            int same_surf = result->hits.data[read].surface_id ==
+                            result->hits.data[write - 1].surface_id;
+            if (!(same_t && same_surf)) {
+                result->hits.data[write++] = result->hits.data[read];
+            }
+        }
+        result->hits.count = write;
+    }
+
+    return 0;
+}
+
+static int raycast_global_pipeline(alea_system_t* sys,
+                                   const alea_ray_t* ray,
+                                   double t_min, double t_max,
+                                   bool include_lattice_hits,
+                                   alea_raycast_result_t* result) {
+    int rc = alea_raycast_surfaces(sys, ray, t_min, t_max, result);
+    if (rc != 0) return rc;
+
+    if (include_lattice_hits)
+        raycast_add_lattice_hits(sys, ray, t_min, t_max, result);
+
+    dedup_sorted_hits(result);
+    return alea_raycast_to_segments(sys, result);
+}
+
 /* ============================================================================
  * CONVENIENCE FUNCTIONS
  * ============================================================================ */
@@ -946,27 +992,8 @@ int alea_raycast(alea_system_t* sys,
 
     /* t_max=0 means infinite */
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-    int rc = alea_raycast_surfaces(sys, &ray, 0, effective_t_max, result);
-    if (rc != 0) return rc;
-
-    /* Add surface hits from lattice elements (DDA) */
-    raycast_add_lattice_hits(sys, &ray, 0, effective_t_max, result);
-
-    /* Re-sort and dedup after adding lattice hits */
-    if (result->hits.count > 1) {
-        sort_hits(result->hits.data, result->hits.count);
-        size_t write = 1;
-        for (size_t read = 1; read < result->hits.count; read++) {
-            int same_t = fabs(result->hits.data[read].t - result->hits.data[write - 1].t) <= DEDUP_EPSILON;
-            int same_surf = result->hits.data[read].surface_id == result->hits.data[write - 1].surface_id;
-            if (!(same_t && same_surf)) {
-                result->hits.data[write++] = result->hits.data[read];
-            }
-        }
-        result->hits.count = write;
-    }
-
-    return alea_raycast_to_segments(sys, result);
+    return raycast_global_pipeline(sys, &ray, 0, effective_t_max,
+                                   system_has_lattice_cells(sys), result);
 }
 
 int alea_ray_first_cell(alea_system_t* sys,
@@ -1228,6 +1255,13 @@ int alea_raycast_cell_aware(alea_system_t* sys,
                            double t_max,
                            alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
+
+    if (system_has_lattice_cells(sys)) {
+        /* Lattice transport requires synthetic DDA boundary hits and
+         * element-local universe raycasts. Use the canonical lattice-aware
+         * pipeline so this public entry point cannot diverge semantically. */
+        return alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result);
+    }
 
     /* Free any prior allocations then reinitialize (safe for reuse) */
     alea_raycast_result_free(result);

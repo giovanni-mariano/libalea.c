@@ -300,13 +300,13 @@ double total_path = alea_raycast_path_length(result, -1);  // all materials
 
 ### Cell-aware ray tracing
 
-For large models, cell-aware tracing is faster. Instead of testing every surface globally, it tracks through cells one at a time:
+For large non-lattice models, cell-aware tracing can be faster. Instead of testing every surface globally, it tracks through cells one at a time:
 
 ```c
 alea_raycast_cell_aware(sys, ox, oy, oz, dx, dy, dz, t_max, result);
 ```
 
-Same interface, same result format, better performance on models with many surfaces.
+Same interface and same result format. On lattice models this entry point uses the canonical DDA-aware path so lattice element-boundary hits are preserved.
 
 ## 5. Building Geometry from Scratch
 

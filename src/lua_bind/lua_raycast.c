@@ -48,7 +48,8 @@ static int l_raycast(lua_State* L) {
     return 1;
 }
 
-/* sys:raycast_cell_aware(ox, oy, oz, dx, dy, dz, t_max) -> Result */
+/* sys:raycast_cell_aware(ox, oy, oz, dx, dy, dz, t_max) -> Result
+ * Semantic equivalent of raycast(); lattice models use the DDA-aware path. */
 static int l_raycast_cell_aware(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     double ox = luaL_checknumber(L, 2);
