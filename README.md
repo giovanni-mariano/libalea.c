@@ -19,13 +19,21 @@ A C library for building, debugging, and analyzing Constructive Solid Geometry (
 
 int main(void) {
     mcnp_model_t* model = mcnp_load("geometry.inp");
-    alea_system_t* sys = model->sys;
+    if (!model) {
+        fprintf(stderr, "load failed: %s\n", alea_error());
+        return 1;
+    }
 
-    int cell = alea_find_cell(sys, 100.0, 0.0, 0.0);
-    int mat  = alea_material_at(sys, 100.0, 0.0, 0.0);
-    printf("Cell %d, material %d\n", cell, mat);
+    alea_system_t* sys = model->sys;
+    alea_build_universe_index(sys);
+
+    int cell = 0;
+    int mat = 0;
+    if (alea_find_cell_at(sys, 100.0, 0.0, 0.0, &cell, &mat) == 0)
+        printf("Cell %d, material %d\n", cell, mat);
 
     mcnp_model_destroy(model);
+    return 0;
 }
 ```
 
@@ -46,7 +54,7 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 - **Convert** between MCNP and OpenMC formats
 - **Build** geometry programmatically with boolean operations
 - **Materials** definition with nuclide/element composition and mixture support
-- **Nuclear data** read ACE-format cross sections (neutron, photon), sample collisions, Doppler broaden, and collapse to multigroup constants
+- **Nuclear data** read ACE-format cross sections (neutron, photon), sample free paths, target nuclides, reaction MTs, and multigroup scattering, Doppler broaden, and collapse to multigroup constants
 
 ## Installation
 
@@ -62,24 +70,31 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | macOS Apple Silicon | `alea-macos-arm64.tar.gz` |
 | Windows x64 | `alea-windows-x64.zip` |
 
-Each release includes the `alea` CLI, `mc_convert`, `mc_plotter`, and `nuc_plot` tools, static libraries, and headers.
+The release workflow packages the `alea` CLI, `mc_convert`, `mc_plotter`, static libraries, and headers. The `nuc_plot` tool is built from source with `make tools`.
 
 ### Building from Source
 
 ```bash
-git clone https://github.com/giovanni-mariano/libalea.git
+git clone --recursive https://github.com/giovanni-mariano/libalea.git
 cd libalea
+```
+
+If you already cloned without submodules, initialize the vendored Lua and linenoise sources before building the CLI:
+
+```bash
+git submodule update --init --recursive
 ```
 
 Build the library, CLI, and tools:
 
 ```bash
-make              # Build core library (libalea.a)
+make              # Build core library (bin/libalea.a)
 make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a, libalea_nucdata.a)
 make full         # Build everything into libalea_full.a
 make cli          # Build the alea CLI tool
 make tools        # Build mc_convert, mc_plotter, and nuc_plot
 make test         # Build and run tests
+make test-lua     # Build the CLI and run Lua tests
 ```
 
 Optional flags:
@@ -102,7 +117,7 @@ make RELEASE=1 full cli       # Optimized build
 | `libalea.a` | Core engine: CSG evaluation, primitives, raycast, slice, 3D render, mesh export |
 | `libalea_mcnp.a` | MCNP parser, converter, and exporter |
 | `libalea_openmc.a` | OpenMC XML parser, converter, and exporter |
-| `libalea_nucdata.a` | Nuclear data: ACE reader, cross-section lookup, collision sampling, Doppler broadening, multigroup collapse |
+| `libalea_nucdata.a` | Nuclear data: ACE reader, cross-section lookup, free-path/nuclide/reaction sampling, Doppler broadening, multigroup collapse |
 | `libalea_full.a` | Everything in one archive |
 
 Link against the core library plus the format modules you need:
@@ -143,7 +158,7 @@ See `examples/lua/` for complete Lua scripts demonstrating all features.
 
 ## Tools
 
-Pre-built tools ship with every release and are also built via `make tools`:
+Tools are built via `make tools`:
 
 | Tool | Description |
 |------|-------------|
@@ -152,10 +167,25 @@ Pre-built tools ship with every release and are also built via `make tools`:
 | `nuc_plot` | Generate SVG plots of nuclear cross sections, angular distributions, fission spectra, and more |
 
 ```bash
-bin/mc_convert model.inp model.xml          # MCNP -> OpenMC
-bin/mc_plotter model.inp Z 0 -100 100 -100 100 800 output.png
-bin/nuc_plot --xsdir /path/to/xsdir --zaid 92235.80c --plot xs -o u235.svg
+bin/mc_convert model.inp model.xml
+bin/mc_plotter model.inp Z 0 -100 100 -100 100 800x800 output.png
+bin/nuc_plot --xsdir /path/to/xsdir --zaid 92235.80c --plot xs --output u235.svg
 ```
+
+## Sampling
+
+The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea_mesh.h`:
+
+| API | What it samples |
+|-----|-----------------|
+| `alea_nuc_sample_distance` | Distance to the next collision from macroscopic total cross section |
+| `alea_nuc_sample_nuclide` | Target nuclide in a material |
+| `alea_nuc_sample_reaction` | Reaction MT on a selected nuclide |
+| `alea_nuc_urr_factors` | Unresolved-resonance probability-table factors |
+| `alea_nuc_mg_sample_scatter` | Outgoing multigroup scatter group |
+| `alea_mesh_sample` | Structured mesh cells from CSG geometry |
+
+Full outgoing collision kinematics are not exposed by the tracked public headers or Makefile.
 
 ## Examples
 
@@ -171,13 +201,13 @@ The `examples/c/` directory contains complete working programs:
 | `mcnp_mesh.c` | Export MCNP geometry as a structured hex mesh (Gmsh/VTK) |
 | `render3d.c` | Render a 3D image of the geometry |
 | `void_demo.c` | Void generation with explicit bounds and multiple cells |
-| `slab_transport.c` | 1D slab neutron transport with transmission/reflection tallies |
-| `k_eigenvalue.c` | k-eigenvalue calculation for a bare sphere via power iteration |
 
 ```bash
 cd examples/c && make
 ./basic
 ```
+
+The examples Makefile currently builds `basic`, `mcnp_roundtrip`, `mcnp_volume`, `render3d`, and `void_demo`. `mcnp_mesh.c` can be compiled directly against the tracked libraries.
 
 ### Lua Examples
 
@@ -239,7 +269,7 @@ src/
     parser/            Lexer and parser
     conversion/        Surface and cell conversion
     exporter/          MCNP output formatting
-  nucdata/             Nuclear data: ACE reader, XS lookup, collision sampling, Doppler, multigroup
+  nucdata/             Nuclear data: ACE reader, XS lookup, public sampling APIs, Doppler, multigroup
   openmc/              OpenMC XML parser, converter, exporter
   raycast/             Ray-geometry intersection, BVH
   slice/               2D slice curves, analytical intersection
@@ -254,9 +284,9 @@ examples/
 tests/
   unit/                Unit tests
   integration/         Integration tests
-  nucdata/             Nuclear data tests 
+  nucdata/             Nuclear data tests
   lua/                 Lua tests
-  fuzz/                Fuzz testing (MCNP and OpenMC parsers)
+  fuzz/                Fuzz testing and corpora for MCNP and OpenMC parsers
   data/                Test geometry files (MCNP, OpenMC XML)
 vendor/                Third-party dependencies (Lua, linenoise)
 ```
