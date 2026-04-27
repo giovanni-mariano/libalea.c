@@ -15,6 +15,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
+#include <math.h>
 
 /* ============================================================================
  * Helper: create a sphere-in-box scene
@@ -91,6 +93,97 @@ TEST(mesh_sample_sphere) {
     alea_destroy(sys);
 }
 
+TEST(mesh_rejects_invalid_dimensions) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = 0;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max =  1.0;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    alea_destroy(sys);
+}
+
+TEST(mesh_rejects_invalid_bounds) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.x_min = 1.0;  cfg.x_max = -1.0;
+    cfg.y_min = -1.0; cfg.y_max =  1.0;
+    cfg.z_min = -1.0; cfg.z_max =  1.0;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    cfg.x_min = -1.0; cfg.x_max = 1.0;
+    cfg.y_min = NAN;  cfg.y_max = 1.0;
+    mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    alea_destroy(sys);
+}
+
+TEST(mesh_rejects_invalid_custom_nodes) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max =  1.0;
+
+    double bad_x[] = { -1.0, 0.0, 0.0 };
+    cfg.x_nodes = bad_x;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    double nan_x[] = { -1.0, NAN, 1.0 };
+    cfg.x_nodes = nan_x;
+    mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    alea_destroy(sys);
+}
+
+TEST(mesh_rejects_huge_dimensions_before_allocation) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = INT_MAX;
+    cfg.ny = 2;
+    cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max =  1.0;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    alea_destroy(sys);
+}
+
+TEST(mesh_auto_bounds_empty_system_fails) {
+    alea_system_t *sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    alea_destroy(sys);
+}
+
 TEST(mesh_export_gmsh) {
     alea_system_t *sys = create_sphere_scene();
     ASSERT_NOT_NULL(sys);
@@ -123,6 +216,8 @@ TEST(mesh_export_gmsh) {
     ASSERT(strstr(buf, "$Nodes") != NULL);
     ASSERT(strstr(buf, "$Elements") != NULL);
     ASSERT(strstr(buf, "$PhysicalNames") != NULL);
+    ASSERT(strstr(buf, "3 0 \"material_") == NULL);
+    ASSERT(strstr(buf, "3 1 \"material_0\"") != NULL);
 
     /* Node count: (3+1)^3 = 64 */
     ASSERT(strstr(buf, "\n64\n") != NULL);

@@ -245,6 +245,7 @@ The `examples/lua/` directory contains scripts for use with the `alea` CLI:
 | [Concepts](docs/CONCEPTS.md) | All users | Surfaces, sense, cells, universes, lattices, and other domain concepts |
 | [Architecture](docs/ARCHITECTURE.md) | Contributors | Internal data model, algorithms, and design decisions |
 | [API Reference](docs/API.md) | All users | Every public function, grouped by task |
+| [Mesh Sampling Plan](docs/PLAN_MESH_SAMPLING.md) | Contributors | Plan for hardening mesh sampling and adding mixed-material support |
 
 Start with the **Tutorial** (C) or **Lua Tutorial** if you're new. Refer to **Concepts** when something doesn't behave as you expect. The **API Reference** is for when you know what you want but forgot the function name.
 

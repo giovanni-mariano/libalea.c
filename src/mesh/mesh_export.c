@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
+#include <stdint.h>
 
 /* ============================================================================
  * Config
@@ -56,32 +58,140 @@ static double *copy_nodes(const double *src, int n) {
     return dst;
 }
 
-/** Collect unique values from array, return sorted array and count */
-static int *collect_unique(const int *arr, int count, int *out_num) {
-    if (count == 0) { *out_num = 0; return NULL; }
+static int checked_mul_size(size_t a, size_t b, size_t *out) {
+    if (!out) return -1;
+    if (a != 0 && b > SIZE_MAX / a) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh dimension product overflows size_t");
+        return -1;
+    }
+    *out = a * b;
+    return 0;
+}
 
-    int *tmp = malloc((size_t)count * sizeof(int));
-    if (!tmp) { *out_num = 0; return NULL; }
-    memcpy(tmp, arr, (size_t)count * sizeof(int));
+static int checked_add_size(size_t a, size_t b, size_t *out) {
+    if (!out) return -1;
+    if (b > SIZE_MAX - a) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh dimension sum overflows size_t");
+        return -1;
+    }
+    *out = a + b;
+    return 0;
+}
+
+static int checked_mesh_cell_count(int nx, int ny, int nz, size_t *out) {
+    size_t xy = 0;
+    if (checked_mul_size((size_t)nx, (size_t)ny, &xy) != 0) return -1;
+    return checked_mul_size(xy, (size_t)nz, out);
+}
+
+static int checked_mesh_node_count(int nx, int ny, int nz, size_t *out) {
+    size_t nx1 = 0, ny1 = 0, nz1 = 0, xy = 0;
+    if (checked_add_size((size_t)nx, 1, &nx1) != 0) return -1;
+    if (checked_add_size((size_t)ny, 1, &ny1) != 0) return -1;
+    if (checked_add_size((size_t)nz, 1, &nz1) != 0) return -1;
+    if (checked_mul_size(nx1, ny1, &xy) != 0) return -1;
+    return checked_mul_size(xy, nz1, out);
+}
+
+static int validate_nodes(const double *nodes, int n, const char *axis) {
+    if (!nodes) return 0;
+    for (int i = 0; i <= n; i++) {
+        if (!isfinite(nodes[i])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh %s node %d is not finite", axis, i);
+            return -1;
+        }
+        if (i > 0 && !(nodes[i] > nodes[i - 1])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh %s nodes must be strictly increasing", axis);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int validate_uniform_axis(double lo, double hi, const char *axis) {
+    if (!isfinite(lo) || !isfinite(hi)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh %s bounds are not finite", axis);
+        return -1;
+    }
+    if (!(lo < hi)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh %s bounds must satisfy min < max", axis);
+        return -1;
+    }
+    return 0;
+}
+
+static int validate_config_basic(const alea_mesh_config_t *cfg) {
+    if (!cfg) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh config is NULL");
+        return -1;
+    }
+    if (cfg->nx <= 0 || cfg->ny <= 0 || cfg->nz <= 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh dimensions must be positive");
+        return -1;
+    }
+    if (cfg->format != ALEA_MESH_GMSH && cfg->format != ALEA_MESH_VTK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh format is invalid");
+        return -1;
+    }
+    if (!isfinite(cfg->auto_pad) || cfg->auto_pad < 0.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh auto_pad must be finite and non-negative");
+        return -1;
+    }
+    if (validate_nodes(cfg->x_nodes, cfg->nx, "X") != 0) return -1;
+    if (validate_nodes(cfg->y_nodes, cfg->ny, "Y") != 0) return -1;
+    if (validate_nodes(cfg->z_nodes, cfg->nz, "Z") != 0) return -1;
+    return 0;
+}
+
+/** Collect unique values from array, return sorted array and count */
+static int *collect_unique(const int *arr, size_t count, int *out_num) {
+    if (count == 0) { *out_num = 0; return NULL; }
+    if (count > (size_t)INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh has too many cells for material collection");
+        *out_num = 0;
+        return NULL;
+    }
+
+    int *tmp = malloc(count * sizeof(int));
+    if (!tmp) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "mesh failed to collect unique materials");
+        *out_num = 0;
+        return NULL;
+    }
+    memcpy(tmp, arr, count * sizeof(int));
 
     /* sort */
-    for (int i = 1; i < count; i++) {
+    for (size_t i = 1; i < count; i++) {
         int key = tmp[i];
-        int j = i - 1;
-        while (j >= 0 && tmp[j] > key) { tmp[j + 1] = tmp[j]; j--; }
-        tmp[j + 1] = key;
+        size_t j = i;
+        while (j > 0 && tmp[j - 1] > key) {
+            tmp[j] = tmp[j - 1];
+            j--;
+        }
+        tmp[j] = key;
     }
 
     /* dedup */
-    int n = 1;
-    for (int i = 1; i < count; i++) {
+    size_t n = 1;
+    for (size_t i = 1; i < count; i++) {
         if (tmp[i] != tmp[i - 1])
             tmp[n++] = tmp[i];
     }
 
     int *result = realloc(tmp, (size_t)n * sizeof(int));
     if (!result) result = tmp;  /* realloc to smaller should not fail, but just in case */
-    *out_num = n;
+    *out_num = (int)n;
     return result;
 }
 
@@ -91,51 +201,91 @@ static int *collect_unique(const int *arr, int count, int *out_num) {
 
 alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                              const alea_mesh_config_t *cfg) {
-    if (!sys || !cfg) return NULL;
-    if (cfg->nx <= 0 || cfg->ny <= 0 || cfg->nz <= 0) return NULL;
+    if (!sys) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh system is NULL");
+        return NULL;
+    }
+    if (validate_config_basic(cfg) != 0) return NULL;
 
     int nx = cfg->nx, ny = cfg->ny, nz = cfg->nz;
+
+    size_t ncells = 0;
+    if (checked_mesh_cell_count(nx, ny, nz, &ncells) != 0) return NULL;
+    if (ncells > (size_t)INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh has too many cells for legacy exporters");
+        return NULL;
+    }
+
+    size_t nnodes = 0;
+    if (checked_mesh_node_count(nx, ny, nz, &nnodes) != 0) return NULL;
+    if (nnodes > (size_t)INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh has too many nodes for legacy exporters");
+        return NULL;
+    }
 
     /* Determine bounds */
     double xlo = cfg->x_min, xhi = cfg->x_max;
     double ylo = cfg->y_min, yhi = cfg->y_max;
     double zlo = cfg->z_min, zhi = cfg->z_max;
 
-    if (xlo == 0.0 && xhi == 0.0 && ylo == 0.0 && yhi == 0.0 &&
-        zlo == 0.0 && zhi == 0.0) {
+    int all_bounds_zero =
+        xlo == 0.0 && xhi == 0.0 && ylo == 0.0 && yhi == 0.0 &&
+        zlo == 0.0 && zhi == 0.0;
+    int needs_uniform_axis = !cfg->x_nodes || !cfg->y_nodes || !cfg->z_nodes;
+
+    if (all_bounds_zero && needs_uniform_axis) {
         /* Auto-detect from bounding sphere */
         double cx, cy, cz, r;
-        if (alea_compute_bounding_sphere(sys, 1.0, &cx, &cy, &cz, &r) != 0)
+        if (alea_compute_bounding_sphere(sys, 1.0, &cx, &cy, &cz, &r) != 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "mesh auto-bounds failed; provide explicit bounds");
             return NULL;
+        }
         double pad = r * cfg->auto_pad;
         xlo = cx - r - pad;  xhi = cx + r + pad;
         ylo = cy - r - pad;  yhi = cy + r + pad;
         zlo = cz - r - pad;  zhi = cz + r + pad;
     }
 
+    if (!cfg->x_nodes && validate_uniform_axis(xlo, xhi, "X") != 0) return NULL;
+    if (!cfg->y_nodes && validate_uniform_axis(ylo, yhi, "Y") != 0) return NULL;
+    if (!cfg->z_nodes && validate_uniform_axis(zlo, zhi, "Z") != 0) return NULL;
+
     /* Build node arrays */
     double *xn = cfg->x_nodes ? copy_nodes(cfg->x_nodes, nx) : build_uniform_nodes(nx, xlo, xhi);
     double *yn = cfg->y_nodes ? copy_nodes(cfg->y_nodes, ny) : build_uniform_nodes(ny, ylo, yhi);
     double *zn = cfg->z_nodes ? copy_nodes(cfg->z_nodes, nz) : build_uniform_nodes(nz, zlo, zhi);
-    if (!xn || !yn || !zn) { free(xn); free(yn); free(zn); return NULL; }
+    if (!xn || !yn || !zn) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "mesh failed to allocate node arrays");
+        free(xn); free(yn); free(zn);
+        return NULL;
+    }
 
-    size_t ncells = (size_t)nx * (size_t)ny * (size_t)nz;
     int *mat_ids = malloc(ncells * sizeof(int));
     int *cell_ids = malloc(ncells * sizeof(int));
     if (!mat_ids || !cell_ids) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "mesh failed to allocate cell data arrays");
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         return NULL;
     }
 
     /* Ensure indices are built */
-    if (!sys->universe_index_built)
-        alea_build_universe_index(sys);
-    if (!sys->cell_adjacency_built)
-        alea_build_cell_adjacency(sys);
-    alea_spatial_index_build(sys);
+    if (!sys->universe_index_built && alea_build_universe_index(sys) != 0) {
+        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        return NULL;
+    }
+    if (alea_spatial_index_build(sys) != 0) {
+        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        return NULL;
+    }
 
     /* Sample cell centers */
     int void_mat = cfg->void_material_id;
+    size_t nxy = (size_t)nx * (size_t)ny;
 
 #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic, 4)
@@ -146,7 +296,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                 double xc = (xn[i] + xn[i + 1]) * 0.5;
                 double yc = (yn[j] + yn[j + 1]) * 0.5;
                 double zc = (zn[k] + zn[k + 1]) * 0.5;
-                size_t idx = (size_t)k * (size_t)(ny * nx) + (size_t)j * (size_t)nx + (size_t)i;
+                size_t idx = (size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i;
 
                 int cell_idx = alea_identify_cell_at_point(sys, xc, yc, zc);
                 if (cell_idx < 0) {
@@ -162,7 +312,11 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
 
     /* Collect unique materials */
     int num_mats = 0;
-    int *unique_mats = collect_unique(mat_ids, (int)ncells, &num_mats);
+    int *unique_mats = collect_unique(mat_ids, ncells, &num_mats);
+    if (!unique_mats) {
+        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        return NULL;
+    }
 
     /* Build result */
     alea_mesh_result_t *res = calloc(1, sizeof(*res));
@@ -198,20 +352,37 @@ void alea_mesh_result_free(alea_mesh_result_t *mesh) {
 #define GMSH_NODE(i, j, k, nx1, ny1) \
     ((k) * (ny1) * (nx1) + (j) * (nx1) + (i) + 1)
 
+static int gmsh_material_tag(const alea_mesh_result_t *mesh, int material_id) {
+    for (int i = 0; i < mesh->num_materials; i++) {
+        if (mesh->unique_materials[i] == material_id)
+            return i + 1;
+    }
+    return 0;
+}
+
 static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out) {
     int nx = mesh->nx, ny = mesh->ny, nz = mesh->nz;
     int nx1 = nx + 1, ny1 = ny + 1, nz1 = nz + 1;
-    int nnodes = nx1 * ny1 * nz1;
-    int nelems = nx * ny * nz;
+    size_t nnodes_sz = 0, nelems_sz = 0;
+    if (checked_mesh_node_count(nx, ny, nz, &nnodes_sz) != 0) return -1;
+    if (checked_mesh_cell_count(nx, ny, nz, &nelems_sz) != 0) return -1;
+    if (nnodes_sz > (size_t)INT_MAX || nelems_sz > (size_t)INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh is too large for Gmsh v2.2 export");
+        return -1;
+    }
+    int nnodes = (int)nnodes_sz;
+    int nelems = (int)nelems_sz;
+    size_t nxy = (size_t)nx * (size_t)ny;
 
     /* Header */
     fprintf(out, "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n");
 
-    /* Physical names (one per unique material) */
+    /* Physical names use positive sequential tags; names keep original IDs. */
     fprintf(out, "$PhysicalNames\n%d\n", mesh->num_materials);
     for (int m = 0; m < mesh->num_materials; m++) {
         fprintf(out, "3 %d \"material_%d\"\n",
-                mesh->unique_materials[m], mesh->unique_materials[m]);
+                m + 1, mesh->unique_materials[m]);
     }
     fprintf(out, "$EndPhysicalNames\n");
 
@@ -235,7 +406,13 @@ static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out) {
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
             for (int i = 0; i < nx; i++) {
-                int mat = mesh->material_ids[(size_t)k * (ny * nx) + (size_t)j * nx + i];
+                int mat = mesh->material_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i];
+                int tag = gmsh_material_tag(mesh, mat);
+                if (tag <= 0) {
+                    alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                          "mesh material %d is missing from unique material table", mat);
+                    return -1;
+                }
 
                 int n0 = GMSH_NODE(i,     j,     k,     nx1, ny1);
                 int n1 = GMSH_NODE(i + 1, j,     k,     nx1, ny1);
@@ -248,7 +425,7 @@ static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out) {
 
                 /* 5 = hex8, 2 tags: physical_group, elementary_entity */
                 fprintf(out, "%d 5 2 %d %d %d %d %d %d %d %d %d %d\n",
-                        eid++, mat, mat,
+                        eid++, tag, tag,
                         n0, n1, n2, n3, n4, n5, n6, n7);
             }
         }
@@ -278,7 +455,15 @@ static int is_uniform(const double *nodes, int n, double *out_spacing) {
 static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
     int nx = mesh->nx, ny = mesh->ny, nz = mesh->nz;
     int nx1 = nx + 1, ny1 = ny + 1, nz1 = nz + 1;
-    int nelems = nx * ny * nz;
+    size_t nelems_sz = 0;
+    if (checked_mesh_cell_count(nx, ny, nz, &nelems_sz) != 0) return -1;
+    if (nelems_sz > (size_t)INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh is too large for VTK legacy export");
+        return -1;
+    }
+    int nelems = (int)nelems_sz;
+    size_t nxy = (size_t)nx * (size_t)ny;
 
     fprintf(out, "# vtk DataFile Version 3.0\n");
     fprintf(out, "Alea mesh export\n");
@@ -321,7 +506,7 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
     for (int k = 0; k < nz; k++)
         for (int j = 0; j < ny; j++)
             for (int i = 0; i < nx; i++)
-                fprintf(out, "%d\n", mesh->material_ids[(size_t)k * (ny * nx) + (size_t)j * nx + i]);
+                fprintf(out, "%d\n", mesh->material_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
 
     /* Cell IDs */
     fprintf(out, "SCALARS cell_id int 1\n");
@@ -329,7 +514,7 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
     for (int k = 0; k < nz; k++)
         for (int j = 0; j < ny; j++)
             for (int i = 0; i < nx; i++)
-                fprintf(out, "%d\n", mesh->cell_ids[(size_t)k * (ny * nx) + (size_t)j * nx + i]);
+                fprintf(out, "%d\n", mesh->cell_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
 
     return 0;
 }
