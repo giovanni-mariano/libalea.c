@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -31,18 +32,26 @@
 alea_nuc_multigroup_t* alea_nuc_mg_create(int n_groups, const double* bounds) {
     if (n_groups <= 0 || !bounds) return NULL;
 
+    for (int i = 0; i <= n_groups; i++) {
+        if (!isfinite(bounds[i]) || bounds[i] < 0.0) return NULL;
+        if (i > 0 && !(bounds[i - 1] > bounds[i])) return NULL;
+    }
+
+    size_t groups = (size_t)n_groups;
+    if (groups > SIZE_MAX / groups) return NULL;
+
     alea_nuc_multigroup_t* mg = calloc(1, sizeof(*mg));
     if (!mg) return NULL;
 
     mg->n_groups = n_groups;
-    mg->bounds = malloc((size_t)(n_groups + 1) * sizeof(double));
-    mg->sigma_t = calloc((size_t)n_groups, sizeof(double));
-    mg->sigma_a = calloc((size_t)n_groups, sizeof(double));
-    mg->sigma_s = calloc((size_t)n_groups, sizeof(double));
-    mg->sigma_f = calloc((size_t)n_groups, sizeof(double));
-    mg->nu_sigma_f = calloc((size_t)n_groups, sizeof(double));
-    mg->chi = calloc((size_t)n_groups, sizeof(double));
-    mg->scatter = calloc((size_t)(n_groups * n_groups), sizeof(double));
+    mg->bounds = malloc((groups + 1) * sizeof(double));
+    mg->sigma_t = calloc(groups, sizeof(double));
+    mg->sigma_a = calloc(groups, sizeof(double));
+    mg->sigma_s = calloc(groups, sizeof(double));
+    mg->sigma_f = calloc(groups, sizeof(double));
+    mg->nu_sigma_f = calloc(groups, sizeof(double));
+    mg->chi = calloc(groups, sizeof(double));
+    mg->scatter = calloc(groups * groups, sizeof(double));
 
     if (!mg->bounds || !mg->sigma_t || !mg->sigma_a ||
         !mg->sigma_s || !mg->sigma_f || !mg->nu_sigma_f ||
@@ -239,6 +248,10 @@ static int find_group(const alea_nuc_multigroup_t* mg, double E) {
     return -1;
 }
 
+static int is_fission_mt(int mt) {
+    return mt == 18 || mt == 19 || mt == 20 || mt == 21 || mt == 38;
+}
+
 /**
  * Build elastic scattering transfer matrix by integrating over
  * incident energies within each group.
@@ -343,12 +356,14 @@ static void build_elastic_scatter(alea_nuc_multigroup_t* mg,
  * The contribution is weighted by the reaction cross section and
  * neutron yield.
  */
-static void build_inelastic_scatter(alea_nuc_multigroup_t* mg,
-                                     const alea_nuc_nuclide_t* nuc) {
+static alea_error_t build_inelastic_scatter(alea_nuc_multigroup_t* mg,
+                                             const alea_nuc_nuclide_t* nuc) {
     int G = mg->n_groups;
     double A = nuc->awr;
     const double* egrid = nuc->energy;
     int n = nuc->n_energies;
+    double* transfer = calloc((size_t)G, sizeof(double));
+    if (!transfer) return ALEA_ERR_OUT_OF_MEMORY;
 
     for (int r = 0; r < nuc->n_reactions; r++) {
         const alea_nuc_reaction_t* rxn = &nuc->reactions[r];
@@ -359,7 +374,7 @@ static void build_inelastic_scatter(alea_nuc_multigroup_t* mg,
         if (cls == ALEA_NUC_RXN_ABSORPTION) continue;
 
         /* Skip fission — handled separately */
-        if (mt == 18 || mt == 19 || mt == 20 || mt == 21 || mt == 38) continue;
+        if (is_fission_mt(mt)) continue;
 
         if (!rxn->xs || rxn->n_energies <= 0) continue;
 
@@ -384,8 +399,6 @@ static void build_inelastic_scatter(alea_nuc_multigroup_t* mg,
             while (i_start < n - 1 && egrid[i_start + 1] < Eg_lo) i_start++;
 
             double sum_flux = 0.0;
-            double transfer[1024]; /* max 1024 groups */
-            if (G > 1024) continue;
             memset(transfer, 0, (size_t)G * sizeof(double));
 
             for (int i = i_start; i < n - 1; i++) {
@@ -464,27 +477,39 @@ static void build_inelastic_scatter(alea_nuc_multigroup_t* mg,
             }
         }
     }
+
+    free(transfer);
+    return ALEA_OK;
 }
 
 alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nuclide_t* nuc) {
     if (!mg || !nuc) return ALEA_ERR_NULL_ARG;
-    if (nuc->n_energies <= 0) return ALEA_ERR_INVALID_ARG;
+    if (nuc->n_energies < 2 || !nuc->energy ||
+        !nuc->sigma_total || !nuc->sigma_abs) {
+        return ALEA_ERR_INVALID_ARG;
+    }
+    for (int i = 0; i < nuc->n_energies; i++) {
+        if (!isfinite(nuc->energy[i])) return ALEA_ERR_INVALID_ARG;
+        if (i > 0 && !(nuc->energy[i] > nuc->energy[i - 1]))
+            return ALEA_ERR_INVALID_ARG;
+    }
 
     int G = mg->n_groups;
 
     /* Build full-grid fission XS once (outside group loop) */
     double* fission_xs = NULL;
     for (int r = 0; r < nuc->n_reactions; r++) {
-        if (nuc->reactions[r].mt == 18 || nuc->reactions[r].mt == 19) {
+        if (is_fission_mt(nuc->reactions[r].mt)) {
             const alea_nuc_reaction_t* rxn = &nuc->reactions[r];
-            fission_xs = calloc((size_t)nuc->n_energies, sizeof(double));
-            if (fission_xs) {
-                int ie_start = rxn->threshold_index - 1;
-                for (int i = 0; i < rxn->n_energies; i++)
-                    if (ie_start + i >= 0 && ie_start + i < nuc->n_energies)
-                        fission_xs[ie_start + i] = rxn->xs[i];
+            if (!rxn->xs || rxn->n_energies <= 0) continue;
+            if (!fission_xs) {
+                fission_xs = calloc((size_t)nuc->n_energies, sizeof(double));
+                if (!fission_xs) return ALEA_ERR_OUT_OF_MEMORY;
             }
-            break;
+            int ie_start = rxn->threshold_index - 1;
+            for (int i = 0; i < rxn->n_energies; i++)
+                if (ie_start + i >= 0 && ie_start + i < nuc->n_energies)
+                    fission_xs[ie_start + i] += rxn->xs[i];
         }
     }
 
@@ -520,7 +545,7 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
 
         /* Try to extract Watt parameters from nuclide's fission reaction */
         for (int r = 0; r < nuc->n_reactions; r++) {
-            if (nuc->reactions[r].mt == 18 || nuc->reactions[r].mt == 19) {
+            if (is_fission_mt(nuc->reactions[r].mt)) {
                 const alea_nuc_energy_dist_t* ed = nuc->reactions[r].energy;
                 while (ed) {
                     if (ed->law == ALEA_NUC_ELAW_WATT && ed->n_temp > 0 &&
@@ -581,9 +606,10 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
     }
 
     /* Scattering matrix: elastic + inelastic + (n,Xn) */
-    memset(mg->scatter, 0, (size_t)(G * G) * sizeof(double));
+    memset(mg->scatter, 0, (size_t)G * (size_t)G * sizeof(double));
     build_elastic_scatter(mg, nuc);
-    build_inelastic_scatter(mg, nuc);
+    alea_error_t scatter_err = build_inelastic_scatter(mg, nuc);
+    if (scatter_err != ALEA_OK) return scatter_err;
 
     /* sigma_s = sum of scatter matrix row (total scattering XS per group) */
     for (int g = 0; g < G; g++) {

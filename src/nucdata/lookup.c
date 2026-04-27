@@ -11,7 +11,12 @@
 #include <math.h>
 
 int alea_nuc_energy_lookup(const double* energy, int n, double E, double* frac) {
-    if (n <= 0 || !energy) return -1;
+    if (n < 2 || !energy || !isfinite(E)) return -1;
+
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(energy[i])) return -1;
+        if (i > 0 && !(energy[i] > energy[i - 1])) return -1;
+    }
 
     /* Clamp to grid bounds */
     if (E <= energy[0]) {
@@ -44,6 +49,7 @@ int alea_nuc_energy_lookup(const double* energy, int n, double E, double* frac) 
 /** Linear interpolation on a grid */
 static double interp(const double* grid, const double* values, int n,
                      double E) {
+    if (!grid || !values || n < 2) return 0.0;
     double f;
     int i = alea_nuc_energy_lookup(grid, n, E, &f);
     if (i < 0) return 0.0;
@@ -53,12 +59,16 @@ static double interp(const double* grid, const double* values, int n,
 /** Log-log interpolation (common for cross sections) */
 double alea_nuc_interp_loglog(const double* grid, const double* values, int n,
                          double E) {
+    if (!grid || !values || n < 2) return 0.0;
     double f;
     int i = alea_nuc_energy_lookup(grid, n, E, &f);
     if (i < 0) return 0.0;
 
     double v0 = values[i];
     double v1 = values[i + 1];
+
+    if (E <= 0.0)
+        return v0 + f * (v1 - v0);
 
     /* Fall back to lin-lin if values are zero or negative */
     if (v0 <= 0.0 || v1 <= 0.0)
@@ -110,6 +120,7 @@ double alea_nuc_heating_per_collision(const alea_nuc_nuclide_t* nuc, double ener
  *  Binary search on ln_energy grid, linear interp in log space, single exp(). */
 static double interp_photon_ll(const double* ln_grid, const double* ln_values,
                                 int n, double ln_E) {
+    if (!ln_grid || !ln_values || n < 2 || !isfinite(ln_E)) return 0.0;
     double f;
     int i = alea_nuc_energy_lookup(ln_grid, n, ln_E, &f);
     if (i < 0) return 0.0;
@@ -121,6 +132,7 @@ static double interp_photon_ll(const double* ln_grid, const double* ln_values,
 
 double alea_nuc_photon_xs_incoherent(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc || !nuc->photon) return 0.0;
+    if (energy <= 0.0 || !isfinite(energy)) return 0.0;
     const alea_nuc_photon_data_t* ph = nuc->photon;
     if (!ph->ln_energy || !ph->ln_sigma_incoherent) return 0.0;
     return interp_photon_ll(ph->ln_energy, ph->ln_sigma_incoherent,
@@ -129,6 +141,7 @@ double alea_nuc_photon_xs_incoherent(const alea_nuc_nuclide_t* nuc, double energ
 
 double alea_nuc_photon_xs_coherent(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc || !nuc->photon) return 0.0;
+    if (energy <= 0.0 || !isfinite(energy)) return 0.0;
     const alea_nuc_photon_data_t* ph = nuc->photon;
     if (!ph->ln_energy || !ph->ln_sigma_coherent) return 0.0;
     return interp_photon_ll(ph->ln_energy, ph->ln_sigma_coherent,
@@ -137,6 +150,7 @@ double alea_nuc_photon_xs_coherent(const alea_nuc_nuclide_t* nuc, double energy)
 
 double alea_nuc_photon_xs_photoelectric(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc || !nuc->photon) return 0.0;
+    if (energy <= 0.0 || !isfinite(energy)) return 0.0;
     const alea_nuc_photon_data_t* ph = nuc->photon;
     if (!ph->ln_energy || !ph->ln_sigma_photoelectric) return 0.0;
     return interp_photon_ll(ph->ln_energy, ph->ln_sigma_photoelectric,
@@ -145,6 +159,7 @@ double alea_nuc_photon_xs_photoelectric(const alea_nuc_nuclide_t* nuc, double en
 
 double alea_nuc_photon_xs_pair(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc || !nuc->photon) return 0.0;
+    if (energy <= 0.0 || !isfinite(energy)) return 0.0;
     const alea_nuc_photon_data_t* ph = nuc->photon;
     if (!ph->ln_energy || !ph->ln_sigma_pair) return 0.0;
     return interp_photon_ll(ph->ln_energy, ph->ln_sigma_pair,
@@ -191,6 +206,7 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
     const alea_nuc_urr_t* urr = nuc->urr;
     int N = urr->n_energies;
     int M = urr->n_bands;
+    if (N < 2 || M <= 0 || !urr->energy || !urr->table) return 0;
 
     /* Check if energy is in URR range */
     if (energy < urr->energy[0] || energy > urr->energy[N - 1])

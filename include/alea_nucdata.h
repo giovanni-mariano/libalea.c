@@ -154,12 +154,13 @@ double alea_nuc_heating_per_collision(const alea_nuc_nuclide_t* nuc, double ener
  *
  * Returns i such that energy[i] <= E < energy[i+1].
  * Also computes interpolation fraction f = (E - E[i]) / (E[i+1] - E[i]).
+ * Values outside the grid are clamped to the nearest endpoint interval.
  *
  * @param energy    Energy grid (ascending)
  * @param n         Grid size
  * @param E         Query energy (MeV)
  * @param frac      Output interpolation fraction [0,1]
- * @return Grid index, or -1 if E is out of range
+ * @return Grid index, or -1 if the grid/input is invalid
  */
 int alea_nuc_energy_lookup(const double* energy, int n, double E, double* frac);
 
