@@ -709,6 +709,7 @@ int alea_spatial_index_build(alea_system_t* sys) {
         int rc = spatial_index_build_impl(sys);
         if (rc == 0) {
             atomic_store(&sys->spatial_build_state, 2);
+            atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SPATIAL);
         } else {
             atomic_store(&sys->spatial_build_state, 0);  /* reset on failure */
         }
@@ -841,9 +842,9 @@ int alea_spatial_query_region(alea_system_t* sys,
 
     alea_spatial_index_t* idx = get_spatial_index(sys);
     if (!idx || !idx->built) {
-        if (alea_spatial_index_build(sys) != 0)
-            return -1;
-        idx = sys->spatial_index;
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "spatial index is not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
 
     query_ctx_t ctx = {
@@ -898,9 +899,9 @@ int alea_spatial_query_point(alea_system_t* sys,
 
     alea_spatial_index_t* idx = get_spatial_index(sys);
     if (!idx || !idx->built) {
-        if (alea_spatial_index_build(sys) != 0)
-            return -1;
-        idx = sys->spatial_index;
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "spatial index is not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
 
     /* Query with point bbox (relative+absolute for large-coordinate robustness) */
@@ -952,6 +953,8 @@ typedef struct {
 static _Thread_local cached_cell_t g_cell_cache[MAX_CACHE_DEPTH];
 static _Thread_local int g_cache_count = 0;
 static _Thread_local alea_system_t* g_cache_system = NULL;
+static _Thread_local uint64_t g_cache_generation = 0;
+static _Thread_local uint64_t g_cache_system_id = 0;
 
 /* Thread-local candidates buffer for point queries (freed via alea_spatial_reset_cache) */
 static _Thread_local alea_spatial_hit_t* g_tls_candidates = NULL;
@@ -959,6 +962,8 @@ static _Thread_local size_t g_tls_candidates_cap = 0;
 
 void alea_spatial_reset_cache(void) {
     g_cache_system = NULL;
+    g_cache_generation = 0;
+    g_cache_system_id = 0;
     g_cache_count = 0;
     for (int i = 0; i < MAX_CACHE_DEPTH; i++) {
         g_cell_cache[i].valid = false;
@@ -975,9 +980,13 @@ int alea_spatial_find_cells_at_point(alea_system_t* sys,
     if (!sys || !out_hits || max_hits == 0) return -1;
 
     /* Check if cache is for a different system - invalidate if so */
-    if (g_cache_system != sys) {
+    uint64_t generation = alea_system_geometry_generation(sys);
+    if (g_cache_system != sys || g_cache_generation != generation ||
+        g_cache_system_id != sys->system_id) {
         g_cache_count = 0;
         g_cache_system = sys;
+        g_cache_generation = generation;
+        g_cache_system_id = sys->system_id;
     }
 
     /* First, try the coherence cache - check if point is in same cells as last query */
@@ -1023,6 +1032,11 @@ int alea_spatial_find_cells_at_point(alea_system_t* sys,
     hit_count = 0;
 
     alea_spatial_index_t* idx = sys->spatial_index;
+    if (!idx || !idx->built) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "spatial index is not prepared; call alea_prepare_query_acceleration()");
+        return -1;
+    }
     size_t max_candidates = idx ? idx->instances.count : 256;
     if (max_candidates < 256) max_candidates = 256;
 
@@ -1043,7 +1057,7 @@ int alea_spatial_find_cells_at_point(alea_system_t* sys,
         return 0;
     }
 
-    /* Re-read idx: alea_spatial_query_point may have built the index */
+    /* Re-read idx in case the caller rebuilt between calls. */
     idx = sys->spatial_index;
 
     /* Verify containment and build hierarchy.
@@ -1162,8 +1176,9 @@ int alea_spatial_find_cells_batch(alea_system_t* sys,
 
     /* Ensure spatial index is built */
     if (!sys->spatial_index || !sys->spatial_index->built) {
-        if (alea_spatial_index_build(sys) != 0)
-            return -1;
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "spatial index is not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
 
     for (size_t i = 0; i < n_points; i++) {

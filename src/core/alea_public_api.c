@@ -292,9 +292,7 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config) {
 
 int alea_build_spatial_index(alea_system_t* sys) {
     if (!sys) return -1;
-    /* Reset build state to force a fresh build */
-    atomic_store(&sys->spatial_build_state, 0);
-    return alea_spatial_index_build(sys);
+    return alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL);
 }
 
 /* ============================================================================
@@ -392,6 +390,7 @@ static int create_surface_entry(alea_system_t* sys,
         .expanded_neg_node = ALEA_NODE_ID_INVALID
     };
 
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return (int)index;
 }
 
@@ -839,7 +838,7 @@ int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id) 
         return -1;
 
     sys->cells.data[cell_index].universe_id = universe_id;
-    sys->universe_index_built = false;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 
@@ -884,7 +883,7 @@ int alea_cell_remove(alea_system_t* sys, int cell_index) {
         cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     }
 
-    sys->universe_index_built = false;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 

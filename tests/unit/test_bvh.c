@@ -164,7 +164,9 @@ TEST(bvh_vs_linear) {
         }
     }
 
-    /* Force BVH build by doing a raycast */
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    /* Use the prepared BVH for raycast surface traversal. */
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
 
@@ -223,15 +225,16 @@ TEST(bvh_rebuild_on_change) {
 
     alea_ray_t ray;
     alea_ray_init(&ray, -5, 0, 0, 1, 0, 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     alea_raycast_surfaces(sys, &ray, 0, 100, &result);
 
     size_t initial_count = sys->surface_bvh ? sys->surface_bvh->surface_count : 0;
 
     /* Add more surfaces */
     alea_sphere_surface(sys, 2, 10, 0, 0, 1.0);
-    sys->bvh_dirty = true;
 
-    /* Next raycast should rebuild */
+    /* Explicit preparation rebuilds after geometry mutation. */
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     alea_raycast_result_clear(&result);
     alea_raycast_surfaces(sys, &ray, 0, 100, &result);
 

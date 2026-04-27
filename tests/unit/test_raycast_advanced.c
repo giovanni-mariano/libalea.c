@@ -22,7 +22,8 @@
 
 static mcnp_model_t* parse_mcnp(const char* input) {
     mcnp_model_t* model = mcnp_load_string(input, strlen(input));
-    if (model) alea_build_universe_index(model->sys);
+    if (model)
+        alea_prepare_query_acceleration(model->sys);
     return model;
 }
 

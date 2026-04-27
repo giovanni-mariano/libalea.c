@@ -2163,12 +2163,9 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                      alea_curve_collection_t* result) {
     if (!sys || !plane || !result) return -1;
 
-    /* Build spatial index if needed */
+    /* Use the prepared spatial index if available. */
     if (alea_spatial_index_needs_rebuild(sys)) {
-        if (alea_spatial_index_build(sys) != 0) {
-            /* Build failed - fall back to non-spatial method */
-            return alea_compute_slice_curves(sys, plane, result);
-        }
+        return alea_compute_slice_curves(sys, plane, result);
     }
 
     memset(result, 0, sizeof(*result));

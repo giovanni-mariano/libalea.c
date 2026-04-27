@@ -13,7 +13,9 @@
 
 int main(int argc, char** argv)
 {
-  const char* out_path = (argc > 1) ? argv[1] : "materials.xml";
+  const int keep_output = (argc > 1);
+  const char* out_path = keep_output ? argv[1] : NULL;
+  FILE* fp = NULL;
 
   arena_t arena;
   arena_init(&arena);
@@ -67,27 +69,51 @@ int main(int argc, char** argv)
   if (!openmc_xml_end_element(&x, "materials")) goto fail;
   /* Write to file */
   {
-    FILE* fp = fopen(out_path, "wb");
+    fp = keep_output ? fopen(out_path, "w+b") : tmpfile();
     if (!fp) {
-      fprintf(stderr, "Error: could not open output file '%s'\n", out_path);
+      fprintf(stderr, "Error: could not open output file\n");
       goto fail;
     }
     if (!openmc_xml_write(&x, fp)) {
       fprintf(stderr, "Error: openmc_xml_write failed\n");
-      fclose(fp);
       goto fail;
     }
-    if (fclose(fp) != 0) {
-      fprintf(stderr, "Warning: failed to close '%s' cleanly\n", out_path);
+    if (fflush(fp) != 0) {
+      fprintf(stderr, "Error: failed to flush output file\n");
+      goto fail;
     }
   }
 
-  fprintf(stderr, "Wrote OpenMC XML to: %s\n", out_path);
+  if (keep_output)
+    fprintf(stderr, "Wrote OpenMC XML to: %s\n", out_path);
+  {
+    char buf[2048];
+    size_t nread;
+
+    rewind(fp);
+    nread = fread(buf, 1, sizeof(buf) - 1, fp);
+    if (ferror(fp)) {
+      fprintf(stderr, "Error: could not read output file\n");
+      goto fail;
+    }
+    buf[nread] = '\0';
+    if (!strstr(buf, "<materials>") ||
+        !strstr(buf, "<material id=\"1\" name=\"UO2\">") ||
+        !strstr(buf, "<nuclide name=\"U235\" ao=\"0.04\" />") ||
+        !strstr(buf, "</materials>")) {
+      fprintf(stderr, "Error: generated XML did not contain expected materials data\n");
+      goto fail;
+    }
+  }
+
+  fclose(fp);
   arena_free(&arena);
   return 0;
 
 fail:
   fprintf(stderr, "Builder ended in error state or an operation failed.\n");
+  if (fp)
+    fclose(fp);
   arena_free(&arena);
   return 1;
 }

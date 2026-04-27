@@ -10,6 +10,7 @@
  */
 
 #include "raycast.h"
+#include "alea.h"
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
 #include "ray_bbox.h"
@@ -37,35 +38,7 @@
  * ============================================================================ */
 
 int alea_raycast_ensure_caches(alea_system_t* sys) {
-    int did_build = 0;
-
-#if !BVH_DISABLED
-    if (sys->bvh_dirty ||
-        (sys->surface_bvh &&
-         sys->surface_bvh->surface_count != alea_vec_count(&sys->surfaces))) {
-        if (sys->surface_bvh) {
-            alea_bvh_free(sys->surface_bvh);
-            sys->surface_bvh = NULL;
-        }
-        if (alea_vec_count(&sys->surfaces) > 0) {
-            sys->surface_bvh = alea_bvh_build(sys);
-        }
-        sys->bvh_dirty = false;
-        did_build = 1;
-    }
-#endif
-
-    if (!sys->spatial_index || !sys->spatial_index->built) {
-        alea_spatial_index_build(sys);
-        did_build = 1;
-    }
-
-    if (!sys->cell_adjacency_built) {
-        did_build = 1;
-    }
-    alea_build_cell_adjacency(sys);
-
-    return did_build;
+    return alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST);
 }
 
 /* ============================================================================
@@ -334,9 +307,10 @@ int alea_raycast_surfaces(alea_system_t* sys,
                          alea_raycast_result_t* result) {
     if (!sys || !ray || !result) return -1;
 
-    if (alea_raycast_ensure_caches(sys)) {
-        ALEA_LOG_WARN("Lazy-building raycast caches. Call alea_build_spatial_index() "
-                     "before concurrent raycast calls to avoid data races.");
+    if (!alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "raycast caches are not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
 
     return raycast_surfaces_impl(sys, ray, t_min, t_max, result);
@@ -1274,9 +1248,10 @@ int alea_raycast_cell_aware(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
 
-    if (alea_raycast_ensure_caches(sys)) {
-        ALEA_LOG_WARN("Lazy-building raycast caches. Call alea_build_spatial_index() "
-                     "before concurrent raycast calls to avoid data races.");
+    if (!alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "raycast caches are not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
 
     /* Current position along ray */

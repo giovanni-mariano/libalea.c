@@ -82,11 +82,9 @@ alea_slice_curves_t* alea_get_slice_curves(alea_system_t* sys,
     alea_slice_curves_t* result = calloc(1, sizeof(alea_slice_curves_t));
     if (!result) return NULL;
 
-    if (!sys->spatial_index) {
-        if (alea_build_spatial_index(sys) != 0) {
-            free(result);
-            return NULL;
-        }
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL) != 0) {
+        free(result);
+        return NULL;
     }
 
     int ret = alea_compute_slice_curves_spatial(sys, &view->plane,
@@ -627,16 +625,12 @@ int alea_find_cells_grid(alea_system_t* sys,
     double v_min = view->v_min;
     double v_max = view->v_max;
 
-    /* Build cell adjacency if not already built - needed for ALL depths now */
-    if (!sys->cell_adjacency_built) {
-        alea_build_cell_adjacency(sys);
-    }
-
-    /* Build spatial index eagerly before the parallel region so that:
+    /* Build query acceleration eagerly before the parallel region so that:
      * (a) the internal #pragma omp parallel for gets full thread parallelism
      *     (no nesting penalty)
-     * (b) OpenMP workers don't race into the lazy-build path */
-    alea_spatial_index_build(sys);
+     * (b) OpenMP workers only read shared cache state */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+        return -1;
 
     double du = (u_max - u_min) / nu;
     double dv = (v_max - v_min) / nv;

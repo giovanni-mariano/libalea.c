@@ -217,6 +217,7 @@ static void test_slice_overlap_detection(void) {
      *   sphere1 at origin r=5: dist = 1.5 < 5  ✓
      *   sphere2 at (3,0,0) r=5: dist = 1.5 < 5 ✓ */
     alea_cell_hit_t hits[8];
+    assert(alea_prepare_query_acceleration(sys) == 0);
     int num_hits = alea_find_all_cells(sys, 1.5, 0, 0, hits, 8);
     assert(num_hits == 2);  /* Both cells claim this point */
 

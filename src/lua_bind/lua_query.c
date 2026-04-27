@@ -24,6 +24,14 @@ static int l_build_spatial_index(lua_State* L) {
     return 0;
 }
 
+static int l_prepare_query_acceleration(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    luaL_checktype(L, 2, LUA_TNONE);
+    if (alea_prepare_query_acceleration(sys) != 0)
+        return luaL_error(L, "prepare_query_acceleration failed: %s", alea_error());
+    return 0;
+}
+
 /* ============================================================================
  * Point queries
  * ============================================================================ */
@@ -613,6 +621,7 @@ static int l_tree_print(lua_State* L) {
 static const luaL_Reg query_methods[] = {
     {"build_universe_index", l_build_universe_index},
     {"build_spatial_index",  l_build_spatial_index},
+    {"prepare_query_acceleration", l_prepare_query_acceleration},
     {"find_cell",            l_find_cell},
     {"material_at",          l_material_at},
     {"find_all_cells",       l_find_all_cells},

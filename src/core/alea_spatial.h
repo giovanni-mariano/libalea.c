@@ -15,7 +15,7 @@
  * Key insight: flatten the bboxes, not the geometry.
  *
  * Usage:
- *   alea_spatial_index_build(sys);              // Build once after loading
+ *   alea_build_spatial_index(sys);
  *   alea_spatial_query_slice_z(sys, z, ...);    // Fast slice queries
  *   alea_spatial_query_region(sys, bbox, ...);  // Fast region queries
  */

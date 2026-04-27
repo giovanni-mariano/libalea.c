@@ -216,7 +216,7 @@ Loading functions live in format-specific headers (`alea_mcnp.h`, `alea_openmc.h
 int alea_build_universe_index(alea_system_t* sys);
 ```
 
-Build the universe hierarchy index. Required before geometry queries. Automatically builds the spatial index as well.
+Build the universe hierarchy index.
 
 ### alea_build_spatial_index
 
@@ -224,7 +224,19 @@ Build the universe hierarchy index. Required before geometry queries. Automatica
 int alea_build_spatial_index(alea_system_t* sys);
 ```
 
-Build or rebuild the spatial index (BVH). Called automatically by `alea_build_universe_index()`.
+Build the spatial index and its dependencies. This is equivalent to preparing
+the acceleration needed by spatial point and region queries.
+
+### alea_prepare_query_acceleration
+
+```c
+int alea_prepare_query_acceleration(alea_system_t* sys);
+```
+
+Build query acceleration explicitly before point, spatial, raycast, slice, render,
+or mesh queries. Query paths do not lazily build shared caches. Geometry mutation
+invalidates prepared caches; call this again after adding/removing/changing
+surfaces, transforms, or cells.
 
 ---
 

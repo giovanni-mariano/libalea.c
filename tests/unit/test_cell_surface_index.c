@@ -238,11 +238,10 @@ static int test_raycast_cell_aware_basic(void) {
 
     alea_add_cell(sys, 1, inside_s1, m1, 1.0, 0);  // interior of sphere
 
-    // Build universe index first (needed for find_all_cells)
-    alea_build_universe_index(sys);
-
-    // Build surface index
-    alea_build_cell_surface_index(sys);
+    if (alea_prepare_query_acceleration(sys) != 0) {
+        alea_destroy(sys);
+        return 0;
+    }
 
     // Cast ray through sphere center
     alea_raycast_result_t result;
@@ -300,8 +299,10 @@ static int test_raycast_cell_aware_multiple(void) {
     alea_add_cell(sys, 1, inside_s1, m1, 1.0, 0);
     alea_add_cell(sys, 2, inside_s2, m2, 2.0, 0);
 
-    alea_build_universe_index(sys);
-    alea_build_cell_surface_index(sys);
+    if (alea_prepare_query_acceleration(sys) != 0) {
+        alea_destroy(sys);
+        return 0;
+    }
 
     // Cast ray through both spheres
     alea_raycast_result_t result;

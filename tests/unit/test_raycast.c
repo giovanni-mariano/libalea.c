@@ -209,6 +209,7 @@ TEST(raycast_simple_geometry) {
     int m1 = alea_add_material(sys, 1);
 
     alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
     /* Cast ray through sphere */
     alea_raycast_result_t result;
@@ -280,7 +281,7 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     ASSERT(alea_add_cell(sys, 10, c1_root, m1, -1.0, 0) >= 0);
     ASSERT(alea_add_cell(sys, 20, c2_root, m2, -1.0, 0) >= 0);
 
-    ASSERT_EQ(alea_build_spatial_index(sys), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     ASSERT_NOT_NULL(sys->spatial_index);
     ASSERT_EQ(alea_build_cell_adjacency(sys), 0);
     ASSERT(sys->cells.data[0].surface_index_count > 0);

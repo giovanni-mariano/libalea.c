@@ -27,6 +27,8 @@
 #define INITIAL_CELL_CAPACITY 256
 #define INITIAL_TRANSFORM_CAPACITY 32
 
+static atomic_uint_fast64_t g_next_system_id = 1;
+
 // ============================================================================
 // DEFAULT CONFIGURATION
 // ============================================================================
@@ -81,6 +83,10 @@ alea_system_t* alea_system_create(void) {
     sys->next_auto_cell_id = 1;     // Start at 1 for auto-assigned cell IDs
     sys->next_auto_material_id = 1; // Start at 1 for auto-assigned material IDs
     sys->source = ALEA_SOURCE_EMPTY;
+    sys->system_id = atomic_fetch_add(&g_next_system_id, 1);
+    atomic_init(&sys->geometry_generation, 1);
+    atomic_init(&sys->query_cache_state, 0);
+    atomic_flag_clear(&sys->query_cache_build_lock);
     /* cell_refs is zero-initialized by calloc (equivalent to ALEA_VEC_INIT) */
 
     // Create hash table for deduplication
@@ -106,6 +112,157 @@ alea_system_t* alea_system_create(void) {
     sys->stats.peak_memory = 0;
 
     return sys;
+}
+
+int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags) {
+    if (!sys) return 0;
+    if (flags == ALEA_CACHE_ALL) flags = ALEA_CACHE_RAYCAST | ALEA_CACHE_UNIVERSE;
+    unsigned state = atomic_load(&sys->query_cache_state);
+    return (state & flags) == flags;
+}
+
+uint64_t alea_system_geometry_generation(const alea_system_t* sys) {
+    if (!sys) return 0;
+    return atomic_load(&sys->geometry_generation);
+}
+
+void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
+    if (!sys || flags == 0) return;
+
+    unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
+    atomic_fetch_add(&sys->geometry_generation, 1);
+
+    /* Restrict expensive teardown to caches that were actually built.
+     * During bulk load, callers invalidate on every add; without this,
+     * each add walks all prior cells/universes (O(N^2) load time). */
+    flags &= prev_state;
+    if (flags == 0) return;
+
+    if (flags & ALEA_CACHE_UNIVERSE) {
+        for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
+            alea_vec_free(&sys->universes.data[i].cell_indices);
+        }
+        alea_vec_clear(&sys->universes);
+        universe_hashmap_clear(&sys->universe_index);
+        sys->universe_index_built = false;
+    }
+
+    if (flags & ALEA_CACHE_CELL_SURFACES) {
+        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+            free(sys->cells.data[i].surface_indices);
+            sys->cells.data[i].surface_indices = NULL;
+            sys->cells.data[i].surface_index_count = 0;
+        }
+        free(sys->prim_to_surface);
+        sys->prim_to_surface = NULL;
+        sys->prim_to_surface_size = 0;
+        free(sys->mc_id_to_surface);
+        sys->mc_id_to_surface = NULL;
+        sys->mc_id_to_surface_size = 0;
+    }
+
+    if (flags & ALEA_CACHE_SPATIAL) {
+        if (sys->spatial_index) {
+            alea_spatial_index_free(sys->spatial_index);
+            sys->spatial_index = NULL;
+        }
+        atomic_store(&sys->spatial_build_state, 0);
+        alea_spatial_reset_cache();
+    }
+
+    if (flags & ALEA_CACHE_SURFACE_BVH) {
+        if (sys->surface_bvh) {
+            alea_bvh_free(sys->surface_bvh);
+            sys->surface_bvh = NULL;
+        }
+        sys->bvh_dirty = true;
+    }
+
+    if (flags & ALEA_CACHE_ADJACENCY) {
+        free(sys->neighbor_pool);
+        sys->neighbor_pool = NULL;
+        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+            sys->cells.data[i].neighbors = NULL;
+            sys->cells.data[i].neighbor_count = 0;
+        }
+        sys->cell_adjacency_built = false;
+    }
+}
+
+int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
+    if (!sys) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "alea_system_prepare_query_caches: system is NULL");
+        return -1;
+    }
+
+    if (flags == ALEA_CACHE_ALL)
+        flags = ALEA_CACHE_UNIVERSE | ALEA_CACHE_RAYCAST;
+    if (flags & ALEA_CACHE_SPATIAL)
+        flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
+    if (flags & ALEA_CACHE_ADJACENCY)
+        flags |= ALEA_CACHE_CELL_SURFACES;
+
+    if (alea_system_query_cache_ready(sys, flags))
+        return 0;
+
+    while (atomic_flag_test_and_set(&sys->query_cache_build_lock)) {
+        /* Another thread is preparing shared caches. */
+    }
+
+    if (alea_system_query_cache_ready(sys, flags)) {
+        atomic_flag_clear(&sys->query_cache_build_lock);
+        return 0;
+    }
+
+    if ((flags & ALEA_CACHE_UNIVERSE) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_UNIVERSE)) {
+        if (alea_build_universe_index(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_UNIVERSE);
+    }
+
+    if ((flags & ALEA_CACHE_CELL_SURFACES) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_CELL_SURFACES)) {
+        if (alea_build_cell_surface_index(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_CELL_SURFACES);
+    }
+
+    if ((flags & ALEA_CACHE_SPATIAL) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_SPATIAL)) {
+        if (alea_spatial_index_build(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SPATIAL);
+    }
+
+    if ((flags & ALEA_CACHE_SURFACE_BVH) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_SURFACE_BVH)) {
+        if (sys->surface_bvh) {
+            alea_bvh_free(sys->surface_bvh);
+            sys->surface_bvh = NULL;
+        }
+        if (alea_vec_count(&sys->surfaces) > 0) {
+            sys->surface_bvh = alea_bvh_build(sys);
+            if (!sys->surface_bvh) goto fail;
+        }
+        sys->bvh_dirty = false;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SURFACE_BVH);
+    }
+
+    if ((flags & ALEA_CACHE_ADJACENCY) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_ADJACENCY)) {
+        if (alea_build_cell_adjacency(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_ADJACENCY);
+    }
+
+    atomic_flag_clear(&sys->query_cache_build_lock);
+    return 0;
+
+fail:
+    atomic_flag_clear(&sys->query_cache_build_lock);
+    return -1;
+}
+
+int alea_prepare_query_acceleration(alea_system_t* sys) {
+    return alea_system_prepare_query_caches(sys, ALEA_CACHE_ALL);
 }
 
 void alea_system_destroy_internals(alea_system_t* sys) {
@@ -250,7 +407,7 @@ void alea_system_reset(alea_system_t* sys) {
     }
     alea_vec_clear(&sys->universes);
     universe_hashmap_clear(&sys->universe_index);
-    sys->universe_index_built = false;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     // Free BVH (will be rebuilt on next use)
     if (sys->surface_bvh) {
@@ -823,6 +980,7 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
             populate_transform_data(tr, normalized, normalized_count, 0);
             tr->value_count = normalized_count;
             tr->degrees = 0;
+            alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
             return 0;
         }
     }
@@ -845,6 +1003,7 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
            transform_id, value_count,
            "normalized cosines");
 
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 
@@ -913,6 +1072,7 @@ int alea_add_inline_transform(alea_system_t* sys, const double* data,
            assigned_id, normalized_count,
            "normalized cosines");
 
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return assigned_id;
 }
 
@@ -1030,7 +1190,7 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
     cell->density = fabs(density);
     cell->universe_id = universe_id;
 
-    sys->universe_index_built = false;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     /* Update next_auto_cell_id if this ID is >= it */
     if (cell_id >= sys->next_auto_cell_id) {
@@ -1314,6 +1474,7 @@ int alea_build_universe_index(alea_system_t* sys) {
     }
 
     sys->universe_index_built = true;
+    atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_UNIVERSE);
 
     ALEA_LOG_INFO("Built universe index: %zu universes", alea_vec_count(&sys->universes));
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
@@ -1855,6 +2016,7 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
         }
     }
 
+    atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_CELL_SURFACES);
     return 0;
 }
 
@@ -2243,6 +2405,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     free(surf_counts);   surf_counts = NULL;
 
     sys->cell_adjacency_built = true;
+    atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_ADJACENCY);
 
 cleanup:
     free(all_refs);

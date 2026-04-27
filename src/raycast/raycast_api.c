@@ -145,7 +145,7 @@ int alea_estimate_cell_volumes(alea_system_t* sys,
     if (!sys || radius <= 0.0 || n_rays <= 0 || !volumes) return -1;
 
     /* Ensure all raycast caches are built before parallel section */
-    alea_raycast_ensure_caches(sys);
+    if (alea_raycast_ensure_caches(sys) != 0) return -1;
 
     size_t n_cells = alea_vec_count(&sys->cells);
     if (n_cells == 0) return 0;
@@ -307,28 +307,7 @@ int alea_remove_cells_by_volume(alea_system_t* sys,
             sys->cells.data[i].neighbor_count = 0;
         }
 
-        free(sys->neighbor_pool);
-        sys->neighbor_pool = NULL;
-        sys->cell_adjacency_built = false;
-
-        for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-            alea_vec_free(&sys->universes.data[i].cell_indices);
-        }
-        alea_vec_clear(&sys->universes);
-        universe_hashmap_clear(&sys->universe_index);
-        sys->universe_index_built = false;
-
-        if (sys->spatial_index) {
-            alea_spatial_index_free(sys->spatial_index);
-            sys->spatial_index = NULL;
-        }
-        alea_spatial_reset_cache();
-
-        if (sys->surface_bvh) {
-            alea_bvh_free(sys->surface_bvh);
-            sys->surface_bvh = NULL;
-        }
-        sys->bvh_dirty = true;
+        alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     }
 
     return removed;
@@ -352,7 +331,7 @@ int alea_estimate_instance_volumes(alea_system_t* sys,
     if (n_instances == 0) return 0;
 
     /* Ensure raycast caches before parallel section */
-    alea_raycast_ensure_caches(sys);
+    if (alea_raycast_ensure_caches(sys) != 0) return -1;
 
     /* Compute bounding sphere from spatial index global bounds */
     const alea_bbox_t* bounds = &sys->spatial_index->bounds;

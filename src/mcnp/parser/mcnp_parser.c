@@ -328,7 +328,9 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
                 // Comments peeked before this continuation are mid-card; discard them
                 str_builder_reset(&peek_comment_sb);
 
-                size_t continuation_len = next_line_end - next_line_start;
+                size_t continuation_len = (next_line_end > next_line_start)
+                                              ? (size_t)(next_line_end - next_line_start)
+                                              : 0;
 
                 // Strip inline comment from continuation line (if any)
                 const char* cont_comment_pos = (const char*)memchr(next_line_start, '$', continuation_len);

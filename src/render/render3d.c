@@ -748,7 +748,7 @@ int render_scene(alea_system_t* sys,
     int aa = cfg->aa_samples > 0 ? cfg->aa_samples : 1;
 
     /* Ensure caches are built before parallel section */
-    alea_raycast_ensure_caches(sys);
+    if (alea_raycast_ensure_caches(sys) != 0) return -1;
 
     int num_threads = cfg->threads;
 #ifdef _OPENMP

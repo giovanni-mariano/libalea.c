@@ -6,7 +6,7 @@ local s1 = sys:sphere(1, 0, 0, 0, 5)
 local m1 = sys:material(1)
 sys:cell{id = 1, region = sys:inside(s1),  material = m1, density = 10.0}
 sys:cell{id = 2, region = sys:outside(s1), material = -1, density = 0.0}
-sys:build_universe_index()
+sys:prepare_query_acceleration()
 
 -- Basic raycast through sphere
 local result = sys:raycast(-10, 0, 0, 1, 0, 0, 100)

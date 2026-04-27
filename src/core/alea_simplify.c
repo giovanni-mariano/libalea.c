@@ -2328,6 +2328,7 @@ void alea_flatten_all_cells(
         }
     }
     sys->cells.count = write;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     if (removed > 0) {
         ALEA_LOG_INFO("Removed %zu empty cells (%zu by simplifier, %zu by interval analysis)",
@@ -2418,6 +2419,7 @@ int alea_split_union_cells(alea_system_t* sys) {
         }
     }
     sys->cells.count = write;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     ALEA_LOG_INFO("Split union cells: %d new cells created", new_cells_created);
     return new_cells_created;

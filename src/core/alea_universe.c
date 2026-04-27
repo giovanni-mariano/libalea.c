@@ -1433,9 +1433,9 @@ int alea_find_cell_lazy(const alea_system_t* sys,
                        int* out_depth) {
     if (!sys) return -1;
     if (!sys->universe_index_built) {
-        if (alea_build_universe_index((alea_system_t*)sys) != 0) {
-            return -1;
-        }
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
     
     int cell_id = -1, material = 0;
@@ -1601,9 +1601,9 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
                                         bool force_recursive) {
     if (!sys || !out_hits || max_hits == 0) return -1;
     if (!sys->universe_index_built) {
-        if (alea_build_universe_index(sys) != 0) {
-            return -1;
-        }
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+        return -1;
     }
 
     /* If debug trace is enabled, use recursive path to get trace output */
@@ -1667,12 +1667,6 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
                                        alea_cell_hit_t* out_hit) {
     if (!sys || !out_hit) return -1;
 
-    if (!sys->universe_index_built) {
-        if (alea_build_universe_index(sys) != 0) {
-            return -1;
-        }
-    }
-
     bool has_hierarchy = false;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         const alea_cell_entry_t* cell = &sys->cells.data[i];
@@ -1703,6 +1697,12 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
             return 0;
         }
 
+        return -1;
+    }
+
+    if (!sys->universe_index_built) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
 

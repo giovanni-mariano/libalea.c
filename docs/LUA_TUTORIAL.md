@@ -236,8 +236,7 @@ local idx = sys:cell_find(cell_id)
 Build both indices first:
 
 ```lua
-sys:build_universe_index()
-sys:build_spatial_index()
+sys:prepare_query_acceleration()
 ```
 
 Find overlapping cell pairs:
@@ -763,6 +762,7 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Complement | `~a` |
 | Add cell | `sys:cell{id=N, region=node, ...}` |
 | **Indexing** | |
+| Prepare query acceleration | `sys:prepare_query_acceleration()` |
 | Build universe index | `sys:build_universe_index()` |
 | Build spatial index | `sys:build_spatial_index()` |
 | **Point Queries** | |

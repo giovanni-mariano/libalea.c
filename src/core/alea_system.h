@@ -23,6 +23,16 @@
 /* Global interrupt flag (defined in alea_error.c) */
 extern volatile sig_atomic_t g_alea_interrupted;
 
+#define ALEA_CACHE_UNIVERSE      (1u << 0)
+#define ALEA_CACHE_CELL_SURFACES (1u << 1)
+#define ALEA_CACHE_SPATIAL       (1u << 2)
+#define ALEA_CACHE_SURFACE_BVH   (1u << 3)
+#define ALEA_CACHE_ADJACENCY     (1u << 4)
+#define ALEA_CACHE_RAYCAST \
+    (ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_SPATIAL | \
+     ALEA_CACHE_SURFACE_BVH | ALEA_CACHE_ADJACENCY)
+#define ALEA_CACHE_ALL           0xFFFFFFFFu
+
 /**
  * @brief Check interrupt flag and return early if set
  *
@@ -279,7 +289,7 @@ typedef struct alea_system {
     void (*on_cell_copied)(void* ud, size_t dst_index, size_t src_index);
     void (*on_cell_removed)(void* ud, size_t index);
 
-    /* BVH acceleration (lazy-built, cached) */
+    /* Surface BVH acceleration (prepared query cache) */
     struct alea_bvh* surface_bvh;
     bool bvh_dirty;  /* True if surfaces changed since BVH build */
 
@@ -287,9 +297,13 @@ typedef struct alea_system {
     bool cell_adjacency_built;
     struct alea_cell_neighbor* neighbor_pool;  /* Single allocation for all neighbor data */
 
-    /* Spatial index for fast instance queries (lazy-built) */
+    /* Spatial index for fast instance queries (prepared query cache) */
     struct alea_spatial_index* spatial_index;
     atomic_int spatial_build_state;  /* 0=pending, 1=building, 2=done */
+    atomic_uint query_cache_state;
+    atomic_flag query_cache_build_lock;
+    uint64_t system_id;
+    atomic_uint_fast64_t geometry_generation;
 
     /* Source tracking - how this system was created */
     enum {
@@ -302,6 +316,11 @@ typedef struct alea_system {
     /* Next auto-assigned cell ID (for programmatic creation) */
     int next_auto_cell_id;
 } alea_system_t;
+
+int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags);
+uint64_t alea_system_geometry_generation(const alea_system_t* sys);
+int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags);
+void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags);
 
 // ============================================================================
 // API - SYSTEM MANAGEMENT

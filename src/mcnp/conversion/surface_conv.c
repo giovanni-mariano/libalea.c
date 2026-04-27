@@ -1077,6 +1077,7 @@ int alea_convert_surface(alea_system_t* sys, const mcnp_surface_t* surf) {
     };
 
     sys->stats.surfaces_converted++;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     ALEA_LOG_DEBUG("Surface %d: prim=%u (type=%d), pos=%u, neg=%u, boundary=%d%s",
                   surf->surface_id, prim_id, global_type, pos_node, neg_node, boundary,

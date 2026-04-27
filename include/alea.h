@@ -144,6 +144,8 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config);
 int alea_build_universe_index(alea_system_t* sys);
 int alea_build_spatial_index(alea_system_t* sys);
 
+int alea_prepare_query_acceleration(alea_system_t* sys);
+
 /* ============================================================================
  * GEOMETRY QUERIES
  * ============================================================================ */
