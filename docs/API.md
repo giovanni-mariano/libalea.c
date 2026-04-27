@@ -1663,6 +1663,9 @@ Key `alea_mesh_config_t` fields:
 | `format` | `ALEA_MESH_GMSH` | `ALEA_MESH_GMSH` or `ALEA_MESH_VTK` |
 | `void_material_id` | 0 | Material ID for void regions |
 | `auto_pad` | 0.01 | Fractional padding for auto-bounds |
+| `sampling_mode` | `ALEA_MESH_SAMPLE_SUBCELL` | Composition sampling: center, near-corners, or subcell lattice |
+| `subsamples_per_axis` | 2 | Per-axis sample count for `ALEA_MESH_SAMPLE_SUBCELL` |
+| `mixed_threshold` | 0 | Tolerance before a voxel is flagged as mixed |
 
 ### alea_mesh_sample
 
@@ -1672,6 +1675,19 @@ alea_mesh_result_t* alea_mesh_sample(const alea_system_t* sys,
 ```
 
 Sample CSG geometry onto a structured grid. Auto-detects bounds if all zero. Returns result (free with `alea_mesh_result_free`), or NULL on error.
+
+By default, each voxel is sampled with a 2x2x2 subcell lattice. `material_ids` stores the dominant sampled material for each voxel; `cell_ids` stores the cell found at the voxel center.
+
+`alea_mesh_result_t` also stores sparse per-voxel material fractions:
+
+| Field | Description |
+|-------|-------------|
+| `mixed_flags` | `nx*ny*nz` flags, one for each voxel |
+| `dominant_fractions` | Largest sampled material fraction per voxel |
+| `mixed_count` | Number of voxels flagged as mixed |
+| `fraction_spans` | `nx*ny*nz` spans into the packed fraction array |
+| `fractions` | Packed `(material_id, fraction)` entries |
+| `fraction_count` | Number of packed entries |
 
 ### alea_mesh_export
 

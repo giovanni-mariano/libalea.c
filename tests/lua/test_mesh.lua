@@ -45,5 +45,34 @@ local mesh2 = sys:mesh_sample{
 local info2 = mesh2:info()
 assert(info2.nx == 2, "bounded mesh nx should be 2")
 
+-- Mixed diagnostics: small inclusion missed by center sampling
+local sys2 = alea.create()
+local inc = sys2:sphere(1, 0.25, 0.25, 0.25, 0.20)
+local mat = sys2:material(1)
+sys2:cell{id = 1, region = sys2:inside(inc), material = mat, density = 1.0}
+sys2:build_universe_index()
+
+local mixed_mesh = sys2:mesh_sample{
+    nx = 1, ny = 1, nz = 1,
+    x_min = 0, x_max = 1,
+    y_min = 0, y_max = 1,
+    z_min = 0, z_max = 1,
+    sampling_mode = 2,
+    subsamples_per_axis = 2,
+}
+local mixed_info = mixed_mesh:info()
+assert(mixed_info.mixed_count == 1, "small inclusion should flag one mixed voxel")
+assert(mixed_info.fraction_count == 2, "one mixed voxel should have two fraction entries")
+
+local fractions = mixed_mesh:material_fractions(1)
+assert(#fractions == 2, "voxel should have two material fractions")
+local by_mat = {}
+for _, entry in ipairs(fractions) do
+    by_mat[entry.material_id] = entry.fraction
+end
+assert(math.abs(by_mat[1] - 0.125) < 1e-12, "material 1 fraction should be 1/8")
+assert(math.abs(by_mat[0] - 0.875) < 1e-12, "void fraction should be 7/8")
+
+sys2:destroy()
 sys:destroy()
 print("test_mesh: OK")

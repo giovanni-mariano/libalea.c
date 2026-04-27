@@ -44,6 +44,25 @@ typedef enum {
     ALEA_MESH_VTK          /**< VTK legacy .vtk ASCII */
 } alea_mesh_format_t;
 
+/** Voxel composition sampling mode */
+typedef enum {
+    ALEA_MESH_SAMPLE_CENTER = 0,   /**< Sample only the voxel center */
+    ALEA_MESH_SAMPLE_CORNERS,      /**< Probe near voxel corners */
+    ALEA_MESH_SAMPLE_SUBCELL       /**< Probe an NxNxN subcell lattice */
+} alea_mesh_sampling_mode_t;
+
+/** One material fraction entry for a sampled voxel */
+typedef struct {
+    int material_id;
+    double fraction;
+} alea_mesh_material_fraction_t;
+
+/** Span into alea_mesh_result_t::fractions for one voxel */
+typedef struct {
+    uint32_t offset;
+    uint32_t count;
+} alea_mesh_fraction_span_t;
+
 /** Mesh sampling configuration */
 typedef struct {
     double x_min, x_max;        /**< X bounds (0,0 = auto-detect) */
@@ -56,16 +75,28 @@ typedef struct {
     alea_mesh_format_t format;
     int void_material_id;       /**< Material ID for void regions (default 0) */
     double auto_pad;            /**< Fractional padding for auto-bounds (default 0.01) */
+    alea_mesh_sampling_mode_t sampling_mode;
+                                  /**< Composition sampling mode */
+    int subsamples_per_axis;     /**< Subsample lattice size for SAMPLE_SUBCELL */
+    double mixed_threshold;      /**< Tolerance for declaring a voxel mixed */
 } alea_mesh_config_t;
 
 /** Mesh sampling result */
 typedef struct {
     int nx, ny, nz;
     double *x_nodes, *y_nodes, *z_nodes;   /**< (n+1) positions each */
-    int *material_ids;                      /**< nx*ny*nz, Z-major [k][j][i] */
-    int *cell_ids;                          /**< nx*ny*nz, Z-major [k][j][i] */
+    int *material_ids;                      /**< Dominant sampled material per voxel */
+    int *cell_ids;                          /**< Center-sampled cell ID per voxel */
     int num_materials;
     int *unique_materials;                  /**< Sorted array of unique material IDs */
+    unsigned char *mixed_flags;             /**< nx*ny*nz flags, 1=mixed */
+    double *dominant_fractions;             /**< nx*ny*nz dominant sampled fraction */
+    int mixed_count;                        /**< Number of voxels flagged as mixed */
+    alea_mesh_fraction_span_t *fraction_spans;
+                                            /**< nx*ny*nz spans into fractions */
+    alea_mesh_material_fraction_t *fractions;
+                                            /**< Packed material fractions */
+    size_t fraction_count;                  /**< Number of packed fraction entries */
 } alea_mesh_result_t;
 
 /* ============================================================================
@@ -76,6 +107,7 @@ typedef struct {
  * @brief Initialize mesh config with defaults
  *
  * Sets nx=ny=nz=10, format=GMSH, void_material_id=0, auto_pad=0.01,
+ * sampling_mode=SUBCELL, subsamples_per_axis=2, mixed_threshold=0,
  * bounds and custom nodes to zero/NULL.
  */
 void alea_mesh_config_init(alea_mesh_config_t *cfg);
@@ -83,7 +115,8 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg);
 /**
  * @brief Sample CSG geometry onto a structured grid
  *
- * Queries material at each cell center. Auto-detects bounds if all zero.
+ * Samples voxel composition, assigns the dominant material to material_ids,
+ * and records center-sampled cell IDs. Auto-detects bounds if all zero.
  * Builds spatial and universe indices if needed.
  *
  * @param sys CSG system (must have cells loaded)

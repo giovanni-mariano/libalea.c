@@ -670,12 +670,15 @@ local mesh = sys:mesh_sample{
     y_min = -10, y_max = 10,
     z_min = -10, z_max = 10,
     void_material_id = 0,
+    sampling_mode = 2,        -- 0=center, 1=corners, 2=subcell
+    subsamples_per_axis = 2,
 }
 
 -- Inspect results
 local info = mesh:info()
 print(string.format("Grid: %dx%dx%d", info.nx, info.ny, info.nz))
 print("Materials found: " .. info.num_materials)
+print("Mixed voxels: " .. info.mixed_count)
 for _, mid in ipairs(info.unique_materials) do
     print("  material " .. mid)
 end
@@ -683,6 +686,7 @@ end
 -- Access raw arrays
 local mids = mesh:material_ids()  -- flat table (nx*ny*nz)
 local cids = mesh:cell_ids()      -- flat table
+local fractions = mesh:material_fractions(1) -- fractions for voxel 1
 
 -- Export to different formats
 mesh:export(0, "output.msh")  -- Gmsh

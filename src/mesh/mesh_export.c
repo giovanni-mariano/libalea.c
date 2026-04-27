@@ -34,6 +34,9 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
     cfg->format = ALEA_MESH_GMSH;
     cfg->void_material_id = 0;
     cfg->auto_pad = 0.01;
+    cfg->sampling_mode = ALEA_MESH_SAMPLE_SUBCELL;
+    cfg->subsamples_per_axis = 2;
+    cfg->mixed_threshold = 0.0;
 }
 
 /* ============================================================================
@@ -141,6 +144,24 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
                               "mesh format is invalid");
         return -1;
     }
+    if (cfg->sampling_mode != ALEA_MESH_SAMPLE_CENTER &&
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_CORNERS &&
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_SUBCELL) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh sampling_mode is invalid");
+        return -1;
+    }
+    if (cfg->subsamples_per_axis <= 0 || cfg->subsamples_per_axis > 8) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh subsamples_per_axis must be in [1,8]");
+        return -1;
+    }
+    if (!isfinite(cfg->mixed_threshold) || cfg->mixed_threshold < 0.0 ||
+        cfg->mixed_threshold >= 1.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh mixed_threshold must be finite and in [0,1)");
+        return -1;
+    }
     if (!isfinite(cfg->auto_pad) || cfg->auto_pad < 0.0) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "mesh auto_pad must be finite and non-negative");
@@ -193,6 +214,137 @@ static int *collect_unique(const int *arr, size_t count, int *out_num) {
     if (!result) result = tmp;  /* realloc to smaller should not fail, but just in case */
     *out_num = (int)n;
     return result;
+}
+
+static int sample_material_at_point(alea_system_t *sys,
+                                    double x, double y, double z,
+                                    int void_mat) {
+    int cell_idx = alea_identify_cell_at_point(sys, x, y, z);
+    if (cell_idx < 0) return void_mat;
+    return sys->cells.data[cell_idx].material_id;
+}
+
+static void tally_material(int material_id,
+                           int *materials,
+                           int *counts,
+                           int *num_materials) {
+    for (int i = 0; i < *num_materials; i++) {
+        if (materials[i] == material_id) {
+            counts[i]++;
+            return;
+        }
+    }
+    materials[*num_materials] = material_id;
+    counts[*num_materials] = 1;
+    (*num_materials)++;
+}
+
+static int mesh_sample_voxel_materials(alea_system_t *sys,
+                                       const alea_mesh_config_t *cfg,
+                                       const double *xn,
+                                       const double *yn,
+                                       const double *zn,
+                                       int i, int j, int k,
+                                       int *materials,
+                                       int *counts,
+                                       int *out_num_materials,
+                                       int *out_num_samples) {
+    int n = cfg->subsamples_per_axis;
+    if (cfg->sampling_mode == ALEA_MESH_SAMPLE_CENTER)
+        n = 1;
+    else if (cfg->sampling_mode == ALEA_MESH_SAMPLE_CORNERS)
+        n = 2;
+    int nsamples = n * n * n;
+    int n_materials = 0;
+
+    double x0 = xn[i], x1 = xn[i + 1];
+    double y0 = yn[j], y1 = yn[j + 1];
+    double z0 = zn[k], z1 = zn[k + 1];
+    double dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+    double eps = 1e-9;
+
+    memset(counts, 0, 512 * sizeof(int));
+
+    for (int kk = 0; kk < n; kk++) {
+        for (int jj = 0; jj < n; jj++) {
+            for (int ii = 0; ii < n; ii++) {
+                double fx, fy, fz;
+                if (cfg->sampling_mode == ALEA_MESH_SAMPLE_CENTER) {
+                    fx = fy = fz = 0.5;
+                } else if (cfg->sampling_mode == ALEA_MESH_SAMPLE_CORNERS) {
+                    fx = (ii == 0) ? eps : 1.0 - eps;
+                    fy = (jj == 0) ? eps : 1.0 - eps;
+                    fz = (kk == 0) ? eps : 1.0 - eps;
+                } else {
+                    fx = ((double)ii + 0.5) / (double)n;
+                    fy = ((double)jj + 0.5) / (double)n;
+                    fz = ((double)kk + 0.5) / (double)n;
+                }
+
+                double x = x0 + fx * dx;
+                double y = y0 + fy * dy;
+                double z = z0 + fz * dz;
+                int mat = sample_material_at_point(sys, x, y, z,
+                                                   cfg->void_material_id);
+                tally_material(mat, materials, counts, &n_materials);
+            }
+        }
+    }
+
+    *out_num_materials = n_materials;
+    *out_num_samples = nsamples;
+    return 0;
+}
+
+static void mesh_fraction_stats(const int *materials,
+                                const int *counts,
+                                int num_materials,
+                                int num_samples,
+                                const alea_mesh_config_t *cfg,
+                                int *out_dominant_material,
+                                unsigned char *out_mixed,
+                                double *out_dominant_fraction) {
+    int max_count = 0;
+    int dominant_material = cfg->void_material_id;
+    for (int m = 0; m < num_materials; m++) {
+        if (counts[m] > max_count) {
+            max_count = counts[m];
+            dominant_material = materials[m];
+        }
+    }
+
+    double dominant = num_samples > 0 ? (double)max_count / (double)num_samples : 1.0;
+    *out_dominant_material = dominant_material;
+    *out_dominant_fraction = dominant;
+    *out_mixed = (dominant < 1.0 - cfg->mixed_threshold) ? 1 : 0;
+}
+
+static int ensure_fraction_capacity(alea_mesh_material_fraction_t **fractions,
+                                    size_t *capacity,
+                                    size_t needed) {
+    if (needed <= *capacity) return 0;
+
+    size_t new_cap = (*capacity == 0) ? 1024 : *capacity;
+    while (new_cap < needed) {
+        if (new_cap > SIZE_MAX / 2) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "mesh fraction storage overflows size_t");
+            return -1;
+        }
+        new_cap *= 2;
+    }
+
+    alea_mesh_material_fraction_t *tmp =
+        realloc(*fractions, new_cap * sizeof(alea_mesh_material_fraction_t));
+    if (!tmp) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "mesh failed to grow material fraction storage");
+        return -1;
+    }
+
+    *fractions = tmp;
+    *capacity = new_cap;
+    return 0;
 }
 
 /* ============================================================================
@@ -273,23 +425,42 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         return NULL;
     }
 
+    unsigned char *mixed_flags = NULL;
+    double *dominant_fractions = NULL;
+    alea_mesh_fraction_span_t *fraction_spans = NULL;
+    alea_mesh_material_fraction_t *fractions = NULL;
+    size_t fraction_count = 0;
+    size_t fraction_capacity = 0;
+    mixed_flags = calloc(ncells, sizeof(unsigned char));
+    dominant_fractions = malloc(ncells * sizeof(double));
+    fraction_spans = calloc(ncells, sizeof(alea_mesh_fraction_span_t));
+    if (!mixed_flags || !dominant_fractions || !fraction_spans) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "mesh failed to allocate composition arrays");
+        free(xn); free(yn); free(zn);
+        free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions); free(fraction_spans);
+        return NULL;
+    }
+
     /* Ensure indices are built */
     if (!sys->universe_index_built && alea_build_universe_index(sys) != 0) {
-        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        free(xn); free(yn); free(zn);
+        free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions); free(fraction_spans);
         return NULL;
     }
     if (alea_spatial_index_build(sys) != 0) {
-        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        free(xn); free(yn); free(zn);
+        free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions); free(fraction_spans);
         return NULL;
     }
 
-    /* Sample cell centers */
-    int void_mat = cfg->void_material_id;
+    /* Sample voxel composition and center cell IDs. */
     size_t nxy = (size_t)nx * (size_t)ny;
+    int mixed_count = 0;
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 4)
-#endif
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
             for (int i = 0; i < nx; i++) {
@@ -297,15 +468,59 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                 double yc = (yn[j] + yn[j + 1]) * 0.5;
                 double zc = (zn[k] + zn[k + 1]) * 0.5;
                 size_t idx = (size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i;
+                int materials[512];
+                int counts[512];
+                int n_materials = 0;
+                int nsamples = 0;
+                int dominant_material = cfg->void_material_id;
+                unsigned char mixed = 0;
+                double dominant = 1.0;
 
                 int cell_idx = alea_identify_cell_at_point(sys, xc, yc, zc);
                 if (cell_idx < 0) {
-                    mat_ids[idx] = void_mat;
                     cell_ids[idx] = -1;
                 } else {
-                    mat_ids[idx] = sys->cells.data[cell_idx].material_id;
                     cell_ids[idx] = sys->cells.data[cell_idx].mc_cell_id;
                 }
+
+                mesh_sample_voxel_materials(sys, cfg, xn, yn, zn, i, j, k,
+                                            materials, counts,
+                                            &n_materials, &nsamples);
+                mesh_fraction_stats(materials, counts, n_materials, nsamples, cfg,
+                                    &dominant_material, &mixed, &dominant);
+                mat_ids[idx] = dominant_material;
+
+                if (fraction_count > (size_t)UINT32_MAX ||
+                    (size_t)n_materials > (size_t)UINT32_MAX - fraction_count) {
+                    alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                          "mesh fraction span offset exceeds uint32_t");
+                    free(xn); free(yn); free(zn);
+                    free(mat_ids); free(cell_ids);
+                    free(mixed_flags); free(dominant_fractions);
+                    free(fraction_spans); free(fractions);
+                    return NULL;
+                }
+                if (ensure_fraction_capacity(&fractions, &fraction_capacity,
+                                             fraction_count + (size_t)n_materials) != 0) {
+                    free(xn); free(yn); free(zn);
+                    free(mat_ids); free(cell_ids);
+                    free(mixed_flags); free(dominant_fractions);
+                    free(fraction_spans); free(fractions);
+                    return NULL;
+                }
+
+                fraction_spans[idx].offset = (uint32_t)fraction_count;
+                fraction_spans[idx].count = (uint32_t)n_materials;
+                for (int m = 0; m < n_materials; m++) {
+                    fractions[fraction_count].material_id = materials[m];
+                    fractions[fraction_count].fraction =
+                        nsamples > 0 ? (double)counts[m] / (double)nsamples : 0.0;
+                    fraction_count++;
+                }
+
+                mixed_flags[idx] = mixed;
+                dominant_fractions[idx] = dominant;
+                mixed_count += mixed ? 1 : 0;
             }
         }
     }
@@ -314,7 +529,10 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     int num_mats = 0;
     int *unique_mats = collect_unique(mat_ids, ncells, &num_mats);
     if (!unique_mats) {
-        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        free(xn); free(yn); free(zn);
+        free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions);
+        free(fraction_spans); free(fractions);
         return NULL;
     }
 
@@ -322,6 +540,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     alea_mesh_result_t *res = calloc(1, sizeof(*res));
     if (!res) {
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids); free(unique_mats);
+        free(mixed_flags); free(dominant_fractions);
+        free(fraction_spans); free(fractions);
         return NULL;
     }
     res->nx = nx;  res->ny = ny;  res->nz = nz;
@@ -330,6 +550,12 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     res->cell_ids = cell_ids;
     res->num_materials = num_mats;
     res->unique_materials = unique_mats;
+    res->mixed_flags = mixed_flags;
+    res->dominant_fractions = dominant_fractions;
+    res->mixed_count = mixed_count;
+    res->fraction_spans = fraction_spans;
+    res->fractions = fractions;
+    res->fraction_count = fraction_count;
     return res;
 }
 
@@ -341,6 +567,10 @@ void alea_mesh_result_free(alea_mesh_result_t *mesh) {
     free(mesh->material_ids);
     free(mesh->cell_ids);
     free(mesh->unique_materials);
+    free(mesh->mixed_flags);
+    free(mesh->dominant_fractions);
+    free(mesh->fraction_spans);
+    free(mesh->fractions);
     free(mesh);
 }
 
@@ -515,6 +745,24 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
         for (int j = 0; j < ny; j++)
             for (int i = 0; i < nx; i++)
                 fprintf(out, "%d\n", mesh->cell_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+
+    if (mesh->mixed_flags) {
+        fprintf(out, "SCALARS mixed_flag int 1\n");
+        fprintf(out, "LOOKUP_TABLE default\n");
+        for (int k = 0; k < nz; k++)
+            for (int j = 0; j < ny; j++)
+                for (int i = 0; i < nx; i++)
+                    fprintf(out, "%d\n", (int)mesh->mixed_flags[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+    }
+
+    if (mesh->dominant_fractions) {
+        fprintf(out, "SCALARS dominant_fraction double 1\n");
+        fprintf(out, "LOOKUP_TABLE default\n");
+        for (int k = 0; k < nz; k++)
+            for (int j = 0; j < ny; j++)
+                for (int i = 0; i < nx; i++)
+                    fprintf(out, "%.15g\n", mesh->dominant_fractions[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+    }
 
     return 0;
 }

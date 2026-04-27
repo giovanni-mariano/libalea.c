@@ -39,6 +39,32 @@ static alea_system_t *create_sphere_scene(void) {
     return sys;
 }
 
+static alea_system_t *create_small_inclusion_scene(void) {
+    alea_system_t *sys = alea_create();
+    if (!sys) return NULL;
+
+    int s1 = alea_sphere_surface(sys, 1, 0.25, 0.25, 0.25, 0.20);
+    alea_node_id_t sphere = alea_surface_at(sys, s1)->neg_node;
+    int m1 = alea_add_material(sys, 1);
+
+    alea_add_cell(sys, 1, sphere, m1, -1.0, 0);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
+static double mesh_fraction_for_material(const alea_mesh_result_t *mesh,
+                                         size_t voxel_index,
+                                         int material_id) {
+    alea_mesh_fraction_span_t span = mesh->fraction_spans[voxel_index];
+    for (uint32_t i = 0; i < span.count; i++) {
+        const alea_mesh_material_fraction_t *f =
+            &mesh->fractions[(size_t)span.offset + (size_t)i];
+        if (f->material_id == material_id)
+            return f->fraction;
+    }
+    return 0.0;
+}
+
 /* ============================================================================
  * Tests
  * ============================================================================ */
@@ -53,6 +79,9 @@ TEST(mesh_config_defaults) {
     ASSERT_EQ(cfg.format, ALEA_MESH_GMSH);
     ASSERT_EQ(cfg.void_material_id, 0);
     ASSERT_NEAR(cfg.auto_pad, 0.01, 1e-15);
+    ASSERT_EQ(cfg.sampling_mode, ALEA_MESH_SAMPLE_SUBCELL);
+    ASSERT_EQ(cfg.subsamples_per_axis, 2);
+    ASSERT_NEAR(cfg.mixed_threshold, 0.0, 1e-15);
     ASSERT_NEAR(cfg.x_min, 0.0, 1e-15);
     ASSERT_NEAR(cfg.x_max, 0.0, 1e-15);
     ASSERT_NULL(cfg.x_nodes);
@@ -93,6 +122,75 @@ TEST(mesh_sample_sphere) {
     alea_destroy(sys);
 }
 
+TEST(mesh_fractions_populated_by_default) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max =  6.0;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_NOT_NULL(mesh->mixed_flags);
+    ASSERT_NOT_NULL(mesh->dominant_fractions);
+    ASSERT_NOT_NULL(mesh->fraction_spans);
+    ASSERT_NOT_NULL(mesh->fractions);
+    ASSERT(mesh->fraction_count > 0);
+    ASSERT(mesh->dominant_fractions[0] > 0.0);
+    ASSERT(mesh->dominant_fractions[0] <= 1.0);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_subsample_detects_inclusion_missed_by_center) {
+    alea_system_t *sys = create_small_inclusion_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = 0.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_SUBCELL;
+    cfg.subsamples_per_axis = 2;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+
+    /* The voxel center is void, but a 2x2x2 sample records the inclusion. */
+    ASSERT_EQ(mesh->material_ids[0], 0);
+    ASSERT_NOT_NULL(mesh->mixed_flags);
+    ASSERT_NOT_NULL(mesh->dominant_fractions);
+    ASSERT_NOT_NULL(mesh->fraction_spans);
+    ASSERT_NOT_NULL(mesh->fractions);
+    ASSERT_EQ(mesh->mixed_flags[0], 1);
+    ASSERT_EQ(mesh->mixed_count, 1);
+    ASSERT_EQ(mesh->fraction_spans[0].count, 2);
+    ASSERT_EQ(mesh->fraction_count, 2);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 1), 0.125, 1e-15);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 0), 0.875, 1e-15);
+    ASSERT_NEAR(mesh->dominant_fractions[0], 0.875, 1e-15);
+
+    FILE *f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    int rc = alea_mesh_export_stream(mesh, ALEA_MESH_VTK, f);
+    ASSERT_EQ(rc, 0);
+    rewind(f);
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    ASSERT(strstr(buf, "SCALARS mixed_flag int") != NULL);
+    ASSERT(strstr(buf, "SCALARS dominant_fraction double") != NULL);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
 TEST(mesh_rejects_invalid_dimensions) {
     alea_system_t *sys = create_sphere_scene();
     ASSERT_NOT_NULL(sys);
@@ -104,6 +202,17 @@ TEST(mesh_rejects_invalid_dimensions) {
     cfg.x_max = cfg.y_max = cfg.z_max =  1.0;
 
     alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    cfg.nx = 2;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_SUBCELL;
+    cfg.subsamples_per_axis = 9;
+    mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NULL(mesh);
+
+    cfg.subsamples_per_axis = 2;
+    cfg.sampling_mode = (alea_mesh_sampling_mode_t)99;
+    mesh = alea_mesh_sample(sys, &cfg);
     ASSERT_NULL(mesh);
 
     alea_destroy(sys);
