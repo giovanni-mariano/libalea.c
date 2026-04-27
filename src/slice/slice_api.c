@@ -915,6 +915,140 @@ static bool pixel_is_boundary(const int* cell_ids, int nu, int nv, int pi, int p
     return false;
 }
 
+static int probe_curve_grid_point_for_overlap(alea_system_t* sys,
+                                              const alea_slice_plane_t* plane,
+                                              double u_min, double v_min,
+                                              double du, double dv,
+                                              double inv_du, double inv_dv,
+                                              int nu, int nv,
+                                              int universe_depth,
+                                              const int* cell_ids,
+                                              uint8_t* errors,
+                                              uint8_t* probed,
+                                              double u, double v) {
+    int pi = (int)((u - u_min) * inv_du);
+    int pj = (int)((v - v_min) * inv_dv);
+    if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) return 0;
+
+    /* Skip boundary pixels: alea_find_cells_grid() already rechecks them
+     * with a full hierarchy query. The curve refinement is for same-cell
+     * pixels where nested overlap can hide. */
+    if (pixel_is_boundary(cell_ids, nu, nv, pi, pj)) return 0;
+
+    int new_overlaps = 0;
+    for (int dj = -1; dj <= 1; dj++) {
+        for (int di = -1; di <= 1; di++) {
+            int qi = pi + di, qj = pj + dj;
+            if (qi < 0 || qi >= nu || qj < 0 || qj >= nv) continue;
+
+            size_t bit_idx = (size_t)qj * (size_t)nu + (size_t)qi;
+            size_t byte_idx = bit_idx / 8;
+            uint8_t bit_mask = (uint8_t)(1u << (bit_idx % 8));
+            if (probed[byte_idx] & bit_mask) continue;
+            probed[byte_idx] |= bit_mask;
+
+            if (pixel_is_boundary(cell_ids, nu, nv, qi, qj)) continue;
+
+            new_overlaps += probe_pixel_for_overlap(
+                sys, plane, u_min, v_min, du, dv,
+                nu, nv, universe_depth, cell_ids, errors, qi, qj);
+        }
+    }
+
+    return new_overlaps;
+}
+
+static int refine_quartic_curve_overlaps(alea_system_t* sys,
+                                         const alea_slice_view_t* view,
+                                         const alea_curve_2d_t* curve,
+                                         double sample_spacing,
+                                         double u_min, double v_min,
+                                         double du, double dv,
+                                         double inv_du, double inv_dv,
+                                         int nu, int nv,
+                                         int universe_depth,
+                                         const int* cell_ids,
+                                         uint8_t* errors,
+                                         uint8_t* probed) {
+    double bbox_umin, bbox_umax, bbox_vmin, bbox_vmax;
+    alea_curve_bbox(curve, &bbox_umin, &bbox_umax, &bbox_vmin, &bbox_vmax);
+
+    double v_lo = fmax(bbox_vmin, view->v_min);
+    double v_hi = fmin(bbox_vmax, view->v_max);
+    if (v_lo >= v_hi) return 0;
+
+    int n_scanlines = (int)((v_hi - v_lo) / sample_spacing);
+    if (n_scanlines < 2) n_scanlines = 2;
+    if (n_scanlines > 10000) n_scanlines = 10000;
+
+    int new_overlaps = 0;
+    for (int i = 0; i <= n_scanlines; i++) {
+        double v_scan = v_lo + (v_hi - v_lo) * (double)i / (double)n_scanlines;
+        double u_vals[16];
+        int n_isect = alea_curve_scanline_intersect(curve, v_scan, u_vals, 16);
+
+        for (int j = 0; j < n_isect; j++) {
+            double u = u_vals[j];
+            if (u < view->u_min || u > view->u_max) continue;
+            new_overlaps += probe_curve_grid_point_for_overlap(
+                sys, &view->plane, u_min, v_min, du, dv, inv_du, inv_dv,
+                nu, nv, universe_depth, cell_ids, errors, probed, u, v_scan);
+        }
+    }
+
+    return new_overlaps;
+}
+
+static int refine_polygon_curve_overlaps(alea_system_t* sys,
+                                         const alea_slice_view_t* view,
+                                         const alea_curve_2d_t* curve,
+                                         double sample_spacing,
+                                         double u_min, double v_min,
+                                         double du, double dv,
+                                         double inv_du, double inv_dv,
+                                         int nu, int nv,
+                                         int universe_depth,
+                                         const int* cell_ids,
+                                         uint8_t* errors,
+                                         uint8_t* probed) {
+    const alea_polygon_2d_t* poly = &curve->data.polygon;
+    int nverts = poly->vertex_count;
+    if (nverts < 2) return 0;
+
+    int n_edges = poly->closed ? nverts : (nverts - 1);
+    int new_overlaps = 0;
+
+    for (int e = 0; e < n_edges; e++) {
+        int i0 = e;
+        int i1 = (e + 1) % nverts;
+        double x0 = poly->vertices[i0][0], y0 = poly->vertices[i0][1];
+        double x1 = poly->vertices[i1][0], y1 = poly->vertices[i1][1];
+        double dx = x1 - x0;
+        double dy = y1 - y0;
+        double edge_len = sqrt(dx * dx + dy * dy);
+        if (edge_len < 1e-15) continue;
+
+        int n_samples = (int)(edge_len / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 10000) n_samples = 10000;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double frac = (double)s / (double)n_samples;
+            double u = x0 + frac * dx;
+            double v = y0 + frac * dy;
+            if (u < view->u_min || u > view->u_max ||
+                v < view->v_min || v > view->v_max) {
+                continue;
+            }
+            new_overlaps += probe_curve_grid_point_for_overlap(
+                sys, &view->plane, u_min, v_min, du, dv, inv_du, inv_dv,
+                nu, nv, universe_depth, cell_ids, errors, probed, u, v);
+        }
+    }
+
+    return new_overlaps;
+}
+
 int alea_check_grid_overlaps_curves(alea_system_t* sys,
                                     const alea_slice_view_t* view,
                                     const alea_slice_curves_t* curves,
@@ -951,9 +1085,21 @@ int alea_check_grid_overlaps_curves(alea_system_t* sys,
         if (curve->type == ALEA_CURVE_NONE || curve->type == ALEA_CURVE_POINT)
             continue;
 
-        /* For parametric curves: walk the parameter range and rasterize */
-        if (curve->type == ALEA_CURVE_QUARTIC || curve->type == ALEA_CURVE_POLYGON)
-            continue;  /* TODO: handle these if needed */
+        if (curve->type == ALEA_CURVE_QUARTIC) {
+            new_overlaps += refine_quartic_curve_overlaps(
+                sys, view, curve, sample_spacing,
+                u_min, v_min, du, dv, inv_du, inv_dv,
+                nu, nv, universe_depth, cell_ids, errors, probed);
+            continue;
+        }
+
+        if (curve->type == ALEA_CURVE_POLYGON) {
+            new_overlaps += refine_polygon_curve_overlaps(
+                sys, view, curve, sample_spacing,
+                u_min, v_min, du, dv, inv_du, inv_dv,
+                nu, nv, universe_depth, cell_ids, errors, probed);
+            continue;
+        }
 
         double t_lo, t_hi;
         get_clipped_param_range(curve, view, &t_lo, &t_hi);
@@ -978,34 +1124,9 @@ int alea_check_grid_overlaps_curves(alea_system_t* sys,
             if (!alea_curve_eval(curve, t, &u, &v)) continue;
             if (u < u_min || u > u_max || v < v_min || v > v_max) continue;
 
-            int pi = (int)((u - u_min) * inv_du);
-            int pj = (int)((v - v_min) * inv_dv);
-            if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) continue;
-
-            /* Skip boundary pixels — already checked by pass 2 */
-            if (pixel_is_boundary(cell_ids, nu, nv, pi, pj)) continue;
-
-            /* Probe this pixel and its immediate neighbors (to catch
-             * near-boundary cases where the curve is between pixels) */
-            for (int dj = -1; dj <= 1; dj++) {
-                for (int di = -1; di <= 1; di++) {
-                    int qi = pi + di, qj = pj + dj;
-                    if (qi < 0 || qi >= nu || qj < 0 || qj >= nv) continue;
-
-                    size_t bit_idx = (size_t)qj * nu + qi;
-                    size_t byte_idx = bit_idx / 8;
-                    uint8_t bit_mask = 1u << (bit_idx % 8);
-                    if (probed[byte_idx] & bit_mask) continue;
-                    probed[byte_idx] |= bit_mask;
-
-                    /* Skip if already a boundary pixel */
-                    if (pixel_is_boundary(cell_ids, nu, nv, qi, qj)) continue;
-
-                    new_overlaps += probe_pixel_for_overlap(
-                        sys, plane, u_min, v_min, du, dv,
-                        nu, nv, universe_depth, cell_ids, errors, qi, qj);
-                }
-            }
+            new_overlaps += probe_curve_grid_point_for_overlap(
+                sys, plane, u_min, v_min, du, dv, inv_du, inv_dv,
+                nu, nv, universe_depth, cell_ids, errors, probed, u, v);
         }
     }
 

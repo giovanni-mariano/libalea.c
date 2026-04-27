@@ -11,10 +11,18 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 #include "alea.h"
 #include "alea_slice.h"
 #include "core/alea_system.h"
 #include "primitives/primitive_create.h"
+
+static size_t count_overlap_pixels(const uint8_t* errors, int n) {
+    size_t count = 0;
+    for (int i = 0; i < n; i++)
+        if (errors[i] == ALEA_GRID_OVERLAP) count++;
+    return count;
+}
 
 /* ============================================================================
  * TEST: Two non-overlapping cells — no errors expected
@@ -227,6 +235,106 @@ static void test_adjacent_cells_no_errors(void) {
 }
 
 /* ============================================================================
+ * TEST: Curve-guided grid refinement includes polygon curves
+ * ============================================================================ */
+
+static void test_curve_grid_overlap_refines_polygon(void) {
+    printf("  test_curve_grid_overlap_refines_polygon... ");
+
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+
+    int sphere_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 10.0);
+    int box_idx = alea_box_surface(sys, 2, -2, 2, -2, 2, -2, 2);
+
+    alea_node_id_t sphere = alea_surface_at(sys, sphere_idx)->neg_node;
+    alea_node_id_t box = alea_surface_at(sys, box_idx)->neg_node;
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, sphere, m1, -1.0, 0);
+    alea_add_cell(sys, 2, box, m2, -1.0, 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -12, 12, -12, 12);
+
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+
+    const int nu = 80, nv = 80;
+    int* cell_ids = calloc((size_t)nu * nv, sizeof(int));
+    uint8_t* errors = calloc((size_t)nu * nv, sizeof(uint8_t));
+    assert(cell_ids != NULL && errors != NULL);
+
+    assert(alea_find_cells_grid(sys, &view, nu, nv, -1, cell_ids, NULL, errors) == 0);
+    size_t before = count_overlap_pixels(errors, nu * nv);
+
+    int added = alea_check_grid_overlaps_curves(
+        sys, &view, curves, nu, nv, -1, cell_ids, errors);
+    size_t after = count_overlap_pixels(errors, nu * nv);
+
+    assert(added > 0);
+    assert(after > before);
+
+    printf("OK (added: %d, before: %zu, after: %zu)\n", added, before, after);
+
+    free(errors);
+    free(cell_ids);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
+/* ============================================================================
+ * TEST: Curve-guided grid refinement includes quartic torus curves
+ * ============================================================================ */
+
+static void test_curve_grid_overlap_refines_quartic(void) {
+    printf("  test_curve_grid_overlap_refines_quartic... ");
+
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+
+    int sphere_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 10.0);
+    int torus_idx = alea_torus_z_surface(sys, 2, 0, 0, 0, 4.0, 1.2);
+
+    alea_node_id_t sphere = alea_surface_at(sys, sphere_idx)->neg_node;
+    alea_node_id_t torus = alea_surface_at(sys, torus_idx)->neg_node;
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, sphere, m1, -1.0, 0);
+    alea_add_cell(sys, 2, torus, m2, -1.0, 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -12, 12, -12, 12);
+
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+
+    const int nu = 100, nv = 100;
+    int* cell_ids = calloc((size_t)nu * nv, sizeof(int));
+    uint8_t* errors = calloc((size_t)nu * nv, sizeof(uint8_t));
+    assert(cell_ids != NULL && errors != NULL);
+
+    assert(alea_find_cells_grid(sys, &view, nu, nv, -1, cell_ids, NULL, errors) == 0);
+    size_t before = count_overlap_pixels(errors, nu * nv);
+
+    int added = alea_check_grid_overlaps_curves(
+        sys, &view, curves, nu, nv, -1, cell_ids, errors);
+    size_t after = count_overlap_pixels(errors, nu * nv);
+
+    assert(added > 0);
+    assert(after > before);
+
+    printf("OK (added: %d, before: %zu, after: %zu)\n", added, before, after);
+
+    free(errors);
+    free(cell_ids);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
+/* ============================================================================
  * TEST: NULL/empty input handling
  * ============================================================================ */
 
@@ -255,6 +363,8 @@ int main(void) {
     test_gap_detection();
     test_overlap_detection();
     test_adjacent_cells_no_errors();
+    test_curve_grid_overlap_refines_polygon();
+    test_curve_grid_overlap_refines_quartic();
 
     printf("\n=== All slice error tests passed! ===\n\n");
     return 0;
