@@ -22,6 +22,16 @@ static void set_fast_void_config(alea_system_t* sys) {
     alea_set_config(sys, &cfg);
 }
 
+/* Configure a deliberately coarse octree for tests that exercise probe
+ * classification at the root node. */
+static void set_coarse_void_config(alea_system_t* sys) {
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.void_max_depth = 4;
+    cfg.void_min_size = 0.1;
+    cfg.void_probes_per_axis = 3;
+    alea_set_config(sys, &cfg);
+}
+
 /* Helper: create a system with a single box cell at [-1,1]^3 in universe 0 */
 static alea_system_t* make_box_system(void) {
     alea_system_t* sys = alea_create();
@@ -36,6 +46,74 @@ static alea_system_t* make_box_system(void) {
     alea_add_cell(sys, 1, box, m1, 1.0, 0);
 
     alea_build_universe_index(sys);
+    return sys;
+}
+
+/* Helper: create a material box with a small internal void cavity that does
+ * not lie on the default 3x3x3 probe grid for bounds [-4,4]^3. */
+static alea_system_t* make_box_shell_with_off_grid_cavity(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    set_coarse_void_config(sys);
+
+    int outer_si = alea_box_surface(sys, 0, -5, 5, -5, 5, -5, 5);
+    int cavity_si = alea_sphere_surface(sys, 0, 1.25, 0.75, 0.25, 0.25);
+    if (outer_si < 0 || cavity_si < 0) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
+    alea_node_id_t outer = alea_halfspace(sys, outer_si, -1);
+    alea_node_id_t cavity = alea_halfspace(sys, cavity_si, -1);
+    alea_node_id_t shell = alea_difference(sys, outer, cavity);
+    if (shell == ALEA_NODE_ID_INVALID) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
+    int mat = alea_add_material(sys, 1);
+    if (alea_add_cell(sys, 1, shell, mat, 1.0, 0) < 0 ||
+        alea_build_universe_index(sys) < 0) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
+    return sys;
+}
+
+/* Helper: root universe contains only a filled container. Void generation over
+ * bounds fully inside the container should conservatively produce no root-level
+ * void cells. */
+static alea_system_t* make_simple_fill_system(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    set_fast_void_config(sys);
+
+    int child_si = alea_sphere_surface(sys, 0, 0, 0, 0, 1.0);
+    int parent_si = alea_box_surface(sys, 0, -5, 5, -5, 5, -5, 5);
+    if (child_si < 0 || parent_si < 0) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
+    alea_node_id_t child = alea_halfspace(sys, child_si, -1);
+    alea_node_id_t parent = alea_halfspace(sys, parent_si, -1);
+
+    int mat = alea_add_material(sys, 1);
+    if (alea_add_cell(sys, 10, child, mat, 1.0, 1) < 0) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
+    int fill_idx = alea_add_cell(sys, 1, parent, ALEA_MATERIAL_VOID, 0.0, 0);
+    if (fill_idx < 0 || alea_set_fill(sys, fill_idx, 1, 0) < 0 ||
+        alea_build_universe_index(sys) < 0) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
     return sys;
 }
 
@@ -254,6 +332,94 @@ TEST(void_point_verification) {
 
     alea_void_free(vr);
     alea_destroy(sys);
+}
+
+TEST(void_detects_internal_cavity_missed_by_probes) {
+    alea_system_t* sys = make_box_shell_with_off_grid_cavity();
+    ASSERT_NOT_NULL(sys);
+
+    /* The cavity point is not in the material shell before void generation. */
+    ASSERT_EQ(alea_find_cell(sys, 1.25, 0.75, 0.25), -1);
+
+    alea_bbox_t bounds = {-4, 4, -4, 4, -4, 4};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT_MSG(alea_void_count(vr) > 0,
+               "void generation must not classify the whole bounds as solid from probes alone");
+
+    int added = alea_void_add_cells(sys, vr);
+    ASSERT(added > 0);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    ASSERT(alea_find_cell(sys, 1.25, 0.75, 0.25) >= 0);
+    ASSERT_EQ(alea_material_at(sys, 1.25, 0.75, 0.25), 0);
+    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+TEST(void_treats_filled_root_container_as_carveout) {
+    alea_system_t* sys = make_simple_fill_system();
+    ASSERT_NOT_NULL(sys);
+
+    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
+
+    alea_bbox_t bounds = {-4, 4, -4, 4, -4, 4};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+
+    ASSERT_MSG(alea_void_count(vr) == 0,
+               "bounds fully inside a filled root container should be carved out, not filled with root-level void");
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+TEST(void_generate_without_add_does_not_commit_geometry) {
+    alea_system_t* sys = make_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    size_t surfaces_before = alea_vec_count(&sys->surfaces);
+    size_t nodes_before = alea_vec_count(&sys->nodes);
+    size_t cells_before = alea_cell_count(sys);
+
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 0);
+
+    alea_void_free(vr);
+
+    ASSERT_EQ(alea_cell_count(sys), cells_before);
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), surfaces_before);
+    ASSERT_EQ(alea_vec_count(&sys->nodes), nodes_before);
+
+    alea_destroy(sys);
+}
+
+TEST(void_add_cells_rejects_invalid_region_without_partial_commit) {
+    alea_system_t* sys = make_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 0);
+
+    size_t cells_before = alea_cell_count(sys);
+    vr->void_regions.data[0].node = ALEA_NODE_ID_INVALID;
+
+    int added = alea_void_add_cells(sys, vr);
+    ASSERT_EQ(added, -1);
+    ASSERT_EQ(alea_cell_count(sys), cells_before);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
+    SKIP("requires allocator fault injection hook for octree_node_create");
 }
 
 /* ------------------------------------------------------------------------- */
