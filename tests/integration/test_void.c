@@ -558,6 +558,10 @@ TEST(void_consolidate) {
     size_t before = alea_void_count(vr);
     ASSERT(before > 1);
 
+    /* Current void generation creates box surfaces eagerly, which invalidates
+     * the universe cache needed by consolidation's global-void path. */
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
     /* Merge with consolidation (default) */
     alea_void_merge_config_t cfg = ALEA_VOID_MERGE_DEFAULT;
     cfg.consolidate_max_surfaces = 100;

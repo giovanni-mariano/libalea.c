@@ -44,7 +44,12 @@ static bool boxes_can_form_box(const alea_bbox_t* a, const alea_bbox_t* b, alea_
 
 static octree_node_t* octree_node_create(const alea_bbox_t* bbox, int depth) {
     octree_node_t* node = calloc(1, sizeof(octree_node_t));
-    if (!node) return NULL;
+    if (!node) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "octree_node_create: failed to allocate node at depth %d",
+                              depth);
+        return NULL;
+    }
     
     node->bbox = *bbox;
     node->depth = depth;
@@ -155,9 +160,9 @@ static int probe_node(alea_system_t* sys, const alea_bbox_t* bbox,
  * CONSERVATIVE: Only classify as SOLID if all probes land in the same
  * material cell. Any hint of void means we keep it as a candidate.
  */
-static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
-                                    const octree_config_t* config,
-                                    void_result_t* result) {
+static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
+                                  const octree_config_t* config,
+                                  void_result_t* result) {
     result->total_nodes++;
 
     // Check minimum size
@@ -178,7 +183,7 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
         node->classification = OCTREE_VOID;
         node->cell_index = -1;
         result->octree_void_count++;
-        return;
+        return 0;
     }
 
     if (cell_result >= 0) {
@@ -187,7 +192,7 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
         node->classification = OCTREE_SOLID;
         node->cell_index = cell_result;
         result->solid_nodes++;
-        return;
+        return 0;
     }
 
     // Mixed: some void probes, or multiple cells.
@@ -206,7 +211,7 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
         if (node->depth >= config->max_depth) {
             result->max_depth_reached++;
         }
-        return;
+        return 0;
     }
 
     // Subdivide for finer resolution
@@ -215,10 +220,19 @@ static void build_octree_recursive(alea_system_t* sys, octree_node_t* node,
     for (int i = 0; i < 8; i++) {
         alea_bbox_t child_bbox = get_child_bbox(&node->bbox, i);
         node->children[i] = octree_node_create(&child_bbox, node->depth + 1);
-        if (!node->children[i]) return;  // Allocation failure
+        if (!node->children[i]) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "build_octree_recursive: failed to allocate child node at depth %d",
+                                  node->depth + 1);
+            return -1;
+        }
 
-        build_octree_recursive(sys, node->children[i], config, result);
+        if (build_octree_recursive(sys, node->children[i], config, result) < 0) {
+            return -1;
+        }
     }
+
+    return 0;
 }
 
 // ============================================================================
@@ -364,6 +378,17 @@ typedef struct {
     alea_bbox_t bbox;
 } cell_bbox_entry_t;
 
+typedef enum {
+    LOCAL_VOID_PURE_VOID = 0,
+    LOCAL_VOID_COMPLEMENT,
+    LOCAL_VOID_ERROR
+} local_void_status_t;
+
+typedef struct {
+    local_void_status_t status;
+    alea_node_id_t node;
+} local_void_result_t;
+
 /**
  * @brief Collect bboxes of all material cells in a universe
  *
@@ -383,7 +408,12 @@ static int collect_cell_bboxes(alea_system_t* sys, int universe_id,
     }
 
     cell_bbox_entry_t* entries = malloc(univ->cell_indices.count * sizeof(cell_bbox_entry_t));
-    if (!entries) return -1;
+    if (!entries) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "collect_cell_bboxes: failed to allocate %zu bbox entries",
+                              univ->cell_indices.count);
+        return -1;
+    }
 
     size_t count = 0;
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
@@ -407,18 +437,32 @@ static int collect_cell_bboxes(alea_system_t* sys, int universe_id,
 /**
  * @brief Build a local void complement from cells overlapping a box
  *
- * Returns ¬(union of overlapping cells), or ALEA_NODE_ID_INVALID if no cells
- * overlap (meaning the entire box is void — caller should use box_node directly).
+ * Returns an explicit status so construction errors cannot be confused with
+ * a valid pure-void box.
  */
-static alea_node_id_t compute_local_void(
+static local_void_result_t compute_local_void(
     alea_system_t* sys,
     const alea_bbox_t* box,
     const cell_bbox_entry_t* cell_bboxes,
     size_t cell_bbox_count
 ) {
+    local_void_result_t result = {
+        .status = LOCAL_VOID_ERROR,
+        .node = ALEA_NODE_ID_INVALID
+    };
+
+    if (cell_bbox_count == 0) {
+        result.status = LOCAL_VOID_PURE_VOID;
+        return result;
+    }
+
     /* Collect roots of cells whose bbox overlaps this box */
     alea_node_id_t* overlapping = malloc(cell_bbox_count * sizeof(alea_node_id_t));
-    if (!overlapping) return ALEA_NODE_ID_INVALID;
+    if (!overlapping) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "compute_local_void: failed to allocate overlap list");
+        return result;
+    }
 
     size_t overlap_count = 0;
     for (size_t j = 0; j < cell_bbox_count; j++) {
@@ -429,7 +473,8 @@ static alea_node_id_t compute_local_void(
 
     if (overlap_count == 0) {
         free(overlapping);
-        return ALEA_NODE_ID_INVALID; /* signal: pure void, no complement needed */
+        result.status = LOCAL_VOID_PURE_VOID;
+        return result;
     }
 
     /* Build local union and complement */
@@ -442,10 +487,21 @@ static alea_node_id_t compute_local_void(
     free(overlapping);
 
     if (local_union == ALEA_NODE_ID_INVALID) {
-        return ALEA_NODE_ID_INVALID;
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "compute_local_void: failed to create local material union");
+        return result;
     }
 
-    return alea_create_complement(sys, local_union);
+    alea_node_id_t local_void = alea_create_complement(sys, local_union);
+    if (local_void == ALEA_NODE_ID_INVALID) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "compute_local_void: failed to create local void complement");
+        return result;
+    }
+
+    result.status = LOCAL_VOID_COMPLEMENT;
+    result.node = local_void;
+    return result;
 }
 
 /**
@@ -471,7 +527,12 @@ static int collect_and_collapse_void_boxes(
         if (*count >= *capacity) {
             size_t new_cap = *capacity == 0 ? 256 : (*capacity) * 2;
             alea_bbox_t* new_boxes = realloc(*boxes, new_cap * sizeof(alea_bbox_t));
-            if (!new_boxes) return -1;
+            if (!new_boxes) {
+                alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                      "collect_and_collapse_void_boxes: failed to allocate %zu boxes",
+                                      new_cap);
+                return -1;
+            }
             *boxes = new_boxes;
             *capacity = new_cap;
         }
@@ -496,7 +557,12 @@ static int collect_and_collapse_void_boxes(
             if (*count >= *capacity) {
                 size_t new_cap = *capacity == 0 ? 256 : (*capacity) * 2;
                 alea_bbox_t* new_boxes = realloc(*boxes, new_cap * sizeof(alea_bbox_t));
-                if (!new_boxes) return -1;
+                if (!new_boxes) {
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                          "collect_and_collapse_void_boxes: failed to allocate %zu boxes",
+                                          new_cap);
+                    return -1;
+                }
                 *boxes = new_boxes;
                 *capacity = new_cap;
             }
@@ -545,12 +611,16 @@ static int create_void_nodes_filtered(
 
     for (size_t i = 0; i < box_count; i++) {
         /* Build per-region complement from overlapping cells only */
-        alea_node_id_t local_void = compute_local_void(
+        local_void_result_t local_void = compute_local_void(
             sys, &boxes[i], cell_bboxes, cell_bbox_count
         );
 
         alea_node_id_t regional_void;
-        if (local_void == ALEA_NODE_ID_INVALID) {
+        if (local_void.status == LOCAL_VOID_ERROR) {
+            return -1;
+        }
+
+        if (local_void.status == LOCAL_VOID_PURE_VOID) {
             /* No cells overlap this box — entire box is void.
              * The region is just the box itself (no complement needed). */
             alea_node_id_t box_node = create_box_from_planes(
@@ -559,7 +629,7 @@ static int create_void_nodes_filtered(
             regional_void = box_node;
         } else {
             regional_void = create_regional_void(
-                sys, local_void, &boxes[i]
+                sys, local_void.node, &boxes[i]
             );
         }
 
@@ -568,15 +638,23 @@ static int create_void_nodes_filtered(
                boxes[i].min_y, boxes[i].max_y,
                boxes[i].min_z, boxes[i].max_z, regional_void);
 
-        /* If regional void is empty (no actual void in this box), skip it. */
+        /* A valid geometric emptiness check is added in a later phase.
+         * INVALID here means construction failure, not an empty region. */
         if (regional_void == ALEA_NODE_ID_INVALID) {
-            result->empty_regions_skipped++;
-            continue;
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "create_void_nodes_filtered: failed to construct void region %zu",
+                                  i);
+            return -1;
         }
 
         /* Store the void region */
         void_region_t* vr = alea_vec_push_uninit(&result->void_regions, void_region_t);
-        if (!vr) return -1;
+        if (!vr) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "create_void_nodes_filtered: failed to append void region %zu",
+                                  i);
+            return -1;
+        }
         vr->node = regional_void;
         vr->bbox = boxes[i];
     }
@@ -634,7 +712,11 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     }
 
     /* Step 1: Build octree using probing for spatial classification */
-    build_octree_recursive(sys, result->root, &cfg, result);
+    if (build_octree_recursive(sys, result->root, &cfg, result) < 0) {
+        ALEA_LOG_ERROR("void octree build failed");
+        alea_void_result_destroy(result);
+        return NULL;
+    }
 
     /* Step 2: Collect candidate boxes from octree with bottom-up collapse.
      * VOID siblings under a MIXED parent are collapsed into the parent box. */
@@ -643,10 +725,10 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     size_t box_capacity = 0;
 
     if (collect_and_collapse_void_boxes(result->root, &candidate_boxes, &box_count, &box_capacity) < 0) {
-        ALEA_LOG_WARN("void box collection incomplete");
+        ALEA_LOG_ERROR("void box collection failed");
         free(candidate_boxes);
-        alea_void_print_stats(result);
-        return result;
+        alea_void_result_destroy(result);
+        return NULL;
     }
 
     result->boxes_before_merge = box_count;
@@ -658,10 +740,10 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     cell_bbox_entry_t* cell_bboxes = NULL;
     size_t cell_bbox_count = 0;
     if (collect_cell_bboxes(sys, 0, &cell_bboxes, &cell_bbox_count) < 0) {
-        ALEA_LOG_WARN("cell bbox collection failed");
+        ALEA_LOG_ERROR("cell bbox collection failed");
         free(candidate_boxes);
-        alea_void_print_stats(result);
-        return result;
+        alea_void_result_destroy(result);
+        return NULL;
     }
 
     ALEA_LOG_INFO("Material cells for filtering: %zu", cell_bbox_count);
@@ -672,7 +754,11 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     if (create_void_nodes_filtered(sys, cell_bboxes, cell_bbox_count,
                                    candidate_boxes, box_count,
                                    result) < 0) {
-        ALEA_LOG_WARN("void cell creation incomplete");
+        ALEA_LOG_ERROR("void cell creation failed");
+        free(cell_bboxes);
+        free(candidate_boxes);
+        alea_void_result_destroy(result);
+        return NULL;
     }
 
     free(cell_bboxes);
