@@ -103,7 +103,7 @@ alea_system_t* alea_system_create(void) {
     // Set default configuration
     sys->config = ALEA_CONFIG_DEFAULT;
 
-    // BVH acceleration (lazy-built)
+    // BVH acceleration (prepared on demand by query acceleration setup)
     sys->surface_bvh = NULL;
     sys->bvh_dirty = true;
 
@@ -126,25 +126,85 @@ uint64_t alea_system_geometry_generation(const alea_system_t* sys) {
     return atomic_load(&sys->geometry_generation);
 }
 
-void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
-    if (!sys || flags == 0) return;
+static void alea_free_surface_lookup(alea_system_t* sys) {
+    free(sys->surface_lookup);
+    sys->surface_lookup = NULL;
+    sys->surface_lookup_size = 0;
+}
 
-    unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
-    atomic_fetch_add(&sys->geometry_generation, 1);
+static void alea_free_cell_dynamic_fields(alea_system_t* sys) {
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        free(sys->cells.data[i].surface_indices);
+        sys->cells.data[i].surface_indices = NULL;
+        sys->cells.data[i].surface_index_count = 0;
+        if (!sys->neighbor_pool)
+            free(sys->cells.data[i].neighbors);
+        sys->cells.data[i].neighbors = NULL;
+        sys->cells.data[i].neighbor_count = 0;
+        free(sys->cells.data[i].lat_fill);
+        sys->cells.data[i].lat_fill = NULL;
+        sys->cells.data[i].lat_fill_count = 0;
+        free(sys->cells.data[i].comments);
+        sys->cells.data[i].comments = NULL;
+        free(sys->cells.data[i].inline_comment);
+        sys->cells.data[i].inline_comment = NULL;
+    }
+    free(sys->neighbor_pool);
+    sys->neighbor_pool = NULL;
+    sys->cell_adjacency_built = false;
+}
 
-    /* Restrict expensive teardown to caches that were actually built.
-     * During bulk load, callers invalidate on every add; without this,
-     * each add walks all prior cells/universes (O(N^2) load time). */
-    flags &= prev_state;
-    if (flags == 0) return;
+static void alea_free_material_contents(alea_material_t* m) {
+    for (size_t j = 0; j < alea_vec_count(&m->nuclides); j++) {
+        free(m->nuclides.data[j].library);
+    }
+    alea_vec_free(&m->nuclides);
+    for (size_t j = 0; j < alea_vec_count(&m->elements); j++) {
+        free(m->elements.data[j].library);
+    }
+    alea_vec_free(&m->elements);
+    for (size_t j = 0; j < alea_vec_count(&m->thermal_laws); j++) {
+        free(m->thermal_laws.data[j].identifier);
+    }
+    alea_vec_free(&m->thermal_laws);
+    free(m->name);
+    free(m->comments);
+}
 
-    if (flags & ALEA_CACHE_UNIVERSE) {
-        for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-            alea_vec_free(&sys->universes.data[i].cell_indices);
-        }
+static void alea_free_all_material_contents(alea_system_t* sys) {
+    for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
+        alea_free_material_contents(&sys->materials.data[i]);
+    }
+}
+
+static void alea_free_mixture_contents(alea_mixture_t* m) {
+    alea_vec_free(&m->components);
+    free(m->name);
+    free(m->comments);
+}
+
+static void alea_free_all_mixture_contents(alea_system_t* sys) {
+    for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
+        alea_free_mixture_contents(&sys->mixtures.data[i]);
+    }
+}
+
+static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
+    for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
+        alea_vec_free(&sys->universes.data[i].cell_indices);
+    }
+    if (free_vector)
+        alea_vec_free(&sys->universes);
+    else
         alea_vec_clear(&sys->universes);
-        universe_hashmap_clear(&sys->universe_index);
-        sys->universe_index_built = false;
+    universe_hashmap_clear(&sys->universe_index);
+    sys->universe_index_built = false;
+}
+
+static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
+                                          bool free_universe_vector) {
+    if (flags & ALEA_CACHE_UNIVERSE) {
+        alea_clear_universe_cache(sys, free_universe_vector);
     }
 
     if (flags & ALEA_CACHE_CELL_SURFACES) {
@@ -187,6 +247,21 @@ void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
         }
         sys->cell_adjacency_built = false;
     }
+}
+
+void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
+    if (!sys || flags == 0) return;
+
+    unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
+    atomic_fetch_add(&sys->geometry_generation, 1);
+
+    /* Restrict expensive teardown to caches that were actually built.
+     * During bulk load, callers invalidate on every add; without this,
+     * each add walks all prior cells/universes (O(N^2) load time). */
+    flags &= prev_state;
+    if (flags == 0) return;
+
+    alea_free_query_cache_storage(sys, flags, false);
 }
 
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
@@ -268,48 +343,19 @@ int alea_prepare_query_acceleration(alea_system_t* sys) {
 void alea_system_destroy_internals(alea_system_t* sys) {
     if (!sys) return;
 
-    // Invalidate thread-local spatial cache to prevent stale hits
-    // if a new system is allocated at the same address (ABA problem)
-    alea_spatial_reset_cache();
-
-    // Free per-cell data
-    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        free(sys->cells.data[i].surface_indices);
-        if (!sys->neighbor_pool)
-            free(sys->cells.data[i].neighbors);
-        free(sys->cells.data[i].lat_fill);
-        free(sys->cells.data[i].comments);
-        free(sys->cells.data[i].inline_comment);
-    }
-    free(sys->neighbor_pool);
+    atomic_store(&sys->query_cache_state, 0);
+    atomic_fetch_add(&sys->geometry_generation, 1);
+    alea_free_query_cache_storage(sys, ALEA_CACHE_ALL, true);
+    alea_free_cell_dynamic_fields(sys);
     alea_vec_free(&sys->cells);
 
     alea_vec_free(&sys->nodes);
     alea_vec_free(&sys->primitives);
     alea_vec_free(&sys->surfaces);
-    /* Free internal arrays of each material before freeing the vector */
-    for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
-        alea_material_t* m = &sys->materials.data[i];
-        for (size_t j = 0; j < alea_vec_count(&m->nuclides); j++) {
-            free(m->nuclides.data[j].library);
-        }
-        alea_vec_free(&m->nuclides);
-        for (size_t j = 0; j < alea_vec_count(&m->elements); j++) {
-            free(m->elements.data[j].library);
-        }
-        alea_vec_free(&m->elements);
-        for (size_t j = 0; j < alea_vec_count(&m->thermal_laws); j++) {
-            free(m->thermal_laws.data[j].identifier);
-        }
-        alea_vec_free(&m->thermal_laws);
-        free(m->name);
-        free(m->comments);
-    }
+    alea_free_all_material_contents(sys);
     alea_vec_free(&sys->materials);
     alea_vec_free(&sys->transforms);
-    free(sys->surface_lookup);
-    free(sys->prim_to_surface);
-    free(sys->mc_id_to_surface);
+    alea_free_surface_lookup(sys);
 
     if (sys->primitive_index) {
         primitive_hash_table_destroy(sys->primitive_index);
@@ -318,30 +364,9 @@ void alea_system_destroy_internals(alea_system_t* sys) {
     cell_hashmap_destroy(&sys->cell_index);
     universe_hashmap_destroy(&sys->universe_index);
 
-    // Free BVH
-    if (sys->surface_bvh) {
-        alea_bvh_free(sys->surface_bvh);
-    }
-
-    // Free universe index (each universe has internal arrays)
-    for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-        alea_vec_free(&sys->universes.data[i].cell_indices);
-    }
-    alea_vec_free(&sys->universes);
-
     alea_free_cell_refs(sys);
 
-    // Free spatial index
-    if (sys->spatial_index) {
-        alea_spatial_index_free(sys->spatial_index);
-    }
-
-    // Free mixtures
-    for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
-        alea_vec_free(&sys->mixtures.data[i].components);
-        free(sys->mixtures.data[i].name);
-        free(sys->mixtures.data[i].comments);
-    }
+    alea_free_all_mixture_contents(sys);
     alea_vec_free(&sys->mixtures);
 }
 
@@ -354,77 +379,26 @@ void alea_system_destroy(alea_system_t* sys) {
 void alea_system_reset(alea_system_t* sys) {
     if (!sys) return;
 
-    // Free per-cell dynamic arrays before reset
-    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        free(sys->cells.data[i].surface_indices);
-        sys->cells.data[i].surface_indices = NULL;
-        sys->cells.data[i].surface_index_count = 0;
-        if (!sys->neighbor_pool)
-            free(sys->cells.data[i].neighbors);
-        sys->cells.data[i].neighbors = NULL;
-        sys->cells.data[i].neighbor_count = 0;
-        free(sys->cells.data[i].lat_fill);
-        sys->cells.data[i].lat_fill = NULL;
-        sys->cells.data[i].lat_fill_count = 0;
-        free(sys->cells.data[i].comments);
-        sys->cells.data[i].comments = NULL;
-        free(sys->cells.data[i].inline_comment);
-        sys->cells.data[i].inline_comment = NULL;
-    }
-    free(sys->neighbor_pool);
-    sys->neighbor_pool = NULL;
+    atomic_store(&sys->query_cache_state, 0);
+    atomic_fetch_add(&sys->geometry_generation, 1);
+    alea_free_query_cache_storage(sys, ALEA_CACHE_ALL, false);
+    alea_free_cell_dynamic_fields(sys);
     alea_vec_clear(&sys->cells);
 
     alea_vec_clear(&sys->nodes);
     alea_vec_clear(&sys->primitives);
     alea_vec_clear(&sys->surfaces);
-    /* Free internal arrays of each material before clearing vector */
-    for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
-        alea_material_t* m = &sys->materials.data[i];
-        for (size_t j = 0; j < alea_vec_count(&m->nuclides); j++) {
-            free(m->nuclides.data[j].library);
-        }
-        alea_vec_free(&m->nuclides);
-        for (size_t j = 0; j < alea_vec_count(&m->elements); j++) {
-            free(m->elements.data[j].library);
-        }
-        alea_vec_free(&m->elements);
-        for (size_t j = 0; j < alea_vec_count(&m->thermal_laws); j++) {
-            free(m->thermal_laws.data[j].identifier);
-        }
-        alea_vec_free(&m->thermal_laws);
-        free(m->name);
-        free(m->comments);
-    }
+    alea_free_all_material_contents(sys);
     alea_vec_clear(&sys->materials);
     alea_vec_clear(&sys->transforms);
     sys->next_inline_transform_id = 1;
+    sys->next_auto_surface_id = 1;
+    sys->next_auto_cell_id = 1;
     sys->next_auto_material_id = 1;
 
-    // Free universe index internal arrays and clear vector
-    for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-        alea_vec_free(&sys->universes.data[i].cell_indices);
-    }
-    alea_vec_clear(&sys->universes);
-    universe_hashmap_clear(&sys->universe_index);
-    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
-
-    // Free BVH (will be rebuilt on next use)
-    if (sys->surface_bvh) {
-        alea_bvh_free(sys->surface_bvh);
-        sys->surface_bvh = NULL;
-    }
-    sys->bvh_dirty = true;
-
-    // Free primitive-to-surface map
-    free(sys->prim_to_surface);
-    sys->prim_to_surface = NULL;
-    sys->prim_to_surface_size = 0;
-
-    // Free mcnp-id-to-surface map
-    free(sys->mc_id_to_surface);
-    sys->mc_id_to_surface = NULL;
-    sys->mc_id_to_surface_size = 0;
+    alea_free_surface_lookup(sys);
+    alea_free_all_mixture_contents(sys);
+    alea_vec_clear(&sys->mixtures);
 
     // Clear hash tables
     if (sys->primitive_index) {
@@ -432,11 +406,11 @@ void alea_system_reset(alea_system_t* sys) {
         sys->primitive_index = primitive_hash_table_create();
     }
     cell_hashmap_clear(&sys->cell_index);
+    universe_hashmap_clear(&sys->universe_index);
     
     memset(&sys->stats, 0, sizeof(alea_stats_t));
     alea_free_cell_refs(sys);
     /* cell_refs is zero-initialized by calloc (equivalent to ALEA_VEC_INIT) */                                                                     
-
 }
 
 /* grow_nodes removed - nodes now use vector API */

@@ -184,11 +184,47 @@ TEST(system_reset) {
 
     /* Add some geometry */
     alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    int mat = alea_add_material(sys, 0);
+    ASSERT(mat >= 0);
+    ASSERT_EQ(alea_material_get_id(sys, mat), 1);
+    int c = alea_add_cell(sys, 0, alea_halfspace(sys, 0, -1), mat, -1.0, 0);
+    ASSERT(c >= 0);
+    int mat_ids[] = {1};
+    double fractions[] = {1.0};
+    ASSERT_EQ(alea_create_mixture(sys, mat_ids, fractions, 1, 100), 100);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
     ASSERT_EQ(alea_surface_count(sys), 1);
+    ASSERT_EQ(alea_cell_count(sys), 1);
+    ASSERT_EQ(alea_material_count(sys), 1);
+    ASSERT_EQ(alea_mixture_count(sys), 1);
+    ASSERT_NOT_NULL(sys->surface_bvh);
+    ASSERT_NOT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->prim_to_surface);
 
     /* Reset should clear everything */
     alea_reset(sys);
+    ASSERT_EQ(alea_surface_count(sys), 0);
     ASSERT_EQ(alea_cell_count(sys), 0);
+    ASSERT_EQ(alea_material_count(sys), 0);
+    ASSERT_EQ(alea_mixture_count(sys), 0);
+    ASSERT_NULL(sys->surface_bvh);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NULL(sys->prim_to_surface);
+    ASSERT_NULL(sys->mc_id_to_surface);
+    ASSERT_NULL(sys->surface_lookup);
+    ASSERT_EQ(sys->surface_lookup_size, 0);
+    ASSERT_EQ(atomic_load(&sys->query_cache_state), 0u);
+
+    int mat_after_reset = alea_add_material(sys, 0);
+    ASSERT(mat_after_reset >= 0);
+    ASSERT_EQ(alea_material_get_id(sys, mat_after_reset), 1);
+    alea_sphere_surface(sys, 0, 0, 0, 0, 1.0);
+    ASSERT_EQ(sys->surfaces.data[0].mc_surface_id, 1);
+    int c_after_reset = alea_add_cell(sys, 0, alea_halfspace(sys, 0, -1),
+                                      mat_after_reset, -1.0, 0);
+    ASSERT(c_after_reset >= 0);
+    ASSERT_EQ(sys->cells.data[c_after_reset].mc_cell_id, 1);
 
     alea_destroy(sys);
 }
