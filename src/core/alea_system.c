@@ -1082,8 +1082,8 @@ static alea_universe_t* find_or_create_universe(alea_system_t* sys, int universe
     memset(u, 0, sizeof(alea_universe_t));
     u->universe_id = universe_id;
     alea_vec_init(&u->cell_indices);
-    alea_result_t vres = alea_vec_reserve(&u->cell_indices, INITIAL_UNIVERSE_CELLS_CAPACITY, size_t);
-    if (ALEA_IS_ERR(vres)) {
+    int vres = alea_vec_reserve(&u->cell_indices, INITIAL_UNIVERSE_CELLS_CAPACITY, size_t);
+    if (vres != 0) {
         alea_vec_pop_discard(&sys->universes);  // Rollback
         return NULL;
     }
@@ -1094,8 +1094,8 @@ static alea_universe_t* find_or_create_universe(alea_system_t* sys, int universe
 }
 
 static int add_cell_to_universe(alea_universe_t* u, size_t cell_index) {
-    alea_size_result_t res = alea_vec_push(&u->cell_indices, cell_index, size_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_push(&u->cell_indices, cell_index, size_t);
+    return res != 0 ? -1 : 0;
 }
 
 /**
@@ -1331,8 +1331,8 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture) {
     alea_vec_init(&dst->components);
     size_t comp_count = alea_vec_count(&mixture->components);
     if (comp_count > 0) {
-        alea_result_t r = alea_vec_reserve(&dst->components, comp_count, alea_mixture_comp_t);
-        if (ALEA_IS_ERR(r)) {
+        int r = alea_vec_reserve(&dst->components, comp_count, alea_mixture_comp_t);
+        if (r != 0) {
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "alea_add_mixture: failed to allocate mixture components");
             alea_vec_pop_discard(&sys->mixtures);
             return -1;

@@ -112,13 +112,13 @@ void alea_raycast_result_reserve(alea_raycast_result_t* result,
 }
 
 static int add_hit(alea_raycast_result_t* result, const alea_ray_hit_t* hit) {
-    alea_size_result_t res = alea_vec_push(&result->hits, *hit, alea_ray_hit_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_push(&result->hits, *hit, alea_ray_hit_t);
+    return res != 0 ? -1 : 0;
 }
 
 static int add_segment(alea_raycast_result_t* result, const alea_ray_segment_t* seg) {
-    alea_size_result_t res = alea_vec_push(&result->segments, *seg, alea_ray_segment_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_push(&result->segments, *seg, alea_ray_segment_t);
+    return res != 0 ? -1 : 0;
 }
 
 /* ============================================================================

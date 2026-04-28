@@ -7,12 +7,10 @@
  * @brief Type-safe dynamic arrays (internal)
  *
  * Macro-based dynamic arrays with explicit error handling.
- * Uses result types from alea_result.h.
  *
  * Usage:
  *   alea_node_vec_t nodes = ALEA_VEC_INIT;
- *   alea_size_result_t res = alea_vec_push(&nodes, node, alea_node_t);
- *   if (ALEA_IS_ERR(res)) { handle error }
+ *   if (alea_vec_push(&nodes, node, alea_node_t) != 0) { handle error }
  *   alea_vec_free(&nodes);
  */
 
@@ -61,17 +59,16 @@
 
 /**
  * Ensure vector has capacity for at least `min_cap` elements.
- * Returns: alea_result_t (ALEA_OK on success, ALEA_ERR_OUT_OF_MEMORY on failure)
+ * Returns: 0 on success, -1 on failure.
  *
  * If vector is empty (capacity=0), allocates exactly min_cap.
  * Otherwise uses 2x growth for push operations.
  *
  * Usage:
- *   alea_result_t res = alea_vec_reserve(&vec, 100, elem_type);
- *   if (ALEA_IS_ERR(res)) { handle error }
+ *   if (alea_vec_reserve(&vec, 100, elem_type) != 0) { handle error }
  */
 #define alea_vec_reserve(vec, min_cap, elem_type) __extension__({            \
-    alea_result_t _res = { .error = ALEA_OK };                                \
+    int _res = 0;                                                            \
     size_t _min = (min_cap);                                                \
     if ((vec)->capacity < _min) {                                           \
         size_t _new_cap;                                                    \
@@ -84,7 +81,7 @@
         void* _new_data = realloc((vec)->data,                              \
                                    _new_cap * sizeof(elem_type));           \
         if (!_new_data) {                                                   \
-            _res.error = ALEA_ERR_OUT_OF_MEMORY;                             \
+            _res = -1;                                                       \
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,                     \
                 "Failed to grow vector to %zu elements", _new_cap);         \
         } else {                                                            \
@@ -101,24 +98,17 @@
 
 /**
  * Push element to end of vector. Grows if needed.
- * Returns: alea_size_result_t with index of pushed element, or error.
+ * Returns: 0 on success, -1 on failure.
  *
  * Usage:
- *   alea_size_result_t res = alea_vec_push(&vec, item, elem_type);
- *   if (ALEA_IS_ERR(res)) { handle error }
- *   size_t index = res.value;
+ *   if (alea_vec_push(&vec, item, elem_type) != 0) { handle error }
  */
 #define alea_vec_push(vec, item, elem_type) __extension__({                  \
-    alea_size_result_t _res = { .error = ALEA_OK, .value = 0 };               \
+    int _res = 0;                                                            \
     if ((vec)->count >= (vec)->capacity) {                                  \
-        alea_result_t _grow = alea_vec_reserve((vec), (vec)->count + 1,       \
-                                              elem_type);                   \
-        if (ALEA_IS_ERR(_grow)) {                                            \
-            _res.error = _grow.error;                                       \
-        }                                                                   \
+        _res = alea_vec_reserve((vec), (vec)->count + 1, elem_type);         \
     }                                                                       \
-    if (ALEA_IS_OK(_res)) {                                                  \
-        _res.value = (vec)->count;                                          \
+    if (_res == 0) {                                                         \
         (vec)->data[(vec)->count++] = (item);                               \
     }                                                                       \
     _res;                                                                   \
@@ -137,9 +127,7 @@
 #define alea_vec_push_uninit(vec, elem_type) __extension__({                 \
     elem_type* _ptr = NULL;                                                 \
     if ((vec)->count >= (vec)->capacity) {                                  \
-        alea_result_t _grow = alea_vec_reserve((vec), (vec)->count + 1,       \
-                                              elem_type);                   \
-        if (ALEA_IS_OK(_grow)) {                                             \
+        if (alea_vec_reserve((vec), (vec)->count + 1, elem_type) == 0) {     \
             _ptr = &(vec)->data[(vec)->count++];                            \
         }                                                                   \
     } else {                                                                \

@@ -364,8 +364,8 @@ alea_bvh_t* alea_bvh_build(const alea_system_t* sys) {
     /* Allocate initial node array */
     size_t initial_capacity = alea_vec_count(&sys->surfaces) * 2;
     alea_vec_init(&bvh->nodes);
-    alea_result_t vres = alea_vec_reserve(&bvh->nodes, initial_capacity, alea_bvh_node_t);
-    if (ALEA_IS_ERR(vres)) {
+    int vres = alea_vec_reserve(&bvh->nodes, initial_capacity, alea_bvh_node_t);
+    if (vres != 0) {
         free(surfaces);
         free(bvh);
         return NULL;

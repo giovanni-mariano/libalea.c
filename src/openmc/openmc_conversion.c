@@ -425,8 +425,8 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
     if (name) mat->name = alea_strdup(name);
 
     /* Pre-allocate nuclide array */
-    alea_result_t r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
-    if (ALEA_IS_ERR(r)) return -1;
+    int r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
+    if (r != 0) return -1;
 
     /* Note: Density is stored per-cell in alea_system, not per-material.
        OpenMC materials have a density element, but we skip it here.
@@ -462,8 +462,8 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
     /* Process S(a,b) thermal scattering */
     size_t sab_count = openmc_xml_count_children(mat_elem, "sab");
     if (sab_count > 0) {
-        alea_result_t rs = alea_vec_reserve(&mat->thermal_laws, sab_count, alea_thermal_law_t);
-        if (ALEA_IS_OK(rs)) {
+        int rs = alea_vec_reserve(&mat->thermal_laws, sab_count, alea_thermal_law_t);
+        if (rs == 0) {
             for (size_t i = 0; i < mat_elem->child_count && alea_vec_count(&mat->thermal_laws) < sab_count; i++) {
                 openmc_xml_element_t* child = mat_elem->children[i];
                 if (strcmp(child->tag_name, "sab") != 0) continue;

@@ -121,15 +121,15 @@ static double bytes_to_mib(size_t bytes) {
 static int ensure_instance_capacity(alea_spatial_index_t* idx, size_t needed) {
     size_t min_cap = idx->instances.count + needed;
     if (min_cap <= idx->instances.capacity) return 0;
-    alea_result_t res = alea_vec_reserve(&idx->instances, min_cap, alea_cell_instance_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_reserve(&idx->instances, min_cap, alea_cell_instance_t);
+    return res != 0 ? -1 : 0;
 }
 
 static int ensure_transform_capacity(alea_spatial_index_t* idx, size_t needed) {
     size_t min_cap = idx->transforms.count + needed;
     if (min_cap <= idx->transforms.capacity) return 0;
-    alea_result_t res = alea_vec_reserve(&idx->transforms, min_cap, alea_matrix_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_reserve(&idx->transforms, min_cap, alea_matrix_t);
+    return res != 0 ? -1 : 0;
 }
 
 static const alea_matrix_t* spatial_instance_transform(const alea_spatial_index_t* idx,
@@ -377,8 +377,8 @@ typedef struct {
 static int ensure_node_capacity(alea_spatial_index_t* idx, size_t needed) {
     size_t min_cap = idx->nodes.count + needed;
     if (min_cap <= idx->nodes.capacity) return 0;
-    alea_result_t res = alea_vec_reserve(&idx->nodes, min_cap, alea_spatial_node_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_reserve(&idx->nodes, min_cap, alea_spatial_node_t);
+    return res != 0 ? -1 : 0;
 }
 
 static alea_bbox_t compute_items_bbox(const alea_spatial_index_t* idx,
@@ -542,8 +542,8 @@ static int build_bvh(alea_spatial_index_t* idx) {
     /* Reserve the exact node count produced by this median-split builder. */
     alea_vec_init(&idx->nodes);
     size_t estimated_nodes = estimate_bvh_node_count(idx->instances.count);
-    alea_result_t nres = alea_vec_reserve(&idx->nodes, estimated_nodes, alea_spatial_node_t);
-    if (ALEA_IS_ERR(nres)) {
+    int nres = alea_vec_reserve(&idx->nodes, estimated_nodes, alea_spatial_node_t);
+    if (nres != 0) {
         free(items);
         return -1;
     }
@@ -619,9 +619,9 @@ static int spatial_index_build_impl(alea_system_t* sys) {
 
     alea_vec_init(&idx->instances);
     alea_vec_init(&idx->transforms);
-    alea_result_t ires = alea_vec_reserve(&idx->instances, count_ctx.total_instances, alea_cell_instance_t);
-    alea_result_t tres = alea_vec_reserve(&idx->transforms, count_ctx.total_instances, alea_matrix_t);
-    if (ALEA_IS_ERR(ires) || ALEA_IS_ERR(tres)) {
+    int ires = alea_vec_reserve(&idx->instances, count_ctx.total_instances, alea_cell_instance_t);
+    int tres = alea_vec_reserve(&idx->transforms, count_ctx.total_instances, alea_matrix_t);
+    if (ires != 0 || tres != 0) {
         alea_vec_free(&idx->transforms);
         alea_vec_free(&idx->instances);
         free(idx);

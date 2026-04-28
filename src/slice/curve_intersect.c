@@ -1415,8 +1415,8 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
 /** Ensure room for one more curve. Returns 0 on success, -1 on OOM. */
 static int ensure_curve_capacity(alea_curve_collection_t* r) {
     if (r->curves.count < r->curves.capacity) return 0;
-    alea_result_t res = alea_vec_reserve(&r->curves, r->curves.capacity * 2, alea_curve_2d_t);
-    return ALEA_IS_ERR(res) ? -1 : 0;
+    int res = alea_vec_reserve(&r->curves, r->curves.capacity * 2, alea_curve_2d_t);
+    return res != 0 ? -1 : 0;
 }
 
 int alea_compute_slice_curves(alea_system_t* sys,
@@ -1428,8 +1428,8 @@ int alea_compute_slice_curves(alea_system_t* sys,
 
     /* Initial allocation */
     alea_vec_init(&result->curves);
-    alea_result_t vres = alea_vec_reserve(&result->curves, 64, alea_curve_2d_t);
-    if (ALEA_IS_ERR(vres)) return -1;
+    int vres = alea_vec_reserve(&result->curves, 64, alea_curve_2d_t);
+    if (vres != 0) return -1;
 
     result->u_min = result->v_min = DBL_MAX;
     result->u_max = result->v_max = -DBL_MAX;
@@ -2172,8 +2172,8 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
 
     /* Initial allocation */
     alea_vec_init(&result->curves);
-    alea_result_t vres = alea_vec_reserve(&result->curves, 64, alea_curve_2d_t);
-    if (ALEA_IS_ERR(vres)) return -1;
+    int vres = alea_vec_reserve(&result->curves, 64, alea_curve_2d_t);
+    if (vres != 0) return -1;
 
     result->u_min = result->v_min = DBL_MAX;
     result->u_max = result->v_max = -DBL_MAX;

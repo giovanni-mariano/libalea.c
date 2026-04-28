@@ -712,8 +712,8 @@ static node_list_t* node_list_create(size_t initial_cap) {
     node_list_t* list = malloc(sizeof(node_list_t));
     if (!list) return NULL;
     alea_vec_init(&list->vec);
-    alea_result_t res = alea_vec_reserve(&list->vec, initial_cap, alea_node_id_t);
-    if (ALEA_IS_ERR(res)) { free(list); return NULL; }
+    int res = alea_vec_reserve(&list->vec, initial_cap, alea_node_id_t);
+    if (res != 0) { free(list); return NULL; }
     return list;
 }
 
@@ -724,8 +724,8 @@ static void node_list_destroy(node_list_t* list) {
 }
 
 static bool node_list_add(node_list_t* list, alea_node_id_t node_id) {
-    alea_size_result_t res = alea_vec_push(&list->vec, node_id, alea_node_id_t);
-    return ALEA_IS_OK(res);
+    int res = alea_vec_push(&list->vec, node_id, alea_node_id_t);
+    return res == 0;
 }
 
 /**

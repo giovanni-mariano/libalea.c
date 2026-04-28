@@ -43,14 +43,14 @@ alea_material_t* alea_material_create(int material_id) {
     if (!mat) return NULL;
 
     mat->material_id = material_id;
-    alea_result_t r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
-    if (ALEA_IS_ERR(r)) {
+    int r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
+    if (r != 0) {
         free(mat);
         return NULL;
     }
 
     r = alea_vec_reserve(&mat->elements, 4, alea_element_comp_t);
-    if (ALEA_IS_ERR(r)) {
+    if (r != 0) {
         alea_vec_free(&mat->nuclides);
         free(mat);
         return NULL;
@@ -173,8 +173,8 @@ alea_mixture_t* alea_mixture_create(int mixture_id) {
     if (!mix) return NULL;
 
     mix->mixture_id = mixture_id;
-    alea_result_t r = alea_vec_reserve(&mix->components, 4, alea_mixture_comp_t);
-    if (ALEA_IS_ERR(r)) {
+    int r = alea_vec_reserve(&mix->components, 4, alea_mixture_comp_t);
+    if (r != 0) {
         free(mix);
         return NULL;
     }

@@ -37,9 +37,10 @@ TEST(vec_push_single) {
     test_item_vec_t vec = ALEA_VEC_INIT;
     test_item_t item = { .id = 42, .value = 3.14 };
 
-    alea_size_result_t res = alea_vec_push(&vec, item, test_item_t);
-    ASSERT(ALEA_IS_OK(res));
-    ASSERT_EQ(res.value, 0);
+    size_t index = alea_vec_count(&vec);
+    int res = alea_vec_push(&vec, item, test_item_t);
+    ASSERT_EQ(res, 0);
+    ASSERT_EQ(index, 0);
     ASSERT_EQ(alea_vec_count(&vec), 1);
     ASSERT_EQ(vec.data[0].id, 42);
     ASSERT_NEAR(vec.data[0].value, 3.14, 0.001);
@@ -52,9 +53,10 @@ TEST(vec_push_many) {
 
     /* Push 100 elements to trigger multiple growths */
     for (int i = 0; i < 100; i++) {
-        alea_size_result_t res = alea_vec_push(&vec, i, int);
-        ASSERT(ALEA_IS_OK(res));
-        ASSERT_EQ(res.value, (size_t)i);
+        size_t index = alea_vec_count(&vec);
+        int res = alea_vec_push(&vec, i, int);
+        ASSERT_EQ(res, 0);
+        ASSERT_EQ(index, (size_t)i);
     }
 
     ASSERT_EQ(alea_vec_count(&vec), 100);
@@ -90,8 +92,8 @@ TEST(vec_push_uninit) {
 TEST(vec_reserve) {
     alea_int_vec_t vec = ALEA_VEC_INIT;
 
-    alea_result_t res = alea_vec_reserve(&vec, 1000, int);
-    ASSERT(ALEA_IS_OK(res));
+    int res = alea_vec_reserve(&vec, 1000, int);
+    ASSERT_EQ(res, 0);
     ASSERT(vec.capacity >= 1000);
     ASSERT_EQ(vec.count, 0);
 

@@ -101,8 +101,8 @@ void alea_destroy(alea_system_t* sys) {
 #define CLONE_VEC(dst, src, type) do { \
     size_t count = alea_vec_count(&(src)); \
     if (count > 0) { \
-        alea_result_t _r = alea_vec_reserve(&(dst), count, type); \
-        if (ALEA_IS_ERR(_r)) goto clone_error; \
+        int _r = alea_vec_reserve(&(dst), count, type); \
+        if (_r != 0) goto clone_error; \
         memcpy((dst).data, (src).data, count * sizeof(type)); \
         (dst).count = count; \
     } \
@@ -157,8 +157,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         m->comments = NULL;
         /* Deep-copy nuclides */
         if (alea_vec_count(&s->nuclides) > 0) {
-            alea_result_t r = alea_vec_reserve(&m->nuclides, alea_vec_count(&s->nuclides), alea_nuclide_t);
-            if (ALEA_IS_ERR(r)) goto clone_error;
+            int r = alea_vec_reserve(&m->nuclides, alea_vec_count(&s->nuclides), alea_nuclide_t);
+            if (r != 0) goto clone_error;
             memcpy(m->nuclides.data, s->nuclides.data, alea_vec_count(&s->nuclides) * sizeof(alea_nuclide_t));
             m->nuclides.count = alea_vec_count(&s->nuclides);
             for (size_t j = 0; j < alea_vec_count(&s->nuclides); j++) {
@@ -167,8 +167,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         }
         /* Deep-copy elements */
         if (alea_vec_count(&s->elements) > 0) {
-            alea_result_t r = alea_vec_reserve(&m->elements, alea_vec_count(&s->elements), alea_element_comp_t);
-            if (ALEA_IS_ERR(r)) goto clone_error;
+            int r = alea_vec_reserve(&m->elements, alea_vec_count(&s->elements), alea_element_comp_t);
+            if (r != 0) goto clone_error;
             memcpy(m->elements.data, s->elements.data, alea_vec_count(&s->elements) * sizeof(alea_element_comp_t));
             m->elements.count = alea_vec_count(&s->elements);
             for (size_t j = 0; j < alea_vec_count(&s->elements); j++) {
@@ -177,8 +177,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         }
         /* Deep-copy thermal laws */
         if (alea_vec_count(&s->thermal_laws) > 0) {
-            alea_result_t r = alea_vec_reserve(&m->thermal_laws, alea_vec_count(&s->thermal_laws), alea_thermal_law_t);
-            if (ALEA_IS_ERR(r)) goto clone_error;
+            int r = alea_vec_reserve(&m->thermal_laws, alea_vec_count(&s->thermal_laws), alea_thermal_law_t);
+            if (r != 0) goto clone_error;
             memcpy(m->thermal_laws.data, s->thermal_laws.data, alea_vec_count(&s->thermal_laws) * sizeof(alea_thermal_law_t));
             m->thermal_laws.count = alea_vec_count(&s->thermal_laws);
             for (size_t j = 0; j < alea_vec_count(&s->thermal_laws); j++) {
@@ -204,8 +204,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         m->name = NULL;
         m->comments = NULL;
         if (alea_vec_count(&s->components) > 0) {
-            alea_result_t r = alea_vec_reserve(&m->components, alea_vec_count(&s->components), alea_mixture_comp_t);
-            if (ALEA_IS_ERR(r)) goto clone_error;
+            int r = alea_vec_reserve(&m->components, alea_vec_count(&s->components), alea_mixture_comp_t);
+            if (r != 0) goto clone_error;
             memcpy(m->components.data, s->components.data, alea_vec_count(&s->components) * sizeof(alea_mixture_comp_t));
             m->components.count = alea_vec_count(&s->components);
         }

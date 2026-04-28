@@ -169,8 +169,8 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
     alea_vec_clear(&sys->surfaces);
 
     /* Reserve capacity for surfaces */
-    alea_result_t reserve_res = alea_vec_reserve(&sys->surfaces, used_count, alea_surface_entry_t);
-    if (ALEA_IS_ERR(reserve_res)) {
+    int reserve_res = alea_vec_reserve(&sys->surfaces, used_count, alea_surface_entry_t);
+    if (reserve_res != 0) {
         alea_bitset_destroy(&prim_used);
         free(prim_to_surf);
         return -1;
@@ -385,8 +385,8 @@ int alea_copy_surfaces_with_remap(alea_system_t* dst,
     }
 
     /* Reserve capacity for surfaces */
-    alea_result_t reserve_res = alea_vec_reserve(&dst->surfaces, alea_vec_count(&src->surfaces), alea_surface_entry_t);
-    if (ALEA_IS_ERR(reserve_res)) {
+    int reserve_res = alea_vec_reserve(&dst->surfaces, alea_vec_count(&src->surfaces), alea_surface_entry_t);
+    if (reserve_res != 0) {
         return -1;
     }
 
@@ -491,8 +491,8 @@ static int copy_material(alea_material_t* dst, const alea_material_t* src) {
     
     /* Copy nuclides */
     if (alea_vec_count(&src->nuclides) > 0) {
-        alea_result_t r = alea_vec_reserve(&dst->nuclides, alea_vec_count(&src->nuclides), alea_nuclide_t);
-        if (ALEA_IS_ERR(r)) {
+        int r = alea_vec_reserve(&dst->nuclides, alea_vec_count(&src->nuclides), alea_nuclide_t);
+        if (r != 0) {
             free(dst->name);
             free(dst->comments);
             return -1;
@@ -516,8 +516,8 @@ static int copy_material(alea_material_t* dst, const alea_material_t* src) {
 
     /* Copy thermal laws */
     if (alea_vec_count(&src->thermal_laws) > 0) {
-        alea_result_t r = alea_vec_reserve(&dst->thermal_laws, alea_vec_count(&src->thermal_laws), alea_thermal_law_t);
-        if (ALEA_IS_ERR(r)) {
+        int r = alea_vec_reserve(&dst->thermal_laws, alea_vec_count(&src->thermal_laws), alea_thermal_law_t);
+        if (r != 0) {
             for (size_t i = 0; i < alea_vec_count(&dst->nuclides); i++) {
                 free(dst->nuclides.data[i].library);
             }
@@ -672,8 +672,8 @@ int alea_copy_referenced_mixtures(alea_system_t* dst, const alea_system_t* src) 
         /* Deep copy allocated fields */
         alea_vec_init(&dst_mix->components);
         if (alea_vec_count(&mix->components) > 0) {
-            alea_result_t r = alea_vec_reserve(&dst_mix->components, alea_vec_count(&mix->components), alea_mixture_comp_t);
-            if (ALEA_IS_ERR(r)) {
+            int r = alea_vec_reserve(&dst_mix->components, alea_vec_count(&mix->components), alea_mixture_comp_t);
+            if (r != 0) {
                 alea_vec_pop_discard(&dst->mixtures);
                 return -1;
             }
