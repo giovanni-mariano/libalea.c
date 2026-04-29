@@ -1183,6 +1183,28 @@ static int count_surfaces(const alea_system_t* sys, alea_node_id_t node) {
     }
 }
 
+/* True when a region node covers its entire recorded bbox. Only these regions
+ * can be safely replaced by a larger box during aligned box merges. Boundary
+ * void regions such as (outside sphere ∩ box) must remain boolean regions. */
+static bool void_region_is_full_box(alea_system_t* sys, const void_region_t* region) {
+    if (!sys || !region || region->node == ALEA_NODE_ID_INVALID) return false;
+    return alea_tree_box_relation(sys, region->node, &region->bbox) == ALEA_RELATION_NEGATIVE;
+}
+
+static alea_node_id_t create_merged_region_node(alea_system_t* sys,
+                                                const void_region_t* a,
+                                                const void_region_t* b,
+                                                const alea_bbox_t* merged_bbox,
+                                                bool is_box_merge) {
+    if (is_box_merge &&
+        void_region_is_full_box(sys, a) &&
+        void_region_is_full_box(sys, b)) {
+        return create_box_from_planes(sys, merged_bbox);
+    }
+
+    return alea_create_union(sys, a->node, b->node);
+}
+
 /* Compact alive regions and log reduction */
 static int compact_and_finish(void_result_t* result, alea_bitset_t* alive,
                               int* surfaces_arr, size_t original_n) {
@@ -1256,7 +1278,9 @@ static int merge_void_cells_greedy(alea_system_t* sys,
                 alea_bbox_t merged_bbox;
                 bool is_box = boxes_can_form_box(&result->void_regions.data[i].bbox,
                                                   &result->void_regions.data[j].bbox,
-                                                  &merged_bbox);
+                                                  &merged_bbox) &&
+                              void_region_is_full_box(sys, &result->void_regions.data[i]) &&
+                              void_region_is_full_box(sys, &result->void_regions.data[j]);
                 int new_surfaces = is_box ? 6 : surfaces[i] + surfaces[j];
 
                 if (new_surfaces > cfg->max_surfaces_per_cell) continue;
@@ -1282,18 +1306,23 @@ static int merge_void_cells_greedy(alea_system_t* sys,
             ALEA_LOG_DEBUG("  Merging cells %zu + %zu (delta=%.2f)",
                    best_i, best_j, best_delta);
 
-            alea_node_id_t merged_node = alea_create_union(sys,
-                result->void_regions.data[best_i].node,
-                result->void_regions.data[best_j].node);
+            alea_bbox_t merged_bbox = alea_bbox_union(
+                &result->void_regions.data[best_i].bbox,
+                &result->void_regions.data[best_j].bbox);
+            alea_node_id_t merged_node = create_merged_region_node(
+                sys,
+                &result->void_regions.data[best_i],
+                &result->void_regions.data[best_j],
+                &merged_bbox,
+                best_is_box);
+            if (merged_node == ALEA_NODE_ID_INVALID) {
+                alea_bitset_destroy(&alive);
+                free(surfaces);
+                return -1;
+            }
 
             alea_bbox_t* bi = &result->void_regions.data[best_i].bbox;
-            const alea_bbox_t* bj = &result->void_regions.data[best_j].bbox;
-            bi->min_x = fmin(bi->min_x, bj->min_x);
-            bi->max_x = fmax(bi->max_x, bj->max_x);
-            bi->min_y = fmin(bi->min_y, bj->min_y);
-            bi->max_y = fmax(bi->max_y, bj->max_y);
-            bi->min_z = fmin(bi->min_z, bj->min_z);
-            bi->max_z = fmax(bi->max_z, bj->max_z);
+            *bi = merged_bbox;
 
             surfaces[best_i] = best_is_box ? 6 : surfaces[best_i] + surfaces[best_j];
             result->void_regions.data[best_i].node = merged_node;
@@ -1488,7 +1517,9 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
                     alea_bbox_t merged_bbox;
                     if (!boxes_can_form_box(&result->void_regions.data[bi].bbox,
                                            &result->void_regions.data[bj].bbox,
-                                           &merged_bbox)) {
+                                           &merged_bbox) ||
+                        !void_region_is_full_box(sys, &result->void_regions.data[bi]) ||
+                        !void_region_is_full_box(sys, &result->void_regions.data[bj])) {
                         continue;
                     }
 
@@ -1580,9 +1611,13 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
             ALEA_LOG_DEBUG("  Pass %d: merging %u + %u (%s)", pass, ci, cj,
                    candidates[c].is_box ? "box" : "union");
 
-            alea_node_id_t merged_node = alea_create_union(sys,
-                result->void_regions.data[ci].node,
-                result->void_regions.data[cj].node);
+            alea_node_id_t merged_node = create_merged_region_node(
+                sys,
+                &result->void_regions.data[ci],
+                &result->void_regions.data[cj],
+                &candidates[c].merged_bbox,
+                candidates[c].is_box);
+            if (merged_node == ALEA_NODE_ID_INVALID) goto cleanup;
 
             result->void_regions.data[ci].node = merged_node;
             result->void_regions.data[ci].bbox = candidates[c].merged_bbox;
@@ -1616,7 +1651,12 @@ cleanup:
 
 static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
                                      int max_surfaces) {
-    if (result->void_regions.count <= 1) return;
+    if (result->void_regions.count == 0) return;
+
+    int current_surfaces = 0;
+    for (size_t i = 0; i < result->void_regions.count; i++) {
+        current_surfaces += count_surfaces(sys, result->void_regions.data[i].node);
+    }
 
     /* 1. Compute combined bbox = union of all remaining void region bboxes */
     alea_bbox_t combined = result->void_regions.data[0].bbox;
@@ -1626,6 +1666,10 @@ static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
 
     /* 2. Compute global_void lazily (only needed for consolidation) */
     if (result->global_void == ALEA_NODE_ID_INVALID) {
+        if (alea_build_universe_index(sys) < 0) {
+            ALEA_LOG_INFO("void consolidation: cannot rebuild universe index");
+            return;
+        }
         result->global_void = compute_global_void(sys, 0);
         if (result->global_void == ALEA_NODE_ID_INVALID) {
             ALEA_LOG_INFO("void consolidation: cannot compute global void");
@@ -1650,10 +1694,17 @@ static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
         return;
     }
 
+    if (result->void_regions.count == 1 && nsurfaces >= current_surfaces) {
+        ALEA_LOG_INFO("void consolidation: analytic region has %d surfaces, "
+                      "current region has %d; keeping current region",
+                      nsurfaces, current_surfaces);
+        return;
+    }
+
     /* 6. Accept: replace all regions with this single one */
-    ALEA_LOG_INFO("void consolidation: %zu regions -> 1 (%d surfaces, "
+    ALEA_LOG_INFO("void consolidation: %zu regions -> 1 (%d -> %d surfaces, "
                   "bbox [%.1f,%.1f]x[%.1f,%.1f]x[%.1f,%.1f])",
-                  result->void_regions.count, nsurfaces,
+                  result->void_regions.count, current_surfaces, nsurfaces,
                   combined.min_x, combined.max_x,
                   combined.min_y, combined.max_y,
                   combined.min_z, combined.max_z);
@@ -1681,8 +1732,7 @@ int alea_merge_void_cells(alea_system_t* sys,
         ret = merge_void_cells_face_sorted(sys, result, cfg);
     }
 
-    if (ret >= 0 && cfg->consolidate_max_surfaces > 0 &&
-        result->void_regions.count > 1) {
+    if (ret >= 0 && cfg->consolidate_max_surfaces > 0) {
         consolidate_void_regions(sys, result, cfg->consolidate_max_surfaces);
         ret = (int)result->void_regions.count;
     }

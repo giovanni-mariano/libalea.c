@@ -12,6 +12,9 @@
 #include "alea.h"
 #include "core/alea_void.h"
 #include "core/alea_system.h"
+#include "alea_mcnp.h"
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 /* Reduce octree depth for fast tests (default 8 is too slow for CI) */
@@ -691,6 +694,68 @@ TEST(void_consolidate) {
     int void_mat = alea_material_at(sys, 4.5, 4.5, 4.5);
     ASSERT_EQ(void_mat, 0);
 
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+TEST(void_consolidate_replaces_single_merged_union) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_config_t acfg = alea_get_config(sys);
+    acfg.void_max_depth = 3;
+    acfg.void_min_size = 1.0;
+    alea_set_config(sys, &acfg);
+
+    int sphere_si = alea_sphere_surface(sys, 0, 0, 0, 0, 3.0);
+    int outer_si = alea_box_surface(sys, 0, -10, 10, -10, 10, -10, 10);
+    ASSERT(sphere_si >= 0);
+    ASSERT(outer_si >= 0);
+
+    alea_node_id_t sphere = alea_halfspace(sys, sphere_si, -1);
+    alea_node_id_t outside_outer = alea_halfspace(sys, outer_si, +1);
+    ASSERT(sphere != ALEA_NODE_ID_INVALID);
+    ASSERT(outside_outer != ALEA_NODE_ID_INVALID);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    ASSERT(alea_add_cell(sys, 1, sphere, mat, 10.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, outside_outer, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    alea_bbox_t bounds = {-10, 10, -10, 10, -10, 10};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 1);
+
+    alea_void_merge_config_t cfg = ALEA_VOID_MERGE_DEFAULT;
+    cfg.max_surfaces_per_cell = 100000;
+    cfg.consolidate_max_surfaces = 0;
+    ASSERT(alea_merge_void_cells(sys, vr, &cfg) > 0);
+    ASSERT_EQ(alea_void_count(vr), 1);
+
+    cfg.consolidate_max_surfaces = 100;
+    ASSERT(alea_merge_void_cells(sys, vr, &cfg) > 0);
+    ASSERT_EQ(alea_void_count(vr), 1);
+    ASSERT(alea_void_add_cells(sys, vr) == 1);
+
+    FILE* f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(mcnp_export_system_stream(sys, f), 0);
+    ASSERT_EQ(fseek(f, 0, SEEK_END), 0);
+    long len = ftell(f);
+    ASSERT(len > 0);
+    ASSERT_EQ(fseek(f, 0, SEEK_SET), 0);
+
+    char* text = calloc((size_t)len + 1, 1);
+    ASSERT_NOT_NULL(text);
+    ASSERT_EQ(fread(text, 1, (size_t)len, f), (size_t)len);
+    fclose(f);
+
+    ASSERT_NULL(strstr(text, "):("));
+    ASSERT(len < 4000);
+
+    free(text);
     alea_void_free(vr);
     alea_destroy(sys);
 }
