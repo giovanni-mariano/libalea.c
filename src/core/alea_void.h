@@ -250,5 +250,18 @@ void octree_destroy(octree_node_t* node);
  */
 void alea_void_print_stats(const void_result_t* result);
 
+/**
+ * @brief Install a test-only fault-injection hook for octree allocation.
+ *
+ * When `should_fail` is non-NULL, every call into `octree_node_create()`
+ * invokes it; a true return makes that call simulate an OOM (returns NULL,
+ * sets ALEA_ERR_OUT_OF_MEMORY). This is intended exclusively for tests that
+ * exercise the partial-allocation rollback path. Pass NULL to disable.
+ *
+ * @param should_fail Predicate called per allocation, or NULL to disable
+ * @param userdata Opaque value passed to should_fail
+ */
+void alea_void_set_octree_alloc_failure(bool (*should_fail)(void* ud), void* userdata);
+
 
 #endif /* ALEA_VOID_H */

@@ -422,8 +422,68 @@ TEST(void_add_cells_rejects_invalid_region_without_partial_commit) {
     alea_destroy(sys);
 }
 
+/* Fault-injection counter: fail the Nth allocation, succeed on all others. */
+typedef struct {
+    int  trigger_at;  /* call index that should fail (0-based) */
+    int  call_count;
+} fail_at_counter_t;
+
+static bool fail_at_nth(void* ud) {
+    fail_at_counter_t* c = ud;
+    return (c->call_count++ == c->trigger_at);
+}
+
 TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
-    SKIP("requires allocator fault injection hook for octree_node_create");
+    /* Use a coarse octree so the partial subtree is small but real:
+     * the root spawns 8 children, then each MIXED child spawns 8 more.
+     * Failing somewhere mid-way exercises the partial-tree rollback path. */
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    set_coarse_void_config(sys);
+
+    int outer_si  = alea_box_surface(sys, 0, -5, 5, -5, 5, -5, 5);
+    int cavity_si = alea_sphere_surface(sys, 0, 1.25, 0.75, 0.25, 0.25);
+    ASSERT(outer_si >= 0 && cavity_si >= 0);
+    alea_node_id_t outer  = alea_halfspace(sys, outer_si, -1);
+    alea_node_id_t cavity = alea_halfspace(sys, cavity_si, -1);
+    alea_node_id_t shell  = alea_difference(sys, outer, cavity);
+    int mat = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, shell, mat, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    size_t surfaces_before   = alea_vec_count(&sys->surfaces);
+    size_t nodes_before      = alea_vec_count(&sys->nodes);
+    size_t primitives_before = alea_vec_count(&sys->primitives);
+    size_t cells_before      = alea_cell_count(sys);
+
+    /* Fail the 5th octree-node allocation: root succeeds, several children
+     * succeed, then one fails partway through subdivision. */
+    fail_at_counter_t counter = { .trigger_at = 5, .call_count = 0 };
+    alea_void_set_octree_alloc_failure(fail_at_nth, &counter);
+
+    alea_bbox_t bounds = {-4, 4, -4, 4, -4, 4};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+
+    /* Disable injection before any further test work. */
+    alea_void_set_octree_alloc_failure(NULL, NULL);
+
+    /* Generation must report failure rather than return a partial result. */
+    ASSERT_NULL(vr);
+
+    /* And the system must look exactly as it did before generation —
+     * any surfaces/nodes/primitives appended along the way are rolled back. */
+    ASSERT_EQ(alea_cell_count(sys), cells_before);
+    ASSERT_EQ(alea_vec_count(&sys->surfaces),   surfaces_before);
+    ASSERT_EQ(alea_vec_count(&sys->nodes),      nodes_before);
+    ASSERT_EQ(alea_vec_count(&sys->primitives), primitives_before);
+
+    /* Sanity: a clean generate after the injection is removed should
+     * succeed normally — proves rollback left sys in a usable state. */
+    void_result_t* vr2 = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr2);
+    alea_void_free(vr2);
+
+    alea_destroy(sys);
 }
 
 /* ------------------------------------------------------------------------- */

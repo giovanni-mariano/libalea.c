@@ -42,7 +42,25 @@
 /* Forward declarations */
 static bool boxes_can_form_box(const alea_bbox_t* a, const alea_bbox_t* b, alea_bbox_t* merged);
 
+/* Test-only allocator hook. When non-NULL, octree_node_create consults it
+ * before calling calloc — returning false simulates OOM at that call site.
+ * Reset via alea_void_set_octree_alloc_failure(NULL, NULL). */
+static bool (*g_octree_alloc_should_fail)(void* ud) = NULL;
+static void* g_octree_alloc_userdata = NULL;
+
+void alea_void_set_octree_alloc_failure(bool (*should_fail)(void* ud), void* userdata) {
+    g_octree_alloc_should_fail = should_fail;
+    g_octree_alloc_userdata = userdata;
+}
+
 static octree_node_t* octree_node_create(const alea_bbox_t* bbox, int depth) {
+    if (g_octree_alloc_should_fail &&
+        g_octree_alloc_should_fail(g_octree_alloc_userdata)) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "octree_node_create: simulated OOM at depth %d", depth);
+        return NULL;
+    }
+
     octree_node_t* node = calloc(1, sizeof(octree_node_t));
     if (!node) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
@@ -50,12 +68,12 @@ static octree_node_t* octree_node_create(const alea_bbox_t* bbox, int depth) {
                               depth);
         return NULL;
     }
-    
+
     node->bbox = *bbox;
     node->depth = depth;
     node->classification = OCTREE_UNKNOWN;
     node->cell_index = -1;
-    
+
     return node;
 }
 
