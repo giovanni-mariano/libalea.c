@@ -90,6 +90,12 @@ ALEA_VEC_DEFINE(void_region_vec, void_region_t);
 
 /**
  * @brief Result of void generation
+ *
+ * Generation appends surfaces, primitives, and CSG nodes to the owning
+ * system. Those mutations are uncommitted until alea_void_add_cells()
+ * succeeds. If the result is destroyed without committing,
+ * alea_void_result_destroy() rolls the system back to its pre-generation
+ * state using the snapshot fields below.
  */
 typedef struct void_result {
     octree_node_t* root;    // Octree root (caller must free with octree_destroy)
@@ -113,6 +119,18 @@ typedef struct void_result {
     size_t boxes_before_merge;    // Candidate boxes from octree
     size_t boxes_after_merge;     // After any merging
     size_t surfaces_created;      // Plane surfaces created for void boxes
+
+    // Snapshot for transactional generation. owner_sys is non-NULL while
+    // generation owns un-committed mutations on the system. Once
+    // alea_void_add_cells() succeeds, committed=true and destroy will not
+    // roll back. If owner_sys is NULL (manually-built result, or already
+    // rolled back), destroy skips rollback.
+    alea_system_t* owner_sys;
+    bool   committed;
+    size_t snapshot_surfaces;
+    size_t snapshot_nodes;
+    size_t snapshot_primitives;
+    int    snapshot_next_auto_surface_id;
 } void_result_t;
 
 // ============================================================================

@@ -742,6 +742,17 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     void_result_t* result = calloc(1, sizeof(void_result_t));
     if (!result) return NULL;
 
+    /* Snapshot system state for transactional generation. Surfaces, nodes,
+     * and primitives appended below are owned by this result until
+     * alea_void_add_cells() commits them. If destroy runs without commit,
+     * it truncates these vectors back to the snapshot. */
+    result->owner_sys                     = sys;
+    result->committed                     = false;
+    result->snapshot_surfaces             = alea_vec_count(&sys->surfaces);
+    result->snapshot_nodes                = alea_vec_count(&sys->nodes);
+    result->snapshot_primitives           = alea_vec_count(&sys->primitives);
+    result->snapshot_next_auto_surface_id = sys->next_auto_surface_id;
+
     // Create root node
     result->root = octree_node_create(&bbox, 0);
     if (!result->root) {
@@ -840,8 +851,50 @@ alea_node_id_t alea_void_to_node(alea_system_t* sys, const void_result_t* result
     return result_node;
 }
 
+/* Roll back uncommitted surface/node/primitive appends made during
+ * generation. Only safe when no external references to those entries exist
+ * — i.e., when the result was never committed via alea_void_add_cells(). */
+static void void_result_rollback(void_result_t* result) {
+    alea_system_t* sys = result->owner_sys;
+    if (!sys) return;
+
+    /* Truncate vectors to pre-generation high-water marks. Surfaces, nodes,
+     * and primitives are POD; truncation by adjusting count is safe. */
+    if (alea_vec_count(&sys->surfaces) > result->snapshot_surfaces) {
+        alea_vec_set_count(&sys->surfaces, result->snapshot_surfaces);
+    }
+    if (alea_vec_count(&sys->nodes) > result->snapshot_nodes) {
+        alea_vec_set_count(&sys->nodes, result->snapshot_nodes);
+    }
+    if (alea_vec_count(&sys->primitives) > result->snapshot_primitives) {
+        alea_vec_set_count(&sys->primitives, result->snapshot_primitives);
+    }
+    sys->next_auto_surface_id = result->snapshot_next_auto_surface_id;
+
+    /* The primitive dedup hash table may reference primitive IDs we just
+     * truncated. Rebuild it from scratch — cheaper than walking entries. */
+    if (sys->primitive_index) {
+        primitive_hash_table_destroy(sys->primitive_index);
+        sys->primitive_index = primitive_hash_table_create();
+        if (sys->primitive_index) {
+            for (size_t i = 0; i < alea_vec_count(&sys->primitives); i++) {
+                const alea_primitive_entry_t* p = &sys->primitives.data[i];
+                uint64_t hash = alea_compute_primitive_hash(p->type, &p->data, 0);
+                primitive_hash_table_insert(sys->primitive_index, (uint32_t)i, hash);
+            }
+        }
+    }
+
+    /* All query caches indexed by surface/node/primitive ID may now be stale. */
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
+}
+
 void alea_void_result_destroy(void_result_t* result) {
     if (!result) return;
+
+    if (!result->committed) {
+        void_result_rollback(result);
+    }
 
     octree_destroy(result->root);
     alea_vec_free(&result->void_regions);
@@ -930,6 +983,10 @@ int alea_void_add_cells(alea_system_t* sys, void_result_t* result) {
         }
         cells_added++;
     }
+
+    /* Cells now reference the surfaces/nodes appended during generation;
+     * destroy must not roll them back. */
+    result->committed = true;
 
     return cells_added;
 }
