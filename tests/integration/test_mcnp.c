@@ -49,6 +49,7 @@ TEST(trcl_inline_translation) {
     mcnp_model_t* model = mcnp_load("test_trcl_inline_tmp.mcnp");
     ASSERT_NOT_NULL(model);
     alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
     /* Origin should be void (sphere translated away) */
     int origin_mat = alea_material_at(sys, 0, 0, 0);
@@ -79,6 +80,7 @@ TEST(trcl_with_tr_card) {
     mcnp_model_t* model = mcnp_load("test_trcl_tr_tmp.mcnp");
     ASSERT_NOT_NULL(model);
     alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
     /* Origin should be void (sphere translated away) */
     int origin_mat = alea_material_at(sys, 0, 0, 0);
@@ -453,6 +455,7 @@ TEST(lattice_raycast) {
     alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
 
     alea_raycast_result_t result;
@@ -512,6 +515,7 @@ TEST(lattice_hex_raycast) {
     alea_system_t* sys = omc->sys;
 
     alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
 
     alea_raycast_result_t result;

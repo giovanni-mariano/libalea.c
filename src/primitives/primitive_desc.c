@@ -619,30 +619,44 @@ static alea_interval_t interval_cone_z(const alea_primitive_data_t* data, const 
 
 static alea_interval_t interval_box(const alea_primitive_data_t* data, const alea_bbox_t* box) {
     const alea_box_data_t* b = &data->box;
-    /* Box SDF: max(dx, dy, dz) where d = max(min - pos, pos - max) */
+    /* Box SDF: f(p) = max_axis( g(p_axis) ) where g(x) = max(b_min - x, x - b_max).
+     *
+     * Per-axis g is V-shaped, with minimum -(b_max - b_min)/2 at the primitive
+     * center, and increasing linearly outward. Over a query interval [x_lo,x_hi]:
+     *   g_max = max(g(x_lo), g(x_hi))
+     *   g_min = -(b_max - b_min)/2  if center ∈ [x_lo, x_hi]
+     *           min(g(x_lo), g(x_hi))  otherwise
+     *
+     * f over the 3D query box combines per-axis intervals via interval-max:
+     *   max([a_lo,a_hi], [b_lo,b_hi]) = [max(a_lo,b_lo), max(a_hi,b_hi)]
+     */
+    double gx_at_lo = MAX(b->min_x - box->min_x, box->min_x - b->max_x);
+    double gx_at_hi = MAX(b->min_x - box->max_x, box->max_x - b->max_x);
+    double gx_max = MAX(gx_at_lo, gx_at_hi);
+    double cx = 0.5 * (b->min_x + b->max_x);
+    double gx_min = (cx >= box->min_x && cx <= box->max_x)
+                    ? 0.5 * (b->min_x - b->max_x)
+                    : MIN(gx_at_lo, gx_at_hi);
 
-    /* Distance from query box to primitive box boundaries */
-    double dx_min = MAX(b->min_x - box->max_x, box->min_x - b->max_x);
-    double dx_max = MAX(fabs(box->max_x - b->min_x), fabs(box->min_x - b->max_x));
-    double dy_min = MAX(b->min_y - box->max_y, box->min_y - b->max_y);
-    double dy_max = MAX(fabs(box->max_y - b->min_y), fabs(box->min_y - b->max_y));
-    double dz_min = MAX(b->min_z - box->max_z, box->min_z - b->max_z);
-    double dz_max = MAX(fabs(box->max_z - b->min_z), fabs(box->min_z - b->max_z));
+    double gy_at_lo = MAX(b->min_y - box->min_y, box->min_y - b->max_y);
+    double gy_at_hi = MAX(b->min_y - box->max_y, box->max_y - b->max_y);
+    double gy_max = MAX(gy_at_lo, gy_at_hi);
+    double cy = 0.5 * (b->min_y + b->max_y);
+    double gy_min = (cy >= box->min_y && cy <= box->max_y)
+                    ? 0.5 * (b->min_y - b->max_y)
+                    : MIN(gy_at_lo, gy_at_hi);
 
-    /* Check if boxes overlap */
-    if (box->min_x <= b->max_x && box->max_x >= b->min_x &&
-        box->min_y <= b->max_y && box->max_y >= b->min_y &&
-        box->min_z <= b->max_z && box->max_z >= b->min_z) {
-        /* Overlapping: result includes negative values */
-        double min_dist = -MIN(MIN(b->max_x - box->min_x, box->max_x - b->min_x),
-                               MIN(MIN(b->max_y - box->min_y, box->max_y - b->min_y),
-                                   MIN(b->max_z - box->min_z, box->max_z - b->min_z)));
-        return alea_iv_make(min_dist, MAX(dx_max, MAX(dy_max, dz_max)));
-    }
+    double gz_at_lo = MAX(b->min_z - box->min_z, box->min_z - b->max_z);
+    double gz_at_hi = MAX(b->min_z - box->max_z, box->max_z - b->max_z);
+    double gz_max = MAX(gz_at_lo, gz_at_hi);
+    double cz = 0.5 * (b->min_z + b->max_z);
+    double gz_min = (cz >= box->min_z && cz <= box->max_z)
+                    ? 0.5 * (b->min_z - b->max_z)
+                    : MIN(gz_at_lo, gz_at_hi);
 
-    /* Non-overlapping: positive distance */
-    double pos_dist = MAX(dx_min, MAX(dy_min, dz_min));
-    return alea_iv_make(pos_dist, MAX(dx_max, MAX(dy_max, dz_max)));
+    double f_min = MAX(gx_min, MAX(gy_min, gz_min));
+    double f_max = MAX(gx_max, MAX(gy_max, gz_max));
+    return alea_iv_make(f_min, f_max);
 }
 
 static alea_interval_t interval_quadric(const alea_primitive_data_t* data, const alea_bbox_t* box) {

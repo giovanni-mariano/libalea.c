@@ -405,10 +405,14 @@ TEST(void_add_cells_rejects_invalid_region_without_partial_commit) {
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
     void_result_t* vr = alea_void_generate(sys, &bounds);
     ASSERT_NOT_NULL(vr);
-    ASSERT(alea_void_count(vr) > 0);
+
+    /* Need >= 2 regions so invalidating the last entry actually exercises
+     * atomicity: a non-atomic add would commit [0..n-2] before failing at n-1. */
+    size_t n = alea_void_count(vr);
+    ASSERT(n >= 2);
 
     size_t cells_before = alea_cell_count(sys);
-    vr->void_regions.data[0].node = ALEA_NODE_ID_INVALID;
+    vr->void_regions.data[n - 1].node = ALEA_NODE_ID_INVALID;
 
     int added = alea_void_add_cells(sys, vr);
     ASSERT_EQ(added, -1);

@@ -419,6 +419,7 @@ TEST(model_roundtrip_imp) {
     ASSERT_NEAR(p1->imp_n, 0.0, 1e-6);
 
     /* Geometry preserved */
+    ASSERT_EQ(alea_prepare_query_acceleration(model2->sys), 0);
     ASSERT_EQ(alea_material_at(model2->sys, 0, 0, 0), 1);
     ASSERT_EQ(alea_material_at(model2->sys, 7, 0, 0), 0);
 

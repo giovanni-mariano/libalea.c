@@ -157,8 +157,10 @@ static int probe_node(alea_system_t* sys, const alea_bbox_t* bbox,
 /**
  * Recursive octree building
  *
- * CONSERVATIVE: Only classify as SOLID if all probes land in the same
- * material cell. Any hint of void means we keep it as a candidate.
+ * Probing is a hint, not proof. The SOLID classification is taken only after
+ * an exact `tree_box_relation == NEGATIVE` check confirms the box is fully
+ * inside the cell's CSG tree — otherwise a cavity smaller than the probe
+ * spacing would be silently discarded.
  */
 static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
                                   const octree_config_t* config,
@@ -187,16 +189,32 @@ static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
     }
 
     if (cell_result >= 0) {
-        // All probes in same material cell.
-        // This is the ONLY case where we can confidently skip.
-        node->classification = OCTREE_SOLID;
-        node->cell_index = cell_result;
-        result->solid_nodes++;
-        return 0;
+        // Probes agree on a single material cell, but probes alone cannot
+        // prove SOLID — a cavity smaller than the probe spacing would be
+        // missed. Verify exactly via interval evaluation: the box is solid
+        // iff the cell's CSG tree evaluates negative everywhere in the box.
+        //
+        // Restrict to universe-0 cells: cell trees in fill universes are
+        // expressed in local coordinates and would require bbox
+        // transformation before comparison. For those, fall through to
+        // subdivision and let CSG filtering handle it.
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_result];
+        if (cell->universe_id == 0) {
+            alea_box_relation_t rel = alea_tree_box_relation(
+                sys, cell->root_node_id, &node->bbox);
+            if (rel == ALEA_RELATION_NEGATIVE) {
+                node->classification = OCTREE_SOLID;
+                node->cell_index = cell_result;
+                result->solid_nodes++;
+                return 0;
+            }
+        }
+        // Exact check failed (probes lied, or fill-universe cell). Treat
+        // this box as a candidate; subdivision or CSG decides what's void.
     }
 
-    // Mixed: some void probes, or multiple cells.
-    // We CANNOT discard this box - it might contain void.
+    // Mixed: some void probes, or multiple cells, or probe-claimed-solid
+    // could not be proven exact. We CANNOT discard this box.
 
     bool should_subdivide = (node->depth < config->max_depth) &&
                             (min_dim > config->min_size);
@@ -420,9 +438,18 @@ static int collect_cell_bboxes(alea_system_t* sys, int universe_id,
         size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
-        /* Skip void cells and invalid cells */
-        if (cell->material_id == 0) continue;
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+
+        /* Treat as occupied (subtract from void) if either:
+         *  - the cell has a non-void material, or
+         *  - the cell is a FILL/lattice container whose interior is covered
+         *    by leaf cells in another universe (its own material_id is
+         *    conventionally 0 even though the region is occupied).
+         * Otherwise this is a true void cell that should not be subtracted. */
+        bool is_occupied = (cell->material_id != 0) ||
+                           (cell->fill_universe > 0) ||
+                           (cell->lat_type != 0);
+        if (!is_occupied) continue;
 
         entries[count].root = cell->root_node_id;
         entries[count].bbox = alea_get_bbox(sys, cell->root_node_id);
@@ -638,13 +665,24 @@ static int create_void_nodes_filtered(
                boxes[i].min_y, boxes[i].max_y,
                boxes[i].min_z, boxes[i].max_z, regional_void);
 
-        /* A valid geometric emptiness check is added in a later phase.
-         * INVALID here means construction failure, not an empty region. */
+        /* INVALID here means construction failure (allocation, invalid input).
+         * Geometric emptiness is checked separately below. */
         if (regional_void == ALEA_NODE_ID_INVALID) {
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                                   "create_void_nodes_filtered: failed to construct void region %zu",
                                   i);
             return -1;
+        }
+
+        /* Exact emptiness via interval evaluation: if the regional void tree
+         * is strictly positive everywhere in the candidate box, the region
+         * has no actual void volume. This catches cases like "candidate box
+         * is fully inside an occupied FILL cell, so ¬cells ∩ box is empty"
+         * — the CSG construction APIs do not signal this directly. */
+        alea_box_relation_t rel = alea_tree_box_relation(sys, regional_void, &boxes[i]);
+        if (rel == ALEA_RELATION_POSITIVE) {
+            result->empty_regions_skipped++;
+            continue;
         }
 
         /* Store the void region */
@@ -865,17 +903,32 @@ int alea_void_add_cells(alea_system_t* sys, void_result_t* result) {
     if (!sys || !result) return -1;
     if (!result->void_regions.data || result->void_regions.count == 0) return 0;
 
+    /* Pre-validate: any INVALID region signals upstream construction failure.
+     * Refuse to commit any cells rather than leave `sys` partially mutated. */
+    for (size_t i = 0; i < result->void_regions.count; i++) {
+        if (result->void_regions.data[i].node == ALEA_NODE_ID_INVALID) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                "alea_void_add_cells: region %zu has invalid node id; refusing partial commit",
+                i);
+            return -1;
+        }
+    }
+
     int next_cell_id = alea_max_cell_id(sys) + 1;
 
     int cells_added = 0;
     for (size_t i = 0; i < result->void_regions.count; i++) {
         ALEA_CHECK_INTERRUPTED(-1);
-        if (result->void_regions.data[i].node != ALEA_NODE_ID_INVALID) {
-            int cell_idx = alea_add_cell(sys, next_cell_id++, result->void_regions.data[i].node, ALEA_MATERIAL_VOID, 0.0, 0);
-            if (cell_idx >= 0) {
-                cells_added++;
-            }
+        int cell_idx = alea_add_cell(sys, next_cell_id++,
+                                     result->void_regions.data[i].node,
+                                     ALEA_MATERIAL_VOID, 0.0, 0);
+        if (cell_idx < 0) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                "alea_void_add_cells: alea_add_cell failed for region %zu after %d additions",
+                i, cells_added);
+            return -1;
         }
+        cells_added++;
     }
 
     return cells_added;
