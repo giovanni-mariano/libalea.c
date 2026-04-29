@@ -334,6 +334,48 @@ TEST(void_point_verification) {
     alea_destroy(sys);
 }
 
+TEST(void_add_cells_invalidates_prepared_query_caches) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    set_fast_void_config(sys);
+
+    int si = alea_sphere_surface(sys, 0, 0, 0, 0, 3.0);
+    ASSERT(si >= 0);
+    alea_node_id_t sphere = alea_halfspace(sys, si, -1);
+    int m1 = alea_add_material(sys, 1);
+    int sphere_cell = alea_add_cell(sys, 1, sphere, m1, 1.0, 0);
+    ASSERT(sphere_cell >= 0);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    void_result_t* vr = alea_void_generate(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 0);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_cell_hit_t hits[16];
+    int count = alea_find_all_cells(sys, 0, 0, 0, hits, 16);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(hits[0].cell_id, 1);
+
+    int added = alea_void_add_cells(sys, vr);
+    ASSERT(added > 0);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT(sys->universe_index_built);
+
+    count = alea_find_all_cells(sys, 0, 0, 0, hits, 16);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(hits[0].cell_id, 1);
+
+    count = alea_find_all_cells(sys, 4.5, 4.5, 4.5, hits, 16);
+    ASSERT(count >= 1);
+    ASSERT_EQ(hits[count - 1].material_id, 0);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
 TEST(void_detects_internal_cavity_missed_by_probes) {
     alea_system_t* sys = make_box_shell_with_off_grid_cavity();
     ASSERT_NOT_NULL(sys);

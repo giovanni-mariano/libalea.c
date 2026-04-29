@@ -1253,7 +1253,7 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
     cell->density = fabs(density);
     cell->universe_id = universe_id;
 
-    sys->universe_index_built = false;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     /* Insert into cell hash map */
     cell_hashmap_put(&sys->cell_index, final_cell_id, idx);
