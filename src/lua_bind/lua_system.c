@@ -13,19 +13,19 @@
 
 static int l_system_create(lua_State* L) {
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
+    alea_lua_system_init(ud);
     ud->sys = alea_create();
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
     if (!ud->sys)
         return luaL_error(L, "alea_create failed: %s", alea_error());
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
     return 1;
 }
 
-static int l_system_destroy(lua_State* L) {
-    alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (ud->owned) {
+void alea_lua_system_release_if_pending(alea_lua_system_t* ud) {
+    if (!ud || !ud->destroy_pending || ud->active_void_results > 0)
+        return;
+
+    if (ud->owned && ud->sys) {
         if (ud->mcnp_model) {
             mcnp_model_destroy((mcnp_model_t*)ud->mcnp_model);
             ud->mcnp_model = NULL;
@@ -37,6 +37,16 @@ static int l_system_destroy(lua_State* L) {
         }
     }
     ud->sys = NULL;
+}
+
+static int l_system_destroy(lua_State* L) {
+    alea_lua_system_t* ud = alea_check_system(L, 1);
+    if (!ud->sys) {
+        return 0;
+    }
+
+    ud->destroy_pending = 1;
+    alea_lua_system_release_if_pending(ud);
     return 0;
 }
 

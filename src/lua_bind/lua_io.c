@@ -14,10 +14,7 @@
 static int l_load_mcnp(lua_State* L) {
     const char* filename = luaL_checkstring(L, 1);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
-    ud->sys = NULL;
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
+    alea_lua_system_init(ud);
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
 
     mcnp_model_t* model = mcnp_load(filename);
@@ -33,10 +30,7 @@ static int l_load_mcnp_string(lua_State* L) {
     size_t len;
     const char* str = luaL_checklstring(L, 1, &len);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
-    ud->sys = NULL;
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
+    alea_lua_system_init(ud);
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
 
     mcnp_model_t* model = mcnp_load_string(str, len);
@@ -51,10 +45,7 @@ static int l_load_mcnp_string(lua_State* L) {
 static int l_load_openmc(lua_State* L) {
     const char* filename = luaL_checkstring(L, 1);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
-    ud->sys = NULL;
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
+    alea_lua_system_init(ud);
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
 
     openmc_model_t* model = openmc_load(filename);

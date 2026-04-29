@@ -34,10 +34,7 @@ static int l_extract_universe(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     int uid = (int)luaL_checkinteger(L, 2);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
-    ud->sys = NULL;
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
+    alea_lua_system_init(ud);
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
     ud->sys = alea_extract_universe(sys, uid);
     if (!ud->sys)
@@ -59,10 +56,7 @@ static int l_merge(lua_State* L) {
 static int l_clone(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
-    ud->sys = NULL;
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
+    alea_lua_system_init(ud);
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
     ud->sys = alea_clone(sys);
     if (!ud->sys)
@@ -372,10 +366,7 @@ static int l_extract_region(lua_State* L) {
     lua_getfield(L, 2, "max_z"); bbox.max_z = luaL_checknumber(L, -1); lua_pop(L, 1);
 
     alea_lua_system_t* ud = (alea_lua_system_t*)lua_newuserdata(L, sizeof(alea_lua_system_t));
-    ud->sys = NULL;
-    ud->mcnp_model = NULL;
-    ud->openmc_model = NULL;
-    ud->owned = 1;
+    alea_lua_system_init(ud);
     luaL_setmetatable(L, ALEA_SYSTEM_MT);
 
     ud->sys = alea_extract_region(sys, &bbox);
@@ -450,9 +441,11 @@ static int l_expand_macrobodies(lua_State* L) {
 typedef struct {
     void_result_t* ptr;
     alea_system_t* sys;
+    alea_lua_system_t* owner;
 } alea_lua_void_result_t;
 
 static int l_void_generate(lua_State* L) {
+    alea_lua_system_t* owner = alea_check_system(L, 1);
     alea_system_t* sys = alea_get_sys(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
 
@@ -468,11 +461,15 @@ static int l_void_generate(lua_State* L) {
         L, sizeof(alea_lua_void_result_t));
     ud->ptr = NULL;
     ud->sys = sys;
+    ud->owner = owner;
     luaL_setmetatable(L, ALEA_VOIDRESULT_MT);
+    lua_pushvalue(L, 1);
+    lua_setiuservalue(L, -2, 1);
 
     ud->ptr = alea_void_generate(sys, &bbox);
     if (!ud->ptr)
         return luaL_error(L, "void_generate failed: %s", alea_error());
+    owner->active_void_results++;
     return 1;
 }
 
@@ -481,6 +478,11 @@ static int l_void_gc(lua_State* L) {
     if (ud->ptr) {
         alea_void_free(ud->ptr);
         ud->ptr = NULL;
+    }
+    if (ud->owner && ud->owner->active_void_results > 0) {
+        ud->owner->active_void_results--;
+        alea_lua_system_release_if_pending(ud->owner);
+        ud->owner = NULL;
     }
     return 0;
 }

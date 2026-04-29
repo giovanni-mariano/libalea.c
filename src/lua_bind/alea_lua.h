@@ -31,6 +31,8 @@ typedef struct {
     void* mcnp_model;    /* mcnp_model_t* if loaded from MCNP, NULL otherwise */
     void* openmc_model;  /* openmc_model_t* if loaded from OpenMC, NULL otherwise */
     int owned;            /* 1 if we should destroy on __gc */
+    int destroy_pending;  /* destroy requested while dependent userdata exists */
+    int active_void_results;
 } alea_lua_system_t;
 
 typedef struct {
@@ -46,12 +48,23 @@ static inline alea_lua_system_t* alea_check_system(lua_State* L, int idx) {
     return (alea_lua_system_t*)luaL_checkudata(L, idx, ALEA_SYSTEM_MT);
 }
 
+static inline void alea_lua_system_init(alea_lua_system_t* ud) {
+    ud->sys = NULL;
+    ud->mcnp_model = NULL;
+    ud->openmc_model = NULL;
+    ud->owned = 1;
+    ud->destroy_pending = 0;
+    ud->active_void_results = 0;
+}
+
 static inline alea_system_t* alea_get_sys(lua_State* L, int idx) {
     alea_lua_system_t* ud = alea_check_system(L, idx);
-    if (!ud->sys)
+    if (!ud->sys || ud->destroy_pending)
         luaL_error(L, "system has been destroyed");
     return ud->sys;
 }
+
+void alea_lua_system_release_if_pending(alea_lua_system_t* ud);
 
 static inline alea_lua_node_t* alea_check_node(lua_State* L, int idx) {
     return (alea_lua_node_t*)luaL_checkudata(L, idx, ALEA_NODE_MT);
