@@ -40,13 +40,15 @@ endif
 ifeq ($(UNAME_S),Darwin)
   LIBS_MCNP = -Wl,-force_load,$(BIN_DIR)/libalea_mcnp.a
   LIBS_OPENMC = -Wl,-force_load,$(BIN_DIR)/libalea_openmc.a
+  LIBS_SERPENT = -Wl,-force_load,$(BIN_DIR)/libalea_serpent.a
 else
   LIBS_MCNP = -Wl,--whole-archive $(BIN_DIR)/libalea_mcnp.a -Wl,--no-whole-archive
   LIBS_OPENMC = -Wl,--whole-archive $(BIN_DIR)/libalea_openmc.a -Wl,--no-whole-archive
+  LIBS_SERPENT = -Wl,--whole-archive $(BIN_DIR)/libalea_serpent.a -Wl,--no-whole-archive
 endif
 
 # All libraries
-LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(BIN_DIR)/libalea.a
+LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
 LDFLAGS = $(OPENMP_LDFLAGS) -lm
 
 TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter $(BIN_DIR)/nuc_plot

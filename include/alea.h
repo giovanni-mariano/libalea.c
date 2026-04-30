@@ -644,6 +644,8 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index);
  *
  * For MCNP: use mcnp_export() from alea_mcnp.h (link libalea_mcnp.a)
  * For OpenMC: use openmc_export() from alea_openmc.h (link libalea_openmc.a)
+ * For Serpent: use serpent_export_system() from alea_serpent.h
+ * (link libalea_serpent.a)
  *
  * Generic export options are read from sys->config (dedup, universe_depth,
  * fill_depth, export_materials, export_transforms).

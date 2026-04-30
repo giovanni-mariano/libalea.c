@@ -116,6 +116,7 @@ typedef enum {
 typedef enum {
     ALEA_EXPORT_FORMAT_MCNP = 0,
     ALEA_EXPORT_FORMAT_OPENMC,
+    ALEA_EXPORT_FORMAT_SERPENT,
 } alea_export_format_t;
 
 typedef enum {

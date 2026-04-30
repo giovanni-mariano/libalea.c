@@ -9,6 +9,7 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_mcnp.h"
+#include "alea_serpent.h"
 #include "core/alea_system.h"
 
 /* ------------------------------------------------------------------------- */
@@ -283,6 +284,25 @@ TEST(export_mcnp) {
     FILE* f = tmpfile();
     ASSERT_NOT_NULL(f);
     int rc = mcnp_export_system_stream(sys, f);
+    ASSERT_EQ(rc, 0);
+    fclose(f);
+
+    alea_destroy(sys);
+}
+
+TEST(export_serpent) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int si = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
+    alea_node_id_t sphere = alea_halfspace(sys, si, -1);
+
+    int m1 = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, sphere, m1, 1.0, 0) >= 0);
+
+    FILE* f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    int rc = serpent_export_system_stream(sys, f);
     ASSERT_EQ(rc, 0);
     fclose(f);
 

@@ -5,6 +5,7 @@
 #include "alea_lua.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
+#include "alea_serpent.h"
 
 /* ============================================================================
  * Load functions (return new owned System userdata)
@@ -94,6 +95,18 @@ static int l_export_openmc(lua_State* L) {
     return 0;
 }
 
+/* sys:export_serpent(filename) */
+static int l_export_serpent(lua_State* L) {
+    alea_lua_system_t* ud = alea_check_system(L, 1);
+    if (!ud->sys) return luaL_error(L, "system has been destroyed");
+    const char* filename = luaL_checkstring(L, 2);
+
+    int rc = serpent_export_system(ud->sys, filename);
+    if (rc != 0)
+        return luaL_error(L, "export_serpent failed: %s", alea_error());
+    return 0;
+}
+
 /* ============================================================================
  * Registration
  * ============================================================================ */
@@ -101,6 +114,7 @@ static int l_export_openmc(lua_State* L) {
 static const luaL_Reg system_io_methods[] = {
     {"export_mcnp",  l_export_mcnp},
     {"export_openmc", l_export_openmc},
+    {"export_serpent", l_export_serpent},
     {NULL, NULL}
 };
 

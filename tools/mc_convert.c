@@ -29,15 +29,16 @@
 #include <alea.h>
 #include <alea_mcnp.h>
 #include <alea_openmc.h>
+#include <alea_serpent.h>
 
-enum format { FMT_AUTO, FMT_MCNP, FMT_OPENMC };
+enum format { FMT_AUTO, FMT_MCNP, FMT_OPENMC, FMT_SERPENT };
 
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s [options] <input> [output]\n", prog);
-    fprintf(stderr, "\nConvert between MCNP and OpenMC geometry formats.\n");
+    fprintf(stderr, "\nConvert between MCNP, OpenMC, and Serpent geometry formats.\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -if, --input-format  FORMAT   mcnp | openmc (auto-detected)\n");
-    fprintf(stderr, "  -of, --output-format FORMAT   mcnp | openmc (auto-detected)\n");
+    fprintf(stderr, "  -of, --output-format FORMAT   mcnp | openmc | serpent (auto-detected)\n");
     fprintf(stderr, "  --no-dedup                     Disable surface deduplication\n");
     fprintf(stderr, "  -v,  --verbose                Set log level to INFO\n");
     fprintf(stderr, "  -vv                           Set log level to DEBUG\n");
@@ -55,6 +56,7 @@ static int ends_with(const char* str, const char* suffix) {
 static enum format parse_format(const char* s) {
     if (strcmp(s, "mcnp") == 0)   return FMT_MCNP;
     if (strcmp(s, "openmc") == 0) return FMT_OPENMC;
+    if (strcmp(s, "serpent") == 0) return FMT_SERPENT;
     return FMT_AUTO;
 }
 
@@ -80,11 +82,11 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-if") == 0 || strcmp(argv[i], "--input-format") == 0) {
             if (++i >= argc) { fprintf(stderr, "Error: %s requires an argument\n", argv[i-1]); return 1; }
             in_fmt = parse_format(argv[i]);
-            if (in_fmt == FMT_AUTO) { fprintf(stderr, "Error: unknown format '%s' (use mcnp or openmc)\n", argv[i]); return 1; }
+            if (in_fmt == FMT_AUTO || in_fmt == FMT_SERPENT) { fprintf(stderr, "Error: unknown or unsupported input format '%s' (use mcnp or openmc)\n", argv[i]); return 1; }
         } else if (strcmp(argv[i], "-of") == 0 || strcmp(argv[i], "--output-format") == 0) {
             if (++i >= argc) { fprintf(stderr, "Error: %s requires an argument\n", argv[i-1]); return 1; }
             out_fmt = parse_format(argv[i]);
-            if (out_fmt == FMT_AUTO) { fprintf(stderr, "Error: unknown format '%s' (use mcnp or openmc)\n", argv[i]); return 1; }
+            if (out_fmt == FMT_AUTO) { fprintf(stderr, "Error: unknown format '%s' (use mcnp, openmc, or serpent)\n", argv[i]); return 1; }
         } else if (!input_file) {
             input_file = argv[i];
         } else if (!output_file) {
@@ -110,7 +112,8 @@ int main(int argc, char** argv) {
 
     /* Default output filename */
     if (!output_file)
-        output_file = (out_fmt == FMT_OPENMC) ? "model.xml" : "output.inp";
+        output_file = (out_fmt == FMT_OPENMC) ? "model.xml" :
+                      (out_fmt == FMT_SERPENT) ? "model.serp" : "output.inp";
 
     printf("Alea %s - MC format converter\n\n", alea_version());
 
@@ -155,6 +158,9 @@ int main(int argc, char** argv) {
     if (out_fmt == FMT_OPENMC) {
         printf("\nExporting to OpenMC XML: %s\n", output_file);
         rc = openmc_export_system(sys, output_file);
+    } else if (out_fmt == FMT_SERPENT) {
+        printf("\nExporting to Serpent: %s\n", output_file);
+        rc = serpent_export_system(sys, output_file);
     } else if (mcnp_model) {
         printf("\nExporting to MCNP: %s\n", output_file);
         rc = mcnp_export(mcnp_model, output_file);

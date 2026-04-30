@@ -10,6 +10,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
+#include "alea_serpent.h"
 #include <string.h>
 
 /* ========================================================================= */
@@ -446,6 +447,28 @@ TEST(mixture_openmc_export) {
     /* Verify nuclides appear */
     ASSERT(strstr(output, "U235") != NULL || strstr(output, "92235") != NULL);
     ASSERT(strstr(output, "O16") != NULL || strstr(output, "8016") != NULL);
+
+    free(output);
+    alea_destroy(sys);
+}
+
+TEST(mixture_serpent_export) {
+    alea_system_t* sys = create_mixture_system();
+
+    FILE* f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    int rc = serpent_export_system_stream(sys, f);
+    ASSERT_EQ(rc, 0);
+
+    char* output = read_file_to_string(f);
+    fclose(f);
+    ASSERT_NOT_NULL(output);
+
+    ASSERT(strstr(output, "cell 1 0 m100") != NULL);
+    ASSERT(strstr(output, "mat m100 -7") != NULL);
+    ASSERT(strstr(output, "92235.80c") != NULL);
+    ASSERT(strstr(output, "8016.80c") != NULL);
+    ASSERT(strstr(output, "surf") != NULL);
 
     free(output);
     alea_destroy(sys);
