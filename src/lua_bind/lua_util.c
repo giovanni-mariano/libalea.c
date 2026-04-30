@@ -466,7 +466,7 @@ static int l_void_generate(lua_State* L) {
     lua_pushvalue(L, 1);
     lua_setiuservalue(L, -2, 1);
 
-    ud->ptr = alea_void_generate(sys, &bbox);
+    ud->ptr = alea_void_generate_in_bbox(sys, &bbox);
     if (!ud->ptr)
         return luaL_error(L, "void_generate failed: %s", alea_error());
     owner->active_void_results++;

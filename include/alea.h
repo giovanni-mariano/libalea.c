@@ -656,7 +656,13 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index);
  * void_probes_per_axis, merge_cell_weight, merge_surface_weight, etc.).
  * ============================================================================ */
 
-void_result_t* alea_void_generate(alea_system_t* sys, const alea_bbox_t* bounds);
+/* Generate voids inside an existing finite CSG region. The supplied bounds
+ * region is preserved and reused during consolidation when possible. */
+void_result_t* alea_void_generate_in_region(alea_system_t* sys, alea_node_id_t bounds_region);
+
+/* Generate voids inside a bbox. If bounds is NULL, universe 0 bbox plus a
+ * margin is used. The bbox path creates an internal RPP bounds region. */
+void_result_t* alea_void_generate_in_bbox(alea_system_t* sys, const alea_bbox_t* bounds);
 int alea_void_add_cells(alea_system_t* sys, void_result_t* result);
 int alea_void_add_graveyard(alea_system_t* sys, void_result_t* result);
 size_t alea_void_count(const void_result_t* result);

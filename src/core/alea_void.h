@@ -104,6 +104,14 @@ typedef struct void_result {
     // This is the exact analytical definition of void
     alea_node_id_t global_void;
 
+    // Optional original bounds region. Region-based generation clips all void
+    // cells to this node and consolidation reuses it instead of synthesizing
+    // six bbox planes. Bbox-based generation stores the generated RPP node here
+    // for consolidation reuse, but does not need it for per-box clipping.
+    alea_node_id_t bounds_region;
+    bool clip_to_bounds_region;
+    alea_bbox_t bounds_bbox;
+
     // Regional void regions: each is (global_void ∩ region_box).
     // These are CSG tree node IDs, NOT cells. Use alea_void_add_cells() to
     // register them as actual cells in the system.
@@ -145,9 +153,13 @@ typedef struct void_result {
  * @param config Configuration (NULL = use defaults)
  * @return Result structure, or NULL on error
  */
-void_result_t* alea_generate_void_octree(alea_system_t* sys,
-                                         const alea_bbox_t* bounds,
-                                         const octree_config_t* config);
+void_result_t* alea_generate_void_in_region(alea_system_t* sys,
+                                            alea_node_id_t bounds_region,
+                                            const octree_config_t* config);
+
+void_result_t* alea_generate_void_in_bbox(alea_system_t* sys,
+                                          const alea_bbox_t* bounds,
+                                          const octree_config_t* config);
 
 /**
  * @brief Create CSG node from void result

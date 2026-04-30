@@ -306,7 +306,7 @@ TEST(void_generation) {
     ASSERT_EQ(alea_build_universe_index(sys), 0);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     alea_void_free(vr);

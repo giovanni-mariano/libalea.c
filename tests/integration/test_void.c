@@ -129,7 +129,7 @@ TEST(void_single_box) {
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     /* There IS void outside the box */
@@ -168,7 +168,7 @@ TEST(void_to_node) {
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 0);
 
@@ -190,7 +190,7 @@ TEST(void_add_cells) {
     size_t before = alea_cell_count(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     size_t void_count = alea_void_count(vr);
@@ -214,7 +214,7 @@ TEST(void_merge) {
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     size_t count_before = alea_void_count(vr);
@@ -249,7 +249,7 @@ TEST(void_no_void) {
     alea_build_universe_index(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     ASSERT_EQ(alea_void_count(vr), 0);
@@ -275,7 +275,7 @@ TEST(void_sphere) {
     alea_build_universe_index(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     /* Void in corners outside sphere */
@@ -312,7 +312,7 @@ TEST(void_point_verification) {
     ASSERT_EQ(alea_find_cell(sys, 3, 3, 3), -1);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 0);
 
@@ -351,7 +351,7 @@ TEST(void_add_cells_invalidates_prepared_query_caches) {
     ASSERT_EQ(alea_build_universe_index(sys), 0);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 0);
 
@@ -387,7 +387,7 @@ TEST(void_detects_internal_cavity_missed_by_probes) {
     ASSERT_EQ(alea_find_cell(sys, 1.25, 0.75, 0.25), -1);
 
     alea_bbox_t bounds = {-4, 4, -4, 4, -4, 4};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
     ASSERT_MSG(alea_void_count(vr) > 0,
                "void generation must not classify the whole bounds as solid from probes alone");
@@ -411,7 +411,7 @@ TEST(void_treats_filled_root_container_as_carveout) {
     ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
 
     alea_bbox_t bounds = {-4, 4, -4, 4, -4, 4};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     ASSERT_MSG(alea_void_count(vr) == 0,
@@ -430,7 +430,7 @@ TEST(void_generate_without_add_does_not_commit_geometry) {
     size_t cells_before = alea_cell_count(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 0);
 
@@ -448,7 +448,7 @@ TEST(void_add_cells_rejects_invalid_region_without_partial_commit) {
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     /* Need >= 2 regions so invalidating the last entry actually exercises
@@ -507,7 +507,7 @@ TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
     alea_void_set_octree_alloc_failure(fail_at_nth, &counter);
 
     alea_bbox_t bounds = {-4, 4, -4, 4, -4, 4};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
 
     /* Disable injection before any further test work. */
     alea_void_set_octree_alloc_failure(NULL, NULL);
@@ -524,7 +524,7 @@ TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
 
     /* Sanity: a clean generate after the injection is removed should
      * succeed normally — proves rollback left sys in a usable state. */
-    void_result_t* vr2 = alea_void_generate(sys, &bounds);
+    void_result_t* vr2 = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr2);
     alea_void_free(vr2);
 
@@ -537,14 +537,14 @@ TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
 
 TEST(void_null_safety) {
     /* NULL sys returns NULL */
-    void_result_t* vr = alea_void_generate(NULL, NULL);
+    void_result_t* vr = alea_void_generate_in_bbox(NULL, NULL);
     ASSERT_NULL(vr);
 
     /* NULL bounds with valid sys uses auto-bounds (should not crash) */
     alea_system_t* sys = make_box_system();
     ASSERT_NOT_NULL(sys);
 
-    vr = alea_void_generate(sys, NULL);
+    vr = alea_void_generate_in_bbox(sys, NULL);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 0);
 
@@ -618,7 +618,7 @@ TEST(void_per_region_filtering) {
 
     /* Generate void with bounds covering both spheres and the gap */
     alea_bbox_t bounds = {-14, 14, -4, 4, -4, 4};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 0);
 
@@ -661,7 +661,7 @@ TEST(void_consolidate) {
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     size_t before = alea_void_count(vr);
@@ -713,8 +713,10 @@ TEST(void_consolidate_replaces_single_merged_union) {
     ASSERT(outer_si >= 0);
 
     alea_node_id_t sphere = alea_halfspace(sys, sphere_si, -1);
+    alea_node_id_t inside_outer = alea_halfspace(sys, outer_si, -1);
     alea_node_id_t outside_outer = alea_halfspace(sys, outer_si, +1);
     ASSERT(sphere != ALEA_NODE_ID_INVALID);
+    ASSERT(inside_outer != ALEA_NODE_ID_INVALID);
     ASSERT(outside_outer != ALEA_NODE_ID_INVALID);
 
     int mat = alea_add_material(sys, 1);
@@ -723,8 +725,10 @@ TEST(void_consolidate_replaces_single_merged_union) {
     ASSERT(alea_add_cell(sys, 2, outside_outer, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
     ASSERT_EQ(alea_build_universe_index(sys), 0);
 
-    alea_bbox_t bounds = {-10, 10, -10, 10, -10, 10};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    size_t original_surfaces = alea_vec_count(&sys->surfaces);
+    ASSERT_EQ(original_surfaces, 2);
+
+    void_result_t* vr = alea_void_generate_in_region(sys, inside_outer);
     ASSERT_NOT_NULL(vr);
     ASSERT(alea_void_count(vr) > 1);
 
@@ -737,7 +741,15 @@ TEST(void_consolidate_replaces_single_merged_union) {
     cfg.consolidate_max_surfaces = 100;
     ASSERT(alea_merge_void_cells(sys, vr, &cfg) > 0);
     ASSERT_EQ(alea_void_count(vr), 1);
+
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), original_surfaces);
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        ASSERT_EQ(sys->surfaces.data[i].mc_surface_id, (int)i + 1);
+    }
+    ASSERT_EQ(sys->next_auto_surface_id, (int)alea_vec_count(&sys->surfaces) + 1);
+
     ASSERT(alea_void_add_cells(sys, vr) == 1);
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), original_surfaces);
 
     FILE* f = tmpfile();
     ASSERT_NOT_NULL(f);
@@ -760,12 +772,106 @@ TEST(void_consolidate_replaces_single_merged_union) {
     alea_destroy(sys);
 }
 
+TEST(void_consolidate_bbox_bounds_uses_generated_rpp) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_config_t acfg = alea_get_config(sys);
+    acfg.void_max_depth = 3;
+    acfg.void_min_size = 1.0;
+    alea_set_config(sys, &acfg);
+
+    int sphere_si = alea_sphere_surface(sys, 0, 0, 0, 0, 3.0);
+    ASSERT(sphere_si >= 0);
+    alea_node_id_t sphere = alea_halfspace(sys, sphere_si, -1);
+    ASSERT(sphere != ALEA_NODE_ID_INVALID);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    ASSERT(alea_add_cell(sys, 1, sphere, mat, 10.0, 0) >= 0);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    size_t original_surfaces = alea_vec_count(&sys->surfaces);
+    ASSERT_EQ(original_surfaces, 1);
+
+    alea_bbox_t bounds = {-10, 10, -10, 10, -10, 10};
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 1);
+
+    alea_void_merge_config_t cfg = ALEA_VOID_MERGE_DEFAULT;
+    cfg.max_surfaces_per_cell = 100000;
+    cfg.consolidate_max_surfaces = 100;
+    ASSERT(alea_merge_void_cells(sys, vr, &cfg) > 0);
+    ASSERT_EQ(alea_void_count(vr), 1);
+
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), original_surfaces + 1);
+    ASSERT_EQ(sys->surfaces.data[original_surfaces].primitive_id,
+              sys->nodes.data[vr->bounds_region].primitive.primitive_id);
+
+    ASSERT(alea_void_add_cells(sys, vr) == 1);
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), original_surfaces + 1);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
+TEST(void_consolidate_sphere_bounds_reuses_original_surface) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_config_t acfg = alea_get_config(sys);
+    acfg.void_max_depth = 3;
+    acfg.void_min_size = 1.0;
+    alea_set_config(sys, &acfg);
+
+    int material_si = alea_sphere_surface(sys, 0, 0, 0, 0, 1.0);
+    int bounds_si = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
+    ASSERT(material_si >= 0);
+    ASSERT(bounds_si >= 0);
+
+    alea_node_id_t material_sphere = alea_halfspace(sys, material_si, -1);
+    alea_node_id_t bounds_sphere = alea_halfspace(sys, bounds_si, -1);
+    ASSERT(material_sphere != ALEA_NODE_ID_INVALID);
+    ASSERT(bounds_sphere != ALEA_NODE_ID_INVALID);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    ASSERT(alea_add_cell(sys, 1, material_sphere, mat, 10.0, 0) >= 0);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    size_t original_surfaces = alea_vec_count(&sys->surfaces);
+    ASSERT_EQ(original_surfaces, 2);
+
+    void_result_t* vr = alea_void_generate_in_region(sys, bounds_sphere);
+    ASSERT_NOT_NULL(vr);
+    ASSERT(alea_void_count(vr) > 1);
+
+    alea_void_merge_config_t cfg = ALEA_VOID_MERGE_DEFAULT;
+    cfg.max_surfaces_per_cell = 100000;
+    cfg.consolidate_max_surfaces = 100;
+    ASSERT(alea_merge_void_cells(sys, vr, &cfg) > 0);
+    ASSERT_EQ(alea_void_count(vr), 1);
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), original_surfaces);
+
+    ASSERT(alea_void_add_cells(sys, vr) == 1);
+    ASSERT_EQ(alea_vec_count(&sys->surfaces), original_surfaces);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
+    ASSERT_EQ(alea_material_at(sys, 4, 0, 0), 0);
+    ASSERT_EQ(alea_find_cell(sys, 6, 0, 0), -1);
+
+    alea_void_free(vr);
+    alea_destroy(sys);
+}
+
 TEST(void_consolidate_disabled) {
     alea_system_t* sys = make_sphere_system();
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     size_t before = alea_void_count(vr);
@@ -794,7 +900,7 @@ TEST(void_graveyard) {
     ASSERT_NOT_NULL(sys);
 
     alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    void_result_t* vr = alea_void_generate(sys, &bounds);
+    void_result_t* vr = alea_void_generate_in_bbox(sys, &bounds);
     ASSERT_NOT_NULL(vr);
 
     alea_void_add_cells(sys, vr);
@@ -862,7 +968,7 @@ TEST(void_merge_benchmark) {
     /* --- Face-sorted merge --- */
     alea_system_t* sys1 = make_sphere_system();
     ASSERT_NOT_NULL(sys1);
-    void_result_t* vr1 = alea_void_generate(sys1, &bounds);
+    void_result_t* vr1 = alea_void_generate_in_bbox(sys1, &bounds);
     ASSERT_NOT_NULL(vr1);
 
     size_t before1 = alea_void_count(vr1);
@@ -878,7 +984,7 @@ TEST(void_merge_benchmark) {
     /* --- Greedy merge --- */
     alea_system_t* sys2 = make_sphere_system();
     ASSERT_NOT_NULL(sys2);
-    void_result_t* vr2 = alea_void_generate(sys2, &bounds);
+    void_result_t* vr2 = alea_void_generate_in_bbox(sys2, &bounds);
     ASSERT_NOT_NULL(vr2);
 
     size_t before2 = alea_void_count(vr2);

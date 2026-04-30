@@ -1199,8 +1199,8 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index) {
  * VOID GENERATION
  * ============================================================================ */
 
-void_result_t* alea_void_generate(alea_system_t* sys,
-                                       const alea_bbox_t* bounds) {
+void_result_t* alea_void_generate_in_region(alea_system_t* sys,
+                                            alea_node_id_t bounds_region) {
     if (!sys) return NULL;
 
     /* Build local octree config from sys->config */
@@ -1209,9 +1209,21 @@ void_result_t* alea_void_generate(alea_system_t* sys,
         .min_size = sys->config.void_min_size,
         .probes_per_axis = sys->config.void_probes_per_axis,
     };
-    return alea_generate_void_octree(sys, bounds, &local_config);
+    return alea_generate_void_in_region(sys, bounds_region, &local_config);
 }
 
+void_result_t* alea_void_generate_in_bbox(alea_system_t* sys,
+                                          const alea_bbox_t* bounds) {
+    if (!sys) return NULL;
+
+    /* Build local octree config from sys->config */
+    octree_config_t local_config = {
+        .max_depth = sys->config.void_max_depth,
+        .min_size = sys->config.void_min_size,
+        .probes_per_axis = sys->config.void_probes_per_axis,
+    };
+    return alea_generate_void_in_bbox(sys, bounds, &local_config);
+}
 
 size_t alea_void_count(const void_result_t* result) {
     if (!result) return 0;

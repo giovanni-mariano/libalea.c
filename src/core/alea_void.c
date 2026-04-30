@@ -42,6 +42,12 @@
 /* Forward declarations */
 static bool boxes_can_form_box(const alea_bbox_t* a, const alea_bbox_t* b, alea_bbox_t* merged);
 
+typedef struct {
+    int surface_id;
+    alea_primitive_id_t primitive_id;
+    uint32_t surface_index;
+} void_surface_ref_t;
+
 /* Test-only allocator hook. When non-NULL, octree_node_create consults it
  * before calling calloc — returning false simulates OOM at that call site.
  * Reset via alea_void_set_octree_alloc_failure(NULL, NULL). */
@@ -388,7 +394,9 @@ static alea_node_id_t compute_global_void(alea_system_t* sys, int universe_id) {
 static alea_node_id_t create_regional_void(
     alea_system_t* sys,
     alea_node_id_t void_complement,
-    const alea_bbox_t* box
+    const alea_bbox_t* box,
+    alea_node_id_t bounds_region,
+    bool clip_to_bounds_region
 ) {
     /* Create box region from 6 planes (registers surfaces automatically) */
     alea_node_id_t box_node = create_box_from_planes(sys, box);
@@ -399,6 +407,13 @@ static alea_node_id_t create_regional_void(
 
     /* Regional void = void_complement ∩ box */
     alea_node_id_t regional_void = alea_create_intersection(sys, void_complement, box_node);
+    if (regional_void == ALEA_NODE_ID_INVALID) {
+        return ALEA_NODE_ID_INVALID;
+    }
+
+    if (clip_to_bounds_region && bounds_region != ALEA_NODE_ID_INVALID) {
+        regional_void = alea_create_intersection(sys, regional_void, bounds_region);
+    }
     return regional_void;
 }
 
@@ -647,7 +662,9 @@ static int create_void_nodes_filtered(
     size_t cell_bbox_count,
     alea_bbox_t* boxes,
     size_t box_count,
-    void_result_t* result
+    void_result_t* result,
+    alea_node_id_t bounds_region,
+    bool clip_to_bounds_region
 ) {
     size_t surfaces_before = alea_vec_count(&sys->surfaces);
 
@@ -671,10 +688,16 @@ static int create_void_nodes_filtered(
             alea_node_id_t box_node = create_box_from_planes(
                 sys, &boxes[i]
             );
+            if (box_node != ALEA_NODE_ID_INVALID &&
+                clip_to_bounds_region &&
+                bounds_region != ALEA_NODE_ID_INVALID) {
+                box_node = alea_create_intersection(sys, box_node, bounds_region);
+            }
             regional_void = box_node;
         } else {
             regional_void = create_regional_void(
-                sys, local_void.node, &boxes[i]
+                sys, local_void.node, &boxes[i],
+                bounds_region, clip_to_bounds_region
             );
         }
 
@@ -723,58 +746,65 @@ static int create_void_nodes_filtered(
 // PUBLIC API
 // ============================================================================
 
-void_result_t* alea_generate_void_octree(alea_system_t* sys,
-                                         const alea_bbox_t* bounds,
-                                         const octree_config_t* config) {
-    if (!sys) return NULL;
+static bool bbox_valid(const alea_bbox_t* bbox) {
+    return bbox &&
+           isfinite(bbox->min_x) && isfinite(bbox->max_x) &&
+           isfinite(bbox->min_y) && isfinite(bbox->max_y) &&
+           isfinite(bbox->min_z) && isfinite(bbox->max_z) &&
+           bbox->min_x < bbox->max_x &&
+           bbox->min_y < bbox->max_y &&
+           bbox->min_z < bbox->max_z;
+}
 
-    // Use defaults if no config
-    octree_config_t cfg = config ? *config : OCTREE_DEFAULT_CONFIG;
+static bool bbox_same(const alea_bbox_t* a, const alea_bbox_t* b) {
+    return fabs(a->min_x - b->min_x) < MERGE_TOL &&
+           fabs(a->max_x - b->max_x) < MERGE_TOL &&
+           fabs(a->min_y - b->min_y) < MERGE_TOL &&
+           fabs(a->max_y - b->max_y) < MERGE_TOL &&
+           fabs(a->min_z - b->min_z) < MERGE_TOL &&
+           fabs(a->max_z - b->max_z) < MERGE_TOL;
+}
 
-    // Build universe index if needed
-    if (!sys->universe_index_built) {
-        if (alea_build_universe_index(sys) < 0) {
-            return NULL;
-        }
-    }
-
-    // Determine bounds
-    alea_bbox_t bbox;
-    if (bounds) {
-        bbox = *bounds;
-    } else {
-        const alea_universe_t* base = alea_get_universe(sys, 0);
-        if (!base) {
-            ALEA_LOG_ERROR("No base universe (universe 0)");
-            return NULL;
-        }
-        bbox = base->bbox;
-        // Add margin
-        double margin = 1.0;
-        bbox.min_x -= margin; bbox.max_x += margin;
-        bbox.min_y -= margin; bbox.max_y += margin;
-        bbox.min_z -= margin; bbox.max_z += margin;
-    }
-
-    // Allocate result
+static void_result_t* create_void_result_snapshot(alea_system_t* sys) {
     void_result_t* result = calloc(1, sizeof(void_result_t));
     if (!result) return NULL;
 
-    /* Snapshot system state for transactional generation. Surfaces, nodes,
-     * and primitives appended below are owned by this result until
-     * alea_void_add_cells() commits them. If destroy runs without commit,
-     * it truncates these vectors back to the snapshot. */
+    /* Snapshot before any bounds helper geometry is appended. */
     result->owner_sys                     = sys;
     result->committed                     = false;
+    result->global_void                   = ALEA_NODE_ID_INVALID;
+    result->bounds_region                 = ALEA_NODE_ID_INVALID;
+    result->clip_to_bounds_region         = false;
     result->snapshot_surfaces             = alea_vec_count(&sys->surfaces);
     result->snapshot_nodes                = alea_vec_count(&sys->nodes);
     result->snapshot_primitives           = alea_vec_count(&sys->primitives);
     result->snapshot_next_auto_surface_id = sys->next_auto_surface_id;
 
-    // Create root node
-    result->root = octree_node_create(&bbox, 0);
+    return result;
+}
+
+static void_result_t* run_void_generation_in_bbox(alea_system_t* sys,
+                                                  void_result_t* result,
+                                                  const alea_bbox_t* bbox,
+                                                  const octree_config_t* config) {
+    if (!sys || !result || !bbox_valid(bbox)) {
+        if (result) alea_void_result_destroy(result);
+        return NULL;
+    }
+
+    octree_config_t cfg = config ? *config : OCTREE_DEFAULT_CONFIG;
+    result->bounds_bbox = *bbox;
+
+    if (!sys->universe_index_built) {
+        if (alea_build_universe_index(sys) < 0) {
+            alea_void_result_destroy(result);
+            return NULL;
+        }
+    }
+
+    result->root = octree_node_create(bbox, 0);
     if (!result->root) {
-        free(result);
+        alea_void_result_destroy(result);
         return NULL;
     }
 
@@ -816,11 +846,13 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     ALEA_LOG_INFO("Material cells for filtering: %zu", cell_bbox_count);
 
     /* Step 4: Create void regions using per-region complement filtering.
-     * Each box gets: local_void = ¬(overlapping cells) ∩ box */
-
+     * Each box gets: local_void = ¬(overlapping cells) ∩ box, optionally
+     * clipped to the original region when region-based bounds were supplied. */
     if (create_void_nodes_filtered(sys, cell_bboxes, cell_bbox_count,
                                    candidate_boxes, box_count,
-                                   result) < 0) {
+                                   result,
+                                   result->bounds_region,
+                                   result->clip_to_bounds_region) < 0) {
         ALEA_LOG_ERROR("void cell creation failed");
         free(cell_bboxes);
         free(candidate_boxes);
@@ -830,9 +862,6 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
 
     free(cell_bboxes);
     free(candidate_boxes);
-
-    /* Compute global_void lazily — only needed for consolidation */
-    result->global_void = ALEA_NODE_ID_INVALID;
 
     ALEA_LOG_INFO("Void CSG processing (per-region filtering):");
     ALEA_LOG_INFO("  Candidate boxes checked: %zu", box_count);
@@ -844,6 +873,73 @@ void_result_t* alea_generate_void_octree(alea_system_t* sys,
     alea_void_print_stats(result);
 
     return result;
+}
+
+void_result_t* alea_generate_void_in_region(alea_system_t* sys,
+                                            alea_node_id_t bounds_region,
+                                            const octree_config_t* config) {
+    if (!sys || bounds_region == ALEA_NODE_ID_INVALID ||
+        bounds_region >= alea_vec_count(&sys->nodes)) {
+        return NULL;
+    }
+
+    alea_bbox_t bbox = alea_get_bbox(sys, bounds_region);
+    if (!bbox_valid(&bbox)) return NULL;
+
+    void_result_t* result = create_void_result_snapshot(sys);
+    if (!result) return NULL;
+    result->bounds_region = bounds_region;
+    result->clip_to_bounds_region = true;
+
+    return run_void_generation_in_bbox(sys, result, &bbox, config);
+}
+
+void_result_t* alea_generate_void_in_bbox(alea_system_t* sys,
+                                          const alea_bbox_t* bounds,
+                                          const octree_config_t* config) {
+    if (!sys) return NULL;
+
+    alea_bbox_t bbox;
+    if (bounds) {
+        bbox = *bounds;
+    } else {
+        if (!sys->universe_index_built && alea_build_universe_index(sys) < 0) {
+            return NULL;
+        }
+        const alea_universe_t* base = alea_get_universe(sys, 0);
+        if (!base) {
+            ALEA_LOG_ERROR("No base universe (universe 0)");
+            return NULL;
+        }
+        bbox = base->bbox;
+        double margin = 1.0;
+        bbox.min_x -= margin; bbox.max_x += margin;
+        bbox.min_y -= margin; bbox.max_y += margin;
+        bbox.min_z -= margin; bbox.max_z += margin;
+    }
+
+    if (!bbox_valid(&bbox)) return NULL;
+
+    void_result_t* result = create_void_result_snapshot(sys);
+    if (!result) return NULL;
+
+    int bounds_surface = alea_box_surface(sys, 0,
+                                          bbox.min_x, bbox.max_x,
+                                          bbox.min_y, bbox.max_y,
+                                          bbox.min_z, bbox.max_z);
+    if (bounds_surface < 0) {
+        alea_void_result_destroy(result);
+        return NULL;
+    }
+
+    result->bounds_region = alea_halfspace(sys, bounds_surface, -1);
+    result->clip_to_bounds_region = false;
+    if (result->bounds_region == ALEA_NODE_ID_INVALID) {
+        alea_void_result_destroy(result);
+        return NULL;
+    }
+
+    return run_void_generation_in_bbox(sys, result, &bbox, config);
 }
 
 alea_node_id_t alea_void_to_node(alea_system_t* sys, const void_result_t* result) {
@@ -970,6 +1066,247 @@ void alea_void_print_stats(const void_result_t* result) {
     }
 }
 
+static int void_surface_ref_cmp(const void* va, const void* vb) {
+    const void_surface_ref_t* a = (const void_surface_ref_t*)va;
+    const void_surface_ref_t* b = (const void_surface_ref_t*)vb;
+
+    if (a->surface_id < b->surface_id) return -1;
+    if (a->surface_id > b->surface_id) return 1;
+    if (a->primitive_id < b->primitive_id) return -1;
+    if (a->primitive_id > b->primitive_id) return 1;
+    return 0;
+}
+
+static uint32_t find_generated_surface_ref(const void_surface_ref_t* refs,
+                                           size_t count,
+                                           int surface_id,
+                                           alea_primitive_id_t primitive_id) {
+    size_t lo = 0;
+    size_t hi = count;
+
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const void_surface_ref_t* ref = &refs[mid];
+
+        if (surface_id < ref->surface_id ||
+            (surface_id == ref->surface_id && primitive_id < ref->primitive_id)) {
+            hi = mid;
+        } else if (surface_id > ref->surface_id ||
+                   (surface_id == ref->surface_id && primitive_id > ref->primitive_id)) {
+            lo = mid + 1;
+        } else {
+            return ref->surface_index;
+        }
+    }
+
+    return UINT32_MAX;
+}
+
+static void mark_generated_surfaces_recursive(const alea_system_t* sys,
+                                              alea_node_id_t node_id,
+                                              const void_surface_ref_t* refs,
+                                              size_t ref_count,
+                                              alea_bitset_t* used) {
+    if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes)) return;
+
+    const alea_node_t* node = &sys->nodes.data[node_id];
+    alea_operation_t op = ALEA_GET_OPERATION(node);
+
+    if (op == ALEA_OP_PRIMITIVE) {
+        uint32_t surf_idx = find_generated_surface_ref(refs, ref_count,
+            node->primitive.mc_surface_id, node->primitive.primitive_id);
+        if (surf_idx != UINT32_MAX) {
+            alea_bitset_set(used, surf_idx);
+        }
+        return;
+    }
+
+    if (op == ALEA_OP_COMPLEMENT) {
+        mark_generated_surfaces_recursive(sys, node->operation.left, refs, ref_count, used);
+        return;
+    }
+
+    if (op == ALEA_OP_UNION || op == ALEA_OP_INTERSECTION || op == ALEA_OP_DIFFERENCE) {
+        mark_generated_surfaces_recursive(sys, node->operation.left, refs, ref_count, used);
+        mark_generated_surfaces_recursive(sys, node->operation.right, refs, ref_count, used);
+    }
+}
+
+static int remap_void_surface_id(int old_id,
+                                 const int* old_ids,
+                                 const int* new_ids,
+                                 size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (old_ids[i] == old_id) return new_ids[i];
+    }
+    return old_id;
+}
+
+static void invalidate_surface_maps_after_void_cleanup(alea_system_t* sys) {
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        free(sys->cells.data[i].surface_indices);
+        sys->cells.data[i].surface_indices = NULL;
+        sys->cells.data[i].surface_index_count = 0;
+    }
+
+    free(sys->surface_lookup);
+    sys->surface_lookup = NULL;
+    sys->surface_lookup_size = 0;
+
+    free(sys->prim_to_surface);
+    sys->prim_to_surface = NULL;
+    sys->prim_to_surface_size = 0;
+
+    free(sys->mc_id_to_surface);
+    sys->mc_id_to_surface = NULL;
+    sys->mc_id_to_surface_size = 0;
+
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
+}
+
+static int cleanup_unused_void_surfaces(alea_system_t* sys, void_result_t* result,
+                                        bool keep_bounds_region) {
+    if (!sys || !result) return -1;
+    if (result->committed) return 0;
+
+    size_t first = result->snapshot_surfaces;
+    size_t surface_count = alea_vec_count(&sys->surfaces);
+    if (first >= surface_count) {
+        result->surfaces_created = 0;
+        return 0;
+    }
+
+    size_t generated_count = surface_count - first;
+    void_surface_ref_t* refs = malloc(generated_count * sizeof(void_surface_ref_t));
+    if (!refs) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "cleanup_unused_void_surfaces: failed to allocate surface refs");
+        return -1;
+    }
+
+    for (size_t i = 0; i < generated_count; i++) {
+        const alea_surface_entry_t* surf = &sys->surfaces.data[first + i];
+        refs[i] = (void_surface_ref_t){
+            .surface_id = surf->mc_surface_id,
+            .primitive_id = surf->primitive_id,
+            .surface_index = (uint32_t)(first + i)
+        };
+    }
+    qsort(refs, generated_count, sizeof(void_surface_ref_t), void_surface_ref_cmp);
+
+    alea_bitset_t used = alea_bitset_create(surface_count);
+    if (!used.words) {
+        free(refs);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "cleanup_unused_void_surfaces: failed to allocate used surface set");
+        return -1;
+    }
+
+    for (size_t i = 0; i < result->void_regions.count; i++) {
+        mark_generated_surfaces_recursive(sys, result->void_regions.data[i].node,
+                                          refs, generated_count, &used);
+    }
+    if (keep_bounds_region && result->bounds_region != ALEA_NODE_ID_INVALID) {
+        mark_generated_surfaces_recursive(sys, result->bounds_region,
+                                          refs, generated_count, &used);
+    }
+
+    size_t kept_count = 0;
+    for (size_t i = first; i < surface_count; i++) {
+        if (alea_bitset_test(&used, i)) kept_count++;
+    }
+
+    int* old_ids = NULL;
+    int* new_ids = NULL;
+    alea_primitive_id_t* prim_ids = NULL;
+    if (kept_count > 0) {
+        old_ids = malloc(kept_count * sizeof(int));
+        new_ids = malloc(kept_count * sizeof(int));
+        prim_ids = malloc(kept_count * sizeof(alea_primitive_id_t));
+        if (!old_ids || !new_ids || !prim_ids) {
+            free(old_ids);
+            free(new_ids);
+            free(prim_ids);
+            alea_bitset_destroy(&used);
+            free(refs);
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "cleanup_unused_void_surfaces: failed to allocate surface id remap");
+            return -1;
+        }
+    }
+
+    int next_id = result->snapshot_next_auto_surface_id;
+    for (size_t i = 0; i < first; i++) {
+        if (sys->surfaces.data[i].mc_surface_id >= next_id) {
+            next_id = sys->surfaces.data[i].mc_surface_id + 1;
+        }
+    }
+
+    size_t map_count = 0;
+    for (size_t i = first; i < surface_count; i++) {
+        if (!alea_bitset_test(&used, i)) continue;
+        const alea_surface_entry_t* surf = &sys->surfaces.data[i];
+        old_ids[map_count] = surf->mc_surface_id;
+        new_ids[map_count] = next_id++;
+        prim_ids[map_count] = surf->primitive_id;
+        map_count++;
+    }
+
+    size_t write = first;
+    size_t map_idx = 0;
+    for (size_t read = first; read < surface_count; read++) {
+        if (!alea_bitset_test(&used, read)) continue;
+
+        alea_surface_entry_t surf = sys->surfaces.data[read];
+        surf.mc_surface_id = new_ids[map_idx];
+        if (surf.periodic_surface_id > 0) {
+            surf.periodic_surface_id = remap_void_surface_id(surf.periodic_surface_id,
+                                                             old_ids, new_ids, map_count);
+        }
+        sys->surfaces.data[write++] = surf;
+        map_idx++;
+    }
+    alea_vec_set_count(&sys->surfaces, write);
+
+    for (size_t n = 0; n < alea_vec_count(&sys->nodes); n++) {
+        alea_node_t* node = &sys->nodes.data[n];
+        if (ALEA_GET_OPERATION(node) != ALEA_OP_PRIMITIVE) continue;
+
+        int old_id = node->primitive.mc_surface_id;
+        alea_primitive_id_t prim_id = node->primitive.primitive_id;
+        for (size_t i = 0; i < map_count; i++) {
+            if (old_ids[i] == old_id && prim_ids[i] == prim_id) {
+                node->primitive.mc_surface_id = new_ids[i];
+                break;
+            }
+        }
+    }
+
+    int max_id = 0;
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        if (sys->surfaces.data[i].mc_surface_id > max_id) {
+            max_id = sys->surfaces.data[i].mc_surface_id;
+        }
+    }
+    sys->next_auto_surface_id = max_id + 1;
+
+    result->surfaces_created = kept_count;
+    invalidate_surface_maps_after_void_cleanup(sys);
+
+    if (kept_count != generated_count || map_count > 0) {
+        ALEA_LOG_INFO("Void surface cleanup: %zu generated surfaces -> %zu active surfaces",
+                      generated_count, kept_count);
+    }
+
+    free(old_ids);
+    free(new_ids);
+    free(prim_ids);
+    alea_bitset_destroy(&used);
+    free(refs);
+
+    return 0;
+}
+
 int alea_void_add_cells(alea_system_t* sys, void_result_t* result) {
     if (!sys || !result) return -1;
     if (!result->void_regions.data || result->void_regions.count == 0) return 0;
@@ -983,6 +1320,10 @@ int alea_void_add_cells(alea_system_t* sys, void_result_t* result) {
                 i);
             return -1;
         }
+    }
+
+    if (cleanup_unused_void_surfaces(sys, result, false) < 0) {
+        return -1;
     }
 
     int next_cell_id = alea_max_cell_id(sys) + 1;
@@ -1649,6 +1990,20 @@ cleanup:
  * Void consolidation: replace N regions with single global_void ∩ outer_bbox
  * ------------------------------------------------------------------------- */
 
+static alea_node_id_t create_consolidated_void_region(alea_system_t* sys,
+                                                      const void_result_t* result,
+                                                      const alea_bbox_t* combined) {
+    if (result->bounds_region != ALEA_NODE_ID_INVALID &&
+        bbox_same(combined, &result->bounds_bbox)) {
+        return alea_create_intersection(sys, result->global_void, result->bounds_region);
+    }
+
+    alea_node_id_t node = create_regional_void(sys, result->global_void, combined,
+                                               result->bounds_region,
+                                               result->clip_to_bounds_region);
+    return node;
+}
+
 static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
                                      int max_surfaces) {
     if (result->void_regions.count == 0) return;
@@ -1677,9 +2032,10 @@ static void consolidate_void_regions(alea_system_t* sys, void_result_t* result,
         }
     }
 
-    /* 3. Create single region: global_void ∩ combined_bbox */
-    alea_node_id_t node = create_regional_void(sys, result->global_void,
-                                               &combined);
+    /* 3. Create single region: global_void ∩ bounds. If the combined
+     * bbox covers the original requested bounds, reuse that original bounds
+     * region instead of synthesizing six planes for the same clipping shape. */
+    alea_node_id_t node = create_consolidated_void_region(sys, result, &combined);
     if (node == ALEA_NODE_ID_INVALID) {
         ALEA_LOG_INFO("void consolidation: node invalid, keeping %zu regions",
                       result->void_regions.count);
@@ -1735,6 +2091,10 @@ int alea_merge_void_cells(alea_system_t* sys,
     if (ret >= 0 && cfg->consolidate_max_surfaces > 0) {
         consolidate_void_regions(sys, result, cfg->consolidate_max_surfaces);
         ret = (int)result->void_regions.count;
+    }
+
+    if (ret >= 0 && cleanup_unused_void_surfaces(sys, result, true) < 0) {
+        return -1;
     }
 
     return ret;
