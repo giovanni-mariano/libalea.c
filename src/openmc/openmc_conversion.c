@@ -286,6 +286,68 @@ static alea_node_id_t convert_surface(alea_system_t* sys,
  * CELL CONVERSION
  * ============================================================================ */
 
+static void collect_vacuum_surface_usage_recursive(const alea_system_t* sys,
+                                                   alea_node_id_t node_id,
+                                                   int polarity,
+                                                   int* usage,
+                                                   size_t usage_count) {
+    if (!sys || node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
+        return;
+
+    const alea_node_t* node = &sys->nodes.data[node_id];
+    alea_operation_t op = ALEA_GET_OPERATION(node);
+
+    if (op == ALEA_OP_PRIMITIVE) {
+        int surface_id = node->primitive.mc_surface_id;
+        if (surface_id <= 0 || (size_t)surface_id >= usage_count)
+            return;
+
+        int node_sense = (node->primitive.sense >= 0) ? 1 : -1;
+        int used_sense = polarity * node_sense;
+        usage[surface_id] += used_sense;
+        return;
+    }
+
+    if (op == ALEA_OP_COMPLEMENT) {
+        collect_vacuum_surface_usage_recursive(sys, node->operation.left,
+                                               -polarity, usage, usage_count);
+    } else if (op == ALEA_OP_DIFFERENCE) {
+        collect_vacuum_surface_usage_recursive(sys, node->operation.left,
+                                               polarity, usage, usage_count);
+        collect_vacuum_surface_usage_recursive(sys, node->operation.right,
+                                               -polarity, usage, usage_count);
+    } else {
+        collect_vacuum_surface_usage_recursive(sys, node->operation.left,
+                                               polarity, usage, usage_count);
+        collect_vacuum_surface_usage_recursive(sys, node->operation.right,
+                                               polarity, usage, usage_count);
+    }
+}
+
+static int* collect_vacuum_surface_usage(const alea_system_t* sys, size_t* out_count) {
+    size_t max_id = 0;
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        int surface_id = sys->surfaces.data[i].mc_surface_id;
+        if (surface_id > 0 && (size_t)surface_id > max_id)
+            max_id = (size_t)surface_id;
+    }
+
+    size_t count = max_id + 1;
+    int* usage = (int*)calloc(count ? count : 1, sizeof(int));
+    if (!usage)
+        return NULL;
+
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        collect_vacuum_surface_usage_recursive(sys, cell->root_node_id,
+                                               1, usage, count);
+    }
+
+    if (out_count)
+        *out_count = count;
+    return usage;
+}
+
 /**
  * @brief Convert a single OpenMC cell element
  */
@@ -1060,28 +1122,56 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             }
 
             if (!graveyard_exists) {
-                /* For each vacuum surface, determine the "outside" sense.
-                 * Cells use the "inside" sense, graveyard uses the opposite.
-                 * The pos_node is +surface (outside for typical bounding surfaces),
-                 * the neg_node is -surface (inside). */
+                /* For each vacuum surface, use the opposite halfspace from the
+                 * one used by the model's real cells.  A bounding box typically
+                 * mixes positive and negative senses (e.g. +xmin, -xmax); using
+                 * the positive side for every vacuum surface makes the generated
+                 * graveyard overlap the physical model. */
+                size_t vacuum_usage_count = 0;
+                int* vacuum_usage = collect_vacuum_surface_usage(sys,
+                                                                 &vacuum_usage_count);
+                if (!vacuum_usage) {
+                    ALEA_LOG_ERROR("Failed to collect OpenMC vacuum surface usage");
+                    fatal_error = 1;
+                    goto fail;
+                }
+
                 alea_node_id_t graveyard_root = ALEA_NODE_ID_INVALID;
                 size_t vacuum_surface_count = 0;
 
                 for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
                     alea_surface_entry_t* surf = &sys->surfaces.data[i];
                     if (surf->boundary_type == ALEA_BOUNDARY_VACUUM) {
-                        /* Use pos_node = outside of surface for graveyard */
+                        int used_sense = 0;
+                        if (surf->mc_surface_id > 0 &&
+                            (size_t)surf->mc_surface_id < vacuum_usage_count) {
+                            used_sense = vacuum_usage[surf->mc_surface_id];
+                        }
+
+                        alea_node_id_t outside_node;
+                        if (used_sense < 0) {
+                            outside_node = surf->pos_node;
+                        } else if (used_sense > 0) {
+                            outside_node = surf->neg_node;
+                        } else {
+                            ALEA_LOG_DEBUG("Vacuum surface %d has no dominant cell-side sense; "
+                                           "using positive halfspace for graveyard fallback",
+                                           surf->mc_surface_id);
+                            outside_node = surf->pos_node;
+                        }
+
                         if (graveyard_root == ALEA_NODE_ID_INVALID) {
-                            graveyard_root = surf->pos_node;
+                            graveyard_root = outside_node;
                         } else {
                             /* Union of all "outside" regions */
                             graveyard_root = alea_create_union(sys,
                                                                graveyard_root,
-                                                               surf->pos_node);
+                                                               outside_node);
                         }
                         vacuum_surface_count++;
                     }
                 }
+                free(vacuum_usage);
 
                 if (graveyard_root != ALEA_NODE_ID_INVALID) {
                     /* Find next available cell ID */

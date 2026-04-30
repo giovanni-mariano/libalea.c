@@ -152,6 +152,52 @@ TEST(parse_simple_box) {
     mcnp_model_destroy(model);
 }
 
+TEST(raycast_descends_into_fill_universe) {
+    const char* input =
+        "Fill ray test\n"
+        "1 0 1 -2 3 -4 5 -6 FILL=10\n"
+        "2 0 -1 : 2 : -3 : 4 : -5 : 6\n"
+        "10 1 -1.0 -7 U=10\n"
+        "11 2 -2.0 7 U=10\n"
+        "\n"
+        "1 PX -10\n"
+        "2 PX 10\n"
+        "3 PY -1\n"
+        "4 PY 1\n"
+        "5 PZ -1\n"
+        "6 PZ 1\n"
+        "7 PX 0\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_cell_hit_t hits[4];
+    int n = alea_find_all_cells_at_point(sys, -5.0, 0.0, 0.0, hits, 4);
+    ASSERT_EQ(n, 2);
+    ASSERT_EQ(hits[1].cell_id, 10);
+    n = alea_find_all_cells_at_point(sys, 5.0, 0.0, 0.0, hits, 4);
+    ASSERT_EQ(n, 2);
+    ASSERT_EQ(hits[1].cell_id, 11);
+
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0, 10.0, &result), 0);
+    ASSERT(result.segments.count >= 2);
+    ASSERT_EQ(result.segments.data[0].cell_id, 10);
+    ASSERT_EQ(result.segments.data[0].material_id, 1);
+    ASSERT_NEAR(result.segments.data[0].t_exit, 5.0, 1e-9);
+    ASSERT_EQ(result.segments.data[1].cell_id, 11);
+    ASSERT_EQ(result.segments.data[1].material_id, 2);
+
+    alea_raycast_result_free(&result);
+    mcnp_model_destroy(model);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Deduplication Export Tests                                                 */
 /* ------------------------------------------------------------------------- */

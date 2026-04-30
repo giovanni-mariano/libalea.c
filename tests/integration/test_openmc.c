@@ -335,6 +335,40 @@ TEST(openmc_vacuum_graveyard_uses_normal_cell_insertion) {
     openmc_model_destroy(omc);
 }
 
+TEST(openmc_vacuum_box_graveyard_does_not_overlap_domain) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<model>\n"
+        " <geometry>\n"
+        "  <surface id=\"113\" type=\"x-plane\" coeffs=\"-10.0\" boundary=\"vacuum\" />\n"
+        "  <surface id=\"114\" type=\"x-plane\" coeffs=\"10.0\" boundary=\"vacuum\" />\n"
+        "  <surface id=\"115\" type=\"y-plane\" coeffs=\"-10.0\" boundary=\"vacuum\" />\n"
+        "  <surface id=\"116\" type=\"y-plane\" coeffs=\"10.0\" boundary=\"vacuum\" />\n"
+        "  <surface id=\"117\" type=\"z-plane\" coeffs=\"-10.0\" boundary=\"vacuum\" />\n"
+        "  <surface id=\"118\" type=\"z-plane\" coeffs=\"10.0\" boundary=\"vacuum\" />\n"
+        "  <cell id=\"1\" material=\"1\" region=\"113 -114 115 -116 117 -118\" />\n"
+        " </geometry>\n"
+        " <materials>\n"
+        "  <material id=\"1\"><nuclide name=\"H1\" ao=\"1.0\" /></material>\n"
+        " </materials>\n"
+        "</model>\n";
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    ASSERT_NOT_NULL(omc);
+
+    alea_system_t* sys = omc->sys;
+    alea_build_universe_index(sys);
+
+    ASSERT_EQ(alea_material_at(sys, 0.0, 0.0, 0.0), 1);
+
+    int cell_id = -1;
+    int material = -1;
+    ASSERT_EQ(alea_find_cell_lazy(sys, 20.0, 0.0, 0.0, &cell_id, &material, NULL), 0);
+    ASSERT_EQ(cell_id, 2);
+    ASSERT_EQ(material, 0);
+
+    openmc_model_destroy(omc);
+}
+
 /* ========================================================================= */
 /* Export roundtrip                                                          */
 /* ========================================================================= */

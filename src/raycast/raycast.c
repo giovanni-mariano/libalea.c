@@ -28,6 +28,7 @@
 #include <stdio.h>
 
 #define INITIAL_CAPACITY 32
+#define MAX_FILL_RAYCAST_DEPTH 32
 
 /* ============================================================================
  * CACHE PRE-BUILD (thread safety)
@@ -354,6 +355,24 @@ static int raycast_find_neighbor(alea_system_t* sys,
     return 1;
 }
 
+static int cell_references_surface_id(const alea_system_t* sys,
+                                      const alea_cell_entry_t* cell,
+                                      int surface_id) {
+    if (!sys || !cell || surface_id <= 0 ||
+        !cell->surface_indices || cell->surface_index_count == 0) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < cell->surface_index_count; i++) {
+        uint32_t surf_idx = cell->surface_indices[i];
+        if (surf_idx >= alea_vec_count(&sys->surfaces))
+            continue;
+        if (sys->surfaces.data[surf_idx].mc_surface_id == surface_id)
+            return 1;
+    }
+    return 0;
+}
+
 /**
  * @brief Full cell lookup via point-in-cell search
  */
@@ -402,19 +421,26 @@ static void find_cell_after_crossing(alea_system_t* sys,
 
     /* Tier 1: neighbor lookup */
     if (prev_cell_idx >= 0 && crossed_surface_id > 0) {
-        found = raycast_find_neighbor(sys, prev_cell_idx, crossed_surface_id,
-                                      out_cell_id, out_cell_idx,
-                                      out_material_id, out_density);
+        const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
+        if (prev_cell->universe_id == 0 &&
+            cell_references_surface_id(sys, prev_cell, crossed_surface_id)) {
+            found = raycast_find_neighbor(sys, prev_cell_idx, crossed_surface_id,
+                                          out_cell_id, out_cell_idx,
+                                          out_material_id, out_density);
+        }
     }
 
     int crossed_dda = (crossed_surface_id == 0);
 
     /* Tier 2: coherence check (skip for DDA boundaries) */
     if (!found && prev_cell_idx >= 0 && !crossed_dda) {
+        const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
+        if (prev_cell->universe_id != 0)
+            goto full_lookup;
+
         double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), SURFACE_SAMPLE_OFFSET);
         double px, py, pz;
         alea_ray_point_at(ray, t_sample, &px, &py, &pz);
-        const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
         if (alea_contains_point(sys, prev_cell->root_node_id, px, py, pz)) {
             *out_cell_id = prev_cell->mc_cell_id;
             *out_cell_idx = prev_cell_idx;
@@ -425,6 +451,7 @@ static void find_cell_after_crossing(alea_system_t* sys,
     }
 
     /* Tier 3: full lookup */
+full_lookup:
     if (!found) {
         double max_offset = crossed_dda ? DDA_SAMPLE_OFFSET : SURFACE_SAMPLE_OFFSET;
         double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), max_offset);
@@ -558,6 +585,96 @@ static void raycast_universe_surfaces(alea_system_t* sys,
         raycast_tree_primitives(sys, local_ray, cell->root_node_id,
                                 t_min, t_max, result);
     }
+}
+
+static void transform_ray_inverse(const alea_matrix_t* mat,
+                                  const alea_ray_t* ray,
+                                  alea_ray_t* local_ray) {
+    double ox = ray->ox;
+    double oy = ray->oy;
+    double oz = ray->oz;
+    alea_matrix_transform_point_inverse(mat, &ox, &oy, &oz);
+
+    double dx = mat->inv[0] * ray->dx + mat->inv[1] * ray->dy + mat->inv[2] * ray->dz;
+    double dy = mat->inv[4] * ray->dx + mat->inv[5] * ray->dy + mat->inv[6] * ray->dz;
+    double dz = mat->inv[8] * ray->dx + mat->inv[9] * ray->dy + mat->inv[10] * ray->dz;
+
+    if (alea_ray_init(local_ray, ox, oy, oz, dx, dy, dz) != 0) {
+        alea_ray_init_normalized(local_ray, ox, oy, oz, ray->dx, ray->dy, ray->dz);
+    }
+}
+
+static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
+                                                 const alea_ray_t* global_ray,
+                                                 int universe_id,
+                                                 const alea_matrix_t* accumulated,
+                                                 double t_min, double t_max,
+                                                 int depth,
+                                                 alea_raycast_result_t* result) {
+    if (!sys || !global_ray || !accumulated || !result)
+        return;
+    if (depth >= MAX_FILL_RAYCAST_DEPTH)
+        return;
+
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ)
+        return;
+
+    alea_ray_t parent_local_ray;
+    transform_ray_inverse(accumulated, global_ray, &parent_local_ray);
+
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
+        if (cell_idx >= alea_vec_count(&sys->cells))
+            continue;
+
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+        if (cell->fill_universe <= 0)
+            continue;
+
+        if (cell->root_node_id != ALEA_NODE_ID_INVALID &&
+            cell->root_node_id < alea_vec_count(&sys->nodes)) {
+            const alea_bbox_t* bbox = &sys->nodes.data[cell->root_node_id].bbox;
+            if (!ray_bbox_slab(&parent_local_ray, bbox, t_min, t_max))
+                continue;
+        }
+
+        alea_matrix_t fill_transform;
+        if (cell->fill_transform > 0) {
+            const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
+            if (!tr ||
+                !alea_matrix_from_mcnp(&fill_transform, tr->cosines,
+                                       tr->value_count, false)) {
+                continue;
+            }
+        } else {
+            alea_matrix_identity(&fill_transform);
+        }
+
+        alea_matrix_t fill_accumulated;
+        alea_matrix_multiply(&fill_accumulated, accumulated, &fill_transform);
+        if (!fill_accumulated.has_inverse && !alea_matrix_invert(&fill_accumulated))
+            continue;
+
+        alea_ray_t fill_local_ray;
+        transform_ray_inverse(&fill_accumulated, global_ray, &fill_local_ray);
+
+        raycast_universe_surfaces(sys, &fill_local_ray, cell->fill_universe,
+                                  t_min, t_max, result);
+        raycast_fill_universe_hits_recursive(sys, global_ray, cell->fill_universe,
+                                             &fill_accumulated, t_min, t_max,
+                                             depth + 1, result);
+    }
+}
+
+static void raycast_add_fill_hits(alea_system_t* sys,
+                                  const alea_ray_t* ray,
+                                  double t_min, double t_max,
+                                  alea_raycast_result_t* result) {
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+    raycast_fill_universe_hits_recursive(sys, ray, 0, &identity,
+                                         t_min, t_max, 0, result);
 }
 
 /* ray_bbox_slab_enter_exit in ray_bbox.h replaces ray_bbox_slab_enter_exit */
@@ -909,6 +1026,15 @@ static bool system_has_lattice_cells(const alea_system_t* sys) {
     return false;
 }
 
+static bool system_has_fill_cells(const alea_system_t* sys) {
+    if (!sys) return false;
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        if (sys->cells.data[i].fill_universe > 0)
+            return true;
+    }
+    return false;
+}
+
 static int dedup_sorted_hits(alea_raycast_result_t* result) {
     if (!result) return -1;
     sort_hits(result->hits.data, result->hits.count);
@@ -937,6 +1063,9 @@ static int raycast_global_pipeline(alea_system_t* sys,
                                    alea_raycast_result_t* result) {
     int rc = alea_raycast_surfaces(sys, ray, t_min, t_max, result);
     if (rc != 0) return rc;
+
+    if (system_has_fill_cells(sys))
+        raycast_add_fill_hits(sys, ray, t_min, t_max, result);
 
     if (include_lattice_hits)
         raycast_add_lattice_hits(sys, ray, t_min, t_max, result);
