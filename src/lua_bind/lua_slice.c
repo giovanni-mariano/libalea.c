@@ -425,7 +425,7 @@ static int l_find_label_positions(lua_State* L) {
     return 1;
 }
 
-/* alea.find_surface_label_positions(curves, x_min, x_max, y_min, y_max, w, h, margin) -> labels */
+/* alea.find_surface_label_positions(curves, x_min, x_max, y_min, y_max, w, h, margin[, boundary_ids]) -> labels */
 static int l_find_surface_label_positions(lua_State* L) {
     alea_lua_slice_curves_t* ud = check_curves(L, 1);
     if (!ud->ptr) return luaL_error(L, "curves freed");
@@ -437,10 +437,29 @@ static int l_find_surface_label_positions(lua_State* L) {
     int h = (int)luaL_checkinteger(L, 7);
     int margin = (int)luaL_optinteger(L, 8, 10);
 
+    int* boundary_ids = NULL;
+    if (!lua_isnoneornil(L, 9)) {
+        luaL_checktype(L, 9, LUA_TTABLE);
+        size_t n = (size_t)w * (size_t)h;
+        boundary_ids = malloc(n * sizeof(int));
+        if (!boundary_ids) return luaL_error(L, "find_surface_label_positions: out of memory");
+        for (size_t i = 0; i < n; i++) {
+            lua_rawgeti(L, 9, (lua_Integer)i + 1);
+            boundary_ids[i] = (int)luaL_checkinteger(L, -1);
+            lua_pop(L, 1);
+        }
+    }
+
     alea_label_position_t* labels = NULL;
     int count = 0;
-    int rc = alea_find_surface_label_positions(ud->ptr, x_min, x_max, y_min, y_max,
-                                                w, h, margin, &labels, &count);
+    int rc = boundary_ids
+        ? alea_find_surface_label_positions_on_boundaries(
+              ud->ptr, boundary_ids, x_min, x_max, y_min, y_max,
+              w, h, margin, &labels, &count)
+        : alea_find_surface_label_positions(
+              ud->ptr, x_min, x_max, y_min, y_max,
+              w, h, margin, &labels, &count);
+    free(boundary_ids);
     if (rc != 0)
         return luaL_error(L, "find_surface_label_positions failed");
 

@@ -303,6 +303,35 @@ int alea_find_surface_label_positions(
     int* out_count
 );
 
+/**
+ * @brief Find surface label positions only where contours are drawn
+ *
+ * Like alea_find_surface_label_positions(), but filters candidate positions
+ * against the same cell/material ID grid used for contour drawing. Pass
+ * cell_ids for cell contours or material_ids for material contours.
+ *
+ * @param curves       Slice curves from alea_get_slice_curves()
+ * @param boundary_ids Cell/material ID grid in math order (width*height)
+ * @param x_min, x_max World coordinate bounds (for pixel conversion)
+ * @param y_min, y_max World coordinate bounds (for pixel conversion)
+ * @param width        Image width in pixels
+ * @param height       Image height in pixels
+ * @param margin       Margin from image edge (labels within margin are skipped)
+ * @param out_labels   Output array of label positions (caller frees with free())
+ * @param out_count    Number of labels returned
+ * @return 0 on success, -1 on error
+ */
+int alea_find_surface_label_positions_on_boundaries(
+    const alea_slice_curves_t* curves,
+    const int* boundary_ids,
+    double x_min, double x_max,
+    double y_min, double y_max,
+    int width, int height,
+    int margin,
+    alea_label_position_t** out_labels,
+    int* out_count
+);
+
 /* ============================================================================
  * ANALYTICAL CURVE API
  * ============================================================================ */

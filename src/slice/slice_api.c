@@ -1510,8 +1510,117 @@ static double estimate_curve_length(const alea_curve_t* curve,
     return 1e6;
 }
 
-int alea_find_surface_label_positions(
+static int contour_drawn_at_grid_pixel(const int* boundary_ids,
+                                       int width, int height,
+                                       int ix, int iy) {
+    if (!boundary_ids || ix < 0 || ix >= width || iy < 0 || iy >= height) {
+        return 0;
+    }
+
+    int idx = iy * width + ix;
+    int id = boundary_ids[idx];
+
+    if (ix + 1 < width && boundary_ids[idx + 1] != id) return 1;
+    if (iy > 0 && boundary_ids[(iy - 1) * width + ix] != id) return 1;
+    return 0;
+}
+
+static int point_has_drawn_contour_nearby(const int* boundary_ids,
+                                          int width, int height,
+                                          int ix, int iy) {
+    if (!boundary_ids) return 1;
+
+    /* Match draw_contours_ex(), with a one-pixel tolerance because a curve
+     * point may quantize to either side of the grid edge where the contour is
+     * actually rasterized. */
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (contour_drawn_at_grid_pixel(boundary_ids, width, height,
+                                            ix + dx, iy + dy)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void surface_label_param_range(const alea_curve_t* curve,
+                                      double* t_start,
+                                      double* t_end,
+                                      double* t_preferred) {
+    if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ELLIPSE) {
+        *t_start = 0.0;
+        *t_end = 2.0 * M_PI;
+        *t_preferred = M_PI / 4.0;
+    } else if (curve->t_min == curve->t_max) {
+        *t_start = 0.0;
+        *t_end = 0.0;
+        *t_preferred = 0.0;
+    } else {
+        *t_start = curve->t_min;
+        *t_end = curve->t_max;
+        *t_preferred = (curve->t_min + curve->t_max) / 2.0;
+    }
+}
+
+static int surface_label_candidate(const alea_curve_t* curve,
+                                   const int* boundary_ids,
+                                   double x_min, double y_min,
+                                   double dx, double dy,
+                                   int width, int height,
+                                   int margin,
+                                   int* out_ix, int* out_iy) {
+    double t_start, t_end, t_preferred;
+    surface_label_param_range(curve, &t_start, &t_end, &t_preferred);
+
+    int samples = boundary_ids ? 32 : 0;
+    double best_score = 1e30;
+    int found = 0;
+
+    for (int s = 0; s <= samples; s++) {
+        double t;
+        if (samples == 0) {
+            t = t_preferred;
+        } else {
+            t = t_start + (t_end - t_start) * (double)s / (double)samples;
+        }
+
+        double px, py;
+        if (eval_curve_at_t(curve, t, &px, &py) != 0) continue;
+
+        int ix = (int)((px - x_min) / dx);
+        int iy = (int)((py - y_min) / dy);
+
+        if (ix < margin || ix >= width - margin ||
+            iy < margin || iy >= height - margin) {
+            continue;
+        }
+
+        if (!point_has_drawn_contour_nearby(boundary_ids, width, height, ix, iy)) {
+            continue;
+        }
+
+        double score = fabs(t - t_preferred);
+        if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ELLIPSE) {
+            double period = 2.0 * M_PI;
+            score = fmod(score, period);
+            if (score > period * 0.5) score = period - score;
+        }
+
+        if (!found || score < best_score) {
+            found = 1;
+            best_score = score;
+            *out_ix = ix;
+            *out_iy = iy;
+        }
+    }
+
+    return found;
+}
+
+int alea_find_surface_label_positions_on_boundaries(
     const alea_slice_curves_t* curves,
+    const int* boundary_ids,
     double x_min, double x_max,
     double y_min, double y_max,
     int width, int height,
@@ -1561,31 +1670,11 @@ int alea_find_surface_label_positions(
                                                   width, height);
         if (curve_len < MIN_CURVE_LENGTH) continue;
 
-        /* Compute position at curve midpoint */
-        double t_mid;
-        if (curve.type == ALEA_CURVE_CIRCLE) {
-            /* Full circle: pick angle π/4 (45°) for label position */
-            t_mid = M_PI / 4.0;
-        } else if (curve.type == ALEA_CURVE_ELLIPSE) {
-            /* Full ellipse: pick angle π/4 */
-            t_mid = M_PI / 4.0;
-        } else if (curve.t_min == curve.t_max) {
-            /* Degenerate bounds - use 0 */
-            t_mid = 0;
-        } else {
-            t_mid = (curve.t_min + curve.t_max) / 2.0;
-        }
-
-        double px, py;
-        if (eval_curve_at_t(&curve, t_mid, &px, &py) != 0) continue;
-
-        /* Convert to pixel coordinates */
-        int ix = (int)((px - x_min) / dx);
-        int iy = (int)((py - y_min) / dy);
-
-        /* Check margin */
-        if (ix < margin || ix >= width - margin ||
-            iy < margin || iy >= height - margin) {
+        int ix, iy;
+        if (!surface_label_candidate(&curve, boundary_ids,
+                                     x_min, y_min, dx, dy,
+                                     width, height, margin,
+                                     &ix, &iy)) {
             continue;
         }
 
@@ -1632,6 +1721,20 @@ int alea_find_surface_label_positions(
     *out_labels = labels;
     *out_count = temp_count;
     return 0;
+}
+
+int alea_find_surface_label_positions(
+    const alea_slice_curves_t* curves,
+    double x_min, double x_max,
+    double y_min, double y_max,
+    int width, int height,
+    int margin,
+    alea_label_position_t** out_labels,
+    int* out_count)
+{
+    return alea_find_surface_label_positions_on_boundaries(
+        curves, NULL, x_min, x_max, y_min, y_max,
+        width, height, margin, out_labels, out_count);
 }
 
 /* ============================================================================

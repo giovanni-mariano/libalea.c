@@ -1048,8 +1048,8 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         if (curves) {
             alea_label_position_t* surf_labels = NULL;
             int surf_count = 0;
-            if (alea_find_surface_label_positions(curves,
-                    p->u_min, p->u_max, p->v_min, p->v_max,
+            if (alea_find_surface_label_positions_on_boundaries(curves,
+                    boundary_ids, p->u_min, p->u_max, p->v_min, p->v_max,
                     p->width, p->height, 20,
                     &surf_labels, &surf_count) == 0 && surf_labels) {
                 for (int i = 0; i < surf_count; i++) {

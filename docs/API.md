@@ -1455,6 +1455,16 @@ int alea_find_surface_label_positions(const alea_slice_curves_t* curves,
 
 Find label positions for surface curves. Caller frees `*out_labels` with `free()`.
 
+```c
+int alea_find_surface_label_positions_on_boundaries(
+    const alea_slice_curves_t* curves, const int* boundary_ids,
+    double x_min, double x_max, double y_min, double y_max,
+    int width, int height, int margin,
+    alea_label_position_t** out_labels, int* out_count);
+```
+
+Boundary-aware variant. Pass the same `cell_ids` or `material_ids` grid used for contour drawing so labels are only placed on drawn contours.
+
 ### Error Checking
 
 #### alea_check_slice_errors

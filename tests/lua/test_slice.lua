@@ -73,5 +73,41 @@ end
 local slabels = alea.find_surface_label_positions(curves, -10, 10, -10, 10, 8, 8, 0)
 assert(type(slabels) == "table", "surface labels should be a table")
 
+-- Boundary-aware surface labels should follow the chosen contour ID grid.
+local sys2 = alea.create()
+local bs1 = sys2:sphere(1, 0, 0, 0, 3)
+local bs2 = sys2:sphere(2, 0, 0, 0, 6)
+local bm1 = sys2:material(1)
+local bm2 = sys2:material(2)
+sys2:cell{id = 1, region = sys2:inside(bs1), material = bm1, density = 1.0}
+sys2:cell{id = 2, region = sys2:outside(bs1) * sys2:inside(bs2), material = bm1, density = 1.0}
+sys2:cell{id = 3, region = sys2:outside(bs2), material = bm2, density = 1.0}
+sys2:build_universe_index()
+
+local bview = alea.slice_view_axis(2, 0.0, -8, 8, -8, 8)
+local bgrid = sys2:find_cells_grid(bview, 64, 64)
+local bcurves = sys2:get_slice_curves(bview)
+
+local cell_surface_labels = alea.find_surface_label_positions(
+    bcurves, -8, 8, -8, 8, 64, 64, 2, bgrid.cell_ids)
+local material_surface_labels = alea.find_surface_label_positions(
+    bcurves, -8, 8, -8, 8, 64, 64, 2, bgrid.material_ids)
+
+local cell_has_s1 = false
+local material_has_s1 = false
+local material_has_s2 = false
+for _, lbl in ipairs(cell_surface_labels) do
+    if lbl.id == 1 then cell_has_s1 = true end
+end
+for _, lbl in ipairs(material_surface_labels) do
+    if lbl.id == 1 then material_has_s1 = true end
+    if lbl.id == 2 then material_has_s2 = true end
+end
+assert(cell_has_s1, "cell contours should label the inner cell boundary")
+assert(not material_has_s1, "material contours should not label same-material cell boundary")
+assert(material_has_s2, "material contours should label material boundary")
+
+sys2:destroy()
+
 sys:destroy()
 print("test_slice: OK")
