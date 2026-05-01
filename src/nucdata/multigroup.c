@@ -580,7 +580,7 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
                 break;
             }
         }
-        watt_found:
+        watt_found: ;
 
         double chi_sum = 0.0;
         for (int g = 0; g < G; g++) {
