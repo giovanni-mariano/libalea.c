@@ -980,6 +980,20 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
 
 int alea_surface_find(const alea_system_t* sys, int surface_id);
 
+/**
+ * @brief Get the surface ID at index `idx` in [0, alea_surface_count(sys)).
+ * @return The surface ID, or -1 if `sys` is NULL or `idx` is out of range.
+ */
+int alea_surface_id_at(const alea_system_t* sys, size_t idx);
+
+/**
+ * @brief Fill `out_ids` with all surface IDs in the system (storage order).
+ *
+ * Caller provides a buffer of at least `alea_surface_count(sys)` ints.
+ * @return The number of IDs written, or 0 if `sys` or `out_ids` is NULL.
+ */
+size_t alea_get_surface_ids(const alea_system_t* sys, int* out_ids);
+
 /* ============================================================================
  * UNIVERSE INFO
  * ============================================================================ */

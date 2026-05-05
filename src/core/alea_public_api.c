@@ -1696,6 +1696,21 @@ int alea_surface_find(const alea_system_t* sys, int surface_id) {
     return -1;
 }
 
+int alea_surface_id_at(const alea_system_t* sys, size_t idx) {
+    if (!sys) return -1;
+    if (idx >= alea_vec_count(&sys->surfaces)) return -1;
+    return sys->surfaces.data[idx].mc_surface_id;
+}
+
+size_t alea_get_surface_ids(const alea_system_t* sys, int* out_ids) {
+    if (!sys || !out_ids) return 0;
+    size_t n = alea_vec_count(&sys->surfaces);
+    for (size_t i = 0; i < n; i++) {
+        out_ids[i] = sys->surfaces.data[i].mc_surface_id;
+    }
+    return n;
+}
+
 /* ============================================================================
  * UNIVERSE INFO
  * ============================================================================ */
