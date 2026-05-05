@@ -463,6 +463,7 @@ full_lookup:
 }
 
 int alea_raycast_to_segments(alea_system_t* sys,
+                            double t_max,
                             alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
 
@@ -472,10 +473,12 @@ int alea_raycast_to_segments(alea_system_t* sys,
     double t_prev = 0;
     int prev_cell_id = -2;  /* Use -2 as "no previous" since -1 is valid (void) */
     int prev_cell_idx = -1; /* Track cell index for neighbor lookup */
+    double t_terminus = (t_max > 0) ? t_max : DBL_MAX;
 
     /* Process intervals between hits */
     for (size_t i = 0; i <= result->hits.count; i++) {
-        double t_curr = (i < result->hits.count) ? result->hits.data[i].t : DBL_MAX;
+        double t_curr = (i < result->hits.count) ? result->hits.data[i].t : t_terminus;
+        if (t_curr > t_terminus) t_curr = t_terminus;
 
         /* Only process if there's a real interval */
         if (t_curr > t_prev + RAY_EPSILON) {
@@ -1071,7 +1074,7 @@ static int raycast_global_pipeline(alea_system_t* sys,
         raycast_add_lattice_hits(sys, ray, t_min, t_max, result);
 
     dedup_sorted_hits(result);
-    return alea_raycast_to_segments(sys, result);
+    return alea_raycast_to_segments(sys, t_max, result);
 }
 
 /* ============================================================================
@@ -1438,6 +1441,10 @@ int alea_raycast_cell_aware(alea_system_t* sys,
         if (t_next <= t_current + RAY_EPSILON) {
             t_next = t_current * (1.0 + 1e-6) + RAY_EPSILON;
         }
+
+        /* raycast_cell_surfaces returns DBL_MAX when no hit lies before t_max;
+         * clamp so the terminal segment stops at the user's max_distance. */
+        if (t_next > effective_t_max) t_next = effective_t_max;
 
         /* Add or extend segment */
         if (cell_idx == prev_cell_idx && result->segments.count > 0) {

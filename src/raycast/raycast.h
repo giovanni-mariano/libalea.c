@@ -150,6 +150,7 @@ int alea_raycast_surfaces_nocache(alea_system_t* sys,
  * @return 0 on success, -1 on error
  */
 int alea_raycast_to_segments(alea_system_t* sys,
+                            double t_max,
                             alea_raycast_result_t* result);
 
 /**

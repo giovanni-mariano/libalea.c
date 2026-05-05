@@ -315,4 +315,42 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     alea_destroy(sys);
 }
 
+/* Regression: terminal segment must clamp t_exit to max_distance when the
+ * ray's endpoint lies inside a cell. Previously t_exit was DBL_MAX (or the
+ * geometric exit beyond max_distance). */
+TEST(raycast_clamps_terminal_segment_to_t_max) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int surf_idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    alea_node_id_t sphere = alea_surface_at(sys, surf_idx)->neg_node;
+    int m1 = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    /* Endpoint (t=10) is at the sphere center, well inside the cell.
+     * Geometric exit at t=15 lies past max_distance=10. */
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+
+    ASSERT_EQ(alea_raycast(sys, -10, 0, 0, 1, 0, 0, 10.0, &result), 0);
+    ASSERT(result.segments.count >= 2);
+    const alea_ray_segment_t* last = &result.segments.data[result.segments.count - 1];
+    ASSERT_EQ(last->cell_id, 1);
+    ASSERT_NEAR(last->t_enter, 5.0, EPS);
+    ASSERT_NEAR(last->t_exit, 10.0, EPS);
+
+    /* Same expectation for cell-aware path. */
+    alea_raycast_result_clear(&result);
+    ASSERT_EQ(alea_raycast_cell_aware(sys, -10, 0, 0, 1, 0, 0, 10.0, &result), 0);
+    ASSERT(result.segments.count >= 2);
+    last = &result.segments.data[result.segments.count - 1];
+    ASSERT_EQ(last->cell_id, 1);
+    ASSERT_NEAR(last->t_enter, 5.0, EPS);
+    ASSERT_NEAR(last->t_exit, 10.0, EPS);
+
+    alea_raycast_result_free(&result);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

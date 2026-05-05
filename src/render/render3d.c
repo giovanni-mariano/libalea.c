@@ -543,7 +543,7 @@ static void render_pixel_solid(alea_system_t* sys,
 
         if (alea_raycast_surfaces_nocache(sys, &ray, 0, t_max, result) != 0)
             return;
-        if (alea_raycast_to_segments(sys, result) != 0)
+        if (alea_raycast_to_segments(sys, t_max, result) != 0)
             return;
     }
     /* Find first non-void segment in visible region (past clips) */
