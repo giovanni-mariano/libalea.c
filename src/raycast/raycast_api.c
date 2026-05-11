@@ -54,7 +54,8 @@ size_t alea_raycast_segment_count(const alea_raycast_result_t* result) {
 
 int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                                  double* t_enter, double* t_exit,
-                                 int* cell_id, int* material_id, double* density) {
+                                 int* cell_id, int* material_id, double* density,
+                                 int* enter_surface_id, int* exit_surface_id) {
     if (!result || index >= result->segments.count) return -1;
     alea_ray_segment_t* seg = &result->segments.data[index];
     if (t_enter) *t_enter = seg->t_enter;
@@ -62,6 +63,8 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
     if (cell_id) *cell_id = seg->cell_id;
     if (material_id) *material_id = seg->material_id;
     if (density) *density = seg->density;
+    if (enter_surface_id) *enter_surface_id = seg->enter_surface_id;
+    if (exit_surface_id) *exit_surface_id = seg->exit_surface_id;
     return 0;
 }
 

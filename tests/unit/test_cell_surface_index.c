@@ -262,8 +262,14 @@ static int test_raycast_cell_aware_basic(void) {
             // Entry should be around t=5, exit around t=15
             double t_enter = result.segments.data[i].t_enter;
             double t_exit = result.segments.data[i].t_exit;
+            int enter_surface_id = result.segments.data[i].enter_surface_id;
+            int exit_surface_id = result.segments.data[i].exit_surface_id;
             if (fabs(t_enter - 5.0) > 0.1 || fabs(t_exit - 15.0) > 0.1) {
                 printf("(t_enter=%.2f, t_exit=%.2f) ", t_enter, t_exit);
+                ok = 0;
+            }
+            if (enter_surface_id != 1 || exit_surface_id != 1) {
+                printf("(surfaces=%d->%d) ", enter_surface_id, exit_surface_id);
                 ok = 0;
             }
         }

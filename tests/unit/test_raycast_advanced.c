@@ -376,11 +376,14 @@ TEST(ray_public_api) {
 
     /* Check first segment through sphere */
     double t_enter, t_exit;
-    int cell_id, material_id;
+    int cell_id, material_id, enter_surface_id, exit_surface_id;
     double density;
     rc = alea_raycast_segment_get(result, 0, &t_enter, &t_exit,
-                                       &cell_id, &material_id, &density);
+                                       &cell_id, &material_id, &density,
+                                       &enter_surface_id, &exit_surface_id);
     ASSERT_EQ(rc, 0);
+    ASSERT_EQ(enter_surface_id, -1);
+    ASSERT_EQ(exit_surface_id, 1);
 
     alea_raycast_result_destroy(result);
     mcnp_model_destroy(model);

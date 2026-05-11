@@ -263,14 +263,16 @@ alea_raycast(sys, 0.0, 0.0, 0.0,   // origin
 size_t nseg = alea_raycast_segment_count(result);
 for (size_t i = 0; i < nseg; i++) {
     double t_enter, t_exit;
-    int cell_id, material_id;
+    int cell_id, material_id, enter_surface_id, exit_surface_id;
     double density;
     alea_raycast_segment_get(result, i,
-        &t_enter, &t_exit, &cell_id, &material_id, &density);
+        &t_enter, &t_exit, &cell_id, &material_id, &density,
+        &enter_surface_id, &exit_surface_id);
 
     double thickness = t_exit - t_enter;
-    printf("%8.2f - %8.2f cm: cell %d, mat %d, density %.3f (%.2f cm)\n",
-           t_enter, t_exit, cell_id, material_id, density, thickness);
+    printf("%8.2f - %8.2f cm: cell %d, mat %d, density %.3f, surfaces %d -> %d (%.2f cm)\n",
+           t_enter, t_exit, cell_id, material_id, density,
+           enter_surface_id, exit_surface_id, thickness);
 }
 
 alea_raycast_result_destroy(result);

@@ -37,6 +37,8 @@ typedef struct {
     int cell_id;
     int material_id;
     double density;
+    int enter_surface_id; /* Surface crossed at t_enter: -1 none, 0 synthetic, >0 physical */
+    int exit_surface_id;  /* Surface crossed at t_exit: -1 none, 0 synthetic, >0 physical */
     int enter_hit_index;  /* Index into hits[] for the surface at t_enter, or -1 */
 } alea_ray_segment_t;
 

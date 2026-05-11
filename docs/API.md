@@ -1284,10 +1284,11 @@ Get number of segments in a raycast result.
 ```c
 int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                              double* t_enter, double* t_exit,
-                             int* cell_id, int* material_id, double* density);
+                             int* cell_id, int* material_id, double* density,
+                             int* enter_surface_id, int* exit_surface_id);
 ```
 
-Get data for a segment. Any output pointer can be NULL.
+Get data for a segment. Any output pointer can be NULL. Surface IDs use `-1` for no boundary, `0` for synthetic lattice/DDA boundaries, and positive IDs for physical model surfaces.
 
 ### alea_raycast_path_length
 

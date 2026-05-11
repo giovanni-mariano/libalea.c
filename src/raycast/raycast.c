@@ -495,7 +495,14 @@ int alea_raycast_to_segments(alea_system_t* sys,
             /* Extend previous segment or start new one */
             if (cell_id == prev_cell_id && result->segments.count > 0) {
                 /* Extend */
-                result->segments.data[result->segments.count - 1].t_exit = t_curr;
+                alea_ray_segment_t* prev_seg =
+                    &result->segments.data[result->segments.count - 1];
+                prev_seg->t_exit = t_curr;
+                prev_seg->exit_surface_id =
+                    (i < result->hits.count &&
+                     result->hits.data[i].t <= t_terminus + RAY_EPSILON)
+                        ? result->hits.data[i].surface_id
+                        : -1;
             } else {
                 /* New segment */
                 alea_ray_segment_t seg;
@@ -504,6 +511,12 @@ int alea_raycast_to_segments(alea_system_t* sys,
                 seg.cell_id = cell_id;
                 seg.material_id = material_id;
                 seg.density = density;
+                seg.enter_surface_id = (i > 0) ? result->hits.data[i - 1].surface_id : -1;
+                seg.exit_surface_id =
+                    (i < result->hits.count &&
+                     result->hits.data[i].t <= t_terminus + RAY_EPSILON)
+                        ? result->hits.data[i].surface_id
+                        : -1;
                 seg.enter_hit_index = (i > 0) ? (int)(i - 1) : -1;
 
                 add_segment(result, &seg);
@@ -1449,7 +1462,10 @@ int alea_raycast_cell_aware(alea_system_t* sys,
         /* Add or extend segment */
         if (cell_idx == prev_cell_idx && result->segments.count > 0) {
             /* Extend previous segment */
-            result->segments.data[result->segments.count - 1].t_exit = t_next;
+            alea_ray_segment_t* prev_seg =
+                &result->segments.data[result->segments.count - 1];
+            prev_seg->t_exit = t_next;
+            prev_seg->exit_surface_id = hit_surface_id;
         } else {
             /* Create new segment */
             alea_ray_segment_t seg;
@@ -1458,6 +1474,8 @@ int alea_raycast_cell_aware(alea_system_t* sys,
             seg.cell_id = cell_id;
             seg.material_id = material_id;
             seg.density = density;
+            seg.enter_surface_id = prev_surface_id;
+            seg.exit_surface_id = hit_surface_id;
             seg.enter_hit_index = -1;  /* cell-aware path doesn't track hit indices */
             add_segment(result, &seg);
             prev_cell_idx = cell_idx;

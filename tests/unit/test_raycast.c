@@ -235,9 +235,9 @@ TEST(raycast_path_length) {
     alea_raycast_result_init(&result);
 
     /* Manually create some segments */
-    alea_ray_segment_t seg1 = {0, 5, 1, 1, -2.7, -1};
-    alea_ray_segment_t seg2 = {5, 10, 2, 2, -8.0, -1};
-    alea_ray_segment_t seg3 = {10, 15, 3, 1, -2.7, -1};
+    alea_ray_segment_t seg1 = {0, 5, 1, 1, -2.7, -1, -1, -1};
+    alea_ray_segment_t seg2 = {5, 10, 2, 2, -8.0, -1, -1, -1};
+    alea_ray_segment_t seg3 = {10, 15, 3, 1, -2.7, -1, -1, -1};
 
     result.segments.data = malloc(3 * sizeof(alea_ray_segment_t));
     ASSERT_NOT_NULL(result.segments.data);

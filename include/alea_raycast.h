@@ -94,11 +94,14 @@ size_t alea_raycast_segment_count(const alea_raycast_result_t* result);
  * @param cell_id Output: cell ID (-1 for void)
  * @param material_id Output: material ID
  * @param density Output: material density
+ * @param enter_surface_id Output: boundary crossed at t_enter (-1 none, 0 synthetic, >0 physical)
+ * @param exit_surface_id Output: boundary crossed at t_exit (-1 none, 0 synthetic, >0 physical)
  * @return 0 on success, -1 on invalid index
  */
 int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                                  double* t_enter, double* t_exit,
-                                 int* cell_id, int* material_id, double* density);
+                                 int* cell_id, int* material_id, double* density,
+                                 int* enter_surface_id, int* exit_surface_id);
 
 /**
  * @brief Calculate total path length through material

@@ -109,7 +109,7 @@ static int l_rayresult_segment_count(lua_State* L) {
     return 1;
 }
 
-/* result:segment(i) -> table {t_enter, t_exit, cell_id, material_id, density} */
+/* result:segment(i) -> table {t_enter, t_exit, cell_id, material_id, density, enter_surface_id, exit_surface_id} */
 static int l_rayresult_segment(lua_State* L) {
     alea_lua_raycast_result_t* ud = check_rayresult(L, 1);
     if (!ud->ptr) return luaL_error(L, "raycast result freed");
@@ -118,17 +118,20 @@ static int l_rayresult_segment(lua_State* L) {
     size_t idx = (size_t)(i - 1);
 
     double t_enter, t_exit, density;
-    int cell_id, material_id;
+    int cell_id, material_id, enter_surface_id, exit_surface_id;
     if (alea_raycast_segment_get(ud->ptr, idx, &t_enter, &t_exit,
-                                  &cell_id, &material_id, &density) != 0)
+                                  &cell_id, &material_id, &density,
+                                  &enter_surface_id, &exit_surface_id) != 0)
         return luaL_error(L, "segment: invalid index %d", i);
 
-    lua_createtable(L, 0, 5);
+    lua_createtable(L, 0, 7);
     lua_pushnumber(L, t_enter);     lua_setfield(L, -2, "t_enter");
     lua_pushnumber(L, t_exit);      lua_setfield(L, -2, "t_exit");
     lua_pushinteger(L, cell_id);    lua_setfield(L, -2, "cell_id");
     lua_pushinteger(L, material_id);lua_setfield(L, -2, "material_id");
     lua_pushnumber(L, density);     lua_setfield(L, -2, "density");
+    lua_pushinteger(L, enter_surface_id); lua_setfield(L, -2, "enter_surface_id");
+    lua_pushinteger(L, exit_surface_id);  lua_setfield(L, -2, "exit_surface_id");
     return 1;
 }
 
@@ -141,16 +144,19 @@ static int l_rayresult_segments(lua_State* L) {
     lua_createtable(L, (int)n, 0);
     for (size_t i = 0; i < n; i++) {
         double t_enter, t_exit, density;
-        int cell_id, material_id;
+        int cell_id, material_id, enter_surface_id, exit_surface_id;
         alea_raycast_segment_get(ud->ptr, i, &t_enter, &t_exit,
-                                  &cell_id, &material_id, &density);
+                                  &cell_id, &material_id, &density,
+                                  &enter_surface_id, &exit_surface_id);
 
-        lua_createtable(L, 0, 5);
+        lua_createtable(L, 0, 7);
         lua_pushnumber(L, t_enter);     lua_setfield(L, -2, "t_enter");
         lua_pushnumber(L, t_exit);      lua_setfield(L, -2, "t_exit");
         lua_pushinteger(L, cell_id);    lua_setfield(L, -2, "cell_id");
         lua_pushinteger(L, material_id);lua_setfield(L, -2, "material_id");
         lua_pushnumber(L, density);     lua_setfield(L, -2, "density");
+        lua_pushinteger(L, enter_surface_id); lua_setfield(L, -2, "enter_surface_id");
+        lua_pushinteger(L, exit_surface_id);  lua_setfield(L, -2, "exit_surface_id");
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
     return 1;

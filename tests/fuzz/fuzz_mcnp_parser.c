@@ -135,10 +135,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                 size_t nseg = alea_raycast_segment_count(result);
                 for (size_t j = 0; j < nseg && j < 8; j++) {
                     double t_enter, t_exit;
-                    int cell_id, mat_id;
+                    int cell_id, mat_id, enter_surface_id, exit_surface_id;
                     double density;
                     alea_raycast_segment_get(result, j, &t_enter, &t_exit,
-                                             &cell_id, &mat_id, &density);
+                                             &cell_id, &mat_id, &density,
+                                             &enter_surface_id, &exit_surface_id);
                 }
 
                 alea_raycast_path_length(result, -1);
