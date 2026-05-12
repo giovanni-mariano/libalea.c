@@ -786,6 +786,7 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
     idx->stats.memory_bytes += idx->transform_capacity * sizeof(*idx->transforms);
     idx->built = 1;
     sys->hier_spatial_index = idx;
+    atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_HIER_SPATIAL);
 
     double t_end = monotonic_seconds();
     ALEA_LOG_INFO("Hier spatial BLAS build: universes=%zu blas=%zu linear=%zu cells=%zu nodes=%zu memory=%.1f MiB time=%.3fs",

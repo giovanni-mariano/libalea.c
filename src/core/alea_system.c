@@ -232,12 +232,15 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
             alea_spatial_index_free(sys->spatial_index);
             sys->spatial_index = NULL;
         }
+        atomic_store(&sys->spatial_build_state, 0);
+        alea_spatial_reset_cache();
+    }
+
+    if (flags & ALEA_CACHE_HIER_SPATIAL) {
         if (sys->hier_spatial_index) {
             alea_hier_spatial_index_free(sys->hier_spatial_index);
             sys->hier_spatial_index = NULL;
         }
-        atomic_store(&sys->spatial_build_state, 0);
-        alea_spatial_reset_cache();
     }
 
     if (flags & ALEA_CACHE_SURFACE_BVH) {
@@ -262,6 +265,9 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys || flags == 0) return;
 
+    if (flags & ALEA_CACHE_SPATIAL)
+        flags |= ALEA_CACHE_HIER_SPATIAL;
+
     unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
     atomic_fetch_add(&sys->geometry_generation, 1);
 
@@ -284,6 +290,8 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
     if (flags == ALEA_CACHE_ALL)
         flags = ALEA_CACHE_UNIVERSE | ALEA_CACHE_RAYCAST;
     if (flags & ALEA_CACHE_SPATIAL)
+        flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
+    if (flags & ALEA_CACHE_HIER_SPATIAL)
         flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_ADJACENCY)
         flags |= ALEA_CACHE_CELL_SURFACES;
@@ -316,6 +324,12 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         !alea_system_query_cache_ready(sys, ALEA_CACHE_SPATIAL)) {
         if (alea_spatial_index_build(sys) != 0) goto fail;
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SPATIAL);
+    }
+
+    if ((flags & ALEA_CACHE_HIER_SPATIAL) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_HIER_SPATIAL)) {
+        if (alea_hier_spatial_index_build(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_HIER_SPATIAL);
     }
 
     if ((flags & ALEA_CACHE_SURFACE_BVH) &&

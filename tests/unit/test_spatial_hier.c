@@ -9,6 +9,7 @@
 #include "alea_mcnp.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
+#include "raycast/raycast.h"
 
 TEST(hier_spatial_builds_universe_blas_stats) {
     setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
@@ -149,6 +150,22 @@ static int spatial_hits_contain_cell(const alea_spatial_hit_t* hits,
         if (hits[i].cell_id == cell_id && (depth < 0 || hits[i].depth == depth)) return 1;
     }
     return 0;
+}
+
+static void assert_raycast_segments_match(const alea_raycast_result_t* flat,
+                                          const alea_raycast_result_t* hier) {
+    ASSERT_EQ(hier->segments.count, flat->segments.count);
+    for (size_t i = 0; i < flat->segments.count; i++) {
+        const alea_ray_segment_t* a = &flat->segments.data[i];
+        const alea_ray_segment_t* b = &hier->segments.data[i];
+        ASSERT_NEAR(b->t_enter, a->t_enter, 1e-9);
+        ASSERT_NEAR(b->t_exit, a->t_exit, 1e-9);
+        ASSERT_EQ(b->cell_id, a->cell_id);
+        ASSERT_EQ(b->material_id, a->material_id);
+        ASSERT_NEAR(b->density, a->density, 1e-12);
+        ASSERT_EQ(b->enter_surface_id, a->enter_surface_id);
+        ASSERT_EQ(b->exit_surface_id, a->exit_surface_id);
+    }
 }
 
 TEST(hier_spatial_point_query_matches_recursive_simple) {
@@ -354,6 +371,65 @@ TEST(hier_spatial_slice_query_resolves_lattice_terminals) {
     ASSERT(n > 0);
     ASSERT(spatial_hits_contain_cell(hits, n, 4, -1));
 
+    mcnp_model_destroy(model);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_raycast_matches_flat_root_universe) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(s >= 0);
+    const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+    ASSERT_NOT_NULL(surf);
+    int c = alea_add_cell(sys, 1, surf->neg_node, mat, 1.0, 0);
+    ASSERT(c >= 0);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_raycast_result_t flat;
+    alea_raycast_result_t hier;
+    alea_raycast_result_init(&flat);
+    alea_raycast_result_init(&hier);
+
+    ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           10.0, &flat), 0);
+    ASSERT_EQ(alea_raycast_hier(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                10.0, &hier), 0);
+
+    assert_raycast_segments_match(&flat, &hier);
+
+    alea_raycast_result_free(&flat);
+    alea_raycast_result_free(&hier);
+    alea_destroy(sys);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_raycast_does_not_build_flat_spatial_index) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    ASSERT_NULL(sys->spatial_index);
+
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    ASSERT_EQ(alea_raycast_hier(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                10.0, &result), 0);
+
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+    ASSERT(result.segments.count > 0);
+
+    alea_raycast_result_free(&result);
     mcnp_model_destroy(model);
     unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }

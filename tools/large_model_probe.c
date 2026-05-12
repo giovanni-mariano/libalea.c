@@ -7,6 +7,7 @@
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_universe.h"
+#include "raycast/raycast.h"
 #include "primitives/bbox.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -267,9 +268,48 @@ static int run_hier_slice_query(alea_system_t* sys,
     return 0;
 }
 
+static int run_hier_raycast(alea_system_t* sys,
+                            double ox, double oy, double oz,
+                            double dx, double dy, double dz,
+                            double t_max) {
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+
+    double t0 = now_seconds();
+    int rc = alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
+    double t1 = now_seconds();
+
+    if (rc != 0) {
+        alea_raycast_result_free(&result);
+        fprintf(stderr, "hierarchical raycast failed: %s\n", alea_error());
+        return -1;
+    }
+
+    printf("Hierarchical raycast probe:\n");
+    printf("  origin=(%.6g,%.6g,%.6g) dir=(%.6g,%.6g,%.6g) t_max=%.6g\n",
+           ox, oy, oz, dx, dy, dz, t_max);
+    printf("  hits=%zu segments=%zu surfaces_tested=%d time=%.3f s\n",
+           result.hits.count, result.segments.count, result.surfaces_tested,
+           t1 - t0);
+    if (result.segments.count > 0) {
+        const alea_ray_segment_t* first = &result.segments.data[0];
+        const alea_ray_segment_t* last =
+            &result.segments.data[result.segments.count - 1];
+        printf("  first_segment: t=[%.6g,%.6g] cell=%d material=%d\n",
+               first->t_enter, first->t_exit, first->cell_id,
+               first->material_id);
+        printf("  last_segment:  t=[%.6g,%.6g] cell=%d material=%d\n",
+               last->t_enter, last->t_exit, last->cell_id,
+               last->material_id);
+    }
+
+    alea_raycast_result_free(&result);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS] [--hier-raycast OX OY OZ DX DY DZ TMAX]\n", argv[0]);
         fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
         fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
@@ -282,6 +322,9 @@ int main(int argc, char** argv) {
     double slice_y_min = 0.0, slice_y_max = 0.0;
     size_t slice_max_hits = 0;
     int hier_build = 0;
+    int hier_raycast = 0;
+    double ray_ox = 0.0, ray_oy = 0.0, ray_oz = 0.0;
+    double ray_dx = 0.0, ray_dy = 0.0, ray_dz = 1.0, ray_t_max = 0.0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--queries") == 0 && i + 1 < argc) {
             queries = (size_t)strtoull(argv[++i], NULL, 10);
@@ -297,6 +340,15 @@ int main(int argc, char** argv) {
             slice_y_min = strtod(argv[++i], NULL);
             slice_y_max = strtod(argv[++i], NULL);
             slice_max_hits = (size_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--hier-raycast") == 0 && i + 7 < argc) {
+            hier_raycast = 1;
+            ray_ox = strtod(argv[++i], NULL);
+            ray_oy = strtod(argv[++i], NULL);
+            ray_oz = strtod(argv[++i], NULL);
+            ray_dx = strtod(argv[++i], NULL);
+            ray_dy = strtod(argv[++i], NULL);
+            ray_dz = strtod(argv[++i], NULL);
+            ray_t_max = strtod(argv[++i], NULL);
         }
     }
 
@@ -375,6 +427,15 @@ int main(int argc, char** argv) {
             return 1;
         }
         printf("  peak_rss_after_hier_slice=%ld KiB\n", peak_rss_kib());
+    }
+
+    if (hier_raycast) {
+        if (run_hier_raycast(sys, ray_ox, ray_oy, ray_oz,
+                             ray_dx, ray_dy, ray_dz, ray_t_max) != 0) {
+            mcnp_model_destroy(model);
+            return 1;
+        }
+        printf("  peak_rss_after_hier_raycast=%ld KiB\n", peak_rss_kib());
     }
 
     mcnp_model_destroy(model);

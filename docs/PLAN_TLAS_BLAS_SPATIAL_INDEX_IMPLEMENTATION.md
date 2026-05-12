@@ -279,12 +279,15 @@ region/slice work.
 
 Current status:
 
-- existing raycast behavior is still tied to the current ray traversal and
-  prepared-cache model
-- hierarchical build, point query, region query, and slice query do not by
-  themselves make raycast hierarchical
-- until this phase is complete, `hier` mode must not silently claim full raycast
-  support
+- flat raycast behavior remains unchanged and selectable
+- a separate internal `alea_raycast_hier()` path now prepares raycast caches
+  with `ALEA_CACHE_RAYCAST_HIER`, builds the hierarchical spatial index, and
+  does not build the flat `sys->spatial_index`
+- hierarchical raycast currently shares the existing surface-hit collection
+  pipeline, then classifies ray segments with hierarchical point lookup
+- this is memory-safe for the flat instance explosion problem, but not yet a
+  speed optimization for large models with many surface/fill hits
+- public/default raycast entry points are not yet switched to hierarchical mode
 
 Implementation notes:
 
@@ -301,21 +304,22 @@ Implementation notes:
 
 Tests:
 
-- raycast in a single root universe
+- raycast in a single root universe: done
 - raycast through a regular filled universe
 - raycast through a transformed fill
 - rectangular lattice raycast parity
 - hex lattice raycast parity
 - segment ordering and surface-crossing parity against existing raycast tests
-- no hidden flat spatial-index build in hierarchical raycast mode
+- no hidden flat spatial-index build in hierarchical raycast mode: done
 
 Exit criteria:
 
-- existing raycast tests pass in flat mode
+- existing raycast tests pass in flat mode: done
 - hierarchical raycast parity tests pass for root, fill, transformed fill, and
   lattice fixtures
 - E-lite can run at least one bounded/representative hierarchical raycast probe
-  without flat instance materialization
+  without flat instance materialization: done for
+  `--hier-raycast -1 0 0 1 0 0 2` with peak RSS about 3.59 GiB
 - unsupported edge cases fail clearly instead of falling back to flat expansion
 
 ### Phase 7: Public Spatial API Migration
