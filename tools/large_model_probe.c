@@ -232,9 +232,44 @@ static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
     }
 }
 
+static int run_hier_slice_query(alea_system_t* sys,
+                                double z,
+                                double x_min,
+                                double x_max,
+                                double y_min,
+                                double y_max,
+                                size_t max_hits) {
+    if (alea_hier_spatial_index_build(sys) != 0) {
+        fprintf(stderr, "hierarchical spatial build failed: %s\n", alea_error());
+        return -1;
+    }
+
+    alea_spatial_hit_t* hits = calloc(max_hits ? max_hits : 1, sizeof(*hits));
+    if (!hits) {
+        fprintf(stderr, "failed to allocate slice hit buffer\n");
+        return -1;
+    }
+
+    double t0 = now_seconds();
+    int n = alea_hier_spatial_query_slice_z(sys, z, x_min, x_max, y_min, y_max,
+                                            hits, max_hits);
+    double t1 = now_seconds();
+    free(hits);
+
+    if (n < 0) {
+        fprintf(stderr, "hierarchical slice query failed: %s\n", alea_error());
+        return -1;
+    }
+
+    printf("Hierarchical slice probe:\n");
+    printf("  z=%.6g x=[%.6g,%.6g] y=[%.6g,%.6g] max_hits=%zu hits=%d time=%.3f s\n",
+           z, x_min, x_max, y_min, y_max, max_hits, n, t1 - t0);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS]\n", argv[0]);
         fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
         fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
@@ -242,6 +277,10 @@ int main(int argc, char** argv) {
 
     size_t queries = 0;
     size_t hier_queries = 0;
+    int hier_slice = 0;
+    double slice_z = 0.0, slice_x_min = 0.0, slice_x_max = 0.0;
+    double slice_y_min = 0.0, slice_y_max = 0.0;
+    size_t slice_max_hits = 0;
     int hier_build = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--queries") == 0 && i + 1 < argc) {
@@ -250,6 +289,14 @@ int main(int argc, char** argv) {
             hier_build = 1;
         } else if (strcmp(argv[i], "--hier-queries") == 0 && i + 1 < argc) {
             hier_queries = (size_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--hier-slice") == 0 && i + 6 < argc) {
+            hier_slice = 1;
+            slice_z = strtod(argv[++i], NULL);
+            slice_x_min = strtod(argv[++i], NULL);
+            slice_x_max = strtod(argv[++i], NULL);
+            slice_y_min = strtod(argv[++i], NULL);
+            slice_y_max = strtod(argv[++i], NULL);
+            slice_max_hits = (size_t)strtoull(argv[++i], NULL, 10);
         }
     }
 
@@ -319,6 +366,15 @@ int main(int argc, char** argv) {
     if (hier_queries > 0) {
         run_hier_center_queries(sys, hier_queries);
         printf("  peak_rss_after_hier_queries=%ld KiB\n", peak_rss_kib());
+    }
+
+    if (hier_slice) {
+        if (run_hier_slice_query(sys, slice_z, slice_x_min, slice_x_max,
+                                 slice_y_min, slice_y_max, slice_max_hits) != 0) {
+            mcnp_model_destroy(model);
+            return 1;
+        }
+        printf("  peak_rss_after_hier_slice=%ld KiB\n", peak_rss_kib());
     }
 
     mcnp_model_destroy(model);

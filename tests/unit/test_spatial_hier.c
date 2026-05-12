@@ -146,7 +146,7 @@ static int spatial_hits_contain_cell(const alea_spatial_hit_t* hits,
                                      int cell_id,
                                      int depth) {
     for (int i = 0; i < count; i++) {
-        if (hits[i].cell_id == cell_id && hits[i].depth == depth) return 1;
+        if (hits[i].cell_id == cell_id && (depth < 0 || hits[i].depth == depth)) return 1;
     }
     return 0;
 }
@@ -331,6 +331,30 @@ TEST(hier_spatial_slice_query_matches_flat_fill) {
     ASSERT(spatial_hits_contain_cell(hier, nh, 2, 1));
 
     alea_destroy(sys);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_slice_query_resolves_lattice_terminals) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_spatial_hit_t hits[32];
+    int n = alea_hier_spatial_query_slice_z(sys, 0.0, -0.75, 0.75, -0.75, 0.75,
+                                            hits, 32);
+    ASSERT(n > 0);
+    ASSERT(spatial_hits_contain_cell(hits, n, 2, -1));
+
+    n = alea_hier_spatial_query_slice_z(sys, 0.0, 1.25, 2.75, -0.75, 0.75,
+                                        hits, 32);
+    ASSERT(n > 0);
+    ASSERT(spatial_hits_contain_cell(hits, n, 4, -1));
+
+    mcnp_model_destroy(model);
     unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
