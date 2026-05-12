@@ -869,8 +869,9 @@ int alea_normalize_mcnp_transform_values(const double* data, int value_count,
     return 0;
 }
 
-static bool validate_transform_values(const char* caller, const double* data,
-                                      int value_count, int degrees) {
+static bool validate_transform_values(const char* caller, const char* context,
+                                      const double* data, int value_count,
+                                      int degrees) {
     if (value_count < 1 || value_count > 12 ||
         (value_count > 3 && value_count != 12)) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
@@ -927,8 +928,13 @@ static bool validate_transform_values(const char* caller, const double* data,
     }
 
     if (det < 0.0) {
-        ALEA_LOG_WARN("%s: transform rotation has negative determinant %.12g",
-                      caller, det);
+        if (context && context[0] != '\0') {
+            ALEA_LOG_WARN("%s: transform rotation for %s has negative determinant %.12g",
+                          caller, context, det);
+        } else {
+            ALEA_LOG_WARN("%s: transform rotation has negative determinant %.12g",
+                          caller, det);
+        }
     }
 
     return true;
@@ -946,7 +952,9 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
                                              normalized, &normalized_count) != 0) {
         return -1;
     }
-    if (!validate_transform_values("alea_add_transform", normalized,
+    char context[32];
+    snprintf(context, sizeof(context), "TR%d", transform_id);
+    if (!validate_transform_values("alea_add_transform", context, normalized,
                                    normalized_count, 0)) {
         return -1;
     }
@@ -987,7 +995,8 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
 }
 
 int alea_add_inline_transform(alea_system_t* sys, const double* data,
-                             int value_count, int degrees) {
+                             int value_count, int degrees,
+                             int cell_id, const char* role) {
     if (!sys || !data) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "alea_add_inline_transform: NULL argument");
         return -1;
@@ -998,7 +1007,16 @@ int alea_add_inline_transform(alea_system_t* sys, const double* data,
                                              normalized, &normalized_count) != 0) {
         return -1;
     }
-    if (!validate_transform_values("alea_add_inline_transform", normalized,
+    char context[64];
+    const char* context_ptr = NULL;
+    if (cell_id != 0 && role && role[0] != '\0') {
+        snprintf(context, sizeof(context), "cell %d inline %s", cell_id, role);
+        context_ptr = context;
+    } else if (cell_id != 0) {
+        snprintf(context, sizeof(context), "cell %d inline transform", cell_id);
+        context_ptr = context;
+    }
+    if (!validate_transform_values("alea_add_inline_transform", context_ptr, normalized,
                                    normalized_count, 0)) {
         return -1;
     }

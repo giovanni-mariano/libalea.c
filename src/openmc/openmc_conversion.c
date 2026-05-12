@@ -411,7 +411,8 @@ static int convert_cell(alea_system_t* sys,
             double trans[3] = {0};
             if (openmc_parse_doubles(translation, trans, 3) >= 3) {
                 /* Create an inline transform */
-                int tr_id = alea_add_inline_transform(sys, trans, 3, 0);
+                int tr_id = alea_add_inline_transform(sys, trans, 3, 0,
+                                                      id, "fill");
                 if (tr_id > 0) {
                     fill_transform = tr_id;
                 }

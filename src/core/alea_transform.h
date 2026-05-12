@@ -69,10 +69,13 @@ int alea_add_transform(alea_system_t* sys, int transform_id,
  * @param data Transform data (3 or 12 values)
  * @param value_count Number of values (3 for translation, 12 for full)
  * @param degrees 1 if angles in degrees (*FILL), 0 for direction cosines
+ * @param cell_id Source cell ID for diagnostics, or 0 if not applicable
+ * @param role Source role for diagnostics (e.g. "FILL" or "TRCL"), or NULL
  * @return Assigned transform ID, or -1 on error
  */
 int alea_add_inline_transform(alea_system_t* sys, const double* data,
-                             int value_count, int degrees);
+                             int value_count, int degrees,
+                             int cell_id, const char* role);
 
 /**
  * @brief Normalize MCNP transform values to internal x_main = R*x_aux + T form.

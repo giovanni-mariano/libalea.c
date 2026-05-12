@@ -706,7 +706,9 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             sys,
             params.fill_transform_data,
             params.fill_transform_count,
-            params.fill_transform_degrees
+            params.fill_transform_degrees,
+            cell->cell_id,
+            "FILL"
         );
         if (tr_id > 0) {
             entry->fill_transform = tr_id;
@@ -770,7 +772,8 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             mp->has_trcl = params.has_trcl;
             if (params.trcl_inline && params.trcl_count > 0) {
                 int trcl_id = alea_add_inline_transform(
-                    sys, params.trcl_data, params.trcl_count, params.trcl_degrees);
+                    sys, params.trcl_data, params.trcl_count,
+                    params.trcl_degrees, cell->cell_id, "TRCL");
                 if (trcl_id > 0) {
                     mp->trcl = trcl_id;
                 } else {

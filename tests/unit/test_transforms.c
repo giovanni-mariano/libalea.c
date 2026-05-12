@@ -183,7 +183,8 @@ static void transform_warn_callback(alea_log_level_t level, const char* file,
     (void)line;
     int* warning_count = (int*)user_data;
     if (level == ALEA_LOG_LEVEL_WARN &&
-        strstr(message, "negative determinant") != NULL) {
+        strstr(message, "negative determinant") != NULL &&
+        strstr(message, "TR1") != NULL) {
         (*warning_count)++;
     }
 }
@@ -204,6 +205,41 @@ TEST(transform_negative_determinant_warns) {
     };
     ASSERT_EQ(alea_add_transform(sys, 1, data, 12, 0), 0);
     ASSERT_NOT_NULL(alea_get_transform(sys, 1));
+    ASSERT_EQ(warning_count, 1);
+
+    alea_log_set_callback(NULL, NULL);
+    alea_destroy(sys);
+}
+
+static void transform_inline_warn_callback(alea_log_level_t level, const char* file,
+                                           int line, const char* message,
+                                           void* user_data) {
+    (void)file;
+    (void)line;
+    int* warning_count = (int*)user_data;
+    if (level == ALEA_LOG_LEVEL_WARN &&
+        strstr(message, "negative determinant") != NULL &&
+        strstr(message, "cell 42 inline FILL") != NULL) {
+        (*warning_count)++;
+    }
+}
+
+TEST(transform_inline_negative_determinant_warns_with_cell_context) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int warning_count = 0;
+    alea_log_set_level(ALEA_LOG_LEVEL_WARN);
+    alea_log_set_callback(transform_inline_warn_callback, &warning_count);
+
+    double data[12] = {
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, -1
+    };
+    int id = alea_add_inline_transform(sys, data, 12, 0, 42, "FILL");
+    ASSERT(id > 0);
     ASSERT_EQ(warning_count, 1);
 
     alea_log_set_callback(NULL, NULL);
@@ -316,7 +352,7 @@ TEST(transform_inline) {
     ASSERT_NOT_NULL(sys);
 
     double tr_data[3] = {5, 10, 15};
-    int id = alea_add_inline_transform(sys, tr_data, 3, 0);
+    int id = alea_add_inline_transform(sys, tr_data, 3, 0, 0, NULL);
     ASSERT(id > 0);
 
     const alea_transform_t* tr = alea_get_transform(sys, id);
@@ -421,7 +457,7 @@ TEST(transform_rejects_partial_rotation) {
     ASSERT_NOT_NULL(sys);
 
     double data[4] = {1, 2, 3, 4};
-    ASSERT_EQ(alea_add_inline_transform(sys, data, 4, 0), -1);
+    ASSERT_EQ(alea_add_inline_transform(sys, data, 4, 0, 0, NULL), -1);
     ASSERT_NOT_NULL(strstr(alea_error(), "rotation entries"));
 
     alea_destroy(sys);
