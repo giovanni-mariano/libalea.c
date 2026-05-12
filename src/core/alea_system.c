@@ -913,7 +913,7 @@ static bool validate_transform_values(const char* caller, const double* data,
     double det = c0[0]*(c1[1]*c2[2] - c1[2]*c2[1])
                - c1[0]*(c0[1]*c2[2] - c0[2]*c2[1])
                + c2[0]*(c0[1]*c1[2] - c0[2]*c1[1]);
-    const double tol = 1e-8;
+    const double tol = 1e-5;
 
     if (fabs(n0 - 1.0) > tol || fabs(n1 - 1.0) > tol ||
         fabs(n2 - 1.0) > tol || fabs(d01) > tol ||
@@ -924,6 +924,11 @@ static bool validate_transform_values(const char* caller, const double* data,
                 "(norms %.12g %.12g %.12g, dots %.12g %.12g %.12g, det %.12g)",
                 caller, n0, n1, n2, d01, d02, d12, det);
         return false;
+    }
+
+    if (det < 0.0) {
+        ALEA_LOG_WARN("%s: transform rotation has negative determinant %.12g",
+                      caller, det);
     }
 
     return true;

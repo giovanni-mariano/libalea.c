@@ -11,6 +11,7 @@
 #include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_transform.h"
+#include "util/alea_log.h"
 #include <string.h>
 #include <math.h>
 
@@ -147,6 +148,65 @@ TEST(transform_degrees_vs_cos) {
     ASSERT_NEAR(y1, y2, 1e-10);
     ASSERT_NEAR(z1, z2, 1e-10);
 
+    alea_destroy(sys);
+}
+
+TEST(transform_accepts_rounded_direction_cosines) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    /* Six-digit direction cosines from deck text should not be rejected. */
+    double data[12] = {
+        0, 0, 0,
+        0.866025, 0.5, 0,
+        -0.5, 0.866025, 0,
+        0, 0, 1
+    };
+    ASSERT_EQ(alea_add_transform(sys, 1, data, 12, 0), 0);
+
+    const alea_transform_t* tr = alea_get_transform(sys, 1);
+    ASSERT_NOT_NULL(tr);
+
+    double x = 1, y = 0, z = 0;
+    alea_transform_point(tr, &x, &y, &z);
+    ASSERT_NEAR(x, 0.866025, 1e-6);
+    ASSERT_NEAR(y, 0.5, 1e-6);
+    ASSERT_NEAR(z, 0.0, 1e-10);
+
+    alea_destroy(sys);
+}
+
+static void transform_warn_callback(alea_log_level_t level, const char* file,
+                                    int line, const char* message,
+                                    void* user_data) {
+    (void)file;
+    (void)line;
+    int* warning_count = (int*)user_data;
+    if (level == ALEA_LOG_LEVEL_WARN &&
+        strstr(message, "negative determinant") != NULL) {
+        (*warning_count)++;
+    }
+}
+
+TEST(transform_negative_determinant_warns) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int warning_count = 0;
+    alea_log_set_level(ALEA_LOG_LEVEL_WARN);
+    alea_log_set_callback(transform_warn_callback, &warning_count);
+
+    double data[12] = {
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, -1
+    };
+    ASSERT_EQ(alea_add_transform(sys, 1, data, 12, 0), 0);
+    ASSERT_NOT_NULL(alea_get_transform(sys, 1));
+    ASSERT_EQ(warning_count, 1);
+
+    alea_log_set_callback(NULL, NULL);
     alea_destroy(sys);
 }
 
