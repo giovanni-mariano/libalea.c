@@ -248,9 +248,9 @@ Exit criteria:
 - query diagnostics show candidate and exact-test counts
 - flat path remains selectable
 
-### Phase 5: Region, Slice, And Ray-Style Queries
+### Phase 5: Region And Slice Queries
 
-Port region/slice/raycast-style users only after point-query parity is stable.
+Port region and slice users only after point-query parity is stable.
 
 Implementation notes:
 
@@ -269,10 +269,56 @@ Tests:
 
 Exit criteria:
 
-- existing slice/render/raycast tests pass
+- existing slice/render tests pass
 - no hierarchical query path depends on a hidden flat global instance array
 
-### Phase 6: Public Spatial API Migration
+### Phase 6: Raycast Migration
+
+Raycast must be migrated explicitly. Do not assume it is covered by the
+region/slice work.
+
+Current status:
+
+- existing raycast behavior is still tied to the current ray traversal and
+  prepared-cache model
+- hierarchical build, point query, region query, and slice query do not by
+  themselves make raycast hierarchical
+- until this phase is complete, `hier` mode must not silently claim full raycast
+  support
+
+Implementation notes:
+
+- traverse rays through hierarchical placements instead of through flat global
+  instances
+- maintain a ray-local transform stack so each placement can be intersected in
+  its local coordinates
+- reuse per-universe BLAS for candidate cell pruning where possible
+- preserve current segment ordering and boundary-crossing semantics
+- descend through regular fill cells by composing placement transforms
+- handle lattice cells by stepping or resolving only the lattice elements
+  intersected by the ray; do not expand all lattice elements
+- keep the existing flat raycast path selectable until parity is proven
+
+Tests:
+
+- raycast in a single root universe
+- raycast through a regular filled universe
+- raycast through a transformed fill
+- rectangular lattice raycast parity
+- hex lattice raycast parity
+- segment ordering and surface-crossing parity against existing raycast tests
+- no hidden flat spatial-index build in hierarchical raycast mode
+
+Exit criteria:
+
+- existing raycast tests pass in flat mode
+- hierarchical raycast parity tests pass for root, fill, transformed fill, and
+  lattice fixtures
+- E-lite can run at least one bounded/representative hierarchical raycast probe
+  without flat instance materialization
+- unsupported edge cases fail clearly instead of falling back to flat expansion
+
+### Phase 7: Public Spatial API Migration
 
 Switch public spatial-index construction to mode-aware behavior.
 
@@ -281,12 +327,14 @@ Proposed behavior:
 - `flat`: existing implementation
 - `hier`: hierarchical implementation, fail explicitly if an unsupported API is
   called
-- `auto`: choose hierarchical when flat collection is estimated to be too large
+- `auto`: choose hierarchical when flat collection is estimated to be too large,
+  but route APIs that are not yet hierarchical-safe to flat mode or fail clearly
 
 Audit APIs that currently assume flat instances:
 
 - `alea_spatial_index_instance_count()`
 - `alea_estimate_instance_volumes()`
+- raycast entry points, until Phase 6 is complete
 - any Lua or example code that expects stable flat instance ids
 
 Do not fake flat instance counts by rematerializing the hierarchy. If a caller
@@ -299,7 +347,7 @@ Exit criteria:
 - E-lite can use hierarchical behavior
 - unsupported flat-only APIs fail clearly in hierarchical mode
 
-### Phase 7: E-lite Validation
+### Phase 8: E-lite Validation
 
 Use `E-lite_R250630.mcnp` as the acceptance model.
 
@@ -311,6 +359,7 @@ Required checks:
 - hierarchical spatial build completes
 - representative point queries complete
 - at least one bounded region or slice query completes
+- at least one representative raycast probe completes after Phase 6
 - peak memory stays close enough to load RSS to avoid OOM
 
 Run:
@@ -326,6 +375,7 @@ Add more specific probe flags as they become available, for example:
 ```sh
 bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp --hier-build
 bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp --hier-query-samples 200
+bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp --hier-slice 0 -1 1 -1 1 1024
 ```
 
 Exit criteria:
@@ -335,7 +385,7 @@ Exit criteria:
 - no meaningful slowdown on small/normal models when flat mode is selected
 - hierarchical mode has clear diagnostics for any remaining slow query cases
 
-### Phase 8: Cleanup After Merge Confidence
+### Phase 9: Cleanup After Merge Confidence
 
 Only after the hierarchical path passes the gates:
 
@@ -411,9 +461,10 @@ Use small commits with independent verification:
 3. collect hierarchical placements without flat terminal expansion
 4. add hierarchical point query and parity tests
 5. port region/slice query paths
-6. add mode switch and API behavior
-7. validate E-lite and update docs
-8. clean up obsolete flat/TLS pieces after confidence
+6. port raycast paths
+7. add mode switch and API behavior
+8. validate E-lite and update docs
+9. clean up obsolete flat/TLS pieces after confidence
 
 ## Immediate Next Coding Step
 
