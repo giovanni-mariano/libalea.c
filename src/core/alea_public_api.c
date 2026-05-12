@@ -193,6 +193,10 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     CLONE_VEC(clone->universes, sys->universes, alea_universe_t);
     for (size_t i = 0; i < alea_vec_count(&clone->universes); i++) {
         alea_vec_init(&clone->universes.data[i].cell_indices);
+        alea_vec_init(&clone->universes.data[i].point_bvh_nodes);
+        clone->universes.data[i].point_bvh_indices = NULL;
+        clone->universes.data[i].point_bvh_built = false;
+        clone->universes.data[i].point_bvh_disabled = false;
     }
 
     /* Clone mixtures: shallow copy then deep-copy internal arrays */

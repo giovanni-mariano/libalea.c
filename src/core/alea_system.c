@@ -192,6 +192,11 @@ static void alea_free_all_mixture_contents(alea_system_t* sys) {
 static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         alea_vec_free(&sys->universes.data[i].cell_indices);
+        alea_vec_free(&sys->universes.data[i].point_bvh_nodes);
+        free(sys->universes.data[i].point_bvh_indices);
+        sys->universes.data[i].point_bvh_indices = NULL;
+        sys->universes.data[i].point_bvh_built = false;
+        sys->universes.data[i].point_bvh_disabled = false;
     }
     if (free_vector)
         alea_vec_free(&sys->universes);
@@ -1429,6 +1434,8 @@ int alea_build_universe_index(alea_system_t* sys) {
     // Clear existing index (free internal arrays first)
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         alea_vec_free(&sys->universes.data[i].cell_indices);
+        alea_vec_free(&sys->universes.data[i].point_bvh_nodes);
+        free(sys->universes.data[i].point_bvh_indices);
     }
     alea_vec_clear(&sys->universes);
     universe_hashmap_clear(&sys->universe_index);
