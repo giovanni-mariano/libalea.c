@@ -47,6 +47,7 @@ extern volatile sig_atomic_t g_alea_interrupted;
 
 /* Forward declaration for BVH */
 struct alea_bvh;
+struct alea_hier_spatial_index;
 
 /* ============================================================================
  * VECTOR TYPES FOR CSG SYSTEM ARRAYS
@@ -299,6 +300,7 @@ typedef struct alea_system {
 
     /* Spatial index for fast instance queries (prepared query cache) */
     struct alea_spatial_index* spatial_index;
+    struct alea_hier_spatial_index* hier_spatial_index;
     atomic_int spatial_build_state;  /* 0=pending, 1=building, 2=done */
     atomic_uint query_cache_state;
     atomic_flag query_cache_build_lock;

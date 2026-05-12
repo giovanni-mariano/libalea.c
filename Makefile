@@ -110,7 +110,8 @@ CORE_SRCS = \
 	$(CORE_DIR)/alea_cell_complement.c \
 	$(CORE_DIR)/alea_void.c \
 	$(CORE_DIR)/alea_macrobody.c \
-	$(CORE_DIR)/alea_spatial.c
+	$(CORE_DIR)/alea_spatial.c \
+	$(CORE_DIR)/alea_spatial_hier.c
 
 # Memory management and utilities
 UTIL_SRCS = \

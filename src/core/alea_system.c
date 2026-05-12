@@ -9,6 +9,7 @@
 #include "core/alea_ops.h"
 #include "core/alea_universe.h"
 #include "core/alea_spatial.h"
+#include "core/alea_spatial_hier.h"
 #include "util/alea_log.h"
 #include "util/compat.h"
 #include "raycast/bvh.h"
@@ -230,6 +231,10 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
         if (sys->spatial_index) {
             alea_spatial_index_free(sys->spatial_index);
             sys->spatial_index = NULL;
+        }
+        if (sys->hier_spatial_index) {
+            alea_hier_spatial_index_free(sys->hier_spatial_index);
+            sys->hier_spatial_index = NULL;
         }
         atomic_store(&sys->spatial_build_state, 0);
         alea_spatial_reset_cache();

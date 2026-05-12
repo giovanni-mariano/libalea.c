@@ -250,7 +250,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mc_cell_id, (int)i);
     }
 
-    /* Note: primitive_index, instance_cache, surface_bvh, spatial_index
+    /* Note: primitive_index, instance_cache, surface_bvh, spatial_index,
+       hier_spatial_index
        are NOT cloned - they can be rebuilt on demand */
 
     return clone;

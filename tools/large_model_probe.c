@@ -5,6 +5,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "core/alea_system.h"
+#include "core/alea_spatial_hier.h"
 #include "core/alea_universe.h"
 #include "primitives/bbox.h"
 #include <stdio.h>
@@ -177,15 +178,19 @@ static void run_center_queries(alea_system_t* sys, size_t max_queries) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build]\n", argv[0]);
         fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
+        fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
     }
 
     size_t queries = 0;
+    int hier_build = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--queries") == 0 && i + 1 < argc) {
             queries = (size_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--hier-build") == 0) {
+            hier_build = 1;
         }
     }
 
@@ -217,6 +222,32 @@ int main(int argc, char** argv) {
     printf("Universe index:\n");
     printf("  build_time=%.3f s peak_rss=%ld KiB\n", tu1 - tu0, peak_rss_kib());
     print_universe_stats(sys);
+
+    if (hier_build) {
+        double th0 = now_seconds();
+        if (alea_hier_spatial_index_build(sys) != 0) {
+            fprintf(stderr, "hierarchical spatial build failed: %s\n", alea_error());
+            mcnp_model_destroy(model);
+            return 1;
+        }
+        double th1 = now_seconds();
+        const alea_hier_spatial_stats_t* stats =
+            alea_hier_spatial_index_stats(sys->hier_spatial_index);
+        printf("Hierarchical spatial BLAS probe:\n");
+        printf("  build_time=%.3f s peak_rss=%ld KiB\n", th1 - th0, peak_rss_kib());
+        if (stats) {
+            printf("  universes=%zu blas=%zu linear=%zu largest_universe=%d cells=%d\n",
+                   stats->universe_count, stats->blas_count,
+                   stats->linear_universe_count, stats->largest_universe_id,
+                   stats->max_universe_cells);
+            printf("  blas_cells=%zu blas_nodes=%zu memory_estimate=%.1f MiB\n",
+                   stats->blas_cell_count, stats->blas_node_count,
+                   (double)stats->memory_bytes / 1048576.0);
+            printf("  placements=%zu fill_cells=%zu lattice_cells=%zu transforms=%zu\n",
+                   stats->placement_count, stats->fill_cell_count,
+                   stats->lattice_cell_count, stats->transform_count);
+        }
+    }
 
     if (queries > 0) {
         run_center_queries(sys, queries);
