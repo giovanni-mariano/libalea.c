@@ -1372,23 +1372,26 @@ static int find_cell_at_point(alea_system_t* sys,
 static int find_cell_at_point_hier(alea_system_t* sys,
                                    double px, double py, double pz,
                                    int* out_material_id,
-                                   double* out_density) {
-    alea_cell_hit_t hits[32];
-    int num_hits = alea_hier_spatial_find_cells_at_point(sys, px, py, pz,
-                                                         hits, 32);
+                                   double* out_density,
+                                   alea_matrix_t* out_transform) {
+    alea_hier_cell_hit_t hit_with_transform;
+    int found = alea_hier_spatial_find_deepest_cell_at_point(sys, px, py, pz,
+                                                             &hit_with_transform);
 
-    if (num_hits > 0) {
-        const alea_cell_hit_t* hit = &hits[num_hits - 1];
+    if (found > 0) {
+        const alea_cell_hit_t* hit = &hit_with_transform.hit;
         if (out_material_id) *out_material_id = hit->material_id;
         if (out_density && hit->cell_index >= 0 &&
             (size_t)hit->cell_index < alea_vec_count(&sys->cells)) {
             *out_density = sys->cells.data[hit->cell_index].density;
         }
+        if (out_transform) *out_transform = hit_with_transform.transform;
         return hit->cell_index;
     }
 
     if (out_material_id) *out_material_id = 0;
     if (out_density) *out_density = 0;
+    if (out_transform) alea_matrix_identity(out_transform);
     return -1;
 }
 
@@ -1486,9 +1489,11 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         int material_id = 0;
         double density = 0;
         int found_via_neighbor = 0;
+        alea_matrix_t cell_transform;
+        alea_matrix_identity(&cell_transform);
 
         /* Try neighbor lookup first if we have previous cell and surface info */
-        if (prev_cell_idx >= 0 && prev_surface_id >= 0) {
+        if (!use_hier_lookup && prev_cell_idx >= 0 && prev_surface_id >= 0) {
             found_via_neighbor = raycast_find_neighbor(sys, prev_cell_idx,
                                                        prev_surface_id,
                                                        &cell_id, &cell_idx,
@@ -1500,7 +1505,8 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
             double px, py, pz;
             alea_ray_point_at(ray, t_current + RAY_EPSILON, &px, &py, &pz);
             cell_idx = use_hier_lookup
-                ? find_cell_at_point_hier(sys, px, py, pz, &material_id, &density)
+                ? find_cell_at_point_hier(sys, px, py, pz, &material_id,
+                                          &density, &cell_transform)
                 : find_cell_at_point(sys, px, py, pz, &material_id, &density);
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
                 cell_id = sys->cells.data[cell_idx].mc_cell_id;
@@ -1514,7 +1520,13 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         double t_next;
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             sys->cells.data[cell_idx].surface_indices) {
-            t_next = raycast_cell_surfaces(sys, ray,
+            alea_ray_t local_ray;
+            const alea_ray_t* surface_ray = ray;
+            if (use_hier_lookup) {
+                transform_ray_inverse(&cell_transform, ray, &local_ray);
+                surface_ray = &local_ray;
+            }
+            t_next = raycast_cell_surfaces(sys, surface_ray,
                                            &sys->cells.data[cell_idx],
                                            t_current + RAY_EPSILON, effective_t_max,
                                            &hit_surface_id);

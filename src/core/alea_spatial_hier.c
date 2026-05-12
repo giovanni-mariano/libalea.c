@@ -279,6 +279,8 @@ static int compare_size_t_ascending(const void* a, const void* b) {
     return (*ia > *ib) - (*ia < *ib);
 }
 
+static void translation_matrix(alea_matrix_t* out, double x, double y, double z);
+
 static void quickselect(hier_bvh_item_t* items,
                         size_t lo,
                         size_t hi,
@@ -1015,6 +1017,177 @@ static int hier_query_universe(alea_system_t* sys,
     return 0;
 }
 
+static void hier_deepest_store_hit(const alea_cell_entry_t* cell,
+                                   uint32_t cell_index,
+                                   int fill_universe,
+                                   double lx,
+                                   double ly,
+                                   double lz,
+                                   int depth,
+                                   const alea_matrix_t* transform,
+                                   alea_hier_cell_hit_t* out_hit,
+                                   int* found) {
+    out_hit->hit.cell_id = cell->mc_cell_id;
+    out_hit->hit.cell_index = (int)cell_index;
+    out_hit->hit.material_id = cell->material_id;
+    out_hit->hit.universe_id = cell->universe_id;
+    out_hit->hit.fill_universe = fill_universe;
+    out_hit->hit.depth = depth;
+    out_hit->hit.local_x = lx;
+    out_hit->hit.local_y = ly;
+    out_hit->hit.local_z = lz;
+    out_hit->transform = *transform;
+    *found = 1;
+}
+
+static int hier_find_deepest_universe(alea_system_t* sys,
+                                      alea_hier_spatial_index_t* idx,
+                                      int universe_id,
+                                      double lx,
+                                      double ly,
+                                      double lz,
+                                      int depth,
+                                      const alea_matrix_t* transform,
+                                      alea_hier_cell_hit_t* out_hit,
+                                      int* found);
+
+static int hier_find_deepest_cell(alea_system_t* sys,
+                                  alea_hier_spatial_index_t* idx,
+                                  uint32_t cell_index,
+                                  double lx,
+                                  double ly,
+                                  double lz,
+                                  int depth,
+                                  const alea_matrix_t* transform,
+                                  alea_hier_cell_hit_t* out_hit,
+                                  int* found) {
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+
+    if (cell->lat_type != 0 && cell->lat_fill) {
+        double ox, oy, oz;
+        int fill_univ = (cell->lat_type == 2)
+            ? lattice_hex_lookup_local(cell, lx, ly, lz, &ox, &oy, &oz)
+            : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
+        if (fill_univ < 0) return 0;
+
+        hier_deepest_store_hit(cell, cell_index, fill_univ,
+                               lx, ly, lz, depth, transform,
+                               out_hit, found);
+
+        alea_matrix_t element_translation;
+        translation_matrix(&element_translation, ox, oy, oz);
+
+        alea_matrix_t element_transform;
+        alea_matrix_multiply(&element_transform, transform, &element_translation);
+        if (!alea_matrix_invert(&element_transform)) return -1;
+
+        return hier_find_deepest_universe(sys, idx, fill_univ,
+                                          lx - ox, ly - oy, lz - oz,
+                                          depth + 1,
+                                          &element_transform,
+                                          out_hit, found);
+    }
+
+    idx->stats.point_exact_tests++;
+    if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+        return 0;
+    }
+
+    hier_deepest_store_hit(cell, cell_index, cell->fill_universe,
+                           lx, ly, lz, depth, transform,
+                           out_hit, found);
+
+    if (cell->fill_universe > 0) {
+        alea_matrix_t fill_transform;
+        if (fill_transform_matrix(sys, cell, &fill_transform) != 0) {
+            return -1;
+        }
+
+        alea_matrix_t child_transform;
+        alea_matrix_multiply(&child_transform, transform, &fill_transform);
+        if (!alea_matrix_invert(&child_transform)) {
+            return -1;
+        }
+
+        double child_x = lx;
+        double child_y = ly;
+        double child_z = lz;
+        alea_matrix_transform_point_inverse(&fill_transform,
+                                            &child_x, &child_y, &child_z);
+
+        return hier_find_deepest_universe(sys, idx, cell->fill_universe,
+                                          child_x, child_y, child_z,
+                                          depth + 1,
+                                          &child_transform,
+                                          out_hit, found);
+    }
+
+    return 0;
+}
+
+static int hier_find_deepest_universe(alea_system_t* sys,
+                                      alea_hier_spatial_index_t* idx,
+                                      int universe_id,
+                                      double lx,
+                                      double ly,
+                                      double lz,
+                                      int depth,
+                                      const alea_matrix_t* transform,
+                                      alea_hier_cell_hit_t* out_hit,
+                                      int* found) {
+    if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
+
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return -1;
+
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    if (blas && blas->built && blas->node_count > 0) {
+        alea_size_vec_t candidates = ALEA_VEC_INIT;
+        hier_point_query_ctx_t ctx = {
+            .sys = sys,
+            .idx = idx,
+            .blas = blas,
+            .x = lx,
+            .y = ly,
+            .z = lz,
+            .candidates = &candidates,
+            .error = 0
+        };
+        idx->stats.point_blas_queries++;
+        query_blas_node(&ctx, 0);
+        if (!ctx.error && candidates.count > 1) {
+            qsort(candidates.data, candidates.count, sizeof(size_t),
+                  compare_size_t_ascending);
+        }
+        for (size_t i = 0; !ctx.error && i < candidates.count; i++) {
+            size_t cell_pos = candidates.data[i];
+            if (cell_pos >= blas->cell_count) {
+                ctx.error = -1;
+                break;
+            }
+            uint32_t candidate_cell = blas->cells[cell_pos].cell_index;
+            int rc = hier_find_deepest_cell(sys, idx, candidate_cell,
+                                            lx, ly, lz, depth,
+                                            transform, out_hit, found);
+            if (rc < 0) ctx.error = -1;
+        }
+        alea_vec_free(&candidates);
+        return ctx.error ? -1 : 0;
+    }
+
+    idx->stats.point_linear_scans++;
+    idx->stats.point_linear_cell_tests += univ->cell_indices.count;
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        uint32_t candidate_cell = (uint32_t)univ->cell_indices.data[i];
+        int rc = hier_find_deepest_cell(sys, idx, candidate_cell,
+                                        lx, ly, lz, depth,
+                                        transform, out_hit, found);
+        if (rc < 0) return -1;
+    }
+
+    return 0;
+}
+
 int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           double x,
                                           double y,
@@ -1038,6 +1211,34 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
     if (rc < 0) return -1;
 
     return (int)hit_count;
+}
+
+int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
+                                                 double x,
+                                                 double y,
+                                                 double z,
+                                                 alea_hier_cell_hit_t* out_hit) {
+    if (!sys || !out_hit) return -1;
+
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) {
+            return -1;
+        }
+    }
+
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    idx->stats.point_queries++;
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+
+    memset(out_hit, 0, sizeof(*out_hit));
+    int found = 0;
+    int rc = hier_find_deepest_universe(sys, idx, 0, x, y, z, 0,
+                                        &identity, out_hit, &found);
+    if (rc < 0) return -1;
+
+    return found ? 1 : 0;
 }
 
 static int append_region_hit(alea_system_t* sys,

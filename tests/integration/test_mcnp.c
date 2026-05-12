@@ -299,6 +299,8 @@ TEST(raycast_hier_transformed_fill_matches_flat) {
 
     assert_hier_raycast_equivalent(sys, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                                    10.0);
+    assert_hier_cell_raycast_segments_equivalent(sys, 0.0, 0.0, 0.0,
+                                                 1.0, 0.0, 0.0, 10.0);
 
     mcnp_model_destroy(model);
 }

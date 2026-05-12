@@ -288,10 +288,11 @@ Current status:
 - this is memory-safe for the flat instance explosion problem, but not yet a
   speed optimization for large models with many surface/fill hits
 - an experimental hierarchical cell-aware probe path exists for performance
-  investigation; it avoids global surface-hit collection but is not yet valid
-  for transformed fills/lattice DDA because it does not carry the full ray-local
-  transform stack; on the E-lite probe ray it reduced measured raycast time
-  from about 168 s to about 20 s, but it is not an acceptance path yet
+  investigation; it avoids global surface-hit collection and now carries the
+  current cell transform for regular and transformed fills; lattice DDA remains
+  outside the accepted fast path. On the E-lite probe ray it reduced measured
+  raycast time from about 168 s to about 20 s, but it is not an acceptance path
+  yet
 - public/default raycast entry points are not yet switched to hierarchical mode
 
 Implementation notes:
@@ -305,6 +306,8 @@ Implementation notes:
 - descend through regular fill cells by composing placement transforms
 - handle lattice cells by stepping or resolving only the lattice elements
   intersected by the ray; do not expand all lattice elements
+- carry the current hierarchical cell transform into cell-aware surface
+  intersection: done for regular and transformed fills
 - keep the existing flat raycast path selectable until parity is proven
 
 Tests:
@@ -312,6 +315,7 @@ Tests:
 - raycast in a single root universe: done
 - raycast through a regular filled universe: done
 - raycast through a transformed fill: done
+- experimental hierarchical cell-aware raycast through a transformed fill: done
 - rectangular lattice raycast parity: done
 - hex lattice raycast parity: done
 - segment ordering and surface-crossing parity against existing raycast tests:

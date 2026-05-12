@@ -14,6 +14,11 @@ typedef struct alea_system alea_system_t;
 typedef struct alea_hier_spatial_index alea_hier_spatial_index_t;
 
 typedef struct {
+    alea_cell_hit_t hit;
+    alea_matrix_t transform;
+} alea_hier_cell_hit_t;
+
+typedef struct {
     size_t universe_count;
     size_t blas_count;
     size_t linear_universe_count;
@@ -50,6 +55,11 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           double z,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits);
+int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
+                                                 double x,
+                                                 double y,
+                                                 double z,
+                                                 alea_hier_cell_hit_t* out_hit);
 int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,
