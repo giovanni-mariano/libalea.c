@@ -177,6 +177,41 @@ static void assert_hier_raycast_equivalent(alea_system_t* sys,
     alea_raycast_result_free(&hier);
 }
 
+static void assert_hier_cell_raycast_segments_equivalent(alea_system_t* sys,
+                                                         double ox, double oy, double oz,
+                                                         double dx, double dy, double dz,
+                                                         double t_max) {
+    alea_raycast_result_t canonical;
+    alea_raycast_result_t hier;
+    alea_raycast_result_init(&canonical);
+    alea_raycast_result_init(&hier);
+
+    ASSERT_EQ(alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, &canonical), 0);
+    ASSERT_EQ(alea_raycast_hier_cell_aware(sys, ox, oy, oz, dx, dy, dz,
+                                           t_max, &hier), 0);
+
+    ASSERT_EQ(hier.segments.count, canonical.segments.count);
+    for (size_t i = 0; i < canonical.segments.count; i++) {
+        ASSERT_NEAR(hier.segments.data[i].t_enter,
+                    canonical.segments.data[i].t_enter, 1e-9);
+        ASSERT_NEAR(hier.segments.data[i].t_exit,
+                    canonical.segments.data[i].t_exit, 1e-9);
+        ASSERT_EQ(hier.segments.data[i].cell_id,
+                  canonical.segments.data[i].cell_id);
+        ASSERT_EQ(hier.segments.data[i].material_id,
+                  canonical.segments.data[i].material_id);
+        ASSERT_NEAR(hier.segments.data[i].density,
+                    canonical.segments.data[i].density, 1e-12);
+        ASSERT_EQ(hier.segments.data[i].enter_surface_id,
+                  canonical.segments.data[i].enter_surface_id);
+        ASSERT_EQ(hier.segments.data[i].exit_surface_id,
+                  canonical.segments.data[i].exit_surface_id);
+    }
+
+    alea_raycast_result_free(&canonical);
+    alea_raycast_result_free(&hier);
+}
+
 TEST(parse_simple_sphere) {
     mcnp_model_t* model = mcnp_load("tests/data/simple_sphere.mcnp");
     ASSERT_NOT_NULL(model);
@@ -237,6 +272,8 @@ TEST(raycast_descends_into_fill_universe) {
 
     assert_hier_raycast_equivalent(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                                    10.0);
+    assert_hier_cell_raycast_segments_equivalent(sys, -5.0, 0.0, 0.0,
+                                                 1.0, 0.0, 0.0, 10.0);
 
     alea_raycast_result_free(&result);
     mcnp_model_destroy(model);

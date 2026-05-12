@@ -187,6 +187,20 @@ int alea_raycast_hier(alea_system_t* sys,
                       double t_max,
                       alea_raycast_result_t* result);
 
+/**
+ * @brief Experimental hierarchical cell-aware raycast.
+ *
+ * Uses the hierarchical spatial index for current-cell lookup and intersects
+ * only the current cell's surfaces. This avoids global surface-hit collection
+ * and is intended for Phase 6 large-model probing before becoming a public
+ * default path.
+ */
+int alea_raycast_hier_cell_aware(alea_system_t* sys,
+                                 double ox, double oy, double oz,
+                                 double dx, double dy, double dz,
+                                 double t_max,
+                                 alea_raycast_result_t* result);
+
 /* ============================================================================
  * QUERY HELPERS
  * ============================================================================ */

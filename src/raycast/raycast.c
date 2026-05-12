@@ -1369,6 +1369,29 @@ static int find_cell_at_point(alea_system_t* sys,
     return -1;
 }
 
+static int find_cell_at_point_hier(alea_system_t* sys,
+                                   double px, double py, double pz,
+                                   int* out_material_id,
+                                   double* out_density) {
+    alea_cell_hit_t hits[32];
+    int num_hits = alea_hier_spatial_find_cells_at_point(sys, px, py, pz,
+                                                         hits, 32);
+
+    if (num_hits > 0) {
+        const alea_cell_hit_t* hit = &hits[num_hits - 1];
+        if (out_material_id) *out_material_id = hit->material_id;
+        if (out_density && hit->cell_index >= 0 &&
+            (size_t)hit->cell_index < alea_vec_count(&sys->cells)) {
+            *out_density = sys->cells.data[hit->cell_index].density;
+        }
+        return hit->cell_index;
+    }
+
+    if (out_material_id) *out_material_id = 0;
+    if (out_density) *out_density = 0;
+    return -1;
+}
+
 /**
  * Context for finding closest intersection during BVH traversal.
  */
@@ -1444,37 +1467,11 @@ static double find_closest_intersection(alea_system_t* sys,
     return closest_t;
 }
 
-int alea_raycast_cell_aware(alea_system_t* sys,
-                           double ox, double oy, double oz,
-                           double dx, double dy, double dz,
-                           double t_max,
-                           alea_raycast_result_t* result) {
-    if (!sys || !result) return -1;
-
-    if (system_has_lattice_cells(sys)) {
-        /* Lattice transport requires synthetic DDA boundary hits and
-         * element-local universe raycasts. Use the canonical lattice-aware
-         * pipeline so this public entry point cannot diverge semantically. */
-        return alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result);
-    }
-
-    /* Free any prior allocations then reinitialize (safe for reuse) */
-    alea_raycast_result_free(result);
-
-    alea_ray_t ray;
-    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) {
-        return -1;  /* Zero-length direction */
-    }
-    result->ray = ray;
-
-    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-
-    if (!alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST)) {
-        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "raycast caches are not prepared; call alea_prepare_query_acceleration()");
-        return -1;
-    }
-
+static int raycast_cell_aware_impl(alea_system_t* sys,
+                                   const alea_ray_t* ray,
+                                   double effective_t_max,
+                                   bool use_hier_lookup,
+                                   alea_raycast_result_t* result) {
     /* Current position along ray */
     double t_current = 0;
     int prev_cell_idx = -2;  /* -2 = no previous */
@@ -1501,8 +1498,10 @@ int alea_raycast_cell_aware(alea_system_t* sys,
         /* Fall back to full lookup if neighbor lookup failed or not available */
         if (!found_via_neighbor) {
             double px, py, pz;
-            alea_ray_point_at(&ray, t_current + RAY_EPSILON, &px, &py, &pz);
-            cell_idx = find_cell_at_point(sys, px, py, pz, &material_id, &density);
+            alea_ray_point_at(ray, t_current + RAY_EPSILON, &px, &py, &pz);
+            cell_idx = use_hier_lookup
+                ? find_cell_at_point_hier(sys, px, py, pz, &material_id, &density)
+                : find_cell_at_point(sys, px, py, pz, &material_id, &density);
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
                 cell_id = sys->cells.data[cell_idx].mc_cell_id;
             }
@@ -1515,12 +1514,12 @@ int alea_raycast_cell_aware(alea_system_t* sys,
         double t_next;
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             sys->cells.data[cell_idx].surface_indices) {
-            t_next = raycast_cell_surfaces(sys, &ray,
+            t_next = raycast_cell_surfaces(sys, ray,
                                            &sys->cells.data[cell_idx],
                                            t_current + RAY_EPSILON, effective_t_max,
                                            &hit_surface_id);
         } else {
-            t_next = find_closest_intersection(sys, &ray,
+            t_next = find_closest_intersection(sys, ray,
                                                t_current + RAY_EPSILON, effective_t_max,
                                                &hit_surface_id);
         }
@@ -1570,4 +1569,60 @@ int alea_raycast_cell_aware(alea_system_t* sys,
     }
 
     return 0;
+}
+
+int alea_raycast_cell_aware(alea_system_t* sys,
+                           double ox, double oy, double oz,
+                           double dx, double dy, double dz,
+                           double t_max,
+                           alea_raycast_result_t* result) {
+    if (!sys || !result) return -1;
+
+    if (system_has_lattice_cells(sys)) {
+        /* Lattice transport requires synthetic DDA boundary hits and
+         * element-local universe raycasts. Use the canonical lattice-aware
+         * pipeline so this public entry point cannot diverge semantically. */
+        return alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result);
+    }
+
+    alea_raycast_result_free(result);
+
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) {
+        return -1;
+    }
+    result->ray = ray;
+
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+
+    if (!alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "raycast caches are not prepared; call alea_prepare_query_acceleration()");
+        return -1;
+    }
+
+    return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, result);
+}
+
+int alea_raycast_hier_cell_aware(alea_system_t* sys,
+                                 double ox, double oy, double oz,
+                                 double dx, double dy, double dz,
+                                 double t_max,
+                                 alea_raycast_result_t* result) {
+    if (!sys || !result) return -1;
+
+    if (alea_system_prepare_query_caches(sys,
+            ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_CELL_SURFACES) != 0)
+        return -1;
+
+    alea_raycast_result_free(result);
+
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) {
+        return -1;
+    }
+    result->ray = ray;
+
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, result);
 }

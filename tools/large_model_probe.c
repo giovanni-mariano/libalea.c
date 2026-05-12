@@ -271,12 +271,15 @@ static int run_hier_slice_query(alea_system_t* sys,
 static int run_hier_raycast(alea_system_t* sys,
                             double ox, double oy, double oz,
                             double dx, double dy, double dz,
-                            double t_max) {
+                            double t_max,
+                            int cell_aware) {
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
 
     double t0 = now_seconds();
-    int rc = alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
+    int rc = cell_aware
+        ? alea_raycast_hier_cell_aware(sys, ox, oy, oz, dx, dy, dz, t_max, &result)
+        : alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
     double t1 = now_seconds();
 
     if (rc != 0) {
@@ -285,7 +288,10 @@ static int run_hier_raycast(alea_system_t* sys,
         return -1;
     }
 
-    printf("Hierarchical raycast probe:\n");
+    printf("Hierarchical %sraycast probe:\n", cell_aware ? "cell-aware " : "");
+    if (cell_aware) {
+        printf("  note=experimental; does not yet carry transformed-fill/lattice ray-local state\n");
+    }
     printf("  origin=(%.6g,%.6g,%.6g) dir=(%.6g,%.6g,%.6g) t_max=%.6g\n",
            ox, oy, oz, dx, dy, dz, t_max);
     printf("  hits=%zu segments=%zu surfaces_tested=%d time=%.3f s\n",
@@ -309,7 +315,7 @@ static int run_hier_raycast(alea_system_t* sys,
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS] [--hier-raycast OX OY OZ DX DY DZ TMAX]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS] [--hier-raycast OX OY OZ DX DY DZ TMAX] [--hier-cell-raycast OX OY OZ DX DY DZ TMAX]\n", argv[0]);
         fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
         fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
@@ -323,6 +329,7 @@ int main(int argc, char** argv) {
     size_t slice_max_hits = 0;
     int hier_build = 0;
     int hier_raycast = 0;
+    int hier_cell_raycast = 0;
     double ray_ox = 0.0, ray_oy = 0.0, ray_oz = 0.0;
     double ray_dx = 0.0, ray_dy = 0.0, ray_dz = 1.0, ray_t_max = 0.0;
     for (int i = 2; i < argc; i++) {
@@ -342,6 +349,15 @@ int main(int argc, char** argv) {
             slice_max_hits = (size_t)strtoull(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--hier-raycast") == 0 && i + 7 < argc) {
             hier_raycast = 1;
+            ray_ox = strtod(argv[++i], NULL);
+            ray_oy = strtod(argv[++i], NULL);
+            ray_oz = strtod(argv[++i], NULL);
+            ray_dx = strtod(argv[++i], NULL);
+            ray_dy = strtod(argv[++i], NULL);
+            ray_dz = strtod(argv[++i], NULL);
+            ray_t_max = strtod(argv[++i], NULL);
+        } else if (strcmp(argv[i], "--hier-cell-raycast") == 0 && i + 7 < argc) {
+            hier_cell_raycast = 1;
             ray_ox = strtod(argv[++i], NULL);
             ray_oy = strtod(argv[++i], NULL);
             ray_oz = strtod(argv[++i], NULL);
@@ -429,13 +445,15 @@ int main(int argc, char** argv) {
         printf("  peak_rss_after_hier_slice=%ld KiB\n", peak_rss_kib());
     }
 
-    if (hier_raycast) {
+    if (hier_raycast || hier_cell_raycast) {
         if (run_hier_raycast(sys, ray_ox, ray_oy, ray_oz,
-                             ray_dx, ray_dy, ray_dz, ray_t_max) != 0) {
+                             ray_dx, ray_dy, ray_dz, ray_t_max,
+                             hier_cell_raycast) != 0) {
             mcnp_model_destroy(model);
             return 1;
         }
-        printf("  peak_rss_after_hier_raycast=%ld KiB\n", peak_rss_kib());
+        printf("  peak_rss_after_hier_%sraycast=%ld KiB\n",
+               hier_cell_raycast ? "cell_" : "", peak_rss_kib());
     }
 
     mcnp_model_destroy(model);

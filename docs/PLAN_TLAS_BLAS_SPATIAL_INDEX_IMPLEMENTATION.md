@@ -287,6 +287,11 @@ Current status:
   pipeline, then classifies ray segments with hierarchical point lookup
 - this is memory-safe for the flat instance explosion problem, but not yet a
   speed optimization for large models with many surface/fill hits
+- an experimental hierarchical cell-aware probe path exists for performance
+  investigation; it avoids global surface-hit collection but is not yet valid
+  for transformed fills/lattice DDA because it does not carry the full ray-local
+  transform stack; on the E-lite probe ray it reduced measured raycast time
+  from about 168 s to about 20 s, but it is not an acceptance path yet
 - public/default raycast entry points are not yet switched to hierarchical mode
 
 Implementation notes:
