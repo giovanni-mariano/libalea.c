@@ -21,6 +21,10 @@ typedef struct {
     size_t lattice_cell_count;
     size_t transform_count;
     size_t placement_count;
+    size_t root_placement_count;
+    size_t fill_placement_count;
+    size_t lattice_placement_count;
+    int max_placement_depth;
     int max_universe_cells;
     int largest_universe_id;
     size_t memory_bytes;

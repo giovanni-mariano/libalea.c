@@ -243,9 +243,12 @@ int main(int argc, char** argv) {
             printf("  blas_cells=%zu blas_nodes=%zu memory_estimate=%.1f MiB\n",
                    stats->blas_cell_count, stats->blas_node_count,
                    (double)stats->memory_bytes / 1048576.0);
-            printf("  placements=%zu fill_cells=%zu lattice_cells=%zu transforms=%zu\n",
-                   stats->placement_count, stats->fill_cell_count,
-                   stats->lattice_cell_count, stats->transform_count);
+            printf("  placements=%zu root=%zu fill=%zu lattice=%zu max_depth=%d transforms=%zu\n",
+                   stats->placement_count, stats->root_placement_count,
+                   stats->fill_placement_count, stats->lattice_placement_count,
+                   stats->max_placement_depth, stats->transform_count);
+            printf("  placement_sources: fill_cells=%zu lattice_cells=%zu\n",
+                   stats->fill_cell_count, stats->lattice_cell_count);
         }
     }
 

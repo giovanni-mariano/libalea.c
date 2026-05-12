@@ -15,6 +15,13 @@
 
 #define HIER_BVH_LEAF_SIZE 4
 #define HIER_DEFAULT_BLAS_THRESHOLD 1
+#define HIER_MAX_PLACEMENT_DEPTH 64
+
+enum {
+    HIER_PLACEMENT_ROOT = 1u << 0,
+    HIER_PLACEMENT_FILL = 1u << 1,
+    HIER_PLACEMENT_LATTICE = 1u << 2
+};
 
 typedef struct {
     alea_bbox_t bbox;
@@ -42,10 +49,28 @@ typedef struct {
     int built;
 } hier_universe_blas_t;
 
+typedef struct {
+    uint32_t id;
+    uint32_t parent_id;
+    uint32_t parent_cell_index;
+    int universe_id;
+    int depth;
+    uint32_t transform_index;
+    uint32_t flags;
+    alea_bbox_t local_bbox;
+    alea_bbox_t world_bbox;
+} hier_placement_t;
+
 struct alea_hier_spatial_index {
     hier_universe_blas_t* blas;
     size_t blas_count;
     size_t blas_capacity;
+    hier_placement_t* placements;
+    size_t placement_count;
+    size_t placement_capacity;
+    alea_matrix_t* transforms;
+    size_t transform_count;
+    size_t transform_capacity;
     alea_hier_spatial_stats_t stats;
     int built;
 };
@@ -97,6 +122,29 @@ static alea_bbox_t local_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
     }
 
     return bbox;
+}
+
+static alea_bbox_t bbox_transform(const alea_bbox_t* bbox, const alea_matrix_t* mat) {
+    const double bmin[3] = {bbox->min_x, bbox->min_y, bbox->min_z};
+    const double bmax[3] = {bbox->max_x, bbox->max_y, bbox->max_z};
+    double rmin[3], rmax[3];
+
+    for (int i = 0; i < 3; i++) {
+        rmin[i] = rmax[i] = mat->m[i * 4 + 3];
+        for (int j = 0; j < 3; j++) {
+            double e = mat->m[i * 4 + j] * bmin[j];
+            double f = mat->m[i * 4 + j] * bmax[j];
+            if (e < f) {
+                rmin[i] += e;
+                rmax[i] += f;
+            } else {
+                rmin[i] += f;
+                rmax[i] += e;
+            }
+        }
+    }
+
+    return (alea_bbox_t){rmin[0], rmax[0], rmin[1], rmax[1], rmin[2], rmax[2]};
 }
 
 static size_t estimate_bvh_node_count(size_t item_count) {
@@ -309,6 +357,8 @@ void alea_hier_spatial_index_free(alea_hier_spatial_index_t* idx) {
         free_universe_blas(&idx->blas[i]);
     }
     free(idx->blas);
+    free(idx->placements);
+    free(idx->transforms);
     free(idx);
 }
 
@@ -330,22 +380,188 @@ static int ensure_blas_capacity(alea_hier_spatial_index_t* idx, size_t needed) {
     return 0;
 }
 
-static void count_cells_for_diagnostics(alea_system_t* sys,
-                                        alea_hier_spatial_stats_t* stats) {
-    for (size_t i = 0; i < sys->cells.count; i++) {
-        const alea_cell_entry_t* cell = &sys->cells.data[i];
-        if (cell->fill_universe > 0) {
-            stats->fill_cell_count++;
-            stats->placement_count++;
-            if (cell->fill_transform > 0) stats->transform_count++;
+static int ensure_placement_capacity(alea_hier_spatial_index_t* idx, size_t needed) {
+    if (needed <= idx->placement_capacity) return 0;
+    size_t new_cap = idx->placement_capacity ? idx->placement_capacity * 2 : 64;
+    while (new_cap < needed) new_cap *= 2;
+
+    hier_placement_t* placements = realloc(idx->placements, new_cap * sizeof(*placements));
+    if (!placements) return -1;
+
+    idx->placements = placements;
+    idx->placement_capacity = new_cap;
+    return 0;
+}
+
+static int ensure_transform_capacity(alea_hier_spatial_index_t* idx, size_t needed) {
+    if (needed <= idx->transform_capacity) return 0;
+    size_t new_cap = idx->transform_capacity ? idx->transform_capacity * 2 : 64;
+    while (new_cap < needed) new_cap *= 2;
+
+    alea_matrix_t* transforms = realloc(idx->transforms, new_cap * sizeof(*transforms));
+    if (!transforms) return -1;
+
+    idx->transforms = transforms;
+    idx->transform_capacity = new_cap;
+    return 0;
+}
+
+static int append_transform(alea_hier_spatial_index_t* idx,
+                            const alea_matrix_t* transform,
+                            uint32_t* out_index) {
+    if (ensure_transform_capacity(idx, idx->transform_count + 1) != 0) {
+        return -1;
+    }
+
+    *out_index = (uint32_t)idx->transform_count;
+    idx->transforms[idx->transform_count++] = *transform;
+    idx->stats.transform_count = idx->transform_count;
+    return 0;
+}
+
+static int append_placement(alea_hier_spatial_index_t* idx,
+                            uint32_t parent_id,
+                            uint32_t parent_cell_index,
+                            int universe_id,
+                            int depth,
+                            uint32_t flags,
+                            const alea_bbox_t* local_bbox,
+                            const alea_bbox_t* world_bbox,
+                            const alea_matrix_t* transform,
+                            uint32_t* out_id) {
+    if (ensure_placement_capacity(idx, idx->placement_count + 1) != 0) {
+        return -1;
+    }
+
+    uint32_t transform_index = UINT32_MAX;
+    if (transform) {
+        if (append_transform(idx, transform, &transform_index) != 0) {
+            return -1;
         }
+    }
+
+    uint32_t id = (uint32_t)idx->placement_count;
+    hier_placement_t* placement = &idx->placements[idx->placement_count++];
+    placement->id = id;
+    placement->parent_id = parent_id;
+    placement->parent_cell_index = parent_cell_index;
+    placement->universe_id = universe_id;
+    placement->depth = depth;
+    placement->transform_index = transform_index;
+    placement->flags = flags;
+    placement->local_bbox = local_bbox ? *local_bbox : alea_bbox_empty();
+    placement->world_bbox = world_bbox ? *world_bbox : alea_bbox_empty();
+
+    idx->stats.placement_count = idx->placement_count;
+    if (flags & HIER_PLACEMENT_ROOT) idx->stats.root_placement_count++;
+    if (flags & HIER_PLACEMENT_FILL) idx->stats.fill_placement_count++;
+    if (flags & HIER_PLACEMENT_LATTICE) idx->stats.lattice_placement_count++;
+    if (depth > idx->stats.max_placement_depth) idx->stats.max_placement_depth = depth;
+
+    if (out_id) *out_id = id;
+    return 0;
+}
+
+static int fill_transform_matrix(alea_system_t* sys,
+                                 const alea_cell_entry_t* cell,
+                                 alea_matrix_t* out) {
+    if (cell->fill_transform <= 0) {
+        alea_matrix_identity(out);
+        return 0;
+    }
+
+    const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
+    if (!tr) return -1;
+
+    if (!alea_matrix_from_mcnp(out, tr->cosines, tr->value_count, false)) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int collect_placements_recursive(alea_system_t* sys,
+                                        alea_hier_spatial_index_t* idx,
+                                        int universe_id,
+                                        uint32_t parent_placement_id,
+                                        const alea_matrix_t* accumulated,
+                                        int depth) {
+    if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
+    if (g_alea_interrupted) return -1;
+
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return 0;
+
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        alea_bbox_t local_bbox = local_cell_bbox(sys, cell_index);
+        alea_bbox_t world_bbox = accumulated ? bbox_transform(&local_bbox, accumulated) : local_bbox;
+
         if (cell->lat_type != 0 && cell->lat_fill) {
-            stats->lattice_cell_count++;
+            idx->stats.lattice_cell_count++;
+            if (append_placement(idx, parent_placement_id, cell_index,
+                                 universe_id, depth + 1,
+                                 HIER_PLACEMENT_LATTICE,
+                                 &local_bbox, &world_bbox,
+                                 accumulated, NULL) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        if (cell->fill_universe > 0) {
+            alea_matrix_t fill_mat;
+            if (fill_transform_matrix(sys, cell, &fill_mat) != 0) {
+                return -1;
+            }
+
+            alea_matrix_t child_transform;
+            if (accumulated) {
+                alea_matrix_multiply(&child_transform, accumulated, &fill_mat);
+            } else {
+                child_transform = fill_mat;
+            }
+            if (!alea_matrix_invert(&child_transform)) {
+                return -1;
+            }
+
+            uint32_t child_id = UINT32_MAX;
+            idx->stats.fill_cell_count++;
+            if (append_placement(idx, parent_placement_id, cell_index,
+                                 cell->fill_universe, depth + 1,
+                                 HIER_PLACEMENT_FILL,
+                                 &local_bbox, &world_bbox,
+                                 &child_transform, &child_id) != 0) {
+                return -1;
+            }
+
+            if (collect_placements_recursive(sys, idx, cell->fill_universe,
+                                             child_id, &child_transform,
+                                             depth + 1) != 0) {
+                return -1;
+            }
         }
     }
-    if (sys->universes.count > 0) {
-        stats->placement_count++; /* root universe placement */
+    return 0;
+}
+
+static int collect_placements(alea_system_t* sys, alea_hier_spatial_index_t* idx) {
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+
+    uint32_t root_id = UINT32_MAX;
+    alea_bbox_t root_bbox = alea_bbox_empty();
+    const alea_universe_t* root = alea_get_universe(sys, 0);
+    if (root) root_bbox = root->bbox;
+
+    if (append_placement(idx, UINT32_MAX, UINT32_MAX, 0, 0,
+                         HIER_PLACEMENT_ROOT, &root_bbox, &root_bbox,
+                         &identity, &root_id) != 0) {
+        return -1;
     }
+
+    return collect_placements_recursive(sys, idx, 0, root_id, &identity, 0);
 }
 
 int alea_hier_spatial_index_build(alea_system_t* sys) {
@@ -367,7 +583,11 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
     if (!idx) return -1;
 
     idx->stats.universe_count = sys->universes.count;
-    count_cells_for_diagnostics(sys, &idx->stats);
+
+    if (collect_placements(sys, idx) != 0) {
+        alea_hier_spatial_index_free(idx);
+        return -1;
+    }
 
     for (size_t i = 0; i < sys->universes.count; i++) {
         const alea_universe_t* univ = &sys->universes.data[i];
@@ -405,6 +625,8 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
     }
 
     idx->stats.memory_bytes += idx->blas_capacity * sizeof(*idx->blas);
+    idx->stats.memory_bytes += idx->placement_capacity * sizeof(*idx->placements);
+    idx->stats.memory_bytes += idx->transform_capacity * sizeof(*idx->transforms);
     idx->built = 1;
     sys->hier_spatial_index = idx;
 
@@ -414,9 +636,10 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
                   idx->stats.linear_universe_count, idx->stats.blas_cell_count,
                   idx->stats.blas_node_count,
                   bytes_to_mib(idx->stats.memory_bytes), t_end - t_start);
-    ALEA_LOG_INFO("Hier spatial placement diagnostics: placements=%zu fill_cells=%zu lattice_cells=%zu transforms=%zu largest_universe=%d/%d cells",
-                  idx->stats.placement_count, idx->stats.fill_cell_count,
-                  idx->stats.lattice_cell_count, idx->stats.transform_count,
+    ALEA_LOG_INFO("Hier spatial placements: total=%zu root=%zu fill=%zu lattice=%zu max_depth=%d transforms=%zu largest_universe=%d/%d cells",
+                  idx->stats.placement_count, idx->stats.root_placement_count,
+                  idx->stats.fill_placement_count, idx->stats.lattice_placement_count,
+                  idx->stats.max_placement_depth, idx->stats.transform_count,
                   idx->stats.largest_universe_id, idx->stats.max_universe_cells);
 
     return 0;
