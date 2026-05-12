@@ -51,7 +51,7 @@ endif
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
 LDFLAGS = $(OPENMP_LDFLAGS) -lm
 
-TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter $(BIN_DIR)/nuc_plot
+TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter $(BIN_DIR)/nuc_plot $(BIN_DIR)/large_model_probe
 
 all: $(TOOLS)
 
@@ -63,6 +63,9 @@ $(BIN_DIR)/mc_plotter: mc_plotter.c
 
 $(BIN_DIR)/nuc_plot: nuc_plot.c
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a $(LDFLAGS)
+
+$(BIN_DIR)/large_model_probe: large_model_probe.c
+	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 clean:
 	rm -f $(TOOLS)
