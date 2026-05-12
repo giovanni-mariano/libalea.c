@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#define _POSIX_C_SOURCE 200112L
 #define ALEA_TEST_IMPLEMENTATION
 #include "alea_test.h"
 #include "alea.h"
@@ -9,6 +10,7 @@
 #include "core/alea_universe.h"
 
 TEST(universe_point_bvh_preserves_all_cells_order) {
+    setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "16", 1);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
@@ -36,9 +38,11 @@ TEST(universe_point_bvh_preserves_all_cells_order) {
     }
 
     alea_destroy(sys);
+    unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
 }
 
 TEST(universe_point_bvh_filters_by_bbox) {
+    setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "16", 1);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
@@ -65,6 +69,7 @@ TEST(universe_point_bvh_filters_by_bbox) {
     ASSERT_EQ(hits[0].depth, 0);
 
     alea_destroy(sys);
+    unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
 }
 
 TEST_MAIN()

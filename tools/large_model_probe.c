@@ -5,6 +5,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "core/alea_system.h"
+#include "core/alea_universe.h"
 #include "primitives/bbox.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +13,18 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
-#define POINT_BVH_THRESHOLD 16
+#define POINT_SAMPLE_THRESHOLD 16
+#define POINT_BVH_THRESHOLD 8192
+
+static size_t point_bvh_threshold(void) {
+    const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long value = strtoul(env, &end, 10);
+        if (end != env && value > 0) return (size_t)value;
+    }
+    return POINT_BVH_THRESHOLD;
+}
 
 static double now_seconds(void) {
     struct timeval tv;
@@ -80,6 +92,7 @@ static void print_universe_stats(const alea_system_t* sys) {
     size_t large = 0, large_lattice = 0, large_non_lattice = 0;
     size_t max_cells = 0, max_idx = 0;
     size_t total_indexed_cells = 0;
+    size_t threshold = point_bvh_threshold();
 
     for (size_t i = 0; i < sys->universes.count; i++) {
         const alea_universe_t* univ = &sys->universes.data[i];
@@ -89,7 +102,7 @@ static void print_universe_stats(const alea_system_t* sys) {
             max_cells = univ->cell_indices.count;
             max_idx = i;
         }
-        if (univ->cell_indices.count > POINT_BVH_THRESHOLD) {
+        if (univ->cell_indices.count > threshold) {
             large++;
             if (has_lattice) large_lattice++;
             else {
@@ -100,7 +113,7 @@ static void print_universe_stats(const alea_system_t* sys) {
     }
 
     printf("Universe stats:\n");
-    printf("  universes=%zu threshold=%d\n", sys->universes.count, POINT_BVH_THRESHOLD);
+    printf("  universes=%zu threshold=%zu\n", sys->universes.count, threshold);
     printf("  large=%zu large_non_lattice=%zu large_lattice_skipped=%zu\n",
            large, large_non_lattice, large_lattice);
     printf("  current-BLAS-eligible cells=%zu\n", total_indexed_cells);
@@ -115,6 +128,7 @@ static void print_universe_stats(const alea_system_t* sys) {
 
 static void run_center_queries(alea_system_t* sys, size_t max_queries) {
     size_t done = 0;
+    alea_universe_point_bvh_stats_reset();
     double t0 = now_seconds();
     size_t total_hits = 0;
     size_t errors = 0;
@@ -122,7 +136,7 @@ static void run_center_queries(alea_system_t* sys, size_t max_queries) {
     for (size_t ui = 0; ui < sys->universes.count && done < max_queries; ui++) {
         const alea_universe_t* univ = &sys->universes.data[ui];
         size_t lattice_cells = 0;
-        if (univ->cell_indices.count <= POINT_BVH_THRESHOLD ||
+        if (univ->cell_indices.count <= POINT_SAMPLE_THRESHOLD ||
             universe_has_lattice(sys, univ, &lattice_cells)) {
             continue;
         }
@@ -143,15 +157,28 @@ static void run_center_queries(alea_system_t* sys, size_t max_queries) {
     }
 
     double t1 = now_seconds();
+    alea_universe_point_bvh_stats_t stats;
+    alea_universe_point_bvh_stats_get(&stats);
     printf("Recursive center-query probe:\n");
     printf("  queries=%zu errors=%zu total_hits=%zu time=%.3f s avg=%.3f ms/query\n",
            done, errors, total_hits, t1 - t0,
            done ? (t1 - t0) * 1000.0 / (double)done : 0.0);
+    printf("  bvh: builds=%zu queries=%zu node_visits=%zu bbox_tests=%zu candidates=%zu\n",
+           stats.bvh_builds, stats.bvh_queries, stats.bvh_node_visits,
+           stats.bvh_bbox_tests, stats.bvh_candidates);
+    printf("  linear: universe_scans=%zu cell_tests=%zu exact_cell_tests=%zu\n",
+           stats.linear_universe_scans, stats.linear_cell_tests,
+           stats.exact_cell_tests);
+    printf("  averages: bvh_candidates/query=%.2f exact_tests/query=%.2f linear_cell_tests/query=%.2f\n",
+           stats.bvh_queries ? (double)stats.bvh_candidates / (double)stats.bvh_queries : 0.0,
+           done ? (double)stats.exact_cell_tests / (double)done : 0.0,
+           done ? (double)stats.linear_cell_tests / (double)done : 0.0);
 }
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s MODEL.mcnp [--queries N]\n", argv[0]);
+        fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
         return 2;
     }
 
@@ -163,6 +190,9 @@ int main(int argc, char** argv) {
     }
 
     alea_log_set_level(1);
+    const char* disabled = getenv("ALEA_DISABLE_UNIVERSE_POINT_BVH");
+    printf("Universe point BVH: %s\n",
+           (disabled && disabled[0] && strcmp(disabled, "0") != 0) ? "disabled" : "enabled");
 
     double t0 = now_seconds();
     mcnp_model_t* model = mcnp_load(argv[1]);

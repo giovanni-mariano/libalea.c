@@ -29,7 +29,7 @@
  * ============================================================================ */
 
 #define MAX_FLATTEN_DEPTH 100
-#define UNIVERSE_POINT_BVH_THRESHOLD 16
+#define UNIVERSE_POINT_BVH_THRESHOLD 8192
 #define UNIVERSE_POINT_BVH_LEAF_SIZE 8
 
 /* Debug trace flag - set via alea_set_debug_point_trace() (thread-local) */
@@ -51,6 +51,27 @@ typedef struct {
     alea_size_vec_t* candidate_positions;
     int error;
 } universe_point_query_ctx_t;
+
+static alea_universe_point_bvh_stats_t g_point_bvh_stats;
+
+static size_t universe_point_bvh_threshold(void) {
+    const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long value = strtoul(env, &end, 10);
+        if (end != env && value > 0) return (size_t)value;
+    }
+    return UNIVERSE_POINT_BVH_THRESHOLD;
+}
+
+void alea_universe_point_bvh_stats_reset(void) {
+    memset(&g_point_bvh_stats, 0, sizeof(g_point_bvh_stats));
+}
+
+void alea_universe_point_bvh_stats_get(alea_universe_point_bvh_stats_t* out) {
+    if (!out) return;
+    *out = g_point_bvh_stats;
+}
 
 static int find_all_cells_recursive(const alea_system_t* sys,
                                     double gx, double gy, double gz,
@@ -214,9 +235,14 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     if (!sys || !univ) return -1;
     if (univ->point_bvh_built) return 0;
     if (univ->point_bvh_disabled) return -1;
+    const char* disable_bvh = getenv("ALEA_DISABLE_UNIVERSE_POINT_BVH");
+    if (disable_bvh && disable_bvh[0] && strcmp(disable_bvh, "0") != 0) {
+        univ->point_bvh_disabled = true;
+        return -1;
+    }
 
     size_t cell_count = univ->cell_indices.count;
-    if (cell_count <= UNIVERSE_POINT_BVH_THRESHOLD ||
+    if (cell_count <= universe_point_bvh_threshold() ||
         universe_has_lattice_cells(sys, univ)) {
         univ->point_bvh_disabled = true;
         return -1;
@@ -261,6 +287,7 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
 
     free(items);
     univ->point_bvh_built = true;
+    g_point_bvh_stats.bvh_builds++;
     return 0;
 }
 
@@ -305,6 +332,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                         out_hits, max_hits, hit_count);
     }
 
+    g_point_bvh_stats.exact_cell_tests++;
     if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
         return 0;
     }
@@ -374,8 +402,10 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
 static void traverse_universe_point_bvh_node(universe_point_query_ctx_t* ctx,
                                              uint32_t node_idx) {
     if (ctx->error) return;
+    g_point_bvh_stats.bvh_node_visits++;
     const alea_universe_bvh_node_t* node = &ctx->univ->point_bvh_nodes.data[node_idx];
 
+    g_point_bvh_stats.bvh_bbox_tests++;
     if (!alea_bbox_contains_point(&node->bbox, ctx->lx, ctx->ly, ctx->lz)) {
         return;
     }
@@ -385,9 +415,11 @@ static void traverse_universe_point_bvh_node(universe_point_query_ctx_t* ctx,
             uint32_t cell_pos = ctx->univ->point_bvh_indices[node->left_or_first + i];
             uint32_t cell_idx = (uint32_t)ctx->univ->cell_indices.data[cell_pos];
             alea_bbox_t bbox = universe_cell_bbox((alea_system_t*)ctx->sys, cell_idx);
+            g_point_bvh_stats.bvh_bbox_tests++;
             if (!alea_bbox_contains_point(&bbox, ctx->lx, ctx->ly, ctx->lz)) {
                 continue;
             }
+            g_point_bvh_stats.bvh_candidates++;
             if (alea_vec_push(ctx->candidate_positions, (size_t)cell_pos, size_t) != 0) {
                 ctx->error = -1;
                 return;
@@ -1857,6 +1889,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
             .candidate_positions = &candidates,
             .error = 0
         };
+        g_point_bvh_stats.bvh_queries++;
         traverse_universe_point_bvh_node(&ctx, 0);
         if (!ctx.error && candidates.count > 1) {
             qsort(candidates.data, candidates.count, sizeof(size_t),
@@ -1880,6 +1913,8 @@ static int find_all_cells_recursive(const alea_system_t* sys,
     }
 
     /* Small/lattice-bearing universes keep the original linear scan. */
+    g_point_bvh_stats.linear_universe_scans++;
+    g_point_bvh_stats.linear_cell_tests += univ->cell_indices.count;
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         size_t cell_idx = univ->cell_indices.data[i];
         int rc = process_cell_for_all_cells_query(sys, cell_idx,

@@ -54,6 +54,20 @@ typedef struct {
 
 ALEA_VEC_DEFINE(alea_universe_vec, alea_universe_t);
 
+typedef struct {
+    size_t bvh_builds;
+    size_t bvh_queries;
+    size_t bvh_node_visits;
+    size_t bvh_bbox_tests;
+    size_t bvh_candidates;
+    size_t linear_universe_scans;
+    size_t linear_cell_tests;
+    size_t exact_cell_tests;
+} alea_universe_point_bvh_stats_t;
+
+void alea_universe_point_bvh_stats_reset(void);
+void alea_universe_point_bvh_stats_get(alea_universe_point_bvh_stats_t* out);
+
 /**
  * @brief Hash table for tracking primitive ID remapping during flatten
  *
