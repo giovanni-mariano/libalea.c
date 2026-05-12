@@ -136,6 +136,47 @@ static void assert_raycast_results_equivalent(alea_system_t* sys,
     alea_raycast_result_free(&cell_aware);
 }
 
+static void assert_hier_raycast_equivalent(alea_system_t* sys,
+                                           double ox, double oy, double oz,
+                                           double dx, double dy, double dz,
+                                           double t_max) {
+    alea_raycast_result_t canonical;
+    alea_raycast_result_t hier;
+    alea_raycast_result_init(&canonical);
+    alea_raycast_result_init(&hier);
+
+    ASSERT_EQ(alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, &canonical), 0);
+    ASSERT_EQ(alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &hier), 0);
+
+    ASSERT_EQ(hier.hits.count, canonical.hits.count);
+    for (size_t i = 0; i < canonical.hits.count; i++) {
+        ASSERT_NEAR(hier.hits.data[i].t, canonical.hits.data[i].t, 1e-9);
+        ASSERT_EQ(hier.hits.data[i].surface_id,
+                  canonical.hits.data[i].surface_id);
+    }
+
+    ASSERT_EQ(hier.segments.count, canonical.segments.count);
+    for (size_t i = 0; i < canonical.segments.count; i++) {
+        ASSERT_NEAR(hier.segments.data[i].t_enter,
+                    canonical.segments.data[i].t_enter, 1e-9);
+        ASSERT_NEAR(hier.segments.data[i].t_exit,
+                    canonical.segments.data[i].t_exit, 1e-9);
+        ASSERT_EQ(hier.segments.data[i].cell_id,
+                  canonical.segments.data[i].cell_id);
+        ASSERT_EQ(hier.segments.data[i].material_id,
+                  canonical.segments.data[i].material_id);
+        ASSERT_NEAR(hier.segments.data[i].density,
+                    canonical.segments.data[i].density, 1e-12);
+        ASSERT_EQ(hier.segments.data[i].enter_surface_id,
+                  canonical.segments.data[i].enter_surface_id);
+        ASSERT_EQ(hier.segments.data[i].exit_surface_id,
+                  canonical.segments.data[i].exit_surface_id);
+    }
+
+    alea_raycast_result_free(&canonical);
+    alea_raycast_result_free(&hier);
+}
+
 TEST(parse_simple_sphere) {
     mcnp_model_t* model = mcnp_load("tests/data/simple_sphere.mcnp");
     ASSERT_NOT_NULL(model);
@@ -194,7 +235,34 @@ TEST(raycast_descends_into_fill_universe) {
     ASSERT_EQ(result.segments.data[1].cell_id, 11);
     ASSERT_EQ(result.segments.data[1].material_id, 2);
 
+    assert_hier_raycast_equivalent(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                   10.0);
+
     alea_raycast_result_free(&result);
+    mcnp_model_destroy(model);
+}
+
+TEST(raycast_hier_transformed_fill_matches_flat) {
+    const char* input =
+        "Transformed fill ray test\n"
+        "1 0 -1 FILL=3 (5 0 0)\n"
+        "10 1 -1.0 -2 U=3\n"
+        "11 2 -2.0 2 U=3\n"
+        "\n"
+        "1 SO 20.0\n"
+        "2 SO 3.0\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    assert_hier_raycast_equivalent(sys, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                   10.0);
+
     mcnp_model_destroy(model);
 }
 
@@ -503,6 +571,7 @@ TEST(lattice_raycast) {
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
+    assert_hier_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
@@ -563,6 +632,7 @@ TEST(lattice_hex_raycast) {
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
+    assert_hier_raycast_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);

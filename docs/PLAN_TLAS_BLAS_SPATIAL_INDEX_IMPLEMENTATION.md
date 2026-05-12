@@ -305,18 +305,20 @@ Implementation notes:
 Tests:
 
 - raycast in a single root universe: done
-- raycast through a regular filled universe
-- raycast through a transformed fill
-- rectangular lattice raycast parity
-- hex lattice raycast parity
-- segment ordering and surface-crossing parity against existing raycast tests
+- raycast through a regular filled universe: done
+- raycast through a transformed fill: done
+- rectangular lattice raycast parity: done
+- hex lattice raycast parity: done
+- segment ordering and surface-crossing parity against existing raycast tests:
+  done for root, regular fill, transformed fill, rectangular lattice, and hex
+  lattice fixtures
 - no hidden flat spatial-index build in hierarchical raycast mode: done
 
 Exit criteria:
 
 - existing raycast tests pass in flat mode: done
 - hierarchical raycast parity tests pass for root, fill, transformed fill, and
-  lattice fixtures
+  lattice fixtures: done for current representative fixtures
 - E-lite can run at least one bounded/representative hierarchical raycast probe
   without flat instance materialization: done for
   `--hier-raycast -1 0 0 1 0 0 2` with peak RSS about 3.59 GiB
