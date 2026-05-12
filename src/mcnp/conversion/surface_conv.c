@@ -42,27 +42,76 @@ static double parse_coefficient(const char** cursor) {
     return value;
 }
 
-static bool torus_is_sphere(double major_radius, double axial_semiwidth,
-                            double minor_radius) {
+static bool torus_major_is_zero(double major_radius, double axial_semiwidth,
+                                double minor_radius) {
     if (axial_semiwidth <= 0.0 || minor_radius <= 0.0) return false;
 
     double scale = fmax(fabs(axial_semiwidth), fabs(minor_radius));
     if (scale < 1.0) scale = 1.0;
-    const double eps = 1e-12 * scale;
+    return fabs(major_radius) <= 1e-12 * scale;
+}
 
-    return fabs(major_radius) <= eps &&
-           fabs(axial_semiwidth - minor_radius) <= eps;
+static bool torus_is_sphere(double major_radius, double axial_semiwidth,
+                            double minor_radius) {
+    if (!torus_major_is_zero(major_radius, axial_semiwidth, minor_radius))
+        return false;
+
+    double scale = fmax(fabs(axial_semiwidth), fabs(minor_radius));
+    if (scale < 1.0) scale = 1.0;
+    return fabs(axial_semiwidth - minor_radius) <= 1e-12 * scale;
 }
 
 static void set_sphere_from_torus(alea_primitive_type_t* out_type,
                                   alea_primitive_data_t* out_data,
                                   double cx, double cy, double cz,
-                                  double radius) {
+                                  double radius,
+                                  int surface_id, const char* mnemonic) {
+    ALEA_LOG_WARN("Surface %d (%s): degenerate torus (major_radius=0, "
+                  "axial_semiwidth==minor_radius=%g) treated as sphere",
+                  surface_id, mnemonic, radius);
     *out_type = ALEA_PRIMITIVE_SPHERE;
     out_data->sphere.center_x = cx;
     out_data->sphere.center_y = cy;
     out_data->sphere.center_z = cz;
     out_data->sphere.radius = radius;
+}
+
+/* A=0 with B!=C: torus collapses to an ellipsoid of revolution.
+ * MCNP form (TX, axis=x): ((x-x0)/B)^2 + ((y-y0)^2+(z-z0)^2)/C^2 = 1.
+ * Encode as the general quadric:
+ *   inv_axial * (x_axis - c_axis)^2 + inv_perp * (sum of perpendicular squares) - 1 = 0
+ */
+static void set_spheroid_from_torus(alea_primitive_type_t* out_type,
+                                    alea_primitive_data_t* out_data,
+                                    alea_axis_t axis,
+                                    double cx, double cy, double cz,
+                                    double axial_semiwidth, double minor_radius,
+                                    int surface_id, const char* mnemonic) {
+    ALEA_LOG_WARN("Surface %d (%s): degenerate torus (major_radius=0, "
+                  "axial_semiwidth=%g, minor_radius=%g) treated as ellipsoid "
+                  "of revolution (quadric)",
+                  surface_id, mnemonic, axial_semiwidth, minor_radius);
+
+    const double inv_axial = 1.0 / (axial_semiwidth * axial_semiwidth);
+    const double inv_perp  = 1.0 / (minor_radius   * minor_radius);
+
+    double a = inv_perp, b = inv_perp, c = inv_perp;
+    if (axis == ALEA_AXIS_X) a = inv_axial;
+    else if (axis == ALEA_AXIS_Y) b = inv_axial;
+    else                          c = inv_axial;
+
+    *out_type = ALEA_PRIMITIVE_QUADRIC;
+    double* k = out_data->quadric.coeffs;
+    k[0] = a;                /* A x^2 */
+    k[1] = b;                /* B y^2 */
+    k[2] = c;                /* C z^2 */
+    k[3] = 0.0;              /* D xy  */
+    k[4] = 0.0;              /* E yz  */
+    k[5] = 0.0;              /* F xz  */
+    k[6] = -2.0 * a * cx;    /* G x   */
+    k[7] = -2.0 * b * cy;    /* H y   */
+    k[8] = -2.0 * c * cz;    /* I z   */
+    k[9] = a*cx*cx + b*cy*cy + c*cz*cz - 1.0;
 }
 
 /**
@@ -145,19 +194,145 @@ static bool validate_coefficient_count(int surface_id, const char* mnemonic,
 // AXISYMMETRIC SURFACE HELPER
 // ============================================================================
 
+static void set_axis_perp_plane(alea_axis_t axis, double a0,
+                                alea_primitive_type_t* out_type,
+                                alea_primitive_data_t* out_data) {
+    *out_type = ALEA_PRIMITIVE_PLANE;
+    out_data->plane.a = (axis == ALEA_AXIS_X) ? 1.0 : 0.0;
+    out_data->plane.b = (axis == ALEA_AXIS_Y) ? 1.0 : 0.0;
+    out_data->plane.c = (axis == ALEA_AXIS_Z) ? 1.0 : 0.0;
+    out_data->plane.d = -a0;
+}
+
+static void fill_quadric_from_axisymmetric(alea_axis_t axis,
+                                           double p, double qc, double s,
+                                           alea_primitive_data_t* out_data) {
+    /* perpendicular^2 - p*axis^2 - qc*axis - s = 0 */
+    double* k = out_data->quadric.coeffs;
+    k[0] = (axis == ALEA_AXIS_X) ? -p : 1.0;
+    k[1] = (axis == ALEA_AXIS_Y) ? -p : 1.0;
+    k[2] = (axis == ALEA_AXIS_Z) ? -p : 1.0;
+    k[3] = k[4] = k[5] = 0.0;
+    k[6] = (axis == ALEA_AXIS_X) ? -qc : 0.0;
+    k[7] = (axis == ALEA_AXIS_Y) ? -qc : 0.0;
+    k[8] = (axis == ALEA_AXIS_Z) ? -qc : 0.0;
+    k[9] = -s;
+}
+
+/* Reduce r^2 = p*a^2 + qc*a + s (axis-symmetric conic of revolution) to the
+ * simplest equivalent alea primitive. Falls back to a general quadric when no
+ * reduction applies. The three sample axis coordinates are used only for cone
+ * sheet selection.
+ *
+ * Cases:
+ *   p == 0, qc == 0  : cylinder (CX/CY/CZ) of radius sqrt(s)
+ *   p == 0, qc != 0  : paraboloid -> quadric
+ *   p > 0, K == 0    : cone (KX/KY/KZ), tan^2 = p, apex at a0 = -qc/(2p)
+ *   p > 0, K != 0    : hyperboloid -> quadric
+ *   p == -1, K > 0   : sphere centered at (a0,0,0)/(0,a0,0)/(0,0,a0), r=sqrt(K)
+ *                       (SX/SY/SZ; SO when a0 == 0)
+ *   p < 0,  K > 0    : spheroid -> quadric
+ *   other            : empty/degenerate -> quadric
+ *   where K = s - qc^2/(4p).
+ */
+static void simplify_axisymmetric_quadratic(alea_axis_t axis,
+                                            double p, double qc, double s,
+                                            double a1, double a2, double a3,
+                                            alea_primitive_type_t* out_type,
+                                            alea_primitive_data_t* out_data) {
+    const double scale = fmax(fmax(fabs(p), fabs(qc)), fmax(fabs(s), 1.0));
+    const double eps = 1e-10 * scale;
+
+    /* Cylinder: r^2 = s (constant) */
+    if (fabs(p) <= eps && fabs(qc) <= eps && s > eps) {
+        double radius = sqrt(s);
+        if (axis == ALEA_AXIS_X) {
+            *out_type = ALEA_PRIMITIVE_CYLINDER_X;
+            out_data->cyl_x.center_y = 0.0;
+            out_data->cyl_x.center_z = 0.0;
+            out_data->cyl_x.radius = radius;
+        } else if (axis == ALEA_AXIS_Y) {
+            *out_type = ALEA_PRIMITIVE_CYLINDER_Y;
+            out_data->cyl_y.center_x = 0.0;
+            out_data->cyl_y.center_z = 0.0;
+            out_data->cyl_y.radius = radius;
+        } else {
+            *out_type = ALEA_PRIMITIVE_CYLINDER_Z;
+            out_data->cyl_z.center_x = 0.0;
+            out_data->cyl_z.center_y = 0.0;
+            out_data->cyl_z.radius = radius;
+        }
+        return;
+    }
+
+    if (fabs(p) > eps) {
+        const double a0 = -qc / (2.0 * p);
+        const double K = s - (qc * qc) / (4.0 * p);
+        const double K_eps = 1e-10 * fmax(fabs(s), fabs(qc * qc / (4.0 * p)) + 1.0);
+
+        /* Cone: r^2 = p * (a - a0)^2, with p > 0 */
+        if (p > 0.0 && fabs(K) <= K_eps) {
+            int sheet = 0;
+            if (a1 > a0 && a2 > a0 && a3 > a0)      sheet =  1;
+            else if (a1 < a0 && a2 < a0 && a3 < a0) sheet = -1;
+
+            if (axis == ALEA_AXIS_X) {
+                *out_type = ALEA_PRIMITIVE_CONE_X;
+                out_data->cone_x.apex_x = a0;
+                out_data->cone_x.apex_y = 0.0;
+                out_data->cone_x.apex_z = 0.0;
+                out_data->cone_x.tan_angle_sq = p;
+                out_data->cone_x.sheet_selection = sheet;
+            } else if (axis == ALEA_AXIS_Y) {
+                *out_type = ALEA_PRIMITIVE_CONE_Y;
+                out_data->cone_y.apex_x = 0.0;
+                out_data->cone_y.apex_y = a0;
+                out_data->cone_y.apex_z = 0.0;
+                out_data->cone_y.tan_angle_sq = p;
+                out_data->cone_y.sheet_selection = sheet;
+            } else {
+                *out_type = ALEA_PRIMITIVE_CONE_Z;
+                out_data->cone_z.apex_x = 0.0;
+                out_data->cone_z.apex_y = 0.0;
+                out_data->cone_z.apex_z = a0;
+                out_data->cone_z.tan_angle_sq = p;
+                out_data->cone_z.sheet_selection = sheet;
+            }
+            return;
+        }
+
+        /* Sphere: (a-a0)^2 + r^2 = K, requires p == -1, K > 0 */
+        if (fabs(p + 1.0) <= 1e-10 && K > K_eps) {
+            *out_type = ALEA_PRIMITIVE_SPHERE;
+            out_data->sphere.center_x = (axis == ALEA_AXIS_X) ? a0 : 0.0;
+            out_data->sphere.center_y = (axis == ALEA_AXIS_Y) ? a0 : 0.0;
+            out_data->sphere.center_z = (axis == ALEA_AXIS_Z) ? a0 : 0.0;
+            out_data->sphere.radius = sqrt(K);
+            return;
+        }
+    }
+
+    /* Fallback: general quadric of revolution */
+    *out_type = ALEA_PRIMITIVE_QUADRIC;
+    fill_quadric_from_axisymmetric(axis, p, qc, s, out_data);
+}
+
 /**
- * @brief Build plane/cylinder/cone/quadric from point pairs
- * 
+ * @brief Build plane/cylinder/cone/sphere/quadric from point pairs
+ *
  * Used by X, Y, Z cards which define surfaces by (axis_coord, radius) pairs.
  * - 1 point  -> plane perpendicular to axis
  * - 2 points -> cylinder (if radii equal) or cone (if radii differ)
- * - 3 points -> general quadric (conic section of revolution)
+ * - 3 points -> reduced via simplify_axisymmetric_quadratic to the simplest
+ *               of cylinder, sphere, cone, or general quadric
  */
 static bool build_axisymmetric_surface(
     alea_axis_t axis,
     const char* coeffs,
     alea_primitive_type_t* out_type,
-    alea_primitive_data_t* out_data
+    alea_primitive_data_t* out_data,
+    int surface_id,
+    const char* mnemonic
 ) {
     /* Parse up to 3 (coord, radius) pairs */
     double pts[6] = {0};
@@ -176,8 +351,11 @@ static bool build_axisymmetric_surface(
     }
 
     int n_points = count / 2;
-    if (n_points < 1 || n_points > 3)
+    if (n_points < 1 || n_points > 3) {
+        ALEA_LOG_ERROR("Surface %d (%s): expected 1-3 (axis,radius) pairs, "
+                       "got %d coefficients", surface_id, mnemonic, count);
         return false;
+    }
 
     double a1 = pts[0], r1 = pts[1];
     double a2 = pts[2], r2 = pts[3];
@@ -185,16 +363,24 @@ static bool build_axisymmetric_surface(
 
     /* 1 POINT -> PLANE */
     if (n_points == 1) {
-        *out_type = ALEA_PRIMITIVE_PLANE;
-        out_data->plane.a = (axis == ALEA_AXIS_X) ? 1.0 : 0.0;
-        out_data->plane.b = (axis == ALEA_AXIS_Y) ? 1.0 : 0.0;
-        out_data->plane.c = (axis == ALEA_AXIS_Z) ? 1.0 : 0.0;
-        out_data->plane.d = -a1;
+        set_axis_perp_plane(axis, a1, out_type, out_data);
         return true;
     }
 
-    /* 2 POINTS -> CYLINDER OR CONE */
+    /* 2 POINTS -> PLANE (degenerate), CYLINDER, or CONE */
     if (n_points == 2) {
+        /* Two distinct radii at the same axis coordinate force a plane
+         * perpendicular to the axis at a1 (PX/PY/PZ). */
+        if (fabs(a1 - a2) < 1e-10) {
+            if (fabs(r1 - r2) < 1e-10) {
+                ALEA_LOG_ERROR("Surface %d (%s): two coincident (a,r) points "
+                               "(a=%g, r=%g) — cannot define a surface",
+                               surface_id, mnemonic, a1, r1);
+                return false;
+            }
+            set_axis_perp_plane(axis, a1, out_type, out_data);
+            return true;
+        }
         if (fabs(r1 - r2) < 1e-10) {
             /* Cylinder */
             if (axis == ALEA_AXIS_X) {
@@ -255,30 +441,58 @@ static bool build_axisymmetric_surface(
         return true;
     }
 
-    /* 3 POINTS -> QUADRIC */
+    /* 3 POINTS -> conic of revolution: r^2 = p*a^2 + q*a + s.
+     * Try to reduce to a simpler primitive (plane/cylinder/sphere/cone) before
+     * falling back to a general quadric. */
+    {
+        const double a_eps = 1e-10 * fmax(fmax(fabs(a1), fabs(a2)),
+                                          fmax(fabs(a3), 1.0));
+        const bool eq12 = fabs(a1 - a2) <= a_eps;
+        const bool eq13 = fabs(a1 - a3) <= a_eps;
+        const bool eq23 = fabs(a2 - a3) <= a_eps;
+        if (eq12 && eq13) {
+            /* All three points lie at the same axis coordinate -> plane.
+             * Distinct radii at the same a force a plane perpendicular to
+             * the axis. If all radii also coincide, it's a single circle
+             * (degenerate, can't define a unique surface). */
+            const double r_eps = 1e-10 * fmax(fmax(fabs(r1), fabs(r2)),
+                                              fmax(fabs(r3), 1.0));
+            if (fabs(r1 - r2) <= r_eps && fabs(r1 - r3) <= r_eps) {
+                ALEA_LOG_ERROR("Surface %d (%s): three coincident (a,r) "
+                               "points (a=%g, r=%g) — cannot define a surface",
+                               surface_id, mnemonic, a1, r1);
+                return false;
+            }
+            set_axis_perp_plane(axis, a1, out_type, out_data);
+            return true;
+        }
+        if (eq12 || eq13 || eq23) {
+            /* Two equal axis coords + one different: inconsistent (no
+             * axisymmetric surface fits all three). */
+            ALEA_LOG_ERROR("Surface %d (%s): inconsistent points — two share "
+                           "axis coord but the third does not "
+                           "(a=[%g, %g, %g], r=[%g, %g, %g])",
+                           surface_id, mnemonic, a1, a2, a3, r1, r2, r3);
+            return false;
+        }
+    }
+
     double denom = (a1-a2)*(a1-a3)*(a2-a3);
-    if (fabs(denom) < 1e-20)
+    if (fabs(denom) < 1e-20) {
+        ALEA_LOG_ERROR("Surface %d (%s): degenerate axis coordinates "
+                       "(a=[%g, %g, %g]) — cannot interpolate r^2",
+                       surface_id, mnemonic, a1, a2, a3);
         return false;
+    }
 
     double r1sq = r1*r1, r2sq = r2*r2, r3sq = r3*r3;
 
-    /* Lagrange interpolation: r^2 = A*a^2 + B*a + C */
-    double A = (r1sq*(a2-a3) + r2sq*(a3-a1) + r3sq*(a1-a2)) / denom;
-    double B = (r1sq*(a3*a3-a2*a2) + r2sq*(a1*a1-a3*a3) + r3sq*(a2*a2-a1*a1)) / denom;
-    double C = (r1sq*a2*a3*(a2-a3) + r2sq*a1*a3*(a3-a1) + r3sq*a1*a2*(a1-a2)) / denom;
+    /* Lagrange interpolation: r^2 = p*a^2 + q*a + s */
+    double p = (r1sq*(a2-a3) + r2sq*(a3-a1) + r3sq*(a1-a2)) / denom;
+    double qc = (r1sq*(a3*a3-a2*a2) + r2sq*(a1*a1-a3*a3) + r3sq*(a2*a2-a1*a1)) / denom;
+    double s = (r1sq*a2*a3*(a2-a3) + r2sq*a1*a3*(a3-a1) + r3sq*a1*a2*(a1-a2)) / denom;
 
-    /* Convert to quadric: perpendicular^2 - A*axis^2 - B*axis - C = 0 */
-    *out_type = ALEA_PRIMITIVE_QUADRIC;
-    double* q = out_data->quadric.coeffs;
-    q[0] = (axis == ALEA_AXIS_X) ? -A : 1.0;  /* x^2 */
-    q[1] = (axis == ALEA_AXIS_Y) ? -A : 1.0;  /* y^2 */
-    q[2] = (axis == ALEA_AXIS_Z) ? -A : 1.0;  /* z^2 */
-    q[3] = q[4] = q[5] = 0.0;            /* xy, yz, xz */
-    q[6] = (axis == ALEA_AXIS_X) ? -B : 0.0;  /* x */
-    q[7] = (axis == ALEA_AXIS_Y) ? -B : 0.0;  /* y */
-    q[8] = (axis == ALEA_AXIS_Z) ? -B : 0.0;  /* z */
-    q[9] = -C;                            /* constant */
-
+    simplify_axisymmetric_quadratic(axis, p, qc, s, a1, a2, a3, out_type, out_data);
     return true;
 }
 
@@ -376,6 +590,8 @@ static bool surface_to_primitive(
     const char* coeffs = surf->coefficients_str;
 
     if (!coeffs) {
+        ALEA_LOG_ERROR("Surface %d (%s): missing coefficient string",
+                       surf->surface_id, mnemonic);
         return false;
     }
 
@@ -544,7 +760,8 @@ static bool surface_to_primitive(
         out_data->cone_x.apex_z = 0.0;
         double t_sq = parse_coefficient(&cursor);
         if (t_sq < 0) {
-            ALEA_LOG_WARN("Negative t² in KX surface %d", surf->surface_id);
+            ALEA_LOG_ERROR("Surface %d (KX): negative t² (%g) — invalid cone",
+                           surf->surface_id, t_sq);
             return false;
         }
         out_data->cone_x.tan_angle_sq = t_sq;
@@ -557,7 +774,8 @@ static bool surface_to_primitive(
         out_data->cone_y.apex_z = 0.0;
         double t_sq = parse_coefficient(&cursor);
         if (t_sq < 0) {
-            ALEA_LOG_WARN("Negative t² in KY surface %d", surf->surface_id);
+            ALEA_LOG_ERROR("Surface %d (KY): negative t² (%g) — invalid cone",
+                           surf->surface_id, t_sq);
             return false;
         }
         out_data->cone_y.tan_angle_sq = t_sq;
@@ -570,7 +788,8 @@ static bool surface_to_primitive(
         out_data->cone_z.apex_z = parse_coefficient(&cursor);
         double t_sq = parse_coefficient(&cursor);
         if (t_sq < 0) {
-            ALEA_LOG_WARN("Negative t² in KZ surface %d", surf->surface_id);
+            ALEA_LOG_ERROR("Surface %d (KZ): negative t² (%g) — invalid cone",
+                           surf->surface_id, t_sq);
             return false;
         }
         out_data->cone_z.tan_angle_sq = t_sq;
@@ -587,7 +806,8 @@ static bool surface_to_primitive(
         out_data->cone_x.apex_z = parse_coefficient(&cursor);
         double t_sq = parse_coefficient(&cursor);
         if (t_sq < 0) {
-            ALEA_LOG_WARN("Negative t² in K/X surface %d", surf->surface_id);
+            ALEA_LOG_ERROR("Surface %d (K/X): negative t² (%g) — invalid cone",
+                           surf->surface_id, t_sq);
             return false;
         }
         out_data->cone_x.tan_angle_sq = t_sq;
@@ -600,7 +820,8 @@ static bool surface_to_primitive(
         out_data->cone_y.apex_z = parse_coefficient(&cursor);
         double t_sq = parse_coefficient(&cursor);
         if (t_sq < 0) {
-            ALEA_LOG_WARN("Negative t² in K/Y surface %d", surf->surface_id);
+            ALEA_LOG_ERROR("Surface %d (K/Y): negative t² (%g) — invalid cone",
+                           surf->surface_id, t_sq);
             return false;
         }
         out_data->cone_y.tan_angle_sq = t_sq;
@@ -613,7 +834,8 @@ static bool surface_to_primitive(
         out_data->cone_z.apex_z = parse_coefficient(&cursor);
         double t_sq = parse_coefficient(&cursor);
         if (t_sq < 0) {
-            ALEA_LOG_WARN("Negative t² in K/Z surface %d", surf->surface_id);
+            ALEA_LOG_ERROR("Surface %d (K/Z): negative t² (%g) — invalid cone",
+                           surf->surface_id, t_sq);
             return false;
         }
         out_data->cone_z.tan_angle_sq = t_sq;
@@ -806,7 +1028,12 @@ static bool surface_to_primitive(
         double axial_semiwidth = parse_coefficient(&cursor);
         double minor_radius = parse_coefficient(&cursor);
         if (torus_is_sphere(major_radius, axial_semiwidth, minor_radius)) {
-            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth);
+            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth,
+                                  surf->surface_id, "TX");
+        } else if (torus_major_is_zero(major_radius, axial_semiwidth, minor_radius)) {
+            set_spheroid_from_torus(out_type, out_data, ALEA_AXIS_X,
+                                    cx, cy, cz, axial_semiwidth, minor_radius,
+                                    surf->surface_id, "TX");
         } else {
             *out_type = ALEA_PRIMITIVE_TORUS_X;
             out_data->torus.axis = ALEA_AXIS_X;
@@ -826,7 +1053,12 @@ static bool surface_to_primitive(
         double axial_semiwidth = parse_coefficient(&cursor);
         double minor_radius = parse_coefficient(&cursor);
         if (torus_is_sphere(major_radius, axial_semiwidth, minor_radius)) {
-            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth);
+            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth,
+                                  surf->surface_id, "TY");
+        } else if (torus_major_is_zero(major_radius, axial_semiwidth, minor_radius)) {
+            set_spheroid_from_torus(out_type, out_data, ALEA_AXIS_Y,
+                                    cx, cy, cz, axial_semiwidth, minor_radius,
+                                    surf->surface_id, "TY");
         } else {
             *out_type = ALEA_PRIMITIVE_TORUS_Y;
             out_data->torus.axis = ALEA_AXIS_Y;
@@ -846,7 +1078,12 @@ static bool surface_to_primitive(
         double axial_semiwidth = parse_coefficient(&cursor);
         double minor_radius = parse_coefficient(&cursor);
         if (torus_is_sphere(major_radius, axial_semiwidth, minor_radius)) {
-            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth);
+            set_sphere_from_torus(out_type, out_data, cx, cy, cz, axial_semiwidth,
+                                  surf->surface_id, "TZ");
+        } else if (torus_major_is_zero(major_radius, axial_semiwidth, minor_radius)) {
+            set_spheroid_from_torus(out_type, out_data, ALEA_AXIS_Z,
+                                    cx, cy, cz, axial_semiwidth, minor_radius,
+                                    surf->surface_id, "TZ");
         } else {
             *out_type = ALEA_PRIMITIVE_TORUS_Z;
             out_data->torus.axis = ALEA_AXIS_Z;
@@ -900,20 +1137,23 @@ static bool surface_to_primitive(
     // ========================================================================
     
     } else if (alea_strcasecmp(mnemonic, "x") == 0) {
-        if (!build_axisymmetric_surface(ALEA_AXIS_X, coeffs, out_type, out_data))
+        if (!build_axisymmetric_surface(ALEA_AXIS_X, coeffs, out_type, out_data,
+                                        surf->surface_id, "X"))
             return false;
-            
+
     } else if (alea_strcasecmp(mnemonic, "y") == 0) {
-        if (!build_axisymmetric_surface(ALEA_AXIS_Y, coeffs, out_type, out_data))
+        if (!build_axisymmetric_surface(ALEA_AXIS_Y, coeffs, out_type, out_data,
+                                        surf->surface_id, "Y"))
             return false;
-            
+
     } else if (alea_strcasecmp(mnemonic, "z") == 0) {
-        if (!build_axisymmetric_surface(ALEA_AXIS_Z, coeffs, out_type, out_data))
+        if (!build_axisymmetric_surface(ALEA_AXIS_Z, coeffs, out_type, out_data,
+                                        surf->surface_id, "Z"))
             return false;
 
     } else {
-        ALEA_LOG_WARN("Unsupported surface type '%s' for surface %d",
-               mnemonic, surf->surface_id);
+        ALEA_LOG_ERROR("Surface %d: unsupported surface type '%s'",
+                       surf->surface_id, mnemonic);
         return false;
     }
     
