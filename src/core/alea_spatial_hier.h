@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "alea_types.h"
+#include "core/alea_spatial.h"
 
 typedef struct alea_system alea_system_t;
 typedef struct alea_hier_spatial_index alea_hier_spatial_index_t;
@@ -49,5 +50,17 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           double z,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits);
+int alea_hier_spatial_query_region(alea_system_t* sys,
+                                   const alea_bbox_t* query_bbox,
+                                   alea_spatial_hit_t* out_hits,
+                                   size_t max_hits);
+int alea_hier_spatial_query_slice_z(alea_system_t* sys,
+                                    double z,
+                                    double x_min,
+                                    double x_max,
+                                    double y_min,
+                                    double y_max,
+                                    alea_spatial_hit_t* out_hits,
+                                    size_t max_hits);
 
 #endif /* ALEA_SPATIAL_HIER_H */

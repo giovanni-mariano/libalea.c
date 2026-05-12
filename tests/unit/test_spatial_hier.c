@@ -141,6 +141,16 @@ static void assert_hits_match(const alea_cell_hit_t* a,
     }
 }
 
+static int spatial_hits_contain_cell(const alea_spatial_hit_t* hits,
+                                     int count,
+                                     int cell_id,
+                                     int depth) {
+    for (int i = 0; i < count; i++) {
+        if (hits[i].cell_id == cell_id && hits[i].depth == depth) return 1;
+    }
+    return 0;
+}
+
 TEST(hier_spatial_point_query_matches_recursive_simple) {
     setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -246,6 +256,81 @@ TEST(hier_spatial_point_query_matches_recursive_lattice) {
     }
 
     mcnp_model_destroy(model);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_region_query_matches_flat_simple) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    for (int i = 0; i < 4; i++) {
+        int s = alea_sphere_surface(sys, i + 1, (double)i * 5.0, 0.0, 0.0, 1.0);
+        ASSERT(s >= 0);
+        const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+        ASSERT_NOT_NULL(surf);
+        int c = alea_add_cell(sys, i + 1, surf->neg_node, mat, 1.0, 0);
+        ASSERT(c >= 0);
+    }
+
+    ASSERT_EQ(alea_spatial_index_build(sys), 0);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_bbox_t query = {-1.5, 6.5, -2.0, 2.0, -2.0, 2.0};
+    alea_spatial_hit_t flat[16];
+    alea_spatial_hit_t hier[16];
+    int nf = alea_spatial_query_region(sys, &query, flat, 16);
+    int nh = alea_hier_spatial_query_region(sys, &query, hier, 16);
+    ASSERT_EQ(nh, nf);
+    ASSERT(spatial_hits_contain_cell(hier, nh, 1, 0));
+    ASSERT(spatial_hits_contain_cell(hier, nh, 2, 0));
+
+    alea_destroy(sys);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_slice_query_matches_flat_fill) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int outer_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(outer_s >= 0);
+    ASSERT(inner_s >= 0);
+
+    const alea_surface_entry_t* outer = alea_surface_at(sys, outer_s);
+    const alea_surface_entry_t* inner = alea_surface_at(sys, inner_s);
+    ASSERT_NOT_NULL(outer);
+    ASSERT_NOT_NULL(inner);
+
+    int container = alea_add_cell(sys, 1, outer->neg_node, mat, 1.0, 0);
+    int terminal = alea_add_cell(sys, 2, inner->neg_node, mat, 1.0, 10);
+    ASSERT(container >= 0);
+    ASSERT(terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+
+    ASSERT_EQ(alea_spatial_index_build(sys), 0);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_spatial_hit_t flat[16];
+    alea_spatial_hit_t hier[16];
+    int nf = alea_spatial_query_slice_z(sys, 0.0, -3.0, 3.0, -3.0, 3.0,
+                                        flat, 16);
+    int nh = alea_hier_spatial_query_slice_z(sys, 0.0, -3.0, 3.0, -3.0, 3.0,
+                                             hier, 16);
+    ASSERT_EQ(nh, nf);
+    ASSERT(spatial_hits_contain_cell(hier, nh, 2, 1));
+
+    alea_destroy(sys);
     unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
