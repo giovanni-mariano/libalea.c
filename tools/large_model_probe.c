@@ -176,21 +176,80 @@ static void run_center_queries(alea_system_t* sys, size_t max_queries) {
            done ? (double)stats.linear_cell_tests / (double)done : 0.0);
 }
 
+static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
+    if (alea_hier_spatial_index_build(sys) != 0) {
+        fprintf(stderr, "hierarchical spatial build failed: %s\n", alea_error());
+        return;
+    }
+
+    size_t done = 0;
+    size_t total_hits = 0;
+    size_t errors = 0;
+    double t0 = now_seconds();
+
+    for (size_t ui = 0; ui < sys->universes.count && done < max_queries; ui++) {
+        const alea_universe_t* univ = &sys->universes.data[ui];
+        size_t lattice_cells = 0;
+        if (univ->cell_indices.count <= POINT_SAMPLE_THRESHOLD ||
+            universe_has_lattice(sys, univ, &lattice_cells)) {
+            continue;
+        }
+
+        for (size_t i = 0; i < univ->cell_indices.count && done < max_queries; i++) {
+            size_t cell_idx = univ->cell_indices.data[i];
+            alea_bbox_t bbox = cell_bbox(sys, cell_idx);
+            if (!alea_bbox_is_valid(&bbox)) continue;
+            double x = 0.5 * (bbox.min_x + bbox.max_x);
+            double y = 0.5 * (bbox.min_y + bbox.max_y);
+            double z = 0.5 * (bbox.min_z + bbox.max_z);
+            alea_cell_hit_t hits[64];
+            int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z, hits, 64);
+            if (n < 0) errors++;
+            else total_hits += (size_t)n;
+            done++;
+        }
+    }
+
+    double t1 = now_seconds();
+    const alea_hier_spatial_stats_t* stats =
+        alea_hier_spatial_index_stats(sys->hier_spatial_index);
+    printf("Hierarchical center-query probe:\n");
+    printf("  queries=%zu errors=%zu total_hits=%zu time=%.3f s avg=%.3f ms/query\n",
+           done, errors, total_hits, t1 - t0,
+           done ? (t1 - t0) * 1000.0 / (double)done : 0.0);
+    if (stats) {
+        printf("  bvh: queries=%zu node_visits=%zu bbox_tests=%zu candidates=%zu\n",
+               stats->point_blas_queries, stats->point_blas_node_visits,
+               stats->point_bbox_tests, stats->point_candidates);
+        printf("  exact_tests=%zu linear_scans=%zu linear_cell_tests=%zu\n",
+               stats->point_exact_tests, stats->point_linear_scans,
+               stats->point_linear_cell_tests);
+        printf("  averages: candidates/query=%.2f exact_tests/query=%.2f\n",
+               stats->point_blas_queries
+                   ? (double)stats->point_candidates / (double)stats->point_blas_queries
+                   : 0.0,
+               done ? (double)stats->point_exact_tests / (double)done : 0.0);
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N]\n", argv[0]);
         fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
         fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
     }
 
     size_t queries = 0;
+    size_t hier_queries = 0;
     int hier_build = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--queries") == 0 && i + 1 < argc) {
             queries = (size_t)strtoull(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--hier-build") == 0) {
             hier_build = 1;
+        } else if (strcmp(argv[i], "--hier-queries") == 0 && i + 1 < argc) {
+            hier_queries = (size_t)strtoull(argv[++i], NULL, 10);
         }
     }
 
@@ -255,6 +314,11 @@ int main(int argc, char** argv) {
     if (queries > 0) {
         run_center_queries(sys, queries);
         printf("  peak_rss_after_queries=%ld KiB\n", peak_rss_kib());
+    }
+
+    if (hier_queries > 0) {
+        run_hier_center_queries(sys, hier_queries);
+        printf("  peak_rss_after_hier_queries=%ld KiB\n", peak_rss_kib());
     }
 
     mcnp_model_destroy(model);

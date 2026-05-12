@@ -6,6 +6,7 @@
 #define ALEA_TEST_IMPLEMENTATION
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
 
@@ -124,6 +125,127 @@ TEST(hier_spatial_collects_fill_placements_without_terminals) {
     ASSERT_EQ(stats->max_placement_depth, 1);
 
     alea_destroy(sys);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+static void assert_hits_match(const alea_cell_hit_t* a,
+                              const alea_cell_hit_t* b,
+                              int count) {
+    for (int i = 0; i < count; i++) {
+        ASSERT_EQ(a[i].cell_id, b[i].cell_id);
+        ASSERT_EQ(a[i].cell_index, b[i].cell_index);
+        ASSERT_EQ(a[i].material_id, b[i].material_id);
+        ASSERT_EQ(a[i].universe_id, b[i].universe_id);
+        ASSERT_EQ(a[i].fill_universe, b[i].fill_universe);
+        ASSERT_EQ(a[i].depth, b[i].depth);
+    }
+}
+
+TEST(hier_spatial_point_query_matches_recursive_simple) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    for (int i = 0; i < 8; i++) {
+        int s = alea_sphere_surface(sys, i + 1, (double)i * 5.0, 0.0, 0.0, 1.5);
+        ASSERT(s >= 0);
+        const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+        ASSERT_NOT_NULL(surf);
+        int c = alea_add_cell(sys, i + 1, surf->neg_node, mat, 1.0, 0);
+        ASSERT(c >= 0);
+    }
+
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_cell_hit_t ref[8];
+    alea_cell_hit_t got[8];
+    int nr = alea_find_all_cells_at_point_recursive(sys, 10.0, 0.0, 0.0, ref, 8);
+    int ng = alea_hier_spatial_find_cells_at_point(sys, 10.0, 0.0, 0.0, got, 8);
+    ASSERT_EQ(ng, nr);
+    assert_hits_match(ref, got, nr);
+
+    alea_destroy(sys);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_point_query_matches_recursive_fill) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int outer_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(outer_s >= 0);
+    ASSERT(inner_s >= 0);
+
+    const alea_surface_entry_t* outer = alea_surface_at(sys, outer_s);
+    const alea_surface_entry_t* inner = alea_surface_at(sys, inner_s);
+    ASSERT_NOT_NULL(outer);
+    ASSERT_NOT_NULL(inner);
+
+    int container = alea_add_cell(sys, 1, outer->neg_node, mat, 1.0, 0);
+    int terminal = alea_add_cell(sys, 2, inner->neg_node, mat, 1.0, 10);
+    ASSERT(container >= 0);
+    ASSERT(terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_cell_hit_t ref[8];
+    alea_cell_hit_t got[8];
+    int nr = alea_find_all_cells_at_point_recursive(sys, 0.0, 0.0, 0.0, ref, 8);
+    int ng = alea_hier_spatial_find_cells_at_point(sys, 0.0, 0.0, 0.0, got, 8);
+    ASSERT_EQ(ng, nr);
+    assert_hits_match(ref, got, nr);
+
+    alea_destroy(sys);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_point_query_matches_recursive_lattice) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    const double points[][3] = {
+        {0.0, 0.0, 0.0},
+        {0.5, 0.5, 0.0},
+        {2.0, 0.0, 0.0},
+        {2.5, 0.5, 0.0},
+        {4.0, 0.0, 0.0},
+        {0.0, 2.0, 0.0}
+    };
+
+    for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); i++) {
+        alea_cell_hit_t ref[8];
+        alea_cell_hit_t got[8];
+        int nr = alea_find_all_cells_at_point_recursive(sys,
+                                                        points[i][0],
+                                                        points[i][1],
+                                                        points[i][2],
+                                                        ref, 8);
+        int ng = alea_hier_spatial_find_cells_at_point(sys,
+                                                       points[i][0],
+                                                       points[i][1],
+                                                       points[i][2],
+                                                       got, 8);
+        ASSERT_EQ(ng, nr);
+        assert_hits_match(ref, got, nr);
+    }
+
+    mcnp_model_destroy(model);
     unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 

@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "core/alea_spatial_hier.h"
+#include "core/alea_eval.h"
 #include "core/alea_system.h"
 #include "core/alea_surface.h"
 #include "primitives/bbox.h"
 #include "util/alea_log.h"
 #include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,9 @@
 #define HIER_BVH_LEAF_SIZE 4
 #define HIER_DEFAULT_BLAS_THRESHOLD 1
 #define HIER_MAX_PLACEMENT_DEPTH 64
+#ifndef M_SQRT3
+#define M_SQRT3 1.73205080756887729353
+#endif
 
 enum {
     HIER_PLACEMENT_ROOT = 1u << 0,
@@ -80,6 +85,17 @@ typedef struct {
     double centroid[3];
 } hier_bvh_item_t;
 
+typedef struct {
+    alea_system_t* sys;
+    alea_hier_spatial_index_t* idx;
+    const hier_universe_blas_t* blas;
+    double x;
+    double y;
+    double z;
+    alea_size_vec_t* candidates;
+    int error;
+} hier_point_query_ctx_t;
+
 static double monotonic_seconds(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -122,6 +138,33 @@ static alea_bbox_t local_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
     }
 
     return bbox;
+}
+
+static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
+    if (cell->lat_type == 1) {
+        int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+        int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+        int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+        return (alea_bbox_t){
+            cell->lat_lower_left[0],
+            cell->lat_lower_left[0] + (double)ni * cell->lat_pitch[0],
+            cell->lat_lower_left[1],
+            cell->lat_lower_left[1] + (double)nj * cell->lat_pitch[1],
+            cell->lat_lower_left[2],
+            cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2]
+        };
+    }
+
+    /* Hex lattice bounds are intentionally conservative. The exact element
+     * lookup still decides whether the point maps to a filled universe. */
+    double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
+    int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    double extent = (double)(ni + nj + 2) * p;
+    double zmax = (nk == 1) ? p : cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2];
+    return (alea_bbox_t){-extent, extent, -extent, extent,
+                         cell->lat_lower_left[2], zmax};
 }
 
 static alea_bbox_t bbox_transform(const alea_bbox_t* bbox, const alea_matrix_t* mat) {
@@ -202,6 +245,12 @@ static int best_split_axis(const hier_bvh_item_t* items,
     if (dx >= dy && dx >= dz) return 0;
     if (dy >= dz) return 1;
     return 2;
+}
+
+static int compare_size_t_ascending(const void* a, const void* b) {
+    const size_t* ia = (const size_t*)a;
+    const size_t* ib = (const size_t*)b;
+    return (*ia > *ib) - (*ia < *ib);
 }
 
 static void quickselect(hier_bvh_item_t* items,
@@ -309,7 +358,10 @@ static int build_universe_blas(alea_system_t* sys,
 
     for (size_t i = 0; i < blas->cell_count; i++) {
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
-        alea_bbox_t bbox = local_cell_bbox(sys, cell_index);
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        alea_bbox_t bbox = (cell->lat_type != 0 && cell->lat_fill)
+            ? lattice_container_bbox(cell)
+            : local_cell_bbox(sys, cell_index);
         blas->cells[i].cell_index = cell_index;
         blas->cells[i].bbox = bbox;
         blas->bounds = alea_bbox_union(&blas->bounds, &bbox);
@@ -480,6 +532,83 @@ static int fill_transform_matrix(alea_system_t* sys,
     return 0;
 }
 
+static int lattice_rect_lookup(const alea_cell_entry_t* cell,
+                               double px, double py, double pz,
+                               double* ox, double* oy, double* oz) {
+    int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+
+    int i = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
+    int j = (nj == 1) ? 0 : (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
+    int k = (nk == 1) ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+
+    if (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk) {
+        return -1;
+    }
+
+    *ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
+    *oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
+    *oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+
+    size_t idx = (size_t)(i * nj * nk + j * nk + k);
+    if (idx >= cell->lat_fill_count) return -1;
+
+    return cell->lat_fill[idx];
+}
+
+static int lattice_hex_lookup_local(const alea_cell_entry_t* cell,
+                                    double px, double py, double pz,
+                                    double* ox, double* oy, double* oz) {
+    double p = cell->lat_pitch[0];
+    if (p <= 0.0) return -1;
+
+    double fj = py / (p * M_SQRT3 * 0.5);
+    double fi = px / p - fj * 0.5;
+
+    double cx = fi;
+    double cz = fj;
+    double cy = -fi - fj;
+
+    int ri = (int)round(cx);
+    int rj = (int)round(cy);
+    int rk = (int)round(cz);
+
+    double dx = fabs(ri - cx);
+    double dy = fabs(rj - cy);
+    double dz = fabs(rk - cz);
+
+    if (dx > dy && dx > dz) {
+        ri = -rj - rk;
+    } else if (dy > dz) {
+        rj = -ri - rk;
+    } else {
+        rk = -ri - rj;
+    }
+
+    int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+
+    int oi = ri - cell->lat_fill_dims[0];
+    int oj = rk - cell->lat_fill_dims[2];
+    int ok = (nk == 1) ? 0
+           : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+
+    if (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk) {
+        return -1;
+    }
+
+    *ox = ri * p + rk * p * 0.5;
+    *oy = rk * p * M_SQRT3 * 0.5;
+    *oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+
+    size_t idx = (size_t)(oi * nj * nk + oj * nk + ok);
+    if (idx >= cell->lat_fill_count) return -1;
+
+    return cell->lat_fill[idx];
+}
+
 static int collect_placements_recursive(alea_system_t* sys,
                                         alea_hier_spatial_index_t* idx,
                                         int universe_id,
@@ -495,7 +624,9 @@ static int collect_placements_recursive(alea_system_t* sys,
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
-        alea_bbox_t local_bbox = local_cell_bbox(sys, cell_index);
+        alea_bbox_t local_bbox = (cell->lat_type != 0 && cell->lat_fill)
+            ? lattice_container_bbox(cell)
+            : local_cell_bbox(sys, cell_index);
         alea_bbox_t world_bbox = accumulated ? bbox_transform(&local_bbox, accumulated) : local_bbox;
 
         if (cell->lat_type != 0 && cell->lat_fill) {
@@ -643,4 +774,234 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
                   idx->stats.largest_universe_id, idx->stats.max_universe_cells);
 
     return 0;
+}
+
+static const hier_universe_blas_t* find_blas(const alea_hier_spatial_index_t* idx,
+                                             int universe_id) {
+    if (!idx) return NULL;
+    for (size_t i = 0; i < idx->blas_count; i++) {
+        if (idx->blas[i].universe_id == universe_id) {
+            return &idx->blas[i];
+        }
+    }
+    return NULL;
+}
+
+static void query_blas_node(hier_point_query_ctx_t* ctx, uint32_t node_idx) {
+    if (ctx->error) return;
+    if (node_idx >= ctx->blas->node_count) {
+        ctx->error = -1;
+        return;
+    }
+
+    const hier_bvh_node_t* node = &ctx->blas->nodes[node_idx];
+    ctx->idx->stats.point_blas_node_visits++;
+    ctx->idx->stats.point_bbox_tests++;
+    if (!alea_bbox_contains_point(&node->bbox, ctx->x, ctx->y, ctx->z)) {
+        return;
+    }
+
+    if (node->count > 0) {
+        for (uint16_t i = 0; i < node->count; i++) {
+            uint32_t cell_pos = ctx->blas->indices[node->left_or_first + i];
+            if (cell_pos >= ctx->blas->cell_count) {
+                ctx->error = -1;
+                return;
+            }
+            const hier_blas_cell_t* blas_cell = &ctx->blas->cells[cell_pos];
+            ctx->idx->stats.point_bbox_tests++;
+            if (!alea_bbox_contains_point(&blas_cell->bbox, ctx->x, ctx->y, ctx->z)) {
+                continue;
+            }
+            ctx->idx->stats.point_candidates++;
+            if (alea_vec_push(ctx->candidates, (size_t)cell_pos, size_t) != 0) {
+                ctx->error = -1;
+                return;
+            }
+        }
+        return;
+    }
+
+    query_blas_node(ctx, node->left_or_first);
+    query_blas_node(ctx, node->right_child);
+}
+
+static int hier_query_universe(alea_system_t* sys,
+                               alea_hier_spatial_index_t* idx,
+                               int universe_id,
+                               double lx,
+                               double ly,
+                               double lz,
+                               int depth,
+                               alea_cell_hit_t* out_hits,
+                               size_t max_hits,
+                               size_t* hit_count);
+
+static int process_point_cell(alea_system_t* sys,
+                              alea_hier_spatial_index_t* idx,
+                              uint32_t cell_index,
+                              double lx,
+                              double ly,
+                              double lz,
+                              int depth,
+                              alea_cell_hit_t* out_hits,
+                              size_t max_hits,
+                              size_t* hit_count) {
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+
+    if (cell->lat_type != 0 && cell->lat_fill) {
+        double ox, oy, oz;
+        int fill_univ = (cell->lat_type == 2)
+            ? lattice_hex_lookup_local(cell, lx, ly, lz, &ox, &oy, &oz)
+            : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
+        if (fill_univ < 0) return 0;
+
+        if (*hit_count < max_hits) {
+            alea_cell_hit_t* hit = &out_hits[*hit_count];
+            hit->cell_id = cell->mc_cell_id;
+            hit->cell_index = (int)cell_index;
+            hit->material_id = cell->material_id;
+            hit->universe_id = cell->universe_id;
+            hit->fill_universe = fill_univ;
+            hit->depth = depth;
+            hit->local_x = lx;
+            hit->local_y = ly;
+            hit->local_z = lz;
+            (*hit_count)++;
+        }
+
+        return hier_query_universe(sys, idx, fill_univ,
+                                   lx - ox, ly - oy, lz - oz,
+                                   depth + 1,
+                                   out_hits, max_hits, hit_count);
+    }
+
+    idx->stats.point_exact_tests++;
+    if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+        return 0;
+    }
+
+    if (*hit_count < max_hits) {
+        alea_cell_hit_t* hit = &out_hits[*hit_count];
+        hit->cell_id = cell->mc_cell_id;
+        hit->cell_index = (int)cell_index;
+        hit->material_id = cell->material_id;
+        hit->universe_id = cell->universe_id;
+        hit->fill_universe = cell->fill_universe;
+        hit->depth = depth;
+        hit->local_x = lx;
+        hit->local_y = ly;
+        hit->local_z = lz;
+        (*hit_count)++;
+    }
+
+    if (cell->fill_universe > 0 && *hit_count < max_hits) {
+        alea_matrix_t fill_transform;
+        if (fill_transform_matrix(sys, cell, &fill_transform) != 0) {
+            return -1;
+        }
+        if (!alea_matrix_invert(&fill_transform)) {
+            return -1;
+        }
+
+        double child_x = lx;
+        double child_y = ly;
+        double child_z = lz;
+        alea_matrix_transform_point_inverse(&fill_transform,
+                                            &child_x, &child_y, &child_z);
+
+        return hier_query_universe(sys, idx, cell->fill_universe,
+                                   child_x, child_y, child_z,
+                                   depth + 1,
+                                   out_hits, max_hits, hit_count);
+    }
+
+    return 0;
+}
+
+static int hier_query_universe(alea_system_t* sys,
+                               alea_hier_spatial_index_t* idx,
+                               int universe_id,
+                               double lx,
+                               double ly,
+                               double lz,
+                               int depth,
+                               alea_cell_hit_t* out_hits,
+                               size_t max_hits,
+                               size_t* hit_count) {
+    if (*hit_count >= max_hits) return 0;
+    if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
+
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return -1;
+
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    if (blas && blas->built && blas->node_count > 0) {
+        alea_size_vec_t candidates = ALEA_VEC_INIT;
+        hier_point_query_ctx_t ctx = {
+            .sys = sys,
+            .idx = idx,
+            .blas = blas,
+            .x = lx,
+            .y = ly,
+            .z = lz,
+            .candidates = &candidates,
+            .error = 0
+        };
+        idx->stats.point_blas_queries++;
+        query_blas_node(&ctx, 0);
+        if (!ctx.error && candidates.count > 1) {
+            qsort(candidates.data, candidates.count, sizeof(size_t),
+                  compare_size_t_ascending);
+        }
+        for (size_t i = 0; !ctx.error && i < candidates.count; i++) {
+            size_t cell_pos = candidates.data[i];
+            if (cell_pos >= blas->cell_count) {
+                ctx.error = -1;
+                break;
+            }
+            uint32_t cell_index = blas->cells[cell_pos].cell_index;
+            int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
+                                        depth, out_hits, max_hits, hit_count);
+            if (rc < 0) ctx.error = -1;
+        }
+        alea_vec_free(&candidates);
+        return ctx.error ? -1 : 0;
+    }
+
+    idx->stats.point_linear_scans++;
+    idx->stats.point_linear_cell_tests += univ->cell_indices.count;
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
+        int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
+                                    depth, out_hits, max_hits, hit_count);
+        if (rc < 0) return -1;
+    }
+
+    return 0;
+}
+
+int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
+                                          double x,
+                                          double y,
+                                          double z,
+                                          alea_cell_hit_t* out_hits,
+                                          size_t max_hits) {
+    if (!sys || !out_hits || max_hits == 0) return -1;
+
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) {
+            return -1;
+        }
+    }
+
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    idx->stats.point_queries++;
+
+    size_t hit_count = 0;
+    int rc = hier_query_universe(sys, idx, 0, x, y, z, 0,
+                                 out_hits, max_hits, &hit_count);
+    if (rc < 0) return -1;
+
+    return (int)hit_count;
 }
