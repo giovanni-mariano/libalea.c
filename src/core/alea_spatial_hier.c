@@ -1025,6 +1025,8 @@ static void hier_deepest_store_hit(const alea_cell_entry_t* cell,
                                    double lz,
                                    int depth,
                                    const alea_matrix_t* transform,
+                                   int lattice_cell_index,
+                                   const alea_matrix_t* lattice_transform,
                                    alea_hier_cell_hit_t* out_hit,
                                    int* found) {
     out_hit->hit.cell_id = cell->mc_cell_id;
@@ -1037,6 +1039,12 @@ static void hier_deepest_store_hit(const alea_cell_entry_t* cell,
     out_hit->hit.local_y = ly;
     out_hit->hit.local_z = lz;
     out_hit->transform = *transform;
+    out_hit->lattice_cell_index = lattice_cell_index;
+    if (lattice_cell_index >= 0 && lattice_transform) {
+        out_hit->lattice_transform = *lattice_transform;
+    } else {
+        alea_matrix_identity(&out_hit->lattice_transform);
+    }
     *found = 1;
 }
 
@@ -1048,6 +1056,8 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                       double lz,
                                       int depth,
                                       const alea_matrix_t* transform,
+                                      int lattice_cell_index,
+                                      const alea_matrix_t* lattice_transform,
                                       alea_hier_cell_hit_t* out_hit,
                                       int* found);
 
@@ -1059,6 +1069,8 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                   double lz,
                                   int depth,
                                   const alea_matrix_t* transform,
+                                  int lattice_cell_index,
+                                  const alea_matrix_t* lattice_transform,
                                   alea_hier_cell_hit_t* out_hit,
                                   int* found) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
@@ -1072,6 +1084,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
 
         hier_deepest_store_hit(cell, cell_index, fill_univ,
                                lx, ly, lz, depth, transform,
+                               lattice_cell_index, lattice_transform,
                                out_hit, found);
 
         alea_matrix_t element_translation;
@@ -1085,6 +1098,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                           lx - ox, ly - oy, lz - oz,
                                           depth + 1,
                                           &element_transform,
+                                          (int)cell_index, transform,
                                           out_hit, found);
     }
 
@@ -1095,6 +1109,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
 
     hier_deepest_store_hit(cell, cell_index, cell->fill_universe,
                            lx, ly, lz, depth, transform,
+                           lattice_cell_index, lattice_transform,
                            out_hit, found);
 
     if (cell->fill_universe > 0) {
@@ -1119,6 +1134,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                           child_x, child_y, child_z,
                                           depth + 1,
                                           &child_transform,
+                                          lattice_cell_index, lattice_transform,
                                           out_hit, found);
     }
 
@@ -1133,6 +1149,8 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                       double lz,
                                       int depth,
                                       const alea_matrix_t* transform,
+                                      int lattice_cell_index,
+                                      const alea_matrix_t* lattice_transform,
                                       alea_hier_cell_hit_t* out_hit,
                                       int* found) {
     if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
@@ -1168,7 +1186,10 @@ static int hier_find_deepest_universe(alea_system_t* sys,
             uint32_t candidate_cell = blas->cells[cell_pos].cell_index;
             int rc = hier_find_deepest_cell(sys, idx, candidate_cell,
                                             lx, ly, lz, depth,
-                                            transform, out_hit, found);
+                                            transform,
+                                            lattice_cell_index,
+                                            lattice_transform,
+                                            out_hit, found);
             if (rc < 0) ctx.error = -1;
         }
         alea_vec_free(&candidates);
@@ -1181,7 +1202,10 @@ static int hier_find_deepest_universe(alea_system_t* sys,
         uint32_t candidate_cell = (uint32_t)univ->cell_indices.data[i];
         int rc = hier_find_deepest_cell(sys, idx, candidate_cell,
                                         lx, ly, lz, depth,
-                                        transform, out_hit, found);
+                                        transform,
+                                        lattice_cell_index,
+                                        lattice_transform,
+                                        out_hit, found);
         if (rc < 0) return -1;
     }
 
@@ -1233,9 +1257,11 @@ int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
     alea_matrix_identity(&identity);
 
     memset(out_hit, 0, sizeof(*out_hit));
+    out_hit->lattice_cell_index = -1;
+    alea_matrix_identity(&out_hit->lattice_transform);
     int found = 0;
     int rc = hier_find_deepest_universe(sys, idx, 0, x, y, z, 0,
-                                        &identity, out_hit, &found);
+                                        &identity, -1, NULL, out_hit, &found);
     if (rc < 0) return -1;
 
     return found ? 1 : 0;

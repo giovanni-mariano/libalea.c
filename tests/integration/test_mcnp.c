@@ -611,6 +611,8 @@ TEST(lattice_raycast) {
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
     assert_hier_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
+    assert_hier_cell_raycast_segments_equivalent(sys, -1.5, 0, 0,
+                                                 1, 0, 0, 7.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
@@ -672,6 +674,8 @@ TEST(lattice_hex_raycast) {
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
     assert_hier_raycast_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
+    assert_hier_cell_raycast_segments_equivalent(sys, -0.5, 0, 0,
+                                                 1, 0, 0, 5.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);

@@ -290,7 +290,7 @@ static int run_hier_raycast(alea_system_t* sys,
 
     printf("Hierarchical %sraycast probe:\n", cell_aware ? "cell-aware " : "");
     if (cell_aware) {
-        printf("  note=experimental; carries regular/transformed fill state, lattice DDA not accepted\n");
+        printf("  note=experimental; carries fill transforms and lattice boundary state\n");
     }
     printf("  origin=(%.6g,%.6g,%.6g) dir=(%.6g,%.6g,%.6g) t_max=%.6g\n",
            ox, oy, oz, dx, dy, dz, t_max);

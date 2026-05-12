@@ -289,10 +289,10 @@ Current status:
   speed optimization for large models with many surface/fill hits
 - an experimental hierarchical cell-aware probe path exists for performance
   investigation; it avoids global surface-hit collection and now carries the
-  current cell transform for regular and transformed fills; lattice DDA remains
-  outside the accepted fast path. On the E-lite probe ray it reduced measured
-  raycast time from about 168 s to about 20 s, but it is not an acceptance path
-  yet
+  current cell transform for regular and transformed fills, plus the active
+  lattice container transform for rectangular and hex lattice boundary stepping.
+  On the E-lite probe ray it reduced measured raycast time from about 168 s to
+  about 20 s, but it remains experimental until broader model coverage is added
 - public/default raycast entry points are not yet switched to hierarchical mode
 
 Implementation notes:
@@ -305,7 +305,8 @@ Implementation notes:
 - preserve current segment ordering and boundary-crossing semantics
 - descend through regular fill cells by composing placement transforms
 - handle lattice cells by stepping or resolving only the lattice elements
-  intersected by the ray; do not expand all lattice elements
+  intersected by the ray; do not expand all lattice elements: done for current
+  rectangular and hex fixtures in the hierarchical cell-aware path
 - carry the current hierarchical cell transform into cell-aware surface
   intersection: done for regular and transformed fills
 - keep the existing flat raycast path selectable until parity is proven
@@ -318,6 +319,8 @@ Tests:
 - experimental hierarchical cell-aware raycast through a transformed fill: done
 - rectangular lattice raycast parity: done
 - hex lattice raycast parity: done
+- experimental hierarchical cell-aware rectangular and hex lattice segment
+  parity: done for current representative fixtures
 - segment ordering and surface-crossing parity against existing raycast tests:
   done for root, regular fill, transformed fill, rectangular lattice, and hex
   lattice fixtures

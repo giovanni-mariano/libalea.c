@@ -16,6 +16,8 @@ typedef struct alea_hier_spatial_index alea_hier_spatial_index_t;
 typedef struct {
     alea_cell_hit_t hit;
     alea_matrix_t transform;
+    int lattice_cell_index;
+    alea_matrix_t lattice_transform;
 } alea_hier_cell_hit_t;
 
 typedef struct {
