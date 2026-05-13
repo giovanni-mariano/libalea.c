@@ -355,17 +355,32 @@ Switch public spatial-index construction to mode-aware behavior.
 
 Proposed behavior:
 
-- `flat`: existing implementation
+- `flat`: existing implementation: done as the default
 - `hier`: hierarchical implementation, fail explicitly if an unsupported API is
-  called
+  called: initial cache/raycast routing done
 - `auto`: choose hierarchical when flat collection is estimated to be too large,
-  but route APIs that are not yet hierarchical-safe to flat mode or fail clearly
+  but route APIs that are not yet hierarchical-safe to flat mode or fail
+  clearly: initial cell-count threshold routing done via
+  `ALEA_SPATIAL_AUTO_CELL_THRESHOLD`
+
+Implemented behavior:
+
+- `alea_config_t.spatial_mode` selects `ALEA_SPATIAL_MODE_FLAT`,
+  `ALEA_SPATIAL_MODE_HIER`, or `ALEA_SPATIAL_MODE_AUTO`
+- `alea_prepare_query_acceleration()` prepares flat raycast/spatial caches in
+  flat mode and hierarchical raycast/spatial caches in hier/large-auto mode
+- `alea_build_spatial_index()` remains the flat instance builder and fails
+  clearly in hier/large-auto mode instead of rematerializing the flat instance
+  set
+- public `alea_raycast()`, `alea_raycast_cell_aware()`, and
+  `alea_ray_is_occluded()` route through hierarchical raycast behavior in
+  hier/large-auto mode without building the flat spatial index
 
 Audit APIs that currently assume flat instances:
 
 - `alea_spatial_index_instance_count()`
 - `alea_estimate_instance_volumes()`
-- raycast entry points, until Phase 6 is complete
+- raycast entry points: initial mode-aware routing done
 - any Lua or example code that expects stable flat instance ids
 
 Do not fake flat instance counts by rematerializing the hierarchy. If a caller
@@ -374,9 +389,10 @@ hierarchical instance-id scheme exists.
 
 Exit criteria:
 
-- normal models can still opt into flat behavior
-- E-lite can use hierarchical behavior
-- unsupported flat-only APIs fail clearly in hierarchical mode
+- normal models can still opt into flat behavior: done, flat remains default
+- E-lite can use hierarchical behavior: initial support via hier/auto config
+- unsupported flat-only APIs fail clearly in hierarchical mode: done for flat
+  spatial-index construction; remaining flat-instance APIs still need audit
 
 ### Phase 8: E-lite Validation
 

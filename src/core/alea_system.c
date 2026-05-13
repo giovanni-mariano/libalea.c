@@ -64,6 +64,9 @@ const alea_config_t ALEA_CONFIG_DEFAULT = {
 
     /* Flatten */
     .flatten_max_depth = 0,
+
+    /* Query acceleration */
+    .spatial_mode = ALEA_SPATIAL_MODE_FLAT,
 };
 
 // ============================================================================
@@ -120,6 +123,30 @@ int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags) {
     if (flags == ALEA_CACHE_ALL) flags = ALEA_CACHE_RAYCAST | ALEA_CACHE_UNIVERSE;
     unsigned state = atomic_load(&sys->query_cache_state);
     return (state & flags) == flags;
+}
+
+static size_t spatial_auto_cell_threshold(void) {
+    const char* env = getenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long value = strtoul(env, &end, 10);
+        if (end != env && value > 0) return (size_t)value;
+    }
+    return 100000;
+}
+
+static bool spatial_auto_prefers_hier(const alea_system_t* sys) {
+    if (!sys) return false;
+    return alea_vec_count(&sys->cells) >= spatial_auto_cell_threshold();
+}
+
+static bool spatial_mode_prefers_hier(const alea_system_t* sys) {
+    if (!sys) return false;
+    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_HIER)
+        return true;
+    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_AUTO)
+        return spatial_auto_prefers_hier(sys);
+    return false;
 }
 
 uint64_t alea_system_geometry_generation(const alea_system_t* sys) {
@@ -287,8 +314,23 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         return -1;
     }
 
-    if (flags == ALEA_CACHE_ALL)
-        flags = ALEA_CACHE_UNIVERSE | ALEA_CACHE_RAYCAST;
+    if (flags == ALEA_CACHE_ALL) {
+        flags = ALEA_CACHE_UNIVERSE |
+                (spatial_mode_prefers_hier(sys)
+                 ? ALEA_CACHE_RAYCAST_HIER
+                 : ALEA_CACHE_RAYCAST);
+    }
+    if ((flags & ALEA_CACHE_RAYCAST) == ALEA_CACHE_RAYCAST &&
+        spatial_mode_prefers_hier(sys)) {
+        flags &= ~ALEA_CACHE_SPATIAL;
+        flags |= ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_UNIVERSE;
+    }
+    if ((flags & ALEA_CACHE_SPATIAL) && spatial_mode_prefers_hier(sys) &&
+        !(flags & ALEA_CACHE_HIER_SPATIAL)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "flat spatial index is disabled by hierarchical spatial mode");
+        return -1;
+    }
     if (flags & ALEA_CACHE_SPATIAL)
         flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_HIER_SPATIAL)

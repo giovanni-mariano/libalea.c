@@ -33,6 +33,27 @@
 
 #define MAX_DEPTH 32
 #define BVH_LEAF_SIZE 4
+
+static size_t spatial_auto_cell_threshold(void) {
+    const char* env = getenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long value = strtoul(env, &end, 10);
+        if (end != env && value > 0) return (size_t)value;
+    }
+    return 100000;
+}
+
+static bool flat_spatial_disabled_by_mode(const alea_system_t* sys) {
+    if (!sys) return true;
+    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_HIER)
+        return true;
+    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_AUTO &&
+        alea_vec_count(&sys->cells) >= spatial_auto_cell_threshold()) {
+        return true;
+    }
+    return false;
+}
 #define EPSILON 1e-10
 
 /* ============================================================================
@@ -695,6 +716,12 @@ static int spatial_index_build_impl(alea_system_t* sys) {
  */
 int alea_spatial_index_build(alea_system_t* sys) {
     if (!sys) return -1;
+
+    if (flat_spatial_disabled_by_mode(sys)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "flat spatial index is disabled by hierarchical spatial mode");
+        return -1;
+    }
 
     /* Fast path: already built */
     if (atomic_load(&sys->spatial_build_state) == 2 &&

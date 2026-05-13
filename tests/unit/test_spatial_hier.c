@@ -471,4 +471,101 @@ TEST(hier_cell_aware_raycast_does_not_build_flat_spatial_index) {
     unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(query_acceleration_respects_hier_spatial_mode) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+    ASSERT(alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST_HIER));
+
+    mcnp_model_destroy(model);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(flat_spatial_index_fails_in_hier_mode) {
+    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+
+    ASSERT_EQ(alea_build_spatial_index(sys), -1);
+    ASSERT_NULL(sys->spatial_index);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(auto_spatial_mode_avoids_flat_index_above_threshold) {
+    setenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD", "1", 1);
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_AUTO;
+    alea_set_config(sys, &cfg);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+    ASSERT_EQ(alea_build_spatial_index(sys), -1);
+
+    mcnp_model_destroy(model);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
+}
+
+TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t flat;
+    alea_raycast_result_t routed;
+    alea_raycast_result_init(&flat);
+    alea_raycast_result_init(&routed);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           10.0, &flat), 0);
+
+    if (sys->spatial_index) {
+        alea_spatial_index_free(sys->spatial_index);
+        sys->spatial_index = NULL;
+    }
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+
+    ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           10.0, &routed), 0);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+    assert_raycast_segments_match(&flat, &routed);
+    ASSERT_EQ(alea_ray_is_occluded(sys, -5.0, 0.0, 0.0,
+                                   1.0, 0.0, 0.0, 10.0), 1);
+    ASSERT_NULL(sys->spatial_index);
+
+    alea_raycast_result_free(&flat);
+    alea_raycast_result_free(&routed);
+    mcnp_model_destroy(model);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST_MAIN()

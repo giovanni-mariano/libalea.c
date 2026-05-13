@@ -47,6 +47,25 @@ int alea_raycast_ensure_hier_caches(alea_system_t* sys) {
     return alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST_HIER);
 }
 
+static size_t raycast_spatial_auto_cell_threshold(void) {
+    const char* env = getenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long value = strtoul(env, &end, 10);
+        if (end != env && value > 0) return (size_t)value;
+    }
+    return 100000;
+}
+
+static bool raycast_prefers_hier_mode(const alea_system_t* sys) {
+    if (!sys) return false;
+    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_HIER)
+        return true;
+    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_AUTO)
+        return alea_vec_count(&sys->cells) >= raycast_spatial_auto_cell_threshold();
+    return false;
+}
+
 /* ============================================================================
  * RAY UTILITIES
  * ============================================================================ */
@@ -1151,6 +1170,9 @@ int alea_raycast(alea_system_t* sys,
                 double t_max,
                 alea_raycast_result_t* result) {
     if (!result) return -1;
+    if (raycast_prefers_hier_mode(sys)) {
+        return alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, result);
+    }
 
     /* Free any prior allocations then reinitialize (safe for reuse) */
     alea_raycast_result_free(result);
@@ -1225,6 +1247,26 @@ int alea_ray_is_occluded(alea_system_t* sys,
                         double dx, double dy, double dz,
                         double t_max) {
     if (!sys) return 0;
+
+    if (raycast_prefers_hier_mode(sys)) {
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
+        int rc = alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
+        if (rc != 0) {
+            alea_raycast_result_free(&result);
+            return 0;
+        }
+        int occluded = 0;
+        for (size_t i = 0; i < result.segments.count; i++) {
+            if (result.segments.data[i].cell_id >= 0 &&
+                result.segments.data[i].material_id != 0) {
+                occluded = 1;
+                break;
+            }
+        }
+        alea_raycast_result_free(&result);
+        return occluded;
+    }
 
     /* Reuse a thread-local result to avoid malloc per shadow ray */
     static _Thread_local alea_raycast_result_t tls_result;
@@ -1818,6 +1860,10 @@ int alea_raycast_cell_aware(alea_system_t* sys,
                            double t_max,
                            alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
+    if (raycast_prefers_hier_mode(sys)) {
+        return alea_raycast_hier_cell_aware(sys, ox, oy, oz, dx, dy, dz,
+                                            t_max, result);
+    }
 
     if (system_has_lattice_cells(sys)) {
         /* Lattice transport requires synthetic DDA boundary hits and

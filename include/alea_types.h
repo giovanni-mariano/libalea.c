@@ -136,6 +136,12 @@ typedef enum {
     ALEA_EMIT_SURFACES,     /* Decompose to cylinder+planes, 6 planes, etc. */
 } alea_surface_emit_policy_t;
 
+typedef enum {
+    ALEA_SPATIAL_MODE_FLAT = 0, /* Existing flat instance spatial index */
+    ALEA_SPATIAL_MODE_HIER = 1, /* Hierarchical TLAS/BLAS spatial index */
+    ALEA_SPATIAL_MODE_AUTO = 2  /* Choose based on model size */
+} alea_spatial_mode_t;
+
 /* ============================================================================
  * UNIFIED CONFIGURATION
  * ============================================================================ */
@@ -171,6 +177,9 @@ typedef struct {
 
     /* Flatten */
     int flatten_max_depth;      /* 0 = unlimited */
+
+    /* Query acceleration */
+    alea_spatial_mode_t spatial_mode; /* ALEA_SPATIAL_MODE_FLAT */
 } alea_config_t;
 
 extern const alea_config_t ALEA_CONFIG_DEFAULT;
