@@ -407,6 +407,73 @@ Exit criteria:
 - example code does not depend on stable flat instance ids: done, no source
   examples call the flat instance APIs
 
+### Phase 7B: `mc_plotter` Migration
+
+`tools/mc_plotter.c` still explicitly calls `alea_build_spatial_index()` before
+rendering, both in batch mode and single-plot mode. That keeps it on the flat
+expanded-instance path and means E-lite will still fail there until the tool is
+migrated.
+
+Goal:
+
+- make basic `mc_plotter` image generation work for E-lite without flat
+  instance materialization
+- keep flat behavior available as the default/small-model path
+- fail or disable unsupported analytical overlays clearly in hierarchical mode
+
+Required activities:
+
+1. Add a plotter spatial mode option.
+   - Support at least `--spatial=flat|hier|auto`.
+   - Default can remain `flat` initially for backward compatibility, or switch
+     to `auto` after E-lite validation is stable.
+   - Set `alea_config_t.spatial_mode` before any query cache preparation.
+
+2. Replace unconditional flat spatial-index construction.
+   - Replace the two `alea_build_spatial_index()` calls in `mc_plotter` with
+     `alea_prepare_query_acceleration()` for mode-aware preparation.
+   - Keep `alea_build_spatial_index()` only when the selected mode is flat and
+     the tool needs flat-only analytical curve features.
+   - Report `alea_error()` when preparation fails so users see whether the
+     requested feature is flat-only.
+
+3. Make the grid-render path hierarchical-safe.
+   - The basic pixel query path uses `alea_find_cells_grid()`.
+   - `alea_find_cells_grid()` prepares `ALEA_CACHE_RAYCAST`, so it can already
+     route to hierarchical caches in hier/large-auto mode.
+   - Validate that plain plots without analytical overlays do not build
+     `sys->spatial_index` in hierarchical mode.
+
+4. Gate flat-only analytical overlays.
+   - `alea_get_slice_curves()` remains flat-spatial-index based.
+   - Until it is migrated, disable or fail clearly in hier/large-auto mode for:
+     `--errors`, `--labels=surfaces`, and any feature that calls
+     `get_curves_for_plot()`.
+   - Cell/material labels based only on the rendered grid can remain enabled.
+
+5. Add a hierarchical slice-curve migration path.
+   - Replace flat `alea_spatial_query_region()` use in curve extraction with a
+     hierarchical slice/region query.
+   - Preserve transformed/fill/lattice terminal resolution.
+   - Add parity tests against the flat path on current slice fixtures before
+     enabling analytical overlays in hier/auto mode.
+
+6. Add tests and acceptance checks.
+   - Unit or integration test: `mc_plotter --spatial=hier` on `simple_fill.mcnp`
+     produces a basic image and does not build a flat spatial index.
+   - Negative test: hierarchical mode with a currently flat-only overlay fails
+     clearly.
+   - E-lite check: basic plot completes with bounded memory in
+     `--spatial=hier` or `--spatial=auto`.
+
+Exit criteria:
+
+- `mc_plotter` basic grid plots work in hierarchical mode on small fixtures and
+  E-lite
+- no `mc_plotter` hierarchical path calls `alea_build_spatial_index()`
+- unsupported overlays produce clear errors instead of attempting flat expansion
+- documentation and usage text describe `--spatial=flat|hier|auto`
+
 ### Phase 8: E-lite Validation
 
 Use `E-lite_R250630.mcnp` as the acceptance model.
