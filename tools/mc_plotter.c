@@ -88,7 +88,6 @@ static double get_time_ms(void) {
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
-#include "core/alea_system.h"
 
 typedef struct {
     alea_system_t* sys;
@@ -951,7 +950,7 @@ static void draw_error_lines(uint8_t* pixels, int width, int height,
 
 /* Render a single plot and save to file */
 static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) {
-    if (alea_system_spatial_mode_prefers_hier(sys) &&
+    if (alea_spatial_mode_is_hierarchical(sys) &&
         plot_needs_flat_slice_curves(p)) {
         fprintf(stderr,
                 "Error: --errors and --labels=surfaces require flat spatial mode; "
@@ -1596,7 +1595,7 @@ int main(int argc, char** argv) {
     fflush(stdout);
 
     set_spatial_mode(sys, spatial_mode);
-    if (alea_system_spatial_mode_prefers_hier(sys) &&
+    if (alea_spatial_mode_is_hierarchical(sys) &&
         plot_needs_flat_slice_curves(&plot)) {
         fprintf(stderr,
                 "Error: --errors and --labels=surfaces require flat spatial mode; "

@@ -6,7 +6,7 @@
 
 CC = gcc
 CFLAGS = -Wall -Wextra -g -std=c11
-INCLUDES = -I../include -I../src
+INCLUDES = -I../include
 BIN_DIR = ../bin
 
 # Detect platform

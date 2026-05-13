@@ -130,6 +130,16 @@ alea_config_t alea_get_config(const alea_system_t* sys);
  */
 void alea_set_config(alea_system_t* sys, const alea_config_t* config);
 
+/**
+ * @brief Return whether the current spatial mode resolves to hierarchical.
+ *
+ * Returns true for ALEA_SPATIAL_MODE_HIER. In ALEA_SPATIAL_MODE_AUTO, returns
+ * true when the system meets the automatic hierarchical-index threshold. This
+ * is useful for public tools that need to gate flat-only features without
+ * including internal headers.
+ */
+bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys);
+
 /* ============================================================================
  * LOADING
  *

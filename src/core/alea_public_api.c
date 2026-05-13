@@ -289,6 +289,10 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config) {
     }
 }
 
+bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys) {
+    return alea_system_spatial_mode_prefers_hier(sys);
+}
+
 /* ============================================================================
  * LOADING
  *
