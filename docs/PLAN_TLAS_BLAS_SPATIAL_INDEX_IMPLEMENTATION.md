@@ -474,6 +474,158 @@ Exit criteria:
 - unsupported overlays produce clear errors instead of attempting flat expansion
 - documentation and usage text describe `--spatial=flat|hier|auto`
 
+### Phase 7C: Remaining Codebase Migration Inventory
+
+Audit scope:
+
+- tracked C headers/sources, tools, examples, Lua bindings, and tests were
+  scanned for direct use of `alea_build_spatial_index()`,
+  `ALEA_CACHE_SPATIAL`, `alea_spatial_query_*()`, flat instance counts, and
+  slice/plot APIs that rely on those paths
+- unrelated untracked generated/binary directories are intentionally excluded
+  from this migration inventory
+
+The following areas still need migration or explicit flat-only classification.
+
+#### Mesh Export
+
+Current flat dependency:
+
+- `src/mesh/mesh_export.c` prepares `ALEA_CACHE_SPATIAL` before sampling
+
+Observed behavior:
+
+- mesh sampling calls `alea_identify_cell_at_point()`, which routes through
+  deepest-cell point lookup and does not itself need the flat spatial index
+- the explicit `ALEA_CACHE_SPATIAL` preparation is therefore the likely
+  migration blocker for E-lite-style models
+
+Required activities:
+
+- replace the eager `ALEA_CACHE_SPATIAL` preparation with the minimum cache set
+  needed by point lookup, likely `alea_prepare_query_acceleration()` or
+  `ALEA_CACHE_UNIVERSE` depending on measured behavior
+- add a hier/auto mesh export test that confirms no flat spatial index is built
+- validate mesh export on E-lite with a small bounded mesh before broad use
+
+#### Slice Curve and Analytical Error APIs
+
+Current flat dependencies:
+
+- `src/slice/slice_api.c`: `alea_get_slice_curves()` prepares
+  `ALEA_CACHE_SPATIAL`
+- `src/slice/curve_intersect.c`: curve extraction uses
+  `alea_spatial_get_instance_count()` and `alea_spatial_query_region()`
+- `alea_check_slice_errors()` and `alea_check_slice_errors_grid()` consume
+  curves and therefore inherit the flat-only limitation when curves are needed
+
+Required activities:
+
+- keep `alea_get_slice_curves()` explicitly flat-only until migrated
+- add clear public documentation in `include/alea_slice.h`
+- add tests that `alea_get_slice_curves()` fails clearly in hier/large-auto mode
+- implement hierarchical curve candidate collection using the hierarchical
+  slice/region query path
+- preserve transformed fills and lattice terminal resolution in generated curves
+- run flat-vs-hier curve parity tests on current slice fixtures
+
+#### Lua Slice Bindings
+
+Current flat dependencies:
+
+- `src/lua_bind/lua_slice.c`: `sys:get_slice_curves(view)` exposes the
+  flat-only curve path directly
+- `sys:find_cells_grid(view, ...)` uses `alea_find_cells_grid()` and should be
+  able to follow the mode-aware raycast cache path
+
+Required activities:
+
+- document or error-message the flat-only limitation for
+  `sys:get_slice_curves(view)`
+- add a Lua regression for `find_cells_grid()` in hierarchical mode
+- add a Lua negative regression for `get_slice_curves()` in hierarchical mode
+  until curve migration is complete
+
+#### Lua Query and Flat Spatial Build API
+
+Current flat dependencies:
+
+- `src/lua_bind/lua_query.c`: `sys:build_spatial_index()` directly exposes
+  `alea_build_spatial_index()`
+- `sys:instance_count()` is already migrated to fail clearly in hier/large-auto
+  mode
+- `sys:prepare_query_acceleration()` is the preferred mode-aware preparation
+  entry point
+
+Required activities:
+
+- keep `sys:build_spatial_index()` as an explicit flat-only method
+- update Lua documentation/examples to prefer `sys:prepare_query_acceleration()`
+  for mode-aware workflows
+- consider adding `sys:set_spatial_mode("flat"|"hier"|"auto")` if Lua examples
+  are expected to drive E-lite workflows directly
+
+#### Render3D and C Render Example
+
+Current status:
+
+- `src/render/render3d.c` uses raycast preparation and public raycast entry
+  points, so the library renderer is mostly mode-aware
+- `examples/c/render3d.c` still calls `alea_build_spatial_index()` directly
+  before rendering
+
+Required activities:
+
+- remove the direct flat spatial build from `examples/c/render3d.c` or replace
+  it with mode-aware preparation
+- add a render example option/config hook for `flat|hier|auto` if the example
+  is used on large models
+- add a small hierarchical render smoke test confirming no flat spatial index
+  is built
+
+#### Fuzzers
+
+Current flat dependencies:
+
+- `tests/fuzz/fuzz_mcnp_parser.c` calls `alea_build_spatial_index()`
+- `tests/fuzz/fuzz_openmc_parser.c` calls `alea_build_spatial_index()`
+
+Required activities:
+
+- decide whether these remain flat-path fuzzers only, or add a separate
+  hier/auto fuzz pass
+- if retained as flat-only, document that choice in comments
+- if expanded, set `ALEA_SPATIAL_MODE_AUTO` or `ALEA_SPATIAL_MODE_HIER` and use
+  `alea_prepare_query_acceleration()` in a second fuzz phase
+
+#### Tests That Should Remain Flat-Specific
+
+Current flat dependencies:
+
+- flat spatial unit tests and flat-vs-hier parity tests intentionally call
+  `alea_spatial_index_build()`, `alea_spatial_query_region()`, and
+  `alea_spatial_query_slice_z()`
+- render and error-handling tests also assert flat spatial index lifecycle
+  behavior
+
+Required activities:
+
+- leave these tests flat-specific where they verify the flat implementation
+- add separate hier/auto tests instead of weakening flat assertions
+- keep parity tests that build both flat and hierarchical indexes on small
+  fixtures
+
+#### Public Documentation
+
+Required activities:
+
+- mark `alea_build_spatial_index()` as flat-spatial-index only in
+  `include/alea.h`
+- document `alea_prepare_query_acceleration()` as the mode-aware replacement
+  for callers that do not specifically need expanded flat instances
+- document `ALEA_SPATIAL_MODE_AUTO` threshold behavior and the
+  `ALEA_SPATIAL_AUTO_CELL_THRESHOLD` override
+
 ### Phase 8: E-lite Validation
 
 Use `E-lite_R250630.mcnp` as the acceptance model.
