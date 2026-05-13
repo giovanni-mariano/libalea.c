@@ -385,7 +385,13 @@ Audit APIs that currently assume flat instances:
 - raycast entry points: initial mode-aware routing done
 - Lua `estimate_instance_volumes()`: done, reports the flat-only limitation
   instead of returning an empty table in hier/large-auto mode
-- any example code that expects stable flat instance ids
+- Lua `instance_count()`: done, reports the flat-only limitation in
+  hier/large-auto mode
+- any example code that expects stable flat instance ids: audited, no source
+  examples currently call these APIs
+- slice curve generation: remains flat-spatial-index based and fails at query
+  cache preparation in hier/large-auto mode instead of materializing flat
+  instances
 
 Do not fake flat instance counts by rematerializing the hierarchy. If a caller
 needs per-expanded-instance volume behavior, keep it flat-only until a proper
@@ -397,7 +403,9 @@ Exit criteria:
 - E-lite can use hierarchical behavior: initial support via hier/auto config
 - unsupported flat-only APIs fail clearly in hierarchical mode: done for flat
   spatial-index construction, flat instance counts, and instance volume
-  estimation
+  estimation; Lua bindings now surface the same limitations
+- example code does not depend on stable flat instance ids: done, no source
+  examples call the flat instance APIs
 
 ### Phase 8: E-lite Validation
 

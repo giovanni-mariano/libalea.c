@@ -573,6 +573,8 @@ int alea_estimate_cell_volumes(alea_system_t* sys,
  * error for each instance: sigma_V / V.  Set to -1 for zero-volume instances.
  *
  * Requires the raycast module to be linked; returns -1 otherwise.
+ * Flat-spatial-index only: returns -1 in hierarchical spatial mode or in
+ * auto mode when the system selects hierarchical spatial indexing.
  *
  * @param sys        CSG system (must have spatial index built)
  * @param n_rays     Number of random rays
@@ -1044,6 +1046,12 @@ size_t alea_get_cells_by_universe(const alea_system_t* sys, int universe_id,
                                        int* out_indices, size_t max_count);
 size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id,
                                             int* out_indices, size_t max_count);
+/**
+ * @brief Return the number of expanded flat spatial instances.
+ *
+ * Flat-spatial-index only: returns 0 and sets an error in hierarchical spatial
+ * mode or in auto mode when the system selects hierarchical spatial indexing.
+ */
 size_t alea_spatial_index_instance_count(const alea_system_t* sys);
 
 /* ============================================================================

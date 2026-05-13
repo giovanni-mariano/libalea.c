@@ -583,6 +583,9 @@ static int l_cells_filling_universe(lua_State* L) {
 /* sys:instance_count() -> int */
 static int l_instance_count(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
+    if (alea_system_spatial_mode_prefers_hier(sys))
+        return luaL_error(L, "instance_count failed: %s",
+                          "flat spatial instance count is unavailable in hierarchical spatial mode");
     lua_pushinteger(L, (lua_Integer)alea_spatial_index_instance_count(sys));
     return 1;
 }
