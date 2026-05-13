@@ -378,10 +378,14 @@ Implemented behavior:
 
 Audit APIs that currently assume flat instances:
 
-- `alea_spatial_index_instance_count()`
-- `alea_estimate_instance_volumes()`
+- `alea_spatial_index_instance_count()`: done, returns `0` with a clear error
+  in hier/large-auto mode instead of exposing stale flat-instance counts
+- `alea_estimate_instance_volumes()`: done, remains flat-only and fails
+  clearly in hier/large-auto mode
 - raycast entry points: initial mode-aware routing done
-- any Lua or example code that expects stable flat instance ids
+- Lua `estimate_instance_volumes()`: done, reports the flat-only limitation
+  instead of returning an empty table in hier/large-auto mode
+- any example code that expects stable flat instance ids
 
 Do not fake flat instance counts by rematerializing the hierarchy. If a caller
 needs per-expanded-instance volume behavior, keep it flat-only until a proper
@@ -392,7 +396,8 @@ Exit criteria:
 - normal models can still opt into flat behavior: done, flat remains default
 - E-lite can use hierarchical behavior: initial support via hier/auto config
 - unsupported flat-only APIs fail clearly in hierarchical mode: done for flat
-  spatial-index construction; remaining flat-instance APIs still need audit
+  spatial-index construction, flat instance counts, and instance volume
+  estimation
 
 ### Phase 8: E-lite Validation
 

@@ -280,7 +280,13 @@ alea_config_t alea_get_config(const alea_system_t* sys) {
 
 void alea_set_config(alea_system_t* sys, const alea_config_t* config) {
     if (!sys || !config) return;
+    alea_spatial_mode_t old_spatial_mode = sys->config.spatial_mode;
     sys->config = *config;
+    if (old_spatial_mode != config->spatial_mode) {
+        alea_system_invalidate_query_caches(sys,
+                                            ALEA_CACHE_SPATIAL |
+                                            ALEA_CACHE_HIER_SPATIAL);
+    }
 }
 
 /* ============================================================================
@@ -1895,7 +1901,13 @@ size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id
 }
 
 size_t alea_spatial_index_instance_count(const alea_system_t* sys) {
-    if (!sys || !sys->spatial_index) return 0;
+    if (!sys) return 0;
+    if (alea_system_spatial_mode_prefers_hier(sys)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "flat spatial instance count is unavailable in hierarchical spatial mode");
+        return 0;
+    }
+    if (!sys->spatial_index) return 0;
     return sys->spatial_index->instances.count;
 }
 

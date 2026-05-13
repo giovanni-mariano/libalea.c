@@ -47,23 +47,8 @@ int alea_raycast_ensure_hier_caches(alea_system_t* sys) {
     return alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST_HIER);
 }
 
-static size_t raycast_spatial_auto_cell_threshold(void) {
-    const char* env = getenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
-    if (env && env[0]) {
-        char* end = NULL;
-        unsigned long value = strtoul(env, &end, 10);
-        if (end != env && value > 0) return (size_t)value;
-    }
-    return 100000;
-}
-
 static bool raycast_prefers_hier_mode(const alea_system_t* sys) {
-    if (!sys) return false;
-    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_HIER)
-        return true;
-    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_AUTO)
-        return alea_vec_count(&sys->cells) >= raycast_spatial_auto_cell_threshold();
-    return false;
+    return alea_system_spatial_mode_prefers_hier(sys);
 }
 
 /* ============================================================================

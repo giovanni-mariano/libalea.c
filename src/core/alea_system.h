@@ -326,6 +326,8 @@ typedef struct alea_system {
 
 int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags);
 uint64_t alea_system_geometry_generation(const alea_system_t* sys);
+size_t alea_spatial_auto_cell_threshold(void);
+bool alea_system_spatial_mode_prefers_hier(const alea_system_t* sys);
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags);
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags);
 

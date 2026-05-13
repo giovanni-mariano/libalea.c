@@ -125,7 +125,7 @@ int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags) {
     return (state & flags) == flags;
 }
 
-static size_t spatial_auto_cell_threshold(void) {
+size_t alea_spatial_auto_cell_threshold(void) {
     const char* env = getenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
     if (env && env[0]) {
         char* end = NULL;
@@ -137,10 +137,10 @@ static size_t spatial_auto_cell_threshold(void) {
 
 static bool spatial_auto_prefers_hier(const alea_system_t* sys) {
     if (!sys) return false;
-    return alea_vec_count(&sys->cells) >= spatial_auto_cell_threshold();
+    return alea_vec_count(&sys->cells) >= alea_spatial_auto_cell_threshold();
 }
 
-static bool spatial_mode_prefers_hier(const alea_system_t* sys) {
+bool alea_system_spatial_mode_prefers_hier(const alea_system_t* sys) {
     if (!sys) return false;
     if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_HIER)
         return true;
@@ -316,16 +316,17 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
 
     if (flags == ALEA_CACHE_ALL) {
         flags = ALEA_CACHE_UNIVERSE |
-                (spatial_mode_prefers_hier(sys)
+                (alea_system_spatial_mode_prefers_hier(sys)
                  ? ALEA_CACHE_RAYCAST_HIER
                  : ALEA_CACHE_RAYCAST);
     }
     if ((flags & ALEA_CACHE_RAYCAST) == ALEA_CACHE_RAYCAST &&
-        spatial_mode_prefers_hier(sys)) {
+        alea_system_spatial_mode_prefers_hier(sys)) {
         flags &= ~ALEA_CACHE_SPATIAL;
         flags |= ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_UNIVERSE;
     }
-    if ((flags & ALEA_CACHE_SPATIAL) && spatial_mode_prefers_hier(sys) &&
+    if ((flags & ALEA_CACHE_SPATIAL) &&
+        alea_system_spatial_mode_prefers_hier(sys) &&
         !(flags & ALEA_CACHE_HIER_SPATIAL)) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "flat spatial index is disabled by hierarchical spatial mode");
