@@ -20,7 +20,7 @@ Test overlapping geometry
 
 local sys1 = alea.load_mcnp_string(mcnp_input)
 sys1:build_universe_index()
-sys1:build_spatial_index()
+sys1:prepare_query_acceleration()
 print(string.format("Loaded inline model: %d cells, %d surfaces",
     sys1:cell_count(), sys1:surface_count()))
 
@@ -42,7 +42,7 @@ print("Loading: " .. filename)
 local ok, sys2 = pcall(alea.load_mcnp, filename)
 if ok then
     sys2:build_universe_index()
-    sys2:build_spatial_index()
+    sys2:prepare_query_acceleration()
 
     local overlaps2 = sys2:find_overlaps()
     print(string.format("Overlapping pairs found: %d", #overlaps2))

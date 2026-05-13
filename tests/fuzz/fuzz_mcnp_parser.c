@@ -58,7 +58,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
      * Phase 1: Indexing
      * ======================================================================== */
     alea_build_universe_index(sys);
-    alea_build_spatial_index(sys);
+    alea_prepare_query_acceleration(sys);
 
     /* ========================================================================
      * Phase 2: Basic inspection

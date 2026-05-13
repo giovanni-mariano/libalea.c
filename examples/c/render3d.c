@@ -344,9 +344,9 @@ int main(int argc, char** argv) {
         alea_set_config(sys, &scfg);
     }
 
-    /* Build indices */
+    /* Build mode-aware query caches */
     alea_build_universe_index(sys);
-    alea_build_spatial_index(sys);
+    alea_prepare_query_acceleration(sys);
 
     /* Print summary */
     alea_print_summary(sys);

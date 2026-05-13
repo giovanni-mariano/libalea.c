@@ -45,6 +45,7 @@
  *   --contours=materials    Draw contours at material boundaries
  *   --ticks                 Show axis tick labels
  *   --errors                Show analytical error lines (overlaps/gaps)
+ *   --spatial=flat|hier|auto Query acceleration mode (default: flat)
  *
  * Batch file format (one plot per line):
  *   Z value u_min u_max v_min v_max WxH output.png [options]
@@ -87,12 +88,46 @@ static double get_time_ms(void) {
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
+#include "core/alea_system.h"
 
 typedef struct {
     alea_system_t* sys;
     mcnp_model_t* mcnp;
     openmc_model_t* openmc;
 } loaded_model_t;
+
+static int parse_spatial_mode(const char* value, alea_spatial_mode_t* out) {
+    if (!value || !out) return -1;
+    if (strcasecmp(value, "flat") == 0) {
+        *out = ALEA_SPATIAL_MODE_FLAT;
+        return 0;
+    }
+    if (strcasecmp(value, "hier") == 0 ||
+        strcasecmp(value, "hierarchical") == 0) {
+        *out = ALEA_SPATIAL_MODE_HIER;
+        return 0;
+    }
+    if (strcasecmp(value, "auto") == 0) {
+        *out = ALEA_SPATIAL_MODE_AUTO;
+        return 0;
+    }
+    return -1;
+}
+
+static const char* spatial_mode_name(alea_spatial_mode_t mode) {
+    switch (mode) {
+        case ALEA_SPATIAL_MODE_FLAT: return "flat";
+        case ALEA_SPATIAL_MODE_HIER: return "hier";
+        case ALEA_SPATIAL_MODE_AUTO: return "auto";
+    }
+    return "unknown";
+}
+
+static void set_spatial_mode(alea_system_t* sys, alea_spatial_mode_t mode) {
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = mode;
+    alea_set_config(sys, &cfg);
+}
 
 static int ends_with(const char* s, const char* suffix) {
     size_t slen = strlen(s), xlen = strlen(suffix);
@@ -795,6 +830,10 @@ static alea_slice_curves_t* get_curves_for_plot(alea_system_t* sys, const plot_p
     return alea_get_slice_curves(sys, &view);
 }
 
+static int plot_needs_flat_slice_curves(const plot_params_t* p) {
+    return p && (p->show_errors || p->labels.show_surfaces);
+}
+
 /* Get axis labels for a slice type */
 static void get_axis_labels(slice_type_t type, const char** u_label, const char** v_label) {
     switch (type) {
@@ -912,6 +951,14 @@ static void draw_error_lines(uint8_t* pixels, int width, int height,
 
 /* Render a single plot and save to file */
 static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) {
+    if (alea_system_spatial_mode_prefers_hier(sys) &&
+        plot_needs_flat_slice_curves(p)) {
+        fprintf(stderr,
+                "Error: --errors and --labels=surfaces require flat spatial mode; "
+                "rerun with --spatial=flat or disable those overlays\n");
+        return -1;
+    }
+
     double t0, t1;
     const char* axis_names[] = {"Z", "Y", "X", "Plane"};
 
@@ -1295,7 +1342,9 @@ static int parse_batch_line(const char* line, plot_params_t* p) {
     return 1;  /* Valid plot line */
 }
 
-static int run_batch(const char* batch_file, const char* input_file) {
+static int run_batch(const char* batch_file,
+                     const char* input_file,
+                     alea_spatial_mode_t spatial_mode) {
     FILE* f = fopen(batch_file, "r");
     if (!f) {
         fprintf(stderr, "Error: Cannot open batch file: %s\n", batch_file);
@@ -1306,6 +1355,7 @@ static int run_batch(const char* batch_file, const char* input_file) {
     printf("==========================================\n");
     printf("Input:      %s\n", input_file);
     printf("Batch file: %s\n", batch_file);
+    printf("Spatial:    %s\n", spatial_mode_name(spatial_mode));
     printf("\n");
 
     /* Load geometry */
@@ -1326,13 +1376,15 @@ static int run_batch(const char* batch_file, const char* input_file) {
     printf("  Cells: %zu, Surfaces: %zu\n",
            alea_cell_count(sys), alea_surface_count(sys));
 
-    /* Build spatial index */
-    printf("Building spatial index... ");
+    set_spatial_mode(sys, spatial_mode);
+
+    /* Prepare query acceleration */
+    printf("Preparing query acceleration... ");
     fflush(stdout);
     t0 = get_time_ms();
 
-    if (alea_build_spatial_index(sys) != 0) {
-        printf("FAILED\n");
+    if (alea_prepare_query_acceleration(sys) != 0) {
+        printf("FAILED: %s\n", alea_error());
         destroy_model(&model);
         fclose(f);
         return 1;
@@ -1391,8 +1443,10 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --contours=cells        Contours at cell boundaries (default)\n");
     fprintf(stderr, "  --contours=materials    Contours at material boundaries\n");
     fprintf(stderr, "  --ticks                 Show axis tick labels\n");
+    fprintf(stderr, "  --spatial=flat|hier|auto Query acceleration mode (default: flat)\n");
     fprintf(stderr, "  --debug                 Print verbose curve generation debug info\n");
     fprintf(stderr, "  --trace=px,py           Trace cell lookup at pixel (px,py) for debugging\n");
+    fprintf(stderr, "\n  Note: --errors and --labels=surfaces currently require --spatial=flat.\n");
     fprintf(stderr, "\nBatch file format (one plot per line):\n");
     fprintf(stderr, "  Z value u_min u_max v_min v_max WxH output.png [options]\n");
     fprintf(stderr, "  Y value u_min u_max v_min v_max WxH output.png [options]\n");
@@ -1414,11 +1468,20 @@ int main(int argc, char** argv) {
     }
 
     const char* input_file = argv[1];
+    alea_spatial_mode_t spatial_mode = ALEA_SPATIAL_MODE_FLAT;
+
+    for (int i = 2; i < argc; i++) {
+        if (strncmp(argv[i], "--spatial=", 10) == 0 &&
+            parse_spatial_mode(argv[i] + 10, &spatial_mode) != 0) {
+            fprintf(stderr, "Error: invalid spatial mode '%s'\n", argv[i] + 10);
+            return 1;
+        }
+    }
 
     /* Check for batch mode */
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "--batch=", 8) == 0) {
-            return run_batch(argv[i] + 8, input_file);
+            return run_batch(argv[i] + 8, input_file, spatial_mode);
         }
     }
 
@@ -1487,6 +1550,8 @@ int main(int argc, char** argv) {
             debug_curves = 1;
         } else if (strncmp(argv[i], "--trace=", 8) == 0) {
             sscanf(argv[i] + 8, "%d,%d", &trace_px, &trace_py);
+        } else if (strncmp(argv[i], "--spatial=", 10) == 0) {
+            /* Parsed before batch/single mode dispatch. */
         }
     }
 
@@ -1498,6 +1563,7 @@ int main(int argc, char** argv) {
     printf("Bounds:     [%.4g, %.4g] x [%.4g, %.4g]\n", plot.u_min, plot.u_max, plot.v_min, plot.v_max);
     printf("Resolution: %d x %d\n", plot.width, plot.height);
     printf("Output:     %s\n", output_file);
+    printf("Spatial:    %s\n", spatial_mode_name(spatial_mode));
     printf("Color by:   %s\n", plot.color_mode == COLOR_BY_MATERIAL ? "materials" : "cells");
     printf("Contours:   %s\n", plot.contour_mode == CONTOUR_BY_MATERIAL ? "materials" : "cells");
     if (plot.show_ticks) printf("Ticks:      enabled\n");
@@ -1527,21 +1593,32 @@ int main(int argc, char** argv) {
     printf("  Cells: %zu, Surfaces: %zu\n",
            alea_cell_count(sys), alea_surface_count(sys));
     printf("  [RSS after load: %.1f MB]\n", get_rss_mb());
+    fflush(stdout);
 
-    /* Build spatial index */
-    printf("Building spatial index... ");
+    set_spatial_mode(sys, spatial_mode);
+    if (alea_system_spatial_mode_prefers_hier(sys) &&
+        plot_needs_flat_slice_curves(&plot)) {
+        fprintf(stderr,
+                "Error: --errors and --labels=surfaces require flat spatial mode; "
+                "rerun with --spatial=flat or disable those overlays\n");
+        destroy_model(&model);
+        return 1;
+    }
+
+    /* Prepare query acceleration */
+    printf("Preparing query acceleration... ");
     fflush(stdout);
     t0 = get_time_ms();
 
-    if (alea_build_spatial_index(sys) != 0) {
-        printf("FAILED\n");
+    if (alea_prepare_query_acceleration(sys) != 0) {
+        printf("FAILED: %s\n", alea_error());
         destroy_model(&model);
         return 1;
     }
 
     t1 = get_time_ms();
     printf("OK (%.1f ms)\n", t1 - t0);
-    printf("  [RSS after spatial index: %.1f MB]\n\n", get_rss_mb());
+    printf("  [RSS after query acceleration: %.1f MB]\n\n", get_rss_mb());
 
     /* Enable curve debug output if requested */
     if (debug_curves) {
@@ -1589,5 +1666,5 @@ int main(int argc, char** argv) {
     if (rc == 0) {
         printf("\nDone: %s\n", output_file);
     }
-    return rc;
+    return rc == 0 ? 0 : 1;
 }

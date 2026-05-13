@@ -340,6 +340,9 @@ int alea_find_surface_label_positions_on_boundaries(
  * @brief Get analytical curves from a slice view
  *
  * Returns exact surface boundaries as parametric curves for accurate rendering.
+ * This currently requires the expanded flat spatial index; it returns NULL and
+ * sets an error in hierarchical spatial mode or in auto mode when the system
+ * selects hierarchical spatial indexing.
  *
  * @param sys CSG system
  * @param view Slice view (plane + viewport bounds)

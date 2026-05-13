@@ -142,8 +142,24 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config);
  * ============================================================================ */
 
 int alea_build_universe_index(alea_system_t* sys);
+/**
+ * @brief Build the expanded flat spatial index.
+ *
+ * This is a flat-spatial-index API. In hierarchical spatial mode, or in auto
+ * mode when hierarchical indexing is selected, it returns -1 and sets an
+ * error. For mode-aware query setup, prefer alea_prepare_query_acceleration().
+ */
 int alea_build_spatial_index(alea_system_t* sys);
 
+/**
+ * @brief Prepare query caches according to the system spatial mode.
+ *
+ * Uses flat caches in ALEA_SPATIAL_MODE_FLAT and hierarchical caches in
+ * ALEA_SPATIAL_MODE_HIER. In ALEA_SPATIAL_MODE_AUTO, the implementation
+ * switches to hierarchical indexing when the cell count reaches the auto
+ * threshold. The threshold defaults to 100000 cells and can be overridden with
+ * ALEA_SPATIAL_AUTO_CELL_THRESHOLD.
+ */
 int alea_prepare_query_acceleration(alea_system_t* sys);
 
 /* ============================================================================

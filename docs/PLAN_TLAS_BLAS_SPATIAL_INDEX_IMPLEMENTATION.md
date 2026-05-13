@@ -409,9 +409,9 @@ Exit criteria:
 
 ### Phase 7B: `mc_plotter` Migration
 
-`tools/mc_plotter.c` still explicitly calls `alea_build_spatial_index()` before
-rendering, both in batch mode and single-plot mode. That keeps it on the flat
-expanded-instance path and means E-lite will still fail there until the tool is
+`tools/mc_plotter.c` previously called `alea_build_spatial_index()` before
+rendering, both in batch mode and single-plot mode. Basic grid plotting is now
+mode-aware, but analytical overlays remain flat-only until slice curves are
 migrated.
 
 Goal:
@@ -424,31 +424,33 @@ Goal:
 Required activities:
 
 1. Add a plotter spatial mode option.
-   - Support at least `--spatial=flat|hier|auto`.
+   - Support at least `--spatial=flat|hier|auto`: done.
    - Default can remain `flat` initially for backward compatibility, or switch
-     to `auto` after E-lite validation is stable.
-   - Set `alea_config_t.spatial_mode` before any query cache preparation.
+     to `auto` after E-lite validation is stable: default remains `flat`.
+   - Set `alea_config_t.spatial_mode` before any query cache preparation: done.
 
 2. Replace unconditional flat spatial-index construction.
    - Replace the two `alea_build_spatial_index()` calls in `mc_plotter` with
-     `alea_prepare_query_acceleration()` for mode-aware preparation.
+     `alea_prepare_query_acceleration()` for mode-aware preparation: done.
    - Keep `alea_build_spatial_index()` only when the selected mode is flat and
-     the tool needs flat-only analytical curve features.
+     the tool needs flat-only analytical curve features: no unconditional
+     plotter calls remain.
    - Report `alea_error()` when preparation fails so users see whether the
-     requested feature is flat-only.
+     requested feature is flat-only: done for preparation failures.
 
 3. Make the grid-render path hierarchical-safe.
    - The basic pixel query path uses `alea_find_cells_grid()`.
    - `alea_find_cells_grid()` prepares `ALEA_CACHE_RAYCAST`, so it can already
      route to hierarchical caches in hier/large-auto mode.
    - Validate that plain plots without analytical overlays do not build
-     `sys->spatial_index` in hierarchical mode.
+     `sys->spatial_index` in hierarchical mode: smoke-tested on
+     `tests/data/simple_fill.mcnp` with `--spatial=hier`.
 
 4. Gate flat-only analytical overlays.
    - `alea_get_slice_curves()` remains flat-spatial-index based.
    - Until it is migrated, disable or fail clearly in hier/large-auto mode for:
      `--errors`, `--labels=surfaces`, and any feature that calls
-     `get_curves_for_plot()`.
+     `get_curves_for_plot()`: done.
    - Cell/material labels based only on the rendered grid can remain enabled.
 
 5. Add a hierarchical slice-curve migration path.
@@ -460,19 +462,38 @@ Required activities:
 
 6. Add tests and acceptance checks.
    - Unit or integration test: `mc_plotter --spatial=hier` on `simple_fill.mcnp`
-     produces a basic image and does not build a flat spatial index.
+     produces a basic image and does not build a flat spatial index: manual
+     smoke test done; automated test still pending.
    - Negative test: hierarchical mode with a currently flat-only overlay fails
-     clearly.
+     clearly: manual smoke test done; automated test still pending.
    - E-lite check: basic plot completes with bounded memory in
-     `--spatial=hier` or `--spatial=auto`.
+     `--spatial=hier` or `--spatial=auto`: done for a 64x64 Z=0 plot over
+     `[-1,1] x [-1,1]` in hierarchical mode
 
 Exit criteria:
 
-- `mc_plotter` basic grid plots work in hierarchical mode on small fixtures and
-  E-lite
-- no `mc_plotter` hierarchical path calls `alea_build_spatial_index()`
-- unsupported overlays produce clear errors instead of attempting flat expansion
-- documentation and usage text describe `--spatial=flat|hier|auto`
+- `mc_plotter` basic grid plots work in hierarchical mode on small fixtures:
+  done; E-lite 64x64 smoke validation done
+- no `mc_plotter` hierarchical path calls `alea_build_spatial_index()`: done
+- unsupported overlays produce clear errors instead of attempting flat
+  expansion: done
+- documentation and usage text describe `--spatial=flat|hier|auto`: done
+
+E-lite smoke result:
+
+```sh
+timeout 300s bin/mc_plotter \
+  /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp \
+  Z 0 -1 1 -1 1 64x64 /tmp/e_lite_hier_plot.bmp --spatial=hier
+```
+
+Observed on the development machine:
+
+- load completed in about 20.3 s
+- hierarchical query acceleration completed in about 25.8 s
+- RSS after query acceleration was about 3211 MB
+- 64x64 grid render completed in about 1.0 s
+- no flat spatial index construction was requested by `mc_plotter`
 
 ### Phase 7C: Remaining Codebase Migration Inventory
 
@@ -491,7 +512,8 @@ The following areas still need migration or explicit flat-only classification.
 
 Current flat dependency:
 
-- `src/mesh/mesh_export.c` prepares `ALEA_CACHE_SPATIAL` before sampling
+- `src/mesh/mesh_export.c` prepared `ALEA_CACHE_SPATIAL` before sampling: done,
+  now prepares only `ALEA_CACHE_UNIVERSE`
 
 Observed behavior:
 
@@ -504,7 +526,8 @@ Required activities:
 
 - replace the eager `ALEA_CACHE_SPATIAL` preparation with the minimum cache set
   needed by point lookup, likely `alea_prepare_query_acceleration()` or
-  `ALEA_CACHE_UNIVERSE` depending on measured behavior
+  `ALEA_CACHE_UNIVERSE` depending on measured behavior: done with
+  `ALEA_CACHE_UNIVERSE`
 - add a hier/auto mesh export test that confirms no flat spatial index is built
 - validate mesh export on E-lite with a small bounded mesh before broad use
 
@@ -522,7 +545,7 @@ Current flat dependencies:
 Required activities:
 
 - keep `alea_get_slice_curves()` explicitly flat-only until migrated
-- add clear public documentation in `include/alea_slice.h`
+- add clear public documentation in `include/alea_slice.h`: done
 - add tests that `alea_get_slice_curves()` fails clearly in hier/large-auto mode
 - implement hierarchical curve candidate collection using the hierarchical
   slice/region query path
@@ -571,13 +594,13 @@ Current status:
 
 - `src/render/render3d.c` uses raycast preparation and public raycast entry
   points, so the library renderer is mostly mode-aware
-- `examples/c/render3d.c` still calls `alea_build_spatial_index()` directly
-  before rendering
+- `examples/c/render3d.c` previously called `alea_build_spatial_index()`
+  directly before rendering: done, now uses mode-aware preparation
 
 Required activities:
 
 - remove the direct flat spatial build from `examples/c/render3d.c` or replace
-  it with mode-aware preparation
+  it with mode-aware preparation: done
 - add a render example option/config hook for `flat|hier|auto` if the example
   is used on large models
 - add a small hierarchical render smoke test confirming no flat spatial index
@@ -587,8 +610,10 @@ Required activities:
 
 Current flat dependencies:
 
-- `tests/fuzz/fuzz_mcnp_parser.c` calls `alea_build_spatial_index()`
-- `tests/fuzz/fuzz_openmc_parser.c` calls `alea_build_spatial_index()`
+- `tests/fuzz/fuzz_mcnp_parser.c` called `alea_build_spatial_index()`: done,
+  now uses mode-aware preparation
+- `tests/fuzz/fuzz_openmc_parser.c` called `alea_build_spatial_index()`: done,
+  now uses mode-aware preparation
 
 Required activities:
 
@@ -620,11 +645,11 @@ Required activities:
 Required activities:
 
 - mark `alea_build_spatial_index()` as flat-spatial-index only in
-  `include/alea.h`
+  `include/alea.h`: done
 - document `alea_prepare_query_acceleration()` as the mode-aware replacement
-  for callers that do not specifically need expanded flat instances
+  for callers that do not specifically need expanded flat instances: done
 - document `ALEA_SPATIAL_MODE_AUTO` threshold behavior and the
-  `ALEA_SPATIAL_AUTO_CELL_THRESHOLD` override
+  `ALEA_SPATIAL_AUTO_CELL_THRESHOLD` override: done
 
 ### Phase 8: E-lite Validation
 
