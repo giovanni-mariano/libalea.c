@@ -12,6 +12,7 @@
 #include "alea_slice.h"
 #include "core/alea_system.h"
 #include "core/alea_spatial.h"
+#include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
 #include "core/alea_universe.h"
 #include <stdlib.h>
@@ -370,6 +371,18 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
         }
     }
 
+    /* Hier-spatial fast path: BLAS-pruned lookup before linear scan. On
+     * models with very large universes (E-lite root universe has ~22K cells),
+     * the linear scan below would do 22K alea_contains_point evaluations per
+     * pixel after every adjacency miss. The BLAS reduces that to O(log N). */
+    if (sys->hier_spatial_index) {
+        int found = alea_hier_spatial_find_cell_in_universe(sys, universe_id,
+                                                            lx, ly, lz);
+        if (found >= 0) return found;
+        if (found == -1) return -1; /* BLAS lookup ran and the point is in no cell */
+        /* found == -2: hier index not usable for this universe, fall through. */
+    }
+
     /* Fall back to linear search within universe */
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
@@ -482,26 +495,34 @@ static void find_cell_multilevel(alea_system_t* sys,
 
             /* If cell has a fill, continue to next level */
             if (cell->fill_universe > 0) {
-                /* Build transform for the fill */
-                alea_matrix_t fill_transform;
-                if (cell->fill_transform > 0) {
-                    const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
-                    if (tr) {
-                        /* Use tr->cosines which has pre-computed direction cosines */
-                        if (!alea_matrix_from_mcnp(&fill_transform, tr->cosines,
-                                                   tr->value_count, false)) {
+                /* Prefer the precomputed per-cell fill matrix from the hier
+                 * index — it avoids `alea_matrix_from_mcnp` (transform-table
+                 * lookup + invert) per pixel per descent. Falls back to the
+                 * per-pixel build if the hier cache is unavailable. */
+                const alea_matrix_t* cached_fill =
+                    alea_hier_spatial_get_cell_fill_matrix(sys, (uint32_t)cell_idx);
+                alea_matrix_t fill_transform_local;
+                const alea_matrix_t* fill_transform = cached_fill;
+                if (!fill_transform) {
+                    if (cell->fill_transform > 0) {
+                        const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
+                        if (tr) {
+                            if (!alea_matrix_from_mcnp(&fill_transform_local, tr->cosines,
+                                                       tr->value_count, false)) {
+                                break;
+                            }
+                        } else {
                             break;
                         }
                     } else {
-                        break;
+                        alea_matrix_identity(&fill_transform_local);
                     }
-                } else {
-                    alea_matrix_identity(&fill_transform);
+                    fill_transform = &fill_transform_local;
                 }
 
                 /* Compose with accumulated transform */
                 alea_matrix_t new_accumulated;
-                alea_matrix_multiply(&new_accumulated, &accumulated, &fill_transform);
+                alea_matrix_multiply(&new_accumulated, &accumulated, fill_transform);
                 accumulated = new_accumulated;
 
                 /* Transform point to fill universe coordinates */

@@ -7,8 +7,12 @@
 #include "core/alea_system.h"
 #include "core/alea_surface.h"
 #include "primitives/bbox.h"
+#include "alea_types.h"
+#include "util/alea_hashmap.h"
 #include "util/alea_log.h"
+#include "util/compat.h"
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -18,6 +22,42 @@
 #define HIER_BVH_LEAF_SIZE 4
 #define HIER_DEFAULT_BLAS_THRESHOLD 1
 #define HIER_MAX_PLACEMENT_DEPTH 64
+#define HIER_DEFAULT_MEMORY_RESERVE_MB 256
+#define HIER_MEMORY_CHECK_INTERVAL 16384
+
+static size_t hier_memory_reserve_bytes(void) {
+    const char* env = getenv("ALEA_HIER_MEMORY_RESERVE_MB");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long mb = strtoul(env, &end, 10);
+        if (end != env) return (size_t)mb * 1024ULL * 1024ULL;
+    }
+    return (size_t)HIER_DEFAULT_MEMORY_RESERVE_MB * 1024ULL * 1024ULL;
+}
+
+/* Returns 0 if memory is OK or unknown, -1 if low. When low, sets a clear
+ * error so the caller can surface it instead of letting the kernel OOM-kill
+ * the process. */
+static int hier_memory_budget_check(const char* phase) {
+    size_t avail = alea_mem_available_bytes();
+    if (avail == 0) return 0; /* unknown platform / not enforceable */
+    size_t reserve = hier_memory_reserve_bytes();
+    if (avail >= reserve) return 0;
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+        "hier spatial index aborted in %s: available memory %.1f MiB below "
+        "reserve %.1f MiB (set ALEA_HIER_MEMORY_RESERVE_MB to override)",
+        phase ? phase : "build",
+        (double)avail / (1024.0 * 1024.0),
+        (double)reserve / (1024.0 * 1024.0));
+    return -1;
+}
+
+static inline uint64_t hier_blas_key_hash(int id) {
+    return (uint64_t)(unsigned int)id * 0x9E3779B97F4A7C15ULL;
+}
+static inline bool hier_blas_key_eq(int a, int b) { return a == b; }
+ALEA_HASHMAP_DEFINE(hier_blas_map, int, uint32_t,
+                    hier_blas_key_hash, hier_blas_key_eq, INT_MIN);
 #ifndef M_SQRT3
 #define M_SQRT3 1.73205080756887729353
 #endif
@@ -28,8 +68,70 @@ enum {
     HIER_PLACEMENT_LATTICE = 1u << 2
 };
 
+/* Compact bbox used for BVH traversal pruning. Stored as floats with each min
+ * rounded down and each max rounded up so the bbox remains conservative (any
+ * point/region intersecting the true double-precision bbox also intersects the
+ * float version). Exact containment of cells is still verified against the
+ * full CSG tree, so float storage here cannot affect correctness, only how
+ * many candidates are visited. Halves node and per-cell footprint vs storing
+ * 6 doubles. */
 typedef struct {
-    alea_bbox_t bbox;
+    float min[3];
+    float max[3];
+} hier_fbbox_t;
+
+static inline hier_fbbox_t hier_fbbox_empty(void) {
+    hier_fbbox_t b;
+    b.min[0] = b.min[1] = b.min[2] =  FLT_MAX;
+    b.max[0] = b.max[1] = b.max[2] = -FLT_MAX;
+    return b;
+}
+
+static inline hier_fbbox_t hier_fbbox_from_double(const alea_bbox_t* d) {
+    if (!alea_bbox_is_valid(d)) return hier_fbbox_empty();
+    hier_fbbox_t b;
+    b.min[0] = nextafterf((float)d->min_x, -INFINITY);
+    b.min[1] = nextafterf((float)d->min_y, -INFINITY);
+    b.min[2] = nextafterf((float)d->min_z, -INFINITY);
+    b.max[0] = nextafterf((float)d->max_x,  INFINITY);
+    b.max[1] = nextafterf((float)d->max_y,  INFINITY);
+    b.max[2] = nextafterf((float)d->max_z,  INFINITY);
+    return b;
+}
+
+static inline hier_fbbox_t hier_fbbox_union(const hier_fbbox_t* a, const hier_fbbox_t* b) {
+    hier_fbbox_t r;
+    for (int i = 0; i < 3; i++) {
+        r.min[i] = a->min[i] < b->min[i] ? a->min[i] : b->min[i];
+        r.max[i] = a->max[i] > b->max[i] ? a->max[i] : b->max[i];
+    }
+    return r;
+}
+
+static inline int hier_fbbox_contains_point(const hier_fbbox_t* b,
+                                            double x, double y, double z) {
+    return x >= (double)b->min[0] && x <= (double)b->max[0] &&
+           y >= (double)b->min[1] && y <= (double)b->max[1] &&
+           z >= (double)b->min[2] && z <= (double)b->max[2];
+}
+
+static inline int hier_fbbox_intersects_dbbox(const hier_fbbox_t* a,
+                                              const alea_bbox_t* b) {
+    return (double)a->min[0] <= b->max_x && (double)a->max[0] >= b->min_x &&
+           (double)a->min[1] <= b->max_y && (double)a->max[1] >= b->min_y &&
+           (double)a->min[2] <= b->max_z && (double)a->max[2] >= b->min_z;
+}
+
+static inline alea_bbox_t hier_fbbox_to_double(const hier_fbbox_t* b) {
+    return (alea_bbox_t){
+        (double)b->min[0], (double)b->max[0],
+        (double)b->min[1], (double)b->max[1],
+        (double)b->min[2], (double)b->max[2]
+    };
+}
+
+typedef struct {
+    hier_fbbox_t bbox;
     uint32_t left_or_first;
     uint32_t right_child;
     uint16_t count;
@@ -39,7 +141,7 @@ typedef struct {
 
 typedef struct {
     uint32_t cell_index;
-    alea_bbox_t bbox;
+    hier_fbbox_t bbox;
 } hier_blas_cell_t;
 
 typedef struct {
@@ -55,14 +157,12 @@ typedef struct {
 } hier_universe_blas_t;
 
 typedef struct {
-    uint32_t id;
     uint32_t parent_id;
     uint32_t parent_cell_index;
     int universe_id;
     int depth;
     uint32_t transform_index;
     uint32_t flags;
-    alea_bbox_t local_bbox;
     alea_bbox_t world_bbox;
 } hier_placement_t;
 
@@ -70,12 +170,26 @@ struct alea_hier_spatial_index {
     hier_universe_blas_t* blas;
     size_t blas_count;
     size_t blas_capacity;
+    hier_blas_map_t blas_by_universe;
+    /* Top-level acceleration structure over placement world bboxes. Reuses the
+     * BLAS struct: each "cell" in the TLAS is a placement and cell_index is
+     * the placement index. Built once after collect_placements. */
+    hier_universe_blas_t tlas;
+    int tlas_built;
     hier_placement_t* placements;
     size_t placement_count;
     size_t placement_capacity;
     alea_matrix_t* transforms;
     size_t transform_count;
     size_t transform_capacity;
+    /* Per-cell fill matrix cache. cell_fill_matrix_index[cell_index] holds
+     * the slot in cell_fill_matrices for cells with fill_universe > 0, or
+     * UINT32_MAX if absent. Each cached matrix has both forward and inverse
+     * precomputed at build time so query paths avoid repeated alea_matrix_invert. */
+    uint32_t* cell_fill_matrix_index;
+    size_t cell_fill_matrix_index_size;
+    alea_matrix_t* cell_fill_matrices;
+    size_t cell_fill_matrix_count;
     alea_hier_spatial_stats_t stats;
     int built;
 };
@@ -85,6 +199,58 @@ typedef struct {
     double centroid[3];
 } hier_bvh_item_t;
 
+#define HIER_CAND_STACK 32
+
+typedef struct {
+    uint32_t stack[HIER_CAND_STACK];
+    uint32_t* data;
+    size_t count;
+    size_t cap;
+} hier_cand_buf_t;
+
+static inline void hier_cand_init(hier_cand_buf_t* b) {
+    b->data = b->stack;
+    b->count = 0;
+    b->cap = HIER_CAND_STACK;
+}
+
+static inline void hier_cand_free(hier_cand_buf_t* b) {
+    if (b->data != b->stack) free(b->data);
+}
+
+static int hier_cand_push(hier_cand_buf_t* b, uint32_t v) {
+    if (b->count == b->cap) {
+        size_t new_cap = b->cap * 2;
+        uint32_t* nd;
+        if (b->data == b->stack) {
+            nd = malloc(new_cap * sizeof(*nd));
+            if (!nd) return -1;
+            memcpy(nd, b->stack, b->count * sizeof(*nd));
+        } else {
+            nd = realloc(b->data, new_cap * sizeof(*nd));
+            if (!nd) return -1;
+        }
+        b->data = nd;
+        b->cap = new_cap;
+    }
+    b->data[b->count++] = v;
+    return 0;
+}
+
+static inline void hier_cand_sort(hier_cand_buf_t* b) {
+    /* Insertion sort: candidate counts are almost always small (<= leaf size
+     * times a few overlapping leaves). Avoids qsort's function-pointer cost. */
+    for (size_t i = 1; i < b->count; i++) {
+        uint32_t x = b->data[i];
+        size_t j = i;
+        while (j > 0 && b->data[j - 1] > x) {
+            b->data[j] = b->data[j - 1];
+            j--;
+        }
+        b->data[j] = x;
+    }
+}
+
 typedef struct {
     alea_system_t* sys;
     alea_hier_spatial_index_t* idx;
@@ -92,7 +258,7 @@ typedef struct {
     double x;
     double y;
     double z;
-    alea_size_vec_t* candidates;
+    hier_cand_buf_t* candidates;
     int error;
 } hier_point_query_ctx_t;
 
@@ -155,16 +321,39 @@ static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
         };
     }
 
-    /* Hex lattice bounds are intentionally conservative. The exact element
-     * lookup still decides whether the point maps to a filled universe. */
+    /* Hex lattice: element centers are at (ri*p + rk*p/2, rk*p*sqrt(3)/2) in
+     * local coords (mirrors lattice_hex_lookup_local). The container bbox is
+     * the rectangle that bounds those centers, padded by one pitch on each
+     * side to cover the element's own footprint conservatively. Previously
+     * this was a giant (ni+nj+2)*p square in both axes, which made hex
+     * lattice placements effectively unbounded and defeated TLAS pruning. */
     double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
-    int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
-    int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    int d0 = cell->lat_fill_dims[0];
+    int d1 = cell->lat_fill_dims[1];
+    int d2 = cell->lat_fill_dims[2];
+    int d3 = cell->lat_fill_dims[3];
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
-    double extent = (double)(ni + nj + 2) * p;
-    double zmax = (nk == 1) ? p : cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2];
-    return (alea_bbox_t){-extent, extent, -extent, extent,
-                         cell->lat_lower_left[2], zmax};
+
+    double cx[4] = {
+        (double)d0 * p + (double)d2 * p * 0.5,
+        (double)d0 * p + (double)d3 * p * 0.5,
+        (double)d1 * p + (double)d2 * p * 0.5,
+        (double)d1 * p + (double)d3 * p * 0.5
+    };
+    double xmin_c = cx[0], xmax_c = cx[0];
+    for (int i = 1; i < 4; i++) {
+        if (cx[i] < xmin_c) xmin_c = cx[i];
+        if (cx[i] > xmax_c) xmax_c = cx[i];
+    }
+    double ymin_c = (double)d2 * p * M_SQRT3 * 0.5;
+    double ymax_c = (double)d3 * p * M_SQRT3 * 0.5;
+
+    double zmin = (nk == 1) ? -p : cell->lat_lower_left[2];
+    double zmax = (nk == 1) ?  p : cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2];
+
+    return (alea_bbox_t){xmin_c - p, xmax_c + p,
+                         ymin_c - p, ymax_c + p,
+                         zmin, zmax};
 }
 
 static alea_bbox_t bbox_transform(const alea_bbox_t* bbox, const alea_matrix_t* mat) {
@@ -240,13 +429,13 @@ static int ensure_node_capacity(hier_universe_blas_t* blas, size_t needed) {
     return 0;
 }
 
-static alea_bbox_t item_bbox(const hier_universe_blas_t* blas,
-                             const hier_bvh_item_t* items,
-                             size_t start,
-                             size_t end) {
-    alea_bbox_t result = alea_bbox_empty();
+static hier_fbbox_t item_bbox(const hier_universe_blas_t* blas,
+                              const hier_bvh_item_t* items,
+                              size_t start,
+                              size_t end) {
+    hier_fbbox_t result = hier_fbbox_empty();
     for (size_t i = start; i < end; i++) {
-        result = alea_bbox_union(&result, &blas->cells[items[i].index].bbox);
+        result = hier_fbbox_union(&result, &blas->cells[items[i].index].bbox);
     }
     return result;
 }
@@ -273,13 +462,16 @@ static int best_split_axis(const hier_bvh_item_t* items,
     return 2;
 }
 
-static int compare_size_t_ascending(const void* a, const void* b) {
-    const size_t* ia = (const size_t*)a;
-    const size_t* ib = (const size_t*)b;
-    return (*ia > *ib) - (*ia < *ib);
-}
-
 static void translation_matrix(alea_matrix_t* out, double x, double y, double z);
+
+static inline const alea_matrix_t*
+cell_fill_matrix_cached(const alea_hier_spatial_index_t* idx, uint32_t cell_index) {
+    if (!idx->cell_fill_matrix_index) return NULL;
+    if ((size_t)cell_index >= idx->cell_fill_matrix_index_size) return NULL;
+    uint32_t slot = idx->cell_fill_matrix_index[cell_index];
+    if (slot == UINT32_MAX) return NULL;
+    return &idx->cell_fill_matrices[slot];
+}
 
 static void quickselect(hier_bvh_item_t* items,
                         size_t lo,
@@ -356,7 +548,7 @@ static uint32_t build_bvh_recursive(hier_universe_blas_t* blas,
     if (left == UINT32_MAX || right == UINT32_MAX) return UINT32_MAX;
 
     node = &blas->nodes[node_index];
-    node->bbox = alea_bbox_union(&blas->nodes[left].bbox, &blas->nodes[right].bbox);
+    node->bbox = hier_fbbox_union(&blas->nodes[left].bbox, &blas->nodes[right].bbox);
     node->left_or_first = left;
     node->right_child = right;
 
@@ -391,7 +583,7 @@ static int build_universe_blas(alea_system_t* sys,
             ? lattice_container_bbox(cell)
             : local_cell_bbox(sys, cell_index);
         blas->cells[i].cell_index = cell_index;
-        blas->cells[i].bbox = bbox;
+        blas->cells[i].bbox = hier_fbbox_from_double(&bbox);
         blas->bounds = alea_bbox_union(&blas->bounds, &bbox);
 
         items[i].index = (uint32_t)i;
@@ -437,8 +629,12 @@ void alea_hier_spatial_index_free(alea_hier_spatial_index_t* idx) {
         free_universe_blas(&idx->blas[i]);
     }
     free(idx->blas);
+    hier_blas_map_destroy(&idx->blas_by_universe);
+    free_universe_blas(&idx->tlas);
     free(idx->placements);
     free(idx->transforms);
+    free(idx->cell_fill_matrix_index);
+    free(idx->cell_fill_matrices);
     free(idx);
 }
 
@@ -522,15 +718,14 @@ static int append_placement(alea_hier_spatial_index_t* idx,
 
     uint32_t id = (uint32_t)idx->placement_count;
     hier_placement_t* placement = &idx->placements[idx->placement_count++];
-    placement->id = id;
     placement->parent_id = parent_id;
     placement->parent_cell_index = parent_cell_index;
     placement->universe_id = universe_id;
     placement->depth = depth;
     placement->transform_index = transform_index;
     placement->flags = flags;
-    placement->local_bbox = local_bbox ? *local_bbox : alea_bbox_empty();
     placement->world_bbox = world_bbox ? *world_bbox : alea_bbox_empty();
+    (void)local_bbox; /* unused: kept in signature for build-time intent */
 
     idx->stats.placement_count = idx->placement_count;
     if (flags & HIER_PLACEMENT_ROOT) idx->stats.root_placement_count++;
@@ -558,6 +753,76 @@ static int fill_transform_matrix(alea_system_t* sys,
     }
 
     return 0;
+}
+
+static int build_cell_fill_matrix_cache(alea_system_t* sys,
+                                        alea_hier_spatial_index_t* idx) {
+    size_t cell_count = sys->cells.count;
+    if (cell_count == 0) return 0;
+
+    idx->cell_fill_matrix_index = malloc(cell_count * sizeof(uint32_t));
+    if (!idx->cell_fill_matrix_index) return -1;
+    idx->cell_fill_matrix_index_size = cell_count;
+    for (size_t i = 0; i < cell_count; i++) {
+        idx->cell_fill_matrix_index[i] = UINT32_MAX;
+    }
+
+    /* Deduplicate by MCNP fill_transform id. All cells with fill_transform == 0
+     * (or unset) share one identity slot. Cells with the same MCNP TR id share
+     * one slot. This keeps the table size proportional to unique transforms,
+     * not to fill-cell count — critical for large models. */
+    hier_blas_map_t xform_map = hier_blas_map_create(32);
+    if (!xform_map.entries) return -1;
+
+    size_t cap = 16;
+    idx->cell_fill_matrices = malloc(cap * sizeof(alea_matrix_t));
+    if (!idx->cell_fill_matrices) {
+        hier_blas_map_destroy(&xform_map);
+        return -1;
+    }
+    idx->cell_fill_matrix_count = 0;
+
+    int rc = 0;
+    for (size_t i = 0; i < cell_count; i++) {
+        const alea_cell_entry_t* c = &sys->cells.data[i];
+        if (c->fill_universe <= 0) continue;
+
+        int key = c->fill_transform > 0 ? c->fill_transform : 0;
+        uint32_t* existing = hier_blas_map_get(&xform_map, key);
+        if (existing) {
+            idx->cell_fill_matrix_index[i] = *existing;
+            continue;
+        }
+
+        if (idx->cell_fill_matrix_count == cap) {
+            size_t new_cap = cap * 2;
+            alea_matrix_t* grown = realloc(idx->cell_fill_matrices,
+                                           new_cap * sizeof(alea_matrix_t));
+            if (!grown) { rc = -1; break; }
+            idx->cell_fill_matrices = grown;
+            cap = new_cap;
+        }
+
+        uint32_t slot = (uint32_t)idx->cell_fill_matrix_count;
+        alea_matrix_t* m = &idx->cell_fill_matrices[slot];
+        if (fill_transform_matrix(sys, c, m) != 0) { rc = -1; break; }
+        if (!alea_matrix_invert(m)) { rc = -1; break; }
+        if (!hier_blas_map_put(&xform_map, key, slot)) { rc = -1; break; }
+        idx->cell_fill_matrix_index[i] = slot;
+        idx->cell_fill_matrix_count++;
+    }
+
+    /* Trim allocation down to actual size; tiny tables stay tiny. */
+    if (rc == 0 && idx->cell_fill_matrix_count > 0 &&
+        idx->cell_fill_matrix_count < cap) {
+        alea_matrix_t* trimmed = realloc(
+            idx->cell_fill_matrices,
+            idx->cell_fill_matrix_count * sizeof(alea_matrix_t));
+        if (trimmed) idx->cell_fill_matrices = trimmed;
+    }
+
+    hier_blas_map_destroy(&xform_map);
+    return rc;
 }
 
 static int lattice_rect_lookup(const alea_cell_entry_t* cell,
@@ -646,6 +911,13 @@ static int collect_placements_recursive(alea_system_t* sys,
     if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
     if (g_alea_interrupted) return -1;
 
+    /* Periodic memory budget check during the long-growing phase. The
+     * placement count grows monotonically, so use it as the polling clock. */
+    if ((idx->placement_count & (HIER_MEMORY_CHECK_INTERVAL - 1)) == 0 &&
+        idx->placement_count > 0) {
+        if (hier_memory_budget_check("collect_placements") != 0) return -1;
+    }
+
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return 0;
 
@@ -670,16 +942,15 @@ static int collect_placements_recursive(alea_system_t* sys,
         }
 
         if (cell->fill_universe > 0) {
-            alea_matrix_t fill_mat;
-            if (fill_transform_matrix(sys, cell, &fill_mat) != 0) {
-                return -1;
-            }
+            const alea_matrix_t* fill_mat =
+                cell_fill_matrix_cached(idx, cell_index);
+            if (!fill_mat) return -1;
 
             alea_matrix_t child_transform;
             if (accumulated) {
-                alea_matrix_multiply(&child_transform, accumulated, &fill_mat);
+                alea_matrix_multiply(&child_transform, accumulated, fill_mat);
             } else {
-                child_transform = fill_mat;
+                child_transform = *fill_mat;
             }
             if (!alea_matrix_invert(&child_transform)) {
                 return -1;
@@ -723,11 +994,68 @@ static int collect_placements(alea_system_t* sys, alea_hier_spatial_index_t* idx
     return collect_placements_recursive(sys, idx, 0, root_id, &identity, 0);
 }
 
+/* Build a top-level BVH over placement world bboxes. Stored as a phantom
+ * hier_universe_blas_t where `cell_index` of each entry is the placement id.
+ * Region queries traverse this BVH instead of scanning all placements. */
+static int build_tlas(alea_hier_spatial_index_t* idx) {
+    hier_universe_blas_t* tlas = &idx->tlas;
+    memset(tlas, 0, sizeof(*tlas));
+    tlas->cell_count = idx->placement_count;
+    tlas->bounds = alea_bbox_empty();
+
+    if (idx->placement_count == 0) {
+        tlas->built = 1;
+        idx->tlas_built = 1;
+        return 0;
+    }
+
+    tlas->cells = calloc(idx->placement_count, sizeof(*tlas->cells));
+    tlas->indices = calloc(idx->placement_count, sizeof(*tlas->indices));
+    hier_bvh_item_t* items = calloc(idx->placement_count, sizeof(*items));
+    if (!tlas->cells || !tlas->indices || !items) { free(items); return -1; }
+
+    /* Use a finite "infinite" bbox sentinel for placements whose world bbox
+     * could not be computed, so they are always traversed (matching the prior
+     * flat-scan behavior for those cases) without breaking BVH math. */
+    const double inf = 1e30;
+    for (size_t i = 0; i < idx->placement_count; i++) {
+        alea_bbox_t b = idx->placements[i].world_bbox;
+        if (!alea_bbox_is_valid(&b)) {
+            b = (alea_bbox_t){-inf, inf, -inf, inf, -inf, inf};
+        }
+        tlas->cells[i].cell_index = (uint32_t)i;
+        tlas->cells[i].bbox = hier_fbbox_from_double(&b);
+        tlas->bounds = alea_bbox_union(&tlas->bounds, &b);
+        items[i].index = (uint32_t)i;
+        items[i].centroid[0] = 0.5 * (b.min_x + b.max_x);
+        items[i].centroid[1] = 0.5 * (b.min_y + b.max_y);
+        items[i].centroid[2] = 0.5 * (b.min_z + b.max_z);
+    }
+
+    size_t est = estimate_bvh_node_count(idx->placement_count);
+    tlas->nodes = calloc(est ? est : 1, sizeof(*tlas->nodes));
+    if (!tlas->nodes) { free(items); return -1; }
+    tlas->node_capacity = est;
+
+    uint32_t root = build_bvh_recursive(tlas, items, 0, idx->placement_count, 0);
+    if (root == UINT32_MAX) { free(items); return -1; }
+
+    for (size_t i = 0; i < idx->placement_count; i++) {
+        tlas->indices[i] = items[i].index;
+    }
+    free(items);
+    tlas->built = 1;
+    idx->tlas_built = 1;
+    return 0;
+}
+
 int alea_hier_spatial_index_build(alea_system_t* sys) {
     if (!sys) return -1;
 
     double t_start = monotonic_seconds();
     size_t threshold = blas_threshold();
+
+    if (hier_memory_budget_check("build start") != 0) return -1;
 
     if (!sys->universe_index_built) {
         if (alea_build_universe_index(sys) != 0) return -1;
@@ -742,8 +1070,34 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
     if (!idx) return -1;
 
     idx->stats.universe_count = sys->universes.count;
+    idx->blas_by_universe = hier_blas_map_create(
+        sys->universes.count > 0 ? sys->universes.count * 2 : 16);
+    if (!idx->blas_by_universe.entries) {
+        free(idx);
+        return -1;
+    }
+
+    if (build_cell_fill_matrix_cache(sys, idx) != 0) {
+        alea_hier_spatial_index_free(idx);
+        return -1;
+    }
 
     if (collect_placements(sys, idx) != 0) {
+        alea_hier_spatial_index_free(idx);
+        return -1;
+    }
+
+    if (hier_memory_budget_check("tlas build") != 0) {
+        alea_hier_spatial_index_free(idx);
+        return -1;
+    }
+
+    if (build_tlas(idx) != 0) {
+        alea_hier_spatial_index_free(idx);
+        return -1;
+    }
+
+    if (hier_memory_budget_check("blas build") != 0) {
         alea_hier_spatial_index_free(idx);
         return -1;
     }
@@ -773,6 +1127,12 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
             alea_hier_spatial_index_free(idx);
             return -1;
         }
+        if (!hier_blas_map_put(&idx->blas_by_universe, univ->universe_id,
+                               (uint32_t)idx->blas_count)) {
+            free_universe_blas(blas);
+            alea_hier_spatial_index_free(idx);
+            return -1;
+        }
         idx->blas_count++;
 
         idx->stats.blas_count++;
@@ -784,13 +1144,28 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
     }
 
     idx->stats.memory_bytes += idx->blas_capacity * sizeof(*idx->blas);
+    idx->stats.memory_bytes += idx->blas_by_universe.capacity *
+                               sizeof(*idx->blas_by_universe.entries);
     idx->stats.memory_bytes += idx->placement_capacity * sizeof(*idx->placements);
     idx->stats.memory_bytes += idx->transform_capacity * sizeof(*idx->transforms);
+    idx->stats.memory_bytes += idx->cell_fill_matrix_index_size *
+                               sizeof(*idx->cell_fill_matrix_index);
+    idx->stats.memory_bytes += idx->cell_fill_matrix_count *
+                               sizeof(*idx->cell_fill_matrices);
+    idx->stats.memory_bytes += idx->tlas.cell_count * sizeof(*idx->tlas.cells);
+    idx->stats.memory_bytes += idx->tlas.cell_count * sizeof(*idx->tlas.indices);
+    idx->stats.memory_bytes += idx->tlas.node_capacity * sizeof(*idx->tlas.nodes);
     idx->built = 1;
     sys->hier_spatial_index = idx;
     atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_HIER_SPATIAL);
 
     double t_end = monotonic_seconds();
+    ALEA_LOG_INFO("Hier spatial cell-fill matrix cache: unique_transforms=%zu cells_indexed=%zu memory=%.2f MiB",
+                  idx->cell_fill_matrix_count,
+                  idx->cell_fill_matrix_index_size,
+                  bytes_to_mib(
+                      idx->cell_fill_matrix_count * sizeof(alea_matrix_t) +
+                      idx->cell_fill_matrix_index_size * sizeof(uint32_t)));
     ALEA_LOG_INFO("Hier spatial BLAS build: universes=%zu blas=%zu linear=%zu cells=%zu nodes=%zu memory=%.1f MiB time=%.3fs",
                   idx->stats.universe_count, idx->stats.blas_count,
                   idx->stats.linear_universe_count, idx->stats.blas_cell_count,
@@ -808,12 +1183,10 @@ int alea_hier_spatial_index_build(alea_system_t* sys) {
 static const hier_universe_blas_t* find_blas(const alea_hier_spatial_index_t* idx,
                                              int universe_id) {
     if (!idx) return NULL;
-    for (size_t i = 0; i < idx->blas_count; i++) {
-        if (idx->blas[i].universe_id == universe_id) {
-            return &idx->blas[i];
-        }
-    }
-    return NULL;
+    uint32_t* slot = hier_blas_map_get(&idx->blas_by_universe, universe_id);
+    if (!slot) return NULL;
+    if (*slot >= idx->blas_count) return NULL;
+    return &idx->blas[*slot];
 }
 
 static const alea_matrix_t* placement_transform(const alea_hier_spatial_index_t* idx,
@@ -831,9 +1204,11 @@ static void query_blas_node(hier_point_query_ctx_t* ctx, uint32_t node_idx) {
     }
 
     const hier_bvh_node_t* node = &ctx->blas->nodes[node_idx];
-    ctx->idx->stats.point_blas_node_visits++;
-    ctx->idx->stats.point_bbox_tests++;
-    if (!alea_bbox_contains_point(&node->bbox, ctx->x, ctx->y, ctx->z)) {
+    /* Per-node/per-bbox stats counters were removed from this hot path: they
+     * were shared writes to idx->stats and caused catastrophic cache-line
+     * ping-ponging under OpenMP. Top-level query counters (point_queries)
+     * remain — they fire once per query, not per BVH node. */
+    if (!hier_fbbox_contains_point(&node->bbox, ctx->x, ctx->y, ctx->z)) {
         return;
     }
 
@@ -845,12 +1220,10 @@ static void query_blas_node(hier_point_query_ctx_t* ctx, uint32_t node_idx) {
                 return;
             }
             const hier_blas_cell_t* blas_cell = &ctx->blas->cells[cell_pos];
-            ctx->idx->stats.point_bbox_tests++;
-            if (!alea_bbox_contains_point(&blas_cell->bbox, ctx->x, ctx->y, ctx->z)) {
+            if (!hier_fbbox_contains_point(&blas_cell->bbox, ctx->x, ctx->y, ctx->z)) {
                 continue;
             }
-            ctx->idx->stats.point_candidates++;
-            if (alea_vec_push(ctx->candidates, (size_t)cell_pos, size_t) != 0) {
+            if (hier_cand_push(ctx->candidates, cell_pos) != 0) {
                 ctx->error = -1;
                 return;
             }
@@ -912,7 +1285,6 @@ static int process_point_cell(alea_system_t* sys,
                                    out_hits, max_hits, hit_count);
     }
 
-    idx->stats.point_exact_tests++;
     if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
         return 0;
     }
@@ -932,18 +1304,14 @@ static int process_point_cell(alea_system_t* sys,
     }
 
     if (cell->fill_universe > 0 && *hit_count < max_hits) {
-        alea_matrix_t fill_transform;
-        if (fill_transform_matrix(sys, cell, &fill_transform) != 0) {
-            return -1;
-        }
-        if (!alea_matrix_invert(&fill_transform)) {
-            return -1;
-        }
+        const alea_matrix_t* fill_transform =
+            cell_fill_matrix_cached(idx, cell_index);
+        if (!fill_transform) return -1;
 
         double child_x = lx;
         double child_y = ly;
         double child_z = lz;
-        alea_matrix_transform_point_inverse(&fill_transform,
+        alea_matrix_transform_point_inverse(fill_transform,
                                             &child_x, &child_y, &child_z);
 
         return hier_query_universe(sys, idx, cell->fill_universe,
@@ -973,7 +1341,8 @@ static int hier_query_universe(alea_system_t* sys,
 
     const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (blas && blas->built && blas->node_count > 0) {
-        alea_size_vec_t candidates = ALEA_VEC_INIT;
+        hier_cand_buf_t candidates;
+        hier_cand_init(&candidates);
         hier_point_query_ctx_t ctx = {
             .sys = sys,
             .idx = idx,
@@ -984,14 +1353,12 @@ static int hier_query_universe(alea_system_t* sys,
             .candidates = &candidates,
             .error = 0
         };
-        idx->stats.point_blas_queries++;
         query_blas_node(&ctx, 0);
         if (!ctx.error && candidates.count > 1) {
-            qsort(candidates.data, candidates.count, sizeof(size_t),
-                  compare_size_t_ascending);
+            hier_cand_sort(&candidates);
         }
         for (size_t i = 0; !ctx.error && i < candidates.count; i++) {
-            size_t cell_pos = candidates.data[i];
+            uint32_t cell_pos = candidates.data[i];
             if (cell_pos >= blas->cell_count) {
                 ctx.error = -1;
                 break;
@@ -1001,12 +1368,10 @@ static int hier_query_universe(alea_system_t* sys,
                                         depth, out_hits, max_hits, hit_count);
             if (rc < 0) ctx.error = -1;
         }
-        alea_vec_free(&candidates);
+        hier_cand_free(&candidates);
         return ctx.error ? -1 : 0;
     }
 
-    idx->stats.point_linear_scans++;
-    idx->stats.point_linear_cell_tests += univ->cell_indices.count;
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
         int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
@@ -1102,7 +1467,6 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                           out_hit, found);
     }
 
-    idx->stats.point_exact_tests++;
     if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
         return 0;
     }
@@ -1113,13 +1477,12 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                            out_hit, found);
 
     if (cell->fill_universe > 0) {
-        alea_matrix_t fill_transform;
-        if (fill_transform_matrix(sys, cell, &fill_transform) != 0) {
-            return -1;
-        }
+        const alea_matrix_t* fill_transform =
+            cell_fill_matrix_cached(idx, cell_index);
+        if (!fill_transform) return -1;
 
         alea_matrix_t child_transform;
-        alea_matrix_multiply(&child_transform, transform, &fill_transform);
+        alea_matrix_multiply(&child_transform, transform, fill_transform);
         if (!alea_matrix_invert(&child_transform)) {
             return -1;
         }
@@ -1127,7 +1490,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
         double child_x = lx;
         double child_y = ly;
         double child_z = lz;
-        alea_matrix_transform_point_inverse(&fill_transform,
+        alea_matrix_transform_point_inverse(fill_transform,
                                             &child_x, &child_y, &child_z);
 
         return hier_find_deepest_universe(sys, idx, cell->fill_universe,
@@ -1160,7 +1523,8 @@ static int hier_find_deepest_universe(alea_system_t* sys,
 
     const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (blas && blas->built && blas->node_count > 0) {
-        alea_size_vec_t candidates = ALEA_VEC_INIT;
+        hier_cand_buf_t candidates;
+        hier_cand_init(&candidates);
         hier_point_query_ctx_t ctx = {
             .sys = sys,
             .idx = idx,
@@ -1171,14 +1535,12 @@ static int hier_find_deepest_universe(alea_system_t* sys,
             .candidates = &candidates,
             .error = 0
         };
-        idx->stats.point_blas_queries++;
         query_blas_node(&ctx, 0);
         if (!ctx.error && candidates.count > 1) {
-            qsort(candidates.data, candidates.count, sizeof(size_t),
-                  compare_size_t_ascending);
+            hier_cand_sort(&candidates);
         }
         for (size_t i = 0; !ctx.error && i < candidates.count; i++) {
-            size_t cell_pos = candidates.data[i];
+            uint32_t cell_pos = candidates.data[i];
             if (cell_pos >= blas->cell_count) {
                 ctx.error = -1;
                 break;
@@ -1192,12 +1554,10 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                             out_hit, found);
             if (rc < 0) ctx.error = -1;
         }
-        alea_vec_free(&candidates);
+        hier_cand_free(&candidates);
         return ctx.error ? -1 : 0;
     }
 
-    idx->stats.point_linear_scans++;
-    idx->stats.point_linear_cell_tests += univ->cell_indices.count;
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         uint32_t candidate_cell = (uint32_t)univ->cell_indices.data[i];
         int rc = hier_find_deepest_cell(sys, idx, candidate_cell,
@@ -1267,6 +1627,65 @@ int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
     return found ? 1 : 0;
 }
 
+const alea_matrix_t*
+alea_hier_spatial_get_cell_fill_matrix(const alea_system_t* sys,
+                                       uint32_t cell_index) {
+    if (!sys || !sys->hier_spatial_index) return NULL;
+    return cell_fill_matrix_cached(sys->hier_spatial_index, cell_index);
+}
+
+int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
+                                            int universe_id,
+                                            double lx,
+                                            double ly,
+                                            double lz) {
+    if (!sys || !sys->hier_spatial_index) return -2;
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    if (!idx->built) return -2;
+
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    if (blas && blas->built && blas->node_count > 0) {
+        hier_cand_buf_t candidates;
+        hier_cand_init(&candidates);
+        hier_point_query_ctx_t ctx = {
+            .sys = sys, .idx = idx, .blas = blas,
+            .x = lx, .y = ly, .z = lz,
+            .candidates = &candidates, .error = 0
+        };
+        query_blas_node(&ctx, 0);
+        if (ctx.error) { hier_cand_free(&candidates); return -2; }
+        if (candidates.count > 1) hier_cand_sort(&candidates);
+
+        int result = -1;
+        for (size_t i = 0; i < candidates.count; i++) {
+            uint32_t cell_pos = candidates.data[i];
+            if (cell_pos >= blas->cell_count) continue;
+            uint32_t cell_index = blas->cells[cell_pos].cell_index;
+            const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+            if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+            if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+                result = (int)cell_index;
+                break;
+            }
+        }
+        hier_cand_free(&candidates);
+        return result;
+    }
+
+    /* No BLAS — fall back to linear scan over the universe. */
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return -1;
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+        if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+            return (int)cell_index;
+        }
+    }
+    return -1;
+}
+
 static int append_region_hit(alea_system_t* sys,
                              alea_hier_spatial_index_t* idx,
                              const hier_placement_t* placement,
@@ -1321,12 +1740,15 @@ static int append_region_hit_direct(alea_system_t* sys,
 }
 
 static void translation_matrix(alea_matrix_t* out, double x, double y, double z) {
-    alea_matrix_identity(out);
-    out->m[3] = x;
-    out->m[7] = y;
-    out->m[11] = z;
-    out->has_inverse = false;
-    alea_matrix_invert(out);
+    /* Pure translation T(x,y,z): inverse is T(-x,-y,-z). Fill both directly
+     * instead of going through the general 4x4 invert path. */
+    out->m[0] = 1; out->m[1] = 0; out->m[2] = 0; out->m[3] = x;
+    out->m[4] = 0; out->m[5] = 1; out->m[6] = 0; out->m[7] = y;
+    out->m[8] = 0; out->m[9] = 0; out->m[10] = 1; out->m[11] = z;
+    out->inv[0] = 1; out->inv[1] = 0; out->inv[2] = 0; out->inv[3] = -x;
+    out->inv[4] = 0; out->inv[5] = 1; out->inv[6] = 0; out->inv[7] = -y;
+    out->inv[8] = 0; out->inv[9] = 0; out->inv[10] = 1; out->inv[11] = -z;
+    out->has_inverse = true;
 }
 
 static int query_region_blas_node(alea_system_t* sys,
@@ -1345,7 +1767,7 @@ static int query_region_blas_node(alea_system_t* sys,
     if (!transform) return -1;
 
     const hier_bvh_node_t* node = &blas->nodes[node_index];
-    if (!bbox_intersects_local(&node->bbox, local_query)) return 0;
+    if (!hier_fbbox_intersects_dbbox(&node->bbox, local_query)) return 0;
 
     if (node->count == 0) {
         if (query_region_blas_node(sys, idx, placement, blas, node->left_or_first,
@@ -1363,17 +1785,19 @@ static int query_region_blas_node(alea_system_t* sys,
         if (cell_pos >= blas->cell_count) return -1;
 
         const hier_blas_cell_t* blas_cell = &blas->cells[cell_pos];
-        if (!bbox_intersects_local(&blas_cell->bbox, local_query)) continue;
+        if (!hier_fbbox_intersects_dbbox(&blas_cell->bbox, local_query)) continue;
 
         const alea_cell_entry_t* cell = &sys->cells.data[blas_cell->cell_index];
         if (cell->fill_universe > 0 || (cell->lat_type != 0 && cell->lat_fill)) {
             continue;
         }
 
-        alea_bbox_t world_bbox = bbox_transform(&blas_cell->bbox, transform);
+        alea_bbox_t cell_bbox_d = hier_fbbox_to_double(&blas_cell->bbox);
+        alea_bbox_t world_bbox = bbox_transform(&cell_bbox_d, transform);
         if (!bbox_intersects_local(&world_bbox, world_query)) continue;
 
-        uint32_t synthetic_index = (uint32_t)(placement->id + cell_pos);
+        uint32_t synthetic_index =
+            (uint32_t)((placement - idx->placements) + cell_pos);
         if (append_region_hit(sys, idx, placement, blas_cell->cell_index,
                               synthetic_index, out_hits, max_hits, hit_count) != 0) {
             return -1;
@@ -1423,7 +1847,8 @@ static int query_region_linear(alea_system_t* sys,
         alea_bbox_t world_bbox = bbox_transform(&local_bbox, transform);
         if (!bbox_intersects_local(&world_bbox, world_query)) continue;
 
-        uint32_t synthetic_index = (uint32_t)(placement->id + i);
+        uint32_t synthetic_index =
+            (uint32_t)((placement - idx->placements) + i);
         if (append_region_hit(sys, idx, placement, cell_index,
                               synthetic_index, out_hits, max_hits, hit_count) != 0) {
             return -1;
@@ -1561,10 +1986,11 @@ static int query_region_cell_direct(alea_system_t* sys,
     }
 
     if (cell->fill_universe > 0) {
-        alea_matrix_t fill_matrix;
-        if (fill_transform_matrix(sys, cell, &fill_matrix) != 0) return -1;
+        const alea_matrix_t* fill_matrix =
+            cell_fill_matrix_cached(idx, cell_index);
+        if (!fill_matrix) return -1;
         alea_matrix_t child_transform;
-        alea_matrix_multiply(&child_transform, transform, &fill_matrix);
+        alea_matrix_multiply(&child_transform, transform, fill_matrix);
         if (!alea_matrix_invert(&child_transform)) return -1;
 
         alea_bbox_t child_query = bbox_transform_inverse_conservative(world_query,
@@ -1601,7 +2027,7 @@ static int query_region_blas_node_direct(alea_system_t* sys,
     if (node_index >= blas->node_count) return -1;
 
     const hier_bvh_node_t* node = &blas->nodes[node_index];
-    if (!bbox_intersects_local(&node->bbox, local_query)) return 0;
+    if (!hier_fbbox_intersects_dbbox(&node->bbox, local_query)) return 0;
 
     if (node->count == 0) {
         if (query_region_blas_node_direct(sys, idx, blas, node->left_or_first,
@@ -1621,9 +2047,10 @@ static int query_region_blas_node_direct(alea_system_t* sys,
         if (cell_pos >= blas->cell_count) return -1;
 
         const hier_blas_cell_t* blas_cell = &blas->cells[cell_pos];
+        alea_bbox_t cell_bbox_d = hier_fbbox_to_double(&blas_cell->bbox);
         if (query_region_cell_direct(sys, idx, blas_cell->cell_index, cell_pos,
                                      universe_id, transform, depth,
-                                     &blas_cell->bbox, local_query, world_query,
+                                     &cell_bbox_d, local_query, world_query,
                                      out_hits, max_hits, hit_count) != 0) {
             return -1;
         }
@@ -1680,6 +2107,76 @@ static int compare_spatial_hits_by_depth_cell(const void* a, const void* b) {
     return (ha->cell_index > hb->cell_index) - (ha->cell_index < hb->cell_index);
 }
 
+static int process_region_placement(alea_system_t* sys,
+                                    alea_hier_spatial_index_t* idx,
+                                    const hier_placement_t* placement,
+                                    const alea_bbox_t* query_bbox,
+                                    alea_spatial_hit_t* out_hits,
+                                    size_t max_hits,
+                                    size_t* hit_count) {
+    const alea_matrix_t* transform = placement_transform(idx, placement);
+    if (!transform) return -1;
+    alea_bbox_t local_query = bbox_transform_inverse_conservative(query_bbox, transform);
+    if (!alea_bbox_is_valid(&local_query)) return 0;
+
+    if (placement->flags & HIER_PLACEMENT_LATTICE) {
+        if (placement->parent_cell_index >= sys->cells.count) return -1;
+        const alea_cell_entry_t* cell = &sys->cells.data[placement->parent_cell_index];
+        return query_lattice_cell_direct(sys, idx, cell, transform,
+                                         placement->depth, &local_query,
+                                         query_bbox, out_hits, max_hits,
+                                         hit_count);
+    }
+
+    const hier_universe_blas_t* blas = find_blas(idx, placement->universe_id);
+    if (blas && blas->built) {
+        return query_region_blas(sys, idx, placement, blas, &local_query,
+                                 query_bbox, out_hits, max_hits, hit_count);
+    }
+    const alea_universe_t* univ = alea_get_universe(sys, placement->universe_id);
+    if (!univ) return 0;
+    return query_region_linear(sys, idx, placement, univ, &local_query,
+                               query_bbox, out_hits, max_hits, hit_count);
+}
+
+static int query_tlas_region_node(alea_system_t* sys,
+                                  alea_hier_spatial_index_t* idx,
+                                  uint32_t node_idx,
+                                  const alea_bbox_t* query_bbox,
+                                  alea_spatial_hit_t* out_hits,
+                                  size_t max_hits,
+                                  size_t* hit_count) {
+    if (*hit_count >= max_hits) return 0;
+    if (node_idx >= idx->tlas.node_count) return -1;
+    const hier_bvh_node_t* node = &idx->tlas.nodes[node_idx];
+    if (!hier_fbbox_intersects_dbbox(&node->bbox, query_bbox)) return 0;
+
+    if (node->count > 0) {
+        for (uint16_t i = 0; i < node->count; i++) {
+            if (*hit_count >= max_hits) return 0;
+            uint32_t pos = idx->tlas.indices[node->left_or_first + i];
+            if (pos >= idx->placement_count) return -1;
+            const hier_placement_t* placement = &idx->placements[pos];
+            /* Final per-placement bbox check: the leaf bbox unions multiple
+             * placements, so an individual entry may not actually intersect. */
+            if (alea_bbox_is_valid(&placement->world_bbox) &&
+                !bbox_intersects_local(&placement->world_bbox, query_bbox)) {
+                continue;
+            }
+            if (process_region_placement(sys, idx, placement, query_bbox,
+                                         out_hits, max_hits, hit_count) != 0) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    if (query_tlas_region_node(sys, idx, node->left_or_first, query_bbox,
+                               out_hits, max_hits, hit_count) != 0) return -1;
+    return query_tlas_region_node(sys, idx, node->right_child, query_bbox,
+                                  out_hits, max_hits, hit_count);
+}
+
 int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,
@@ -1695,41 +2192,22 @@ int alea_hier_spatial_query_region(alea_system_t* sys,
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
     size_t hit_count = 0;
 
-    for (size_t i = 0; i < idx->placement_count; i++) {
-        const hier_placement_t* placement = &idx->placements[i];
-        if (alea_bbox_is_valid(&placement->world_bbox) &&
-            !bbox_intersects_local(&placement->world_bbox, query_bbox)) {
-            continue;
+    if (idx->tlas_built && idx->tlas.node_count > 0) {
+        if (query_tlas_region_node(sys, idx, 0, query_bbox,
+                                   out_hits, max_hits, &hit_count) != 0) {
+            return -1;
         }
-
-        const alea_matrix_t* transform = placement_transform(idx, placement);
-        if (!transform) return -1;
-        alea_bbox_t local_query = bbox_transform_inverse_conservative(query_bbox, transform);
-        if (!alea_bbox_is_valid(&local_query)) continue;
-
-        if (placement->flags & HIER_PLACEMENT_LATTICE) {
-            if (placement->parent_cell_index >= sys->cells.count) return -1;
-            const alea_cell_entry_t* cell = &sys->cells.data[placement->parent_cell_index];
-            if (query_lattice_cell_direct(sys, idx, cell, transform,
-                                          placement->depth, &local_query,
-                                          query_bbox, out_hits, max_hits,
-                                          &hit_count) != 0) {
-                return -1;
+    } else {
+        /* Fallback: no TLAS (e.g. zero placements). Walk the flat list. */
+        for (size_t i = 0; i < idx->placement_count; i++) {
+            if (hit_count >= max_hits) break;
+            const hier_placement_t* placement = &idx->placements[i];
+            if (alea_bbox_is_valid(&placement->world_bbox) &&
+                !bbox_intersects_local(&placement->world_bbox, query_bbox)) {
+                continue;
             }
-            continue;
-        }
-
-        const hier_universe_blas_t* blas = find_blas(idx, placement->universe_id);
-        if (blas && blas->built) {
-            if (query_region_blas(sys, idx, placement, blas, &local_query,
-                                  query_bbox, out_hits, max_hits, &hit_count) != 0) {
-                return -1;
-            }
-        } else {
-            const alea_universe_t* univ = alea_get_universe(sys, placement->universe_id);
-            if (!univ) continue;
-            if (query_region_linear(sys, idx, placement, univ, &local_query,
-                                    query_bbox, out_hits, max_hits, &hit_count) != 0) {
+            if (process_region_placement(sys, idx, placement, query_bbox,
+                                         out_hits, max_hits, &hit_count) != 0) {
                 return -1;
             }
         }

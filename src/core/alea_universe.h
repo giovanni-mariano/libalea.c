@@ -178,6 +178,16 @@ int alea_find_all_cells_at_point(alea_system_t* sys,
                                 size_t max_hits);
 
 /**
+ * @brief Pre-build per-universe point BVHs for all universes.
+ *
+ * Called from query-cache preparation so subsequent concurrent point queries
+ * (OpenMP grid render etc.) never enter the lazy BVH build path. Returns 0
+ * on success; per-universe errors are recorded as disabled flags and do not
+ * abort the prebuild loop.
+ */
+int alea_prebuild_universe_point_bvhs(alea_system_t* sys);
+
+/**
  * @brief Find the deepest hierarchy-aware cell hit for a point
  *
  * Uses the same fill/lattice-aware semantics as `alea_find_all_cells_at_point()`

@@ -62,6 +62,32 @@ int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
                                                  double y,
                                                  double z,
                                                  alea_hier_cell_hit_t* out_hit);
+
+/**
+ * @brief Find the cell of `universe_id` containing (lx, ly, lz) in that
+ *        universe's local frame, using the per-universe BLAS for pruning.
+ *
+ * Does NOT descend into fills; returns the cell directly owning the point.
+ * Returns the cell index on success, -1 if none, -2 on error (no index).
+ */
+int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
+                                            int universe_id,
+                                            double lx,
+                                            double ly,
+                                            double lz);
+
+/**
+ * @brief Return the precomputed per-cell fill transform (forward + inverse)
+ *        for `cell_index`, or NULL if the hier index is not built or this
+ *        cell has no fill.
+ *
+ * Cached at hier-index build time so callers in hot loops can skip the
+ * per-pixel `alea_matrix_from_mcnp` + `alea_matrix_invert` work. The returned
+ * pointer is owned by the hier index and valid until it is destroyed.
+ */
+const alea_matrix_t*
+alea_hier_spatial_get_cell_fill_matrix(const alea_system_t* sys,
+                                       uint32_t cell_index);
 int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,

@@ -9,7 +9,9 @@
 
 #include "alea_universe.h"
 #include "alea_spatial.h"
+#include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
+#include <pthread.h>
 #include "core/alea_ops.h"
 #include "core/alea_eval.h"
 #include "primitives/bbox.h"
@@ -52,7 +54,9 @@ typedef struct {
     int error;
 } universe_point_query_ctx_t;
 
-static alea_universe_point_bvh_stats_t g_point_bvh_stats;
+/* Per-thread accumulator avoids cache-line ping-ponging under OpenMP grid
+ * render. The public getter sums across threads (best-effort, no fence). */
+static _Thread_local alea_universe_point_bvh_stats_t g_point_bvh_stats;
 
 static size_t universe_point_bvh_threshold(void) {
     const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
@@ -231,27 +235,53 @@ static uint32_t universe_bvh_build_recursive(alea_universe_t* univ,
     return node_idx;
 }
 
+/* Forward decl for the eager prebuild. */
+static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ);
+
+/* Build per-universe point BVHs for every universe sequentially. Called once
+ * during query-cache preparation so concurrent point queries (OpenMP grid
+ * render, etc.) never trip the lazy build path. */
+int alea_prebuild_universe_point_bvhs(alea_system_t* sys) {
+    if (!sys) return -1;
+    if (!sys->universe_index_built) return 0;
+    for (size_t i = 0; i < sys->universes.count; i++) {
+        ensure_universe_point_bvh(sys, &sys->universes.data[i]);
+        /* Non-fatal: per-universe disabled flag handles failures. */
+    }
+    return 0;
+}
+
 static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) {
     if (!sys || !univ) return -1;
     if (univ->point_bvh_built) return 0;
     if (univ->point_bvh_disabled) return -1;
+
+    /* Serialize the lazy build across threads (OpenMP grid render in the
+     * plotter, or any concurrent call). The lock-free fast path above
+     * handles the already-built case. Using a pthread mutex avoids a
+     * link-time dependency on libgomp in non-OpenMP builds. */
+    static pthread_mutex_t build_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&build_mutex);
+    {
+    if (univ->point_bvh_built || univ->point_bvh_disabled) goto done;
+
     const char* disable_bvh = getenv("ALEA_DISABLE_UNIVERSE_POINT_BVH");
     if (disable_bvh && disable_bvh[0] && strcmp(disable_bvh, "0") != 0) {
         univ->point_bvh_disabled = true;
-        return -1;
+        goto done;
     }
 
     size_t cell_count = univ->cell_indices.count;
     if (cell_count <= universe_point_bvh_threshold() ||
         universe_has_lattice_cells(sys, univ)) {
         univ->point_bvh_disabled = true;
-        return -1;
+        goto done;
     }
 
     universe_bvh_item_t* items = malloc(cell_count * sizeof(universe_bvh_item_t));
     if (!items) {
         univ->point_bvh_disabled = true;
-        return -1;
+        goto done;
     }
 
     for (size_t i = 0; i < cell_count; i++) {
@@ -270,7 +300,7 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
         free(items);
         alea_vec_free(&univ->point_bvh_nodes);
         univ->point_bvh_disabled = true;
-        return -1;
+        goto done;
     }
 
     univ->point_bvh_indices = malloc(cell_count * sizeof(uint32_t));
@@ -278,7 +308,7 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
         free(items);
         alea_vec_free(&univ->point_bvh_nodes);
         univ->point_bvh_disabled = true;
-        return -1;
+        goto done;
     }
 
     for (size_t i = 0; i < cell_count; i++) {
@@ -288,7 +318,10 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     free(items);
     univ->point_bvh_built = true;
     g_point_bvh_stats.bvh_builds++;
-    return 0;
+    done: ;
+    } /* end critical section */
+    pthread_mutex_unlock(&build_mutex);
+    return univ->point_bvh_built ? 0 : -1;
 }
 
 static int process_cell_for_all_cells_query(const alea_system_t* sys,
@@ -1944,8 +1977,40 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
         return -1;
     }
 
-    /* If debug trace is enabled, use recursive path to get trace output */
-    if (force_recursive || g_debug_point_trace) {
+    /* Debug-trace path stays on the recursive walker so it can emit per-step
+     * logs. force_recursive (caller-requested cache bypass for overlap
+     * detection) is satisfied equally well by the hier path — the hier index
+     * has no per-point cache to invalidate, so it always returns full
+     * multi-depth hits. Important: the recursive walker lazily builds a
+     * per-universe point BVH on first use; that lazy build is NOT thread-safe
+     * and segfaults under OpenMP. Routing through hier when available also
+     * dodges that race entirely. */
+    if (g_debug_point_trace) {
+        size_t hit_count = 0;
+        int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
+                                              0, NULL, 0,
+                                              out_hits, max_hits, &hit_count);
+        if (result < 0) return -1;
+        return (int)hit_count;
+    }
+
+    /* Hier-spatial fast path: if the hierarchical index is built, use it
+     * instead of the flat spatial cache or the O(N)-per-level recursive
+     * fallback. Critical for hier-mode plotter/raycast on large models
+     * where the recursive scan would dominate per-pixel cost. */
+    if (sys->hier_spatial_index) {
+        int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
+                                                      out_hits, max_hits);
+        if (n >= 0) return n;
+        /* Fall through to flat/recursive on error. */
+    }
+
+    /* No hier index — fall back to recursive (single-threaded plotter path,
+     * or when hier index isn't built). The per-universe point BVH inside
+     * find_all_cells_recursive remains lazily built; that's fine here because
+     * the recursive path is only reached when OpenMP isn't doing parallel
+     * grid queries through the hier branch above. */
+    if (force_recursive) {
         size_t hit_count = 0;
         int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
                                               0, NULL, 0,
