@@ -292,8 +292,10 @@ Current status:
   current cell transform for regular and transformed fills, plus the active
   lattice container transform for rectangular and hex lattice boundary stepping.
   On the E-lite probe ray it reduced measured raycast time from about 168 s to
-  about 20 s, but it remains experimental until broader model coverage is added
-- public/default raycast entry points are not yet switched to hierarchical mode
+  about 5-20 s depending on build/run conditions, but it remains experimental
+  until broader model coverage is added
+- public/default raycast entry points are not yet switched to hierarchical mode;
+  that switch is part of Phase 7 mode-aware public API migration
 
 Implementation notes:
 
@@ -309,7 +311,7 @@ Implementation notes:
   rectangular and hex fixtures in the hierarchical cell-aware path
 - carry the current hierarchical cell transform into cell-aware surface
   intersection: done for regular and transformed fills
-- keep the existing flat raycast path selectable until parity is proven
+- keep the existing flat raycast path selectable until parity is proven: done
 
 Tests:
 
@@ -325,16 +327,27 @@ Tests:
   done for root, regular fill, transformed fill, rectangular lattice, and hex
   lattice fixtures
 - no hidden flat spatial-index build in hierarchical raycast mode: done
+- no hidden flat spatial-index build in hierarchical cell-aware raycast mode:
+  done
 
 Exit criteria:
 
 - existing raycast tests pass in flat mode: done
 - hierarchical raycast parity tests pass for root, fill, transformed fill, and
   lattice fixtures: done for current representative fixtures
+- hierarchical cell-aware raycast parity tests pass for regular fill,
+  transformed fill, rectangular lattice, and hex lattice fixtures: done for
+  current representative fixtures
 - E-lite can run at least one bounded/representative hierarchical raycast probe
   without flat instance materialization: done for
   `--hier-raycast -1 0 0 1 0 0 2` with peak RSS about 3.59 GiB
-- unsupported edge cases fail clearly instead of falling back to flat expansion
+- unsupported edge cases fail clearly instead of falling back to flat expansion:
+  no flat-expansion fallback remains in the hierarchical raycast entry points
+
+Phase 6 is implementation-complete for the current acceptance scope. Remaining
+raycast work is Phase 7 hardening: broader model coverage, mode-aware public API
+selection, and deciding whether/when the hierarchical cell-aware path should
+graduate from experimental probe path to default behavior.
 
 ### Phase 7: Public Spatial API Migration
 

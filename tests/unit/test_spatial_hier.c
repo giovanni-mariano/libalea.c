@@ -434,4 +434,41 @@ TEST(hier_raycast_does_not_build_flat_spatial_index) {
     unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_cell_aware_raycast_does_not_build_flat_spatial_index) {
+    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    ASSERT_NULL(sys->spatial_index);
+
+    alea_raycast_result_t flat;
+    alea_raycast_result_t hier;
+    alea_raycast_result_init(&flat);
+    alea_raycast_result_init(&hier);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_raycast(sys, -1.5, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           7.0, &flat), 0);
+
+    if (sys->spatial_index) {
+        alea_spatial_index_free(sys->spatial_index);
+        sys->spatial_index = NULL;
+    }
+
+    ASSERT_EQ(alea_raycast_hier_cell_aware(sys, -1.5, 0.0, 0.0,
+                                           1.0, 0.0, 0.0,
+                                           7.0, &hier), 0);
+
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+    assert_raycast_segments_match(&flat, &hier);
+
+    alea_raycast_result_free(&flat);
+    alea_raycast_result_free(&hier);
+    mcnp_model_destroy(model);
+    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST_MAIN()
