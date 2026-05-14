@@ -51,6 +51,13 @@ endif
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
 LDFLAGS = $(OPENMP_LDFLAGS) -lm
 
+# Windows: link psapi for GetProcessMemoryInfo in large_model_probe
+ifeq ($(OS),Windows_NT)
+  PROBE_LIBS = -lpsapi
+else
+  PROBE_LIBS =
+endif
+
 TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter $(BIN_DIR)/nuc_plot $(BIN_DIR)/large_model_probe
 
 all: $(TOOLS)
@@ -65,7 +72,7 @@ $(BIN_DIR)/nuc_plot: nuc_plot.c
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a $(LDFLAGS)
 
 $(BIN_DIR)/large_model_probe: large_model_probe.c
-	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(LIBS_ALL) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(LIBS_ALL) $(LDFLAGS) $(PROBE_LIBS)
 
 clean:
 	rm -f $(TOOLS)

@@ -13,8 +13,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
-#include <sys/time.h>
+#include <time.h>
+#if defined(_WIN32)
+#  include <windows.h>
+#  include <psapi.h>
+#else
+#  include <sys/resource.h>
+#  include <sys/time.h>
+#endif
 
 #define POINT_SAMPLE_THRESHOLD 16
 #define POINT_BVH_THRESHOLD 8192
@@ -30,15 +36,33 @@ static size_t point_bvh_threshold(void) {
 }
 
 static double now_seconds(void) {
+#if defined(_WIN32)
+    LARGE_INTEGER freq, counter;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+#endif
 }
 
 static long peak_rss_kib(void) {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return -1;
+    return (long)(pmc.PeakWorkingSetSize / 1024);
+#else
     struct rusage ru;
     if (getrusage(RUSAGE_SELF, &ru) != 0) return -1;
+#  if defined(__APPLE__)
+    /* macOS reports ru_maxrss in bytes; Linux/BSD in KiB. */
+    return ru.ru_maxrss / 1024;
+#  else
     return ru.ru_maxrss;
+#  endif
+#endif
 }
 
 static alea_bbox_t cell_bbox(alea_system_t* sys, size_t cell_index) {

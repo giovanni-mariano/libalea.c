@@ -7,7 +7,11 @@
  * @brief Portable replacements for POSIX functions
  */
 
-#ifndef _WIN32
+#if defined(__APPLE__)
+/* _DARWIN_C_SOURCE keeps BSD types (u_int, u_char, u_short) visible alongside
+ * the POSIX surface area — sys/sysctl.h needs them on macOS. */
+#define _DARWIN_C_SOURCE
+#elif !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
 
