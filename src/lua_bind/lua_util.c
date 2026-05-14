@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_lua.h"
+#include "core/alea_system.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -256,6 +257,10 @@ static int l_flatten_all(lua_State* L) {
 static int l_estimate_instance_volumes(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     int n_rays = (int)luaL_checkinteger(L, 2);
+
+    if (alea_system_spatial_mode_prefers_hier(sys))
+        return luaL_error(L, "estimate_instance_volumes failed: %s",
+                          "instance volume estimation requires flat spatial mode");
 
     size_t ni = alea_spatial_index_instance_count(sys);
     if (ni == 0) {

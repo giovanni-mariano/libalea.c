@@ -9,7 +9,9 @@
 
 #include "alea_universe.h"
 #include "alea_spatial.h"
+#include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
+#include <pthread.h>
 #include "core/alea_ops.h"
 #include "core/alea_eval.h"
 #include "primitives/bbox.h"
@@ -29,9 +31,433 @@
  * ============================================================================ */
 
 #define MAX_FLATTEN_DEPTH 100
+#define UNIVERSE_POINT_BVH_THRESHOLD 8192
+#define UNIVERSE_POINT_BVH_LEAF_SIZE 8
 
 /* Debug trace flag - set via alea_set_debug_point_trace() (thread-local) */
 _Thread_local int g_debug_point_trace = 0;
+
+typedef struct {
+    uint32_t cell_position;
+    alea_bbox_t bbox;
+    double centroid[3];
+} universe_bvh_item_t;
+
+typedef struct {
+    const alea_system_t* sys;
+    const alea_universe_t* univ;
+    double gx, gy, gz;
+    double lx, ly, lz;
+    const alea_matrix_t* accumulated_transform;
+    int depth;
+    alea_size_vec_t* candidate_positions;
+    int error;
+} universe_point_query_ctx_t;
+
+/* Per-thread accumulator avoids cache-line ping-ponging under OpenMP grid
+ * render. The public getter sums across threads (best-effort, no fence). */
+static _Thread_local alea_universe_point_bvh_stats_t g_point_bvh_stats;
+
+static size_t universe_point_bvh_threshold(void) {
+    const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
+    if (env && env[0]) {
+        char* end = NULL;
+        unsigned long value = strtoul(env, &end, 10);
+        if (end != env && value > 0) return (size_t)value;
+    }
+    return UNIVERSE_POINT_BVH_THRESHOLD;
+}
+
+void alea_universe_point_bvh_stats_reset(void) {
+    memset(&g_point_bvh_stats, 0, sizeof(g_point_bvh_stats));
+}
+
+void alea_universe_point_bvh_stats_get(alea_universe_point_bvh_stats_t* out) {
+    if (!out) return;
+    *out = g_point_bvh_stats;
+}
+
+static int find_all_cells_recursive(const alea_system_t* sys,
+                                    double gx, double gy, double gz,
+                                    double lx, double ly, double lz,
+                                    int universe_id,
+                                    const alea_matrix_t* accumulated_transform,
+                                    int depth,
+                                    alea_cell_hit_t* out_hits,
+                                    size_t max_hits,
+                                    size_t* hit_count);
+static int lattice_rect_lookup(const alea_cell_entry_t* cell,
+                               double px, double py, double pz,
+                               double* ox, double* oy, double* oz);
+int lattice_hex_lookup(const alea_cell_entry_t* cell,
+                       double px, double py, double pz,
+                       double* ox, double* oy, double* oz);
+
+static alea_bbox_t universe_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+
+    if (cell->root_node_id == ALEA_NODE_ID_INVALID) {
+        return alea_bbox_empty();
+    }
+
+    const alea_node_t* root = &sys->nodes.data[cell->root_node_id];
+    if (root->bbox.min_x <= root->bbox.max_x) {
+        return root->bbox;
+    }
+
+    alea_bbox_t bbox = alea_get_bbox(sys, cell->root_node_id);
+    if (bbox.min_x > bbox.max_x ||
+        bbox.min_x <= -1e10 || bbox.max_x >= 1e10 ||
+        bbox.min_y <= -1e10 || bbox.max_y >= 1e10 ||
+        bbox.min_z <= -1e10 || bbox.max_z >= 1e10) {
+        bbox.min_x = bbox.min_y = bbox.min_z = -1e6;
+        bbox.max_x = bbox.max_y = bbox.max_z = 1e6;
+    }
+
+    return bbox;
+}
+
+static bool universe_has_lattice_cells(const alea_system_t* sys,
+                                       const alea_universe_t* univ) {
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_idx = univ->cell_indices.data[i];
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+        if (cell->lat_type != 0 && cell->lat_fill) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int compare_bvh_item_x(const void* a, const void* b) {
+    const universe_bvh_item_t* ia = (const universe_bvh_item_t*)a;
+    const universe_bvh_item_t* ib = (const universe_bvh_item_t*)b;
+    return (ia->centroid[0] > ib->centroid[0]) - (ia->centroid[0] < ib->centroid[0]);
+}
+
+static int compare_bvh_item_y(const void* a, const void* b) {
+    const universe_bvh_item_t* ia = (const universe_bvh_item_t*)a;
+    const universe_bvh_item_t* ib = (const universe_bvh_item_t*)b;
+    return (ia->centroid[1] > ib->centroid[1]) - (ia->centroid[1] < ib->centroid[1]);
+}
+
+static int compare_bvh_item_z(const void* a, const void* b) {
+    const universe_bvh_item_t* ia = (const universe_bvh_item_t*)a;
+    const universe_bvh_item_t* ib = (const universe_bvh_item_t*)b;
+    return (ia->centroid[2] > ib->centroid[2]) - (ia->centroid[2] < ib->centroid[2]);
+}
+
+static int compare_size_t_ascending(const void* a, const void* b) {
+    const size_t* ia = (const size_t*)a;
+    const size_t* ib = (const size_t*)b;
+    return (*ia > *ib) - (*ia < *ib);
+}
+
+static alea_bbox_t universe_bvh_items_bbox(const universe_bvh_item_t* items,
+                                           size_t start, size_t end) {
+    alea_bbox_t result = alea_bbox_empty();
+    for (size_t i = start; i < end; i++) {
+        result = alea_bbox_union(&result, &items[i].bbox);
+    }
+    return result;
+}
+
+static int universe_bvh_split_axis(const universe_bvh_item_t* items,
+                                   size_t start, size_t end) {
+    alea_bbox_t cbox = alea_bbox_empty();
+    for (size_t i = start; i < end; i++) {
+        double cx = items[i].centroid[0];
+        double cy = items[i].centroid[1];
+        double cz = items[i].centroid[2];
+        if (cx < cbox.min_x) cbox.min_x = cx;
+        if (cx > cbox.max_x) cbox.max_x = cx;
+        if (cy < cbox.min_y) cbox.min_y = cy;
+        if (cy > cbox.max_y) cbox.max_y = cy;
+        if (cz < cbox.min_z) cbox.min_z = cz;
+        if (cz > cbox.max_z) cbox.max_z = cz;
+    }
+
+    double dx = cbox.max_x - cbox.min_x;
+    double dy = cbox.max_y - cbox.min_y;
+    double dz = cbox.max_z - cbox.min_z;
+    if (dx >= dy && dx >= dz) return 0;
+    if (dy >= dz) return 1;
+    return 2;
+}
+
+static int universe_bvh_reserve_node(alea_universe_t* univ) {
+    return alea_vec_reserve(&univ->point_bvh_nodes,
+                            univ->point_bvh_nodes.count + 1,
+                            alea_universe_bvh_node_t);
+}
+
+static uint32_t universe_bvh_build_recursive(alea_universe_t* univ,
+                                             universe_bvh_item_t* items,
+                                             size_t start, size_t end,
+                                             int depth) {
+    if (universe_bvh_reserve_node(univ) != 0) {
+        return UINT32_MAX;
+    }
+
+    uint32_t node_idx = (uint32_t)univ->point_bvh_nodes.count++;
+    alea_universe_bvh_node_t* node = &univ->point_bvh_nodes.data[node_idx];
+    size_t count = end - start;
+
+    if (count <= UNIVERSE_POINT_BVH_LEAF_SIZE || depth > 30) {
+        node->bbox = universe_bvh_items_bbox(items, start, end);
+        node->left_or_first = (uint32_t)start;
+        node->right_child = UINT32_MAX;
+        node->count = (uint16_t)count;
+        node->axis = 0;
+        return node_idx;
+    }
+
+    int axis = universe_bvh_split_axis(items, start, end);
+    int (*cmp)(const void*, const void*) =
+        (axis == 0) ? compare_bvh_item_x :
+        (axis == 1) ? compare_bvh_item_y : compare_bvh_item_z;
+    qsort(items + start, count, sizeof(universe_bvh_item_t), cmp);
+
+    size_t mid = start + count / 2;
+    uint32_t left = universe_bvh_build_recursive(univ, items, start, mid, depth + 1);
+    uint32_t right = universe_bvh_build_recursive(univ, items, mid, end, depth + 1);
+    if (left == UINT32_MAX || right == UINT32_MAX) {
+        return UINT32_MAX;
+    }
+
+    node = &univ->point_bvh_nodes.data[node_idx];
+    node->bbox = alea_bbox_union(&univ->point_bvh_nodes.data[left].bbox,
+                                 &univ->point_bvh_nodes.data[right].bbox);
+    node->left_or_first = left;
+    node->right_child = right;
+    node->count = 0;
+    node->axis = (uint8_t)axis;
+    return node_idx;
+}
+
+/* Forward decl for the eager prebuild. */
+static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ);
+
+/* Build per-universe point BVHs for every universe sequentially. Called once
+ * during query-cache preparation so concurrent point queries (OpenMP grid
+ * render, etc.) never trip the lazy build path. */
+int alea_prebuild_universe_point_bvhs(alea_system_t* sys) {
+    if (!sys) return -1;
+    if (!sys->universe_index_built) return 0;
+    for (size_t i = 0; i < sys->universes.count; i++) {
+        ensure_universe_point_bvh(sys, &sys->universes.data[i]);
+        /* Non-fatal: per-universe disabled flag handles failures. */
+    }
+    return 0;
+}
+
+static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) {
+    if (!sys || !univ) return -1;
+    if (univ->point_bvh_built) return 0;
+    if (univ->point_bvh_disabled) return -1;
+
+    /* Serialize the lazy build across threads (OpenMP grid render in the
+     * plotter, or any concurrent call). The lock-free fast path above
+     * handles the already-built case. Using a pthread mutex avoids a
+     * link-time dependency on libgomp in non-OpenMP builds. */
+    static pthread_mutex_t build_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&build_mutex);
+    {
+    if (univ->point_bvh_built || univ->point_bvh_disabled) goto done;
+
+    size_t cell_count = univ->cell_indices.count;
+    if (cell_count <= universe_point_bvh_threshold() ||
+        universe_has_lattice_cells(sys, univ)) {
+        univ->point_bvh_disabled = true;
+        goto done;
+    }
+
+    universe_bvh_item_t* items = malloc(cell_count * sizeof(universe_bvh_item_t));
+    if (!items) {
+        univ->point_bvh_disabled = true;
+        goto done;
+    }
+
+    for (size_t i = 0; i < cell_count; i++) {
+        uint32_t cell_idx = (uint32_t)univ->cell_indices.data[i];
+        alea_bbox_t bbox = universe_cell_bbox(sys, cell_idx);
+        items[i].cell_position = (uint32_t)i;
+        items[i].bbox = bbox;
+        items[i].centroid[0] = (bbox.min_x + bbox.max_x) * 0.5;
+        items[i].centroid[1] = (bbox.min_y + bbox.max_y) * 0.5;
+        items[i].centroid[2] = (bbox.min_z + bbox.max_z) * 0.5;
+    }
+
+    alea_vec_init(&univ->point_bvh_nodes);
+    uint32_t root = universe_bvh_build_recursive(univ, items, 0, cell_count, 0);
+    if (root == UINT32_MAX) {
+        free(items);
+        alea_vec_free(&univ->point_bvh_nodes);
+        univ->point_bvh_disabled = true;
+        goto done;
+    }
+
+    univ->point_bvh_indices = malloc(cell_count * sizeof(uint32_t));
+    if (!univ->point_bvh_indices) {
+        free(items);
+        alea_vec_free(&univ->point_bvh_nodes);
+        univ->point_bvh_disabled = true;
+        goto done;
+    }
+
+    for (size_t i = 0; i < cell_count; i++) {
+        univ->point_bvh_indices[i] = items[i].cell_position;
+    }
+
+    free(items);
+    univ->point_bvh_built = true;
+    g_point_bvh_stats.bvh_builds++;
+    done: ;
+    } /* end critical section */
+    pthread_mutex_unlock(&build_mutex);
+    return univ->point_bvh_built ? 0 : -1;
+}
+
+static int process_cell_for_all_cells_query(const alea_system_t* sys,
+                                            size_t cell_idx,
+                                            double gx, double gy, double gz,
+                                            double lx, double ly, double lz,
+                                            int universe_id,
+                                            const alea_matrix_t* accumulated_transform,
+                                            int depth,
+                                            alea_cell_hit_t* out_hits,
+                                            size_t max_hits,
+                                            size_t* hit_count) {
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+
+    if (cell->lat_type != 0 && cell->lat_fill) {
+        double ox, oy, oz;
+        int fill_univ = (cell->lat_type == 2)
+            ? lattice_hex_lookup(cell, lx, ly, lz, &ox, &oy, &oz)
+            : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
+        if (fill_univ < 0) return 0;
+
+        if (*hit_count < max_hits) {
+            alea_cell_hit_t* hit = &out_hits[*hit_count];
+            hit->cell_id = cell->mc_cell_id;
+            hit->cell_index = (int)cell_idx;
+            hit->material_id = cell->material_id;
+            hit->universe_id = cell->universe_id;
+            hit->fill_universe = fill_univ;
+            hit->depth = depth;
+            hit->local_x = lx;
+            hit->local_y = ly;
+            hit->local_z = lz;
+            (*hit_count)++;
+        }
+
+        double elx = lx - ox, ely = ly - oy, elz = lz - oz;
+        return find_all_cells_recursive(sys, gx, gy, gz,
+                                        elx, ely, elz,
+                                        fill_univ, NULL,
+                                        depth + 1,
+                                        out_hits, max_hits, hit_count);
+    }
+
+    g_point_bvh_stats.exact_cell_tests++;
+    if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+        return 0;
+    }
+
+    if (*hit_count < max_hits) {
+        alea_cell_hit_t* hit = &out_hits[*hit_count];
+        hit->cell_id = cell->mc_cell_id;
+        hit->cell_index = (int)cell_idx;
+        hit->material_id = cell->material_id;
+        hit->universe_id = cell->universe_id;
+        hit->fill_universe = cell->fill_universe;
+        hit->depth = depth;
+        hit->local_x = lx;
+        hit->local_y = ly;
+        hit->local_z = lz;
+        (*hit_count)++;
+
+        if (g_debug_point_trace) {
+            ALEA_LOG_DEBUG("  -> Found cell %d (mat=%d) in universe %d, fill=%d",
+                   cell->mc_cell_id, cell->material_id, universe_id, cell->fill_universe);
+        }
+    }
+
+    if (cell->fill_universe > 0 && *hit_count < max_hits) {
+        alea_matrix_t fill_transform;
+        if (cell->fill_transform > 0) {
+            const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
+            if (tr) {
+                if (!alea_matrix_from_mcnp(&fill_transform, tr->cosines,
+                                           tr->value_count, false)) {
+                    return -1;
+                }
+            } else {
+                return -1;
+            }
+        } else {
+            alea_matrix_identity(&fill_transform);
+        }
+
+        alea_matrix_t new_accumulated;
+        if (accumulated_transform) {
+            alea_matrix_multiply(&new_accumulated, accumulated_transform, &fill_transform);
+        } else {
+            new_accumulated = fill_transform;
+        }
+
+        double fill_x = gx, fill_y = gy, fill_z = gz;
+        if (!alea_matrix_invert(&new_accumulated)) return -1;
+        alea_matrix_transform_point_inverse(&new_accumulated, &fill_x, &fill_y, &fill_z);
+
+        if (g_debug_point_trace) {
+            ALEA_LOG_DEBUG("  -> Entering fill %d (transform=%d)",
+                   cell->fill_universe, cell->fill_transform);
+        }
+
+        return find_all_cells_recursive(sys, gx, gy, gz,
+                                        fill_x, fill_y, fill_z,
+                                        cell->fill_universe,
+                                        &new_accumulated,
+                                        depth + 1,
+                                        out_hits, max_hits, hit_count);
+    }
+
+    return 0;
+}
+
+static void traverse_universe_point_bvh_node(universe_point_query_ctx_t* ctx,
+                                             uint32_t node_idx) {
+    if (ctx->error) return;
+    g_point_bvh_stats.bvh_node_visits++;
+    const alea_universe_bvh_node_t* node = &ctx->univ->point_bvh_nodes.data[node_idx];
+
+    g_point_bvh_stats.bvh_bbox_tests++;
+    if (!alea_bbox_contains_point(&node->bbox, ctx->lx, ctx->ly, ctx->lz)) {
+        return;
+    }
+
+    if (node->count > 0) {
+        for (uint16_t i = 0; i < node->count; i++) {
+            uint32_t cell_pos = ctx->univ->point_bvh_indices[node->left_or_first + i];
+            uint32_t cell_idx = (uint32_t)ctx->univ->cell_indices.data[cell_pos];
+            alea_bbox_t bbox = universe_cell_bbox((alea_system_t*)ctx->sys, cell_idx);
+            g_point_bvh_stats.bvh_bbox_tests++;
+            if (!alea_bbox_contains_point(&bbox, ctx->lx, ctx->ly, ctx->lz)) {
+                continue;
+            }
+            g_point_bvh_stats.bvh_candidates++;
+            if (alea_vec_push(ctx->candidate_positions, (size_t)cell_pos, size_t) != 0) {
+                ctx->error = -1;
+                return;
+            }
+        }
+        return;
+    }
+
+    traverse_universe_point_bvh_node(ctx, node->left_or_first);
+    traverse_universe_point_bvh_node(ctx, node->right_child);
+}
 
 /**
  * @brief Build primitive->surface mapping after flatten
@@ -1476,119 +1902,58 @@ static int find_all_cells_recursive(const alea_system_t* sys,
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
 
-    /* Test each cell in this universe */
+    alea_universe_t* mutable_univ = (alea_universe_t*)univ;
+    if (ensure_universe_point_bvh((alea_system_t*)sys, mutable_univ) == 0 &&
+        mutable_univ->point_bvh_built) {
+        alea_size_vec_t candidates = ALEA_VEC_INIT;
+        universe_point_query_ctx_t ctx = {
+            .sys = sys,
+            .univ = univ,
+            .gx = gx, .gy = gy, .gz = gz,
+            .lx = lx, .ly = ly, .lz = lz,
+            .accumulated_transform = accumulated_transform,
+            .depth = depth,
+            .candidate_positions = &candidates,
+            .error = 0
+        };
+        g_point_bvh_stats.bvh_queries++;
+        traverse_universe_point_bvh_node(&ctx, 0);
+        if (!ctx.error && candidates.count > 1) {
+            qsort(candidates.data, candidates.count, sizeof(size_t),
+                  compare_size_t_ascending);
+        }
+        for (size_t i = 0; !ctx.error && i < candidates.count; i++) {
+            size_t cell_idx = univ->cell_indices.data[candidates.data[i]];
+            int rc = process_cell_for_all_cells_query(sys, cell_idx,
+                                                      gx, gy, gz,
+                                                      lx, ly, lz,
+                                                      universe_id,
+                                                      accumulated_transform,
+                                                      depth,
+                                                      out_hits,
+                                                      max_hits,
+                                                      hit_count);
+            if (rc < 0) ctx.error = -1;
+        }
+        alea_vec_free(&candidates);
+        return ctx.error ? -1 : 0;
+    }
+
+    /* Small/lattice-bearing universes keep the original linear scan. */
+    g_point_bvh_stats.linear_universe_scans++;
+    g_point_bvh_stats.linear_cell_tests += univ->cell_indices.count;
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         size_t cell_idx = univ->cell_indices.data[i];
-        const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-
-        /* Lattice cell: use lattice bounds instead of CSG containment */
-        if (cell->lat_type != 0 && cell->lat_fill) {
-            double ox, oy, oz;
-            int fill_univ = (cell->lat_type == 2)
-                ? lattice_hex_lookup(cell, lx, ly, lz, &ox, &oy, &oz)
-                : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
-            if (fill_univ < 0) continue;
-
-            /* Record the lattice cell itself */
-            if (*hit_count < max_hits) {
-                alea_cell_hit_t* hit = &out_hits[*hit_count];
-                hit->cell_id = cell->mc_cell_id;
-                hit->cell_index = (int)cell_idx;
-                hit->material_id = cell->material_id;
-                hit->universe_id = cell->universe_id;
-                hit->fill_universe = fill_univ;
-                hit->depth = depth;
-                hit->local_x = lx;
-                hit->local_y = ly;
-                hit->local_z = lz;
-                (*hit_count)++;
-            }
-
-            /* Recurse into fill universe at element-local coords */
-            double elx = lx - ox, ely = ly - oy, elz = lz - oz;
-            if (find_all_cells_recursive(sys, gx, gy, gz,
-                                         elx, ely, elz,
-                                         fill_univ, NULL,
-                                         depth + 1,
-                                         out_hits, max_hits, hit_count) < 0) {
-                return -1;
-            }
-            continue;
-        }
-
-        /* Test point against cell geometry using local coordinates */
-        if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-            continue;
-        }
-
-        /* Point is inside this cell - record it */
-        if (*hit_count < max_hits) {
-            alea_cell_hit_t* hit = &out_hits[*hit_count];
-            hit->cell_id = cell->mc_cell_id;
-            hit->cell_index = (int)cell_idx;
-            hit->material_id = cell->material_id;
-            hit->universe_id = cell->universe_id;
-            hit->fill_universe = cell->fill_universe;
-            hit->depth = depth;
-            hit->local_x = lx;
-            hit->local_y = ly;
-            hit->local_z = lz;
-            (*hit_count)++;
-
-            if (g_debug_point_trace) {
-                ALEA_LOG_DEBUG("  -> Found cell %d (mat=%d) in universe %d, fill=%d",
-                       cell->mc_cell_id, cell->material_id, universe_id, cell->fill_universe);
-            }
-        }
-
-        /* If cell has FILL, recurse into it */
-        if (cell->fill_universe > 0 && *hit_count < max_hits) {
-            /* Build transform for the fill */
-            alea_matrix_t fill_transform;
-            if (cell->fill_transform > 0) {
-                const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
-                if (tr) {
-                    if (!alea_matrix_from_mcnp(&fill_transform, tr->cosines,
-                                               tr->value_count, false)) {
-                        return -1;
-                    }
-                } else {
-                    return -1;
-                }
-            } else {
-                alea_matrix_identity(&fill_transform);
-            }
-
-            /* Compose with accumulated transform */
-            alea_matrix_t new_accumulated;
-            if (accumulated_transform) {
-                alea_matrix_multiply(&new_accumulated, accumulated_transform, &fill_transform);
-            } else {
-                new_accumulated = fill_transform;
-            }
-
-            /* Transform point to fill universe coordinates */
-            double fill_x = gx, fill_y = gy, fill_z = gz;
-            if (!alea_matrix_invert(&new_accumulated)) return -1;
-            alea_matrix_transform_point_inverse(&new_accumulated, &fill_x, &fill_y, &fill_z);
-
-            if (g_debug_point_trace) {
-                ALEA_LOG_DEBUG("  -> Entering fill %d (transform=%d)",
-                       cell->fill_universe, cell->fill_transform);
-            }
-
-            /* Recurse */
-            if (find_all_cells_recursive(sys, gx, gy, gz,
-                                         fill_x, fill_y, fill_z,
-                                         cell->fill_universe,
-                                         &new_accumulated,
-                                         depth + 1,
-                                         out_hits, max_hits, hit_count) < 0) {
-                return -1;
-            }
-        }
-
-        /* Continue checking other cells - they might overlap */
+        int rc = process_cell_for_all_cells_query(sys, cell_idx,
+                                                  gx, gy, gz,
+                                                  lx, ly, lz,
+                                                  universe_id,
+                                                  accumulated_transform,
+                                                  depth,
+                                                  out_hits,
+                                                  max_hits,
+                                                  hit_count);
+        if (rc < 0) return -1;
     }
 
     return 0;
@@ -1606,8 +1971,40 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
         return -1;
     }
 
-    /* If debug trace is enabled, use recursive path to get trace output */
-    if (force_recursive || g_debug_point_trace) {
+    /* Debug-trace path stays on the recursive walker so it can emit per-step
+     * logs. force_recursive (caller-requested cache bypass for overlap
+     * detection) is satisfied equally well by the hier path — the hier index
+     * has no per-point cache to invalidate, so it always returns full
+     * multi-depth hits. Important: the recursive walker lazily builds a
+     * per-universe point BVH on first use; that lazy build is NOT thread-safe
+     * and segfaults under OpenMP. Routing through hier when available also
+     * dodges that race entirely. */
+    if (g_debug_point_trace) {
+        size_t hit_count = 0;
+        int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
+                                              0, NULL, 0,
+                                              out_hits, max_hits, &hit_count);
+        if (result < 0) return -1;
+        return (int)hit_count;
+    }
+
+    /* Hier-spatial fast path: if the hierarchical index is built, use it
+     * instead of the flat spatial cache or the O(N)-per-level recursive
+     * fallback. Critical for hier-mode plotter/raycast on large models
+     * where the recursive scan would dominate per-pixel cost. */
+    if (sys->hier_spatial_index) {
+        int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
+                                                      out_hits, max_hits);
+        if (n >= 0) return n;
+        /* Fall through to flat/recursive on error. */
+    }
+
+    /* No hier index — fall back to recursive (single-threaded plotter path,
+     * or when hier index isn't built). The per-universe point BVH inside
+     * find_all_cells_recursive remains lazily built; that's fine here because
+     * the recursive path is only reached when OpenMP isn't doing parallel
+     * grid queries through the hier branch above. */
+    if (force_recursive) {
         size_t hit_count = 0;
         int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
                                               0, NULL, 0,

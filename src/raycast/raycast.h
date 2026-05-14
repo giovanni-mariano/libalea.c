@@ -91,6 +91,14 @@ void alea_ray_init_normalized(alea_ray_t* ray,
 int alea_raycast_ensure_caches(alea_system_t* sys);
 
 /**
+ * @brief Build raycast caches for the hierarchical spatial path.
+ *
+ * This prepares surface/cell caches plus the hierarchical spatial index, but
+ * intentionally does not build the flat spatial instance index.
+ */
+int alea_raycast_ensure_hier_caches(alea_system_t* sys);
+
+/**
  * @brief Initialize raycast result (call before first use)
  */
 void alea_raycast_result_init(alea_raycast_result_t* result);
@@ -165,6 +173,33 @@ int alea_raycast(alea_system_t* sys,
                 double dx, double dy, double dz,
                 double t_max,
                 alea_raycast_result_t* result);
+
+/**
+ * @brief Cast a ray using hierarchical spatial point lookup for segments.
+ *
+ * The surface-hit pipeline is shared with alea_raycast(); segment
+ * classification uses the hierarchical spatial index to avoid flat instance
+ * expansion on large repeated/lattice models.
+ */
+int alea_raycast_hier(alea_system_t* sys,
+                      double ox, double oy, double oz,
+                      double dx, double dy, double dz,
+                      double t_max,
+                      alea_raycast_result_t* result);
+
+/**
+ * @brief Experimental hierarchical cell-aware raycast.
+ *
+ * Uses the hierarchical spatial index for current-cell lookup and intersects
+ * only the current cell's surfaces. This avoids global surface-hit collection
+ * and is intended for Phase 6 large-model probing before becoming a public
+ * default path.
+ */
+int alea_raycast_hier_cell_aware(alea_system_t* sys,
+                                 double ox, double oy, double oz,
+                                 double dx, double dy, double dz,
+                                 double t_max,
+                                 alea_raycast_result_t* result);
 
 /* ============================================================================
  * QUERY HELPERS

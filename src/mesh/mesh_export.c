@@ -443,8 +443,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         return NULL;
     }
 
-    /* Ensure query acceleration is built before sampling. */
-    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL) != 0) {
+    /* Ensure universe lookup is ready before point sampling. Mesh sampling
+     * uses recursive point lookup, not the expanded flat spatial index. */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_UNIVERSE) != 0) {
         free(xn); free(yn); free(zn);
         free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(fraction_spans);

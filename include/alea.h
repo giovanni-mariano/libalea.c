@@ -130,6 +130,16 @@ alea_config_t alea_get_config(const alea_system_t* sys);
  */
 void alea_set_config(alea_system_t* sys, const alea_config_t* config);
 
+/**
+ * @brief Return whether the current spatial mode resolves to hierarchical.
+ *
+ * Returns true for ALEA_SPATIAL_MODE_HIER. In ALEA_SPATIAL_MODE_AUTO, returns
+ * true when the system meets the automatic hierarchical-index threshold. This
+ * is useful for public tools that need to gate flat-only features without
+ * including internal headers.
+ */
+bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys);
+
 /* ============================================================================
  * LOADING
  *
@@ -142,8 +152,24 @@ void alea_set_config(alea_system_t* sys, const alea_config_t* config);
  * ============================================================================ */
 
 int alea_build_universe_index(alea_system_t* sys);
+/**
+ * @brief Build the expanded flat spatial index.
+ *
+ * This is a flat-spatial-index API. In hierarchical spatial mode, or in auto
+ * mode when hierarchical indexing is selected, it returns -1 and sets an
+ * error. For mode-aware query setup, prefer alea_prepare_query_acceleration().
+ */
 int alea_build_spatial_index(alea_system_t* sys);
 
+/**
+ * @brief Prepare query caches according to the system spatial mode.
+ *
+ * Uses flat caches in ALEA_SPATIAL_MODE_FLAT and hierarchical caches in
+ * ALEA_SPATIAL_MODE_HIER. In ALEA_SPATIAL_MODE_AUTO, the implementation
+ * switches to hierarchical indexing when the cell count reaches the auto
+ * threshold. The threshold defaults to 100000 cells and can be overridden with
+ * ALEA_SPATIAL_AUTO_CELL_THRESHOLD.
+ */
 int alea_prepare_query_acceleration(alea_system_t* sys);
 
 /* ============================================================================
@@ -184,7 +210,16 @@ int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 
 /**
  * @brief Create a plane surface with automatic registration
- * @param surface_id MCNP-style surface ID (will be registered)
+ *
+ * The plane is defined by the equation  a·x + b·y + c·z + d = 0.
+ * The negative half-space (sense=-1) is where a·x + b·y + c·z + d < 0.
+ *
+ * To place a plane at x = K with outward normal (+x): use a=1, b=0, c=0, d=-K.
+ * Example: plane at x = 4  →  alea_plane_surface(sys, id, 1, 0, 0, -4).
+ *
+ * @param surface_id MCNP-style surface ID (0 = auto-assign)
+ * @param a,b,c     Normal direction (need not be unit length; will be normalised)
+ * @param d         Constant term in the plane equation (d = −K for plane at position K)
  * @return Index into surfaces array, or -1 on error
  */
 int alea_plane_surface(alea_system_t* sys, int surface_id,
@@ -573,6 +608,8 @@ int alea_estimate_cell_volumes(alea_system_t* sys,
  * error for each instance: sigma_V / V.  Set to -1 for zero-volume instances.
  *
  * Requires the raycast module to be linked; returns -1 otherwise.
+ * Flat-spatial-index only: returns -1 in hierarchical spatial mode or in
+ * auto mode when the system selects hierarchical spatial indexing.
  *
  * @param sys        CSG system (must have spatial index built)
  * @param n_rays     Number of random rays
@@ -1044,6 +1081,12 @@ size_t alea_get_cells_by_universe(const alea_system_t* sys, int universe_id,
                                        int* out_indices, size_t max_count);
 size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id,
                                             int* out_indices, size_t max_count);
+/**
+ * @brief Return the number of expanded flat spatial instances.
+ *
+ * Flat-spatial-index only: returns 0 and sets an error in hierarchical spatial
+ * mode or in auto mode when the system selects hierarchical spatial indexing.
+ */
 size_t alea_spatial_index_instance_count(const alea_system_t* sys);
 
 /* ============================================================================

@@ -696,6 +696,12 @@ static int spatial_index_build_impl(alea_system_t* sys) {
 int alea_spatial_index_build(alea_system_t* sys) {
     if (!sys) return -1;
 
+    if (alea_system_spatial_mode_prefers_hier(sys)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "flat spatial index is disabled by hierarchical spatial mode");
+        return -1;
+    }
+
     /* Fast path: already built */
     if (atomic_load(&sys->spatial_build_state) == 2 &&
         sys->spatial_index && sys->spatial_index->built) {
@@ -735,6 +741,11 @@ void alea_spatial_index_free(alea_spatial_index_t* idx) {
 }
 
 size_t alea_spatial_get_instance_count(const alea_system_t* sys) {
+    if (alea_system_spatial_mode_prefers_hier(sys)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "flat spatial instance count is unavailable in hierarchical spatial mode");
+        return 0;
+    }
     if (!sys || !sys->spatial_index) return 0;
     return sys->spatial_index->instances.count;
 }

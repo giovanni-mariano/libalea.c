@@ -74,4 +74,16 @@ const char* alea_dir_next(alea_dir_t* dir);
  */
 void alea_dir_close(alea_dir_t* dir);
 
+/**
+ * @brief Approximate physical memory currently available for new allocations
+ *
+ * Linux: parses MemAvailable from /proc/meminfo.
+ * macOS: uses host_statistics64 / HOST_VM_INFO64.
+ * Windows: uses GlobalMemoryStatusEx (ullAvailPhys).
+ *
+ * Returns 0 if the value cannot be determined; callers should treat 0 as
+ * "unknown" and skip any memory-budget enforcement rather than refusing work.
+ */
+size_t alea_mem_available_bytes(void);
+
 #endif /* ALEA_COMPAT_H */

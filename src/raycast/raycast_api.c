@@ -328,6 +328,11 @@ int alea_estimate_instance_volumes(alea_system_t* sys,
                                    int n_rays,
                                    double* volumes, double* rel_errors) {
     if (!sys || n_rays <= 0 || !volumes) return -1;
+    if (alea_system_spatial_mode_prefers_hier(sys)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "instance volume estimation requires flat spatial mode");
+        return -1;
+    }
     if (!sys->spatial_index || !sys->spatial_index->built) return -1;
 
     size_t n_instances = sys->spatial_index->instances.count;

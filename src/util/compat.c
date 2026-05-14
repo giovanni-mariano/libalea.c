@@ -159,3 +159,68 @@ void alea_dir_close(alea_dir_t* dir) {
 }
 
 #endif /* _WIN32 */
+
+/* ============================================================================
+ * Available physical memory
+ * ============================================================================ */
+
+#if defined(_WIN32)
+
+size_t alea_mem_available_bytes(void) {
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) return 0;
+    return (size_t)status.ullAvailPhys;
+}
+
+#elif defined(__APPLE__)
+
+#include <mach/mach.h>
+#include <mach/vm_statistics.h>
+#include <sys/sysctl.h>
+
+size_t alea_mem_available_bytes(void) {
+    mach_port_t host = mach_host_self();
+    vm_size_t page_size = 0;
+    if (host_page_size(host, &page_size) != KERN_SUCCESS || page_size == 0) {
+        return 0;
+    }
+    vm_statistics64_data_t stats;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(host, HOST_VM_INFO64,
+                          (host_info64_t)&stats, &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    /* Pages that can be reclaimed without paging from disk. Mirrors what
+     * Activity Monitor labels "Memory Free" plus "Inactive". */
+    uint64_t pages = (uint64_t)stats.free_count +
+                     (uint64_t)stats.inactive_count +
+                     (uint64_t)stats.purgeable_count;
+    return (size_t)(pages * (uint64_t)page_size);
+}
+
+#elif defined(__linux__)
+
+size_t alea_mem_available_bytes(void) {
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (!f) return 0;
+    char line[256];
+    size_t avail = 0;
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long kb = 0;
+        if (sscanf(line, "MemAvailable: %lu kB", &kb) == 1) {
+            avail = (size_t)kb * 1024;
+            break;
+        }
+    }
+    fclose(f);
+    return avail;
+}
+
+#else
+
+size_t alea_mem_available_bytes(void) {
+    return 0; /* Unknown platform: callers skip enforcement. */
+}
+
+#endif

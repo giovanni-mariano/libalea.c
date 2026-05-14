@@ -193,6 +193,10 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     CLONE_VEC(clone->universes, sys->universes, alea_universe_t);
     for (size_t i = 0; i < alea_vec_count(&clone->universes); i++) {
         alea_vec_init(&clone->universes.data[i].cell_indices);
+        alea_vec_init(&clone->universes.data[i].point_bvh_nodes);
+        clone->universes.data[i].point_bvh_indices = NULL;
+        clone->universes.data[i].point_bvh_built = false;
+        clone->universes.data[i].point_bvh_disabled = false;
     }
 
     /* Clone mixtures: shallow copy then deep-copy internal arrays */
@@ -246,7 +250,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mc_cell_id, (int)i);
     }
 
-    /* Note: primitive_index, instance_cache, surface_bvh, spatial_index
+    /* Note: primitive_index, instance_cache, surface_bvh, spatial_index,
+       hier_spatial_index
        are NOT cloned - they can be rebuilt on demand */
 
     return clone;
@@ -275,7 +280,17 @@ alea_config_t alea_get_config(const alea_system_t* sys) {
 
 void alea_set_config(alea_system_t* sys, const alea_config_t* config) {
     if (!sys || !config) return;
+    alea_spatial_mode_t old_spatial_mode = sys->config.spatial_mode;
     sys->config = *config;
+    if (old_spatial_mode != config->spatial_mode) {
+        alea_system_invalidate_query_caches(sys,
+                                            ALEA_CACHE_SPATIAL |
+                                            ALEA_CACHE_HIER_SPATIAL);
+    }
+}
+
+bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys) {
+    return alea_system_spatial_mode_prefers_hier(sys);
 }
 
 /* ============================================================================
@@ -1890,7 +1905,13 @@ size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id
 }
 
 size_t alea_spatial_index_instance_count(const alea_system_t* sys) {
-    if (!sys || !sys->spatial_index) return 0;
+    if (!sys) return 0;
+    if (alea_system_spatial_mode_prefers_hier(sys)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "flat spatial instance count is unavailable in hierarchical spatial mode");
+        return 0;
+    }
+    if (!sys->spatial_index) return 0;
     return sys->spatial_index->instances.count;
 }
 

@@ -15,6 +15,7 @@
 #include "curve_intersect.h"
 #include "core/alea_system.h"
 #include "core/alea_spatial.h"
+#include "core/alea_spatial_hier.h"
 #include "core/alea_universe.h"
 #include "primitives/primitive_desc.h"
 #include "util/poly_solve.h"
@@ -2163,9 +2164,17 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                      alea_curve_collection_t* result) {
     if (!sys || !plane || !result) return -1;
 
-    /* Use the prepared spatial index if available. */
-    if (alea_spatial_index_needs_rebuild(sys)) {
-        return alea_compute_slice_curves(sys, plane, result);
+    bool use_hier = alea_spatial_mode_is_hierarchical(sys);
+
+    /* Use the prepared spatial index if available, fall back to brute-force. */
+    if (use_hier) {
+        if (alea_hier_spatial_index_needs_rebuild(sys)) {
+            return alea_compute_slice_curves(sys, plane, result);
+        }
+    } else {
+        if (alea_spatial_index_needs_rebuild(sys)) {
+            return alea_compute_slice_curves(sys, plane, result);
+        }
     }
 
     memset(result, 0, sizeof(*result));
@@ -2239,7 +2248,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
     }
 
     /* Query instances that intersect the slice */
-    size_t max_hits = alea_spatial_get_instance_count(sys);
+    size_t max_hits = use_hier ? MAX_SPATIAL_HITS : alea_spatial_get_instance_count(sys);
     if (max_hits == 0) max_hits = MAX_SPATIAL_HITS;
     if (max_hits > MAX_SPATIAL_HITS) max_hits = MAX_SPATIAL_HITS;
 
@@ -2249,7 +2258,9 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
         return -1;
     }
 
-    int hit_count = alea_spatial_query_region(sys, &query_bbox, hits, max_hits);
+    int hit_count = use_hier
+        ? alea_hier_spatial_query_region(sys, &query_bbox, hits, max_hits)
+        : alea_spatial_query_region(sys, &query_bbox, hits, max_hits);
     if (hit_count < 0) {
         free(hits);
         alea_vec_free(&result->curves);

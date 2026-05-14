@@ -32,12 +32,41 @@ typedef struct alea_material alea_material_t;
  * @brief Universe information
  */
 typedef struct {
+    alea_bbox_t bbox;
+    uint32_t left_or_first;
+    uint32_t right_child;
+    uint16_t count;
+    uint8_t axis;
+    uint8_t pad;
+} alea_universe_bvh_node_t;
+
+ALEA_VEC_DEFINE(alea_universe_bvh_node_vec, alea_universe_bvh_node_t);
+
+typedef struct {
     int universe_id;
     alea_size_vec_t cell_indices;
     alea_bbox_t bbox;         // Bounding box of all cells
+    alea_universe_bvh_node_vec_t point_bvh_nodes;
+    uint32_t* point_bvh_indices;
+    bool point_bvh_built;
+    bool point_bvh_disabled;
 } alea_universe_t;
 
 ALEA_VEC_DEFINE(alea_universe_vec, alea_universe_t);
+
+typedef struct {
+    size_t bvh_builds;
+    size_t bvh_queries;
+    size_t bvh_node_visits;
+    size_t bvh_bbox_tests;
+    size_t bvh_candidates;
+    size_t linear_universe_scans;
+    size_t linear_cell_tests;
+    size_t exact_cell_tests;
+} alea_universe_point_bvh_stats_t;
+
+void alea_universe_point_bvh_stats_reset(void);
+void alea_universe_point_bvh_stats_get(alea_universe_point_bvh_stats_t* out);
 
 /**
  * @brief Hash table for tracking primitive ID remapping during flatten
@@ -147,6 +176,16 @@ int alea_find_all_cells_at_point(alea_system_t* sys,
                                 double x, double y, double z,
                                 alea_cell_hit_t* out_hits,
                                 size_t max_hits);
+
+/**
+ * @brief Pre-build per-universe point BVHs for all universes.
+ *
+ * Called from query-cache preparation so subsequent concurrent point queries
+ * (OpenMP grid render etc.) never enter the lazy BVH build path. Returns 0
+ * on success; per-universe errors are recorded as disabled flags and do not
+ * abort the prebuild loop.
+ */
+int alea_prebuild_universe_point_bvhs(alea_system_t* sys);
 
 /**
  * @brief Find the deepest hierarchy-aware cell hit for a point
