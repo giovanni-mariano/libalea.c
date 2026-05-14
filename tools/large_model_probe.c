@@ -219,17 +219,7 @@ static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
            done, errors, total_hits, t1 - t0,
            done ? (t1 - t0) * 1000.0 / (double)done : 0.0);
     if (stats) {
-        printf("  bvh: queries=%zu node_visits=%zu bbox_tests=%zu candidates=%zu\n",
-               stats->point_blas_queries, stats->point_blas_node_visits,
-               stats->point_bbox_tests, stats->point_candidates);
-        printf("  exact_tests=%zu linear_scans=%zu linear_cell_tests=%zu\n",
-               stats->point_exact_tests, stats->point_linear_scans,
-               stats->point_linear_cell_tests);
-        printf("  averages: candidates/query=%.2f exact_tests/query=%.2f\n",
-               stats->point_blas_queries
-                   ? (double)stats->point_candidates / (double)stats->point_blas_queries
-                   : 0.0,
-               done ? (double)stats->point_exact_tests / (double)done : 0.0);
+        printf("  point_queries=%zu\n", stats->point_queries);
     }
 }
 

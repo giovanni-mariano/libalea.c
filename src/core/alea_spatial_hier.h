@@ -38,13 +38,6 @@ typedef struct {
     int largest_universe_id;
     size_t memory_bytes;
     size_t point_queries;
-    size_t point_blas_queries;
-    size_t point_blas_node_visits;
-    size_t point_bbox_tests;
-    size_t point_candidates;
-    size_t point_exact_tests;
-    size_t point_linear_scans;
-    size_t point_linear_cell_tests;
 } alea_hier_spatial_stats_t;
 
 int alea_hier_spatial_index_build(alea_system_t* sys);
