@@ -265,12 +265,6 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     {
     if (univ->point_bvh_built || univ->point_bvh_disabled) goto done;
 
-    const char* disable_bvh = getenv("ALEA_DISABLE_UNIVERSE_POINT_BVH");
-    if (disable_bvh && disable_bvh[0] && strcmp(disable_bvh, "0") != 0) {
-        univ->point_bvh_disabled = true;
-        goto done;
-    }
-
     size_t cell_count = univ->cell_indices.count;
     if (cell_count <= universe_point_bvh_threshold() ||
         universe_has_lattice_cells(sys, univ)) {

@@ -306,7 +306,6 @@ static int run_hier_raycast(alea_system_t* sys,
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS] [--hier-raycast OX OY OZ DX DY DZ TMAX] [--hier-cell-raycast OX OY OZ DX DY DZ TMAX]\n", argv[0]);
-        fprintf(stderr, "set ALEA_DISABLE_UNIVERSE_POINT_BVH=1 to benchmark the old linear recursive path\n");
         fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
     }
@@ -359,9 +358,6 @@ int main(int argc, char** argv) {
     }
 
     alea_log_set_level(1);
-    const char* disabled = getenv("ALEA_DISABLE_UNIVERSE_POINT_BVH");
-    printf("Universe point BVH: %s\n",
-           (disabled && disabled[0] && strcmp(disabled, "0") != 0) ? "disabled" : "enabled");
 
     double t0 = now_seconds();
     mcnp_model_t* model = mcnp_load(argv[1]);

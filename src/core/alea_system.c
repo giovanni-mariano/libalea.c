@@ -356,12 +356,12 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         if (alea_build_universe_index(sys) != 0) goto fail;
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_UNIVERSE);
     }
-    /* Pre-build per-universe point BVHs unconditionally when UNIVERSE is
-     * requested — alea_build_universe_index can be called from many sites
-     * (loaders, flatten), so by the time prep runs the cache flag may
-     * already be set even though the per-universe point BVHs haven't been
-     * built. The prebuild is idempotent (skips already-built universes). */
-    if (flags & ALEA_CACHE_UNIVERSE) {
+    /* Pre-build per-universe point BVHs when UNIVERSE is requested, but only
+     * in flat/auto-flat mode. In hier mode alea_find_all_cells_at_point
+     * delegates to the BLAS (alea_hier_spatial_find_cells_at_point), so the
+     * per-universe BVHs would be built and never used. */
+    if ((flags & ALEA_CACHE_UNIVERSE) &&
+        !alea_system_spatial_mode_prefers_hier(sys)) {
         alea_prebuild_universe_point_bvhs(sys);
     }
 
