@@ -829,9 +829,6 @@ static alea_slice_curves_t* get_curves_for_plot(alea_system_t* sys, const plot_p
     return alea_get_slice_curves(sys, &view);
 }
 
-static int plot_needs_flat_slice_curves(const plot_params_t* p) {
-    return p && (p->show_errors || p->labels.show_surfaces);
-}
 
 /* Get axis labels for a slice type */
 static void get_axis_labels(slice_type_t type, const char** u_label, const char** v_label) {
@@ -950,14 +947,6 @@ static void draw_error_lines(uint8_t* pixels, int width, int height,
 
 /* Render a single plot and save to file */
 static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) {
-    if (alea_spatial_mode_is_hierarchical(sys) &&
-        plot_needs_flat_slice_curves(p)) {
-        fprintf(stderr,
-                "Error: --errors and --labels=surfaces require flat spatial mode; "
-                "rerun with --spatial=flat or disable those overlays\n");
-        return -1;
-    }
-
     double t0, t1;
     const char* axis_names[] = {"Z", "Y", "X", "Plane"};
 
@@ -1445,7 +1434,6 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --spatial=flat|hier|auto Query acceleration mode (default: flat)\n");
     fprintf(stderr, "  --debug                 Print verbose curve generation debug info\n");
     fprintf(stderr, "  --trace=px,py           Trace cell lookup at pixel (px,py) for debugging\n");
-    fprintf(stderr, "\n  Note: --errors and --labels=surfaces currently require --spatial=flat.\n");
     fprintf(stderr, "\nBatch file format (one plot per line):\n");
     fprintf(stderr, "  Z value u_min u_max v_min v_max WxH output.png [options]\n");
     fprintf(stderr, "  Y value u_min u_max v_min v_max WxH output.png [options]\n");
@@ -1595,14 +1583,6 @@ int main(int argc, char** argv) {
     fflush(stdout);
 
     set_spatial_mode(sys, spatial_mode);
-    if (alea_spatial_mode_is_hierarchical(sys) &&
-        plot_needs_flat_slice_curves(&plot)) {
-        fprintf(stderr,
-                "Error: --errors and --labels=surfaces require flat spatial mode; "
-                "rerun with --spatial=flat or disable those overlays\n");
-        destroy_model(&model);
-        return 1;
-    }
 
     /* Prepare query acceleration */
     printf("Preparing query acceleration... ");

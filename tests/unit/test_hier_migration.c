@@ -147,6 +147,80 @@ TEST(slice_curves_auto_no_flat_spatial_index) {
     unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
 }
 
+/* alea_check_slice_errors() (the --errors overlay path) works in hier mode. */
+TEST(slice_errors_hier_mode) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    /* Two non-overlapping spheres */
+    int s1 = alea_sphere_surface(sys, 1, 0, 0, 0, 3.0);
+    int s2 = alea_sphere_surface(sys, 2, 8, 0, 0, 3.0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_surface_at(sys, s1)->neg_node, m1, -2.7, 0);
+    alea_add_cell(sys, 2, alea_surface_at(sys, s2)->neg_node, m2, -8.0, 0);
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+    alea_build_universe_index(sys);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -6, 14, -6, 6);
+
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
+    ASSERT(alea_slice_curves_count(curves) >= 2);
+
+    /* Check errors — should complete without crash, no overlaps */
+    alea_slice_error_result_t* errs = alea_check_slice_errors(sys, &view, curves, -1);
+    ASSERT_NOT_NULL(errs);
+
+    size_t overlaps = 0;
+    for (size_t i = 0; i < errs->error_count; i++) {
+        if (errs->errors[i].type == ALEA_SLICE_ERR_OVERLAP) overlaps++;
+    }
+    ASSERT_EQ((int)overlaps, 0);
+
+    ASSERT_NULL(sys->spatial_index);
+
+    alea_slice_errors_free(errs);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
+/* alea_find_surface_label_positions() (the --labels=surfaces path) works in
+ * hier mode. */
+TEST(surface_labels_hier_mode) {
+    alea_system_t* sys = make_sphere_sys();
+    ASSERT_NOT_NULL(sys);
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+    alea_build_universe_index(sys);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
+
+    alea_label_position_t* labels = NULL;
+    int label_count = 0;
+    int rc = alea_find_surface_label_positions(curves, -10, 10, -10, 10,
+                                               64, 64, 2,
+                                               &labels, &label_count);
+    ASSERT_EQ(rc, 0);
+    ASSERT(label_count > 0);
+
+    ASSERT_NULL(sys->spatial_index);
+
+    free(labels);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
 /* ============================================================================
  * Grid query tests
  * ============================================================================ */
