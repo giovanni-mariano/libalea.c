@@ -57,6 +57,31 @@ int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
                                                  alea_hier_cell_hit_t* out_hit);
 
 /**
+ * @brief Reset the hier point-query coherence cache.
+ *
+ * Mirror of alea_spatial_reset_cache for the hierarchical query path.
+ * Called automatically by alea_spatial_reset_cache so existing callers
+ * that reset between renders do not need to learn a second API.
+ */
+void alea_hier_spatial_reset_cache(void);
+
+/**
+ * @brief Test whether a world-space point lies inside a cell, using the
+ * transform cached by the most recent alea_hier_spatial_find_cells_at_point.
+ *
+ * Lets raycast's Tier 2 coherence check work for cells with universe_id
+ * != 0, where the caller has no other access to the world→local transform.
+ *
+ * @return 1 if the point is inside the cell,
+ *         0 if it is outside,
+ *        -1 if the cell is not present in the current cache or the cache
+ *           has been invalidated. Caller must fall back to a full lookup.
+ */
+int alea_hier_spatial_check_cached_containment(alea_system_t* sys,
+                                               uint32_t cell_index,
+                                               double x, double y, double z);
+
+/**
  * @brief Find the cell of `universe_id` containing (lx, ly, lz) in that
  *        universe's local frame, using the per-universe BLAS for pruning.
  *

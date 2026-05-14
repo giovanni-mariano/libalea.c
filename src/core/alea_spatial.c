@@ -15,6 +15,7 @@
  */
 
 #include "alea_spatial.h"
+#include "alea_spatial_hier.h"
 #include "alea_eval.h"
 #include "core/alea_system.h"
 #include "core/alea_surface.h"
@@ -982,6 +983,7 @@ void alea_spatial_reset_cache(void) {
     free(g_tls_candidates);
     g_tls_candidates = NULL;
     g_tls_candidates_cap = 0;
+    alea_hier_spatial_reset_cache();
 }
 
 int alea_spatial_find_cells_at_point(alea_system_t* sys,

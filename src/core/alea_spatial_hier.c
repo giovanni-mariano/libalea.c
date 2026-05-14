@@ -25,6 +25,52 @@
 #define HIER_DEFAULT_MEMORY_RESERVE_MB 256
 #define HIER_MEMORY_CHECK_INTERVAL 16384
 
+/* ----------------------------------------------------------------------
+ * Hier coherence cache: mirror of g_cell_cache in alea_spatial.c.
+ * Successive point queries along a ray are typically fractions of a mm
+ * apart; without this cache, every step pays the full TLAS+BLAS descent.
+ * -------------------------------------------------------------------- */
+#define HIER_CACHE_MAX_DEPTH 16
+
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    int material_id;
+    int universe_id;
+    int fill_universe;
+    int depth;
+    /* Forward world->this-depth's-local. Used via transform_point_inverse. */
+    alea_matrix_t transform;
+    /* Lattice "wrapper" hit (cell->lat_type != 0 && cell->lat_fill). On
+     * verify we re-run the lattice lookup and require fill_universe and
+     * element origin to match — otherwise the deeper cached transforms
+     * (which embed the old element origin) are stale. */
+    bool is_lattice;
+    int lat_fill_universe;
+    double lat_ox, lat_oy, lat_oz;
+    bool valid;
+} hier_cached_cell_t;
+
+static _Thread_local hier_cached_cell_t g_hier_cache[HIER_CACHE_MAX_DEPTH];
+static _Thread_local int g_hier_cache_count = 0;
+static _Thread_local alea_system_t* g_hier_cache_system = NULL;
+static _Thread_local uint64_t g_hier_cache_generation = 0;
+static _Thread_local uint64_t g_hier_cache_system_id = 0;
+
+static inline void hier_cache_invalidate(void) {
+    g_hier_cache_count = 0;
+    for (int i = 0; i < HIER_CACHE_MAX_DEPTH; i++) {
+        g_hier_cache[i].valid = false;
+    }
+}
+
+void alea_hier_spatial_reset_cache(void) {
+    hier_cache_invalidate();
+    g_hier_cache_system = NULL;
+    g_hier_cache_generation = 0;
+    g_hier_cache_system_id = 0;
+}
+
 static size_t hier_memory_reserve_bytes(void) {
     const char* env = getenv("ALEA_HIER_MEMORY_RESERVE_MB");
     if (env && env[0]) {
@@ -1275,9 +1321,80 @@ static int hier_query_universe(alea_system_t* sys,
                                double ly,
                                double lz,
                                int depth,
+                               const alea_matrix_t* parent_transform,
                                alea_cell_hit_t* out_hits,
                                size_t max_hits,
                                size_t* hit_count);
+
+static inline void hier_cache_append(uint32_t cell_index,
+                                     const alea_cell_hit_t* hit,
+                                     const alea_matrix_t* transform,
+                                     bool is_lattice,
+                                     int lat_fill_universe,
+                                     double lat_ox,
+                                     double lat_oy,
+                                     double lat_oz) {
+    if (g_hier_cache_count >= HIER_CACHE_MAX_DEPTH) return;
+    hier_cached_cell_t* ent = &g_hier_cache[g_hier_cache_count++];
+    ent->cell_index = cell_index;
+    ent->cell_id = hit->cell_id;
+    ent->material_id = hit->material_id;
+    ent->universe_id = hit->universe_id;
+    ent->fill_universe = hit->fill_universe;
+    ent->depth = hit->depth;
+    ent->transform = *transform;
+    ent->is_lattice = is_lattice;
+    ent->lat_fill_universe = lat_fill_universe;
+    ent->lat_ox = lat_ox;
+    ent->lat_oy = lat_oy;
+    ent->lat_oz = lat_oz;
+    ent->valid = true;
+}
+
+static int hier_cache_try(alea_system_t* sys, double x, double y, double z,
+                          alea_cell_hit_t* out_hits, size_t max_hits) {
+    if (g_hier_cache_count <= 0) return -1;
+
+    size_t hit_count = 0;
+    for (int i = 0; i < g_hier_cache_count && hit_count < max_hits; i++) {
+        hier_cached_cell_t* ent = &g_hier_cache[i];
+        if (!ent->valid) return -1;
+
+        double lx = x, ly = y, lz = z;
+        alea_matrix_transform_point_inverse(&ent->transform, &lx, &ly, &lz);
+
+        const alea_cell_entry_t* cell = &sys->cells.data[ent->cell_index];
+
+        if (ent->is_lattice) {
+            double ox, oy, oz;
+            int fill_univ = (cell->lat_type == 2)
+                ? lattice_hex_lookup_local(cell, lx, ly, lz, &ox, &oy, &oz)
+                : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
+            if (fill_univ != ent->lat_fill_universe) return -1;
+            /* Lattice lookups derive (ox,oy,oz) from integer indices × pitch,
+             * so bitwise equality across calls is the right test. */
+            if (ox != ent->lat_ox || oy != ent->lat_oy || oz != ent->lat_oz) {
+                return -1;
+            }
+        } else {
+            if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+                return -1;
+            }
+        }
+
+        alea_cell_hit_t* hit = &out_hits[hit_count++];
+        hit->cell_id = ent->cell_id;
+        hit->cell_index = (int)ent->cell_index;
+        hit->material_id = ent->material_id;
+        hit->universe_id = ent->universe_id;
+        hit->fill_universe = ent->fill_universe;
+        hit->depth = ent->depth;
+        hit->local_x = lx;
+        hit->local_y = ly;
+        hit->local_z = lz;
+    }
+    return (int)hit_count;
+}
 
 static int process_point_cell(alea_system_t* sys,
                               alea_hier_spatial_index_t* idx,
@@ -1286,6 +1403,7 @@ static int process_point_cell(alea_system_t* sys,
                               double ly,
                               double lz,
                               int depth,
+                              const alea_matrix_t* parent_transform,
                               alea_cell_hit_t* out_hits,
                               size_t max_hits,
                               size_t* hit_count) {
@@ -1309,12 +1427,21 @@ static int process_point_cell(alea_system_t* sys,
             hit->local_x = lx;
             hit->local_y = ly;
             hit->local_z = lz;
+            hier_cache_append(cell_index, hit, parent_transform,
+                              true, fill_univ, ox, oy, oz);
             (*hit_count)++;
         }
+
+        alea_matrix_t element_translation, child_transform;
+        translation_matrix(&element_translation, ox, oy, oz);
+        alea_matrix_multiply(&child_transform, parent_transform,
+                             &element_translation);
+        if (!alea_matrix_invert(&child_transform)) return -1;
 
         return hier_query_universe(sys, idx, fill_univ,
                                    lx - ox, ly - oy, lz - oz,
                                    depth + 1,
+                                   &child_transform,
                                    out_hits, max_hits, hit_count);
     }
 
@@ -1333,6 +1460,8 @@ static int process_point_cell(alea_system_t* sys,
         hit->local_x = lx;
         hit->local_y = ly;
         hit->local_z = lz;
+        hier_cache_append(cell_index, hit, parent_transform,
+                          false, 0, 0.0, 0.0, 0.0);
         (*hit_count)++;
     }
 
@@ -1347,9 +1476,14 @@ static int process_point_cell(alea_system_t* sys,
         alea_matrix_transform_point_inverse(fill_transform,
                                             &child_x, &child_y, &child_z);
 
+        alea_matrix_t child_transform;
+        alea_matrix_multiply(&child_transform, parent_transform, fill_transform);
+        if (!alea_matrix_invert(&child_transform)) return -1;
+
         return hier_query_universe(sys, idx, cell->fill_universe,
                                    child_x, child_y, child_z,
                                    depth + 1,
+                                   &child_transform,
                                    out_hits, max_hits, hit_count);
     }
 
@@ -1363,6 +1497,7 @@ static int hier_query_universe(alea_system_t* sys,
                                double ly,
                                double lz,
                                int depth,
+                               const alea_matrix_t* parent_transform,
                                alea_cell_hit_t* out_hits,
                                size_t max_hits,
                                size_t* hit_count) {
@@ -1398,7 +1533,8 @@ static int hier_query_universe(alea_system_t* sys,
             }
             uint32_t cell_index = blas->cells[cell_pos].cell_index;
             int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
-                                        depth, out_hits, max_hits, hit_count);
+                                        depth, parent_transform,
+                                        out_hits, max_hits, hit_count);
             if (rc < 0) ctx.error = -1;
         }
         hier_cand_free(&candidates);
@@ -1408,7 +1544,8 @@ static int hier_query_universe(alea_system_t* sys,
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
         int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
-                                    depth, out_hits, max_hits, hit_count);
+                                    depth, parent_transform,
+                                    out_hits, max_hits, hit_count);
         if (rc < 0) return -1;
     }
 
@@ -1619,13 +1756,40 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
         }
     }
 
+    /* Invalidate cache if the system or its geometry changed. */
+    uint64_t generation = alea_system_geometry_generation(sys);
+    if (g_hier_cache_system != sys ||
+        g_hier_cache_generation != generation ||
+        g_hier_cache_system_id != sys->system_id) {
+        hier_cache_invalidate();
+        g_hier_cache_system = sys;
+        g_hier_cache_generation = generation;
+        g_hier_cache_system_id = sys->system_id;
+    }
+
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+
+    int cached = hier_cache_try(sys, x, y, z, out_hits, max_hits);
+    if (cached > 0) {
+        idx->stats.point_queries++;
+        return cached;
+    }
+
+    /* Cache miss — wipe and repopulate during the full descent. */
+    hier_cache_invalidate();
     idx->stats.point_queries++;
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
 
     size_t hit_count = 0;
     int rc = hier_query_universe(sys, idx, 0, x, y, z, 0,
+                                 &identity,
                                  out_hits, max_hits, &hit_count);
-    if (rc < 0) return -1;
+    if (rc < 0) {
+        hier_cache_invalidate();
+        return -1;
+    }
 
     return (int)hit_count;
 }
