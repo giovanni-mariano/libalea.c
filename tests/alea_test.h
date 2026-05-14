@@ -36,6 +36,34 @@
 #include <stdint.h>
 
 /* ------------------------------------------------------------------------- */
+/* Portable env helpers                                                       */
+/* ------------------------------------------------------------------------- */
+
+/* setenv / unsetenv are POSIX.1-2001. On Windows MSVC they don't exist
+ * (use _putenv_s). On macOS / glibc, visibility depends on feature test
+ * macros set by the translation unit. Wrap once here so tests don't have
+ * to worry about platform plumbing. Signature matches POSIX setenv so
+ * existing call sites pass through unchanged. */
+static inline int alea_setenv(const char* name, const char* value, int overwrite) {
+#if defined(_WIN32)
+    (void)overwrite;
+    return _putenv_s(name, value);
+#else
+    extern int setenv(const char*, const char*, int);
+    return setenv(name, value, overwrite);
+#endif
+}
+
+static inline int alea_unsetenv(const char* name) {
+#if defined(_WIN32)
+    return _putenv_s(name, "");
+#else
+    extern int unsetenv(const char*);
+    return unsetenv(name);
+#endif
+}
+
+/* ------------------------------------------------------------------------- */
 /* Test registration                                                          */
 /* ------------------------------------------------------------------------- */
 

@@ -10,7 +10,7 @@
 #include "core/alea_universe.h"
 
 TEST(universe_point_bvh_preserves_all_cells_order) {
-    setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "16", 1);
+    alea_setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "16", 1);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
@@ -38,11 +38,11 @@ TEST(universe_point_bvh_preserves_all_cells_order) {
     }
 
     alea_destroy(sys);
-    unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
+    alea_unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
 }
 
 TEST(universe_point_bvh_filters_by_bbox) {
-    setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "16", 1);
+    alea_setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "16", 1);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
@@ -69,13 +69,13 @@ TEST(universe_point_bvh_filters_by_bbox) {
     ASSERT_EQ(hits[0].depth, 0);
 
     alea_destroy(sys);
-    unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
+    alea_unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
 }
 
 /* In hier mode, alea_prepare_query_acceleration must NOT build per-universe
  * point BVHs — they are unused (BLAS handles all find_all_cells queries). */
 TEST(hier_mode_skips_per_universe_bvh_build) {
-    setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -104,7 +104,7 @@ TEST(hier_mode_skips_per_universe_bvh_build) {
     ASSERT_EQ(hits[0].cell_id, 1);
 
     alea_destroy(sys);
-    unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
+    alea_unsetenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
 }
 
 TEST_MAIN()

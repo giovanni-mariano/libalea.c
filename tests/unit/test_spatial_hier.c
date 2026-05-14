@@ -12,7 +12,7 @@
 #include "raycast/raycast.h"
 
 TEST(hier_spatial_builds_universe_blas_stats) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -50,11 +50,11 @@ TEST(hier_spatial_builds_universe_blas_stats) {
     ASSERT(stats->memory_bytes > 0);
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_respects_blas_threshold) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "99", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "99", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -85,11 +85,11 @@ TEST(hier_spatial_respects_blas_threshold) {
     ASSERT_EQ(stats->lattice_placement_count, 0);
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_collects_fill_placements_without_terminals) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -126,7 +126,7 @@ TEST(hier_spatial_collects_fill_placements_without_terminals) {
     ASSERT_EQ(stats->max_placement_depth, 1);
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 static void assert_hits_match(const alea_cell_hit_t* a,
@@ -169,7 +169,7 @@ static void assert_raycast_segments_match(const alea_raycast_result_t* flat,
 }
 
 TEST(hier_spatial_point_query_matches_recursive_simple) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -196,11 +196,11 @@ TEST(hier_spatial_point_query_matches_recursive_simple) {
     assert_hits_match(ref, got, nr);
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_point_query_matches_recursive_fill) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -234,11 +234,11 @@ TEST(hier_spatial_point_query_matches_recursive_fill) {
     assert_hits_match(ref, got, nr);
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_point_query_matches_recursive_lattice) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -273,11 +273,11 @@ TEST(hier_spatial_point_query_matches_recursive_lattice) {
     }
 
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_region_query_matches_flat_simple) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -307,11 +307,11 @@ TEST(hier_spatial_region_query_matches_flat_simple) {
     ASSERT(spatial_hits_contain_cell(hier, nh, 2, 0));
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_slice_query_matches_flat_fill) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -348,11 +348,11 @@ TEST(hier_spatial_slice_query_matches_flat_fill) {
     ASSERT(spatial_hits_contain_cell(hier, nh, 2, 1));
 
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_spatial_slice_query_resolves_lattice_terminals) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -372,11 +372,11 @@ TEST(hier_spatial_slice_query_resolves_lattice_terminals) {
     ASSERT(spatial_hits_contain_cell(hits, n, 4, -1));
 
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_raycast_matches_flat_root_universe) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -408,11 +408,11 @@ TEST(hier_raycast_matches_flat_root_universe) {
     alea_raycast_result_free(&flat);
     alea_raycast_result_free(&hier);
     alea_destroy(sys);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_raycast_does_not_build_flat_spatial_index) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -431,11 +431,11 @@ TEST(hier_raycast_does_not_build_flat_spatial_index) {
 
     alea_raycast_result_free(&result);
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(hier_cell_aware_raycast_does_not_build_flat_spatial_index) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -468,11 +468,11 @@ TEST(hier_cell_aware_raycast_does_not_build_flat_spatial_index) {
     alea_raycast_result_free(&flat);
     alea_raycast_result_free(&hier);
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(query_acceleration_respects_hier_spatial_mode) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -488,7 +488,7 @@ TEST(query_acceleration_respects_hier_spatial_mode) {
     ASSERT(alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST_HIER));
 
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(flat_spatial_index_fails_in_hier_mode) {
@@ -507,8 +507,8 @@ TEST(flat_spatial_index_fails_in_hier_mode) {
 }
 
 TEST(auto_spatial_mode_avoids_flat_index_above_threshold) {
-    setenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD", "1", 1);
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -528,12 +528,12 @@ TEST(auto_spatial_mode_avoids_flat_index_above_threshold) {
     ASSERT_EQ(alea_estimate_instance_volumes(sys, 8, volumes, NULL), -1);
 
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
-    unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
 }
 
 TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {
-    setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -569,7 +569,7 @@ TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {
     alea_raycast_result_free(&flat);
     alea_raycast_result_free(&routed);
     mcnp_model_destroy(model);
-    unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST(spatial_mode_change_invalidates_flat_spatial_index) {

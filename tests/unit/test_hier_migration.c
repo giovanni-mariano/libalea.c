@@ -124,7 +124,7 @@ TEST(slice_curves_hier_no_flat_spatial_index) {
 /* alea_get_slice_curves() in auto mode must NOT build the flat spatial index
  * (auto selects hier for all models with this threshold override). */
 TEST(slice_curves_auto_no_flat_spatial_index) {
-    setenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD", "1", 1);
+    alea_setenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD", "1", 1);
 
     alea_system_t* sys = make_sphere_sys();
     ASSERT_NOT_NULL(sys);
@@ -144,7 +144,7 @@ TEST(slice_curves_auto_no_flat_spatial_index) {
 
     alea_slice_curves_free(curves);
     alea_destroy(sys);
-    unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
+    alea_unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
 }
 
 /* alea_check_slice_errors() (the --errors overlay path) works in hier mode. */
