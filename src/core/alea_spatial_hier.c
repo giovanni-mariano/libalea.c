@@ -141,6 +141,7 @@ typedef struct {
 
 typedef struct {
     uint32_t cell_index;
+    float bbox_volume;  /* Precomputed for fast candidate ordering. */
     hier_fbbox_t bbox;
 } hier_blas_cell_t;
 
@@ -218,7 +219,14 @@ static inline void hier_cand_free(hier_cand_buf_t* b) {
     if (b->data != b->stack) free(b->data);
 }
 
+/* Debug counter: candidates pushed across all universes in the current query.
+ * Reset/read via alea_hier_debug_candidates_*(). Thread-local to avoid races. */
+static _Thread_local size_t g_hier_debug_candidates = 0;
+void alea_hier_debug_candidates_reset(void) { g_hier_debug_candidates = 0; }
+size_t alea_hier_debug_candidates_get(void) { return g_hier_debug_candidates; }
+
 static int hier_cand_push(hier_cand_buf_t* b, uint32_t v) {
+    g_hier_debug_candidates++;
     if (b->count == b->cap) {
         size_t new_cap = b->cap * 2;
         uint32_t* nd;
@@ -249,6 +257,25 @@ static inline void hier_cand_sort(hier_cand_buf_t* b) {
         }
         b->data[j] = x;
     }
+}
+
+/* qsort comparator: smallest bbox_volume first. The blas pointer is passed
+ * via a thread-local so we don't need qsort_r (which is non-portable). */
+static _Thread_local const hier_universe_blas_t* g_sort_blas = NULL;
+static int hier_cand_cmp_by_volume(const void* a, const void* b) {
+    float va = g_sort_blas->cells[*(const uint32_t*)a].bbox_volume;
+    float vb = g_sort_blas->cells[*(const uint32_t*)b].bbox_volume;
+    return (va > vb) - (va < vb);
+}
+
+/* Sort by bbox volume, smallest first. Used by find_cell_in_universe so the
+ * most-likely-containing (tightest) cell is tested first and the search can
+ * short-circuit at the first match. */
+static inline void hier_cand_sort_by_volume(hier_cand_buf_t* b,
+                                            const hier_universe_blas_t* blas) {
+    g_sort_blas = blas;
+    qsort(b->data, b->count, sizeof(*b->data), hier_cand_cmp_by_volume);
+    g_sort_blas = NULL;
 }
 
 typedef struct {
@@ -584,6 +611,12 @@ static int build_universe_blas(alea_system_t* sys,
             : local_cell_bbox(sys, cell_index);
         blas->cells[i].cell_index = cell_index;
         blas->cells[i].bbox = hier_fbbox_from_double(&bbox);
+        {
+            float vdx = (float)(bbox.max_x - bbox.min_x);
+            float vdy = (float)(bbox.max_y - bbox.min_y);
+            float vdz = (float)(bbox.max_z - bbox.min_z);
+            blas->cells[i].bbox_volume = vdx * vdy * vdz;
+        }
         blas->bounds = alea_bbox_union(&blas->bounds, &bbox);
 
         items[i].index = (uint32_t)i;
@@ -1654,7 +1687,14 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
         };
         query_blas_node(&ctx, 0);
         if (ctx.error) { hier_cand_free(&candidates); return -2; }
-        if (candidates.count > 1) hier_cand_sort(&candidates);
+
+        /* Sort candidates by bbox volume, smallest first. Cells in a universe
+         * should not overlap, so we only need to find the first containing
+         * cell — tight bboxes are far more likely to actually contain the
+         * point than world-sized "shell" bboxes that just happen to overlap. */
+        if (candidates.count > 1) {
+            hier_cand_sort_by_volume(&candidates, blas);
+        }
 
         int result = -1;
         for (size_t i = 0; i < candidates.count; i++) {

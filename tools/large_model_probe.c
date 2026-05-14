@@ -7,6 +7,7 @@
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_universe.h"
+#include "core/alea_eval.h"
 #include "raycast/raycast.h"
 #include "primitives/bbox.h"
 #include <stdio.h>
@@ -177,11 +178,30 @@ static void run_center_queries(alea_system_t* sys, size_t max_queries) {
            done ? (double)stats.linear_cell_tests / (double)done : 0.0);
 }
 
+typedef struct {
+    double ms;
+    size_t prim;
+    size_t bool_ops;
+    size_t candidates;
+    size_t universe_id;
+    size_t cell_idx;
+    double x, y, z;
+} hier_query_sample_t;
+
+static int sample_cmp_desc(const void* a, const void* b) {
+    double da = ((const hier_query_sample_t*)a)->ms;
+    double db = ((const hier_query_sample_t*)b)->ms;
+    return (da < db) - (da > db);
+}
+
 static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
     if (alea_hier_spatial_index_build(sys) != 0) {
         fprintf(stderr, "hierarchical spatial build failed: %s\n", alea_error());
         return;
     }
+
+    hier_query_sample_t* samples = calloc(max_queries, sizeof(*samples));
+    if (!samples) { fprintf(stderr, "alloc failed\n"); return; }
 
     size_t done = 0;
     size_t total_hits = 0;
@@ -203,8 +223,30 @@ static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
             double x = 0.5 * (bbox.min_x + bbox.max_x);
             double y = 0.5 * (bbox.min_y + bbox.max_y);
             double z = 0.5 * (bbox.min_z + bbox.max_z);
+
+            alea_perf_reset();
+            alea_hier_debug_candidates_reset();
+            double q0 = now_seconds();
+            int n;
             alea_cell_hit_t hits[64];
-            int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z, hits, 64);
+            if (getenv("PROBE_SINGLE_CELL")) {
+                int rc = alea_hier_spatial_find_cell_in_universe(sys, 0, x, y, z);
+                hits[0].cell_index = rc;
+                n = (rc >= 0) ? 1 : 0;
+            } else {
+                n = alea_hier_spatial_find_cells_at_point(sys, x, y, z, hits, 64);
+            }
+            double q1 = now_seconds();
+            alea_perf_counters_t pc = alea_perf_get();
+
+            samples[done].ms = (q1 - q0) * 1000.0;
+            samples[done].prim = pc.primitive_evaluations;
+            samples[done].bool_ops = pc.boolean_operations;
+            samples[done].candidates = alea_hier_debug_candidates_get();
+            samples[done].universe_id = ui;
+            samples[done].cell_idx = cell_idx;
+            samples[done].x = x; samples[done].y = y; samples[done].z = z;
+
             if (n < 0) errors++;
             else total_hits += (size_t)n;
             done++;
@@ -221,6 +263,80 @@ static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
     if (stats) {
         printf("  point_queries=%zu\n", stats->point_queries);
     }
+
+    /* Per-query distribution */
+    if (done > 0) {
+        double total_ms = 0;
+        size_t total_prim = 0, total_bool = 0, total_cands = 0;
+        for (size_t i = 0; i < done; i++) {
+            total_ms += samples[i].ms;
+            total_prim += samples[i].prim;
+            total_bool += samples[i].bool_ops;
+            total_cands += samples[i].candidates;
+        }
+        qsort(samples, done, sizeof(*samples), sample_cmp_desc);
+
+        /* Buckets: <0.1, <1, <10, <100, >=100 ms */
+        size_t b[5] = {0};
+        for (size_t i = 0; i < done; i++) {
+            double m = samples[i].ms;
+            if      (m < 0.1)   b[0]++;
+            else if (m < 1.0)   b[1]++;
+            else if (m < 10.0)  b[2]++;
+            else if (m < 100.0) b[3]++;
+            else                b[4]++;
+        }
+
+        printf("  histogram (ms/query):\n");
+        printf("    <0.1:  %zu (%.1f%%)\n", b[0], 100.0*b[0]/done);
+        printf("    <1:    %zu (%.1f%%)\n", b[1], 100.0*b[1]/done);
+        printf("    <10:   %zu (%.1f%%)\n", b[2], 100.0*b[2]/done);
+        printf("    <100:  %zu (%.1f%%)\n", b[3], 100.0*b[3]/done);
+        printf("    >=100: %zu (%.1f%%)\n", b[4], 100.0*b[4]/done);
+
+        printf("  totals: prim_evals=%zu bool_ops=%zu csg_ops/query=%.0f cands/query=%.0f\n",
+               total_prim, total_bool, (double)(total_prim + total_bool) / done,
+               (double)total_cands / done);
+
+        /* Diagnose universe 0 bbox quality at the origin */
+        const alea_universe_t* u0 = alea_get_universe(sys, 0);
+        if (u0) {
+            size_t cells_in_u0 = u0->cell_indices.count;
+            size_t containing = 0;
+            for (size_t i = 0; i < cells_in_u0; i++) {
+                size_t ci = u0->cell_indices.data[i];
+                const alea_cell_entry_t* c = &sys->cells.data[ci];
+                if (c->root_node_id == ALEA_NODE_ID_INVALID) continue;
+                const alea_bbox_t* bb = &sys->nodes.data[c->root_node_id].bbox;
+                if (bb->min_x <= 0 && 0 <= bb->max_x &&
+                    bb->min_y <= 0 && 0 <= bb->max_y &&
+                    bb->min_z <= 0 && 0 <= bb->max_z) {
+                    containing++;
+                }
+            }
+            printf("  universe 0: cells=%zu  bboxes_containing_origin=%zu (%.1f%%)\n",
+                   cells_in_u0, containing,
+                   cells_in_u0 ? 100.0 * containing / cells_in_u0 : 0.0);
+        }
+
+        printf("  per-cand: csg_ops=%.0f prim=%.0f bool=%.0f\n",
+               total_cands ? (double)(total_prim + total_bool) / total_cands : 0,
+               total_cands ? (double)total_prim / total_cands : 0,
+               total_cands ? (double)total_bool / total_cands : 0);
+
+        /* Top 5 slowest */
+        size_t show = done < 5 ? done : 5;
+        printf("  top-%zu slowest:\n", show);
+        for (size_t i = 0; i < show; i++) {
+            const alea_universe_t* u = &sys->universes.data[samples[i].universe_id];
+            const alea_cell_entry_t* c = &sys->cells.data[samples[i].cell_idx];
+            printf("    %.2f ms  univ=%d  cell=%d  cands=%zu prim=%zu bool=%zu  pt=(%.1f,%.1f,%.1f)\n",
+                   samples[i].ms, u->universe_id, c->mc_cell_id,
+                   samples[i].candidates, samples[i].prim, samples[i].bool_ops,
+                   samples[i].x, samples[i].y, samples[i].z);
+        }
+    }
+    free(samples);
 }
 
 static int run_hier_slice_query(alea_system_t* sys,
