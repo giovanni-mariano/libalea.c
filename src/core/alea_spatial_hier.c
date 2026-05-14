@@ -1742,6 +1742,45 @@ static int hier_find_deepest_universe(alea_system_t* sys,
     return 0;
 }
 
+int alea_hier_spatial_check_cached_containment(alea_system_t* sys,
+                                               uint32_t cell_index,
+                                               double x, double y, double z) {
+    if (!sys) return -1;
+
+    uint64_t generation = alea_system_geometry_generation(sys);
+    if (g_hier_cache_system != sys ||
+        g_hier_cache_generation != generation ||
+        g_hier_cache_system_id != sys->system_id) {
+        return -1;
+    }
+
+    for (int i = 0; i < g_hier_cache_count; i++) {
+        hier_cached_cell_t* ent = &g_hier_cache[i];
+        if (!ent->valid) break;
+        if (ent->cell_index != cell_index) continue;
+
+        double lx = x, ly = y, lz = z;
+        alea_matrix_transform_point_inverse(&ent->transform, &lx, &ly, &lz);
+
+        const alea_cell_entry_t* cell = &sys->cells.data[ent->cell_index];
+
+        if (ent->is_lattice) {
+            double ox, oy, oz;
+            int fill_univ = (cell->lat_type == 2)
+                ? lattice_hex_lookup_local(cell, lx, ly, lz, &ox, &oy, &oz)
+                : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
+            if (fill_univ != ent->lat_fill_universe) return 0;
+            if (ox != ent->lat_ox || oy != ent->lat_oy || oz != ent->lat_oz) {
+                return 0;
+            }
+            return 1;
+        }
+
+        return alea_contains_point(sys, cell->root_node_id, lx, ly, lz) ? 1 : 0;
+    }
+    return -1;
+}
+
 int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           double x,
                                           double y,

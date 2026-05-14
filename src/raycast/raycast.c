@@ -470,13 +470,29 @@ static void find_cell_after_crossing(alea_system_t* sys,
     /* Tier 2: coherence check (skip for DDA boundaries) */
     if (!found && prev_cell_idx >= 0 && !crossed_dda) {
         const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
-        if (prev_cell->universe_id != 0)
+
+        /* Nested-cell case: in flat mode Tier 3 is already fast via the
+         * flat point-query coherence cache, so skip Tier 2 there. In hier
+         * mode we consult the hier cache for the cell's world→local
+         * transform. */
+        if (prev_cell->universe_id != 0 && !use_hier_lookup)
             goto full_lookup;
 
         double t_sample = t_prev + fmin(0.5 * (t_curr - t_prev), SURFACE_SAMPLE_OFFSET);
         double px, py, pz;
         alea_ray_point_at(ray, t_sample, &px, &py, &pz);
-        if (alea_contains_point(sys, prev_cell->root_node_id, px, py, pz)) {
+
+        int in_cell;
+        if (prev_cell->universe_id == 0) {
+            in_cell = alea_contains_point(sys, prev_cell->root_node_id,
+                                          px, py, pz) ? 1 : 0;
+        } else {
+            in_cell = alea_hier_spatial_check_cached_containment(
+                sys, (uint32_t)prev_cell_idx, px, py, pz);
+            if (in_cell < 0) goto full_lookup;
+        }
+
+        if (in_cell) {
             *out_cell_id = prev_cell->mc_cell_id;
             *out_cell_idx = prev_cell_idx;
             *out_material_id = prev_cell->material_id;
