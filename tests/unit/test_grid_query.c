@@ -35,7 +35,8 @@ static alea_system_t* make_x_split(double split_x, double R) {
     alea_system_t* sys = alea_create();
     if (!sys) return NULL;
 
-    int p_idx = alea_plane_surface(sys, 1, 1.0, 0.0, 0.0, split_x);
+    /* d = -split_x: plane equation x + d = 0 → plane at x = split_x */
+    int p_idx = alea_plane_surface(sys, 1, 1.0, 0.0, 0.0, -split_x);
     int s_idx = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, R);
     if (p_idx < 0 || s_idx < 0) { alea_destroy(sys); return NULL; }
 

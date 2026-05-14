@@ -210,7 +210,16 @@ int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 
 /**
  * @brief Create a plane surface with automatic registration
- * @param surface_id MCNP-style surface ID (will be registered)
+ *
+ * The plane is defined by the equation  a·x + b·y + c·z + d = 0.
+ * The negative half-space (sense=-1) is where a·x + b·y + c·z + d < 0.
+ *
+ * To place a plane at x = K with outward normal (+x): use a=1, b=0, c=0, d=-K.
+ * Example: plane at x = 4  →  alea_plane_surface(sys, id, 1, 0, 0, -4).
+ *
+ * @param surface_id MCNP-style surface ID (0 = auto-assign)
+ * @param a,b,c     Normal direction (need not be unit length; will be normalised)
+ * @param d         Constant term in the plane equation (d = −K for plane at position K)
  * @return Index into surfaces array, or -1 on error
  */
 int alea_plane_surface(alea_system_t* sys, int surface_id,
