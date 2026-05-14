@@ -14,12 +14,27 @@
 #include "core/alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
+#include <stdio.h>
 #include "core/alea_universe.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdatomic.h>
 #include "util/math.h"
 #include "util/alea_log.h"
+
+/* Grid query diagnostic counters — printed when ALEA_GRID_STATS=1.
+ * Atomics are cheap vs CSG eval cost; no compile flag needed. */
+static _Atomic size_t g_px_total         = 0;
+static _Atomic size_t g_px_hint_full     = 0; /* all depths resolved by adjacency */
+static _Atomic size_t g_px_hint_partial  = 0; /* adjacency broke mid-hierarchy */
+static _Atomic size_t g_px_full_fallback = 0; /* no hint → full alea_find_all_cells_at_point */
+static _Atomic size_t g_univ_hint_cell   = 0; /* exact hint cell hit */
+static _Atomic size_t g_univ_neighbor    = 0; /* neighbor walk hit */
+static _Atomic size_t g_univ_blas        = 0; /* BLAS query used */
+static _Atomic size_t g_univ_linear      = 0; /* linear scan fallback */
+static _Atomic size_t g_csg_prim_evals   = 0; /* total primitive evaluations */
+static _Atomic size_t g_csg_bool_ops     = 0; /* total boolean ops in CSG tree */
 
 /* ============================================================================
  * SLICE CURVES API
@@ -332,16 +347,22 @@ static void multilevel_hint_from_hits(alea_system_t* sys,
 static int find_cell_in_universe_with_hint(alea_system_t* sys,
                                             double lx, double ly, double lz,
                                             int universe_id,
-                                            int hint_cell_idx) {
+                                            int hint_cell_idx,
+                                            bool trust_hint) {
     /* Try hint cell first (coherence) */
     if (hint_cell_idx >= 0 && (size_t)hint_cell_idx < alea_vec_count(&sys->cells)) {
         const alea_cell_entry_t* cell = &sys->cells.data[hint_cell_idx];
 
-        /* Verify hint cell is in the correct universe */
+        /* When trust_hint is set, skip the expensive CSG verification and return
+         * the hint directly. A periodic verify pass in the caller corrects any
+         * stale hints introduced by cell-boundary crossings between samples. */
         if (cell->universe_id == universe_id &&
-            cell->root_node_id != ALEA_NODE_ID_INVALID &&
-            alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-            return hint_cell_idx;
+            cell->root_node_id != ALEA_NODE_ID_INVALID) {
+            if (trust_hint ||
+                alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+                atomic_fetch_add_explicit(&g_univ_hint_cell, 1, memory_order_relaxed);
+                return hint_cell_idx;
+            }
         }
 
         /* Try neighbors of hint cell */
@@ -365,6 +386,7 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
                 }
 
                 if (alea_contains_point(sys, neighbor->root_node_id, lx, ly, lz)) {
+                    atomic_fetch_add_explicit(&g_univ_neighbor, 1, memory_order_relaxed);
                     return neighbor_idx;
                 }
             }
@@ -378,8 +400,8 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
     if (sys->hier_spatial_index) {
         int found = alea_hier_spatial_find_cell_in_universe(sys, universe_id,
                                                             lx, ly, lz);
-        if (found >= 0) return found;
-        if (found == -1) return -1; /* BLAS lookup ran and the point is in no cell */
+        if (found >= 0) { atomic_fetch_add_explicit(&g_univ_blas, 1, memory_order_relaxed); return found; }
+        if (found == -1) { atomic_fetch_add_explicit(&g_univ_blas, 1, memory_order_relaxed); return -1; }
         /* found == -2: hier index not usable for this universe, fall through. */
     }
 
@@ -387,6 +409,7 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
 
+    atomic_fetch_add_explicit(&g_univ_linear, 1, memory_order_relaxed);
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
@@ -421,6 +444,7 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
 static void find_cell_multilevel(alea_system_t* sys,
                                   double gx, double gy, double gz,
                                   int universe_depth,
+                                  bool trust_hints,
                                   const alea_multilevel_hint_t* prev_hint,
                                   alea_multilevel_hint_t* out_hint,
                                   int* out_cell_id,
@@ -430,6 +454,7 @@ static void find_cell_multilevel(alea_system_t* sys,
     if (out_material_id) *out_material_id = 0;
     if (out_error) *out_error = GRID_ERR_NONE;
     if (out_hint) multilevel_hint_init(out_hint);
+    atomic_fetch_add_explicit(&g_px_total, 1, memory_order_relaxed);
 
     /* Use multi-level walking only when we have valid previous hints */
     bool use_multilevel = (prev_hint != NULL && prev_hint->valid_depth >= 0 &&
@@ -459,7 +484,8 @@ static void find_cell_multilevel(alea_system_t* sys,
             /* Try adjacency walking at this depth */
             int cell_idx = find_cell_in_universe_with_hint(sys, lx, ly, lz,
                                                            current_universe,
-                                                           level_hint->cell_index);
+                                                           level_hint->cell_index,
+                                                           trust_hints);
 
             if (cell_idx < 0) {
                 /* Adjacency walk failed - need full search from here */
@@ -484,7 +510,8 @@ static void find_cell_multilevel(alea_system_t* sys,
 
             /* Check for target depth */
             if (universe_depth >= 0 && depth >= universe_depth) {
-                /* Reached target depth */
+                /* Reached target depth — full adjacency success */
+                atomic_fetch_add_explicit(&g_px_hint_full, 1, memory_order_relaxed);
                 *out_cell_id = cell->mc_cell_id;
                 if (out_material_id) *out_material_id = cell->material_id;
                 if (out_hint) {
@@ -536,6 +563,8 @@ static void find_cell_multilevel(alea_system_t* sys,
             } else {
                 /* Terminal cell (no fill) - this is the innermost */
                 if (universe_depth < 0) {
+                    /* Full adjacency success — reached terminal cell */
+                    atomic_fetch_add_explicit(&g_px_hint_full, 1, memory_order_relaxed);
                     *out_cell_id = cell->mc_cell_id;
                     if (out_material_id) *out_material_id = cell->material_id;
                     if (out_hint) {
@@ -552,7 +581,8 @@ static void find_cell_multilevel(alea_system_t* sys,
             /* Return deepest hit found */
             alea_cell_hit_t* last = &local_hits[hits_found - 1];
             if (last->fill_universe <= 0) {
-                /* This is a terminal cell */
+                /* This is a terminal cell — partial adjacency success */
+                atomic_fetch_add_explicit(&g_px_hint_partial, 1, memory_order_relaxed);
                 *out_cell_id = last->cell_id;
                 if (out_material_id) *out_material_id = last->material_id;
                 if (out_hint) {
@@ -564,6 +594,11 @@ static void find_cell_multilevel(alea_system_t* sys,
     }
 
     /* Fall back to full hierarchy traversal */
+    if (use_multilevel)
+        atomic_fetch_add_explicit(&g_px_hint_partial, 1, memory_order_relaxed);
+    else
+        atomic_fetch_add_explicit(&g_px_full_fallback, 1, memory_order_relaxed);
+
     alea_cell_hit_t hits[32];
     int num_hits = alea_find_all_cells_at_point(sys, gx, gy, gz, hits, 32);
 
@@ -673,34 +708,93 @@ int alea_find_cells_grid(alea_system_t* sys,
      */
 
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 4)
-    for (int j = 0; j < nv; j++) {
-        double v = v_min + (j + 0.5) * dv;
-        alea_multilevel_hint_t row_hint;
-        multilevel_hint_init(&row_hint);
+    bool stats_en = getenv("ALEA_GRID_STATS") != NULL;
+    /* ALEA_GRID_VERIFY_INTERVAL=N: verify every N-th pixel; trust hint in between.
+     * Default 1 = always verify (exact, current behaviour).
+     * Higher values trade a bounded number of wrong pixels near cell boundaries
+     * for fewer CSG evaluations. Effective when pixel step << cell size. */
+    const char* vi_env = getenv("ALEA_GRID_VERIFY_INTERVAL");
+    int verify_interval = (vi_env && atoi(vi_env) > 1) ? atoi(vi_env) : 1;
+    #pragma omp parallel
+    {
+        if (stats_en) alea_perf_reset();
+        #pragma omp for schedule(dynamic, 4)
+        for (int j = 0; j < nv; j++) {
+            double v = v_min + (j + 0.5) * dv;
+            alea_multilevel_hint_t row_hint;
+            multilevel_hint_init(&row_hint);
 
-        for (int i = 0; i < nu; i++) {
-            double u = u_min + (i + 0.5) * du;
-            int idx = j * nu + i;
+            /* State for periodic verify + re-scan */
+            int last_verify_i = -1;
+            alea_multilevel_hint_t last_verify_hint;
+            multilevel_hint_init(&last_verify_hint);
 
-            double x = origin[0] + u * u_axis[0] + v * v_axis[0];
-            double y = origin[1] + u * u_axis[1] + v * v_axis[1];
-            double z = origin[2] + u * u_axis[2] + v * v_axis[2];
+            for (int i = 0; i < nu; i++) {
+                double u = u_min + (i + 0.5) * du;
+                int idx = j * nu + i;
 
-            int cell_id = -1;
-            int material_id = 0;
-            uint8_t error = 0;
-            alea_multilevel_hint_t curr_hint;
+                double x = origin[0] + u * u_axis[0] + v * v_axis[0];
+                double y = origin[1] + u * u_axis[1] + v * v_axis[1];
+                double z = origin[2] + u * u_axis[2] + v * v_axis[2];
 
-            find_cell_multilevel(sys, x, y, z, universe_depth,
-                                 &row_hint, &curr_hint,
-                                 &cell_id, &material_id, &error);
+                bool is_verify = (verify_interval <= 1) ||
+                                  (i % verify_interval == 0);
+                bool trust = !is_verify;
 
-            row_hint = curr_hint;  /* Use current as hint for next pixel */
+                int cell_id = -1, material_id = 0;
+                uint8_t error = 0;
+                alea_multilevel_hint_t curr_hint;
 
-            out_cell_ids[idx] = cell_id;
-            if (out_material_ids) out_material_ids[idx] = material_id;
-            if (out_errors) out_errors[idx] = error;
+                find_cell_multilevel(sys, x, y, z, universe_depth, trust,
+                                     &row_hint, &curr_hint,
+                                     &cell_id, &material_id, &error);
+
+                out_cell_ids[idx] = cell_id;
+                if (out_material_ids) out_material_ids[idx] = material_id;
+                if (out_errors) out_errors[idx] = error;
+
+                if (is_verify && last_verify_i >= 0) {
+                    /* Mismatch: verify found a different cell than the last fast
+                     * pixel. Some pixels in [last_verify_i+1, i-1] may have
+                     * propagated a stale hint; re-scan them from the last known-
+                     * good verify hint to get correct assignments. */
+                    int prev_cell = out_cell_ids[j * nu + i - 1];
+                    if (cell_id != prev_cell) {
+                        alea_multilevel_hint_t seg_hint = last_verify_hint;
+                        for (int k = last_verify_i + 1; k < i; k++) {
+                            double ku = u_min + (k + 0.5) * du;
+                            double kx = origin[0] + ku * u_axis[0] + v * v_axis[0];
+                            double ky = origin[1] + ku * u_axis[1] + v * v_axis[1];
+                            double kz = origin[2] + ku * u_axis[2] + v * v_axis[2];
+                            int kidx = j * nu + k;
+                            int k_cell = -1, k_mat = 0;
+                            uint8_t k_err = 0;
+                            alea_multilevel_hint_t k_hint;
+                            find_cell_multilevel(sys, kx, ky, kz, universe_depth,
+                                                 false, /* always verify in re-scan */
+                                                 &seg_hint, &k_hint,
+                                                 &k_cell, &k_mat, &k_err);
+                            out_cell_ids[kidx] = k_cell;
+                            if (out_material_ids) out_material_ids[kidx] = k_mat;
+                            if (out_errors) out_errors[kidx] = k_err;
+                            seg_hint = k_hint;
+                        }
+                    }
+                }
+
+                if (is_verify) {
+                    last_verify_i = i;
+                    last_verify_hint = curr_hint;
+                }
+
+                row_hint = curr_hint;
+            }
+        }
+        /* Collect per-thread CSG counters after the for barrier */
+        if (stats_en) {
+            alea_perf_counters_t c = alea_perf_get();
+            atomic_fetch_add_explicit(&g_csg_prim_evals, c.primitive_evaluations, memory_order_relaxed);
+            atomic_fetch_add_explicit(&g_csg_bool_ops,   c.boolean_operations,     memory_order_relaxed);
         }
     }
 #else
@@ -742,7 +836,7 @@ int alea_find_cells_grid(alea_system_t* sys,
             int material_id = 0;
             uint8_t error = 0;
 
-            find_cell_multilevel(sys, x, y, z, universe_depth,
+            find_cell_multilevel(sys, x, y, z, universe_depth, false,
                                  hint, &curr_row_hints[i],
                                  &cell_id, &material_id, &error);
 
@@ -806,6 +900,41 @@ int alea_find_cells_grid(alea_system_t* sys,
                 if (count > 1) out_errors[idx] = GRID_ERR_OVERLAP;
             }
         }
+    }
+
+    /* Print query stats when ALEA_GRID_STATS=1 */
+    if (getenv("ALEA_GRID_STATS")) {
+        size_t total    = atomic_load(&g_px_total);
+        size_t hint_f   = atomic_load(&g_px_hint_full);
+        size_t hint_p   = atomic_load(&g_px_hint_partial);
+        size_t fallback = atomic_load(&g_px_full_fallback);
+        size_t uh_cell  = atomic_load(&g_univ_hint_cell);
+        size_t uh_nbr   = atomic_load(&g_univ_neighbor);
+        size_t uh_blas  = atomic_load(&g_univ_blas);
+        size_t uh_lin   = atomic_load(&g_univ_linear);
+        size_t univ_total = uh_cell + uh_nbr + uh_blas + uh_lin;
+        fprintf(stdout, "\n[GRID STATS] pixels=%zu\n", total);
+        fprintf(stdout, "  adjacency full:    %6zu (%5.1f%%)\n", hint_f,   total ? 100.0*hint_f/total   : 0.0);
+        fprintf(stdout, "  adjacency partial: %6zu (%5.1f%%)\n", hint_p,   total ? 100.0*hint_p/total   : 0.0);
+        fprintf(stdout, "  full fallback:     %6zu (%5.1f%%)\n", fallback, total ? 100.0*fallback/total : 0.0);
+        fprintf(stdout, "[UNIV LOOKUPS] total=%zu per_pixel=%.1f\n",
+                univ_total, total ? (double)univ_total/total : 0.0);
+        fprintf(stdout, "  hint cell:  %6zu (%5.1f%%)\n", uh_cell, univ_total ? 100.0*uh_cell/univ_total : 0.0);
+        fprintf(stdout, "  neighbor:   %6zu (%5.1f%%)\n", uh_nbr,  univ_total ? 100.0*uh_nbr/univ_total  : 0.0);
+        fprintf(stdout, "  BLAS:       %6zu (%5.1f%%)\n", uh_blas, univ_total ? 100.0*uh_blas/univ_total : 0.0);
+        fprintf(stdout, "  linear:     %6zu (%5.1f%%)\n", uh_lin,  univ_total ? 100.0*uh_lin/univ_total  : 0.0);
+        size_t prim = atomic_load(&g_csg_prim_evals);
+        size_t bops = atomic_load(&g_csg_bool_ops);
+        fprintf(stdout, "[CSG EVALS] prim=%zu bool_ops=%zu per_pixel=%.0f prim+bool=%.0f\n",
+                prim, bops, total ? (double)(prim+bops)/total : 0.0,
+                total ? (double)(prim+bops)/total : 0.0);
+        fflush(stdout);
+        /* Reset for next call */
+        atomic_store(&g_px_total, 0); atomic_store(&g_px_hint_full, 0);
+        atomic_store(&g_px_hint_partial, 0); atomic_store(&g_px_full_fallback, 0);
+        atomic_store(&g_univ_hint_cell, 0); atomic_store(&g_univ_neighbor, 0);
+        atomic_store(&g_univ_blas, 0); atomic_store(&g_univ_linear, 0);
+        atomic_store(&g_csg_prim_evals, 0); atomic_store(&g_csg_bool_ops, 0);
     }
 
     return 0;
