@@ -98,7 +98,8 @@ alea_slice_curves_t* alea_get_slice_curves(alea_system_t* sys,
     alea_slice_curves_t* result = calloc(1, sizeof(alea_slice_curves_t));
     if (!result) return NULL;
 
-    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL) != 0) {
+    /* Mode-aware: builds flat spatial index or hier index depending on config. */
+    if (alea_prepare_query_acceleration(sys) != 0) {
         free(result);
         return NULL;
     }
@@ -347,22 +348,19 @@ static void multilevel_hint_from_hits(alea_system_t* sys,
 static int find_cell_in_universe_with_hint(alea_system_t* sys,
                                             double lx, double ly, double lz,
                                             int universe_id,
-                                            int hint_cell_idx,
-                                            bool trust_hint) {
-    /* Try hint cell first (coherence) */
+                                            int hint_cell_idx) {
+    /* Try hint cell first (adjacency cache).
+     * Always verify with alea_contains_point — this is cheap for the common
+     * case (point still inside the same cell, single CSG eval with early exit)
+     * and immediately detects cell-boundary crossings without losing information. */
     if (hint_cell_idx >= 0 && (size_t)hint_cell_idx < alea_vec_count(&sys->cells)) {
         const alea_cell_entry_t* cell = &sys->cells.data[hint_cell_idx];
 
-        /* When trust_hint is set, skip the expensive CSG verification and return
-         * the hint directly. A periodic verify pass in the caller corrects any
-         * stale hints introduced by cell-boundary crossings between samples. */
         if (cell->universe_id == universe_id &&
-            cell->root_node_id != ALEA_NODE_ID_INVALID) {
-            if (trust_hint ||
-                alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-                atomic_fetch_add_explicit(&g_univ_hint_cell, 1, memory_order_relaxed);
-                return hint_cell_idx;
-            }
+            cell->root_node_id != ALEA_NODE_ID_INVALID &&
+            alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+            atomic_fetch_add_explicit(&g_univ_hint_cell, 1, memory_order_relaxed);
+            return hint_cell_idx;
         }
 
         /* Try neighbors of hint cell */
@@ -444,7 +442,6 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
 static void find_cell_multilevel(alea_system_t* sys,
                                   double gx, double gy, double gz,
                                   int universe_depth,
-                                  bool trust_hints,
                                   const alea_multilevel_hint_t* prev_hint,
                                   alea_multilevel_hint_t* out_hint,
                                   int* out_cell_id,
@@ -484,8 +481,7 @@ static void find_cell_multilevel(alea_system_t* sys,
             /* Try adjacency walking at this depth */
             int cell_idx = find_cell_in_universe_with_hint(sys, lx, ly, lz,
                                                            current_universe,
-                                                           level_hint->cell_index,
-                                                           trust_hints);
+                                                           level_hint->cell_index);
 
             if (cell_idx < 0) {
                 /* Adjacency walk failed - need full search from here */
@@ -709,12 +705,12 @@ int alea_find_cells_grid(alea_system_t* sys,
 
 #ifdef _OPENMP
     bool stats_en = getenv("ALEA_GRID_STATS") != NULL;
-    /* ALEA_GRID_VERIFY_INTERVAL=N: verify every N-th pixel; trust hint in between.
-     * Default 1 = always verify (exact, current behaviour).
-     * Higher values trade a bounded number of wrong pixels near cell boundaries
-     * for fewer CSG evaluations. Effective when pixel step << cell size. */
+    /* ALEA_GRID_VERIFY_INTERVAL=N: every N-th pixel also runs a full recursive
+     * search to detect overlapping geometry. 0 or unset = no periodic scan
+     * (relies on boundary-pixel second pass only). Useful for finding geometry
+     * errors in interior regions not adjacent to cell boundaries. */
     const char* vi_env = getenv("ALEA_GRID_VERIFY_INTERVAL");
-    int verify_interval = (vi_env && atoi(vi_env) > 1) ? atoi(vi_env) : 1;
+    int overlap_interval = (vi_env && atoi(vi_env) > 0) ? atoi(vi_env) : 0;
     #pragma omp parallel
     {
         if (stats_en) alea_perf_reset();
@@ -724,11 +720,6 @@ int alea_find_cells_grid(alea_system_t* sys,
             alea_multilevel_hint_t row_hint;
             multilevel_hint_init(&row_hint);
 
-            /* State for periodic verify + re-scan */
-            int last_verify_i = -1;
-            alea_multilevel_hint_t last_verify_hint;
-            multilevel_hint_init(&last_verify_hint);
-
             for (int i = 0; i < nu; i++) {
                 double u = u_min + (i + 0.5) * du;
                 int idx = j * nu + i;
@@ -737,15 +728,13 @@ int alea_find_cells_grid(alea_system_t* sys,
                 double y = origin[1] + u * u_axis[1] + v * v_axis[1];
                 double z = origin[2] + u * u_axis[2] + v * v_axis[2];
 
-                bool is_verify = (verify_interval <= 1) ||
-                                  (i % verify_interval == 0);
-                bool trust = !is_verify;
-
                 int cell_id = -1, material_id = 0;
                 uint8_t error = 0;
                 alea_multilevel_hint_t curr_hint;
 
-                find_cell_multilevel(sys, x, y, z, universe_depth, trust,
+                /* Adjacency-cached cell find: always verifies hint cell with
+                 * alea_contains_point, then falls back to BLAS on miss. */
+                find_cell_multilevel(sys, x, y, z, universe_depth,
                                      &row_hint, &curr_hint,
                                      &cell_id, &material_id, &error);
 
@@ -753,38 +742,21 @@ int alea_find_cells_grid(alea_system_t* sys,
                 if (out_material_ids) out_material_ids[idx] = material_id;
                 if (out_errors) out_errors[idx] = error;
 
-                if (is_verify && last_verify_i >= 0) {
-                    /* Mismatch: verify found a different cell than the last fast
-                     * pixel. Some pixels in [last_verify_i+1, i-1] may have
-                     * propagated a stale hint; re-scan them from the last known-
-                     * good verify hint to get correct assignments. */
-                    int prev_cell = out_cell_ids[j * nu + i - 1];
-                    if (cell_id != prev_cell) {
-                        alea_multilevel_hint_t seg_hint = last_verify_hint;
-                        for (int k = last_verify_i + 1; k < i; k++) {
-                            double ku = u_min + (k + 0.5) * du;
-                            double kx = origin[0] + ku * u_axis[0] + v * v_axis[0];
-                            double ky = origin[1] + ku * u_axis[1] + v * v_axis[1];
-                            double kz = origin[2] + ku * u_axis[2] + v * v_axis[2];
-                            int kidx = j * nu + k;
-                            int k_cell = -1, k_mat = 0;
-                            uint8_t k_err = 0;
-                            alea_multilevel_hint_t k_hint;
-                            find_cell_multilevel(sys, kx, ky, kz, universe_depth,
-                                                 false, /* always verify in re-scan */
-                                                 &seg_hint, &k_hint,
-                                                 &k_cell, &k_mat, &k_err);
-                            out_cell_ids[kidx] = k_cell;
-                            if (out_material_ids) out_material_ids[kidx] = k_mat;
-                            if (out_errors) out_errors[kidx] = k_err;
-                            seg_hint = k_hint;
-                        }
+                /* Periodic full-universe overlap scan. Finds geometry errors in
+                 * interior pixels that the boundary-pixel second pass would miss. */
+                if (out_errors && overlap_interval > 0 &&
+                    (i % overlap_interval == 0)) {
+                    alea_cell_hit_t hits[32];
+                    int nh = alea_find_all_cells_at_point_recursive(
+                                 sys, x, y, z, hits, 32);
+                    if (nh > 1) {
+                        int td = (universe_depth < 0)
+                                     ? hits[nh - 1].depth : universe_depth;
+                        int cnt = 0;
+                        for (int h = 0; h < nh; h++)
+                            if (hits[h].depth == td) cnt++;
+                        if (cnt > 1) out_errors[idx] = GRID_ERR_OVERLAP;
                     }
-                }
-
-                if (is_verify) {
-                    last_verify_i = i;
-                    last_verify_hint = curr_hint;
                 }
 
                 row_hint = curr_hint;
@@ -836,7 +808,7 @@ int alea_find_cells_grid(alea_system_t* sys,
             int material_id = 0;
             uint8_t error = 0;
 
-            find_cell_multilevel(sys, x, y, z, universe_depth, false,
+            find_cell_multilevel(sys, x, y, z, universe_depth,
                                  hint, &curr_row_hints[i],
                                  &cell_id, &material_id, &error);
 

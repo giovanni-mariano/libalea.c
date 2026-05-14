@@ -2177,6 +2177,11 @@ static int query_tlas_region_node(alea_system_t* sys,
                                   out_hits, max_hits, hit_count);
 }
 
+bool alea_hier_spatial_index_needs_rebuild(const alea_system_t* sys) {
+    if (!sys || !sys->hier_spatial_index) return true;
+    return !sys->hier_spatial_index->built;
+}
+
 int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,

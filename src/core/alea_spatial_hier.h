@@ -88,6 +88,7 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
 const alea_matrix_t*
 alea_hier_spatial_get_cell_fill_matrix(const alea_system_t* sys,
                                        uint32_t cell_index);
+bool alea_hier_spatial_index_needs_rebuild(const alea_system_t* sys);
 int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,
