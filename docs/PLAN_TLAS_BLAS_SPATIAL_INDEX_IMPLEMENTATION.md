@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-12
 **Branch:** `feature/tlas-blas-spatial-index`
-**Target model:** `/home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp`
+**Target model:** `/path/to/large_model.mcnp`
 **Status:** implementation plan before replacing the flat spatial index
 
 ## Decision
@@ -12,25 +12,25 @@ Use the hierarchical two-level spatial index approach from
 `PLAN_SPATIAL_INDEX_LARGE_MODEL.md`.
 
 The current flat global spatial index is still the scaling limiter for
-`E-lite_R250630.mcnp`. The model loads, but spatial build fails while
+`large_test_model.mcnp`. The model loads, but spatial build fails while
 collecting expanded instances in `collect_instances_recursive()`, before BVH
 construction. Further flat-instance compression is therefore unlikely to be
 enough unless it changes the instance-count scaling law.
 
 The recent per-universe point-BVH experiment is useful diagnostic work, but it
-is not the final answer by itself. On E-lite-like queries it reduces exact cell
+is not the final answer by itself. On the large test model-like queries it reduces exact cell
 tests, but can still produce large candidate sets and extra bbox traversal
 work. It should remain guarded by thresholds/environment switches while the
 real spatial-index replacement is built.
 
 ## Goals
 
-- Build a spatial acceleration structure for E-lite without materializing the
+- Build a spatial acceleration structure for the large test model without materializing the
   full recursively expanded flat instance array.
 - Preserve point, region, slice, and ray-style query correctness on normal
   models.
 - Keep the existing flat spatial path available as a fallback until the
-  hierarchical path has parity tests and E-lite validation.
+  hierarchical path has parity tests and the large test model validation.
 - Keep lattice handling O(1) through existing lattice coordinate math instead
   of expanding lattice elements into flat instances.
 - Make the memory/performance tradeoff measurable with dedicated diagnostics.
@@ -62,7 +62,7 @@ Each BLAS should contain:
 
 Small universes should keep the current linear scan path. The threshold must be
 configurable because the first experiment showed that an aggressive low
-threshold can hurt performance on E-lite.
+threshold can hurt performance on the large test model.
 
 ### TLAS: Placements Instead Of Expanded Instances
 
@@ -111,7 +111,7 @@ For point queries, traversal should:
 
 For spatial build, the first hierarchical implementation should store a lattice
 container placement, not one placement per lattice element. This is the key rule
-that prevents accidentally recreating the E-lite flat-expansion failure.
+that prevents accidentally recreating the the large test model flat-expansion failure.
 
 ## Implementation Phases
 
@@ -135,7 +135,7 @@ Add a build mode switch:
 - `ALEA_SPATIAL_INDEX_MODE=hier`
 - `ALEA_SPATIAL_INDEX_MODE=auto`
 
-The default should stay conservative until parity and E-lite validation are
+The default should stay conservative until parity and the large test model validation are
 complete.
 
 Exit criteria:
@@ -185,7 +185,7 @@ Tests:
 - larger universe above threshold
 - overlapping local cell bounding boxes
 
-E-lite gate:
+the large test model gate:
 
 - BLAS construction completes after model load
 - memory increase is proportional to unique cells, not expanded placements
@@ -206,7 +206,7 @@ Rules:
 
 Exit criteria:
 
-- E-lite placement collection completes without OOM
+- the large test model placement collection completes without OOM
 - placement count is explainable and much smaller than the failed flat expanded
   instance count
 - diagnostics identify root/fill/lattice placement categories
@@ -291,7 +291,7 @@ Current status:
   investigation; it avoids global surface-hit collection and now carries the
   current cell transform for regular and transformed fills, plus the active
   lattice container transform for rectangular and hex lattice boundary stepping.
-  On the E-lite probe ray it reduced measured raycast time from about 168 s to
+  On the the large test model probe ray it reduced measured raycast time from about 168 s to
   about 5-20 s depending on build/run conditions, but it remains experimental
   until broader model coverage is added
 - public/default raycast entry points are not yet switched to hierarchical mode;
@@ -338,7 +338,7 @@ Exit criteria:
 - hierarchical cell-aware raycast parity tests pass for regular fill,
   transformed fill, rectangular lattice, and hex lattice fixtures: done for
   current representative fixtures
-- E-lite can run at least one bounded/representative hierarchical raycast probe
+- the large test model can run at least one bounded/representative hierarchical raycast probe
   without flat instance materialization: done for
   `--hier-raycast -1 0 0 1 0 0 2` with peak RSS about 3.59 GiB
 - unsupported edge cases fail clearly instead of falling back to flat expansion:
@@ -400,7 +400,7 @@ hierarchical instance-id scheme exists.
 Exit criteria:
 
 - normal models can still opt into flat behavior: done, flat remains default
-- E-lite can use hierarchical behavior: initial support via hier/auto config
+- the large test model can use hierarchical behavior: initial support via hier/auto config
 - unsupported flat-only APIs fail clearly in hierarchical mode: done for flat
   spatial-index construction, flat instance counts, and instance volume
   estimation; Lua bindings now surface the same limitations
@@ -416,7 +416,7 @@ migrated.
 
 Goal:
 
-- make basic `mc_plotter` image generation work for E-lite without flat
+- make basic `mc_plotter` image generation work for the large test model without flat
   instance materialization
 - keep flat behavior available as the default/small-model path
 - fail or disable unsupported analytical overlays clearly in hierarchical mode
@@ -426,7 +426,7 @@ Required activities:
 1. Add a plotter spatial mode option.
    - Support at least `--spatial=flat|hier|auto`: done.
    - Default can remain `flat` initially for backward compatibility, or switch
-     to `auto` after E-lite validation is stable: default remains `flat`.
+     to `auto` after the large test model validation is stable: default remains `flat`.
    - Set `alea_config_t.spatial_mode` before any query cache preparation: done.
 
 2. Replace unconditional flat spatial-index construction.
@@ -466,24 +466,24 @@ Required activities:
      smoke test done; automated test still pending.
    - Negative test: hierarchical mode with a currently flat-only overlay fails
      clearly: manual smoke test done; automated test still pending.
-   - E-lite check: basic plot completes with bounded memory in
+   - the large test model check: basic plot completes with bounded memory in
      `--spatial=hier` or `--spatial=auto`: done for a 64x64 Z=0 plot over
      `[-1,1] x [-1,1]` in hierarchical mode
 
 Exit criteria:
 
 - `mc_plotter` basic grid plots work in hierarchical mode on small fixtures:
-  done; E-lite 64x64 smoke validation done
+  done; the large test model 64x64 smoke validation done
 - no `mc_plotter` hierarchical path calls `alea_build_spatial_index()`: done
 - unsupported overlays produce clear errors instead of attempting flat
   expansion: done
 - documentation and usage text describe `--spatial=flat|hier|auto`: done
 
-E-lite smoke result:
+the large test model smoke result:
 
 ```sh
 timeout 300s bin/mc_plotter \
-  /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp \
+  /path/to/large_model.mcnp \
   Z 0 -1 1 -1 1 64x64 /tmp/e_lite_hier_plot.bmp --spatial=hier
 ```
 
@@ -520,7 +520,7 @@ Observed behavior:
 - mesh sampling calls `alea_identify_cell_at_point()`, which routes through
   deepest-cell point lookup and does not itself need the flat spatial index
 - the explicit `ALEA_CACHE_SPATIAL` preparation is therefore the likely
-  migration blocker for E-lite-style models
+  migration blocker for the large test model-style models
 
 Required activities:
 
@@ -529,7 +529,7 @@ Required activities:
   `ALEA_CACHE_UNIVERSE` depending on measured behavior: done with
   `ALEA_CACHE_UNIVERSE`
 - add a hier/auto mesh export test that confirms no flat spatial index is built
-- validate mesh export on E-lite with a small bounded mesh before broad use
+- validate mesh export on the large test model with a small bounded mesh before broad use
 
 #### Slice Curve and Analytical Error APIs
 
@@ -586,7 +586,7 @@ Required activities:
 - update Lua documentation/examples to prefer `sys:prepare_query_acceleration()`
   for mode-aware workflows
 - consider adding `sys:set_spatial_mode("flat"|"hier"|"auto")` if Lua examples
-  are expected to drive E-lite workflows directly
+  are expected to drive the large test model workflows directly
 
 #### Render3D and C Render Example
 
@@ -651,9 +651,9 @@ Required activities:
 - document `ALEA_SPATIAL_MODE_AUTO` threshold behavior and the
   `ALEA_SPATIAL_AUTO_CELL_THRESHOLD` override: done
 
-### Phase 8: E-lite Validation
+### Phase 8: the large test model Validation
 
-Use `E-lite_R250630.mcnp` as the acceptance model.
+Use `large_test_model.mcnp` as the acceptance model.
 
 Required checks:
 
@@ -671,15 +671,15 @@ Run:
 ```sh
 make test-unit
 make test-integration
-bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp
+bin/large_model_probe /path/to/large_model.mcnp
 ```
 
 Add more specific probe flags as they become available, for example:
 
 ```sh
-bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp --hier-build
-bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp --hier-query-samples 200
-bin/large_model_probe /home/giovanni/projects/mcnp_files/E-lite_R250630.mcnp --hier-slice 0 -1 1 -1 1 1024
+bin/large_model_probe /path/to/large_model.mcnp --hier-build
+bin/large_model_probe /path/to/large_model.mcnp --hier-query-samples 200
+bin/large_model_probe /path/to/large_model.mcnp --hier-slice 0 -1 1 -1 1 1024
 ```
 
 Exit criteria:
@@ -728,13 +728,13 @@ Mitigation:
 ### Lattice Expansion Regression
 
 Risk: adding TLAS placements naively can recreate the same flat expansion that
-breaks E-lite.
+breaks the large test model.
 
 Mitigation:
 
 - first implementation stores lattice containers
 - diagnostics report lattice container count and placement count
-- E-lite acceptance explicitly checks that placement count stays bounded
+- the large test model acceptance explicitly checks that placement count stays bounded
 
 ### API Compatibility
 
@@ -767,7 +767,7 @@ Use small commits with independent verification:
 5. port region/slice query paths
 6. port raycast paths
 7. add mode switch and API behavior
-8. validate E-lite and update docs
+8. validate the large test model and update docs
 9. clean up obsolete flat/TLS pieces after confidence
 
 ## Immediate Next Coding Step
@@ -779,4 +779,4 @@ Start with a scaffold that does not replace public behavior:
 3. build BLAS-per-universe diagnostics only
 4. extend `large_model_probe` with a hierarchical build/probe mode
 
-This gives an early E-lite memory signal before any risky public query migration.
+This gives an early the large test model memory signal before any risky public query migration.

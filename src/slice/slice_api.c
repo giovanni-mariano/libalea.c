@@ -392,9 +392,9 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
     }
 
     /* Hier-spatial fast path: BLAS-pruned lookup before linear scan. On
-     * models with very large universes (E-lite root universe has ~22K cells),
-     * the linear scan below would do 22K alea_contains_point evaluations per
-     * pixel after every adjacency miss. The BLAS reduces that to O(log N). */
+     * models with very large universes the linear scan would do O(N)
+     * alea_contains_point evaluations per pixel after every adjacency miss.
+     * The BLAS reduces that to O(log N). */
     if (sys->hier_spatial_index) {
         int found = alea_hier_spatial_find_cell_in_universe(sys, universe_id,
                                                             lx, ly, lz);
