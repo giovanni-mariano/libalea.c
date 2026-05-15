@@ -347,10 +347,54 @@ static int alea_tree_to_mcnp_expr(const alea_system_t* sys,
 /**
  * @brief Write a cell card with proper 80-column wrapping
  */
+/* Per-cell flatten info computed once before the cell emit loop. See
+ * build_flatten_info() for the detection rules. */
+typedef struct {
+    /* If skip is true, the entire cell is omitted from the output (it has been
+     * folded into a LAT cell that fills directly into the cell's fill_universe). */
+    bool skip;
+    /* If override_fill_universe > 0, this LAT cell uses this universe instead of
+     * its own lat_fill[0]. override_fill_transform (if non-zero) is the transform
+     * to apply on the FILL. */
+    int override_fill_universe;
+    int override_fill_transform;
+} flatten_cell_info_t;
+
+/* For each surface id (sparse, keyed by mc_surface_id), an offset to apply to
+ * the emitted primitive data. Used to position a flattened LAT cell's bounding
+ * macrobody at [lower_left, lower_left + pitch] in the parent universe frame
+ * without modifying the internal CSG. */
+typedef struct {
+    int surface_id;
+    double off_x, off_y, off_z;
+} surface_offset_t;
+
+/* Shift primitive bounds by an offset when emitting a flattened LAT cell's
+ * bounding macrobody. Only RPP is handled today — the synthetic LAT element
+ * boxes that come out of build_lattice_element_tree are always RPPs. */
+static void apply_flatten_surface_offset(int mc_surface_id,
+                                         const surface_offset_t* offsets,
+                                         size_t count,
+                                         alea_primitive_type_t type,
+                                         alea_primitive_data_t* data) {
+    if (!offsets || count == 0 || type != ALEA_PRIMITIVE_RPP) return;
+    for (size_t i = 0; i < count; i++) {
+        if (offsets[i].surface_id != mc_surface_id) continue;
+        data->box.min_x += offsets[i].off_x;
+        data->box.max_x += offsets[i].off_x;
+        data->box.min_y += offsets[i].off_y;
+        data->box.max_y += offsets[i].off_y;
+        data->box.min_z += offsets[i].off_z;
+        data->box.max_z += offsets[i].off_z;
+        return;
+    }
+}
+
 static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
                                   size_t cell_index, const char* expr,
                                   const alea_system_t* sys,
                                   export_context_t* ctx,
+                                  const flatten_cell_info_t* flatten,
                                   const char* inline_comment) {
 
     mcnp_str_t s;
@@ -457,34 +501,66 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
         mcnp_str_int(&s, cell->lat_type);
     }
 
-    /* Lattice FILL array */
+    /* Lattice FILL: emit simple "FILL=N" for 1x1x1 lattices (single element,
+     * single universe), and the explicit "FILL=imin:imax ... U U U" array
+     * form otherwise. Both are valid MCNP; the simple form is idiomatic for
+     * degenerate 1x1x1 lattices that act as positioning wrappers. */
     if (cell->lat_fill && cell->lat_fill_count > 0) {
-        mcnp_str_puts(&s, " FILL=");
-
+        int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
         int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
         int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
 
-        mcnp_str_int(&s, cell->lat_fill_dims[0]);
-        mcnp_str_putc(&s, ':');
-        mcnp_str_int(&s, cell->lat_fill_dims[1]);
+        if (cell->lat_fill_count == 1 && ni == 1 && nj == 1 && nk == 1) {
+            /* Flatten override: when the lat_fill[0] universe is a passthrough,
+             * the pre-pass redirects FILL to its target. */
+            int fill_univ = (flatten && flatten->override_fill_universe > 0)
+                          ? flatten->override_fill_universe : cell->lat_fill[0];
+            int fill_xform = (flatten && flatten->override_fill_universe > 0)
+                           ? flatten->override_fill_transform : 0;
 
-        if (nj > 1 || nk > 1) {
-            mcnp_str_putc(&s, ' ');
-            mcnp_str_int(&s, cell->lat_fill_dims[2]);
+            mcnp_str_puts(&s, " FILL=");
+            mcnp_str_int(&s, fill_univ);
+            if (fill_xform != 0) {
+                const alea_transform_t* tr = alea_get_transform(sys, fill_xform);
+                if (tr && tr->value_count > 0 &&
+                    ((ctx->transform_export_mode == ALEA_TR_EXPORT_INLINE) ||
+                     (ctx->transform_export_mode == ALEA_TR_EXPORT_ORIGINAL && tr->from_inline))) {
+                    mcnp_str_puts(&s, " (");
+                    for (int i = 0; i < tr->value_count; i++) {
+                        if (i > 0) mcnp_str_putc(&s, ' ');
+                        mcnp_str_double(&s, tr->data[i], 10);
+                    }
+                    mcnp_str_putc(&s, ')');
+                } else {
+                    mcnp_str_puts(&s, " (");
+                    mcnp_str_int(&s, fill_xform);
+                    mcnp_str_putc(&s, ')');
+                }
+            }
+        } else {
+            mcnp_str_puts(&s, " FILL=");
+            mcnp_str_int(&s, cell->lat_fill_dims[0]);
             mcnp_str_putc(&s, ':');
-            mcnp_str_int(&s, cell->lat_fill_dims[3]);
-        }
+            mcnp_str_int(&s, cell->lat_fill_dims[1]);
 
-        if (nk > 1) {
-            mcnp_str_putc(&s, ' ');
-            mcnp_str_int(&s, cell->lat_fill_dims[4]);
-            mcnp_str_putc(&s, ':');
-            mcnp_str_int(&s, cell->lat_fill_dims[5]);
-        }
+            if (nj > 1 || nk > 1) {
+                mcnp_str_putc(&s, ' ');
+                mcnp_str_int(&s, cell->lat_fill_dims[2]);
+                mcnp_str_putc(&s, ':');
+                mcnp_str_int(&s, cell->lat_fill_dims[3]);
+            }
 
-        for (size_t i = 0; i < cell->lat_fill_count; i++) {
-            mcnp_str_putc(&s, ' ');
-            mcnp_str_int(&s, cell->lat_fill[i]);
+            if (nk > 1) {
+                mcnp_str_putc(&s, ' ');
+                mcnp_str_int(&s, cell->lat_fill_dims[4]);
+                mcnp_str_putc(&s, ':');
+                mcnp_str_int(&s, cell->lat_fill_dims[5]);
+            }
+
+            for (size_t i = 0; i < cell->lat_fill_count; i++) {
+                mcnp_str_putc(&s, ' ');
+                mcnp_str_int(&s, cell->lat_fill[i]);
+            }
         }
     }
 
@@ -846,6 +922,86 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
         }
     }
 
+    /* Build flatten info: collapse 1x1x1 LAT cells whose content universe is a
+     * single passthrough cell (no geometry, just FILL=X with optional transform).
+     * The LAT cell takes the passthrough's target universe and transform; the
+     * passthrough cell itself is skipped on emission. This matches the cleaner
+     * idiomatic MCNP form for OpenMC-style positioning-wrapper lattices.
+     *
+     * When the passthrough's translation T equals -(lower_left + pitch/2) — the
+     * canonical OpenMC normalization pattern — we additionally drop the FILL
+     * transform and shift the LAT cell's bounding RPP by (lower_left + pitch/2),
+     * so the cell occupies its actual region in the parent universe frame. */
+    size_t n_cells = alea_vec_count(&sys->cells);
+    flatten_cell_info_t* flatten = NULL;
+    surface_offset_t* surf_offsets = NULL;
+    size_t surf_offset_count = 0;
+    if (n_cells > 0) {
+        flatten = calloc(n_cells, sizeof(*flatten));
+        surf_offsets = calloc(n_cells, sizeof(*surf_offsets));
+    }
+    if (flatten && surf_offsets) {
+        for (size_t i = 0; i < n_cells; i++) {
+            const alea_cell_entry_t* lc = &sys->cells.data[i];
+            if (lc->lat_type == 0 || !lc->lat_fill || lc->lat_fill_count != 1) continue;
+            int ni = lc->lat_fill_dims[1] - lc->lat_fill_dims[0] + 1;
+            int nj = lc->lat_fill_dims[3] - lc->lat_fill_dims[2] + 1;
+            int nk = lc->lat_fill_dims[5] - lc->lat_fill_dims[4] + 1;
+            if (ni != 1 || nj != 1 || nk != 1) continue;
+
+            int u_int = lc->lat_fill[0];
+            const alea_universe_t* u = alea_get_universe(sys, u_int);
+            if (!u || u->cell_indices.count != 1) continue;
+
+            size_t inner_idx = u->cell_indices.data[0];
+            if (inner_idx >= n_cells) continue;
+            const alea_cell_entry_t* inner = &sys->cells.data[inner_idx];
+            if (inner->fill_universe <= 0) continue;
+            if (inner->root_node_id != ALEA_NODE_ID_INVALID) continue;
+            if (inner->lat_type != 0) continue;
+
+            /* Element center C = lower_left + pitch/2 in the lattice frame. */
+            double cx = lc->lat_lower_left[0] + 0.5 * lc->lat_pitch[0];
+            double cy = lc->lat_lower_left[1] + 0.5 * lc->lat_pitch[1];
+            double cz = lc->lat_lower_left[2] + 0.5 * lc->lat_pitch[2];
+
+            /* Check if the passthrough's translation cancels C: T == -C. */
+            int cancels = 0;
+            if (inner->fill_transform != 0) {
+                const alea_transform_t* tr = alea_get_transform(sys, inner->fill_transform);
+                if (tr) {
+                    const double eps = 1e-6;
+                    if (fabs(tr->data[0] + cx) < eps &&
+                        fabs(tr->data[1] + cy) < eps &&
+                        fabs(tr->data[2] + cz) < eps) {
+                        cancels = 1;
+                    }
+                }
+            }
+
+            flatten[i].override_fill_universe = inner->fill_universe;
+            flatten[inner_idx].skip = true;
+
+            if (cancels) {
+                /* Drop the FILL transform and shift the bounding RPP by +C so the
+                 * cell occupies [lower_left, lower_left + pitch] in the parent. */
+                flatten[i].override_fill_transform = 0;
+                const alea_node_t* root = (lc->root_node_id < alea_vec_count(&sys->nodes))
+                    ? &sys->nodes.data[lc->root_node_id] : NULL;
+                if (root && ALEA_GET_OPERATION(root) == ALEA_OP_PRIMITIVE &&
+                    root->primitive.mc_surface_id != 0) {
+                    surf_offsets[surf_offset_count].surface_id = root->primitive.mc_surface_id;
+                    surf_offsets[surf_offset_count].off_x = cx;
+                    surf_offsets[surf_offset_count].off_y = cy;
+                    surf_offsets[surf_offset_count].off_z = cz;
+                    surf_offset_count++;
+                }
+            } else {
+                flatten[i].override_fill_transform = inner->fill_transform;
+            }
+        }
+    }
+
     /* Prepare universe depth cache for filtering */
     int* depth_cache = NULL;
     size_t depth_cache_size = 0;
@@ -868,6 +1024,9 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         ALEA_CHECK_INTERRUPTED(-1);
         const alea_cell_entry_t* cell = &sys->cells.data[i];
+
+        /* Skip passthrough cells folded into their parent LAT cell */
+        if (flatten && flatten[i].skip) continue;
 
         /* Apply universe depth filter */
         if (ctx->universe_depth >= 0 &&
@@ -917,7 +1076,8 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
             }
         }
 
-        write_mcnp_cell_line(ctx->out, cell, i, s.sb.buf, sys, ctx, cell->inline_comment);
+        write_mcnp_cell_line(ctx->out, cell, i, s.sb.buf, sys, ctx,
+                             flatten ? &flatten[i] : NULL, cell->inline_comment);
         ctx->cells_written++;
     }
 
@@ -976,6 +1136,9 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
                 }
             }
 
+            apply_flatten_surface_offset(mcnp_id, surf_offsets, surf_offset_count,
+                                         export_type, &export_data);
+
             write_mcnp_surface(ctx->out, &ctx->arena, mcnp_id, export_transform_id, surface->boundary_type,
                 surface->periodic_surface_id, export_type, &export_data, inverted,
                 ctx->mcnp_max_col, ctx->mcnp_cont_indent);
@@ -1010,6 +1173,9 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
                     export_transform_id = surface->transform_id;
                 }
             }
+
+            apply_flatten_surface_offset(surface->mc_surface_id, surf_offsets, surf_offset_count,
+                                         export_type, &export_data);
 
             write_mcnp_surface(ctx->out, &ctx->arena, surface->mc_surface_id, export_transform_id,
                 surface->boundary_type, surface->periodic_surface_id, export_type, &export_data, inverted,
@@ -1304,6 +1470,9 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
     mcnp_str_comment(&cs, "END Transform Cards");
     mcnp_str_comment(&cs, "");
     mcnp_str_write(&cs, ctx->out);
+
+    free(flatten);
+    free(surf_offsets);
 
     return 0;
 }
