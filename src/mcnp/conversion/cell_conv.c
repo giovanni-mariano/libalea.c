@@ -729,13 +729,17 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         // Don't free params.lat_fill - ownership transferred
     }
 
-    // For simple FILL=N with LAT, synthesize a 1x1x1 lattice fill
+    // For simple FILL=N with LAT, synthesize a 1x1x1 lattice fill.
+    // Mirrors apply_lattice_to_cell in the OpenMC importer: when lat_fill is
+    // populated, fill_universe is cleared so the exporter doesn't emit two
+    // FILL keywords (one from the non-lattice path, one from the lattice path).
     if (entry->lat_type > 0 && entry->fill_universe > 0 && !entry->lat_fill) {
         int* fill = malloc(sizeof(int));
         if (fill) {
             fill[0] = entry->fill_universe;
             entry->lat_fill = fill;
             entry->lat_fill_count = 1;
+            entry->fill_universe = 0;
             // lat_fill_dims defaults to [0,0,0,0,0,0] giving 1x1x1
         }
     }
