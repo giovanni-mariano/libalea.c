@@ -176,26 +176,26 @@ TEST(transform_accepts_rounded_direction_cosines) {
     alea_destroy(sys);
 }
 
-static void transform_warn_callback(alea_log_level_t level, const char* file,
+static void transform_info_callback(alea_log_level_t level, const char* file,
                                     int line, const char* message,
                                     void* user_data) {
     (void)file;
     (void)line;
-    int* warning_count = (int*)user_data;
-    if (level == ALEA_LOG_LEVEL_WARN &&
+    int* info_count = (int*)user_data;
+    if (level == ALEA_LOG_LEVEL_INFO &&
         strstr(message, "negative determinant") != NULL &&
         strstr(message, "TR1") != NULL) {
-        (*warning_count)++;
+        (*info_count)++;
     }
 }
 
-TEST(transform_negative_determinant_warns) {
+TEST(transform_negative_determinant_logs_info) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
-    int warning_count = 0;
-    alea_log_set_level(ALEA_LOG_LEVEL_WARN);
-    alea_log_set_callback(transform_warn_callback, &warning_count);
+    int info_count = 0;
+    alea_log_set_level(ALEA_LOG_LEVEL_INFO);
+    alea_log_set_callback(transform_info_callback, &info_count);
 
     double data[12] = {
         0, 0, 0,
@@ -205,32 +205,32 @@ TEST(transform_negative_determinant_warns) {
     };
     ASSERT_EQ(alea_add_transform(sys, 1, data, 12, 0), 0);
     ASSERT_NOT_NULL(alea_get_transform(sys, 1));
-    ASSERT_EQ(warning_count, 1);
+    ASSERT_EQ(info_count, 1);
 
     alea_log_set_callback(NULL, NULL);
     alea_destroy(sys);
 }
 
-static void transform_inline_warn_callback(alea_log_level_t level, const char* file,
+static void transform_inline_info_callback(alea_log_level_t level, const char* file,
                                            int line, const char* message,
                                            void* user_data) {
     (void)file;
     (void)line;
-    int* warning_count = (int*)user_data;
-    if (level == ALEA_LOG_LEVEL_WARN &&
+    int* info_count = (int*)user_data;
+    if (level == ALEA_LOG_LEVEL_INFO &&
         strstr(message, "negative determinant") != NULL &&
         strstr(message, "cell 42 inline FILL") != NULL) {
-        (*warning_count)++;
+        (*info_count)++;
     }
 }
 
-TEST(transform_inline_negative_determinant_warns_with_cell_context) {
+TEST(transform_inline_negative_determinant_logs_info_with_cell_context) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
-    int warning_count = 0;
-    alea_log_set_level(ALEA_LOG_LEVEL_WARN);
-    alea_log_set_callback(transform_inline_warn_callback, &warning_count);
+    int info_count = 0;
+    alea_log_set_level(ALEA_LOG_LEVEL_INFO);
+    alea_log_set_callback(transform_inline_info_callback, &info_count);
 
     double data[12] = {
         0, 0, 0,
@@ -240,7 +240,7 @@ TEST(transform_inline_negative_determinant_warns_with_cell_context) {
     };
     int id = alea_add_inline_transform(sys, data, 12, 0, 42, "FILL");
     ASSERT(id > 0);
-    ASSERT_EQ(warning_count, 1);
+    ASSERT_EQ(info_count, 1);
 
     alea_log_set_callback(NULL, NULL);
     alea_destroy(sys);
