@@ -1004,10 +1004,10 @@ static bool validate_transform_values(const char* caller, const char* context,
 
     if (det < 0.0) {
         if (context && context[0] != '\0') {
-            ALEA_LOG_WARN("%s: transform rotation for %s has negative determinant %.12g",
+            ALEA_LOG_INFO("%s: transform rotation for %s has negative determinant %.12g (reflection + rotation)",
                           caller, context, det);
         } else {
-            ALEA_LOG_WARN("%s: transform rotation has negative determinant %.12g",
+            ALEA_LOG_INFO("%s: transform rotation has negative determinant %.12g (reflection + rotation)",
                           caller, det);
         }
     }

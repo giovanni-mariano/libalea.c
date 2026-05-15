@@ -1532,10 +1532,16 @@ static int hier_query_universe(alea_system_t* sys,
                 break;
             }
             uint32_t cell_index = blas->cells[cell_pos].cell_index;
+            size_t before = *hit_count;
             int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
                                         depth, parent_transform,
                                         out_hits, max_hits, hit_count);
             if (rc < 0) ctx.error = -1;
+            /* MCNP semantics: cells in the same universe must not overlap;
+             * if they do (malformed model or numerical edge), the first
+             * matching cell wins, matching alea_spatial_find_cells_at_point
+             * which uses an expected_universe filter to enforce the same. */
+            if (*hit_count > before) break;
         }
         hier_cand_free(&candidates);
         return ctx.error ? -1 : 0;
@@ -1543,10 +1549,12 @@ static int hier_query_universe(alea_system_t* sys,
 
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
+        size_t before = *hit_count;
         int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
                                     depth, parent_transform,
                                     out_hits, max_hits, hit_count);
         if (rc < 0) return -1;
+        if (*hit_count > before) break;
     }
 
     return 0;
@@ -1754,11 +1762,21 @@ int alea_hier_spatial_check_cached_containment(alea_system_t* sys,
         return -1;
     }
 
+    /* Locate the target entry. Return -1 (unknown, caller falls back to a
+     * full lookup) if the cell is not on the last query's cached path. */
+    int target = -1;
     for (int i = 0; i < g_hier_cache_count; i++) {
-        hier_cached_cell_t* ent = &g_hier_cache[i];
-        if (!ent->valid) break;
-        if (ent->cell_index != cell_index) continue;
+        if (!g_hier_cache[i].valid) break;
+        if (g_hier_cache[i].cell_index == cell_index) { target = i; break; }
+    }
+    if (target < 0) return -1;
 
+    /* Validate the FULL ancestor chain. A deep cell's CSG can easily extend
+     * outside its parent FILL region; testing the target cell alone gives
+     * false positives when the point now sits in a different parent chain.
+     * The chain check mirrors hier_cache_try semantics. */
+    for (int i = 0; i <= target; i++) {
+        hier_cached_cell_t* ent = &g_hier_cache[i];
         double lx = x, ly = y, lz = z;
         alea_matrix_transform_point_inverse(&ent->transform, &lx, &ly, &lz);
 
@@ -1773,12 +1791,13 @@ int alea_hier_spatial_check_cached_containment(alea_system_t* sys,
             if (ox != ent->lat_ox || oy != ent->lat_oy || oz != ent->lat_oz) {
                 return 0;
             }
-            return 1;
+            continue;
         }
 
-        return alea_contains_point(sys, cell->root_node_id, lx, ly, lz) ? 1 : 0;
+        if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
+            return 0;
     }
-    return -1;
+    return 1;
 }
 
 int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
