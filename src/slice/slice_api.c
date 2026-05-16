@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <float.h>
 #include <stdatomic.h>
 #include "util/math.h"
 #include "util/alea_log.h"
@@ -35,6 +36,25 @@ static _Atomic size_t g_univ_blas        = 0; /* BLAS query used */
 static _Atomic size_t g_univ_linear      = 0; /* linear scan fallback */
 static _Atomic size_t g_csg_prim_evals   = 0; /* total primitive evaluations */
 static _Atomic size_t g_csg_bool_ops     = 0; /* total boolean ops in CSG tree */
+
+static alea_tile_coverage_stats_t g_tile_coverage_stats;
+static alea_point_coverage_stats_t g_point_coverage_stats;
+
+void alea_tile_coverage_stats_reset(void) {
+    memset(&g_tile_coverage_stats, 0, sizeof(g_tile_coverage_stats));
+}
+
+alea_tile_coverage_stats_t alea_tile_coverage_stats_get(void) {
+    return g_tile_coverage_stats;
+}
+
+void alea_point_coverage_stats_reset(void) {
+    memset(&g_point_coverage_stats, 0, sizeof(g_point_coverage_stats));
+}
+
+alea_point_coverage_stats_t alea_point_coverage_stats_get(void) {
+    return g_point_coverage_stats;
+}
 
 /* ============================================================================
  * SLICE CURVES API
@@ -235,6 +255,15 @@ void alea_slice_curves_free(alea_slice_curves_t* curves) {
 static void get_clipped_param_range(const alea_curve_2d_t* curve,
                                     const alea_slice_view_t* view,
                                     double* t_lo, double* t_hi);
+static int dedup_spatial_hits(alea_spatial_hit_t* hits, int hit_count);
+typedef struct {
+    uint8_t coverage;
+    int secondary_cell_id;
+} point_coverage_t;
+static int find_point_coverage_exact(alea_system_t* sys,
+                                     double gx, double gy, double gz,
+                                     int universe_depth,
+                                     point_coverage_t* out);
 
 /* ============================================================================
  * PER-UNIVERSE ADJACENCY HINTS
@@ -973,6 +1002,94 @@ int alea_check_grid_overlaps(alea_system_t* sys,
     return 0;
 }
 
+int alea_find_cells_grid_coverage(alea_system_t* sys,
+                                  const alea_slice_view_t* view,
+                                  int nu, int nv,
+                                  int universe_depth,
+                                  unsigned flags,
+                                  int* out_cell_ids,
+                                  int* out_material_ids,
+                                  int* out_secondary_cell_ids,
+                                  uint8_t* out_coverage,
+                                  uint8_t* out_errors) {
+    if (!sys || !view || !out_cell_ids || nu <= 0 || nv <= 0) {
+        return -1;
+    }
+
+    int rc = alea_find_cells_grid(sys, view, nu, nv, universe_depth,
+                                  out_cell_ids, out_material_ids, out_errors);
+    if (rc != 0) return rc;
+
+    size_t n = (size_t)nu * (size_t)nv;
+    if (out_secondary_cell_ids) {
+        for (size_t i = 0; i < n; i++) out_secondary_cell_ids[i] = -1;
+    }
+
+    if (out_coverage) {
+        for (size_t i = 0; i < n; i++) {
+            if (out_errors && out_errors[i] == GRID_ERR_OVERLAP) {
+                out_coverage[i] = ALEA_COVERAGE_MULTI;
+            } else if (out_cell_ids[i] < 0 ||
+                       (out_errors && out_errors[i] == GRID_ERR_UNDEFINED)) {
+                out_coverage[i] = ALEA_COVERAGE_NONE;
+            } else {
+                out_coverage[i] = ALEA_COVERAGE_ONE;
+            }
+        }
+    }
+
+    if ((flags & ALEA_GRID_COVERAGE_EXACT) && (out_coverage || out_secondary_cell_ids || out_errors)) {
+        alea_point_coverage_stats_reset();
+        const alea_slice_plane_t* plane = &view->plane;
+        double du = (view->u_max - view->u_min) / nu;
+        double dv = (view->v_max - view->v_min) / nv;
+        const double* origin = plane->origin;
+        const double* u_axis = plane->u_axis;
+        const double* v_axis = plane->v_axis;
+
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(dynamic, 4)
+#endif
+        for (int j = 0; j < nv; j++) {
+            double v = view->v_min + (j + 0.5) * dv;
+            for (int i = 0; i < nu; i++) {
+                size_t idx = (size_t)j * (size_t)nu + (size_t)i;
+                double u = view->u_min + (i + 0.5) * du;
+                double gx = origin[0] + u * u_axis[0] + v * v_axis[0];
+                double gy = origin[1] + u * u_axis[1] + v * v_axis[1];
+                double gz = origin[2] + u * u_axis[2] + v * v_axis[2];
+
+                point_coverage_t pc;
+                if (find_point_coverage_exact(sys, gx, gy, gz,
+                                              universe_depth, &pc) != 0) {
+                    continue;
+                }
+
+                if (pc.coverage == ALEA_COVERAGE_NONE) {
+                    if (out_coverage) out_coverage[idx] = ALEA_COVERAGE_NONE;
+                    if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+                    if (out_errors) out_errors[idx] = GRID_ERR_UNDEFINED;
+                    continue;
+                }
+
+                if (pc.coverage == ALEA_COVERAGE_ONE) {
+                    if (out_coverage) out_coverage[idx] = ALEA_COVERAGE_ONE;
+                    if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+                    if (out_errors && out_errors[idx] == GRID_ERR_OVERLAP)
+                        out_errors[idx] = GRID_ERR_NONE;
+                } else {
+                    if (out_coverage) out_coverage[idx] = ALEA_COVERAGE_MULTI;
+                    if (out_secondary_cell_ids)
+                        out_secondary_cell_ids[idx] = pc.secondary_cell_id;
+                    if (out_errors) out_errors[idx] = GRID_ERR_OVERLAP;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
 /* ============================================================================
  * CURVE-GUIDED OVERLAP DETECTION
  * ============================================================================ */
@@ -1072,6 +1189,434 @@ static int probe_curve_grid_point_for_overlap(alea_system_t* sys,
     }
 
     return new_overlaps;
+}
+
+static int probe_curve_grid_point_from_coverage(double u_min, double v_min,
+                                                double inv_du, double inv_dv,
+                                                int nu, int nv,
+                                                const uint8_t* coverage,
+                                                uint8_t* errors,
+                                                uint8_t* probed,
+                                                double u, double v) {
+    int pi = (int)((u - u_min) * inv_du);
+    int pj = (int)((v - v_min) * inv_dv);
+    if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) return 0;
+
+    int new_overlaps = 0;
+    for (int dj = -1; dj <= 1; dj++) {
+        for (int di = -1; di <= 1; di++) {
+            int qi = pi + di, qj = pj + dj;
+            if (qi < 0 || qi >= nu || qj < 0 || qj >= nv) continue;
+
+            size_t bit_idx = (size_t)qj * (size_t)nu + (size_t)qi;
+            size_t byte_idx = bit_idx / 8;
+            uint8_t bit_mask = (uint8_t)(1u << (bit_idx % 8));
+            if (probed[byte_idx] & bit_mask) continue;
+            probed[byte_idx] |= bit_mask;
+
+            size_t idx = (size_t)qj * (size_t)nu + (size_t)qi;
+            if (coverage[idx] == ALEA_COVERAGE_MULTI &&
+                errors[idx] != GRID_ERR_OVERLAP) {
+                errors[idx] = GRID_ERR_OVERLAP;
+                new_overlaps++;
+            }
+        }
+    }
+
+    return new_overlaps;
+}
+
+static int find_point_coverage_from_hits(const alea_cell_hit_t* hits,
+                                         int num_hits,
+                                         int universe_depth,
+                                         point_coverage_t* out) {
+    out->coverage = ALEA_COVERAGE_NONE;
+    out->secondary_cell_id = -1;
+    if (num_hits <= 0) return 0;
+
+    int target_depth = (universe_depth < 0)
+        ? hits[num_hits - 1].depth : universe_depth;
+    int count = 0;
+    for (int h = 0; h < num_hits; h++) {
+        if (hits[h].depth != target_depth) continue;
+        if (count == 1) out->secondary_cell_id = hits[h].cell_id;
+        count++;
+        if (count > 1) {
+            out->coverage = ALEA_COVERAGE_MULTI;
+            return 0;
+        }
+    }
+
+    out->coverage = (count == 1) ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
+    return 0;
+}
+
+static int find_point_coverage_spatial(alea_system_t* sys,
+                                       double gx, double gy, double gz,
+                                       int universe_depth,
+                                       point_coverage_t* out) {
+    out->coverage = ALEA_COVERAGE_NONE;
+    out->secondary_cell_id = -1;
+
+    if (sys->has_lattice) {
+        g_point_coverage_stats.lattice_fallbacks++;
+        return -2;
+    }
+
+    if (alea_spatial_mode_is_hierarchical(sys)) {
+        alea_cell_hit_t hits[32];
+        int n = alea_hier_spatial_find_cells_at_point_uncached(sys, gx, gy, gz,
+                                                               hits, 32);
+        if (n < 0) return -1;
+        if (n >= 32) {
+            g_point_coverage_stats.truncated_fallbacks++;
+            return -2;
+        }
+        g_point_coverage_stats.spatial_queries++;
+        g_point_coverage_stats.candidate_total += (size_t)n;
+        if ((size_t)n > g_point_coverage_stats.candidate_max)
+            g_point_coverage_stats.candidate_max = (size_t)n;
+        return find_point_coverage_from_hits(hits, n, universe_depth, out);
+    }
+
+    const size_t cap = 4096;
+    alea_spatial_hit_t* hits = malloc(cap * sizeof(*hits));
+    if (!hits) return -1;
+
+    int n = alea_spatial_query_point(sys, gx, gy, gz, hits, cap);
+    if (n < 0 || (size_t)n >= cap) {
+        if ((size_t)n >= cap) g_point_coverage_stats.truncated_fallbacks++;
+        free(hits);
+        return -2;
+    }
+
+    n = dedup_spatial_hits(hits, n);
+    g_point_coverage_stats.spatial_queries++;
+    g_point_coverage_stats.candidate_total += (size_t)n;
+    if ((size_t)n > g_point_coverage_stats.candidate_max)
+        g_point_coverage_stats.candidate_max = (size_t)n;
+
+    if (universe_depth >= 0) {
+        int count = 0;
+        for (int h = 0; h < n; h++) {
+            const alea_spatial_hit_t* hit = &hits[h];
+            if (hit->depth != universe_depth) continue;
+
+            double lx = gx, ly = gy, lz = gz;
+            alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
+            const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
+            g_point_coverage_stats.contains_tests++;
+            if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
+                continue;
+
+            if (count == 1) out->secondary_cell_id = hit->cell_id;
+            count++;
+            if (count > 1) {
+                out->coverage = ALEA_COVERAGE_MULTI;
+                g_point_coverage_stats.spatial_multi_early_exit++;
+                free(hits);
+                return 0;
+            }
+        }
+        out->coverage = (count == 1) ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
+        free(hits);
+        return 0;
+    }
+
+    int max_depth = -1;
+    int count_at_max = 0;
+    int second_at_max = -1;
+    for (int h = n - 1; h >= 0; h--) {
+        const alea_spatial_hit_t* hit = &hits[h];
+        if (max_depth >= 0 && hit->depth < max_depth)
+            break;
+
+        double lx = gx, ly = gy, lz = gz;
+        alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
+        const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
+        g_point_coverage_stats.contains_tests++;
+        if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
+            continue;
+
+        if (hit->depth > max_depth) {
+            max_depth = hit->depth;
+            count_at_max = 1;
+            second_at_max = -1;
+        } else if (hit->depth == max_depth) {
+            if (count_at_max == 1) second_at_max = hit->cell_id;
+            count_at_max++;
+            if (count_at_max > 1) {
+                out->coverage = ALEA_COVERAGE_MULTI;
+                out->secondary_cell_id = second_at_max;
+                g_point_coverage_stats.spatial_multi_early_exit++;
+                free(hits);
+                return 0;
+            }
+        }
+    }
+
+    out->coverage = (count_at_max == 1) ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
+    free(hits);
+    return 0;
+}
+
+static int find_point_coverage_exact(alea_system_t* sys,
+                                     double gx, double gy, double gz,
+                                     int universe_depth,
+                                     point_coverage_t* out) {
+    g_point_coverage_stats.queries++;
+    int rc = find_point_coverage_spatial(sys, gx, gy, gz, universe_depth, out);
+    if (rc == 0) return 0;
+    if (rc != -2) {
+        g_point_coverage_stats.query_errors++;
+        return rc;
+    }
+
+    g_point_coverage_stats.recursive_fallbacks++;
+    alea_cell_hit_t hits[32];
+    int num_hits = alea_find_all_cells_at_point_recursive(sys, gx, gy, gz,
+                                                           hits, 32);
+    if (num_hits < 0) {
+        g_point_coverage_stats.query_errors++;
+        return -1;
+    }
+    return find_point_coverage_from_hits(hits, num_hits, universe_depth, out);
+}
+
+static int update_pixel_coverage_exact(alea_system_t* sys,
+                                       const alea_slice_plane_t* plane,
+                                       double u_min, double v_min,
+                                       double du, double dv,
+                                       int nu, int nv,
+                                       int universe_depth,
+                                       int* out_secondary_cell_ids,
+                                       uint8_t* coverage,
+                                       uint8_t* errors,
+                                       int pi, int pj) {
+    if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) return 0;
+
+    size_t idx = (size_t)pj * (size_t)nu + (size_t)pi;
+    double u = u_min + (pi + 0.5) * du;
+    double v = v_min + (pj + 0.5) * dv;
+    double gx = plane->origin[0] + u * plane->u_axis[0] + v * plane->v_axis[0];
+    double gy = plane->origin[1] + u * plane->u_axis[1] + v * plane->v_axis[1];
+    double gz = plane->origin[2] + u * plane->u_axis[2] + v * plane->v_axis[2];
+
+    point_coverage_t pc;
+    if (find_point_coverage_exact(sys, gx, gy, gz, universe_depth, &pc) != 0)
+        return 0;
+
+    if (pc.coverage == ALEA_COVERAGE_NONE) {
+        coverage[idx] = ALEA_COVERAGE_NONE;
+        if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+        errors[idx] = GRID_ERR_UNDEFINED;
+        return 0;
+    }
+
+    if (pc.coverage == ALEA_COVERAGE_ONE) {
+        coverage[idx] = ALEA_COVERAGE_ONE;
+        if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+        if (errors[idx] == GRID_ERR_OVERLAP) errors[idx] = GRID_ERR_NONE;
+        return 0;
+    }
+
+    int newly_multi = coverage[idx] != ALEA_COVERAGE_MULTI ||
+                      errors[idx] != GRID_ERR_OVERLAP;
+    coverage[idx] = ALEA_COVERAGE_MULTI;
+    if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = pc.secondary_cell_id;
+    errors[idx] = GRID_ERR_OVERLAP;
+    return newly_multi ? 1 : 0;
+}
+
+static bool slice_matrix_equal(const alea_matrix_t* a, const alea_matrix_t* b) {
+    const double tol = 1e-10;
+    for (int i = 0; i < 12; i++) {
+        if (fabs(a->m[i] - b->m[i]) > tol) return false;
+    }
+    return true;
+}
+
+static int dedup_spatial_hits(alea_spatial_hit_t* hits, int hit_count) {
+    int unique_count = 0;
+    for (int h = 0; h < hit_count; h++) {
+        bool duplicate = false;
+        for (int k = 0; k < unique_count; k++) {
+            if (hits[k].cell_index == hits[h].cell_index &&
+                hits[k].depth == hits[h].depth &&
+                slice_matrix_equal(&hits[k].transform, &hits[h].transform)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            if (unique_count != h) hits[unique_count] = hits[h];
+            unique_count++;
+        }
+    }
+    return unique_count;
+}
+
+static alea_bbox_t tile_query_bbox(const alea_slice_view_t* view,
+                                   double u0, double u1,
+                                   double v0, double v1,
+                                   double eps) {
+    const alea_slice_plane_t* plane = &view->plane;
+    double uvals[2] = {u0, u1};
+    double vvals[2] = {v0, v1};
+    alea_bbox_t bbox = {
+        .min_x = DBL_MAX, .max_x = -DBL_MAX,
+        .min_y = DBL_MAX, .max_y = -DBL_MAX,
+        .min_z = DBL_MAX, .max_z = -DBL_MAX
+    };
+
+    for (int ui = 0; ui < 2; ui++) {
+        for (int vi = 0; vi < 2; vi++) {
+            double x = plane->origin[0] +
+                       uvals[ui] * plane->u_axis[0] +
+                       vvals[vi] * plane->v_axis[0];
+            double y = plane->origin[1] +
+                       uvals[ui] * plane->u_axis[1] +
+                       vvals[vi] * plane->v_axis[1];
+            double z = plane->origin[2] +
+                       uvals[ui] * plane->u_axis[2] +
+                       vvals[vi] * plane->v_axis[2];
+            if (x < bbox.min_x) bbox.min_x = x;
+            if (x > bbox.max_x) bbox.max_x = x;
+            if (y < bbox.min_y) bbox.min_y = y;
+            if (y > bbox.max_y) bbox.max_y = y;
+            if (z < bbox.min_z) bbox.min_z = z;
+            if (z > bbox.max_z) bbox.max_z = z;
+        }
+    }
+
+    bbox.min_x -= eps; bbox.max_x += eps;
+    bbox.min_y -= eps; bbox.max_y += eps;
+    bbox.min_z -= eps; bbox.max_z += eps;
+    return bbox;
+}
+
+static int update_pixel_coverage_from_candidates(
+    alea_system_t* sys,
+    const alea_slice_plane_t* plane,
+    const alea_spatial_hit_t* hits,
+    int hit_count,
+    double u_min, double v_min,
+    double du, double dv,
+    int nu,
+    int universe_depth,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors,
+    int pi, int pj) {
+    size_t idx = (size_t)pj * (size_t)nu + (size_t)pi;
+    double u = u_min + (pi + 0.5) * du;
+    double v = v_min + (pj + 0.5) * dv;
+    double gx = plane->origin[0] + u * plane->u_axis[0] + v * plane->v_axis[0];
+    double gy = plane->origin[1] + u * plane->u_axis[1] + v * plane->v_axis[1];
+    double gz = plane->origin[2] + u * plane->u_axis[2] + v * plane->v_axis[2];
+
+    int any_inside = 0;
+    int count = 0;
+    int second_cell = -1;
+    int count_at_max_depth = 0;
+    int second_cell_at_max_depth = -1;
+    int max_depth = -1;
+
+    for (int h = 0; h < hit_count; h++) {
+        const alea_spatial_hit_t* hit = &hits[h];
+        double lx = gx, ly = gy, lz = gz;
+        alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
+
+        const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
+        if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
+            continue;
+
+        any_inside = 1;
+        if (universe_depth >= 0) {
+            if (hit->depth != universe_depth) continue;
+            if (count == 1) second_cell = hit->cell_id;
+            count++;
+        } else if (hit->depth > max_depth) {
+            max_depth = hit->depth;
+            count_at_max_depth = 1;
+            second_cell_at_max_depth = -1;
+        } else if (hit->depth == max_depth) {
+            if (count_at_max_depth == 1)
+                second_cell_at_max_depth = hit->cell_id;
+            count_at_max_depth++;
+        }
+    }
+
+    if (!any_inside) {
+        coverage[idx] = ALEA_COVERAGE_NONE;
+        if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+        errors[idx] = GRID_ERR_UNDEFINED;
+        return 0;
+    }
+
+    if (universe_depth < 0) {
+        count = count_at_max_depth;
+        second_cell = second_cell_at_max_depth;
+    }
+
+    if (count <= 0) {
+        coverage[idx] = ALEA_COVERAGE_NONE;
+        if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+        errors[idx] = GRID_ERR_UNDEFINED;
+        return 0;
+    }
+
+    if (count == 1) {
+        coverage[idx] = ALEA_COVERAGE_ONE;
+        if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = -1;
+        if (errors[idx] == GRID_ERR_OVERLAP) errors[idx] = GRID_ERR_NONE;
+        return 0;
+    }
+
+    int newly_multi = coverage[idx] != ALEA_COVERAGE_MULTI ||
+                      errors[idx] != GRID_ERR_OVERLAP;
+    coverage[idx] = ALEA_COVERAGE_MULTI;
+    if (out_secondary_cell_ids) out_secondary_cell_ids[idx] = second_cell;
+    errors[idx] = GRID_ERR_OVERLAP;
+    return newly_multi ? 1 : 0;
+}
+
+static int probe_curve_grid_point_for_exact_coverage(
+    alea_system_t* sys,
+    const alea_slice_plane_t* plane,
+    double u_min, double v_min,
+    double du, double dv,
+    double inv_du, double inv_dv,
+    int nu, int nv,
+    int universe_depth,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors,
+    uint8_t* probed,
+    double u, double v) {
+    int pi = (int)((u - u_min) * inv_du);
+    int pj = (int)((v - v_min) * inv_dv);
+    if (pi < 0 || pi >= nu || pj < 0 || pj >= nv) return 0;
+
+    int updated = 0;
+    for (int dj = -1; dj <= 1; dj++) {
+        for (int di = -1; di <= 1; di++) {
+            int qi = pi + di, qj = pj + dj;
+            if (qi < 0 || qi >= nu || qj < 0 || qj >= nv) continue;
+
+            size_t bit_idx = (size_t)qj * (size_t)nu + (size_t)qi;
+            size_t byte_idx = bit_idx / 8;
+            uint8_t bit_mask = (uint8_t)(1u << (bit_idx % 8));
+            if (probed[byte_idx] & bit_mask) continue;
+            probed[byte_idx] |= bit_mask;
+
+            updated += update_pixel_coverage_exact(
+                sys, plane, u_min, v_min, du, dv, nu, nv, universe_depth,
+                out_secondary_cell_ids, coverage, errors, qi, qj);
+        }
+    }
+
+    return updated;
 }
 
 static int refine_quartic_curve_overlaps(alea_system_t* sys,
@@ -1248,6 +1793,402 @@ int alea_check_grid_overlaps_curves(alea_system_t* sys,
 
     free(probed);
     return new_overlaps;
+}
+
+int alea_check_grid_overlaps_curves_coverage(
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    int nu, int nv,
+    const uint8_t* coverage,
+    uint8_t* errors) {
+    if (!view || !curves || !coverage || !errors || nu <= 0 || nv <= 0)
+        return -1;
+
+    const alea_curve_collection_t* coll = &curves->internal;
+    if (coll->curves.count == 0) return 0;
+
+    double u_min = view->u_min, u_max = view->u_max;
+    double v_min = view->v_min, v_max = view->v_max;
+    double du = (u_max - u_min) / nu;
+    double dv = (v_max - v_min) / nv;
+    double inv_du = 1.0 / du;
+    double inv_dv = 1.0 / dv;
+
+    size_t bitmap_size = ((size_t)nu * nv + 7) / 8;
+    uint8_t* probed = calloc(bitmap_size, 1);
+    if (!probed) return -1;
+
+    double sample_spacing = fmin(du, dv) * 0.7;
+    int new_overlaps = 0;
+
+    for (size_t ci = 0; ci < coll->curves.count; ci++) {
+        const alea_curve_2d_t* curve = &coll->curves.data[ci];
+
+        if (curve->type == ALEA_CURVE_NONE || curve->type == ALEA_CURVE_POINT)
+            continue;
+
+        if (curve->type == ALEA_CURVE_QUARTIC) {
+            double bbox_umin, bbox_umax, bbox_vmin, bbox_vmax;
+            alea_curve_bbox(curve, &bbox_umin, &bbox_umax, &bbox_vmin, &bbox_vmax);
+            double v_lo = fmax(bbox_vmin, view->v_min);
+            double v_hi = fmin(bbox_vmax, view->v_max);
+            if (v_lo >= v_hi) continue;
+
+            int n_scanlines = (int)((v_hi - v_lo) / sample_spacing);
+            if (n_scanlines < 2) n_scanlines = 2;
+            if (n_scanlines > 10000) n_scanlines = 10000;
+
+            for (int i = 0; i <= n_scanlines; i++) {
+                double v_scan = v_lo + (v_hi - v_lo) * (double)i / (double)n_scanlines;
+                double u_vals[16];
+                int n_isect = alea_curve_scanline_intersect(curve, v_scan, u_vals, 16);
+                for (int j = 0; j < n_isect; j++) {
+                    double u = u_vals[j];
+                    if (u < view->u_min || u > view->u_max) continue;
+                    new_overlaps += probe_curve_grid_point_from_coverage(
+                        u_min, v_min, inv_du, inv_dv,
+                        nu, nv, coverage, errors, probed, u, v_scan);
+                }
+            }
+            continue;
+        }
+
+        if (curve->type == ALEA_CURVE_POLYGON) {
+            const alea_polygon_2d_t* poly = &curve->data.polygon;
+            int nverts = poly->vertex_count;
+            if (nverts < 2) continue;
+            int n_edges = poly->closed ? nverts : (nverts - 1);
+
+            for (int e = 0; e < n_edges; e++) {
+                int i0 = e;
+                int i1 = (e + 1) % nverts;
+                double x0 = poly->vertices[i0][0], y0 = poly->vertices[i0][1];
+                double x1 = poly->vertices[i1][0], y1 = poly->vertices[i1][1];
+                double dx = x1 - x0;
+                double dy = y1 - y0;
+                double edge_len = sqrt(dx * dx + dy * dy);
+                if (edge_len < 1e-15) continue;
+
+                int n_samples = (int)(edge_len / sample_spacing);
+                if (n_samples < 2) n_samples = 2;
+                if (n_samples > 10000) n_samples = 10000;
+
+                for (int s = 0; s <= n_samples; s++) {
+                    double frac = (double)s / (double)n_samples;
+                    double u = x0 + frac * dx;
+                    double v = y0 + frac * dy;
+                    if (u < view->u_min || u > view->u_max ||
+                        v < view->v_min || v > view->v_max)
+                        continue;
+                    new_overlaps += probe_curve_grid_point_from_coverage(
+                        u_min, v_min, inv_du, inv_dv,
+                        nu, nv, coverage, errors, probed, u, v);
+                }
+            }
+            continue;
+        }
+
+        double t_lo, t_hi;
+        get_clipped_param_range(curve, view, &t_lo, &t_hi);
+        if (t_lo >= t_hi) continue;
+
+        double arc_approx = t_hi - t_lo;
+        if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ARC) {
+            arc_approx = (t_hi - t_lo) * curve->data.circle.radius;
+        } else if (curve->type == ALEA_CURVE_ELLIPSE ||
+                   curve->type == ALEA_CURVE_ELLIPSE_ARC) {
+            double avg_r = (curve->data.ellipse.semi_a + curve->data.ellipse.semi_b) * 0.5;
+            arc_approx = (t_hi - t_lo) * avg_r;
+        }
+
+        int n_samples = (int)(arc_approx / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 10000) n_samples = 10000;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double t = t_lo + (t_hi - t_lo) * s / n_samples;
+            double u, v;
+            if (!alea_curve_eval(curve, t, &u, &v)) continue;
+            if (u < u_min || u > u_max || v < v_min || v > v_max) continue;
+
+            new_overlaps += probe_curve_grid_point_from_coverage(
+                u_min, v_min, inv_du, inv_dv,
+                nu, nv, coverage, errors, probed, u, v);
+        }
+    }
+
+    free(probed);
+    return new_overlaps;
+}
+
+int alea_refine_grid_coverage_curves_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    int nu, int nv,
+    int universe_depth,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors) {
+    if (!sys || !view || !curves || !coverage || !errors || nu <= 0 || nv <= 0)
+        return -1;
+    alea_point_coverage_stats_reset();
+
+    const alea_curve_collection_t* coll = &curves->internal;
+    if (coll->curves.count == 0) return 0;
+
+    const alea_slice_plane_t* plane = &view->plane;
+    double u_min = view->u_min, u_max = view->u_max;
+    double v_min = view->v_min, v_max = view->v_max;
+    double du = (u_max - u_min) / nu;
+    double dv = (v_max - v_min) / nv;
+    double inv_du = 1.0 / du;
+    double inv_dv = 1.0 / dv;
+
+    size_t bitmap_size = ((size_t)nu * nv + 7) / 8;
+    uint8_t* probed = calloc(bitmap_size, 1);
+    if (!probed) return -1;
+
+    double sample_spacing = fmin(du, dv) * 0.7;
+    int updated = 0;
+
+    for (size_t ci = 0; ci < coll->curves.count; ci++) {
+        const alea_curve_2d_t* curve = &coll->curves.data[ci];
+        if (curve->type == ALEA_CURVE_NONE || curve->type == ALEA_CURVE_POINT)
+            continue;
+
+        if (curve->type == ALEA_CURVE_QUARTIC) {
+            double bbox_umin, bbox_umax, bbox_vmin, bbox_vmax;
+            alea_curve_bbox(curve, &bbox_umin, &bbox_umax, &bbox_vmin, &bbox_vmax);
+            double v_lo = fmax(bbox_vmin, view->v_min);
+            double v_hi = fmin(bbox_vmax, view->v_max);
+            if (v_lo >= v_hi) continue;
+
+            int n_scanlines = (int)((v_hi - v_lo) / sample_spacing);
+            if (n_scanlines < 2) n_scanlines = 2;
+            if (n_scanlines > 10000) n_scanlines = 10000;
+
+            for (int i = 0; i <= n_scanlines; i++) {
+                double v_scan = v_lo + (v_hi - v_lo) * (double)i / (double)n_scanlines;
+                double u_vals[16];
+                int n_isect = alea_curve_scanline_intersect(curve, v_scan, u_vals, 16);
+                for (int j = 0; j < n_isect; j++) {
+                    double u = u_vals[j];
+                    if (u < view->u_min || u > view->u_max) continue;
+                    updated += probe_curve_grid_point_for_exact_coverage(
+                        sys, plane, u_min, v_min, du, dv, inv_du, inv_dv,
+                        nu, nv, universe_depth, out_secondary_cell_ids,
+                        coverage, errors, probed, u, v_scan);
+                }
+            }
+            continue;
+        }
+
+        if (curve->type == ALEA_CURVE_POLYGON) {
+            const alea_polygon_2d_t* poly = &curve->data.polygon;
+            int nverts = poly->vertex_count;
+            if (nverts < 2) continue;
+            int n_edges = poly->closed ? nverts : (nverts - 1);
+            for (int e = 0; e < n_edges; e++) {
+                int i0 = e;
+                int i1 = (e + 1) % nverts;
+                double x0 = poly->vertices[i0][0], y0 = poly->vertices[i0][1];
+                double x1 = poly->vertices[i1][0], y1 = poly->vertices[i1][1];
+                double dx = x1 - x0;
+                double dy = y1 - y0;
+                double edge_len = sqrt(dx * dx + dy * dy);
+                if (edge_len < 1e-15) continue;
+
+                int n_samples = (int)(edge_len / sample_spacing);
+                if (n_samples < 2) n_samples = 2;
+                if (n_samples > 10000) n_samples = 10000;
+
+                for (int s = 0; s <= n_samples; s++) {
+                    double frac = (double)s / (double)n_samples;
+                    double u = x0 + frac * dx;
+                    double v = y0 + frac * dy;
+                    if (u < view->u_min || u > view->u_max ||
+                        v < view->v_min || v > view->v_max)
+                        continue;
+                    updated += probe_curve_grid_point_for_exact_coverage(
+                        sys, plane, u_min, v_min, du, dv, inv_du, inv_dv,
+                        nu, nv, universe_depth, out_secondary_cell_ids,
+                        coverage, errors, probed, u, v);
+                }
+            }
+            continue;
+        }
+
+        double t_lo, t_hi;
+        get_clipped_param_range(curve, view, &t_lo, &t_hi);
+        if (t_lo >= t_hi) continue;
+
+        double arc_approx = t_hi - t_lo;
+        if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ARC) {
+            arc_approx = (t_hi - t_lo) * curve->data.circle.radius;
+        } else if (curve->type == ALEA_CURVE_ELLIPSE ||
+                   curve->type == ALEA_CURVE_ELLIPSE_ARC) {
+            double avg_r = (curve->data.ellipse.semi_a + curve->data.ellipse.semi_b) * 0.5;
+            arc_approx = (t_hi - t_lo) * avg_r;
+        }
+
+        int n_samples = (int)(arc_approx / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 10000) n_samples = 10000;
+
+        for (int s = 0; s <= n_samples; s++) {
+            double t = t_lo + (t_hi - t_lo) * s / n_samples;
+            double u, v;
+            if (!alea_curve_eval(curve, t, &u, &v)) continue;
+            if (u < u_min || u > u_max || v < v_min || v > v_max) continue;
+
+            updated += probe_curve_grid_point_for_exact_coverage(
+                sys, plane, u_min, v_min, du, dv, inv_du, inv_dv,
+                nu, nv, universe_depth, out_secondary_cell_ids,
+                coverage, errors, probed, u, v);
+        }
+    }
+
+    free(probed);
+    return updated;
+}
+
+int alea_refine_grid_coverage_tiles_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors) {
+    if (!sys || !view || !coverage || !errors || nu <= 0 || nv <= 0)
+        return -1;
+    if (tile_w <= 0) tile_w = 16;
+    if (tile_h <= 0) tile_h = 16;
+    alea_tile_coverage_stats_reset();
+    alea_point_coverage_stats_reset();
+
+    if (alea_prepare_query_acceleration(sys) != 0)
+        return -1;
+
+    size_t max_hits = 4096;
+    if (max_hits < 4096) max_hits = 4096;
+    alea_spatial_hit_t* hits = malloc(max_hits * sizeof(*hits));
+    if (!hits) return -1;
+
+    double u_range = view->u_max - view->u_min;
+    double v_range = view->v_max - view->v_min;
+    double du = u_range / nu;
+    double dv = v_range / nv;
+    double eps = fmax(fabs(du), fabs(dv)) * 2.0 + 1e-10;
+    bool use_hier = alea_spatial_mode_is_hierarchical(sys);
+    bool use_hier_direct_region =
+        use_hier && getenv("ALEA_TILE_DIRECT_REGION") != NULL;
+    size_t cap_storm_threshold = 16;
+    const char* cap_storm_env = getenv("ALEA_TILE_CAP_STORM_THRESHOLD");
+    if (cap_storm_env && cap_storm_env[0]) {
+        cap_storm_threshold = (size_t)strtoul(cap_storm_env, NULL, 10);
+    }
+    size_t capped_tile_queries = 0;
+    size_t evaluable_tile_queries = 0;
+    bool exact_remaining_tiles = false;
+    int updated = 0;
+
+    for (int tj = 0; tj < nv; tj += tile_h) {
+        int j_end = tj + tile_h;
+        if (j_end > nv) j_end = nv;
+        double v0 = view->v_min + tj * dv;
+        double v1 = view->v_min + j_end * dv;
+
+        for (int ti = 0; ti < nu; ti += tile_w) {
+            int i_end = ti + tile_w;
+            if (i_end > nu) i_end = nu;
+            double u0 = view->u_min + ti * du;
+            double u1 = view->u_min + i_end * du;
+            size_t tile_pixels = (size_t)(i_end - ti) * (size_t)(j_end - tj);
+            g_tile_coverage_stats.tiles++;
+
+            if (exact_remaining_tiles) {
+                g_tile_coverage_stats.fallback_tiles++;
+                g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
+                for (int j = tj; j < j_end; j++) {
+                    for (int i = ti; i < i_end; i++) {
+                        updated += update_pixel_coverage_exact(
+                            sys, &view->plane, view->u_min, view->v_min,
+                            du, dv, nu, nv, universe_depth,
+                            out_secondary_cell_ids, coverage, errors, i, j);
+                    }
+                }
+                continue;
+            }
+
+            alea_bbox_t query = tile_query_bbox(view, u0, u1, v0, v1, eps);
+            int hit_count;
+            if (use_hier_direct_region) {
+                hit_count = alea_hier_spatial_query_region_direct(
+                    sys, &query, hits, max_hits);
+            } else if (use_hier) {
+                hit_count = alea_hier_spatial_query_region(
+                    sys, &query, hits, max_hits);
+            } else {
+                hit_count = alea_spatial_query_region(
+                    sys, &query, hits, max_hits);
+            }
+            if (hit_count < 0) {
+                g_tile_coverage_stats.query_errors++;
+                free(hits);
+                return -1;
+            }
+
+            g_tile_coverage_stats.candidate_total += (size_t)hit_count;
+            if ((size_t)hit_count > g_tile_coverage_stats.candidate_max)
+                g_tile_coverage_stats.candidate_max = (size_t)hit_count;
+
+            if ((size_t)hit_count >= max_hits) {
+                capped_tile_queries++;
+                g_tile_coverage_stats.fallback_tiles++;
+                g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
+                for (int j = tj; j < j_end; j++) {
+                    for (int i = ti; i < i_end; i++) {
+                        updated += update_pixel_coverage_exact(
+                            sys, &view->plane, view->u_min, view->v_min,
+                            du, dv, nu, nv, universe_depth,
+                            out_secondary_cell_ids, coverage, errors, i, j);
+                    }
+                }
+                if (cap_storm_threshold > 0 &&
+                    evaluable_tile_queries == 0 &&
+                    capped_tile_queries >= cap_storm_threshold) {
+                    exact_remaining_tiles = true;
+                }
+                continue;
+            }
+
+            evaluable_tile_queries++;
+            hit_count = dedup_spatial_hits(hits, hit_count);
+            g_tile_coverage_stats.dedup_candidate_total += (size_t)hit_count;
+            if ((size_t)hit_count > g_tile_coverage_stats.dedup_candidate_max)
+                g_tile_coverage_stats.dedup_candidate_max = (size_t)hit_count;
+            g_tile_coverage_stats.pixels += tile_pixels;
+            g_tile_coverage_stats.candidate_pixel_tests +=
+                (size_t)hit_count * tile_pixels;
+
+            for (int j = tj; j < j_end; j++) {
+                for (int i = ti; i < i_end; i++) {
+                    updated += update_pixel_coverage_from_candidates(
+                        sys, &view->plane, hits, hit_count,
+                        view->u_min, view->v_min, du, dv, nu,
+                        universe_depth, out_secondary_cell_ids,
+                        coverage, errors, i, j);
+                }
+            }
+        }
+    }
+
+    free(hits);
+    g_tile_coverage_stats.refined_pixels = (size_t)updated;
+    return updated;
 }
 
 /* ============================================================================
@@ -2026,9 +2967,15 @@ static bool point_in_viewport(double u, double v, const alea_slice_view_t* view)
 
 /* Dynamic array for error segments */
 ALEA_VEC_DEFINE(error_vec, alea_slice_error_t);
+ALEA_VEC_DEFINE(plot_error_component_vec, alea_plot_error_component_t);
 
 static void error_vec_push(error_vec_t* vec, const alea_slice_error_t* err) {
     alea_vec_push(vec, *err, alea_slice_error_t);
+}
+
+static void plot_error_component_vec_push(plot_error_component_vec_t* vec,
+                                          const alea_plot_error_component_t* comp) {
+    alea_vec_push(vec, *comp, alea_plot_error_component_t);
 }
 
 /**
@@ -2361,6 +3308,7 @@ alea_slice_error_result_t* alea_check_slice_errors(
 /** Grid context passed to grid-based classify */
 typedef struct {
     const int* cell_ids;
+    const uint8_t* coverage;
     const uint8_t* grid_errors;
     int nu, nv;
     double u_min, v_min;
@@ -2409,6 +3357,15 @@ static int classify_sample_grid(const grid_ctx_t* g,
             return ALEA_SLICE_ERR_OVERLAP;
     }
 
+    if (g->coverage) {
+        if (g->coverage[idx_plus] == ALEA_COVERAGE_MULTI ||
+            g->coverage[idx_minus] == ALEA_COVERAGE_MULTI)
+            return ALEA_SLICE_ERR_OVERLAP;
+        if (g->coverage[idx_plus] == ALEA_COVERAGE_NONE ||
+            g->coverage[idx_minus] == ALEA_COVERAGE_NONE)
+            return ALEA_SLICE_ERR_GAP;
+    }
+
     int cell_plus  = g->cell_ids[idx_plus];
     int cell_minus = g->cell_ids[idx_minus];
 
@@ -2419,6 +3376,12 @@ static int classify_sample_grid(const grid_ctx_t* g,
     /* One or both sides void → gap */
     if (cell_plus < 0 || cell_minus < 0)
         return ALEA_SLICE_ERR_GAP;
+
+    /* Same winning cell on both sides. In coverage-driven mode, a ONE/ONE
+     * result is authoritative for this plot grid, so avoid the old CSG
+     * fallback. */
+    if (cell_plus == cell_minus && g->coverage)
+        return 0;
 
     /* Same cell on both sides — this curve might be inside a nested overlap
      * (e.g., inner sphere fully inside outer sphere). The grid only stores
@@ -2662,11 +3625,12 @@ static void check_polygon_curve_grid(const grid_ctx_t* g,
     }
 }
 
-alea_slice_error_result_t* alea_check_slice_errors_grid(
+static alea_slice_error_result_t* check_slice_errors_grid_impl(
     alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     const int* cell_ids,
+    const uint8_t* coverage,
     const uint8_t* grid_errors,
     int nu, int nv)
 {
@@ -2681,6 +3645,7 @@ alea_slice_error_result_t* alea_check_slice_errors_grid(
 
     grid_ctx_t g = {
         .cell_ids    = cell_ids,
+        .coverage    = coverage,
         .grid_errors = grid_errors,
         .nu = nu,
         .nv = nv,
@@ -2735,8 +3700,199 @@ alea_slice_error_result_t* alea_check_slice_errors_grid(
     return result;
 }
 
+alea_slice_error_result_t* alea_check_slice_errors_grid(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    const int* cell_ids,
+    const uint8_t* grid_errors,
+    int nu, int nv)
+{
+    return check_slice_errors_grid_impl(sys, view, curves, cell_ids, NULL,
+                                        grid_errors, nu, nv);
+}
+
+alea_slice_error_result_t* alea_check_slice_errors_grid_ex(
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    const int* cell_ids,
+    const uint8_t* coverage,
+    const uint8_t* grid_errors,
+    int nu, int nv)
+{
+    return check_slice_errors_grid_impl(NULL, view, curves, cell_ids, coverage,
+                                        grid_errors, nu, nv);
+}
+
 void alea_slice_errors_free(alea_slice_error_result_t* result) {
     if (!result) return;
     free(result->errors);
+    free(result);
+}
+
+static int component_pixel_matches(const uint8_t* coverage,
+                                   uint8_t target,
+                                   int idx) {
+    return coverage[idx] == target;
+}
+
+alea_plot_error_component_result_t* alea_classify_plot_error_components(
+    const int* cell_ids,
+    const int* secondary_cell_ids,
+    const uint8_t* coverage,
+    int nu, int nv) {
+    if (!cell_ids || !coverage || nu <= 0 || nv <= 0) return NULL;
+
+    size_t n = (size_t)nu * (size_t)nv;
+    uint8_t* visited = calloc(n, 1);
+    int* queue = malloc(n * sizeof(*queue));
+    if (!visited || !queue) {
+        free(visited);
+        free(queue);
+        return NULL;
+    }
+
+    plot_error_component_vec_t comps = ALEA_VEC_INIT;
+    const int di[4] = { 1, -1, 0, 0 };
+    const int dj[4] = { 0, 0, 1, -1 };
+
+    for (int j0 = 0; j0 < nv; j0++) {
+        for (int i0 = 0; i0 < nu; i0++) {
+            int start = j0 * nu + i0;
+            uint8_t cov = coverage[start];
+            if (visited[start]) continue;
+            if (cov != ALEA_COVERAGE_NONE && cov != ALEA_COVERAGE_MULTI)
+                continue;
+
+            int head = 0, tail = 0;
+            visited[start] = 1;
+            queue[tail++] = start;
+
+            alea_plot_error_component_t comp;
+            memset(&comp, 0, sizeof(comp));
+            comp.kind = (cov == ALEA_COVERAGE_NONE)
+                ? ALEA_PLOT_ERR_UNDEFINED_REGION
+                : ALEA_PLOT_ERR_TOTAL_OVERLAP;
+            comp.primary_cell_id = -1;
+            comp.secondary_cell_id = -1;
+            comp.min_i = comp.max_i = i0;
+            comp.min_j = comp.max_j = j0;
+
+            bool primary_visible = false;
+            bool secondary_visible = false;
+            bool other_visible = false;
+
+            while (head < tail) {
+                int idx = queue[head++];
+                int i = idx % nu;
+                int j = idx / nu;
+                comp.pixel_count++;
+                if (i < comp.min_i) comp.min_i = i;
+                if (i > comp.max_i) comp.max_i = i;
+                if (j < comp.min_j) comp.min_j = j;
+                if (j > comp.max_j) comp.max_j = j;
+
+                if (cov == ALEA_COVERAGE_MULTI) {
+                    if (comp.primary_cell_id < 0 && cell_ids[idx] >= 0)
+                        comp.primary_cell_id = cell_ids[idx];
+                    if (secondary_cell_ids &&
+                        comp.secondary_cell_id < 0 &&
+                        secondary_cell_ids[idx] >= 0) {
+                        comp.secondary_cell_id = secondary_cell_ids[idx];
+                    }
+                }
+
+                for (int k = 0; k < 4; k++) {
+                    int ni = i + di[k];
+                    int nj = j + dj[k];
+                    if (ni < 0 || ni >= nu || nj < 0 || nj >= nv)
+                        continue;
+                    int nidx = nj * nu + ni;
+                    if (component_pixel_matches(coverage, cov, nidx)) {
+                        if (!visited[nidx]) {
+                            visited[nidx] = 1;
+                            queue[tail++] = nidx;
+                        }
+                        continue;
+                    }
+
+                    if (cov != ALEA_COVERAGE_MULTI)
+                        continue;
+
+                    int neighbor_cell = cell_ids[nidx];
+                    if (neighbor_cell < 0 ||
+                        coverage[nidx] == ALEA_COVERAGE_MULTI)
+                        continue;
+                    if (neighbor_cell == comp.primary_cell_id) {
+                        primary_visible = true;
+                    } else if (comp.secondary_cell_id >= 0 &&
+                               neighbor_cell == comp.secondary_cell_id) {
+                        secondary_visible = true;
+                    } else {
+                        other_visible = true;
+                    }
+                }
+            }
+
+            if (cov == ALEA_COVERAGE_MULTI) {
+                primary_visible = false;
+                secondary_visible = false;
+                other_visible = false;
+                for (int q = 0; q < tail; q++) {
+                    int idx = queue[q];
+                    int i = idx % nu;
+                    int j = idx / nu;
+                    for (int k = 0; k < 4; k++) {
+                        int ni = i + di[k];
+                        int nj = j + dj[k];
+                        if (ni < 0 || ni >= nu || nj < 0 || nj >= nv)
+                            continue;
+                        int nidx = nj * nu + ni;
+                        if (coverage[nidx] == ALEA_COVERAGE_MULTI)
+                            continue;
+                        int neighbor_cell = cell_ids[nidx];
+                        if (neighbor_cell < 0) continue;
+                        if (neighbor_cell == comp.primary_cell_id) {
+                            primary_visible = true;
+                        } else if (comp.secondary_cell_id >= 0 &&
+                                   neighbor_cell == comp.secondary_cell_id) {
+                            secondary_visible = true;
+                        } else {
+                            other_visible = true;
+                        }
+                    }
+                }
+
+                if (secondary_visible ||
+                    (comp.secondary_cell_id < 0 && other_visible) ||
+                    (primary_visible && other_visible)) {
+                    comp.kind = ALEA_PLOT_ERR_PARTIAL_OVERLAP;
+                } else {
+                    comp.kind = ALEA_PLOT_ERR_TOTAL_OVERLAP;
+                }
+            }
+
+            plot_error_component_vec_push(&comps, &comp);
+        }
+    }
+
+    free(visited);
+    free(queue);
+
+    alea_plot_error_component_result_t* result =
+        malloc(sizeof(*result));
+    if (!result) {
+        free(comps.data);
+        return NULL;
+    }
+    result->components = comps.data;
+    result->component_count = comps.count;
+    return result;
+}
+
+void alea_plot_error_components_free(
+    alea_plot_error_component_result_t* result) {
+    if (!result) return;
+    free(result->components);
     free(result);
 }

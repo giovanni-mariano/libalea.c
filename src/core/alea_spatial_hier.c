@@ -1532,16 +1532,10 @@ static int hier_query_universe(alea_system_t* sys,
                 break;
             }
             uint32_t cell_index = blas->cells[cell_pos].cell_index;
-            size_t before = *hit_count;
             int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
                                         depth, parent_transform,
                                         out_hits, max_hits, hit_count);
             if (rc < 0) ctx.error = -1;
-            /* MCNP semantics: cells in the same universe must not overlap;
-             * if they do (malformed model or numerical edge), the first
-             * matching cell wins, matching alea_spatial_find_cells_at_point
-             * which uses an expected_universe filter to enforce the same. */
-            if (*hit_count > before) break;
         }
         hier_cand_free(&candidates);
         return ctx.error ? -1 : 0;
@@ -1549,12 +1543,10 @@ static int hier_query_universe(alea_system_t* sys,
 
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
-        size_t before = *hit_count;
         int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
                                     depth, parent_transform,
                                     out_hits, max_hits, hit_count);
         if (rc < 0) return -1;
-        if (*hit_count > before) break;
     }
 
     return 0;
@@ -1800,12 +1792,13 @@ int alea_hier_spatial_check_cached_containment(alea_system_t* sys,
     return 1;
 }
 
-int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
-                                          double x,
-                                          double y,
-                                          double z,
-                                          alea_cell_hit_t* out_hits,
-                                          size_t max_hits) {
+static int hier_spatial_find_cells_at_point_impl(alea_system_t* sys,
+                                                 double x,
+                                                 double y,
+                                                 double z,
+                                                 alea_cell_hit_t* out_hits,
+                                                 size_t max_hits,
+                                                 int use_cache) {
     if (!sys || !out_hits || max_hits == 0) return -1;
 
     if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
@@ -1827,10 +1820,12 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
 
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
 
-    int cached = hier_cache_try(sys, x, y, z, out_hits, max_hits);
-    if (cached > 0) {
-        idx->stats.point_queries++;
-        return cached;
+    if (use_cache) {
+        int cached = hier_cache_try(sys, x, y, z, out_hits, max_hits);
+        if (cached > 0) {
+            idx->stats.point_queries++;
+            return cached;
+        }
     }
 
     /* Cache miss — wipe and repopulate during the full descent. */
@@ -1849,7 +1844,31 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
         return -1;
     }
 
+    if (!use_cache) {
+        hier_cache_invalidate();
+    }
+
     return (int)hit_count;
+}
+
+int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
+                                          double x,
+                                          double y,
+                                          double z,
+                                          alea_cell_hit_t* out_hits,
+                                          size_t max_hits) {
+    return hier_spatial_find_cells_at_point_impl(sys, x, y, z,
+                                                out_hits, max_hits, 1);
+}
+
+int alea_hier_spatial_find_cells_at_point_uncached(alea_system_t* sys,
+                                                   double x,
+                                                   double y,
+                                                   double z,
+                                                   alea_cell_hit_t* out_hits,
+                                                   size_t max_hits) {
+    return hier_spatial_find_cells_at_point_impl(sys, x, y, z,
+                                                out_hits, max_hits, 0);
 }
 
 int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
@@ -2482,6 +2501,36 @@ int alea_hier_spatial_query_region(alea_system_t* sys,
 
     if (hit_count > 1) {
         qsort(out_hits, hit_count, sizeof(*out_hits), compare_spatial_hits_by_depth_cell);
+    }
+
+    return (int)hit_count;
+}
+
+int alea_hier_spatial_query_region_direct(alea_system_t* sys,
+                                          const alea_bbox_t* query_bbox,
+                                          alea_spatial_hit_t* out_hits,
+                                          size_t max_hits) {
+    if (!sys || !query_bbox || !out_hits) return -1;
+
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) {
+            return -1;
+        }
+    }
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+
+    size_t hit_count = 0;
+    int rc = query_region_universe_direct(sys, sys->hier_spatial_index, 0,
+                                          &identity, 0,
+                                          query_bbox, query_bbox,
+                                          out_hits, max_hits, &hit_count);
+    if (rc != 0) return -1;
+
+    if (hit_count > 1) {
+        qsort(out_hits, hit_count, sizeof(*out_hits),
+              compare_spatial_hits_by_depth_cell);
     }
 
     return (int)hit_count;

@@ -50,6 +50,12 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           double z,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits);
+int alea_hier_spatial_find_cells_at_point_uncached(alea_system_t* sys,
+                                                   double x,
+                                                   double y,
+                                                   double z,
+                                                   alea_cell_hit_t* out_hits,
+                                                   size_t max_hits);
 int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
                                                  double x,
                                                  double y,
@@ -115,6 +121,10 @@ int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,
                                    size_t max_hits);
+int alea_hier_spatial_query_region_direct(alea_system_t* sys,
+                                          const alea_bbox_t* query_bbox,
+                                          alea_spatial_hit_t* out_hits,
+                                          size_t max_hits);
 int alea_hier_spatial_query_slice_z(alea_system_t* sys,
                                     double z,
                                     double x_min,

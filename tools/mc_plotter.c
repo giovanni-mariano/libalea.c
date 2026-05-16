@@ -128,6 +128,144 @@ static void set_spatial_mode(alea_system_t* sys, alea_spatial_mode_t mode) {
     alea_set_config(sys, &cfg);
 }
 
+static void count_plot_error_state(const int* cell_ids,
+                                   const uint8_t* coverage,
+                                   const uint8_t* errors,
+                                   int n,
+                                   int* cov_none,
+                                   int* cov_one,
+                                   int* cov_multi,
+                                   int* err_overlap,
+                                   int* err_undefined) {
+    int none = 0, one = 0, multi = 0, overlap = 0, undefined = 0;
+    for (int i = 0; i < n; i++) {
+        if (coverage) {
+            if (coverage[i] == ALEA_COVERAGE_MULTI) multi++;
+            else if (coverage[i] == ALEA_COVERAGE_ONE) one++;
+            else none++;
+        } else if (cell_ids && cell_ids[i] < 0) {
+            none++;
+        } else {
+            one++;
+        }
+
+        if (errors) {
+            if (errors[i] == ALEA_GRID_OVERLAP) overlap++;
+            else if (errors[i] == ALEA_GRID_UNDEFINED) undefined++;
+        }
+    }
+    if (cov_none) *cov_none = none;
+    if (cov_one) *cov_one = one;
+    if (cov_multi) *cov_multi = multi;
+    if (err_overlap) *err_overlap = overlap;
+    if (err_undefined) *err_undefined = undefined;
+}
+
+static void print_point_coverage_stats(const char* label) {
+    alea_point_coverage_stats_t ps = alea_point_coverage_stats_get();
+    if (ps.queries == 0) return;
+
+    double avg_candidates = ps.spatial_queries > 0
+        ? (double)ps.candidate_total / (double)ps.spatial_queries : 0.0;
+    double tests_per_query = ps.queries > 0
+        ? (double)ps.contains_tests / (double)ps.queries : 0.0;
+    printf("    [PLOT ERROR STATS] %s point coverage: queries=%zu spatial=%zu recursive_fallback=%zu lattice_fallback=%zu truncated_fallback=%zu early_multi=%zu candidates avg=%.1f max=%zu contains_per_query=%.1f query_errors=%zu\n",
+           label, ps.queries, ps.spatial_queries, ps.recursive_fallbacks,
+           ps.lattice_fallbacks, ps.truncated_fallbacks,
+           ps.spatial_multi_early_exit, avg_candidates,
+           ps.candidate_max, tests_per_query, ps.query_errors);
+}
+
+static void read_tile_coverage_size(int* tile_w, int* tile_h) {
+    int w = 16;
+    int h = 16;
+    const char* size_env = getenv("ALEA_PLOT_TILE_SIZE");
+    if (size_env && size_env[0]) {
+        char* end = NULL;
+        long parsed_w = strtol(size_env, &end, 10);
+        if (parsed_w > 0) {
+            w = (int)parsed_w;
+            if (*end == 'x' || *end == 'X' || *end == ',') {
+                char* end_h = NULL;
+                long parsed_h = strtol(end + 1, &end_h, 10);
+                if (parsed_h > 0) h = (int)parsed_h;
+            } else {
+                h = w;
+            }
+        }
+    }
+
+    const char* w_env = getenv("ALEA_PLOT_TILE_W");
+    const char* h_env = getenv("ALEA_PLOT_TILE_H");
+    if (w_env && atoi(w_env) > 0) w = atoi(w_env);
+    if (h_env && atoi(h_env) > 0) h = atoi(h_env);
+
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w > 256) w = 256;
+    if (h > 256) h = 256;
+    *tile_w = w;
+    *tile_h = h;
+}
+
+static uint8_t exact_coverage_at_point(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       int universe_depth) {
+    alea_cell_hit_t hits[64];
+    int num_hits = alea_find_all_cells(sys, x, y, z, hits, 64);
+    if (num_hits <= 0) return ALEA_COVERAGE_NONE;
+
+    int target_depth = universe_depth;
+    if (target_depth < 0)
+        target_depth = hits[num_hits - 1].depth;
+
+    int count = 0;
+    for (int h = 0; h < num_hits; h++) {
+        if (hits[h].depth != target_depth) continue;
+        count++;
+        if (count > 1) return ALEA_COVERAGE_MULTI;
+    }
+    return count == 1 ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
+}
+
+static int verify_plot_coverage_sample(alea_system_t* sys,
+                                       const alea_slice_view_t* view,
+                                       int nu, int nv,
+                                       int universe_depth,
+                                       const uint8_t* coverage,
+                                       int interval,
+                                       int* out_checked,
+                                       int* out_mismatches) {
+    if (!sys || !view || !coverage || nu <= 0 || nv <= 0 || interval <= 0)
+        return -1;
+
+    const alea_slice_plane_t* plane = &view->plane;
+    double du = (view->u_max - view->u_min) / nu;
+    double dv = (view->v_max - view->v_min) / nv;
+    int checked = 0;
+    int mismatches = 0;
+
+    for (int j = 0; j < nv; j++) {
+        double v = view->v_min + (j + 0.5) * dv;
+        for (int i = 0; i < nu; i++) {
+            int idx = j * nu + i;
+            if (idx % interval != 0) continue;
+
+            double u = view->u_min + (i + 0.5) * du;
+            double x = plane->origin[0] + u * plane->u_axis[0] + v * plane->v_axis[0];
+            double y = plane->origin[1] + u * plane->u_axis[1] + v * plane->v_axis[1];
+            double z = plane->origin[2] + u * plane->u_axis[2] + v * plane->v_axis[2];
+            uint8_t exact = exact_coverage_at_point(sys, x, y, z, universe_depth);
+            checked++;
+            if (coverage[idx] != exact) mismatches++;
+        }
+    }
+
+    if (out_checked) *out_checked = checked;
+    if (out_mismatches) *out_mismatches = mismatches;
+    return mismatches == 0 ? 0 : 1;
+}
+
 static int ends_with(const char* s, const char* suffix) {
     size_t slen = strlen(s), xlen = strlen(suffix);
     return slen >= xlen && strcmp(s + slen - xlen, suffix) == 0;
@@ -967,12 +1105,15 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
     int num_pixels = p->width * p->height;
     int* cell_ids = malloc(num_pixels * sizeof(int));
     int* material_ids = malloc(num_pixels * sizeof(int));
+    int* secondary_ids = NULL;
     uint8_t* errors = malloc(num_pixels);
+    uint8_t* coverage = malloc(num_pixels);
     uint8_t* pixels = malloc(num_pixels * 3);
 
-    if (!cell_ids || !material_ids || !errors || !pixels) {
+    if (!cell_ids || !material_ids || !errors || !coverage || !pixels) {
         fprintf(stderr, "Error: Failed to allocate buffers\n");
-        free(cell_ids); free(material_ids); free(errors); free(pixels);
+        free(cell_ids); free(material_ids); free(secondary_ids);
+        free(errors); free(coverage); free(pixels);
         return -1;
     }
 
@@ -984,21 +1125,91 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
 
     alea_slice_view_t view;
     build_view_from_params(p, &view);
-    int rc = alea_find_cells_grid(sys, &view, p->width, p->height,
-                                       -1, cell_ids, material_ids, errors);
+    int selective_exact_coverage = getenv("ALEA_PLOT_EXACT_COVERAGE") != NULL;
+    int full_exact_coverage = getenv("ALEA_PLOT_FULL_EXACT_COVERAGE") != NULL;
+    int tile_exact_coverage = getenv("ALEA_PLOT_TILE_COVERAGE") != NULL;
+    int plot_error_stats = getenv("ALEA_PLOT_ERROR_STATS") != NULL;
+    const char* verify_env = getenv("ALEA_PLOT_ERROR_VERIFY");
+    int verify_interval = (verify_env && atoi(verify_env) > 0)
+        ? atoi(verify_env) : 0;
+    if (plot_error_stats) {
+        secondary_ids = malloc(num_pixels * sizeof(int));
+        if (!secondary_ids) {
+            fprintf(stderr, "Error: Failed to allocate secondary ID buffer\n");
+            free(cell_ids); free(material_ids); free(errors);
+            free(coverage); free(pixels);
+            return -1;
+        }
+    }
+    unsigned coverage_flags = full_exact_coverage
+        ? ALEA_GRID_COVERAGE_EXACT
+        : ALEA_GRID_COVERAGE_FAST;
+    if (secondary_ids) coverage_flags |= ALEA_GRID_SECONDARY_CELL_IDS;
+    int rc = alea_find_cells_grid_coverage(sys, &view, p->width, p->height,
+                                           -1, coverage_flags,
+                                           cell_ids, material_ids, secondary_ids,
+                                           coverage, errors);
 
     t1 = get_time_ms();
 
     if (rc != 0) {
         fprintf(stderr, "Error: Grid query failed\n");
-        free(cell_ids); free(material_ids); free(errors); free(pixels);
+        free(cell_ids); free(material_ids); free(secondary_ids);
+        free(errors); free(coverage); free(pixels);
         return -1;
     }
 
     if (verbose) {
         printf("    Grid query: %.1f ms (%.2f Mpx/s)\n",
                t1 - t0, num_pixels / (t1 - t0) / 1000.0);
+        if (full_exact_coverage) {
+            printf("    Full exact coverage enabled via ALEA_PLOT_FULL_EXACT_COVERAGE\n");
+        } else if (tile_exact_coverage) {
+            printf("    Tile exact coverage enabled via ALEA_PLOT_TILE_COVERAGE\n");
+        } else if (selective_exact_coverage) {
+            printf("    Selective exact coverage enabled via ALEA_PLOT_EXACT_COVERAGE\n");
+        }
         printf("    [RSS after grid query: %.1f MB]\n", get_rss_mb());
+    }
+    if (plot_error_stats && full_exact_coverage) {
+        print_point_coverage_stats("full-grid exact");
+    }
+
+    if (tile_exact_coverage && !full_exact_coverage) {
+        int tile_w = 16, tile_h = 16;
+        read_tile_coverage_size(&tile_w, &tile_h);
+        t0 = get_time_ms();
+        int refined = alea_refine_grid_coverage_tiles_exact(
+            sys, &view, p->width, p->height, -1, tile_w, tile_h,
+            secondary_ids, coverage, errors);
+        t1 = get_time_ms();
+        if (verbose || plot_error_stats) {
+            printf("    Tile exact coverage: %d pixels refined, tile=%dx%d (%.1f ms)\n",
+                   refined, tile_w, tile_h, t1 - t0);
+        }
+        if (plot_error_stats) {
+            alea_tile_coverage_stats_t ts = alea_tile_coverage_stats_get();
+            double avg_raw = ts.tiles > 0
+                ? (double)ts.candidate_total / (double)ts.tiles : 0.0;
+            double avg_dedup = ts.tiles > 0
+                ? (double)ts.dedup_candidate_total / (double)ts.tiles : 0.0;
+            double tests_per_pixel = ts.pixels > 0
+                ? (double)ts.candidate_pixel_tests / (double)ts.pixels : 0.0;
+            printf("    [PLOT ERROR STATS] tile coverage: tiles=%zu fallback=%zu query_errors=%zu raw_candidates avg=%.1f max=%zu dedup avg=%.1f max=%zu tests_per_pixel=%.1f exact_fallback_pixels=%zu\n",
+                   ts.tiles, ts.fallback_tiles, ts.query_errors,
+                   avg_raw, ts.candidate_max, avg_dedup,
+                   ts.dedup_candidate_max, tests_per_pixel,
+                   ts.exact_fallback_pixels);
+            print_point_coverage_stats("tile fallback");
+        }
+    }
+
+    if (plot_error_stats) {
+        int c0, c1, c2, eo, eu;
+        count_plot_error_state(cell_ids, coverage, errors, num_pixels,
+                               &c0, &c1, &c2, &eo, &eu);
+        printf("    [PLOT ERROR STATS] after grid: coverage none=%d one=%d multi=%d, errors overlap=%d undefined=%d\n",
+               c0, c1, c2, eo, eu);
     }
 
     /* Select ID array based on color mode */
@@ -1030,14 +1241,64 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         t0 = get_time_ms();
         err_curves = get_curves_for_plot(sys, p);
         if (err_curves) {
-            int new_overlaps = alea_check_grid_overlaps_curves(
-                sys, &view, err_curves, p->width, p->height,
-                -1, cell_ids, errors);
+            int refined = 0;
+            if (selective_exact_coverage && !full_exact_coverage && !tile_exact_coverage) {
+                refined = alea_refine_grid_coverage_curves_exact(
+                    sys, &view, err_curves, p->width, p->height,
+                    -1, secondary_ids, coverage, errors);
+                if (verbose) {
+                    printf("    Selective exact coverage: %d pixels refined\n",
+                           refined);
+                }
+                if (plot_error_stats) {
+                    print_point_coverage_stats("selective exact");
+                }
+            }
+            int new_overlaps = (selective_exact_coverage || full_exact_coverage || tile_exact_coverage)
+                ? alea_check_grid_overlaps_curves_coverage(
+                      &view, err_curves, p->width, p->height,
+                      coverage, errors)
+                : alea_check_grid_overlaps_curves(
+                      sys, &view, err_curves, p->width, p->height,
+                      -1, cell_ids, errors);
             t1 = get_time_ms();
             if (verbose) {
                 printf("    Nested overlap check: %d new overlap pixels (%.1f ms)\n",
                        new_overlaps, t1 - t0);
             }
+            if (plot_error_stats) {
+                int c0, c1, c2, eo, eu;
+                count_plot_error_state(cell_ids, coverage, errors, num_pixels,
+                                       &c0, &c1, &c2, &eo, &eu);
+                printf("    [PLOT ERROR STATS] after curve check: coverage none=%d one=%d multi=%d, errors overlap=%d undefined=%d, refined=%d, curve_new=%d\n",
+                       c0, c1, c2, eo, eu, refined, new_overlaps);
+            }
+            for (int i = 0; i < num_pixels; i++) {
+                if (errors[i] == GRID_ERR_OVERLAP) {
+                    coverage[i] = ALEA_COVERAGE_MULTI;
+                } else if (errors[i] == GRID_ERR_UNDEFINED || cell_ids[i] < 0) {
+                    coverage[i] = ALEA_COVERAGE_NONE;
+                }
+            }
+        }
+    }
+
+    if (plot_error_stats) {
+        alea_plot_error_component_result_t* comps =
+            alea_classify_plot_error_components(
+                cell_ids, secondary_ids, coverage, p->width, p->height);
+        if (comps) {
+            size_t undefined = 0, partial = 0, total = 0;
+            for (size_t i = 0; i < comps->component_count; i++) {
+                switch (comps->components[i].kind) {
+                    case ALEA_PLOT_ERR_UNDEFINED_REGION: undefined++; break;
+                    case ALEA_PLOT_ERR_PARTIAL_OVERLAP: partial++; break;
+                    case ALEA_PLOT_ERR_TOTAL_OVERLAP: total++; break;
+                }
+            }
+            printf("    [PLOT ERROR STATS] components undefined=%zu partial_overlap=%zu total_overlap=%zu\n",
+                   undefined, partial, total);
+            alea_plot_error_components_free(comps);
         }
     }
 
@@ -1048,15 +1309,17 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
     /* Draw analytical error lines if requested */
     if (p->show_errors && err_curves) {
         t0 = get_time_ms();
+        size_t error_segment_count = 0;
         alea_slice_error_result_t* err_result =
-            alea_check_slice_errors_grid(sys, &view, err_curves,
-                                         cell_ids, errors,
-                                         p->width, p->height);
+            alea_check_slice_errors_grid_ex(&view, err_curves,
+                                            cell_ids, coverage, errors,
+                                            p->width, p->height);
         if (err_result) {
             if (verbose) {
                 printf("    Error check: %zu error segments found\n",
                        err_result->error_count);
             }
+            error_segment_count = err_result->error_count;
             if (err_result->error_count > 0) {
                 draw_error_lines(pixels, p->width, p->height, p,
                                  err_curves, err_result);
@@ -1067,8 +1330,34 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         if (verbose) {
             printf("    Error lines: %.1f ms\n", t1 - t0);
         }
+        if (plot_error_stats) {
+            printf("    [PLOT ERROR STATS] error segments=%zu\n",
+                   error_segment_count);
+        }
     }
     if (err_curves) alea_slice_curves_free(err_curves);
+
+    if (verify_interval > 0) {
+        t0 = get_time_ms();
+        int checked = 0, mismatches = 0;
+        int verify_rc = verify_plot_coverage_sample(
+            sys, &view, p->width, p->height, -1, coverage,
+            verify_interval, &checked, &mismatches);
+        t1 = get_time_ms();
+        printf("    [PLOT ERROR VERIFY] interval=%d checked=%d mismatches=%d (%.1f ms)\n",
+               verify_interval, checked, mismatches, t1 - t0);
+        if (verify_rc != 0) {
+            fprintf(stderr, "Error: Coverage verifier found %d mismatches\n",
+                    mismatches);
+            free(cell_ids);
+            free(material_ids);
+            free(secondary_ids);
+            free(errors);
+            free(coverage);
+            free(pixels);
+            return -1;
+        }
+    }
 
     /* Draw labels if requested */
     if (p->labels.show_cells) {
@@ -1116,7 +1405,9 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
 
     free(cell_ids);
     free(material_ids);
+    free(secondary_ids);
     free(errors);
+    free(coverage);
     free(pixels);
 
     if (rc != 0) {

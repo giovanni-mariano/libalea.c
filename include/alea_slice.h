@@ -47,6 +47,7 @@
 #define ALEA_SLICE_H
 
 #include "alea.h"
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,6 +117,48 @@ typedef enum {
     ALEA_GRID_OVERLAP   = 1,  /**< Multiple cells claim this point */
     ALEA_GRID_UNDEFINED = 2   /**< No cell claims this point (geometry error) */
 } alea_grid_error_t;
+
+/** Coverage class for plot-time geometry diagnostics */
+typedef enum {
+    ALEA_COVERAGE_NONE  = 0,  /**< No cell claims this point */
+    ALEA_COVERAGE_ONE   = 1,  /**< Exactly one known cell claims this point */
+    ALEA_COVERAGE_MULTI = 2   /**< Multiple cells claim this point */
+} alea_coverage_class_t;
+
+/** Flags for alea_find_cells_grid_coverage() */
+#define ALEA_GRID_COVERAGE_NONE_FLAG       0u
+#define ALEA_GRID_COVERAGE_FAST            1u
+#define ALEA_GRID_COVERAGE_EXACT           2u
+#define ALEA_GRID_SECONDARY_CELL_IDS       4u
+
+/** Diagnostic counters from the most recent tile coverage refinement pass */
+typedef struct {
+    size_t tiles;                    /**< Number of tiles visited */
+    size_t fallback_tiles;           /**< Tiles refined with exact per-pixel fallback */
+    size_t query_errors;             /**< Spatial candidate query failures */
+    size_t pixels;                   /**< Pixels evaluated by tile candidates */
+    size_t exact_fallback_pixels;    /**< Pixels evaluated by exact fallback */
+    size_t candidate_total;          /**< Raw spatial candidates across tiles */
+    size_t candidate_max;            /**< Maximum raw candidates in one tile */
+    size_t dedup_candidate_total;    /**< Deduplicated candidates across tiles */
+    size_t dedup_candidate_max;      /**< Maximum deduplicated candidates in one tile */
+    size_t candidate_pixel_tests;    /**< Deduplicated candidate/pixel containment tests */
+    size_t refined_pixels;           /**< Pixels newly classified as overlap */
+} alea_tile_coverage_stats_t;
+
+/** Diagnostic counters from exact point-coverage refinement */
+typedef struct {
+    size_t queries;                  /**< Total exact coverage point queries */
+    size_t spatial_queries;          /**< Queries handled by spatial candidates */
+    size_t spatial_multi_early_exit; /**< Spatial queries stopped at second claimant */
+    size_t recursive_fallbacks;      /**< Queries handled by recursive all-hit fallback */
+    size_t lattice_fallbacks;        /**< Fallbacks caused by lattice semantics */
+    size_t truncated_fallbacks;      /**< Fallbacks caused by candidate truncation */
+    size_t query_errors;             /**< Point coverage query errors */
+    size_t candidate_total;          /**< Deduplicated spatial candidates scanned */
+    size_t candidate_max;            /**< Max deduplicated spatial candidates */
+    size_t contains_tests;           /**< Exact containment tests in spatial path */
+} alea_point_coverage_stats_t;
 
 /** Label position information */
 typedef struct {
@@ -192,6 +235,33 @@ int alea_find_cells_grid(alea_system_t* sys,
                               uint8_t* out_errors);
 
 /**
+ * @brief Find cells and coverage classes on a slice grid
+ *
+ * Compatibility extension of alea_find_cells_grid(). The cell/material/error
+ * arrays have the same meaning as alea_find_cells_grid(). out_coverage, when
+ * provided, receives ALEA_COVERAGE_NONE/ONE/MULTI for each pixel.
+ *
+ * FAST derives coverage from the normal grid result: undefined pixels become
+ * NONE, overlap pixels become MULTI, and remaining valid pixels become ONE.
+ * EXACT rechecks pixels with all-cell semantics, which detects total/nested
+ * overlaps that have no winning-cell boundary.
+ *
+ * @param flags ALEA_GRID_COVERAGE_* flags
+ * @param out_secondary_cell_ids Optional secondary cell IDs for MULTI pixels
+ * @param out_coverage Optional coverage class array (size nu*nv)
+ */
+int alea_find_cells_grid_coverage(alea_system_t* sys,
+                                  const alea_slice_view_t* view,
+                                  int nu, int nv,
+                                  int universe_depth,
+                                  unsigned flags,
+                                  int* out_cell_ids,
+                                  int* out_material_ids,
+                                  int* out_secondary_cell_ids,
+                                  uint8_t* out_coverage,
+                                  uint8_t* out_errors);
+
+/**
  * @brief Check grid for overlapping cells (comprehensive)
  *
  * Re-queries every non-void pixel with the full hierarchy search to detect
@@ -246,6 +316,78 @@ int alea_check_grid_overlaps_curves(alea_system_t* sys,
                                     int universe_depth,
                                     const int* cell_ids,
                                     uint8_t* errors);
+
+/**
+ * @brief Mark curve-adjacent overlap pixels from precomputed coverage
+ *
+ * Coverage-driven companion to alea_check_grid_overlaps_curves(). It performs
+ * the same curve sampling, but never queries geometry. Pixels sampled near a
+ * curve are marked as overlap when coverage[pixel] is ALEA_COVERAGE_MULTI.
+ *
+ * @return Number of newly marked overlap pixels, or -1 on error
+ */
+int alea_check_grid_overlaps_curves_coverage(
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    int nu, int nv,
+    const uint8_t* coverage,
+    uint8_t* errors);
+
+/**
+ * @brief Refine coverage by exact queries near surface curves
+ *
+ * Samples surface curves, maps samples to nearby pixels, and rechecks only
+ * those pixels with all-cell semantics. This is a selective exact pass for
+ * total/nested overlaps near hidden boundaries, cheaper than exact coverage
+ * over the full grid.
+ *
+ * @param out_secondary_cell_ids Optional secondary cell ID array, can be NULL
+ * @param coverage Coverage array to update (size nu*nv)
+ * @param errors Error array to update (size nu*nv)
+ * @return Number of pixels newly or still classified as multi-coverage, or -1
+ */
+int alea_refine_grid_coverage_curves_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    int nu, int nv,
+    int universe_depth,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors);
+
+/**
+ * @brief Refine coverage by querying spatial candidates per tile
+ *
+ * Experimental tile-based exact coverage pass. For each tile, it queries the
+ * spatial index once for candidate cells, evaluates those candidates over the
+ * tile pixels, and updates coverage/errors. If a tile candidate list is
+ * truncated, that tile falls back to exact per-pixel queries.
+ *
+ * @param tile_w,tile_h Tile dimensions; use positive values such as 16x16
+ * @return Number of pixels newly classified as multi-coverage, or -1 on error
+ */
+int alea_refine_grid_coverage_tiles_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors);
+
+/** Reset diagnostics for tile coverage refinement */
+void alea_tile_coverage_stats_reset(void);
+
+/** Return diagnostics from the most recent tile coverage refinement pass */
+alea_tile_coverage_stats_t alea_tile_coverage_stats_get(void);
+
+/** Reset diagnostics for exact point-coverage refinement */
+void alea_point_coverage_stats_reset(void);
+
+/** Return diagnostics from exact point-coverage refinement */
+alea_point_coverage_stats_t alea_point_coverage_stats_get(void);
 
 /* ============================================================================
  * LABEL POSITION COMPUTATION
@@ -399,6 +541,28 @@ typedef struct {
     size_t error_count;
 } alea_slice_error_result_t;
 
+/** Plot-level geometry error component kind */
+typedef enum {
+    ALEA_PLOT_ERR_UNDEFINED_REGION = 1, /**< Connected undefined/gap pixels */
+    ALEA_PLOT_ERR_PARTIAL_OVERLAP  = 2, /**< Overlap with visible non-overlap for participants */
+    ALEA_PLOT_ERR_TOTAL_OVERLAP    = 3  /**< Nested/coincident overlap with hidden participant */
+} alea_plot_error_kind_t;
+
+/** Connected component of plot-level error pixels */
+typedef struct {
+    alea_plot_error_kind_t kind;
+    int primary_cell_id;
+    int secondary_cell_id;
+    int pixel_count;
+    int min_i, min_j, max_i, max_j;
+} alea_plot_error_component_t;
+
+/** Result of plot-level component classification */
+typedef struct {
+    alea_plot_error_component_t* components;
+    size_t component_count;
+} alea_plot_error_component_result_t;
+
 /**
  * @brief Check surface curves for geometry errors (overlaps/gaps)
  *
@@ -453,8 +617,46 @@ alea_slice_error_result_t* alea_check_slice_errors_grid(
     const uint8_t* grid_errors,
     int nu, int nv);
 
+/**
+ * @brief Check surface curves using pre-computed grid coverage
+ *
+ * Variant of alea_check_slice_errors_grid() that does not perform same-cell CSG
+ * fallback queries. When both sides of a curve map to the same winning cell,
+ * the supplied coverage/error grids decide whether that curve sample is an
+ * overlap, gap, or clean region.
+ */
+alea_slice_error_result_t* alea_check_slice_errors_grid_ex(
+    const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves,
+    const int* cell_ids,
+    const uint8_t* coverage,
+    const uint8_t* grid_errors,
+    int nu, int nv);
+
 /** Free error result */
 void alea_slice_errors_free(alea_slice_error_result_t* result);
+
+/**
+ * @brief Classify connected error components from plot coverage arrays
+ *
+ * Undefined components are built from ALEA_COVERAGE_NONE. Overlap components are
+ * built from ALEA_COVERAGE_MULTI and classified as partial when a participant
+ * is visible in adjacent non-overlap pixels; otherwise they are classified as
+ * total/nested overlap.
+ *
+ * @param cell_ids Primary cell IDs for the same grid
+ * @param secondary_cell_ids Optional secondary IDs from coverage refinement
+ * @param coverage Coverage class grid
+ * @return Component result (free with alea_plot_error_components_free), or NULL
+ */
+alea_plot_error_component_result_t* alea_classify_plot_error_components(
+    const int* cell_ids,
+    const int* secondary_cell_ids,
+    const uint8_t* coverage,
+    int nu, int nv);
+
+/** Free plot error component result */
+void alea_plot_error_components_free(alea_plot_error_component_result_t* result);
 
 /* ============================================================================
  * DEBUG UTILITIES
