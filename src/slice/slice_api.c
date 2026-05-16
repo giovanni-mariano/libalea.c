@@ -1258,7 +1258,11 @@ static int find_point_coverage_spatial(alea_system_t* sys,
     out->coverage = ALEA_COVERAGE_NONE;
     out->secondary_cell_id = -1;
 
+    /* Stats counters below are mutated from inside the omp parallel for in
+     * alea_find_cells_grid_coverage. Every mutation must be guarded; plain
+     * `++` and `+=` race and lose increments under threading. */
     if (sys->has_lattice) {
+        #pragma omp atomic
         g_point_coverage_stats.lattice_fallbacks++;
         return -2;
     }
@@ -1269,13 +1273,19 @@ static int find_point_coverage_spatial(alea_system_t* sys,
                                                                hits, 32);
         if (n < 0) return -1;
         if (n >= 32) {
+            #pragma omp atomic
             g_point_coverage_stats.truncated_fallbacks++;
             return -2;
         }
+        #pragma omp atomic
         g_point_coverage_stats.spatial_queries++;
+        #pragma omp atomic
         g_point_coverage_stats.candidate_total += (size_t)n;
-        if ((size_t)n > g_point_coverage_stats.candidate_max)
-            g_point_coverage_stats.candidate_max = (size_t)n;
+        #pragma omp critical(pc_stats_candidate_max)
+        {
+            if ((size_t)n > g_point_coverage_stats.candidate_max)
+                g_point_coverage_stats.candidate_max = (size_t)n;
+        }
         return find_point_coverage_from_hits(hits, n, universe_depth, out);
     }
 
@@ -1285,16 +1295,24 @@ static int find_point_coverage_spatial(alea_system_t* sys,
 
     int n = alea_spatial_query_point(sys, gx, gy, gz, hits, cap);
     if (n < 0 || (size_t)n >= cap) {
-        if ((size_t)n >= cap) g_point_coverage_stats.truncated_fallbacks++;
+        if ((size_t)n >= cap) {
+            #pragma omp atomic
+            g_point_coverage_stats.truncated_fallbacks++;
+        }
         free(hits);
         return -2;
     }
 
     n = dedup_spatial_hits(hits, n);
+    #pragma omp atomic
     g_point_coverage_stats.spatial_queries++;
+    #pragma omp atomic
     g_point_coverage_stats.candidate_total += (size_t)n;
-    if ((size_t)n > g_point_coverage_stats.candidate_max)
-        g_point_coverage_stats.candidate_max = (size_t)n;
+    #pragma omp critical(pc_stats_candidate_max)
+    {
+        if ((size_t)n > g_point_coverage_stats.candidate_max)
+            g_point_coverage_stats.candidate_max = (size_t)n;
+    }
 
     if (universe_depth >= 0) {
         int count = 0;
@@ -1305,6 +1323,7 @@ static int find_point_coverage_spatial(alea_system_t* sys,
             double lx = gx, ly = gy, lz = gz;
             alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
             const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
+            #pragma omp atomic
             g_point_coverage_stats.contains_tests++;
             if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
                 continue;
@@ -1313,6 +1332,7 @@ static int find_point_coverage_spatial(alea_system_t* sys,
             count++;
             if (count > 1) {
                 out->coverage = ALEA_COVERAGE_MULTI;
+                #pragma omp atomic
                 g_point_coverage_stats.spatial_multi_early_exit++;
                 free(hits);
                 return 0;
@@ -1334,6 +1354,7 @@ static int find_point_coverage_spatial(alea_system_t* sys,
         double lx = gx, ly = gy, lz = gz;
         alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
         const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
+        #pragma omp atomic
         g_point_coverage_stats.contains_tests++;
         if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
             continue;
@@ -1348,6 +1369,7 @@ static int find_point_coverage_spatial(alea_system_t* sys,
             if (count_at_max > 1) {
                 out->coverage = ALEA_COVERAGE_MULTI;
                 out->secondary_cell_id = second_at_max;
+                #pragma omp atomic
                 g_point_coverage_stats.spatial_multi_early_exit++;
                 free(hits);
                 return 0;
@@ -1364,19 +1386,23 @@ static int find_point_coverage_exact(alea_system_t* sys,
                                      double gx, double gy, double gz,
                                      int universe_depth,
                                      point_coverage_t* out) {
+    #pragma omp atomic
     g_point_coverage_stats.queries++;
     int rc = find_point_coverage_spatial(sys, gx, gy, gz, universe_depth, out);
     if (rc == 0) return 0;
     if (rc != -2) {
+        #pragma omp atomic
         g_point_coverage_stats.query_errors++;
         return rc;
     }
 
+    #pragma omp atomic
     g_point_coverage_stats.recursive_fallbacks++;
     alea_cell_hit_t hits[32];
     int num_hits = alea_find_all_cells_at_point_recursive(sys, gx, gy, gz,
                                                            hits, 32);
     if (num_hits < 0) {
+        #pragma omp atomic
         g_point_coverage_stats.query_errors++;
         return -1;
     }
