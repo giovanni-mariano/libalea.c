@@ -1233,7 +1233,9 @@ const alea_flatten_config_t ALEA_FLATTEN_DEFAULT = {
     .max_depth = 0,
     .starting_cell_id = 1,
     .copy_materials = true,
-    .copy_transforms = false
+    .copy_transforms = false,
+    .clip_active = false,
+    .clip_bbox = {0, 0, 0, 0, 0, 0}
 };
 
 /**
@@ -2146,6 +2148,321 @@ static alea_node_id_t clone_tree_to_system_transformed(alea_system_t* dst,
                                                        primitive_remap_t* remap);
 
 /**
+ * @brief Container bbox of a lattice cell in its own (local) frame.
+ *
+ * For rectangular lattices this is just lat_lower_left + dims*pitch. For
+ * hex lattices it's a conservative axis-aligned cover of all element
+ * centers expanded by one pitch (mirrors lattice_container_bbox in
+ * alea_spatial_hier.c). Used so the region cull works on the true lattice
+ * extent rather than on the stored CSG bbox (which may be a single
+ * element's region for MCNP LAT cells).
+ */
+static alea_bbox_t flatten_lattice_container_bbox(const alea_cell_entry_t* cell) {
+    if (cell->lat_type == 1) {
+        int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+        int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+        int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+        return (alea_bbox_t){
+            cell->lat_lower_left[0],
+            cell->lat_lower_left[0] + (double)ni * cell->lat_pitch[0],
+            cell->lat_lower_left[1],
+            cell->lat_lower_left[1] + (double)nj * cell->lat_pitch[1],
+            cell->lat_lower_left[2],
+            cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2]
+        };
+    }
+    /* Hex lattice. */
+    double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
+    int d0 = cell->lat_fill_dims[0];
+    int d1 = cell->lat_fill_dims[1];
+    int d2 = cell->lat_fill_dims[2];
+    int d3 = cell->lat_fill_dims[3];
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+
+    /* Element centers at (ri*p + rk*p/2, rk*p*sqrt(3)/2). Cover all index
+     * extremes and pad by one pitch. */
+    double cx[4] = {
+        d0 * p + d2 * p * 0.5,
+        d0 * p + d3 * p * 0.5,
+        d1 * p + d2 * p * 0.5,
+        d1 * p + d3 * p * 0.5
+    };
+    double cy[2] = { d2 * p * M_SQRT3 * 0.5, d3 * p * M_SQRT3 * 0.5 };
+
+    double xmin = cx[0], xmax = cx[0];
+    for (int i = 1; i < 4; i++) {
+        if (cx[i] < xmin) xmin = cx[i];
+        if (cx[i] > xmax) xmax = cx[i];
+    }
+    double ymin = cy[0] < cy[1] ? cy[0] : cy[1];
+    double ymax = cy[0] < cy[1] ? cy[1] : cy[0];
+
+    double zmin = (nk == 1) ? -p : cell->lat_lower_left[2];
+    double zmax = (nk == 1) ?  p
+        : cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2];
+
+    return (alea_bbox_t){xmin - p, xmax + p, ymin - p, ymax + p, zmin, zmax};
+}
+
+/**
+ * @brief Project a world-frame bbox conservatively into the lattice cell's
+ * local frame by inverting accumulated_transform and AABB-ing the 8 corners.
+ * If accumulated_transform is NULL the world frame == local frame.
+ */
+static alea_bbox_t flatten_project_clip_to_local(const alea_bbox_t* world_clip,
+                                                 const alea_matrix_t* accumulated) {
+    if (!accumulated) return *world_clip;
+
+    alea_bbox_t result = alea_bbox_empty();
+    for (int ix = 0; ix < 2; ix++) {
+        for (int iy = 0; iy < 2; iy++) {
+            for (int iz = 0; iz < 2; iz++) {
+                double x = ix ? world_clip->max_x : world_clip->min_x;
+                double y = iy ? world_clip->max_y : world_clip->min_y;
+                double z = iz ? world_clip->max_z : world_clip->min_z;
+                alea_matrix_transform_point_inverse(accumulated, &x, &y, &z);
+                alea_bbox_t p = {x, x, y, y, z, z};
+                result = alea_bbox_union(&result, &p);
+            }
+        }
+    }
+    return result;
+}
+
+/* Forward declaration for the lattice helper that recurses through flatten. */
+static void flatten_recursive_to_new(flatten_context_t* ctx,
+                                     int universe_id,
+                                     const alea_matrix_t* accumulated_transform,
+                                     int depth);
+
+/**
+ * @brief Expand the elements of a lattice cell that overlap the (optional)
+ * clip region, recursing into each element's fill universe.
+ *
+ * Conventions:
+ *   - Element local coords are translated by the element origin so that
+ *     each element's fill universe sees coordinates centered on the element.
+ *   - The lattice cell's CSG (root_node_id) is pushed onto the parent_stack
+ *     so each emitted leaf gets intersected with the lattice shell — same
+ *     model as fill cells.
+ *   - When ctx->config->clip_active, only elements whose center +/- pitch
+ *     could overlap the clip box are visited.
+ */
+static void flatten_lattice_expand(flatten_context_t* ctx,
+                                   const alea_cell_entry_t* cell,
+                                   const alea_matrix_t* accumulated_transform,
+                                   int depth) {
+    int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (ni <= 0 || nj <= 0 || nk <= 0) return;
+    if (!cell->lat_fill || cell->lat_fill_count == 0) return;
+
+    /* Compute clipped index range. Defaults: full sweep. */
+    int oi_lo = 0, oi_hi = ni - 1;
+    int oj_lo = 0, oj_hi = nj - 1;
+    int ok_lo = 0, ok_hi = nk - 1;
+
+    if (ctx->config->clip_active) {
+        const alea_bbox_t world = flatten_lattice_container_bbox(cell);
+        const alea_bbox_t world_in_lattice = accumulated_transform
+            ? alea_bbox_transform(&world, accumulated_transform)
+            : world;
+        if (!alea_bbox_intersects(&world_in_lattice, &ctx->config->clip_bbox)) {
+            return;
+        }
+
+        /* Project the world-frame clip box into this lattice's local frame. */
+        const alea_bbox_t local_clip =
+            flatten_project_clip_to_local(&ctx->config->clip_bbox,
+                                          accumulated_transform);
+
+        if (cell->lat_type == 1) {
+            /* Rect: direct division by pitch. Pad by 1 to keep boundary
+             * elements when the clip box hugs an element edge. */
+            const double *ll = cell->lat_lower_left;
+            const double *pp = cell->lat_pitch;
+            int i_lo = (int)floor((local_clip.min_x - ll[0]) / pp[0]) - 1;
+            int i_hi = (int)floor((local_clip.max_x - ll[0]) / pp[0]) + 1;
+            int j_lo = (nj == 1) ? 0
+                : (int)floor((local_clip.min_y - ll[1]) / pp[1]) - 1;
+            int j_hi = (nj == 1) ? 0
+                : (int)floor((local_clip.max_y - ll[1]) / pp[1]) + 1;
+            int k_lo = (nk == 1) ? 0
+                : (int)floor((local_clip.min_z - ll[2]) / pp[2]) - 1;
+            int k_hi = (nk == 1) ? 0
+                : (int)floor((local_clip.max_z - ll[2]) / pp[2]) + 1;
+
+            if (i_lo > oi_lo) oi_lo = i_lo;
+            if (i_hi < oi_hi) oi_hi = i_hi;
+            if (j_lo > oj_lo) oj_lo = j_lo;
+            if (j_hi < oj_hi) oj_hi = j_hi;
+            if (k_lo > ok_lo) ok_lo = k_lo;
+            if (k_hi < ok_hi) ok_hi = k_hi;
+        } else if (cell->lat_type == 2) {
+            /* Hex: derive a conservative (ri, rk) range from the cartesian
+             * corners of the local clip box.
+             *   y_local = rk * p * sqrt(3) / 2  =>  rk = 2y / (p*sqrt3)
+             *   x_local = ri*p + rk*p/2         =>  ri = (x - rk*p/2) / p
+             * Z is rectangular. */
+            double p = cell->lat_pitch[0];
+            if (p > 0.0) {
+                double frk_lo = local_clip.min_y / (p * M_SQRT3 * 0.5);
+                double frk_hi = local_clip.max_y / (p * M_SQRT3 * 0.5);
+                if (frk_lo > frk_hi) { double t = frk_lo; frk_lo = frk_hi; frk_hi = t; }
+                int rk_lo_idx = (int)floor(frk_lo) - 1;
+                int rk_hi_idx = (int)floor(frk_hi) + 1;
+
+                /* For ri, sample both rk extremes and both x extremes. */
+                double fri_candidates[4] = {
+                    (local_clip.min_x - frk_lo * p * 0.5) / p,
+                    (local_clip.max_x - frk_lo * p * 0.5) / p,
+                    (local_clip.min_x - frk_hi * p * 0.5) / p,
+                    (local_clip.max_x - frk_hi * p * 0.5) / p
+                };
+                double fri_min = fri_candidates[0], fri_max = fri_candidates[0];
+                for (int c = 1; c < 4; c++) {
+                    if (fri_candidates[c] < fri_min) fri_min = fri_candidates[c];
+                    if (fri_candidates[c] > fri_max) fri_max = fri_candidates[c];
+                }
+                int ri_lo_idx = (int)floor(fri_min) - 1;
+                int ri_hi_idx = (int)floor(fri_max) + 1;
+
+                /* Convert ri/rk to oi/oj. */
+                int new_oi_lo = ri_lo_idx - cell->lat_fill_dims[0];
+                int new_oi_hi = ri_hi_idx - cell->lat_fill_dims[0];
+                int new_oj_lo = rk_lo_idx - cell->lat_fill_dims[2];
+                int new_oj_hi = rk_hi_idx - cell->lat_fill_dims[2];
+
+                if (new_oi_lo > oi_lo) oi_lo = new_oi_lo;
+                if (new_oi_hi < oi_hi) oi_hi = new_oi_hi;
+                if (new_oj_lo > oj_lo) oj_lo = new_oj_lo;
+                if (new_oj_hi < oj_hi) oj_hi = new_oj_hi;
+
+                if (nk > 1) {
+                    int k_lo = (int)floor((local_clip.min_z - cell->lat_lower_left[2])
+                                          / cell->lat_pitch[2]) - 1;
+                    int k_hi = (int)floor((local_clip.max_z - cell->lat_lower_left[2])
+                                          / cell->lat_pitch[2]) + 1;
+                    if (k_lo > ok_lo) ok_lo = k_lo;
+                    if (k_hi < ok_hi) ok_hi = k_hi;
+                }
+            }
+        }
+
+        /* Clamp to valid range. */
+        if (oi_lo < 0) oi_lo = 0;
+        if (oj_lo < 0) oj_lo = 0;
+        if (ok_lo < 0) ok_lo = 0;
+        if (oi_hi >= ni) oi_hi = ni - 1;
+        if (oj_hi >= nj) oj_hi = nj - 1;
+        if (ok_hi >= nk) ok_hi = nk - 1;
+        if (oi_lo > oi_hi || oj_lo > oj_hi || ok_lo > ok_hi) return;
+    }
+
+    /* Compose the lattice cell's own fill_transform into accumulated once,
+     * if present. Each element then composes a translate on top of that. */
+    alea_matrix_t lat_fill_matrix;
+    bool have_lat_fill_xform = (cell->fill_transform > 0);
+    if (have_lat_fill_xform) {
+        const alea_transform_t* tr = alea_get_transform(ctx->src, cell->fill_transform);
+        if (!tr || !alea_matrix_from_mcnp(&lat_fill_matrix, tr->cosines,
+                                          tr->value_count, false)) {
+            ALEA_LOG_ERROR("Invalid matrix for lattice cell %d fill_transform %d",
+                    cell->mc_cell_id, cell->fill_transform);
+            ctx->error = -1;
+            return;
+        }
+    }
+
+    /* Push the lattice shell onto the parent stack so each element's leaves
+     * get intersected with the lattice cell's CSG. The shell's transform is
+     * the unmodified accumulated (before per-element translation). */
+    parent_geom_t parent_node;
+    parent_node.node_id = cell->root_node_id;
+    if (accumulated_transform) {
+        parent_node.transform = *accumulated_transform;
+    } else {
+        alea_matrix_identity(&parent_node.transform);
+    }
+    parent_node.next = ctx->parent_stack;
+    parent_geom_t* old_stack = ctx->parent_stack;
+    ctx->parent_stack = &parent_node;
+
+    const double p = cell->lat_pitch[0];
+
+    for (int oi = oi_lo; oi <= oi_hi; oi++) {
+        for (int oj = oj_lo; oj <= oj_hi; oj++) {
+            for (int ok = ok_lo; ok <= ok_hi; ok++) {
+                size_t idx = (size_t)oi * (size_t)nj * (size_t)nk
+                           + (size_t)oj * (size_t)nk + (size_t)ok;
+                if (idx >= cell->lat_fill_count) continue;
+                int fill_univ = cell->lat_fill[idx];
+                if (fill_univ <= 0) continue;
+
+                /* Element center in lattice-local frame. */
+                double ox, oy, oz;
+                if (cell->lat_type == 1) {
+                    ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+                    oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+                    oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                } else {
+                    int ri = oi + cell->lat_fill_dims[0];
+                    int rk = oj + cell->lat_fill_dims[2];
+                    ox = ri * p + rk * p * 0.5;
+                    oy = rk * p * M_SQRT3 * 0.5;
+                    oz = (nk == 1) ? 0.0
+                       : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                }
+
+                /* Element translation: element-local -> lattice-local. */
+                alea_matrix_t translate;
+                alea_matrix_identity(&translate);
+                translate.m[3]  = ox;
+                translate.m[7]  = oy;
+                translate.m[11] = oz;
+
+                /* element-local -> world: accumulated × (lat_fill × translate)
+                 * or accumulated × translate when no fill_transform. */
+                alea_matrix_t step;
+                if (have_lat_fill_xform) {
+                    alea_matrix_multiply(&step, &lat_fill_matrix, &translate);
+                } else {
+                    step = translate;
+                }
+
+                alea_matrix_t composed;
+                alea_matrix_t* composed_ptr;
+                if (accumulated_transform) {
+                    alea_matrix_multiply(&composed, accumulated_transform, &step);
+                    composed_ptr = &composed;
+                } else {
+                    composed = step;
+                    composed_ptr = &composed;
+                }
+
+                if (!alea_matrix_invert(composed_ptr)) {
+                    ALEA_LOG_ERROR("Singular lattice element transform "
+                                   "(cell %d, oi=%d oj=%d ok=%d)",
+                                   cell->mc_cell_id, oi, oj, ok);
+                    ctx->error = -1;
+                    ctx->parent_stack = old_stack;
+                    return;
+                }
+
+                flatten_recursive_to_new(ctx, fill_univ, composed_ptr, depth + 1);
+                if (ctx->error) {
+                    ctx->parent_stack = old_stack;
+                    return;
+                }
+            }
+        }
+    }
+
+    ctx->parent_stack = old_stack;
+}
+
+/**
  * @brief Recursively flatten cells into destination system
  */
 static void flatten_recursive_to_new(flatten_context_t* ctx,
@@ -2179,6 +2496,35 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
         }
         
         const alea_cell_entry_t* cell = &ctx->src->cells.data[cell_idx];
+        const bool is_lattice = (cell->lat_type != 0 && cell->lat_fill);
+
+        /* Region-restricted flatten: skip cells whose world-frame bbox does
+         * not overlap the configured clip box. For fill cells this prunes
+         * the entire sub-universe; for terminal cells it avoids emitting
+         * cells that lie outside the region. Conservative under rotation
+         * (false positives only — no false negatives).
+         *
+         * Lattice cells are handled separately because the stored CSG bbox
+         * may describe a single element rather than the full lattice extent
+         * (MCNP LAT convention). flatten_lattice_expand does its own clip
+         * test against the lattice container bbox. */
+        if (ctx->config->clip_active && !is_lattice &&
+            cell->root_node_id != ALEA_NODE_ID_INVALID) {
+            const alea_bbox_t local = ctx->src->nodes.data[cell->root_node_id].bbox;
+            const alea_bbox_t world = accumulated_transform
+                ? alea_bbox_transform(&local, accumulated_transform)
+                : local;
+            if (!alea_bbox_intersects(&world, &ctx->config->clip_bbox)) {
+                continue;
+            }
+        }
+
+        if (is_lattice) {
+            flatten_lattice_expand(ctx, cell, accumulated_transform, depth);
+            if (ctx->error) return;
+            continue;
+        }
+
         if (cell->fill_universe > 0) {
             /* Cell has FILL - compose transform and recurse */
             alea_matrix_t fill_matrix;
@@ -2368,8 +2714,8 @@ static alea_node_id_t clone_tree_to_system_transformed(alea_system_t* dst,
     return clone_tree_impl(dst, src, src_root, mat, remap, 0);
 }
 
-static alea_system_t* flatten_to_new(alea_system_t* src,
-                                     const alea_flatten_config_t* config) {
+alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
+                                          const alea_flatten_config_t* config) {
     if (!src) return NULL;
     
     alea_flatten_config_t cfg = config ? *config : ALEA_FLATTEN_DEFAULT;
@@ -2441,7 +2787,7 @@ int alea_flatten_in_place(alea_system_t* sys,
     if (!sys) return -1;
 
     /* Flatten to a new system */
-    alea_system_t* flat = flatten_to_new(sys, config);
+    alea_system_t* flat = alea_flatten_to_new_system(sys, config);
     if (!flat) return -1;
 
     int cell_count = (int)alea_vec_count(&flat->cells);

@@ -1506,62 +1506,22 @@ int alea_mixture_component_get(const alea_system_t* sys, int mix_index,
 alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* bbox) {
     if (!sys || !bbox) return NULL;
 
-    alea_system_t* extracted = alea_system_create();
-    if (!extracted) return NULL;
+    /* Region-restricted flatten: descend the universe tree from the root,
+     * propagate transforms, and only emit cells whose world-frame bbox
+     * overlaps the query region. This prunes entire fill sub-universes
+     * (and out-of-range lattice elements) at the parent level, so cost
+     * is proportional to geometry inside the region — not to the total
+     * cell count. Necessary for large lattice models where a full flatten
+     * would not fit in memory. */
+    alea_flatten_config_t cfg = ALEA_FLATTEN_DEFAULT;
+    cfg.starting_universe_id = 0;
+    cfg.clip_active = true;
+    cfg.clip_bbox = *bbox;
 
-    primitive_remap_t* remap = alea_create_remap_table(alea_vec_count(&sys->primitives));
-    if (!remap) {
-        alea_system_destroy(extracted);
-        return NULL;
-    }
-
-    /* Find cells whose bounding boxes intersect the query bbox */
-    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        const alea_cell_entry_t* cell = &sys->cells.data[i];
-        if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
-
-        /* Get cell's bounding box */
-        const alea_bbox_t* cb = &sys->nodes.data[cell->root_node_id].bbox;
-
-        /* Check intersection */
-        bool intersects = (cb->min_x <= bbox->max_x && cb->max_x >= bbox->min_x &&
-                          cb->min_y <= bbox->max_y && cb->max_y >= bbox->min_y &&
-                          cb->min_z <= bbox->max_z && cb->max_z >= bbox->min_z);
-
-        if (!intersects) continue;
-
-        /* Clone the cell's node tree to the new system */
-        alea_node_id_t new_root = alea_clone_tree_to_system(extracted, sys,
-                                                          cell->root_node_id, remap);
-
-        int idx = alea_add_cell(extracted, cell->mc_cell_id, new_root,
-                               ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
-        if (idx >= 0) {
-            /* Copy core cell fields */
-            alea_cell_entry_t* dst_cell = &extracted->cells.data[idx];
-            dst_cell->material_id = cell->material_id;
-            dst_cell->material_index = cell->material_index;
-            dst_cell->is_mass_density = cell->is_mass_density;
-            dst_cell->original_root_node_id = cell->original_root_node_id;
-            dst_cell->temperature = cell->temperature;
-            dst_cell->has_temperature = cell->has_temperature;
-            dst_cell->fill_universe = cell->fill_universe;
-            dst_cell->fill_transform = cell->fill_transform;
-            dst_cell->comments = cell->comments ? alea_strdup(cell->comments) : NULL;
-            dst_cell->inline_comment = cell->inline_comment ? alea_strdup(cell->inline_comment) : NULL;
-        }
-    }
-
-    /* Copy referenced auxiliary data */
-    alea_copy_surfaces_with_remap(extracted, sys, remap);
-    alea_destroy_remap_table(remap);
-    alea_copy_referenced_materials(extracted, sys);
-    alea_copy_referenced_mixtures(extracted, sys);
-    alea_copy_referenced_transforms(extracted, sys);
-    alea_copy_referenced_cell_refs(extracted, sys);
-
-    extracted->source = sys->source;
-    return extracted;
+    /* The source isn't semantically mutated; alea_flatten_to_new_system may
+     * lazily build the universe index, which is the usual reason for the
+     * const cast on read-only entry points. */
+    return alea_flatten_to_new_system((alea_system_t*)sys, &cfg);
 }
 
 size_t alea_get_cells_in_bbox(const alea_system_t* sys, const alea_bbox_t* bbox,

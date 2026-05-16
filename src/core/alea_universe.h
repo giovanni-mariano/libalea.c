@@ -94,7 +94,7 @@ typedef struct {
  *
  * Stored as 12 values: R00,R01,R02,Tx, R10,R11,R12,Ty, R20,R21,R22,Tz
  */
-typedef struct {
+typedef struct alea_matrix {
     double m[12];       /* 3x4 matrix (bottom row implicit: 0,0,0,1) */
     double inv[12];     /* Inverse matrix */
     bool has_inverse;   /* True if inverse is computed */
@@ -227,6 +227,14 @@ typedef struct alea_flatten_config {
     int starting_cell_id;       /* First cell ID in output (default: 1) */
     bool copy_materials;        /* Copy material definitions to new system */
     bool copy_transforms;       /* Copy transform definitions (usually not needed) */
+
+    /* Region-restricted flatten: when clip_active is true, cells whose
+     * world-frame bbox does not overlap clip_bbox are pruned during the
+     * descent (entire fill sub-universes and out-of-range lattice elements
+     * are skipped). Used to implement alea_extract_region without
+     * materializing the full flattened geometry. */
+    bool clip_active;
+    alea_bbox_t clip_bbox;
 } alea_flatten_config_t;
 
 /**
@@ -249,6 +257,19 @@ extern const alea_flatten_config_t ALEA_FLATTEN_DEFAULT;
  */
 int alea_flatten_in_place(alea_system_t* sys,
                          const alea_flatten_config_t* config);
+
+/**
+ * @brief Flatten into a freshly-allocated system (non-destructive).
+ *
+ * Caller owns the returned system and must destroy it with
+ * alea_system_destroy(). Returns NULL on error.
+ *
+ * Used by alea_extract_region with clip_active = true to materialize only
+ * the geometry intersecting a query region, without first flattening the
+ * full model.
+ */
+alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
+                                          const alea_flatten_config_t* config);
 
 /**
  * @brief Clone a CSG tree with transformed primitives (same system)

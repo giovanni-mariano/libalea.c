@@ -429,29 +429,6 @@ static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
                          zmin, zmax};
 }
 
-static alea_bbox_t bbox_transform(const alea_bbox_t* bbox, const alea_matrix_t* mat) {
-    const double bmin[3] = {bbox->min_x, bbox->min_y, bbox->min_z};
-    const double bmax[3] = {bbox->max_x, bbox->max_y, bbox->max_z};
-    double rmin[3], rmax[3];
-
-    for (int i = 0; i < 3; i++) {
-        rmin[i] = rmax[i] = mat->m[i * 4 + 3];
-        for (int j = 0; j < 3; j++) {
-            double e = mat->m[i * 4 + j] * bmin[j];
-            double f = mat->m[i * 4 + j] * bmax[j];
-            if (e < f) {
-                rmin[i] += e;
-                rmax[i] += f;
-            } else {
-                rmin[i] += f;
-                rmax[i] += e;
-            }
-        }
-    }
-
-    return (alea_bbox_t){rmin[0], rmax[0], rmin[1], rmax[1], rmin[2], rmax[2]};
-}
-
 static alea_bbox_t bbox_transform_inverse_conservative(const alea_bbox_t* bbox,
                                                        const alea_matrix_t* mat) {
     if (!mat || !mat->has_inverse) return alea_bbox_empty();
@@ -1006,7 +983,7 @@ static int collect_placements_recursive(alea_system_t* sys,
         alea_bbox_t local_bbox = (cell->lat_type != 0 && cell->lat_fill)
             ? lattice_container_bbox(cell)
             : local_cell_bbox(sys, cell_index);
-        alea_bbox_t world_bbox = accumulated ? bbox_transform(&local_bbox, accumulated) : local_bbox;
+        alea_bbox_t world_bbox = accumulated ? alea_bbox_transform(&local_bbox, accumulated) : local_bbox;
 
         if (cell->lat_type != 0 && cell->lat_fill) {
             idx->stats.lattice_cell_count++;
@@ -2074,7 +2051,7 @@ static int query_region_blas_node(alea_system_t* sys,
         }
 
         alea_bbox_t cell_bbox_d = hier_fbbox_to_double(&blas_cell->bbox);
-        alea_bbox_t world_bbox = bbox_transform(&cell_bbox_d, transform);
+        alea_bbox_t world_bbox = alea_bbox_transform(&cell_bbox_d, transform);
         if (!bbox_intersects_local(&world_bbox, world_query)) continue;
 
         uint32_t synthetic_index =
@@ -2125,7 +2102,7 @@ static int query_region_linear(alea_system_t* sys,
         alea_bbox_t local_bbox = local_cell_bbox(sys, cell_index);
         if (!bbox_intersects_local(&local_bbox, local_query)) continue;
 
-        alea_bbox_t world_bbox = bbox_transform(&local_bbox, transform);
+        alea_bbox_t world_bbox = alea_bbox_transform(&local_bbox, transform);
         if (!bbox_intersects_local(&world_bbox, world_query)) continue;
 
         uint32_t synthetic_index =
@@ -2284,7 +2261,7 @@ static int query_region_cell_direct(alea_system_t* sys,
                                             out_hits, max_hits, hit_count);
     }
 
-    alea_bbox_t world_bbox = bbox_transform(cell_bbox, transform);
+    alea_bbox_t world_bbox = alea_bbox_transform(cell_bbox, transform);
     if (!bbox_intersects_local(&world_bbox, world_query)) return 0;
 
     uint32_t synthetic_index = (uint32_t)(cell_pos + ((size_t)depth << 24));

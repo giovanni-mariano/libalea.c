@@ -5,6 +5,7 @@
 #include "bbox.h"
 #include "primitive_desc.h"
 #include "core/alea_eval.h"
+#include "core/alea_universe.h"  /* for alea_matrix_t (struct alea_matrix) */
 #include "util/math.h"
 #include <math.h>
 #include <float.h>
@@ -174,6 +175,30 @@ alea_bbox_t alea_bbox_infinite(void) {
         -BBOX_LARGE, BBOX_LARGE,
         -BBOX_LARGE, BBOX_LARGE
     };
+}
+
+alea_bbox_t alea_bbox_transform(const alea_bbox_t* bbox,
+                                const struct alea_matrix* mat) {
+    if (!bbox || !mat) return alea_bbox_empty();
+
+    /* Decompose rotation matrix into min/max contributions to avoid
+     * enumerating all 8 corners (18 mul + 18 add vs 192 mul-adds).
+     * Matrix layout: m[row*4 + col], row-major 3x4 with translation in col 3. */
+    const double bmin[3] = {bbox->min_x, bbox->min_y, bbox->min_z};
+    const double bmax[3] = {bbox->max_x, bbox->max_y, bbox->max_z};
+    double rmin[3], rmax[3];
+
+    for (int i = 0; i < 3; i++) {
+        rmin[i] = rmax[i] = mat->m[i * 4 + 3]; /* translation */
+        for (int j = 0; j < 3; j++) {
+            double e = mat->m[i * 4 + j] * bmin[j];
+            double f = mat->m[i * 4 + j] * bmax[j];
+            if (e < f) { rmin[i] += e; rmax[i] += f; }
+            else       { rmin[i] += f; rmax[i] += e; }
+        }
+    }
+
+    return (alea_bbox_t){rmin[0], rmax[0], rmin[1], rmax[1], rmin[2], rmax[2]};
 }
 
 alea_bbox_t alea_get_bbox(alea_system_t* sys, alea_node_id_t id) {

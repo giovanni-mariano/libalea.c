@@ -60,29 +60,6 @@ size_t alea_spatial_get_interval_culls(void) { return g_interval_culls; }
  * BBOX HELPERS
  * ============================================================================ */
 
-/**
- * Transform AABB by decomposing rotation matrix into min/max contributions.
- * Avoids projecting all 8 corners (18 mul + 18 add vs 192 mul-adds).
- * Matrix layout: m[row*4+col], row-major 3x4 with translation in col 3.
- */
-static alea_bbox_t bbox_transform(const alea_bbox_t* bbox, const alea_matrix_t* mat) {
-    const double bmin[3] = {bbox->min_x, bbox->min_y, bbox->min_z};
-    const double bmax[3] = {bbox->max_x, bbox->max_y, bbox->max_z};
-    double rmin[3], rmax[3];
-
-    for (int i = 0; i < 3; i++) {
-        rmin[i] = rmax[i] = mat->m[i * 4 + 3]; /* translation */
-        for (int j = 0; j < 3; j++) {
-            double e = mat->m[i * 4 + j] * bmin[j];
-            double f = mat->m[i * 4 + j] * bmax[j];
-            if (e < f) { rmin[i] += e; rmax[i] += f; }
-            else       { rmin[i] += f; rmax[i] += e; }
-        }
-    }
-
-    return (alea_bbox_t){rmin[0], rmax[0], rmin[1], rmax[1], rmin[2], rmax[2]};
-}
-
 static bool bbox_intersects(const alea_bbox_t* a, const alea_bbox_t* b) {
     return a->min_x <= b->max_x && a->max_x >= b->min_x &&
            a->min_y <= b->max_y && a->max_y >= b->min_y &&
@@ -198,7 +175,7 @@ static void count_instances_recursive(count_ctx_t* ctx,
         alea_bbox_t global_bbox;
 
         if (accumulated) {
-            global_bbox = bbox_transform(&local_bbox, accumulated);
+            global_bbox = alea_bbox_transform(&local_bbox, accumulated);
         } else {
             global_bbox = local_bbox;
         }
@@ -278,7 +255,7 @@ static void collect_instances_recursive(collect_ctx_t* ctx,
         alea_bbox_t global_bbox;
 
         if (accumulated) {
-            global_bbox = bbox_transform(&local_bbox, accumulated);
+            global_bbox = alea_bbox_transform(&local_bbox, accumulated);
         } else {
             global_bbox = local_bbox;
         }

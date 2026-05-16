@@ -8,6 +8,9 @@
 #include "core/alea_system.h"
 #include <stdbool.h>
 
+/* Forward decl to avoid pulling alea_universe.h transitively */
+struct alea_matrix;
+
 
 /**
  * @file bbox.h
@@ -158,10 +161,24 @@ bool alea_bbox_is_valid(const alea_bbox_t* bbox);
 /**
  * Create an empty bounding box (min > max)
  * Useful as initial value for computing unions
- * 
+ *
  * @return Empty bounding box
  */
 alea_bbox_t alea_bbox_empty(void);
+
+/**
+ * Transform an axis-aligned bounding box by a matrix and re-AABB the result.
+ *
+ * Conservative under rotation: returns the smallest AABB enclosing the
+ * 8 transformed corners (computed in O(1) from min/max contributions, not
+ * by enumerating corners). Safe for cull tests — false positives only.
+ *
+ * @param bbox Bounding box in source frame
+ * @param mat  Transform matrix (row-major 3x4)
+ * @return Transformed bounding box
+ */
+alea_bbox_t alea_bbox_transform(const alea_bbox_t* bbox,
+                                const struct alea_matrix* mat);
 
 /**
  * Create an infinite bounding box (covers all space)
