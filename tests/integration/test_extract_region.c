@@ -16,11 +16,13 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_cell.h"
 #include "core/alea_universe.h"
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /* Helper: terminal material at a world-frame point. */
 static int terminal_material(alea_system_t* sys, double x, double y, double z) {
@@ -278,6 +280,201 @@ TEST(extract_region_rect_lattice_clipped) {
      * (their centers shouldn't have a sphere cell anymore). */
     ASSERT_EQ(terminal_material(out, 0.5, 0.0, 0.0), 0);
     ASSERT_EQ(terminal_material(out, 4.5, 0.0, 0.0), 0);
+
+    alea_destroy(out);
+    alea_destroy(sys);
+}
+
+/* ------------------------------------------------------------------- */
+/* Surface integrity: every primitive type in the extracted system     */
+/* must be a valid enum value. Catches memory corruption / stale       */
+/* primitive_ids in surface entries.                                    */
+/* ------------------------------------------------------------------- */
+
+/* Nested lattices: outer 3x1x1 lattice of inner 2x1x1 lattices of spheres.
+ * Exercises the recursive lattice expansion path that user reports breaks
+ * with very-high "Unknown primitive type" numbers from the MCNP exporter.
+ *
+ * Every surface in the extracted system must have a primitive type in
+ * range [PLANE=1, ARB=23] and primitive_id < primitive_count. */
+TEST(extract_region_nested_lattices_surface_integrity) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    /* Universe 20: a sphere at origin (the leaf universe). */
+    int sphere_surf = alea_sphere_surface(sys, 0, 0, 0, 0, 0.15);
+    alea_node_id_t sphere = alea_halfspace(sys, sphere_surf, -1);
+    int m_inner = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 200, sphere, m_inner, -1.0, 20) >= 0);
+
+    /* Universe 10: inner lattice cell, 2x1x1 of universe 20. */
+    int inner_dims[6] = {0, 1, 0, 0, 0, 0};
+    double inner_pitch[3] = {0.5, 1.0, 1.0};
+    double inner_ll[3] = {0.0, -0.5, -0.5};
+    int inner_fills[2] = {20, 20};
+    /* Inner lattice cell has its CSG shell = the lattice bbox. */
+    int inner_sb = alea_box_surface(sys, 0,
+        inner_ll[0], inner_ll[0] + 2 * inner_pitch[0],
+        inner_ll[1], inner_ll[1] + 1 * inner_pitch[1],
+        inner_ll[2], inner_ll[2] + 1 * inner_pitch[2]);
+    alea_node_id_t inner_box = alea_halfspace(sys, inner_sb, -1);
+    int inner_lat_idx = alea_add_cell(sys, 100, inner_box,
+                                      ALEA_MATERIAL_VOID, 0.0, 10);
+    ASSERT(inner_lat_idx >= 0);
+    alea_cell_entry_t* inner_lc = &sys->cells.data[inner_lat_idx];
+    inner_lc->lat_type = 1;
+    inner_lc->lat_fill_dims[0] = inner_dims[0]; inner_lc->lat_fill_dims[1] = inner_dims[1];
+    inner_lc->lat_fill_dims[2] = inner_dims[2]; inner_lc->lat_fill_dims[3] = inner_dims[3];
+    inner_lc->lat_fill_dims[4] = inner_dims[4]; inner_lc->lat_fill_dims[5] = inner_dims[5];
+    inner_lc->lat_pitch[0] = inner_pitch[0];
+    inner_lc->lat_pitch[1] = inner_pitch[1];
+    inner_lc->lat_pitch[2] = inner_pitch[2];
+    inner_lc->lat_lower_left[0] = inner_ll[0];
+    inner_lc->lat_lower_left[1] = inner_ll[1];
+    inner_lc->lat_lower_left[2] = inner_ll[2];
+    inner_lc->lat_fill = malloc(2 * sizeof(int));
+    ASSERT_NOT_NULL(inner_lc->lat_fill);
+    memcpy(inner_lc->lat_fill, inner_fills, 2 * sizeof(int));
+    inner_lc->lat_fill_count = 2;
+
+    /* Universe 0: outer lattice 3x1x1 of universe 10. */
+    int outer_dims[6] = {0, 2, 0, 0, 0, 0};
+    double outer_pitch[3] = {2.0, 1.0, 1.0};
+    double outer_ll[3] = {0.0, -0.5, -0.5};
+    int outer_fills[3] = {10, 10, 10};
+    int outer_sb = alea_box_surface(sys, 0,
+        outer_ll[0], outer_ll[0] + 3 * outer_pitch[0],
+        outer_ll[1], outer_ll[1] + 1 * outer_pitch[1],
+        outer_ll[2], outer_ll[2] + 1 * outer_pitch[2]);
+    alea_node_id_t outer_box = alea_halfspace(sys, outer_sb, -1);
+    int outer_lat_idx = alea_add_cell(sys, 1, outer_box,
+                                      ALEA_MATERIAL_VOID, 0.0, 0);
+    ASSERT(outer_lat_idx >= 0);
+    alea_cell_entry_t* outer_lc = &sys->cells.data[outer_lat_idx];
+    outer_lc->lat_type = 1;
+    outer_lc->lat_fill_dims[0] = outer_dims[0]; outer_lc->lat_fill_dims[1] = outer_dims[1];
+    outer_lc->lat_fill_dims[2] = outer_dims[2]; outer_lc->lat_fill_dims[3] = outer_dims[3];
+    outer_lc->lat_fill_dims[4] = outer_dims[4]; outer_lc->lat_fill_dims[5] = outer_dims[5];
+    outer_lc->lat_pitch[0] = outer_pitch[0];
+    outer_lc->lat_pitch[1] = outer_pitch[1];
+    outer_lc->lat_pitch[2] = outer_pitch[2];
+    outer_lc->lat_lower_left[0] = outer_ll[0];
+    outer_lc->lat_lower_left[1] = outer_ll[1];
+    outer_lc->lat_lower_left[2] = outer_ll[2];
+    outer_lc->lat_fill = malloc(3 * sizeof(int));
+    ASSERT_NOT_NULL(outer_lc->lat_fill);
+    memcpy(outer_lc->lat_fill, outer_fills, 3 * sizeof(int));
+    outer_lc->lat_fill_count = 3;
+
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    /* Extract a region covering everything. */
+    alea_bbox_t big = {-100, 100, -100, 100, -100, 100};
+    alea_system_t* out = alea_extract_region(sys, &big);
+    ASSERT_NOT_NULL(out);
+
+    /* Validate every surface's primitive type is in range. */
+    size_t nsurf = alea_surface_count(out);
+    ASSERT(nsurf > 0);
+    for (size_t i = 0; i < nsurf; i++) {
+        int surf_id;
+        alea_primitive_type_t type;
+        alea_node_id_t pn, nn;
+        alea_boundary_type_t bnd;
+        ASSERT_EQ(alea_surface_get(out, i, &surf_id, &type, &pn, &nn, &bnd), 0);
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "nested-lat surface idx=%zu id=%d has out-of-range type=%d (cell_count=%zu)",
+                 i, surf_id, (int)type, alea_cell_count(out));
+        ASSERT_MSG((int)type >= ALEA_PRIMITIVE_PLANE && (int)type <= ALEA_PRIMITIVE_ARB,
+                   msg);
+    }
+
+    /* Export to MCNP. The export pass mutates the system (assigns missing
+     * surface IDs, expands macrobodies) and is where the user reports
+     * "Unknown primitive type %d" with very high numbers. Re-validate
+     * types after export to catch any corruption introduced there. */
+    FILE* tmpf = tmpfile();
+    ASSERT_NOT_NULL(tmpf);
+    ASSERT_EQ(mcnp_export_system_stream(out, tmpf), 0);
+    fclose(tmpf);
+
+    nsurf = alea_surface_count(out);
+    for (size_t i = 0; i < nsurf; i++) {
+        int surf_id;
+        alea_primitive_type_t type;
+        alea_node_id_t pn, nn;
+        alea_boundary_type_t bnd;
+        ASSERT_EQ(alea_surface_get(out, i, &surf_id, &type, &pn, &nn, &bnd), 0);
+        char msg[160];
+        snprintf(msg, sizeof(msg),
+                 "post-export surface idx=%zu id=%d has out-of-range type=%d",
+                 i, surf_id, (int)type);
+        ASSERT_MSG((int)type >= ALEA_PRIMITIVE_PLANE && (int)type <= ALEA_PRIMITIVE_ARB,
+                   msg);
+    }
+
+    alea_destroy(out);
+    alea_destroy(sys);
+}
+
+TEST(extract_region_surface_types_in_range) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    /* Build a small universe with a mix of surface types. */
+    int ss = alea_sphere_surface(sys, 0, 0, 0, 0, 1.5);
+    int sp = alea_plane_surface(sys, 0, 1, 0, 0, -0.5);
+    int sc = alea_cylinder_z_surface(sys, 0, 0, 0, 1.0);
+    int sb = alea_box_surface(sys, 0, -5, 5, -5, 5, -5, 5);
+
+    alea_node_id_t sphere   = alea_halfspace(sys, ss, -1);
+    alea_node_id_t plane    = alea_halfspace(sys, sp, -1);
+    alea_node_id_t cylinder = alea_halfspace(sys, sc, -1);
+    alea_node_id_t box      = alea_halfspace(sys, sb, -1);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    int m3 = alea_add_material(sys, 3);
+
+    /* Universe 1: three cells using different surface types. */
+    ASSERT(alea_add_cell(sys, 100, sphere,   m1, -1.0, 1) >= 0);
+    ASSERT(alea_add_cell(sys, 101, plane,    m2, -1.0, 1) >= 0);
+    ASSERT(alea_add_cell(sys, 102, cylinder, m3, -1.0, 1) >= 0);
+
+    /* TR1: offset universe 1 to (4, 0, 0) so cloning happens through a
+     * transform (this is where mc_surface_id gets zeroed). */
+    double tr_data[3] = {4.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 1, tr_data, 3, 0), 0);
+
+    int container_idx = alea_add_cell(sys, 1, box, ALEA_MATERIAL_VOID, 0.0, 0);
+    ASSERT(container_idx >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container_idx, 1, 1), 0);
+
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+
+    /* Extract a region covering the placed universe. */
+    alea_bbox_t clip = {2, 6, -2, 2, -2, 2};
+    alea_system_t* out = alea_extract_region(sys, &clip);
+    ASSERT_NOT_NULL(out);
+
+    /* Every surface in the output must reference a primitive whose type
+     * is in the valid enum range [PLANE=1, ARB=23]. A "very high" number
+     * indicates a stale or out-of-bounds primitive_id. */
+    size_t nsurf = alea_surface_count(out);
+    for (size_t i = 0; i < nsurf; i++) {
+        int surf_id;
+        alea_primitive_type_t type;
+        alea_node_id_t pn, nn;
+        alea_boundary_type_t bnd;
+        ASSERT_EQ(alea_surface_get(out, i, &surf_id, &type, &pn, &nn, &bnd), 0);
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "surface idx=%zu id=%d has out-of-range type=%d",
+                 i, surf_id, (int)type);
+        ASSERT_MSG((int)type >= ALEA_PRIMITIVE_PLANE && (int)type <= ALEA_PRIMITIVE_ARB,
+                   msg);
+    }
 
     alea_destroy(out);
     alea_destroy(sys);

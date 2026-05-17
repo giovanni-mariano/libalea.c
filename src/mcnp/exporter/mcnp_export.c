@@ -20,6 +20,7 @@
 #include "core/alea_export.h"
 #include "core/alea_materials.h"
 #include "core/alea_macrobody.h"
+#include "primitives/primitive_desc.h"
 #include "util/alea_log.h"
 #include "util/alea_bitset.h"
 #include <stdlib.h>
@@ -879,6 +880,153 @@ static int write_mcnp_surface(FILE* out,
             break;
         }
 
+        /* Macrobody surface cards. MCNP supports these natively at the
+         * surface-card level; we just need to write the right mnemonic and
+         * the data fields in the order MCNP expects. */
+
+        case ALEA_PRIMITIVE_BOX: {
+            const alea_box_general_data_t* b = &data->box_general;
+            const double v[12] = {
+                b->corner_x, b->corner_y, b->corner_z,
+                b->v1_x, b->v1_y, b->v1_z,
+                b->v2_x, b->v2_y, b->v2_z,
+                b->v3_x, b->v3_y, b->v3_z,
+            };
+            mcnp_str_puts(&s, "BOX ");
+            for (int i = 0; i < 12; i++) {
+                mcnp_str_double(&s, v[i], 16);
+                if (i < 11) mcnp_str_putc(&s, ' ');
+            }
+            break;
+        }
+
+        case ALEA_PRIMITIVE_SPH: {
+            const alea_sph_data_t* sp = &data->sph;
+            mcnp_str_puts(&s, "SPH ");
+            mcnp_str_double(&s, sp->center_x, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, sp->center_y, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, sp->center_z, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, sp->radius, 16);
+            break;
+        }
+
+        case ALEA_PRIMITIVE_TRC: {
+            const alea_trc_data_t* t = &data->trc;
+            const double v[8] = {
+                t->base_x, t->base_y, t->base_z,
+                t->height_x, t->height_y, t->height_z,
+                t->base_radius, t->top_radius,
+            };
+            mcnp_str_puts(&s, "TRC ");
+            for (int i = 0; i < 8; i++) {
+                mcnp_str_double(&s, v[i], 16);
+                if (i < 7) mcnp_str_putc(&s, ' ');
+            }
+            break;
+        }
+
+        case ALEA_PRIMITIVE_ELL: {
+            /* ELL has two parametrizations:
+             *   - Foci form: V1 (focus 1), V2 (focus 2), RM > 0 (major axis length)
+             *   - Semi-axes form: V1 (center), V2 (semi-axis lengths), RM < 0
+             * libalea stores both fields raw; the sign on major_axis_len
+             * selects the form. We preserve that sign on export. */
+            const alea_ell_data_t* e = &data->ell;
+            mcnp_str_puts(&s, "ELL ");
+            mcnp_str_double(&s, e->v1_x, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, e->v1_y, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, e->v1_z, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, e->v2_x, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, e->v2_y, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, e->v2_z, 16); mcnp_str_putc(&s, ' ');
+            mcnp_str_double(&s, e->major_axis_len, 16);
+            break;
+        }
+
+        case ALEA_PRIMITIVE_REC: {
+            /* REC: base center + height vector + 2 perpendicular semi-axis
+             * vectors. MCNP also accepts a short form (one axis + scalar
+             * radius); we always emit the full 12-value form. */
+            const alea_rec_data_t* r = &data->rec;
+            const double v[12] = {
+                r->base_x, r->base_y, r->base_z,
+                r->height_x, r->height_y, r->height_z,
+                r->axis1_x, r->axis1_y, r->axis1_z,
+                r->axis2_x, r->axis2_y, r->axis2_z,
+            };
+            mcnp_str_puts(&s, "REC ");
+            for (int i = 0; i < 12; i++) {
+                mcnp_str_double(&s, v[i], 16);
+                if (i < 11) mcnp_str_putc(&s, ' ');
+            }
+            break;
+        }
+
+        case ALEA_PRIMITIVE_WED: {
+            const alea_wed_data_t* w = &data->wed;
+            const double v[12] = {
+                w->vertex_x, w->vertex_y, w->vertex_z,
+                w->v1_x, w->v1_y, w->v1_z,
+                w->v2_x, w->v2_y, w->v2_z,
+                w->v3_x, w->v3_y, w->v3_z,
+            };
+            mcnp_str_puts(&s, "WED ");
+            for (int i = 0; i < 12; i++) {
+                mcnp_str_double(&s, v[i], 16);
+                if (i < 11) mcnp_str_putc(&s, ' ');
+            }
+            break;
+        }
+
+        case ALEA_PRIMITIVE_RHP: {
+            /* RHP: base center + height vector + three semi-vertex vectors
+             * (r1, r2, r3). MCNP also accepts a short form with only r1
+             * when the hex is regular; we always emit the full 15-value
+             * form (matches HEX alias which is the same primitive). */
+            const alea_rhp_data_t* h = &data->rhp;
+            const double v[15] = {
+                h->base_x, h->base_y, h->base_z,
+                h->height_x, h->height_y, h->height_z,
+                h->r1_x, h->r1_y, h->r1_z,
+                h->r2_x, h->r2_y, h->r2_z,
+                h->r3_x, h->r3_y, h->r3_z,
+            };
+            mcnp_str_puts(&s, "RHP ");
+            for (int i = 0; i < 15; i++) {
+                mcnp_str_double(&s, v[i], 16);
+                if (i < 14) mcnp_str_putc(&s, ' ');
+            }
+            break;
+        }
+
+        case ALEA_PRIMITIVE_ARB: {
+            /* ARB: 8 corner triples (24 values) + 6 face descriptors
+             * (each is a 4-digit integer whose digits are 1..8 corner
+             * indices, or 0-padded for triangles). MCNP requires exactly
+             * 30 values regardless of num_corners / num_faces. */
+            const alea_arb_data_t* a = &data->arb;
+            mcnp_str_puts(&s, "ARB ");
+            for (int i = 0; i < 8; i++) {
+                for (int j = 0; j < 3; j++) {
+                    mcnp_str_double(&s, a->corners[i][j], 16);
+                    mcnp_str_putc(&s, ' ');
+                }
+            }
+            for (int f = 0; f < 6; f++) {
+                /* Encode face as concatenated digits: e.g. {1,2,3,4} -> 1234,
+                 * {1,2,3,0} (triangle) -> 1230. */
+                int code = 0;
+                for (int j = 0; j < 4; j++) {
+                    int d = a->faces[f][j];
+                    if (d < 0 || d > 9) d = 0;
+                    code = code * 10 + d;
+                }
+                mcnp_str_int(&s, code);
+                if (f < 5) mcnp_str_putc(&s, ' ');
+            }
+            break;
+        }
+
         default:
             ALEA_LOG_WARN("Unknown primitive type %d", type);
             return -1;
@@ -1112,6 +1260,13 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
 
             if (alea_bitset_test(&prim_written, prim_id)) continue;
 
+            if (prim_id >= alea_vec_count(&sys->primitives)) {
+                ALEA_LOG_ERROR("Surface entry %zu (mc_surface_id=%d) has out-of-range "
+                               "primitive_id=%u (primitive_count=%zu) in dedup path",
+                               i, mcnp_id, prim_id, alea_vec_count(&sys->primitives));
+                alea_bitset_destroy(&prim_written);
+                return -1;
+            }
             const alea_primitive_entry_t* prim = &sys->primitives.data[prim_id];
 
             if (ctx->surface_policy == ALEA_EMIT_SURFACES && is_macrobody(prim->type)) {
@@ -1152,6 +1307,18 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
             ALEA_CHECK_INTERRUPTED(-1);
             const alea_surface_entry_t* surface = &sys->surfaces.data[i];
 
+            /* Bounds-check primitive_id before dereferencing. If a surface
+             * entry references an out-of-range primitive, reading past the
+             * primitives vector yields garbage — most visibly a "very high"
+             * prim->type printed by the "Unknown primitive type" branch
+             * below. Fail loudly with diagnostics instead. */
+            if (surface->primitive_id >= alea_vec_count(&sys->primitives)) {
+                ALEA_LOG_ERROR("Surface entry %zu (mc_surface_id=%d) has out-of-range "
+                               "primitive_id=%u (primitive_count=%zu) — corrupted surface table",
+                               i, surface->mc_surface_id, surface->primitive_id,
+                               alea_vec_count(&sys->primitives));
+                return -1;
+            }
             const alea_primitive_entry_t* prim = &sys->primitives.data[surface->primitive_id];
             if (ctx->surface_policy == ALEA_EMIT_SURFACES && is_macrobody(prim->type)) {
                 continue;
@@ -1251,6 +1418,13 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
 
                 if (registered && surf_id <= max_registered_id && registered[surf_id]) continue;
 
+                if (node->primitive.primitive_id >= alea_vec_count(&sys->primitives)) {
+                    ALEA_LOG_ERROR("Node %zu (mc_surface_id=%d) has out-of-range "
+                                   "primitive_id=%u (primitive_count=%zu) in synthetic-surface emission",
+                                   n, surf_id, node->primitive.primitive_id,
+                                   alea_vec_count(&sys->primitives));
+                    continue;
+                }
                 const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
                 write_mcnp_surface(ctx->out, &ctx->arena, surf_id, 0,
                                    ALEA_BOUNDARY_TRANSMISSIVE, 0, prim->type, &prim->data,

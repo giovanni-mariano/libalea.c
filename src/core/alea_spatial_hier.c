@@ -1944,6 +1944,119 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
     return -1;
 }
 
+static int compare_spatial_hits_by_depth_cell(const void* a, const void* b);
+
+static int append_universe_region_hit(alea_system_t* sys,
+                                      int universe_id,
+                                      int depth,
+                                      uint32_t cell_index,
+                                      uint32_t synthetic_index,
+                                      alea_spatial_hit_t* out_hits,
+                                      size_t max_hits,
+                                      size_t* hit_count) {
+    if (*hit_count >= max_hits) return 0;
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    alea_spatial_hit_t* hit = &out_hits[*hit_count];
+    hit->instance_index = synthetic_index;
+    hit->cell_index = cell_index;
+    hit->cell_id = cell->mc_cell_id;
+    hit->material_id = cell->material_id;
+    hit->universe_id = universe_id;
+    hit->depth = depth;
+    hit->is_terminal = (cell->fill_universe <= 0 &&
+                        !(cell->lat_type != 0 && cell->lat_fill));
+    alea_matrix_identity(&hit->transform);
+    (*hit_count)++;
+    return 0;
+}
+
+static int query_universe_region_blas_node(alea_system_t* sys,
+                                           const hier_universe_blas_t* blas,
+                                           uint32_t node_index,
+                                           int universe_id,
+                                           const alea_bbox_t* local_bbox,
+                                           alea_spatial_hit_t* out_hits,
+                                           size_t max_hits,
+                                           size_t* hit_count) {
+    if (node_index >= blas->node_count) return -1;
+    if (*hit_count >= max_hits) return 0;
+
+    const hier_bvh_node_t* node = &blas->nodes[node_index];
+    if (!hier_fbbox_intersects_dbbox(&node->bbox, local_bbox)) return 0;
+
+    if (node->count == 0) {
+        if (query_universe_region_blas_node(sys, blas, node->left_or_first,
+                                            universe_id, local_bbox,
+                                            out_hits, max_hits,
+                                            hit_count) != 0) {
+            return -1;
+        }
+        return query_universe_region_blas_node(sys, blas, node->right_child,
+                                               universe_id, local_bbox,
+                                               out_hits, max_hits, hit_count);
+    }
+
+    for (uint16_t i = 0; i < node->count; i++) {
+        if (*hit_count >= max_hits) return 0;
+        uint32_t cell_pos = blas->indices[node->left_or_first + i];
+        if (cell_pos >= blas->cell_count) return -1;
+        const hier_blas_cell_t* blas_cell = &blas->cells[cell_pos];
+        if (!hier_fbbox_intersects_dbbox(&blas_cell->bbox, local_bbox)) continue;
+        if (append_universe_region_hit(sys, universe_id, 0,
+                                       blas_cell->cell_index, cell_pos,
+                                       out_hits, max_hits, hit_count) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int alea_hier_spatial_query_universe_region(alea_system_t* sys,
+                                            int universe_id,
+                                            const alea_bbox_t* local_bbox,
+                                            alea_spatial_hit_t* out_hits,
+                                            size_t max_hits) {
+    if (!sys || !local_bbox || !out_hits || max_hits == 0) return -1;
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) return -1;
+    }
+
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    size_t hit_count = 0;
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    if (blas && blas->built && blas->node_count > 0) {
+        int rc = query_universe_region_blas_node(sys, blas, 0,
+                                                 universe_id, local_bbox,
+                                                 out_hits, max_hits,
+                                                 &hit_count);
+        if (rc != 0) return -1;
+    } else {
+        const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+        if (!univ) return 0;
+        for (size_t i = 0; i < univ->cell_indices.count; i++) {
+            if (hit_count >= max_hits) break;
+            uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
+            const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+            alea_bbox_t bbox = (cell->lat_type != 0 && cell->lat_fill)
+                ? lattice_container_bbox(cell)
+                : local_cell_bbox(sys, cell_index);
+            if (!bbox_intersects_local(&bbox, local_bbox)) continue;
+            if (append_universe_region_hit(sys, universe_id, 0,
+                                           cell_index, (uint32_t)i,
+                                           out_hits, max_hits,
+                                           &hit_count) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    if (hit_count > 1) {
+        qsort(out_hits, hit_count, sizeof(*out_hits),
+              compare_spatial_hits_by_depth_cell);
+    }
+    return (int)hit_count;
+}
+
 static int append_region_hit(alea_system_t* sys,
                              alea_hier_spatial_index_t* idx,
                              const hier_placement_t* placement,
@@ -2353,6 +2466,307 @@ static int query_region_universe_direct(alea_system_t* sys,
     return 0;
 }
 
+typedef struct {
+    uint32_t cell_indices[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    alea_matrix_t transforms[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    uint8_t count;
+    uint8_t truncated;
+} hier_region_chain_t;
+
+static void hier_region_chain_push(hier_region_chain_t* chain,
+                                   uint32_t cell_index,
+                                   const alea_matrix_t* transform) {
+    if (chain->count >= ALEA_HIER_SPATIAL_HIT_CHAIN_MAX) {
+        chain->truncated = 1;
+        return;
+    }
+    chain->cell_indices[chain->count] = cell_index;
+    chain->transforms[chain->count] = *transform;
+    chain->count++;
+}
+
+static int append_region_chain_hit(alea_system_t* sys,
+                                   const alea_matrix_t* transform,
+                                   int universe_id,
+                                   int depth,
+                                   uint32_t cell_index,
+                                   uint32_t synthetic_index,
+                                   const hier_region_chain_t* chain,
+                                   alea_hier_spatial_chain_hit_t* out_hits,
+                                   size_t max_hits,
+                                   size_t* hit_count) {
+    if (*hit_count >= max_hits) return 0;
+    if (!transform || !chain) return -1;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    alea_hier_spatial_chain_hit_t* out = &out_hits[*hit_count];
+    out->hit.instance_index = synthetic_index;
+    out->hit.cell_index = cell_index;
+    out->hit.cell_id = cell->mc_cell_id;
+    out->hit.material_id = cell->material_id;
+    out->hit.universe_id = universe_id;
+    out->hit.depth = depth;
+    out->hit.is_terminal = true;
+    out->hit.transform = *transform;
+    out->ancestor_count = chain->count;
+    out->chain_truncated = chain->truncated;
+    for (uint8_t i = 0; i < chain->count; i++) {
+        out->ancestor_cell_indices[i] = chain->cell_indices[i];
+        out->ancestor_transforms[i] = chain->transforms[i];
+    }
+    (*hit_count)++;
+    return 0;
+}
+
+static int query_region_universe_chain(alea_system_t* sys,
+                                       alea_hier_spatial_index_t* idx,
+                                       int universe_id,
+                                       const alea_matrix_t* transform,
+                                       int depth,
+                                       const alea_bbox_t* local_query,
+                                       const alea_bbox_t* world_query,
+                                       const hier_region_chain_t* chain,
+                                       alea_hier_spatial_chain_hit_t* out_hits,
+                                       size_t max_hits,
+                                       size_t* hit_count);
+
+static int query_lattice_cell_chain(alea_system_t* sys,
+                                    alea_hier_spatial_index_t* idx,
+                                    const alea_cell_entry_t* cell,
+                                    const alea_matrix_t* parent_transform,
+                                    int depth,
+                                    const alea_bbox_t* local_query,
+                                    const alea_bbox_t* world_query,
+                                    const hier_region_chain_t* chain,
+                                    alea_hier_spatial_chain_hit_t* out_hits,
+                                    size_t max_hits,
+                                    size_t* hit_count) {
+    if (!cell->lat_fill || cell->lat_fill_count == 0) return 0;
+
+    int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (ni <= 0 || nj <= 0 || nk <= 0) return 0;
+
+    int i0 = 0, i1 = ni - 1;
+    int j0 = 0, j1 = nj - 1;
+    int k0 = 0, k1 = nk - 1;
+
+    if (cell->lat_type == 1) {
+        if (cell->lat_pitch[0] == 0.0 || cell->lat_pitch[1] == 0.0 ||
+            cell->lat_pitch[2] == 0.0) {
+            return 0;
+        }
+        i0 = (int)floor((local_query->min_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
+        i1 = (int)floor((local_query->max_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
+        j0 = (nj == 1) ? 0 : (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
+        j1 = (nj == 1) ? 0 : (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
+        k0 = (nk == 1) ? 0 : (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+        k1 = (nk == 1) ? 0 : (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+
+        if (i0 < 0) i0 = 0;
+        if (j0 < 0) j0 = 0;
+        if (k0 < 0) k0 = 0;
+        if (i1 >= ni) i1 = ni - 1;
+        if (j1 >= nj) j1 = nj - 1;
+        if (k1 >= nk) k1 = nk - 1;
+    }
+
+    if (i0 > i1 || j0 > j1 || k0 > k1) return 0;
+
+    for (int i = i0; i <= i1; i++) {
+        for (int j = j0; j <= j1; j++) {
+            for (int k = k0; k <= k1; k++) {
+                size_t fill_index = (size_t)(i * nj * nk + j * nk + k);
+                if (fill_index >= cell->lat_fill_count) continue;
+
+                int fill_universe = cell->lat_fill[fill_index];
+                if (fill_universe < 0) continue;
+
+                double ox, oy, oz;
+                if (cell->lat_type == 2) {
+                    int ri = i + cell->lat_fill_dims[0];
+                    int rk = j + cell->lat_fill_dims[2];
+                    double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
+                    ox = ri * p + rk * p * 0.5;
+                    oy = rk * p * M_SQRT3 * 0.5;
+                    oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                } else {
+                    ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
+                    oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
+                    oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                }
+
+                alea_matrix_t element_translation;
+                translation_matrix(&element_translation, ox, oy, oz);
+                alea_matrix_t element_transform;
+                alea_matrix_multiply(&element_transform, parent_transform, &element_translation);
+                if (!alea_matrix_invert(&element_transform)) return -1;
+
+                alea_bbox_t element_query = *local_query;
+                element_query.min_x -= ox;
+                element_query.max_x -= ox;
+                element_query.min_y -= oy;
+                element_query.max_y -= oy;
+                element_query.min_z -= oz;
+                element_query.max_z -= oz;
+
+                if (query_region_universe_chain(sys, idx, fill_universe,
+                                                &element_transform, depth + 1,
+                                                &element_query, world_query,
+                                                chain, out_hits, max_hits,
+                                                hit_count) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int query_region_cell_chain(alea_system_t* sys,
+                                   alea_hier_spatial_index_t* idx,
+                                   uint32_t cell_index,
+                                   size_t cell_pos,
+                                   int universe_id,
+                                   const alea_matrix_t* transform,
+                                   int depth,
+                                   const alea_bbox_t* cell_bbox,
+                                   const alea_bbox_t* local_query,
+                                   const alea_bbox_t* world_query,
+                                   const hier_region_chain_t* chain,
+                                   alea_hier_spatial_chain_hit_t* out_hits,
+                                   size_t max_hits,
+                                   size_t* hit_count) {
+    if (!bbox_intersects_local(cell_bbox, local_query)) return 0;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    if (cell->lat_type != 0 && cell->lat_fill) {
+        hier_region_chain_t child_chain = *chain;
+        hier_region_chain_push(&child_chain, cell_index, transform);
+        return query_lattice_cell_chain(sys, idx, cell, transform, depth,
+                                        local_query, world_query,
+                                        &child_chain, out_hits, max_hits,
+                                        hit_count);
+    }
+
+    if (cell->fill_universe > 0) {
+        const alea_matrix_t* fill_matrix =
+            cell_fill_matrix_cached(idx, cell_index);
+        if (!fill_matrix) return -1;
+        alea_matrix_t child_transform;
+        alea_matrix_multiply(&child_transform, transform, fill_matrix);
+        if (!alea_matrix_invert(&child_transform)) return -1;
+
+        alea_bbox_t child_query = bbox_transform_inverse_conservative(world_query,
+                                                                      &child_transform);
+        if (!alea_bbox_is_valid(&child_query)) return 0;
+
+        hier_region_chain_t child_chain = *chain;
+        hier_region_chain_push(&child_chain, cell_index, transform);
+        return query_region_universe_chain(sys, idx, cell->fill_universe,
+                                           &child_transform, depth + 1,
+                                           &child_query, world_query,
+                                           &child_chain, out_hits, max_hits,
+                                           hit_count);
+    }
+
+    alea_bbox_t world_bbox = alea_bbox_transform(cell_bbox, transform);
+    if (!bbox_intersects_local(&world_bbox, world_query)) return 0;
+
+    uint32_t synthetic_index = (uint32_t)(cell_pos + ((size_t)depth << 24));
+    return append_region_chain_hit(sys, transform, universe_id, depth,
+                                   cell_index, synthetic_index, chain,
+                                   out_hits, max_hits, hit_count);
+}
+
+static int query_region_blas_node_chain(alea_system_t* sys,
+                                        alea_hier_spatial_index_t* idx,
+                                        const hier_universe_blas_t* blas,
+                                        uint32_t node_index,
+                                        int universe_id,
+                                        const alea_matrix_t* transform,
+                                        int depth,
+                                        const alea_bbox_t* local_query,
+                                        const alea_bbox_t* world_query,
+                                        const hier_region_chain_t* chain,
+                                        alea_hier_spatial_chain_hit_t* out_hits,
+                                        size_t max_hits,
+                                        size_t* hit_count) {
+    if (node_index >= blas->node_count) return -1;
+
+    const hier_bvh_node_t* node = &blas->nodes[node_index];
+    if (!hier_fbbox_intersects_dbbox(&node->bbox, local_query)) return 0;
+
+    if (node->count == 0) {
+        if (query_region_blas_node_chain(sys, idx, blas, node->left_or_first,
+                                         universe_id, transform, depth,
+                                         local_query, world_query, chain,
+                                         out_hits, max_hits, hit_count) != 0) {
+            return -1;
+        }
+        return query_region_blas_node_chain(sys, idx, blas, node->right_child,
+                                            universe_id, transform, depth,
+                                            local_query, world_query, chain,
+                                            out_hits, max_hits, hit_count);
+    }
+
+    for (uint16_t i = 0; i < node->count; i++) {
+        uint32_t cell_pos = blas->indices[node->left_or_first + i];
+        if (cell_pos >= blas->cell_count) return -1;
+
+        const hier_blas_cell_t* blas_cell = &blas->cells[cell_pos];
+        alea_bbox_t cell_bbox_d = hier_fbbox_to_double(&blas_cell->bbox);
+        if (query_region_cell_chain(sys, idx, blas_cell->cell_index, cell_pos,
+                                    universe_id, transform, depth,
+                                    &cell_bbox_d, local_query, world_query,
+                                    chain, out_hits, max_hits,
+                                    hit_count) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int query_region_universe_chain(alea_system_t* sys,
+                                       alea_hier_spatial_index_t* idx,
+                                       int universe_id,
+                                       const alea_matrix_t* transform,
+                                       int depth,
+                                       const alea_bbox_t* local_query,
+                                       const alea_bbox_t* world_query,
+                                       const hier_region_chain_t* chain,
+                                       alea_hier_spatial_chain_hit_t* out_hits,
+                                       size_t max_hits,
+                                       size_t* hit_count) {
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    if (blas && blas->built && blas->node_count > 0) {
+        return query_region_blas_node_chain(sys, idx, blas, 0, universe_id,
+                                            transform, depth, local_query,
+                                            world_query, chain,
+                                            out_hits, max_hits, hit_count);
+    }
+
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return 0;
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        alea_bbox_t bbox = (cell->lat_type != 0 && cell->lat_fill)
+            ? lattice_container_bbox(cell)
+            : local_cell_bbox(sys, cell_index);
+        if (query_region_cell_chain(sys, idx, cell_index, i, universe_id,
+                                    transform, depth, &bbox, local_query,
+                                    world_query, chain, out_hits, max_hits,
+                                    hit_count) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int compare_spatial_hits_by_depth_cell(const void* a, const void* b) {
     const alea_spatial_hit_t* ha = (const alea_spatial_hit_t*)a;
     const alea_spatial_hit_t* hb = (const alea_spatial_hit_t*)b;
@@ -2508,6 +2922,61 @@ int alea_hier_spatial_query_region_direct(alea_system_t* sys,
     if (hit_count > 1) {
         qsort(out_hits, hit_count, sizeof(*out_hits),
               compare_spatial_hits_by_depth_cell);
+    }
+
+    return (int)hit_count;
+}
+
+int alea_hier_spatial_query_region_chain(alea_system_t* sys,
+                                         const alea_bbox_t* query_bbox,
+                                         alea_hier_spatial_chain_hit_t* out_hits,
+                                         size_t max_hits) {
+    if (!sys || !query_bbox || !out_hits) return -1;
+
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) {
+            return -1;
+        }
+    }
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+
+    hier_region_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+
+    size_t hit_count = 0;
+    int rc = query_region_universe_chain(sys, sys->hier_spatial_index, 0,
+                                         &identity, 0,
+                                         query_bbox, query_bbox,
+                                         &chain, out_hits, max_hits,
+                                         &hit_count);
+    if (rc != 0) return -1;
+
+    if (hit_count > 1) {
+        /* Keep the same stable order as normal region hits. */
+        for (size_t i = 1; i < hit_count; i++) {
+            alea_hier_spatial_chain_hit_t x = out_hits[i];
+            size_t j = i;
+            while (j > 0) {
+                const alea_spatial_hit_t* a = &out_hits[j - 1].hit;
+                const alea_spatial_hit_t* b = &x.hit;
+                int cmp = 0;
+                if (a->depth != b->depth) {
+                    cmp = (a->depth > b->depth) - (a->depth < b->depth);
+                } else if (a->universe_id != b->universe_id) {
+                    cmp = (a->universe_id > b->universe_id) -
+                          (a->universe_id < b->universe_id);
+                } else {
+                    cmp = (a->cell_index > b->cell_index) -
+                          (a->cell_index < b->cell_index);
+                }
+                if (cmp <= 0) break;
+                out_hits[j] = out_hits[j - 1];
+                j--;
+            }
+            out_hits[j] = x;
+        }
     }
 
     return (int)hit_count;

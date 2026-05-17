@@ -437,6 +437,75 @@ TEST(grid_tile_coverage_nested_overlap) {
     alea_destroy(sys);
 }
 
+TEST(grid_path_coverage_nested_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+
+    int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 10.0);
+    int inner = alea_sphere_surface(sys, 2, 0, 0, 0, 3.0);
+    ASSERT(outer >= 0 && inner >= 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_halfspace(sys, outer, -1), m1, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, inner, -1), m2, -2.0, 0);
+
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int nu = 64, nv = 64;
+    int* cell_ids = calloc((size_t)nu * nv, sizeof(int));
+    int* secondary = calloc((size_t)nu * nv, sizeof(int));
+    uint8_t* errors = calloc((size_t)nu * nv, sizeof(uint8_t));
+    uint8_t* coverage = calloc((size_t)nu * nv, sizeof(uint8_t));
+    uint32_t* path_ids = calloc((size_t)nu * nv, sizeof(uint32_t));
+    alea_slice_path_table_t paths = {0};
+    ASSERT_NOT_NULL(cell_ids);
+    ASSERT_NOT_NULL(secondary);
+    ASSERT_NOT_NULL(errors);
+    ASSERT_NOT_NULL(coverage);
+    ASSERT_NOT_NULL(path_ids);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -12.0, 12.0, -12.0, 12.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage_paths(
+                  sys, &view, nu, nv, -1,
+                  ALEA_GRID_COVERAGE_FAST | ALEA_GRID_PATH_IDS,
+                  cell_ids, NULL, secondary, coverage, errors,
+                  path_ids, &paths), 0);
+    ASSERT(paths.count > 0);
+    int before = count_coverage(coverage, nu * nv, ALEA_COVERAGE_MULTI);
+
+    int refined = alea_refine_grid_coverage_paths_exact(
+        sys, &view, nu, nv, -1, 16, 16, cell_ids, path_ids, &paths,
+        secondary, coverage, errors);
+    ASSERT(refined > 0);
+    alea_tile_coverage_stats_t stats = alea_tile_coverage_stats_get();
+    ASSERT(stats.tiles > 0);
+    ASSERT(stats.pixels > 0);
+    ASSERT(stats.dedup_candidate_max > 0);
+    ASSERT_EQ((int)stats.refined_pixels, refined);
+
+    int after = count_coverage(coverage, nu * nv, ALEA_COVERAGE_MULTI);
+    ASSERT(after > before);
+    int center = (nv / 2) * nu + (nu / 2);
+    ASSERT_EQ(coverage[center], ALEA_COVERAGE_MULTI);
+    ASSERT(secondary[center] > 0);
+
+    alea_slice_path_table_free(&paths);
+    free(path_ids);
+    free(coverage);
+    free(errors);
+    free(secondary);
+    free(cell_ids);
+    alea_destroy(sys);
+}
+
 /* =========================================================================
  * Test 4e: component classification distinguishes partial overlap
  * ========================================================================= */
@@ -696,6 +765,125 @@ TEST(grid_flat_hier_parity) {
 
     mcnp_model_destroy(mf);
     mcnp_model_destroy(mh);
+}
+
+TEST(grid_path_ids_filled_universe) {
+    mcnp_model_t* model = mcnp_load(SIMPLE_FILL_PATH);
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int nu = 32, nv = 32;
+    int cell_ids[1024];
+    uint8_t coverage[1024];
+    uint8_t errors[1024];
+    uint32_t path_ids[1024];
+    alea_slice_path_table_t paths = {0};
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -60.0, 60.0, -60.0, 60.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage_paths(
+        sys, &view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_FAST | ALEA_GRID_PATH_IDS,
+        cell_ids, NULL, NULL, coverage, errors, path_ids, &paths), 0);
+
+    ASSERT(paths.count > 0);
+    uint32_t fill_path = UINT32_MAX;
+    int fill_pixels = 0;
+    for (int i = 0; i < nu * nv; i++) {
+        if (cell_ids[i] == 2 || cell_ids[i] == 3) {
+            ASSERT(path_ids[i] != UINT32_MAX);
+            if (fill_path == UINT32_MAX) fill_path = path_ids[i];
+            ASSERT_EQ(path_ids[i], fill_path);
+            fill_pixels++;
+        }
+    }
+    ASSERT(fill_pixels > 0);
+    ASSERT(fill_path < paths.count);
+    ASSERT_EQ(paths.records[fill_path].universe_id, 1);
+    ASSERT_EQ(paths.records[fill_path].depth, 1);
+
+    alea_slice_path_table_free(&paths);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_boundary_filter_suppresses_shared_surface) {
+    alea_system_t* sys = make_x_split(0.0, 10.0);
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[1];
+    int secondary_ids[1] = {-1};
+    uint8_t coverage[1];
+    uint8_t errors[1];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, 1, 1, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        cell_ids, NULL, secondary_ids, coverage, errors), 0);
+    ASSERT_EQ(coverage[0], ALEA_COVERAGE_MULTI);
+    ASSERT_EQ(errors[0], ALEA_GRID_OVERLAP);
+
+    alea_boundary_filter_stats_t stats;
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, 1, 1, -1, cell_ids, secondary_ids,
+        coverage, errors, &stats), 1);
+    ASSERT_EQ(stats.checked, 1);
+    ASSERT_EQ(stats.suppressed, 1);
+    ASSERT_EQ(coverage[0], ALEA_COVERAGE_ONE);
+    ASSERT_EQ(errors[0], ALEA_GRID_OK);
+    ASSERT_EQ(secondary_ids[0], -1);
+
+    alea_destroy(sys);
+}
+
+TEST(grid_boundary_filter_keeps_finite_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int s1 = alea_sphere_surface(sys, 1, -0.25, 0.0, 0.0, 1.0);
+    int s2 = alea_sphere_surface(sys, 2,  0.25, 0.0, 0.0, 1.0);
+    ASSERT(s1 >= 0);
+    ASSERT(s2 >= 0);
+    alea_node_id_t n1 = alea_halfspace(sys, s1, -1);
+    alea_node_id_t n2 = alea_halfspace(sys, s2, -1);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, n1, m1, -1.0, 0);
+    alea_add_cell(sys, 2, n2, m2, -1.0, 0);
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[1];
+    int secondary_ids[1] = {-1};
+    uint8_t coverage[1];
+    uint8_t errors[1];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, 1, 1, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        cell_ids, NULL, secondary_ids, coverage, errors), 0);
+    ASSERT_EQ(coverage[0], ALEA_COVERAGE_MULTI);
+    ASSERT_EQ(errors[0], ALEA_GRID_OVERLAP);
+
+    alea_boundary_filter_stats_t stats;
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, 1, 1, -1, cell_ids, secondary_ids,
+        coverage, errors, &stats), 0);
+    ASSERT_EQ(stats.checked, 1);
+    ASSERT_EQ(stats.retained, 1);
+    ASSERT_EQ(coverage[0], ALEA_COVERAGE_MULTI);
+    ASSERT_EQ(errors[0], ALEA_GRID_OVERLAP);
+
+    alea_destroy(sys);
 }
 
 TEST_MAIN()

@@ -20,6 +20,16 @@ typedef struct {
     alea_matrix_t lattice_transform;
 } alea_hier_cell_hit_t;
 
+#define ALEA_HIER_SPATIAL_HIT_CHAIN_MAX 16
+
+typedef struct {
+    alea_spatial_hit_t hit;
+    uint8_t ancestor_count;
+    uint8_t chain_truncated;
+    uint32_t ancestor_cell_indices[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    alea_matrix_t ancestor_transforms[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+} alea_hier_spatial_chain_hit_t;
+
 typedef struct {
     size_t universe_count;
     size_t blas_count;
@@ -99,6 +109,11 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
                                             double lx,
                                             double ly,
                                             double lz);
+int alea_hier_spatial_query_universe_region(alea_system_t* sys,
+                                            int universe_id,
+                                            const alea_bbox_t* local_bbox,
+                                            alea_spatial_hit_t* out_hits,
+                                            size_t max_hits);
 
 /**
  * @brief Return the precomputed per-cell fill transform (forward + inverse)
@@ -125,6 +140,10 @@ int alea_hier_spatial_query_region_direct(alea_system_t* sys,
                                           const alea_bbox_t* query_bbox,
                                           alea_spatial_hit_t* out_hits,
                                           size_t max_hits);
+int alea_hier_spatial_query_region_chain(alea_system_t* sys,
+                                         const alea_bbox_t* query_bbox,
+                                         alea_hier_spatial_chain_hit_t* out_hits,
+                                         size_t max_hits);
 int alea_hier_spatial_query_slice_z(alea_system_t* sys,
                                     double z,
                                     double x_min,

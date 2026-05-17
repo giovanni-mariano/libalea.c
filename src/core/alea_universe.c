@@ -16,6 +16,8 @@
 #include "core/alea_eval.h"
 #include "primitives/bbox.h"
 #include "primitives/primitive_desc.h"
+#include "core/alea_macrobody.h"
+#include "core/alea_transform.h"
 #include "raycast/bvh.h"
 #include "util/compat.h"
 #include "util/alea_bitset.h"
@@ -736,9 +738,76 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
             sys->surface_lookup[id] = (alea_node_id_t)i;
     }
 
+    /* Rebuild macrobody / 1-sheet-cone immediate expansions.
+     *
+     * For each surface whose primitive is a macrobody (BOX, SPH, TRC, ELL,
+     * REC, WED, RHP, ARB) or a 1-sheet cone, recompute the half-space
+     * decomposition into expanded_neg_node / expanded_pos_node. The MCNP
+     * exporter uses these at write time to swap a macrobody primitive node
+     * for its CSG expansion (replace_macrobody_nodes in alea_export.c).
+     *
+     * Without this step, surface entries created here have
+     * expanded_*_node = INVALID, so the exporter falls back to emitting
+     * the macrobody surface card directly — which works for RPP and RCC
+     * but not for the other macrobody types (the MCNP write_mcnp_surface
+     * switch has no case for them) and produces "Unknown primitive type
+     * %d" warnings. Building expansions here lets the exporter emit those
+     * macrobodies as their component half-spaces. */
+    /* Snapshot count up front: alea_expand_macrobody_immediate adds new
+     * component primitives (and nodes) via alea_get_or_create_primitive,
+     * which can realloc sys->primitives. Iterate using the original surface
+     * count so we don't re-expand entries that didn't exist when we started. */
+    size_t surface_count_snapshot = alea_vec_count(&sys->surfaces);
+    for (size_t i = 0; i < surface_count_snapshot; i++) {
+        /* Re-fetch the surface entry pointer through the index each iteration
+         * (we don't add surface entries here, but be defensive). Copy the
+         * primitive type and data BY VALUE: the expansion below grows
+         * primitives, which invalidates any pointer into the primitives
+         * vector. */
+        uint32_t prim_id = sys->surfaces.data[i].primitive_id;
+        if (prim_id >= alea_vec_count(&sys->primitives)) continue;
+        alea_primitive_type_t prim_type = sys->primitives.data[prim_id].type;
+        alea_primitive_data_t prim_data = sys->primitives.data[prim_id].data;
+
+        alea_node_id_t exp_neg = ALEA_NODE_ID_INVALID;
+        alea_node_id_t exp_pos = ALEA_NODE_ID_INVALID;
+
+        if (alea_is_macrobody(prim_type)) {
+            if (alea_expand_macrobody_immediate(sys, prim_type, &prim_data,
+                                                &exp_neg, &exp_pos) == 0) {
+                sys->surfaces.data[i].expanded_neg_node = exp_neg;
+                sys->surfaces.data[i].expanded_pos_node = exp_pos;
+            }
+            continue;
+        }
+
+        /* 1-sheet cones: sheet_selection != 0 in the cone data. */
+        bool is_1sheet_cone = false;
+        switch (prim_type) {
+            case ALEA_PRIMITIVE_CONE_X:
+                is_1sheet_cone = (prim_data.cone_x.sheet_selection != 0);
+                break;
+            case ALEA_PRIMITIVE_CONE_Y:
+                is_1sheet_cone = (prim_data.cone_y.sheet_selection != 0);
+                break;
+            case ALEA_PRIMITIVE_CONE_Z:
+                is_1sheet_cone = (prim_data.cone_z.sheet_selection != 0);
+                break;
+            default:
+                break;
+        }
+        if (is_1sheet_cone) {
+            if (alea_expand_1sheet_cone_immediate(sys, prim_type, &prim_data,
+                                                  &exp_neg, &exp_pos) == 0) {
+                sys->surfaces.data[i].expanded_neg_node = exp_neg;
+                sys->surfaces.data[i].expanded_pos_node = exp_pos;
+            }
+        }
+    }
+
     ALEA_LOG_INFO("Built surface mapping for flattened system: %zu surfaces (max ID %d)",
            alea_vec_count(&sys->surfaces), max_assigned_id);
-    
+
     return 0;
 }
 /* ============================================================================
@@ -1547,8 +1616,26 @@ static alea_node_id_t clone_tree_impl(alea_system_t* dst, const alea_system_t* s
             alea_primitive_entry_t* src_prim = &src->primitives.data[src_prim_id];
             alea_primitive_data_t transformed_data;
             alea_primitive_type_t transformed_type;
-            alea_primitive_transform(src_prim->type, &src_prim->data, mat->m,
-                                    &transformed_type, &transformed_data);
+            bool xform_ok = alea_primitive_transform(src_prim->type, &src_prim->data, mat->m,
+                                                     &transformed_type, &transformed_data);
+            if (!xform_ok) {
+                /* Per-type transform refused to bake (e.g., a rotated torus
+                 * whose axis no longer aligns with X/Y/Z — MCNP only
+                 * supports axis-aligned tori, and MCNP does NOT accept a
+                 * surface-level TR prefix to rescue this case when the TR
+                 * itself doesn't preserve axis alignment).
+                 *
+                 * Producing un-transformed output here would silently
+                 * corrupt geometry, so fail hard. The principled fix is
+                 * partial-flatten: stop flattening at the fill level whose
+                 * accumulated rotation would skew a torus, and emit a fill
+                 * cell instead — see docs/PLAN_PARTIAL_FLATTEN_TORUS.md. */
+                ALEA_LOG_ERROR("Cannot bake transform into primitive (type %s, src_id=%u, node=%u). "
+                               "For a torus this means the accumulated rotation breaks axis alignment, "
+                               "which MCNP cannot express. Aborting flatten/extract.",
+                               alea_primitive_type_name(src_prim->type), src_prim_id, root);
+                return ALEA_NODE_ID_INVALID;
+            }
 
             dst_prim_id = alea_get_or_create_primitive(
                 dst, transformed_type, &transformed_data, &transform_inverted);
@@ -2415,12 +2502,17 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
                        : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
                 }
 
-                /* Element translation: element-local -> lattice-local. */
+                /* Element translation: element-local -> lattice-local.
+                 * alea_matrix_identity sets has_inverse=true with inv = identity;
+                 * we then mutate the translation columns, so inv is now stale.
+                 * Clear has_inverse so any later alea_matrix_invert recomputes
+                 * the real inverse instead of accepting the stale identity. */
                 alea_matrix_t translate;
                 alea_matrix_identity(&translate);
                 translate.m[3]  = ox;
                 translate.m[7]  = oy;
                 translate.m[11] = oz;
+                translate.has_inverse = false;
 
                 /* element-local -> world: accumulated × (lat_fill × translate)
                  * or accumulated × translate when no fill_transform. */
@@ -2775,7 +2867,7 @@ alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
     }
     /* Build universe index in destination */
     alea_build_universe_index(dst);
-    
+
     ALEA_LOG_INFO("Flattened %zu cells from %zu universes into new system with %zu cells",
            alea_vec_count(&src->cells), alea_vec_count(&src->universes), alea_vec_count(&dst->cells));
     build_primitive_to_surface_map_from_nodes(dst);

@@ -48,6 +48,7 @@
 
 #include "alea.h"
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -130,6 +131,22 @@ typedef enum {
 #define ALEA_GRID_COVERAGE_FAST            1u
 #define ALEA_GRID_COVERAGE_EXACT           2u
 #define ALEA_GRID_SECONDARY_CELL_IDS       4u
+#define ALEA_GRID_PATH_IDS                 8u
+
+/** Interned concrete universe path used by path-conditioned slice refinement */
+typedef struct {
+    int universe_id;           /**< Universe at the target/deepest depth */
+    int depth;                 /**< Nesting depth */
+    uint64_t chain_hash;       /**< Stable hash for diagnostics/grouping */
+    double world_to_local[12]; /**< Concrete 3x4 transform values */
+} alea_slice_path_record_t;
+
+/** Table of interned slice paths. Caller owns records and frees with helper. */
+typedef struct {
+    alea_slice_path_record_t* records;
+    size_t count;
+    size_t capacity;
+} alea_slice_path_table_t;
 
 /** Diagnostic counters from the most recent tile coverage refinement pass */
 typedef struct {
@@ -144,7 +161,25 @@ typedef struct {
     size_t dedup_candidate_max;      /**< Maximum deduplicated candidates in one tile */
     size_t candidate_pixel_tests;    /**< Deduplicated candidate/pixel containment tests */
     size_t refined_pixels;           /**< Pixels newly classified as overlap */
+    size_t path_groups;              /**< Path-local groups evaluated */
+    size_t path_group_pixels_max;    /**< Maximum pixels in one path-local group */
+    size_t path_group_candidates_max; /**< Maximum candidates in one path group */
+    size_t bbox_pixel_tests;         /**< Candidate bbox-to-pixel tests */
+    size_t bbox_pixel_rejects;       /**< Candidate/pixel pairs rejected by bbox */
+    size_t early_multi_skips;        /**< Candidate/pixel pairs skipped after MULTI */
+    size_t primary_cell_skips;       /**< Candidate/pixel pairs skipped as primary */
+    size_t path_2d_verify_queries;   /**< 2D buckets checked against 3D query */
+    size_t path_2d_missing_candidates; /**< 3D candidates absent from 2D buckets */
+    size_t path_2d_missing_tiles;     /**< Path/tile groups with missing candidates */
 } alea_tile_coverage_stats_t;
+
+/** Diagnostic counters from boundary-ambiguity filtering */
+typedef struct {
+    size_t checked;      /**< Provisional MULTI pixels tested */
+    size_t suppressed;   /**< Boundary-only overlaps downgraded */
+    size_t retained;     /**< Overlaps confirmed by off-boundary samples */
+    size_t inconclusive; /**< Conservative keeps due to ambiguous samples */
+} alea_boundary_filter_stats_t;
 
 /** Diagnostic counters from exact point-coverage refinement */
 typedef struct {
@@ -262,6 +297,30 @@ int alea_find_cells_grid_coverage(alea_system_t* sys,
                                   uint8_t* out_errors);
 
 /**
+ * @brief Find cells, coverage, and optional concrete path IDs on a slice grid
+ *
+ * Extends alea_find_cells_grid_coverage() with an interned path table. This is
+ * currently intended for path-conditioned large-model error refinement. Path IDs
+ * are filled when ALEA_GRID_PATH_IDS is set and out_path_ids/out_paths are
+ * provided. Pixels without a stable path receive UINT32_MAX.
+ */
+int alea_find_cells_grid_coverage_paths(alea_system_t* sys,
+                                        const alea_slice_view_t* view,
+                                        int nu, int nv,
+                                        int universe_depth,
+                                        unsigned flags,
+                                        int* out_cell_ids,
+                                        int* out_material_ids,
+                                        int* out_secondary_cell_ids,
+                                        uint8_t* out_coverage,
+                                        uint8_t* out_errors,
+                                        uint32_t* out_path_ids,
+                                        alea_slice_path_table_t* out_paths);
+
+/** Free records owned by a slice path table */
+void alea_slice_path_table_free(alea_slice_path_table_t* table);
+
+/**
  * @brief Check grid for overlapping cells (comprehensive)
  *
  * Re-queries every non-void pixel with the full hierarchy search to detect
@@ -376,6 +435,51 @@ int alea_refine_grid_coverage_tiles_exact(
     int* out_secondary_cell_ids,
     uint8_t* coverage,
     uint8_t* errors);
+
+/**
+ * @brief Refine coverage by querying spatial candidates per concrete path
+ *
+ * Experimental path-conditioned exact coverage pass. For each tile, pixels are
+ * grouped by their concrete universe path, queried in that universe's local
+ * coordinates, and evaluated against only sibling candidates. Pixels without a
+ * stable path fall back to exact per-pixel queries.
+ *
+ * @param path_ids Path ID grid produced by alea_find_cells_grid_coverage_paths()
+ * @param paths Interned path table produced with ALEA_GRID_PATH_IDS
+ * @return Number of pixels newly classified as multi-coverage, or -1 on error
+ */
+int alea_refine_grid_coverage_paths_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    const int* primary_cell_ids,
+    const uint32_t* path_ids,
+    const alea_slice_path_table_t* paths,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors);
+
+/**
+ * @brief Suppress exact-boundary overlap ambiguities in plot coverage grids
+ *
+ * Tests provisional MULTI pixels by sampling small offsets in the slice plane.
+ * Boundary-only multi-hits are downgraded to ONE/no-error. Finite overlaps and
+ * inconclusive cases are retained.
+ *
+ * @return Number of suppressed pixels, or -1 on invalid input
+ */
+int alea_filter_grid_boundary_ambiguities(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    const int* primary_cell_ids,
+    int* secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors,
+    alea_boundary_filter_stats_t* out_stats);
 
 /** Reset diagnostics for tile coverage refinement */
 void alea_tile_coverage_stats_reset(void);

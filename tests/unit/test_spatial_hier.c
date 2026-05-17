@@ -388,6 +388,94 @@ TEST(hier_spatial_direct_region_query_resolves_fill) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_spatial_chain_region_query_carries_fill_ancestor) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int outer_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(outer_s >= 0);
+    ASSERT(inner_s >= 0);
+
+    const alea_surface_entry_t* outer = alea_surface_at(sys, outer_s);
+    const alea_surface_entry_t* inner = alea_surface_at(sys, inner_s);
+    ASSERT_NOT_NULL(outer);
+    ASSERT_NOT_NULL(inner);
+
+    int container = alea_add_cell(sys, 1, outer->neg_node, mat, 1.0, 0);
+    int terminal = alea_add_cell(sys, 2, inner->neg_node, mat, 1.0, 10);
+    ASSERT(container >= 0);
+    ASSERT(terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_bbox_t query = {-3.0, 3.0, -3.0, 3.0, -0.1, 0.1};
+    alea_hier_spatial_chain_hit_t hits[16];
+    int n = alea_hier_spatial_query_region_chain(sys, &query, hits, 16);
+    ASSERT(n > 0);
+
+    int found = 0;
+    for (int i = 0; i < n; i++) {
+        if (hits[i].hit.cell_id == 2 && hits[i].hit.depth == 1) {
+            ASSERT_EQ(hits[i].ancestor_count, 1);
+            ASSERT_EQ(hits[i].ancestor_cell_indices[0], (uint32_t)container);
+            ASSERT_EQ(hits[i].chain_truncated, 0);
+            found = 1;
+        }
+    }
+    ASSERT(found);
+
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_universe_region_query_filters_to_one_universe) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int outer_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(outer_s >= 0);
+    ASSERT(inner_s >= 0);
+
+    const alea_surface_entry_t* outer = alea_surface_at(sys, outer_s);
+    const alea_surface_entry_t* inner = alea_surface_at(sys, inner_s);
+    ASSERT_NOT_NULL(outer);
+    ASSERT_NOT_NULL(inner);
+
+    int container = alea_add_cell(sys, 1, outer->neg_node, mat, 1.0, 0);
+    int terminal = alea_add_cell(sys, 2, inner->neg_node, mat, 1.0, 10);
+    ASSERT(container >= 0);
+    ASSERT(terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_bbox_t query = {-3.0, 3.0, -3.0, 3.0, -0.1, 0.1};
+    alea_spatial_hit_t hits[16];
+    int n = alea_hier_spatial_query_universe_region(sys, 10, &query, hits, 16);
+    ASSERT(n > 0);
+    ASSERT(spatial_hits_contain_cell(hits, n, 2, 0));
+    ASSERT(!spatial_hits_contain_cell(hits, n, 1, 0));
+    for (int i = 0; i < n; i++) {
+        ASSERT_EQ(hits[i].universe_id, 10);
+    }
+
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST(hier_spatial_slice_query_resolves_lattice_terminals) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 

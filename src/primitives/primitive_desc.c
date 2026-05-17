@@ -2081,7 +2081,20 @@ bool alea_primitive_transform(
         return false;
     }
 
-    return desc->transform(in_data, mat, out_type, out_data);
+    bool ok = desc->transform(in_data, mat, out_type, out_data);
+    if (!ok) {
+        /* Per-type xform refused to bake the transform (e.g., xform_torus
+         * returns false for a non-axis-aligned rotated torus, which can't
+         * be represented as a quadric). Some implementations leave
+         * *out_type uninitialized on that path, which propagates stack
+         * garbage into the destination primitive entry. Defensively fall
+         * back to the un-transformed primitive so the caller always gets
+         * a well-formed output. Geometric fidelity is lost; the caller is
+         * expected to act on the false return (warn / abort). */
+        *out_type = in_type;
+        *out_data = *in_data;
+    }
+    return ok;
 }
 
 /* ============================================================================
