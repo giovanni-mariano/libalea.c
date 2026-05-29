@@ -18,6 +18,13 @@
 #include "core/alea_system.h"
 #include "primitives/primitive_create.h"
 
+/* This file deliberately exercises the deprecated curve-based slice-error
+ * checkers (superseded by alea_validate_geometry_slice) to confirm they still
+ * behave while supported. Silence the deprecation warning for the whole file. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
 static size_t count_overlap_pixels(const uint8_t* errors, int n) {
     size_t count = 0;
     for (int i = 0; i < n; i++)

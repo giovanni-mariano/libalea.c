@@ -11,6 +11,7 @@
 #define ALEA_GEO_VALIDATOR_H
 
 #include "alea.h"
+#include "alea_slice.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -103,6 +104,14 @@ int alea_validate_geometry_ray(alea_system_t* sys,
                                double dx, double dy, double dz,
                                double t_max,
                                alea_geom_validator_result_t* result);
+
+/* Surface/slice-driven validation: samples the analytical boundary curves on
+ * `view`'s plane and emits the same structured events as the ray-driven path.
+ * Catches hidden nested overlaps that random rays can miss. */
+int alea_validate_geometry_slice(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 const alea_geom_validator_options_t* options,
+                                 alea_geom_validator_result_t* result);
 
 #ifdef __cplusplus
 }

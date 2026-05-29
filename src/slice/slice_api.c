@@ -151,6 +151,7 @@ int alea_slice_curves_get(const alea_slice_curves_t* curves, size_t index, alea_
     memset(out, 0, sizeof(*out));
 
     out->surface_id = src->surface_id;
+    out->primitive_id = src->primitive_id;
     out->t_min = src->bounds.t_min;
     out->t_max = src->bounds.t_max;
 
@@ -4841,6 +4842,28 @@ static void get_clipped_param_range(const alea_curve_2d_t* curve,
             *t_hi = curve->bounds.t_max;
             return;
     }
+}
+
+/* Public accessors so external consumers (geometry validator) can sample
+ * boundary curves without reaching into slice internals. */
+int alea_slice_curve_eval(const alea_slice_curves_t* curves, size_t index,
+                          double t, double* u, double* v) {
+    if (!curves || !u || !v || index >= curves->internal.curves.count)
+        return -1;
+    const alea_curve_2d_t* c = &curves->internal.curves.data[index];
+    return alea_curve_eval(c, t, u, v) ? 0 : -1;
+}
+
+void alea_slice_curve_param_range(const alea_slice_curves_t* curves, size_t index,
+                                  const alea_slice_view_t* view,
+                                  double* t_lo, double* t_hi) {
+    if (t_lo) *t_lo = 0.0;
+    if (t_hi) *t_hi = 0.0;
+    if (!curves || !view || !t_lo || !t_hi ||
+        index >= curves->internal.curves.count)
+        return;
+    get_clipped_param_range(&curves->internal.curves.data[index], view,
+                            t_lo, t_hi);
 }
 
 /**

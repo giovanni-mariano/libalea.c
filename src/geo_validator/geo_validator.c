@@ -4,6 +4,7 @@
 
 #include "geo_validator.h"
 
+#include "alea_slice.h"
 #include "core/alea_cell.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
@@ -379,35 +380,29 @@ static void coverage_from_cell(const alea_system_t* sys, int cell_idx,
     out->count_at_depth = 1;
 }
 
-static int validate_crossing(alea_system_t* sys,
-                             int previous_cell_idx,
-                             int surface_id,
-                             uint32_t primitive_id,
-                             const double crossing_point[3],
-                             const double direction[3],
-                             double t,
-                             uint32_t event_flags,
-                             const alea_geom_validator_options_t* options,
-                             alea_geom_validator_result_t* result,
-                             point_coverage_t* out_after) {
-    if (surface_id <= 0) return 0;
-
-    point_coverage_t cov;
-    double sample_point[3];
-    double offset = 0.0;
-    int ambiguous = 0;
-    uint32_t flags = event_flags;
-    if (sample_coverage_ladder(sys, crossing_point, direction, options,
-                               &cov, sample_point, &offset, &ambiguous,
-                               &flags, result) != 0) {
-        return -1;
-    }
-    if (out_after) *out_after = cov;
-
+/* Shared classifier: given the previous cell and the exact coverage on the
+ * "after" side of a boundary, decide which (if any) structured event to emit.
+ * Keyed on canonical primitive_id for matching; surface_id is report-only.
+ * Used by both the ray-driven and surface/slice-driven drivers. */
+static int classify_transition(alea_system_t* sys,
+                               int previous_cell_idx,
+                               int surface_id,
+                               uint32_t primitive_id,
+                               const point_coverage_t* cov,
+                               int ambiguous,
+                               uint32_t event_flags,
+                               const double crossing_point[3],
+                               const double sample_point[3],
+                               const double direction[3],
+                               double t,
+                               double offset,
+                               const alea_geom_validator_options_t* options,
+                               alea_geom_validator_result_t* result) {
     int previous_cell_id = -1;
     int expected_neighbor_idx = -1;
     int expected_neighbor_id = -1;
     int previous_references_surface = 0;
+    uint32_t flags = event_flags;
 
     if (previous_cell_idx >= 0 &&
         (size_t)previous_cell_idx < alea_vec_count(&sys->cells)) {
@@ -435,13 +430,13 @@ static int validate_crossing(alea_system_t* sys,
     alea_geom_error_t err;
     memset(&err, 0, sizeof(err));
     err.previous_cell_id = previous_cell_id;
-    err.found_cell_id = cov.primary_cell_id;
+    err.found_cell_id = cov->primary_cell_id;
     err.expected_neighbor_cell_id = expected_neighbor_id;
-    err.secondary_cell_id = cov.secondary_cell_id;
-    err.found_cell_count = cov.count_at_depth;
+    err.secondary_cell_id = cov->secondary_cell_id;
+    err.found_cell_count = cov->count_at_depth;
     err.surface_id = surface_id;
-    err.universe_id = cov.universe_id;
-    err.universe_depth = cov.depth;
+    err.universe_id = cov->universe_id;
+    err.universe_depth = cov->depth;
     copy3(err.crossing_point, crossing_point);
     copy3(err.sample_point, sample_point);
     copy3(err.direction, direction);
@@ -455,23 +450,22 @@ static int validate_crossing(alea_system_t* sys,
         return append_error(result, options, &err);
     }
 
-    if (cov.klass == COVERAGE_NONE) {
+    if (cov->klass == COVERAGE_NONE) {
         if ((options->flags & ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID) &&
             expected_neighbor_idx < 0) {
-            if (out_after) *out_after = cov;
             return 0;
         }
         err.type = ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
         return append_error(result, options, &err);
     }
 
-    if (cov.klass == COVERAGE_MULTI) {
+    if (cov->klass == COVERAGE_MULTI) {
         err.type = ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
         return append_error(result, options, &err);
     }
 
     if (expected_neighbor_idx >= 0) {
-        if (cov.primary_cell_idx != expected_neighbor_idx) {
+        if (cov->primary_cell_idx != expected_neighbor_idx) {
             err.type = ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION;
             return append_error(result, options, &err);
         }
@@ -479,13 +473,48 @@ static int validate_crossing(alea_system_t* sys,
     }
 
     if (previous_references_surface) {
-        if (cov.klass == COVERAGE_ONE)
+        if (cov->klass == COVERAGE_ONE)
             err.flags |= ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY;
         err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
         return append_error(result, options, &err);
     }
 
     return 0;
+}
+
+static int validate_crossing(alea_system_t* sys,
+                             int previous_cell_idx,
+                             int surface_id,
+                             uint32_t primitive_id,
+                             const double crossing_point[3],
+                             const double direction[3],
+                             double t,
+                             uint32_t event_flags,
+                             const alea_geom_validator_options_t* options,
+                             alea_geom_validator_result_t* result,
+                             point_coverage_t* out_after) {
+    if (surface_id <= 0) return 0;
+
+    point_coverage_t cov;
+    double sample_point[3];
+    double offset = 0.0;
+    int ambiguous = 0;
+    uint32_t flags = event_flags;
+    if (sample_coverage_ladder(sys, crossing_point, direction, options,
+                               &cov, sample_point, &offset, &ambiguous,
+                               &flags, result) != 0) {
+        return -1;
+    }
+    if (out_after) *out_after = cov;
+
+    /* The ladder resets flags; restore caller flags (e.g. COINCIDENT_SURFACES,
+     * carried-over truncation) so classification still sees them. */
+    flags |= event_flags;
+
+    return classify_transition(sys, previous_cell_idx, surface_id, primitive_id,
+                               &cov, ambiguous, flags, crossing_point,
+                               sample_point, direction, t, offset,
+                               options, result);
 }
 
 static int validate_crossing_fast(alea_system_t* sys,
@@ -829,4 +858,181 @@ int alea_validate_geometry_ray(alea_system_t* sys,
     }
 
     return validate_one_ray(sys, &ray, effective_t_max, &local_options, result);
+}
+
+/* ------------------------------------------------------------------------- *
+ * Surface/slice-driven validation
+ * ------------------------------------------------------------------------- */
+
+/* Validate one boundary sample: world point `p` with in-plane normal mapped to
+ * the 3D direction `dir`.  Evaluates exact coverage on both sides and reuses the
+ * shared classifier.  The side carrying a single cell is treated as "previous"
+ * so the adjacency comparison engages; orientation is chosen so a MULTI/NONE
+ * side is surfaced as the "after" coverage. */
+static int validate_surface_sample(alea_system_t* sys,
+                                   const double p[3],
+                                   const double dir[3],
+                                   int surface_id,
+                                   uint32_t primitive_id,
+                                   const alea_geom_validator_options_t* options,
+                                   alea_geom_validator_result_t* result) {
+    double neg_dir[3] = { -dir[0], -dir[1], -dir[2] };
+
+    point_coverage_t cov_plus, cov_minus;
+    double sp_plus[3], sp_minus[3];
+    double off_plus = 0.0, off_minus = 0.0;
+    int amb_plus = 0, amb_minus = 0;
+    uint32_t flags_plus = 0, flags_minus = 0;
+
+    if (sample_coverage_ladder(sys, p, dir, options, &cov_plus, sp_plus,
+                               &off_plus, &amb_plus, &flags_plus, result) != 0)
+        return -1;
+    if (sample_coverage_ladder(sys, p, neg_dir, options, &cov_minus, sp_minus,
+                               &off_minus, &amb_minus, &flags_minus, result) != 0)
+        return -1;
+
+    int ambiguous = amb_plus || amb_minus;
+    uint32_t flags = flags_plus | flags_minus;
+
+    /* Choose orientation: prefer a single-cell side as "previous". */
+    int prev_idx;
+    const point_coverage_t* after;
+    const double* after_sp;
+    const double* after_dir;
+    double after_off;
+
+    if (cov_minus.klass == COVERAGE_ONE) {
+        prev_idx = cov_minus.primary_cell_idx;
+        after = &cov_plus;  after_sp = sp_plus;  after_dir = dir;  after_off = off_plus;
+    } else if (cov_plus.klass == COVERAGE_ONE) {
+        prev_idx = cov_plus.primary_cell_idx;
+        after = &cov_minus; after_sp = sp_minus; after_dir = neg_dir; after_off = off_minus;
+    } else {
+        /* Neither side is a clean single cell: surface the more severe side. */
+        prev_idx = -1;
+        if (cov_minus.klass == COVERAGE_MULTI) {
+            after = &cov_minus; after_sp = sp_minus; after_dir = neg_dir; after_off = off_minus;
+        } else {
+            after = &cov_plus;  after_sp = sp_plus;  after_dir = dir;  after_off = off_plus;
+        }
+    }
+
+    return classify_transition(sys, prev_idx, surface_id, primitive_id,
+                               after, ambiguous, flags, p, after_sp, after_dir,
+                               0.0, after_off, options, result);
+}
+
+int alea_validate_geometry_slice(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 const alea_geom_validator_options_t* options,
+                                 alea_geom_validator_result_t* result) {
+    if (!sys || !view || !result) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "alea_validate_geometry_slice: NULL argument");
+        return -1;
+    }
+
+    alea_geom_validator_options_t local;
+    if (prepare_validator(sys, &local, options) != 0)
+        return -1;
+
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, view);
+    if (!curves) return 0;  /* no boundaries on this plane: nothing to validate */
+
+    size_t ncurves = alea_slice_curves_count(curves);
+    double vp_w = view->u_max - view->u_min;
+    double vp_h = view->v_max - view->v_min;
+    double vp_diag = sqrt(vp_w * vp_w + vp_h * vp_h);
+    double sample_spacing = vp_diag / 200.0;
+    if (!(sample_spacing > 0.0) || !isfinite(sample_spacing))
+        sample_spacing = 0.05;
+
+    size_t max_crossings = local.max_crossings;
+    if (max_crossings == 0) max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
+
+    const double* origin = view->plane.origin;
+    const double* u_axis = view->plane.u_axis;
+    const double* v_axis = view->plane.v_axis;
+
+    int rc = 0;
+    for (size_t ci = 0; ci < ncurves; ci++) {
+        if (g_alea_interrupted) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                  "geometry slice validation interrupted");
+            rc = -1;
+            break;
+        }
+        if (result->truncated) break;
+
+        alea_curve_t c;
+        if (alea_slice_curves_get(curves, ci, &c) != 0) continue;
+        if (c.type == ALEA_CURVE_NONE || c.type == ALEA_CURVE_POINT) continue;
+        if (c.surface_id <= 0) continue;  /* synthetic boundary, not physical */
+
+        double t_lo, t_hi;
+        alea_slice_curve_param_range(curves, ci, view, &t_lo, &t_hi);
+        if (!(t_hi > t_lo)) continue;
+
+        /* Approximate arc length to pick a sample count (mirrors slice checker). */
+        double arc = t_hi - t_lo;
+        if (c.type == ALEA_CURVE_CIRCLE || c.type == ALEA_CURVE_ARC) {
+            arc = (t_hi - t_lo) * c.data.circle.radius;
+        } else if (c.type == ALEA_CURVE_ELLIPSE || c.type == ALEA_CURVE_ELLIPSE_ARC) {
+            arc = (t_hi - t_lo) * 0.5 * (c.data.ellipse.semi_a + c.data.ellipse.semi_b);
+        }
+        int n_samples = (int)(arc / sample_spacing);
+        if (n_samples < 2) n_samples = 2;
+        if (n_samples > 2000) n_samples = 2000;
+
+        double dt_finite = (t_hi - t_lo) * 1e-6;
+        if (dt_finite < 1e-15) dt_finite = 1e-15;
+
+        for (int i = 0; i <= n_samples; i++) {
+            if (result->crossings_checked >= max_crossings) {
+                result->truncated = 1;
+                break;
+            }
+            if (result->truncated) break;
+
+            double t = t_lo + (t_hi - t_lo) * (double)i / (double)n_samples;
+            double u, v;
+            if (alea_slice_curve_eval(curves, ci, t, &u, &v) != 0) continue;
+            if (u < view->u_min || u > view->u_max ||
+                v < view->v_min || v > view->v_max) continue;
+
+            /* Normal from a finite-difference tangent in plane coordinates. */
+            double t_back = t - dt_finite, t_fwd = t + dt_finite;
+            if (t_back < t_lo) t_back = t_lo;
+            if (t_fwd > t_hi) t_fwd = t_hi;
+            double u1, v1, u2, v2;
+            if (alea_slice_curve_eval(curves, ci, t_back, &u1, &v1) != 0 ||
+                alea_slice_curve_eval(curves, ci, t_fwd, &u2, &v2) != 0) continue;
+            double tang_u = u2 - u1, tang_v = v2 - v1;
+            double tlen = sqrt(tang_u * tang_u + tang_v * tang_v);
+            if (tlen < 1e-20) continue;
+            double nu = -tang_v / tlen, nv = tang_u / tlen;
+
+            double pw[3] = {
+                origin[0] + u * u_axis[0] + v * v_axis[0],
+                origin[1] + u * u_axis[1] + v * v_axis[1],
+                origin[2] + u * u_axis[2] + v * v_axis[2]
+            };
+            double dirw[3] = {
+                nu * u_axis[0] + nv * v_axis[0],
+                nu * u_axis[1] + nv * v_axis[1],
+                nu * u_axis[2] + nv * v_axis[2]
+            };
+
+            if (validate_surface_sample(sys, pw, dirw, c.surface_id,
+                                        c.primitive_id, &local, result) != 0) {
+                rc = -1;
+                break;
+            }
+            result->crossings_checked++;
+        }
+        if (rc != 0) break;
+    }
+
+    alea_slice_curves_free(curves);
+    return rc;
 }

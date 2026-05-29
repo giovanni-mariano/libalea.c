@@ -100,7 +100,8 @@ typedef enum {
 /** 2D curve from slice intersection */
 typedef struct {
     alea_curve_type_t type;
-    int surface_id;                 /**< Surface ID that generated this curve */
+    int surface_id;                 /**< MCNP/user surface ID that generated this curve (display) */
+    uint32_t primitive_id;          /**< Canonical deduplicated primitive (internal match-only) */
     union {
         struct { double point[2]; double direction[2]; } line;
         struct { double center[2]; double radius; } circle;
@@ -617,6 +618,28 @@ void alea_slice_curves_bounds(const alea_slice_curves_t* curves,
                                   double* v_min, double* v_max);
 
 /**
+ * @brief Evaluate a curve at parameter t, returning the 2D (u,v) point.
+ *
+ * Thin accessor over the internal curve evaluator so external consumers
+ * (e.g. the geometry validator) can sample boundary curves without depending
+ * on slice internals.
+ *
+ * @return 0 on success, -1 on error or if the point is undefined at t.
+ */
+int alea_slice_curve_eval(const alea_slice_curves_t* curves, size_t index,
+                          double t, double* u, double* v);
+
+/**
+ * @brief Get the parameter range of a curve clipped to the view's viewport.
+ *
+ * Mirrors the clipping used by the slice error sampler. On error both outputs
+ * are set to 0.
+ */
+void alea_slice_curve_param_range(const alea_slice_curves_t* curves, size_t index,
+                                  const alea_slice_view_t* view,
+                                  double* t_lo, double* t_hi);
+
+/**
  * @brief Free curves result
  */
 void alea_slice_curves_free(alea_slice_curves_t* curves);
@@ -677,12 +700,18 @@ typedef struct {
  * Uses CSG point-containment queries. Prefer alea_check_slice_errors_grid()
  * when a cell grid is already available.
  *
+ * @deprecated Use alea_validate_geometry_slice() (alea_geo_validator.h), which
+ * samples the same boundary curves but returns structured, primitive-keyed
+ * events with five diagnostic types instead of OVERLAP/GAP segments, and avoids
+ * deduplicated-surface false positives.
+ *
  * @param sys CSG system
  * @param view Slice view
  * @param curves Previously computed curves from alea_get_slice_curves()
  * @param universe_depth Which level of universe hierarchy (-1 for innermost)
  * @return Error result (must be freed with alea_slice_errors_free), or NULL
  */
+ALEA_DEPRECATED("use alea_validate_geometry_slice")
 alea_slice_error_result_t* alea_check_slice_errors(
     alea_system_t* sys,
     const alea_slice_view_t* view,
@@ -712,7 +741,12 @@ alea_slice_error_result_t* alea_check_slice_errors(
  * @param nu Grid width
  * @param nv Grid height
  * @return Error result (must be freed with alea_slice_errors_free), or NULL
+ *
+ * @deprecated Use alea_validate_geometry_slice() (alea_geo_validator.h) for
+ * structured, primitive-keyed boundary diagnostics. The grid per-pixel error
+ * flags from alea_find_cells_grid() remain available for fast pixel overlays.
  */
+ALEA_DEPRECATED("use alea_validate_geometry_slice")
 alea_slice_error_result_t* alea_check_slice_errors_grid(
     alea_system_t* sys,
     const alea_slice_view_t* view,
@@ -728,7 +762,11 @@ alea_slice_error_result_t* alea_check_slice_errors_grid(
  * fallback queries. When both sides of a curve map to the same winning cell,
  * the supplied coverage/error grids decide whether that curve sample is an
  * overlap, gap, or clean region.
+ *
+ * @deprecated Use alea_validate_geometry_slice() (alea_geo_validator.h) for
+ * structured, primitive-keyed boundary diagnostics.
  */
+ALEA_DEPRECATED("use alea_validate_geometry_slice")
 alea_slice_error_result_t* alea_check_slice_errors_grid_ex(
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,

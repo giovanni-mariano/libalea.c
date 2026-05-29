@@ -181,7 +181,8 @@ typedef struct {
     alea_curve_type_t type;
     alea_curve_data_t data;
     alea_curve_bounds_t bounds;
-    int surface_id;         /* MCNP surface ID this curve came from */
+    int surface_id;         /* MCNP surface ID this curve came from (display) */
+    uint32_t primitive_id;  /* Canonical deduplicated primitive (match-only) */
     int universe_id;        /* Universe ID this curve belongs to */
     int sense;              /* +1 or -1: which side is "inside" */
 } alea_curve_2d_t;

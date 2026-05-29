@@ -88,6 +88,7 @@ static double get_time_ms(void) {
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
+#include "alea_geo_validator.h"
 
 typedef struct {
     alea_system_t* sys;
@@ -1001,106 +1002,52 @@ static void get_axis_labels(slice_type_t type, const char** u_label, const char*
     }
 }
 
-/* Evaluate a public alea_curve_t at parameter t, returning (u,v) coordinates.
- * Returns 1 on success, 0 if the curve type cannot be evaluated. */
-static int eval_public_curve(const alea_curve_t* c, double t, double* u, double* v) {
-    switch (c->type) {
-        case ALEA_CURVE_LINE:
-        case ALEA_CURVE_LINE_SEGMENT:
-        case ALEA_CURVE_RAY:
-            *u = c->data.line.point[0] + t * c->data.line.direction[0];
-            *v = c->data.line.point[1] + t * c->data.line.direction[1];
-            return 1;
-        case ALEA_CURVE_CIRCLE:
-        case ALEA_CURVE_ARC:
-            *u = c->data.circle.center[0] + c->data.circle.radius * cos(t);
-            *v = c->data.circle.center[1] + c->data.circle.radius * sin(t);
-            return 1;
-        case ALEA_CURVE_ELLIPSE:
-        case ALEA_CURVE_ELLIPSE_ARC: {
-            double ca = cos(c->data.ellipse.angle);
-            double sa = sin(c->data.ellipse.angle);
-            double ct = cos(t);
-            double st = sin(t);
-            *u = c->data.ellipse.center[0] + c->data.ellipse.semi_a * ct * ca
-                                            - c->data.ellipse.semi_b * st * sa;
-            *v = c->data.ellipse.center[1] + c->data.ellipse.semi_a * ct * sa
-                                            + c->data.ellipse.semi_b * st * ca;
-            return 1;
-        }
-        case ALEA_CURVE_POLYGON: {
-            int n = c->data.polygon.count;
-            if (n < 2) return 0;
-            /* t is an edge-interpolation parameter: integer part = segment index */
-            int seg = (int)t;
-            double frac = t - seg;
-            if (seg < 0) { seg = 0; frac = 0; }
-            if (seg >= n - 1) { seg = n - 2; frac = 1.0; }
-            *u = c->data.polygon.vertices[seg][0]
-               + frac * (c->data.polygon.vertices[seg + 1][0] - c->data.polygon.vertices[seg][0]);
-            *v = c->data.polygon.vertices[seg][1]
-               + frac * (c->data.polygon.vertices[seg + 1][1] - c->data.polygon.vertices[seg][1]);
-            return 1;
-        }
-        default:
-            return 0;
-    }
-}
-
-/* Draw analytical error lines (overlaps/gaps) onto the pixel buffer */
-static void draw_error_lines(uint8_t* pixels, int width, int height,
-                              const plot_params_t* p,
-                              const alea_slice_curves_t* curves,
-                              const alea_slice_error_result_t* errs) {
+/* Draw geometry-validator boundary events (overlaps/gaps/etc.) onto the pixel
+ * buffer as dots. Faithful two-colour scheme: red for overlaps, orange for every
+ * other event type (undefined / non-adjacent / missing-neighbor / ambiguous). */
+static void draw_validator_error_dots(uint8_t* pixels, int width, int height,
+                                      const plot_params_t* p,
+                                      const alea_slice_view_t* view,
+                                      const alea_geom_validator_result_t* res) {
     double du = (p->u_max - p->u_min) / width;
     double dv = (p->v_max - p->v_min) / height;
+    const double* origin = view->plane.origin;
+    const double* u_axis = view->plane.u_axis;
+    const double* v_axis = view->plane.v_axis;
 
-    for (size_t i = 0; i < errs->error_count; i++) {
-        const alea_slice_error_t* e = &errs->errors[i];
+    for (size_t i = 0; i < res->error_count; i++) {
+        const alea_geom_error_t* e = &res->errors[i];
 
-        /* Get the public curve */
-        alea_curve_t curve;
-        if (alea_slice_curves_get(curves, e->curve_index, &curve) != 0)
-            continue;
+        /* Project the world crossing point onto plane (u,v) coordinates. */
+        double dx = e->crossing_point[0] - origin[0];
+        double dy = e->crossing_point[1] - origin[1];
+        double dz = e->crossing_point[2] - origin[2];
+        double u = dx * u_axis[0] + dy * u_axis[1] + dz * u_axis[2];
+        double v = dx * v_axis[0] + dy * v_axis[1] + dz * v_axis[2];
 
-        /* Choose color: red for overlap, orange for gap */
+        /* Choose color: red for overlap, orange for everything else. */
         uint8_t r, g, b;
-        if (e->type == ALEA_SLICE_ERR_OVERLAP) {
+        if (e->type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) {
             r = 255; g = 0; b = 0;
         } else {
             r = 255; g = 165; b = 0;
         }
 
-        /* Sample the curve in [t_start, t_end] */
-        double t_range = e->t_end - e->t_start;
-        /* Use enough samples for ~1 pixel spacing */
-        int n_samples = (int)(t_range / (du < dv ? du : dv) * 2);
-        if (n_samples < 20) n_samples = 20;
-        if (n_samples > 2000) n_samples = 2000;
+        int px = (int)((u - p->u_min) / du);
+        int py_grid = (int)((v - p->v_min) / dv);
+        int py = height - 1 - py_grid;  /* flip to image coords */
 
-        for (int s = 0; s <= n_samples; s++) {
-            double t = e->t_start + t_range * s / n_samples;
-            double u, v;
-            if (!eval_public_curve(&curve, t, &u, &v))
-                continue;
-
-            /* Convert (u,v) to pixel coordinates */
-            int px = (int)((u - p->u_min) / du);
-            int py_grid = (int)((v - p->v_min) / dv);
-            int py = height - 1 - py_grid;  /* flip to image coords */
-
-            /* Draw 3x3 dot */
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    int x = px + dx;
-                    int y = py + dy;
-                    if (x < 0 || x >= width || y < 0 || y >= height)
-                        continue;
-                    int pidx = (y * width + x) * 3;
-                    pixels[pidx + 0] = r;
-                    pixels[pidx + 1] = g;
-                    pixels[pidx + 2] = b;
-                }
+        /* Draw 3x3 dot */
+        for (int ddy = -1; ddy <= 1; ddy++) {
+            for (int ddx = -1; ddx <= 1; ddx++) {
+                int x = px + ddx;
+                int y = py + ddy;
+                if (x < 0 || x >= width || y < 0 || y >= height)
+                    continue;
+                int pidx = (y * width + x) * 3;
+                pixels[pidx + 0] = r;
+                pixels[pidx + 1] = g;
+                pixels[pidx + 2] = b;
             }
         }
     }
@@ -1430,33 +1377,42 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
     const int* boundary_ids = (p->contour_mode == CONTOUR_BY_MATERIAL) ? material_ids : cell_ids;
     draw_contours_ex(pixels, boundary_ids, errors, p->width, p->height);
 
-    /* Draw analytical error lines if requested */
-    if (p->show_errors && err_curves) {
+    /* Draw geometry-validator boundary diagnostics if requested */
+    if (p->show_errors) {
         t0 = get_time_ms();
-        size_t error_segment_count = 0;
-        alea_slice_error_result_t* err_result =
-            alea_check_slice_errors_grid_ex(&view, err_curves,
-                                            cell_ids, coverage, errors,
-                                            p->width, p->height);
-        if (err_result) {
+        size_t error_event_count = 0;
+
+        alea_geom_validator_options_t vopts;
+        alea_geom_validator_options_init(&vopts);
+        /* Preserve current --errors behaviour: outer boundaries to void are
+         * still flagged (do not allow exterior void). Depth -1 matches the
+         * grid coverage query above. */
+        vopts.universe_depth = -1;
+        vopts.max_errors    = (size_t)p->width * (size_t)p->height; /* don't truncate the overlay */
+        vopts.max_crossings = 0;  /* 0 -> validator default cap */
+
+        alea_geom_validator_result_t vres;
+        alea_geom_validator_result_init(&vres);
+        if (alea_validate_geometry_slice(sys, &view, &vopts, &vres) == 0) {
+            error_event_count = vres.error_count;
             if (verbose) {
-                printf("    Error check: %zu error segments found\n",
-                       err_result->error_count);
+                printf("    Error check: %zu boundary events found\n",
+                       vres.error_count);
             }
-            error_segment_count = err_result->error_count;
-            if (err_result->error_count > 0) {
-                draw_error_lines(pixels, p->width, p->height, p,
-                                 err_curves, err_result);
+            if (vres.error_count > 0) {
+                draw_validator_error_dots(pixels, p->width, p->height, p,
+                                          &view, &vres);
             }
-            alea_slice_errors_free(err_result);
         }
+        alea_geom_validator_result_free(&vres);
+
         t1 = get_time_ms();
         if (verbose) {
-            printf("    Error lines: %.1f ms\n", t1 - t0);
+            printf("    Error overlay: %.1f ms\n", t1 - t0);
         }
         if (plot_error_stats) {
-            printf("    [PLOT ERROR STATS] error segments=%zu\n",
-                   error_segment_count);
+            printf("    [PLOT ERROR STATS] boundary events=%zu\n",
+                   error_event_count);
         }
     }
     if (err_curves) alea_slice_curves_free(err_curves);

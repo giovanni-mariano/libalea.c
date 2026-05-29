@@ -9,6 +9,7 @@
 #include "lauxlib.h"
 #include "lualib.h"
 #include "alea.h"
+#include "alea_slice.h"
 
 /* ============================================================================
  * Metatable names
@@ -94,6 +95,9 @@ int luaopen_alea_util(lua_State* L);
 int luaopen_alea_raycast(lua_State* L);
 int luaopen_alea_geo_validator(lua_State* L);
 int luaopen_alea_slice(lua_State* L);
+
+/* Read a Lua slice-view table into a view struct (defined in lua_slice.c). */
+void alea_lua_to_slice_view(lua_State* L, int idx, alea_slice_view_t* view);
 int luaopen_alea_render(lua_State* L);
 int luaopen_alea_mesh(lua_State* L);
 int luaopen_alea_materials(lua_State* L);

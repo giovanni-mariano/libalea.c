@@ -54,8 +54,8 @@ static void push_slice_view(lua_State* L, const alea_slice_view_t* view) {
     lua_pushnumber(L, view->v_max); lua_setfield(L, -2, "v_max");
 }
 
-/* Read a Lua table into a slice_view_t */
-static void lua_to_slice_view(lua_State* L, int idx, alea_slice_view_t* view) {
+/* Read a Lua table into a slice_view_t (shared with other bindings) */
+void alea_lua_to_slice_view(lua_State* L, int idx, alea_slice_view_t* view) {
     luaL_checktype(L, idx, LUA_TTABLE);
 
     lua_getfield(L, idx, "ox"); view->plane.origin[0] = luaL_checknumber(L, -1); lua_pop(L, 1);
@@ -141,7 +141,7 @@ static int l_slice_point_trace_set_debug(lua_State* L) {
 static int l_find_cells_grid(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_slice_view_t view;
-    lua_to_slice_view(L, 2, &view);
+    alea_lua_to_slice_view(L, 2, &view);
     int nu = (int)luaL_checkinteger(L, 3);
     int nv = (int)luaL_checkinteger(L, 4);
     int depth = (int)luaL_optinteger(L, 5, -1);
@@ -198,7 +198,7 @@ static int l_find_cells_grid(lua_State* L) {
 static int l_check_grid_overlaps(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_slice_view_t view;
-    lua_to_slice_view(L, 2, &view);
+    alea_lua_to_slice_view(L, 2, &view);
     int nu = (int)luaL_checkinteger(L, 3);
     int nv = (int)luaL_checkinteger(L, 4);
     int depth = (int)luaL_checkinteger(L, 5);
@@ -243,7 +243,7 @@ static int l_check_grid_overlaps(lua_State* L) {
 static int l_get_slice_curves(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_slice_view_t view;
-    lua_to_slice_view(L, 2, &view);
+    alea_lua_to_slice_view(L, 2, &view);
 
     alea_lua_slice_curves_t* ud = (alea_lua_slice_curves_t*)lua_newuserdata(
         L, sizeof(alea_lua_slice_curves_t));

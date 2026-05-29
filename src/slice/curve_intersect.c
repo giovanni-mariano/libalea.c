@@ -1442,8 +1442,9 @@ int alea_compute_slice_curves(alea_system_t* sys,
 
         alea_curve_2d_t curve;
         if (alea_intersect_primitive_plane(prim->type, &prim->data, plane, &curve)) {
-            /* Store surface ID */
+            /* Store surface ID (display) and canonical primitive (match-only) */
             curve.surface_id = surf->mc_surface_id;
+            curve.primitive_id = surf->primitive_id;
 
             if (ensure_curve_capacity(result) != 0) {
                 alea_curve_collection_free(result);
@@ -2379,6 +2380,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
             }
 
             curve.surface_id = surf->mc_surface_id;
+            curve.primitive_id = surf->primitive_id;
             curve.universe_id = cell->universe_id;
 
             /* Add curve to result */
@@ -2533,6 +2535,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                 continue;
 
                             curve.surface_id = surf->mc_surface_id;
+                            curve.primitive_id = surf->primitive_id;
                             curve.universe_id = fc_cell->universe_id;
 
                             if (ensure_curve_capacity(result) != 0) goto lat_done;

@@ -38,6 +38,14 @@
 
 #define ALEA_MATERIAL_VOID (-1)
 
+/* Mark a public API as deprecated; callers get a compile-time warning with the
+ * given message (GCC/Clang). No effect on other compilers. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define ALEA_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#else
+#  define ALEA_DEPRECATED(msg)
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

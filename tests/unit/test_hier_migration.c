@@ -172,8 +172,17 @@ TEST(slice_errors_hier_mode) {
     ASSERT_NOT_NULL(curves);
     ASSERT(alea_slice_curves_count(curves) >= 2);
 
-    /* Check errors — should complete without crash, no overlaps */
+    /* Check errors — should complete without crash, no overlaps.
+     * alea_check_slice_errors is deprecated (use alea_validate_geometry_slice);
+     * this test keeps verifying the still-supported path. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     alea_slice_error_result_t* errs = alea_check_slice_errors(sys, &view, curves, -1);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     ASSERT_NOT_NULL(errs);
 
     size_t overlaps = 0;

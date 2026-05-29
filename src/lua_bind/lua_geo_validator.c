@@ -193,6 +193,25 @@ static int l_validate_geometry_ray(lua_State* L) {
     return 1;
 }
 
+/* sys:validate_geometry_slice(view, options?) -> GeometryValidationResult */
+static int l_validate_geometry_slice(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_slice_view_t view;
+    alea_lua_to_slice_view(L, 2, &view);
+
+    alea_geom_validator_options_t options;
+    parse_validator_options(L, 3, &options);
+
+    alea_lua_geom_result_t* ud = push_new_result(L);
+    if (alea_validate_geometry_slice(sys, &view, &options, ud->result) != 0) {
+        alea_geom_validator_result_free(ud->result);
+        free(ud->result);
+        ud->result = NULL;
+        return luaL_error(L, "validate_geometry_slice: %s", alea_error());
+    }
+    return 1;
+}
+
 static int l_geom_error_count(lua_State* L) {
     alea_lua_geom_result_t* ud = check_geom_result(L, 1);
     lua_pushinteger(L, (lua_Integer)alea_geom_validator_error_count(ud->result));
@@ -278,8 +297,9 @@ static int l_geom_gc(lua_State* L) {
 }
 
 static const luaL_Reg geom_system_methods[] = {
-    {"validate_geometry",     l_validate_geometry},
-    {"validate_geometry_ray", l_validate_geometry_ray},
+    {"validate_geometry",       l_validate_geometry},
+    {"validate_geometry_ray",   l_validate_geometry_ray},
+    {"validate_geometry_slice", l_validate_geometry_slice},
     {NULL, NULL}
 };
 

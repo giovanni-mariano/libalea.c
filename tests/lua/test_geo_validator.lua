@@ -53,4 +53,23 @@ assert((summary.undefined_after_crossing or 0) > 0,
        "summary should include undefined-region diagnostics")
 
 undefined:destroy()
+
+-- Surface/slice-driven validation (Phase 5)
+local nested = alea.create()
+local big = nested:sphere(10, 0, 0, 0, 3)
+local small = nested:sphere(20, 0, 0, 0, 1)
+local mb = nested:material(1)
+local ms = nested:material(2)
+nested:cell{id = 1, region = nested:inside(big), material = mb, density = 1.0}
+nested:cell{id = 2, region = nested:inside(small), material = ms, density = 1.0}
+
+local sview = alea.slice_view_axis(2, 0.0, -4, 4, -4, 4)
+local sres = nested:validate_geometry_slice(sview, {allow_exterior_void = true})
+local ssum = sres:summary()
+assert((ssum.overlap_after_crossing or 0) > 0,
+       "slice validation should detect the hidden nested overlap")
+local sstats = sres:stats()
+assert(sstats.crossings_checked > 0, "slice validation should sample boundaries")
+nested:destroy()
+
 print("test_geo_validator: OK")

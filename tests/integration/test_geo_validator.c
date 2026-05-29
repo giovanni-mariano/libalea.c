@@ -544,4 +544,162 @@ TEST(geo_validator_reports_overlap_count) {
     alea_destroy(sys);
 }
 
+/* ============================================================================
+ * Surface/slice-driven validation (Phase 5)
+ * ============================================================================ */
+
+TEST(geo_validator_slice_clean_split_box) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -5, 5, -5, 5);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+    ASSERT(result.crossings_checked > 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_slice_detects_nested_overlap) {
+    /* Small sphere fully inside a larger sphere cell that does NOT exclude it:
+     * an overlap throughout the inner volume. Surface-driven sampling hits the
+     * inner circle directly, which random rays can miss. */
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int large_si = alea_sphere_surface(sys, 10, 0, 0, 0, 3.0);
+    int small_si = alea_sphere_surface(sys, 20, 0, 0, 0, 1.0);
+    ASSERT(large_si >= 0);
+    ASSERT(small_si >= 0);
+
+    alea_node_id_t large = alea_halfspace(sys, large_si, -1);
+    alea_node_id_t small = alea_halfspace(sys, small_si, -1);
+    ASSERT_NE(large, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(small, ALEA_NODE_ID_INVALID);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    ASSERT(alea_add_cell(sys, 1, large, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, small, m2, 1.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -4, 4, -4, 4);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) > 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_slice_reports_undefined) {
+    /* Single sphere cell; without ALLOW_EXTERIOR_VOID the boundary into open
+     * space is an undefined transition. */
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int sphere_si = alea_sphere_surface(sys, 10, 0, 0, 0, 1.0);
+    ASSERT(sphere_si >= 0);
+    alea_node_id_t sphere = alea_halfspace(sys, sphere_si, -1);
+    ASSERT_NE(sphere, ALEA_NODE_ID_INVALID);
+
+    int m1 = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, sphere, m1, 1.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -3, 3, -3, 3);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);  /* exterior void NOT allowed */
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING) > 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_slice_deduplicated_cards_are_clean) {
+    /* Two distinct cards for the same plane (canonical primitive dedup), one per
+     * cell. Slice validation must match on primitive_id and report no errors. */
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int p10 = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int p20 = alea_plane_surface(sys, 20, 1, 0, 0, 0);
+    int box_si = alea_box_surface(sys, 30, -3, 3, -3, 3, -3, 3);
+    ASSERT(p10 >= 0);
+    ASSERT(p20 >= 0);
+    ASSERT(box_si >= 0);
+
+    alea_node_id_t left_half = alea_halfspace(sys, p10, -1);
+    alea_node_id_t right_half = alea_halfspace(sys, p20, 1);
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t left = alea_intersection(sys, box, left_half);
+    alea_node_id_t right = alea_intersection(sys, box, right_half);
+    ASSERT_NE(left, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(right, ALEA_NODE_ID_INVALID);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    ASSERT(alea_add_cell(sys, 1, left, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, right, m2, 1.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -5, 5, -5, 5);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_slice_is_reproducible) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -5, 5, -5, 5);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+
+    alea_geom_validator_result_t r1, r2;
+    alea_geom_validator_result_init(&r1);
+    alea_geom_validator_result_init(&r2);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &r1), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &r2), 0);
+    ASSERT_EQ(r1.error_count, r2.error_count);
+    ASSERT_EQ(r1.crossings_checked, r2.crossings_checked);
+
+    alea_geom_validator_result_free(&r1);
+    alea_geom_validator_result_free(&r2);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()
