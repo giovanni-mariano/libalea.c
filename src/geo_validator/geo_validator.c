@@ -36,6 +36,7 @@ typedef struct {
     int universe_id;
     int depth;
     int count_at_depth;
+    int target_depth;
     int truncated;
 } point_coverage_t;
 
@@ -128,10 +129,14 @@ static int append_error(alea_geom_validator_result_t* result,
     return 0;
 }
 
-static int cell_references_surface_id(const alea_system_t* sys,
-                                      const alea_cell_entry_t* cell,
-                                      int surface_id) {
-    if (!sys || !cell || surface_id <= 0 ||
+/* Match on the canonical (deduplicated) primitive identity, mirroring MCNP's
+ * surface equivalence.  Two distinct surface cards that fold onto the same
+ * primitive must be treated as the same boundary, otherwise we would invent
+ * transition errors that MCNP never sees.  mc_surface_id is report-only. */
+static int cell_references_primitive(const alea_system_t* sys,
+                                     const alea_cell_entry_t* cell,
+                                     uint32_t primitive_id) {
+    if (!sys || !cell || primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
         !cell->surface_indices || cell->surface_index_count == 0) {
         return 0;
     }
@@ -139,10 +144,33 @@ static int cell_references_surface_id(const alea_system_t* sys,
     for (size_t i = 0; i < cell->surface_index_count; i++) {
         uint32_t surf_idx = cell->surface_indices[i];
         if (surf_idx >= alea_vec_count(&sys->surfaces)) continue;
-        if (sys->surfaces.data[surf_idx].mc_surface_id == surface_id)
+        if (sys->surfaces.data[surf_idx].primitive_id == primitive_id)
             return 1;
     }
     return 0;
+}
+
+/* Neighbor lookup keyed on canonical primitive identity instead of
+ * mc_surface_id.  alea_find_neighbor_cell() matches on mc_surface_id, which
+ * would miss deduplicated equivalent surfaces. */
+static int find_neighbor_by_primitive(const alea_system_t* sys,
+                                      uint32_t cell_index,
+                                      uint32_t primitive_id) {
+    if (!sys || primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
+        cell_index >= alea_vec_count(&sys->cells) ||
+        !sys->cell_adjacency_built) {
+        return -1;
+    }
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    for (size_t i = 0; i < cell->neighbor_count; i++) {
+        uint32_t surf_idx = cell->neighbors[i].surface_index;
+        if (surf_idx < alea_vec_count(&sys->surfaces) &&
+            sys->surfaces.data[surf_idx].primitive_id == primitive_id) {
+            return (int)cell->neighbors[i].neighbor_index;
+        }
+    }
+    return -1;
 }
 
 static int find_point_coverage(alea_system_t* sys,
@@ -157,6 +185,7 @@ static int find_point_coverage(alea_system_t* sys,
     out->secondary_cell_id = -1;
     out->universe_id = 0;
     out->depth = universe_depth;
+    out->target_depth = universe_depth;
 
     alea_cell_hit_t hits[VALIDATOR_HIT_CAP];
     int n = alea_find_all_cells_at_point_recursive(sys, x, y, z,
@@ -172,6 +201,7 @@ static int find_point_coverage(alea_system_t* sys,
             if (hits[i].depth > target_depth) target_depth = hits[i].depth;
         }
     }
+    out->target_depth = target_depth;
 
     int count = 0;
     for (int i = 0; i < n; i++) {
@@ -252,6 +282,7 @@ static int sample_coverage_ladder(alea_system_t* sys,
             continue;
         }
         if (!same_coverage(&first, &cur)) {
+            if (i > 1) break;
             *out_ambiguous = 1;
             break;
         }
@@ -264,7 +295,8 @@ static int sample_coverage_ladder(alea_system_t* sys,
 static int validate_initial_point(alea_system_t* sys,
                                   const alea_ray_t* ray,
                                   const alea_geom_validator_options_t* options,
-                                  alea_geom_validator_result_t* result) {
+                                  alea_geom_validator_result_t* result,
+                                  point_coverage_t* out_initial) {
     double offset = options->sample_offset > 0.0
         ? options->sample_offset
         : SURFACE_SAMPLE_OFFSET;
@@ -279,8 +311,12 @@ static int validate_initial_point(alea_system_t* sys,
         return -1;
     }
     result->exact_queries++;
+    if (out_initial) *out_initial = cov;
 
-    if (cov.klass != COVERAGE_MULTI) return 0;
+    if (!(options->flags & ALEA_GEOM_VALIDATE_STRICT_ADJACENCY) ||
+        cov.klass != COVERAGE_MULTI) {
+        return 0;
+    }
 
     alea_geom_error_t err;
     memset(&err, 0, sizeof(err));
@@ -289,6 +325,7 @@ static int validate_initial_point(alea_system_t* sys,
     err.found_cell_id = cov.primary_cell_id;
     err.expected_neighbor_cell_id = -1;
     err.secondary_cell_id = cov.secondary_cell_id;
+    err.found_cell_count = cov.count_at_depth;
     err.surface_id = -1;
     err.universe_id = cov.universe_id;
     err.universe_depth = cov.depth;
@@ -306,9 +343,46 @@ static int validate_initial_point(alea_system_t* sys,
     return append_error(result, options, &err);
 }
 
+static int point_inside_cell(alea_system_t* sys, int cell_idx,
+                             const double p[3]) {
+    if (!sys || cell_idx < 0 ||
+        (size_t)cell_idx >= alea_vec_count(&sys->cells)) {
+        return 0;
+    }
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+    if (cell->root_node_id == ALEA_NODE_ID_INVALID ||
+        cell->root_node_id >= alea_vec_count(&sys->nodes)) {
+        return 0;
+    }
+    return alea_point_inside(sys, cell->root_node_id, p[0], p[1], p[2]) ? 1 : 0;
+}
+
+static void coverage_from_cell(const alea_system_t* sys, int cell_idx,
+                               point_coverage_t* out) {
+    memset(out, 0, sizeof(*out));
+    out->klass = COVERAGE_NONE;
+    out->primary_cell_id = -1;
+    out->primary_cell_idx = -1;
+    out->secondary_cell_id = -1;
+    out->universe_id = 0;
+    out->depth = 0;
+    out->target_depth = 0;
+    if (!sys || cell_idx < 0 ||
+        (size_t)cell_idx >= alea_vec_count(&sys->cells)) {
+        return;
+    }
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+    out->klass = COVERAGE_ONE;
+    out->primary_cell_id = cell->mc_cell_id;
+    out->primary_cell_idx = cell_idx;
+    out->universe_id = cell->universe_id;
+    out->count_at_depth = 1;
+}
+
 static int validate_crossing(alea_system_t* sys,
                              int previous_cell_idx,
                              int surface_id,
+                             uint32_t primitive_id,
                              const double crossing_point[3],
                              const double direction[3],
                              double t,
@@ -340,11 +414,11 @@ static int validate_crossing(alea_system_t* sys,
         const alea_cell_entry_t* prev = &sys->cells.data[previous_cell_idx];
         previous_cell_id = prev->mc_cell_id;
         previous_references_surface =
-            cell_references_surface_id(sys, prev, surface_id);
+            cell_references_primitive(sys, prev, primitive_id);
         if (previous_references_surface) {
             expected_neighbor_idx =
-                alea_find_neighbor_cell(sys, (uint32_t)previous_cell_idx,
-                                        surface_id);
+                find_neighbor_by_primitive(sys, (uint32_t)previous_cell_idx,
+                                           primitive_id);
             if (expected_neighbor_idx >= 0 &&
                 (size_t)expected_neighbor_idx < alea_vec_count(&sys->cells)) {
                 expected_neighbor_id =
@@ -364,6 +438,7 @@ static int validate_crossing(alea_system_t* sys,
     err.found_cell_id = cov.primary_cell_id;
     err.expected_neighbor_cell_id = expected_neighbor_id;
     err.secondary_cell_id = cov.secondary_cell_id;
+    err.found_cell_count = cov.count_at_depth;
     err.surface_id = surface_id;
     err.universe_id = cov.universe_id;
     err.universe_depth = cov.depth;
@@ -383,6 +458,7 @@ static int validate_crossing(alea_system_t* sys,
     if (cov.klass == COVERAGE_NONE) {
         if ((options->flags & ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID) &&
             expected_neighbor_idx < 0) {
+            if (out_after) *out_after = cov;
             return 0;
         }
         err.type = ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
@@ -403,6 +479,8 @@ static int validate_crossing(alea_system_t* sys,
     }
 
     if (previous_references_surface) {
+        if (cov.klass == COVERAGE_ONE)
+            err.flags |= ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY;
         err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
         return append_error(result, options, &err);
     }
@@ -410,13 +488,107 @@ static int validate_crossing(alea_system_t* sys,
     return 0;
 }
 
-static uint32_t lcg_next(uint32_t* state) {
-    *state = *state * 1664525u + 1013904223u;
+static int validate_crossing_fast(alea_system_t* sys,
+                                  int previous_cell_idx,
+                                  int surface_id,
+                                  uint32_t primitive_id,
+                                  const double crossing_point[3],
+                                  const double direction[3],
+                                  double t,
+                                  uint32_t event_flags,
+                                  const alea_geom_validator_options_t* options,
+                                  alea_geom_validator_result_t* result,
+                                  point_coverage_t* out_after) {
+    if (surface_id <= 0) return 0;
+
+    double offset = options->sample_offset > 0.0
+        ? options->sample_offset
+        : SURFACE_SAMPLE_OFFSET;
+    double sample_point[3] = {
+        crossing_point[0] + offset * direction[0],
+        crossing_point[1] + offset * direction[1],
+        crossing_point[2] + offset * direction[2]
+    };
+
+    int previous_cell_id = -1;
+    int expected_neighbor_idx = -1;
+    int expected_neighbor_id = -1;
+    int previous_references_surface = 0;
+    uint32_t flags = event_flags;
+
+    if (previous_cell_idx >= 0 &&
+        (size_t)previous_cell_idx < alea_vec_count(&sys->cells)) {
+        const alea_cell_entry_t* prev = &sys->cells.data[previous_cell_idx];
+        previous_cell_id = prev->mc_cell_id;
+        previous_references_surface =
+            cell_references_primitive(sys, prev, primitive_id);
+        if (previous_references_surface) {
+            expected_neighbor_idx =
+                find_neighbor_by_primitive(sys, (uint32_t)previous_cell_idx,
+                                           primitive_id);
+            if (expected_neighbor_idx >= 0 &&
+                (size_t)expected_neighbor_idx < alea_vec_count(&sys->cells)) {
+                expected_neighbor_id =
+                    sys->cells.data[expected_neighbor_idx].mc_cell_id;
+                result->adjacency_hits++;
+            } else {
+                flags |= ALEA_GEOM_EVENT_MISSING_ADJACENCY;
+            }
+        } else {
+            flags |= ALEA_GEOM_EVENT_PREVIOUS_NO_SURFACE;
+        }
+    }
+
+    if (expected_neighbor_idx >= 0 &&
+        point_inside_cell(sys, expected_neighbor_idx, sample_point)) {
+        if (out_after) coverage_from_cell(sys, expected_neighbor_idx, out_after);
+        return 0;
+    }
+
+    if (expected_neighbor_idx < 0 &&
+        (options->flags & ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID)) {
+        if (out_after) {
+            memset(out_after, 0, sizeof(*out_after));
+            out_after->klass = COVERAGE_NONE;
+            out_after->primary_cell_id = -1;
+            out_after->primary_cell_idx = -1;
+            out_after->secondary_cell_id = -1;
+        }
+        return 0;
+    }
+
+    if (expected_neighbor_idx < 0 && previous_references_surface) {
+        alea_geom_error_t err;
+        memset(&err, 0, sizeof(err));
+        err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
+        err.previous_cell_id = previous_cell_id;
+        err.found_cell_id = -1;
+        err.expected_neighbor_cell_id = expected_neighbor_id;
+        err.secondary_cell_id = -1;
+        err.found_cell_count = 0;
+        err.surface_id = surface_id;
+        copy3(err.crossing_point, crossing_point);
+        copy3(err.sample_point, sample_point);
+        copy3(err.direction, direction);
+        err.t = t;
+        err.offset = offset;
+        err.flags = flags;
+        return append_error(result, options, &err);
+    }
+
+    return validate_crossing(sys, previous_cell_idx, surface_id, primitive_id,
+                             crossing_point, direction, t, event_flags,
+                             options, result, out_after);
+}
+
+static uint64_t lcg_next(uint64_t* state) {
+    *state = *state * UINT64_C(6364136223846793005) +
+             UINT64_C(1442695040888963407);
     return *state;
 }
 
-static double lcg_double(uint32_t* state) {
-    return (double)lcg_next(state) / 4294967296.0;
+static double lcg_double(uint64_t* state) {
+    return (double)(lcg_next(state) >> 11) * (1.0 / 9007199254740992.0);
 }
 
 static alea_bbox_t validator_bounds(alea_system_t* sys) {
@@ -434,7 +606,7 @@ static alea_bbox_t validator_bounds(alea_system_t* sys) {
     return bbox;
 }
 
-static void generate_validation_ray(uint32_t* rng,
+static void generate_validation_ray(uint64_t* rng,
                                     const alea_bbox_t* bounds,
                                     alea_ray_t* ray) {
     double cx = 0.5 * (bounds->min_x + bounds->max_x);
@@ -472,8 +644,6 @@ static int prepare_validator(alea_system_t* sys,
         local_options->ray_count = VALIDATOR_DEFAULT_RAYS;
     if (local_options->sample_offset <= 0.0)
         local_options->sample_offset = SURFACE_SAMPLE_OFFSET;
-    if (!(local_options->flags & ALEA_GEOM_VALIDATE_RAYS))
-        local_options->flags |= ALEA_GEOM_VALIDATE_RAYS;
 
     unsigned cache_flags = alea_system_spatial_mode_prefers_hier(sys)
         ? ALEA_CACHE_RAYCAST_HIER
@@ -488,7 +658,8 @@ static int validate_one_ray(alea_system_t* sys,
                             double t_max,
                             const alea_geom_validator_options_t* options,
                             alea_geom_validator_result_t* result) {
-    if (validate_initial_point(sys, ray, options, result) != 0)
+    point_coverage_t previous_cov;
+    if (validate_initial_point(sys, ray, options, result, &previous_cov) != 0)
         return -1;
 
     alea_raycast_result_t ray_result;
@@ -512,40 +683,37 @@ static int validate_one_ray(alea_system_t* sys,
         alea_ray_hit_t* hit = &ray_result.hits.data[i];
         if (hit->surface_id <= 0) continue;
 
-        double offset = options->sample_offset > 0.0
-            ? options->sample_offset
-            : SURFACE_SAMPLE_OFFSET;
-        double before_t = hit->t - offset;
-        if (before_t < 0.0) before_t = 0.0;
-        double before[3];
-        alea_ray_point_at(ray, before_t, &before[0], &before[1], &before[2]);
-
-        point_coverage_t prev_cov;
-        if (find_point_coverage(sys, before[0], before[1], before[2],
-                                options->universe_depth, &prev_cov) != 0) {
-            alea_raycast_result_free(&ray_result);
-            return -1;
+        /* Collapse duplicate hits from deduplicated surface cards: the same
+         * physical primitive can appear once per mc_surface_id at the same t.
+         * Treat them as a single crossing so we neither double-classify nor
+         * report a spurious coincident-surface ambiguity. */
+        if (i > 0 &&
+            fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON &&
+            ray_result.hits.data[i - 1].primitive_id == hit->primitive_id) {
+            continue;
         }
-        result->exact_queries++;
 
-        int previous_cell_idx = (prev_cov.klass == COVERAGE_ONE)
-            ? prev_cov.primary_cell_idx
+        int previous_cell_idx = (previous_cov.klass == COVERAGE_ONE)
+            ? previous_cov.primary_cell_idx
             : -1;
 
         uint32_t event_flags = 0;
-        if (prev_cov.truncated) event_flags |= ALEA_GEOM_EVENT_TRUNCATED_COVERAGE;
+        if (previous_cov.truncated) event_flags |= ALEA_GEOM_EVENT_TRUNCATED_COVERAGE;
 
+        /* Coincident-surface ambiguity is keyed on canonical primitive identity:
+         * two hits at the same t are only genuinely coincident if they are
+         * distinct primitives, not duplicate cards of one primitive. */
         for (size_t j = i + 1; j < ray_result.hits.count; j++) {
             if (fabs(ray_result.hits.data[j].t - hit->t) > DEDUP_EPSILON)
                 break;
-            if (ray_result.hits.data[j].surface_id != hit->surface_id) {
+            if (ray_result.hits.data[j].primitive_id != hit->primitive_id) {
                 event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
                 break;
             }
         }
         if (i > 0 &&
             fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON &&
-            ray_result.hits.data[i - 1].surface_id != hit->surface_id) {
+            ray_result.hits.data[i - 1].primitive_id != hit->primitive_id) {
             event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
         }
 
@@ -553,13 +721,30 @@ static int validate_one_ray(alea_system_t* sys,
         alea_ray_point_at(ray, hit->t, &crossing[0], &crossing[1], &crossing[2]);
         double direction[3] = { ray->dx, ray->dy, ray->dz };
         point_coverage_t after_cov;
-        rc = validate_crossing(sys, previous_cell_idx, hit->surface_id,
-                               crossing, direction, hit->t, event_flags,
-                               options, result, &after_cov);
+        alea_geom_validator_options_t depth_options;
+        const alea_geom_validator_options_t* crossing_options = options;
+        if (options->universe_depth < 0 && previous_cov.klass == COVERAGE_ONE) {
+            depth_options = *options;
+            depth_options.universe_depth = previous_cov.depth;
+            crossing_options = &depth_options;
+        }
+
+        if (crossing_options->flags & ALEA_GEOM_VALIDATE_STRICT_ADJACENCY) {
+            rc = validate_crossing(sys, previous_cell_idx, hit->surface_id,
+                                   hit->primitive_id, crossing, direction,
+                                   hit->t, event_flags,
+                                   crossing_options, result, &after_cov);
+        } else {
+            rc = validate_crossing_fast(sys, previous_cell_idx, hit->surface_id,
+                                        hit->primitive_id, crossing, direction,
+                                        hit->t, event_flags,
+                                        crossing_options, result, &after_cov);
+        }
         if (rc != 0) {
             alea_raycast_result_free(&ray_result);
             return -1;
         }
+        previous_cov = after_cov;
         result->crossings_checked++;
     }
 
@@ -579,6 +764,8 @@ int alea_validate_geometry(alea_system_t* sys,
     alea_geom_validator_options_t local_options;
     if (prepare_validator(sys, &local_options, options) != 0)
         return -1;
+    if (!(local_options.flags & ALEA_GEOM_VALIDATE_RAYS))
+        return 0;
 
     alea_bbox_t bounds = validator_bounds(sys);
     double bx = bounds.max_x - bounds.min_x;
@@ -590,7 +777,7 @@ int alea_validate_geometry(alea_system_t* sys,
         ? local_options.t_max
         : 3.0 * diag;
 
-    uint32_t rng = (uint32_t)(local_options.seed ? local_options.seed : 42u);
+    uint64_t rng = local_options.seed ? local_options.seed : UINT64_C(42);
     for (int i = 0; i < local_options.ray_count; i++) {
         if (g_alea_interrupted) {
             alea_set_error_detail(ALEA_ERR_INTERRUPTED,

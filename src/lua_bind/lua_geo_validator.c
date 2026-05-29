@@ -119,6 +119,8 @@ static void push_geom_error(lua_State* L, const alea_geom_error_t* error) {
     lua_setfield(L, -2, "expected_neighbor_cell_id");
     lua_pushinteger(L, error->secondary_cell_id);
     lua_setfield(L, -2, "secondary_cell_id");
+    lua_pushinteger(L, error->found_cell_count);
+    lua_setfield(L, -2, "found_cell_count");
     lua_pushinteger(L, error->surface_id);
     lua_setfield(L, -2, "surface_id");
     lua_pushinteger(L, error->universe_id);

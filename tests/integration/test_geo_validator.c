@@ -256,15 +256,71 @@ TEST(geo_validator_reports_ambiguous_boundary) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
-    int p1_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
-    int p2_si = alea_plane_surface(sys, 20, 1, 0, 0, 0);
+    /* Genuinely coincident, geometrically DISTINCT primitives at the same
+     * point: plane x=0 and a sphere centered at (1,0,0) r=1 both pass through
+     * the origin.  (Two identical plane cards would instead deduplicate to one
+     * primitive and validate cleanly, which is the dedup case, not ambiguity.) */
+    int plane_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int sphere_si = alea_sphere_surface(sys, 20, 1, 0, 0, 1.0);
     int box_si = alea_box_surface(sys, 30, -3, 3, -1, 1, -1, 1);
-    ASSERT(p1_si >= 0);
-    ASSERT(p2_si >= 0);
+    ASSERT(plane_si >= 0);
+    ASSERT(sphere_si >= 0);
     ASSERT(box_si >= 0);
 
-    alea_node_id_t left_half = alea_halfspace(sys, p1_si, -1);
-    alea_node_id_t right_half = alea_halfspace(sys, p2_si, 1);
+    alea_node_id_t left_half = alea_halfspace(sys, plane_si, -1);
+    alea_node_id_t right_half = alea_halfspace(sys, plane_si, 1);
+    alea_node_id_t sphere_in = alea_halfspace(sys, sphere_si, -1);
+    alea_node_id_t sphere_out = alea_halfspace(sys, sphere_si, 1);
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t left = alea_intersection(sys, box, left_half);
+    alea_node_id_t right = alea_intersection(sys,
+                                             alea_intersection(sys, box, right_half),
+                                             sphere_out);
+    ASSERT_NE(left, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(right, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(sphere_in, ALEA_NODE_ID_INVALID);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    int m3 = alea_add_material(sys, 3);
+    ASSERT(alea_add_cell(sys, 1, left, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, right, m2, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 3, sphere_in, m3, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &result), 0);
+    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY) > 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_deduplicated_surface_cards_are_clean) {
+    /* Two distinct surface cards (10 and 20) describe the SAME plane x=0 and
+     * fold onto one canonical primitive, exactly as MCNP would deduplicate
+     * them.  Cell 1 is written against card 10 and cell 2 against card 20.
+     * Matching on canonical primitive identity (not mc_surface_id) must see a
+     * clean shared boundary and report no errors. */
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int p10 = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int p20 = alea_plane_surface(sys, 20, 1, 0, 0, 0);
+    int box_si = alea_box_surface(sys, 30, -3, 3, -3, 3, -3, 3);
+    ASSERT(p10 >= 0);
+    ASSERT(p20 >= 0);
+    ASSERT(box_si >= 0);
+
+    alea_node_id_t left_half = alea_halfspace(sys, p10, -1);
+    alea_node_id_t right_half = alea_halfspace(sys, p20, 1);
     alea_node_id_t box = alea_halfspace(sys, box_si, -1);
     alea_node_id_t left = alea_intersection(sys, box, left_half);
     alea_node_id_t right = alea_intersection(sys, box, right_half);
@@ -279,14 +335,14 @@ TEST(geo_validator_reports_ambiguous_boundary) {
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
     opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
-    opts.sample_offset = 0.01;
+    opts.ray_count = 24;
+    opts.seed = 7;
 
     alea_geom_validator_result_t result;
     alea_geom_validator_result_init(&result);
-    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
-                                         -2, 0, 0, 1, 0, 0, 4,
-                                         &result), 0);
-    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY) > 0);
+    ASSERT_EQ(alea_validate_geometry(sys, &opts, &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+    ASSERT(result.crossings_checked > 0);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
@@ -344,6 +400,145 @@ TEST(geo_validator_clean_adjacent_hier) {
     ASSERT_EQ(alea_validate_geometry(sys, &opts, &result), 0);
     ASSERT_EQ(result.error_count, 0);
     ASSERT(result.crossings_checked > 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_non_strict_uses_fast_adjacency_path) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t strict_opts;
+    alea_geom_validator_options_init(&strict_opts);
+    strict_opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    strict_opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t strict_result;
+    alea_geom_validator_result_init(&strict_result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &strict_opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &strict_result), 0);
+
+    alea_geom_validator_options_t fast_opts = strict_opts;
+    fast_opts.flags &= ~ALEA_GEOM_VALIDATE_STRICT_ADJACENCY;
+
+    alea_geom_validator_result_t fast_result;
+    alea_geom_validator_result_init(&fast_result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &fast_opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &fast_result), 0);
+    ASSERT_EQ(fast_result.error_count, 0);
+    ASSERT(fast_result.exact_queries < strict_result.exact_queries);
+    ASSERT(fast_result.adjacency_hits > 0);
+
+    alea_geom_validator_result_free(&strict_result);
+    alea_geom_validator_result_free(&fast_result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_rays_flag_can_disable_whole_geometry_scan) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags &= ~ALEA_GEOM_VALIDATE_RAYS;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry(sys, &opts, &result), 0);
+    ASSERT_EQ(result.crossings_checked, 0);
+    ASSERT_EQ(result.exact_queries, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_late_ladder_change_does_not_mark_thin_cell_ambiguous) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int p0_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int pthin_si = alea_plane_surface(sys, 20, 1, 0, 0, -0.005);
+    int box_si = alea_box_surface(sys, 30, -3, 3, -1, 1, -1, 1);
+    ASSERT(p0_si >= 0);
+    ASSERT(pthin_si >= 0);
+    ASSERT(box_si >= 0);
+
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t left = alea_intersection(sys, box,
+                                            alea_halfspace(sys, p0_si, -1));
+    alea_node_id_t thin_left = alea_halfspace(sys, p0_si, 1);
+    alea_node_id_t thin_right = alea_halfspace(sys, pthin_si, -1);
+    alea_node_id_t thin = alea_intersection(sys, box,
+        alea_intersection(sys, thin_left, thin_right));
+    alea_node_id_t right = alea_intersection(sys, box,
+                                             alea_halfspace(sys, pthin_si, 1));
+    ASSERT_NE(left, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(thin, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(right, ALEA_NODE_ID_INVALID);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    int m3 = alea_add_material(sys, 3);
+    ASSERT(alea_add_cell(sys, 1, left, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, thin, m2, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 3, right, m3, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.001;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -1, 0, 0, 1, 0, 0, 2,
+                                         &result), 0);
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY), 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_reports_overlap_count) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int s1 = alea_sphere_surface(sys, 10, 0, 0, 0, 3.0);
+    int s2 = alea_sphere_surface(sys, 20, 0, 0, 0, 2.0);
+    int s3 = alea_sphere_surface(sys, 30, 0, 0, 0, 1.0);
+    ASSERT(s1 >= 0);
+    ASSERT(s2 >= 0);
+    ASSERT(s3 >= 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    int m3 = alea_add_material(sys, 3);
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, s1, -1), m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, alea_halfspace(sys, s2, -1), m2, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 3, alea_halfspace(sys, s3, -1), m3, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -4, 0, 0, 1, 0, 0, 8,
+                                         &result), 0);
+
+    int saw_three_way = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        if (result.errors[i].type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING &&
+            result.errors[i].found_cell_count >= 3) {
+            saw_three_way = 1;
+        }
+    }
+    ASSERT(saw_three_way);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);

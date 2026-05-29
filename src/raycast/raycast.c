@@ -217,6 +217,7 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
                 alea_ray_hit_t hit;
                 hit.t = t[j];
                 hit.surface_id = surf->mc_surface_id;
+                hit.primitive_id = surf->primitive_id;
 
                 /* Compute normal at hit point */
                 double px, py, pz;
@@ -253,6 +254,7 @@ static int raycast_surfaces_linear(alea_system_t* sys,
                 alea_ray_hit_t hit;
                 hit.t = t[j];
                 hit.surface_id = surf->mc_surface_id;
+                hit.primitive_id = surf->primitive_id;
 
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
@@ -624,6 +626,7 @@ static void raycast_tree_primitives(alea_system_t* sys,
                 alea_ray_hit_t hit;
                 hit.t = t[j];
                 hit.surface_id = node->primitive.mc_surface_id;
+                hit.primitive_id = node->primitive.primitive_id;
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
                 primitive_normal_at(prim->type, &prim->data, px, py, pz,
@@ -849,7 +852,8 @@ static void raycast_lattice_rect(alea_system_t* sys,
          * builder to skip the (universe-unaware) neighbor lookup and
          * fall through to a full point query. */
         if (step > 0 && t_cur > t_enter + RAY_EPSILON) {
-            alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0 };
+            alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0,
+                                   .primitive_id = ALEA_PRIMITIVE_ID_INVALID };
             if (add_hit(result, &bnd) != 0) {
                 ALEA_LOG_WARN("add_hit failed (out of memory) - lattice raycast incomplete");
                 return;
@@ -1024,7 +1028,8 @@ static void raycast_lattice_hex(alea_system_t* sys,
             int new_elem = (fabs(ox - prev_cx) > RAY_EPSILON ||
                             fabs(oy - prev_cy) > RAY_EPSILON);
             if (new_elem && prev_cx < DBL_MAX && t_cur > t_enter + RAY_EPSILON) {
-                alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0 };
+                alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0,
+                                       .primitive_id = ALEA_PRIMITIVE_ID_INVALID };
                 if (add_hit(result, &bnd) != 0) {
                     ALEA_LOG_WARN("add_hit failed (out of memory) - hex lattice raycast incomplete");
                     return;

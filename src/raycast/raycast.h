@@ -27,7 +27,8 @@ typedef struct {
 
 typedef struct {
     double t;
-    int surface_id;
+    int surface_id;        /* MCNP/user surface ID for reporting (0 synthetic, -1 none) */
+    uint32_t primitive_id; /* Canonical deduplicated primitive (ALEA_PRIMITIVE_ID_INVALID if none) */
     double nx, ny, nz;
 } alea_ray_hit_t;
 

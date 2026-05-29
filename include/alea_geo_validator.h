@@ -39,7 +39,8 @@ typedef enum {
     ALEA_GEOM_EVENT_MISSING_ADJACENCY      = 1u << 2,
     ALEA_GEOM_EVENT_EXTERIOR_ALLOWED       = 1u << 3,
     ALEA_GEOM_EVENT_COINCIDENT_SURFACES    = 1u << 4,
-    ALEA_GEOM_EVENT_TRUNCATED_COVERAGE     = 1u << 5
+    ALEA_GEOM_EVENT_TRUNCATED_COVERAGE     = 1u << 5,
+    ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY = 1u << 6
 } alea_geom_event_flags_t;
 
 typedef struct {
@@ -59,6 +60,7 @@ typedef struct {
     int found_cell_id;
     int expected_neighbor_cell_id;
     int secondary_cell_id;
+    int found_cell_count;
     int surface_id;
     int universe_id;
     int universe_depth;
