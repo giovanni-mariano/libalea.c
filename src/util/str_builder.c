@@ -12,11 +12,31 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>  /* SIZE_MAX */
+
+/* Compute a buffer capacity >= needed using ~2x growth. `needed` must already
+ * be a representable size (<= SIZE_MAX); the caller guarantees this. Starting
+ * from at least 1 prevents the doubling loop from stalling on a zero capacity,
+ * and the SIZE_MAX/2 guard prevents it from overflowing. */
+static size_t grow_capacity(size_t current, size_t needed)
+{
+    size_t cap = current ? current : 1;
+    while (cap < needed) {
+        if (cap > SIZE_MAX / 2) return needed;  /* doubling would overflow */
+        cap *= 2;
+    }
+    return cap;
+}
 
 static bool ensure_space(str_builder_t* sb, size_t n)
 {
     if (sb->error) return false;
-    if (sb->len + n + 1 <= sb->capacity) return true;
+
+    /* Guard the `len + n + 1` arithmetic against size_t overflow before it is
+     * used as an allocation size. */
+    if (n > SIZE_MAX - 1 - sb->len) { sb->error = true; return false; }
+    size_t needed = sb->len + n + 1;
+    if (needed <= sb->capacity) return true;
 
     /* Stream mode: flush current buffer to file and reuse it. */
     if (sb->stream) {
@@ -29,8 +49,7 @@ static bool ensure_space(str_builder_t* sb, size_t n)
         /* After flush the buffer is empty; if n still doesn't fit (single
          * write larger than the buffer), grow it once with realloc. */
         if (n + 1 <= sb->capacity) return true;
-        size_t new_cap = sb->capacity;
-        while (new_cap < n + 1) new_cap *= 2;
+        size_t new_cap = grow_capacity(sb->capacity, n + 1);
         char* new_buf = (char*)realloc(sb->buf, new_cap);
         if (!new_buf) { sb->error = true; return false; }
         sb->buf = new_buf;
@@ -41,8 +60,7 @@ static bool ensure_space(str_builder_t* sb, size_t n)
     /* Arena mode: allocate a larger block (old block stays in arena). */
     if (!sb->arena) { sb->error = true; return false; }
 
-    size_t new_cap = sb->capacity ? sb->capacity * 2 : 256;
-    while (new_cap < sb->len + n + 1) new_cap *= 2;
+    size_t new_cap = grow_capacity(sb->capacity, needed);
 
     char* new_buf = (char*)arena_alloc(sb->arena, new_cap);
     if (!new_buf) { sb->error = true; return false; }
@@ -176,6 +194,9 @@ void str_builder_init_stream(str_builder_t* sb, size_t buf_size, FILE* stream)
 {
     memset(sb, 0, sizeof(*sb));
     sb->stream = stream;
+    /* A zero-size buffer would make malloc(0) ambiguous and the buf[0]
+     * terminator write below an overflow; reject it as an error. */
+    if (buf_size == 0) { sb->error = true; return; }
     sb->buf = (char*)malloc(buf_size);
     if (sb->buf) {
         sb->capacity = buf_size;

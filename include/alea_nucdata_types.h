@@ -106,6 +106,11 @@ typedef struct {
 
     /* Table type (parsed from ZAID suffix) */
     alea_nuc_table_type_t type;
+
+    /* Set true if any decode step attempted an out-of-bounds XSS access,
+     * signalling corrupt/malformed data. The loader rejects the nuclide
+     * rather than fabricating zero-valued physics. */
+    bool decode_error;
 } alea_nuc_ace_table_t;
 
 /* ============================================================================

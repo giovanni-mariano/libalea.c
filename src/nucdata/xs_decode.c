@@ -458,6 +458,18 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
         return NULL;
     }
 
+    /* Fail closed: if any decode step touched the XSS array out of bounds, the
+     * data is corrupt and the decoded values cannot be trusted. Reject the
+     * nuclide rather than returning fabricated zero-valued physics. The phase-1
+     * decoders operate on `raw`; the angular/energy decoders on `nuc->raw`
+     * (a copy sharing the same XSS) — inspect both. */
+    if (raw.decode_error || nuc->raw.decode_error) {
+        ALEA_LOG_ERROR("rejecting '%s': out-of-bounds XSS access during decode "
+                       "(corrupt or malformed ACE data)", zaid);
+        alea_nuc_nuclide_free(nuc);
+        return NULL;
+    }
+
     ALEA_LOG_INFO("loaded %s (Z=%d A=%d, %d energies, %d reactions)",
                  zaid, nuc->Z, nuc->A, nuc->n_energies, nuc->n_reactions);
 

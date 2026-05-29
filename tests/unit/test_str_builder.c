@@ -10,6 +10,7 @@
 #include "util/str_builder.h"
 #include "util/arena.h"
 #include <string.h>
+#include <stdio.h>
 
 TEST(str_basic) {
     arena_t arena;
@@ -147,6 +148,24 @@ TEST(str_reset) {
     ASSERT_STR_EQ(str_builder_get(&sb), "second");
 
     arena_free(&arena);
+}
+
+/* Regression: a stream builder initialised with zero capacity must report an
+   error rather than leaving a zero-capacity buffer that loops forever (or
+   overflows a malloc(0) allocation) on the next write. */
+TEST(str_stream_zero_capacity_errors) {
+    FILE* f = tmpfile();
+    ASSERT_NOT_NULL(f);
+
+    str_builder_t sb;
+    str_builder_init_stream(&sb, 0, f);
+    ASSERT_TRUE(str_builder_error(&sb));
+
+    /* Writes are no-ops in the error state and must not hang or crash. */
+    ASSERT_FALSE(str_builder_puts(&sb, "data"));
+
+    str_builder_destroy(&sb);
+    fclose(f);
 }
 
 TEST_MAIN()

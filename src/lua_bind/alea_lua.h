@@ -21,6 +21,7 @@
 #define ALEA_MESHRESULT_MT  "alea.MeshResult"
 #define ALEA_VOIDRESULT_MT  "alea.VoidResult"
 #define ALEA_FRAMEBUFFER_MT "alea.Framebuffer"
+#define ALEA_GEOMRESULT_MT  "alea.GeometryValidationResult"
 
 /* ============================================================================
  * Userdata types
@@ -91,6 +92,7 @@ int luaopen_alea_io(lua_State* L);
 int luaopen_alea_query(lua_State* L);
 int luaopen_alea_util(lua_State* L);
 int luaopen_alea_raycast(lua_State* L);
+int luaopen_alea_geo_validator(lua_State* L);
 int luaopen_alea_slice(lua_State* L);
 int luaopen_alea_render(lua_State* L);
 int luaopen_alea_mesh(lua_State* L);

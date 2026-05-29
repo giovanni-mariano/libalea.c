@@ -54,13 +54,19 @@ typedef struct { \
 \
 static inline name##_t name##_create(size_t initial_cap) { \
     name##_t map; \
+    map.count = 0; \
     size_t _cap = initial_cap < 8 ? 8 : initial_cap; \
     /* Round up to next power of two */ \
     _cap--; _cap |= _cap >> 1; _cap |= _cap >> 2; \
     _cap |= _cap >> 4; _cap |= _cap >> 8; _cap |= _cap >> 16; \
     _cap |= _cap >> 32; _cap++; \
+    /* Reject a round-up that wrapped to 0, or a size whose byte total would \
+     * overflow size_t. A wrapped capacity would yield mask = SIZE_MAX and \
+     * out-of-bounds indexing in get/put. */ \
+    if (_cap == 0 || _cap > SIZE_MAX / sizeof(name##_entry_t)) { \
+        map.entries = NULL; map.capacity = 0; return map; \
+    } \
     map.capacity = _cap; \
-    map.count = 0; \
     map.entries = (name##_entry_t*)malloc(map.capacity * sizeof(name##_entry_t)); \
     if (map.entries) { \
         for (size_t _i = 0; _i < map.capacity; _i++) { \
@@ -100,6 +106,8 @@ static inline val_type* name##_get(const name##_t* map, key_type key) { \
 } \
 \
 static inline bool name##_resize(name##_t* map, size_t new_cap) { \
+    /* Refuse a target whose byte total would overflow size_t. */ \
+    if (new_cap == 0 || new_cap > SIZE_MAX / sizeof(name##_entry_t)) return false; \
     name##_entry_t* old = map->entries; \
     size_t old_cap = map->capacity; \
     map->entries = (name##_entry_t*)malloc(new_cap * sizeof(name##_entry_t)); \
@@ -129,7 +137,9 @@ static inline bool name##_put(name##_t* map, key_type key, val_type value) { \
     if (!map->entries) return false; \
     /* Grow if load > 70% */ \
     if (map->count * 10 >= map->capacity * 7) { \
-        if (!name##_resize(map, map->capacity * 2)) return false; \
+        size_t _new_cap = map->capacity ? map->capacity * 2 : 8; \
+        if (_new_cap <= map->capacity) return false; /* doubling overflowed */ \
+        if (!name##_resize(map, _new_cap)) return false; \
     } \
     size_t mask = map->capacity - 1; \
     size_t idx = (size_t)(hash_fn(key)) & mask; \

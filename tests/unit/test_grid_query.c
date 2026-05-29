@@ -886,4 +886,47 @@ TEST(grid_boundary_filter_keeps_finite_overlap) {
     alea_destroy(sys);
 }
 
+TEST(grid_boundary_filter_keeps_nested_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int outer = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 3.0);
+    ASSERT(outer >= 0);
+    ASSERT(inner >= 0);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_halfspace(sys, outer, -1), m1, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, inner, -1), m2, -2.0, 0);
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[1];
+    int secondary_ids[1] = {-1};
+    uint8_t coverage[1];
+    uint8_t errors[1];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, 1, 1, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        cell_ids, NULL, secondary_ids, coverage, errors), 0);
+    ASSERT_EQ(coverage[0], ALEA_COVERAGE_MULTI);
+    ASSERT_EQ(errors[0], ALEA_GRID_OVERLAP);
+
+    alea_boundary_filter_stats_t stats;
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, 1, 1, -1, cell_ids, secondary_ids,
+        coverage, errors, &stats), 0);
+    ASSERT_EQ(stats.checked, 1);
+    ASSERT_EQ(stats.retained, 1);
+    ASSERT_EQ(coverage[0], ALEA_COVERAGE_MULTI);
+    ASSERT_EQ(errors[0], ALEA_GRID_OVERLAP);
+    ASSERT(secondary_ids[0] > 0);
+
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

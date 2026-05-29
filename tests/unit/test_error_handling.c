@@ -256,4 +256,40 @@ TEST(system_clone) {
     mcnp_model_destroy(model);
 }
 
+/* Regression: a cloned system must carry a populated primitive dedup index,
+   otherwise inserting a primitive that already exists in the clone fails to
+   dedup and silently creates a duplicate. */
+TEST(system_clone_primitive_dedup) {
+    const char* input =
+        "Test clone dedup\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+
+    alea_system_t* clone = alea_clone(model->sys);
+    ASSERT_NOT_NULL(clone);
+
+    size_t before = alea_vec_count(&clone->primitives);
+    ASSERT(before >= 1);  /* the SO sphere must have produced a primitive */
+
+    /* Re-submit a primitive already present in the clone. With a populated
+       index this is a dedup hit (count unchanged, existing id returned);
+       with the old empty-index bug it would append a duplicate. */
+    alea_primitive_type_t t = clone->primitives.data[0].type;
+    alea_primitive_data_t d = clone->primitives.data[0].data;
+    int8_t inverted = 0;
+    alea_primitive_id_t id = alea_get_or_create_primitive(clone, t, &d, &inverted);
+
+    ASSERT_EQ(alea_vec_count(&clone->primitives), before);  /* no duplicate */
+    ASSERT(id < (alea_primitive_id_t)before);               /* reused existing */
+
+    alea_destroy(clone);
+    mcnp_model_destroy(model);
+}
+
 TEST_MAIN()

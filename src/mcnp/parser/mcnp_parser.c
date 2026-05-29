@@ -216,7 +216,7 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
 
     while (current < end) {
         const char* line_start = current;
-        const char* line_end = strchr(line_start, '\n');
+        const char* line_end = memchr(line_start, '\n', end - line_start);
         if (line_end == NULL) line_end = end;
         line_num++;
 
@@ -285,7 +285,7 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
 
         while (peek_pos < end) {
             const char* next_line_start = peek_pos;
-            const char* next_line_end = strchr(next_line_start, '\n');
+            const char* next_line_end = memchr(next_line_start, '\n', end - next_line_start);
             if (next_line_end == NULL) next_line_end = end;
 
             // Classify the peeked line

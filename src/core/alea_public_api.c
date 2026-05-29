@@ -250,9 +250,18 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mc_cell_id, (int)i);
     }
 
-    /* Note: primitive_index, instance_cache, surface_bvh, spatial_index,
-       hier_spatial_index
-       are NOT cloned - they can be rebuilt on demand */
+    /* Rebuild the primitive dedup index. The primitives vector was copied above,
+       but alea_system_create() gave the clone an empty index. Unlike the query
+       caches below, the dedup index has no build-on-demand path, so it must be
+       repopulated here or mutating the clone would miss dedup and skew stats. */
+    for (size_t i = 0; i < alea_vec_count(&clone->primitives); i++) {
+        const alea_primitive_entry_t* p = &clone->primitives.data[i];
+        uint64_t hash = alea_compute_primitive_hash(p->type, &p->data, &clone->config);
+        primitive_hash_table_insert(clone->primitive_index, (uint32_t)i, hash);
+    }
+
+    /* Note: instance_cache, surface_bvh, spatial_index, hier_spatial_index
+       are NOT cloned - they are query caches rebuilt on demand */
 
     return clone;
 

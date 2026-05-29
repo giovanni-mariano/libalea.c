@@ -69,6 +69,7 @@ RAYCAST_DIR = $(SRC_DIR)/raycast
 SLICE_DIR = $(SRC_DIR)/slice
 RENDER_DIR = $(SRC_DIR)/render
 MESH_DIR = $(SRC_DIR)/mesh
+GEO_VALIDATOR_DIR = $(SRC_DIR)/geo_validator
 
 # Lua (vendored)
 LUA_DIR = vendor/lua
@@ -203,6 +204,10 @@ RENDER_SRCS = \
 MESH_SRCS = \
 	$(MESH_DIR)/mesh_export.c
 
+# Geometry validator module
+GEO_VALIDATOR_SRCS = \
+	$(GEO_VALIDATOR_DIR)/geo_validator.c
+
 # Core library sources (geometry engine + raycast/slice/render/mesh)
 CORE_LIB_SRCS = \
 	$(CORE_SRCS) \
@@ -211,7 +216,8 @@ CORE_LIB_SRCS = \
 	$(RAYCAST_SRCS) \
 	$(SLICE_SRCS) \
 	$(RENDER_SRCS) \
-	$(MESH_SRCS)
+	$(MESH_SRCS) \
+	$(GEO_VALIDATOR_SRCS)
 
 # MCNP module sources (parser + conversion + exporter + model)
 MCNP_MODULE_SRCS = $(MCNP_PARSER_SRCS) $(MCNP_GEOM_SRCS) $(MCNP_CONV_SRCS) $(MCNP_EXPO_SRCS) $(MCNP_MODEL_SRCS)
@@ -254,9 +260,10 @@ RAYCAST_OBJS = $(RAYCAST_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 SLICE_OBJS = $(SLICE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 RENDER_OBJS = $(RENDER_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MESH_OBJS = $(MESH_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+GEO_VALIDATOR_OBJS = $(GEO_VALIDATOR_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
 # Core library objects (geometry engine + raycast/slice/render/mesh)
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS)
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
 
 # MCNP module objects
 MCNP_MODULE_OBJS = $(MCNP_PARSER_OBJS) $(MCNP_GEOM_OBJS) $(MCNP_CONV_OBJS) $(MCNP_EXPO_OBJS) $(MCNP_MODEL_OBJS)
@@ -343,6 +350,7 @@ BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
 	$(BUILD_DIR)/mcnp/parser $(BUILD_DIR)/mcnp/geometry $(BUILD_DIR)/mcnp/conversion \
 	$(BUILD_DIR)/mcnp/exporter $(BUILD_DIR)/mcnp $(BUILD_DIR)/openmc $(BUILD_DIR)/serpent \
 	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
+	$(BUILD_DIR)/geo_validator \
 	$(BUILD_DIR)/lua $(BUILD_DIR)/lua_bind $(BUILD_DIR)/linenoise \
 	$(BIN_DIR) $(BIN_DIR)/tests/unit $(BIN_DIR)/tests/integration
 
@@ -464,6 +472,11 @@ $(BUILD_DIR)/render/%.o: $(RENDER_DIR)/%.c | $(BUILD_DIR)/render
 
 # Mesh export
 $(BUILD_DIR)/mesh/%.o: $(MESH_DIR)/%.c | $(BUILD_DIR)/mesh
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Geometry validator
+$(BUILD_DIR)/geo_validator/%.o: $(GEO_VALIDATOR_DIR)/%.c | $(BUILD_DIR)/geo_validator
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 

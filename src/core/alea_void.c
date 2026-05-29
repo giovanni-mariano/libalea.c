@@ -993,7 +993,7 @@ static void void_result_rollback(void_result_t* result) {
         if (sys->primitive_index) {
             for (size_t i = 0; i < alea_vec_count(&sys->primitives); i++) {
                 const alea_primitive_entry_t* p = &sys->primitives.data[i];
-                uint64_t hash = alea_compute_primitive_hash(p->type, &p->data, 0);
+                uint64_t hash = alea_compute_primitive_hash(p->type, &p->data, &sys->config);
                 primitive_hash_table_insert(sys->primitive_index, (uint32_t)i, hash);
             }
         }

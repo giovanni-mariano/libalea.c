@@ -223,4 +223,19 @@ TEST(hashmap_negative_keys) {
     test_map_destroy(&map);
 }
 
+/* Regression: an initial capacity whose power-of-two round-up wraps to 0 (or
+   whose byte size overflows size_t) must yield an empty, safe map rather than
+   a map with mask = SIZE_MAX that indexes out of bounds. */
+TEST(hashmap_create_overflow_safe) {
+    test_map_t map = test_map_create(SIZE_MAX);
+    ASSERT_NULL(map.entries);
+    ASSERT_EQ(map.capacity, 0);
+
+    /* Operations on the empty map are safe no-ops, not crashes. */
+    ASSERT_FALSE(test_map_put(&map, 1, 1));
+    ASSERT_NULL(test_map_get(&map, 1));
+
+    test_map_destroy(&map);
+}
+
 TEST_MAIN()

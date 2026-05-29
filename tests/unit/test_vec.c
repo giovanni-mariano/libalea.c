@@ -211,4 +211,26 @@ TEST(vec_empty) {
     alea_vec_free(&vec);
 }
 
+/* Regression: a reserve whose byte size would overflow size_t must be rejected
+   (return non-zero) rather than wrapping to a small allocation or looping. */
+TEST(vec_reserve_overflow_rejected) {
+    test_item_vec_t vec = ALEA_VEC_INIT;
+
+    /* SIZE_MAX elements of a >1-byte type cannot fit in size_t bytes. Keep the
+     * size runtime-opaque so the compiler does not statically analyse (and
+     * warn about) the allocation branch that the guard makes unreachable. */
+    volatile size_t huge = SIZE_MAX;
+    int res = alea_vec_reserve(&vec, huge, test_item_t);
+    ASSERT(res != 0);
+    ASSERT_NULL(vec.data);
+    ASSERT_EQ(vec.capacity, 0);
+
+    /* Still usable for a sane size afterwards. */
+    res = alea_vec_reserve(&vec, 8, test_item_t);
+    ASSERT_EQ(res, 0);
+    ASSERT(vec.capacity >= 8);
+
+    alea_vec_free(&vec);
+}
+
 TEST_MAIN()

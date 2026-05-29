@@ -20,6 +20,7 @@
 #include "alea_types.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>  /* SIZE_MAX */
 
 /* ============================================================================
  * TYPE GENERATOR
@@ -71,22 +72,37 @@
     int _res = 0;                                                            \
     size_t _min = (min_cap);                                                \
     if ((vec)->capacity < _min) {                                           \
-        size_t _new_cap;                                                    \
-        if ((vec)->capacity == 0) {                                         \
-            _new_cap = _min;  /* Exact allocation for reserve hints */      \
-        } else {                                                            \
-            _new_cap = (vec)->capacity;                                     \
-            while (_new_cap < _min) _new_cap *= 2;                          \
-        }                                                                   \
-        void* _new_data = realloc((vec)->data,                              \
-                                   _new_cap * sizeof(elem_type));           \
-        if (!_new_data) {                                                   \
+        /* Largest element count whose byte size fits in size_t. Reject up  \
+         * front so neither the growth loop nor the realloc multiply below  \
+         * can overflow. */                                                  \
+        const size_t _max_elems = SIZE_MAX / sizeof(elem_type);             \
+        if (_min > _max_elems) {                                            \
             _res = -1;                                                       \
-            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,                     \
-                "Failed to grow vector to %zu elements", _new_cap);         \
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,                    \
+                "Vector size %zu exceeds allocation limit", _min);          \
         } else {                                                            \
-            (vec)->data = _new_data;                                        \
-            (vec)->capacity = _new_cap;                                     \
+            size_t _new_cap;                                                \
+            if ((vec)->capacity == 0) {                                     \
+                _new_cap = _min;  /* Exact allocation for reserve hints */  \
+            } else {                                                        \
+                _new_cap = (vec)->capacity;                                 \
+                /* 2x growth, clamped so doubling cannot overflow or stall  \
+                 * (a wrapped _new_cap of 0 would loop forever). */         \
+                while (_new_cap < _min) {                                   \
+                    if (_new_cap > _max_elems / 2) { _new_cap = _min; break; } \
+                    _new_cap *= 2;                                          \
+                }                                                           \
+            }                                                               \
+            void* _new_data = realloc((vec)->data,                          \
+                                       _new_cap * sizeof(elem_type));       \
+            if (!_new_data) {                                              \
+                _res = -1;                                                  \
+                alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,               \
+                    "Failed to grow vector to %zu elements", _new_cap);     \
+            } else {                                                        \
+                (vec)->data = _new_data;                                    \
+                (vec)->capacity = _new_cap;                                 \
+            }                                                               \
         }                                                                   \
     }                                                                       \
     _res;                                                                   \

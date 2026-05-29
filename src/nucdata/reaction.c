@@ -69,12 +69,17 @@ static double eval_tabulated_yield(const alea_nuc_nuclide_t* nuc, int loc, doubl
     if (loc <= 0 || loc > t->xss_length) return 1.0;
 
     int nr = (int)t->xss[loc - 1];
-    if (nr < 0 || loc + 2 * nr > t->xss_length) return 1.0;
+    /* Bound nr against the remaining space *before* forming loc + 2*nr, so the
+     * multiply cannot overflow int and wrap past the check. */
+    if (nr < 0 || nr > (t->xss_length - loc) / 2) return 1.0;
     int base = loc + 2 * nr; /* skip NBT/INT pairs */
-    if (base > t->xss_length) return 1.0;
+    /* base is the index of NE, read below — it must be a valid index, not one
+     * past the end (the old `> xss_length` allowed base == xss_length). */
+    if (base >= t->xss_length) return 1.0;
 
     int ne = (int)t->xss[base];
-    if (ne <= 0 || base + 1 + 2 * ne > t->xss_length) return 1.0;
+    /* Likewise bound ne before forming base + 1 + 2*ne. */
+    if (ne <= 0 || ne > (t->xss_length - base - 1) / 2) return 1.0;
 
     const double* egrid = &t->xss[base];     /* NE, E[0..NE-1] */
     const double* evals = &t->xss[base + ne]; /* Y[0..NE-1] */

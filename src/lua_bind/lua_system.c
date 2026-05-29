@@ -237,6 +237,7 @@ int luaopen_alea(lua_State* L) {
     luaopen_alea_query(L);
     luaopen_alea_util(L);
     luaopen_alea_raycast(L);
+    luaopen_alea_geo_validator(L);
     luaopen_alea_slice(L);
     luaopen_alea_render(L);
     luaopen_alea_mesh(L);

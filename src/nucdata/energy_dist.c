@@ -324,8 +324,9 @@ void alea_nuc_decode_all_energy(alea_nuc_nuclide_t* nuc) {
     if (ldlw_base <= 0 || dlw_base <= 0) return;
     /* If LDLW == DLW, there is no separate locator array */
     if (ldlw_base == dlw_base && nuc->n_reactions > 0) {
-        /* Check if first value looks like a valid locator (small integer) */
-        double first = t->xss[ldlw_base - 1];
+        /* Check if first value looks like a valid locator (small integer).
+         * Use the bounds-checked accessor: ldlw_base may exceed xss_length. */
+        double first = xss(t, ldlw_base);
         if (first != (int)first || first < 0 || first > t->xss_length)
             return; /* not valid locators */
     }
