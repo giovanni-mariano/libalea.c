@@ -47,6 +47,13 @@ static void copy3(double dst[3], const double src[3]) {
     dst[2] = src[2];
 }
 
+static void init_geom_error(alea_geom_error_t* err) {
+    memset(err, 0, sizeof(*err));
+    err->source = ALEA_GEOM_EVENT_SOURCE_UNKNOWN;
+    err->curve_index = SIZE_MAX;
+    err->primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+}
+
 void alea_geom_validator_options_init(alea_geom_validator_options_t* options) {
     if (!options) return;
     memset(options, 0, sizeof(*options));
@@ -320,8 +327,9 @@ static int validate_initial_point(alea_system_t* sys,
     }
 
     alea_geom_error_t err;
-    memset(&err, 0, sizeof(err));
+    init_geom_error(&err);
     err.type = ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
+    err.source = ALEA_GEOM_EVENT_SOURCE_INITIAL_POINT;
     err.previous_cell_id = -1;
     err.found_cell_id = cov.primary_cell_id;
     err.expected_neighbor_cell_id = -1;
@@ -396,6 +404,10 @@ static int classify_transition(alea_system_t* sys,
                                const double direction[3],
                                double t,
                                double offset,
+                               alea_geom_event_source_t source,
+                               size_t curve_index,
+                               uint32_t component_index,
+                               const double uv[2],
                                const alea_geom_validator_options_t* options,
                                alea_geom_validator_result_t* result) {
     int previous_cell_id = -1;
@@ -428,13 +440,15 @@ static int classify_transition(alea_system_t* sys,
     }
 
     alea_geom_error_t err;
-    memset(&err, 0, sizeof(err));
+    init_geom_error(&err);
+    err.source = source;
     err.previous_cell_id = previous_cell_id;
     err.found_cell_id = cov->primary_cell_id;
     err.expected_neighbor_cell_id = expected_neighbor_id;
     err.secondary_cell_id = cov->secondary_cell_id;
     err.found_cell_count = cov->count_at_depth;
     err.surface_id = surface_id;
+    err.primitive_id = primitive_id;
     err.universe_id = cov->universe_id;
     err.universe_depth = cov->depth;
     copy3(err.crossing_point, crossing_point);
@@ -442,6 +456,12 @@ static int classify_transition(alea_system_t* sys,
     copy3(err.direction, direction);
     err.t = t;
     err.offset = offset;
+    err.curve_index = curve_index;
+    err.component_index = component_index;
+    if (uv) {
+        err.uv[0] = uv[0];
+        err.uv[1] = uv[1];
+    }
     err.flags = flags;
 
     if (ambiguous || (event_flags & ALEA_GEOM_EVENT_COINCIDENT_SURFACES)) {
@@ -514,6 +534,7 @@ static int validate_crossing(alea_system_t* sys,
     return classify_transition(sys, previous_cell_idx, surface_id, primitive_id,
                                &cov, ambiguous, flags, crossing_point,
                                sample_point, direction, t, offset,
+                               ALEA_GEOM_EVENT_SOURCE_RAY, SIZE_MAX, 0, NULL,
                                options, result);
 }
 
@@ -588,14 +609,16 @@ static int validate_crossing_fast(alea_system_t* sys,
 
     if (expected_neighbor_idx < 0 && previous_references_surface) {
         alea_geom_error_t err;
-        memset(&err, 0, sizeof(err));
+        init_geom_error(&err);
         err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
+        err.source = ALEA_GEOM_EVENT_SOURCE_RAY;
         err.previous_cell_id = previous_cell_id;
         err.found_cell_id = -1;
         err.expected_neighbor_cell_id = expected_neighbor_id;
         err.secondary_cell_id = -1;
         err.found_cell_count = 0;
         err.surface_id = surface_id;
+        err.primitive_id = primitive_id;
         copy3(err.crossing_point, crossing_point);
         copy3(err.sample_point, sample_point);
         copy3(err.direction, direction);
@@ -874,6 +897,10 @@ static int validate_surface_sample(alea_system_t* sys,
                                    const double dir[3],
                                    int surface_id,
                                    uint32_t primitive_id,
+                                   size_t curve_index,
+                                   uint32_t component_index,
+                                   double curve_t,
+                                   const double uv[2],
                                    const alea_geom_validator_options_t* options,
                                    alea_geom_validator_result_t* result) {
     double neg_dir[3] = { -dir[0], -dir[1], -dir[2] };
@@ -919,14 +946,18 @@ static int validate_surface_sample(alea_system_t* sys,
 
     return classify_transition(sys, prev_idx, surface_id, primitive_id,
                                after, ambiguous, flags, p, after_sp, after_dir,
-                               0.0, after_off, options, result);
+                               curve_t, after_off,
+                               ALEA_GEOM_EVENT_SOURCE_SLICE_CURVE,
+                               curve_index, component_index, uv,
+                               options, result);
 }
 
 int alea_validate_geometry_slice(alea_system_t* sys,
                                  const alea_slice_view_t* view,
+                                 const alea_slice_curves_t* curves,
                                  const alea_geom_validator_options_t* options,
                                  alea_geom_validator_result_t* result) {
-    if (!sys || !view || !result) {
+    if (!sys || !view || !curves || !result) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG,
                               "alea_validate_geometry_slice: NULL argument");
         return -1;
@@ -935,9 +966,6 @@ int alea_validate_geometry_slice(alea_system_t* sys,
     alea_geom_validator_options_t local;
     if (prepare_validator(sys, &local, options) != 0)
         return -1;
-
-    alea_slice_curves_t* curves = alea_get_slice_curves(sys, view);
-    if (!curves) return 0;  /* no boundaries on this plane: nothing to validate */
 
     size_t ncurves = alea_slice_curves_count(curves);
     double vp_w = view->u_max - view->u_min;
@@ -1023,8 +1051,10 @@ int alea_validate_geometry_slice(alea_system_t* sys,
                 nu * u_axis[2] + nv * v_axis[2]
             };
 
+            double uv[2] = { u, v };
             if (validate_surface_sample(sys, pw, dirw, c.surface_id,
-                                        c.primitive_id, &local, result) != 0) {
+                                        c.primitive_id, ci, 0, t, uv,
+                                        &local, result) != 0) {
                 rc = -1;
                 break;
             }
@@ -1032,7 +1062,5 @@ int alea_validate_geometry_slice(alea_system_t* sys,
         }
         if (rc != 0) break;
     }
-
-    alea_slice_curves_free(curves);
     return rc;
 }

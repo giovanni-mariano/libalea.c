@@ -44,6 +44,13 @@ typedef enum {
     ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY = 1u << 6
 } alea_geom_event_flags_t;
 
+typedef enum {
+    ALEA_GEOM_EVENT_SOURCE_UNKNOWN = 0,
+    ALEA_GEOM_EVENT_SOURCE_RAY,
+    ALEA_GEOM_EVENT_SOURCE_SLICE_CURVE,
+    ALEA_GEOM_EVENT_SOURCE_INITIAL_POINT
+} alea_geom_event_source_t;
+
 typedef struct {
     unsigned flags;
     int universe_depth;
@@ -57,19 +64,24 @@ typedef struct {
 
 typedef struct {
     alea_geom_error_type_t type;
+    alea_geom_event_source_t source;
     int previous_cell_id;
     int found_cell_id;
     int expected_neighbor_cell_id;
     int secondary_cell_id;
     int found_cell_count;
     int surface_id;
+    uint32_t primitive_id;
     int universe_id;
     int universe_depth;
     double crossing_point[3];
     double sample_point[3];
     double direction[3];
-    double t;
+    double t;                       /**< Ray distance for ray events; curve parameter for slice events */
     double offset;
+    size_t curve_index;             /**< Index into caller-provided curves for slice events, SIZE_MAX otherwise */
+    uint32_t component_index;        /**< Component/edge/branch index for slice events */
+    double uv[2];                    /**< Slice-plane coordinate for slice events */
     uint32_t flags;
 } alea_geom_error_t;
 
@@ -105,11 +117,13 @@ int alea_validate_geometry_ray(alea_system_t* sys,
                                double t_max,
                                alea_geom_validator_result_t* result);
 
-/* Surface/slice-driven validation: samples the analytical boundary curves on
- * `view`'s plane and emits the same structured events as the ray-driven path.
- * Catches hidden nested overlaps that random rays can miss. */
+/* Surface/slice-driven validation: samples caller-provided analytical boundary
+ * curves on `view`'s plane and emits the same structured events as the
+ * ray-driven path, augmented with curve_index/t/uv provenance. Catches hidden
+ * nested overlaps that random rays can miss. */
 int alea_validate_geometry_slice(alea_system_t* sys,
                                  const alea_slice_view_t* view,
+                                 const alea_slice_curves_t* curves,
                                  const alea_geom_validator_options_t* options,
                                  alea_geom_validator_result_t* result);
 

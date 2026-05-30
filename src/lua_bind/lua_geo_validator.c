@@ -12,8 +12,16 @@ typedef struct {
     alea_geom_validator_result_t* result;
 } alea_lua_geom_result_t;
 
+typedef struct {
+    alea_slice_curves_t* ptr;
+} alea_lua_slice_curves_t;
+
 static alea_lua_geom_result_t* check_geom_result(lua_State* L, int idx) {
     return (alea_lua_geom_result_t*)luaL_checkudata(L, idx, ALEA_GEOMRESULT_MT);
+}
+
+static alea_lua_slice_curves_t* check_curves(lua_State* L, int idx) {
+    return (alea_lua_slice_curves_t*)luaL_checkudata(L, idx, ALEA_CURVES_MT);
 }
 
 static int get_bool_field(lua_State* L, int table_idx, const char* name, int* out) {
@@ -111,6 +119,8 @@ static void push_geom_error(lua_State* L, const alea_geom_error_t* error) {
     lua_setfield(L, -2, "type");
     lua_pushinteger(L, error->type);
     lua_setfield(L, -2, "type_id");
+    lua_pushinteger(L, error->source);
+    lua_setfield(L, -2, "source");
     lua_pushinteger(L, error->previous_cell_id);
     lua_setfield(L, -2, "previous_cell_id");
     lua_pushinteger(L, error->found_cell_id);
@@ -123,12 +133,24 @@ static void push_geom_error(lua_State* L, const alea_geom_error_t* error) {
     lua_setfield(L, -2, "found_cell_count");
     lua_pushinteger(L, error->surface_id);
     lua_setfield(L, -2, "surface_id");
+    lua_pushinteger(L, (lua_Integer)error->primitive_id);
+    lua_setfield(L, -2, "primitive_id");
     lua_pushinteger(L, error->universe_id);
     lua_setfield(L, -2, "universe_id");
     lua_pushinteger(L, error->universe_depth);
     lua_setfield(L, -2, "universe_depth");
     lua_pushnumber(L, error->t);
     lua_setfield(L, -2, "t");
+    if (error->curve_index != SIZE_MAX) {
+        lua_pushinteger(L, (lua_Integer)error->curve_index + 1);
+        lua_setfield(L, -2, "curve_index");
+        lua_pushinteger(L, (lua_Integer)error->component_index);
+        lua_setfield(L, -2, "component_index");
+        lua_pushnumber(L, error->uv[0]);
+        lua_setfield(L, -2, "u");
+        lua_pushnumber(L, error->uv[1]);
+        lua_setfield(L, -2, "v");
+    }
     lua_pushnumber(L, error->offset);
     lua_setfield(L, -2, "offset");
     lua_pushinteger(L, error->flags);
@@ -193,17 +215,21 @@ static int l_validate_geometry_ray(lua_State* L) {
     return 1;
 }
 
-/* sys:validate_geometry_slice(view, options?) -> GeometryValidationResult */
+/* sys:validate_geometry_slice(view, curves, options?) -> GeometryValidationResult */
 static int l_validate_geometry_slice(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_slice_view_t view;
     alea_lua_to_slice_view(L, 2, &view);
+    alea_lua_slice_curves_t* curves = check_curves(L, 3);
+    if (!curves->ptr)
+        return luaL_error(L, "validate_geometry_slice: curves freed");
 
     alea_geom_validator_options_t options;
-    parse_validator_options(L, 3, &options);
+    parse_validator_options(L, 4, &options);
 
     alea_lua_geom_result_t* ud = push_new_result(L);
-    if (alea_validate_geometry_slice(sys, &view, &options, ud->result) != 0) {
+    if (alea_validate_geometry_slice(sys, &view, curves->ptr,
+                                     &options, ud->result) != 0) {
         alea_geom_validator_result_free(ud->result);
         free(ud->result);
         ud->result = NULL;

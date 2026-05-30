@@ -1393,7 +1393,9 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
 
         alea_geom_validator_result_t vres;
         alea_geom_validator_result_init(&vres);
-        if (alea_validate_geometry_slice(sys, &view, &vopts, &vres) == 0) {
+        if (err_curves &&
+            alea_validate_geometry_slice(sys, &view, err_curves,
+                                         &vopts, &vres) == 0) {
             error_event_count = vres.error_count;
             if (verbose) {
                 printf("    Error check: %zu boundary events found\n",

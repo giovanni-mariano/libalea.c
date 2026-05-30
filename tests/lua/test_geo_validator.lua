@@ -64,12 +64,15 @@ nested:cell{id = 1, region = nested:inside(big), material = mb, density = 1.0}
 nested:cell{id = 2, region = nested:inside(small), material = ms, density = 1.0}
 
 local sview = alea.slice_view_axis(2, 0.0, -4, 4, -4, 4)
-local sres = nested:validate_geometry_slice(sview, {allow_exterior_void = true})
+local scurves = nested:get_slice_curves(sview)
+local sres = nested:validate_geometry_slice(sview, scurves, {allow_exterior_void = true})
 local ssum = sres:summary()
 assert((ssum.overlap_after_crossing or 0) > 0,
        "slice validation should detect the hidden nested overlap")
 local sstats = sres:stats()
 assert(sstats.crossings_checked > 0, "slice validation should sample boundaries")
+local serr = sres:error(1)
+assert(serr.curve_index ~= nil, "slice events should expose curve index")
 nested:destroy()
 
 print("test_geo_validator: OK")

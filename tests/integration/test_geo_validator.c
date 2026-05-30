@@ -554,6 +554,8 @@ TEST(geo_validator_slice_clean_split_box) {
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -5, 5, -5, 5);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
@@ -561,11 +563,12 @@ TEST(geo_validator_slice_clean_split_box) {
 
     alea_geom_validator_result_t result;
     alea_geom_validator_result_init(&result);
-    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
     ASSERT_EQ(result.error_count, 0);
     ASSERT(result.crossings_checked > 0);
 
     alea_geom_validator_result_free(&result);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
 }
 
@@ -593,6 +596,8 @@ TEST(geo_validator_slice_detects_nested_overlap) {
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -4, 4, -4, 4);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
@@ -600,10 +605,21 @@ TEST(geo_validator_slice_detects_nested_overlap) {
 
     alea_geom_validator_result_t result;
     alea_geom_validator_result_init(&result);
-    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
     ASSERT(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) > 0);
+    int saw_slice_location = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        if (result.errors[i].source == ALEA_GEOM_EVENT_SOURCE_SLICE_CURVE &&
+            result.errors[i].curve_index != SIZE_MAX &&
+            result.errors[i].curve_index < alea_slice_curves_count(curves)) {
+            saw_slice_location = 1;
+            break;
+        }
+    }
+    ASSERT(saw_slice_location);
 
     alea_geom_validator_result_free(&result);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
 }
 
@@ -623,16 +639,19 @@ TEST(geo_validator_slice_reports_undefined) {
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -3, 3, -3, 3);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);  /* exterior void NOT allowed */
 
     alea_geom_validator_result_t result;
     alea_geom_validator_result_init(&result);
-    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
     ASSERT(count_error_type(&result, ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING) > 0);
 
     alea_geom_validator_result_free(&result);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
 }
 
@@ -664,6 +683,8 @@ TEST(geo_validator_slice_deduplicated_cards_are_clean) {
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -5, 5, -5, 5);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
@@ -671,10 +692,11 @@ TEST(geo_validator_slice_deduplicated_cards_are_clean) {
 
     alea_geom_validator_result_t result;
     alea_geom_validator_result_init(&result);
-    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &result), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
     ASSERT_EQ(result.error_count, 0);
 
     alea_geom_validator_result_free(&result);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
 }
 
@@ -684,6 +706,8 @@ TEST(geo_validator_slice_is_reproducible) {
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -5, 5, -5, 5);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
@@ -692,13 +716,14 @@ TEST(geo_validator_slice_is_reproducible) {
     alea_geom_validator_result_t r1, r2;
     alea_geom_validator_result_init(&r1);
     alea_geom_validator_result_init(&r2);
-    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &r1), 0);
-    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, &opts, &r2), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &r1), 0);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &r2), 0);
     ASSERT_EQ(r1.error_count, r2.error_count);
     ASSERT_EQ(r1.crossings_checked, r2.crossings_checked);
 
     alea_geom_validator_result_free(&r1);
     alea_geom_validator_result_free(&r2);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
 }
 
