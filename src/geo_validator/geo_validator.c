@@ -158,6 +158,13 @@ static int cell_references_primitive(const alea_system_t* sys,
     return 0;
 }
 
+static int cell_can_be_implicit_neighbor_by_primitive(
+    const alea_system_t* sys,
+    const alea_cell_entry_t* cell,
+    uint32_t primitive_id) {
+    return cell_references_primitive(sys, cell, primitive_id);
+}
+
 /* Neighbor lookup keyed on canonical primitive identity instead of
  * mc_surface_id.  alea_find_neighbor_cell() matches on mc_surface_id, which
  * would miss deduplicated equivalent surfaces. */
@@ -486,6 +493,14 @@ static int classify_transition(alea_system_t* sys,
 
     if (expected_neighbor_idx >= 0) {
         if (cov->primary_cell_idx != expected_neighbor_idx) {
+            if (cov->klass == COVERAGE_ONE &&
+                cov->primary_cell_idx >= 0 &&
+                (size_t)cov->primary_cell_idx < alea_vec_count(&sys->cells) &&
+                cell_can_be_implicit_neighbor_by_primitive(
+                    sys, &sys->cells.data[cov->primary_cell_idx],
+                    primitive_id)) {
+                return 0;
+            }
             err.type = ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION;
             return append_error(result, options, &err);
         }
@@ -493,6 +508,14 @@ static int classify_transition(alea_system_t* sys,
     }
 
     if (previous_references_surface) {
+        if (cov->klass == COVERAGE_ONE &&
+            cov->primary_cell_idx >= 0 &&
+            (size_t)cov->primary_cell_idx < alea_vec_count(&sys->cells) &&
+            cell_can_be_implicit_neighbor_by_primitive(
+                sys, &sys->cells.data[cov->primary_cell_idx],
+                primitive_id)) {
+            return 0;
+        }
         if (cov->klass == COVERAGE_ONE)
             err.flags |= ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY;
         err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
@@ -920,6 +943,13 @@ static int validate_surface_sample(alea_system_t* sys,
 
     int ambiguous = amb_plus || amb_minus;
     uint32_t flags = flags_plus | flags_minus;
+
+    if (!ambiguous &&
+        cov_plus.klass == COVERAGE_ONE &&
+        cov_minus.klass == COVERAGE_ONE &&
+        cov_plus.primary_cell_idx == cov_minus.primary_cell_idx) {
+        return 0;
+    }
 
     /* Choose orientation: prefer a single-cell side as "previous". */
     int prev_idx;

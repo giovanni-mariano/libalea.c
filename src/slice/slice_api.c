@@ -267,6 +267,20 @@ static int find_point_coverage_exact(alea_system_t* sys,
                                      double gx, double gy, double gz,
                                      int universe_depth,
                                      point_coverage_t* out);
+static bool point_coverage_matches_pair(const point_coverage_t* pc,
+                                        int cell_a,
+                                        int cell_b);
+static int filter_grid_overlap_ambiguities(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu,
+    int nv,
+    int universe_depth,
+    const int* primary_cell_ids,
+    int* secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors,
+    alea_boundary_filter_stats_t* out_stats);
 
 void alea_slice_path_table_free(alea_slice_path_table_t* table) {
     if (!table) return;
@@ -1005,6 +1019,9 @@ int alea_find_cells_grid(alea_system_t* sys,
                 if (count > 1) out_errors[idx] = GRID_ERR_OVERLAP;
             }
         }
+        filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
+                                        out_cell_ids, NULL, NULL, out_errors,
+                                        NULL);
     }
 
     /* Print query stats when ALEA_GRID_STATS=1 */
@@ -1186,6 +1203,9 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
                 if (count > 1) out_errors[idx] = GRID_ERR_OVERLAP;
             }
         }
+        filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
+                                        out_cell_ids, NULL, NULL, out_errors,
+                                        NULL);
     }
 
     return 0;
@@ -1786,7 +1806,15 @@ static bool point_coverage_matches_pair(const point_coverage_t* pc,
             pc->secondary_cell_id == cell_a);
 }
 
-int alea_filter_grid_boundary_ambiguities(
+static int find_point_coverage_exact_world(alea_system_t* sys,
+                                           const double p[3],
+                                           int universe_depth,
+                                           point_coverage_t* out) {
+    return find_point_coverage_exact(sys, p[0], p[1], p[2],
+                                     universe_depth, out);
+}
+
+static int filter_grid_overlap_ambiguities(
     alea_system_t* sys,
     const alea_slice_view_t* view,
     int nu, int nv,
@@ -1796,7 +1824,7 @@ int alea_filter_grid_boundary_ambiguities(
     uint8_t* coverage,
     uint8_t* errors,
     alea_boundary_filter_stats_t* out_stats) {
-    if (!sys || !view || !primary_cell_ids || !coverage || !errors ||
+    if (!sys || !view || !primary_cell_ids || !errors ||
         nu <= 0 || nv <= 0)
         return -1;
 
@@ -1807,6 +1835,9 @@ int alea_filter_grid_boundary_ambiguities(
     double dv = (view->v_max - view->v_min) / (double)nv;
     double eps = 0.05 * fmin(fabs(du), fabs(dv));
     if (eps <= 0.0) return -1;
+    double eps_n = eps;
+    if (sys->config.abs_tol > 0.0 && eps_n < 10.0 * sys->config.abs_tol)
+        eps_n = 10.0 * sys->config.abs_tol;
 
     const double offsets[4][2] = {
         { 1.0,  0.0 },
@@ -1818,24 +1849,102 @@ int alea_filter_grid_boundary_ambiguities(
     int suppressed = 0;
     size_t n = (size_t)nu * (size_t)nv;
     for (size_t idx = 0; idx < n; idx++) {
-        if (coverage[idx] != ALEA_COVERAGE_MULTI ||
-            errors[idx] != GRID_ERR_OVERLAP)
+        if (errors[idx] != GRID_ERR_OVERLAP)
             continue;
 
         int primary = primary_cell_ids[idx];
-        int secondary = secondary_cell_ids ? secondary_cell_ids[idx] : -1;
-        if (primary < 0 || secondary < 0) {
+        if (primary < 0) {
             stats.inconclusive++;
             continue;
         }
 
-        stats.checked++;
         int pi = (int)(idx % (size_t)nu);
         int pj = (int)(idx / (size_t)nu);
         double u = view->u_min + (pi + 0.5) * du;
         double v = view->v_min + (pj + 0.5) * dv;
+        double center[3] = {
+            view->plane.origin[0] + u * view->plane.u_axis[0] + v * view->plane.v_axis[0],
+            view->plane.origin[1] + u * view->plane.u_axis[1] + v * view->plane.v_axis[1],
+            view->plane.origin[2] + u * view->plane.u_axis[2] + v * view->plane.v_axis[2]
+        };
+
+        point_coverage_t center_pc;
+        if (find_point_coverage_exact_world(sys, center, universe_depth,
+                                            &center_pc) != 0) {
+            stats.inconclusive++;
+            continue;
+        }
+
+        if (center_pc.coverage == ALEA_COVERAGE_NONE) {
+            if (coverage) coverage[idx] = ALEA_COVERAGE_NONE;
+            if (secondary_cell_ids) secondary_cell_ids[idx] = -1;
+            errors[idx] = GRID_ERR_UNDEFINED;
+            stats.suppressed++;
+            suppressed++;
+            continue;
+        }
+
+        if (center_pc.coverage == ALEA_COVERAGE_ONE) {
+            if (coverage) coverage[idx] = ALEA_COVERAGE_ONE;
+            if (secondary_cell_ids) secondary_cell_ids[idx] = -1;
+            errors[idx] = GRID_ERR_NONE;
+            stats.suppressed++;
+            suppressed++;
+            continue;
+        }
+
+        int pair_primary = center_pc.primary_cell_id >= 0
+            ? center_pc.primary_cell_id : primary;
+        int secondary = center_pc.secondary_cell_id;
+        if (secondary < 0)
+            secondary = secondary_cell_ids ? secondary_cell_ids[idx] : -1;
+        if (secondary < 0) {
+            stats.inconclusive++;
+            continue;
+        }
+
+        if (coverage) coverage[idx] = ALEA_COVERAGE_MULTI;
+        if (secondary_cell_ids) secondary_cell_ids[idx] = secondary;
+
+        stats.checked++;
         bool inconclusive = false;
         int matching_multi = 0;
+
+        point_coverage_t normal_pc[2];
+        int normal_rc[2];
+        double p_plus[3] = {
+            center[0] + eps_n * view->plane.normal[0],
+            center[1] + eps_n * view->plane.normal[1],
+            center[2] + eps_n * view->plane.normal[2]
+        };
+        double p_minus[3] = {
+            center[0] - eps_n * view->plane.normal[0],
+            center[1] - eps_n * view->plane.normal[1],
+            center[2] - eps_n * view->plane.normal[2]
+        };
+        normal_rc[0] = find_point_coverage_exact_world(sys, p_plus,
+                                                       universe_depth,
+                                                       &normal_pc[0]);
+        normal_rc[1] = find_point_coverage_exact_world(sys, p_minus,
+                                                       universe_depth,
+                                                       &normal_pc[1]);
+        if (normal_rc[0] == 0 && normal_rc[1] == 0 &&
+            normal_pc[0].coverage != ALEA_COVERAGE_NONE &&
+            normal_pc[1].coverage != ALEA_COVERAGE_NONE &&
+            !point_coverage_matches_pair(&normal_pc[0], pair_primary, secondary) &&
+            !point_coverage_matches_pair(&normal_pc[1], pair_primary, secondary)) {
+            if (coverage) coverage[idx] = ALEA_COVERAGE_ONE;
+            errors[idx] = GRID_ERR_NONE;
+            if (secondary_cell_ids) secondary_cell_ids[idx] = -1;
+            stats.suppressed++;
+            suppressed++;
+            continue;
+        }
+        if (normal_rc[0] != 0 || normal_rc[1] != 0 ||
+            normal_pc[0].coverage == ALEA_COVERAGE_NONE ||
+            normal_pc[1].coverage == ALEA_COVERAGE_NONE) {
+            inconclusive = true;
+        }
 
         for (int s = 0; s < 4; s++) {
             point_coverage_t pc;
@@ -1849,7 +1958,7 @@ int alea_filter_grid_boundary_ambiguities(
                 break;
             }
             if (pc.coverage == ALEA_COVERAGE_MULTI) {
-                if (point_coverage_matches_pair(&pc, primary, secondary)) {
+                if (point_coverage_matches_pair(&pc, pair_primary, secondary)) {
                     matching_multi++;
                 }
             }
@@ -1864,7 +1973,7 @@ int alea_filter_grid_boundary_ambiguities(
             continue;
         }
 
-        coverage[idx] = ALEA_COVERAGE_ONE;
+        if (coverage) coverage[idx] = ALEA_COVERAGE_ONE;
         errors[idx] = GRID_ERR_NONE;
         if (secondary_cell_ids) secondary_cell_ids[idx] = -1;
         stats.suppressed++;
@@ -1873,6 +1982,22 @@ int alea_filter_grid_boundary_ambiguities(
 
     if (out_stats) *out_stats = stats;
     return suppressed;
+}
+
+int alea_filter_grid_boundary_ambiguities(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    const int* primary_cell_ids,
+    int* secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors,
+    alea_boundary_filter_stats_t* out_stats) {
+    if (!coverage) return -1;
+    return filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
+                                           primary_cell_ids, secondary_cell_ids,
+                                           coverage, errors, out_stats);
 }
 
 static int update_pixel_coverage_exact(alea_system_t* sys,

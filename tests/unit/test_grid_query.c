@@ -60,6 +60,39 @@ static alea_system_t* make_x_split(double split_x, double R) {
     return sys;
 }
 
+static alea_system_t* make_z_split_sphere(double R) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    int sphere = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, R);
+    int plane = alea_plane_surface(sys, 2, 0.0, 0.0, 1.0, 0.0);
+    if (sphere < 0 || plane < 0) { alea_destroy(sys); return NULL; }
+
+    alea_node_id_t sphere_in = alea_halfspace(sys, sphere, -1);
+    alea_node_id_t sphere_out = alea_halfspace(sys, sphere, 1);
+    alea_node_id_t lower_half = alea_halfspace(sys, plane, -1);
+    alea_node_id_t upper_half = alea_halfspace(sys, plane, 1);
+    alea_node_id_t lower = alea_intersection(sys, sphere_in, lower_half);
+    alea_node_id_t upper = alea_intersection(sys, sphere_in, upper_half);
+    if (sphere_in == ALEA_NODE_ID_INVALID ||
+        sphere_out == ALEA_NODE_ID_INVALID ||
+        lower_half == ALEA_NODE_ID_INVALID ||
+        upper_half == ALEA_NODE_ID_INVALID ||
+        lower == ALEA_NODE_ID_INVALID ||
+        upper == ALEA_NODE_ID_INVALID) {
+        alea_destroy(sys);
+        return NULL;
+    }
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, lower, m1, -1.0, 0);
+    alea_add_cell(sys, 2, upper, m2, -2.0, 0);
+    alea_add_cell(sys, 3, sphere_out, ALEA_MATERIAL_VOID, 0.0, 0);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
 /* MCNP input for three X-aligned cells split by planes at x=4 and x=8.
  * Cell 1 (mat 1): x < 4, inside sphere SO 12
  * Cell 2 (mat 2): 4 <= x < 8
@@ -840,6 +873,42 @@ TEST(grid_boundary_filter_suppresses_shared_surface) {
     ASSERT_EQ(errors[0], ALEA_GRID_OK);
     ASSERT_EQ(secondary_ids[0], -1);
 
+    alea_destroy(sys);
+}
+
+TEST(grid_fast_suppresses_coplanar_split_surface_overlap) {
+    alea_system_t* sys = make_z_split_sphere(5.0);
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int nu = 199, nv = 199;
+    const int n = nu * nv;
+    int* cell_ids = calloc((size_t)n, sizeof(int));
+    uint8_t* coverage = calloc((size_t)n, sizeof(uint8_t));
+    uint8_t* errors = calloc((size_t)n, sizeof(uint8_t));
+    ASSERT_NOT_NULL(cell_ids);
+    ASSERT_NOT_NULL(coverage);
+    ASSERT_NOT_NULL(errors);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -12.0, 12.0, -12.0, 12.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1, ALEA_GRID_COVERAGE_FAST,
+        cell_ids, NULL, NULL, coverage, errors), 0);
+    ASSERT_EQ(count_coverage(coverage, n, ALEA_COVERAGE_MULTI), 0);
+    ASSERT_EQ(count_errors(errors, n), 0);
+
+    alea_slice_view_axis(&view, 2, 2.0, -12.0, 12.0, -12.0, 12.0);
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1, ALEA_GRID_COVERAGE_FAST,
+        cell_ids, NULL, NULL, coverage, errors), 0);
+    ASSERT_EQ(count_coverage(coverage, n, ALEA_COVERAGE_MULTI), 0);
+    ASSERT_EQ(count_errors(errors, n), 0);
+
+    free(errors);
+    free(coverage);
+    free(cell_ids);
     alea_destroy(sys);
 }
 
