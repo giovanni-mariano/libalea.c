@@ -17,7 +17,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 #define HIER_BVH_LEAF_SIZE 4
 #define HIER_DEFAULT_BLAS_THRESHOLD 1
@@ -51,11 +50,11 @@ typedef struct {
     bool valid;
 } hier_cached_cell_t;
 
-static _Thread_local hier_cached_cell_t g_hier_cache[HIER_CACHE_MAX_DEPTH];
-static _Thread_local int g_hier_cache_count = 0;
-static _Thread_local alea_system_t* g_hier_cache_system = NULL;
-static _Thread_local uint64_t g_hier_cache_generation = 0;
-static _Thread_local uint64_t g_hier_cache_system_id = 0;
+static ALEA_THREAD_LOCAL hier_cached_cell_t g_hier_cache[HIER_CACHE_MAX_DEPTH];
+static ALEA_THREAD_LOCAL int g_hier_cache_count = 0;
+static ALEA_THREAD_LOCAL alea_system_t* g_hier_cache_system = NULL;
+static ALEA_THREAD_LOCAL uint64_t g_hier_cache_generation = 0;
+static ALEA_THREAD_LOCAL uint64_t g_hier_cache_system_id = 0;
 
 static inline void hier_cache_invalidate(void) {
     g_hier_cache_count = 0;
@@ -267,7 +266,7 @@ static inline void hier_cand_free(hier_cand_buf_t* b) {
 
 /* Debug counter: candidates pushed across all universes in the current query.
  * Reset/read via alea_hier_debug_candidates_*(). Thread-local to avoid races. */
-static _Thread_local size_t g_hier_debug_candidates = 0;
+static ALEA_THREAD_LOCAL size_t g_hier_debug_candidates = 0;
 void alea_hier_debug_candidates_reset(void) { g_hier_debug_candidates = 0; }
 size_t alea_hier_debug_candidates_get(void) { return g_hier_debug_candidates; }
 
@@ -307,7 +306,7 @@ static inline void hier_cand_sort(hier_cand_buf_t* b) {
 
 /* qsort comparator: smallest bbox_volume first. The blas pointer is passed
  * via a thread-local so we don't need qsort_r (which is non-portable). */
-static _Thread_local const hier_universe_blas_t* g_sort_blas = NULL;
+static ALEA_THREAD_LOCAL const hier_universe_blas_t* g_sort_blas = NULL;
 static int hier_cand_cmp_by_volume(const void* a, const void* b) {
     float va = g_sort_blas->cells[*(const uint32_t*)a].bbox_volume;
     float vb = g_sort_blas->cells[*(const uint32_t*)b].bbox_volume;
@@ -336,9 +335,7 @@ typedef struct {
 } hier_point_query_ctx_t;
 
 static double monotonic_seconds(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+    return alea_monotonic_seconds();
 }
 
 static double bytes_to_mib(size_t bytes) {

@@ -11,6 +11,7 @@
  */
 
 #include "alea_types.h"
+#include "util/compat.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <signal.h>
@@ -19,8 +20,8 @@
 volatile sig_atomic_t g_alea_interrupted = 0;
 
 /* Thread-local error state */
-static _Thread_local alea_error_t g_last_error = ALEA_OK;
-static _Thread_local char g_error_message[256] = {0};
+static ALEA_THREAD_LOCAL alea_error_t g_last_error = ALEA_OK;
+static ALEA_THREAD_LOCAL char g_error_message[256] = {0};
 
 /* ============================================================================
  * ERROR CODE TO STRING

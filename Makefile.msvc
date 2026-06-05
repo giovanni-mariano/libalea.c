@@ -1,0 +1,334 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+#
+# SPDX-License-Identifier: MPL-2.0
+#
+# ============================================================================
+# Makefile.msvc - MSVC (cl.exe) build driver for the Alea C library
+# ============================================================================
+#
+# Usage (from a "x64 Native Tools Command Prompt for VS" or after vcvars64.bat):
+#
+#     nmake /f Makefile.msvc                 # build all static libraries
+#     nmake /f Makefile.msvc test            # build + run unit & integration tests
+#     nmake /f Makefile.msvc RELEASE=1       # optimized build (default is /Od /Zi)
+#     nmake /f Makefile.msvc USE_OPENMP=1    # enable OpenMP (/openmp:llvm, VS2019 16.9+)
+#     nmake /f Makefile.msvc clean
+#
+# This is the MSVC counterpart to the GNU `Makefile`. It deliberately mirrors
+# the same source lists and the same library layout (libalea + format modules).
+# The CLI (Lua) target is intentionally out of scope here.
+#
+# ----------------------------------------------------------------------------
+# Migration status (docs/MSVC_MIGRATION_PLAN.md)
+# ----------------------------------------------------------------------------
+# Phases 1-2-5 are in the tree: atomics shim (src/util/alea_atomic.h),
+# ALEA_THREAD_LOCAL, and the POSIX compat sweep (monotonic clock + portable
+# mutex via SRWLOCK in src/util/compat.{h,c}; guarded <unistd.h> in alea_log.c;
+# mcnp_parser.c already had a _WIN32 mmap branch). No known POSIX/GCC-isms
+# remain in the library sources.
+#
+# NOTE: not yet validated on a real cl.exe toolchain — expect to triage MSVC
+# warnings/quirks on first CI run. The CLI (Lua) target is out of scope here.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Toolchain
+# ----------------------------------------------------------------------------
+CC   = cl
+AR   = lib
+
+# ----------------------------------------------------------------------------
+# Directories
+# ----------------------------------------------------------------------------
+SRC   = src
+BUILD = build_msvc
+BIN   = bin
+
+INCLUDES = /I include /I $(SRC)
+
+# ----------------------------------------------------------------------------
+# Compiler flags
+# ----------------------------------------------------------------------------
+# /std:c11      - C11 mode (needed for _Generic-free atomics shim, designated inits)
+# /MD           - dynamic CRT (matches the portable, redistributable intent)
+# /W3           - default-ish warning level; raise to /W4 once warnings are triaged
+# /utf-8        - source/exec charset (files contain UTF-8 box-drawing in comments)
+# _CRT_SECURE_NO_WARNINGS / _CRT_NONSTDC_NO_WARNINGS - silence strdup/strcpy noise
+CFLAGS = /nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+
+!IFDEF RELEASE
+CFLAGS = $(CFLAGS) /O2 /DNDEBUG
+!ELSE
+CFLAGS = $(CFLAGS) /Od /Zi
+!ENDIF
+
+!IFDEF USE_OPENMP
+# LLVM OpenMP runtime: allows unsigned loop counters + richer atomics (vs /openmp 2.0)
+CFLAGS = $(CFLAGS) /openmp:llvm
+!ENDIF
+
+# Tests keep asserts active (strip /DNDEBUG) and are always debuggable.
+TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+TEST_INCLUDES = $(INCLUDES) /I tests
+
+# ============================================================================
+# Source -> object lists (mirror of the GNU Makefile)
+# ============================================================================
+
+# --- core engine -----------------------------------------------------------
+CORE_OBJS = \
+	$(BUILD)\core\alea_system.obj \
+	$(BUILD)\core\alea_export.obj \
+	$(BUILD)\core\alea_tolerance.obj \
+	$(BUILD)\core\alea_primitive_dedup.obj \
+	$(BUILD)\core\alea_materials.obj \
+	$(BUILD)\core\alea_elements_data.obj \
+	$(BUILD)\core\alea_error.obj \
+	$(BUILD)\core\alea_public_api.obj \
+	$(BUILD)\core\alea_eval.obj \
+	$(BUILD)\core\alea_ops.obj \
+	$(BUILD)\core\alea_simplify.obj \
+	$(BUILD)\core\alea_universe.obj \
+	$(BUILD)\core\alea_cell_complement.obj \
+	$(BUILD)\core\alea_void.obj \
+	$(BUILD)\core\alea_macrobody.obj \
+	$(BUILD)\core\alea_spatial.obj \
+	$(BUILD)\core\alea_spatial_hier.obj
+
+UTIL_OBJS = \
+	$(BUILD)\util\arena.obj \
+	$(BUILD)\util\str_builder.obj \
+	$(BUILD)\util\alea_log.obj \
+	$(BUILD)\util\poly_solve.obj \
+	$(BUILD)\util\compat.obj \
+	$(BUILD)\util\alea_svg.obj
+
+PRIMITIVES_OBJS = \
+	$(BUILD)\primitives\primitive_eval.obj \
+	$(BUILD)\primitives\primitive_create.obj \
+	$(BUILD)\primitives\primitive_desc.obj \
+	$(BUILD)\primitives\bbox.obj
+
+RAYCAST_OBJS = \
+	$(BUILD)\raycast\raycast.obj \
+	$(BUILD)\raycast\ray_intersect.obj \
+	$(BUILD)\raycast\bvh.obj \
+	$(BUILD)\raycast\raycast_api.obj
+
+SLICE_OBJS = \
+	$(BUILD)\slice\curve_intersect.obj \
+	$(BUILD)\slice\slice_api.obj
+
+RENDER_OBJS = \
+	$(BUILD)\render\render3d.obj
+
+MESH_OBJS = \
+	$(BUILD)\mesh\mesh_export.obj
+
+GEO_VALIDATOR_OBJS = \
+	$(BUILD)\geo_validator\geo_validator.obj
+
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) \
+	$(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
+
+# --- MCNP module -----------------------------------------------------------
+MCNP_OBJS = \
+	$(BUILD)\mcnp\parser\mcnp_parser.obj \
+	$(BUILD)\mcnp\parser\mcnp_lexer.obj \
+	$(BUILD)\mcnp\parser\geom_parser.obj \
+	$(BUILD)\mcnp\parser\geom_lexer.obj \
+	$(BUILD)\mcnp\conversion\mcnp_conversion.obj \
+	$(BUILD)\mcnp\conversion\surface_conv.obj \
+	$(BUILD)\mcnp\conversion\cell_conv.obj \
+	$(BUILD)\mcnp\exporter\mcnp_str.obj \
+	$(BUILD)\mcnp\exporter\mcnp_export.obj \
+	$(BUILD)\mcnp\mcnp_model.obj
+
+# --- OpenMC module ---------------------------------------------------------
+OPENMC_OBJS = \
+	$(BUILD)\openmc\openmc_xml.obj \
+	$(BUILD)\openmc\openmc_export.obj \
+	$(BUILD)\openmc\openmc_parse.obj \
+	$(BUILD)\openmc\openmc_region.obj \
+	$(BUILD)\openmc\openmc_conversion.obj \
+	$(BUILD)\openmc\openmc_model.obj
+
+# --- Serpent module --------------------------------------------------------
+SERPENT_OBJS = \
+	$(BUILD)\serpent\serpent_export.obj
+
+# --- Nuclear data module ---------------------------------------------------
+NUCDATA_OBJS = \
+	$(BUILD)\nucdata\context.obj \
+	$(BUILD)\nucdata\ace_reader.obj \
+	$(BUILD)\nucdata\xsdir.obj \
+	$(BUILD)\nucdata\xs_decode.obj \
+	$(BUILD)\nucdata\lookup.obj \
+	$(BUILD)\nucdata\material.obj \
+	$(BUILD)\nucdata\reaction.obj \
+	$(BUILD)\nucdata\angular.obj \
+	$(BUILD)\nucdata\energy_dist.obj \
+	$(BUILD)\nucdata\doppler.obj \
+	$(BUILD)\nucdata\multigroup.obj \
+	$(BUILD)\nucdata\material_bridge.obj
+
+# ============================================================================
+# Library outputs (mirror the .a names from the GNU Makefile)
+# ============================================================================
+LIB_CORE    = $(BIN)\libalea.lib
+LIB_MCNP    = $(BIN)\libalea_mcnp.lib
+LIB_OPENMC  = $(BIN)\libalea_openmc.lib
+LIB_SERPENT = $(BIN)\libalea_serpent.lib
+LIB_NUCDATA = $(BIN)\libalea_nucdata.lib
+LIB_FULL    = $(BIN)\libalea_full.lib
+
+ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
+
+# ============================================================================
+# Phony-ish targets
+# ============================================================================
+all: dirs $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
+
+full: all $(LIB_FULL)
+
+libs: all
+
+# ----------------------------------------------------------------------------
+# Library link (static) via LIB.EXE
+# ----------------------------------------------------------------------------
+$(LIB_CORE): $(CORE_LIB_OBJS)
+	$(AR) /nologo /OUT:$@ $(CORE_LIB_OBJS)
+
+$(LIB_MCNP): $(MCNP_OBJS)
+	$(AR) /nologo /OUT:$@ $(MCNP_OBJS)
+
+$(LIB_OPENMC): $(OPENMC_OBJS)
+	$(AR) /nologo /OUT:$@ $(OPENMC_OBJS)
+
+$(LIB_SERPENT): $(SERPENT_OBJS)
+	$(AR) /nologo /OUT:$@ $(SERPENT_OBJS)
+
+$(LIB_NUCDATA): $(NUCDATA_OBJS)
+	$(AR) /nologo /OUT:$@ $(NUCDATA_OBJS)
+
+$(LIB_FULL): $(ALL_OBJS)
+	$(AR) /nologo /OUT:$@ $(ALL_OBJS)
+
+# ============================================================================
+# Batch inference rules (one per source directory).
+# The `::` makes nmake compile all out-of-date sources in a single cl call.
+# ============================================================================
+{$(SRC)\core\}.c{$(BUILD)\core\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $<
+
+{$(SRC)\util\}.c{$(BUILD)\util\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $<
+
+{$(SRC)\primitives\}.c{$(BUILD)\primitives\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $<
+
+{$(SRC)\raycast\}.c{$(BUILD)\raycast\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $<
+
+{$(SRC)\slice\}.c{$(BUILD)\slice\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $<
+
+{$(SRC)\render\}.c{$(BUILD)\render\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\render\ $<
+
+{$(SRC)\mesh\}.c{$(BUILD)\mesh\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mesh\ $<
+
+{$(SRC)\geo_validator\}.c{$(BUILD)\geo_validator\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $<
+
+{$(SRC)\mcnp\}.c{$(BUILD)\mcnp\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\ $<
+
+{$(SRC)\mcnp\parser\}.c{$(BUILD)\mcnp\parser\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $<
+
+{$(SRC)\mcnp\conversion\}.c{$(BUILD)\mcnp\conversion\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\conversion\ $<
+
+{$(SRC)\mcnp\exporter\}.c{$(BUILD)\mcnp\exporter\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\exporter\ $<
+
+{$(SRC)\openmc\}.c{$(BUILD)\openmc\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $<
+
+{$(SRC)\serpent\}.c{$(BUILD)\serpent\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\serpent\ $<
+
+{$(SRC)\nucdata\}.c{$(BUILD)\nucdata\}.obj::
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $<
+
+# ============================================================================
+# Tests
+# ============================================================================
+# Module libs are pulled in with /WHOLEARCHIVE (the MSVC analogue of GNU
+# --whole-archive used by the test/CLI links in the GNU Makefile), so any
+# self-contained module objects the tests rely on are not dropped by the linker.
+TEST_LINK = /link \
+	/WHOLEARCHIVE:$(LIB_MCNP) \
+	/WHOLEARCHIVE:$(LIB_OPENMC) \
+	/WHOLEARCHIVE:$(LIB_SERPENT) \
+	/WHOLEARCHIVE:$(LIB_NUCDATA)
+
+# Build + run every tests\unit\*.c and tests\integration\*.c.
+# nmake has no $(wildcard); a cmd FOR loop discovers the sources at run time.
+# (`%%f` -> `%f` is passed to cmd, which is what a command-line FOR expects.)
+test: test-unit test-integration
+
+test-unit: libs
+	@if not exist $(BIN)\tests\unit mkdir $(BIN)\tests\unit
+	@for %%f in (tests\unit\*.c) do @( \
+		echo TEST %%~nf && \
+		$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) /Fo$(BIN)\tests\unit\ \
+			tests\unit\%%~nf.c $(LIB_CORE) /Fe$(BIN)\tests\unit\%%~nf.exe $(TEST_LINK) && \
+		$(BIN)\tests\unit\%%~nf.exe || exit /b 1 )
+	@echo All unit tests passed.
+
+test-integration: libs
+	@if not exist $(BIN)\tests\integration mkdir $(BIN)\tests\integration
+	@for %%f in (tests\integration\*.c) do @( \
+		echo TEST %%~nf && \
+		$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) /Fo$(BIN)\tests\integration\ \
+			tests\integration\%%~nf.c $(LIB_CORE) /Fe$(BIN)\tests\integration\%%~nf.exe $(TEST_LINK) && \
+		$(BIN)\tests\integration\%%~nf.exe || exit /b 1 )
+	@echo All integration tests passed.
+
+# ============================================================================
+# Directory creation
+# ============================================================================
+dirs:
+	@if not exist $(BIN) mkdir $(BIN)
+	@if not exist $(BUILD) mkdir $(BUILD)
+	@if not exist $(BUILD)\core mkdir $(BUILD)\core
+	@if not exist $(BUILD)\util mkdir $(BUILD)\util
+	@if not exist $(BUILD)\primitives mkdir $(BUILD)\primitives
+	@if not exist $(BUILD)\raycast mkdir $(BUILD)\raycast
+	@if not exist $(BUILD)\slice mkdir $(BUILD)\slice
+	@if not exist $(BUILD)\render mkdir $(BUILD)\render
+	@if not exist $(BUILD)\mesh mkdir $(BUILD)\mesh
+	@if not exist $(BUILD)\geo_validator mkdir $(BUILD)\geo_validator
+	@if not exist $(BUILD)\mcnp mkdir $(BUILD)\mcnp
+	@if not exist $(BUILD)\mcnp\parser mkdir $(BUILD)\mcnp\parser
+	@if not exist $(BUILD)\mcnp\conversion mkdir $(BUILD)\mcnp\conversion
+	@if not exist $(BUILD)\mcnp\exporter mkdir $(BUILD)\mcnp\exporter
+	@if not exist $(BUILD)\openmc mkdir $(BUILD)\openmc
+	@if not exist $(BUILD)\serpent mkdir $(BUILD)\serpent
+	@if not exist $(BUILD)\nucdata mkdir $(BUILD)\nucdata
+
+# ============================================================================
+# Clean
+# ============================================================================
+clean:
+	@if exist $(BUILD) rmdir /s /q $(BUILD)
+	@if exist $(LIB_CORE) del /q $(LIB_CORE)
+	@if exist $(LIB_MCNP) del /q $(LIB_MCNP)
+	@if exist $(LIB_OPENMC) del /q $(LIB_OPENMC)
+	@if exist $(LIB_SERPENT) del /q $(LIB_SERPENT)
+	@if exist $(LIB_NUCDATA) del /q $(LIB_NUCDATA)
+	@if exist $(LIB_FULL) del /q $(LIB_FULL)
+	@if exist $(BIN)\tests rmdir /s /q $(BIN)\tests

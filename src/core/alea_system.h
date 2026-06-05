@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <signal.h>
-#include <stdatomic.h>
+#include "util/alea_atomic.h"
 #include "alea_types.h"  // All primitive and node types
 #include "alea_materials.h"  // Material, element, mixture types
 #include "util/alea_vec.h"  // Dynamic array types

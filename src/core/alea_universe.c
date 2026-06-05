@@ -11,7 +11,6 @@
 #include "alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
-#include <pthread.h>
 #include "core/alea_ops.h"
 #include "core/alea_eval.h"
 #include "primitives/bbox.h"
@@ -37,7 +36,7 @@
 #define UNIVERSE_POINT_BVH_LEAF_SIZE 8
 
 /* Debug trace flag - set via alea_set_debug_point_trace() (thread-local) */
-_Thread_local int g_debug_point_trace = 0;
+ALEA_THREAD_LOCAL int g_debug_point_trace = 0;
 
 typedef struct {
     uint32_t cell_position;
@@ -58,7 +57,7 @@ typedef struct {
 
 /* Per-thread accumulator avoids cache-line ping-ponging under OpenMP grid
  * render. The public getter sums across threads (best-effort, no fence). */
-static _Thread_local alea_universe_point_bvh_stats_t g_point_bvh_stats;
+static ALEA_THREAD_LOCAL alea_universe_point_bvh_stats_t g_point_bvh_stats;
 
 static size_t universe_point_bvh_threshold(void) {
     const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
@@ -260,10 +259,10 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
 
     /* Serialize the lazy build across threads (OpenMP grid render in the
      * plotter, or any concurrent call). The lock-free fast path above
-     * handles the already-built case. Using a pthread mutex avoids a
+     * handles the already-built case. Using a plain mutex avoids a
      * link-time dependency on libgomp in non-OpenMP builds. */
-    static pthread_mutex_t build_mutex = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_lock(&build_mutex);
+    static alea_mutex_t build_mutex = ALEA_MUTEX_INIT;
+    alea_mutex_lock(&build_mutex);
     {
     if (univ->point_bvh_built || univ->point_bvh_disabled) goto done;
 
@@ -316,7 +315,7 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     g_point_bvh_stats.bvh_builds++;
     done: ;
     } /* end critical section */
-    pthread_mutex_unlock(&build_mutex);
+    alea_mutex_unlock(&build_mutex);
     return univ->point_bvh_built ? 0 : -1;
 }
 

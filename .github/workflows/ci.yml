@@ -88,6 +88,30 @@ jobs:
       - name: Run tests
         run: make test-unit test-integration USE_OPENMP=1
 
+  build-windows-msvc:
+    # MSVC migration (docs/MSVC_MIGRATION_PLAN.md). Phases 1-2-5 are done
+    # (atomics shim, thread-local, POSIX compat sweep). This is the first build
+    # on a real cl.exe toolchain, so MSVC-specific warnings/quirks may still need
+    # triage. Kept non-blocking so it tracks progress without gating PRs — flip
+    # continue-on-error off once it is reliably green.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC environment (vcvars64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build static libraries (MSVC)
+        run: nmake /f Makefile.msvc full
+
+      - name: Run unit & integration tests (MSVC)
+        run: nmake /f Makefile.msvc test
+
   reuse-lint:
     runs-on: ubuntu-latest
     steps:

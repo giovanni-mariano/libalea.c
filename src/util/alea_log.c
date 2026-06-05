@@ -8,9 +8,9 @@
  */
 
 #include "alea_log.h"
+#include "util/compat.h"  /* alea_file_use_color */
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 // ============================================================================
 // GLOBAL STATE
@@ -105,21 +105,6 @@ void alea_log_show_location(int enable) {
 // CORE LOGGING
 // ============================================================================
 
-// Check if output is a terminal (for color support)
-static int is_tty(FILE* f) {
-#ifdef _WIN32
-    (void)f;
-    return 0;  // Disable colors on Windows by default
-#else
-    int fd = -1;
-    if (f == stdout) fd = 1;
-    else if (f == stderr) fd = 2;
-    else if (f == stdin) fd = 0;
-    else return 0;
-    return isatty(fd);
-#endif
-}
-
 static void alea_log_writev(alea_log_level_t level, const char* file, int line,
                             const char* fmt, va_list args) {
     // Check if this level is enabled
@@ -151,7 +136,7 @@ static void alea_log_writev(alea_log_level_t level, const char* file, int line,
             break;
     }
 
-    int use_color = is_tty(out);
+    int use_color = alea_file_use_color(out);
 
     // Build output line
     char buffer[4096];
@@ -188,13 +173,7 @@ static void alea_log_writev(alea_log_level_t level, const char* file, int line,
     // Location (file:line) - typically only for DEBUG/TRACE
     if (g_config.show_location && file && (level >= ALEA_LOG_LEVEL_DEBUG)) {
         // Extract just the filename, not full path
-        const char* basename = file;
-        const char* slash = strrchr(file, '/');
-        if (slash) basename = slash + 1;
-#ifdef _WIN32
-        slash = strrchr(basename, '\\');
-        if (slash) basename = slash + 1;
-#endif
+        const char* basename = alea_path_basename(file);
         n = snprintf(ptr, remaining, "(%s:%d) ", basename, line);
         if (n > 0 && (size_t)n < remaining) {
             ptr += n;

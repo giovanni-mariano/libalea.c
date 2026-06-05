@@ -7,13 +7,8 @@
 #include <string.h>
 #include <signal.h>
 
-#ifdef _WIN32
-#include <io.h>
-#define IS_TTY() _isatty(_fileno(stdin))
-#else
-#include <unistd.h>
-#define IS_TTY() isatty(STDIN_FILENO)
-#endif
+#include "util/compat.h"
+#define IS_TTY() alea_file_is_tty(stdin)
 
 #include "lua.h"
 #include "lauxlib.h"
