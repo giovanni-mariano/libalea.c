@@ -178,6 +178,32 @@ Override the detected path when needed:
 make USE_OPENMP=1 LIBOMP_PREFIX=/opt/homebrew/opt/libomp full cli tools
 ```
 
+#### Windows with MinGW/UCRT
+
+Use the MSYS2 UCRT64 environment with the MinGW-w64 GCC toolchain. Install the
+build tools from an MSYS2 shell:
+
+```bash
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make make
+```
+
+Open a UCRT64 shell, clone the repository with submodules, and build with the
+GNU Makefile:
+
+```bash
+make full cli tools
+make test-unit test-integration
+```
+
+OpenMP builds require the MinGW OpenMP runtime:
+
+```bash
+pacman -S --needed mingw-w64-ucrt-x86_64-omp
+make clean
+make USE_OPENMP=1 RELEASE=1 full cli tools
+make USE_OPENMP=1 test-unit test-integration
+```
+
 #### Windows with MSVC
 
 Use Visual Studio 2019 or newer with the C++ x64 toolset installed. The wrapper
@@ -212,7 +238,7 @@ runtime component if OpenMP executables cannot find `libomp140.x86_64.dll`.
 ### Dependencies
 
 - C11 compiler (gcc, clang, or MSVC)
-- `make` on Linux/macOS, or Visual Studio `nmake` on Windows
+- `make` on Linux/macOS/MinGW, or Visual Studio `nmake` on Windows
 - Standard math library (`-lm`)
 - Optional: OpenMP for parallel rendering and ray tracing
 
