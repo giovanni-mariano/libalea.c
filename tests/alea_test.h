@@ -83,12 +83,29 @@ extern int alea_test_failed;
 extern int alea_test_current_failed;
 extern const char *alea_test_current_name;
 
+/* Run a function before main(). GCC/Clang use the constructor attribute; MSVC
+ * places a pointer in the CRT init section .CRT$XCU, with a /include linker
+ * directive so /OPT:REF can't strip the (otherwise unreferenced) pointer.
+ * Note: the /include symbol name is correct on x64 (no leading underscore);
+ * a 32-bit MSVC target would need an "_" prefix. */
+#if defined(_MSC_VER)
+#pragma section(".CRT$XCU", read)
+#define ALEA_TEST_CTOR(fn) \
+    static void fn(void); \
+    __declspec(allocate(".CRT$XCU")) void (*fn##_ptr)(void) = fn; \
+    __pragma(comment(linker, "/include:" #fn "_ptr")) \
+    static void fn(void)
+#else
+#define ALEA_TEST_CTOR(fn) \
+    static void fn(void) __attribute__((constructor)); \
+    static void fn(void)
+#endif
+
 /* Register a test */
 #define TEST(name) \
     static void test_##name(void); \
-    static void register_##name(void) __attribute__((constructor)); \
     static alea_test_entry_t entry_##name = { #name, test_##name, NULL }; \
-    static void register_##name(void) { \
+    ALEA_TEST_CTOR(register_##name) { \
         *alea_test_tail = &entry_##name; \
         alea_test_tail = &entry_##name.next; \
     } \
