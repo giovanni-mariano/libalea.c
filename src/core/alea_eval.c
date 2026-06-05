@@ -17,6 +17,7 @@
 #include "core/alea_system.h"
 #include "primitives/primitive_eval.h"
 #include "primitives/bbox.h"
+#include "util/compat.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,15 +28,15 @@
 // ============================================================================
 
 // Thread-local performance counters for safe parallel execution
-static _Thread_local alea_perf_counters_t g_alea_perf = {0};
+static ALEA_THREAD_LOCAL alea_perf_counters_t g_alea_perf = {0};
 
 // ============================================================================
 // HELPER: EVALUATE PRIMITIVE NODE
 // ============================================================================
 
 /* Debug trace flag - linked from alea_universe.c */
-extern _Thread_local int g_debug_point_trace;
-static _Thread_local int g_trace_cell_id = 0;  /* Cell ID to trace primitives for */
+extern ALEA_THREAD_LOCAL int g_debug_point_trace;
+static ALEA_THREAD_LOCAL int g_trace_cell_id = 0;  /* Cell ID to trace primitives for */
 
 static inline double eval_primitive_node(
     const alea_system_t* sys,
@@ -80,7 +81,7 @@ static inline double eval_primitive_node(
 // POINT EVALUATION (RECURSIVE)
 // ============================================================================
 
-static _Thread_local int g_eval_trace_depth = 0;
+static ALEA_THREAD_LOCAL int g_eval_trace_depth = 0;
 
 double alea_evaluate_point(
     const alea_system_t* sys,
@@ -416,4 +417,4 @@ alea_box_relation_t alea_tree_box_relation(
         return ALEA_RELATION_POSITIVE;  /* Entirely outside */
     }
     return ALEA_RELATION_INTERSECT;     /* Crosses surface */
-}
+}

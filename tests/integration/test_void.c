@@ -13,6 +13,7 @@
 #include "core/alea_void.h"
 #include "core/alea_system.h"
 #include "alea_mcnp.h"
+#include "util/compat.h"   /* alea_monotonic_seconds */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -557,9 +558,7 @@ TEST(void_null_safety) {
 /* ------------------------------------------------------------------------- */
 
 static double now_sec(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec + ts.tv_nsec * 1e-9;
+    return alea_monotonic_seconds();
 }
 
 /* Helper: create sphere system for benchmarking */

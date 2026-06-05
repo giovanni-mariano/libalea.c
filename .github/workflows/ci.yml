@@ -88,6 +88,26 @@ jobs:
       - name: Run tests
         run: make test-unit test-integration USE_OPENMP=1
 
+  build-windows-msvc:
+    # Native MSVC (cl.exe) build via the self-contained wrapper, which locates VS
+    # with vswhere and enters the x64 dev env itself — no msvc-dev-cmd needed.
+    # Non-blocking while the MSVC path is still being hardened; flip
+    # continue-on-error off once it is reliably green.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build static libraries (MSVC)
+        shell: pwsh
+        run: ./build-msvc.ps1 full
+
+      - name: Run unit & integration tests (MSVC)
+        shell: pwsh
+        run: ./build-msvc.ps1 test
+
   reuse-lint:
     runs-on: ubuntu-latest
     steps:

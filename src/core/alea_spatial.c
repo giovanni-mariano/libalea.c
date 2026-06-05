@@ -21,13 +21,13 @@
 #include "core/alea_surface.h"
 #include "primitives/bbox.h"
 #include "primitives/primitive_desc.h"
+#include "util/compat.h"
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <assert.h>
-#include <sys/time.h>
 #include "util/alea_log.h"
 
 /* OpenMP removed — centroid init is too trivial to benefit from threading */
@@ -52,7 +52,7 @@
 
 #if ALEA_USE_INTERVAL_CULLING
 #include "slice/curve_intersect.h"
-static _Thread_local size_t g_interval_culls = 0;
+static ALEA_THREAD_LOCAL size_t g_interval_culls = 0;
 size_t alea_spatial_get_interval_culls(void) { return g_interval_culls; }
 #endif
 
@@ -87,9 +87,7 @@ typedef struct {
 } count_ctx_t;
 
 static double monotonic_seconds(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+    return alea_monotonic_seconds();
 }
 
 static double bytes_to_mib(size_t bytes) {
@@ -801,7 +799,10 @@ typedef struct {
     bool terminal_only;
 } query_ctx_t;
 
-static void query_callback(const alea_cell_instance_t* restrict inst,
+/* Signature must match alea_spatial_callback exactly (no restrict): MSVC's C
+ * frontend treats a top-level restrict on the parameter as an incompatible
+ * function-pointer type (C4113), unlike GCC. */
+static void query_callback(const alea_cell_instance_t* inst,
                            uint32_t inst_idx, void* userdata) {
     query_ctx_t* ctx = (query_ctx_t*)userdata;
 
@@ -939,15 +940,15 @@ typedef struct {
     bool valid;
 } cached_cell_t;
 
-static _Thread_local cached_cell_t g_cell_cache[MAX_CACHE_DEPTH];
-static _Thread_local int g_cache_count = 0;
-static _Thread_local alea_system_t* g_cache_system = NULL;
-static _Thread_local uint64_t g_cache_generation = 0;
-static _Thread_local uint64_t g_cache_system_id = 0;
+static ALEA_THREAD_LOCAL cached_cell_t g_cell_cache[MAX_CACHE_DEPTH];
+static ALEA_THREAD_LOCAL int g_cache_count = 0;
+static ALEA_THREAD_LOCAL alea_system_t* g_cache_system = NULL;
+static ALEA_THREAD_LOCAL uint64_t g_cache_generation = 0;
+static ALEA_THREAD_LOCAL uint64_t g_cache_system_id = 0;
 
 /* Thread-local candidates buffer for point queries (freed via alea_spatial_reset_cache) */
-static _Thread_local alea_spatial_hit_t* g_tls_candidates = NULL;
-static _Thread_local size_t g_tls_candidates_cap = 0;
+static ALEA_THREAD_LOCAL alea_spatial_hit_t* g_tls_candidates = NULL;
+static ALEA_THREAD_LOCAL size_t g_tls_candidates_cap = 0;
 
 void alea_spatial_reset_cache(void) {
     g_cache_system = NULL;

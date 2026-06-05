@@ -17,6 +17,7 @@
 #include "bvh.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
+#include "util/compat.h"
 #include "core/alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
@@ -1275,8 +1276,8 @@ int alea_ray_is_occluded(alea_system_t* sys,
     }
 
     /* Reuse a thread-local result to avoid malloc per shadow ray */
-    static _Thread_local alea_raycast_result_t tls_result;
-    static _Thread_local int tls_init = 0;
+    static ALEA_THREAD_LOCAL alea_raycast_result_t tls_result;
+    static ALEA_THREAD_LOCAL int tls_init = 0;
     if (!tls_init) {
         alea_raycast_result_init(&tls_result);
         alea_raycast_result_reserve(&tls_result, 64, 32);

@@ -12,16 +12,7 @@
 #include <time.h>
 #include <stdlib.h>
 
-// Platform-specific includes for memory-mapped files
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-#include "util/compat.h"
+#include "util/compat.h"  /* alea_mapped_file_t, alea_file_map/unmap */
 
 /* ========================================================================== */
 /* INTERNAL STATE AND HELPERS                                                 */
@@ -36,66 +27,11 @@ typedef enum {
     STATE_DONE
 } parser_state_t;
 
-// A structure to hold the memory-mapped file data
-typedef struct {
-    const char* content; // Pointer to the file content in memory
-    size_t size;         // Size of the file
-
-#ifdef _WIN32
-    HANDLE hFile;
-    HANDLE hMapping;
-#else
-    int fd;
-#endif
-} mapped_file_t;
-
 // Forward declarations for internal parsing functions
 static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len);
 static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len);
 static int parse_material_card(mcnp_context_t* ctx, const char* line, size_t len);
 static int parse_transform_card(mcnp_context_t* ctx, const char* line, size_t len);
-
-/* ========================================================================== */
-/* FILE MEMORY-MAPPING (PLATFORM-SPECIFIC)                                    */
-/* ========================================================================== */
-
-static int map_file(const char* filepath, mapped_file_t* mf) {
-#ifdef _WIN32
-    mf->hFile = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (mf->hFile == INVALID_HANDLE_VALUE) return 0;
-
-    mf->size = GetFileSize(mf->hFile, NULL);
-    if (mf->size == INVALID_FILE_SIZE) { CloseHandle(mf->hFile); return 0; }
-
-    mf->hMapping = CreateFileMapping(mf->hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-    if (mf->hMapping == NULL) { CloseHandle(mf->hFile); return 0; }
-
-    mf->content = (const char*)MapViewOfFile(mf->hMapping, FILE_MAP_READ, 0, 0, 0);
-    if (mf->content == NULL) { CloseHandle(mf->hMapping); CloseHandle(mf->hFile); return 0; }
-#else
-    mf->fd = open(filepath, O_RDONLY);
-    if (mf->fd == -1) return 0;
-
-    struct stat s;
-    if (fstat(mf->fd, &s) == -1) { close(mf->fd); return 0; }
-    mf->size = s.st_size;
-
-    mf->content = (const char*)mmap(NULL, mf->size, PROT_READ, MAP_PRIVATE, mf->fd, 0);
-    if (mf->content == MAP_FAILED) { close(mf->fd); return 0; }
-#endif
-    return 1;
-}
-
-static void unmap_file(mapped_file_t* mf) {
-#ifdef _WIN32
-    UnmapViewOfFile(mf->content);
-    CloseHandle(mf->hMapping);
-    CloseHandle(mf->hFile);
-#else
-    munmap((void*)mf->content, mf->size);
-    close(mf->fd);
-#endif
-}
 
 /* ========================================================================== */
 /* DYNAMIC ARRAY MANAGEMENT (USING THE ARENA)                                 */
@@ -187,21 +123,21 @@ void mcnp_context_destroy(mcnp_context_t* ctx) {
 /* ========================================================================== */
 
 int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
-    mapped_file_t mf = {0};
-    if (!map_file(filename, &mf)) {
+    alea_mapped_file_t mf = {0};
+    if (!alea_file_map(filename, &mf)) {
         ALEA_LOG_ERROR("ERROR: Could not open or map file: %s\n", filename);
         return 0;
     }
 
     mcnp_context_t* ctx = mcnp_context_create(filename);
     if (!ctx) {
-        unmap_file(&mf);
+        alea_file_unmap(&mf);
         return 0;
     }
 
     parser_state_t state = STATE_TITLE_CARD;
-    const char* current = mf.content;
-    const char* end = mf.content + mf.size;
+    const char* current = mf.data;
+    const char* end = mf.data + mf.size;
     int line_num = 0;
     int had_fatal_error = 0;
 
@@ -461,7 +397,7 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
         current = peek_pos;
     }
 
-    unmap_file(&mf);
+    alea_file_unmap(&mf);
     if (had_fatal_error) {
         mcnp_context_destroy(ctx);
         *out_context = NULL;

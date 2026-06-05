@@ -191,13 +191,17 @@ static int parse_transform_definition(double* values, int* value_count,
 static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* model) {
     if (!sys) return -1;
 
-    /* Test points at "infinity" in 6 directions (9.9e5 cm = ~10 km) */
-    static const double FAR = 9.9e5;
+    /* Test points at "infinity" in 6 directions (9.9e5 cm = ~10 km).
+     * A macro (not a const double) so it is a constant expression usable in the
+     * static initializer under strict C / MSVC; the name avoids the legacy FAR
+     * macro from <windows.h>. */
+#define FAR_DISTANCE 9.9e5
     static const double test_points[][3] = {
-        { FAR, 0, 0}, {-FAR, 0, 0},
-        {0,  FAR, 0}, {0, -FAR, 0},
-        {0, 0,  FAR}, {0, 0, -FAR}
+        { FAR_DISTANCE, 0, 0}, {-FAR_DISTANCE, 0, 0},
+        {0,  FAR_DISTANCE, 0}, {0, -FAR_DISTANCE, 0},
+        {0, 0,  FAR_DISTANCE}, {0, 0, -FAR_DISTANCE}
     };
+#undef FAR_DISTANCE
 
     int graveyard_cell_id = -1;
     int graveyard_cell_idx = -1;

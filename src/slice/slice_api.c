@@ -21,7 +21,7 @@
 #include <math.h>
 #include <float.h>
 #include <limits.h>
-#include <stdatomic.h>
+#include "util/alea_atomic.h"
 #include "util/math.h"
 #include "util/alea_log.h"
 

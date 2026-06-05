@@ -1197,7 +1197,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
 
         /* Helper: map a fill universe through the wrapper table */
         #define MAP_UNIV(uid) \
-            ({ int _r = (uid); \
+            __extension__({ int _r = (uid); \
                if (needs_translation) { \
                    for (int _m = 0; _m < univ_map_count; _m++) { \
                        if (univ_map_orig[_m] == _r) { _r = univ_map_wrap[_m]; break; } \

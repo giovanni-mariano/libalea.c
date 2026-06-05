@@ -25,6 +25,7 @@
 #include "raycast/ray_intersect.h"
 #include "raycast/bvh.h"
 #include "core/alea_system.h"
+#include "util/compat.h"   /* alea_monotonic_seconds */
 
 #include <math.h>
 #include <time.h>
@@ -39,9 +40,7 @@
  * ========================================================================= */
 
 static double now_sec(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec + ts.tv_nsec * 1e-9;
+    return alea_monotonic_seconds();
 }
 
 #define BENCH_START() double _t0 = now_sec()
