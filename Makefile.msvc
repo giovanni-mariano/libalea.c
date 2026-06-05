@@ -32,6 +32,17 @@
 # ============================================================================
 
 # ----------------------------------------------------------------------------
+# Environment guard
+# ----------------------------------------------------------------------------
+# vcvars sets VCINSTALLDIR; nmake exposes env vars as macros. Without a VS x64
+# dev environment, cl/lib aren't on PATH and the build fails deep inside with a
+# cryptic "vcruntime.h not found" — turn that into one clear line. The wrapper
+# (build-msvc.ps1) sets this up automatically; bare nmake needs vcvarsall x64.
+!IFNDEF VCINSTALLDIR
+!ERROR No VS x64 dev environment (VCINSTALLDIR unset). Use build-msvc.ps1, or run `vcvarsall.bat x64` first.
+!ENDIF
+
+# ----------------------------------------------------------------------------
 # Toolchain
 # ----------------------------------------------------------------------------
 CC   = cl
@@ -54,7 +65,24 @@ INCLUDES = /I include /I $(SRC)
 # /W3           - default-ish warning level; raise to /W4 once warnings are triaged
 # /utf-8        - source/exec charset (files contain UTF-8 box-drawing in comments)
 # _CRT_SECURE_NO_WARNINGS / _CRT_NONSTDC_NO_WARNINGS - silence strdup/strcpy noise
-CFLAGS = /nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+
+# OpenMP flag, shared by the library AND the tests. It MUST go on both: the test
+# exes link libalea.lib, whose objects (render3d.c, slice_api.c) carry omp
+# pragmas and reference libomp symbols (__kmpc_*). Building tests without the
+# flag while the library was built with it would leave those unresolved at link.
+# Use /openmp:llvm, not plain /openmp (OpenMP 2.0): slice_api.c uses
+# `omp for collapse(2)` (OpenMP 3.0+), the one construct the 2.0 runtime rejects.
+# Everything else here is even 2.0-compatible (all signed int loop counters,
+# plain `atomic` update, named `critical`, schedule(dynamic,N)). /openmp:llvm is
+# x64-only (matches this build); exes load libomp140.x86_64.dll at runtime, so
+# the wrapper puts that redist on PATH for test runs.
+!IFDEF USE_OPENMP
+OMP_FLAGS = /openmp:llvm
+!ELSE
+OMP_FLAGS =
+!ENDIF
+
+CFLAGS = /nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(OMP_FLAGS)
 
 !IFDEF RELEASE
 CFLAGS = $(CFLAGS) /O2 /DNDEBUG
@@ -62,13 +90,8 @@ CFLAGS = $(CFLAGS) /O2 /DNDEBUG
 CFLAGS = $(CFLAGS) /Od /Zi
 !ENDIF
 
-!IFDEF USE_OPENMP
-# LLVM OpenMP runtime: allows unsigned loop counters + richer atomics (vs /openmp 2.0)
-CFLAGS = $(CFLAGS) /openmp:llvm
-!ENDIF
-
 # Tests keep asserts active (strip /DNDEBUG) and are always debuggable.
-TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(OMP_FLAGS)
 TEST_INCLUDES = $(INCLUDES) /I tests
 
 # ============================================================================
