@@ -185,6 +185,96 @@ LIB_FULL    = $(BIN)\libalea_full.lib
 ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
 # ============================================================================
+# Header dependency tracking
+# ============================================================================
+# The GNU Makefile gets precise per-object header deps from `-MMD -MP`. nmake
+# has no equivalent: the only automatic option is parsing `cl /showIncludes`,
+# whose "Note: including file:" prefix is localized (breaks on non-English MSVC)
+# and needs generated dep fragments + a filter script.
+#
+# Instead we track headers coarsely: every object depends on the full header
+# set, so touching any header rebuilds all objects. This is always correct
+# (never stale), pure-nmake, and locale-independent; the cost is over-building
+# on a header edit (irrelevant for CI clean builds). Keep this list in sync with
+# the headers under include/ and src/ — same maintenance contract as the source
+# lists above. (Regenerate: `find include src -name '*.h' | grep -v lua_bind`.)
+HEADERS = \
+	include\alea.h \
+	include\alea_geo_validator.h \
+	include\alea_mcnp.h \
+	include\alea_mesh.h \
+	include\alea_nucdata.h \
+	include\alea_nucdata_types.h \
+	include\alea_openmc.h \
+	include\alea_raycast.h \
+	include\alea_render.h \
+	include\alea_serpent.h \
+	include\alea_slice.h \
+	include\alea_types.h \
+	src\core\alea_cell.h \
+	src\core\alea_cell_complement.h \
+	src\core\alea_eval.h \
+	src\core\alea_export.h \
+	src\core\alea_macrobody.h \
+	src\core\alea_materials.h \
+	src\core\alea_ops.h \
+	src\core\alea_simplify.h \
+	src\core\alea_spatial.h \
+	src\core\alea_spatial_hier.h \
+	src\core\alea_surface.h \
+	src\core\alea_system.h \
+	src\core\alea_transform.h \
+	src\core\alea_universe.h \
+	src\core\alea_void.h \
+	src\geo_validator\geo_validator.h \
+	src\mcnp\conversion\cell_conv.h \
+	src\mcnp\conversion\mcnp_conversion.h \
+	src\mcnp\conversion\surface_conv.h \
+	src\mcnp\exporter\mcnp_export.h \
+	src\mcnp\exporter\mcnp_str.h \
+	src\mcnp\mcnp_model.h \
+	src\mcnp\parser\geom_lexer.h \
+	src\mcnp\parser\geom_parser.h \
+	src\mcnp\parser\mcnp_lexer.h \
+	src\mcnp\parser\mcnp_parser.h \
+	src\nucdata\constants.h \
+	src\nucdata\nuclear_internal.h \
+	src\openmc\openmc_conversion.h \
+	src\openmc\openmc_export.h \
+	src\openmc\openmc_model.h \
+	src\openmc\openmc_parse.h \
+	src\openmc\openmc_region.h \
+	src\openmc\openmc_xml.h \
+	src\primitives\bbox.h \
+	src\primitives\primitive_create.h \
+	src\primitives\primitive_desc.h \
+	src\primitives\primitive_eval.h \
+	src\raycast\bvh.h \
+	src\raycast\ray_bbox.h \
+	src\raycast\ray_epsilon.h \
+	src\raycast\ray_intersect.h \
+	src\raycast\raycast.h \
+	src\render\render3d.h \
+	src\serpent\serpent_export.h \
+	src\slice\curve_intersect.h \
+	src\slice\slice_epsilon.h \
+	src\util\alea_atomic.h \
+	src\util\alea_bitset.h \
+	src\util\alea_hashmap.h \
+	src\util\alea_log.h \
+	src\util\alea_svg.h \
+	src\util\alea_vec.h \
+	src\util\arena.h \
+	src\util\compat.h \
+	src\util\math.h \
+	src\util\poly_solve.h \
+	src\util\str_builder.h
+
+# Coarse dependency: all objects rebuild when any header changes. No commands
+# here, so the per-directory batch inference rules below still do the compiling.
+$(ALL_OBJS): $(HEADERS)
+
+# ============================================================================
 # Phony-ish targets
 # ============================================================================
 all: dirs $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
