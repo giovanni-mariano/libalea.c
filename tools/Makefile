@@ -5,9 +5,10 @@
 # Tools Makefile
 
 CC = gcc
-CFLAGS = -Wall -Wextra -g -std=c11
+CFLAGS ?= -Wall -Wextra -g -std=c11
 INCLUDES = -I../include
 BIN_DIR = ../bin
+LDFLAGS ?= -lm
 
 # Detect platform
 UNAME_S := $(shell uname -s)
@@ -15,12 +16,20 @@ UNAME_S := $(shell uname -s)
 # OpenMP support (pass USE_OPENMP=1 to enable)
 ifdef USE_OPENMP
   ifeq ($(UNAME_S),Darwin)
-    LIBOMP_PREFIX := $(shell brew --prefix libomp 2>/dev/null || echo "/usr/local/opt/libomp")
+    LIBOMP_PREFIX ?= $(shell brew --prefix libomp 2>/dev/null || echo "/usr/local/opt/libomp")
     OPENMP_FLAGS = -Xpreprocessor -fopenmp -I$(LIBOMP_PREFIX)/include
     OPENMP_LDFLAGS = -L$(LIBOMP_PREFIX)/lib -lomp
   else
+    IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -qi clang && echo 1)
     OPENMP_FLAGS = -fopenmp
     OPENMP_LDFLAGS = -fopenmp
+    ifdef LIBOMP_PREFIX
+      OPENMP_FLAGS += -I$(LIBOMP_PREFIX)/include
+      OPENMP_LDFLAGS += -L$(LIBOMP_PREFIX)/lib
+    endif
+    ifeq ($(IS_CLANG),1)
+      OPENMP_LDFLAGS += -lomp
+    endif
   endif
 else
   OPENMP_FLAGS =
@@ -49,7 +58,7 @@ endif
 
 # All libraries
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
-LDFLAGS = $(OPENMP_LDFLAGS) -lm
+LDFLAGS += $(OPENMP_LDFLAGS)
 
 # Windows: link psapi for GetProcessMemoryInfo in large_model_probe
 ifeq ($(OS),Windows_NT)

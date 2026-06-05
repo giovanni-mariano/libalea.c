@@ -9,8 +9,22 @@
 # ============================================================================
 
 CC = gcc
-CFLAGS = -Wall -Wextra -g -std=c11 -fPIC
-LDFLAGS = -lm
+AR ?= ar
+INSTALL ?= install
+INSTALL_PROGRAM ?= $(INSTALL) -m 755
+INSTALL_DATA ?= $(INSTALL) -m 644
+MKDIR_P ?= mkdir -p
+
+CFLAGS ?= -Wall -Wextra -g -std=c11 -fPIC
+LDFLAGS ?= -lm
+
+# Installation directories (override with e.g. PREFIX=/opt/alea)
+PREFIX ?= /usr/local
+EXEC_PREFIX ?= $(PREFIX)
+BINDIR ?= $(EXEC_PREFIX)/bin
+LIBDIR ?= $(EXEC_PREFIX)/lib
+INCLUDEDIR ?= $(PREFIX)/include
+DOCDIR ?= $(PREFIX)/share/doc/libalea
 
 # Automatic dependency generation
 DEPFLAGS = -MMD -MP
@@ -21,7 +35,7 @@ ifdef USE_OPENMP
   UNAME_S := $(shell uname -s)
   ifeq ($(UNAME_S),Darwin)
     # macOS: use Homebrew libomp with -Xpreprocessor
-    LIBOMP_PREFIX := $(shell brew --prefix libomp 2>/dev/null || echo "/usr/local/opt/libomp")
+    LIBOMP_PREFIX ?= $(shell brew --prefix libomp 2>/dev/null || echo "/usr/local/opt/libomp")
     CFLAGS += -Xpreprocessor -fopenmp -I$(LIBOMP_PREFIX)/include
     LDFLAGS += -L$(LIBOMP_PREFIX)/lib -lomp
   else
@@ -29,7 +43,12 @@ ifdef USE_OPENMP
     IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -qi clang && echo 1)
     ifeq ($(IS_CLANG),1)
       CFLAGS += -fopenmp
-      LDFLAGS += -fopenmp -lomp
+      LDFLAGS += -fopenmp
+      ifdef LIBOMP_PREFIX
+        CFLAGS += -I$(LIBOMP_PREFIX)/include
+        LDFLAGS += -L$(LIBOMP_PREFIX)/lib
+      endif
+      LDFLAGS += -lomp
     else
       CFLAGS += -fopenmp
       LDFLAGS += -fopenmp
@@ -315,7 +334,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools
+.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools install install-libs install-cli install-tools install-doc uninstall
 
 # Default target: core library only
 all: lib-core
@@ -355,7 +374,7 @@ BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
 	$(BIN_DIR) $(BIN_DIR)/tests/unit $(BIN_DIR)/tests/integration
 
 $(BUILD_DIRS):
-	@mkdir -p $@
+	@$(MKDIR_P) $@
 
 structure: $(BUILD_DIRS)
 
@@ -366,37 +385,37 @@ structure: $(BUILD_DIRS)
 # Core library (default)
 $(LIB_CORE): $(CORE_LIB_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "✓ Built library: $@"
 
 # MCNP module (optional)
 $(LIB_MCNP): $(MCNP_MODULE_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "✓ Built MCNP module: $@"
 
 # Nuclear data module (optional)
 $(LIB_NUCDATA): $(NUCDATA_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "✓ Built nucdata module: $@"
 
 # OpenMC module (optional)
 $(LIB_OPENMC): $(OPENMC_MODULE_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "✓ Built OpenMC module: $@"
 
 # Serpent module (optional)
 $(LIB_SERPENT): $(SERPENT_MODULE_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "✓ Built Serpent module: $@"
 
 # Full library (core + all format modules)
 $(LIB): $(ALL_OBJS) | $(BIN_DIR)
 	@echo "AR  $@"
-	@ar rcs $@ $^
+	@$(AR) rcs $@ $^
 	@echo "✓ Built full library: $@"
 
 # ============================================================================
@@ -731,6 +750,55 @@ fuzz-openmc: $(BIN_DIR)/fuzz_openmc
 fuzz: fuzz-mcnp
 
 # ============================================================================
+# Install
+# ============================================================================
+
+install: install-libs install-cli install-tools install-doc
+	@echo "✓ Installed libalea to $(DESTDIR)$(PREFIX)"
+
+install-libs: full
+	@$(MKDIR_P) "$(DESTDIR)$(LIBDIR)" "$(DESTDIR)$(INCLUDEDIR)"
+	@$(INSTALL_DATA) $(LIB_CORE) "$(DESTDIR)$(LIBDIR)/"
+	@$(INSTALL_DATA) $(LIB_MCNP) "$(DESTDIR)$(LIBDIR)/"
+	@$(INSTALL_DATA) $(LIB_OPENMC) "$(DESTDIR)$(LIBDIR)/"
+	@$(INSTALL_DATA) $(LIB_SERPENT) "$(DESTDIR)$(LIBDIR)/"
+	@$(INSTALL_DATA) $(LIB_NUCDATA) "$(DESTDIR)$(LIBDIR)/"
+	@$(INSTALL_DATA) $(LIB) "$(DESTDIR)$(LIBDIR)/"
+	@$(INSTALL_DATA) $(INCLUDE_DIR)/*.h "$(DESTDIR)$(INCLUDEDIR)/"
+
+install-cli: cli
+	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"
+	@$(INSTALL_PROGRAM) $(ALEA_CLI) "$(DESTDIR)$(BINDIR)/"
+
+install-tools: tools
+	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_convert "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_plotter "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/nuc_plot "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/large_model_probe "$(DESTDIR)$(BINDIR)/"
+
+install-doc:
+	@$(MKDIR_P) "$(DESTDIR)$(DOCDIR)"
+	@$(INSTALL_DATA) README.md "$(DESTDIR)$(DOCDIR)/"
+	@cp -R LICENSES "$(DESTDIR)$(DOCDIR)/"
+
+uninstall:
+	@rm -f "$(DESTDIR)$(BINDIR)/alea"
+	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert"
+	@rm -f "$(DESTDIR)$(BINDIR)/mc_plotter"
+	@rm -f "$(DESTDIR)$(BINDIR)/nuc_plot"
+	@rm -f "$(DESTDIR)$(BINDIR)/large_model_probe"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea.a"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_mcnp.a"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_openmc.a"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_serpent.a"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_nucdata.a"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_full.a"
+	@rm -f "$(DESTDIR)$(INCLUDEDIR)"/alea*.h
+	@rm -rf "$(DESTDIR)$(DOCDIR)"
+	@echo "✓ Uninstalled libalea from $(DESTDIR)$(PREFIX)"
+
+# ============================================================================
 # Clean Targets
 # ============================================================================
 
@@ -764,37 +832,54 @@ help:
 	@echo "Alea Project Makefile"
 	@echo ""
 	@echo "Main Targets:"
-	@echo "  all              - Build library (default)"
-	@echo "  full             - Build full library (core + MCNP + OpenMC)"
+	@echo "  all              - Build core library (default)"
+	@echo "  modules          - Build MCNP, OpenMC, Serpent, and nucdata modules"
+	@echo "  full             - Build full library (core + all modules)"
+	@echo "  cli              - Build alea CLI"
+	@echo "  tools            - Build mc_convert, mc_plotter, nuc_plot, large_model_probe"
+	@echo "  install          - Install libraries, headers, CLI, tools, and docs"
+	@echo "  install-libs     - Install static libraries and public headers"
+	@echo "  install-cli      - Install alea CLI"
+	@echo "  install-tools    - Install command-line tools"
+	@echo "  uninstall        - Remove installed libalea files"
 	@echo "  tests            - Build all tests"
 	@echo "  test             - Build and run all tests"
 	@echo "  test-unit        - Run only unit tests"
 	@echo "  test-integration - Run only integration tests"
+	@echo "  test-lua         - Run Lua tests"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  distclean        - Deep clean (all generated files)"
 	@echo "  tree             - Show project structure"
 	@echo "  help             - Show this help message"
+	@echo ""
+	@echo "Common Variables:"
+	@echo "  CC=$(CC)"
+	@echo "  AR=$(AR)"
+	@echo "  PREFIX=$(PREFIX)"
+	@echo "  DESTDIR=$(DESTDIR)"
+	@echo "  BINDIR=$(BINDIR)"
+	@echo "  LIBDIR=$(LIBDIR)"
+	@echo "  INCLUDEDIR=$(INCLUDEDIR)"
+	@echo "  USE_OPENMP=1     - Enable OpenMP"
+	@echo "  LIBOMP_PREFIX=   - OpenMP runtime prefix, e.g. /opt/homebrew/opt/libomp"
+	@echo "  RELEASE=1        - Optimized build"
+	@echo "  PORTABLE=1       - Avoid -march=native in release builds"
 	@echo ""
 	@echo "Directory Layout:"
 	@echo "  src/             - Source code"
 	@echo "    core/          - Core CSG system"
 	@echo "    util/          - Memory management"
 	@echo "    primitives/    - Geometric primitives"
-	@echo "    csg/           - CSG operations"
-	@echo "    mcnp/          - MCNP parsing and conversion"
+	@echo "    mcnp/          - MCNP parser, converter, exporter"
+	@echo "    openmc/        - OpenMC parser, converter, exporter"
+	@echo "    serpent/       - Serpent exporter"
+	@echo "    nucdata/       - Nuclear data"
 	@echo "  include/         - Public headers"
-	@echo "  obj/             - Compiled object files"
+	@echo "  build/           - Compiled object files"
 	@echo "  bin/             - Executables and libraries"
 	@echo "  tests/           - Test code"
-	@echo "    unit_/         - Unit tests"
+	@echo "    unit/          - Unit tests"
 	@echo "    integration/   - Integration tests"
-	@echo ""
-	@echo "Architecture:"
-	@echo "  NEW: Flattened single alea_system_t structure"
-	@echo "  - Replaces old node_pool, primitive_pool, alea_world"
-	@echo "  - Direct array access for performance"
-	@echo "  - Built-in deduplication with hash table"
-	@echo "  - Automatic growth (no manual sizing)"
 
 # ============================================================================
 # Automatic Dependencies
@@ -803,4 +888,4 @@ help:
 # Include generated dependency files (ignore if they don't exist yet)
 -include $(ALL_DEPS)
 
-.PHONY: all full tests test test-unit test-integration test-valgrind clean distclean tree help structure
+.PHONY: all full lib-core modules cli tools tests test test-unit test-integration test-lua test-valgrind install install-libs install-cli install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz

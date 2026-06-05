@@ -32,6 +32,8 @@ jobs:
           cp bin/alea dist/alea-linux-x64/
           cp bin/mc_convert dist/alea-linux-x64/
           cp bin/mc_plotter dist/alea-linux-x64/
+          cp bin/nuc_plot dist/alea-linux-x64/
+          cp bin/large_model_probe dist/alea-linux-x64/
           cp bin/*.a dist/alea-linux-x64/
           cp -r include dist/alea-linux-x64/
           cp README.md LICENSE* dist/alea-linux-x64/ 2>/dev/null || true
@@ -61,6 +63,8 @@ jobs:
           cp bin/alea dist/alea-linux-arm64/
           cp bin/mc_convert dist/alea-linux-arm64/
           cp bin/mc_plotter dist/alea-linux-arm64/
+          cp bin/nuc_plot dist/alea-linux-arm64/
+          cp bin/large_model_probe dist/alea-linux-arm64/
           cp bin/*.a dist/alea-linux-arm64/
           cp -r include dist/alea-linux-arm64/
           cp README.md LICENSE* dist/alea-linux-arm64/ 2>/dev/null || true
@@ -90,6 +94,8 @@ jobs:
           cp bin/alea dist/alea-macos-x64/
           cp bin/mc_convert dist/alea-macos-x64/
           cp bin/mc_plotter dist/alea-macos-x64/
+          cp bin/nuc_plot dist/alea-macos-x64/
+          cp bin/large_model_probe dist/alea-macos-x64/
           cp bin/*.a dist/alea-macos-x64/
           cp -r include dist/alea-macos-x64/
           cp README.md LICENSE* dist/alea-macos-x64/ 2>/dev/null || true
@@ -119,6 +125,8 @@ jobs:
           cp bin/alea dist/alea-macos-arm64/
           cp bin/mc_convert dist/alea-macos-arm64/
           cp bin/mc_plotter dist/alea-macos-arm64/
+          cp bin/nuc_plot dist/alea-macos-arm64/
+          cp bin/large_model_probe dist/alea-macos-arm64/
           cp bin/*.a dist/alea-macos-arm64/
           cp -r include dist/alea-macos-arm64/
           cp README.md LICENSE* dist/alea-macos-arm64/ 2>/dev/null || true
@@ -161,6 +169,8 @@ jobs:
           cp bin/alea.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/alea dist/alea-windows-x64/alea.exe
           cp bin/mc_convert.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_convert dist/alea-windows-x64/mc_convert.exe
           cp bin/mc_plotter.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_plotter dist/alea-windows-x64/mc_plotter.exe
+          cp bin/nuc_plot.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/nuc_plot dist/alea-windows-x64/nuc_plot.exe
+          cp bin/large_model_probe.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/large_model_probe dist/alea-windows-x64/large_model_probe.exe
           cp bin/*.a dist/alea-windows-x64/
           cp -r include dist/alea-windows-x64/
           cp README.md LICENSE* dist/alea-windows-x64/ 2>/dev/null || true
@@ -171,8 +181,38 @@ jobs:
           name: alea-windows-x64
           path: dist/alea-windows-x64.zip
 
+  build-windows-msvc-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build release
+        shell: pwsh
+        run: ./build-msvc.ps1 RELEASE=1 full
+
+      - name: Run tests
+        shell: pwsh
+        run: ./build-msvc.ps1 RELEASE=1 test
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/alea-windows-msvc-x64 | Out-Null
+          Copy-Item bin/*.lib dist/alea-windows-msvc-x64/
+          Copy-Item include dist/alea-windows-msvc-x64/include -Recurse
+          Copy-Item README.md dist/alea-windows-msvc-x64/
+          Copy-Item LICENSES dist/alea-windows-msvc-x64/LICENSES -Recurse
+          Compress-Archive -Path dist/alea-windows-msvc-x64 -DestinationPath dist/alea-windows-msvc-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alea-windows-msvc-x64
+          path: dist/alea-windows-msvc-x64.zip
+
   create-release:
-    needs: [build-linux-x64, build-linux-arm64, build-macos-x64, build-macos-arm64, build-windows-x64]
+    needs: [build-linux-x64, build-linux-arm64, build-macos-x64, build-macos-arm64, build-windows-x64, build-windows-msvc-x64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -194,3 +234,4 @@ jobs:
             artifacts/alea-macos-x64/alea-macos-x64.tar.gz
             artifacts/alea-macos-arm64/alea-macos-arm64.tar.gz
             artifacts/alea-windows-x64/alea-windows-x64.zip
+            artifacts/alea-windows-msvc-x64/alea-windows-msvc-x64.zip

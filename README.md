@@ -51,7 +51,7 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 - **Render** 3D images with Phong shading, cutaway views, and shadow rays
 - **Export** structured hex meshes to Gmsh (.msh) and VTK (.vtk) formats (exp.)
 - **Generate** void regions to fill gaps in the geometry
-- **Convert** between MCNP and OpenMC formats
+- **Convert** between MCNP, OpenMC, and Serpent geometry formats
 - **Build** geometry programmatically with boolean operations
 - **Materials** definition with nuclide/element composition and mixture support
 - **Nuclear data** read ACE-format cross sections (neutron, photon), sample free paths, target nuclides, reaction MTs, and multigroup scattering, Doppler broaden, and collapse to multigroup constants
@@ -68,9 +68,12 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Linux ARM64 | `alea-linux-arm64.tar.gz` |
 | macOS Intel | `alea-macos-x64.tar.gz` |
 | macOS Apple Silicon | `alea-macos-arm64.tar.gz` |
-| Windows x64 | `alea-windows-x64.zip` |
+| Windows x64 (MinGW/UCRT) | `alea-windows-x64.zip` |
+| Windows x64 (MSVC) | `alea-windows-msvc-x64.zip` |
 
-The release workflow packages the `alea` CLI, `mc_convert`, `mc_plotter`, static libraries, and headers. The `nuc_plot` tool is built from source with `make tools`.
+The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
+`mc_convert`, `mc_plotter`, `nuc_plot`, `large_model_probe`, static libraries,
+and headers. The MSVC archive packages the `.lib` static libraries and headers.
 
 ### Building from Source
 
@@ -89,24 +92,127 @@ Build the library, CLI, and tools:
 
 ```bash
 make              # Build core library (bin/libalea.a)
-make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a, libalea_nucdata.a)
+make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a, libalea_serpent.a, libalea_nucdata.a)
 make full         # Build everything into libalea_full.a
 make cli          # Build the alea CLI tool
-make tools        # Build mc_convert, mc_plotter, and nuc_plot
+make tools        # Build mc_convert, mc_plotter, nuc_plot, and large_model_probe
 make test         # Build and run tests
 make test-lua     # Build the CLI and run Lua tests
+make install      # Install libraries, headers, CLI, tools, and docs
 ```
 
-Optional flags:
+### Build Options by Platform
+
+The default build does not enable OpenMP. Add `USE_OPENMP=1` to compile the
+same targets with OpenMP parallelization enabled. Add `RELEASE=1` for an
+optimized build.
+
+Common Makefile variables:
 
 ```bash
-make USE_OPENMP=1 full cli    # Enable OpenMP parallelization
-make RELEASE=1 full cli       # Optimized build
+make CC=clang full cli tools                  # Select compiler
+make PREFIX=/opt/libalea install             # Install prefix
+make DESTDIR=/tmp/pkg PREFIX=/usr install    # Package/stage install
+make LIBOMP_PREFIX=/path/to/libomp USE_OPENMP=1 full cli tools
 ```
+
+`make install` builds and installs the static libraries, public headers, `alea`
+CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
+`install-tools` to install only one part.
+
+#### Linux
+
+Non-OpenMP build:
+
+```bash
+make full cli tools
+make test
+```
+
+OpenMP build with gcc:
+
+```bash
+make clean
+make USE_OPENMP=1 RELEASE=1 full cli tools
+make USE_OPENMP=1 test
+```
+
+OpenMP build with clang requires an OpenMP runtime such as `libomp`:
+
+```bash
+make clean
+make CC=clang USE_OPENMP=1 RELEASE=1 full cli tools
+make CC=clang USE_OPENMP=1 test
+```
+
+If `libomp` is installed in a non-standard location, pass its prefix:
+
+```bash
+make CC=clang USE_OPENMP=1 LIBOMP_PREFIX=/opt/libomp full cli tools
+```
+
+#### macOS
+
+Non-OpenMP build:
+
+```bash
+make full cli tools
+make test
+```
+
+OpenMP builds with Apple Clang require Homebrew `libomp`:
+
+```bash
+brew install libomp
+make clean
+make USE_OPENMP=1 RELEASE=1 full cli tools
+make USE_OPENMP=1 test
+```
+
+The Makefile detects `libomp` with `brew --prefix libomp` and falls back to
+`/usr/local/opt/libomp` if Homebrew is not on `PATH`.
+
+Override the detected path when needed:
+
+```bash
+make USE_OPENMP=1 LIBOMP_PREFIX=/opt/homebrew/opt/libomp full cli tools
+```
+
+#### Windows with MSVC
+
+Use Visual Studio 2019 or newer with the C++ x64 toolset installed. The wrapper
+scripts locate Visual Studio, enter the x64 developer environment, and run
+`nmake /f Makefile.msvc`. The MSVC build currently covers the static libraries
+and tests; the Lua CLI target is built by the GNU Makefile.
+
+Non-OpenMP build from PowerShell:
+
+```powershell
+.\build-msvc.ps1 full
+.\build-msvc.ps1 test
+```
+
+OpenMP build from PowerShell:
+
+```powershell
+.\build-msvc.ps1 USE_OPENMP=1 RELEASE=1 full
+.\build-msvc.ps1 USE_OPENMP=1 test
+```
+
+The same commands are available from `cmd.exe`:
+
+```bat
+build-msvc.bat full
+build-msvc.bat USE_OPENMP=1 RELEASE=1 full
+```
+
+MSVC OpenMP uses `/openmp:llvm`, so install the Visual Studio LLVM/OpenMP
+runtime component if OpenMP executables cannot find `libomp140.x86_64.dll`.
 
 ### Dependencies
 
-- C11 compiler (gcc or clang)
+- C11 compiler (gcc, clang, or MSVC)
+- `make` on Linux/macOS, or Visual Studio `nmake` on Windows
 - Standard math library (`-lm`)
 - Optional: OpenMP for parallel rendering and ray tracing
 
@@ -117,8 +223,9 @@ make RELEASE=1 full cli       # Optimized build
 | `libalea.a` | Core engine: CSG evaluation, primitives, raycast, slice, 3D render, mesh export |
 | `libalea_mcnp.a` | MCNP parser, converter, and exporter |
 | `libalea_openmc.a` | OpenMC XML parser, converter, and exporter |
+| `libalea_serpent.a` | Serpent exporter |
 | `libalea_nucdata.a` | Nuclear data: ACE reader, cross-section lookup, free-path/nuclide/reaction sampling, Doppler broadening, multigroup collapse |
-| `libalea_full.a` | Everything in one archive |
+| `libalea_full.a` | Core, MCNP, OpenMC, Serpent, and nuclear data in one archive |
 
 Link against the core library plus the format modules you need:
 
@@ -126,8 +233,14 @@ Link against the core library plus the format modules you need:
 # MCNP support
 gcc -o myapp myapp.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 
+# OpenMC support
+gcc -o myapp myapp.c -Iinclude bin/libalea_openmc.a bin/libalea.a -lm
+
 # Nuclear data
 gcc -o myapp myapp.c -Iinclude bin/libalea_nucdata.a bin/libalea.a -lm
+
+# Serpent export
+gcc -o myapp myapp.c -Iinclude bin/libalea_serpent.a bin/libalea.a -lm
 
 # Full library (core + all formats + nucdata)
 gcc -o myapp myapp.c -Iinclude bin/libalea_full.a -lm
@@ -162,14 +275,17 @@ Tools are built via `make tools`:
 
 | Tool | Description |
 |------|-------------|
-| `mc_convert` | Convert between MCNP and OpenMC geometry formats |
+| `mc_convert` | Convert between MCNP, OpenMC, and Serpent geometry formats |
 | `mc_plotter` | Render 2D cross-section slices of CSG geometry to PNG/BMP |
 | `nuc_plot` | Generate SVG plots of nuclear cross sections, angular distributions, fission spectra, and more |
+| `large_model_probe` | Inspect large MCNP models and benchmark hierarchy query/raycast behavior |
 
 ```bash
 bin/mc_convert model.inp model.xml
+bin/mc_convert model.inp model.serp --output-format serpent
 bin/mc_plotter model.inp Z 0 -100 100 -100 100 800x800 output.png
 bin/nuc_plot --xsdir /path/to/xsdir --zaid 92235.80c --plot xs --output u235.svg
+bin/large_model_probe model.inp --queries 10000 --hier-build
 ```
 
 ## Sampling
@@ -263,6 +379,7 @@ include/               Public headers
   alea_nucdata_types.h Nuclear data type definitions
   alea_mcnp.h          MCNP module API
   alea_openmc.h        OpenMC module API
+  alea_serpent.h       Serpent exporter API
 src/
   core/                CSG engine, evaluation, export, dedup, void, materials
   primitives/          Geometric primitives (plane, sphere, cylinder, cone, torus, ...)
@@ -272,6 +389,7 @@ src/
     exporter/          MCNP output formatting
   nucdata/             Nuclear data: ACE reader, XS lookup, public sampling APIs, Doppler, multigroup
   openmc/              OpenMC XML parser, converter, exporter
+  serpent/             Serpent exporter
   raycast/             Ray-geometry intersection, BVH
   slice/               2D slice curves, analytical intersection
   render/              3D batch renderer (Phong, shadows, cutaway)
@@ -279,6 +397,7 @@ src/
   lua_bind/            Lua bindings for CLI
   util/                Arena allocator, logging, vectors, math
 tools/               mc_convert, mc_plotter, nuc_plot
+                     large_model_probe
 examples/
   c/                   C example programs
   lua/                 Lua example scripts
