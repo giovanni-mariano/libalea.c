@@ -288,7 +288,7 @@ bool validate_geometry_syntax(const char* geometry_expr, char* error_msg, size_t
             paren_count--;
             if (paren_count < 0) {
                 snprintf(error_msg, error_size, 
-                        "Unmatched closing parenthesis at position %ld", p - geometry_expr);
+                        "Unmatched closing parenthesis at position %lld", (long long)(p - geometry_expr));
                 return false;
             }
         } else if (!isspace(*p) && *p != '$') {

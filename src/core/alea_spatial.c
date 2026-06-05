@@ -799,7 +799,10 @@ typedef struct {
     bool terminal_only;
 } query_ctx_t;
 
-static void query_callback(const alea_cell_instance_t* restrict inst,
+/* Signature must match alea_spatial_callback exactly (no restrict): MSVC's C
+ * frontend treats a top-level restrict on the parameter as an incompatible
+ * function-pointer type (C4113), unlike GCC. */
+static void query_callback(const alea_cell_instance_t* inst,
                            uint32_t inst_idx, void* userdata) {
     query_ctx_t* ctx = (query_ctx_t*)userdata;
 

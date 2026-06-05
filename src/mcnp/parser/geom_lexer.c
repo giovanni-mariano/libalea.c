@@ -237,7 +237,7 @@ const geometry_token_t* geom_lexer_next_token(geometry_lexer_t* lexer) {
             // Parsing failed
             lexer->token.type = GEOM_TOKEN_ERROR;
             snprintf(lexer->error_msg, sizeof(lexer->error_msg), 
-                    "Invalid number at position %ld", number_start - lexer->input);
+                    "Invalid number at position %lld", (long long)(number_start - lexer->input));
             lexer->token.end = lexer->current;
             return &lexer->token;
         }

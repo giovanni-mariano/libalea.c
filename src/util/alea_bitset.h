@@ -68,11 +68,26 @@ static inline void alea_bitset_clear_all(alea_bitset_t* bs) {
     memset(bs->words, 0, bs->n_words * sizeof(uint64_t));
 }
 
+/** Portable 64-bit population count.
+ *  MSVC has no __builtin_popcountll; use a SWAR software implementation (the
+ *  same algorithm GCC emits without -mpopcnt). Avoids __popcnt64, which would
+ *  require the POPCNT instruction (x86-64-v2) and fault on older CPUs. */
+static inline int alea_popcount64(uint64_t x) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    x = x - ((x >> 1) & 0x5555555555555555ULL);
+    x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
+    x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
+    return (int)((x * 0x0101010101010101ULL) >> 56);
+#else
+    return __builtin_popcountll(x);
+#endif
+}
+
 /** Count set bits (popcount). */
 static inline size_t alea_bitset_popcount(const alea_bitset_t* bs) {
     size_t count = 0;
     for (size_t i = 0; i < bs->n_words; i++) {
-        count += (size_t)__builtin_popcountll(bs->words[i]);
+        count += (size_t)alea_popcount64(bs->words[i]);
     }
     return count;
 }
