@@ -175,7 +175,8 @@ static int compute_path_bounding_sphere(alea_system_t* sys,
             continue;
         }
 
-        const alea_bbox_t* local = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t local_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* local = &local_v;
         if (!alea_bbox_is_valid(local)) continue;
         double dx = local->max_x - local->min_x;
         double dy = local->max_y - local->min_y;

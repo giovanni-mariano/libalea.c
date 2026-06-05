@@ -1280,7 +1280,8 @@ static int check_general_pairwise_subsumption(
 
     // Try: does A imply B? (evaluate B's surface over A's bbox)
     {
-        const alea_bbox_t* ba = &na->bbox;
+        const alea_bbox_t ba_v = alea_node_bbox_get(&na->bbox);
+        const alea_bbox_t* ba = &ba_v;
         if (ba->min_x <= ba->max_x &&
             ba->max_x - ba->min_x < UNBOUNDED_THRESHOLD &&
             ba->max_y - ba->min_y < UNBOUNDED_THRESHOLD &&
@@ -1299,7 +1300,8 @@ static int check_general_pairwise_subsumption(
 
     // Try: does B imply A? (evaluate A's surface over B's bbox)
     {
-        const alea_bbox_t* bb = &nb->bbox;
+        const alea_bbox_t bb_v = alea_node_bbox_get(&nb->bbox);
+        const alea_bbox_t* bb = &bb_v;
         if (bb->min_x <= bb->max_x &&
             bb->max_x - bb->min_x < UNBOUNDED_THRESHOLD &&
             bb->max_y - bb->min_y < UNBOUNDED_THRESHOLD &&
@@ -1735,7 +1737,8 @@ static size_t remove_geometrically_subsumed_branches(
 
         /* Get bbox for Ti */
         const alea_node_t* ti_node = &sys->nodes.data[ti];
-        const alea_bbox_t* ti_bbox = &ti_node->bbox;
+        const alea_bbox_t ti_bbox_v = alea_node_bbox_get(&ti_node->bbox);
+        const alea_bbox_t* ti_bbox = &ti_bbox_v;
 
         /* Skip if bbox is degenerate */
         if (ti_bbox->min_x > ti_bbox->max_x) continue;
@@ -1878,7 +1881,8 @@ static bool compute_intersection_bbox(
          * sense: e.g. plane z=5, sense>0 → bbox min_z=5; sense<0 → max_z=5.
          * Both interior AND exterior half-spaces can provide useful one-sided
          * bounds (planes always do, exterior of closed surfaces don't). */
-        const alea_bbox_t* nb = &node->bbox;
+        const alea_bbox_t nb_v = alea_node_bbox_get(&node->bbox);
+        const alea_bbox_t* nb = &nb_v;
         if (nb->min_x > nb->max_x) continue;  /* degenerate */
 
         /* Check each bound independently.  A half-space typically provides
@@ -2292,7 +2296,8 @@ void alea_flatten_all_cells(
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
         const alea_node_t* root_node = &sys->nodes.data[cell->root_node_id];
-        const alea_bbox_t* bbox = &root_node->bbox;
+        const alea_bbox_t bbox_v = alea_node_bbox_get(&root_node->bbox);
+        const alea_bbox_t* bbox = &bbox_v;
 
         /* Skip cells with degenerate bbox */
         if (bbox->min_x > bbox->max_x) continue;

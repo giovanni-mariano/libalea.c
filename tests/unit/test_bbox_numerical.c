@@ -213,7 +213,7 @@ TEST(octree_oblique_slab) {
     alea_build_universe_index(sys);
 
     /* The analytical bbox for this is infinite (oblique planes) */
-    alea_bbox_t analytical = sys->nodes.data[root].bbox;
+    alea_bbox_t analytical = alea_node_bbox_get(&sys->nodes.data[root].bbox);
     double dx = analytical.max_x - analytical.min_x;
     ASSERT_TRUE(dx > 9e5);  /* should be infinite */
 
@@ -359,7 +359,7 @@ TEST(public_api_numerical_tighten) {
     ASSERT_EQ(rc, 0);
 
     /* After tightening, bbox should be finite and reasonable */
-    alea_bbox_t after = sys->nodes.data[root].bbox;
+    alea_bbox_t after = alea_node_bbox_get(&sys->nodes.data[root].bbox);
     ASSERT_TRUE(after.min_x < after.max_x);
     ASSERT_TRUE(after.max_x - after.min_x < 15.0);
 
@@ -403,7 +403,8 @@ TEST(tighten_all_with_lp) {
     ASSERT_TRUE(tightened >= 1);
 
     /* After tightening, the bbox should be finite */
-    alea_bbox_t* box = &sys->nodes.data[root].bbox;
+    alea_bbox_t box_v = alea_node_bbox_get(&sys->nodes.data[root].bbox);
+    alea_bbox_t* box = &box_v;
     double tdx = box->max_x - box->min_x;
     double tdz = box->max_z - box->min_z;
     ASSERT_TRUE(tdx < 20.0);

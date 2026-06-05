@@ -1145,7 +1145,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         double center[3] = {0, 0, 0};
         if (cell->root_node_id != ALEA_NODE_ID_INVALID &&
             cell->root_node_id < alea_vec_count(&sys->nodes)) {
-            alea_bbox_t bbox = sys->nodes.data[cell->root_node_id].bbox;
+            alea_bbox_t bbox = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
             center[0] = (bbox.min_x + bbox.max_x) / 2.0;
             center[1] = (bbox.min_y + bbox.max_y) / 2.0;
             if (is_3d)

@@ -507,7 +507,8 @@ int alea_compute_bounding_sphere(alea_system_t* sys,
         const alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        const alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t box_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* box = &box_v;
         if (box->min_x > box->max_x) continue;
         double dx = box->max_x - box->min_x;
         double dy = box->max_y - box->min_y;
@@ -540,7 +541,8 @@ int alea_compute_bounding_sphere(alea_system_t* sys,
         const alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        const alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t box_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* box = &box_v;
         if (box->min_x > box->max_x) continue;
         double dx2 = box->max_x - box->min_x;
         double dy2 = box->max_y - box->min_y;
@@ -596,7 +598,9 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+        alea_node_bbox_t* node_box = &sys->nodes.data[cell->root_node_id].bbox;
+        alea_bbox_t box_v = alea_node_bbox_get(node_box);
+        alea_bbox_t* box = &box_v;
         if (box->min_x > box->max_x) continue;
         double dx = box->max_x - box->min_x;
         double dy = box->max_y - box->min_y;
@@ -610,7 +614,7 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
                 if (tight.min_x < tight.max_x &&
                     tight.min_y < tight.max_y &&
                     tight.min_z < tight.max_z) {
-                    *box = tight;
+                    alea_node_bbox_set(node_box, &tight);
                     tightened++;
                 }
             }
@@ -626,7 +630,7 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
         if (tight.min_x < tight.max_x &&
             tight.min_y < tight.max_y &&
             tight.min_z < tight.max_z) {
-            *box = tight;
+            alea_node_bbox_set(node_box, &tight);
             tightened++;
         }
     }

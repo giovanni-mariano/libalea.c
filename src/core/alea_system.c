@@ -647,8 +647,9 @@ alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id
     /* Compute bounding box (sense-aware for proper halfspace bounds) */
     /* Note: inverted flips the effective sense */
     int8_t effective_sense = inverted ? -sense : sense;
-    node->bbox = alea_halfspace_bbox(sys->primitives.data[primitive_id].type,
+    alea_bbox_t prim_bbox = alea_halfspace_bbox(sys->primitives.data[primitive_id].type,
                                      &sys->primitives.data[primitive_id].data, effective_sense);
+    alea_node_bbox_set(&node->bbox, &prim_bbox);
 
     sys->primitives.data[primitive_id].ref_count++;
 
@@ -1626,15 +1627,17 @@ int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {
         if (cell_i->universe_id != 0) continue;
         if (cell_i->root_node_id >= alea_vec_count(&sys->nodes)) continue;
 
-        const alea_bbox_t* bbox_i = &sys->nodes.data[cell_i->root_node_id].bbox;
+        const alea_bbox_t bbox_i_v = alea_node_bbox_get(&sys->nodes.data[cell_i->root_node_id].bbox);
+        const alea_bbox_t* bbox_i = &bbox_i_v;
 
         for (size_t j = i + 1; j < alea_vec_count(&sys->cells) && found < max_pairs; j++) {
             const alea_cell_entry_t* cell_j = &sys->cells.data[j];
             if (cell_j->universe_id != 0) continue;
             if (cell_j->root_node_id >= alea_vec_count(&sys->nodes)) continue;
-            
-            const alea_bbox_t* bbox_j = &sys->nodes.data[cell_j->root_node_id].bbox;
-            
+
+            const alea_bbox_t bbox_j_v = alea_node_bbox_get(&sys->nodes.data[cell_j->root_node_id].bbox);
+            const alea_bbox_t* bbox_j = &bbox_j_v;
+
             // Check bbox overlap first (fast rejection)
             if (bbox_i->max_x < bbox_j->min_x || bbox_j->max_x < bbox_i->min_x ||
                 bbox_i->max_y < bbox_j->min_y || bbox_j->max_y < bbox_i->min_y ||

@@ -129,7 +129,7 @@ static alea_bbox_t compute_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
     /* Get bbox from the node if it's cached (empty bbox has min > max) */
     const alea_node_t* root = &sys->nodes.data[cell->root_node_id];
     if (root->bbox.min_x <= root->bbox.max_x) {
-        return root->bbox;
+        return alea_node_bbox_get(&root->bbox);
     }
 
     /* Compute bbox properly using CSG tree traversal with halfspace awareness.

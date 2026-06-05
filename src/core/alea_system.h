@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <math.h>    /* nextafterf for alea_node_bbox_set */
+#include <float.h>   /* FLT_MAX for empty-bbox sentinel */
 #include "util/alea_atomic.h"
 #include "alea_types.h"  // All primitive and node types
 #include "alea_materials.h"  // Material, element, mixture types
@@ -111,6 +113,58 @@ ALEA_VEC_DEFINE(alea_primitive_vec, alea_primitive_entry_t);
 
 
 /**
+ * @brief Compact float bounding box stored per CSG node.
+ *
+ * The per-node bbox is only a conservative spatial cull cache: containment is
+ * always confirmed by full primitive evaluation, so float storage cannot affect
+ * correctness, only how many subtrees are visited. Storing 6 floats instead of
+ * 6 doubles halves the per-node bbox footprint (48B -> 24B), which dominates the
+ * node array for large models. Field names mirror alea_bbox_t so existing
+ * `node->bbox.min_x` reads still compile (float -> double promotion).
+ *
+ * Conversions go through alea_node_bbox_set/get which round outward (set) and
+ * widen (get), guaranteeing the float box always encloses the true double box.
+ */
+typedef struct alea_node_bbox {
+    float min_x, max_x;
+    float min_y, max_y;
+    float min_z, max_z;
+} alea_node_bbox_t;
+
+/* Point-in-box test directly on the float bbox (hot path; avoids a double copy). */
+static inline bool alea_node_bbox_contains_point(const alea_node_bbox_t* b,
+                                                 double x, double y, double z) {
+    return x >= (double)b->min_x && x <= (double)b->max_x &&
+           y >= (double)b->min_y && y <= (double)b->max_y &&
+           z >= (double)b->min_z && z <= (double)b->max_z;
+}
+
+/* Widen a stored float bbox back to a double bbox (exact, enclosing). */
+static inline alea_bbox_t alea_node_bbox_get(const alea_node_bbox_t* b) {
+    alea_bbox_t r;
+    r.min_x = (double)b->min_x; r.max_x = (double)b->max_x;
+    r.min_y = (double)b->min_y; r.max_y = (double)b->max_y;
+    r.min_z = (double)b->min_z; r.max_z = (double)b->max_z;
+    return r;
+}
+
+/* Store a double bbox into float, rounding each bound OUTWARD so the float box
+ * always contains the double box. Preserves the empty (min>max) sentinel. */
+static inline void alea_node_bbox_set(alea_node_bbox_t* dst, const alea_bbox_t* s) {
+    if (!(s->min_x <= s->max_x && s->min_y <= s->max_y && s->min_z <= s->max_z)) {
+        dst->min_x = dst->min_y = dst->min_z =  FLT_MAX;
+        dst->max_x = dst->max_y = dst->max_z = -FLT_MAX;
+        return;
+    }
+    dst->min_x = nextafterf((float)s->min_x, -INFINITY);
+    dst->min_y = nextafterf((float)s->min_y, -INFINITY);
+    dst->min_z = nextafterf((float)s->min_z, -INFINITY);
+    dst->max_x = nextafterf((float)s->max_x,  INFINITY);
+    dst->max_y = nextafterf((float)s->max_y,  INFINITY);
+    dst->max_z = nextafterf((float)s->max_z,  INFINITY);
+}
+
+/**
  * @brief CSG tree node
  *
  * Nodes are stored in a flat array. Child nodes are referenced by ID,
@@ -127,8 +181,8 @@ typedef struct alea_node {
     // Material ID
     alea_material_id_t material_id;
 
-    // Bounding box
-    alea_bbox_t bbox;
+    // Bounding box (compact float cull cache; see alea_node_bbox_t)
+    alea_node_bbox_t bbox;
 
     // Union: either primitive data or operation children
     union {

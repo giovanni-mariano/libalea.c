@@ -496,7 +496,7 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
 
-        alea_bbox_t bb = sys->nodes.data[cell->root_node_id].bbox;
+        alea_bbox_t bb = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
         cell->lat_pitch[0] = bb.max_x - bb.min_x;
         cell->lat_pitch[1] = bb.max_y - bb.min_y;
         cell->lat_pitch[2] = bb.max_z - bb.min_z;

@@ -720,8 +720,8 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
 
         if (cell->root_node_id != ALEA_NODE_ID_INVALID &&
             cell->root_node_id < alea_vec_count(&sys->nodes)) {
-            const alea_bbox_t* bbox = &sys->nodes.data[cell->root_node_id].bbox;
-            if (!ray_bbox_slab(&parent_local_ray, bbox, t_min, t_max))
+            const alea_bbox_t bbox_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+            if (!ray_bbox_slab(&parent_local_ray, &bbox_v, t_min, t_max))
                 continue;
         }
 

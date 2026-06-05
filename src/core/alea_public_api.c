@@ -2016,7 +2016,8 @@ int alea_tighten_cell_bbox(const alea_system_t* sys,
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     if (cell->root_node_id == ALEA_NODE_ID_INVALID) return -1;
 
-    const alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+    const alea_bbox_t box_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+    const alea_bbox_t* box = &box_v;
     if (box->min_x > box->max_x) return -1;
 
     alea_tighten_tree_bbox(sys, cell->root_node_id, box, tol, out);
@@ -2036,7 +2037,7 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index) {
     if (alea_tighten_bbox_numerical(sys, cell->root_node_id, 1.0, &tight) != 0)
         return -1;
 
-    sys->nodes.data[cell->root_node_id].bbox = tight;
+    alea_node_bbox_set(&sys->nodes.data[cell->root_node_id].bbox, &tight);
     return 0;
 }
 
@@ -2375,7 +2376,8 @@ size_t alea_get_cells_in_bbox(const alea_system_t* sys, const alea_bbox_t* bbox,
         /* Check if cell bbox intersects query bbox */
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        const alea_bbox_t* cb = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t cb_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* cb = &cb_v;
         bool intersects = (cb->min_x <= bbox->max_x && cb->max_x >= bbox->min_x &&
                           cb->min_y <= bbox->max_y && cb->max_y >= bbox->min_y &&
                           cb->min_z <= bbox->max_z && cb->max_z >= bbox->min_z);
@@ -2433,7 +2435,7 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     /* Get bbox from root node if available */
     if (c->root_node_id != ALEA_NODE_ID_INVALID &&
         c->root_node_id < alea_vec_count(&sys->nodes)) {
-        info->bbox = sys->nodes.data[c->root_node_id].bbox;
+        info->bbox = alea_node_bbox_get(&sys->nodes.data[c->root_node_id].bbox);
     } else {
         info->bbox = (alea_bbox_t){-1e30, 1e30, -1e30, 1e30, -1e30, 1e30};
     }

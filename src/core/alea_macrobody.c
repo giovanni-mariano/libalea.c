@@ -121,8 +121,8 @@ static alea_node_id_t create_intersection(alea_system_t* sys,
     node->operation.right = right;
 
     /* Compute bbox as intersection of children */
-    alea_bbox_t* bl = &sys->nodes.data[left].bbox;
-    alea_bbox_t* br = &sys->nodes.data[right].bbox;
+    const alea_node_bbox_t* bl = &sys->nodes.data[left].bbox;
+    const alea_node_bbox_t* br = &sys->nodes.data[right].bbox;
     node->bbox.min_x = fmax(bl->min_x, br->min_x);
     node->bbox.max_x = fmin(bl->max_x, br->max_x);
     node->bbox.min_y = fmax(bl->min_y, br->min_y);
@@ -1063,8 +1063,8 @@ static alea_node_id_t expand_all_cached(alea_system_t* sys, alea_node_id_t root_
         nn->operation.right = new_right;
 
         /* Recompute bbox based on operation */
-        alea_bbox_t* bl = &sys->nodes.data[new_left].bbox;
-        alea_bbox_t* br = &sys->nodes.data[new_right].bbox;
+        const alea_node_bbox_t* bl = &sys->nodes.data[new_left].bbox;
+        const alea_node_bbox_t* br = &sys->nodes.data[new_right].bbox;
         if (op == ALEA_OP_UNION) {
             nn->bbox.min_x = fmin(bl->min_x, br->min_x);
             nn->bbox.max_x = fmax(bl->max_x, br->max_x);

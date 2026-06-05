@@ -97,7 +97,7 @@ double alea_evaluate_point(
 
 
     // Early bounding box test
-    if (!alea_bbox_contains_point(&node->bbox, x, y, z)) {
+    if (!alea_node_bbox_contains_point(&node->bbox, x, y, z)) {
         //g_alea_perf.bbox_tests++;
         if (g_debug_point_trace && g_eval_trace_depth == 0) {
             ALEA_LOG_DEBUG("node %u: bbox reject (bbox=[%.2f,%.2f]x[%.2f,%.2f]x[%.2f,%.2f])",

@@ -361,7 +361,7 @@ static alea_bbox_t local_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
 
     const alea_node_t* root = &sys->nodes.data[cell->root_node_id];
     if (root->bbox.min_x <= root->bbox.max_x) {
-        return root->bbox;
+        return alea_node_bbox_get(&root->bbox);
     }
 
     alea_bbox_t bbox = alea_get_bbox(sys, cell->root_node_id);

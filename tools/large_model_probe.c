@@ -72,7 +72,7 @@ static alea_bbox_t cell_bbox(alea_system_t* sys, size_t cell_index) {
     }
     const alea_node_t* root = &sys->nodes.data[cell->root_node_id];
     if (root->bbox.min_x <= root->bbox.max_x) {
-        return root->bbox;
+        return alea_node_bbox_get(&root->bbox);
     }
     return alea_get_bbox(sys, cell->root_node_id);
 }
@@ -331,7 +331,8 @@ static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
                 size_t ci = u0->cell_indices.data[i];
                 const alea_cell_entry_t* c = &sys->cells.data[ci];
                 if (c->root_node_id == ALEA_NODE_ID_INVALID) continue;
-                const alea_bbox_t* bb = &sys->nodes.data[c->root_node_id].bbox;
+                const alea_bbox_t bb_v = alea_node_bbox_get(&sys->nodes.data[c->root_node_id].bbox);
+                const alea_bbox_t* bb = &bb_v;
                 if (bb->min_x <= 0 && 0 <= bb->max_x &&
                     bb->min_y <= 0 && 0 <= bb->max_y &&
                     bb->min_z <= 0 && 0 <= bb->max_z) {
