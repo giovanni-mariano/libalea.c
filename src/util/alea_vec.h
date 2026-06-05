@@ -181,6 +181,29 @@
 /** Clear vector (reset count to 0, keep capacity) */
 #define alea_vec_clear(vec) ((vec)->count = 0)
 
+/**
+ * Shrink capacity down to the current count, releasing unused tail memory.
+ * No-op if already exact or empty. A failed realloc is ignored (keeps the
+ * larger buffer), so this never loses data.
+ */
+#define alea_vec_shrink_to_fit(vec, elem_type) __extension__({               \
+    if ((vec)->data && (vec)->capacity > (vec)->count) {                     \
+        if ((vec)->count == 0) {                                             \
+            free((vec)->data);                                              \
+            (vec)->data = NULL;                                             \
+            (vec)->capacity = 0;                                            \
+        } else {                                                            \
+            void* _nd = realloc((vec)->data,                                \
+                                (vec)->count * sizeof(elem_type));          \
+            if (_nd) {                                                      \
+                (vec)->data = _nd;                                          \
+                (vec)->capacity = (vec)->count;                            \
+            }                                                               \
+        }                                                                   \
+    }                                                                       \
+    (void)0;                                                                \
+})
+
 /** Pop last element and return it (undefined if empty) */
 #define alea_vec_pop(vec) ((vec)->data[--(vec)->count])
 

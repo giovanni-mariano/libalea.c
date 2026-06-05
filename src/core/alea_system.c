@@ -716,6 +716,20 @@ size_t alea_system_memory_usage(const alea_system_t* sys) {
     return total;
 }
 
+void alea_system_shrink_to_fit(alea_system_t* sys) {
+    if (!sys) return;
+    /* Release the doubling-growth slack from the big arrays after loading.
+     * The node array dominates (2x growth can leave ~50% unused tail). */
+    alea_vec_shrink_to_fit(&sys->nodes, alea_node_t);
+    alea_vec_shrink_to_fit(&sys->primitives, alea_primitive_entry_t);
+    alea_vec_shrink_to_fit(&sys->surfaces, alea_surface_entry_t);
+    alea_vec_shrink_to_fit(&sys->cells, alea_cell_entry_t);
+    alea_vec_shrink_to_fit(&sys->transforms, alea_transform_t);
+    alea_vec_shrink_to_fit(&sys->materials, alea_material_t);
+    alea_vec_shrink_to_fit(&sys->mixtures, alea_mixture_t);
+    alea_vec_shrink_to_fit(&sys->cell_refs, alea_cell_ref_t);
+}
+
 void alea_system_print_stats(const alea_system_t* sys) {
     if (!sys) return;
 

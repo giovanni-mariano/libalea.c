@@ -645,6 +645,15 @@ void alea_system_print_stats(const alea_system_t* sys);
 size_t alea_system_memory_usage(const alea_system_t* sys);
 
 /**
+ * @brief Release unused capacity from the system's large arrays.
+ *
+ * After loading, the 2x-growth vectors (especially nodes) can hold up to ~50%
+ * unused tail capacity. Reallocs them down to their current count. Safe to call
+ * once geometry is final; do not call mid-construction.
+ */
+void alea_system_shrink_to_fit(alea_system_t* sys);
+
+/**
  * @brief Get statistics
  *
  * @param sys CSG system
