@@ -7,6 +7,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define ALEA_LUA_UTIL_DEPRECATED_CALL_BEGIN \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define ALEA_LUA_UTIL_DEPRECATED_CALL_END \
+    _Pragma("GCC diagnostic pop")
+#else
+#define ALEA_LUA_UTIL_DEPRECATED_CALL_BEGIN
+#define ALEA_LUA_UTIL_DEPRECATED_CALL_END
+#endif
+
 /* ============================================================================
  * Universe operations
  * ============================================================================ */
@@ -262,7 +273,9 @@ static int l_estimate_instance_volumes(lua_State* L) {
         return luaL_error(L, "estimate_instance_volumes failed: %s",
                           "instance volume estimation requires flat spatial mode");
 
+    ALEA_LUA_UTIL_DEPRECATED_CALL_BEGIN;
     size_t ni = alea_spatial_index_instance_count(sys);
+    ALEA_LUA_UTIL_DEPRECATED_CALL_END;
     if (ni == 0) {
         lua_newtable(L);
         return 1;
@@ -275,7 +288,9 @@ static int l_estimate_instance_volumes(lua_State* L) {
         return luaL_error(L, "out of memory");
     }
 
+    ALEA_LUA_UTIL_DEPRECATED_CALL_BEGIN;
     int rc = alea_estimate_instance_volumes(sys, n_rays, volumes, errors);
+    ALEA_LUA_UTIL_DEPRECATED_CALL_END;
     if (rc != 0) {
         free(volumes); free(errors);
         return luaL_error(L, "estimate_instance_volumes failed: %s", alea_error());
@@ -288,6 +303,107 @@ static int l_estimate_instance_volumes(lua_State* L) {
         lua_pushnumber(L, errors[i]);  lua_setfield(L, -2, "rel_error");
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
+    free(volumes);
+    free(errors);
+    return 1;
+}
+
+static void lua_push_volume_path(lua_State* L,
+                                 const alea_volume_path_t* path,
+                                 const double* volume,
+                                 const double* rel_error) {
+    lua_createtable(L, 0, 12);
+    lua_pushinteger(L, (lua_Integer)(path->path_id + 1)); lua_setfield(L, -2, "path_id");
+    lua_pushinteger(L, (lua_Integer)path->terminal_cell_index); lua_setfield(L, -2, "cell_index");
+    lua_pushinteger(L, (lua_Integer)path->terminal_cell_id); lua_setfield(L, -2, "cell_id");
+    lua_pushinteger(L, (lua_Integer)path->material_id); lua_setfield(L, -2, "material_id");
+    lua_pushinteger(L, (lua_Integer)path->universe_id); lua_setfield(L, -2, "universe_id");
+    lua_pushinteger(L, (lua_Integer)path->depth); lua_setfield(L, -2, "depth");
+    lua_pushboolean(L, path->truncated != 0); lua_setfield(L, -2, "truncated");
+
+    if (volume) {
+        lua_pushnumber(L, *volume); lua_setfield(L, -2, "volume");
+    }
+    if (rel_error) {
+        lua_pushnumber(L, *rel_error); lua_setfield(L, -2, "rel_error");
+    }
+
+    lua_createtable(L, path->ancestor_count, 0);
+    for (uint8_t i = 0; i < path->ancestor_count; i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, (lua_Integer)path->ancestor_cell_indices[i]);
+        lua_setfield(L, -2, "cell_index");
+        lua_pushinteger(L, (lua_Integer)path->ancestor_universe_ids[i]);
+        lua_setfield(L, -2, "universe_id");
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    lua_setfield(L, -2, "ancestors");
+
+    lua_createtable(L, path->lattice_step_count, 0);
+    for (uint8_t i = 0; i < path->lattice_step_count; i++) {
+        const alea_volume_lattice_step_t* step = &path->lattice_steps[i];
+        lua_createtable(L, 0, 6);
+        lua_pushinteger(L, (lua_Integer)step->lattice_cell_index); lua_setfield(L, -2, "cell_index");
+        lua_pushinteger(L, (lua_Integer)step->fill_universe); lua_setfield(L, -2, "fill_universe");
+        lua_pushinteger(L, (lua_Integer)step->i); lua_setfield(L, -2, "i");
+        lua_pushinteger(L, (lua_Integer)step->j); lua_setfield(L, -2, "j");
+        lua_pushinteger(L, (lua_Integer)step->k); lua_setfield(L, -2, "k");
+        lua_pushinteger(L, (lua_Integer)step->linear_index); lua_setfield(L, -2, "linear_index");
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    lua_setfield(L, -2, "lattice");
+}
+
+/* sys:volume_paths() -> table */
+static int l_volume_paths(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    size_t n = alea_volume_path_count(sys);
+
+    alea_volume_path_t* paths = n ? (alea_volume_path_t*)calloc(n, sizeof(*paths)) : NULL;
+    if (n && !paths) return luaL_error(L, "out of memory");
+
+    size_t got = alea_volume_paths_get(sys, paths, n);
+    if (got > n) got = n;
+
+    lua_createtable(L, (int)got, 0);
+    for (size_t i = 0; i < got; i++) {
+        lua_push_volume_path(L, &paths[i], NULL, NULL);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+
+    free(paths);
+    return 1;
+}
+
+/* sys:estimate_path_volumes(n_rays) -> table of path records */
+static int l_estimate_path_volumes(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int n_rays = (int)luaL_checkinteger(L, 2);
+    size_t n = alea_volume_path_count(sys);
+
+    alea_volume_path_t* paths = n ? (alea_volume_path_t*)calloc(n, sizeof(*paths)) : NULL;
+    double* volumes = n ? (double*)calloc(n, sizeof(double)) : NULL;
+    double* errors = n ? (double*)calloc(n, sizeof(double)) : NULL;
+    if (n && (!paths || !volumes || !errors)) {
+        free(paths); free(volumes); free(errors);
+        return luaL_error(L, "out of memory");
+    }
+
+    size_t got = alea_volume_paths_get(sys, paths, n);
+    if (got > n) got = n;
+
+    if (alea_estimate_path_volumes(sys, n_rays, volumes, errors) != 0) {
+        free(paths); free(volumes); free(errors);
+        return luaL_error(L, "estimate_path_volumes failed: %s", alea_error());
+    }
+
+    lua_createtable(L, (int)got, 0);
+    for (size_t i = 0; i < got; i++) {
+        lua_push_volume_path(L, &paths[i], &volumes[i], &errors[i]);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+
+    free(paths);
     free(volumes);
     free(errors);
     return 1;
@@ -566,6 +682,8 @@ static const luaL_Reg util_methods[] = {
     {"bounding_sphere",            l_bounding_sphere},
     {"estimate_volumes",           l_estimate_volumes},
     {"estimate_instance_volumes",  l_estimate_instance_volumes},
+    {"volume_paths",               l_volume_paths},
+    {"estimate_path_volumes",      l_estimate_path_volumes},
     {"remove_cells_by_volume",     l_remove_cells_by_volume},
     {"tighten_all_bboxes",         l_tighten_all_bboxes},
     {"tighten_cell_bbox",          l_tighten_cell_bbox},

@@ -40,7 +40,7 @@ static alea_system_t* create_test_scene(void) {
     alea_add_cell(sys, 2, box, m2, -8.0, 0);
 
     alea_build_universe_index(sys);
-    alea_build_spatial_index(sys);
+    alea_prepare_query_acceleration(sys);
 
     return sys;
 }
@@ -486,7 +486,7 @@ TEST(clip_plane_cuts_geometry) {
 
     alea_add_cell(sys, 1, sphere, m1, -2.7, 0);
     alea_build_universe_index(sys);
-    alea_build_spatial_index(sys);
+    alea_prepare_query_acceleration(sys);
 
     render_config_t cfg;
     render_config_init(&cfg);

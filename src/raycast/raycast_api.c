@@ -31,7 +31,16 @@
 #include <omp.h>
 #endif
 
-
+#if defined(__GNUC__) || defined(__clang__)
+#define ALEA_RAYCAST_DEPRECATED_CALL_BEGIN \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define ALEA_RAYCAST_DEPRECATED_CALL_END \
+    _Pragma("GCC diagnostic pop")
+#else
+#define ALEA_RAYCAST_DEPRECATED_CALL_BEGIN
+#define ALEA_RAYCAST_DEPRECATED_CALL_END
+#endif
 
 
 alea_raycast_result_t* alea_raycast_result_create(void) {
@@ -141,6 +150,65 @@ static void compute_volume_errors(const double* volumes, const double* sum_l2,
     }
 }
 
+static int compute_path_bounding_sphere(alea_system_t* sys,
+                                        size_t n_paths,
+                                        double* cx,
+                                        double* cy,
+                                        double* cz,
+                                        double* radius) {
+    if (!sys || n_paths == 0 || !cx || !cy || !cz || !radius) return -1;
+
+    alea_volume_path_t* paths = calloc(n_paths, sizeof(*paths));
+    if (!paths) return -1;
+    size_t got = alea_volume_paths_get(sys, paths, n_paths);
+    if (got > n_paths) got = n_paths;
+
+    alea_bbox_t bounds = alea_bbox_empty();
+    int bounded = 0;
+    for (size_t i = 0; i < got; i++) {
+        int cell_index = paths[i].terminal_cell_index;
+        if (cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+            continue;
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        if (cell->root_node_id == ALEA_NODE_ID_INVALID ||
+            cell->root_node_id >= alea_vec_count(&sys->nodes)) {
+            continue;
+        }
+
+        const alea_bbox_t* local = &sys->nodes.data[cell->root_node_id].bbox;
+        if (!alea_bbox_is_valid(local)) continue;
+        double dx = local->max_x - local->min_x;
+        double dy = local->max_y - local->min_y;
+        double dz = local->max_z - local->min_z;
+        if (!isfinite(dx) || !isfinite(dy) || !isfinite(dz) ||
+            dx > 9e5 || dy > 9e5 || dz > 9e5) {
+            continue;
+        }
+
+        alea_matrix_t transform;
+        memset(&transform, 0, sizeof(transform));
+        memcpy(transform.m, paths[i].world_to_local, sizeof(transform.m));
+        alea_bbox_t world = alea_bbox_transform(local, &transform);
+        if (!alea_bbox_is_valid(&world)) continue;
+
+        bounds = bounded ? alea_bbox_union(&bounds, &world) : world;
+        bounded++;
+    }
+    free(paths);
+
+    if (bounded == 0) return -1;
+
+    *cx = (bounds.min_x + bounds.max_x) * 0.5;
+    *cy = (bounds.min_y + bounds.max_y) * 0.5;
+    *cz = (bounds.min_z + bounds.max_z) * 0.5;
+
+    double dx = bounds.max_x - bounds.min_x;
+    double dy = bounds.max_y - bounds.min_y;
+    double dz = bounds.max_z - bounds.min_z;
+    *radius = 0.5 * sqrt(dx * dx + dy * dy + dz * dz) * 1.01;
+    return *radius > 0.0 ? 0 : -1;
+}
+
 int alea_estimate_cell_volumes(alea_system_t* sys,
                               double ox, double oy, double oz,
                               double radius, int n_rays,
@@ -205,7 +273,9 @@ int alea_estimate_cell_volumes(alea_system_t* sys,
             if (ray_l) memset(ray_l, 0, n_cells * sizeof(double));
 
             alea_raycast_result_clear(&result);
-            int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
+            int rc = alea_raycast_hier_cell_aware(sys, rox, roy, roz,
+                                                  ux, uy, uz, 4.0 * R,
+                                                  &result);
             if (rc != 0) continue;
 
             /* Accumulate track lengths per cell */
@@ -474,6 +544,145 @@ int alea_estimate_instance_volumes(alea_system_t* sys,
         compute_volume_errors(volumes, sum_l2, rel_errors, n_instances, n_rays);
     }
     for (size_t i = 0; i < n_instances; i++) {
+        volumes[i] *= scale;
+    }
+
+    free(sum_l2);
+    return 0;
+}
+
+int alea_estimate_path_volumes(alea_system_t* sys,
+                               int n_rays,
+                               double* volumes,
+                               double* rel_errors) {
+    if (!sys || n_rays <= 0 || !volumes) return -1;
+    if (!alea_system_spatial_mode_prefers_hier(sys)) {
+        if (alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL) != 0) return -1;
+        ALEA_RAYCAST_DEPRECATED_CALL_BEGIN;
+        int rc = alea_estimate_instance_volumes(sys, n_rays, volumes, rel_errors);
+        ALEA_RAYCAST_DEPRECATED_CALL_END;
+        return rc;
+    }
+
+    alea_error_clear();
+    size_t n_paths = alea_volume_path_count(sys);
+    if (n_paths == 0 && alea_error_code() != (int)ALEA_OK) return -1;
+    if (n_paths == 0) return 0;
+
+    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
+
+    double cx, cy, cz, R;
+    if (compute_path_bounding_sphere(sys, n_paths, &cx, &cy, &cz, &R) != 0 ||
+        R <= 0.0) {
+        if (alea_compute_bounding_sphere(sys, 1.0, &cx, &cy, &cz, &R) != 0 ||
+            R <= 0.0) {
+            return -1;
+        }
+    }
+    R *= 1.01;
+
+    memset(volumes, 0, n_paths * sizeof(double));
+    if (rel_errors) memset(rel_errors, 0, n_paths * sizeof(double));
+
+    double* sum_l2 = NULL;
+    if (rel_errors) {
+        sum_l2 = calloc(n_paths, sizeof(double));
+        if (!sum_l2) return -1;
+    }
+
+    int error_flag = 0;
+
+    #pragma omp parallel
+    {
+        double* local_vol = calloc(n_paths, sizeof(double));
+        double* local_l2 = rel_errors ? calloc(n_paths, sizeof(double)) : NULL;
+        double* ray_l = rel_errors ? calloc(n_paths, sizeof(double)) : NULL;
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
+
+        if (!local_vol || (rel_errors && (!local_l2 || !ray_l))) {
+            #pragma omp atomic
+            error_flag |= 1;
+        }
+
+        int tid = 0;
+        #ifdef _OPENMP
+        tid = omp_get_thread_num();
+        #endif
+        uint32_t rng = 42 + (uint32_t)tid * 2654435761u;
+
+        #pragma omp for schedule(dynamic, 16)
+        for (int ray = 0; ray < n_rays; ray++) {
+            if (error_flag) continue;
+
+            double rox, roy, roz, ux, uy, uz;
+            generate_cauchy_crofton_ray(&rng, cx, cy, cz, R,
+                                        &rox, &roy, &roz, &ux, &uy, &uz);
+
+            if (ray_l) memset(ray_l, 0, n_paths * sizeof(double));
+
+            alea_raycast_result_clear(&result);
+            int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
+            if (rc != 0) continue;
+
+            for (size_t s = 0; s < result.segments.count; s++) {
+                int seg_cell_id = result.segments.data[s].cell_id;
+                if (seg_cell_id < 0) continue;
+                double len = result.segments.data[s].t_exit -
+                             result.segments.data[s].t_enter;
+                if (len <= 0.0) continue;
+
+                double t_mid = (result.segments.data[s].t_enter +
+                                result.segments.data[s].t_exit) * 0.5;
+                double px = rox + t_mid * ux;
+                double py = roy + t_mid * uy;
+                double pz = roz + t_mid * uz;
+
+                alea_volume_path_t path;
+                int found = alea_volume_path_at_point(sys, px, py, pz, &path);
+                if (found <= 0) continue;
+                if (path.terminal_cell_id != seg_cell_id) continue;
+                if (path.path_id >= n_paths) continue;
+
+                local_vol[path.path_id] += len;
+                if (ray_l) ray_l[path.path_id] += len;
+            }
+
+            if (local_l2) {
+                for (size_t i = 0; i < n_paths; i++) {
+                    local_l2[i] += ray_l[i] * ray_l[i];
+                }
+            }
+        }
+
+        #pragma omp critical
+        {
+            if (local_vol) {
+                for (size_t i = 0; i < n_paths; i++)
+                    volumes[i] += local_vol[i];
+            }
+            if (local_l2 && sum_l2) {
+                for (size_t i = 0; i < n_paths; i++)
+                    sum_l2[i] += local_l2[i];
+            }
+        }
+
+        alea_raycast_result_free(&result);
+        free(local_vol);
+        free(local_l2);
+        free(ray_l);
+    }
+
+    if (error_flag) {
+        free(sum_l2);
+        return -1;
+    }
+
+    double scale = M_PI * R * R / (double)n_rays;
+    if (rel_errors) {
+        compute_volume_errors(volumes, sum_l2, rel_errors, n_paths, n_rays);
+    }
+    for (size_t i = 0; i < n_paths; i++) {
         volumes[i] *= scale;
     }
 

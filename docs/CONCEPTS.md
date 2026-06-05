@@ -247,13 +247,21 @@ The `mc_convert` tool wraps this for command-line format conversion. See [API Re
 
 ## Spatial Index and Point Queries
 
-After loading a model, you build a spatial index (BVH — bounding volume hierarchy) that accelerates all geometric queries:
+After loading a model, prepare query acceleration before geometric queries:
 
 ```c
-alea_build_spatial_index(sys);
+alea_prepare_query_acceleration(sys);
 ```
 
-Once the index is built, you can query any point in space:
+This builds the right acceleration structures for the configured spatial mode.
+Small flat-mode models use the expanded flat instance BVH; hierarchical or
+auto-selected large models use the hierarchical TLAS/BLAS index. Once the
+acceleration is prepared, you can query any point in space:
+
+`ALEA_CONFIG_DEFAULT` still uses flat mode for compatibility. Applications that
+load arbitrary external models should set `cfg.spatial_mode =
+ALEA_SPATIAL_MODE_AUTO` before preparing query acceleration, so large models do
+not materialize the expanded flat spatial index.
 
 ```c
 int cell_id, material_id;

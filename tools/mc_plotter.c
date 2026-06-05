@@ -45,7 +45,7 @@
  *   --contours=materials    Draw contours at material boundaries
  *   --ticks                 Show axis tick labels
  *   --errors                Show analytical error lines (overlaps/gaps)
- *   --spatial=flat|hier|auto Query acceleration mode (default: flat)
+ *   --spatial=flat|hier|auto Query acceleration mode (default: auto)
  *
  * Batch file format (one plot per line):
  *   Z value u_min u_max v_min v_max WxH output.png [options]
@@ -1808,7 +1808,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --contours=cells        Contours at cell boundaries (default)\n");
     fprintf(stderr, "  --contours=materials    Contours at material boundaries\n");
     fprintf(stderr, "  --ticks                 Show axis tick labels\n");
-    fprintf(stderr, "  --spatial=flat|hier|auto Query acceleration mode (default: flat)\n");
+    fprintf(stderr, "  --spatial=flat|hier|auto Query acceleration mode (default: auto)\n");
     fprintf(stderr, "  --debug                 Print verbose curve generation debug info\n");
     fprintf(stderr, "  --trace=px,py           Trace cell lookup at pixel (px,py) for debugging\n");
     fprintf(stderr, "\nBatch file format (one plot per line):\n");
@@ -1832,7 +1832,7 @@ int main(int argc, char** argv) {
     }
 
     const char* input_file = argv[1];
-    alea_spatial_mode_t spatial_mode = ALEA_SPATIAL_MODE_FLAT;
+    alea_spatial_mode_t spatial_mode = ALEA_SPATIAL_MODE_AUTO;
 
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "--spatial=", 10) == 0 &&

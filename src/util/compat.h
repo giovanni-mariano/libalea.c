@@ -150,6 +150,18 @@ int alea_strcasecmp(const char* s1, const char* s2);
 int alea_strncasecmp(const char* s1, const char* s2, size_t n);
 
 /**
+ * @brief Portable unsigned long long parser.
+ *
+ * POSIX/C99: strtoull(). Older MSVC CRTs: _strtoui64().
+ *
+ * @param nptr Input string
+ * @param endptr Receives first unparsed character when non-NULL
+ * @param base Numeric base, as for strtoull()
+ * @return Parsed value
+ */
+unsigned long long alea_strtoull(const char* nptr, char** endptr, int base);
+
+/**
  * @brief Create and open a temporary file with a unique name
  * @param path_out Buffer to receive the temp file path (at least 256 bytes)
  * @return FILE* open for writing, or NULL on failure. Caller must fclose().

@@ -53,6 +53,23 @@ local sys_hier = make_sphere_sys()
 sys_hier:set_spatial_mode("hier")
 local g_hier = sys_hier:find_cells_grid(view, 16, 16)
 
+local flat_stats = sys_flat:query_acceleration_stats()
+assert(flat_stats.resolved_mode == "flat", "flat stats resolved mode")
+assert(flat_stats.built, "flat stats built")
+assert(flat_stats.flat_instance_count >= 1, "flat stats instance count")
+
+local hier_stats = sys_hier:query_acceleration_stats()
+assert(hier_stats.resolved_mode == "hier", "hier stats resolved mode")
+assert(hier_stats.built, "hier stats built")
+assert(hier_stats.hier_blas_count >= 1, "hier stats BLAS count")
+assert(hier_stats.hier_placement_count >= 1, "hier stats placement count")
+assert(hier_stats.flat_instance_count == 0, "hier stats flat instance count is zero")
+
+local hier_paths = sys_hier:volume_paths()
+assert(type(hier_paths) == "table", "hier volume_paths returns table")
+assert(#hier_paths >= 1, "hier volume_paths has at least one path")
+assert(hier_paths[1].cell_id ~= nil, "hier path has cell_id")
+
 assert(#g_flat.cell_ids == 16*16, "flat grid size")
 assert(#g_hier.cell_ids == 16*16, "hier grid size")
 

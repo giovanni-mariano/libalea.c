@@ -198,6 +198,53 @@ TEST(slice_errors_hier_mode) {
     alea_destroy(sys);
 }
 
+/* alea_check_slice_errors() must classify real overlaps in hier mode without
+ * falling back to the expanded flat spatial index. */
+TEST(slice_errors_hier_overlap_no_flat_index) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int s1 = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    int s2 = alea_sphere_surface(sys, 2, 3, 0, 0, 5.0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_surface_at(sys, s1)->neg_node, m1, -2.7, 0);
+    alea_add_cell(sys, 2, alea_surface_at(sys, s2)->neg_node, m2, -8.0, 0);
+
+    alea_config_t cfg = alea_get_config(sys);
+    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
+    alea_set_config(sys, &cfg);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 13, -10, 10);
+
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    alea_slice_error_result_t* errs = alea_check_slice_errors(sys, &view, curves, -1);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+    ASSERT_NOT_NULL(errs);
+
+    size_t overlaps = 0;
+    for (size_t i = 0; i < errs->error_count; i++) {
+        if (errs->errors[i].type == ALEA_SLICE_ERR_OVERLAP) overlaps++;
+    }
+    ASSERT(overlaps > 0);
+    ASSERT_NULL(sys->spatial_index);
+
+    alea_slice_errors_free(errs);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
 /* alea_find_surface_label_positions() (the --labels=surfaces path) works in
  * hier mode. */
 TEST(surface_labels_hier_mode) {

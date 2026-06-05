@@ -4835,8 +4835,16 @@ int alea_find_surface_label_positions(
 static int count_cells_in_universe_at_point(alea_system_t* sys,
                                              int universe_id,
                                              double x, double y, double z) {
-    alea_cell_hit_t hits[16];
-    int n = alea_spatial_find_cells_at_point(sys, x, y, z, hits, 16);
+    enum { MAX_HITS = 64 };
+    alea_cell_hit_t hits[MAX_HITS];
+    int n;
+
+    if (alea_spatial_mode_is_hierarchical(sys)) {
+        n = alea_hier_spatial_find_cells_at_point_uncached(sys, x, y, z,
+                                                           hits, MAX_HITS);
+    } else {
+        n = alea_spatial_find_cells_at_point(sys, x, y, z, hits, MAX_HITS);
+    }
     if (n <= 0) return 0;
 
     int count = 0;
@@ -4846,6 +4854,7 @@ static int count_cells_in_universe_at_point(alea_system_t* sys,
             if (count > 1) return count;  /* Early exit on overlap */
         }
     }
+    if (n >= MAX_HITS && count > 0) return 2;  /* Conservative on truncation. */
     return count;
 }
 

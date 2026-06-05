@@ -185,6 +185,14 @@ int alea_strncasecmp(const char* s1, const char* s2, size_t n) {
     return 0;
 }
 
+unsigned long long alea_strtoull(const char* nptr, char** endptr, int base) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _strtoui64(nptr, endptr, base);
+#else
+    return strtoull(nptr, endptr, base);
+#endif
+}
+
 /* --- Portable directory iteration --- */
 
 #ifdef _WIN32

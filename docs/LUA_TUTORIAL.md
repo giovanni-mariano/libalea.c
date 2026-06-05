@@ -763,8 +763,9 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Add cell | `sys:cell{id=N, region=node, ...}` |
 | **Indexing** | |
 | Prepare query acceleration | `sys:prepare_query_acceleration()` |
+| Query acceleration stats | `sys:query_acceleration_stats()` |
 | Build universe index | `sys:build_universe_index()` |
-| Build spatial index | `sys:build_spatial_index()` |
+| Build flat spatial index | `sys:build_spatial_index()` (deprecated; flat mode only) |
 | **Point Queries** | |
 | Find cell + material | `sys:find_cell_at(x, y, z)` |
 | Find cell | `sys:find_cell(x, y, z)` |
@@ -784,7 +785,7 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Universe find | `sys:universe_find(universe_id)` |
 | Statistics | `sys:stats()` |
 | Print summary | `sys:print_summary()` |
-| Instance count | `sys:instance_count()` |
+| Flat instance count | `sys:instance_count()` (deprecated; flat mode only; use `sys:query_acceleration_stats()`) |
 | **Node Inspection** | |
 | Node operation | `sys:node_operation(node)` |
 | Node left/right | `sys:node_left(node)`, `sys:node_right(node)` |
@@ -812,7 +813,9 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | **Volume & BBox** | |
 | Bounding sphere | `sys:bounding_sphere(tol)` |
 | Estimate volumes | `sys:estimate_volumes(n, cx, cy, cz, r)` |
-| Instance volumes | `sys:estimate_instance_volumes(n)` |
+| Volume paths | `sys:volume_paths()` |
+| Path volumes | `sys:estimate_path_volumes(n)` |
+| Flat instance volumes | `sys:estimate_instance_volumes(n)` (deprecated; flat mode only) |
 | Tighten bbox | `sys:tighten_cell_bbox(idx, tol)` |
 | Tighten all | `sys:tighten_all_bboxes(tol)` |
 | Cells in bbox | `sys:cells_in_bbox(bbox)` |

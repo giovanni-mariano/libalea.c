@@ -236,6 +236,12 @@ static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
 
 static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
                                           bool free_universe_vector) {
+    if ((flags & (ALEA_CACHE_SPATIAL | ALEA_CACHE_HIER_SPATIAL)) &&
+        sys->volume_path_index) {
+        alea_volume_path_index_free(sys->volume_path_index);
+        sys->volume_path_index = NULL;
+    }
+
     if (flags & ALEA_CACHE_UNIVERSE) {
         alea_clear_universe_cache(sys, free_universe_vector);
     }
@@ -295,8 +301,16 @@ void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     if (flags & ALEA_CACHE_SPATIAL)
         flags |= ALEA_CACHE_HIER_SPATIAL;
 
+    unsigned invalidated_flags = flags;
+
     unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
     atomic_fetch_add(&sys->geometry_generation, 1);
+
+    if ((invalidated_flags & (ALEA_CACHE_SPATIAL | ALEA_CACHE_HIER_SPATIAL)) &&
+        sys->volume_path_index) {
+        alea_volume_path_index_free(sys->volume_path_index);
+        sys->volume_path_index = NULL;
+    }
 
     /* Restrict expensive teardown to caches that were actually built.
      * During bulk load, callers invalidate on every add; without this,

@@ -224,8 +224,12 @@ Build the universe hierarchy index.
 int alea_build_spatial_index(alea_system_t* sys);
 ```
 
-Build the spatial index and its dependencies. This is equivalent to preparing
-the acceleration needed by spatial point and region queries.
+Deprecated flat-spatial-index API. Builds the expanded global cell-instance
+BVH only when the system resolves to `ALEA_SPATIAL_MODE_FLAT`.
+
+In `ALEA_SPATIAL_MODE_HIER`, or in `ALEA_SPATIAL_MODE_AUTO` when the auto
+threshold selects hierarchical indexing, this returns `-1` and sets an error.
+Use `alea_prepare_query_acceleration()` for mode-aware query setup.
 
 ### alea_prepare_query_acceleration
 
@@ -237,6 +241,27 @@ Build query acceleration explicitly before point, spatial, raycast, slice, rende
 or mesh queries. Query paths do not lazily build shared caches. Geometry mutation
 invalidates prepared caches; call this again after adding/removing/changing
 surfaces, transforms, or cells.
+
+The default configuration currently resolves to flat mode for compatibility.
+Tools that load arbitrary external models should set `cfg.spatial_mode =
+ALEA_SPATIAL_MODE_AUTO` before calling this function.
+
+### alea_query_acceleration_stats
+
+```c
+int alea_query_acceleration_stats(const alea_system_t* sys,
+                                  alea_query_acceleration_stats_t* out_stats);
+```
+
+Inspect the currently built query-acceleration structure without building
+caches. Call `alea_prepare_query_acceleration()` first when a built index is
+required.
+
+In flat mode, `out_stats->flat_instance_count` reports the expanded flat
+instance count. In hierarchical mode, the hierarchical fields report the
+TLAS/BLAS shape, including universe, BLAS, placement, transform, and memory
+counts. Use this mode-aware introspection API instead of the deprecated
+`alea_spatial_index_instance_count()` when code supports hierarchical indexing.
 
 ---
 
@@ -934,7 +959,14 @@ Get cell indices that fill a given universe.
 size_t alea_spatial_index_instance_count(const alea_system_t* sys);
 ```
 
-Get the number of cell instances in the spatial index (accounts for fill hierarchy).
+Deprecated flat-spatial-index API. Returns the number of expanded flat spatial
+instances after the flat index has been built.
+
+In `ALEA_SPATIAL_MODE_HIER`, or in `ALEA_SPATIAL_MODE_AUTO` when the auto
+threshold selects hierarchical indexing, this returns `0` and sets an error.
+Do not use it to size hierarchical outputs; the hierarchical index has
+placements and path-conditioned hits rather than a stable expanded-instance
+array.
 
 ---
 
@@ -1037,11 +1069,69 @@ Estimate cell volumes using Cauchy-Crofton random ray tracing. `volumes` and `re
 ### alea_estimate_instance_volumes
 
 ```c
-int alea_estimate_instance_volumes(const alea_system_t* sys, int n_rays,
+int alea_estimate_instance_volumes(alea_system_t* sys, int n_rays,
                                    double* volumes, double* rel_errors);
 ```
 
-Estimate volumes per cell instance (spatial-index aware). Distinguishes the same cell appearing in different fill contexts. Arrays must be of size `alea_spatial_index_instance_count(sys)`.
+Deprecated flat-spatial-index API. Estimates volumes per expanded flat cell
+instance and distinguishes repeated cells by their flat instance index. Arrays
+must be of size `alea_spatial_index_instance_count(sys)`.
+
+This returns `-1` in hierarchical spatial mode, and in auto mode when the auto
+threshold selects hierarchical indexing. Use the path-keyed hierarchical volume
+APIs below instead of retrofitting hierarchical semantics into the flat instance
+index.
+
+Flat-mode callers may continue using this compatibility API. The mode-aware
+`alea_estimate_path_volumes()` API below delegates to this flat estimator when
+the system resolves to flat mode.
+
+### alea_volume_path_count
+
+```c
+size_t alea_volume_path_count(alea_system_t* sys);
+```
+
+Return the number of concrete hierarchical volume paths. This implementation is
+hierarchical-mode only. The count is stable until geometry or spatial-mode
+mutation invalidates query caches.
+
+### alea_volume_paths_get
+
+```c
+size_t alea_volume_paths_get(alea_system_t* sys,
+                             alea_volume_path_t* out_paths,
+                             size_t max_paths);
+```
+
+Enumerate concrete hierarchical volume paths. Each path identifies one terminal
+cell under a concrete fill/lattice ancestry and has a dense `path_id` for volume
+arrays. If the return value is greater than `max_paths`, the output was
+truncated.
+
+### alea_volume_path_at_point
+
+```c
+int alea_volume_path_at_point(alea_system_t* sys,
+                              double x, double y, double z,
+                              alea_volume_path_t* out_path);
+```
+
+Resolve a world-space point to a concrete hierarchical volume path. Returns `1`
+when a path is found, `0` when no terminal path contains the point, and `-1` on
+error.
+
+### alea_estimate_path_volumes
+
+```c
+int alea_estimate_path_volumes(alea_system_t* sys, int n_rays,
+                               double* volumes, double* rel_errors);
+```
+
+Estimate volumes per concrete path. Arrays must be sized to
+`alea_volume_path_count(sys)`. In hierarchical mode this provides repeated-cell
+separation without building the expanded flat spatial index. In flat mode it
+delegates to the deprecated flat instance-volume estimator for compatibility.
 
 ### alea_remove_cells_by_volume
 

@@ -6,6 +6,17 @@
 #include "core/alea_system.h"
 #include <stdlib.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define ALEA_LUA_DEPRECATED_CALL_BEGIN \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define ALEA_LUA_DEPRECATED_CALL_END \
+    _Pragma("GCC diagnostic pop")
+#else
+#define ALEA_LUA_DEPRECATED_CALL_BEGIN
+#define ALEA_LUA_DEPRECATED_CALL_END
+#endif
+
 /* ============================================================================
  * Indexing
  * ============================================================================ */
@@ -19,8 +30,10 @@ static int l_build_universe_index(lua_State* L) {
 
 static int l_build_spatial_index(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
+    ALEA_LUA_DEPRECATED_CALL_BEGIN;
     if (alea_build_spatial_index(sys) != 0)
         return luaL_error(L, "build_spatial_index failed: %s", alea_error());
+    ALEA_LUA_DEPRECATED_CALL_END;
     return 0;
 }
 
@@ -30,6 +43,47 @@ static int l_prepare_query_acceleration(lua_State* L) {
     if (alea_prepare_query_acceleration(sys) != 0)
         return luaL_error(L, "prepare_query_acceleration failed: %s", alea_error());
     return 0;
+}
+
+static const char* spatial_mode_name(alea_spatial_mode_t mode) {
+    switch (mode) {
+        case ALEA_SPATIAL_MODE_FLAT: return "flat";
+        case ALEA_SPATIAL_MODE_HIER: return "hier";
+        case ALEA_SPATIAL_MODE_AUTO: return "auto";
+        default: return "unknown";
+    }
+}
+
+/* sys:query_acceleration_stats() -> table */
+static int l_query_acceleration_stats(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_query_acceleration_stats_t stats;
+    if (alea_query_acceleration_stats(sys, &stats) != 0)
+        return luaL_error(L, "query_acceleration_stats failed: %s", alea_error());
+
+    lua_createtable(L, 0, 21);
+    lua_pushstring(L, spatial_mode_name(stats.configured_mode)); lua_setfield(L, -2, "configured_mode");
+    lua_pushstring(L, spatial_mode_name(stats.resolved_mode));   lua_setfield(L, -2, "resolved_mode");
+    lua_pushboolean(L, stats.built);                             lua_setfield(L, -2, "built");
+    lua_pushinteger(L, (lua_Integer)stats.flat_instance_count);   lua_setfield(L, -2, "flat_instance_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_universe_count);   lua_setfield(L, -2, "hier_universe_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_blas_count);       lua_setfield(L, -2, "hier_blas_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_linear_universe_count); lua_setfield(L, -2, "hier_linear_universe_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_blas_cell_count);  lua_setfield(L, -2, "hier_blas_cell_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_blas_node_count);  lua_setfield(L, -2, "hier_blas_node_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_fill_cell_count);  lua_setfield(L, -2, "hier_fill_cell_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_lattice_cell_count); lua_setfield(L, -2, "hier_lattice_cell_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_transform_count);  lua_setfield(L, -2, "hier_transform_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_placement_count);  lua_setfield(L, -2, "hier_placement_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_root_placement_count); lua_setfield(L, -2, "hier_root_placement_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_fill_placement_count); lua_setfield(L, -2, "hier_fill_placement_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_lattice_placement_count); lua_setfield(L, -2, "hier_lattice_placement_count");
+    lua_pushinteger(L, (lua_Integer)stats.hier_max_placement_depth); lua_setfield(L, -2, "hier_max_placement_depth");
+    lua_pushinteger(L, (lua_Integer)stats.hier_max_universe_cells); lua_setfield(L, -2, "hier_max_universe_cells");
+    lua_pushinteger(L, (lua_Integer)stats.hier_largest_universe_id); lua_setfield(L, -2, "hier_largest_universe_id");
+    lua_pushinteger(L, (lua_Integer)stats.memory_bytes);          lua_setfield(L, -2, "memory_bytes");
+    lua_pushinteger(L, (lua_Integer)stats.point_queries);         lua_setfield(L, -2, "point_queries");
+    return 1;
 }
 
 /* ============================================================================
@@ -586,7 +640,9 @@ static int l_instance_count(lua_State* L) {
     if (alea_system_spatial_mode_prefers_hier(sys))
         return luaL_error(L, "instance_count failed: %s",
                           "flat spatial instance count is unavailable in hierarchical spatial mode");
+    ALEA_LUA_DEPRECATED_CALL_BEGIN;
     lua_pushinteger(L, (lua_Integer)alea_spatial_index_instance_count(sys));
+    ALEA_LUA_DEPRECATED_CALL_END;
     return 1;
 }
 
@@ -655,6 +711,7 @@ static const luaL_Reg query_methods[] = {
     {"build_universe_index", l_build_universe_index},
     {"build_spatial_index",  l_build_spatial_index},
     {"prepare_query_acceleration", l_prepare_query_acceleration},
+    {"query_acceleration_stats", l_query_acceleration_stats},
     {"set_spatial_mode",     l_set_spatial_mode},
     {"get_spatial_mode",     l_get_spatial_mode},
     {"find_cell",            l_find_cell},

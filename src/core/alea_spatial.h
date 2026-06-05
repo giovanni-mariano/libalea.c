@@ -15,9 +15,12 @@
  * Key insight: flatten the bboxes, not the geometry.
  *
  * Usage:
- *   alea_build_spatial_index(sys);
+ *   alea_prepare_query_acceleration(sys);
  *   alea_spatial_query_slice_z(sys, z, ...);    // Fast slice queries
  *   alea_spatial_query_region(sys, bbox, ...);  // Fast region queries
+ *
+ * Direct alea_spatial_index_build() calls are flat-mode internals and
+ * compatibility tests only. Public callers should use mode-aware setup.
  */
 
 #include "alea_types.h"

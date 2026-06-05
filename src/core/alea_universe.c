@@ -2053,6 +2053,13 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
                                         size_t max_hits,
                                         bool force_recursive) {
     if (!sys || !out_hits || max_hits == 0) return -1;
+    if (!g_debug_point_trace && alea_system_spatial_mode_prefers_hier(sys)) {
+        int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
+                                                      out_hits, max_hits);
+        if (n >= 0) return n;
+        return -1;
+    }
+
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "universe index is not prepared; call alea_prepare_query_acceleration()");
@@ -2076,10 +2083,10 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
         return (int)hit_count;
     }
 
-    /* Hier-spatial fast path: if the hierarchical index is built, use it
-     * instead of the flat spatial cache or the O(N)-per-level recursive
-     * fallback. Critical for hier-mode plotter/raycast on large models
-     * where the recursive scan would dominate per-pixel cost. */
+    /* If a hierarchical index is already built explicitly, use it instead of
+     * the flat spatial cache or the O(N)-per-level recursive fallback. Critical
+     * for plotter/raycast on large models where the recursive scan would
+     * dominate per-pixel cost. */
     if (sys->hier_spatial_index) {
         int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
                                                       out_hits, max_hits);
@@ -2892,4 +2899,3 @@ int alea_flatten_in_place(alea_system_t* sys,
 
     return cell_count;
 }
-

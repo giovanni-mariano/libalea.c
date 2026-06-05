@@ -53,6 +53,7 @@ extern volatile sig_atomic_t g_alea_interrupted;
 /* Forward declaration for BVH */
 struct alea_bvh;
 struct alea_hier_spatial_index;
+struct alea_volume_path_index;
 
 /* ============================================================================
  * VECTOR TYPES FOR CSG SYSTEM ARRAYS
@@ -306,6 +307,7 @@ typedef struct alea_system {
     /* Spatial index for fast instance queries (prepared query cache) */
     struct alea_spatial_index* spatial_index;
     struct alea_hier_spatial_index* hier_spatial_index;
+    struct alea_volume_path_index* volume_path_index;
     atomic_int spatial_build_state;  /* 0=pending, 1=building, 2=done */
     atomic_uint query_cache_state;
     atomic_flag query_cache_build_lock;
@@ -330,6 +332,7 @@ size_t alea_spatial_auto_cell_threshold(void);
 bool alea_system_spatial_mode_prefers_hier(const alea_system_t* sys);
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags);
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags);
+void alea_volume_path_index_free(struct alea_volume_path_index* idx);
 
 // ============================================================================
 // API - SYSTEM MANAGEMENT
