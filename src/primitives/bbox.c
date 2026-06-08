@@ -219,10 +219,13 @@ alea_bbox_t alea_get_bbox(alea_system_t* sys, alea_node_id_t id) {
         if (prim_id >= alea_vec_count(&sys->primitives)) {
             return alea_bbox_empty();
         }
-        const alea_primitive_entry_t* entry = &sys->primitives.data[prim_id];
+        alea_primitive_data_t data;
+        if (!alea_primitive_copy_data(sys, prim_id, &data)) {
+            return alea_bbox_empty();
+        }
         /* Compute effective sense: inverted flips the sense */
         int8_t effective_sense = node->primitive.inverted ? -node->primitive.sense : node->primitive.sense;
-        return alea_halfspace_bbox(node->primitive.prim_type, &entry->data, effective_sense);
+        return alea_halfspace_bbox(node->primitive.prim_type, &data, effective_sense);
     }
     
     // Recursively compute for operations
@@ -687,7 +690,9 @@ static int collect_plane_constraints(
     uint32_t prim_id = node->primitive.primitive_id;
     if (prim_id >= alea_vec_count(&sys->primitives)) return -1;
 
-    const alea_plane_data_t* p = &sys->primitives.data[prim_id].data.plane;
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(sys, prim_id, &data)) return -1;
+    const alea_plane_data_t* p = &data.plane;
     int8_t eff_sense = node->primitive.sense;
     if (node->primitive.inverted) eff_sense = -eff_sense;
 

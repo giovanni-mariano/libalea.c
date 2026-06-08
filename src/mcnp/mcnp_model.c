@@ -38,6 +38,8 @@ static void init_default_params(mcnp_cell_params_t* p) {
     p->imp_n = 1.0;
     p->imp_p = 1.0;
     p->imp_e = 1.0;
+    p->trcl_inline_index = MCNP_INLINE_TRANSFORM_INVALID;
+    p->fill_transform_index = MCNP_INLINE_TRANSFORM_INVALID;
 }
 
 /* ============================================================================
@@ -108,6 +110,40 @@ const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t i
     return &m->cell_params[idx];
 }
 
+uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
+                                         const double* values,
+                                         int count,
+                                         int degrees) {
+    if (!model || !values || count <= 0 || count > 13) {
+        return MCNP_INLINE_TRANSFORM_INVALID;
+    }
+
+    size_t idx = alea_vec_count(&model->inline_transforms);
+    if (idx > UINT32_MAX) {
+        return MCNP_INLINE_TRANSFORM_INVALID;
+    }
+
+    mcnp_inline_transform_t* tr = alea_vec_push_uninit(
+        &model->inline_transforms, mcnp_inline_transform_t);
+    if (!tr) return MCNP_INLINE_TRANSFORM_INVALID;
+
+    memset(tr, 0, sizeof(*tr));
+    tr->count = (uint8_t)count;
+    tr->degrees = (uint8_t)(degrees != 0);
+    memcpy(tr->values, values, (size_t)count * sizeof(double));
+    return (uint32_t)idx;
+}
+
+const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
+    const mcnp_model_t* model,
+    uint32_t index) {
+    if (!model || index == MCNP_INLINE_TRANSFORM_INVALID ||
+        (size_t)index >= alea_vec_count(&model->inline_transforms)) {
+        return NULL;
+    }
+    return &model->inline_transforms.data[index];
+}
+
 void mcnp_model_register_hooks(mcnp_model_t* model) {
     if (!model || !model->sys) return;
     model->sys->cell_hook_userdata = model;
@@ -131,6 +167,7 @@ void mcnp_model_destroy(mcnp_model_t* model) {
     }
 
     free(model->cell_params);
+    alea_vec_free(&model->inline_transforms);
     free(model);
 }
 

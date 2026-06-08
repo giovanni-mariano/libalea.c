@@ -205,12 +205,14 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
         uint32_t surface_idx = surface_indices[si];
         const alea_surface_entry_t* surf = &ctx->sys->surfaces.data[surface_idx];
         const alea_primitive_entry_t* prim = &ctx->sys->primitives.data[surf->primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(ctx->sys, surf->primitive_id, &prim_data)) continue;
 
         ctx->result->surfaces_tested++;
 
         /* Find intersections */
         double t[4];
-        int n = ray_intersect_primitive(ctx->ray, prim->type, &prim->data, t);
+        int n = ray_intersect_primitive(ctx->ray, prim->type, &prim_data, t);
 
         /* Add valid hits */
         for (int j = 0; j < n; j++) {
@@ -223,7 +225,7 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
                 /* Compute normal at hit point */
                 double px, py, pz;
                 alea_ray_point_at(ctx->ray, t[j], &px, &py, &pz);
-                primitive_normal_at(prim->type, &prim->data, px, py, pz,
+                primitive_normal_at(prim->type, &prim_data, px, py, pz,
                                    &hit.nx, &hit.ny, &hit.nz);
 
                 if (add_hit(ctx->result, &hit) != 0) {
@@ -244,11 +246,13 @@ static int raycast_surfaces_linear(alea_system_t* sys,
         
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, surf->primitive_id, &prim_data)) continue;
 
         result->surfaces_tested++;
 
         double t[4];
-        int count = ray_intersect_primitive(ray, prim->type, &prim->data, t);
+        int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
 
         for (int j = 0; j < count; j++) {
             if (t[j] >= t_min && t[j] <= t_max) {
@@ -259,7 +263,7 @@ static int raycast_surfaces_linear(alea_system_t* sys,
 
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
-                primitive_normal_at(prim->type, &prim->data, px, py, pz,
+                primitive_normal_at(prim->type, &prim_data, px, py, pz,
                                    &hit.nx, &hit.ny, &hit.nz);
 
                 if (add_hit(result, &hit) != 0) {
@@ -620,8 +624,10 @@ static void raycast_tree_primitives(alea_system_t* sys,
     if (op == ALEA_OP_PRIMITIVE) {
         const alea_primitive_entry_t* prim =
             &sys->primitives.data[node->primitive.primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &prim_data)) return;
         double t[4];
-        int count = ray_intersect_primitive(ray, prim->type, &prim->data, t);
+        int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
         for (int j = 0; j < count; j++) {
             if (t[j] >= t_min && t[j] <= t_max) {
                 alea_ray_hit_t hit;
@@ -630,7 +636,7 @@ static void raycast_tree_primitives(alea_system_t* sys,
                 hit.primitive_id = node->primitive.primitive_id;
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
-                primitive_normal_at(prim->type, &prim->data, px, py, pz,
+                primitive_normal_at(prim->type, &prim_data, px, py, pz,
                                    &hit.nx, &hit.ny, &hit.nz);
                 if (add_hit(result, &hit) != 0) {
                     ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
@@ -1377,9 +1383,11 @@ static double raycast_cell_surfaces(alea_system_t* sys,
 
         const alea_surface_entry_t* surf = &sys->surfaces.data[surf_idx];
         const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, surf->primitive_id, &prim_data)) continue;
 
         double t[4];
-        int count = ray_intersect_primitive(ray, prim->type, &prim->data, t);
+        int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
 
         for (int j = 0; j < count; j++) {
             if (t[j] > t_min && t[j] < t_max && t[j] < closest_t) {
@@ -1647,9 +1655,11 @@ static void find_closest_callback(uint32_t surface_idx, void* userdata) {
     closest_hit_ctx_t* ctx = (closest_hit_ctx_t*)userdata;
     const alea_surface_entry_t* surf = &ctx->sys->surfaces.data[surface_idx];
     const alea_primitive_entry_t* prim = &ctx->sys->primitives.data[surf->primitive_id];
+    alea_primitive_data_t prim_data;
+    if (!alea_primitive_copy_data(ctx->sys, surf->primitive_id, &prim_data)) return;
 
     double t[4];
-    int count = ray_intersect_primitive(ctx->ray, prim->type, &prim->data, t);
+    int count = ray_intersect_primitive(ctx->ray, prim->type, &prim_data, t);
 
     for (int j = 0; j < count; j++) {
         if (t[j] > ctx->t_min && t[j] < ctx->closest_t) {
@@ -1690,9 +1700,11 @@ static double find_closest_intersection(alea_system_t* sys,
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, surf->primitive_id, &prim_data)) continue;
 
         double t[4];
-        int count = ray_intersect_primitive(ray, prim->type, &prim->data, t);
+        int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
 
         for (int j = 0; j < count; j++) {
             if (t[j] > t_min && t[j] < closest_t) {

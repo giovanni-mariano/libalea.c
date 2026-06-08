@@ -53,11 +53,17 @@ static inline double eval_primitive_node(
     }
 
     const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
+    alea_primitive_data_t prim_data;
+    if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &prim_data)) {
+        ALEA_LOG_ERROR("Invalid primitive payload %u",
+                node->primitive.primitive_id);
+        return 1.0;
+    }
 
     // Evaluate the primitive
     double distance = alea_primitive_eval(
         prim->type,
-        &prim->data,
+        &prim_data,
         x, y, z
     );
 
@@ -338,8 +344,12 @@ static alea_interval_t eval_primitive_interval(
     }
 
     const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
+    alea_primitive_data_t prim_data;
+    if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &prim_data)) {
+        return alea_iv_make(-1e30, 1e30);
+    }
 
-    alea_interval_t iv = alea_primitive_interval_eval(prim->type, &prim->data, box);
+    alea_interval_t iv = alea_primitive_interval_eval(prim->type, &prim_data, box);
 
     /* Apply inverted flag and sense (same logic as point evaluation) */
     bool flip = (node->primitive.sense > 0) != (node->primitive.inverted != 0);
@@ -417,4 +427,4 @@ alea_box_relation_t alea_tree_box_relation(
         return ALEA_RELATION_POSITIVE;  /* Entirely outside */
     }
     return ALEA_RELATION_INTERSECT;     /* Crosses surface */
-}
+}

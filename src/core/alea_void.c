@@ -778,6 +778,26 @@ static void_result_t* create_void_result_snapshot(alea_system_t* sys) {
     result->snapshot_surfaces             = alea_vec_count(&sys->surfaces);
     result->snapshot_nodes                = alea_vec_count(&sys->nodes);
     result->snapshot_primitives           = alea_vec_count(&sys->primitives);
+    result->snapshot_primitive_planes     = alea_vec_count(&sys->primitive_planes);
+    result->snapshot_primitive_spheres    = alea_vec_count(&sys->primitive_spheres);
+    result->snapshot_primitive_cyl_x      = alea_vec_count(&sys->primitive_cyl_x);
+    result->snapshot_primitive_cyl_y      = alea_vec_count(&sys->primitive_cyl_y);
+    result->snapshot_primitive_cyl_z      = alea_vec_count(&sys->primitive_cyl_z);
+    result->snapshot_primitive_cone_x     = alea_vec_count(&sys->primitive_cone_x);
+    result->snapshot_primitive_cone_y     = alea_vec_count(&sys->primitive_cone_y);
+    result->snapshot_primitive_cone_z     = alea_vec_count(&sys->primitive_cone_z);
+    result->snapshot_primitive_boxes      = alea_vec_count(&sys->primitive_boxes);
+    result->snapshot_primitive_quadrics   = alea_vec_count(&sys->primitive_quadrics);
+    result->snapshot_primitive_toruses    = alea_vec_count(&sys->primitive_toruses);
+    result->snapshot_primitive_rccs       = alea_vec_count(&sys->primitive_rccs);
+    result->snapshot_primitive_box_generals = alea_vec_count(&sys->primitive_box_generals);
+    result->snapshot_primitive_sphs       = alea_vec_count(&sys->primitive_sphs);
+    result->snapshot_primitive_trcs       = alea_vec_count(&sys->primitive_trcs);
+    result->snapshot_primitive_ells       = alea_vec_count(&sys->primitive_ells);
+    result->snapshot_primitive_recs       = alea_vec_count(&sys->primitive_recs);
+    result->snapshot_primitive_weds       = alea_vec_count(&sys->primitive_weds);
+    result->snapshot_primitive_rhps       = alea_vec_count(&sys->primitive_rhps);
+    result->snapshot_primitive_arbs       = alea_vec_count(&sys->primitive_arbs);
     result->snapshot_next_auto_surface_id = sys->next_auto_surface_id;
 
     return result;
@@ -983,6 +1003,26 @@ static void void_result_rollback(void_result_t* result) {
     if (alea_vec_count(&sys->primitives) > result->snapshot_primitives) {
         alea_vec_set_count(&sys->primitives, result->snapshot_primitives);
     }
+    alea_vec_set_count(&sys->primitive_planes, result->snapshot_primitive_planes);
+    alea_vec_set_count(&sys->primitive_spheres, result->snapshot_primitive_spheres);
+    alea_vec_set_count(&sys->primitive_cyl_x, result->snapshot_primitive_cyl_x);
+    alea_vec_set_count(&sys->primitive_cyl_y, result->snapshot_primitive_cyl_y);
+    alea_vec_set_count(&sys->primitive_cyl_z, result->snapshot_primitive_cyl_z);
+    alea_vec_set_count(&sys->primitive_cone_x, result->snapshot_primitive_cone_x);
+    alea_vec_set_count(&sys->primitive_cone_y, result->snapshot_primitive_cone_y);
+    alea_vec_set_count(&sys->primitive_cone_z, result->snapshot_primitive_cone_z);
+    alea_vec_set_count(&sys->primitive_boxes, result->snapshot_primitive_boxes);
+    alea_vec_set_count(&sys->primitive_quadrics, result->snapshot_primitive_quadrics);
+    alea_vec_set_count(&sys->primitive_toruses, result->snapshot_primitive_toruses);
+    alea_vec_set_count(&sys->primitive_rccs, result->snapshot_primitive_rccs);
+    alea_vec_set_count(&sys->primitive_box_generals, result->snapshot_primitive_box_generals);
+    alea_vec_set_count(&sys->primitive_sphs, result->snapshot_primitive_sphs);
+    alea_vec_set_count(&sys->primitive_trcs, result->snapshot_primitive_trcs);
+    alea_vec_set_count(&sys->primitive_ells, result->snapshot_primitive_ells);
+    alea_vec_set_count(&sys->primitive_recs, result->snapshot_primitive_recs);
+    alea_vec_set_count(&sys->primitive_weds, result->snapshot_primitive_weds);
+    alea_vec_set_count(&sys->primitive_rhps, result->snapshot_primitive_rhps);
+    alea_vec_set_count(&sys->primitive_arbs, result->snapshot_primitive_arbs);
     sys->next_auto_surface_id = result->snapshot_next_auto_surface_id;
 
     /* The primitive dedup hash table may reference primitive IDs we just
@@ -993,8 +1033,11 @@ static void void_result_rollback(void_result_t* result) {
         if (sys->primitive_index) {
             for (size_t i = 0; i < alea_vec_count(&sys->primitives); i++) {
                 const alea_primitive_entry_t* p = &sys->primitives.data[i];
-                uint64_t hash = alea_compute_primitive_hash(p->type, &p->data, &sys->config);
-                primitive_hash_table_insert(sys->primitive_index, (uint32_t)i, hash);
+                alea_primitive_data_t data;
+                if (alea_primitive_copy_data(sys, (uint32_t)i, &data)) {
+                    uint64_t hash = alea_compute_primitive_hash(p->type, &data, &sys->config);
+                    primitive_hash_table_insert(sys->primitive_index, (uint32_t)i, hash);
+                }
             }
         }
     }

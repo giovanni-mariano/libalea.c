@@ -279,9 +279,10 @@ TEST(system_clone_primitive_dedup) {
 
     /* Re-submit a primitive already present in the clone. With a populated
        index this is a dedup hit (count unchanged, existing id returned);
-       with the old empty-index bug it would append a duplicate. */
+    with the old empty-index bug it would append a duplicate. */
     alea_primitive_type_t t = clone->primitives.data[0].type;
-    alea_primitive_data_t d = clone->primitives.data[0].data;
+    alea_primitive_data_t d;
+    ASSERT(alea_primitive_copy_data(clone, 0, &d));
     int8_t inverted = 0;
     alea_primitive_id_t id = alea_get_or_create_primitive(clone, t, &d, &inverted);
 
@@ -290,6 +291,51 @@ TEST(system_clone_primitive_dedup) {
 
     alea_destroy(clone);
     mcnp_model_destroy(model);
+}
+
+TEST(system_merge_primitive_payload_remap_dedup) {
+    alea_system_t* target = alea_create();
+    alea_system_t* source = alea_create();
+    ASSERT_NOT_NULL(target);
+    ASSERT_NOT_NULL(source);
+
+    int target_surface = alea_sphere_surface(target, 0, 0, 0, 0, 5.0);
+    int source_surface = alea_sphere_surface(source, 0, 0, 0, 0, 5.0);
+    ASSERT(target_surface >= 0);
+    ASSERT(source_surface >= 0);
+
+    alea_node_id_t target_root = alea_halfspace(target, target_surface, -1);
+    alea_node_id_t source_root = alea_halfspace(source, source_surface, -1);
+    ASSERT(target_root != ALEA_NODE_ID_INVALID);
+    ASSERT(source_root != ALEA_NODE_ID_INVALID);
+
+    int target_mat = alea_add_material(target, 1);
+    int source_mat = alea_add_material(source, 2);
+    ASSERT(target_mat >= 0);
+    ASSERT(source_mat >= 0);
+    ASSERT(alea_add_cell(target, 1, target_root, target_mat, -1.0, 0) >= 0);
+    ASSERT(alea_add_cell(source, 2, source_root, source_mat, -1.0, 0) >= 0);
+
+    ASSERT_EQ(alea_vec_count(&target->primitives), 1);
+    ASSERT_EQ(alea_vec_count(&source->primitives), 1);
+
+    int added = alea_merge(target, source, 100);
+    ASSERT_EQ(added, 1);
+    ASSERT_EQ(alea_vec_count(&target->primitives), 1);
+    ASSERT_EQ(alea_vec_count(&target->surfaces), 2);
+    ASSERT_EQ(target->surfaces.data[1].primitive_id, target->surfaces.data[0].primitive_id);
+
+    alea_primitive_data_t payload;
+    ASSERT(alea_primitive_copy_data(target, target->surfaces.data[1].primitive_id, &payload));
+    ASSERT_NEAR(payload.sphere.radius, 5.0, 1e-12);
+
+    const alea_cell_entry_t* merged_cell = &target->cells.data[1];
+    ASSERT_EQ(merged_cell->mc_cell_id, 102);
+    ASSERT(alea_point_inside(target, merged_cell->root_node_id, 0, 0, 0));
+    ASSERT_FALSE(alea_point_inside(target, merged_cell->root_node_id, 6, 0, 0));
+
+    alea_destroy(source);
+    alea_destroy(target);
 }
 
 TEST_MAIN()

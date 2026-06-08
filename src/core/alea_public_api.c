@@ -118,6 +118,26 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     /* Clone vectors without internal pointers (safe shallow copy) */
     CLONE_VEC(clone->nodes, sys->nodes, alea_node_t);
     CLONE_VEC(clone->primitives, sys->primitives, alea_primitive_entry_t);
+    CLONE_VEC(clone->primitive_planes, sys->primitive_planes, alea_plane_data_t);
+    CLONE_VEC(clone->primitive_spheres, sys->primitive_spheres, alea_sphere_data_t);
+    CLONE_VEC(clone->primitive_cyl_x, sys->primitive_cyl_x, alea_cylinder_x_data_t);
+    CLONE_VEC(clone->primitive_cyl_y, sys->primitive_cyl_y, alea_cylinder_y_data_t);
+    CLONE_VEC(clone->primitive_cyl_z, sys->primitive_cyl_z, alea_cylinder_z_data_t);
+    CLONE_VEC(clone->primitive_cone_x, sys->primitive_cone_x, alea_cone_x_data_t);
+    CLONE_VEC(clone->primitive_cone_y, sys->primitive_cone_y, alea_cone_y_data_t);
+    CLONE_VEC(clone->primitive_cone_z, sys->primitive_cone_z, alea_cone_z_data_t);
+    CLONE_VEC(clone->primitive_boxes, sys->primitive_boxes, alea_box_data_t);
+    CLONE_VEC(clone->primitive_quadrics, sys->primitive_quadrics, alea_quadric_data_t);
+    CLONE_VEC(clone->primitive_toruses, sys->primitive_toruses, alea_torus_data_t);
+    CLONE_VEC(clone->primitive_rccs, sys->primitive_rccs, alea_rcc_data_t);
+    CLONE_VEC(clone->primitive_box_generals, sys->primitive_box_generals, alea_box_general_data_t);
+    CLONE_VEC(clone->primitive_sphs, sys->primitive_sphs, alea_sph_data_t);
+    CLONE_VEC(clone->primitive_trcs, sys->primitive_trcs, alea_trc_data_t);
+    CLONE_VEC(clone->primitive_ells, sys->primitive_ells, alea_ell_data_t);
+    CLONE_VEC(clone->primitive_recs, sys->primitive_recs, alea_rec_data_t);
+    CLONE_VEC(clone->primitive_weds, sys->primitive_weds, alea_wed_data_t);
+    CLONE_VEC(clone->primitive_rhps, sys->primitive_rhps, alea_rhp_data_t);
+    CLONE_VEC(clone->primitive_arbs, sys->primitive_arbs, alea_arb_data_t);
     CLONE_VEC(clone->surfaces, sys->surfaces, alea_surface_entry_t);
     CLONE_VEC(clone->transforms, sys->transforms, alea_transform_t);
     CLONE_VEC(clone->cell_refs, sys->cell_refs, alea_cell_ref_t);
@@ -257,7 +277,9 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
        repopulated here or mutating the clone would miss dedup and skew stats. */
     for (size_t i = 0; i < alea_vec_count(&clone->primitives); i++) {
         const alea_primitive_entry_t* p = &clone->primitives.data[i];
-        uint64_t hash = alea_compute_primitive_hash(p->type, &p->data, &clone->config);
+        alea_primitive_data_t data;
+        if (!alea_primitive_copy_data(clone, (uint32_t)i, &data)) goto clone_error;
+        uint64_t hash = alea_compute_primitive_hash(p->type, &data, &clone->config);
         primitive_hash_table_insert(clone->primitive_index, (uint32_t)i, hash);
     }
 
@@ -1030,12 +1052,39 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
     if (!target || !source) return -1;
 
     size_t node_offset = alea_vec_count(&target->nodes);
-    size_t prim_offset = alea_vec_count(&target->primitives);
+    size_t source_prim_count = alea_vec_count(&source->primitives);
+    uint32_t* prim_map = NULL;
+    int8_t* prim_inverted = NULL;
+
+    if (source_prim_count > 0) {
+        prim_map = malloc(source_prim_count * sizeof(uint32_t));
+        prim_inverted = calloc(source_prim_count, sizeof(int8_t));
+        if (!prim_map || !prim_inverted) {
+            free(prim_map);
+            free(prim_inverted);
+            return -1;
+        }
+    }
 
     /* Copy primitives */
-    for (size_t i = 0; i < alea_vec_count(&source->primitives); i++) {
-        alea_primitive_entry_t prim = source->primitives.data[i];
-        alea_vec_push(&target->primitives, prim, alea_primitive_entry_t);
+    for (size_t i = 0; i < source_prim_count; i++) {
+        const alea_primitive_entry_t* prim = &source->primitives.data[i];
+        alea_primitive_data_t data;
+        int8_t inverted = 0;
+        if (!alea_primitive_copy_data(source, (uint32_t)i, &data)) {
+            free(prim_map);
+            free(prim_inverted);
+            return -1;
+        }
+        uint32_t new_id = alea_get_or_create_primitive(
+            target, prim->type, &data, &inverted);
+        if (new_id == UINT32_MAX) {
+            free(prim_map);
+            free(prim_inverted);
+            return -1;
+        }
+        prim_map[i] = new_id;
+        prim_inverted[i] = inverted;
     }
 
     /* Copy nodes with adjusted references */
@@ -1044,7 +1093,16 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         alea_operation_t op = ALEA_GET_OPERATION(&node);
 
         if (op == ALEA_OP_PRIMITIVE) {
-            node.primitive.primitive_id += (uint32_t)prim_offset;
+            uint32_t old_id = node.primitive.primitive_id;
+            if (old_id >= source_prim_count) {
+                free(prim_map);
+                free(prim_inverted);
+                return -1;
+            }
+            node.primitive.primitive_id = prim_map[old_id];
+            if (prim_inverted[old_id]) {
+                node.primitive.inverted = !node.primitive.inverted;
+            }
         } else {
             node.operation.left += (uint32_t)node_offset;
             if (op != ALEA_OP_COMPLEMENT) {
@@ -1096,12 +1154,20 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         surf.mc_surface_id += id_offset;
         surf.pos_node += (uint32_t)node_offset;
         surf.neg_node += (uint32_t)node_offset;
+        if (surf.primitive_id >= source_prim_count) {
+            free(prim_map);
+            free(prim_inverted);
+            return -1;
+        }
+        surf.primitive_id = prim_map[surf.primitive_id];
         alea_vec_push(&target->surfaces, surf, alea_surface_entry_t);
     }
 
     /* Mark universe index as needing rebuild */
     target->universe_index_built = false;
 
+    free(prim_map);
+    free(prim_inverted);
     return cells_added;
 }
 
@@ -2815,8 +2881,7 @@ int alea_node_primitive_data(const alea_system_t* sys, alea_node_id_t node,
 
     uint32_t prim_id = n->primitive.primitive_id;
     if (prim_id >= alea_vec_count(&sys->primitives)) return -1;
-    *out = sys->primitives.data[prim_id].data;
-    return 0;
+    return alea_primitive_copy_data(sys, prim_id, out) ? 0 : -1;
 }
 
 int alea_node_sense(const alea_system_t* sys, alea_node_id_t node) {

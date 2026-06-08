@@ -1439,9 +1439,11 @@ int alea_compute_slice_curves(alea_system_t* sys,
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, surf->primitive_id, &prim_data)) continue;
 
         alea_curve_2d_t curve;
-        if (alea_intersect_primitive_plane(prim->type, &prim->data, plane, &curve)) {
+        if (alea_intersect_primitive_plane(prim->type, &prim_data, plane, &curve)) {
             /* Store surface ID (display) and canonical primitive (match-only) */
             curve.surface_id = surf->mc_surface_id;
             curve.primitive_id = surf->primitive_id;
@@ -2340,12 +2342,16 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
             }
 
             const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
+            alea_primitive_data_t prim_data;
+            if (!alea_primitive_copy_data(sys, surf->primitive_id, &prim_data)) {
+                continue;
+            }
 
             /* Transform primitive */
             alea_primitive_data_t transformed_data;
             alea_primitive_type_t transformed_type;
 
-            if (!alea_primitive_transform(prim->type, &prim->data,
+            if (!alea_primitive_transform(prim->type, &prim_data,
                                         hit->transform.m,
                                         &transformed_type, &transformed_data)) {
                 if (g_slice_curve_debug) {
@@ -2515,11 +2521,15 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                 &sys->surfaces.data[surf_idx];
                             const alea_primitive_entry_t* prim =
                                 &sys->primitives.data[surf->primitive_id];
+                            alea_primitive_data_t prim_data;
+                            if (!alea_primitive_copy_data(sys, surf->primitive_id,
+                                                          &prim_data))
+                                continue;
 
                             alea_primitive_data_t td;
                             alea_primitive_type_t tt;
                             if (!alea_primitive_transform(prim->type,
-                                    &prim->data, elem_tr.m, &tt, &td))
+                                    &prim_data, elem_tr.m, &tt, &td))
                                 continue;
 
                             alea_curve_2d_t curve;

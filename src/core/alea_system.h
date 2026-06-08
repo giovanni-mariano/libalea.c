@@ -96,11 +96,31 @@ typedef struct mcnp_context mcnp_context_t;
  */
 typedef struct {
     alea_primitive_type_t type;
-    alea_primitive_data_t data;
+    uint32_t payload_index;
     uint32_t ref_count;  // How many nodes reference this primitive
 } alea_primitive_entry_t;
 
 ALEA_VEC_DEFINE(alea_primitive_vec, alea_primitive_entry_t);
+ALEA_VEC_DEFINE(alea_plane_data_vec, alea_plane_data_t);
+ALEA_VEC_DEFINE(alea_sphere_data_vec, alea_sphere_data_t);
+ALEA_VEC_DEFINE(alea_cylinder_x_data_vec, alea_cylinder_x_data_t);
+ALEA_VEC_DEFINE(alea_cylinder_y_data_vec, alea_cylinder_y_data_t);
+ALEA_VEC_DEFINE(alea_cylinder_z_data_vec, alea_cylinder_z_data_t);
+ALEA_VEC_DEFINE(alea_cone_x_data_vec, alea_cone_x_data_t);
+ALEA_VEC_DEFINE(alea_cone_y_data_vec, alea_cone_y_data_t);
+ALEA_VEC_DEFINE(alea_cone_z_data_vec, alea_cone_z_data_t);
+ALEA_VEC_DEFINE(alea_box_data_vec, alea_box_data_t);
+ALEA_VEC_DEFINE(alea_quadric_data_vec, alea_quadric_data_t);
+ALEA_VEC_DEFINE(alea_torus_data_vec, alea_torus_data_t);
+ALEA_VEC_DEFINE(alea_rcc_data_vec, alea_rcc_data_t);
+ALEA_VEC_DEFINE(alea_box_general_data_vec, alea_box_general_data_t);
+ALEA_VEC_DEFINE(alea_sph_data_vec, alea_sph_data_t);
+ALEA_VEC_DEFINE(alea_trc_data_vec, alea_trc_data_t);
+ALEA_VEC_DEFINE(alea_ell_data_vec, alea_ell_data_t);
+ALEA_VEC_DEFINE(alea_rec_data_vec, alea_rec_data_t);
+ALEA_VEC_DEFINE(alea_wed_data_vec, alea_wed_data_t);
+ALEA_VEC_DEFINE(alea_rhp_data_vec, alea_rhp_data_t);
+ALEA_VEC_DEFINE(alea_arb_data_vec, alea_arb_data_t);
 
 // ============================================================================
 // CSG TREE NODES
@@ -290,6 +310,26 @@ typedef struct alea_system {
 
     // Primitives with deduplication
     alea_primitive_vec_t primitives;
+    alea_plane_data_vec_t primitive_planes;
+    alea_sphere_data_vec_t primitive_spheres;
+    alea_cylinder_x_data_vec_t primitive_cyl_x;
+    alea_cylinder_y_data_vec_t primitive_cyl_y;
+    alea_cylinder_z_data_vec_t primitive_cyl_z;
+    alea_cone_x_data_vec_t primitive_cone_x;
+    alea_cone_y_data_vec_t primitive_cone_y;
+    alea_cone_z_data_vec_t primitive_cone_z;
+    alea_box_data_vec_t primitive_boxes;
+    alea_quadric_data_vec_t primitive_quadrics;
+    alea_torus_data_vec_t primitive_toruses;
+    alea_rcc_data_vec_t primitive_rccs;
+    alea_box_general_data_vec_t primitive_box_generals;
+    alea_sph_data_vec_t primitive_sphs;
+    alea_trc_data_vec_t primitive_trcs;
+    alea_ell_data_vec_t primitive_ells;
+    alea_rec_data_vec_t primitive_recs;
+    alea_wed_data_vec_t primitive_weds;
+    alea_rhp_data_vec_t primitive_rhps;
+    alea_arb_data_vec_t primitive_arbs;
 
     // Primitive lookup for deduplication
     primitive_hash_table_t* primitive_index;
@@ -625,6 +665,11 @@ alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id
  * @return Pointer to primitive entry (read-only)
  */
 const alea_primitive_entry_t* alea_get_primitive(const alea_system_t* sys, uint32_t id);
+bool alea_primitive_copy_data(const alea_system_t* sys,
+                              uint32_t id,
+                              alea_primitive_data_t* out);
+const void* alea_primitive_payload_const(const alea_system_t* sys,
+                                         uint32_t id);
 
 // ============================================================================
 // API - UTILITIES

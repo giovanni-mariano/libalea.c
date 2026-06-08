@@ -766,14 +766,35 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             mp->fill_transform_inline = params.fill_transform_inline;
             mp->fill_transform_degrees = params.fill_transform_degrees;
             mp->fill_transform_count = params.fill_transform_count;
-            for (int i = 0; i < params.fill_transform_count && i < 13; i++) {
-                mp->fill_transform_data[i] = params.fill_transform_data[i];
+            mp->fill_transform_index = MCNP_INLINE_TRANSFORM_INVALID;
+            if (params.fill_transform_inline && params.fill_transform_count > 0) {
+                mp->fill_transform_index = mcnp_model_add_inline_transform(
+                    model, params.fill_transform_data,
+                    params.fill_transform_count,
+                    params.fill_transform_degrees);
+                if (mp->fill_transform_index == MCNP_INLINE_TRANSFORM_INVALID) {
+                    ALEA_LOG_ERROR("Cell %d: failed to store inline FILL transform",
+                                   cell->cell_id);
+                    return UINT32_MAX;
+                }
             }
 
             // TRCL - cell transformation
             mp->trcl = params.trcl;
             mp->trcl_degrees = params.trcl_degrees;
             mp->has_trcl = params.has_trcl;
+            mp->trcl_inline_index = MCNP_INLINE_TRANSFORM_INVALID;
+            if (params.trcl_inline && params.trcl_count > 0) {
+                mp->trcl_inline_index = mcnp_model_add_inline_transform(
+                    model, params.trcl_data,
+                    params.trcl_count,
+                    params.trcl_degrees);
+                if (mp->trcl_inline_index == MCNP_INLINE_TRANSFORM_INVALID) {
+                    ALEA_LOG_ERROR("Cell %d: failed to store inline TRCL transform",
+                                   cell->cell_id);
+                    return UINT32_MAX;
+                }
+            }
             if (params.trcl_inline && params.trcl_count > 0) {
                 int trcl_id = alea_add_inline_transform(
                     sys, params.trcl_data, params.trcl_count,
@@ -788,9 +809,6 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             }
             mp->trcl_inline = params.trcl_inline;
             mp->trcl_count = params.trcl_count;
-            for (int i = 0; i < params.trcl_count && i < 13; i++) {
-                mp->trcl_data[i] = params.trcl_data[i];
-            }
 
             // LIKE BUT - store template cell ID for later resolution
             mp->like_cell_id = like_cell_id;
@@ -867,8 +885,11 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
             }
         } else if (mp->trcl_inline && mp->trcl_count > 0) {
             /* Inline TRCL data */
-            if (!alea_matrix_from_mcnp(&mat, mp->trcl_data, mp->trcl_count,
-                                       mp->trcl_degrees)) {
+            const mcnp_inline_transform_t* inline_tr =
+                mcnp_model_inline_transform_const(model, mp->trcl_inline_index);
+            if (!inline_tr ||
+                !alea_matrix_from_mcnp(&mat, inline_tr->values, inline_tr->count,
+                                       inline_tr->degrees)) {
                 ALEA_LOG_ERROR("Cell %d: inline TRCL is not invertible",
                                cell->mc_cell_id);
                 return -1;

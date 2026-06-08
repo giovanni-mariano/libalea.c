@@ -362,7 +362,9 @@ uint32_t primitive_hash_table_find(primitive_hash_table_t* table, alea_system_t*
         if (entry->hash == hash) {
             // Hash matches, check full equality
             const alea_primitive_entry_t* prim = &sys->primitives.data[entry->primitive_id];
-            if (alea_primitives_equal(type, data, prim->type, &prim->data,
+            alea_primitive_data_t prim_data;
+            if (alea_primitive_copy_data(sys, entry->primitive_id, &prim_data) &&
+                alea_primitives_equal(type, data, prim->type, &prim_data,
                                      &sys->config, match_inverted)) {
                 return entry->primitive_id;
             }
