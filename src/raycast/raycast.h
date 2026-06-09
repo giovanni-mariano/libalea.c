@@ -225,6 +225,27 @@ int alea_raycast_hier_blas_experimental(alea_system_t* sys,
                                         double t_max,
                                         alea_raycast_result_t* result);
 
+/**
+ * @brief Hierarchical raycast that also emits boundary surface hits.
+ *
+ * Returns the same material/path segments as alea_raycast_hier_fast_segments()
+ * (segment parity), and additionally populates result->hits with one
+ * alea_ray_hit_t per physical surface crossing along the stepped path. Each
+ * segment's enter_hit_index links back to the hit at its entry boundary
+ * (-1 when that boundary has no physical surface, e.g. synthetic lattice DDA
+ * boundaries or the initial void entry).
+ *
+ * Normals are reported in world space. For non-lattice/non-fill geometry the
+ * frame transform is identity, so hits match the flat alea_raycast() path.
+ * This path may be slower than fast_segments but remains step-based rather
+ * than candidate-list based.
+ */
+int alea_raycast_hier_with_hits(alea_system_t* sys,
+                                double ox, double oy, double oz,
+                                double dx, double dy, double dz,
+                                double t_max,
+                                alea_raycast_result_t* result);
+
 /* ============================================================================
  * QUERY HELPERS
  * ============================================================================ */

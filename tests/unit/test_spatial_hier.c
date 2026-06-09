@@ -1573,4 +1573,143 @@ TEST(spatial_mode_change_invalidates_flat_spatial_index) {
     mcnp_model_destroy(model);
 }
 
+static void assert_raycast_hits_match(const alea_raycast_result_t* flat,
+                                      const alea_raycast_result_t* hier) {
+    ASSERT_EQ(hier->hits.count, flat->hits.count);
+    for (size_t i = 0; i < flat->hits.count; i++) {
+        const alea_ray_hit_t* a = &flat->hits.data[i];
+        const alea_ray_hit_t* b = &hier->hits.data[i];
+        ASSERT_NEAR(b->t, a->t, 1e-9);
+        ASSERT_EQ(b->surface_id, a->surface_id);
+        ASSERT_EQ(b->primitive_id, a->primitive_id);
+        ASSERT_NEAR(b->nx, a->nx, 1e-9);
+        ASSERT_NEAR(b->ny, a->ny, 1e-9);
+        ASSERT_NEAR(b->nz, a->nz, 1e-9);
+    }
+}
+
+/* Phase 1 (PLAN_HIER_RAY_NEXT_STEPS): alea_raycast_hier_with_hits() returns
+ * the same path segments as the segment-only fast path, plus a boundary hit
+ * list. For a simple non-lattice model (root universe, identity transforms)
+ * its hits match the flat alea_raycast() path exactly. */
+TEST(hier_with_hits_matches_flat_for_disjoint_spheres) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    /* Disjoint spheres strung along x so the ray crosses each exactly twice
+     * with void gaps between them — unambiguous, all in the root universe. */
+    for (int i = 0; i < 5; i++) {
+        int s = alea_sphere_surface(sys, i + 1, (double)i * 5.0, 0.0, 0.0, 1.5);
+        ASSERT(s >= 0);
+        const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+        ASSERT_NOT_NULL(surf);
+        int c = alea_add_cell(sys, i + 1, surf->neg_node, mat, 1.0, 0);
+        ASSERT(c >= 0);
+    }
+
+    alea_raycast_result_t flat;
+    alea_raycast_result_t hier;
+    alea_raycast_result_init(&flat);
+    alea_raycast_result_init(&hier);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           30.0, &flat), 0);
+
+    if (sys->spatial_index) {
+        alea_spatial_index_free(sys->spatial_index);
+        sys->spatial_index = NULL;
+    }
+
+    ASSERT_EQ(alea_raycast_hier_with_hits(sys, -5.0, 0.0, 0.0,
+                                          1.0, 0.0, 0.0, 30.0, &hier), 0);
+
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+
+    /* Every sphere is crossed twice -> 10 boundary hits. */
+    ASSERT_EQ(hier.hits.count, 10u);
+    assert_raycast_material_segments_match(&flat, &hier);
+    assert_raycast_hits_match(&flat, &hier);
+
+    alea_raycast_result_free(&flat);
+    alea_raycast_result_free(&hier);
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+/* with_hits must not change the stepped segments relative to fast_segments,
+ * even for a fill/lattice model with non-identity transforms. */
+TEST(hier_with_hits_segments_match_fast_segments) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t segs;
+    alea_raycast_result_t hits;
+    alea_raycast_result_init(&segs);
+    alea_raycast_result_init(&hits);
+
+    ASSERT_EQ(alea_raycast_hier_fast_segments(sys, -1.5, 0.0, 0.0,
+                                              1.0, 0.0, 0.0, 7.0, &segs), 0);
+    ASSERT_EQ(alea_raycast_hier_with_hits(sys, -1.5, 0.0, 0.0,
+                                          1.0, 0.0, 0.0, 7.0, &hits), 0);
+
+    ASSERT_NULL(sys->spatial_index);
+    assert_raycast_segments_match(&segs, &hits);
+
+    /* fast_segments must not populate hits; with_hits should. */
+    ASSERT_EQ(segs.hits.count, 0u);
+
+    alea_raycast_result_free(&segs);
+    alea_raycast_result_free(&hits);
+    mcnp_model_destroy(model);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+/* Synthetic lattice DDA boundaries (surface_id == 0) are reported on segment
+ * boundaries but never emitted as physical surface hits. */
+TEST(hier_with_hits_skips_synthetic_lattice_boundaries) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t hits;
+    alea_raycast_result_init(&hits);
+
+    ASSERT_EQ(alea_raycast_hier_with_hits(sys, -1.5, 0.0, 0.0,
+                                          1.0, 0.0, 0.0, 7.0, &hits), 0);
+
+    /* No emitted hit may carry a synthetic (0) or "none" (-1) surface id. */
+    for (size_t i = 0; i < hits.hits.count; i++) {
+        ASSERT(hits.hits.data[i].surface_id > 0);
+        ASSERT(hits.hits.data[i].primitive_id != ALEA_PRIMITIVE_ID_INVALID);
+    }
+
+    /* Segments may still record synthetic boundaries; confirm the model
+     * actually exercises at least one so the assertion above is meaningful. */
+    int saw_synthetic = 0;
+    for (size_t i = 0; i < hits.segments.count; i++) {
+        if (hits.segments.data[i].exit_surface_id == 0 ||
+            hits.segments.data[i].enter_surface_id == 0) {
+            saw_synthetic = 1;
+            break;
+        }
+    }
+    ASSERT(saw_synthetic);
+
+    alea_raycast_result_free(&hits);
+    mcnp_model_destroy(model);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST_MAIN()
