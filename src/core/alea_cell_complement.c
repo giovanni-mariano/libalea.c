@@ -126,13 +126,12 @@ int alea_resolve_cell_complements(alea_system_t* sys) {
     for (size_t i = 0; i < alea_vec_count(&sys->cell_refs); i++) {
         alea_cell_ref_t* ref = &sys->cell_refs.data[i];
         
-        /* Find the referenced cell's root node */
+        /* Find the referenced cell's root node. The cell index is maintained
+         * during load, so avoid refs * cells linear scans on large models. */
         alea_node_id_t cell_root = ALEA_NODE_ID_INVALID;
-        for (size_t c = 0; c < alea_vec_count(&sys->cells); c++) {
-            if (sys->cells.data[c].mc_cell_id == ref->referenced_cell_id) {
-                cell_root = sys->cells.data[c].root_node_id;
-                break;
-            }
+        int cell_idx = alea_find_cell_by_id(sys, ref->referenced_cell_id);
+        if (cell_idx >= 0) {
+            cell_root = sys->cells.data[cell_idx].root_node_id;
         }
         
         if (cell_root == ALEA_NODE_ID_INVALID) {

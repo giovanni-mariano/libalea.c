@@ -403,14 +403,21 @@ static int run_hier_raycast(alea_system_t* sys,
                             double ox, double oy, double oz,
                             double dx, double dy, double dz,
                             double t_max,
-                            int cell_aware) {
+                            int fast_segments,
+                            int blas_experimental,
+                            size_t repeat_count) {
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
 
     double t0 = now_seconds();
-    int rc = cell_aware
-        ? alea_raycast_hier_cell_aware(sys, ox, oy, oz, dx, dy, dz, t_max, &result)
-        : alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
+    int rc = blas_experimental
+        ? alea_raycast_hier_blas_experimental(sys, ox, oy, oz, dx, dy, dz,
+                                              t_max, &result)
+        : (fast_segments
+            ? alea_raycast_hier_fast_segments(sys, ox, oy, oz, dx, dy, dz,
+                                              t_max, &result)
+            : alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max,
+                                &result));
     double t1 = now_seconds();
 
     if (rc != 0) {
@@ -419,15 +426,75 @@ static int run_hier_raycast(alea_system_t* sys,
         return -1;
     }
 
-    printf("Hierarchical %sraycast probe:\n", cell_aware ? "cell-aware " : "");
-    if (cell_aware) {
-        printf("  note=experimental; carries fill transforms and lattice boundary state\n");
+    printf("Hierarchical %s%sraycast probe:\n",
+           blas_experimental ? "BLAS experimental " : "",
+           fast_segments ? "fast-segments " : "");
+    if (fast_segments) {
+        printf("  note=segments-first; carries fill/lattice path state and does not reconstruct full hit lists\n");
+    }
+    if (blas_experimental) {
+        printf("  note=experimental; TLAS/BLAS-pruned surface hit generation\n");
     }
     printf("  origin=(%.6g,%.6g,%.6g) dir=(%.6g,%.6g,%.6g) t_max=%.6g\n",
            ox, oy, oz, dx, dy, dz, t_max);
-    printf("  hits=%zu segments=%zu surfaces_tested=%d time=%.3f s\n",
+    printf("  hits=%zu segments=%zu surfaces_tested=%d point_lookups=%d steps=%d time=%.3f s\n",
            result.hits.count, result.segments.count, result.surfaces_tested,
-           t1 - t0);
+           result.point_lookups, result.step_iterations, t1 - t0);
+    if (blas_experimental) {
+        printf("  blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
+               result.blas_placement_candidates,
+               result.blas_placements_pruned,
+               result.blas_universe_queries,
+               result.blas_cell_candidates,
+               result.blas_cells_tested,
+               result.blas_hits_before_dedup);
+    }
+    if (repeat_count > 1) {
+        double warm_total = 0.0;
+        double warm_min = 1e300;
+        double warm_max = 0.0;
+        size_t warm_runs = repeat_count - 1;
+        for (size_t i = 0; i < warm_runs; i++) {
+            alea_raycast_result_clear(&result);
+            double tw0 = now_seconds();
+            rc = blas_experimental
+                ? alea_raycast_hier_blas_experimental(sys, ox, oy, oz,
+                                                       dx, dy, dz, t_max,
+                                                       &result)
+                : (fast_segments
+                    ? alea_raycast_hier_fast_segments(sys, ox, oy, oz,
+                                                      dx, dy, dz, t_max,
+                                                      &result)
+                    : alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz,
+                                        t_max, &result));
+            double tw1 = now_seconds();
+            if (rc != 0) {
+                alea_raycast_result_free(&result);
+                fprintf(stderr, "hierarchical repeated raycast failed: %s\n",
+                        alea_error());
+                return -1;
+            }
+            double dt = tw1 - tw0;
+            warm_total += dt;
+            if (dt < warm_min) warm_min = dt;
+            if (dt > warm_max) warm_max = dt;
+        }
+        printf("  repeat=%zu warm_avg=%.6f s warm_min=%.6f s warm_max=%.6f s\n",
+               repeat_count, warm_total / warm_runs, warm_min, warm_max);
+        printf("  warm_last: hits=%zu segments=%zu surfaces_tested=%d point_lookups=%d steps=%d\n",
+               result.hits.count, result.segments.count,
+               result.surfaces_tested, result.point_lookups,
+               result.step_iterations);
+        if (blas_experimental) {
+            printf("  warm_last_blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
+                   result.blas_placement_candidates,
+                   result.blas_placements_pruned,
+                   result.blas_universe_queries,
+                   result.blas_cell_candidates,
+                   result.blas_cells_tested,
+                   result.blas_hits_before_dedup);
+        }
+    }
     if (result.segments.count > 0) {
         const alea_ray_segment_t* first = &result.segments.data[0];
         const alea_ray_segment_t* last =
@@ -446,7 +513,7 @@ static int run_hier_raycast(alea_system_t* sys,
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS] [--hier-raycast OX OY OZ DX DY DZ TMAX] [--hier-cell-raycast OX OY OZ DX DY DZ TMAX]\n", argv[0]);
+        fprintf(stderr, "usage: %s MODEL.mcnp [--queries N] [--hier-build] [--hier-queries N] [--hier-slice Z XMIN XMAX YMIN YMAX MAX_HITS] [--hier-raycast OX OY OZ DX DY DZ TMAX] [--hier-fast-segments OX OY OZ DX DY DZ TMAX] [--hier-cell-raycast OX OY OZ DX DY DZ TMAX] [--hier-blas-raycast OX OY OZ DX DY DZ TMAX] [--raycast-repeat N]\n", argv[0]);
         fprintf(stderr, "set ALEA_HIER_BLAS_THRESHOLD=N to skip BLAS builds for universes below N cells\n");
         return 2;
     }
@@ -459,9 +526,11 @@ int main(int argc, char** argv) {
     size_t slice_max_hits = 0;
     int hier_build = 0;
     int hier_raycast = 0;
-    int hier_cell_raycast = 0;
+    int hier_fast_segments = 0;
+    int hier_blas_raycast = 0;
     double ray_ox = 0.0, ray_oy = 0.0, ray_oz = 0.0;
     double ray_dx = 0.0, ray_dy = 0.0, ray_dz = 1.0, ray_t_max = 0.0;
+    size_t raycast_repeat = 1;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--queries") == 0 && i + 1 < argc) {
             queries = (size_t)strtoull(argv[++i], NULL, 10);
@@ -486,8 +555,10 @@ int main(int argc, char** argv) {
             ray_dy = strtod(argv[++i], NULL);
             ray_dz = strtod(argv[++i], NULL);
             ray_t_max = strtod(argv[++i], NULL);
-        } else if (strcmp(argv[i], "--hier-cell-raycast") == 0 && i + 7 < argc) {
-            hier_cell_raycast = 1;
+        } else if ((strcmp(argv[i], "--hier-fast-segments") == 0 ||
+                    strcmp(argv[i], "--hier-cell-raycast") == 0) &&
+                   i + 7 < argc) {
+            hier_fast_segments = 1;
             ray_ox = strtod(argv[++i], NULL);
             ray_oy = strtod(argv[++i], NULL);
             ray_oz = strtod(argv[++i], NULL);
@@ -495,6 +566,18 @@ int main(int argc, char** argv) {
             ray_dy = strtod(argv[++i], NULL);
             ray_dz = strtod(argv[++i], NULL);
             ray_t_max = strtod(argv[++i], NULL);
+        } else if (strcmp(argv[i], "--hier-blas-raycast") == 0 && i + 7 < argc) {
+            hier_blas_raycast = 1;
+            ray_ox = strtod(argv[++i], NULL);
+            ray_oy = strtod(argv[++i], NULL);
+            ray_oz = strtod(argv[++i], NULL);
+            ray_dx = strtod(argv[++i], NULL);
+            ray_dy = strtod(argv[++i], NULL);
+            ray_dz = strtod(argv[++i], NULL);
+            ray_t_max = strtod(argv[++i], NULL);
+        } else if (strcmp(argv[i], "--raycast-repeat") == 0 && i + 1 < argc) {
+            raycast_repeat = (size_t)strtoull(argv[++i], NULL, 10);
+            if (raycast_repeat == 0) raycast_repeat = 1;
         }
     }
 
@@ -572,15 +655,17 @@ int main(int argc, char** argv) {
         printf("  peak_rss_after_hier_slice=%ld KiB\n", peak_rss_kib());
     }
 
-    if (hier_raycast || hier_cell_raycast) {
+    if (hier_raycast || hier_fast_segments || hier_blas_raycast) {
         if (run_hier_raycast(sys, ray_ox, ray_oy, ray_oz,
                              ray_dx, ray_dy, ray_dz, ray_t_max,
-                             hier_cell_raycast) != 0) {
+                             hier_fast_segments, hier_blas_raycast,
+                             raycast_repeat) != 0) {
             mcnp_model_destroy(model);
             return 1;
         }
-        printf("  peak_rss_after_hier_%sraycast=%ld KiB\n",
-               hier_cell_raycast ? "cell_" : "", peak_rss_kib());
+        printf("  peak_rss_after_hier_%s%sraycast=%ld KiB\n",
+               hier_blas_raycast ? "blas_" : "",
+               hier_fast_segments ? "fast_segments_" : "", peak_rss_kib());
     }
 
     mcnp_model_destroy(model);

@@ -21,6 +21,7 @@ typedef struct {
 } alea_hier_cell_hit_t;
 
 #define ALEA_HIER_SPATIAL_HIT_CHAIN_MAX 16
+#define ALEA_HIER_RAY_PATH_MAX 64
 
 typedef struct {
     alea_spatial_hit_t hit;
@@ -29,6 +30,44 @@ typedef struct {
     uint32_t ancestor_cell_indices[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
     alea_matrix_t ancestor_transforms[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
 } alea_hier_spatial_chain_hit_t;
+
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    int material_id;
+    int universe_id;
+    int fill_universe;
+    int depth;
+    uint8_t is_lattice;
+    int lat_fill_universe;
+    double lat_ox;
+    double lat_oy;
+    double lat_oz;
+    alea_matrix_t transform;
+} alea_hier_ray_path_entry_t;
+
+typedef struct {
+    int count;
+    alea_hier_ray_path_entry_t entries[ALEA_HIER_RAY_PATH_MAX];
+} alea_hier_ray_path_t;
+
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    double t_enter;
+    double t_exit;
+} alea_hier_ray_candidate_t;
+
+typedef struct {
+    uint32_t placement_index;
+    uint32_t parent_cell_index;
+    int universe_id;
+    int depth;
+    uint32_t flags;
+    alea_matrix_t transform;
+    double t_enter;
+    double t_exit;
+} alea_hier_placement_ray_candidate_t;
 
 typedef struct {
     size_t universe_count;
@@ -71,6 +110,29 @@ int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
                                                  double y,
                                                  double z,
                                                  alea_hier_cell_hit_t* out_hit);
+int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
+                                         double x,
+                                         double y,
+                                         double z,
+                                         alea_hier_cell_hit_t* out_hit,
+                                         alea_hier_ray_path_t* out_path);
+int alea_hier_spatial_check_path_containment(alea_system_t* sys,
+                                             const alea_hier_ray_path_t* path,
+                                             uint32_t cell_index,
+                                             double x,
+                                             double y,
+                                             double z,
+                                             alea_matrix_t* out_transform,
+                                             int* out_lattice_cell_index,
+                                             alea_matrix_t* out_lattice_transform);
+int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
+                                            const alea_hier_ray_path_t* path,
+                                            int parent_entry,
+                                            double x,
+                                            double y,
+                                            double z,
+                                            alea_hier_cell_hit_t* out_hit,
+                                            alea_hier_ray_path_t* out_path);
 
 /**
  * @brief Reset the hier point-query coherence cache.
@@ -97,6 +159,13 @@ int alea_hier_spatial_check_cached_containment(alea_system_t* sys,
                                                uint32_t cell_index,
                                                double x, double y, double z);
 
+int alea_hier_spatial_get_cached_cell_state(alea_system_t* sys,
+                                            uint32_t cell_index,
+                                            double x, double y, double z,
+                                            alea_matrix_t* out_transform,
+                                            int* out_lattice_cell_index,
+                                            alea_matrix_t* out_lattice_transform);
+
 /**
  * @brief Find the cell of `universe_id` containing (lx, ly, lz) in that
  *        universe's local frame, using the per-universe BLAS for pruning.
@@ -109,11 +178,50 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
                                             double lx,
                                             double ly,
                                             double lz);
+int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
+                                                    int universe_id,
+                                                    double lx,
+                                                    double ly,
+                                                    double lz);
 int alea_hier_spatial_query_universe_region(alea_system_t* sys,
                                             int universe_id,
                                             const alea_bbox_t* local_bbox,
                                             alea_spatial_hit_t* out_hits,
                                             size_t max_hits);
+int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
+                                         int universe_id,
+                                         double ox,
+                                         double oy,
+                                         double oz,
+                                         double dx,
+                                         double dy,
+                                         double dz,
+                                         double inv_dx,
+                                         double inv_dy,
+                                         double inv_dz,
+                                         double t_min,
+                                         double t_max,
+                                         alea_hier_ray_candidate_t* out_hits,
+                                         size_t max_hits);
+int alea_hier_spatial_query_placements_ray(alea_system_t* sys,
+                                           double ox,
+                                           double oy,
+                                           double oz,
+                                           double dx,
+                                           double dy,
+                                           double dz,
+                                           double inv_dx,
+                                           double inv_dy,
+                                           double inv_dz,
+                                           double t_min,
+                                           double t_max,
+                                           alea_hier_placement_ray_candidate_t* out_hits,
+                                           size_t max_hits);
+int alea_hier_spatial_check_placement_chain(alea_system_t* sys,
+                                            uint32_t placement_index,
+                                            double x,
+                                            double y,
+                                            double z);
 
 /**
  * @brief Return the precomputed per-cell fill transform (forward + inverse)

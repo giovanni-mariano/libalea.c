@@ -21,6 +21,11 @@
 #include <stdio.h>
 #include "util/compat.h"
 
+static int load_profile_enabled(void) {
+    const char* v = getenv("ALEA_PROFILE_LOAD");
+    return v && *v && strcmp(v, "0") != 0;
+}
+
 const mcnp_export_config_t MCNP_EXPORT_CONFIG_DEFAULT = {
     .surface_policy = 0,    /* ALEA_EMIT_MACROBODY */
     .trcl_mode = 0,         /* preserve */
@@ -202,15 +207,23 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
 mcnp_model_t* mcnp_load(const char* filename) {
     if (!filename) return NULL;
 
+    double t_load0 = alea_monotonic_seconds();
+
     /* mcnp_convert_to_model creates the system, model, and populates
        cell params directly during conversion. */
     mcnp_model_t* model = mcnp_convert_to_model(filename);
     if (!model) return NULL;
 
+    double t0 = alea_monotonic_seconds();
     if (alea_validate_cell_ids(model->sys) < 0) {
         alea_set_error_detail(ALEA_ERR_INVALID_ID, "Duplicate cell IDs");
         mcnp_model_destroy(model);
         return NULL;
+    }
+    double t1 = alea_monotonic_seconds();
+    if (load_profile_enabled()) {
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "validate_cell_ids", t1 - t0);
     }
 
     model->sys->source = ALEA_SOURCE_MCNP;
@@ -218,6 +231,12 @@ mcnp_model_t* mcnp_load(const char* filename) {
     /* Build cell adjacency lazily on first use (raycasting, slicing, mesh
      * export). Eager adjacency construction is prohibitively expensive on
      * very large models and is not needed for pure conversion. */
+
+    if (load_profile_enabled()) {
+        double t_load1 = alea_monotonic_seconds();
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "mcnp_load_total", t_load1 - t_load0);
+    }
 
     return model;
 }
