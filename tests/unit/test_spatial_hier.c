@@ -453,7 +453,7 @@ TEST(hier_spatial_ordered_universe_lookup_preserves_cell_order) {
     ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
 
     int ordered = alea_hier_spatial_find_ordered_cell_in_universe(
-        sys, 0, 0.0, 0.0, 0.0);
+        sys, 0, 0.0, 0.0, 0.0, -1);
     ASSERT_EQ(ordered, large_cell);
 
     alea_destroy(sys);

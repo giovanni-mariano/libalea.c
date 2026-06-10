@@ -2424,11 +2424,27 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
     return -1;
 }
 
+/* True if the cell's CSG region references the given MCNP surface id. Used to
+ * restrict the expensive containment test to cells sharing a just-crossed
+ * boundary. */
+static bool cell_references_mc_surface(const alea_system_t* sys,
+                                       const alea_cell_entry_t* cell,
+                                       int mc_surface_id) {
+    if (!cell->surface_indices || mc_surface_id <= 0) return false;
+    for (size_t i = 0; i < cell->surface_index_count; i++) {
+        uint32_t si = cell->surface_indices[i];
+        if (si >= alea_vec_count(&sys->surfaces)) continue;
+        if (sys->surfaces.data[si].mc_surface_id == mc_surface_id) return true;
+    }
+    return false;
+}
+
 int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
                                                     int universe_id,
                                                     double lx,
                                                     double ly,
-                                                    double lz) {
+                                                    double lz,
+                                                    int crossed_mc_surface_id) {
     if (!sys || !sys->hier_spatial_index) return -2;
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
     if (!idx->built) return -2;
@@ -2452,14 +2468,36 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
         }
 
         int result = -1;
-        for (size_t i = 0; i < candidates.count; i++) {
-            uint32_t cell_pos = candidates.data[i];
-            if (cell_pos >= blas->cell_count) continue;
-            uint32_t cell_index = blas->cells[cell_pos].cell_index;
-            const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
-            if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
-            if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-                result = (int)cell_index;
+        /* Fast path: the cell across a crossed boundary shares that surface, so
+         * test containment only on candidates referencing it (typically tens vs
+         * thousands of bbox candidates). */
+        if (crossed_mc_surface_id > 0) {
+            for (size_t i = 0; i < candidates.count; i++) {
+                uint32_t cell_pos = candidates.data[i];
+                if (cell_pos >= blas->cell_count) continue;
+                uint32_t cell_index = blas->cells[cell_pos].cell_index;
+                const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+                if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+                if (!cell_references_mc_surface(sys, cell, crossed_mc_surface_id))
+                    continue;
+                if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+                    result = (int)cell_index;  /* keep last = highest cell_pos */
+                }
+            }
+        }
+        /* No surface hint, or no referencing candidate contained the point
+         * (coincident surfaces, etc.): exhaustive scan, identical to old
+         * behavior. */
+        if (result < 0) {
+            for (size_t i = 0; i < candidates.count; i++) {
+                uint32_t cell_pos = candidates.data[i];
+                if (cell_pos >= blas->cell_count) continue;
+                uint32_t cell_index = blas->cells[cell_pos].cell_index;
+                const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+                if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+                if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+                    result = (int)cell_index;
+                }
             }
         }
         hier_cand_free(&candidates);

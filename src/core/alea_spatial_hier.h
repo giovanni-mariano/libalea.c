@@ -178,11 +178,16 @@ int alea_hier_spatial_find_cell_in_universe(alea_system_t* sys,
                                             double lx,
                                             double ly,
                                             double lz);
+/* crossed_mc_surface_id: if > 0, the expensive containment test runs first only
+ * on candidates that reference that surface (the cell just across a crossed
+ * boundary shares it), falling back to the full scan if none contains the point.
+ * Pass -1 to disable the filter (exhaustive scan, e.g. for geometry validation). */
 int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
                                                     int universe_id,
                                                     double lx,
                                                     double ly,
-                                                    double lz);
+                                                    double lz,
+                                                    int crossed_mc_surface_id);
 int alea_hier_spatial_query_universe_region(alea_system_t* sys,
                                             int universe_id,
                                             const alea_bbox_t* local_bbox,

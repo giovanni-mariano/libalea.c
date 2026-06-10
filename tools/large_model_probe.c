@@ -25,6 +25,55 @@
 #define POINT_SAMPLE_THRESHOLD 16
 #define POINT_BVH_THRESHOLD 8192
 
+/* Short names for the primitive-type histogram, indexed by alea_primitive_type_t. */
+static const char* primitive_type_name(int type) {
+    switch (type) {
+        case ALEA_PRIMITIVE_PLANE:      return "plane";
+        case ALEA_PRIMITIVE_SPHERE:     return "sphere";
+        case ALEA_PRIMITIVE_CYLINDER_X: return "cyl_x";
+        case ALEA_PRIMITIVE_CYLINDER_Y: return "cyl_y";
+        case ALEA_PRIMITIVE_CYLINDER_Z: return "cyl_z";
+        case ALEA_PRIMITIVE_CONE_X:     return "cone_x";
+        case ALEA_PRIMITIVE_CONE_Y:     return "cone_y";
+        case ALEA_PRIMITIVE_CONE_Z:     return "cone_z";
+        case ALEA_PRIMITIVE_RPP:        return "rpp";
+        case ALEA_PRIMITIVE_QUADRIC:    return "quadric";
+        case ALEA_PRIMITIVE_TORUS_X:    return "torus_x";
+        case ALEA_PRIMITIVE_TORUS_Y:    return "torus_y";
+        case ALEA_PRIMITIVE_TORUS_Z:    return "torus_z";
+        case ALEA_PRIMITIVE_RCC:        return "rcc";
+        case ALEA_PRIMITIVE_BOX:        return "box";
+        case ALEA_PRIMITIVE_SPH:        return "sph";
+        case ALEA_PRIMITIVE_TRC:        return "trc";
+        case ALEA_PRIMITIVE_ELL:        return "ell";
+        case ALEA_PRIMITIVE_REC:        return "rec";
+        case ALEA_PRIMITIVE_WED:        return "wed";
+        case ALEA_PRIMITIVE_RHP:        return "rhp";
+        case ALEA_PRIMITIVE_ARB:        return "arb";
+        default:                        return "?";
+    }
+}
+
+/* Print the Phase 2 per-ray surface-test instrumentation for a hier raycast. */
+static void print_surface_instrumentation(const alea_raycast_result_t* result) {
+    double avg_surf = result->crossed_cell_count
+        ? (double)result->sum_cell_surface_count / (double)result->crossed_cell_count
+        : 0.0;
+    printf("  surf_tests: terminal=%d lattice=%d ancestor=%d\n",
+           result->terminal_surfaces_tested,
+           result->lattice_surfaces_tested,
+           result->ancestor_surfaces_tested);
+    printf("  crossed_cells=%zu cell_surfaces avg=%.1f max=%u\n",
+           result->crossed_cell_count, avg_surf,
+           result->max_cell_surface_count);
+    printf("  prim_type_tests:");
+    for (int t = 0; t < ALEA_RAYCAST_PRIM_TYPE_BINS; t++) {
+        if (result->prim_type_tests[t])
+            printf(" %s=%u", primitive_type_name(t), result->prim_type_tests[t]);
+    }
+    printf("\n");
+}
+
 static size_t point_bvh_threshold(void) {
     const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
     if (env && env[0]) {
@@ -440,6 +489,7 @@ static int run_hier_raycast(alea_system_t* sys,
     printf("  hits=%zu segments=%zu surfaces_tested=%d point_lookups=%d steps=%d time=%.3f s\n",
            result.hits.count, result.segments.count, result.surfaces_tested,
            result.point_lookups, result.step_iterations, t1 - t0);
+    print_surface_instrumentation(&result);
     if (blas_experimental) {
         printf("  blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
                result.blas_placement_candidates,
@@ -485,6 +535,7 @@ static int run_hier_raycast(alea_system_t* sys,
                result.hits.count, result.segments.count,
                result.surfaces_tested, result.point_lookups,
                result.step_iterations);
+        print_surface_instrumentation(&result);
         if (blas_experimental) {
             printf("  warm_last_blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
                    result.blas_placement_candidates,

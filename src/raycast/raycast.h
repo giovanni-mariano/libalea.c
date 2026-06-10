@@ -46,6 +46,10 @@ typedef struct {
 ALEA_VEC_DEFINE(alea_ray_hit_vec, alea_ray_hit_t);
 ALEA_VEC_DEFINE(alea_ray_segment_vec, alea_ray_segment_t);
 
+/* Number of histogram bins for primitive-type instrumentation. Sized to
+ * comfortably exceed the alea_primitive_type_t range (currently <= 22). */
+#define ALEA_RAYCAST_PRIM_TYPE_BINS 32
+
 /* Use struct tag matching the public API forward declaration */
 struct alea_raycast_result {
     alea_ray_t ray;
@@ -61,6 +65,19 @@ struct alea_raycast_result {
     size_t blas_cell_candidates;
     size_t blas_cells_tested;
     size_t blas_hits_before_dedup;
+
+    /* Phase 2 per-ray surface-test instrumentation (cheap, always-on).
+     * Attributes the surfaces_tested total across the cell-aware stepper's
+     * sources and characterises the crossed cells, so an acceleration
+     * strategy (per-cell BVH vs type-specialised loops) can be chosen from
+     * measured data rather than guessed. */
+    int terminal_surfaces_tested;  /* tests against the terminal cell's surfaces */
+    int lattice_surfaces_tested;   /* tests against lattice wrapper surfaces */
+    int ancestor_surfaces_tested;  /* tests against active-path ancestor surfaces */
+    size_t crossed_cell_count;       /* stepper iterations landing in a surfaced cell */
+    uint32_t max_cell_surface_count; /* largest crossed surface_index_count */
+    uint64_t sum_cell_surface_count; /* sum of crossed surface_index_count (for avg) */
+    uint32_t prim_type_tests[ALEA_RAYCAST_PRIM_TYPE_BINS]; /* tests by primitive type */
 };
 
 /* Typedef for internal use */
