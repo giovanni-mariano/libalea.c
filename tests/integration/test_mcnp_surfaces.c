@@ -526,10 +526,12 @@ TEST(degenerate_torus_becomes_sphere) {
 
     alea_primitive_id_t prim_id = sys->surfaces.data[0].primitive_id;
     ASSERT_EQ(sys->primitives.data[prim_id].type, ALEA_PRIMITIVE_SPHERE);
-    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.center_x, 1.0, 1e-12);
-    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.center_y, 2.0, 1e-12);
-    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.center_z, 3.0, 1e-12);
-    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.radius, 2.0, 1e-12);
+    alea_primitive_data_t data;
+    ASSERT(alea_primitive_copy_data(sys, prim_id, &data));
+    ASSERT_NEAR(data.sphere.center_x, 1.0, 1e-12);
+    ASSERT_NEAR(data.sphere.center_y, 2.0, 1e-12);
+    ASSERT_NEAR(data.sphere.center_z, 3.0, 1e-12);
+    ASSERT_NEAR(data.sphere.radius, 2.0, 1e-12);
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, 1.0, 2.0, 3.0), 1);
@@ -555,7 +557,9 @@ TEST(transformed_degenerate_torus_becomes_sphere) {
 
     alea_primitive_id_t prim_id = sys->surfaces.data[0].primitive_id;
     ASSERT_EQ(sys->primitives.data[prim_id].type, ALEA_PRIMITIVE_SPHERE);
-    ASSERT_NEAR(sys->primitives.data[prim_id].data.sphere.radius, 1.0, 1e-12);
+    alea_primitive_data_t data;
+    ASSERT(alea_primitive_copy_data(sys, prim_id, &data));
+    ASSERT_NEAR(data.sphere.radius, 1.0, 1e-12);
 
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_material_at(sys, 0.0, 0.0, 0.0), 1);

@@ -168,14 +168,16 @@ static plane_alignment_t detect_plane_alignment(const alea_plane_data_t* p) {
  *
  * For planes, detects axis-alignment and returns x-plane/y-plane/z-plane accordingly.
  */
-static const char* get_openmc_surface_type(const alea_primitive_entry_t* prim, int8_t inverted) {
-    switch (prim->type) {
+static const char* get_openmc_surface_type(alea_primitive_type_t type,
+                                           const alea_primitive_data_t* data,
+                                           int8_t inverted) {
+    switch (type) {
         case ALEA_PRIMITIVE_PLANE: {
             if (inverted) {
                 /* Un-canonicalized plane has flipped leading coeff — no longer axis-aligned */
                 return "plane";
             }
-            plane_alignment_t align = detect_plane_alignment(&prim->data.plane);
+            plane_alignment_t align = detect_plane_alignment(&data->plane);
             switch (align) {
                 case PLANE_X: return "x-plane";
                 case PLANE_Y: return "y-plane";
@@ -245,11 +247,11 @@ static const char* macrobody_type_name(alea_primitive_type_t type) {
  * OpenMC x-plane: x = x0  (for a=1, d=-x0, so x0 = -d)
  * OpenMC plane: Ax + By + Cz = D  (D = -d in our convention)
  */
-static int format_surface_coeffs(const alea_primitive_entry_t* prim, char* buf, size_t buf_size,
+static int format_surface_coeffs(alea_primitive_type_t type,
+                                 const alea_primitive_data_t* d,
+                                 char* buf, size_t buf_size,
                                  int8_t inverted) {
-    const alea_primitive_data_t* d = &prim->data;
-
-    switch (prim->type) {
+    switch (type) {
         case ALEA_PRIMITIVE_PLANE: {
             /* Un-canonicalize: restore original sign when inverted */
             double a = d->plane.a, b = d->plane.b, c = d->plane.c, pd = d->plane.d;
@@ -1145,7 +1147,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         double center[3] = {0, 0, 0};
         if (cell->root_node_id != ALEA_NODE_ID_INVALID &&
             cell->root_node_id < alea_vec_count(&sys->nodes)) {
-            alea_bbox_t bbox = sys->nodes.data[cell->root_node_id].bbox;
+            alea_bbox_t bbox = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
             center[0] = (bbox.min_x + bbox.max_x) / 2.0;
             center[1] = (bbox.min_y + bbox.max_y) / 2.0;
             if (is_3d)
@@ -1566,6 +1568,8 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         }
 
         const alea_primitive_entry_t* prim = &sys->primitives.data[prim_id];
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, prim_id, &prim_data)) continue;
 
         /* Un-canonicalize: restore original surface orientation */
         int8_t inverted = 0;
@@ -1575,13 +1579,13 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
 
         /* Skip 1-sheet cones — they are expanded into (double-sheet cone ∩ plane)
            and the original surface ID is not referenced in cell expressions */
-        if ((prim->type == ALEA_PRIMITIVE_CONE_X && prim->data.cone_x.sheet_selection != 0) ||
-            (prim->type == ALEA_PRIMITIVE_CONE_Y && prim->data.cone_y.sheet_selection != 0) ||
-            (prim->type == ALEA_PRIMITIVE_CONE_Z && prim->data.cone_z.sheet_selection != 0)) {
+        if ((prim->type == ALEA_PRIMITIVE_CONE_X && prim_data.cone_x.sheet_selection != 0) ||
+            (prim->type == ALEA_PRIMITIVE_CONE_Y && prim_data.cone_y.sheet_selection != 0) ||
+            (prim->type == ALEA_PRIMITIVE_CONE_Z && prim_data.cone_z.sheet_selection != 0)) {
             continue;
         }
 
-        const char* type_name = get_openmc_surface_type(prim, inverted);
+        const char* type_name = get_openmc_surface_type(prim->type, &prim_data, inverted);
 
         if (!type_name) {
             if (is_macrobody_type(prim->type)) {
@@ -1595,7 +1599,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         }
 
         char coeffs[512];
-        if (format_surface_coeffs(prim, coeffs, sizeof(coeffs), inverted) < 0) {
+        if (format_surface_coeffs(prim->type, &prim_data, coeffs, sizeof(coeffs), inverted) < 0) {
             ALEA_LOG_WARN("Failed to format coefficients for surface %d", surf_id);
             continue;
         }
@@ -1661,7 +1665,10 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
             if (prim_id >= alea_vec_count(&sys->primitives)) continue;
 
             const alea_primitive_entry_t* prim = &sys->primitives.data[prim_id];
-            const char* type_name = get_openmc_surface_type(prim, node->primitive.inverted);
+            alea_primitive_data_t prim_data;
+            if (!alea_primitive_copy_data(sys, prim_id, &prim_data)) continue;
+            const char* type_name = get_openmc_surface_type(
+                prim->type, &prim_data, node->primitive.inverted);
 
             if (!type_name) {
                 if (is_macrobody_type(prim->type)) {
@@ -1675,7 +1682,8 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
             }
 
             char coeffs[512];
-            if (format_surface_coeffs(prim, coeffs, sizeof(coeffs), node->primitive.inverted) < 0) {
+            if (format_surface_coeffs(prim->type, &prim_data, coeffs, sizeof(coeffs),
+                                      node->primitive.inverted) < 0) {
                 ALEA_LOG_WARN("Failed to format coefficients for synthetic surface %d", surf_id);
                 continue;
             }

@@ -46,6 +46,10 @@ typedef struct {
 ALEA_VEC_DEFINE(alea_ray_hit_vec, alea_ray_hit_t);
 ALEA_VEC_DEFINE(alea_ray_segment_vec, alea_ray_segment_t);
 
+/* Number of histogram bins for primitive-type instrumentation. Sized to
+ * comfortably exceed the alea_primitive_type_t range (currently <= 22). */
+#define ALEA_RAYCAST_PRIM_TYPE_BINS 32
+
 /* Use struct tag matching the public API forward declaration */
 struct alea_raycast_result {
     alea_ray_t ray;
@@ -53,6 +57,27 @@ struct alea_raycast_result {
     alea_ray_segment_vec_t segments;
     int surfaces_tested;
     int bbox_culled;
+    int point_lookups;
+    int step_iterations;
+    size_t blas_placement_candidates;
+    size_t blas_placements_pruned;
+    size_t blas_universe_queries;
+    size_t blas_cell_candidates;
+    size_t blas_cells_tested;
+    size_t blas_hits_before_dedup;
+
+    /* Phase 2 per-ray surface-test instrumentation (cheap, always-on).
+     * Attributes the surfaces_tested total across the cell-aware stepper's
+     * sources and characterises the crossed cells, so an acceleration
+     * strategy (per-cell BVH vs type-specialised loops) can be chosen from
+     * measured data rather than guessed. */
+    int terminal_surfaces_tested;  /* tests against the terminal cell's surfaces */
+    int lattice_surfaces_tested;   /* tests against lattice wrapper surfaces */
+    int ancestor_surfaces_tested;  /* tests against active-path ancestor surfaces */
+    size_t crossed_cell_count;       /* stepper iterations landing in a surfaced cell */
+    uint32_t max_cell_surface_count; /* largest crossed surface_index_count */
+    uint64_t sum_cell_surface_count; /* sum of crossed surface_index_count (for avg) */
+    uint32_t prim_type_tests[ALEA_RAYCAST_PRIM_TYPE_BINS]; /* tests by primitive type */
 };
 
 /* Typedef for internal use */
@@ -176,11 +201,11 @@ int alea_raycast(alea_system_t* sys,
                 alea_raycast_result_t* result);
 
 /**
- * @brief Cast a ray using hierarchical spatial point lookup for segments.
+ * @brief Fast hierarchical material/path segment raycast.
  *
- * The surface-hit pipeline is shared with alea_raycast(); segment
- * classification uses the hierarchical spatial index to avoid flat instance
- * expansion on large repeated/lattice models.
+ * Segment output is the primary contract. The complete ordered surface-hit list
+ * is intentionally not reconstructed on this fast path; use segment
+ * enter/exit surface IDs for boundary reporting.
  */
 int alea_raycast_hier(alea_system_t* sys,
                       double ox, double oy, double oz,
@@ -189,18 +214,54 @@ int alea_raycast_hier(alea_system_t* sys,
                       alea_raycast_result_t* result);
 
 /**
- * @brief Experimental hierarchical cell-aware raycast.
+ * @brief Deprecated alias for alea_raycast_hier_fast_segments().
  *
- * Uses the hierarchical spatial index for current-cell lookup and intersects
- * only the current cell's surfaces. This avoids global surface-hit collection
- * and is intended for Phase 6 large-model probing before becoming a public
- * default path.
+ * Kept for source compatibility with earlier experiments.
  */
 int alea_raycast_hier_cell_aware(alea_system_t* sys,
                                  double ox, double oy, double oz,
                                  double dx, double dy, double dz,
                                  double t_max,
                                  alea_raycast_result_t* result);
+
+/**
+ * @brief Fast hierarchical material/path segment raycast.
+ *
+ * Segment output is the primary contract. The complete ordered surface-hit list
+ * is intentionally not reconstructed on this fast path.
+ */
+int alea_raycast_hier_fast_segments(alea_system_t* sys,
+                                    double ox, double oy, double oz,
+                                    double dx, double dy, double dz,
+                                    double t_max,
+                                    alea_raycast_result_t* result);
+
+int alea_raycast_hier_blas_experimental(alea_system_t* sys,
+                                        double ox, double oy, double oz,
+                                        double dx, double dy, double dz,
+                                        double t_max,
+                                        alea_raycast_result_t* result);
+
+/**
+ * @brief Hierarchical raycast that also emits boundary surface hits.
+ *
+ * Returns the same material/path segments as alea_raycast_hier_fast_segments()
+ * (segment parity), and additionally populates result->hits with one
+ * alea_ray_hit_t per physical surface crossing along the stepped path. Each
+ * segment's enter_hit_index links back to the hit at its entry boundary
+ * (-1 when that boundary has no physical surface, e.g. synthetic lattice DDA
+ * boundaries or the initial void entry).
+ *
+ * Normals are reported in world space. For non-lattice/non-fill geometry the
+ * frame transform is identity, so hits match the flat alea_raycast() path.
+ * This path may be slower than fast_segments but remains step-based rather
+ * than candidate-list based.
+ */
+int alea_raycast_hier_with_hits(alea_system_t* sys,
+                                double ox, double oy, double oz,
+                                double dx, double dy, double dz,
+                                double t_max,
+                                alea_raycast_result_t* result);
 
 /* ============================================================================
  * QUERY HELPERS

@@ -21,6 +21,11 @@
 #include <stdio.h>
 #include "util/compat.h"
 
+static int load_profile_enabled(void) {
+    const char* v = getenv("ALEA_PROFILE_LOAD");
+    return v && *v && strcmp(v, "0") != 0;
+}
+
 const mcnp_export_config_t MCNP_EXPORT_CONFIG_DEFAULT = {
     .surface_policy = 0,    /* ALEA_EMIT_MACROBODY */
     .trcl_mode = 0,         /* preserve */
@@ -38,6 +43,8 @@ static void init_default_params(mcnp_cell_params_t* p) {
     p->imp_n = 1.0;
     p->imp_p = 1.0;
     p->imp_e = 1.0;
+    p->trcl_inline_index = MCNP_INLINE_TRANSFORM_INVALID;
+    p->fill_transform_index = MCNP_INLINE_TRANSFORM_INVALID;
 }
 
 /* ============================================================================
@@ -108,6 +115,40 @@ const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t i
     return &m->cell_params[idx];
 }
 
+uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
+                                         const double* values,
+                                         int count,
+                                         int degrees) {
+    if (!model || !values || count <= 0 || count > 13) {
+        return MCNP_INLINE_TRANSFORM_INVALID;
+    }
+
+    size_t idx = alea_vec_count(&model->inline_transforms);
+    if (idx > UINT32_MAX) {
+        return MCNP_INLINE_TRANSFORM_INVALID;
+    }
+
+    mcnp_inline_transform_t* tr = alea_vec_push_uninit(
+        &model->inline_transforms, mcnp_inline_transform_t);
+    if (!tr) return MCNP_INLINE_TRANSFORM_INVALID;
+
+    memset(tr, 0, sizeof(*tr));
+    tr->count = (uint8_t)count;
+    tr->degrees = (uint8_t)(degrees != 0);
+    memcpy(tr->values, values, (size_t)count * sizeof(double));
+    return (uint32_t)idx;
+}
+
+const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
+    const mcnp_model_t* model,
+    uint32_t index) {
+    if (!model || index == MCNP_INLINE_TRANSFORM_INVALID ||
+        (size_t)index >= alea_vec_count(&model->inline_transforms)) {
+        return NULL;
+    }
+    return &model->inline_transforms.data[index];
+}
+
 void mcnp_model_register_hooks(mcnp_model_t* model) {
     if (!model || !model->sys) return;
     model->sys->cell_hook_userdata = model;
@@ -131,6 +172,7 @@ void mcnp_model_destroy(mcnp_model_t* model) {
     }
 
     free(model->cell_params);
+    alea_vec_free(&model->inline_transforms);
     free(model);
 }
 
@@ -165,15 +207,23 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
 mcnp_model_t* mcnp_load(const char* filename) {
     if (!filename) return NULL;
 
+    double t_load0 = alea_monotonic_seconds();
+
     /* mcnp_convert_to_model creates the system, model, and populates
        cell params directly during conversion. */
     mcnp_model_t* model = mcnp_convert_to_model(filename);
     if (!model) return NULL;
 
+    double t0 = alea_monotonic_seconds();
     if (alea_validate_cell_ids(model->sys) < 0) {
         alea_set_error_detail(ALEA_ERR_INVALID_ID, "Duplicate cell IDs");
         mcnp_model_destroy(model);
         return NULL;
+    }
+    double t1 = alea_monotonic_seconds();
+    if (load_profile_enabled()) {
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "validate_cell_ids", t1 - t0);
     }
 
     model->sys->source = ALEA_SOURCE_MCNP;
@@ -181,6 +231,12 @@ mcnp_model_t* mcnp_load(const char* filename) {
     /* Build cell adjacency lazily on first use (raycasting, slicing, mesh
      * export). Eager adjacency construction is prohibitively expensive on
      * very large models and is not needed for pure conversion. */
+
+    if (load_profile_enabled()) {
+        double t_load1 = alea_monotonic_seconds();
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "mcnp_load_total", t_load1 - t_load0);
+    }
 
     return model;
 }

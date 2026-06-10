@@ -180,9 +180,13 @@ TEST(model_trcl_inline) {
     ASSERT(p0->trcl > 0);  /* inline transform registered */
     ASSERT(p0->trcl_inline);
     ASSERT_EQ(p0->trcl_count, 3);
-    ASSERT_NEAR(p0->trcl_data[0], 10.0, 1e-6);
-    ASSERT_NEAR(p0->trcl_data[1], 0.0, 1e-6);
-    ASSERT_NEAR(p0->trcl_data[2], 0.0, 1e-6);
+    const mcnp_inline_transform_t* trcl =
+        mcnp_model_inline_transform_const(model, p0->trcl_inline_index);
+    ASSERT_NOT_NULL(trcl);
+    ASSERT_EQ(trcl->count, 3);
+    ASSERT_NEAR(trcl->values[0], 10.0, 1e-6);
+    ASSERT_NEAR(trcl->values[1], 0.0, 1e-6);
+    ASSERT_NEAR(trcl->values[2], 0.0, 1e-6);
 
     /* Geometry: sphere translated to (10,0,0) */
     ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 0);   /* origin: void */
@@ -307,11 +311,56 @@ TEST(model_fill_transform) {
     ASSERT_NOT_NULL(p0);
     ASSERT(p0->fill_transform_inline);
     ASSERT_EQ(p0->fill_transform_count, 3);
-    ASSERT_NEAR(p0->fill_transform_data[0], 5.0, 1e-6);
+    const mcnp_inline_transform_t* fill_tr =
+        mcnp_model_inline_transform_const(model, p0->fill_transform_index);
+    ASSERT_NOT_NULL(fill_tr);
+    ASSERT_EQ(fill_tr->count, 3);
+    ASSERT_NEAR(fill_tr->values[0], 5.0, 1e-6);
 
     /* Core cell: fill_transform set to registered transform ID */
     const alea_cell_entry_t* cell0 = &model->sys->cells.data[0];
     ASSERT(cell0->fill_transform > 0);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(model_inline_transform_pool_boundaries) {
+    const char* input =
+        "Inline transform pool test\n"
+        "1 1 -1.0 -1 TRCL=(10 0 0)\n"
+        "2 0 -2 FILL=1 (5 0 0)\n"
+        "10 1 -1.0 -3 U=1\n"
+        "99 0 1 2\n"
+        "\n"
+        "1 SO 5.0\n"
+        "2 RPP -10 10 -10 10 -10 10\n"
+        "3 SO 2.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = load_model(input);
+    ASSERT_NOT_NULL(model);
+
+    const mcnp_cell_params_t* p0 = mcnp_cell_params_const(model, 0);
+    const mcnp_cell_params_t* p1 = mcnp_cell_params_const(model, 1);
+    ASSERT_NOT_NULL(p0);
+    ASSERT_NOT_NULL(p1);
+    ASSERT(p0->trcl_inline);
+    ASSERT(p1->fill_transform_inline);
+    ASSERT(p0->trcl_inline_index != p1->fill_transform_index);
+
+    const mcnp_inline_transform_t* trcl =
+        mcnp_model_inline_transform_const(model, p0->trcl_inline_index);
+    const mcnp_inline_transform_t* fill =
+        mcnp_model_inline_transform_const(model, p1->fill_transform_index);
+    ASSERT_NOT_NULL(trcl);
+    ASSERT_NOT_NULL(fill);
+    ASSERT_EQ(trcl->count, 3);
+    ASSERT_EQ(fill->count, 3);
+    ASSERT_NEAR(trcl->values[0], 10.0, 1e-6);
+    ASSERT_NEAR(fill->values[0], 5.0, 1e-6);
+
+    ASSERT_NULL(mcnp_model_inline_transform_const(model, MCNP_INLINE_TRANSFORM_INVALID));
+    ASSERT_NULL(mcnp_model_inline_transform_const(model, p1->fill_transform_index + 1));
 
     mcnp_model_destroy(model);
 }

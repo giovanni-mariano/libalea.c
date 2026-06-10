@@ -7,7 +7,9 @@
  */
 
 #include "alea_test.h"
+#include "alea.h"
 #include "alea_types.h"
+#include "core/alea_system.h"
 #include "primitives/primitive_eval.h"
 #include "primitives/bbox.h"
 #include <string.h>
@@ -439,6 +441,141 @@ TEST(eval_with_sense) {
     /* Inside sphere, sense +1 (positive/outside) → positive */
     v = alea_primitive_eval_with_sense(ALEA_PRIMITIVE_SPHERE, &d, +1, 0, 0, 0);
     ASSERT(v > 0);
+}
+
+/* ========================================================================= */
+/* Compact primitive payload storage                                          */
+/* ========================================================================= */
+
+static bool add_and_copy_payload(
+    alea_system_t* sys,
+    alea_primitive_type_t type,
+    alea_primitive_data_t data,
+    alea_primitive_data_t* out
+) {
+    int8_t inverted = 0;
+    alea_primitive_id_t id = alea_get_or_create_primitive(sys, type, &data, &inverted);
+    if (id == ALEA_PRIMITIVE_ID_INVALID) return false;
+    if (!alea_primitive_copy_data(sys, id, out)) return false;
+    return alea_primitive_payload_const(sys, id) != NULL;
+}
+
+TEST(primitive_payload_storage_all_types) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    alea_primitive_data_t d, out;
+
+    memset(&d, 0, sizeof(d));
+    d.plane.a = 0.0; d.plane.b = 0.0; d.plane.c = 1.0; d.plane.d = -7.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_PLANE, d, &out));
+    ASSERT_NEAR(out.plane.d, -7.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.sphere.center_x = 1.0; d.sphere.center_y = 2.0; d.sphere.center_z = 3.0; d.sphere.radius = 4.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_SPHERE, d, &out));
+    ASSERT_NEAR(out.sphere.center_z, 3.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.cyl_x.center_y = 1.5; d.cyl_x.center_z = 2.5; d.cyl_x.radius = 3.5;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_CYLINDER_X, d, &out));
+    ASSERT_NEAR(out.cyl_x.center_z, 2.5, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.cyl_y.center_x = 2.5; d.cyl_y.center_z = 3.5; d.cyl_y.radius = 4.5;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_CYLINDER_Y, d, &out));
+    ASSERT_NEAR(out.cyl_y.center_x, 2.5, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.cyl_z.center_x = 3.5; d.cyl_z.center_y = 4.5; d.cyl_z.radius = 5.5;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_CYLINDER_Z, d, &out));
+    ASSERT_NEAR(out.cyl_z.center_y, 4.5, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.cone_x.apex_x = 1.0; d.cone_x.apex_y = 2.0; d.cone_x.apex_z = 3.0; d.cone_x.tan_angle_sq = 0.25; d.cone_x.sheet_selection = 1;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_CONE_X, d, &out));
+    ASSERT_EQ(out.cone_x.sheet_selection, 1);
+
+    memset(&d, 0, sizeof(d));
+    d.cone_y.apex_x = 2.0; d.cone_y.apex_y = 3.0; d.cone_y.apex_z = 4.0; d.cone_y.tan_angle_sq = 0.5; d.cone_y.sheet_selection = -1;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_CONE_Y, d, &out));
+    ASSERT_EQ(out.cone_y.sheet_selection, -1);
+
+    memset(&d, 0, sizeof(d));
+    d.cone_z.apex_x = 3.0; d.cone_z.apex_y = 4.0; d.cone_z.apex_z = 5.0; d.cone_z.tan_angle_sq = 0.75; d.cone_z.sheet_selection = 1;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_CONE_Z, d, &out));
+    ASSERT_NEAR(out.cone_z.apex_z, 5.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.box.min_x = -1.0; d.box.max_x = 2.0; d.box.min_y = -3.0; d.box.max_y = 4.0; d.box.min_z = -5.0; d.box.max_z = 6.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_RPP, d, &out));
+    ASSERT_NEAR(out.box.max_z, 6.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.quadric.coeffs[0] = 1.0; d.quadric.coeffs[9] = -16.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_QUADRIC, d, &out));
+    ASSERT_NEAR(out.quadric.coeffs[9], -16.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.torus.axis = ALEA_AXIS_X; d.torus.center_x = 1.0; d.torus.major_radius = 5.0; d.torus.minor_radius = 1.0; d.torus.axial_semiwidth_B = 1.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_TORUS_X, d, &out));
+    ASSERT_EQ(out.torus.axis, ALEA_AXIS_X);
+
+    d.torus.axis = ALEA_AXIS_Y;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_TORUS_Y, d, &out));
+    ASSERT_EQ(out.torus.axis, ALEA_AXIS_Y);
+
+    d.torus.axis = ALEA_AXIS_Z;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_TORUS_Z, d, &out));
+    ASSERT_EQ(out.torus.axis, ALEA_AXIS_Z);
+
+    memset(&d, 0, sizeof(d));
+    d.rcc.base_x = 1.0; d.rcc.height_z = 10.0; d.rcc.radius = 2.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_RCC, d, &out));
+    ASSERT_NEAR(out.rcc.height_z, 10.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.box_general.corner_x = 1.0; d.box_general.v1_x = 2.0; d.box_general.v2_y = 3.0; d.box_general.v3_z = 4.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_BOX, d, &out));
+    ASSERT_NEAR(out.box_general.v3_z, 4.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.sph.center_x = 2.0; d.sph.radius = 8.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_SPH, d, &out));
+    ASSERT_NEAR(out.sph.radius, 8.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.trc.base_x = 1.0; d.trc.height_z = 9.0; d.trc.base_radius = 2.0; d.trc.top_radius = 3.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_TRC, d, &out));
+    ASSERT_NEAR(out.trc.top_radius, 3.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.ell.v1_x = -1.0; d.ell.v2_x = 1.0; d.ell.major_axis_len = 5.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_ELL, d, &out));
+    ASSERT_NEAR(out.ell.major_axis_len, 5.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.rec.base_x = 1.0; d.rec.height_z = 6.0; d.rec.axis1_x = 2.0; d.rec.axis2_y = 3.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_REC, d, &out));
+    ASSERT_NEAR(out.rec.axis2_y, 3.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.wed.vertex_x = 1.0; d.wed.v1_x = 2.0; d.wed.v2_y = 3.0; d.wed.v3_z = 4.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_WED, d, &out));
+    ASSERT_NEAR(out.wed.v3_z, 4.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.rhp.base_x = 1.0; d.rhp.height_z = 7.0; d.rhp.r1_x = 2.0; d.rhp.r2_y = 3.0; d.rhp.r3_z = 4.0;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_RHP, d, &out));
+    ASSERT_NEAR(out.rhp.r3_z, 4.0, 1e-12);
+
+    memset(&d, 0, sizeof(d));
+    d.arb.num_corners = 4; d.arb.num_faces = 4; d.arb.corners[3][2] = 9.0; d.arb.faces[0][0] = 1;
+    ASSERT(add_and_copy_payload(sys, ALEA_PRIMITIVE_ARB, d, &out));
+    ASSERT_EQ(out.arb.num_faces, 4);
+    ASSERT_NEAR(out.arb.corners[3][2], 9.0, 1e-12);
+
+    alea_destroy(sys);
 }
 
 TEST_MAIN()

@@ -1280,12 +1280,18 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
             }
 
             alea_primitive_type_t export_type = prim->type;
-            alea_primitive_data_t export_data = prim->data;
+            alea_primitive_data_t source_data;
+            alea_primitive_data_t export_data;
+            if (!alea_primitive_copy_data(sys, prim_id, &source_data)) {
+                alea_bitset_destroy(&prim_written);
+                return -1;
+            }
+            export_data = source_data;
             int export_transform_id = 0;
 
             if (surface->transform_applied && surface->transform_id != 0) {
                 const alea_transform_t* tr = alea_get_transform(sys, surface->transform_id);
-                if (tr && alea_apply_inverse_transform_to_primitive(tr, prim->type, &prim->data,
+                if (tr && alea_apply_inverse_transform_to_primitive(tr, prim->type, &source_data,
                                                                     &export_type, &export_data)) {
                     export_transform_id = surface->transform_id;
                 }
@@ -1330,12 +1336,17 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
             }
 
             alea_primitive_type_t export_type = prim->type;
-            alea_primitive_data_t export_data = prim->data;
+            alea_primitive_data_t source_data;
+            alea_primitive_data_t export_data;
+            if (!alea_primitive_copy_data(sys, surface->primitive_id, &source_data)) {
+                return -1;
+            }
+            export_data = source_data;
             int export_transform_id = 0;
 
             if (surface->transform_applied && surface->transform_id != 0) {
                 const alea_transform_t* tr = alea_get_transform(sys, surface->transform_id);
-                if (tr && alea_apply_inverse_transform_to_primitive(tr, prim->type, &prim->data,
+                if (tr && alea_apply_inverse_transform_to_primitive(tr, prim->type, &source_data,
                                                                     &export_type, &export_data)) {
                     export_transform_id = surface->transform_id;
                 }
@@ -1370,8 +1381,12 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
                     if (ALEA_GET_OPERATION(node) == ALEA_OP_PRIMITIVE &&
                         node->primitive.mc_surface_id == surf_id) {
                         const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
+                        alea_primitive_data_t prim_data;
+                        if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &prim_data)) {
+                            continue;
+                        }
                         write_mcnp_surface(ctx->out, &ctx->arena, surf_id, 0, ALEA_BOUNDARY_TRANSMISSIVE, 0,
-                                           prim->type, &prim->data, node->primitive.inverted,
+                                           prim->type, &prim_data, node->primitive.inverted,
                                            ctx->mcnp_max_col, ctx->mcnp_cont_indent);
                         ctx->surfaces_written++;
                         break;
@@ -1426,8 +1441,12 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
                     continue;
                 }
                 const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
+                alea_primitive_data_t prim_data;
+                if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &prim_data)) {
+                    continue;
+                }
                 write_mcnp_surface(ctx->out, &ctx->arena, surf_id, 0,
-                                   ALEA_BOUNDARY_TRANSMISSIVE, 0, prim->type, &prim->data,
+                                   ALEA_BOUNDARY_TRANSMISSIVE, 0, prim->type, &prim_data,
                                    node->primitive.inverted,
                                    ctx->mcnp_max_col, ctx->mcnp_cont_indent);
                 ctx->surfaces_written++;

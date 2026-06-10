@@ -349,9 +349,14 @@ alea_bvh_t* alea_bvh_build(const alea_system_t* sys) {
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
+        alea_primitive_data_t prim_data;
 
         surfaces[i].index = (uint32_t)i;
-        surfaces[i].bbox = alea_primitive_bbox(prim->type, &prim->data);
+        if (alea_primitive_copy_data(sys, surf->primitive_id, &prim_data)) {
+            surfaces[i].bbox = alea_primitive_bbox(prim->type, &prim_data);
+        } else {
+            surfaces[i].bbox = alea_bbox_empty();
+        }
 
         surfaces[i].centroid[0] = (surfaces[i].bbox.min_x +
                                    surfaces[i].bbox.max_x) * 0.5;

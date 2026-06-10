@@ -440,6 +440,26 @@ void alea_system_destroy_internals(alea_system_t* sys) {
 
     alea_vec_free(&sys->nodes);
     alea_vec_free(&sys->primitives);
+    alea_vec_free(&sys->primitive_planes);
+    alea_vec_free(&sys->primitive_spheres);
+    alea_vec_free(&sys->primitive_cyl_x);
+    alea_vec_free(&sys->primitive_cyl_y);
+    alea_vec_free(&sys->primitive_cyl_z);
+    alea_vec_free(&sys->primitive_cone_x);
+    alea_vec_free(&sys->primitive_cone_y);
+    alea_vec_free(&sys->primitive_cone_z);
+    alea_vec_free(&sys->primitive_boxes);
+    alea_vec_free(&sys->primitive_quadrics);
+    alea_vec_free(&sys->primitive_toruses);
+    alea_vec_free(&sys->primitive_rccs);
+    alea_vec_free(&sys->primitive_box_generals);
+    alea_vec_free(&sys->primitive_sphs);
+    alea_vec_free(&sys->primitive_trcs);
+    alea_vec_free(&sys->primitive_ells);
+    alea_vec_free(&sys->primitive_recs);
+    alea_vec_free(&sys->primitive_weds);
+    alea_vec_free(&sys->primitive_rhps);
+    alea_vec_free(&sys->primitive_arbs);
     alea_vec_free(&sys->surfaces);
     alea_free_all_material_contents(sys);
     alea_vec_free(&sys->materials);
@@ -476,6 +496,26 @@ void alea_system_reset(alea_system_t* sys) {
 
     alea_vec_clear(&sys->nodes);
     alea_vec_clear(&sys->primitives);
+    alea_vec_clear(&sys->primitive_planes);
+    alea_vec_clear(&sys->primitive_spheres);
+    alea_vec_clear(&sys->primitive_cyl_x);
+    alea_vec_clear(&sys->primitive_cyl_y);
+    alea_vec_clear(&sys->primitive_cyl_z);
+    alea_vec_clear(&sys->primitive_cone_x);
+    alea_vec_clear(&sys->primitive_cone_y);
+    alea_vec_clear(&sys->primitive_cone_z);
+    alea_vec_clear(&sys->primitive_boxes);
+    alea_vec_clear(&sys->primitive_quadrics);
+    alea_vec_clear(&sys->primitive_toruses);
+    alea_vec_clear(&sys->primitive_rccs);
+    alea_vec_clear(&sys->primitive_box_generals);
+    alea_vec_clear(&sys->primitive_sphs);
+    alea_vec_clear(&sys->primitive_trcs);
+    alea_vec_clear(&sys->primitive_ells);
+    alea_vec_clear(&sys->primitive_recs);
+    alea_vec_clear(&sys->primitive_weds);
+    alea_vec_clear(&sys->primitive_rhps);
+    alea_vec_clear(&sys->primitive_arbs);
     alea_vec_clear(&sys->surfaces);
     alea_free_all_material_contents(sys);
     alea_vec_clear(&sys->materials);
@@ -552,6 +592,122 @@ alea_node_id_t alea_clone_primitive(alea_system_t* sys, alea_node_id_t node_id, 
 // PRIMITIVE OPERATIONS WITH DEDUPLICATION
 // ============================================================================
 
+static uint32_t alea_store_primitive_payload(alea_system_t* sys,
+                                             alea_primitive_type_t type,
+                                             const alea_primitive_data_t* data) {
+#define STORE_PAYLOAD(kind, vec, field) do {                                  \
+        uint32_t idx = (uint32_t)alea_vec_count(&(sys)->vec);                  \
+        kind* dst = alea_vec_push_uninit(&(sys)->vec, kind);                   \
+        if (!dst) return UINT32_MAX;                                           \
+        *dst = data->field;                                                    \
+        return idx;                                                            \
+    } while (0)
+
+    switch (type) {
+        case ALEA_PRIMITIVE_PLANE:      STORE_PAYLOAD(alea_plane_data_t,       primitive_planes,       plane);
+        case ALEA_PRIMITIVE_SPHERE:     STORE_PAYLOAD(alea_sphere_data_t,      primitive_spheres,      sphere);
+        case ALEA_PRIMITIVE_CYLINDER_X: STORE_PAYLOAD(alea_cylinder_x_data_t,  primitive_cyl_x,        cyl_x);
+        case ALEA_PRIMITIVE_CYLINDER_Y: STORE_PAYLOAD(alea_cylinder_y_data_t,  primitive_cyl_y,        cyl_y);
+        case ALEA_PRIMITIVE_CYLINDER_Z: STORE_PAYLOAD(alea_cylinder_z_data_t,  primitive_cyl_z,        cyl_z);
+        case ALEA_PRIMITIVE_CONE_X:     STORE_PAYLOAD(alea_cone_x_data_t,      primitive_cone_x,       cone_x);
+        case ALEA_PRIMITIVE_CONE_Y:     STORE_PAYLOAD(alea_cone_y_data_t,      primitive_cone_y,       cone_y);
+        case ALEA_PRIMITIVE_CONE_Z:     STORE_PAYLOAD(alea_cone_z_data_t,      primitive_cone_z,       cone_z);
+        case ALEA_PRIMITIVE_RPP:        STORE_PAYLOAD(alea_box_data_t,         primitive_boxes,        box);
+        case ALEA_PRIMITIVE_QUADRIC:    STORE_PAYLOAD(alea_quadric_data_t,     primitive_quadrics,     quadric);
+        case ALEA_PRIMITIVE_TORUS_X:
+        case ALEA_PRIMITIVE_TORUS_Y:
+        case ALEA_PRIMITIVE_TORUS_Z:    STORE_PAYLOAD(alea_torus_data_t,       primitive_toruses,      torus);
+        case ALEA_PRIMITIVE_RCC:        STORE_PAYLOAD(alea_rcc_data_t,         primitive_rccs,         rcc);
+        case ALEA_PRIMITIVE_BOX:        STORE_PAYLOAD(alea_box_general_data_t, primitive_box_generals, box_general);
+        case ALEA_PRIMITIVE_SPH:        STORE_PAYLOAD(alea_sph_data_t,         primitive_sphs,         sph);
+        case ALEA_PRIMITIVE_TRC:        STORE_PAYLOAD(alea_trc_data_t,         primitive_trcs,         trc);
+        case ALEA_PRIMITIVE_ELL:        STORE_PAYLOAD(alea_ell_data_t,         primitive_ells,         ell);
+        case ALEA_PRIMITIVE_REC:        STORE_PAYLOAD(alea_rec_data_t,         primitive_recs,         rec);
+        case ALEA_PRIMITIVE_WED:        STORE_PAYLOAD(alea_wed_data_t,         primitive_weds,         wed);
+        case ALEA_PRIMITIVE_RHP:        STORE_PAYLOAD(alea_rhp_data_t,         primitive_rhps,         rhp);
+        case ALEA_PRIMITIVE_ARB:        STORE_PAYLOAD(alea_arb_data_t,         primitive_arbs,         arb);
+        default: return UINT32_MAX;
+    }
+
+#undef STORE_PAYLOAD
+}
+
+const void* alea_primitive_payload_const(const alea_system_t* sys,
+                                         uint32_t id) {
+    if (!sys || id >= alea_vec_count(&sys->primitives)) return NULL;
+    const alea_primitive_entry_t* prim = &sys->primitives.data[id];
+    uint32_t idx = prim->payload_index;
+
+#define GET_PAYLOAD(vec) \
+    ((idx < alea_vec_count(&(sys)->vec)) ? (const void*)&(sys)->vec.data[idx] : NULL)
+
+    switch (prim->type) {
+        case ALEA_PRIMITIVE_PLANE:       return GET_PAYLOAD(primitive_planes);
+        case ALEA_PRIMITIVE_SPHERE:      return GET_PAYLOAD(primitive_spheres);
+        case ALEA_PRIMITIVE_CYLINDER_X:  return GET_PAYLOAD(primitive_cyl_x);
+        case ALEA_PRIMITIVE_CYLINDER_Y:  return GET_PAYLOAD(primitive_cyl_y);
+        case ALEA_PRIMITIVE_CYLINDER_Z:  return GET_PAYLOAD(primitive_cyl_z);
+        case ALEA_PRIMITIVE_CONE_X:      return GET_PAYLOAD(primitive_cone_x);
+        case ALEA_PRIMITIVE_CONE_Y:      return GET_PAYLOAD(primitive_cone_y);
+        case ALEA_PRIMITIVE_CONE_Z:      return GET_PAYLOAD(primitive_cone_z);
+        case ALEA_PRIMITIVE_RPP:         return GET_PAYLOAD(primitive_boxes);
+        case ALEA_PRIMITIVE_QUADRIC:     return GET_PAYLOAD(primitive_quadrics);
+        case ALEA_PRIMITIVE_TORUS_X:
+        case ALEA_PRIMITIVE_TORUS_Y:
+        case ALEA_PRIMITIVE_TORUS_Z:     return GET_PAYLOAD(primitive_toruses);
+        case ALEA_PRIMITIVE_RCC:         return GET_PAYLOAD(primitive_rccs);
+        case ALEA_PRIMITIVE_BOX:         return GET_PAYLOAD(primitive_box_generals);
+        case ALEA_PRIMITIVE_SPH:         return GET_PAYLOAD(primitive_sphs);
+        case ALEA_PRIMITIVE_TRC:         return GET_PAYLOAD(primitive_trcs);
+        case ALEA_PRIMITIVE_ELL:         return GET_PAYLOAD(primitive_ells);
+        case ALEA_PRIMITIVE_REC:         return GET_PAYLOAD(primitive_recs);
+        case ALEA_PRIMITIVE_WED:         return GET_PAYLOAD(primitive_weds);
+        case ALEA_PRIMITIVE_RHP:         return GET_PAYLOAD(primitive_rhps);
+        case ALEA_PRIMITIVE_ARB:         return GET_PAYLOAD(primitive_arbs);
+        default: return NULL;
+    }
+
+#undef GET_PAYLOAD
+}
+
+bool alea_primitive_copy_data(const alea_system_t* sys,
+                              uint32_t id,
+                              alea_primitive_data_t* out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (!sys || id >= alea_vec_count(&sys->primitives)) return false;
+
+    const alea_primitive_entry_t* prim = &sys->primitives.data[id];
+    const void* payload = alea_primitive_payload_const(sys, id);
+    if (!payload) return false;
+
+    switch (prim->type) {
+        case ALEA_PRIMITIVE_PLANE:       out->plane = *(const alea_plane_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_SPHERE:      out->sphere = *(const alea_sphere_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_CYLINDER_X:  out->cyl_x = *(const alea_cylinder_x_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_CYLINDER_Y:  out->cyl_y = *(const alea_cylinder_y_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_CYLINDER_Z:  out->cyl_z = *(const alea_cylinder_z_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_CONE_X:      out->cone_x = *(const alea_cone_x_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_CONE_Y:      out->cone_y = *(const alea_cone_y_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_CONE_Z:      out->cone_z = *(const alea_cone_z_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_RPP:         out->box = *(const alea_box_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_QUADRIC:     out->quadric = *(const alea_quadric_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_TORUS_X:
+        case ALEA_PRIMITIVE_TORUS_Y:
+        case ALEA_PRIMITIVE_TORUS_Z:     out->torus = *(const alea_torus_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_RCC:         out->rcc = *(const alea_rcc_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_BOX:         out->box_general = *(const alea_box_general_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_SPH:         out->sph = *(const alea_sph_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_TRC:         out->trc = *(const alea_trc_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_ELL:         out->ell = *(const alea_ell_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_REC:         out->rec = *(const alea_rec_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_WED:         out->wed = *(const alea_wed_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_RHP:         out->rhp = *(const alea_rhp_data_t*)payload; return true;
+        case ALEA_PRIMITIVE_ARB:         out->arb = *(const alea_arb_data_t*)payload; return true;
+        default: return false;
+    }
+}
+
 alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
                                                alea_primitive_type_t type,
                                                alea_primitive_data_t* data,
@@ -601,6 +757,14 @@ alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
         return existing;
     }
 
+    uint32_t payload_index = alea_store_primitive_payload(sys, type, data);
+    if (payload_index == UINT32_MAX) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "alea_get_or_create_primitive: failed to allocate primitive payload %u (type %d)",
+                              (uint32_t)alea_vec_count(&sys->primitives), type);
+        return UINT32_MAX;
+    }
+
     // Create new primitive using vector API
     uint32_t id = (uint32_t)alea_vec_count(&sys->primitives);
     alea_primitive_entry_t* prim = alea_vec_push_uninit(&sys->primitives, alea_primitive_entry_t);
@@ -610,7 +774,7 @@ alea_primitive_id_t alea_get_or_create_primitive(alea_system_t* sys,
     }
 
     prim->type = type;
-    prim->data = *data;
+    prim->payload_index = payload_index;
     prim->ref_count = 0;
 
     // Add to hash table
@@ -647,8 +811,13 @@ alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id
     /* Compute bounding box (sense-aware for proper halfspace bounds) */
     /* Note: inverted flips the effective sense */
     int8_t effective_sense = inverted ? -sense : sense;
-    node->bbox = alea_halfspace_bbox(sys->primitives.data[primitive_id].type,
-                                     &sys->primitives.data[primitive_id].data, effective_sense);
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(sys, primitive_id, &data)) {
+        return ALEA_NODE_ID_INVALID;
+    }
+    alea_bbox_t prim_bbox = alea_halfspace_bbox(sys->primitives.data[primitive_id].type,
+                                     &data, effective_sense);
+    alea_node_bbox_set(&node->bbox, &prim_bbox);
 
     sys->primitives.data[primitive_id].ref_count++;
 
@@ -671,6 +840,26 @@ size_t alea_system_memory_usage(const alea_system_t* sys) {
     /* Vector capacities (allocated memory, not just used) */
     total += sys->nodes.capacity * sizeof(alea_node_t);
     total += sys->primitives.capacity * sizeof(alea_primitive_entry_t);
+    total += sys->primitive_planes.capacity * sizeof(alea_plane_data_t);
+    total += sys->primitive_spheres.capacity * sizeof(alea_sphere_data_t);
+    total += sys->primitive_cyl_x.capacity * sizeof(alea_cylinder_x_data_t);
+    total += sys->primitive_cyl_y.capacity * sizeof(alea_cylinder_y_data_t);
+    total += sys->primitive_cyl_z.capacity * sizeof(alea_cylinder_z_data_t);
+    total += sys->primitive_cone_x.capacity * sizeof(alea_cone_x_data_t);
+    total += sys->primitive_cone_y.capacity * sizeof(alea_cone_y_data_t);
+    total += sys->primitive_cone_z.capacity * sizeof(alea_cone_z_data_t);
+    total += sys->primitive_boxes.capacity * sizeof(alea_box_data_t);
+    total += sys->primitive_quadrics.capacity * sizeof(alea_quadric_data_t);
+    total += sys->primitive_toruses.capacity * sizeof(alea_torus_data_t);
+    total += sys->primitive_rccs.capacity * sizeof(alea_rcc_data_t);
+    total += sys->primitive_box_generals.capacity * sizeof(alea_box_general_data_t);
+    total += sys->primitive_sphs.capacity * sizeof(alea_sph_data_t);
+    total += sys->primitive_trcs.capacity * sizeof(alea_trc_data_t);
+    total += sys->primitive_ells.capacity * sizeof(alea_ell_data_t);
+    total += sys->primitive_recs.capacity * sizeof(alea_rec_data_t);
+    total += sys->primitive_weds.capacity * sizeof(alea_wed_data_t);
+    total += sys->primitive_rhps.capacity * sizeof(alea_rhp_data_t);
+    total += sys->primitive_arbs.capacity * sizeof(alea_arb_data_t);
     total += sys->surfaces.capacity * sizeof(alea_surface_entry_t);
     total += sys->materials.capacity * sizeof(alea_material_t);
     total += sys->cells.capacity * sizeof(alea_cell_entry_t);
@@ -713,6 +902,40 @@ size_t alea_system_memory_usage(const alea_system_t* sys) {
     }
 
     return total;
+}
+
+void alea_system_shrink_to_fit(alea_system_t* sys) {
+    if (!sys) return;
+    /* Release the doubling-growth slack from the big arrays after loading.
+     * The node array dominates (2x growth can leave ~50% unused tail). */
+    alea_vec_shrink_to_fit(&sys->nodes, alea_node_t);
+    alea_vec_shrink_to_fit(&sys->primitives, alea_primitive_entry_t);
+    alea_vec_shrink_to_fit(&sys->primitive_planes, alea_plane_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_spheres, alea_sphere_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_cyl_x, alea_cylinder_x_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_cyl_y, alea_cylinder_y_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_cyl_z, alea_cylinder_z_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_cone_x, alea_cone_x_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_cone_y, alea_cone_y_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_cone_z, alea_cone_z_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_boxes, alea_box_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_quadrics, alea_quadric_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_toruses, alea_torus_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_rccs, alea_rcc_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_box_generals, alea_box_general_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_sphs, alea_sph_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_trcs, alea_trc_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_ells, alea_ell_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_recs, alea_rec_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_weds, alea_wed_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_rhps, alea_rhp_data_t);
+    alea_vec_shrink_to_fit(&sys->primitive_arbs, alea_arb_data_t);
+    alea_vec_shrink_to_fit(&sys->surfaces, alea_surface_entry_t);
+    alea_vec_shrink_to_fit(&sys->cells, alea_cell_entry_t);
+    alea_vec_shrink_to_fit(&sys->transforms, alea_transform_t);
+    alea_vec_shrink_to_fit(&sys->materials, alea_material_t);
+    alea_vec_shrink_to_fit(&sys->mixtures, alea_mixture_t);
+    alea_vec_shrink_to_fit(&sys->cell_refs, alea_cell_ref_t);
 }
 
 void alea_system_print_stats(const alea_system_t* sys) {
@@ -1626,15 +1849,17 @@ int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {
         if (cell_i->universe_id != 0) continue;
         if (cell_i->root_node_id >= alea_vec_count(&sys->nodes)) continue;
 
-        const alea_bbox_t* bbox_i = &sys->nodes.data[cell_i->root_node_id].bbox;
+        const alea_bbox_t bbox_i_v = alea_node_bbox_get(&sys->nodes.data[cell_i->root_node_id].bbox);
+        const alea_bbox_t* bbox_i = &bbox_i_v;
 
         for (size_t j = i + 1; j < alea_vec_count(&sys->cells) && found < max_pairs; j++) {
             const alea_cell_entry_t* cell_j = &sys->cells.data[j];
             if (cell_j->universe_id != 0) continue;
             if (cell_j->root_node_id >= alea_vec_count(&sys->nodes)) continue;
-            
-            const alea_bbox_t* bbox_j = &sys->nodes.data[cell_j->root_node_id].bbox;
-            
+
+            const alea_bbox_t bbox_j_v = alea_node_bbox_get(&sys->nodes.data[cell_j->root_node_id].bbox);
+            const alea_bbox_t* bbox_j = &bbox_j_v;
+
             // Check bbox overlap first (fast rejection)
             if (bbox_i->max_x < bbox_j->min_x || bbox_j->max_x < bbox_i->min_x ||
                 bbox_i->max_y < bbox_j->min_y || bbox_j->max_y < bbox_i->min_y ||

@@ -121,8 +121,8 @@ static alea_node_id_t create_intersection(alea_system_t* sys,
     node->operation.right = right;
 
     /* Compute bbox as intersection of children */
-    alea_bbox_t* bl = &sys->nodes.data[left].bbox;
-    alea_bbox_t* br = &sys->nodes.data[right].bbox;
+    const alea_node_bbox_t* bl = &sys->nodes.data[left].bbox;
+    const alea_node_bbox_t* br = &sys->nodes.data[right].bbox;
     node->bbox.min_x = fmax(bl->min_x, br->min_x);
     node->bbox.max_x = fmin(bl->max_x, br->max_x);
     node->bbox.min_y = fmax(bl->min_y, br->min_y);
@@ -183,14 +183,16 @@ bool alea_is_1sheet_cone(const alea_system_t* sys, alea_node_id_t node_id) {
     if (prim_id >= alea_vec_count(&sys->primitives)) return false;
 
     const alea_primitive_entry_t* prim = &sys->primitives.data[prim_id];
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(sys, prim_id, &data)) return false;
 
     switch (prim->type) {
         case ALEA_PRIMITIVE_CONE_X:
-            return prim->data.cone_x.sheet_selection != 0;
+            return data.cone_x.sheet_selection != 0;
         case ALEA_PRIMITIVE_CONE_Y:
-            return prim->data.cone_y.sheet_selection != 0;
+            return data.cone_y.sheet_selection != 0;
         case ALEA_PRIMITIVE_CONE_Z:
-            return prim->data.cone_z.sheet_selection != 0;
+            return data.cone_z.sheet_selection != 0;
         default:
             return false;
     }
@@ -803,6 +805,8 @@ static alea_node_id_t expand_1sheet_cone(alea_system_t* sys, alea_node_id_t node
     /* Always create interior (negative sense) representation - exterior handled by complement */
     const int8_t sense = -1;
     alea_primitive_data_t data;
+    alea_primitive_data_t prim_data;
+    if (!alea_primitive_copy_data(sys, prim_id, &prim_data)) return ALEA_NODE_ID_INVALID;
     memset(&data, 0, sizeof(data));
 
     alea_node_id_t cone_node = ALEA_NODE_ID_INVALID;
@@ -812,7 +816,7 @@ static alea_node_id_t expand_1sheet_cone(alea_system_t* sys, alea_node_id_t node
 
     switch (prim->type) {
         case ALEA_PRIMITIVE_CONE_Z: {
-            const alea_cone_z_data_t* c = &prim->data.cone_z;
+            const alea_cone_z_data_t* c = &prim_data.cone_z;
             sheet_sel = c->sheet_selection;
             if (sheet_sel == 0) return node_id;  /* Not a 1-sheet cone */
 
@@ -838,7 +842,7 @@ static alea_node_id_t expand_1sheet_cone(alea_system_t* sys, alea_node_id_t node
         }
 
         case ALEA_PRIMITIVE_CONE_Y: {
-            const alea_cone_y_data_t* c = &prim->data.cone_y;
+            const alea_cone_y_data_t* c = &prim_data.cone_y;
             sheet_sel = c->sheet_selection;
             if (sheet_sel == 0) return node_id;
 
@@ -857,7 +861,7 @@ static alea_node_id_t expand_1sheet_cone(alea_system_t* sys, alea_node_id_t node
         }
 
         case ALEA_PRIMITIVE_CONE_X: {
-            const alea_cone_x_data_t* c = &prim->data.cone_x;
+            const alea_cone_x_data_t* c = &prim_data.cone_x;
             sheet_sel = c->sheet_selection;
             if (sheet_sel == 0) return node_id;
 
@@ -925,46 +929,47 @@ static alea_node_id_t expand_macrobody_cached(alea_system_t* sys, alea_node_id_t
         neg_node = expand_1sheet_cone(sys, node_id);
     } else if (alea_is_macrobody(type)) {
         if (prim_id >= alea_vec_count(&sys->primitives)) return ALEA_NODE_ID_INVALID;
-        const alea_primitive_data_t* data = &sys->primitives.data[prim_id].data;
+        alea_primitive_data_t data;
+        if (!alea_primitive_copy_data(sys, prim_id, &data)) return ALEA_NODE_ID_INVALID;
 
         /* Always expand with sense=-1 (interior representation) */
         switch (type) {
             case ALEA_PRIMITIVE_RCC:
-                neg_node = expand_rcc(sys, &data->rcc, -1);
+                neg_node = expand_rcc(sys, &data.rcc, -1);
                 break;
 
             case ALEA_PRIMITIVE_RPP:
-                neg_node = expand_box(sys, &data->box, -1);
+                neg_node = expand_box(sys, &data.box, -1);
                 break;
 
             case ALEA_PRIMITIVE_BOX:
-                neg_node = expand_box_general(sys, &data->box_general, -1);
+                neg_node = expand_box_general(sys, &data.box_general, -1);
                 break;
 
             case ALEA_PRIMITIVE_TRC:
-                neg_node = expand_trc(sys, &data->trc, -1);
+                neg_node = expand_trc(sys, &data.trc, -1);
                 break;
 
             case ALEA_PRIMITIVE_WED:
-                neg_node = expand_wed(sys, &data->wed, -1);
+                neg_node = expand_wed(sys, &data.wed, -1);
                 break;
 
             case ALEA_PRIMITIVE_RHP:
-                neg_node = expand_rhp(sys, &data->rhp, -1);
+                neg_node = expand_rhp(sys, &data.rhp, -1);
                 break;
 
             case ALEA_PRIMITIVE_ARB:
-                neg_node = expand_arb(sys, &data->arb, -1);
+                neg_node = expand_arb(sys, &data.arb, -1);
                 break;
 
             case ALEA_PRIMITIVE_SPH: {
                 /* SPH is just a sphere - create equivalent sphere primitive */
                 alea_primitive_data_t sphere_data;
                 memset(&sphere_data, 0, sizeof(sphere_data));
-                sphere_data.sphere.center_x = data->sph.center_x;
-                sphere_data.sphere.center_y = data->sph.center_y;
-                sphere_data.sphere.center_z = data->sph.center_z;
-                sphere_data.sphere.radius = data->sph.radius;
+                sphere_data.sphere.center_x = data.sph.center_x;
+                sphere_data.sphere.center_y = data.sph.center_y;
+                sphere_data.sphere.center_z = data.sph.center_z;
+                sphere_data.sphere.radius = data.sph.radius;
                 neg_node = create_primitive_node_internal(sys, ALEA_PRIMITIVE_SPHERE, &sphere_data, -1);
                 break;
             }
@@ -1063,8 +1068,8 @@ static alea_node_id_t expand_all_cached(alea_system_t* sys, alea_node_id_t root_
         nn->operation.right = new_right;
 
         /* Recompute bbox based on operation */
-        alea_bbox_t* bl = &sys->nodes.data[new_left].bbox;
-        alea_bbox_t* br = &sys->nodes.data[new_right].bbox;
+        const alea_node_bbox_t* bl = &sys->nodes.data[new_left].bbox;
+        const alea_node_bbox_t* br = &sys->nodes.data[new_right].bbox;
         if (op == ALEA_OP_UNION) {
             nn->bbox.min_x = fmin(bl->min_x, br->min_x);
             nn->bbox.max_x = fmax(bl->max_x, br->max_x);

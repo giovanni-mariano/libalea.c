@@ -523,7 +523,8 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
                 if (neighbor->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
                 /* Quick bbox check */
-                const alea_bbox_t* bbox = &sys->nodes.data[neighbor->root_node_id].bbox;
+                const alea_bbox_t bbox_v = alea_node_bbox_get(&sys->nodes.data[neighbor->root_node_id].bbox);
+                const alea_bbox_t* bbox = &bbox_v;
                 if (lx < bbox->min_x || lx > bbox->max_x ||
                     ly < bbox->min_y || ly > bbox->max_y ||
                     lz < bbox->min_z || lz > bbox->max_z) {
@@ -2263,7 +2264,8 @@ static int update_path_group_coverage_from_candidates(
         if (cell->root_node_id == ALEA_NODE_ID_INVALID)
             continue;
 
-        const alea_bbox_t* bbox = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t bbox_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* bbox = &bbox_v;
         for (size_t q = 0; q < group_pixels; q++) {
             if (count[q] > 1) {
                 early_multi_skips++;
@@ -2487,7 +2489,8 @@ static int path_slice_index_build(alea_system_t* sys,
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        const alea_bbox_t* bbox = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t bbox_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* bbox = &bbox_v;
         double u_min_p = DBL_MAX, u_max_p = -DBL_MAX;
         double v_min_p = DBL_MAX, v_max_p = -DBL_MAX;
         for (int ix = 0; ix < 2; ix++) {

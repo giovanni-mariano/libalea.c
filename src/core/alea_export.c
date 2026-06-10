@@ -186,16 +186,19 @@ static alea_node_id_t replace_macrobody_nodes(alea_system_t* sys, alea_node_id_t
                                   ptype == ALEA_PRIMITIVE_CONE_Z)) {
             alea_primitive_id_t pid = node->primitive.primitive_id;
             if (pid < alea_vec_count(&sys->primitives)) {
-                const alea_primitive_entry_t* prim = &sys->primitives.data[pid];
+                alea_primitive_data_t pdata;
+                if (!alea_primitive_copy_data(sys, pid, &pdata)) {
+                    return ALEA_NODE_ID_INVALID;
+                }
                 switch (ptype) {
                     case ALEA_PRIMITIVE_CONE_X:
-                        needs_expansion = (prim->data.cone_x.sheet_selection != 0);
+                        needs_expansion = (pdata.cone_x.sheet_selection != 0);
                         break;
                     case ALEA_PRIMITIVE_CONE_Y:
-                        needs_expansion = (prim->data.cone_y.sheet_selection != 0);
+                        needs_expansion = (pdata.cone_y.sheet_selection != 0);
                         break;
                     case ALEA_PRIMITIVE_CONE_Z:
-                        needs_expansion = (prim->data.cone_z.sheet_selection != 0);
+                        needs_expansion = (pdata.cone_z.sheet_selection != 0);
                         break;
                     default:
                         break;

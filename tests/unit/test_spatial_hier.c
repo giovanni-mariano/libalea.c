@@ -185,6 +185,20 @@ static void assert_raycast_segments_match(const alea_raycast_result_t* flat,
     }
 }
 
+static void assert_raycast_material_segments_match(const alea_raycast_result_t* flat,
+                                                   const alea_raycast_result_t* hier) {
+    ASSERT_EQ(hier->segments.count, flat->segments.count);
+    for (size_t i = 0; i < flat->segments.count; i++) {
+        const alea_ray_segment_t* a = &flat->segments.data[i];
+        const alea_ray_segment_t* b = &hier->segments.data[i];
+        ASSERT_NEAR(b->t_enter, a->t_enter, 1e-9);
+        ASSERT_NEAR(b->t_exit, a->t_exit, 1e-9);
+        ASSERT_EQ(b->cell_id, a->cell_id);
+        ASSERT_EQ(b->material_id, a->material_id);
+        ASSERT_NEAR(b->density, a->density, 1e-12);
+    }
+}
+
 TEST(hier_spatial_point_query_matches_recursive_simple) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -361,6 +375,144 @@ TEST(hier_spatial_region_query_returns_expected_root_cells) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+static void build_three_sphere_universe(alea_system_t* sys) {
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    for (int i = 0; i < 3; i++) {
+        int s = alea_sphere_surface(sys, i + 1, (double)i * 5.0, 0.0, 0.0, 1.0);
+        ASSERT(s >= 0);
+        const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+        ASSERT_NOT_NULL(surf);
+        int c = alea_add_cell(sys, i + 1, surf->neg_node, mat, 1.0, 0);
+        ASSERT(c >= 0);
+    }
+}
+
+static void assert_universe_ray_query_three_spheres(const char* threshold) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", threshold, 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    build_three_sphere_universe(sys);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+
+    alea_hier_ray_candidate_t hits[8];
+    int n = alea_hier_spatial_query_universe_ray(
+        sys, 0,
+        ray.ox, ray.oy, ray.oz,
+        ray.dx, ray.dy, ray.dz,
+        ray.inv_dx, ray.inv_dy, ray.inv_dz,
+        0.0, 20.0,
+        hits, 8);
+    ASSERT_EQ(n, 3);
+    ASSERT_EQ(hits[0].cell_id, 1);
+    ASSERT_EQ(hits[1].cell_id, 2);
+    ASSERT_EQ(hits[2].cell_id, 3);
+    ASSERT(hits[0].t_enter <= hits[1].t_enter);
+    ASSERT(hits[1].t_enter <= hits[2].t_enter);
+    ASSERT_NEAR(hits[0].t_enter, 2.0, 1e-5);
+    ASSERT_NEAR(hits[1].t_enter, 7.0, 1e-5);
+    ASSERT_NEAR(hits[2].t_enter, 12.0, 1e-5);
+
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_universe_ray_query_returns_ordered_candidates) {
+    assert_universe_ray_query_three_spheres("1");
+    assert_universe_ray_query_three_spheres("99");
+}
+
+TEST(hier_spatial_ordered_universe_lookup_preserves_cell_order) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int small_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 1.0);
+    int large_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 10.0);
+    ASSERT(small_s >= 0);
+    ASSERT(large_s >= 0);
+
+    const alea_surface_entry_t* small = alea_surface_at(sys, small_s);
+    const alea_surface_entry_t* large = alea_surface_at(sys, large_s);
+    ASSERT_NOT_NULL(small);
+    ASSERT_NOT_NULL(large);
+
+    int small_cell = alea_add_cell(sys, 1, small->neg_node, mat, 1.0, 0);
+    int large_cell = alea_add_cell(sys, 2, large->neg_node, mat, 1.0, 0);
+    ASSERT(small_cell >= 0);
+    ASSERT(large_cell >= 0);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    int ordered = alea_hier_spatial_find_ordered_cell_in_universe(
+        sys, 0, 0.0, 0.0, 0.0, -1);
+    ASSERT_EQ(ordered, large_cell);
+
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_placement_ray_query_returns_root_and_fill) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int outer_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(outer_s >= 0);
+    ASSERT(inner_s >= 0);
+
+    const alea_surface_entry_t* outer = alea_surface_at(sys, outer_s);
+    const alea_surface_entry_t* inner = alea_surface_at(sys, inner_s);
+    ASSERT_NOT_NULL(outer);
+    ASSERT_NOT_NULL(inner);
+
+    int container = alea_add_cell(sys, 1, outer->neg_node, mat, 1.0, 0);
+    int terminal = alea_add_cell(sys, 2, inner->neg_node, mat, 1.0, 10);
+    ASSERT(container >= 0);
+    ASSERT(terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -12.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+
+    alea_hier_placement_ray_candidate_t hits[8];
+    int n = alea_hier_spatial_query_placements_ray(
+        sys,
+        ray.ox, ray.oy, ray.oz,
+        ray.dx, ray.dy, ray.dz,
+        ray.inv_dx, ray.inv_dy, ray.inv_dz,
+        0.0, 24.0,
+        hits, 8);
+    ASSERT(n >= 2);
+
+    int saw_root = 0;
+    int saw_fill = 0;
+    for (int i = 0; i < n; i++) {
+        ASSERT(hits[i].t_enter <= hits[i].t_exit);
+        if (hits[i].universe_id == 0 && hits[i].depth == 0) saw_root = 1;
+        if (hits[i].universe_id == 10 && hits[i].depth == 1) saw_fill = 1;
+    }
+    ASSERT(saw_root);
+    ASSERT(saw_fill);
+
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST(hier_spatial_slice_query_returns_expected_fill_cell) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -395,6 +547,66 @@ TEST(hier_spatial_slice_query_returns_expected_fill_cell) {
     ASSERT(spatial_hits_contain_cell(hier, nh, 2, 1));
     ASSERT(!spatial_hits_contain_cell(hier, nh, 1, 0));
     ASSERT_NULL(sys->spatial_index);
+
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_spatial_path_query_returns_explicit_fill_chain) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int outer_s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner_s = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(outer_s >= 0);
+    ASSERT(inner_s >= 0);
+
+    const alea_surface_entry_t* outer = alea_surface_at(sys, outer_s);
+    const alea_surface_entry_t* inner = alea_surface_at(sys, inner_s);
+    ASSERT_NOT_NULL(outer);
+    ASSERT_NOT_NULL(inner);
+
+    int container = alea_add_cell(sys, 1, outer->neg_node, mat, 1.0, 0);
+    int terminal = alea_add_cell(sys, 2, inner->neg_node, mat, 1.0, 10);
+    ASSERT(container >= 0);
+    ASSERT(terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_hier_cell_hit_t hit;
+    alea_hier_ray_path_t path;
+    ASSERT_EQ(alea_hier_spatial_find_path_at_point(sys, 0.0, 0.0, 0.0,
+                                                   &hit, &path), 1);
+    ASSERT_EQ(hit.hit.cell_id, 2);
+    ASSERT_EQ(path.count, 2);
+    ASSERT_EQ(path.entries[0].cell_id, 1);
+    ASSERT_EQ(path.entries[1].cell_id, 2);
+
+    alea_matrix_t transform;
+    int lattice_cell_index = -2;
+    alea_matrix_t lattice_transform;
+    ASSERT_EQ(alea_hier_spatial_check_path_containment(
+                  sys, &path, (uint32_t)terminal, 0.1, 0.0, 0.0,
+                  &transform, &lattice_cell_index, &lattice_transform), 1);
+    ASSERT_EQ(lattice_cell_index, -1);
+    ASSERT_EQ(alea_hier_spatial_check_path_containment(
+                  sys, &path, (uint32_t)terminal, 20.0, 0.0, 0.0,
+                  NULL, NULL, NULL), 0);
+
+    alea_hier_cell_hit_t refreshed_hit;
+    alea_hier_ray_path_t refreshed_path;
+    ASSERT_EQ(alea_hier_spatial_find_path_from_parent(
+                  sys, &path, 0, 0.1, 0.0, 0.0,
+                  &refreshed_hit, &refreshed_path), 1);
+    ASSERT_EQ(refreshed_hit.hit.cell_id, 2);
+    ASSERT_EQ(refreshed_path.count, 2);
+    ASSERT_EQ(refreshed_path.entries[0].cell_id, 1);
+    ASSERT_EQ(refreshed_path.entries[1].cell_id, 2);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -632,6 +844,104 @@ TEST(hier_raycast_matches_flat_root_universe) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_blas_raycast_matches_hier_root_universe) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    for (int i = 0; i < 3; i++) {
+        int s = alea_sphere_surface(sys, i + 1, (double)i * 4.0, 0.0, 0.0, 1.0);
+        ASSERT(s >= 0);
+        const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+        ASSERT_NOT_NULL(surf);
+        int c = alea_add_cell(sys, i + 1, surf->neg_node, mat, 1.0, 0);
+        ASSERT(c >= 0);
+    }
+
+    alea_raycast_result_t hier;
+    alea_raycast_result_t blas;
+    alea_raycast_result_init(&hier);
+    alea_raycast_result_init(&blas);
+
+    ASSERT_EQ(alea_raycast_hier_blas_experimental(
+                  sys, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                  14.0, &blas), 0);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+
+    ASSERT_EQ(alea_raycast_hier(sys, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                14.0, &hier), 0);
+
+    assert_raycast_material_segments_match(&hier, &blas);
+
+    alea_raycast_result_free(&hier);
+    alea_raycast_result_free(&blas);
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_blas_raycast_matches_hier_fill_universe) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t hier;
+    alea_raycast_result_t blas;
+    alea_raycast_result_init(&hier);
+    alea_raycast_result_init(&blas);
+
+    ASSERT_EQ(alea_raycast_hier_blas_experimental(
+                  sys, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                  25.0, &blas), 0);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+
+    ASSERT_EQ(alea_raycast_hier(sys, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                25.0, &hier), 0);
+
+    assert_raycast_material_segments_match(&hier, &blas);
+
+    alea_raycast_result_free(&hier);
+    alea_raycast_result_free(&blas);
+    mcnp_model_destroy(model);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_blas_raycast_matches_hier_lattice_universe) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t hier;
+    alea_raycast_result_t blas;
+    alea_raycast_result_init(&hier);
+    alea_raycast_result_init(&blas);
+
+    ASSERT_EQ(alea_raycast_hier_blas_experimental(
+                  sys, -1.5, 0.0, 0.0, 1.0, 0.0, 0.0,
+                  7.0, &blas), 0);
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+
+    ASSERT_EQ(alea_raycast_hier(sys, -1.5, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                7.0, &hier), 0);
+
+    assert_raycast_material_segments_match(&hier, &blas);
+
+    alea_raycast_result_free(&hier);
+    alea_raycast_result_free(&blas);
+    mcnp_model_destroy(model);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST(hier_raycast_does_not_build_flat_spatial_index) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -655,7 +965,7 @@ TEST(hier_raycast_does_not_build_flat_spatial_index) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
-TEST(hier_cell_aware_raycast_does_not_build_flat_spatial_index) {
+TEST(hier_fast_segments_raycast_does_not_build_flat_spatial_index) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
@@ -678,13 +988,13 @@ TEST(hier_cell_aware_raycast_does_not_build_flat_spatial_index) {
         sys->spatial_index = NULL;
     }
 
-    ASSERT_EQ(alea_raycast_hier_cell_aware(sys, -1.5, 0.0, 0.0,
-                                           1.0, 0.0, 0.0,
-                                           7.0, &hier), 0);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(sys, -1.5, 0.0, 0.0,
+                                              1.0, 0.0, 0.0,
+                                              7.0, &hier), 0);
 
     ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
-    assert_raycast_segments_match(&flat, &hier);
+    assert_raycast_material_segments_match(&flat, &hier);
 
     alea_raycast_result_free(&flat);
     alea_raycast_result_free(&hier);
@@ -1230,7 +1540,7 @@ TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {
                            10.0, &routed), 0);
     ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
-    assert_raycast_segments_match(&flat, &routed);
+    assert_raycast_material_segments_match(&flat, &routed);
     ASSERT_EQ(alea_ray_is_occluded(sys, -5.0, 0.0, 0.0,
                                    1.0, 0.0, 0.0, 10.0), 1);
     ASSERT_NULL(sys->spatial_index);
@@ -1261,6 +1571,145 @@ TEST(spatial_mode_change_invalidates_flat_spatial_index) {
     ASSERT_EQ(alea_estimate_instance_volumes(sys, 8, volumes, NULL), -1);
 
     mcnp_model_destroy(model);
+}
+
+static void assert_raycast_hits_match(const alea_raycast_result_t* flat,
+                                      const alea_raycast_result_t* hier) {
+    ASSERT_EQ(hier->hits.count, flat->hits.count);
+    for (size_t i = 0; i < flat->hits.count; i++) {
+        const alea_ray_hit_t* a = &flat->hits.data[i];
+        const alea_ray_hit_t* b = &hier->hits.data[i];
+        ASSERT_NEAR(b->t, a->t, 1e-9);
+        ASSERT_EQ(b->surface_id, a->surface_id);
+        ASSERT_EQ(b->primitive_id, a->primitive_id);
+        ASSERT_NEAR(b->nx, a->nx, 1e-9);
+        ASSERT_NEAR(b->ny, a->ny, 1e-9);
+        ASSERT_NEAR(b->nz, a->nz, 1e-9);
+    }
+}
+
+/* Phase 1 (PLAN_HIER_RAY_NEXT_STEPS): alea_raycast_hier_with_hits() returns
+ * the same path segments as the segment-only fast path, plus a boundary hit
+ * list. For a simple non-lattice model (root universe, identity transforms)
+ * its hits match the flat alea_raycast() path exactly. */
+TEST(hier_with_hits_matches_flat_for_disjoint_spheres) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    /* Disjoint spheres strung along x so the ray crosses each exactly twice
+     * with void gaps between them — unambiguous, all in the root universe. */
+    for (int i = 0; i < 5; i++) {
+        int s = alea_sphere_surface(sys, i + 1, (double)i * 5.0, 0.0, 0.0, 1.5);
+        ASSERT(s >= 0);
+        const alea_surface_entry_t* surf = alea_surface_at(sys, s);
+        ASSERT_NOT_NULL(surf);
+        int c = alea_add_cell(sys, i + 1, surf->neg_node, mat, 1.0, 0);
+        ASSERT(c >= 0);
+    }
+
+    alea_raycast_result_t flat;
+    alea_raycast_result_t hier;
+    alea_raycast_result_init(&flat);
+    alea_raycast_result_init(&hier);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           30.0, &flat), 0);
+
+    if (sys->spatial_index) {
+        alea_spatial_index_free(sys->spatial_index);
+        sys->spatial_index = NULL;
+    }
+
+    ASSERT_EQ(alea_raycast_hier_with_hits(sys, -5.0, 0.0, 0.0,
+                                          1.0, 0.0, 0.0, 30.0, &hier), 0);
+
+    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
+
+    /* Every sphere is crossed twice -> 10 boundary hits. */
+    ASSERT_EQ(hier.hits.count, 10u);
+    assert_raycast_material_segments_match(&flat, &hier);
+    assert_raycast_hits_match(&flat, &hier);
+
+    alea_raycast_result_free(&flat);
+    alea_raycast_result_free(&hier);
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+/* with_hits must not change the stepped segments relative to fast_segments,
+ * even for a fill/lattice model with non-identity transforms. */
+TEST(hier_with_hits_segments_match_fast_segments) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t segs;
+    alea_raycast_result_t hits;
+    alea_raycast_result_init(&segs);
+    alea_raycast_result_init(&hits);
+
+    ASSERT_EQ(alea_raycast_hier_fast_segments(sys, -1.5, 0.0, 0.0,
+                                              1.0, 0.0, 0.0, 7.0, &segs), 0);
+    ASSERT_EQ(alea_raycast_hier_with_hits(sys, -1.5, 0.0, 0.0,
+                                          1.0, 0.0, 0.0, 7.0, &hits), 0);
+
+    ASSERT_NULL(sys->spatial_index);
+    assert_raycast_segments_match(&segs, &hits);
+
+    /* fast_segments must not populate hits; with_hits should. */
+    ASSERT_EQ(segs.hits.count, 0u);
+
+    alea_raycast_result_free(&segs);
+    alea_raycast_result_free(&hits);
+    mcnp_model_destroy(model);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+/* Synthetic lattice DDA boundaries (surface_id == 0) are reported on segment
+ * boundaries but never emitted as physical surface hits. */
+TEST(hier_with_hits_skips_synthetic_lattice_boundaries) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_raycast_result_t hits;
+    alea_raycast_result_init(&hits);
+
+    ASSERT_EQ(alea_raycast_hier_with_hits(sys, -1.5, 0.0, 0.0,
+                                          1.0, 0.0, 0.0, 7.0, &hits), 0);
+
+    /* No emitted hit may carry a synthetic (0) or "none" (-1) surface id. */
+    for (size_t i = 0; i < hits.hits.count; i++) {
+        ASSERT(hits.hits.data[i].surface_id > 0);
+        ASSERT(hits.hits.data[i].primitive_id != ALEA_PRIMITIVE_ID_INVALID);
+    }
+
+    /* Segments may still record synthetic boundaries; confirm the model
+     * actually exercises at least one so the assertion above is meaningful. */
+    int saw_synthetic = 0;
+    for (size_t i = 0; i < hits.segments.count; i++) {
+        if (hits.segments.data[i].exit_surface_id == 0 ||
+            hits.segments.data[i].enter_surface_id == 0) {
+            saw_synthetic = 1;
+            break;
+        }
+    }
+    ASSERT(saw_synthetic);
+
+    alea_raycast_result_free(&hits);
+    mcnp_model_destroy(model);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
 TEST_MAIN()

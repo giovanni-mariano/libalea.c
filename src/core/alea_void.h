@@ -138,6 +138,26 @@ typedef struct void_result {
     size_t snapshot_surfaces;
     size_t snapshot_nodes;
     size_t snapshot_primitives;
+    size_t snapshot_primitive_planes;
+    size_t snapshot_primitive_spheres;
+    size_t snapshot_primitive_cyl_x;
+    size_t snapshot_primitive_cyl_y;
+    size_t snapshot_primitive_cyl_z;
+    size_t snapshot_primitive_cone_x;
+    size_t snapshot_primitive_cone_y;
+    size_t snapshot_primitive_cone_z;
+    size_t snapshot_primitive_boxes;
+    size_t snapshot_primitive_quadrics;
+    size_t snapshot_primitive_toruses;
+    size_t snapshot_primitive_rccs;
+    size_t snapshot_primitive_box_generals;
+    size_t snapshot_primitive_sphs;
+    size_t snapshot_primitive_trcs;
+    size_t snapshot_primitive_ells;
+    size_t snapshot_primitive_recs;
+    size_t snapshot_primitive_weds;
+    size_t snapshot_primitive_rhps;
+    size_t snapshot_primitive_arbs;
     int    snapshot_next_auto_surface_id;
 } void_result_t;
 

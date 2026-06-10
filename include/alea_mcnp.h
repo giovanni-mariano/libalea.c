@@ -24,7 +24,9 @@
 #define ALEA_MCNP_H
 
 #include "alea.h"
+#include "util/alea_vec.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -57,6 +59,17 @@ extern "C" {
 /**
  * @brief MCNP-specific cell parameters (parallel array to sys->cells)
  */
+#define MCNP_INLINE_TRANSFORM_INVALID UINT32_MAX
+
+typedef struct {
+    uint8_t count;
+    uint8_t degrees;
+    uint8_t reserved[6];
+    double values[13];
+} mcnp_inline_transform_t;
+
+ALEA_VEC_DEFINE(mcnp_inline_transform_vec, mcnp_inline_transform_t);
+
 typedef struct {
     double imp_n, imp_p, imp_e;
 
@@ -68,11 +81,11 @@ typedef struct {
     int trcl_inline;
     int trcl_degrees;
     int trcl_count;
-    double trcl_data[13];
+    uint32_t trcl_inline_index;
     int fill_transform_inline;
     int fill_transform_degrees;
     int fill_transform_count;
-    double fill_transform_data[13];
+    uint32_t fill_transform_index;
     int like_cell_id;
 
     /* Flags indicating which parameters were explicitly set */
@@ -113,6 +126,7 @@ typedef struct {
     mcnp_cell_params_t* cell_params;        /* parallel array, indexed like sys->cells */
     size_t cell_params_count;
     size_t cell_params_capacity;
+    mcnp_inline_transform_vec_t inline_transforms;
     mcnp_export_config_t export_config;
 } mcnp_model_t;
 
@@ -187,6 +201,14 @@ mcnp_cell_params_t* mcnp_cell_params(mcnp_model_t* m, size_t idx);
  * @brief Get cell params by index (const, bounds-checked)
  */
 const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t idx);
+
+uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
+                                         const double* values,
+                                         int count,
+                                         int degrees);
+const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
+    const mcnp_model_t* model,
+    uint32_t index);
 
 /**
  * @brief Ensure cell_params array has room for at least `cap` entries

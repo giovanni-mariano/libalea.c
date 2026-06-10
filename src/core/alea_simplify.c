@@ -478,43 +478,47 @@ static box_surface_relation_t check_box_surface_relation(
     const alea_node_t* node = &sys->nodes.data[prim_node_id];
     alea_primitive_id_t prim_id = node->primitive.primitive_id;
     const alea_primitive_entry_t* prim = &sys->primitives.data[prim_id];
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(sys, prim_id, &data)) {
+        return BOX_INTERSECTS;
+    }
 
     switch (prim->type) {
         case ALEA_PRIMITIVE_PLANE:
-            return check_plane(&prim->data.plane, box);
+            return check_plane(&data.plane, box);
 
         case ALEA_PRIMITIVE_SPHERE:
-            return check_sphere(&prim->data.sphere, box);
+            return check_sphere(&data.sphere, box);
 
         case ALEA_PRIMITIVE_CYLINDER_X:
-            return check_cylinder_x(&prim->data.cyl_x, box);
+            return check_cylinder_x(&data.cyl_x, box);
 
         case ALEA_PRIMITIVE_CYLINDER_Y:
-            return check_cylinder_y(&prim->data.cyl_y, box);
+            return check_cylinder_y(&data.cyl_y, box);
 
         case ALEA_PRIMITIVE_CYLINDER_Z:
-            return check_cylinder_z(&prim->data.cyl_z, box);
+            return check_cylinder_z(&data.cyl_z, box);
 
         case ALEA_PRIMITIVE_CONE_X:
-            return check_cone_x(&prim->data.cone_x, box);
+            return check_cone_x(&data.cone_x, box);
 
         case ALEA_PRIMITIVE_CONE_Y:
-            return check_cone_y(&prim->data.cone_y, box);
+            return check_cone_y(&data.cone_y, box);
 
         case ALEA_PRIMITIVE_CONE_Z:
-            return check_cone_z(&prim->data.cone_z, box);
+            return check_cone_z(&data.cone_z, box);
 
         case ALEA_PRIMITIVE_QUADRIC:
-            return check_quadric(&prim->data.quadric, box);
+            return check_quadric(&data.quadric, box);
 
         case ALEA_PRIMITIVE_TORUS_X:
-            return check_torus_x(&prim->data.torus, box);
+            return check_torus_x(&data.torus, box);
 
         case ALEA_PRIMITIVE_TORUS_Y:
-            return check_torus_y(&prim->data.torus, box);
+            return check_torus_y(&data.torus, box);
 
         case ALEA_PRIMITIVE_TORUS_Z:
-            return check_torus_z(&prim->data.torus, box);
+            return check_torus_z(&data.torus, box);
 
         case ALEA_PRIMITIVE_RPP:
         case ALEA_PRIMITIVE_RCC:
@@ -1083,8 +1087,12 @@ static size_t remove_semantic_duplicates(const alea_system_t* sys, node_list_t* 
 
                 const alea_primitive_entry_t* k_prim = &sys->primitives.data[k_prim_id];
                 int8_t match_inv = 0;
-                if (alea_primitives_equal(prim->type, &prim->data,
-                                         k_prim->type, &k_prim->data,
+                alea_primitive_data_t prim_data;
+                alea_primitive_data_t k_prim_data;
+                if (alea_primitive_copy_data(sys, prim_id, &prim_data) &&
+                    alea_primitive_copy_data(sys, k_prim_id, &k_prim_data) &&
+                    alea_primitives_equal(prim->type, &prim_data,
+                                         k_prim->type, &k_prim_data,
                                          &sys->config, &match_inv)) {
                     // Geometrically identical surfaces
                     int8_t adjusted_sense = eff_sense;
@@ -1221,42 +1229,51 @@ static int check_sphere_containment(
  * Returns: 1 if B is redundant, -1 if A is redundant, 0 if no subsumption detected.
  */
 static int check_typed_pairwise_subsumption(
-    const alea_primitive_entry_t* prim_a, int8_t sense_a,
-    const alea_primitive_entry_t* prim_b, int8_t sense_b
+    const alea_system_t* sys,
+    alea_primitive_id_t prim_a_id, int8_t sense_a,
+    alea_primitive_id_t prim_b_id, int8_t sense_b
 ) {
+    const alea_primitive_entry_t* prim_a = &sys->primitives.data[prim_a_id];
+    const alea_primitive_entry_t* prim_b = &sys->primitives.data[prim_b_id];
     if (prim_a->type != prim_b->type) return 0;
+    alea_primitive_data_t data_a;
+    alea_primitive_data_t data_b;
+    if (!alea_primitive_copy_data(sys, prim_a_id, &data_a) ||
+        !alea_primitive_copy_data(sys, prim_b_id, &data_b)) {
+        return 0;
+    }
 
     switch (prim_a->type) {
         case ALEA_PRIMITIVE_PLANE:
             return check_parallel_planes(
-                &prim_a->data.plane, sense_a,
-                &prim_b->data.plane, sense_b);
+                &data_a.plane, sense_a,
+                &data_b.plane, sense_b);
 
         case ALEA_PRIMITIVE_SPHERE:
             return check_sphere_containment(
-                &prim_a->data.sphere, sense_a,
-                &prim_b->data.sphere, sense_b);
+                &data_a.sphere, sense_a,
+                &data_b.sphere, sense_b);
 
         case ALEA_PRIMITIVE_CYLINDER_Z:
             return check_coaxial_cylinders(
-                prim_a->data.cyl_z.center_x, prim_a->data.cyl_z.center_y,
-                prim_a->data.cyl_z.radius, sense_a,
-                prim_b->data.cyl_z.center_x, prim_b->data.cyl_z.center_y,
-                prim_b->data.cyl_z.radius, sense_b);
+                data_a.cyl_z.center_x, data_a.cyl_z.center_y,
+                data_a.cyl_z.radius, sense_a,
+                data_b.cyl_z.center_x, data_b.cyl_z.center_y,
+                data_b.cyl_z.radius, sense_b);
 
         case ALEA_PRIMITIVE_CYLINDER_X:
             return check_coaxial_cylinders(
-                prim_a->data.cyl_x.center_y, prim_a->data.cyl_x.center_z,
-                prim_a->data.cyl_x.radius, sense_a,
-                prim_b->data.cyl_x.center_y, prim_b->data.cyl_x.center_z,
-                prim_b->data.cyl_x.radius, sense_b);
+                data_a.cyl_x.center_y, data_a.cyl_x.center_z,
+                data_a.cyl_x.radius, sense_a,
+                data_b.cyl_x.center_y, data_b.cyl_x.center_z,
+                data_b.cyl_x.radius, sense_b);
 
         case ALEA_PRIMITIVE_CYLINDER_Y:
             return check_coaxial_cylinders(
-                prim_a->data.cyl_y.center_x, prim_a->data.cyl_y.center_z,
-                prim_a->data.cyl_y.radius, sense_a,
-                prim_b->data.cyl_y.center_x, prim_b->data.cyl_y.center_z,
-                prim_b->data.cyl_y.radius, sense_b);
+                data_a.cyl_y.center_x, data_a.cyl_y.center_z,
+                data_a.cyl_y.radius, sense_a,
+                data_b.cyl_y.center_x, data_b.cyl_y.center_z,
+                data_b.cyl_y.radius, sense_b);
 
         default:
             return 0;
@@ -1280,7 +1297,8 @@ static int check_general_pairwise_subsumption(
 
     // Try: does A imply B? (evaluate B's surface over A's bbox)
     {
-        const alea_bbox_t* ba = &na->bbox;
+        const alea_bbox_t ba_v = alea_node_bbox_get(&na->bbox);
+        const alea_bbox_t* ba = &ba_v;
         if (ba->min_x <= ba->max_x &&
             ba->max_x - ba->min_x < UNBOUNDED_THRESHOLD &&
             ba->max_y - ba->min_y < UNBOUNDED_THRESHOLD &&
@@ -1299,7 +1317,8 @@ static int check_general_pairwise_subsumption(
 
     // Try: does B imply A? (evaluate A's surface over B's bbox)
     {
-        const alea_bbox_t* bb = &nb->bbox;
+        const alea_bbox_t bb_v = alea_node_bbox_get(&nb->bbox);
+        const alea_bbox_t* bb = &bb_v;
         if (bb->min_x <= bb->max_x &&
             bb->max_x - bb->min_x < UNBOUNDED_THRESHOLD &&
             bb->max_y - bb->min_y < UNBOUNDED_THRESHOLD &&
@@ -1349,8 +1368,6 @@ static size_t remove_subsumed_terms(
         alea_primitive_id_t pid_i = ni->primitive.primitive_id;
         int8_t sense_i = ni->primitive.sense;
         if (ni->primitive.inverted) sense_i = -sense_i;
-        const alea_primitive_entry_t* prim_i = &sys->primitives.data[pid_i];
-
         for (size_t j = i + 1; j < terms->vec.count; j++) {
             if (alea_bitset_test(&redundant, j)) continue;
 
@@ -1361,11 +1378,9 @@ static size_t remove_subsumed_terms(
             alea_primitive_id_t pid_j = nj->primitive.primitive_id;
             int8_t sense_j = nj->primitive.sense;
             if (nj->primitive.inverted) sense_j = -sense_j;
-            const alea_primitive_entry_t* prim_j = &sys->primitives.data[pid_j];
-
             // Try specialized check first
             int result = check_typed_pairwise_subsumption(
-                prim_i, sense_i, prim_j, sense_j);
+                sys, pid_i, sense_i, pid_j, sense_j);
 
             // Fall back to general interval arithmetic
             if (result == 0) {
@@ -1735,7 +1750,8 @@ static size_t remove_geometrically_subsumed_branches(
 
         /* Get bbox for Ti */
         const alea_node_t* ti_node = &sys->nodes.data[ti];
-        const alea_bbox_t* ti_bbox = &ti_node->bbox;
+        const alea_bbox_t ti_bbox_v = alea_node_bbox_get(&ti_node->bbox);
+        const alea_bbox_t* ti_bbox = &ti_bbox_v;
 
         /* Skip if bbox is degenerate */
         if (ti_bbox->min_x > ti_bbox->max_x) continue;
@@ -1878,7 +1894,8 @@ static bool compute_intersection_bbox(
          * sense: e.g. plane z=5, sense>0 → bbox min_z=5; sense<0 → max_z=5.
          * Both interior AND exterior half-spaces can provide useful one-sided
          * bounds (planes always do, exterior of closed surfaces don't). */
-        const alea_bbox_t* nb = &node->bbox;
+        const alea_bbox_t nb_v = alea_node_bbox_get(&node->bbox);
+        const alea_bbox_t* nb = &nb_v;
         if (nb->min_x > nb->max_x) continue;  /* degenerate */
 
         /* Check each bound independently.  A half-space typically provides
@@ -2292,7 +2309,8 @@ void alea_flatten_all_cells(
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
         const alea_node_t* root_node = &sys->nodes.data[cell->root_node_id];
-        const alea_bbox_t* bbox = &root_node->bbox;
+        const alea_bbox_t bbox_v = alea_node_bbox_get(&root_node->bbox);
+        const alea_bbox_t* bbox = &bbox_v;
 
         /* Skip cells with degenerate bbox */
         if (bbox->min_x > bbox->max_x) continue;

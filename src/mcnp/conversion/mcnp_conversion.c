@@ -26,6 +26,16 @@
 #include <string.h>
 #include <ctype.h>
 
+static int load_profile_enabled(void) {
+    const char* v = getenv("ALEA_PROFILE_LOAD");
+    return v && *v && strcmp(v, "0") != 0;
+}
+
+static void load_profile_stage(const char* name, double start, double end) {
+    if (load_profile_enabled()) {
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n", name, end - start);
+    }
+}
 
 // ============================================================================
 // MATERIAL PARSING
@@ -344,12 +354,19 @@ static void reserve_from_mcnp(alea_system_t* sys, const mcnp_context_t* mcnp) {
 mcnp_model_t* mcnp_convert_to_model(const char* filename) {
     if (!filename) return NULL;
 
+    const int profile = load_profile_enabled();
+    double t_convert0 = alea_monotonic_seconds();
+    double t0, t1;
+
     // Parse MCNP file
     mcnp_context_t* mcnp = NULL;
+    t0 = alea_monotonic_seconds();
     if (!mcnp_parse_file(filename, &mcnp) || !mcnp) {
         ALEA_LOG_ERROR("Failed to parse MCNP file: %s\n", filename);
         return NULL;
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("parse_file", t0, t1);
 
     ALEA_LOG_DEBUG("Parsed MCNP file: %zu surfaces, %zu cells, %zu materials\n",
            mcnp->surface_count, mcnp->cell_count, mcnp->material_count);
@@ -376,10 +393,14 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
     mcnp_model_register_hooks(model);
 
     // Pre-allocate vectors based on parsed counts to avoid reallocations
+    t0 = alea_monotonic_seconds();
     reserve_from_mcnp(sys, mcnp);
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("reserve_from_mcnp", t0, t1);
 
    // Convert all transforms (TRn cards)
     ALEA_LOG_INFO("\nConverting transforms...\n");
+    t0 = alea_monotonic_seconds();
     for (size_t i = 0; i < mcnp->transform_count; i++) {
         mcnp_transform_t* tr = mcnp->transforms[i];
         double values[13];
@@ -398,14 +419,20 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
             return NULL;
         }
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("convert_transforms", t0, t1);
 
     // Set inline transform IDs to start above all TRn card IDs
+    t0 = alea_monotonic_seconds();
     alea_finalize_transform_ids(sys);
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("finalize_transform_ids", t0, t1);
 
     // Convert all surfaces (with automatic deduplication)
     ALEA_LOG_INFO("\nConverting surfaces...\n");
 
     // Build seen-array for O(1) duplicate surface ID detection
+    t0 = alea_monotonic_seconds();
     int max_surf_id = 0;
     for (size_t i = 0; i < mcnp->surface_count; i++) {
         if (mcnp->surfaces[i]->surface_id > max_surf_id)
@@ -433,12 +460,18 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
         }
     }
     alea_bitset_destroy(&surf_seen);
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("convert_surfaces", t0, t1);
 
     // Build surface lookup table
+    t0 = alea_monotonic_seconds();
     alea_build_surface_lookup(sys);
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("build_surface_lookup", t0, t1);
 
     // Convert all materials (before cells, so cell conversion can resolve material indices)
     ALEA_LOG_INFO("\nConverting materials...\n");
+    t0 = alea_monotonic_seconds();
     for (size_t i = 0; i < mcnp->material_count; i++) {
         if (g_alea_interrupted) goto interrupted;
         if (convert_material(sys, mcnp->materials[i]) < 0) {
@@ -446,9 +479,13 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
                     mcnp->materials[i]->material_id);
         }
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("convert_materials", t0, t1);
 
     // Convert all cells (hooks auto-grow model->cell_params)
     ALEA_LOG_INFO("\nConverting cells...\n");
+    alea_cell_conversion_profile_reset();
+    t0 = alea_monotonic_seconds();
     for (size_t i = 0; i < mcnp->cell_count; i++) {
         if (g_alea_interrupted) goto interrupted;
         if (alea_convert_cell(sys, mcnp->cells[i], model) == UINT32_MAX) {
@@ -459,8 +496,19 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
             return NULL;
         }
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("convert_cells", t0, t1);
+    alea_cell_conversion_profile_print();
 
+    t0 = alea_monotonic_seconds();
     if (!alea_vec_empty(&sys->cell_refs)) {
+        if (profile) {
+            fprintf(stderr,
+                    "[alea-load-profile] %-28s %zu refs over %zu cells\n",
+                    "cell_complement_work",
+                    alea_vec_count(&sys->cell_refs),
+                    alea_vec_count(&sys->cells));
+        }
         ALEA_LOG_INFO("\nResolving cell complement references...\n");
         int resolved = alea_resolve_cell_complements(sys);
         if (resolved < 0) {
@@ -470,9 +518,12 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
             return NULL;
         }
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("resolve_cell_complements", t0, t1);
 
     // Resolve LIKE BUT cells (must happen before TRCL transforms)
     ALEA_LOG_INFO("\nResolving LIKE BUT cells...\n");
+    t0 = alea_monotonic_seconds();
     int like_count = alea_resolve_like_cells(sys, model);
     if (like_count < 0) {
         ALEA_LOG_ERROR("Error resolving LIKE cells");
@@ -480,9 +531,12 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
         mcnp_context_destroy(mcnp);
         return NULL;
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("resolve_like_cells", t0, t1);
 
     // Apply TRCL transforms to cells
     ALEA_LOG_INFO("\nApplying TRCL transforms...\n");
+    t0 = alea_monotonic_seconds();
     int trcl_count = alea_apply_trcl_transforms(sys, model);
     if (trcl_count < 0) {
         ALEA_LOG_ERROR("Error applying TRCL transforms");
@@ -490,13 +544,16 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
         mcnp_context_destroy(mcnp);
         return NULL;
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("apply_trcl_transforms", t0, t1);
 
     // Compute lattice pitch and lower_left from cell bounding boxes
+    t0 = alea_monotonic_seconds();
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
 
-        alea_bbox_t bb = sys->nodes.data[cell->root_node_id].bbox;
+        alea_bbox_t bb = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
         cell->lat_pitch[0] = bb.max_x - bb.min_x;
         cell->lat_pitch[1] = bb.max_y - bb.min_y;
         cell->lat_pitch[2] = bb.max_z - bb.min_z;
@@ -509,19 +566,36 @@ mcnp_model_t* mcnp_convert_to_model(const char* filename) {
                      cell->lat_pitch[0], cell->lat_pitch[1], cell->lat_pitch[2],
                      cell->lat_lower_left[0], cell->lat_lower_left[1], cell->lat_lower_left[2]);
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("compute_lattice_pitch", t0, t1);
 
     // Detect vacuum boundaries from graveyard cell
     ALEA_LOG_INFO("\nDetecting vacuum boundaries...\n");
+    t0 = alea_monotonic_seconds();
     int vacuum_count = detect_vacuum_boundaries(sys, model);
     if (vacuum_count > 0) {
         ALEA_LOG_INFO("Marked %d vacuum boundary surfaces\n", vacuum_count);
     }
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("detect_vacuum_boundaries", t0, t1);
 
     // Print statistics
+    t0 = alea_monotonic_seconds();
     alea_system_print_stats(sys);
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("print_stats", t0, t1);
 
     // Cleanup MCNP context
+    t0 = alea_monotonic_seconds();
     mcnp_context_destroy(mcnp);
+    t1 = alea_monotonic_seconds();
+    load_profile_stage("destroy_parse_context", t0, t1);
+
+    if (profile) {
+        double t_convert1 = alea_monotonic_seconds();
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "mcnp_convert_to_model_total", t_convert1 - t_convert0);
+    }
 
     return model;
 

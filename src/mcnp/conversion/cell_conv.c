@@ -22,6 +22,68 @@
 #include <string.h>
 #include <stdio.h>
 
+typedef struct {
+    double geometry;
+    double params;
+    double material;
+    double add_cell;
+    double comments;
+    double fill_transform;
+    double lattice;
+    double model_params;
+    double stats_log;
+    size_t cells;
+    size_t like_cells;
+} cell_conversion_profile_t;
+
+static cell_conversion_profile_t g_cell_profile;
+
+static int cell_profile_enabled(void) {
+    static int enabled = -1;
+    if (enabled >= 0) return enabled;
+    const char* v = getenv("ALEA_PROFILE_LOAD");
+    enabled = (v && *v && strcmp(v, "0") != 0) ? 1 : 0;
+    return enabled;
+}
+
+static double cell_profile_now(void) {
+    return alea_monotonic_seconds();
+}
+
+void alea_cell_conversion_profile_reset(void) {
+    memset(&g_cell_profile, 0, sizeof(g_cell_profile));
+}
+
+void alea_cell_conversion_profile_print(void) {
+    if (!cell_profile_enabled()) return;
+    double total = g_cell_profile.geometry + g_cell_profile.params +
+                   g_cell_profile.material + g_cell_profile.add_cell +
+                   g_cell_profile.comments + g_cell_profile.fill_transform +
+                   g_cell_profile.lattice + g_cell_profile.model_params +
+                   g_cell_profile.stats_log;
+    fprintf(stderr,
+            "[alea-load-profile] %-28s %.6f s (cells=%zu like=%zu)\n",
+            "convert_cell_measured", total,
+            g_cell_profile.cells, g_cell_profile.like_cells);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_geometry_parse", g_cell_profile.geometry);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_param_parse", g_cell_profile.params);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_material_lookup", g_cell_profile.material);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_add", g_cell_profile.add_cell);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_comment_copy", g_cell_profile.comments);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_fill_transform", g_cell_profile.fill_transform);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_lattice_setup", g_cell_profile.lattice);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_model_params", g_cell_profile.model_params);
+    fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+            "cell_stats_log_detail", g_cell_profile.stats_log);
+}
 
 // ============================================================================
 // CELL PARAMETERS PARSER
@@ -566,11 +628,16 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
 uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                            mcnp_model_t* model) {
     if (!sys || !cell) return UINT32_MAX;
+    int profile = cell_profile_enabled();
+    double t0 = 0.0;
+    double t1 = 0.0;
+    if (profile) g_cell_profile.cells++;
 
     // Parse the geometry expression using geometry parser
     // This converts the MCNP boolean expression (e.g., "-1 : (2 -3)") into CSG tree
     int like_cell_id = 0;
     const char* but_clause = NULL;
+    if (profile) t0 = cell_profile_now();
     alea_node_id_t root = parse_mcnp_geometry_with_like(
         sys,
         cell->geometry_definition,
@@ -578,9 +645,14 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         &like_cell_id,
         &but_clause
     );
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.geometry += t1 - t0;
+    }
 
     // Handle LIKE cells - defer geometry resolution until all cells parsed
     bool is_like_cell = (root == ALEA_NODE_ID_LIKE_PENDING && like_cell_id > 0);
+    if (profile && is_like_cell) g_cell_profile.like_cells++;
 
     if (root == ALEA_NODE_ID_INVALID) {
         ALEA_LOG_ERROR("Failed to parse geometry for cell %d", cell->cell_id);
@@ -594,6 +666,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
 
     // Parse cell parameters (U=, FILL=, IMP:N=, etc.)
     alea_cell_params_t params;
+    if (profile) t0 = cell_profile_now();
     parse_cell_parameters(cell->parameters, &params, cell->cell_id);
 
     // For LIKE cells, parse BUT clause parameters (override template values)
@@ -660,6 +733,10 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             params.has_lat = 1;
         }
     }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.params += t1 - t0;
+    }
 
     // For LIKE cells, use material/density from BUT clause (or keep 0 for resolution)
     int material_id = is_like_cell && params.has_mat ? params.material_id : cell->material_id;
@@ -667,19 +744,29 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
 
     // Resolve MCNP material ID to material index (auto-register if missing)
     int mat_index = ALEA_MATERIAL_VOID;
+    if (profile) t0 = cell_profile_now();
     if (material_id != 0) {
         mat_index = alea_find_material_by_id(sys, material_id);
         if (mat_index < 0) {
             mat_index = alea_add_material(sys, material_id);
         }
     }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.material += t1 - t0;
+    }
 
     // Add cell to system (use _with_id for file loading - validation done after all cells loaded)
+    if (profile) t0 = cell_profile_now();
     int cell_idx = alea_add_cell_with_id(sys, cell->cell_id, root,
                                         mat_index, density,
                                         params.universe_id);
     if (cell_idx < 0) {
         return UINT32_MAX;
+    }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.add_cell += t1 - t0;
     }
 
     // Write core fields to cell entry
@@ -695,12 +782,18 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
     }
 
     // Copy comments from parsed cell
+    if (profile) t0 = cell_profile_now();
     if (cell->comments)
         entry->comments = alea_strdup(cell->comments);
     if (cell->inline_comment)
         entry->inline_comment = alea_strdup(cell->inline_comment);
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.comments += t1 - t0;
+    }
 
     // Handle inline FILL transforms (registered in sys, ID stored in entry)
+    if (profile) t0 = cell_profile_now();
     if (params.fill_transform_inline && params.fill_transform_count > 0) {
         int tr_id = alea_add_inline_transform(
             sys,
@@ -718,8 +811,13 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             return UINT32_MAX;
         }
     }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.fill_transform += t1 - t0;
+    }
 
     // Lattice FILL array (transfer ownership of array)
+    if (profile) t0 = cell_profile_now();
     if (params.lat_fill_is_array && params.lat_fill && params.lat_fill_count > 0) {
         for (int i = 0; i < 6; i++) {
             entry->lat_fill_dims[i] = params.lat_fill_dims[i];
@@ -743,8 +841,13 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             // lat_fill_dims defaults to [0,0,0,0,0,0] giving 1x1x1
         }
     }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.lattice += t1 - t0;
+    }
 
     // Write MCNP-specific fields to model params
+    if (profile) t0 = cell_profile_now();
     if (model) {
         mcnp_cell_params_t* mp = mcnp_cell_params(model, (size_t)cell_idx);
         if (mp) {
@@ -766,14 +869,35 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             mp->fill_transform_inline = params.fill_transform_inline;
             mp->fill_transform_degrees = params.fill_transform_degrees;
             mp->fill_transform_count = params.fill_transform_count;
-            for (int i = 0; i < params.fill_transform_count && i < 13; i++) {
-                mp->fill_transform_data[i] = params.fill_transform_data[i];
+            mp->fill_transform_index = MCNP_INLINE_TRANSFORM_INVALID;
+            if (params.fill_transform_inline && params.fill_transform_count > 0) {
+                mp->fill_transform_index = mcnp_model_add_inline_transform(
+                    model, params.fill_transform_data,
+                    params.fill_transform_count,
+                    params.fill_transform_degrees);
+                if (mp->fill_transform_index == MCNP_INLINE_TRANSFORM_INVALID) {
+                    ALEA_LOG_ERROR("Cell %d: failed to store inline FILL transform",
+                                   cell->cell_id);
+                    return UINT32_MAX;
+                }
             }
 
             // TRCL - cell transformation
             mp->trcl = params.trcl;
             mp->trcl_degrees = params.trcl_degrees;
             mp->has_trcl = params.has_trcl;
+            mp->trcl_inline_index = MCNP_INLINE_TRANSFORM_INVALID;
+            if (params.trcl_inline && params.trcl_count > 0) {
+                mp->trcl_inline_index = mcnp_model_add_inline_transform(
+                    model, params.trcl_data,
+                    params.trcl_count,
+                    params.trcl_degrees);
+                if (mp->trcl_inline_index == MCNP_INLINE_TRANSFORM_INVALID) {
+                    ALEA_LOG_ERROR("Cell %d: failed to store inline TRCL transform",
+                                   cell->cell_id);
+                    return UINT32_MAX;
+                }
+            }
             if (params.trcl_inline && params.trcl_count > 0) {
                 int trcl_id = alea_add_inline_transform(
                     sys, params.trcl_data, params.trcl_count,
@@ -788,9 +912,6 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             }
             mp->trcl_inline = params.trcl_inline;
             mp->trcl_count = params.trcl_count;
-            for (int i = 0; i < params.trcl_count && i < 13; i++) {
-                mp->trcl_data[i] = params.trcl_data[i];
-            }
 
             // LIKE BUT - store template cell ID for later resolution
             mp->like_cell_id = like_cell_id;
@@ -800,7 +921,12 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             }
         }
     }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.model_params += t1 - t0;
+    }
 
+    if (profile) t0 = cell_profile_now();
     sys->stats.cells_converted++;
 
     {
@@ -823,6 +949,10 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         } else {
             ALEA_LOG_INFO("Converted cell %d to CSG tree (root node %u)%s", cell->cell_id, root, detail);
         }
+    }
+    if (profile) {
+        t1 = cell_profile_now();
+        g_cell_profile.stats_log += t1 - t0;
     }
     
     // For LIKE cells, root is ALEA_NODE_ID_INVALID (pending resolution) but the
@@ -867,8 +997,11 @@ int alea_apply_trcl_transforms(alea_system_t* sys, mcnp_model_t* model) {
             }
         } else if (mp->trcl_inline && mp->trcl_count > 0) {
             /* Inline TRCL data */
-            if (!alea_matrix_from_mcnp(&mat, mp->trcl_data, mp->trcl_count,
-                                       mp->trcl_degrees)) {
+            const mcnp_inline_transform_t* inline_tr =
+                mcnp_model_inline_transform_const(model, mp->trcl_inline_index);
+            if (!inline_tr ||
+                !alea_matrix_from_mcnp(&mat, inline_tr->values, inline_tr->count,
+                                       inline_tr->degrees)) {
                 ALEA_LOG_ERROR("Cell %d: inline TRCL is not invertible",
                                cell->mc_cell_id);
                 return -1;

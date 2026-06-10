@@ -36,6 +36,81 @@ static void set_coarse_void_config(alea_system_t* sys) {
     alea_set_config(sys, &cfg);
 }
 
+typedef struct {
+    size_t planes;
+    size_t spheres;
+    size_t cyl_x;
+    size_t cyl_y;
+    size_t cyl_z;
+    size_t cone_x;
+    size_t cone_y;
+    size_t cone_z;
+    size_t boxes;
+    size_t quadrics;
+    size_t toruses;
+    size_t rccs;
+    size_t box_generals;
+    size_t sphs;
+    size_t trcs;
+    size_t ells;
+    size_t recs;
+    size_t weds;
+    size_t rhps;
+    size_t arbs;
+} primitive_payload_counts_t;
+
+static primitive_payload_counts_t primitive_payload_counts(const alea_system_t* sys) {
+    primitive_payload_counts_t counts = {
+        .planes = alea_vec_count(&sys->primitive_planes),
+        .spheres = alea_vec_count(&sys->primitive_spheres),
+        .cyl_x = alea_vec_count(&sys->primitive_cyl_x),
+        .cyl_y = alea_vec_count(&sys->primitive_cyl_y),
+        .cyl_z = alea_vec_count(&sys->primitive_cyl_z),
+        .cone_x = alea_vec_count(&sys->primitive_cone_x),
+        .cone_y = alea_vec_count(&sys->primitive_cone_y),
+        .cone_z = alea_vec_count(&sys->primitive_cone_z),
+        .boxes = alea_vec_count(&sys->primitive_boxes),
+        .quadrics = alea_vec_count(&sys->primitive_quadrics),
+        .toruses = alea_vec_count(&sys->primitive_toruses),
+        .rccs = alea_vec_count(&sys->primitive_rccs),
+        .box_generals = alea_vec_count(&sys->primitive_box_generals),
+        .sphs = alea_vec_count(&sys->primitive_sphs),
+        .trcs = alea_vec_count(&sys->primitive_trcs),
+        .ells = alea_vec_count(&sys->primitive_ells),
+        .recs = alea_vec_count(&sys->primitive_recs),
+        .weds = alea_vec_count(&sys->primitive_weds),
+        .rhps = alea_vec_count(&sys->primitive_rhps),
+        .arbs = alea_vec_count(&sys->primitive_arbs),
+    };
+    return counts;
+}
+
+static void assert_primitive_payload_counts_equal(
+    primitive_payload_counts_t actual,
+    primitive_payload_counts_t expected
+) {
+    ASSERT_EQ(actual.planes, expected.planes);
+    ASSERT_EQ(actual.spheres, expected.spheres);
+    ASSERT_EQ(actual.cyl_x, expected.cyl_x);
+    ASSERT_EQ(actual.cyl_y, expected.cyl_y);
+    ASSERT_EQ(actual.cyl_z, expected.cyl_z);
+    ASSERT_EQ(actual.cone_x, expected.cone_x);
+    ASSERT_EQ(actual.cone_y, expected.cone_y);
+    ASSERT_EQ(actual.cone_z, expected.cone_z);
+    ASSERT_EQ(actual.boxes, expected.boxes);
+    ASSERT_EQ(actual.quadrics, expected.quadrics);
+    ASSERT_EQ(actual.toruses, expected.toruses);
+    ASSERT_EQ(actual.rccs, expected.rccs);
+    ASSERT_EQ(actual.box_generals, expected.box_generals);
+    ASSERT_EQ(actual.sphs, expected.sphs);
+    ASSERT_EQ(actual.trcs, expected.trcs);
+    ASSERT_EQ(actual.ells, expected.ells);
+    ASSERT_EQ(actual.recs, expected.recs);
+    ASSERT_EQ(actual.weds, expected.weds);
+    ASSERT_EQ(actual.rhps, expected.rhps);
+    ASSERT_EQ(actual.arbs, expected.arbs);
+}
+
 /* Helper: create a system with a single box cell at [-1,1]^3 in universe 0 */
 static alea_system_t* make_box_system(void) {
     alea_system_t* sys = alea_create();
@@ -501,6 +576,7 @@ TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
     size_t nodes_before      = alea_vec_count(&sys->nodes);
     size_t primitives_before = alea_vec_count(&sys->primitives);
     size_t cells_before      = alea_cell_count(sys);
+    primitive_payload_counts_t payloads_before = primitive_payload_counts(sys);
 
     /* Fail the 5th octree-node allocation: root succeeds, several children
      * succeed, then one fails partway through subdivision. */
@@ -522,6 +598,7 @@ TEST(void_generation_aborts_on_partial_octree_allocation_failure) {
     ASSERT_EQ(alea_vec_count(&sys->surfaces),   surfaces_before);
     ASSERT_EQ(alea_vec_count(&sys->nodes),      nodes_before);
     ASSERT_EQ(alea_vec_count(&sys->primitives), primitives_before);
+    assert_primitive_payload_counts_equal(primitive_payload_counts(sys), payloads_before);
 
     /* Sanity: a clean generate after the injection is removed should
      * succeed normally — proves rollback left sys in a usable state. */

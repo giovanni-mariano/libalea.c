@@ -103,7 +103,7 @@ static alea_bbox_t universe_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
 
     const alea_node_t* root = &sys->nodes.data[cell->root_node_id];
     if (root->bbox.min_x <= root->bbox.max_x) {
-        return root->bbox;
+        return alea_node_bbox_get(&root->bbox);
     }
 
     alea_bbox_t bbox = alea_get_bbox(sys, cell->root_node_id);
@@ -766,7 +766,8 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
         uint32_t prim_id = sys->surfaces.data[i].primitive_id;
         if (prim_id >= alea_vec_count(&sys->primitives)) continue;
         alea_primitive_type_t prim_type = sys->primitives.data[prim_id].type;
-        alea_primitive_data_t prim_data = sys->primitives.data[prim_id].data;
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, prim_id, &prim_data)) continue;
 
         alea_node_id_t exp_neg = ALEA_NODE_ID_INVALID;
         alea_node_id_t exp_pos = ALEA_NODE_ID_INVALID;
@@ -1613,9 +1614,13 @@ static alea_node_id_t clone_tree_impl(alea_system_t* dst, const alea_system_t* s
             /* Transform primitive — always re-transform (remap cache is not
              * valid across calls with different transforms) */
             alea_primitive_entry_t* src_prim = &src->primitives.data[src_prim_id];
+            alea_primitive_data_t src_data;
+            if (!alea_primitive_copy_data(src, src_prim_id, &src_data)) {
+                return ALEA_NODE_ID_INVALID;
+            }
             alea_primitive_data_t transformed_data;
             alea_primitive_type_t transformed_type;
-            bool xform_ok = alea_primitive_transform(src_prim->type, &src_prim->data, mat->m,
+            bool xform_ok = alea_primitive_transform(src_prim->type, &src_data, mat->m,
                                                      &transformed_type, &transformed_data);
             if (!xform_ok) {
                 /* Per-type transform refused to bake (e.g., a rotated torus
@@ -1650,7 +1655,10 @@ static alea_node_id_t clone_tree_impl(alea_system_t* dst, const alea_system_t* s
         } else {
             /* No transform, cache miss — copy data directly */
             alea_primitive_entry_t* src_prim = &src->primitives.data[src_prim_id];
-            alea_primitive_data_t data_copy = src_prim->data;
+            alea_primitive_data_t data_copy;
+            if (!alea_primitive_copy_data(src, src_prim_id, &data_copy)) {
+                return ALEA_NODE_ID_INVALID;
+            }
 
             dst_prim_id = alea_get_or_create_primitive(
                 dst, src_prim->type, &data_copy, &transform_inverted);
@@ -2608,7 +2616,7 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
          * test against the lattice container bbox. */
         if (ctx->config->clip_active && !is_lattice &&
             cell->root_node_id != ALEA_NODE_ID_INVALID) {
-            const alea_bbox_t local = ctx->src->nodes.data[cell->root_node_id].bbox;
+            const alea_bbox_t local = alea_node_bbox_get(&ctx->src->nodes.data[cell->root_node_id].bbox);
             const alea_bbox_t world = accumulated_transform
                 ? alea_bbox_transform(&local, accumulated_transform)
                 : local;

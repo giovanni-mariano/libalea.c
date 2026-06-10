@@ -66,6 +66,20 @@ int alea_raycast_cell_aware(alea_system_t* sys,
                                 alea_raycast_result_t* result);
 
 /**
+ * @brief Fast hierarchical raycast for material/path segments.
+ *
+ * Uses the hierarchical spatial index and per-ray path state to step through
+ * cells without building a flat spatial index or collecting global surface
+ * hits. The returned segments contain boundary surface IDs where available,
+ * but the result's full hit list is not part of this function's contract.
+ */
+int alea_raycast_hier_fast_segments(alea_system_t* sys,
+                                    double ox, double oy, double oz,
+                                    double dx, double dy, double dz,
+                                    double t_max,
+                                    alea_raycast_result_t* result);
+
+/**
  * @brief Find first cell along ray
  *
  * @param sys System

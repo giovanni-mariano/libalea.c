@@ -432,7 +432,9 @@ static int write_serpent_surfaces(FILE* out, alea_system_t* sys, export_context_
             if (surface->pos_node < alea_vec_count(&sys->nodes)) {
                 inverted = sys->nodes.data[surface->pos_node].primitive.inverted;
             }
-            if (write_serpent_surface(out, surface->mc_surface_id, prim->type, &prim->data, inverted) < 0) {
+            alea_primitive_data_t prim_data;
+            if (!alea_primitive_copy_data(sys, prim_id, &prim_data) ||
+                write_serpent_surface(out, surface->mc_surface_id, prim->type, &prim_data, inverted) < 0) {
                 alea_bitset_destroy(&prim_written);
                 alea_set_error_detail(ALEA_ERR_UNSUPPORTED_SURFACE,
                                       "Serpent export does not support primitive type %d", prim->type);
@@ -453,7 +455,9 @@ static int write_serpent_surfaces(FILE* out, alea_system_t* sys, export_context_
         if (surface->pos_node < alea_vec_count(&sys->nodes)) {
             inverted = sys->nodes.data[surface->pos_node].primitive.inverted;
         }
-        if (write_serpent_surface(out, surface->mc_surface_id, prim->type, &prim->data, inverted) < 0) {
+        alea_primitive_data_t prim_data;
+        if (!alea_primitive_copy_data(sys, surface->primitive_id, &prim_data) ||
+            write_serpent_surface(out, surface->mc_surface_id, prim->type, &prim_data, inverted) < 0) {
             alea_set_error_detail(ALEA_ERR_UNSUPPORTED_SURFACE,
                                   "Serpent export does not support primitive type %d", prim->type);
             return -1;

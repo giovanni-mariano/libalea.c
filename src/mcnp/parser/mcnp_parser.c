@@ -14,6 +14,11 @@
 
 #include "util/compat.h"  /* alea_mapped_file_t, alea_file_map/unmap */
 
+static int parser_profile_enabled(void) {
+    const char* v = getenv("ALEA_PROFILE_LOAD");
+    return v && *v && strcmp(v, "0") != 0;
+}
+
 /* ========================================================================== */
 /* INTERNAL STATE AND HELPERS                                                 */
 /* ========================================================================== */
@@ -123,6 +128,16 @@ void mcnp_context_destroy(mcnp_context_t* ctx) {
 /* ========================================================================== */
 
 int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
+    double total_start = alea_monotonic_seconds();
+    double cell_parse_time = 0.0;
+    double surface_parse_time = 0.0;
+    double material_parse_time = 0.0;
+    double transform_parse_time = 0.0;
+    size_t parsed_cell_cards = 0;
+    size_t parsed_surface_cards = 0;
+    size_t parsed_material_cards = 0;
+    size_t parsed_transform_cards = 0;
+
     alea_mapped_file_t mf = {0};
     if (!alea_file_map(filename, &mf)) {
         ALEA_LOG_ERROR("ERROR: Could not open or map file: %s\n", filename);
@@ -311,20 +326,42 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
         while(isspace((unsigned char)*logical_line_ptr)) logical_line_ptr++;
 
         switch (state) {
-            case STATE_CELL_BLOCK: if (!parse_cell_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0; break;
-            case STATE_SURFACE_BLOCK: if (!parse_surface_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0; break;
+            case STATE_CELL_BLOCK: {
+                double t0 = alea_monotonic_seconds();
+                if (!parse_cell_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0;
+                double t1 = alea_monotonic_seconds();
+                cell_parse_time += t1 - t0;
+                parsed_cell_cards++;
+                break;
+            }
+            case STATE_SURFACE_BLOCK: {
+                double t0 = alea_monotonic_seconds();
+                if (!parse_surface_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0;
+                double t1 = alea_monotonic_seconds();
+                surface_parse_time += t1 - t0;
+                parsed_surface_cards++;
+                break;
+            }
             case STATE_DATA_BLOCK: {
                 char c = tolower((unsigned char)*logical_line_ptr);
                 char c2 = logical_line_ptr[0];
                 /* Material cards: Mn */
                 if (c == 'm' && isdigit((unsigned char)logical_line_ptr[1])) {
+                    double t0 = alea_monotonic_seconds();
                     if (!parse_material_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0;
+                    double t1 = alea_monotonic_seconds();
+                    material_parse_time += t1 - t0;
+                    parsed_material_cards++;
                 }
                 /* Transform cards: TRn or *TRn */
                 else if ((c == 't' && tolower((unsigned char)logical_line_ptr[1]) == 'r') ||
-                         (c2 == '*' && tolower((unsigned char)logical_line_ptr[1]) == 't' && 
+                         (c2 == '*' && tolower((unsigned char)logical_line_ptr[1]) == 't' &&
                           tolower((unsigned char)logical_line_ptr[2]) == 'r')) {
+                    double t0 = alea_monotonic_seconds();
                     if (!parse_transform_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0;
+                    double t1 = alea_monotonic_seconds();
+                    transform_parse_time += t1 - t0;
+                    parsed_transform_cards++;
                 }
                 break;
             }
@@ -405,6 +442,26 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
     }
     *out_context = ctx;
     ALEA_LOG_INFO("Parsing complete. Cells: %zu, Surfaces: %zu, Materials: %zu\n", ctx->cell_count, ctx->surface_count, ctx->material_count);
+    if (parser_profile_enabled()) {
+        double total = alea_monotonic_seconds() - total_start;
+        double cards = cell_parse_time + surface_parse_time +
+                       material_parse_time + transform_parse_time;
+        fprintf(stderr,
+                "[alea-load-profile] %-28s %.6f s (cells=%zu surfaces=%zu materials=%zu transforms=%zu)\n",
+                "parser_parse_cards", cards,
+                parsed_cell_cards, parsed_surface_cards,
+                parsed_material_cards, parsed_transform_cards);
+        fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+                "parser_cell_cards", cell_parse_time);
+        fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+                "parser_surface_cards", surface_parse_time);
+        fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+                "parser_material_cards", material_parse_time);
+        fprintf(stderr, "[alea-load-profile]   %-26s %.6f s\n",
+                "parser_transform_cards", transform_parse_time);
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "parser_line_overhead", total - cards);
+    }
     return 1;
 }
 

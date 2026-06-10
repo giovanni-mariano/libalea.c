@@ -219,10 +219,13 @@ alea_bbox_t alea_get_bbox(alea_system_t* sys, alea_node_id_t id) {
         if (prim_id >= alea_vec_count(&sys->primitives)) {
             return alea_bbox_empty();
         }
-        const alea_primitive_entry_t* entry = &sys->primitives.data[prim_id];
+        alea_primitive_data_t data;
+        if (!alea_primitive_copy_data(sys, prim_id, &data)) {
+            return alea_bbox_empty();
+        }
         /* Compute effective sense: inverted flips the sense */
         int8_t effective_sense = node->primitive.inverted ? -node->primitive.sense : node->primitive.sense;
-        return alea_halfspace_bbox(node->primitive.prim_type, &entry->data, effective_sense);
+        return alea_halfspace_bbox(node->primitive.prim_type, &data, effective_sense);
     }
     
     // Recursively compute for operations
@@ -507,7 +510,8 @@ int alea_compute_bounding_sphere(alea_system_t* sys,
         const alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        const alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t box_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* box = &box_v;
         if (box->min_x > box->max_x) continue;
         double dx = box->max_x - box->min_x;
         double dy = box->max_y - box->min_y;
@@ -540,7 +544,8 @@ int alea_compute_bounding_sphere(alea_system_t* sys,
         const alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        const alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+        const alea_bbox_t box_v = alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+        const alea_bbox_t* box = &box_v;
         if (box->min_x > box->max_x) continue;
         double dx2 = box->max_x - box->min_x;
         double dy2 = box->max_y - box->min_y;
@@ -596,7 +601,9 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
-        alea_bbox_t* box = &sys->nodes.data[cell->root_node_id].bbox;
+        alea_node_bbox_t* node_box = &sys->nodes.data[cell->root_node_id].bbox;
+        alea_bbox_t box_v = alea_node_bbox_get(node_box);
+        alea_bbox_t* box = &box_v;
         if (box->min_x > box->max_x) continue;
         double dx = box->max_x - box->min_x;
         double dy = box->max_y - box->min_y;
@@ -610,7 +617,7 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
                 if (tight.min_x < tight.max_x &&
                     tight.min_y < tight.max_y &&
                     tight.min_z < tight.max_z) {
-                    *box = tight;
+                    alea_node_bbox_set(node_box, &tight);
                     tightened++;
                 }
             }
@@ -626,7 +633,7 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
         if (tight.min_x < tight.max_x &&
             tight.min_y < tight.max_y &&
             tight.min_z < tight.max_z) {
-            *box = tight;
+            alea_node_bbox_set(node_box, &tight);
             tightened++;
         }
     }
@@ -683,7 +690,9 @@ static int collect_plane_constraints(
     uint32_t prim_id = node->primitive.primitive_id;
     if (prim_id >= alea_vec_count(&sys->primitives)) return -1;
 
-    const alea_plane_data_t* p = &sys->primitives.data[prim_id].data.plane;
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(sys, prim_id, &data)) return -1;
+    const alea_plane_data_t* p = &data.plane;
     int8_t eff_sense = node->primitive.sense;
     if (node->primitive.inverted) eff_sense = -eff_sense;
 

@@ -50,9 +50,12 @@ alea_node_id_t alea_create_union(
     // Compute bounding box: union of child boxes
     const alea_node_t* left_node = alea_get_node(sys, left);
     const alea_node_t* right_node = alea_get_node(sys, right);
-    
-    node->bbox = alea_bbox_union(&left_node->bbox, &right_node->bbox);
-    
+
+    alea_bbox_t lb = alea_node_bbox_get(&left_node->bbox);
+    alea_bbox_t rb = alea_node_bbox_get(&right_node->bbox);
+    alea_bbox_t ub = alea_bbox_union(&lb, &rb);
+    alea_node_bbox_set(&node->bbox, &ub);
+
     return node_id;
 }
 
@@ -88,9 +91,12 @@ alea_node_id_t alea_create_intersection(
     // Compute bounding box: intersection of child boxes
     const alea_node_t* left_node = alea_get_node(sys, left);
     const alea_node_t* right_node = alea_get_node(sys, right);
-    
-    node->bbox = alea_bbox_intersection(&left_node->bbox, &right_node->bbox);
-    
+
+    alea_bbox_t lb = alea_node_bbox_get(&left_node->bbox);
+    alea_bbox_t rb = alea_node_bbox_get(&right_node->bbox);
+    alea_bbox_t ib = alea_bbox_intersection(&lb, &rb);
+    alea_node_bbox_set(&node->bbox, &ib);
+
     return node_id;
 }
 
@@ -260,11 +266,12 @@ alea_node_id_t alea_create_complement(
     
     // Bounding box: complement of finite region is infinite
     // Use large conservative bounds
-    node->bbox = (alea_bbox_t){
+    alea_bbox_t inf_bbox = {
         -1.0e6, 1.0e6,
         -1.0e6, 1.0e6,
         -1.0e6, 1.0e6
     };
-    
+    alea_node_bbox_set(&node->bbox, &inf_bbox);
+
     return node_id;
 }

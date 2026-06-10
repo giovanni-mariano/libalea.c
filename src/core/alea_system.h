@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <math.h>    /* nextafterf for alea_node_bbox_set */
+#include <float.h>   /* FLT_MAX for empty-bbox sentinel */
 #include "util/alea_atomic.h"
 #include "alea_types.h"  // All primitive and node types
 #include "alea_materials.h"  // Material, element, mixture types
@@ -94,11 +96,31 @@ typedef struct mcnp_context mcnp_context_t;
  */
 typedef struct {
     alea_primitive_type_t type;
-    alea_primitive_data_t data;
+    uint32_t payload_index;
     uint32_t ref_count;  // How many nodes reference this primitive
 } alea_primitive_entry_t;
 
 ALEA_VEC_DEFINE(alea_primitive_vec, alea_primitive_entry_t);
+ALEA_VEC_DEFINE(alea_plane_data_vec, alea_plane_data_t);
+ALEA_VEC_DEFINE(alea_sphere_data_vec, alea_sphere_data_t);
+ALEA_VEC_DEFINE(alea_cylinder_x_data_vec, alea_cylinder_x_data_t);
+ALEA_VEC_DEFINE(alea_cylinder_y_data_vec, alea_cylinder_y_data_t);
+ALEA_VEC_DEFINE(alea_cylinder_z_data_vec, alea_cylinder_z_data_t);
+ALEA_VEC_DEFINE(alea_cone_x_data_vec, alea_cone_x_data_t);
+ALEA_VEC_DEFINE(alea_cone_y_data_vec, alea_cone_y_data_t);
+ALEA_VEC_DEFINE(alea_cone_z_data_vec, alea_cone_z_data_t);
+ALEA_VEC_DEFINE(alea_box_data_vec, alea_box_data_t);
+ALEA_VEC_DEFINE(alea_quadric_data_vec, alea_quadric_data_t);
+ALEA_VEC_DEFINE(alea_torus_data_vec, alea_torus_data_t);
+ALEA_VEC_DEFINE(alea_rcc_data_vec, alea_rcc_data_t);
+ALEA_VEC_DEFINE(alea_box_general_data_vec, alea_box_general_data_t);
+ALEA_VEC_DEFINE(alea_sph_data_vec, alea_sph_data_t);
+ALEA_VEC_DEFINE(alea_trc_data_vec, alea_trc_data_t);
+ALEA_VEC_DEFINE(alea_ell_data_vec, alea_ell_data_t);
+ALEA_VEC_DEFINE(alea_rec_data_vec, alea_rec_data_t);
+ALEA_VEC_DEFINE(alea_wed_data_vec, alea_wed_data_t);
+ALEA_VEC_DEFINE(alea_rhp_data_vec, alea_rhp_data_t);
+ALEA_VEC_DEFINE(alea_arb_data_vec, alea_arb_data_t);
 
 // ============================================================================
 // CSG TREE NODES
@@ -109,6 +131,58 @@ ALEA_VEC_DEFINE(alea_primitive_vec, alea_primitive_entry_t);
 #define ALEA_SET_OPERATION(node, op) ((node)->type_and_flags = ((node)->type_and_flags & 0xFFFFFF00) | (op))
 
 
+
+/**
+ * @brief Compact float bounding box stored per CSG node.
+ *
+ * The per-node bbox is only a conservative spatial cull cache: containment is
+ * always confirmed by full primitive evaluation, so float storage cannot affect
+ * correctness, only how many subtrees are visited. Storing 6 floats instead of
+ * 6 doubles halves the per-node bbox footprint (48B -> 24B), which dominates the
+ * node array for large models. Field names mirror alea_bbox_t so existing
+ * `node->bbox.min_x` reads still compile (float -> double promotion).
+ *
+ * Conversions go through alea_node_bbox_set/get which round outward (set) and
+ * widen (get), guaranteeing the float box always encloses the true double box.
+ */
+typedef struct alea_node_bbox {
+    float min_x, max_x;
+    float min_y, max_y;
+    float min_z, max_z;
+} alea_node_bbox_t;
+
+/* Point-in-box test directly on the float bbox (hot path; avoids a double copy). */
+static inline bool alea_node_bbox_contains_point(const alea_node_bbox_t* b,
+                                                 double x, double y, double z) {
+    return x >= (double)b->min_x && x <= (double)b->max_x &&
+           y >= (double)b->min_y && y <= (double)b->max_y &&
+           z >= (double)b->min_z && z <= (double)b->max_z;
+}
+
+/* Widen a stored float bbox back to a double bbox (exact, enclosing). */
+static inline alea_bbox_t alea_node_bbox_get(const alea_node_bbox_t* b) {
+    alea_bbox_t r;
+    r.min_x = (double)b->min_x; r.max_x = (double)b->max_x;
+    r.min_y = (double)b->min_y; r.max_y = (double)b->max_y;
+    r.min_z = (double)b->min_z; r.max_z = (double)b->max_z;
+    return r;
+}
+
+/* Store a double bbox into float, rounding each bound OUTWARD so the float box
+ * always contains the double box. Preserves the empty (min>max) sentinel. */
+static inline void alea_node_bbox_set(alea_node_bbox_t* dst, const alea_bbox_t* s) {
+    if (!(s->min_x <= s->max_x && s->min_y <= s->max_y && s->min_z <= s->max_z)) {
+        dst->min_x = dst->min_y = dst->min_z =  FLT_MAX;
+        dst->max_x = dst->max_y = dst->max_z = -FLT_MAX;
+        return;
+    }
+    dst->min_x = nextafterf((float)s->min_x, -INFINITY);
+    dst->min_y = nextafterf((float)s->min_y, -INFINITY);
+    dst->min_z = nextafterf((float)s->min_z, -INFINITY);
+    dst->max_x = nextafterf((float)s->max_x,  INFINITY);
+    dst->max_y = nextafterf((float)s->max_y,  INFINITY);
+    dst->max_z = nextafterf((float)s->max_z,  INFINITY);
+}
 
 /**
  * @brief CSG tree node
@@ -127,8 +201,8 @@ typedef struct alea_node {
     // Material ID
     alea_material_id_t material_id;
 
-    // Bounding box
-    alea_bbox_t bbox;
+    // Bounding box (compact float cull cache; see alea_node_bbox_t)
+    alea_node_bbox_t bbox;
 
     // Union: either primitive data or operation children
     union {
@@ -236,6 +310,26 @@ typedef struct alea_system {
 
     // Primitives with deduplication
     alea_primitive_vec_t primitives;
+    alea_plane_data_vec_t primitive_planes;
+    alea_sphere_data_vec_t primitive_spheres;
+    alea_cylinder_x_data_vec_t primitive_cyl_x;
+    alea_cylinder_y_data_vec_t primitive_cyl_y;
+    alea_cylinder_z_data_vec_t primitive_cyl_z;
+    alea_cone_x_data_vec_t primitive_cone_x;
+    alea_cone_y_data_vec_t primitive_cone_y;
+    alea_cone_z_data_vec_t primitive_cone_z;
+    alea_box_data_vec_t primitive_boxes;
+    alea_quadric_data_vec_t primitive_quadrics;
+    alea_torus_data_vec_t primitive_toruses;
+    alea_rcc_data_vec_t primitive_rccs;
+    alea_box_general_data_vec_t primitive_box_generals;
+    alea_sph_data_vec_t primitive_sphs;
+    alea_trc_data_vec_t primitive_trcs;
+    alea_ell_data_vec_t primitive_ells;
+    alea_rec_data_vec_t primitive_recs;
+    alea_wed_data_vec_t primitive_weds;
+    alea_rhp_data_vec_t primitive_rhps;
+    alea_arb_data_vec_t primitive_arbs;
 
     // Primitive lookup for deduplication
     primitive_hash_table_t* primitive_index;
@@ -571,6 +665,11 @@ alea_node_id_t alea_add_primitive_node(alea_system_t* sys, uint32_t primitive_id
  * @return Pointer to primitive entry (read-only)
  */
 const alea_primitive_entry_t* alea_get_primitive(const alea_system_t* sys, uint32_t id);
+bool alea_primitive_copy_data(const alea_system_t* sys,
+                              uint32_t id,
+                              alea_primitive_data_t* out);
+const void* alea_primitive_payload_const(const alea_system_t* sys,
+                                         uint32_t id);
 
 // ============================================================================
 // API - UTILITIES
@@ -589,6 +688,15 @@ void alea_system_print_stats(const alea_system_t* sys);
  * @return Total allocated bytes
  */
 size_t alea_system_memory_usage(const alea_system_t* sys);
+
+/**
+ * @brief Release unused capacity from the system's large arrays.
+ *
+ * After loading, the 2x-growth vectors (especially nodes) can hold up to ~50%
+ * unused tail capacity. Reallocs them down to their current count. Safe to call
+ * once geometry is final; do not call mid-construction.
+ */
+void alea_system_shrink_to_fit(alea_system_t* sys);
 
 /**
  * @brief Get statistics

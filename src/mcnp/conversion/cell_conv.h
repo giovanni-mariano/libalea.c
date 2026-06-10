@@ -96,6 +96,9 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
 uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                            mcnp_model_t* model);
 
+void alea_cell_conversion_profile_reset(void);
+void alea_cell_conversion_profile_print(void);
+
 /**
  * @brief Apply TRCL transforms to all cells that have them
  *
