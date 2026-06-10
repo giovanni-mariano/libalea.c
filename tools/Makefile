@@ -6,7 +6,9 @@
 
 CC = gcc
 CFLAGS ?= -Wall -Wextra -g -std=c11
-INCLUDES = -I../include
+# Match the library build's include roots: public headers (e.g. alea_mcnp.h)
+# pull in src-side utility headers such as util/alea_vec.h.
+INCLUDES = -I../include -I../src
 BIN_DIR = ../bin
 LDFLAGS ?= -lm
 
