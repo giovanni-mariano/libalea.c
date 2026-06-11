@@ -115,7 +115,6 @@ CORE_OBJS = \
 	$(BUILD)\core\alea_cell_complement.obj \
 	$(BUILD)\core\alea_void.obj \
 	$(BUILD)\core\alea_macrobody.obj \
-	$(BUILD)\core\alea_spatial.obj \
 	$(BUILD)\core\alea_spatial_hier.obj
 
 UTIL_OBJS = \
@@ -242,7 +241,6 @@ HEADERS = \
 	src\core\alea_materials.h \
 	src\core\alea_ops.h \
 	src\core\alea_simplify.h \
-	src\core\alea_spatial.h \
 	src\core\alea_spatial_hier.h \
 	src\core\alea_surface.h \
 	src\core\alea_system.h \
