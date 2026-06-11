@@ -13,7 +13,6 @@
 #include "alea_mesh.h"
 #include "alea.h"
 #include "core/alea_system.h"
-#include "core/alea_spatial.h"
 #include "core/alea_universe.h"
 #include "primitives/bbox.h"
 

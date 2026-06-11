@@ -199,7 +199,7 @@ TEST(system_reset) {
     ASSERT_EQ(alea_material_count(sys), 1);
     ASSERT_EQ(alea_mixture_count(sys), 1);
     ASSERT_NOT_NULL(sys->surface_bvh);
-    ASSERT_NOT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
     ASSERT_NOT_NULL(sys->prim_to_surface);
 
     /* Reset should clear everything */
@@ -209,7 +209,7 @@ TEST(system_reset) {
     ASSERT_EQ(alea_material_count(sys), 0);
     ASSERT_EQ(alea_mixture_count(sys), 0);
     ASSERT_NULL(sys->surface_bvh);
-    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NULL(sys->hier_spatial_index);
     ASSERT_NULL(sys->prim_to_surface);
     ASSERT_NULL(sys->mc_id_to_surface);
     ASSERT_NULL(sys->surface_lookup);

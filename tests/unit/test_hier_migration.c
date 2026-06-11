@@ -56,7 +56,6 @@ TEST(slice_curves_flat_hier_parity) {
     alea_system_t* flat = make_sphere_sys();
     ASSERT_NOT_NULL(flat);
     alea_config_t cfg = alea_get_config(flat);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_FLAT;
     alea_set_config(flat, &cfg);
     alea_build_universe_index(flat);
 
@@ -69,7 +68,6 @@ TEST(slice_curves_flat_hier_parity) {
     alea_system_t* hier = make_sphere_sys();
     ASSERT_NOT_NULL(hier);
     cfg = alea_get_config(hier);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(hier, &cfg);
     alea_build_universe_index(hier);
 
@@ -102,11 +100,9 @@ TEST(slice_curves_hier_no_flat_spatial_index) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
     alea_build_universe_index(sys);
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
@@ -114,7 +110,6 @@ TEST(slice_curves_hier_no_flat_spatial_index) {
     ASSERT_NOT_NULL(curves);
     ASSERT(alea_slice_curves_count(curves) > 0);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_slice_curves_free(curves);
@@ -130,7 +125,6 @@ TEST(slice_curves_auto_no_flat_spatial_index) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_AUTO;
     alea_set_config(sys, &cfg);
     alea_build_universe_index(sys);
 
@@ -140,7 +134,6 @@ TEST(slice_curves_auto_no_flat_spatial_index) {
     ASSERT_NOT_NULL(curves);
     ASSERT(alea_slice_curves_count(curves) > 0);
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_slice_curves_free(curves);
     alea_destroy(sys);
@@ -161,7 +154,6 @@ TEST(slice_errors_hier_mode) {
     alea_add_cell(sys, 2, alea_surface_at(sys, s2)->neg_node, m2, -8.0, 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
     alea_build_universe_index(sys);
 
@@ -191,7 +183,6 @@ TEST(slice_errors_hier_mode) {
     }
     ASSERT_EQ((int)overlaps, 0);
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_slice_errors_free(errs);
     alea_slice_curves_free(curves);
@@ -212,7 +203,6 @@ TEST(slice_errors_hier_overlap_no_flat_index) {
     alea_add_cell(sys, 2, alea_surface_at(sys, s2)->neg_node, m2, -8.0, 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     alea_slice_view_t view;
@@ -220,7 +210,6 @@ TEST(slice_errors_hier_overlap_no_flat_index) {
 
     alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
     ASSERT_NOT_NULL(curves);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -238,7 +227,6 @@ TEST(slice_errors_hier_overlap_no_flat_index) {
         if (errs->errors[i].type == ALEA_SLICE_ERR_OVERLAP) overlaps++;
     }
     ASSERT(overlaps > 0);
-    ASSERT_NULL(sys->spatial_index);
 
     alea_slice_errors_free(errs);
     alea_slice_curves_free(curves);
@@ -252,7 +240,6 @@ TEST(surface_labels_hier_mode) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
     alea_build_universe_index(sys);
 
@@ -270,7 +257,6 @@ TEST(surface_labels_hier_mode) {
     ASSERT_EQ(rc, 0);
     ASSERT(label_count > 0);
 
-    ASSERT_NULL(sys->spatial_index);
 
     free(labels);
     alea_slice_curves_free(curves);
@@ -289,12 +275,9 @@ TEST(find_cells_grid_hier_no_flat_index) {
     alea_system_t* sys = model->sys;
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_slice_view_t view;
@@ -315,7 +298,6 @@ TEST(find_cells_grid_hier_no_flat_index) {
     ASSERT_EQ(mat_ids[cy * W + cx], 1);
 
     /* No flat index was built as a side effect */
-    ASSERT_NULL(sys->spatial_index);
 
     free(cell_ids);
     free(mat_ids);
@@ -336,12 +318,10 @@ TEST(find_cells_grid_flat_hier_parity) {
     alea_config_t cfg;
 
     cfg = alea_get_config(mf->sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_FLAT;
     alea_set_config(mf->sys, &cfg);
     alea_prepare_query_acceleration(mf->sys);
 
     cfg = alea_get_config(mh->sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(mh->sys, &cfg);
     alea_prepare_query_acceleration(mh->sys);
 
@@ -379,11 +359,9 @@ TEST(mesh_hier_no_flat_spatial_index) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
     alea_build_universe_index(sys);
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_mesh_config_t mcfg;
     alea_mesh_config_init(&mcfg);
@@ -398,7 +376,6 @@ TEST(mesh_hier_no_flat_spatial_index) {
     int ci = 4 * 8 * 8 + 4 * 8 + 4;
     ASSERT_EQ(mesh->material_ids[ci], 1);
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_mesh_result_free(mesh);
     alea_destroy(sys);
@@ -419,12 +396,10 @@ TEST(mesh_flat_hier_parity) {
 
     alea_config_t cfg;
     cfg = alea_get_config(flat);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_FLAT;
     alea_set_config(flat, &cfg);
     alea_build_universe_index(flat);
 
     cfg = alea_get_config(hier);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(hier, &cfg);
     alea_build_universe_index(hier);
 
@@ -479,12 +454,10 @@ TEST(render3d_hier_no_flat_spatial_index) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     render_framebuffer_t* fb = do_render(sys, 16, 16);
@@ -497,7 +470,6 @@ TEST(render3d_hier_no_flat_spatial_index) {
     }
     ASSERT(hit > 0);
 
-    ASSERT_NULL(sys->spatial_index);
 
     render_framebuffer_free(fb);
     alea_destroy(sys);
@@ -512,13 +484,11 @@ TEST(render3d_flat_hier_parity) {
 
     alea_config_t cfg;
     cfg = alea_get_config(flat);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_FLAT;
     alea_set_config(flat, &cfg);
     alea_build_universe_index(flat);
     alea_prepare_query_acceleration(flat);
 
     cfg = alea_get_config(hier);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(hier, &cfg);
     alea_build_universe_index(hier);
     alea_prepare_query_acceleration(hier);

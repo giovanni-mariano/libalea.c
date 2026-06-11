@@ -27,17 +27,15 @@ extern volatile sig_atomic_t g_alea_interrupted;
 
 #define ALEA_CACHE_UNIVERSE      (1u << 0)
 #define ALEA_CACHE_CELL_SURFACES (1u << 1)
-#define ALEA_CACHE_SPATIAL       (1u << 2)
 #define ALEA_CACHE_SURFACE_BVH   (1u << 3)
 #define ALEA_CACHE_ADJACENCY     (1u << 4)
 #define ALEA_CACHE_HIER_SPATIAL  (1u << 5)
+/* The hierarchical spatial index is the only spatial backend. */
 #define ALEA_CACHE_RAYCAST \
-    (ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_SPATIAL | \
-     ALEA_CACHE_SURFACE_BVH | ALEA_CACHE_ADJACENCY)
-#define ALEA_CACHE_RAYCAST_HIER \
     (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | \
      ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_SURFACE_BVH | \
      ALEA_CACHE_ADJACENCY)
+#define ALEA_CACHE_RAYCAST_HIER ALEA_CACHE_RAYCAST
 #define ALEA_CACHE_ALL           0xFFFFFFFFu
 
 /**
@@ -398,8 +396,7 @@ typedef struct alea_system {
     bool cell_adjacency_built;
     struct alea_cell_neighbor* neighbor_pool;  /* Single allocation for all neighbor data */
 
-    /* Spatial index for fast instance queries (prepared query cache) */
-    struct alea_spatial_index* spatial_index;
+    /* Hierarchical spatial index (prepared query cache) */
     struct alea_hier_spatial_index* hier_spatial_index;
     struct alea_volume_path_index* volume_path_index;
     atomic_int spatial_build_state;  /* 0=pending, 1=building, 2=done */
@@ -422,8 +419,6 @@ typedef struct alea_system {
 
 int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags);
 uint64_t alea_system_geometry_generation(const alea_system_t* sys);
-size_t alea_spatial_auto_cell_threshold(void);
-bool alea_system_spatial_mode_prefers_hier(const alea_system_t* sys);
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags);
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags);
 void alea_volume_path_index_free(struct alea_volume_path_index* idx);

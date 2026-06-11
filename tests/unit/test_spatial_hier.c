@@ -335,7 +335,6 @@ TEST(hier_spatial_hex_lattice_points_return_expected_terminals) {
         ASSERT(n > 0);
         ASSERT(cell_hits_contain_cell(hits, n, cases[i].cell_id, -1));
     }
-    ASSERT_NULL(sys->spatial_index);
 
     mcnp_model_destroy(model);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -369,7 +368,6 @@ TEST(hier_spatial_region_query_returns_expected_root_cells) {
     ASSERT(spatial_hits_contain_cell(hier, nh, 2, 0));
     ASSERT(!spatial_hits_contain_cell(hier, nh, 3, 0));
     ASSERT(!spatial_hits_contain_cell(hier, nh, 4, 0));
-    ASSERT_NULL(sys->spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -546,7 +544,6 @@ TEST(hier_spatial_slice_query_returns_expected_fill_cell) {
     ASSERT_EQ(nh, 1);
     ASSERT(spatial_hits_contain_cell(hier, nh, 2, 1));
     ASSERT(!spatial_hits_contain_cell(hier, nh, 1, 0));
-    ASSERT_NULL(sys->spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -690,7 +687,6 @@ TEST(hier_spatial_translated_fill_returns_expected_terminal) {
 
     n = alea_hier_spatial_find_cells_at_point(sys, -5.0, 0.0, 0.0, hits, 8);
     ASSERT(n <= 0 || !cell_hits_contain_cell(hits, n, 2, 1));
-    ASSERT_NULL(sys->spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -870,7 +866,6 @@ TEST(hier_blas_raycast_matches_hier_root_universe) {
     ASSERT_EQ(alea_raycast_hier_blas_experimental(
                   sys, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                   14.0, &blas), 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     ASSERT_EQ(alea_raycast_hier(sys, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0,
@@ -899,7 +894,6 @@ TEST(hier_blas_raycast_matches_hier_fill_universe) {
     ASSERT_EQ(alea_raycast_hier_blas_experimental(
                   sys, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                   25.0, &blas), 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     ASSERT_EQ(alea_raycast_hier(sys, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
@@ -928,7 +922,6 @@ TEST(hier_blas_raycast_matches_hier_lattice_universe) {
     ASSERT_EQ(alea_raycast_hier_blas_experimental(
                   sys, -1.5, 0.0, 0.0, 1.0, 0.0, 0.0,
                   7.0, &blas), 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     ASSERT_EQ(alea_raycast_hier(sys, -1.5, 0.0, 0.0, 1.0, 0.0, 0.0,
@@ -949,14 +942,12 @@ TEST(hier_raycast_does_not_build_flat_spatial_index) {
     if (!model) SKIP("Test data file not found");
     alea_system_t* sys = model->sys;
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
     ASSERT_EQ(alea_raycast_hier(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                                 10.0, &result), 0);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
     ASSERT(result.segments.count > 0);
 
@@ -972,7 +963,6 @@ TEST(hier_fast_segments_raycast_does_not_build_flat_spatial_index) {
     if (!model) SKIP("Test data file not found");
     alea_system_t* sys = model->sys;
 
-    ASSERT_NULL(sys->spatial_index);
 
     alea_raycast_result_t flat;
     alea_raycast_result_t hier;
@@ -983,16 +973,11 @@ TEST(hier_fast_segments_raycast_does_not_build_flat_spatial_index) {
     ASSERT_EQ(alea_raycast(sys, -1.5, 0.0, 0.0, 1.0, 0.0, 0.0,
                            7.0, &flat), 0);
 
-    if (sys->spatial_index) {
-        alea_spatial_index_free(sys->spatial_index);
-        sys->spatial_index = NULL;
-    }
 
     ASSERT_EQ(alea_raycast_hier_fast_segments(sys, -1.5, 0.0, 0.0,
                                               1.0, 0.0, 0.0,
                                               7.0, &hier), 0);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
     assert_raycast_material_segments_match(&flat, &hier);
 
@@ -1010,11 +995,9 @@ TEST(query_acceleration_respects_hier_spatial_mode) {
     alea_system_t* sys = model->sys;
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
     ASSERT(alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST_HIER));
 
@@ -1038,16 +1021,13 @@ TEST(public_point_query_hier_mode_builds_no_flat_spatial_index) {
     ASSERT(c >= 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NULL(sys->hier_spatial_index);
 
     alea_cell_hit_t hits[8];
     int n = alea_find_all_cells(sys, 0.0, 0.0, 0.0, hits, 8);
     ASSERT(n > 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_destroy(sys);
@@ -1072,93 +1052,26 @@ TEST(query_acceleration_stats_reports_hier_index_shape) {
     }
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     alea_query_acceleration_stats_t stats;
     ASSERT_EQ(alea_query_acceleration_stats(sys, &stats), 0);
-    ASSERT_EQ(stats.configured_mode, ALEA_SPATIAL_MODE_HIER);
-    ASSERT_EQ(stats.resolved_mode, ALEA_SPATIAL_MODE_HIER);
     ASSERT(!stats.built);
 
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     ASSERT_EQ(alea_query_acceleration_stats(sys, &stats), 0);
     ASSERT(stats.built);
-    ASSERT_EQ(stats.flat_instance_count, 0);
     ASSERT_EQ(stats.hier_universe_count, 1);
     ASSERT_EQ(stats.hier_blas_count, 1);
     ASSERT_EQ(stats.hier_blas_cell_count, 3);
     ASSERT_EQ(stats.hier_placement_count, 1);
     ASSERT(stats.memory_bytes > 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
-TEST(query_acceleration_stats_reports_flat_index_shape) {
-    alea_system_t* sys = alea_create();
-    ASSERT_NOT_NULL(sys);
-
-    int mat = alea_add_material(sys, 1);
-    ASSERT(mat >= 0);
-    int s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
-    ASSERT(s >= 0);
-    const alea_surface_entry_t* surf = alea_surface_at(sys, s);
-    ASSERT_NOT_NULL(surf);
-    int c = alea_add_cell(sys, 1, surf->neg_node, mat, 1.0, 0);
-    ASSERT(c >= 0);
-
-    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-
-    alea_query_acceleration_stats_t stats;
-    ASSERT_EQ(alea_query_acceleration_stats(sys, &stats), 0);
-    ASSERT_EQ(stats.configured_mode, ALEA_SPATIAL_MODE_FLAT);
-    ASSERT_EQ(stats.resolved_mode, ALEA_SPATIAL_MODE_FLAT);
-    ASSERT(stats.built);
-    ASSERT_EQ(stats.flat_instance_count, 1);
-    ASSERT_EQ(stats.hier_blas_count, 0);
-    ASSERT(stats.memory_bytes > 0);
-    ASSERT_NOT_NULL(sys->spatial_index);
-    ASSERT_NULL(sys->hier_spatial_index);
-
-    alea_destroy(sys);
-}
-
-TEST(flat_path_api_wraps_flat_instance_volumes) {
-    alea_system_t* sys = alea_create();
-    ASSERT_NOT_NULL(sys);
-
-    int mat = alea_add_material(sys, 1);
-    ASSERT(mat >= 0);
-    int s = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
-    ASSERT(s >= 0);
-    const alea_surface_entry_t* surf = alea_surface_at(sys, s);
-    ASSERT_NOT_NULL(surf);
-    int c = alea_add_cell(sys, 1, surf->neg_node, mat, 1.0, 0);
-    ASSERT(c >= 0);
-
-    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NOT_NULL(sys->spatial_index);
-
-    size_t flat_instances = alea_spatial_index_instance_count(sys);
-    ASSERT_EQ(flat_instances, 1);
-    ASSERT_EQ(alea_volume_path_count(sys), flat_instances);
-
-    alea_volume_path_t path;
-    ASSERT_EQ(alea_volume_paths_get(sys, &path, 1), 1);
-    ASSERT_EQ(path.path_id, 0);
-    ASSERT_EQ(path.terminal_cell_index, c);
-
-    double volumes[1] = {0.0};
-    ASSERT_EQ(alea_estimate_path_volumes(sys, 8, volumes, NULL), 0);
-    ASSERT(volumes[0] >= 0.0);
-    ASSERT_NOT_NULL(sys->spatial_index);
-    ASSERT_NULL(sys->hier_spatial_index);
-
-    alea_destroy(sys);
-}
 
 TEST(volume_path_index_reuses_and_invalidates) {
     alea_system_t* sys = alea_create();
@@ -1213,7 +1126,6 @@ TEST(volume_path_index_respects_max_count_guard) {
     }
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     alea_error_clear();
@@ -1224,7 +1136,6 @@ TEST(volume_path_index_respects_max_count_guard) {
     double volumes[2] = {0.0, 0.0};
     ASSERT_EQ(alea_estimate_path_volumes(sys, 8, volumes, NULL), -1);
     ASSERT_EQ(alea_error_code(), (int)ALEA_ERR_INVALID_STATE);
-    ASSERT_NULL(sys->spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_VOLUME_PATH_MAX_COUNT");
@@ -1247,7 +1158,6 @@ TEST(volume_path_index_rejects_duplicate_structural_keys) {
     ASSERT(c >= 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     ASSERT_EQ(alea_build_universe_index(sys), 0);
@@ -1304,12 +1214,10 @@ TEST(hier_volume_paths_distinguish_repeated_transformed_fills) {
     ASSERT_EQ(alea_set_fill(sys, right, 10, 102), 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     size_t count = alea_volume_path_count(sys);
     ASSERT_EQ(count, 2);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_volume_path_t paths[2];
@@ -1327,7 +1235,6 @@ TEST(hier_volume_paths_distinguish_repeated_transformed_fills) {
     ASSERT_EQ(alea_volume_path_at_point(sys, 5.0, 0.0, 0.0, &hit), 1);
     ASSERT_EQ(hit.terminal_cell_index, child);
     ASSERT_EQ(hit.ancestor_cell_indices[0], right);
-    ASSERT_NULL(sys->spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -1341,12 +1248,10 @@ TEST(hier_volume_paths_distinguish_rect_lattice_elements) {
     alea_system_t* sys = model->sys;
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     size_t count = alea_volume_path_count(sys);
     ASSERT_EQ(count, 18);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_volume_path_t paths[18];
@@ -1391,7 +1296,6 @@ TEST(hier_volume_paths_distinguish_rect_lattice_elements) {
     }
     ASSERT(nonzero_u1_moderator >= 2);
     ASSERT(nonzero_u3_moderator >= 2);
-    ASSERT_NULL(sys->spatial_index);
 
     mcnp_model_destroy(model);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
@@ -1420,7 +1324,6 @@ TEST(hier_path_volume_estimation_no_flat_spatial_index) {
     ASSERT_EQ(alea_set_fill(sys, outer, 10, 0), 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     ASSERT_EQ(alea_volume_path_count(sys), 1);
@@ -1428,7 +1331,6 @@ TEST(hier_path_volume_estimation_no_flat_spatial_index) {
     double errors[1] = {0.0};
     ASSERT_EQ(alea_estimate_path_volumes(sys, 16, volumes, errors), 0);
     ASSERT(volumes[0] >= 0.0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_destroy(sys);
@@ -1451,7 +1353,6 @@ TEST(hier_path_volume_estimation_sphere_smoke) {
     ASSERT(c >= 0);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     ASSERT_EQ(alea_volume_path_count(sys), 1);
@@ -1463,52 +1364,10 @@ TEST(hier_path_volume_estimation_sphere_smoke) {
     ASSERT(volumes[0] > expected * 0.65);
     ASSERT(volumes[0] < expected * 1.35);
     ASSERT(errors[0] >= 0.0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
-}
-
-TEST(flat_spatial_index_fails_in_hier_mode) {
-    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
-    if (!model) SKIP("Test data file not found");
-    alea_system_t* sys = model->sys;
-
-    alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
-    alea_set_config(sys, &cfg);
-
-    ASSERT_EQ(alea_build_spatial_index(sys), -1);
-    ASSERT_NULL(sys->spatial_index);
-
-    mcnp_model_destroy(model);
-}
-
-TEST(auto_spatial_mode_avoids_flat_index_above_threshold) {
-    alea_setenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD", "1", 1);
-    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
-
-    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
-    if (!model) SKIP("Test data file not found");
-    alea_system_t* sys = model->sys;
-
-    alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_AUTO;
-    alea_set_config(sys, &cfg);
-
-    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NULL(sys->spatial_index);
-    ASSERT_NOT_NULL(sys->hier_spatial_index);
-    ASSERT_EQ(alea_build_spatial_index(sys), -1);
-    ASSERT_EQ(alea_spatial_index_instance_count(sys), 0);
-
-    double volumes[1] = {0.0};
-    ASSERT_EQ(alea_estimate_instance_volumes(sys, 8, volumes, NULL), -1);
-
-    mcnp_model_destroy(model);
-    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
-    alea_unsetenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
 }
 
 TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {
@@ -1527,50 +1386,21 @@ TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {
     ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                            10.0, &flat), 0);
 
-    if (sys->spatial_index) {
-        alea_spatial_index_free(sys->spatial_index);
-        sys->spatial_index = NULL;
-    }
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                            10.0, &routed), 0);
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
     assert_raycast_material_segments_match(&flat, &routed);
     ASSERT_EQ(alea_ray_is_occluded(sys, -5.0, 0.0, 0.0,
                                    1.0, 0.0, 0.0, 10.0), 1);
-    ASSERT_NULL(sys->spatial_index);
 
     alea_raycast_result_free(&flat);
     alea_raycast_result_free(&routed);
     mcnp_model_destroy(model);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
-}
-
-TEST(spatial_mode_change_invalidates_flat_spatial_index) {
-    mcnp_model_t* model = mcnp_load("tests/data/simple_fill.mcnp");
-    if (!model) SKIP("Test data file not found");
-    alea_system_t* sys = model->sys;
-
-    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NOT_NULL(sys->spatial_index);
-
-    alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
-    alea_set_config(sys, &cfg);
-
-    ASSERT_NULL(sys->spatial_index);
-    ASSERT_EQ(alea_spatial_index_instance_count(sys), 0);
-    ASSERT_EQ(alea_build_spatial_index(sys), -1);
-
-    double volumes[1] = {0.0};
-    ASSERT_EQ(alea_estimate_instance_volumes(sys, 8, volumes, NULL), -1);
-
-    mcnp_model_destroy(model);
 }
 
 static void assert_raycast_hits_match(const alea_raycast_result_t* flat,
@@ -1621,15 +1451,10 @@ TEST(hier_with_hits_matches_flat_for_disjoint_spheres) {
     ASSERT_EQ(alea_raycast(sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                            30.0, &flat), 0);
 
-    if (sys->spatial_index) {
-        alea_spatial_index_free(sys->spatial_index);
-        sys->spatial_index = NULL;
-    }
 
     ASSERT_EQ(alea_raycast_hier_with_hits(sys, -5.0, 0.0, 0.0,
                                           1.0, 0.0, 0.0, 30.0, &hier), 0);
 
-    ASSERT_NULL(sys->spatial_index);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     /* Every sphere is crossed twice -> 10 boundary hits. */
@@ -1662,7 +1487,6 @@ TEST(hier_with_hits_segments_match_fast_segments) {
     ASSERT_EQ(alea_raycast_hier_with_hits(sys, -1.5, 0.0, 0.0,
                                           1.0, 0.0, 0.0, 7.0, &hits), 0);
 
-    ASSERT_NULL(sys->spatial_index);
     assert_raycast_segments_match(&segs, &hits);
 
     /* fast_segments must not populate hits; with_hits should. */

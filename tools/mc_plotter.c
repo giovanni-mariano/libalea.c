@@ -45,7 +45,6 @@
  *   --contours=materials    Draw contours at material boundaries
  *   --ticks                 Show axis tick labels
  *   --errors                Show analytical error lines (overlaps/gaps)
- *   --spatial=flat|hier|auto Query acceleration mode (default: auto)
  *
  * Batch file format (one plot per line):
  *   Z value u_min u_max v_min v_max WxH output.png [options]
@@ -95,39 +94,6 @@ typedef struct {
     mcnp_model_t* mcnp;
     openmc_model_t* openmc;
 } loaded_model_t;
-
-static int parse_spatial_mode(const char* value, alea_spatial_mode_t* out) {
-    if (!value || !out) return -1;
-    if (strcasecmp(value, "flat") == 0) {
-        *out = ALEA_SPATIAL_MODE_FLAT;
-        return 0;
-    }
-    if (strcasecmp(value, "hier") == 0 ||
-        strcasecmp(value, "hierarchical") == 0) {
-        *out = ALEA_SPATIAL_MODE_HIER;
-        return 0;
-    }
-    if (strcasecmp(value, "auto") == 0) {
-        *out = ALEA_SPATIAL_MODE_AUTO;
-        return 0;
-    }
-    return -1;
-}
-
-static const char* spatial_mode_name(alea_spatial_mode_t mode) {
-    switch (mode) {
-        case ALEA_SPATIAL_MODE_FLAT: return "flat";
-        case ALEA_SPATIAL_MODE_HIER: return "hier";
-        case ALEA_SPATIAL_MODE_AUTO: return "auto";
-    }
-    return "unknown";
-}
-
-static void set_spatial_mode(alea_system_t* sys, alea_spatial_mode_t mode) {
-    alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = mode;
-    alea_set_config(sys, &cfg);
-}
 
 static void count_plot_error_state(const int* cell_ids,
                                    const uint8_t* coverage,
@@ -1708,8 +1674,7 @@ static int parse_batch_line(const char* line, plot_params_t* p) {
 }
 
 static int run_batch(const char* batch_file,
-                     const char* input_file,
-                     alea_spatial_mode_t spatial_mode) {
+                     const char* input_file) {
     FILE* f = fopen(batch_file, "r");
     if (!f) {
         fprintf(stderr, "Error: Cannot open batch file: %s\n", batch_file);
@@ -1720,7 +1685,6 @@ static int run_batch(const char* batch_file,
     printf("==========================================\n");
     printf("Input:      %s\n", input_file);
     printf("Batch file: %s\n", batch_file);
-    printf("Spatial:    %s\n", spatial_mode_name(spatial_mode));
     printf("\n");
 
     /* Load geometry */
@@ -1740,8 +1704,6 @@ static int run_batch(const char* batch_file,
     printf("OK (%.1f ms)\n", t1 - t0);
     printf("  Cells: %zu, Surfaces: %zu\n",
            alea_cell_count(sys), alea_surface_count(sys));
-
-    set_spatial_mode(sys, spatial_mode);
 
     /* Prepare query acceleration */
     printf("Preparing query acceleration... ");
@@ -1808,7 +1770,6 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --contours=cells        Contours at cell boundaries (default)\n");
     fprintf(stderr, "  --contours=materials    Contours at material boundaries\n");
     fprintf(stderr, "  --ticks                 Show axis tick labels\n");
-    fprintf(stderr, "  --spatial=flat|hier|auto Query acceleration mode (default: auto)\n");
     fprintf(stderr, "  --debug                 Print verbose curve generation debug info\n");
     fprintf(stderr, "  --trace=px,py           Trace cell lookup at pixel (px,py) for debugging\n");
     fprintf(stderr, "\nBatch file format (one plot per line):\n");
@@ -1832,20 +1793,11 @@ int main(int argc, char** argv) {
     }
 
     const char* input_file = argv[1];
-    alea_spatial_mode_t spatial_mode = ALEA_SPATIAL_MODE_AUTO;
-
-    for (int i = 2; i < argc; i++) {
-        if (strncmp(argv[i], "--spatial=", 10) == 0 &&
-            parse_spatial_mode(argv[i] + 10, &spatial_mode) != 0) {
-            fprintf(stderr, "Error: invalid spatial mode '%s'\n", argv[i] + 10);
-            return 1;
-        }
-    }
 
     /* Check for batch mode */
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "--batch=", 8) == 0) {
-            return run_batch(argv[i] + 8, input_file, spatial_mode);
+            return run_batch(argv[i] + 8, input_file);
         }
     }
 
@@ -1914,8 +1866,6 @@ int main(int argc, char** argv) {
             debug_curves = 1;
         } else if (strncmp(argv[i], "--trace=", 8) == 0) {
             sscanf(argv[i] + 8, "%d,%d", &trace_px, &trace_py);
-        } else if (strncmp(argv[i], "--spatial=", 10) == 0) {
-            /* Parsed before batch/single mode dispatch. */
         }
     }
 
@@ -1927,7 +1877,6 @@ int main(int argc, char** argv) {
     printf("Bounds:     [%.4g, %.4g] x [%.4g, %.4g]\n", plot.u_min, plot.u_max, plot.v_min, plot.v_max);
     printf("Resolution: %d x %d\n", plot.width, plot.height);
     printf("Output:     %s\n", output_file);
-    printf("Spatial:    %s\n", spatial_mode_name(spatial_mode));
     printf("Color by:   %s\n", plot.color_mode == COLOR_BY_MATERIAL ? "materials" : "cells");
     printf("Contours:   %s\n", plot.contour_mode == CONTOUR_BY_MATERIAL ? "materials" : "cells");
     if (plot.show_ticks) printf("Ticks:      enabled\n");
@@ -1958,8 +1907,6 @@ int main(int argc, char** argv) {
            alea_cell_count(sys), alea_surface_count(sys));
     printf("  [RSS after load: %.1f MB]\n", get_rss_mb());
     fflush(stdout);
-
-    set_spatial_mode(sys, spatial_mode);
 
     /* Prepare query acceleration */
     printf("Preparing query acceleration... ");

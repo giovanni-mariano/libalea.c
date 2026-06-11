@@ -17,7 +17,6 @@
 #include "core/alea_eval.h"
 #include "core/alea_void.h"
 #include "core/alea_universe.h"
-#include "core/alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_simplify.h"
 #include "primitives/primitive_create.h"
@@ -312,17 +311,7 @@ alea_config_t alea_get_config(const alea_system_t* sys) {
 
 void alea_set_config(alea_system_t* sys, const alea_config_t* config) {
     if (!sys || !config) return;
-    alea_spatial_mode_t old_spatial_mode = sys->config.spatial_mode;
     sys->config = *config;
-    if (old_spatial_mode != config->spatial_mode) {
-        alea_system_invalidate_query_caches(sys,
-                                            ALEA_CACHE_SPATIAL |
-                                            ALEA_CACHE_HIER_SPATIAL);
-    }
-}
-
-bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys) {
-    return alea_system_spatial_mode_prefers_hier(sys);
 }
 
 /* ============================================================================
@@ -336,58 +325,34 @@ bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys) {
  * INDEXING
  * ============================================================================ */
 
-
-int alea_build_spatial_index(alea_system_t* sys) {
-    if (!sys) return -1;
-    return alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL);
-}
-
 int alea_query_acceleration_stats(const alea_system_t* sys,
                                   alea_query_acceleration_stats_t* out_stats) {
     if (!sys || !out_stats) return -1;
 
     memset(out_stats, 0, sizeof(*out_stats));
-    out_stats->configured_mode = sys->config.spatial_mode;
-    bool prefers_hier = alea_system_spatial_mode_prefers_hier(sys);
-    out_stats->resolved_mode = prefers_hier
-        ? ALEA_SPATIAL_MODE_HIER
-        : ALEA_SPATIAL_MODE_FLAT;
 
-    if (prefers_hier) {
-        const alea_hier_spatial_stats_t* stats =
-            alea_hier_spatial_index_stats(sys->hier_spatial_index);
-        out_stats->built = stats != NULL;
-        if (!stats) return 0;
+    const alea_hier_spatial_stats_t* stats =
+        alea_hier_spatial_index_stats(sys->hier_spatial_index);
+    out_stats->built = stats != NULL;
+    if (!stats) return 0;
 
-        out_stats->hier_universe_count = stats->universe_count;
-        out_stats->hier_blas_count = stats->blas_count;
-        out_stats->hier_linear_universe_count = stats->linear_universe_count;
-        out_stats->hier_blas_cell_count = stats->blas_cell_count;
-        out_stats->hier_blas_node_count = stats->blas_node_count;
-        out_stats->hier_fill_cell_count = stats->fill_cell_count;
-        out_stats->hier_lattice_cell_count = stats->lattice_cell_count;
-        out_stats->hier_transform_count = stats->transform_count;
-        out_stats->hier_placement_count = stats->placement_count;
-        out_stats->hier_root_placement_count = stats->root_placement_count;
-        out_stats->hier_fill_placement_count = stats->fill_placement_count;
-        out_stats->hier_lattice_placement_count = stats->lattice_placement_count;
-        out_stats->hier_max_placement_depth = stats->max_placement_depth;
-        out_stats->hier_max_universe_cells = stats->max_universe_cells;
-        out_stats->hier_largest_universe_id = stats->largest_universe_id;
-        out_stats->memory_bytes = stats->memory_bytes;
-        out_stats->point_queries = stats->point_queries;
-        return 0;
-    }
-
-    out_stats->built = sys->spatial_index != NULL && sys->spatial_index->built;
-    if (sys->spatial_index) {
-        out_stats->flat_instance_count = sys->spatial_index->instances.count;
-        out_stats->memory_bytes =
-            sys->spatial_index->nodes.capacity * sizeof(*sys->spatial_index->nodes.data) +
-            sys->spatial_index->instances.capacity * sizeof(*sys->spatial_index->instances.data) +
-            sys->spatial_index->transforms.capacity * sizeof(*sys->spatial_index->transforms.data) +
-            sys->spatial_index->instances.capacity * sizeof(*sys->spatial_index->indices);
-    }
+    out_stats->hier_universe_count = stats->universe_count;
+    out_stats->hier_blas_count = stats->blas_count;
+    out_stats->hier_linear_universe_count = stats->linear_universe_count;
+    out_stats->hier_blas_cell_count = stats->blas_cell_count;
+    out_stats->hier_blas_node_count = stats->blas_node_count;
+    out_stats->hier_fill_cell_count = stats->fill_cell_count;
+    out_stats->hier_lattice_cell_count = stats->lattice_cell_count;
+    out_stats->hier_transform_count = stats->transform_count;
+    out_stats->hier_placement_count = stats->placement_count;
+    out_stats->hier_root_placement_count = stats->root_placement_count;
+    out_stats->hier_fill_placement_count = stats->fill_placement_count;
+    out_stats->hier_lattice_placement_count = stats->lattice_placement_count;
+    out_stats->hier_max_placement_depth = stats->max_placement_depth;
+    out_stats->hier_max_universe_cells = stats->max_universe_cells;
+    out_stats->hier_largest_universe_id = stats->largest_universe_id;
+    out_stats->memory_bytes = stats->memory_bytes;
+    out_stats->point_queries = stats->point_queries;
     return 0;
 }
 
@@ -1278,9 +1243,6 @@ int alea_estimate_cell_volumes(alea_system_t* sys,
                                double ox, double oy, double oz,
                                double radius, int n_rays,
                                double* volumes, double* rel_errors);
-int alea_estimate_instance_volumes(alea_system_t* sys,
-                                   int n_rays,
-                                   double* volumes, double* rel_errors);
 int alea_estimate_path_volumes(alea_system_t* sys,
                                int n_rays,
                                double* volumes,
@@ -1301,7 +1263,6 @@ typedef struct alea_volume_path_index {
     size_t capacity;
     size_t max_path_count;
     uint64_t geometry_generation;
-    alea_spatial_mode_t resolved_mode;
     volume_path_hash_slot_t* slots;
     size_t slot_capacity;
 } alea_volume_path_index_t;
@@ -1449,37 +1410,6 @@ static void volume_path_emit(volume_path_enum_ctx_t* ctx,
     }
     if (ctx->out && id < ctx->max) {
         ctx->out[id] = *path;
-    }
-}
-
-static void volume_path_from_flat_instance(const alea_system_t* sys,
-                                           size_t instance_index,
-                                           alea_volume_path_t* path) {
-    if (!sys || !sys->spatial_index || !path ||
-        instance_index >= sys->spatial_index->instances.count) {
-        return;
-    }
-
-    const alea_cell_instance_t* inst =
-        &sys->spatial_index->instances.data[instance_index];
-    const alea_cell_entry_t* cell = &sys->cells.data[inst->cell_index];
-    memset(path, 0, sizeof(*path));
-    path->path_id = (uint64_t)instance_index;
-    path->terminal_cell_index = (int)inst->cell_index;
-    path->terminal_cell_id = cell->mc_cell_id;
-    path->material_id = cell->material_id;
-    path->universe_id = inst->universe_id;
-    path->depth = inst->depth;
-    if (inst->parent_cell_index != UINT32_MAX) {
-        path->ancestor_count = 1;
-        path->ancestor_cell_indices[0] = (int)inst->parent_cell_index;
-        path->ancestor_universe_ids[0] = 0;
-    }
-    if (inst->transform_index < sys->spatial_index->transforms.count) {
-        volume_path_copy_transform(path->world_to_local,
-                                   &sys->spatial_index->transforms.data[inst->transform_index]);
-    } else {
-        volume_path_copy_transform(path->world_to_local, NULL);
     }
 }
 
@@ -1846,40 +1776,21 @@ static int volume_path_index_build(alea_system_t* sys,
     alea_volume_path_index_t* idx = calloc(1, sizeof(*idx));
     if (!idx) return -1;
     idx->geometry_generation = alea_system_geometry_generation(sys);
-    idx->resolved_mode = alea_system_spatial_mode_prefers_hier(sys)
-        ? ALEA_SPATIAL_MODE_HIER
-        : ALEA_SPATIAL_MODE_FLAT;
     idx->max_path_count = volume_path_max_count_from_env();
 
-    if (idx->resolved_mode == ALEA_SPATIAL_MODE_FLAT) {
-        if (alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL) != 0) {
-            alea_volume_path_index_free(idx);
-            return -1;
-        }
-        size_t count = sys->spatial_index ? sys->spatial_index->instances.count : 0;
-        for (size_t i = 0; i < count; i++) {
-            alea_volume_path_t path;
-            volume_path_from_flat_instance(sys, i, &path);
-            if (volume_path_index_append(idx, &path) != 0) {
-                alea_volume_path_index_free(idx);
-                return -1;
-            }
-        }
-    } else {
-        if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0) {
-            alea_volume_path_index_free(idx);
-            return -1;
-        }
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0) {
+        alea_volume_path_index_free(idx);
+        return -1;
+    }
 
-        volume_path_enum_ctx_t ctx = {.index = idx, .count = 0};
-        volume_path_builder_t builder;
-        memset(&builder, 0, sizeof(builder));
-        alea_matrix_identity(&builder.transform);
-        if (volume_paths_enumerate_universe(sys, 0, 0, &builder, &ctx) != 0 ||
-            ctx.failed) {
-            alea_volume_path_index_free(idx);
-            return -1;
-        }
+    volume_path_enum_ctx_t ctx = {.index = idx, .count = 0};
+    volume_path_builder_t builder;
+    memset(&builder, 0, sizeof(builder));
+    alea_matrix_identity(&builder.transform);
+    if (volume_paths_enumerate_universe(sys, 0, 0, &builder, &ctx) != 0 ||
+        ctx.failed) {
+        alea_volume_path_index_free(idx);
+        return -1;
     }
 
     if (volume_path_index_build_hash(idx) != 0) {
@@ -1894,11 +1805,7 @@ static int volume_path_index_build(alea_system_t* sys,
 static bool volume_path_index_fresh(const alea_system_t* sys,
                                     const alea_volume_path_index_t* idx) {
     if (!sys || !idx) return false;
-    alea_spatial_mode_t mode = alea_system_spatial_mode_prefers_hier(sys)
-        ? ALEA_SPATIAL_MODE_HIER
-        : ALEA_SPATIAL_MODE_FLAT;
-    return idx->geometry_generation == alea_system_geometry_generation(sys) &&
-           idx->resolved_mode == mode;
+    return idx->geometry_generation == alea_system_geometry_generation(sys);
 }
 
 static int alea_volume_path_index_ensure(alea_system_t* sys) {
@@ -2008,46 +1915,6 @@ int alea_volume_path_at_point(alea_system_t* sys,
                               alea_volume_path_t* out_path) {
     if (!sys || !out_path) return -1;
     if (alea_volume_path_index_ensure(sys) != 0) return -1;
-    if (!alea_system_spatial_mode_prefers_hier(sys)) {
-        if (alea_system_prepare_query_caches(sys, ALEA_CACHE_SPATIAL) != 0) return -1;
-        alea_spatial_hit_t hits[64];
-        int n = alea_spatial_query_point(sys, x, y, z, hits, 64);
-        if (n <= 0) return n < 0 ? -1 : 0;
-
-        int best = -1;
-        int best_depth = -1;
-        for (int i = 0; i < n; i++) {
-            if (!hits[i].is_terminal) continue;
-            if (hits[i].depth > best_depth) {
-                best = i;
-                best_depth = hits[i].depth;
-            }
-        }
-        if (best < 0) return 0;
-
-        const alea_spatial_hit_t* hit = &hits[best];
-        memset(out_path, 0, sizeof(*out_path));
-        out_path->path_id = hit->instance_index;
-        out_path->terminal_cell_index = (int)hit->cell_index;
-        out_path->terminal_cell_id = hit->cell_id;
-        out_path->material_id = hit->material_id;
-        out_path->universe_id = hit->universe_id;
-        out_path->depth = hit->depth;
-        volume_path_copy_transform(out_path->world_to_local, &hit->transform);
-        if (hit->instance_index < sys->spatial_index->instances.count) {
-            const alea_cell_instance_t* inst =
-                &sys->spatial_index->instances.data[hit->instance_index];
-            if (inst->parent_cell_index != UINT32_MAX) {
-                out_path->ancestor_count = 1;
-                out_path->ancestor_cell_indices[0] = (int)inst->parent_cell_index;
-                out_path->ancestor_universe_ids[0] = 0;
-            }
-        }
-        const alea_volume_path_t* canonical =
-            alea_volume_path_index_find(sys->volume_path_index, out_path);
-        if (canonical) *out_path = *canonical;
-        return 1;
-    }
     if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0) return -1;
 
     volume_path_builder_t builder;
@@ -2771,17 +2638,6 @@ size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id
         }
     }
     return count;
-}
-
-size_t alea_spatial_index_instance_count(const alea_system_t* sys) {
-    if (!sys) return 0;
-    if (alea_system_spatial_mode_prefers_hier(sys)) {
-        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "flat spatial instance count is unavailable in hierarchical spatial mode");
-        return 0;
-    }
-    if (!sys->spatial_index) return 0;
-    return sys->spatial_index->instances.count;
 }
 
 /* ============================================================================

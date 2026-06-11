@@ -12,7 +12,6 @@
 #include "openmc_model.h"
 #include "alea.h"
 #include "core/alea_system.h"
-#include "core/alea_spatial.h"
 #include "core/alea_export.h"
 #include "util/alea_log.h"
 #include <stdlib.h>
