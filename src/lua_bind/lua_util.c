@@ -264,50 +264,6 @@ static int l_flatten_all(lua_State* L) {
  * Volume estimation (instance-based)
  * ============================================================================ */
 
-/* sys:estimate_instance_volumes(n_rays) -> table of {volume, rel_error} */
-static int l_estimate_instance_volumes(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    int n_rays = (int)luaL_checkinteger(L, 2);
-
-    if (alea_system_spatial_mode_prefers_hier(sys))
-        return luaL_error(L, "estimate_instance_volumes failed: %s",
-                          "instance volume estimation requires flat spatial mode");
-
-    ALEA_LUA_UTIL_DEPRECATED_CALL_BEGIN;
-    size_t ni = alea_spatial_index_instance_count(sys);
-    ALEA_LUA_UTIL_DEPRECATED_CALL_END;
-    if (ni == 0) {
-        lua_newtable(L);
-        return 1;
-    }
-
-    double* volumes = (double*)calloc(ni, sizeof(double));
-    double* errors  = (double*)calloc(ni, sizeof(double));
-    if (!volumes || !errors) {
-        free(volumes); free(errors);
-        return luaL_error(L, "out of memory");
-    }
-
-    ALEA_LUA_UTIL_DEPRECATED_CALL_BEGIN;
-    int rc = alea_estimate_instance_volumes(sys, n_rays, volumes, errors);
-    ALEA_LUA_UTIL_DEPRECATED_CALL_END;
-    if (rc != 0) {
-        free(volumes); free(errors);
-        return luaL_error(L, "estimate_instance_volumes failed: %s", alea_error());
-    }
-
-    lua_createtable(L, (int)ni, 0);
-    for (size_t i = 0; i < ni; i++) {
-        lua_createtable(L, 0, 2);
-        lua_pushnumber(L, volumes[i]); lua_setfield(L, -2, "volume");
-        lua_pushnumber(L, errors[i]);  lua_setfield(L, -2, "rel_error");
-        lua_rawseti(L, -2, (lua_Integer)(i + 1));
-    }
-    free(volumes);
-    free(errors);
-    return 1;
-}
-
 static void lua_push_volume_path(lua_State* L,
                                  const alea_volume_path_t* path,
                                  const double* volume,
@@ -681,7 +637,6 @@ static const luaL_Reg util_methods[] = {
     {"clone",                      l_clone},
     {"bounding_sphere",            l_bounding_sphere},
     {"estimate_volumes",           l_estimate_volumes},
-    {"estimate_instance_volumes",  l_estimate_instance_volumes},
     {"volume_paths",               l_volume_paths},
     {"estimate_path_volumes",      l_estimate_path_volumes},
     {"remove_cells_by_volume",     l_remove_cells_by_volume},

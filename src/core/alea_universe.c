@@ -8,7 +8,6 @@
  */
 
 #include "alea_universe.h"
-#include "alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
 #include "core/alea_ops.h"
@@ -2061,7 +2060,11 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
                                         size_t max_hits,
                                         bool force_recursive) {
     if (!sys || !out_hits || max_hits == 0) return -1;
-    if (!g_debug_point_trace && alea_system_spatial_mode_prefers_hier(sys)) {
+
+    /* Default fast path: the hierarchical spatial index. The recursive walker
+     * is reserved for callers that need exact multi-cell coverage (overlap
+     * detection, force_recursive) and for the debug-trace path. */
+    if (!g_debug_point_trace && !force_recursive) {
         int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
                                                       out_hits, max_hits);
         if (n >= 0) return n;
@@ -2074,83 +2077,10 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
         return -1;
     }
 
-    /* Debug-trace path stays on the recursive walker so it can emit per-step
-     * logs. force_recursive (caller-requested cache bypass for overlap
-     * detection) is satisfied equally well by the hier path — the hier index
-     * has no per-point cache to invalidate, so it always returns full
-     * multi-depth hits. Important: the recursive walker lazily builds a
-     * per-universe point BVH on first use; that lazy build is NOT thread-safe
-     * and segfaults under OpenMP. Routing through hier when available also
-     * dodges that race entirely. */
-    if (g_debug_point_trace) {
-        size_t hit_count = 0;
-        int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
-                                              0, NULL, 0,
-                                              out_hits, max_hits, &hit_count);
-        if (result < 0) return -1;
-        return (int)hit_count;
-    }
-
-    /* If a hierarchical index is already built explicitly, use it instead of
-     * the flat spatial cache or the O(N)-per-level recursive fallback. Critical
-     * for plotter/raycast on large models where the recursive scan would
-     * dominate per-pixel cost. */
-    if (sys->hier_spatial_index) {
-        int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
-                                                      out_hits, max_hits);
-        if (n >= 0) return n;
-        /* Fall through to flat/recursive on error. */
-    }
-
-    /* No hier index — fall back to recursive (single-threaded plotter path,
-     * or when hier index isn't built). The per-universe point BVH inside
-     * find_all_cells_recursive remains lazily built; that's fine here because
-     * the recursive path is only reached when OpenMP isn't doing parallel
-     * grid queries through the hier branch above. */
-    if (force_recursive) {
-        size_t hit_count = 0;
-        int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
-                                              0, NULL, 0,
-                                              out_hits, max_hits, &hit_count);
-        if (result < 0) return -1;
-        return (int)hit_count;
-    }
-
-    /* Try fast spatial lookup with coherence caching.
-     * Will auto-build the spatial index if needed. */
-    int result = alea_spatial_find_cells_at_point(sys, x, y, z, out_hits, max_hits);
-    if (result >= 0) {
-        if (!sys->has_lattice) return result;
-
-        /* Spatial path doesn't handle lattices.  Check if any hit landed on
-         * a lattice cell, or if result==0 the point might be in a lattice
-         * element outside the base cell geometry. */
-        bool need_recursive = (result == 0);
-        for (int i = 0; i < result && !need_recursive; i++) {
-            const alea_cell_entry_t* c = &sys->cells.data[out_hits[i].cell_index];
-            if (c->lat_type != 0 && c->lat_fill)
-                need_recursive = true;
-        }
-        /* Also recurse if the spatial path couldn't fully resolve a fill
-         * chain (deepest hit still has fill_universe > 0).  This happens
-         * when a fill points to a lattice universe whose synthetic cell
-         * has no CSG tree and thus no BVH entry. */
-        if (!need_recursive && result > 0) {
-            const alea_cell_entry_t* deepest =
-                &sys->cells.data[out_hits[result - 1].cell_index];
-            if (deepest->fill_universe > 0)
-                need_recursive = true;
-        }
-        if (!need_recursive) return result;
-    }
-
-    /* Fallback: recursive approach (O(N) per level) */
     size_t hit_count = 0;
-
-    result = find_all_cells_recursive(sys, x, y, z, x, y, z,
-                                      0, NULL, 0,
-                                      out_hits, max_hits, &hit_count);
-
+    int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
+                                          0, NULL, 0,
+                                          out_hits, max_hits, &hit_count);
     if (result < 0) return -1;
     return (int)hit_count;
 }

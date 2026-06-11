@@ -253,15 +253,9 @@ After loading a model, prepare query acceleration before geometric queries:
 alea_prepare_query_acceleration(sys);
 ```
 
-This builds the right acceleration structures for the configured spatial mode.
-Small flat-mode models use the expanded flat instance BVH; hierarchical or
-auto-selected large models use the hierarchical TLAS/BLAS index. Once the
-acceleration is prepared, you can query any point in space:
-
-`ALEA_CONFIG_DEFAULT` still uses flat mode for compatibility. Applications that
-load arbitrary external models should set `cfg.spatial_mode =
-ALEA_SPATIAL_MODE_AUTO` before preparing query acceleration, so large models do
-not materialize the expanded flat spatial index.
+This builds the acceleration structures (the hierarchical TLAS/BLAS spatial
+index, surface BVH, and related caches). Once the acceleration is prepared, you
+can query any point in space:
 
 ```c
 int cell_id, material_id;

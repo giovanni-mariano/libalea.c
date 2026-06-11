@@ -138,16 +138,6 @@ alea_config_t alea_get_config(const alea_system_t* sys);
  */
 void alea_set_config(alea_system_t* sys, const alea_config_t* config);
 
-/**
- * @brief Return whether the current spatial mode resolves to hierarchical.
- *
- * Returns true for ALEA_SPATIAL_MODE_HIER. In ALEA_SPATIAL_MODE_AUTO, returns
- * true when the system meets the automatic hierarchical-index threshold. This
- * is useful for public tools that need to gate flat-only features without
- * including internal headers.
- */
-bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys);
-
 /* ============================================================================
  * LOADING
  *
@@ -160,36 +150,19 @@ bool alea_spatial_mode_is_hierarchical(const alea_system_t* sys);
  * ============================================================================ */
 
 int alea_build_universe_index(alea_system_t* sys);
-/**
- * @brief Build the expanded flat spatial index.
- *
- * This is a flat-spatial-index API. In hierarchical spatial mode, or in auto
- * mode when hierarchical indexing is selected, it returns -1 and sets an
- * error. For mode-aware query setup, prefer alea_prepare_query_acceleration().
- */
-int alea_build_spatial_index(alea_system_t* sys)
-    ALEA_DEPRECATED("flat spatial API; use alea_prepare_query_acceleration()");
 
 /**
- * @brief Prepare query caches according to the system spatial mode.
+ * @brief Prepare query caches (hierarchical spatial index, surface BVH, etc.).
  *
- * Uses flat caches in ALEA_SPATIAL_MODE_FLAT and hierarchical caches in
- * ALEA_SPATIAL_MODE_HIER. In ALEA_SPATIAL_MODE_AUTO, the implementation
- * switches to hierarchical indexing when the cell count reaches the auto
- * threshold. The threshold defaults to 100000 cells and can be overridden with
- * ALEA_SPATIAL_AUTO_CELL_THRESHOLD.
+ * This is the query setup API for raycast, slice/grid, mesh, render, and
+ * geometry queries.
  */
 int alea_prepare_query_acceleration(alea_system_t* sys);
 
 typedef struct {
-    alea_spatial_mode_t configured_mode;
-    alea_spatial_mode_t resolved_mode;
     bool built;
 
-    /* Flat-mode index shape. Zero in hierarchical mode. */
-    size_t flat_instance_count;
-
-    /* Hierarchical-mode index shape. Zero in flat mode. */
+    /* Hierarchical spatial index shape. */
     size_t hier_universe_count;
     size_t hier_blas_count;
     size_t hier_linear_universe_count;
@@ -213,9 +186,8 @@ typedef struct {
  * @brief Inspect the currently built query-acceleration structure.
  *
  * This does not build caches. Call alea_prepare_query_acceleration() first when
- * a built index is required. Flat-mode callers can inspect flat_instance_count;
- * hierarchical-mode callers can inspect placement, BLAS, transform, and memory
- * counts without relying on deprecated flat instance-index semantics.
+ * a built index is required. Callers can inspect placement, BLAS, transform,
+ * and memory counts of the hierarchical spatial index.
  */
 int alea_query_acceleration_stats(const alea_system_t* sys,
                                   alea_query_acceleration_stats_t* out_stats);
@@ -645,32 +617,6 @@ int alea_estimate_cell_volumes(alea_system_t* sys,
                                    double* volumes,
                                    double* rel_errors);
 
-/**
- * @brief Estimate volumes per cell instance (spatial-index aware)
- *
- * Like alea_estimate_cell_volumes but resolves each ray segment to
- * a specific cell instance via the spatial index. Distinguishes the same
- * cell appearing in different fill contexts.
- *
- * If @p rel_errors is non-NULL, it receives the 1-sigma relative statistical
- * error for each instance: sigma_V / V.  Set to -1 for zero-volume instances.
- *
- * Requires the raycast module to be linked; returns -1 otherwise.
- * Flat-spatial-index only: returns -1 in hierarchical spatial mode or in
- * auto mode when the system selects hierarchical spatial indexing.
- *
- * @param sys        CSG system (must have spatial index built)
- * @param n_rays     Number of random rays
- * @param volumes    Output array of size alea_spatial_index_instance_count(sys)
- * @param rel_errors Output array of same size, or NULL
- * @return 0 on success, -1 on error
- */
-int alea_estimate_instance_volumes(alea_system_t* sys,
-                                       int n_rays,
-                                       double* volumes,
-                                       double* rel_errors)
-    ALEA_DEPRECATED("flat instance-volume API; use alea_estimate_path_volumes() for hierarchical paths");
-
 #define ALEA_VOLUME_PATH_MAX_DEPTH 16
 
 typedef struct {
@@ -734,9 +680,7 @@ int alea_volume_path_at_point(alea_system_t* sys,
 /**
  * @brief Estimate volumes for concrete hierarchy paths.
  *
- * Output arrays must be sized to alea_volume_path_count(sys). Hierarchical mode
- * only in this implementation; use alea_estimate_instance_volumes() for the
- * deprecated flat expanded-instance API.
+ * Output arrays must be sized to alea_volume_path_count(sys).
  */
 int alea_estimate_path_volumes(alea_system_t* sys,
                                int n_rays,
@@ -1202,15 +1146,6 @@ size_t alea_get_cells_by_universe(const alea_system_t* sys, int universe_id,
                                        int* out_indices, size_t max_count);
 size_t alea_get_cells_filling_universe(const alea_system_t* sys, int universe_id,
                                             int* out_indices, size_t max_count);
-/**
- * @brief Return the number of expanded flat spatial instances.
- *
- * Flat-spatial-index only: returns 0 and sets an error in hierarchical spatial
- * mode or in auto mode when the system selects hierarchical spatial indexing.
- */
-size_t alea_spatial_index_instance_count(const alea_system_t* sys)
-    ALEA_DEPRECATED("flat spatial API; no hierarchical instance count exists");
-
 /* ============================================================================
  * VALIDATION
  * ============================================================================ */

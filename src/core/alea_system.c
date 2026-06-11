@@ -8,7 +8,6 @@
 #include "core/alea_eval.h"
 #include "core/alea_ops.h"
 #include "core/alea_universe.h"
-#include "core/alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "util/alea_log.h"
 #include "util/compat.h"
@@ -64,9 +63,6 @@ const alea_config_t ALEA_CONFIG_DEFAULT = {
 
     /* Flatten */
     .flatten_max_depth = 0,
-
-    /* Query acceleration */
-    .spatial_mode = ALEA_SPATIAL_MODE_FLAT,
 };
 
 // ============================================================================
@@ -123,30 +119,6 @@ int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags) {
     if (flags == ALEA_CACHE_ALL) flags = ALEA_CACHE_RAYCAST | ALEA_CACHE_UNIVERSE;
     unsigned state = atomic_load(&sys->query_cache_state);
     return (state & flags) == flags;
-}
-
-size_t alea_spatial_auto_cell_threshold(void) {
-    const char* env = getenv("ALEA_SPATIAL_AUTO_CELL_THRESHOLD");
-    if (env && env[0]) {
-        char* end = NULL;
-        unsigned long value = strtoul(env, &end, 10);
-        if (end != env && value > 0) return (size_t)value;
-    }
-    return 100000;
-}
-
-static bool spatial_auto_prefers_hier(const alea_system_t* sys) {
-    if (!sys) return false;
-    return alea_vec_count(&sys->cells) >= alea_spatial_auto_cell_threshold();
-}
-
-bool alea_system_spatial_mode_prefers_hier(const alea_system_t* sys) {
-    if (!sys) return false;
-    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_HIER)
-        return true;
-    if (sys->config.spatial_mode == ALEA_SPATIAL_MODE_AUTO)
-        return spatial_auto_prefers_hier(sys);
-    return false;
 }
 
 uint64_t alea_system_geometry_generation(const alea_system_t* sys) {
@@ -236,7 +208,7 @@ static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
 
 static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
                                           bool free_universe_vector) {
-    if ((flags & (ALEA_CACHE_SPATIAL | ALEA_CACHE_HIER_SPATIAL)) &&
+    if ((flags & ALEA_CACHE_HIER_SPATIAL) &&
         sys->volume_path_index) {
         alea_volume_path_index_free(sys->volume_path_index);
         sys->volume_path_index = NULL;
@@ -258,15 +230,6 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
         free(sys->mc_id_to_surface);
         sys->mc_id_to_surface = NULL;
         sys->mc_id_to_surface_size = 0;
-    }
-
-    if (flags & ALEA_CACHE_SPATIAL) {
-        if (sys->spatial_index) {
-            alea_spatial_index_free(sys->spatial_index);
-            sys->spatial_index = NULL;
-        }
-        atomic_store(&sys->spatial_build_state, 0);
-        alea_spatial_reset_cache();
     }
 
     if (flags & ALEA_CACHE_HIER_SPATIAL) {
@@ -298,15 +261,12 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys || flags == 0) return;
 
-    if (flags & ALEA_CACHE_SPATIAL)
-        flags |= ALEA_CACHE_HIER_SPATIAL;
-
     unsigned invalidated_flags = flags;
 
     unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
     atomic_fetch_add(&sys->geometry_generation, 1);
 
-    if ((invalidated_flags & (ALEA_CACHE_SPATIAL | ALEA_CACHE_HIER_SPATIAL)) &&
+    if ((invalidated_flags & ALEA_CACHE_HIER_SPATIAL) &&
         sys->volume_path_index) {
         alea_volume_path_index_free(sys->volume_path_index);
         sys->volume_path_index = NULL;
@@ -329,25 +289,8 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
     }
 
     if (flags == ALEA_CACHE_ALL) {
-        flags = ALEA_CACHE_UNIVERSE |
-                (alea_system_spatial_mode_prefers_hier(sys)
-                 ? ALEA_CACHE_RAYCAST_HIER
-                 : ALEA_CACHE_RAYCAST);
+        flags = ALEA_CACHE_UNIVERSE | ALEA_CACHE_RAYCAST;
     }
-    if ((flags & ALEA_CACHE_RAYCAST) == ALEA_CACHE_RAYCAST &&
-        alea_system_spatial_mode_prefers_hier(sys)) {
-        flags &= ~ALEA_CACHE_SPATIAL;
-        flags |= ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_UNIVERSE;
-    }
-    if ((flags & ALEA_CACHE_SPATIAL) &&
-        alea_system_spatial_mode_prefers_hier(sys) &&
-        !(flags & ALEA_CACHE_HIER_SPATIAL)) {
-        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "flat spatial index is disabled by hierarchical spatial mode");
-        return -1;
-    }
-    if (flags & ALEA_CACHE_SPATIAL)
-        flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_HIER_SPATIAL)
         flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_ADJACENCY)
@@ -370,25 +313,10 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         if (alea_build_universe_index(sys) != 0) goto fail;
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_UNIVERSE);
     }
-    /* Pre-build per-universe point BVHs when UNIVERSE is requested, but only
-     * in flat/auto-flat mode. In hier mode alea_find_all_cells_at_point
-     * delegates to the BLAS (alea_hier_spatial_find_cells_at_point), so the
-     * per-universe BVHs would be built and never used. */
-    if ((flags & ALEA_CACHE_UNIVERSE) &&
-        !alea_system_spatial_mode_prefers_hier(sys)) {
-        alea_prebuild_universe_point_bvhs(sys);
-    }
-
     if ((flags & ALEA_CACHE_CELL_SURFACES) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_CELL_SURFACES)) {
         if (alea_build_cell_surface_index(sys) != 0) goto fail;
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_CELL_SURFACES);
-    }
-
-    if ((flags & ALEA_CACHE_SPATIAL) &&
-        !alea_system_query_cache_ready(sys, ALEA_CACHE_SPATIAL)) {
-        if (alea_spatial_index_build(sys) != 0) goto fail;
-        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SPATIAL);
     }
 
     if ((flags & ALEA_CACHE_HIER_SPATIAL) &&

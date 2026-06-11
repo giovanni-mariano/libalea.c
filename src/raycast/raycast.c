@@ -18,7 +18,6 @@
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
 #include "util/compat.h"
-#include "core/alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
 #include "util/alea_log.h"
@@ -49,7 +48,8 @@ int alea_raycast_ensure_hier_caches(alea_system_t* sys) {
 }
 
 static bool raycast_prefers_hier_mode(const alea_system_t* sys) {
-    return alea_system_spatial_mode_prefers_hier(sys);
+    (void)sys;
+    return true;  /* hierarchical spatial index is the only backend */
 }
 
 static int raycast_cell_aware_impl(alea_system_t* sys,
@@ -1452,9 +1452,10 @@ int alea_raycast(alea_system_t* sys,
                 double t_max,
                 alea_raycast_result_t* result) {
     if (!result) return -1;
-    if (raycast_prefers_hier_mode(sys)) {
-        return alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, result);
-    }
+
+    /* alea_raycast() is the hit-producing surface+segment pipeline (uses the
+     * surface BVH). For segment-only fast tracing use alea_raycast_hier(); for
+     * hit-producing hierarchical tracing use alea_raycast_hier_with_hits(). */
 
     /* Free any prior allocations then reinitialize (safe for reuse) */
     alea_raycast_result_free(result);
@@ -2639,10 +2640,6 @@ int alea_raycast_cell_aware(alea_system_t* sys,
                            double t_max,
                            alea_raycast_result_t* result) {
     if (!sys || !result) return -1;
-    if (raycast_prefers_hier_mode(sys)) {
-        return alea_raycast_hier_cell_aware(sys, ox, oy, oz, dx, dy, dz,
-                                            t_max, result);
-    }
 
     if (system_has_lattice_cells(sys)) {
         /* Lattice transport requires synthetic DDA boundary hits and

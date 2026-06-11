@@ -475,7 +475,6 @@ TEST(grid_path_coverage_nested_overlap) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 10.0);
@@ -758,54 +757,11 @@ TEST(grid_no_false_overlaps) {
  * ========================================================================= */
 static const char* SIMPLE_FILL_PATH = "tests/data/simple_fill.mcnp";
 
-TEST(grid_flat_hier_parity) {
-    /* flat mode */
-    mcnp_model_t* mf = mcnp_load(SIMPLE_FILL_PATH);
-    if (!mf) {
-        /* skip gracefully if fixture not found from this working dir */
-        return;
-    }
-    alea_system_t* sf = mf->sys;
-    alea_config_t cfg = alea_get_config(sf);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_FLAT;
-    alea_set_config(sf, &cfg);
-    ASSERT_EQ(alea_prepare_query_acceleration(sf), 0);
-
-    /* hier mode */
-    mcnp_model_t* mh = mcnp_load(SIMPLE_FILL_PATH);
-    ASSERT_NOT_NULL(mh);
-    alea_system_t* sh = mh->sys;
-    cfg = alea_get_config(sh);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
-    alea_set_config(sh, &cfg);
-    ASSERT_EQ(alea_prepare_query_acceleration(sh), 0);
-
-    const int nu = 32, nv = 32;
-    int cells_flat[1024]; int mats_flat[1024];
-    int cells_hier[1024]; int mats_hier[1024];
-
-    alea_slice_view_t view;
-    alea_slice_view_axis(&view, 2, 0.0, -60.0, 60.0, -60.0, 60.0);
-
-    ASSERT_EQ(alea_find_cells_grid(sf, &view, nu, nv, -1, cells_flat, mats_flat, NULL), 0);
-    ASSERT_EQ(alea_find_cells_grid(sh, &view, nu, nv, -1, cells_hier, mats_hier, NULL), 0);
-
-    int mismatches = 0;
-    for (int i = 0; i < nu * nv; i++) {
-        if (mats_flat[i] != mats_hier[i]) mismatches++;
-    }
-    ASSERT_MSG(mismatches == 0, "flat and hier modes gave different material maps");
-
-    mcnp_model_destroy(mf);
-    mcnp_model_destroy(mh);
-}
-
 TEST(grid_path_ids_filled_universe) {
     mcnp_model_t* model = mcnp_load(SIMPLE_FILL_PATH);
     if (!model) return;
     alea_system_t* sys = model->sys;
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 

@@ -80,12 +80,11 @@ assert(math.abs(pdata.r - 5.0) < 0.01, "sphere radius should be 5")
 local filling = sys:cells_filling_universe(0)
 assert(type(filling) == "table", "should return a table")
 
--- query acceleration stats (mode-aware replacement for flat instance_count)
+-- query acceleration stats (hierarchical spatial index)
 local qstats = sys:query_acceleration_stats()
 assert(type(qstats) == "table", "query_acceleration_stats should return a table")
-assert(qstats.resolved_mode == "flat", "default resolved spatial mode should be flat")
 assert(qstats.built == false, "query acceleration should not be built yet")
-assert(type(qstats.flat_instance_count) == "number", "flat_instance_count should be a number")
+assert(type(qstats.hier_universe_count) == "number", "hier_universe_count should be a number")
 
 -- stats
 local st = sys:stats()

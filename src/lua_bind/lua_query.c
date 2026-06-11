@@ -28,30 +28,12 @@ static int l_build_universe_index(lua_State* L) {
     return 0;
 }
 
-static int l_build_spatial_index(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    ALEA_LUA_DEPRECATED_CALL_BEGIN;
-    if (alea_build_spatial_index(sys) != 0)
-        return luaL_error(L, "build_spatial_index failed: %s", alea_error());
-    ALEA_LUA_DEPRECATED_CALL_END;
-    return 0;
-}
-
 static int l_prepare_query_acceleration(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     luaL_checktype(L, 2, LUA_TNONE);
     if (alea_prepare_query_acceleration(sys) != 0)
         return luaL_error(L, "prepare_query_acceleration failed: %s", alea_error());
     return 0;
-}
-
-static const char* spatial_mode_name(alea_spatial_mode_t mode) {
-    switch (mode) {
-        case ALEA_SPATIAL_MODE_FLAT: return "flat";
-        case ALEA_SPATIAL_MODE_HIER: return "hier";
-        case ALEA_SPATIAL_MODE_AUTO: return "auto";
-        default: return "unknown";
-    }
 }
 
 /* sys:query_acceleration_stats() -> table */
@@ -62,10 +44,7 @@ static int l_query_acceleration_stats(lua_State* L) {
         return luaL_error(L, "query_acceleration_stats failed: %s", alea_error());
 
     lua_createtable(L, 0, 21);
-    lua_pushstring(L, spatial_mode_name(stats.configured_mode)); lua_setfield(L, -2, "configured_mode");
-    lua_pushstring(L, spatial_mode_name(stats.resolved_mode));   lua_setfield(L, -2, "resolved_mode");
     lua_pushboolean(L, stats.built);                             lua_setfield(L, -2, "built");
-    lua_pushinteger(L, (lua_Integer)stats.flat_instance_count);   lua_setfield(L, -2, "flat_instance_count");
     lua_pushinteger(L, (lua_Integer)stats.hier_universe_count);   lua_setfield(L, -2, "hier_universe_count");
     lua_pushinteger(L, (lua_Integer)stats.hier_blas_count);       lua_setfield(L, -2, "hier_blas_count");
     lua_pushinteger(L, (lua_Integer)stats.hier_linear_universe_count); lua_setfield(L, -2, "hier_linear_universe_count");
@@ -634,18 +613,6 @@ static int l_cells_filling_universe(lua_State* L) {
     return 1;
 }
 
-/* sys:instance_count() -> int */
-static int l_instance_count(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    if (alea_system_spatial_mode_prefers_hier(sys))
-        return luaL_error(L, "instance_count failed: %s",
-                          "flat spatial instance count is unavailable in hierarchical spatial mode");
-    ALEA_LUA_DEPRECATED_CALL_BEGIN;
-    lua_pushinteger(L, (lua_Integer)alea_spatial_index_instance_count(sys));
-    ALEA_LUA_DEPRECATED_CALL_END;
-    return 1;
-}
-
 /* sys:stats() -> table */
 static int l_stats(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
@@ -673,47 +640,14 @@ static int l_tree_print(lua_State* L) {
     return 0;
 }
 
-/* sys:set_spatial_mode("flat"|"hier"|"auto") */
-static int l_set_spatial_mode(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    const char* mode_str = luaL_checkstring(L, 2);
-    alea_config_t cfg = alea_get_config(sys);
-    if (strcmp(mode_str, "flat") == 0)
-        cfg.spatial_mode = ALEA_SPATIAL_MODE_FLAT;
-    else if (strcmp(mode_str, "hier") == 0)
-        cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
-    else if (strcmp(mode_str, "auto") == 0)
-        cfg.spatial_mode = ALEA_SPATIAL_MODE_AUTO;
-    else
-        return luaL_error(L, "set_spatial_mode: unknown mode '%s' (use 'flat', 'hier', or 'auto')", mode_str);
-    alea_set_config(sys, &cfg);
-    return 0;
-}
-
-/* sys:get_spatial_mode() -> "flat"|"hier"|"auto" */
-static int l_get_spatial_mode(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    alea_config_t cfg = alea_get_config(sys);
-    switch (cfg.spatial_mode) {
-        case ALEA_SPATIAL_MODE_FLAT: lua_pushstring(L, "flat"); break;
-        case ALEA_SPATIAL_MODE_HIER: lua_pushstring(L, "hier"); break;
-        case ALEA_SPATIAL_MODE_AUTO: lua_pushstring(L, "auto"); break;
-        default:                     lua_pushstring(L, "unknown"); break;
-    }
-    return 1;
-}
-
 /* ============================================================================
  * Registration
  * ============================================================================ */
 
 static const luaL_Reg query_methods[] = {
     {"build_universe_index", l_build_universe_index},
-    {"build_spatial_index",  l_build_spatial_index},
     {"prepare_query_acceleration", l_prepare_query_acceleration},
     {"query_acceleration_stats", l_query_acceleration_stats},
-    {"set_spatial_mode",     l_set_spatial_mode},
-    {"get_spatial_mode",     l_get_spatial_mode},
     {"find_cell",            l_find_cell},
     {"material_at",          l_material_at},
     {"find_all_cells",       l_find_all_cells},
@@ -745,7 +679,6 @@ static const luaL_Reg query_methods[] = {
     {"node_primitive_id",       l_node_primitive_id},
     {"node_primitive_data",     l_node_primitive_data},
     {"cells_filling_universe",  l_cells_filling_universe},
-    {"instance_count",          l_instance_count},
     {"stats",                   l_stats},
     {"tree_print",              l_tree_print},
     {NULL, NULL}

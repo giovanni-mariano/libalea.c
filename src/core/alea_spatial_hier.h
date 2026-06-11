@@ -8,10 +8,26 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "alea_types.h"
-#include "core/alea_spatial.h"
+#include "alea_universe.h"  /* alea_matrix_t */
 
 typedef struct alea_system alea_system_t;
 typedef struct alea_hier_spatial_index alea_hier_spatial_index_t;
+
+/**
+ * @brief Query result for region/slice/point queries.
+ *
+ * `instance_index` is a synthetic per-query index in hierarchical mode.
+ */
+typedef struct {
+    uint32_t instance_index;
+    uint32_t cell_index;       /* Index into sys->cells */
+    int cell_id;               /* MCNP cell ID */
+    int material_id;           /* Material ID */
+    int universe_id;           /* Universe this instance belongs to */
+    int depth;                 /* Nesting depth (0 = base universe) */
+    bool is_terminal;          /* True if no FILL (actual geometry) */
+    alea_matrix_t transform;    /* Transform to apply */
+} alea_spatial_hit_t;
 
 typedef struct {
     alea_cell_hit_t hit;

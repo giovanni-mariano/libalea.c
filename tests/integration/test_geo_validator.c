@@ -458,7 +458,6 @@ TEST(geo_validator_clean_adjacent_hier) {
     alea_system_t* sys = build_split_box_system();
     ASSERT_NOT_NULL(sys);
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     alea_geom_validator_options_t opts;

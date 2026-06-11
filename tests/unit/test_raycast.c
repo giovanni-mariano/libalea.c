@@ -282,7 +282,7 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     ASSERT(alea_add_cell(sys, 20, c2_root, m2, -1.0, 0) >= 0);
 
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NOT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
     ASSERT_EQ(alea_build_cell_adjacency(sys), 0);
     ASSERT(sys->cells.data[0].surface_index_count > 0);
     ASSERT(sys->cells.data[1].surface_index_count > 0);
@@ -299,12 +299,12 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     ASSERT_EQ(info.cell_id, 20);
 
     ASSERT(!sys->universe_index_built);
-    ASSERT_NULL(sys->spatial_index);
+    ASSERT_NULL(sys->hier_spatial_index);
     ASSERT(!sys->cell_adjacency_built);
     ASSERT_EQ((int)sys->cells.data[0].surface_index_count, 0);
 
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NOT_NULL(sys->spatial_index);
+    ASSERT_NOT_NULL(sys->hier_spatial_index);
 
     int cell_id = -1;
     int material_id = -1;

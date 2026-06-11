@@ -81,7 +81,6 @@ TEST(hier_mode_skips_per_universe_bvh_build) {
     ASSERT_NOT_NULL(sys);
 
     alea_config_t cfg = alea_get_config(sys);
-    cfg.spatial_mode = ALEA_SPATIAL_MODE_HIER;
     alea_set_config(sys, &cfg);
 
     int mat = alea_add_material(sys, 1);

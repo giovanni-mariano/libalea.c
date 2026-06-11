@@ -2,7 +2,6 @@
 
 local function build_clean_system()
     local sys = alea.create()
-    sys:set_spatial_mode("hier")
     local s1 = sys:sphere(1, 0, 0, 0, 5)
     local m1 = sys:material(1)
     sys:cell{id = 1, region = sys:inside(s1), material = m1, density = 10.0}
@@ -28,7 +27,6 @@ assert(clean_all:error_count() == 0, "clean whole-geometry validation should pas
 clean:destroy()
 
 local undefined = alea.create()
-undefined:set_spatial_mode("hier")
 local sphere = undefined:sphere(1, 0, 0, 0, 1)
 local mat = undefined:material(1)
 undefined:cell{id = 1, region = undefined:inside(sphere), material = mat, density = 1.0}

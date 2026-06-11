@@ -720,12 +720,7 @@ static int prepare_validator(alea_system_t* sys,
     if (local_options->sample_offset <= 0.0)
         local_options->sample_offset = SURFACE_SAMPLE_OFFSET;
 
-    unsigned cache_flags = alea_system_spatial_mode_prefers_hier(sys)
-        ? ALEA_CACHE_RAYCAST_HIER
-        : ALEA_CACHE_RAYCAST;
-    if (local_options->flags & ALEA_GEOM_VALIDATE_HIERARCHICAL)
-        cache_flags = ALEA_CACHE_RAYCAST_HIER;
-    return alea_system_prepare_query_caches(sys, cache_flags);
+    return alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST);
 }
 
 static int validate_one_ray(alea_system_t* sys,

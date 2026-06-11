@@ -11,7 +11,6 @@
 #include "slice/curve_intersect.h"  /* Must come before alea_slice.h for extended enum */
 #include "alea_slice.h"
 #include "core/alea_system.h"
-#include "core/alea_spatial.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
 #include <stdio.h>
@@ -1097,12 +1096,6 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
     for (size_t i = 0; i < n; i++) out_path_ids[i] = UINT32_MAX;
     alea_slice_path_table_free(out_paths);
 
-    if (!alea_spatial_mode_is_hierarchical(sys)) {
-        return alea_find_cells_grid(sys, view, nu, nv, universe_depth,
-                                    out_cell_ids, out_material_ids,
-                                    out_errors);
-    }
-
     alea_multilevel_hint_t* prev_row_hints =
         calloc((size_t)nu, sizeof(*prev_row_hints));
     alea_multilevel_hint_t* curr_row_hints =
@@ -1615,6 +1608,8 @@ static int find_point_coverage_from_hits(const alea_cell_hit_t* hits,
         count++;
         if (count > 1) {
             out->coverage = ALEA_COVERAGE_MULTI;
+            #pragma omp atomic
+            g_point_coverage_stats.spatial_multi_early_exit++;
             return 0;
         }
     }
@@ -1640,43 +1635,15 @@ static int find_point_coverage_spatial(alea_system_t* sys,
         return -2;
     }
 
-    if (alea_spatial_mode_is_hierarchical(sys)) {
-        alea_cell_hit_t hits[32];
-        int n = alea_hier_spatial_find_cells_at_point_uncached(sys, gx, gy, gz,
-                                                               hits, 32);
-        if (n < 0) return -1;
-        if (n >= 32) {
-            #pragma omp atomic
-            g_point_coverage_stats.truncated_fallbacks++;
-            return -2;
-        }
+    alea_cell_hit_t hits[32];
+    int n = alea_hier_spatial_find_cells_at_point_uncached(sys, gx, gy, gz,
+                                                           hits, 32);
+    if (n < 0) return -1;
+    if (n >= 32) {
         #pragma omp atomic
-        g_point_coverage_stats.spatial_queries++;
-        #pragma omp atomic
-        g_point_coverage_stats.candidate_total += (size_t)n;
-        #pragma omp critical(pc_stats_candidate_max)
-        {
-            if ((size_t)n > g_point_coverage_stats.candidate_max)
-                g_point_coverage_stats.candidate_max = (size_t)n;
-        }
-        return find_point_coverage_from_hits(hits, n, universe_depth, out);
-    }
-
-    const size_t cap = 4096;
-    alea_spatial_hit_t* hits = malloc(cap * sizeof(*hits));
-    if (!hits) return -1;
-
-    int n = alea_spatial_query_point(sys, gx, gy, gz, hits, cap);
-    if (n < 0 || (size_t)n >= cap) {
-        if ((size_t)n >= cap) {
-            #pragma omp atomic
-            g_point_coverage_stats.truncated_fallbacks++;
-        }
-        free(hits);
+        g_point_coverage_stats.truncated_fallbacks++;
         return -2;
     }
-
-    n = dedup_spatial_hits(hits, n);
     #pragma omp atomic
     g_point_coverage_stats.spatial_queries++;
     #pragma omp atomic
@@ -1686,75 +1653,7 @@ static int find_point_coverage_spatial(alea_system_t* sys,
         if ((size_t)n > g_point_coverage_stats.candidate_max)
             g_point_coverage_stats.candidate_max = (size_t)n;
     }
-
-    if (universe_depth >= 0) {
-        int count = 0;
-        for (int h = 0; h < n; h++) {
-            const alea_spatial_hit_t* hit = &hits[h];
-            if (hit->depth != universe_depth) continue;
-
-            double lx = gx, ly = gy, lz = gz;
-            alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
-            const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
-            #pragma omp atomic
-            g_point_coverage_stats.contains_tests++;
-            if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
-                continue;
-
-            if (count == 0) out->primary_cell_id = hit->cell_id;
-            if (count == 1) out->secondary_cell_id = hit->cell_id;
-            count++;
-            if (count > 1) {
-                out->coverage = ALEA_COVERAGE_MULTI;
-                #pragma omp atomic
-                g_point_coverage_stats.spatial_multi_early_exit++;
-                free(hits);
-                return 0;
-            }
-        }
-        out->coverage = (count == 1) ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
-        free(hits);
-        return 0;
-    }
-
-    int max_depth = -1;
-    int count_at_max = 0;
-    int second_at_max = -1;
-    for (int h = n - 1; h >= 0; h--) {
-        const alea_spatial_hit_t* hit = &hits[h];
-        if (max_depth >= 0 && hit->depth < max_depth)
-            break;
-
-        double lx = gx, ly = gy, lz = gz;
-        alea_matrix_transform_point_inverse(&hit->transform, &lx, &ly, &lz);
-        const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
-        #pragma omp atomic
-        g_point_coverage_stats.contains_tests++;
-        if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
-            continue;
-
-        if (hit->depth > max_depth) {
-            max_depth = hit->depth;
-            count_at_max = 1;
-            out->primary_cell_id = hit->cell_id;
-            second_at_max = -1;
-        } else if (hit->depth == max_depth) {
-            if (count_at_max == 1) second_at_max = hit->cell_id;
-            count_at_max++;
-            if (count_at_max > 1) {
-                out->coverage = ALEA_COVERAGE_MULTI;
-                out->secondary_cell_id = second_at_max;
-                #pragma omp atomic
-                g_point_coverage_stats.spatial_multi_early_exit++;
-                free(hits);
-                return 0;
-            }
-        }
-    }
-
-    out->coverage = (count_at_max == 1) ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
-    free(hits);
-    return 0;
+    return find_point_coverage_from_hits(hits, n, universe_depth, out);
 }
 
 static int find_point_coverage_exact(alea_system_t* sys,
@@ -3467,11 +3366,10 @@ int alea_refine_grid_coverage_tiles_exact(
     double du = u_range / nu;
     double dv = v_range / nv;
     double eps = fmax(fabs(du), fabs(dv)) * 2.0 + 1e-10;
-    bool use_hier = alea_spatial_mode_is_hierarchical(sys);
     bool use_hier_direct_region =
-        use_hier && getenv("ALEA_TILE_DIRECT_REGION") != NULL;
+        getenv("ALEA_TILE_DIRECT_REGION") != NULL;
     bool use_hier_chain_candidates =
-        use_hier && getenv("ALEA_TILE_CHAIN_CANDIDATES") != NULL;
+        getenv("ALEA_TILE_CHAIN_CANDIDATES") != NULL;
     bool use_chain_bitset =
         use_hier_chain_candidates && getenv("ALEA_TILE_CHAIN_BITSET") != NULL;
     if (use_hier_chain_candidates) {
@@ -3533,11 +3431,8 @@ int alea_refine_grid_coverage_tiles_exact(
             } else if (use_hier_direct_region) {
                 hit_count = alea_hier_spatial_query_region_direct(
                     sys, &query, hits, max_hits);
-            } else if (use_hier) {
-                hit_count = alea_hier_spatial_query_region(
-                    sys, &query, hits, max_hits);
             } else {
-                hit_count = alea_spatial_query_region(
+                hit_count = alea_hier_spatial_query_region(
                     sys, &query, hits, max_hits);
             }
             if (hit_count < 0) {
@@ -3676,8 +3571,6 @@ int alea_refine_grid_coverage_paths_exact(
     alea_tile_coverage_stats_reset();
     alea_point_coverage_stats_reset();
 
-    if (!alea_spatial_mode_is_hierarchical(sys))
-        return -1;
     if (alea_prepare_query_acceleration(sys) != 0)
         return -1;
 
@@ -4842,12 +4735,8 @@ static int count_cells_in_universe_at_point(alea_system_t* sys,
     alea_cell_hit_t hits[MAX_HITS];
     int n;
 
-    if (alea_spatial_mode_is_hierarchical(sys)) {
-        n = alea_hier_spatial_find_cells_at_point_uncached(sys, x, y, z,
-                                                           hits, MAX_HITS);
-    } else {
-        n = alea_spatial_find_cells_at_point(sys, x, y, z, hits, MAX_HITS);
-    }
+    n = alea_hier_spatial_find_cells_at_point_uncached(sys, x, y, z,
+                                                       hits, MAX_HITS);
     if (n <= 0) return 0;
 
     int count = 0;
@@ -5297,7 +5186,7 @@ alea_slice_error_result_t* alea_check_slice_errors(
     if (coll->curves.count == 0) return NULL;
 
     /* Reset spatial coherence cache so it starts fresh for curve walking */
-    alea_spatial_reset_cache();
+    alea_hier_spatial_reset_cache();
 
     /* Compute viewport-derived parameters */
     double vp_width  = view->u_max - view->u_min;
