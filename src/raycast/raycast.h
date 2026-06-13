@@ -263,6 +263,32 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
                                 double t_max,
                                 alea_raycast_result_t* result);
 
+/**
+ * @brief Buffer-reuse hierarchical raycast with boundary hits.
+ *
+ * Same contract as alea_raycast_hier_with_hits() (segment + hit parity), but
+ * takes a pre-normalized ray, assumes query caches are already built
+ * (ALEA_CACHE_RAYCAST), and does NOT free the result buffers. The caller must
+ * call alea_raycast_result_clear() between rays. Intended for per-pixel render
+ * loops that reuse a thread-local result to avoid malloc/free churn.
+ */
+int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max,
+                                        alea_raycast_result_t* result);
+
+/**
+ * @brief Buffer-reuse hierarchical raycast, segments only (no hit list).
+ *
+ * Like alea_raycast_hier_with_hits_nocache() but skips boundary-hit
+ * reconstruction; produces material/path segments only. Use when surface
+ * normals are not needed (e.g. x-ray accumulation).
+ */
+int alea_raycast_hier_segments_nocache(alea_system_t* sys,
+                                       const alea_ray_t* ray,
+                                       double t_max,
+                                       alea_raycast_result_t* result);
+
 /* ============================================================================
  * QUERY HELPERS
  * ============================================================================ */

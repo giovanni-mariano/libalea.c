@@ -537,13 +537,14 @@ static void render_pixel_solid(alea_system_t* sys,
         if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result) != 0)
             return;
     } else {
-        /* Non-lattice: use nocache + normalized init (caches pre-built) */
+        /* Non-lattice: hierarchical segment+hit trace. Steps cell-to-cell via
+         * the spatial index instead of intersecting every surface along the
+         * ray (the old global surface-BVH path). Buffer-reuse nocache variant;
+         * caches are pre-built and the result was cleared above. */
         alea_ray_t ray;
         alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
 
-        if (alea_raycast_surfaces_nocache(sys, &ray, 0, t_max, result) != 0)
-            return;
-        if (alea_raycast_to_segments(sys, t_max, result) != 0)
+        if (alea_raycast_hier_with_hits_nocache(sys, &ray, t_max, result) != 0)
             return;
     }
     /* Find first non-void segment in visible region (past clips) */
@@ -687,10 +688,19 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = cfg->background[2];
     *out_cell_id = -1;
 
-    /* Full raycast */
+    /* Full raycast. Non-lattice uses the hierarchical segment tracer (segments
+     * only — x-ray needs no surface normals); lattice keeps the full global
+     * traversal which handles lattice DDA + fill expansion. */
     alea_raycast_result_clear(result);
-    if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, 0, result) != 0)
-        return;
+    if (sys->has_lattice) {
+        if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, 0, result) != 0)
+            return;
+    } else {
+        alea_ray_t ray;
+        alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+        if (alea_raycast_hier_segments_nocache(sys, &ray, 0, result) != 0)
+            return;
+    }
 
     /* Accumulate density-weighted color */
     float accum_r = 0, accum_g = 0, accum_b = 0;
