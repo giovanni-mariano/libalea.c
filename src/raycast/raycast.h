@@ -290,6 +290,20 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                        alea_raycast_result_t* result);
 
 /**
+ * @brief Buffer-reuse, segments-only raycast with neighbor-walk disabled.
+ *
+ * Same output contract as alea_raycast_hier_segments_nocache() (full segment
+ * list, buffer reuse, caches assumed built), but the nested-universe
+ * neighbor-walk is OFF, so every segment's cell matches the canonical
+ * root-to-leaf point lookup (no overlap-region divergence). Intended for 2D
+ * slice rasterization that traces one in-plane ray per image row.
+ */
+int alea_raycast_hier_fast_segments_nocache(alea_system_t* sys,
+                                            const alea_ray_t* ray,
+                                            double t_max,
+                                            alea_raycast_result_t* result);
+
+/**
  * @brief Buffer-reuse hierarchical raycast for solid rendering (first hit).
  *
  * Like alea_raycast_hier_with_hits_nocache() but stops tracing once a

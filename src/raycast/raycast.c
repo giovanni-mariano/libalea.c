@@ -2846,6 +2846,20 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                    true, DBL_MAX, result);
 }
 
+int alea_raycast_hier_fast_segments_nocache(alea_system_t* sys,
+                                            const alea_ray_t* ray,
+                                            double t_max,
+                                            alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    result->ray = *ray;
+    /* Buffer-reuse, segments-only, neighbor-walk OFF: the per-pixel cell choice
+     * matches the canonical full root-to-leaf lookup (no overlap-region
+     * divergence). Intended for one-ray-per-scanline 2D slice rasterization. */
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
+                                   false, DBL_MAX, result);
+}
+
 int alea_raycast_hier_firsthit_nocache(alea_system_t* sys,
                                        const alea_ray_t* ray,
                                        double t_min, double t_max,

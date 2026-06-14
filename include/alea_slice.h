@@ -271,6 +271,29 @@ int alea_find_cells_grid(alea_system_t* sys,
                               uint8_t* out_errors);
 
 /**
+ * @brief Fill a slice grid by scanline raytracing (drop-in for
+ *        alea_find_cells_grid).
+ *
+ * Traces one ray per image row within the slice plane and maps the resulting
+ * cell segments to column spans, costing O(cell-crossings/row) instead of one
+ * point query per pixel. Much faster at high resolution on large models.
+ *
+ * Fills out_cell_ids / out_material_ids identically to alea_find_cells_grid()
+ * (idx = j*nu + i, -1 / 0 for void). out_errors is set to all-clean: this fill
+ * does not detect overlaps; use the coverage/curve passes for that.
+ *
+ * Only the innermost level is supported; universe_depth != -1 transparently
+ * falls back to alea_find_cells_grid(). Requires the raycast module.
+ */
+int alea_find_cells_grid_raycast(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 int nu, int nv,
+                                 int universe_depth,
+                                 int* out_cell_ids,
+                                 int* out_material_ids,
+                                 uint8_t* out_errors);
+
+/**
  * @brief Find cells and coverage classes on a slice grid
  *
  * Compatibility extension of alea_find_cells_grid(). The cell/material/error

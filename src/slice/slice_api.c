@@ -13,6 +13,7 @@
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
+#include "raycast/raycast.h"  /* scanline raytrace grid fill */
 #include <stdio.h>
 #include "core/alea_universe.h"
 #include <stdlib.h>
@@ -1070,6 +1071,104 @@ int alea_find_cells_grid(alea_system_t* sys,
         atomic_store(&g_univ_hint_cell, 0); atomic_store(&g_univ_neighbor, 0);
         atomic_store(&g_univ_blas, 0); atomic_store(&g_univ_linear, 0);
         atomic_store(&g_csg_prim_evals, 0); atomic_store(&g_csg_bool_ops, 0);
+    }
+
+    return 0;
+}
+
+int alea_find_cells_grid_raycast(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 int nu, int nv,
+                                 int universe_depth,
+                                 int* out_cell_ids,
+                                 int* out_material_ids,
+                                 uint8_t* out_errors) {
+    if (!sys || !view || !out_cell_ids || nu <= 0 || nv <= 0) {
+        return -1;
+    }
+
+    /* The cell-aware trace yields innermost (terminal) cells, so only the
+     * innermost level is supported here; defer other depths to the point
+     * query, which understands universe_depth. */
+    if (universe_depth != -1) {
+        return alea_find_cells_grid(sys, view, nu, nv, universe_depth,
+                                    out_cell_ids, out_material_ids, out_errors);
+    }
+
+    const alea_slice_plane_t* plane = &view->plane;
+    const double u_min = view->u_min;
+    const double v_min = view->v_min;
+    const double du = (view->u_max - u_min) / nu;
+    const double dv = (view->v_max - v_min) / nv;
+    const double t_max = view->u_max - u_min;
+    const double* O = plane->origin;
+    const double* U = plane->u_axis;
+    const double* Vx = plane->v_axis;
+
+    /* Build raycast caches once, before the parallel region (workers read-only). */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+        return -1;
+
+    /* This fill produces no overlap/error info; the existing coverage/curve
+     * passes remain the source for that. Errors are reported as clean. */
+    if (out_errors) memset(out_errors, 0, (size_t)nu * nv);
+
+#ifdef _OPENMP
+    #pragma omp parallel
+#endif
+    {
+        alea_raycast_result_t res;
+        alea_raycast_result_init(&res);
+        alea_raycast_result_reserve(&res, 64, 64);
+
+#ifdef _OPENMP
+        #pragma omp for schedule(dynamic, 4)
+#endif
+        for (int j = 0; j < nv; j++) {
+            double v = v_min + (j + 0.5) * dv;
+            /* One in-plane ray per row, from the left viewport edge (u=u_min)
+             * along +u_axis; segments tile the row's columns. */
+            double ox = O[0] + u_min * U[0] + v * Vx[0];
+            double oy = O[1] + u_min * U[1] + v * Vx[1];
+            double oz = O[2] + u_min * U[2] + v * Vx[2];
+            alea_ray_t ray;
+            alea_ray_init_normalized(&ray, ox, oy, oz, U[0], U[1], U[2]);
+
+            int* row_cell = &out_cell_ids[(size_t)j * nu];
+            int* row_mat = out_material_ids
+                         ? &out_material_ids[(size_t)j * nu] : NULL;
+
+            alea_raycast_result_clear(&res);
+            if (alea_raycast_hier_fast_segments_nocache(sys, &ray,
+                                                        t_max, &res) != 0) {
+                for (int i = 0; i < nu; i++) {
+                    row_cell[i] = -1;
+                    if (row_mat) row_mat[i] = 0;
+                }
+                continue;
+            }
+
+            /* Merged advance: column centers t=(i+0.5)*du and segments both
+             * ascend in t, so fill the whole row in O(nu + segments). Void
+             * spans surface as segments with cell_id < 0, matching the
+             * point-query's -1 for void. */
+            size_t s = 0;
+            const size_t ns = res.segments.count;
+            for (int i = 0; i < nu; i++) {
+                double t = (i + 0.5) * du;
+                while (s < ns && res.segments.data[s].t_exit <= t) s++;
+                if (s < ns && res.segments.data[s].t_enter <= t) {
+                    const alea_ray_segment_t* seg = &res.segments.data[s];
+                    row_cell[i] = seg->cell_id;
+                    if (row_mat) row_mat[i] = seg->material_id;
+                } else {
+                    row_cell[i] = -1;
+                    if (row_mat) row_mat[i] = 0;
+                }
+            }
+        }
+
+        alea_raycast_result_free(&res);
     }
 
     return 0;
