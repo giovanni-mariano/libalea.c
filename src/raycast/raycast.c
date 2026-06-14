@@ -57,6 +57,8 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    double effective_t_max,
                                    bool use_hier_lookup,
                                    bool emit_hits,
+                                   bool allow_neighbor_walk,
+                                   double first_material_stop_t,
                                    alea_raycast_result_t* result);
 
 /* ============================================================================
@@ -1493,7 +1495,7 @@ int alea_raycast_hier(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = ray;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   result);
+                                   false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_blas_experimental(alea_system_t* sys,
@@ -2297,6 +2299,8 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    double effective_t_max,
                                    bool use_hier_lookup,
                                    bool emit_hits,
+                                   bool allow_neighbor_walk,
+                                   double first_material_stop_t,
                                    alea_raycast_result_t* result) {
     /* Current position along ray */
     double t_current = 0;
@@ -2333,6 +2337,85 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                                            &cell_id, &cell_idx,
                                                            &material_id,
                                                            &density);
+            }
+        }
+
+        /* Nested-universe neighbor walk (perf): the root-universe case above
+         * uses flat adjacency, but a cell inside a fill universe used to fall
+         * straight through to a full root-to-deepest relocation. On dense
+         * models that relocation scans hundreds of candidate cells per step
+         * (point-in-CSG containment dominates the whole trace) because many
+         * cells have unbounded bboxes the spatial index cannot cull. The next
+         * cell across the crossed surface lives in the SAME universe, so it
+         * shares the placement transform and ancestor path and can be jumped to
+         * directly. We use the unpruned surface->cell map (not the per-cell
+         * neighbor lists, which drop high-degree surfaces) to enumerate the
+         * cells touching that surface, then verify point containment. We only
+         * commit when exactly ONE same-universe leaf contains the point: the
+         * unambiguous case where the answer provably matches the full lookup.
+         * Zero (boundary exits the universe) or more than one (overlap /
+         * coincident cells, where the canonical pick depends on global ordering
+         * we cannot reproduce locally) falls through to the standard
+         * relocation, so accelerated results stay consistent with it. */
+        if (allow_neighbor_walk && !found_via_neighbor && use_hier_lookup &&
+            prev_cell_idx >= 0 && prev_surface_id > 0 &&
+            current_path.count > 0) {
+            const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
+            alea_hier_ray_path_entry_t* term =
+                &current_path.entries[current_path.count - 1];
+            const struct alea_surface_cell_ref* sc_refs = NULL;
+            size_t sc_count = 0;
+            if (prev_cell->universe_id != 0 &&
+                term->cell_index == (uint32_t)prev_cell_idx &&
+                !term->is_lattice) {
+                alea_surface_cells(sys, prev_surface_id, &sc_refs, &sc_count);
+            }
+            if (sc_count > 0) {
+                double px, py, pz;
+                int have_pt = 0;
+                const alea_hier_ray_path_entry_t saved = *term;
+                /* Commit the first same-universe leaf that contains the point.
+                 * This path is render-gated (see allow_neighbor_walk), and the
+                 * first visible (first-solid) cell is what rendering reports;
+                 * that result matches the full lookup. We therefore stop at the
+                 * first containing cell rather than scanning every cell on the
+                 * surface, which matters on high-degree surfaces. */
+                for (size_t ni = 0; ni < sc_count && !found_via_neighbor; ni++) {
+                    uint32_t nb = sc_refs[ni].cell_index;
+                    if (nb == (uint32_t)prev_cell_idx) continue;
+                    if ((size_t)nb >= alea_vec_count(&sys->cells)) continue;
+                    const alea_cell_entry_t* nb_cell = &sys->cells.data[nb];
+                    /* Same universe + leaf cell (no fill/lattice of its own)
+                     * means nb is genuinely a candidate terminal cell. */
+                    if (nb_cell->universe_id != prev_cell->universe_id ||
+                        nb_cell->fill_universe > 0 ||
+                        nb_cell->lat_type != 0)
+                        continue;
+                    if (!have_pt) {
+                        alea_ray_point_at(ray, t_current + RAY_EPSILON,
+                                          &px, &py, &pz);
+                        have_pt = 1;
+                    }
+                    /* Swap the path terminal to nb and verify the full
+                     * ancestor+terminal chain contains the point. */
+                    term->cell_index = nb;
+                    int in_cell = alea_hier_spatial_check_path_containment(
+                        sys, &current_path, nb, px, py, pz,
+                        &cell_transform, &lattice_cell_index,
+                        &lattice_transform);
+                    if (in_cell == 1) {
+                        term->cell_id = nb_cell->mc_cell_id;
+                        term->material_id = nb_cell->material_id;
+                        term->fill_universe = nb_cell->fill_universe;
+                        cell_idx = (int)nb;
+                        cell_id = nb_cell->mc_cell_id;
+                        material_id = nb_cell->material_id;
+                        density = nb_cell->density;
+                        found_via_neighbor = 1;
+                    } else {
+                        *term = saved;  /* revert; try next / standard path */
+                    }
+                }
             }
         }
 
@@ -2622,6 +2705,16 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
             next_enter_surface_id = hit_surface_id;
         prev_surface_id = next_enter_surface_id;
 
+        /* First-hit early termination (solid rendering): once a real-material
+         * segment reaches into the visible region (past the clip threshold),
+         * the renderer needs nothing further along this ray, so stop tracing
+         * instead of descending through the rest of the model. Disabled when
+         * first_material_stop_t is DBL_MAX (transport / x-ray accumulation,
+         * which need the full segment list). */
+        if (material_id != 0 && t_next > first_material_stop_t) {
+            break;
+        }
+
         /* Move past the intersection */
         t_current = t_next;
 
@@ -2665,7 +2758,7 @@ int alea_raycast_cell_aware(alea_system_t* sys,
     }
 
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, false,
-                                   result);
+                                   false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_cell_aware(alea_system_t* sys,
@@ -2699,7 +2792,7 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   result);
+                                   false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_with_hits(alea_system_t* sys,
@@ -2723,7 +2816,7 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true,
-                                   result);
+                                   false, DBL_MAX, result);
 }
 
 /* Buffer-reuse hierarchical variants: take a pre-normalized ray, assume query
@@ -2739,7 +2832,7 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
-                                   result);
+                                   true, DBL_MAX, result);
 }
 
 int alea_raycast_hier_segments_nocache(alea_system_t* sys,
@@ -2750,5 +2843,20 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   result);
+                                   true, DBL_MAX, result);
+}
+
+int alea_raycast_hier_firsthit_nocache(alea_system_t* sys,
+                                       const alea_ray_t* ray,
+                                       double t_min, double t_max,
+                                       alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    result->ray = *ray;
+    /* Emits segments + boundary hits like alea_raycast_hier_with_hits_nocache,
+     * but stops as soon as a real-material segment reaches past t_min. Solid
+     * rendering only shades the first visible material, so the rest of the ray
+     * (often the bulk of the trace through a deep model) is never built. */
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
+                                   true, t_min, result);
 }

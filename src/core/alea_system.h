@@ -396,6 +396,15 @@ typedef struct alea_system {
     bool cell_adjacency_built;
     struct alea_cell_neighbor* neighbor_pool;  /* Single allocation for all neighbor data */
 
+    /* Persistent surface->cell map (surface index -> cells referencing that
+     * surface, with sense). Unlike the per-cell neighbor lists, this is NOT
+     * pruned for high-degree surfaces, so it supports neighbor-walking across
+     * surfaces shared by many cells. Built alongside the neighbor lists. */
+    struct alea_surface_cell_ref* surf_cell_pool;  /* all refs, grouped by surface */
+    size_t* surf_cell_offset;  /* [num_surfaces] offset into surf_cell_pool */
+    size_t* surf_cell_count;   /* [num_surfaces] ref count per surface */
+    size_t surf_cell_num_surfaces;
+
     /* Hierarchical spatial index (prepared query cache) */
     struct alea_hier_spatial_index* hier_spatial_index;
     struct alea_volume_path_index* volume_path_index;
@@ -497,6 +506,30 @@ int alea_build_cell_adjacency(alea_system_t* sys);
 int alea_find_neighbor_cell(const alea_system_t* sys,
                            uint32_t cell_index,
                            int surface_id);
+
+/* Entry in the persistent surface->cell map: a cell referencing a surface,
+ * with the sense in which it does so. */
+struct alea_surface_cell_ref {
+    uint32_t cell_index;
+    int8_t sense;  /* +1 or -1 */
+};
+
+/**
+ * @brief Get all cells referencing a surface (by mc_surface_id).
+ *
+ * Returns the unpruned surface->cell list built by alea_build_cell_adjacency,
+ * enabling neighbor-walking across high-degree surfaces. Returns 0 with
+ * *out_count == 0 when adjacency is not built or the surface is unknown.
+ *
+ * @param sys         CSG system
+ * @param mc_surface_id MCNP surface ID
+ * @param out_refs    Receives pointer into the internal pool (do not free)
+ * @param out_count   Receives the number of refs
+ * @return 0 on success (including the empty case), -1 on bad arguments
+ */
+int alea_surface_cells(const alea_system_t* sys, int mc_surface_id,
+                       const struct alea_surface_cell_ref** out_refs,
+                       size_t* out_count);
 
 /**
  * @brief Get universe by ID

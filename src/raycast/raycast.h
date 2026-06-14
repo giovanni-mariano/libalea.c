@@ -289,6 +289,20 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                        double t_max,
                                        alea_raycast_result_t* result);
 
+/**
+ * @brief Buffer-reuse hierarchical raycast for solid rendering (first hit).
+ *
+ * Like alea_raycast_hier_with_hits_nocache() but stops tracing once a
+ * real-material (material_id != 0) segment extends past @p t_min. Solid
+ * rendering shades only the first visible material, so the remainder of the
+ * ray is never traced. @p t_min is the clip-entry distance (0 when unclipped).
+ * Not for transport or x-ray accumulation, which need the full segment list.
+ */
+int alea_raycast_hier_firsthit_nocache(alea_system_t* sys,
+                                       const alea_ray_t* ray,
+                                       double t_min, double t_max,
+                                       alea_raycast_result_t* result);
+
 /* ============================================================================
  * QUERY HELPERS
  * ============================================================================ */
