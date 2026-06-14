@@ -663,6 +663,15 @@ static void find_cell_multilevel(alea_system_t* sys,
                 return;
             }
 
+            /* Lattice element selection needs DDA, which this adjacency fast
+             * path cannot do (lattice cells carry lat_type, not a single
+             * fill_universe). Bail to the full hierarchy query below, which
+             * descends into the lattice element correctly — otherwise the
+             * lattice container cell would be wrongly reported as terminal. */
+            if (cell->lat_type != 0) {
+                break;
+            }
+
             /* If cell has a fill, continue to next level */
             if (cell->fill_universe > 0) {
                 /* Prefer the precomputed per-cell fill matrix from the hier
@@ -723,7 +732,11 @@ static void find_cell_multilevel(alea_system_t* sys,
         if (hits_found > 0 && universe_depth < 0) {
             /* Return deepest hit found */
             alea_cell_hit_t* last = &local_hits[hits_found - 1];
-            if (last->fill_universe <= 0) {
+            bool last_is_lattice =
+                last->cell_index >= 0 &&
+                (size_t)last->cell_index < alea_vec_count(&sys->cells) &&
+                sys->cells.data[last->cell_index].lat_type != 0;
+            if (last->fill_universe <= 0 && !last_is_lattice) {
                 /* This is a terminal cell — partial adjacency success */
                 atomic_fetch_add_explicit(&g_px_hint_partial, 1, memory_order_relaxed);
                 *out_cell_id = last->cell_id;
