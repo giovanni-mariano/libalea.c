@@ -954,4 +954,165 @@ TEST(grid_boundary_filter_keeps_nested_overlap) {
     alea_destroy(sys);
 }
 
+static void assert_ray_interval_matches_exact(alea_system_t* sys,
+                                              const alea_slice_view_t* view,
+                                              int nu,
+                                              int nv) {
+    size_t n = (size_t)nu * (size_t)nv;
+    int* exact_cells = calloc(n, sizeof(int));
+    int* ray_cells = calloc(n, sizeof(int));
+    int* exact_secondary = calloc(n, sizeof(int));
+    int* ray_secondary = calloc(n, sizeof(int));
+    uint8_t* exact_coverage = calloc(n, sizeof(uint8_t));
+    uint8_t* ray_coverage = calloc(n, sizeof(uint8_t));
+    uint8_t* exact_errors = calloc(n, sizeof(uint8_t));
+    uint8_t* ray_errors = calloc(n, sizeof(uint8_t));
+    ASSERT_NOT_NULL(exact_cells);
+    ASSERT_NOT_NULL(ray_cells);
+    ASSERT_NOT_NULL(exact_secondary);
+    ASSERT_NOT_NULL(ray_secondary);
+    ASSERT_NOT_NULL(exact_coverage);
+    ASSERT_NOT_NULL(ray_coverage);
+    ASSERT_NOT_NULL(exact_errors);
+    ASSERT_NOT_NULL(ray_errors);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        exact_cells, NULL, exact_secondary, exact_coverage, exact_errors), 0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_RAY_INTERVALS | ALEA_GRID_SECONDARY_CELL_IDS,
+        ray_cells, NULL, ray_secondary, ray_coverage, ray_errors), 0);
+
+    for (size_t i = 0; i < n; i++) {
+        ASSERT_EQ(ray_coverage[i], exact_coverage[i]);
+        ASSERT_EQ(ray_errors[i], exact_errors[i]);
+        if (exact_coverage[i] != ALEA_COVERAGE_MULTI)
+            ASSERT_EQ(ray_cells[i], exact_cells[i]);
+    }
+
+    free(ray_errors);
+    free(exact_errors);
+    free(ray_coverage);
+    free(exact_coverage);
+    free(ray_secondary);
+    free(exact_secondary);
+    free(ray_cells);
+    free(exact_cells);
+}
+
+TEST(grid_ray_interval_coverage_partial_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int s1 = alea_sphere_surface(sys, 1, -2.0, 0.0, 0.0, 5.0);
+    int s2 = alea_sphere_surface(sys, 2,  2.0, 0.0, 0.0, 5.0);
+    ASSERT(s1 >= 0);
+    ASSERT(s2 >= 0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_halfspace(sys, s1, -1), m1, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, s2, -1), m2, -2.0, 0);
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -8.0, 8.0, -6.0, 6.0);
+    assert_ray_interval_matches_exact(sys, &view, 96, 64);
+
+    alea_destroy(sys);
+}
+
+TEST(grid_ray_interval_coverage_nested_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int outer = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 3.0);
+    ASSERT(outer >= 0);
+    ASSERT(inner >= 0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_halfspace(sys, outer, -1), m1, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, inner, -1), m2, -2.0, 0);
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -12.0, 12.0, -12.0, 12.0);
+    assert_ray_interval_matches_exact(sys, &view, 96, 96);
+
+    alea_destroy(sys);
+}
+
+TEST(grid_ray_interval_coverage_undefined_gap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int s1 = alea_sphere_surface(sys, 1, -4.0, 0.0, 0.0, 2.0);
+    int s2 = alea_sphere_surface(sys, 2,  4.0, 0.0, 0.0, 2.0);
+    ASSERT(s1 >= 0);
+    ASSERT(s2 >= 0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_halfspace(sys, s1, -1), m1, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, s2, -1), m2, -2.0, 0);
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -8.0, 8.0, -5.0, 5.0);
+    assert_ray_interval_matches_exact(sys, &view, 72, 48);
+
+    alea_destroy(sys);
+}
+
+TEST(grid_ray_interval_coverage_lattice_matches_exact) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -6.0, 6.0, -6.0, 6.0);
+    assert_ray_interval_matches_exact(sys, &view, 64, 64);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_ray_interval_suppresses_coplanar_split_surface_overlap) {
+    alea_system_t* sys = make_z_split_sphere(5.0);
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int nu = 199, nv = 199;
+    const int n = nu * nv;
+    int* cell_ids = calloc((size_t)n, sizeof(int));
+    int* secondary = calloc((size_t)n, sizeof(int));
+    uint8_t* coverage = calloc((size_t)n, sizeof(uint8_t));
+    uint8_t* errors = calloc((size_t)n, sizeof(uint8_t));
+    ASSERT_NOT_NULL(cell_ids);
+    ASSERT_NOT_NULL(secondary);
+    ASSERT_NOT_NULL(coverage);
+    ASSERT_NOT_NULL(errors);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -12.0, 12.0, -12.0, 12.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_RAY_INTERVALS | ALEA_GRID_SECONDARY_CELL_IDS,
+        cell_ids, NULL, secondary, coverage, errors), 0);
+    ASSERT_EQ(count_coverage(coverage, n, ALEA_COVERAGE_MULTI), 0);
+    ASSERT_EQ(count_errors(errors, n), 0);
+
+    free(errors);
+    free(coverage);
+    free(secondary);
+    free(cell_ids);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

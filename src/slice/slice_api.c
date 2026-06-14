@@ -261,6 +261,7 @@ static int dedup_spatial_hits(alea_spatial_hit_t* hits, int hit_count);
 typedef struct {
     uint8_t coverage;
     int primary_cell_id;
+    int primary_material_id;
     int secondary_cell_id;
 } point_coverage_t;
 static int find_point_coverage_exact(alea_system_t* sys,
@@ -281,6 +282,17 @@ static int filter_grid_overlap_ambiguities(
     uint8_t* coverage,
     uint8_t* errors,
     alea_boundary_filter_stats_t* out_stats);
+static int find_cells_grid_coverage_ray_intervals(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu,
+    int nv,
+    int universe_depth,
+    int* out_cell_ids,
+    int* out_material_ids,
+    int* out_secondary_cell_ids,
+    uint8_t* out_coverage,
+    uint8_t* out_errors);
 
 void alea_slice_path_table_free(alea_slice_path_table_t* table) {
     if (!table) return;
@@ -1378,6 +1390,212 @@ int alea_check_grid_overlaps(alea_system_t* sys,
     return 0;
 }
 
+static void set_interval_pixel(size_t idx,
+                               const point_coverage_t* pc,
+                               int* out_cell_ids,
+                               int* out_material_ids,
+                               int* out_secondary_cell_ids,
+                               uint8_t* out_coverage,
+                               uint8_t* out_errors) {
+    int cell_id = pc ? pc->primary_cell_id : -1;
+    int material_id = pc ? pc->primary_material_id : 0;
+    uint8_t coverage = pc ? pc->coverage : ALEA_COVERAGE_NONE;
+
+    if (coverage == ALEA_COVERAGE_NONE) {
+        cell_id = -1;
+        material_id = 0;
+    }
+
+    out_cell_ids[idx] = cell_id;
+    if (out_material_ids) out_material_ids[idx] = material_id;
+    if (out_secondary_cell_ids) {
+        out_secondary_cell_ids[idx] =
+            (coverage == ALEA_COVERAGE_MULTI) ? pc->secondary_cell_id : -1;
+    }
+    if (out_coverage) out_coverage[idx] = coverage;
+    if (out_errors) {
+        out_errors[idx] =
+            (coverage == ALEA_COVERAGE_MULTI) ? GRID_ERR_OVERLAP :
+            (coverage == ALEA_COVERAGE_NONE) ? GRID_ERR_UNDEFINED :
+                                               GRID_ERR_NONE;
+    }
+}
+
+static void fill_ray_interval_pixels(int nu,
+                                     int row,
+                                     double du,
+                                     double t0,
+                                     double t1,
+                                     const point_coverage_t* pc,
+                                     int* out_cell_ids,
+                                     int* out_material_ids,
+                                     int* out_secondary_cell_ids,
+                                     uint8_t* out_coverage,
+                                     uint8_t* out_errors) {
+    if (t1 <= t0 || du <= 0.0) return;
+
+    int i0 = (int)ceil(t0 / du - 0.5);
+    int i1 = (int)ceil(t1 / du - 0.5);
+    if (i0 < 0) i0 = 0;
+    if (i1 > nu) i1 = nu;
+    if (i1 <= i0) return;
+
+    size_t base = (size_t)row * (size_t)nu;
+    for (int i = i0; i < i1; i++) {
+        set_interval_pixel(base + (size_t)i, pc, out_cell_ids,
+                           out_material_ids, out_secondary_cell_ids,
+                           out_coverage, out_errors);
+    }
+}
+
+static int fill_ray_interval_row_exact_from_hits(alea_system_t* sys,
+                                                 const alea_slice_view_t* view,
+                                                 int nu,
+                                                 int nv,
+                                                 int row,
+                                                 int universe_depth,
+                                                 double du,
+                                                 const alea_raycast_result_t* result,
+                                                 int* out_cell_ids,
+                                                 int* out_material_ids,
+                                                 int* out_secondary_cell_ids,
+                                                 uint8_t* out_coverage,
+                                                 uint8_t* out_errors) {
+    double t_max = view->u_max - view->u_min;
+    if (t_max <= 0.0 || du <= 0.0) return -1;
+
+    const alea_slice_plane_t* plane = &view->plane;
+    double dv = (view->v_max - view->v_min) / (double)nv;
+    double v = view->v_min + (row + 0.5) * dv;
+    double ox = plane->origin[0] + view->u_min * plane->u_axis[0] +
+                v * plane->v_axis[0];
+    double oy = plane->origin[1] + view->u_min * plane->u_axis[1] +
+                v * plane->v_axis[1];
+    double oz = plane->origin[2] + view->u_min * plane->u_axis[2] +
+                v * plane->v_axis[2];
+
+    double prev = 0.0;
+    for (size_t h = 0; h <= result->hits.count; h++) {
+        double cur = (h < result->hits.count) ? result->hits.data[h].t : t_max;
+        if (cur < 0.0) continue;
+        if (cur > t_max) cur = t_max;
+
+        if (cur > prev + 1e-12) {
+            double mid = 0.5 * (prev + cur);
+            double gx = ox + mid * plane->u_axis[0];
+            double gy = oy + mid * plane->u_axis[1];
+            double gz = oz + mid * plane->u_axis[2];
+
+            point_coverage_t pc;
+            if (find_point_coverage_exact(sys, gx, gy, gz,
+                                          universe_depth, &pc) != 0)
+                return -1;
+
+            fill_ray_interval_pixels(nu, row, du, prev, cur, &pc,
+                                     out_cell_ids, out_material_ids,
+                                     out_secondary_cell_ids, out_coverage,
+                                     out_errors);
+        }
+
+        if (cur > prev) prev = cur;
+        if (prev >= t_max) break;
+    }
+
+    return 0;
+}
+
+static int find_cells_grid_coverage_ray_intervals(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu,
+    int nv,
+    int universe_depth,
+    int* out_cell_ids,
+    int* out_material_ids,
+    int* out_secondary_cell_ids,
+    uint8_t* out_coverage,
+    uint8_t* out_errors) {
+    if (!sys || !view || !out_cell_ids || nu <= 0 || nv <= 0)
+        return -1;
+
+    if (universe_depth != -1)
+        return -2;
+
+    const double du = (view->u_max - view->u_min) / (double)nu;
+    const double dv = (view->v_max - view->v_min) / (double)nv;
+    const double t_max = view->u_max - view->u_min;
+    if (du <= 0.0 || dv <= 0.0 || t_max <= 0.0)
+        return -1;
+
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+        return -1;
+
+    size_t n = (size_t)nu * (size_t)nv;
+    for (size_t i = 0; i < n; i++) {
+        out_cell_ids[i] = -1;
+        if (out_material_ids) out_material_ids[i] = 0;
+        if (out_secondary_cell_ids) out_secondary_cell_ids[i] = -1;
+        if (out_coverage) out_coverage[i] = ALEA_COVERAGE_NONE;
+        if (out_errors) out_errors[i] = GRID_ERR_UNDEFINED;
+    }
+
+    alea_point_coverage_stats_reset();
+
+    const alea_slice_plane_t* plane = &view->plane;
+    int failed = 0;
+
+#ifdef _OPENMP
+    #pragma omp parallel
+#endif
+    {
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
+
+#ifdef _OPENMP
+        #pragma omp for schedule(dynamic, 4)
+#endif
+        for (int j = 0; j < nv; j++) {
+            double v = view->v_min + (j + 0.5) * dv;
+            double ox = plane->origin[0] + view->u_min * plane->u_axis[0] +
+                        v * plane->v_axis[0];
+            double oy = plane->origin[1] + view->u_min * plane->u_axis[1] +
+                        v * plane->v_axis[1];
+            double oz = plane->origin[2] + view->u_min * plane->u_axis[2] +
+                        v * plane->v_axis[2];
+
+            alea_raycast_result_clear(&result);
+            if (alea_raycast(sys, ox, oy, oz,
+                             plane->u_axis[0], plane->u_axis[1],
+                             plane->u_axis[2], t_max, &result) != 0) {
+                #pragma omp atomic write
+                failed = 1;
+                continue;
+            }
+
+            if (fill_ray_interval_row_exact_from_hits(
+                    sys, view, nu, nv, j, universe_depth, du, &result,
+                    out_cell_ids, out_material_ids, out_secondary_cell_ids,
+                    out_coverage, out_errors) != 0) {
+                #pragma omp atomic write
+                failed = 1;
+            }
+        }
+
+        alea_raycast_result_free(&result);
+    }
+
+    if (failed)
+        return -2;
+
+    if (out_errors) {
+        filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
+                                        out_cell_ids, out_secondary_cell_ids,
+                                        out_coverage, out_errors, NULL);
+    }
+
+    return 0;
+}
+
 int alea_find_cells_grid_coverage(alea_system_t* sys,
                                   const alea_slice_view_t* view,
                                   int nu, int nv,
@@ -1390,6 +1608,20 @@ int alea_find_cells_grid_coverage(alea_system_t* sys,
                                   uint8_t* out_errors) {
     if (!sys || !view || !out_cell_ids || nu <= 0 || nv <= 0) {
         return -1;
+    }
+
+    if (flags & ALEA_GRID_COVERAGE_RAY_INTERVALS) {
+        int ray_rc = find_cells_grid_coverage_ray_intervals(
+            sys, view, nu, nv, universe_depth,
+            out_cell_ids, out_material_ids, out_secondary_cell_ids,
+            out_coverage, out_errors);
+        if (ray_rc == 0)
+            return 0;
+
+        /* Conservative fallback: unsupported or degenerate ray-interval
+         * cases use the existing exact grid coverage path. */
+        flags &= ~ALEA_GRID_COVERAGE_RAY_INTERVALS;
+        flags |= ALEA_GRID_COVERAGE_EXACT;
     }
 
     int rc = alea_find_cells_grid(sys, view, nu, nv, universe_depth,
@@ -1707,6 +1939,7 @@ static int find_point_coverage_from_hits(const alea_cell_hit_t* hits,
                                          point_coverage_t* out) {
     out->coverage = ALEA_COVERAGE_NONE;
     out->primary_cell_id = -1;
+    out->primary_material_id = 0;
     out->secondary_cell_id = -1;
     if (num_hits <= 0) return 0;
 
@@ -1715,7 +1948,10 @@ static int find_point_coverage_from_hits(const alea_cell_hit_t* hits,
     int count = 0;
     for (int h = 0; h < num_hits; h++) {
         if (hits[h].depth != target_depth) continue;
-        if (count == 0) out->primary_cell_id = hits[h].cell_id;
+        if (count == 0) {
+            out->primary_cell_id = hits[h].cell_id;
+            out->primary_material_id = hits[h].material_id;
+        }
         if (count == 1) out->secondary_cell_id = hits[h].cell_id;
         count++;
         if (count > 1) {
@@ -1736,6 +1972,7 @@ static int find_point_coverage_spatial(alea_system_t* sys,
                                        point_coverage_t* out) {
     out->coverage = ALEA_COVERAGE_NONE;
     out->primary_cell_id = -1;
+    out->primary_material_id = 0;
     out->secondary_cell_id = -1;
 
     /* Stats counters below are mutated from inside the omp parallel for in

@@ -133,6 +133,7 @@ typedef enum {
 #define ALEA_GRID_COVERAGE_EXACT           2u
 #define ALEA_GRID_SECONDARY_CELL_IDS       4u
 #define ALEA_GRID_PATH_IDS                 8u
+#define ALEA_GRID_COVERAGE_RAY_INTERVALS 16u
 
 /** Interned concrete universe path used by path-conditioned slice refinement */
 typedef struct {
