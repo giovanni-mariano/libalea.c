@@ -122,7 +122,6 @@ static void print_usage(const char* prog) {
 "  --threads N                  Thread count (default: all cores)\n"
 "  --tile-size N                Tile size in pixels (default: 32)\n"
 "  --preview                    Write quick 1/4-res preview first\n"
-"  --spatial flat|hier|auto     Spatial acceleration mode (default: auto)\n"
 "\n"
 "AUXILIARY:\n"
 "  --aux                        Write depth/cellid/matid/normal maps\n"
@@ -151,7 +150,6 @@ int main(int argc, char** argv) {
 
     const char* input_file = NULL;
     const char* output_file = "render.png";
-    alea_spatial_mode_t spatial_mode = ALEA_SPATIAL_MODE_AUTO;
     render_config_t cfg;
     render_config_init(&cfg);
 
@@ -281,13 +279,6 @@ int main(int argc, char** argv) {
             cfg.aux_output = 1;
         } else if (strcmp(arg, "--dedup") == 0) {
             cfg.dedup = 1;
-        } else if (strcmp(arg, "--spatial") == 0) {
-            if (++i >= argc) { fprintf(stderr, "--spatial requires an argument\n"); return 1; }
-            const char* m = argv[i];
-            if (strcmp(m, "flat") == 0) spatial_mode = ALEA_SPATIAL_MODE_FLAT;
-            else if (strcmp(m, "hier") == 0) spatial_mode = ALEA_SPATIAL_MODE_HIER;
-            else if (strcmp(m, "auto") == 0) spatial_mode = ALEA_SPATIAL_MODE_AUTO;
-            else { fprintf(stderr, "Unknown spatial mode: %s\n", m); return 1; }
         } else if (strcmp(arg, "--log-level") == 0) {
             if (++i < argc) cfg.log_level = atoi(argv[i]);
         }
@@ -353,12 +344,7 @@ int main(int argc, char** argv) {
         alea_set_config(sys, &scfg);
     }
 
-    /* Apply spatial mode and build query caches */
-    {
-        alea_config_t scfg = alea_get_config(sys);
-        scfg.spatial_mode = spatial_mode;
-        alea_set_config(sys, &scfg);
-    }
+    /* Build query caches (hierarchical spatial index is the only backend) */
     alea_build_universe_index(sys);
     alea_prepare_query_acceleration(sys);
 

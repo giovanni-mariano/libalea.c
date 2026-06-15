@@ -2725,3 +2725,30 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true,
                                    result);
 }
+
+/* Buffer-reuse hierarchical variants: take a pre-normalized ray, assume query
+ * caches are already built (ALEA_CACHE_RAYCAST), and do NOT free the result
+ * buffers. The caller must clear the result (count reset, capacity retained)
+ * between rays. These are the hot-loop entry points for renderers that trace
+ * one ray per pixel and must avoid per-pixel malloc/free churn. */
+int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max,
+                                        alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    result->ray = *ray;
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
+                                   result);
+}
+
+int alea_raycast_hier_segments_nocache(alea_system_t* sys,
+                                       const alea_ray_t* ray,
+                                       double t_max,
+                                       alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    result->ray = *ray;
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
+                                   result);
+}
