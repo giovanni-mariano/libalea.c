@@ -2449,6 +2449,36 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
     if (!idx->built) return -2;
 
+    /* Surface-directed fast path: the cell on the far side of the crossed
+     * boundary references that surface, so enumerate the (typically few) cells
+     * on it directly via the surface->cell map instead of collecting the
+     * thousands of bbox candidates the BLAS returns for a poorly-culled
+     * universe. We commit only when EXACTLY one same-universe cell contains the
+     * point — the unambiguous case that provably matches the canonical ordered
+     * result (a contained point is necessarily a bbox candidate, so the BLAS
+     * path would test the same cell; with a single match there is no ordering
+     * tie to break). Zero or >=2 matches fall through to the full query. */
+    if (crossed_mc_surface_id > 0) {
+        const struct alea_surface_cell_ref* refs = NULL;
+        size_t ref_count = 0;
+        if (alea_surface_cells(sys, crossed_mc_surface_id, &refs, &ref_count) == 0
+            && ref_count > 0) {
+            int match = -1, match_n = 0;
+            for (size_t i = 0; i < ref_count && match_n < 2; i++) {
+                uint32_t ci = refs[i].cell_index;
+                if (ci >= alea_vec_count(&sys->cells)) continue;
+                const alea_cell_entry_t* cell = &sys->cells.data[ci];
+                if (cell->universe_id != universe_id) continue;
+                if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+                if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
+                    match = (int)ci;
+                    match_n++;
+                }
+            }
+            if (match_n == 1) return match;
+        }
+    }
+
     const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (blas && blas->built && blas->node_count > 0) {
         hier_cand_buf_t candidates;

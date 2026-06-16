@@ -21,6 +21,11 @@
 #include <math.h>
 #include <float.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <time.h>
+#else
+#include <sys/time.h>
+#endif
 #include "util/alea_atomic.h"
 #include "util/math.h"
 #include "util/alea_log.h"
@@ -40,6 +45,24 @@ static _Atomic size_t g_csg_bool_ops     = 0; /* total boolean ops in CSG tree *
 
 static alea_tile_coverage_stats_t g_tile_coverage_stats;
 static alea_point_coverage_stats_t g_point_coverage_stats;
+static alea_ray_interval_stats_t g_ray_interval_stats;
+
+static int ray_interval_trace_enabled(void) {
+    const char* env = getenv("ALEA_RAY_INTERVAL_TRACE");
+    if (env && env[0] && env[0] != '0') return 1;
+    env = getenv("ALEA_RAYCAST_TRACE_TIMINGS");
+    return env && env[0] && env[0] != '0';
+}
+
+static double ray_interval_trace_time_ms(void) {
+#ifdef _WIN32
+    return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
+#endif
+}
 
 void alea_tile_coverage_stats_reset(void) {
     memset(&g_tile_coverage_stats, 0, sizeof(g_tile_coverage_stats));
@@ -55,6 +78,14 @@ void alea_point_coverage_stats_reset(void) {
 
 alea_point_coverage_stats_t alea_point_coverage_stats_get(void) {
     return g_point_coverage_stats;
+}
+
+void alea_ray_interval_stats_reset(void) {
+    memset(&g_ray_interval_stats, 0, sizeof(g_ray_interval_stats));
+}
+
+alea_ray_interval_stats_t alea_ray_interval_stats_get(void) {
+    return g_ray_interval_stats;
 }
 
 /* ============================================================================
@@ -854,7 +885,10 @@ int alea_find_cells_grid(alea_system_t* sys,
      * (a) the internal #pragma omp parallel for gets full thread parallelism
      *     (no nesting penalty)
      * (b) OpenMP workers only read shared cache state */
-    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+    if (alea_system_prepare_query_caches(
+            sys, ALEA_CACHE_HIER_SPATIAL |
+                 ALEA_CACHE_CELL_SURFACES |
+                 ALEA_CACHE_SURFACE_BVH) != 0)
         return -1;
 
     double du = (u_max - u_min) / nu;
@@ -1118,12 +1152,29 @@ int alea_find_cells_grid_raycast(alea_system_t* sys,
     const double* Vx = plane->v_axis;
 
     /* Build raycast caches once, before the parallel region (workers read-only). */
-    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+    if (alea_system_prepare_query_caches(
+            sys, ALEA_CACHE_HIER_SPATIAL |
+                 ALEA_CACHE_CELL_SURFACES |
+                 ALEA_CACHE_SURFACE_BVH) != 0)
         return -1;
 
     /* This fill produces no overlap/error info; the existing coverage/curve
      * passes remain the source for that. Errors are reported as clean. */
     if (out_errors) memset(out_errors, 0, (size_t)nu * nv);
+
+    int ray_grid_stats = getenv("ALEA_RAYCAST_GRID_STATS") != NULL;
+    size_t rows_total = 0;
+    size_t row_errors = 0;
+    size_t segments_total = 0;
+    size_t segments_max = 0;
+    size_t steps_total = 0;
+    size_t steps_max = 0;
+    size_t point_lookups_total = 0;
+    size_t point_lookups_max = 0;
+    size_t surfaces_tested_total = 0;
+    size_t terminal_surfaces_total = 0;
+    size_t lattice_surfaces_total = 0;
+    size_t ancestor_surfaces_total = 0;
 
 #ifdef _OPENMP
     #pragma omp parallel
@@ -1132,11 +1183,24 @@ int alea_find_cells_grid_raycast(alea_system_t* sys,
         alea_raycast_result_t res;
         alea_raycast_result_init(&res);
         alea_raycast_result_reserve(&res, 64, 64);
+        size_t local_rows = 0;
+        size_t local_errors = 0;
+        size_t local_segments = 0;
+        size_t local_segments_max = 0;
+        size_t local_steps = 0;
+        size_t local_steps_max = 0;
+        size_t local_point_lookups = 0;
+        size_t local_point_lookups_max = 0;
+        size_t local_surfaces_tested = 0;
+        size_t local_terminal_surfaces = 0;
+        size_t local_lattice_surfaces = 0;
+        size_t local_ancestor_surfaces = 0;
 
 #ifdef _OPENMP
         #pragma omp for schedule(dynamic, 4)
 #endif
         for (int j = 0; j < nv; j++) {
+            local_rows++;
             double v = v_min + (j + 0.5) * dv;
             /* One in-plane ray per row, from the left viewport edge (u=u_min)
              * along +u_axis; segments tile the row's columns. */
@@ -1153,12 +1217,26 @@ int alea_find_cells_grid_raycast(alea_system_t* sys,
             alea_raycast_result_clear(&res);
             if (alea_raycast_hier_fast_segments_nocache(sys, &ray,
                                                         t_max, &res) != 0) {
+                local_errors++;
                 for (int i = 0; i < nu; i++) {
                     row_cell[i] = -1;
                     if (row_mat) row_mat[i] = 0;
                 }
                 continue;
             }
+            local_segments += res.segments.count;
+            if (res.segments.count > local_segments_max)
+                local_segments_max = res.segments.count;
+            local_steps += (size_t)res.step_iterations;
+            if ((size_t)res.step_iterations > local_steps_max)
+                local_steps_max = (size_t)res.step_iterations;
+            local_point_lookups += (size_t)res.point_lookups;
+            if ((size_t)res.point_lookups > local_point_lookups_max)
+                local_point_lookups_max = (size_t)res.point_lookups;
+            local_surfaces_tested += (size_t)res.surfaces_tested;
+            local_terminal_surfaces += (size_t)res.terminal_surfaces_tested;
+            local_lattice_surfaces += (size_t)res.lattice_surfaces_tested;
+            local_ancestor_surfaces += (size_t)res.ancestor_surfaces_tested;
 
             /* Merged advance: column centers t=(i+0.5)*du and segments both
              * ascend in t, so fill the whole row in O(nu + segments). Void
@@ -1180,7 +1258,48 @@ int alea_find_cells_grid_raycast(alea_system_t* sys,
             }
         }
 
+        if (ray_grid_stats) {
+#ifdef _OPENMP
+            #pragma omp critical(ray_grid_stats_merge)
+#endif
+            {
+                rows_total += local_rows;
+                row_errors += local_errors;
+                segments_total += local_segments;
+                if (local_segments_max > segments_max)
+                    segments_max = local_segments_max;
+                steps_total += local_steps;
+                if (local_steps_max > steps_max)
+                    steps_max = local_steps_max;
+                point_lookups_total += local_point_lookups;
+                if (local_point_lookups_max > point_lookups_max)
+                    point_lookups_max = local_point_lookups_max;
+                surfaces_tested_total += local_surfaces_tested;
+                terminal_surfaces_total += local_terminal_surfaces;
+                lattice_surfaces_total += local_lattice_surfaces;
+                ancestor_surfaces_total += local_ancestor_surfaces;
+            }
+        }
+
         alea_raycast_result_free(&res);
+    }
+
+    if (ray_grid_stats) {
+        double avg_segments = rows_total
+            ? (double)segments_total / (double)rows_total : 0.0;
+        double avg_steps = rows_total
+            ? (double)steps_total / (double)rows_total : 0.0;
+        double avg_point_lookups = rows_total
+            ? (double)point_lookups_total / (double)rows_total : 0.0;
+        double avg_surfaces = rows_total
+            ? (double)surfaces_tested_total / (double)rows_total : 0.0;
+        fprintf(stdout,
+                "\n[RAYCAST GRID STATS] rows=%zu errors=%zu segments avg=%.1f max=%zu steps avg=%.1f max=%zu point_lookups avg=%.1f max=%zu surfaces avg=%.1f terminal=%zu lattice=%zu ancestor=%zu\n",
+                rows_total, row_errors, avg_segments, segments_max,
+                avg_steps, steps_max, avg_point_lookups, point_lookups_max,
+                avg_surfaces, terminal_surfaces_total,
+                lattice_surfaces_total, ancestor_surfaces_total);
+        fflush(stdout);
     }
 
     return 0;
@@ -1421,24 +1540,19 @@ static void set_interval_pixel(size_t idx,
     }
 }
 
-static void fill_ray_interval_pixels(int nu,
-                                     int row,
-                                     double du,
-                                     double t0,
-                                     double t1,
-                                     const point_coverage_t* pc,
-                                     int* out_cell_ids,
-                                     int* out_material_ids,
-                                     int* out_secondary_cell_ids,
-                                     uint8_t* out_coverage,
-                                     uint8_t* out_errors) {
-    if (t1 <= t0 || du <= 0.0) return;
-
-    int i0 = (int)ceil(t0 / du - 0.5);
-    int i1 = (int)ceil(t1 / du - 0.5);
+static size_t fill_ray_interval_pixel_span(int nu,
+                                           int row,
+                                           int i0,
+                                           int i1,
+                                           const point_coverage_t* pc,
+                                           int* out_cell_ids,
+                                           int* out_material_ids,
+                                           int* out_secondary_cell_ids,
+                                           uint8_t* out_coverage,
+                                           uint8_t* out_errors) {
     if (i0 < 0) i0 = 0;
     if (i1 > nu) i1 = nu;
-    if (i1 <= i0) return;
+    if (i1 <= i0) return 0;
 
     size_t base = (size_t)row * (size_t)nu;
     for (int i = i0; i < i1; i++) {
@@ -1446,6 +1560,46 @@ static void fill_ray_interval_pixels(int nu,
                            out_material_ids, out_secondary_cell_ids,
                            out_coverage, out_errors);
     }
+    return (size_t)(i1 - i0);
+}
+
+static int fill_ray_interval_pixel_center_exact(alea_system_t* sys,
+                                                const alea_slice_plane_t* plane,
+                                                double ox,
+                                                double oy,
+                                                double oz,
+                                                int nu,
+                                                int row,
+                                                int pixel,
+                                                double du,
+                                                int universe_depth,
+                                                int* out_cell_ids,
+                                                int* out_material_ids,
+                                                int* out_secondary_cell_ids,
+                                                uint8_t* out_coverage,
+                                                uint8_t* out_errors,
+                                                alea_ray_interval_stats_t* stats) {
+    if (pixel < 0 || pixel >= nu) return 0;
+
+    double t = ((double)pixel + 0.5) * du;
+    double gx = ox + t * plane->u_axis[0];
+    double gy = oy + t * plane->u_axis[1];
+    double gz = oz + t * plane->u_axis[2];
+
+    point_coverage_t pc;
+    if (stats) {
+        stats->intervals++;
+        stats->interval_exact_queries++;
+    }
+    if (find_point_coverage_exact(sys, gx, gy, gz,
+                                  universe_depth, &pc) != 0)
+        return -1;
+
+    set_interval_pixel((size_t)row * (size_t)nu + (size_t)pixel, &pc,
+                       out_cell_ids, out_material_ids,
+                       out_secondary_cell_ids, out_coverage, out_errors);
+    if (stats) stats->pixels_filled++;
+    return 0;
 }
 
 static int fill_ray_interval_row_exact_from_hits(alea_system_t* sys,
@@ -1460,7 +1614,8 @@ static int fill_ray_interval_row_exact_from_hits(alea_system_t* sys,
                                                  int* out_material_ids,
                                                  int* out_secondary_cell_ids,
                                                  uint8_t* out_coverage,
-                                                 uint8_t* out_errors) {
+                                                 uint8_t* out_errors,
+                                                 alea_ray_interval_stats_t* stats) {
     double t_max = view->u_max - view->u_min;
     if (t_max <= 0.0 || du <= 0.0) return -1;
 
@@ -1475,33 +1630,167 @@ static int fill_ray_interval_row_exact_from_hits(alea_system_t* sys,
                 v * plane->v_axis[2];
 
     double prev = 0.0;
+    int next_pixel = 0;
     for (size_t h = 0; h <= result->hits.count; h++) {
         double cur = (h < result->hits.count) ? result->hits.data[h].t : t_max;
         if (cur < 0.0) continue;
         if (cur > t_max) cur = t_max;
 
         if (cur > prev + 1e-12) {
+            int span_start = next_pixel;
+            while (next_pixel < nu &&
+                   ((double)next_pixel + 0.5) * du < cur) {
+                next_pixel++;
+            }
+            int span_end = next_pixel;
+
+            if (span_end <= span_start) {
+                prev = cur;
+                continue;
+            }
+
             double mid = 0.5 * (prev + cur);
             double gx = ox + mid * plane->u_axis[0];
             double gy = oy + mid * plane->u_axis[1];
             double gz = oz + mid * plane->u_axis[2];
 
             point_coverage_t pc;
+            double query_t0 = ray_interval_trace_time_ms();
+            if (ray_interval_trace_enabled()) {
+                fprintf(stderr,
+                        "[RAY INTERVAL TRACE] row=%d interval=[%.6g,%.6g] midpoint exact begin\n",
+                        row, prev, cur);
+                fflush(stderr);
+            }
+            if (stats) {
+                stats->intervals++;
+                stats->interval_exact_queries++;
+            }
             if (find_point_coverage_exact(sys, gx, gy, gz,
                                           universe_depth, &pc) != 0)
                 return -1;
+            if (ray_interval_trace_enabled()) {
+                fprintf(stderr,
+                        "[RAY INTERVAL TRACE] row=%d midpoint exact end %.1f ms coverage=%u primary=%d secondary=%d\n",
+                        row, ray_interval_trace_time_ms() - query_t0,
+                        (unsigned)pc.coverage, pc.primary_cell_id,
+                        pc.secondary_cell_id);
+                fflush(stderr);
+            }
 
-            fill_ray_interval_pixels(nu, row, du, prev, cur, &pc,
-                                     out_cell_ids, out_material_ids,
-                                     out_secondary_cell_ids, out_coverage,
-                                     out_errors);
+            size_t filled = fill_ray_interval_pixel_span(
+                nu, row, span_start, span_end, &pc,
+                out_cell_ids, out_material_ids,
+                out_secondary_cell_ids, out_coverage, out_errors);
+            if (stats) stats->pixels_filled += filled;
         }
 
         if (cur > prev) prev = cur;
         if (prev >= t_max) break;
     }
 
+    while (next_pixel < nu) {
+        if (fill_ray_interval_pixel_center_exact(
+                sys, plane, ox, oy, oz, nu, row, next_pixel, du,
+                universe_depth, out_cell_ids, out_material_ids,
+                out_secondary_cell_ids, out_coverage, out_errors,
+                stats) != 0)
+            return -1;
+        next_pixel++;
+    }
+
     return 0;
+}
+
+static uint8_t ray_grid_coverage_at(size_t idx,
+                                    const int* cell_ids,
+                                    const uint8_t* coverage,
+                                    const uint8_t* errors) {
+    if (coverage) return coverage[idx];
+    if (errors) {
+        if (errors[idx] == GRID_ERR_OVERLAP) return ALEA_COVERAGE_MULTI;
+        if (errors[idx] == GRID_ERR_UNDEFINED) return ALEA_COVERAGE_NONE;
+    }
+    return cell_ids[idx] >= 0 ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
+}
+
+static size_t ray_interval_verify_stride(void) {
+    const char* env = getenv("ALEA_RAY_INTERVAL_VERIFY");
+    if (!env || !*env) return 0;
+    char* end = NULL;
+    unsigned long value = strtoul(env, &end, 10);
+    if (end == env || value == 0) return 0;
+    return (size_t)value;
+}
+
+static int verify_ray_interval_grid(alea_system_t* sys,
+                                    const alea_slice_view_t* view,
+                                    int nu,
+                                    int nv,
+                                    int universe_depth,
+                                    const int* out_cell_ids,
+                                    const int* out_secondary_cell_ids,
+                                    const uint8_t* out_coverage,
+                                    const uint8_t* out_errors,
+                                    size_t stride,
+                                    alea_ray_interval_stats_t* stats) {
+    if (!stride) return 0;
+
+    const double du = (view->u_max - view->u_min) / (double)nu;
+    const double dv = (view->v_max - view->v_min) / (double)nv;
+    const alea_slice_plane_t* plane = &view->plane;
+    size_t n = (size_t)nu * (size_t)nv;
+
+    for (size_t idx = 0; idx < n; idx += stride) {
+        int i = (int)(idx % (size_t)nu);
+        int j = (int)(idx / (size_t)nu);
+        double u = view->u_min + (i + 0.5) * du;
+        double v = view->v_min + (j + 0.5) * dv;
+        double gx = plane->origin[0] + u * plane->u_axis[0] + v * plane->v_axis[0];
+        double gy = plane->origin[1] + u * plane->u_axis[1] + v * plane->v_axis[1];
+        double gz = plane->origin[2] + u * plane->u_axis[2] + v * plane->v_axis[2];
+
+        point_coverage_t pc;
+        if (find_point_coverage_exact(sys, gx, gy, gz,
+                                      universe_depth, &pc) != 0) {
+            if (stats) stats->verifier_mismatches++;
+            continue;
+        }
+
+        if (stats) stats->verifier_samples++;
+        uint8_t observed = ray_grid_coverage_at(idx, out_cell_ids,
+                                                out_coverage, out_errors);
+        bool mismatch = observed != pc.coverage;
+        if (!mismatch && pc.coverage == ALEA_COVERAGE_ONE) {
+            mismatch = out_cell_ids[idx] != pc.primary_cell_id;
+        } else if (!mismatch && pc.coverage == ALEA_COVERAGE_MULTI &&
+                   out_secondary_cell_ids) {
+            mismatch = !point_coverage_matches_pair(&pc, out_cell_ids[idx],
+                                                    out_secondary_cell_ids[idx]);
+        }
+        if (mismatch && stats) stats->verifier_mismatches++;
+    }
+
+    return 0;
+}
+
+static void ray_interval_stats_add(alea_ray_interval_stats_t* dst,
+                                   const alea_ray_interval_stats_t* src) {
+    dst->rows += src->rows;
+    dst->rays += src->rays;
+    dst->ray_errors += src->ray_errors;
+    dst->hits_total += src->hits_total;
+    if (src->hits_max > dst->hits_max) dst->hits_max = src->hits_max;
+    dst->intervals += src->intervals;
+    dst->interval_exact_queries += src->interval_exact_queries;
+    dst->pixels_filled += src->pixels_filled;
+    dst->fallback_invocations += src->fallback_invocations;
+    dst->verifier_samples += src->verifier_samples;
+    dst->verifier_mismatches += src->verifier_mismatches;
+    dst->boundary_checked += src->boundary_checked;
+    dst->boundary_suppressed += src->boundary_suppressed;
+    dst->boundary_retained += src->boundary_retained;
+    dst->boundary_inconclusive += src->boundary_inconclusive;
 }
 
 static int find_cells_grid_coverage_ray_intervals(
@@ -1515,11 +1804,16 @@ static int find_cells_grid_coverage_ray_intervals(
     int* out_secondary_cell_ids,
     uint8_t* out_coverage,
     uint8_t* out_errors) {
+    double total_t0 = ray_interval_trace_time_ms();
+    alea_ray_interval_stats_reset();
+
     if (!sys || !view || !out_cell_ids || nu <= 0 || nv <= 0)
         return -1;
 
-    if (universe_depth != -1)
+    if (universe_depth != -1) {
+        g_ray_interval_stats.fallback_invocations++;
         return -2;
+    }
 
     const double du = (view->u_max - view->u_min) / (double)nu;
     const double dv = (view->v_max - view->v_min) / (double)nv;
@@ -1527,10 +1821,20 @@ static int find_cells_grid_coverage_ray_intervals(
     if (du <= 0.0 || dv <= 0.0 || t_max <= 0.0)
         return -1;
 
-    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+    double stage_t0 = ray_interval_trace_time_ms();
+    if (alea_system_prepare_query_caches(
+            sys, ALEA_CACHE_HIER_SPATIAL |
+                 ALEA_CACHE_CELL_SURFACES |
+                 ALEA_CACHE_SURFACE_BVH) != 0)
         return -1;
+    if (ray_interval_trace_enabled()) {
+        fprintf(stderr, "[RAY INTERVAL TRACE] cache check %.1f ms\n",
+                ray_interval_trace_time_ms() - stage_t0);
+        fflush(stderr);
+    }
 
     size_t n = (size_t)nu * (size_t)nv;
+    stage_t0 = ray_interval_trace_time_ms();
     for (size_t i = 0; i < n; i++) {
         out_cell_ids[i] = -1;
         if (out_material_ids) out_material_ids[i] = 0;
@@ -1538,23 +1842,35 @@ static int find_cells_grid_coverage_ray_intervals(
         if (out_coverage) out_coverage[i] = ALEA_COVERAGE_NONE;
         if (out_errors) out_errors[i] = GRID_ERR_UNDEFINED;
     }
+    if (ray_interval_trace_enabled()) {
+        fprintf(stderr, "[RAY INTERVAL TRACE] grid init %.1f ms\n",
+                ray_interval_trace_time_ms() - stage_t0);
+        fflush(stderr);
+    }
 
     alea_point_coverage_stats_reset();
 
     const alea_slice_plane_t* plane = &view->plane;
     int failed = 0;
+    alea_ray_interval_stats_t parallel_stats;
+    memset(&parallel_stats, 0, sizeof(parallel_stats));
 
+    stage_t0 = ray_interval_trace_time_ms();
 #ifdef _OPENMP
     #pragma omp parallel
 #endif
     {
         alea_raycast_result_t result;
         alea_raycast_result_init(&result);
+        alea_ray_interval_stats_t local_stats;
+        memset(&local_stats, 0, sizeof(local_stats));
 
 #ifdef _OPENMP
         #pragma omp for schedule(dynamic, 4)
 #endif
         for (int j = 0; j < nv; j++) {
+            local_stats.rows++;
+            local_stats.rays++;
             double v = view->v_min + (j + 0.5) * dv;
             double ox = plane->origin[0] + view->u_min * plane->u_axis[0] +
                         v * plane->v_axis[0];
@@ -1563,34 +1879,105 @@ static int find_cells_grid_coverage_ray_intervals(
             double oz = plane->origin[2] + view->u_min * plane->u_axis[2] +
                         v * plane->v_axis[2];
 
-            alea_raycast_result_clear(&result);
-            if (alea_raycast(sys, ox, oy, oz,
-                             plane->u_axis[0], plane->u_axis[1],
-                             plane->u_axis[2], t_max, &result) != 0) {
+            alea_ray_t ray;
+            alea_ray_init_normalized(&ray, ox, oy, oz,
+                                     plane->u_axis[0], plane->u_axis[1],
+                                     plane->u_axis[2]);
+            double ray_t0 = ray_interval_trace_time_ms();
+            if (ray_interval_trace_enabled()) {
+                fprintf(stderr,
+                        "[RAY INTERVAL TRACE] row=%d raycast begin t_max=%.6g\n",
+                        j, t_max);
+                fflush(stderr);
+            }
+            if (alea_raycast_hier_blas_hits_nocache(sys, &ray, t_max,
+                                                    &result) != 0) {
+                local_stats.ray_errors++;
                 #pragma omp atomic write
                 failed = 1;
                 continue;
             }
+            if (ray_interval_trace_enabled()) {
+                fprintf(stderr,
+                        "[RAY INTERVAL TRACE] row=%d raycast end %.1f ms hits=%zu\n",
+                        j, ray_interval_trace_time_ms() - ray_t0,
+                        result.hits.count);
+                fflush(stderr);
+            }
+            local_stats.hits_total += result.hits.count;
+            if (result.hits.count > local_stats.hits_max)
+                local_stats.hits_max = result.hits.count;
 
             if (fill_ray_interval_row_exact_from_hits(
                     sys, view, nu, nv, j, universe_depth, du, &result,
                     out_cell_ids, out_material_ids, out_secondary_cell_ids,
-                    out_coverage, out_errors) != 0) {
+                    out_coverage, out_errors, &local_stats) != 0) {
                 #pragma omp atomic write
                 failed = 1;
             }
         }
 
+        #pragma omp critical(ray_interval_stats_merge)
+        {
+            ray_interval_stats_add(&parallel_stats, &local_stats);
+        }
+
         alea_raycast_result_free(&result);
     }
 
-    if (failed)
+    g_ray_interval_stats = parallel_stats;
+    if (ray_interval_trace_enabled()) {
+        fprintf(stderr, "[RAY INTERVAL TRACE] row loop %.1f ms\n",
+                ray_interval_trace_time_ms() - stage_t0);
+        fflush(stderr);
+    }
+
+    if (failed) {
+        g_ray_interval_stats.fallback_invocations++;
         return -2;
+    }
+
+    size_t verify_stride = ray_interval_verify_stride();
+    if (verify_stride) {
+        stage_t0 = ray_interval_trace_time_ms();
+        alea_ray_interval_stats_t verify_stats;
+        memset(&verify_stats, 0, sizeof(verify_stats));
+        verify_ray_interval_grid(sys, view, nu, nv, universe_depth,
+                                 out_cell_ids, out_secondary_cell_ids,
+                                 out_coverage, out_errors, verify_stride,
+                                 &verify_stats);
+        ray_interval_stats_add(&g_ray_interval_stats, &verify_stats);
+        if (ray_interval_trace_enabled()) {
+            fprintf(stderr, "[RAY INTERVAL TRACE] verifier %.1f ms\n",
+                    ray_interval_trace_time_ms() - stage_t0);
+            fflush(stderr);
+        }
+    }
 
     if (out_errors) {
+        stage_t0 = ray_interval_trace_time_ms();
+        alea_boundary_filter_stats_t boundary_stats;
+        memset(&boundary_stats, 0, sizeof(boundary_stats));
         filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
                                         out_cell_ids, out_secondary_cell_ids,
-                                        out_coverage, out_errors, NULL);
+                                        out_coverage, out_errors,
+                                        &boundary_stats);
+        g_ray_interval_stats.boundary_checked += boundary_stats.checked;
+        g_ray_interval_stats.boundary_suppressed += boundary_stats.suppressed;
+        g_ray_interval_stats.boundary_retained += boundary_stats.retained;
+        g_ray_interval_stats.boundary_inconclusive += boundary_stats.inconclusive;
+        if (ray_interval_trace_enabled()) {
+            fprintf(stderr, "[RAY INTERVAL TRACE] boundary filter %.1f ms checked=%zu\n",
+                    ray_interval_trace_time_ms() - stage_t0,
+                    boundary_stats.checked);
+            fflush(stderr);
+        }
+    }
+
+    if (ray_interval_trace_enabled()) {
+        fprintf(stderr, "[RAY INTERVAL TRACE] ray interval total %.1f ms\n",
+                ray_interval_trace_time_ms() - total_t0);
+        fflush(stderr);
     }
 
     return 0;
@@ -1978,13 +2365,12 @@ static int find_point_coverage_spatial(alea_system_t* sys,
     /* Stats counters below are mutated from inside the omp parallel for in
      * alea_find_cells_grid_coverage. Every mutation must be guarded; plain
      * `++` and `+=` race and lose increments under threading. */
+    alea_cell_hit_t hits[32];
     if (sys->has_lattice) {
         #pragma omp atomic
         g_point_coverage_stats.lattice_fallbacks++;
         return -2;
     }
-
-    alea_cell_hit_t hits[32];
     int n = alea_hier_spatial_find_cells_at_point_uncached(sys, gx, gy, gz,
                                                            hits, 32);
     if (n < 0) return -1;

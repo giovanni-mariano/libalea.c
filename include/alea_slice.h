@@ -197,6 +197,25 @@ typedef struct {
     size_t contains_tests;           /**< Exact containment tests in spatial path */
 } alea_point_coverage_stats_t;
 
+/** Diagnostic counters from experimental ray-interval plot coverage */
+typedef struct {
+    size_t rows;                     /**< Slice rows visited */
+    size_t rays;                     /**< Row rays attempted */
+    size_t ray_errors;               /**< Row raycast failures */
+    size_t hits_total;               /**< Total raycast hits across rows */
+    size_t hits_max;                 /**< Maximum raycast hits on one row */
+    size_t intervals;                /**< Non-empty row intervals classified */
+    size_t interval_exact_queries;   /**< Exact midpoint coverage queries */
+    size_t pixels_filled;            /**< Pixels written from intervals */
+    size_t fallback_invocations;     /**< Calls that requested exact fallback */
+    size_t verifier_samples;         /**< Pixels checked by sampled verifier */
+    size_t verifier_mismatches;      /**< Verifier disagreements before filtering */
+    size_t boundary_checked;         /**< Boundary filter provisional overlaps checked */
+    size_t boundary_suppressed;      /**< Boundary-only overlaps downgraded */
+    size_t boundary_retained;        /**< Overlaps retained by boundary filter */
+    size_t boundary_inconclusive;    /**< Conservative boundary-filter keeps */
+} alea_ray_interval_stats_t;
+
 /** Label position information */
 typedef struct {
     int id;             /**< Cell/material/surface ID */
@@ -517,6 +536,12 @@ void alea_point_coverage_stats_reset(void);
 
 /** Return diagnostics from exact point-coverage refinement */
 alea_point_coverage_stats_t alea_point_coverage_stats_get(void);
+
+/** Reset diagnostics for experimental ray-interval plot coverage */
+void alea_ray_interval_stats_reset(void);
+
+/** Return diagnostics from experimental ray-interval plot coverage */
+alea_ray_interval_stats_t alea_ray_interval_stats_get(void);
 
 /* ============================================================================
  * LABEL POSITION COMPUTATION

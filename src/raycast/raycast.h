@@ -201,6 +201,33 @@ int alea_raycast(alea_system_t* sys,
                 alea_raycast_result_t* result);
 
 /**
+ * @brief Buffer-reuse canonical hit-producing raycast.
+ *
+ * Same surface/fill/lattice hit and segment semantics as alea_raycast(), but
+ * takes a pre-normalized ray, assumes the caller has prepared the needed
+ * surface/cell caches, and clears rather than frees result buffers. Intended
+ * for scanline slice loops that need the ordered hit list as interval
+ * breakpoints.
+ */
+int alea_raycast_canonical_nocache(alea_system_t* sys,
+                                   const alea_ray_t* ray,
+                                   double t_max,
+                                   alea_raycast_result_t* result);
+
+/**
+ * @brief Buffer-reuse canonical hit-only raycast.
+ *
+ * Emits the same ordered physical/fill/lattice boundary hit list as
+ * alea_raycast(), but intentionally skips material segment construction.
+ * Intended for row-interval plotting, where hits are only breakpoints and
+ * interval ownership is decided by exact coverage sampling.
+ */
+int alea_raycast_canonical_hits_nocache(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max,
+                                        alea_raycast_result_t* result);
+
+/**
  * @brief Fast hierarchical material/path segment raycast.
  *
  * Segment output is the primary contract. The complete ordered surface-hit list
@@ -239,6 +266,19 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
 int alea_raycast_hier_blas_experimental(alea_system_t* sys,
                                         double ox, double oy, double oz,
                                         double dx, double dy, double dz,
+                                        double t_max,
+                                        alea_raycast_result_t* result);
+
+/**
+ * @brief Buffer-reuse hierarchical BLAS hit-only raycast.
+ *
+ * Uses the hierarchical placement/cell ray queries to collect candidate
+ * surface hits without recursively expanding every filled universe into a
+ * global hit list. Intended for row-interval slice plotting, where the hit
+ * list is used only as exact-coverage breakpoints.
+ */
+int alea_raycast_hier_blas_hits_nocache(alea_system_t* sys,
+                                        const alea_ray_t* ray,
                                         double t_max,
                                         alea_raycast_result_t* result);
 

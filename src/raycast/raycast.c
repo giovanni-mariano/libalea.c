@@ -27,9 +27,45 @@
 #include <float.h>
 #include "util/math.h"
 #include <stdio.h>
+#include <stdarg.h>
+#ifdef _WIN32
+#include <time.h>
+#else
+#include <sys/time.h>
+#endif
 
 #define INITIAL_CAPACITY 32
 #define MAX_FILL_RAYCAST_DEPTH 32
+
+/* TEMP diagnostic */
+#include <time.h>
+uint64_t g_fe_calls=0, g_fe_iters=0, g_fe_fail=0, g_fe_ns=0;
+static inline uint64_t fe_diag_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec; }
+
+static int raycast_trace_timings_enabled(void) {
+    const char* env = getenv("ALEA_RAYCAST_TRACE_TIMINGS");
+    return env && env[0] && env[0] != '0';
+}
+
+static double raycast_trace_time_ms(void) {
+#ifdef _WIN32
+    return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
+#endif
+}
+
+static void raycast_trace_printf(const char* fmt, ...) {
+    if (!raycast_trace_timings_enabled()) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fflush(stderr);
+}
 
 /* ============================================================================
  * CACHE PRE-BUILD (thread safety)
@@ -58,6 +94,7 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    bool use_hier_lookup,
                                    bool emit_hits,
                                    bool allow_neighbor_walk,
+                                   bool neighbor_walk_exact,
                                    double first_material_stop_t,
                                    alea_raycast_result_t* result);
 
@@ -819,6 +856,8 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
                                       double t_min,
                                       double t_max,
                                       alea_raycast_result_t* result) {
+    int trace = raycast_trace_timings_enabled();
+    double total_t0 = raycast_trace_time_ms();
     alea_raycast_result_clear(result);
     result->ray = *ray;
 
@@ -828,7 +867,15 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
         stats->max_universe_cells <= 0) {
         return 0;
     }
+    if (trace) {
+        raycast_trace_printf(
+            "[RAYCAST TRACE] root BLAS begin placements=%zu max_universe_cells=%d placement_buf=%.1f MB candidate_buf=%.1f MB\n",
+            stats->placement_count, stats->max_universe_cells,
+            (double)(stats->placement_count * sizeof(alea_hier_placement_ray_candidate_t)) / (1024.0 * 1024.0),
+            (double)((size_t)stats->max_universe_cells * sizeof(alea_hier_ray_candidate_t)) / (1024.0 * 1024.0));
+    }
 
+    double stage_t0 = raycast_trace_time_ms();
     alea_hier_placement_ray_candidate_t* placements =
         malloc(stats->placement_count * sizeof(*placements));
     alea_hier_ray_candidate_t* candidates =
@@ -838,7 +885,12 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
         free(candidates);
         return -1;
     }
+    if (trace) {
+        raycast_trace_printf("[RAYCAST TRACE] root BLAS alloc %.1f ms\n",
+                             raycast_trace_time_ms() - stage_t0);
+    }
 
+    stage_t0 = raycast_trace_time_ms();
     int placement_count = alea_hier_spatial_query_placements_ray(
         sys,
         ray->ox, ray->oy, ray->oz,
@@ -852,7 +904,13 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
         return -1;
     }
     result->blas_placement_candidates = (size_t)placement_count;
+    if (trace) {
+        raycast_trace_printf("[RAYCAST TRACE] root BLAS placement query %.1f ms hits=%d\n",
+                             raycast_trace_time_ms() - stage_t0,
+                             placement_count);
+    }
 
+    stage_t0 = raycast_trace_time_ms();
     for (int p = 0; p < placement_count; p++) {
         alea_hier_placement_ray_candidate_t* placement = &placements[p];
         const alea_universe_t* univ =
@@ -942,11 +1000,30 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
             }
         }
     }
+    if (trace) {
+        raycast_trace_printf(
+            "[RAYCAST TRACE] root BLAS cell surface pass %.1f ms universe_queries=%zu cell_candidates=%zu cells_tested=%zu raw_hits=%zu pruned=%zu\n",
+            raycast_trace_time_ms() - stage_t0,
+            result->blas_universe_queries,
+            result->blas_cell_candidates,
+            result->blas_cells_tested,
+            result->hits.count,
+            result->blas_placements_pruned);
+    }
 
     free(placements);
     free(candidates);
     result->blas_hits_before_dedup = result->hits.count;
+    stage_t0 = raycast_trace_time_ms();
     dedup_sorted_hits(result);
+    if (trace) {
+        raycast_trace_printf(
+            "[RAYCAST TRACE] root BLAS dedup %.1f ms raw_hits=%zu hits=%zu total=%.1f ms\n",
+            raycast_trace_time_ms() - stage_t0,
+            result->blas_hits_before_dedup,
+            result->hits.count,
+            raycast_trace_time_ms() - total_t0);
+    }
     return 0;
 }
 
@@ -1369,15 +1446,53 @@ static void raycast_add_lattice_hits(alea_system_t* sys,
                                      const alea_ray_t* ray,
                                      double t_min, double t_max,
                                      alea_raycast_result_t* result) {
+    int trace = raycast_trace_timings_enabled();
+    size_t lattice_total = 0;
+    if (trace) {
+        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+            const alea_cell_entry_t* cell = &sys->cells.data[i];
+            if (cell->lat_type != 0 && cell->lat_fill)
+                lattice_total++;
+        }
+        raycast_trace_printf("[RAYCAST TRACE] lattice stage begin cells=%zu hits=%zu\n",
+                             lattice_total, result->hits.count);
+    }
+
+    size_t lattice_seen = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         const alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
+
+        lattice_seen++;
+        double cell_t0 = raycast_trace_time_ms();
+        if (trace && (lattice_seen <= 64 || (lattice_seen % 100) == 0)) {
+            raycast_trace_printf(
+                "[RAYCAST TRACE] lattice cell %zu/%zu idx=%zu mc=%d type=%d dims=[%d,%d,%d,%d,%d,%d] fill=%zu hits_before=%zu\n",
+                lattice_seen, lattice_total, i, cell->mc_cell_id,
+                cell->lat_type,
+                cell->lat_fill_dims[0], cell->lat_fill_dims[1],
+                cell->lat_fill_dims[2], cell->lat_fill_dims[3],
+                cell->lat_fill_dims[4], cell->lat_fill_dims[5],
+                cell->lat_fill_count, result->hits.count);
+        }
 
         if (cell->lat_type == 1) {
             raycast_lattice_rect(sys, ray, cell, t_min, t_max, result);
         } else if (cell->lat_type == 2) {
             raycast_lattice_hex(sys, ray, cell, t_min, t_max, result);
         }
+
+        if (trace && (lattice_seen <= 64 || (lattice_seen % 100) == 0)) {
+            raycast_trace_printf(
+                "[RAYCAST TRACE] lattice cell %zu done %.1f ms hits_after=%zu\n",
+                lattice_seen, raycast_trace_time_ms() - cell_t0,
+                result->hits.count);
+        }
+    }
+
+    if (trace) {
+        raycast_trace_printf("[RAYCAST TRACE] lattice stage end hits=%zu\n",
+                             result->hits.count);
     }
 }
 
@@ -1421,26 +1536,95 @@ static int dedup_sorted_hits(alea_raycast_result_t* result) {
     return 0;
 }
 
-static int raycast_global_pipeline(alea_system_t* sys,
-                                   const alea_ray_t* ray,
-                                   double t_min, double t_max,
-                                   bool include_lattice_hits,
-                                   bool use_hier_lookup,
-                                   alea_raycast_result_t* result) {
-    if (use_hier_lookup) {
+static int raycast_global_hits_pipeline(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_min, double t_max,
+                                        bool include_lattice_hits,
+                                        bool use_hier_lookup,
+                                        bool check_surface_cache,
+                                        alea_raycast_result_t* result) {
+    int trace = raycast_trace_timings_enabled();
+    double pipeline_t0 = raycast_trace_time_ms();
+    if (trace) {
+        raycast_trace_printf(
+            "[RAYCAST TRACE] hits pipeline begin t=[%.6g,%.6g] include_lattice=%d use_hier=%d check_cache=%d\n",
+            t_min, t_max, include_lattice_hits ? 1 : 0,
+            use_hier_lookup ? 1 : 0, check_surface_cache ? 1 : 0);
+    }
+
+    double stage_t0 = raycast_trace_time_ms();
+    if (trace)
+        raycast_trace_printf("[RAYCAST TRACE] surfaces begin\n");
+    if (use_hier_lookup || !check_surface_cache) {
         raycast_surfaces_impl(sys, ray, t_min, t_max, result);
     } else {
         int rc = alea_raycast_surfaces(sys, ray, t_min, t_max, result);
         if (rc != 0) return rc;
     }
+    if (trace) {
+        raycast_trace_printf("[RAYCAST TRACE] surfaces end %.1f ms hits=%zu\n",
+                             raycast_trace_time_ms() - stage_t0,
+                             result->hits.count);
+    }
 
-    if (system_has_fill_cells(sys))
+    stage_t0 = raycast_trace_time_ms();
+    bool has_fill = system_has_fill_cells(sys);
+    if (trace) {
+        raycast_trace_printf("[RAYCAST TRACE] fill scan end %.1f ms has_fill=%d\n",
+                             raycast_trace_time_ms() - stage_t0,
+                             has_fill ? 1 : 0);
+    }
+
+    if (has_fill) {
+        stage_t0 = raycast_trace_time_ms();
+        if (trace)
+            raycast_trace_printf("[RAYCAST TRACE] fill stage begin hits=%zu\n",
+                                 result->hits.count);
         raycast_add_fill_hits(sys, ray, t_min, t_max, result);
+        if (trace) {
+            raycast_trace_printf("[RAYCAST TRACE] fill stage end %.1f ms hits=%zu\n",
+                                 raycast_trace_time_ms() - stage_t0,
+                                 result->hits.count);
+        }
+    }
 
-    if (include_lattice_hits)
+    if (include_lattice_hits) {
+        stage_t0 = raycast_trace_time_ms();
         raycast_add_lattice_hits(sys, ray, t_min, t_max, result);
+        if (trace) {
+            raycast_trace_printf("[RAYCAST TRACE] lattice wrapper end %.1f ms hits=%zu\n",
+                                 raycast_trace_time_ms() - stage_t0,
+                                 result->hits.count);
+        }
+    }
 
-    dedup_sorted_hits(result);
+    stage_t0 = raycast_trace_time_ms();
+    if (trace)
+        raycast_trace_printf("[RAYCAST TRACE] dedup begin hits=%zu\n",
+                             result->hits.count);
+    int rc = dedup_sorted_hits(result);
+    if (trace) {
+        raycast_trace_printf("[RAYCAST TRACE] dedup end %.1f ms hits=%zu total=%.1f ms\n",
+                             raycast_trace_time_ms() - stage_t0,
+                             result->hits.count,
+                             raycast_trace_time_ms() - pipeline_t0);
+    }
+    return rc;
+}
+
+static int raycast_global_pipeline(alea_system_t* sys,
+                                   const alea_ray_t* ray,
+                                   double t_min, double t_max,
+                                   bool include_lattice_hits,
+                                   bool use_hier_lookup,
+                                   bool check_surface_cache,
+                                   alea_raycast_result_t* result) {
+    int rc = raycast_global_hits_pipeline(sys, ray, t_min, t_max,
+                                          include_lattice_hits,
+                                          use_hier_lookup,
+                                          check_surface_cache,
+                                          result);
+    if (rc != 0) return rc;
     return raycast_to_segments_impl(sys, t_max, result, use_hier_lookup);
 }
 
@@ -1471,7 +1655,48 @@ int alea_raycast(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_global_pipeline(sys, &ray, 0, effective_t_max,
                                    system_has_lattice_cells(sys), false,
+                                   true,
                                    result);
+}
+
+int alea_raycast_canonical_nocache(alea_system_t* sys,
+                                   const alea_ray_t* ray,
+                                   double t_max,
+                                   alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    double scan_t0 = raycast_trace_time_ms();
+    bool include_lattice = system_has_lattice_cells(sys);
+    if (raycast_trace_timings_enabled()) {
+        raycast_trace_printf("[RAYCAST TRACE] lattice scan %.1f ms include_lattice=%d\n",
+                             raycast_trace_time_ms() - scan_t0,
+                             include_lattice ? 1 : 0);
+    }
+    return raycast_global_pipeline(sys, ray, 0, effective_t_max,
+                                   include_lattice, false,
+                                   false,
+                                   result);
+}
+
+int alea_raycast_canonical_hits_nocache(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max,
+                                        alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    double scan_t0 = raycast_trace_time_ms();
+    bool include_lattice = system_has_lattice_cells(sys);
+    if (raycast_trace_timings_enabled()) {
+        raycast_trace_printf("[RAYCAST TRACE] lattice scan %.1f ms include_lattice=%d\n",
+                             raycast_trace_time_ms() - scan_t0,
+                             include_lattice ? 1 : 0);
+    }
+    return raycast_global_hits_pipeline(sys, ray, 0, effective_t_max,
+                                        include_lattice, false,
+                                        false,
+                                        result);
 }
 
 int alea_raycast_hier(alea_system_t* sys,
@@ -1495,7 +1720,7 @@ int alea_raycast_hier(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = ray;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   false, DBL_MAX, result);
+                                   false, false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_blas_experimental(alea_system_t* sys,
@@ -1523,6 +1748,15 @@ int alea_raycast_hier_blas_experimental(alea_system_t* sys,
     if (rc != 0) return rc;
 
     return raycast_to_segments_impl(sys, effective_t_max, result, true);
+}
+
+int alea_raycast_hier_blas_hits_nocache(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max,
+                                        alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    return raycast_root_blas_surfaces(sys, ray, 0.0, effective_t_max, result);
 }
 
 int alea_ray_first_cell(alea_system_t* sys,
@@ -2105,14 +2339,18 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
                                              alea_hier_ray_path_t* out_path) {
     if (!sys || !current_path || current_path->count <= 1) return -1;
 
+    g_fe_calls++;
+    uint64_t fe_t0 = fe_diag_ns();
     for (int parent = current_path->count - 2; parent >= 0; parent--) {
+        g_fe_iters++;
         alea_hier_cell_hit_t hit_with_transform;
         alea_hier_ray_path_t candidate_path;
         int found = alea_hier_spatial_find_path_from_parent(
             sys, current_path, parent, px, py, pz,
             &hit_with_transform, &candidate_path);
-        if (found < 0) return -2;
+        if (found < 0) { g_fe_ns += fe_diag_ns()-fe_t0; return -2; }
         if (found == 0) continue;
+        g_fe_ns += fe_diag_ns()-fe_t0;
 
         const alea_cell_hit_t* hit = &hit_with_transform.hit;
         if (out_material_id) *out_material_id = hit->material_id;
@@ -2131,6 +2369,8 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
         return hit->cell_index;
     }
 
+    g_fe_fail++;
+    g_fe_ns += fe_diag_ns()-fe_t0;
     return -1;
 }
 
@@ -2300,6 +2540,7 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    bool use_hier_lookup,
                                    bool emit_hits,
                                    bool allow_neighbor_walk,
+                                   bool neighbor_walk_exact,
                                    double first_material_stop_t,
                                    alea_raycast_result_t* result) {
     /* Current position along ray */
@@ -2374,13 +2615,20 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                 double px, py, pz;
                 int have_pt = 0;
                 const alea_hier_ray_path_entry_t saved = *term;
-                /* Commit the first same-universe leaf that contains the point.
-                 * This path is render-gated (see allow_neighbor_walk), and the
-                 * first visible (first-solid) cell is what rendering reports;
-                 * that result matches the full lookup. We therefore stop at the
-                 * first containing cell rather than scanning every cell on the
-                 * surface, which matters on high-degree surfaces. */
-                for (size_t ni = 0; ni < sc_count && !found_via_neighbor; ni++) {
+                /* First-containing mode (rendering, neighbor_walk_exact=0): stop
+                 * at the first same-universe leaf that contains the point — the
+                 * first visible cell, which is what solid rendering reports.
+                 * EXACT mode (2D slice fill, neighbor_walk_exact=1): require
+                 * EXACTLY one containing same-universe leaf before committing,
+                 * so the pick provably matches the canonical full lookup; 0 or
+                 * >=2 (overlap / coincident) falls through to standard
+                 * relocation. We scan candidates, count containment, and commit
+                 * the unique match afterwards. */
+                int match_count = 0;
+                uint32_t match_nb = 0;
+                alea_matrix_t match_cell_tf, match_lat_tf;
+                int match_lat_idx = -1;
+                for (size_t ni = 0; ni < sc_count; ni++) {
                     uint32_t nb = sc_refs[ni].cell_index;
                     if (nb == (uint32_t)prev_cell_idx) continue;
                     if ((size_t)nb >= alea_vec_count(&sys->cells)) continue;
@@ -2398,23 +2646,40 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                     }
                     /* Swap the path terminal to nb and verify the full
                      * ancestor+terminal chain contains the point. */
+                    alea_matrix_t cand_cell_tf, cand_lat_tf;
+                    int cand_lat_idx = -1;
                     term->cell_index = nb;
                     int in_cell = alea_hier_spatial_check_path_containment(
                         sys, &current_path, nb, px, py, pz,
-                        &cell_transform, &lattice_cell_index,
-                        &lattice_transform);
+                        &cand_cell_tf, &cand_lat_idx, &cand_lat_tf);
+                    *term = saved;  /* restore; commit happens after the scan */
                     if (in_cell == 1) {
-                        term->cell_id = nb_cell->mc_cell_id;
-                        term->material_id = nb_cell->material_id;
-                        term->fill_universe = nb_cell->fill_universe;
-                        cell_idx = (int)nb;
-                        cell_id = nb_cell->mc_cell_id;
-                        material_id = nb_cell->material_id;
-                        density = nb_cell->density;
-                        found_via_neighbor = 1;
-                    } else {
-                        *term = saved;  /* revert; try next / standard path */
+                        if (++match_count == 1) {
+                            match_nb = nb;
+                            match_cell_tf = cand_cell_tf;
+                            match_lat_tf = cand_lat_tf;
+                            match_lat_idx = cand_lat_idx;
+                            if (!neighbor_walk_exact)
+                                break;  /* first-containing: take it */
+                        } else {
+                            break;  /* exact mode: ambiguous, abandon walk */
+                        }
                     }
+                }
+                if (match_count == 1) {
+                    const alea_cell_entry_t* nb_cell = &sys->cells.data[match_nb];
+                    term->cell_index = match_nb;
+                    term->cell_id = nb_cell->mc_cell_id;
+                    term->material_id = nb_cell->material_id;
+                    term->fill_universe = nb_cell->fill_universe;
+                    cell_idx = (int)match_nb;
+                    cell_id = nb_cell->mc_cell_id;
+                    material_id = nb_cell->material_id;
+                    density = nb_cell->density;
+                    cell_transform = match_cell_tf;
+                    lattice_cell_index = match_lat_idx;
+                    lattice_transform = match_lat_tf;
+                    found_via_neighbor = 1;
                 }
             }
         }
@@ -2758,7 +3023,7 @@ int alea_raycast_cell_aware(alea_system_t* sys,
     }
 
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, false,
-                                   false, DBL_MAX, result);
+                                   false, false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_cell_aware(alea_system_t* sys,
@@ -2792,7 +3057,7 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   false, DBL_MAX, result);
+                                   false, false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_with_hits(alea_system_t* sys,
@@ -2816,7 +3081,7 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true,
-                                   false, DBL_MAX, result);
+                                   false, false, DBL_MAX, result);
 }
 
 /* Buffer-reuse hierarchical variants: take a pre-normalized ray, assume query
@@ -2832,7 +3097,7 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
-                                   true, DBL_MAX, result);
+                                   true, false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_segments_nocache(alea_system_t* sys,
@@ -2843,7 +3108,7 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   true, DBL_MAX, result);
+                                   true, false, DBL_MAX, result);
 }
 
 int alea_raycast_hier_fast_segments_nocache(alea_system_t* sys,
@@ -2853,11 +3118,17 @@ int alea_raycast_hier_fast_segments_nocache(alea_system_t* sys,
     if (!sys || !ray || !result) return -1;
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
-    /* Buffer-reuse, segments-only, neighbor-walk OFF: the per-pixel cell choice
-     * matches the canonical full root-to-leaf lookup (no overlap-region
-     * divergence). Intended for one-ray-per-scanline 2D slice rasterization. */
+    /* Buffer-reuse, segments-only. Intended for one-ray-per-scanline 2D slice
+     * rasterization. The neighbor walk is ON but in EXACT mode: it only commits
+     * a same-universe sibling cell when exactly one contains the point (the
+     * unambiguous case that provably matches the canonical full lookup), and
+     * otherwise falls through to the full relocation. So the per-pixel cell
+     * choice is identical to the full root-to-leaf lookup with no overlap-region
+     * divergence, while avoiding the expensive relocation on the common case. */
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   false, DBL_MAX, result);
+                                   /* allow_neighbor_walk */ true,
+                                   /* neighbor_walk_exact  */ true,
+                                   DBL_MAX, result);
 }
 
 int alea_raycast_hier_firsthit_nocache(alea_system_t* sys,
@@ -2872,5 +3143,5 @@ int alea_raycast_hier_firsthit_nocache(alea_system_t* sys,
      * rendering only shades the first visible material, so the rest of the ray
      * (often the bulk of the trace through a deep model) is never built. */
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
-                                   true, t_min, result);
+                                   true, false, t_min, result);
 }
