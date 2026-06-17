@@ -37,12 +37,6 @@
 #define INITIAL_CAPACITY 32
 #define MAX_FILL_RAYCAST_DEPTH 32
 
-/* TEMP diagnostic */
-#include <time.h>
-uint64_t g_fe_calls=0, g_fe_iters=0, g_fe_fail=0, g_fe_ns=0;
-static inline uint64_t fe_diag_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
-    return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec; }
-
 static int raycast_trace_timings_enabled(void) {
     const char* env = getenv("ALEA_RAYCAST_TRACE_TIMINGS");
     return env && env[0] && env[0] != '0';
@@ -2339,18 +2333,14 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
                                              alea_hier_ray_path_t* out_path) {
     if (!sys || !current_path || current_path->count <= 1) return -1;
 
-    g_fe_calls++;
-    uint64_t fe_t0 = fe_diag_ns();
     for (int parent = current_path->count - 2; parent >= 0; parent--) {
-        g_fe_iters++;
         alea_hier_cell_hit_t hit_with_transform;
         alea_hier_ray_path_t candidate_path;
         int found = alea_hier_spatial_find_path_from_parent(
             sys, current_path, parent, px, py, pz,
             &hit_with_transform, &candidate_path);
-        if (found < 0) { g_fe_ns += fe_diag_ns()-fe_t0; return -2; }
+        if (found < 0) return -2;
         if (found == 0) continue;
-        g_fe_ns += fe_diag_ns()-fe_t0;
 
         const alea_cell_hit_t* hit = &hit_with_transform.hit;
         if (out_material_id) *out_material_id = hit->material_id;
@@ -2369,8 +2359,6 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
         return hit->cell_index;
     }
 
-    g_fe_fail++;
-    g_fe_ns += fe_diag_ns()-fe_t0;
     return -1;
 }
 
