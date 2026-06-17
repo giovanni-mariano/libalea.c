@@ -1,4 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+//
 // SPDX-License-Identifier: MPL-2.0
+
 /*
  * slice_raycast_bench — compare the scanline-raytrace slice fill
  * (alea_find_cells_grid_raycast) against the point-query fill
