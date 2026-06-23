@@ -39,7 +39,7 @@ jobs:
           cp README.md LICENSE* dist/alea-linux-x64/ 2>/dev/null || true
           cd dist && tar -czvf alea-linux-x64.tar.gz alea-linux-x64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alea-linux-x64
           path: dist/alea-linux-x64.tar.gz
@@ -70,7 +70,7 @@ jobs:
           cp README.md LICENSE* dist/alea-linux-arm64/ 2>/dev/null || true
           cd dist && tar -czvf alea-linux-arm64.tar.gz alea-linux-arm64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alea-linux-arm64
           path: dist/alea-linux-arm64.tar.gz
@@ -101,7 +101,7 @@ jobs:
           cp README.md LICENSE* dist/alea-macos-x64/ 2>/dev/null || true
           cd dist && tar -czvf alea-macos-x64.tar.gz alea-macos-x64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alea-macos-x64
           path: dist/alea-macos-x64.tar.gz
@@ -132,7 +132,7 @@ jobs:
           cp README.md LICENSE* dist/alea-macos-arm64/ 2>/dev/null || true
           cd dist && tar -czvf alea-macos-arm64.tar.gz alea-macos-arm64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alea-macos-arm64
           path: dist/alea-macos-arm64.tar.gz
@@ -176,7 +176,7 @@ jobs:
           cp README.md LICENSE* dist/alea-windows-x64/ 2>/dev/null || true
           cd dist && zip -r alea-windows-x64.zip alea-windows-x64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alea-windows-x64
           path: dist/alea-windows-x64.zip
@@ -206,7 +206,7 @@ jobs:
           Copy-Item LICENSES dist/alea-windows-msvc-x64/LICENSES -Recurse
           Compress-Archive -Path dist/alea-windows-msvc-x64 -DestinationPath dist/alea-windows-msvc-x64.zip -Force
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alea-windows-msvc-x64
           path: dist/alea-windows-msvc-x64.zip
