@@ -12,6 +12,12 @@ INCLUDES = -I../include -I../src
 BIN_DIR = ../bin
 LDFLAGS ?= -lm
 
+ifdef WINDOWS_GNU
+  EXEEXT ?= .exe
+else
+  EXEEXT ?=
+endif
+
 # Detect platform
 UNAME_S := $(shell uname -s)
 
@@ -63,26 +69,28 @@ LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
 LDFLAGS += $(OPENMP_LDFLAGS)
 
 # Windows: link psapi for GetProcessMemoryInfo in large_model_probe
-ifeq ($(OS),Windows_NT)
+ifdef WINDOWS_GNU
+  PROBE_LIBS = -lpsapi
+else ifeq ($(OS),Windows_NT)
   PROBE_LIBS = -lpsapi
 else
   PROBE_LIBS =
 endif
 
-TOOLS = $(BIN_DIR)/mc_convert $(BIN_DIR)/mc_plotter $(BIN_DIR)/nuc_plot $(BIN_DIR)/large_model_probe
+TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
 
 all: $(TOOLS)
 
-$(BIN_DIR)/mc_convert: mc_convert.c
+$(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
-$(BIN_DIR)/mc_plotter: mc_plotter.c
+$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c
 	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
-$(BIN_DIR)/nuc_plot: nuc_plot.c
+$(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a $(LDFLAGS)
 
-$(BIN_DIR)/large_model_probe: large_model_probe.c
+$(BIN_DIR)/large_model_probe$(EXEEXT): large_model_probe.c
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(LIBS_ALL) $(LDFLAGS) $(PROBE_LIBS)
 
 clean:

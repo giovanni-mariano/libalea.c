@@ -88,6 +88,75 @@ jobs:
       - name: Run tests
         run: make test-unit test-integration USE_OPENMP=1
 
+  build-windows-conda-gnu-ucrt:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: libalea-conda-gnu
+          auto-activate-base: false
+          channel-priority: strict
+          channels: conda-forge/label/m2w64-experimental,conda-forge
+
+      - name: Install conda MinGW-w64 UCRT toolchain
+        run: |
+          conda install -y \
+            mingw-w64-ucrt-x86_64-gcc \
+            mingw-w64-ucrt-x86_64-binutils \
+            make
+          x86_64-w64-mingw32-gcc --version
+          x86_64-w64-mingw32-ar --version
+
+      - name: Build (conda MinGW-w64 UCRT)
+        run: >
+          make WINDOWS_GNU=1
+          CC=x86_64-w64-mingw32-gcc
+          AR=x86_64-w64-mingw32-ar
+          full cli tools
+
+      - name: Run tests (conda MinGW-w64 UCRT)
+        run: >
+          make WINDOWS_GNU=1
+          CC=x86_64-w64-mingw32-gcc
+          AR=x86_64-w64-mingw32-ar
+          test-unit test-integration test-lua
+
+  build-windows-conda-clang:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: libalea-conda-clang
+          auto-activate-base: false
+          channel-priority: strict
+          channels: conda-forge
+
+      - name: Install conda clang-cl toolchain
+        shell: pwsh
+        run: |
+          conda install -y clang_win-64
+          where.exe clang-cl
+          where.exe llvm-lib
+
+      - name: Build static libraries (conda clang-cl)
+        shell: pwsh
+        run: ./build-msvc.ps1 CONDA_CLANG=1 full
+
+      - name: Run unit & integration tests (conda clang-cl)
+        shell: pwsh
+        run: ./build-msvc.ps1 CONDA_CLANG=1 test
+
   build-windows-msvc:
     # Native MSVC (cl.exe) build via the self-contained wrapper, which locates VS
     # with vswhere and enters the x64 dev env itself — no msvc-dev-cmd needed.

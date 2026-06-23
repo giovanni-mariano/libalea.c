@@ -12,6 +12,7 @@
 #     nmake /f Makefile.msvc test            # build + run unit & integration tests
 #     nmake /f Makefile.msvc RELEASE=1       # optimized build (default is /Od /Zi)
 #     nmake /f Makefile.msvc USE_OPENMP=1    # enable OpenMP (/openmp:llvm, VS2019 16.9+)
+#     nmake /f Makefile.msvc CONDA_CLANG=1   # use conda clang-cl/llvm-lib
 #     nmake /f Makefile.msvc clean
 #
 # This is the MSVC counterpart to the GNU `Makefile`. It deliberately mirrors
@@ -38,15 +39,24 @@
 # dev environment, cl/lib aren't on PATH and the build fails deep inside with a
 # cryptic "vcruntime.h not found" — turn that into one clear line. The wrapper
 # (build-msvc.ps1) sets this up automatically; bare nmake needs vcvarsall x64.
+# CONDA_CLANG=1 is the no-admin conda clang_win-64 path; it relies on conda's
+# activation scripts and SDK/header setup instead of a Visual Studio prompt.
+!IFNDEF CONDA_CLANG
 !IFNDEF VCINSTALLDIR
 !ERROR No VS x64 dev environment (VCINSTALLDIR unset). Use build-msvc.ps1, or run `vcvarsall.bat x64` first.
+!ENDIF
 !ENDIF
 
 # ----------------------------------------------------------------------------
 # Toolchain
 # ----------------------------------------------------------------------------
+!IFDEF CONDA_CLANG
+CC   = clang-cl
+AR   = llvm-lib
+!ELSE
 CC   = cl
 AR   = lib
+!ENDIF
 
 # ----------------------------------------------------------------------------
 # Directories

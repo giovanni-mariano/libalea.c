@@ -15,8 +15,24 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DATA ?= $(INSTALL) -m 644
 MKDIR_P ?= mkdir -p
 
-CFLAGS ?= -Wall -Wextra -g -std=c11 -fPIC
+# Set WINDOWS_GNU=1 for conda/MSYS2-style MinGW-w64 UCRT builds.
+# Conda users need the UCRT GCC and binutils packages, e.g.
+#   mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils
+#   make WINDOWS_GNU=1 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar full cli tools
+DEFAULT_CFLAGS = -Wall -Wextra -g -std=c11
+ifndef WINDOWS_GNU
+  DEFAULT_CFLAGS += -fPIC
+endif
+CFLAGS ?= $(DEFAULT_CFLAGS)
 LDFLAGS ?= -lm
+
+ifdef WINDOWS_GNU
+  EXEEXT ?= .exe
+  PICFLAGS ?=
+else
+  EXEEXT ?=
+  PICFLAGS ?= -fPIC
+endif
 
 # Installation directories (override with e.g. PREFIX=/opt/alea)
 PREFIX ?= /usr/local
@@ -320,11 +336,11 @@ LIB = $(BIN_DIR)/libalea_full.a
 
 # Unit tests
 UNIT_TEST_SRCS = $(wildcard $(UNIT_TEST_DIR)/*.c)
-UNIT_TEST_BINS = $(UNIT_TEST_SRCS:$(UNIT_TEST_DIR)/%.c=$(BIN_DIR)/tests/unit/%)
+UNIT_TEST_BINS = $(UNIT_TEST_SRCS:$(UNIT_TEST_DIR)/%.c=$(BIN_DIR)/tests/unit/%$(EXEEXT))
 
 # Integration tests
 INTEGRATION_TEST_SRCS = $(wildcard $(INTEGRATION_TEST_DIR)/*.c)
-INTEGRATION_TEST_BINS = $(INTEGRATION_TEST_SRCS:$(INTEGRATION_TEST_DIR)/%.c=$(BIN_DIR)/tests/integration/%)
+INTEGRATION_TEST_BINS = $(INTEGRATION_TEST_SRCS:$(INTEGRATION_TEST_DIR)/%.c=$(BIN_DIR)/tests/integration/%$(EXEEXT))
 
 # All tests
 ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
@@ -348,12 +364,12 @@ modules: structure $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
 full: lib-core modules $(LIB)
 
 # CLI binary
-ALEA_CLI = $(BIN_DIR)/alea
+ALEA_CLI = $(BIN_DIR)/alea$(EXEEXT)
 cli: lib-core modules $(ALEA_CLI)
 
 # Build tools (mc_convert, mc_plotter)
 tools: lib-core modules
-	$(MAKE) -C tools
+	$(MAKE) -C tools WINDOWS_GNU=$(WINDOWS_GNU) EXEEXT=$(EXEEXT)
 
 # Build all tests (requires core + modules)
 tests: lib-core modules $(ALL_TEST_BINS)
@@ -501,7 +517,9 @@ $(BUILD_DIR)/geo_validator/%.o: $(GEO_VALIDATOR_DIR)/%.c | $(BUILD_DIR)/geo_vali
 # Lua 5.4 (vendored) - suppress warnings with -w
 # Use LUA_USE_POSIX on Unix, LUA_USE_WINDOWS on Windows
 LUA_UNAME_S := $(shell uname -s)
-ifeq ($(OS),Windows_NT)
+ifdef WINDOWS_GNU
+  LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
+else ifeq ($(OS),Windows_NT)
   LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
 else ifneq ($(findstring MINGW,$(LUA_UNAME_S)),)
   LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
@@ -513,7 +531,7 @@ endif
 
 $(BUILD_DIR)/lua/%.o: $(LUA_DIR)/%.c | $(BUILD_DIR)/lua
 	@echo "CC  $< (lua)"
-	@$(CC) -std=gnu11 -O2 -fPIC $(LUA_PLAT_FLAGS) -w -MMD -MP -c $< -o $@
+	@$(CC) -std=gnu11 -O2 $(PICFLAGS) $(LUA_PLAT_FLAGS) -w -MMD -MP -c $< -o $@
 
 # Lua bindings
 $(BUILD_DIR)/lua_bind/%.o: $(LUA_BIND_DIR)/%.c | $(BUILD_DIR)/lua_bind
@@ -522,7 +540,11 @@ $(BUILD_DIR)/lua_bind/%.o: $(LUA_BIND_DIR)/%.c | $(BUILD_DIR)/lua_bind
 
 # Linenoise (POSIX only - provides line editing in REPL)
 # Windows uses fgets fallback in lua_main.c
-ifeq ($(OS),Windows_NT)
+ifdef WINDOWS_GNU
+  LINENOISE_OBJ =
+  LINENOISE_INC =
+  CLI_LDFLAGS = $(LDFLAGS)
+else ifeq ($(OS),Windows_NT)
   LINENOISE_OBJ =
   LINENOISE_INC =
   CLI_LDFLAGS = $(LDFLAGS)
@@ -545,7 +567,7 @@ endif
 
 $(BUILD_DIR)/linenoise/linenoise.o: $(LINENOISE_DIR)/linenoise.c | $(BUILD_DIR)/linenoise
 	@echo "CC  $< (linenoise)"
-	@$(CC) -std=gnu11 -O2 -fPIC -w -MMD -MP -c $< -o $@
+	@$(CC) -std=gnu11 -O2 $(PICFLAGS) -w -MMD -MP -c $< -o $@
 
 # CLI binary (lua_main.c + bindings + linenoise + all alea libs + lua)
 # Platform-specific whole-archive flags for format modules
@@ -579,12 +601,12 @@ else
 endif
 
 # Unit tests
-$(BIN_DIR)/tests/unit/%: $(UNIT_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/unit
+$(BIN_DIR)/tests/unit/%$(EXEEXT): $(UNIT_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/unit
 	@echo "LD  $@"
 	@$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) $< $(TEST_LIBS) $(LDFLAGS) -o $@
 
 # Integration tests
-$(BIN_DIR)/tests/integration/%: $(INTEGRATION_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/integration
+$(BIN_DIR)/tests/integration/%$(EXEEXT): $(INTEGRATION_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/integration
 	@echo "LD  $@"
 	@$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) $< $(TEST_LIBS) $(LDFLAGS) -o $@
 
@@ -771,10 +793,10 @@ install-cli: cli
 
 install-tools: tools
 	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"
-	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_convert "$(DESTDIR)$(BINDIR)/"
-	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_plotter "$(DESTDIR)$(BINDIR)/"
-	@$(INSTALL_PROGRAM) $(BIN_DIR)/nuc_plot "$(DESTDIR)$(BINDIR)/"
-	@$(INSTALL_PROGRAM) $(BIN_DIR)/large_model_probe "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_convert$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_plotter$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/nuc_plot$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/large_model_probe$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 
 install-doc:
 	@$(MKDIR_P) "$(DESTDIR)$(DOCDIR)"
@@ -783,10 +805,15 @@ install-doc:
 
 uninstall:
 	@rm -f "$(DESTDIR)$(BINDIR)/alea"
+	@rm -f "$(DESTDIR)$(BINDIR)/alea.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert"
+	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_plotter"
+	@rm -f "$(DESTDIR)$(BINDIR)/mc_plotter.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/nuc_plot"
+	@rm -f "$(DESTDIR)$(BINDIR)/nuc_plot.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/large_model_probe"
+	@rm -f "$(DESTDIR)$(BINDIR)/large_model_probe.exe"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea.a"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_mcnp.a"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_openmc.a"
@@ -863,6 +890,12 @@ help:
 	@echo "  LIBOMP_PREFIX=   - OpenMP runtime prefix, e.g. /opt/homebrew/opt/libomp"
 	@echo "  RELEASE=1        - Optimized build"
 	@echo "  PORTABLE=1       - Avoid -march=native in release builds"
+	@echo "  WINDOWS_GNU=1    - MinGW-w64/UCRT Windows build (.exe, no -fPIC)"
+	@echo ""
+	@echo "Windows Toolchain Examples:"
+	@echo "  conda install -c conda-forge/label/m2w64-experimental mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils"
+	@echo "  make WINDOWS_GNU=1 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar full cli tools"
+	@echo "  nmake /f Makefile.msvc CONDA_CLANG=1 full"
 	@echo ""
 	@echo "Directory Layout:"
 	@echo "  src/             - Source code"
