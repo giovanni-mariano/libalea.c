@@ -16,6 +16,7 @@
 #include "core/alea_universe.h"
 #include "primitives/bbox.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -779,7 +780,12 @@ int alea_mesh_export(const alea_mesh_result_t *mesh,
                          alea_mesh_format_t fmt, const char *filename) {
     if (!mesh || !filename) return -1;
     FILE *f = fopen(filename, "w");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open mesh export file '%s': %s",
+                              filename, strerror(errno));
+        return -1;
+    }
     int rc = alea_mesh_export_stream(mesh, fmt, f);
     fclose(f);
     return rc;

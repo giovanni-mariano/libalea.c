@@ -25,15 +25,37 @@ assert(#mids == 27, "should have 3*3*3=27 material IDs")
 local cids = mesh:cell_ids()
 assert(#cids == 27, "should have 3*3*3=27 cell IDs")
 
+local function join_path(dir, name)
+    local sep = package.config and package.config:sub(1, 1) or "/"
+    if not dir or dir == "" then
+        dir = "."
+    end
+    local last = dir:sub(-1)
+    if last == "/" or last == "\\" then
+        return dir .. name
+    end
+    return dir .. sep .. name
+end
+
+local tmpdir = os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or "."
+local gmsh_file = join_path(tmpdir, "alea_test_mesh.msh")
+local vtk_file = join_path(tmpdir, "alea_test_mesh.vtk")
+local gmsh_file2 = join_path(tmpdir, "alea_test_mesh2.msh")
+local vtk_file2 = join_path(tmpdir, "alea_test_mesh2.vtk")
+
 -- Export Gmsh
-mesh:export(0, "/tmp/alea_test_mesh.msh")
+mesh:export(0, gmsh_file)
 
 -- Export VTK
-mesh:export(1, "/tmp/alea_test_mesh.vtk")
+mesh:export(1, vtk_file)
 
 -- One-shot export
-sys:mesh_export({nx = 3, ny = 3, nz = 3, format = 0}, "/tmp/alea_test_mesh2.msh")
-sys:mesh_export({nx = 3, ny = 3, nz = 3, format = 1}, "/tmp/alea_test_mesh2.vtk")
+sys:mesh_export({nx = 3, ny = 3, nz = 3, format = 0}, gmsh_file2)
+sys:mesh_export({nx = 3, ny = 3, nz = 3, format = 1}, vtk_file2)
+os.remove(gmsh_file)
+os.remove(vtk_file)
+os.remove(gmsh_file2)
+os.remove(vtk_file2)
 
 -- With explicit bounds
 local mesh2 = sys:mesh_sample{

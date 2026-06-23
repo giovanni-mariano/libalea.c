@@ -23,10 +23,28 @@ assert(fb:height() == 32, "fb height should be 32")
 fb:edge_darken()
 
 -- Write to temp files
-local tmpdir = "/tmp"
-fb:write(tmpdir .. "/alea_test_render.ppm")
-fb:write_ppm(tmpdir .. "/alea_test_render2.ppm")
-fb:write_bmp(tmpdir .. "/alea_test_render.bmp")
+local function join_path(dir, name)
+    local sep = package.config and package.config:sub(1, 1) or "/"
+    if not dir or dir == "" then
+        dir = "."
+    end
+    local last = dir:sub(-1)
+    if last == "/" or last == "\\" then
+        return dir .. name
+    end
+    return dir .. sep .. name
+end
+
+local tmpdir = os.getenv("TMPDIR") or os.getenv("TEMP") or os.getenv("TMP") or "."
+local ppm_file = join_path(tmpdir, "alea_test_render.ppm")
+local ppm_file2 = join_path(tmpdir, "alea_test_render2.ppm")
+local bmp_file = join_path(tmpdir, "alea_test_render.bmp")
+fb:write(ppm_file)
+fb:write_ppm(ppm_file2)
+fb:write_bmp(bmp_file)
+os.remove(ppm_file)
+os.remove(ppm_file2)
+os.remove(bmp_file)
 
 -- Camera setup
 local cam = sys:render_camera_setup{width = 64, height = 64}

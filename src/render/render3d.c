@@ -17,6 +17,7 @@
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -1029,7 +1030,12 @@ static void png_write_chunk(FILE* f, const char* type, const uint8_t* data, size
 int render_write_png(const char* filename, const uint8_t* pixels,
                      int width, int height) {
     FILE* f = fopen(filename, "wb");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open render output file '%s': %s",
+                              filename, strerror(errno));
+        return -1;
+    }
 
     static const uint8_t png_sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
     fwrite(png_sig, 1, 8, f);
@@ -1090,7 +1096,12 @@ int render_write_png(const char* filename, const uint8_t* pixels,
 int render_write_bmp(const char* filename, const uint8_t* pixels,
                      int width, int height) {
     FILE* f = fopen(filename, "wb");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open render output file '%s': %s",
+                              filename, strerror(errno));
+        return -1;
+    }
 
     int row_size = ((width * 3 + 3) / 4) * 4;
     int data_size = row_size * height;
@@ -1132,7 +1143,12 @@ int render_write_bmp(const char* filename, const uint8_t* pixels,
 int render_write_ppm(const char* filename, const uint8_t* pixels,
                      int width, int height) {
     FILE* f = fopen(filename, "wb");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open render output file '%s': %s",
+                              filename, strerror(errno));
+        return -1;
+    }
 
     fprintf(f, "P6\n%d %d\n255\n", width, height);
     fwrite(pixels, 1, (size_t)width * height * 3, f);
