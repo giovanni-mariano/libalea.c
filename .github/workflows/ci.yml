@@ -118,21 +118,34 @@ jobs:
             conda clean -i -y || true
             sleep $((attempt * 20))
           done
-          x86_64-w64-mingw32-gcc --version
-          x86_64-w64-mingw32-ar --version
+
+          cc_bin="$(command -v x86_64-w64-mingw32-gcc)"
+          ar_bin="$("$cc_bin" -print-prog-name=ar)"
+          if ! "$ar_bin" --version >/dev/null 2>&1; then
+            ar_bin="$("$cc_bin" -print-prog-name=x86_64-w64-mingw32-ar)"
+          fi
+          if [ -z "$cc_bin" ] || [ -z "$ar_bin" ]; then
+            echo "Could not determine conda MinGW-w64 compiler tools"
+            exit 1
+          fi
+
+          echo "WINDOWS_GNU_CC=$cc_bin" >> "$GITHUB_ENV"
+          echo "WINDOWS_GNU_AR=$ar_bin" >> "$GITHUB_ENV"
+          "$cc_bin" --version
+          "$ar_bin" --version
 
       - name: Build (conda MinGW-w64 UCRT)
         run: >
           make WINDOWS_GNU=1
-          CC=x86_64-w64-mingw32-gcc
-          AR=x86_64-w64-mingw32-ar
+          CC="$WINDOWS_GNU_CC"
+          AR="$WINDOWS_GNU_AR"
           full cli tools
 
       - name: Run tests (conda MinGW-w64 UCRT)
         run: >
           make WINDOWS_GNU=1
-          CC=x86_64-w64-mingw32-gcc
-          AR=x86_64-w64-mingw32-ar
+          CC="$WINDOWS_GNU_CC"
+          AR="$WINDOWS_GNU_AR"
           test-unit test-integration test-lua
 
   build-windows-conda-clang:
