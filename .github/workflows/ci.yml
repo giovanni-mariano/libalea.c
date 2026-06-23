@@ -98,7 +98,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: conda-incubator/setup-miniconda@v3
+      - uses: conda-incubator/setup-miniconda@v4
         with:
           activate-environment: libalea-conda-gnu
           auto-activate-base: false
@@ -155,7 +155,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: conda-incubator/setup-miniconda@v3
+      - uses: conda-incubator/setup-miniconda@v4
         with:
           activate-environment: libalea-conda-clang
           auto-activate-base: false
