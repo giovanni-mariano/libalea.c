@@ -17,7 +17,7 @@
 #
 # This is the MSVC counterpart to the GNU `Makefile`. It deliberately mirrors
 # the same source lists and the same library layout (libalea + format modules).
-# The CLI (Lua) target is intentionally out of scope here.
+# The CLI target embeds vendored Lua and skips linenoise on Windows.
 #
 # ----------------------------------------------------------------------------
 # Migration status (docs/MSVC_MIGRATION_PLAN.md)
@@ -29,7 +29,7 @@
 # remain in the library sources.
 #
 # NOTE: not yet validated on a real cl.exe toolchain — expect to triage MSVC
-# warnings/quirks on first CI run. The CLI (Lua) target is out of scope here.
+# warnings/quirks on first CI run.
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -64,8 +64,10 @@ AR   = lib
 SRC   = src
 BUILD = build_msvc
 BIN   = bin
+LUA   = vendor\lua
 
 INCLUDES = /I include /I $(SRC)
+LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 
 # ----------------------------------------------------------------------------
 # Compiler flags
@@ -103,6 +105,7 @@ CFLAGS = $(CFLAGS) /Od /Zi
 # Tests keep asserts active (strip /DNDEBUG) and are always debuggable.
 TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(OMP_FLAGS)
 TEST_INCLUDES = $(INCLUDES) /I tests
+LUA_CFLAGS    = /nologo /std:c11 /W3 /utf-8 /O2 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS /DLUA_USE_WINDOWS
 
 # ============================================================================
 # Source -> object lists (mirror of the GNU Makefile)
@@ -204,6 +207,58 @@ NUCDATA_OBJS = \
 	$(BUILD)\nucdata\multigroup.obj \
 	$(BUILD)\nucdata\material_bridge.obj
 
+LUA_OBJS = \
+		$(BUILD)\lua\lapi.obj \
+		$(BUILD)\lua\lauxlib.obj \
+		$(BUILD)\lua\lbaselib.obj \
+		$(BUILD)\lua\lcode.obj \
+		$(BUILD)\lua\lcorolib.obj \
+		$(BUILD)\lua\lctype.obj \
+		$(BUILD)\lua\ldblib.obj \
+		$(BUILD)\lua\ldebug.obj \
+		$(BUILD)\lua\ldo.obj \
+		$(BUILD)\lua\ldump.obj \
+		$(BUILD)\lua\lfunc.obj \
+		$(BUILD)\lua\lgc.obj \
+		$(BUILD)\lua\linit.obj \
+		$(BUILD)\lua\liolib.obj \
+		$(BUILD)\lua\llex.obj \
+		$(BUILD)\lua\lmathlib.obj \
+		$(BUILD)\lua\lmem.obj \
+		$(BUILD)\lua\loadlib.obj \
+		$(BUILD)\lua\lobject.obj \
+		$(BUILD)\lua\lopcodes.obj \
+		$(BUILD)\lua\loslib.obj \
+		$(BUILD)\lua\lparser.obj \
+		$(BUILD)\lua\lstate.obj \
+		$(BUILD)\lua\lstring.obj \
+		$(BUILD)\lua\lstrlib.obj \
+		$(BUILD)\lua\ltable.obj \
+		$(BUILD)\lua\ltablib.obj \
+		$(BUILD)\lua\ltm.obj \
+		$(BUILD)\lua\lundump.obj \
+		$(BUILD)\lua\lutf8lib.obj \
+		$(BUILD)\lua\lvm.obj \
+		$(BUILD)\lua\lzio.obj
+
+LUA_BIND_OBJS = \
+		$(BUILD)\lua_bind\lua_geo_validator.obj \
+		$(BUILD)\lua_bind\lua_io.obj \
+		$(BUILD)\lua_bind\lua_materials.obj \
+		$(BUILD)\lua_bind\lua_mesh.obj \
+		$(BUILD)\lua_bind\lua_nucdata.obj \
+		$(BUILD)\lua_bind\lua_ops.obj \
+		$(BUILD)\lua_bind\lua_query.obj \
+		$(BUILD)\lua_bind\lua_raycast.obj \
+		$(BUILD)\lua_bind\lua_render.obj \
+		$(BUILD)\lua_bind\lua_slice.obj \
+		$(BUILD)\lua_bind\lua_surfaces.obj \
+		$(BUILD)\lua_bind\lua_svg.obj \
+		$(BUILD)\lua_bind\lua_system.obj \
+		$(BUILD)\lua_bind\lua_util.obj
+
+LUA_MAIN_OBJ = $(BUILD)\lua_bind\lua_main.obj
+
 # ============================================================================
 # Library outputs (mirror the .a names from the GNU Makefile)
 # ============================================================================
@@ -213,6 +268,7 @@ LIB_OPENMC  = $(BIN)\libalea_openmc.lib
 LIB_SERPENT = $(BIN)\libalea_serpent.lib
 LIB_NUCDATA = $(BIN)\libalea_nucdata.lib
 LIB_FULL    = $(BIN)\libalea_full.lib
+ALEA_CLI    = $(BIN)\alea.exe
 
 ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
@@ -314,6 +370,8 @@ full: all $(LIB_FULL)
 
 libs: all
 
+cli: all $(ALEA_CLI)
+
 # ----------------------------------------------------------------------------
 # Library link (static) via LIB.EXE
 # ----------------------------------------------------------------------------
@@ -384,6 +442,15 @@ $(LIB_FULL): $(ALL_OBJS)
 {$(SRC)\nucdata\}.c{$(BUILD)\nucdata\}.obj::
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $<
 
+{$(LUA)\}.c{$(BUILD)\lua\}.obj::
+	$(CC) $(LUA_CFLAGS) /I $(LUA) /c /Fo$(BUILD)\lua\ $<
+
+{$(SRC)\lua_bind\}.c{$(BUILD)\lua_bind\}.obj::
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $<
+
+$(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(TEST_LINK)
+
 # ============================================================================
 # Tests
 # ============================================================================
@@ -399,7 +466,7 @@ TEST_LINK = /link \
 # Build + run every tests\unit\*.c and tests\integration\*.c.
 # nmake has no $(wildcard); a cmd FOR loop discovers the sources at run time.
 # (`%%f` -> `%f` is passed to cmd, which is what a command-line FOR expects.)
-test: test-unit test-integration
+test: test-unit test-integration test-lua
 
 test-unit: libs
 	@if not exist $(BIN)\tests\unit mkdir $(BIN)\tests\unit
@@ -418,6 +485,12 @@ test-integration: libs
 			tests\integration\%%~nf.c $(LIB_CORE) /Fe$(BIN)\tests\integration\%%~nf.exe $(TEST_LINK) && \
 		$(BIN)\tests\integration\%%~nf.exe || exit /b 1 )
 	@echo All integration tests passed.
+
+test-lua: cli
+	@for %%f in (tests\lua\test_*.lua) do @( \
+		echo Running %%f && \
+		$(ALEA_CLI) %%f || exit /b 1 )
+	@echo All Lua tests passed.
 
 # ============================================================================
 # Directory creation
@@ -440,6 +513,8 @@ dirs:
 	@if not exist $(BUILD)\openmc mkdir $(BUILD)\openmc
 	@if not exist $(BUILD)\serpent mkdir $(BUILD)\serpent
 	@if not exist $(BUILD)\nucdata mkdir $(BUILD)\nucdata
+	@if not exist $(BUILD)\lua mkdir $(BUILD)\lua
+	@if not exist $(BUILD)\lua_bind mkdir $(BUILD)\lua_bind
 
 # ============================================================================
 # Clean
@@ -452,4 +527,5 @@ clean:
 	@if exist $(LIB_SERPENT) del /q $(LIB_SERPENT)
 	@if exist $(LIB_NUCDATA) del /q $(LIB_NUCDATA)
 	@if exist $(LIB_FULL) del /q $(LIB_FULL)
+	@if exist $(ALEA_CLI) del /q $(ALEA_CLI)
 	@if exist $(BIN)\tests rmdir /s /q $(BIN)\tests

@@ -173,7 +173,7 @@ jobs:
         shell: pwsh
         run: ./build-msvc.ps1 CONDA_CLANG=1 full
 
-      - name: Run unit & integration tests (conda clang-cl)
+      - name: Run tests (conda clang-cl)
         shell: pwsh
         run: ./build-msvc.ps1 CONDA_CLANG=1 test
 
@@ -193,7 +193,7 @@ jobs:
         shell: pwsh
         run: ./build-msvc.ps1 full
 
-      - name: Run unit & integration tests (MSVC)
+      - name: Run tests (MSVC)
         shell: pwsh
         run: ./build-msvc.ps1 test
 
