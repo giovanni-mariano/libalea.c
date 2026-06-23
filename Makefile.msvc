@@ -105,7 +105,7 @@ CFLAGS = $(CFLAGS) /Od /Zi
 # Tests keep asserts active (strip /DNDEBUG) and are always debuggable.
 TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(OMP_FLAGS)
 TEST_INCLUDES = $(INCLUDES) /I tests
-LUA_CFLAGS    = /nologo /std:c11 /W3 /utf-8 /O2 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS /DLUA_USE_WINDOWS
+LUA_CFLAGS    = /nologo /std:c11 /W3 /utf-8 /O2 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
 
 # ============================================================================
 # Source -> object lists (mirror of the GNU Makefile)
@@ -269,6 +269,15 @@ LIB_SERPENT = $(BIN)\libalea_serpent.lib
 LIB_NUCDATA = $(BIN)\libalea_nucdata.lib
 LIB_FULL    = $(BIN)\libalea_full.lib
 ALEA_CLI    = $(BIN)\alea.exe
+
+# Module libs are pulled in with /WHOLEARCHIVE (the MSVC analogue of GNU
+# --whole-archive used by the test/CLI links in the GNU Makefile), so any
+# self-contained module objects the tests and CLI rely on are not dropped.
+MODULE_LINK = /link \
+	/WHOLEARCHIVE:$(LIB_MCNP) \
+	/WHOLEARCHIVE:$(LIB_OPENMC) \
+	/WHOLEARCHIVE:$(LIB_SERPENT) \
+	/WHOLEARCHIVE:$(LIB_NUCDATA)
 
 ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
@@ -449,19 +458,12 @@ $(LIB_FULL): $(ALL_OBJS)
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $<
 
 $(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
-	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(TEST_LINK)
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(MODULE_LINK)
 
 # ============================================================================
 # Tests
 # ============================================================================
-# Module libs are pulled in with /WHOLEARCHIVE (the MSVC analogue of GNU
-# --whole-archive used by the test/CLI links in the GNU Makefile), so any
-# self-contained module objects the tests rely on are not dropped by the linker.
-TEST_LINK = /link \
-	/WHOLEARCHIVE:$(LIB_MCNP) \
-	/WHOLEARCHIVE:$(LIB_OPENMC) \
-	/WHOLEARCHIVE:$(LIB_SERPENT) \
-	/WHOLEARCHIVE:$(LIB_NUCDATA)
+TEST_LINK = $(MODULE_LINK)
 
 # Build + run every tests\unit\*.c and tests\integration\*.c.
 # nmake has no $(wildcard); a cmd FOR loop discovers the sources at run time.
