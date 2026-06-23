@@ -86,7 +86,7 @@ jobs:
         run: make full cli tools USE_OPENMP=1
 
       - name: Run tests
-        run: make test-unit test-integration USE_OPENMP=1
+        run: make test-unit test-integration test-lua USE_OPENMP=1
 
   build-windows-conda-gnu-ucrt:
     runs-on: windows-latest

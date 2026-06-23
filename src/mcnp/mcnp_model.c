@@ -15,6 +15,7 @@
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "util/alea_log.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -263,7 +264,12 @@ int mcnp_export(const mcnp_model_t* model, const char* filename) {
     if (!model || !filename) return -1;
 
     FILE* f = fopen(filename, "w");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open MCNP export file '%s': %s",
+                              filename, strerror(errno));
+        return -1;
+    }
 
     int ret = mcnp_export_stream(model, f);
     fclose(f);
@@ -303,7 +309,12 @@ int mcnp_export_system(alea_system_t* sys, const char* filename) {
     if (!sys || !filename) return -1;
 
     FILE* f = fopen(filename, "w");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open MCNP export file '%s': %s",
+                              filename, strerror(errno));
+        return -1;
+    }
 
     int ret = mcnp_export_system_stream(sys, f);
     fclose(f);
