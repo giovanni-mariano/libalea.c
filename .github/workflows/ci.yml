@@ -107,10 +107,17 @@ jobs:
 
       - name: Install conda MinGW-w64 UCRT toolchain
         run: |
-          conda install -y \
-            mingw-w64-ucrt-x86_64-gcc \
-            mingw-w64-ucrt-x86_64-binutils \
-            make
+          for attempt in 1 2 3; do
+            conda install -y \
+              mingw-w64-ucrt-x86_64-gcc \
+              mingw-w64-ucrt-x86_64-binutils \
+              make && break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            conda clean -i -y || true
+            sleep $((attempt * 20))
+          done
           x86_64-w64-mingw32-gcc --version
           x86_64-w64-mingw32-ar --version
 
