@@ -64,7 +64,7 @@ AR   = lib
 SRC   = src
 BUILD = build_msvc
 BIN   = bin
-LUA   = vendor\lua
+LUA   = vendor\lua\src
 
 INCLUDES = /I include /I $(SRC)
 LUA_INCLUDES = $(INCLUDES) /I $(LUA)

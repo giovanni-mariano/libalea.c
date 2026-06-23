@@ -9,17 +9,17 @@
 
 lua/
   Description: Lua programming language (used for CLI scripting interface)
-  Version:     5.4.7
-  Source:      https://www.lua.org/ftp/lua-5.4.7.tar.gz
+  Version:     5.5.0
+  Source:      https://www.lua.org/ftp/lua-5.5.0.tar.gz
   Homepage:    https://www.lua.org/
   License:     MIT
-  Fetched:     2026-02-22
+  Fetched:     2026-06-23
   Patches:     none
 
 linenoise/
   Description: Small readline replacement (used for CLI line editing)
-  Version:     commit 452e3793858a15cc006bb3aa3ea06378eb98c5b5
+  Version:     commit a473823d74b93eab2ba83480df16ed37617493f2
   Source:      https://github.com/antirez/linenoise
   License:     BSD-2-Clause
-  Fetched:     2026-02-22
+  Fetched:     2026-06-23
   Patches:     none

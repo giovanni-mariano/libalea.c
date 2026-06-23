@@ -249,7 +249,7 @@ static void repl(lua_State* L) {
     linenoiseHistorySetMaxLen(1000);
     linenoiseHistoryLoad(hist);
 
-    printf("alea %s (Lua 5.4) -- type Ctrl-D to exit\n", alea_version());
+    printf("alea %s (Lua 5.5) -- type Ctrl-D to exit\n", alea_version());
 
     char* accum = NULL;
     size_t accum_len = 0;
@@ -340,7 +340,7 @@ static char* read_line(const char* prompt) {
 }
 
 static void repl(lua_State* L) {
-    printf("alea %s (Lua 5.4) -- type Ctrl-Z then Enter to exit\n", alea_version());
+    printf("alea %s (Lua 5.5) -- type Ctrl-Z then Enter to exit\n", alea_version());
 
     char* accum = NULL;
     size_t accum_len = 0;
@@ -422,7 +422,7 @@ int main(int argc, char** argv) {
     int i;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            printf("alea %s (Lua 5.4)\n", alea_version());
+            printf("alea %s (Lua 5.5)\n", alea_version());
             return 0;
         }
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {

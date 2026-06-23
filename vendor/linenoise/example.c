@@ -24,6 +24,7 @@ int main(int argc, char **argv) {
     char *line;
     char *prgname = argv[0];
     int async = 0;
+    const char *prompt = "hello> ";
 
     /* Parse options, with --multiline we enable multi line editing. */
     while(argc > 1) {
@@ -37,8 +38,13 @@ int main(int argc, char **argv) {
             exit(0);
         } else if (!strcmp(*argv,"--async")) {
             async = 1;
+        } else if (!strcmp(*argv,"--ansi-prompt")) {
+            /* "red" in red, "green" in green, then "> " in default color.
+             * Visible width is 10 columns; the raw string contains ANSI
+             * CSI escape sequences that must be treated as zero-width. */
+            prompt = "\x1b[31mred\x1b[32mgreen\x1b[0m> ";
         } else {
-            fprintf(stderr, "Usage: %s [--multiline] [--keycodes] [--async]\n", prgname);
+            fprintf(stderr, "Usage: %s [--multiline] [--keycodes] [--async] [--ansi-prompt]\n", prgname);
             exit(1);
         }
     }
@@ -61,7 +67,7 @@ int main(int argc, char **argv) {
 
     while(1) {
         if (!async) {
-            line = linenoise("hello> ");
+            line = linenoise(prompt);
             if (line == NULL) break;
         } else {
             /* Asynchronous mode using the multiplexing API: wait for
@@ -69,7 +75,7 @@ int main(int argc, char **argv) {
              * using the select(2) timeout. */
             struct linenoiseState ls;
             char buf[1024];
-            linenoiseEditStart(&ls,-1,-1,buf,sizeof(buf),"hello> ");
+            linenoiseEditStart(&ls,-1,-1,buf,sizeof(buf),prompt);
             while(1) {
 		fd_set readfds;
 		struct timeval tv;

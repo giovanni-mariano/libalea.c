@@ -217,7 +217,7 @@ static void emu_handle_csi(char cmd) {
         if (n == 2) emu_clear_screen();
         break;
     case 'K':  /* Erase Line */
-        if (n == 0 || csi_len == 0) emu_clear_to_eol();
+        if (csi_len == 0 || atoi(csi_buf) == 0) emu_clear_to_eol();
         break;
     case 'm':  /* SGR (colors/attributes) - ignore */
         break;
@@ -1045,7 +1045,8 @@ static void test_ctrl_w_delete_word(void) {
 
     send_keys("hello world");
     send_keys(KEY_CTRL_W);  /* Delete "world" */
-    assert_row_contains(0, "hello ");
+    assert_row_contains(0, "hello> hello");
+    assert_cursor(0, strlen("hello> hello "));
 
     send_keys(KEY_CTRL_W);  /* Delete "hello " */
     /* Should be empty now. */
@@ -1254,6 +1255,180 @@ static void test_tab_no_completions(void) {
     test_end();
 }
 
+static void test_ansi_prompt_width(void) {
+    /* The --ansi-prompt option produces "\x1b[31mred\x1b[32mgreen\x1b[0m> ":
+     * visible glyphs are "redgreen> " (10 columns), but the raw string is
+     * 23 bytes. If utf8StrWidth() counts the escape bytes, the cursor
+     * column computed during refresh drifts well past the true end of
+     * the text. */
+    if (test_start("ANSI Prompt Zero Width", "./linenoise-example --ansi-prompt") == -1) return;
+
+    int plen = strlen("redgreen> ");  /* 10 visible columns */
+
+    send_keys("abc");
+    /* The emulator strips ANSI, so the visible row is "redgreen> abc". */
+    assert_screen_row(0, "redgreen> abc");
+    assert_cursor(0, plen + 3);
+
+    /* Move left twice, then type another character: cursor must land at the
+     * correct display column. Previous bug would offset it by the escape
+     * byte count. */
+    send_keys("\x1b[D\x1b[D");   /* left, left */
+    assert_cursor(0, plen + 1);   /* between 'a' and 'b' */
+    send_keys("X");
+    assert_screen_row(0, "redgreen> aXbc");
+    assert_cursor(0, plen + 2);   /* right after the inserted 'X' */
+
+    test_end();
+}
+
+/* Bracketed paste: short single-line content is inserted literally. */
+static void test_bracketed_paste_inline(void) {
+    if (test_start("Bracketed Paste Inline", "./linenoise-example") == -1) return;
+
+    send_keys("\x1b[200~hi there\x1b[201~");
+    assert_screen_row(0, "hello> hi there");
+    assert_cursor(0, strlen("hello> hi there"));
+
+    test_end();
+}
+
+/* Bracketed paste: multiline content stays in the real buffer, but is
+ * rendered as one folded placeholder. */
+static void test_bracketed_paste_fold(void) {
+    if (test_start("Bracketed Paste Fold", "./linenoise-example") == -1) return;
+
+    int plen = strlen("hello> ");
+    const char *placeholder = "[... 2 pasted lines ...]";
+
+    send_keys("\x1b[200~aaa\nbbb\x1b[201~");
+    assert_screen_row(0, "hello> [... 2 pasted lines ...]");
+    assert_cursor(0, plen + (int)strlen(placeholder));
+
+    send_keys(KEY_BACKSPACE);
+    assert_screen_row(0, "hello>");
+    assert_cursor(0, plen);
+
+    test_end();
+}
+
+/* History remains caller-driven: the example adds the returned real text,
+ * and recall folds it again from the newline-containing entry. */
+static void test_bracketed_paste_history_nav(void) {
+    if (test_start("Bracketed Paste in History", "./linenoise-example") == -1) return;
+
+    int plen = strlen("hello> ");
+    const char *placeholder = "[... 2 pasted lines ...]";
+
+    send_keys("\x1b[200~aaa\nbbb\x1b[201~");
+    send_keys(KEY_ENTER);
+    send_keys("plain");
+    send_keys(KEY_ENTER);
+
+    send_keys(KEY_UP);
+    assert_row_contains(0, "plain");
+    send_keys(KEY_UP);
+    assert_row_contains(0, placeholder);
+    assert_cursor(0, plen + (int)strlen(placeholder));
+
+    test_end();
+}
+
+/* Recalled folded history must remain editable: new text typed after the
+ * recalled paste is not part of the hidden fold. */
+static void test_bracketed_paste_history_edit(void) {
+    if (test_start("Bracketed Paste History Edit", "./linenoise-example") == -1) return;
+
+    int plen = strlen("hello> ");
+    const char *placeholder = "[... 2 pasted lines ...]";
+
+    send_keys("\x1b[200~aaa\nbbb\x1b[201~");
+    send_keys(KEY_ENTER);
+    send_keys(KEY_UP);
+    assert_screen_row(0, "hello> [... 2 pasted lines ...]");
+
+    send_keys("X");
+    assert_screen_row(0, "hello> [... 2 pasted lines ...]X");
+    assert_cursor(0, plen + (int)strlen(placeholder) + 1);
+
+    test_end();
+}
+
+/* Text around an active folded paste is rendered normally. */
+static void test_bracketed_paste_surround(void) {
+    if (test_start("Bracketed Paste Keeps Surround", "./linenoise-example") == -1) return;
+
+    const char *placeholder = "[... 2 pasted lines ...]";
+    char expected[128];
+    snprintf(expected, sizeof(expected), "hello> before-%s-after", placeholder);
+
+    send_keys("before-");
+    send_keys("\x1b[200~aaa\nbbb\x1b[201~");
+    send_keys("-after");
+    assert_screen_row(0, expected);
+
+    test_end();
+}
+
+/* Multiple bracketed pastes are folded independently. */
+static void test_bracketed_paste_multiple(void) {
+    if (test_start("Bracketed Paste Multiple", "./linenoise-example") == -1) return;
+
+    const char *placeholder = "[... 2 pasted lines ...]";
+    char expected[128];
+    int second_start;
+    snprintf(expected, sizeof(expected), "hello> %s-%s", placeholder, placeholder);
+    second_start = strlen("hello> ") + strlen(placeholder) + 1;
+
+    send_keys("\x1b[200~aaa\nbbb\x1b[201~");
+    send_keys("-");
+    send_keys("\x1b[200~ccc\nddd\x1b[201~");
+    assert_screen_row(0, expected);
+
+    send_keys(KEY_LEFT);
+    assert_cursor(0, second_start);
+    send_keys(KEY_RIGHT);
+    assert_cursor(0, (int)strlen(expected));
+
+    test_end();
+}
+
+/* Completion previews temporarily replace the edit buffer. Active folds from
+ * the real buffer must not affect rendering of the completion text. */
+static void test_bracketed_paste_completion(void) {
+    if (test_start("Bracketed Paste Completion", "./linenoise-example") == -1) return;
+
+    send_keys("\x1b[200~h\nx\x1b[201~");
+    assert_screen_row(0, "hello> [... 2 pasted lines ...]");
+
+    send_keys("\t");
+    assert_row_contains(0, "hello> hello");
+
+    test_end();
+}
+
+/* Ctrl-T should not transpose bytes across a folded paste range. */
+static void test_bracketed_paste_ctrl_t(void) {
+    if (test_start("Bracketed Paste Ctrl-T", "./linenoise-example") == -1) return;
+
+    int plen = strlen("hello> ");
+    const char *placeholder = "[... 2 pasted lines ...]";
+    char expected[128];
+    snprintf(expected, sizeof(expected), "hello> %sX", placeholder);
+
+    send_keys("\x1b[200~aaa\nbbb\x1b[201~");
+    send_keys("X");
+    assert_screen_row(0, expected);
+
+    send_keys(KEY_LEFT);
+    assert_cursor(0, plen + (int)strlen(placeholder));
+    send_keys(KEY_CTRL_T);
+    assert_screen_row(0, expected);
+    assert_cursor(0, plen + (int)strlen(placeholder));
+
+    test_end();
+}
+
 /* ========================= Main ========================= */
 
 int main(int argc, char **argv) {
@@ -1283,6 +1458,15 @@ int main(int argc, char **argv) {
     test_ctrl_w_delete_word();
     test_ctrl_u_delete_line();
     test_tab_no_completions();
+    test_ansi_prompt_width();
+    test_bracketed_paste_inline();
+    test_bracketed_paste_fold();
+    test_bracketed_paste_history_nav();
+    test_bracketed_paste_history_edit();
+    test_bracketed_paste_surround();
+    test_bracketed_paste_multiple();
+    test_bracketed_paste_completion();
+    test_bracketed_paste_ctrl_t();
 
     /* Horizontal scrolling tests (single-line mode). */
     test_horizontal_scroll();

@@ -107,7 +107,7 @@ MESH_DIR = $(SRC_DIR)/mesh
 GEO_VALIDATOR_DIR = $(SRC_DIR)/geo_validator
 
 # Lua (vendored)
-LUA_DIR = vendor/lua
+LUA_DIR = vendor/lua/src
 LUA_BIND_DIR = $(SRC_DIR)/lua_bind
 LINENOISE_DIR = vendor/linenoise
 
@@ -265,7 +265,7 @@ OPENMC_MODULE_SRCS = $(OPENMC_EXPO_SRCS) $(OPENMC_PARSE_SRCS) $(OPENMC_MODEL_SRC
 # Serpent module sources (exporter only)
 SERPENT_MODULE_SRCS = $(SERPENT_EXPO_SRCS)
 
-# Lua 5.4 (vendored) - exclude standalone binaries
+# Lua 5.5 (vendored) - exclude standalone binaries
 LUA_SRCS = $(filter-out $(LUA_DIR)/lua.c $(LUA_DIR)/luac.c $(LUA_DIR)/onelua.c, $(wildcard $(LUA_DIR)/*.c))
 LUA_OBJS = $(patsubst $(LUA_DIR)/%.c,$(BUILD_DIR)/lua/%.o,$(LUA_SRCS))
 
@@ -514,7 +514,7 @@ $(BUILD_DIR)/geo_validator/%.o: $(GEO_VALIDATOR_DIR)/%.c | $(BUILD_DIR)/geo_vali
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
-# Lua 5.4 (vendored) - suppress warnings with -w
+# Lua 5.5 (vendored) - suppress warnings with -w
 # Use LUA_USE_POSIX on Unix, LUA_USE_WINDOWS on Windows
 LUA_UNAME_S := $(shell uname -s)
 ifdef WINDOWS_GNU

@@ -8,8 +8,9 @@ MongoDB, Android and many other projects.
 * Completion.
 * Hints (suggestions at the right of the prompt as you type).
 * Multiplexing mode, with prompt hiding/restoring for asynchronous output.
+* Bracketed paste support, with large or multi line pastes folded on screen.
 * UTF-8 support for multi-byte characters and emoji.
-* About ~1100 lines (comments and spaces excluded) of BSD license source code.
+* About ~1600 lines (comments and spaces excluded) of BSD license source code.
 * Only uses a subset of VT100 escapes (ANSI.SYS compatible).
 
 ## Can a line editing library be 20k lines of code?
@@ -30,7 +31,7 @@ So I spent more or less two hours doing a reality check resulting in this little
 Apparently almost every terminal you can happen to use today has some kind of support for basic VT100 escape sequences. So I tried to write a lib using just very basic VT100 features. The resulting library appears to work everywhere I tried to use it, and now can work even on ANSI.SYS compatible terminals, since no
 VT220 specific sequences are used anymore.
 
-The library is currently about 850 lines of code. In order to use it in your project just look at the *example.c* file in the source distribution, it is pretty straightforward. The library supports both a blocking mode and a multiplexing mode, see the API documentation later in this file for more information.
+The library is currently about 1600 lines of code, excluding comments and empty lines. In order to use it in your project just look at the *example.c* file in the source distribution, it is pretty straightforward. The library supports both a blocking mode and a multiplexing mode, see the API documentation later in this file for more information.
 
 Linenoise is BSD-licensed code, so you can use both in free software and commercial software.
 
@@ -76,6 +77,12 @@ the maximum editable line length is `LINENOISE_MAX_LINE`. When instead the
 standard input is not a tty, which happens every time you redirect a file
 to a program, or use it in an Unix pipeline, there are no limits to the
 length of the line that can be returned.
+
+In tty mode large pastes are accepted up to the same `LINENOISE_MAX_LINE`
+limit. When the terminal supports bracketed paste, multi line pastes and
+very long single line pastes are shown in a folded form on screen. However
+the string returned by `linenoise()` is still the real text pasted by the
+user.
 
 The returned line should be freed with the `free()` standard system call.
 However sometimes it could happen that your program uses a different dynamic
@@ -129,6 +136,12 @@ function.
 Linenoise has direct support for persisting the history into an history
 file. The functions `linenoiseHistorySave` and `linenoiseHistoryLoad` do
 just that. Both functions return -1 on error and 0 on success.
+
+The history file is newline separated. If an history entry contains embedded
+newlines, they are stored as CR characters and converted back when the history
+is loaded again. When multi line or very long entries are recalled with the
+up arrow, linenoise folds them again on screen, while keeping the real entry
+available for editing.
 
 ## Mask mode
 
@@ -264,6 +277,11 @@ context like this:
 
 The two -1 and -1 arguments are the stdin/out descriptors. If they are
 set to -1, linenoise will just use the default stdin/out file descriptors.
+The asynchronous API uses the buffer provided by the caller, so pasted input
+is limited by the size passed to `linenoiseEditStart()`. Bracketed paste
+folding works in this mode too, but if you want to accept large pastes you
+need to provide a large enough buffer.
+
 Now as soon as we have data from stdin (and we know it via select(2) or
 some other way), we can ask linenoise to read the next character with:
 
@@ -362,6 +380,7 @@ The test suite verifies:
 * Multiline mode editing and navigation
 * History navigation in multiline mode
 * Word and line deletion (Ctrl-W, Ctrl-U)
+* Bracketed paste folding and large paste handling
 
 ### How the test harness works
 
