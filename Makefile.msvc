@@ -289,12 +289,10 @@ ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDAT
 # whose "Note: including file:" prefix is localized (breaks on non-English MSVC)
 # and needs generated dep fragments + a filter script.
 #
-# Instead we track headers coarsely: every object depends on the full header
-# set, so touching any header rebuilds all objects. This is always correct
-# (never stale), pure-nmake, and locale-independent; the cost is over-building
-# on a header edit (irrelevant for CI clean builds). Keep this list in sync with
-# the headers under include/ and src/ — same maintenance contract as the source
-# lists above. (Regenerate: `find include src -name '*.h' | grep -v lua_bind`.)
+# Keep this list as documentation for the headers under include/ and src/.
+# It is not wired into the object rules because jom 1.1.5 treats explicit
+# dependency-only object rules as complete rules and then skips `.c -> .obj`
+# inference. Regenerate: `find include src -name '*.h' | grep -v lua_bind`.
 HEADERS = \
 	include\alea.h \
 	include\alea_geo_validator.h \
@@ -366,9 +364,12 @@ HEADERS = \
 	src\util\poly_solve.h \
 	src\util\str_builder.h
 
-# Coarse dependency: all objects rebuild when any header changes. No commands
-# here, so the per-directory batch inference rules below still do the compiling.
-$(ALL_OBJS): $(HEADERS)
+# Coarse object->header dependencies are intentionally not expressed here.
+# nmake can combine explicit dependency-only object rules with inference rules,
+# but jom 1.1.5 does not: it treats `target.obj: headers...` as the complete
+# rule and skips the `.c -> .obj` inference rule, then the archive step fails
+# with missing objects. Keep the clean-build jom path working; use `clean` after
+# header edits on this build driver.
 
 # ============================================================================
 # Phony-ish targets
