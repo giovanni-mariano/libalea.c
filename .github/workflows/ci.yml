@@ -151,7 +151,12 @@ jobs:
           AR="$WINDOWS_GNU_AR"
           test-unit test-integration test-lua
 
-  build-windows-conda-clang:
+  build-windows-conda-clang-jom:
+    # Genuinely Visual-Studio-free build: conda clang-cl + jom (Qt's nmake clone)
+    # invoked directly, NOT via build-msvc.ps1 (that wrapper requires VS for
+    # nmake/vcvars). This mirrors what a contributor with conda-only gets, and
+    # guards against nmake-only constructs the wrapper job would never hit
+    # (e.g. batch-mode `.obj::` inference rules, which jom does not support).
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -160,25 +165,28 @@ jobs:
 
       - uses: conda-incubator/setup-miniconda@v4
         with:
-          activate-environment: libalea-conda-clang
+          activate-environment: libalea-conda-clang-jom
           auto-activate: false
           channel-priority: strict
           channels: conda-forge
 
-      - name: Install conda clang-cl toolchain
+      - name: Install conda clang-cl toolchain + jom
         shell: pwsh
         run: |
-          conda install -y clang_win-64
+          conda install -y clang_win-64 jom
           where.exe clang-cl
           where.exe llvm-lib
+          where.exe jom
 
-      - name: Build static libraries (conda clang-cl)
+      - name: Build static libraries (conda clang-cl + jom, no VS)
         shell: pwsh
-        run: ./build-msvc.ps1 CONDA_CLANG=1 full
+        # /J 1 keeps the build serial so the `dirs` target creates the output
+        # directories before the inference rules write .obj into them.
+        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 full
 
-      - name: Run tests (conda clang-cl)
+      - name: Run tests (conda clang-cl + jom, no VS)
         shell: pwsh
-        run: ./build-msvc.ps1 CONDA_CLANG=1 test
+        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 test
 
   build-windows-msvc:
     # Native MSVC (cl.exe) build via the self-contained wrapper, which locates VS
