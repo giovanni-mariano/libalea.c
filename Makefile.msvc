@@ -385,82 +385,221 @@ cli: all $(ALEA_CLI)
 # ----------------------------------------------------------------------------
 # Library link (static) via LIB.EXE
 # ----------------------------------------------------------------------------
-$(LIB_CORE): $(CORE_LIB_OBJS)
+$(LIB_CORE): dirs $(CORE_LIB_OBJS)
 	$(AR) /nologo /OUT:$@ $(CORE_LIB_OBJS)
 
-$(LIB_MCNP): $(MCNP_OBJS)
+$(LIB_MCNP): dirs $(MCNP_OBJS)
 	$(AR) /nologo /OUT:$@ $(MCNP_OBJS)
 
-$(LIB_OPENMC): $(OPENMC_OBJS)
+$(LIB_OPENMC): dirs $(OPENMC_OBJS)
 	$(AR) /nologo /OUT:$@ $(OPENMC_OBJS)
 
-$(LIB_SERPENT): $(SERPENT_OBJS)
+$(LIB_SERPENT): dirs $(SERPENT_OBJS)
 	$(AR) /nologo /OUT:$@ $(SERPENT_OBJS)
 
-$(LIB_NUCDATA): $(NUCDATA_OBJS)
+$(LIB_NUCDATA): dirs $(NUCDATA_OBJS)
 	$(AR) /nologo /OUT:$@ $(NUCDATA_OBJS)
 
-$(LIB_FULL): $(ALL_OBJS)
+$(LIB_FULL): dirs $(ALL_OBJS)
 	$(AR) /nologo /OUT:$@ $(ALL_OBJS)
 
 # ============================================================================
-# Inference rules (one per source directory).
-# Standard single-colon inference rules: compile each out-of-date source in its
-# own $(CC) call. This is portable across both nmake and jom (Qt's nmake clone,
-# the conda-only / no-Visual-Studio build driver). NOTE: do NOT use the nmake
-# batch-mode form `.obj::` here -- jom does not implement batch inference rules,
-# so it silently skips compilation and then fails at lib time with missing .obj.
+# Explicit object rules.
+# jom 1.1.5 is unreliable with nmake-style directory inference rules in this
+# makefile, so spell out the source for each library object. Library targets
+# depend on `dirs`, which creates the output directories before compilation.
 # ============================================================================
-{$(SRC)\core\}.c{$(BUILD)\core\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $<
+$(BUILD)\core\alea_system.obj: $(SRC)\core\alea_system.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\util\}.c{$(BUILD)\util\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $<
+$(BUILD)\core\alea_export.obj: $(SRC)\core\alea_export.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\primitives\}.c{$(BUILD)\primitives\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $<
+$(BUILD)\core\alea_tolerance.obj: $(SRC)\core\alea_tolerance.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\raycast\}.c{$(BUILD)\raycast\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $<
+$(BUILD)\core\alea_primitive_dedup.obj: $(SRC)\core\alea_primitive_dedup.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\slice\}.c{$(BUILD)\slice\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $<
+$(BUILD)\core\alea_materials.obj: $(SRC)\core\alea_materials.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\render\}.c{$(BUILD)\render\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\render\ $<
+$(BUILD)\core\alea_elements_data.obj: $(SRC)\core\alea_elements_data.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\mesh\}.c{$(BUILD)\mesh\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mesh\ $<
+$(BUILD)\core\alea_error.obj: $(SRC)\core\alea_error.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\geo_validator\}.c{$(BUILD)\geo_validator\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $<
+$(BUILD)\core\alea_public_api.obj: $(SRC)\core\alea_public_api.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\mcnp\}.c{$(BUILD)\mcnp\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\ $<
+$(BUILD)\core\alea_eval.obj: $(SRC)\core\alea_eval.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\mcnp\parser\}.c{$(BUILD)\mcnp\parser\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $<
+$(BUILD)\core\alea_ops.obj: $(SRC)\core\alea_ops.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\mcnp\conversion\}.c{$(BUILD)\mcnp\conversion\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\conversion\ $<
+$(BUILD)\core\alea_simplify.obj: $(SRC)\core\alea_simplify.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\mcnp\exporter\}.c{$(BUILD)\mcnp\exporter\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\exporter\ $<
+$(BUILD)\core\alea_universe.obj: $(SRC)\core\alea_universe.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\openmc\}.c{$(BUILD)\openmc\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $<
+$(BUILD)\core\alea_cell_complement.obj: $(SRC)\core\alea_cell_complement.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\serpent\}.c{$(BUILD)\serpent\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\serpent\ $<
+$(BUILD)\core\alea_void.obj: $(SRC)\core\alea_void.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\nucdata\}.c{$(BUILD)\nucdata\}.obj:
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $<
+$(BUILD)\core\alea_macrobody.obj: $(SRC)\core\alea_macrobody.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(LUA)\}.c{$(BUILD)\lua\}.obj:
-	$(CC) $(LUA_CFLAGS) /I $(LUA) /c /Fo$(BUILD)\lua\ $<
+$(BUILD)\core\alea_spatial_hier.obj: $(SRC)\core\alea_spatial_hier.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $**
 
-{$(SRC)\lua_bind\}.c{$(BUILD)\lua_bind\}.obj:
-	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $<
+$(BUILD)\util\arena.obj: $(SRC)\util\arena.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $**
+
+$(BUILD)\util\str_builder.obj: $(SRC)\util\str_builder.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $**
+
+$(BUILD)\util\alea_log.obj: $(SRC)\util\alea_log.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $**
+
+$(BUILD)\util\poly_solve.obj: $(SRC)\util\poly_solve.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $**
+
+$(BUILD)\util\compat.obj: $(SRC)\util\compat.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $**
+
+$(BUILD)\util\alea_svg.obj: $(SRC)\util\alea_svg.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $**
+
+$(BUILD)\primitives\primitive_eval.obj: $(SRC)\primitives\primitive_eval.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $**
+
+$(BUILD)\primitives\primitive_create.obj: $(SRC)\primitives\primitive_create.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $**
+
+$(BUILD)\primitives\primitive_desc.obj: $(SRC)\primitives\primitive_desc.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $**
+
+$(BUILD)\primitives\bbox.obj: $(SRC)\primitives\bbox.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $**
+
+$(BUILD)\raycast\raycast.obj: $(SRC)\raycast\raycast.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $**
+
+$(BUILD)\raycast\ray_intersect.obj: $(SRC)\raycast\ray_intersect.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $**
+
+$(BUILD)\raycast\bvh.obj: $(SRC)\raycast\bvh.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $**
+
+$(BUILD)\raycast\raycast_api.obj: $(SRC)\raycast\raycast_api.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $**
+
+$(BUILD)\slice\curve_intersect.obj: $(SRC)\slice\curve_intersect.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $**
+
+$(BUILD)\slice\slice_api.obj: $(SRC)\slice\slice_api.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $**
+
+$(BUILD)\render\render3d.obj: $(SRC)\render\render3d.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\render\ $**
+
+$(BUILD)\mesh\mesh_export.obj: $(SRC)\mesh\mesh_export.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mesh\ $**
+
+$(BUILD)\geo_validator\geo_validator.obj: $(SRC)\geo_validator\geo_validator.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $**
+
+$(BUILD)\mcnp\parser\mcnp_parser.obj: $(SRC)\mcnp\parser\mcnp_parser.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $**
+
+$(BUILD)\mcnp\parser\mcnp_lexer.obj: $(SRC)\mcnp\parser\mcnp_lexer.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $**
+
+$(BUILD)\mcnp\parser\geom_parser.obj: $(SRC)\mcnp\parser\geom_parser.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $**
+
+$(BUILD)\mcnp\parser\geom_lexer.obj: $(SRC)\mcnp\parser\geom_lexer.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $**
+
+$(BUILD)\mcnp\conversion\mcnp_conversion.obj: $(SRC)\mcnp\conversion\mcnp_conversion.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\conversion\ $**
+
+$(BUILD)\mcnp\conversion\surface_conv.obj: $(SRC)\mcnp\conversion\surface_conv.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\conversion\ $**
+
+$(BUILD)\mcnp\conversion\cell_conv.obj: $(SRC)\mcnp\conversion\cell_conv.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\conversion\ $**
+
+$(BUILD)\mcnp\exporter\mcnp_str.obj: $(SRC)\mcnp\exporter\mcnp_str.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\exporter\ $**
+
+$(BUILD)\mcnp\exporter\mcnp_export.obj: $(SRC)\mcnp\exporter\mcnp_export.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\exporter\ $**
+
+$(BUILD)\mcnp\mcnp_model.obj: $(SRC)\mcnp\mcnp_model.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\ $**
+
+$(BUILD)\openmc\openmc_xml.obj: $(SRC)\openmc\openmc_xml.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $**
+
+$(BUILD)\openmc\openmc_export.obj: $(SRC)\openmc\openmc_export.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $**
+
+$(BUILD)\openmc\openmc_parse.obj: $(SRC)\openmc\openmc_parse.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $**
+
+$(BUILD)\openmc\openmc_region.obj: $(SRC)\openmc\openmc_region.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $**
+
+$(BUILD)\openmc\openmc_conversion.obj: $(SRC)\openmc\openmc_conversion.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $**
+
+$(BUILD)\openmc\openmc_model.obj: $(SRC)\openmc\openmc_model.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $**
+
+$(BUILD)\serpent\serpent_export.obj: $(SRC)\serpent\serpent_export.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\serpent\ $**
+
+$(BUILD)\nucdata\context.obj: $(SRC)\nucdata\context.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\ace_reader.obj: $(SRC)\nucdata\ace_reader.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\xsdir.obj: $(SRC)\nucdata\xsdir.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\xs_decode.obj: $(SRC)\nucdata\xs_decode.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\lookup.obj: $(SRC)\nucdata\lookup.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\material.obj: $(SRC)\nucdata\material.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\reaction.obj: $(SRC)\nucdata\reaction.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\angular.obj: $(SRC)\nucdata\angular.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\energy_dist.obj: $(SRC)\nucdata\energy_dist.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\doppler.obj: $(SRC)\nucdata\doppler.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\multigroup.obj: $(SRC)\nucdata\multigroup.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
+
+$(BUILD)\nucdata\material_bridge.obj: $(SRC)\nucdata\material_bridge.c
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $**
 
 $(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(MODULE_LINK)
