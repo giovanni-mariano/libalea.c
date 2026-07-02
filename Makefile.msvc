@@ -604,6 +604,147 @@ $(BUILD)\nucdata\multigroup.obj: $(SRC)\nucdata\multigroup.c dirs
 $(BUILD)\nucdata\material_bridge.obj: $(SRC)\nucdata\material_bridge.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\material_bridge.c
 
+$(BUILD)\lua\lapi.obj: $(LUA)\lapi.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lapi.c
+
+$(BUILD)\lua\lauxlib.obj: $(LUA)\lauxlib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lauxlib.c
+
+$(BUILD)\lua\lbaselib.obj: $(LUA)\lbaselib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lbaselib.c
+
+$(BUILD)\lua\lcode.obj: $(LUA)\lcode.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lcode.c
+
+$(BUILD)\lua\lcorolib.obj: $(LUA)\lcorolib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lcorolib.c
+
+$(BUILD)\lua\lctype.obj: $(LUA)\lctype.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lctype.c
+
+$(BUILD)\lua\ldblib.obj: $(LUA)\ldblib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ldblib.c
+
+$(BUILD)\lua\ldebug.obj: $(LUA)\ldebug.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ldebug.c
+
+$(BUILD)\lua\ldo.obj: $(LUA)\ldo.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ldo.c
+
+$(BUILD)\lua\ldump.obj: $(LUA)\ldump.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ldump.c
+
+$(BUILD)\lua\lfunc.obj: $(LUA)\lfunc.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lfunc.c
+
+$(BUILD)\lua\lgc.obj: $(LUA)\lgc.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lgc.c
+
+$(BUILD)\lua\linit.obj: $(LUA)\linit.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\linit.c
+
+$(BUILD)\lua\liolib.obj: $(LUA)\liolib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\liolib.c
+
+$(BUILD)\lua\llex.obj: $(LUA)\llex.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\llex.c
+
+$(BUILD)\lua\lmathlib.obj: $(LUA)\lmathlib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lmathlib.c
+
+$(BUILD)\lua\lmem.obj: $(LUA)\lmem.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lmem.c
+
+$(BUILD)\lua\loadlib.obj: $(LUA)\loadlib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\loadlib.c
+
+$(BUILD)\lua\lobject.obj: $(LUA)\lobject.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lobject.c
+
+$(BUILD)\lua\lopcodes.obj: $(LUA)\lopcodes.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lopcodes.c
+
+$(BUILD)\lua\loslib.obj: $(LUA)\loslib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\loslib.c
+
+$(BUILD)\lua\lparser.obj: $(LUA)\lparser.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lparser.c
+
+$(BUILD)\lua\lstate.obj: $(LUA)\lstate.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lstate.c
+
+$(BUILD)\lua\lstring.obj: $(LUA)\lstring.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lstring.c
+
+$(BUILD)\lua\lstrlib.obj: $(LUA)\lstrlib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lstrlib.c
+
+$(BUILD)\lua\ltable.obj: $(LUA)\ltable.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ltable.c
+
+$(BUILD)\lua\ltablib.obj: $(LUA)\ltablib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ltablib.c
+
+$(BUILD)\lua\ltm.obj: $(LUA)\ltm.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\ltm.c
+
+$(BUILD)\lua\lundump.obj: $(LUA)\lundump.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lundump.c
+
+$(BUILD)\lua\lutf8lib.obj: $(LUA)\lutf8lib.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lutf8lib.c
+
+$(BUILD)\lua\lvm.obj: $(LUA)\lvm.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lvm.c
+
+$(BUILD)\lua\lzio.obj: $(LUA)\lzio.c dirs
+	$(CC) $(LUA_CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua\ $(LUA)\lzio.c
+
+$(BUILD)\lua_bind\lua_geo_validator.obj: $(SRC)\lua_bind\lua_geo_validator.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_geo_validator.c
+
+$(BUILD)\lua_bind\lua_io.obj: $(SRC)\lua_bind\lua_io.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_io.c
+
+$(BUILD)\lua_bind\lua_materials.obj: $(SRC)\lua_bind\lua_materials.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_materials.c
+
+$(BUILD)\lua_bind\lua_mesh.obj: $(SRC)\lua_bind\lua_mesh.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_mesh.c
+
+$(BUILD)\lua_bind\lua_nucdata.obj: $(SRC)\lua_bind\lua_nucdata.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_nucdata.c
+
+$(BUILD)\lua_bind\lua_ops.obj: $(SRC)\lua_bind\lua_ops.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_ops.c
+
+$(BUILD)\lua_bind\lua_query.obj: $(SRC)\lua_bind\lua_query.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_query.c
+
+$(BUILD)\lua_bind\lua_raycast.obj: $(SRC)\lua_bind\lua_raycast.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_raycast.c
+
+$(BUILD)\lua_bind\lua_render.obj: $(SRC)\lua_bind\lua_render.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_render.c
+
+$(BUILD)\lua_bind\lua_slice.obj: $(SRC)\lua_bind\lua_slice.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_slice.c
+
+$(BUILD)\lua_bind\lua_surfaces.obj: $(SRC)\lua_bind\lua_surfaces.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_surfaces.c
+
+$(BUILD)\lua_bind\lua_svg.obj: $(SRC)\lua_bind\lua_svg.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_svg.c
+
+$(BUILD)\lua_bind\lua_system.obj: $(SRC)\lua_bind\lua_system.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_system.c
+
+$(BUILD)\lua_bind\lua_util.obj: $(SRC)\lua_bind\lua_util.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_util.c
+
+$(BUILD)\lua_bind\lua_main.obj: $(SRC)\lua_bind\lua_main.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_main.c
+
 $(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(MODULE_LINK)
 
