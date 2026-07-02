@@ -93,7 +93,7 @@ LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 # the wrapper puts that redist on PATH for test runs.
 !IFDEF USE_OPENMP
 !IFDEF CONDA_CLANG
-OMP_FLAGS = /openmp:llvm /D_OPENMP=201511
+OMP_FLAGS = -fopenmp /D_OPENMP=201511
 !ELSE
 OMP_FLAGS = /openmp:llvm
 !ENDIF
