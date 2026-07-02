@@ -65,15 +65,28 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Platform | Archive |
 |----------|---------|
 | Linux x64 | `alea-linux-x64.tar.gz` |
+| Linux x64 (conda + OpenMP) | `alea-linux-conda-openmp-x64.tar.gz` |
 | Linux ARM64 | `alea-linux-arm64.tar.gz` |
 | macOS Intel | `alea-macos-x64.tar.gz` |
 | macOS Apple Silicon | `alea-macos-arm64.tar.gz` |
 | Windows x64 (MinGW/UCRT) | `alea-windows-x64.zip` |
 | Windows x64 (MSVC) | `alea-windows-msvc-x64.zip` |
+| Windows x64 (MSVC + OpenMP) | `alea-windows-msvc-openmp-x64.zip` |
 
 The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
 `mc_convert`, `mc_plotter`, `nuc_plot`, `large_model_probe`, static libraries,
-and headers. The MSVC archive packages the `.lib` static libraries and headers.
+and headers. The MSVC archives package the `.lib` static libraries and headers.
+Applications linked against the conda OpenMP Linux archive or the OpenMP-enabled
+MSVC archive require the LLVM OpenMP runtime at run time:
+
+```powershell
+conda install -c conda-forge llvm-openmp
+```
+
+This runtime requirement does not require Visual Studio, Windows SDK headers, or
+compiler tools; those are needed only when compiling or linking applications.
+On Linux, run from an activated conda environment or make sure the conda
+environment's `lib` directory is on the runtime library search path.
 
 ### Building from Source
 
@@ -202,6 +215,45 @@ pacman -S --needed mingw-w64-ucrt-x86_64-omp
 make clean
 make USE_OPENMP=1 RELEASE=1 full cli tools
 make USE_OPENMP=1 test-unit test-integration
+```
+
+#### Windows with conda clang-cl
+
+Use this path when users can install conda packages without admin rights and the
+machine already has Windows SDK/MSVC headers and import libraries available.
+The compiler, archive tool, OpenMP runtime, and `jom` are supplied by conda, but
+`clang-cl` still targets the MSVC ABI.
+
+```powershell
+conda create -n libalea-clang -c conda-forge clang_win-64 llvm-openmp jom
+conda activate libalea-clang
+
+jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 full
+jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 test
+```
+
+If `clang-cl` reports missing headers such as `vcruntime.h` or `windows.h`, the
+Windows SDK/MSVC C++ components are not visible to the shell. Open a VS x64
+developer prompt before activating conda, or install the required SDK/toolset
+components. The `/J 1` option keeps `jom` serial because its dependency handling
+differs from `nmake` for this makefile.
+
+#### Windows with conda MinGW/UCRT
+
+For machines without Windows SDK/MSVC headers, use the conda-forge MinGW-w64
+UCRT toolchain. It provides its own compiler, headers, and runtime inside the
+conda environment.
+
+```powershell
+conda create -n libalea-ucrt `
+  -c conda-forge/label/m2w64-experimental -c conda-forge `
+  mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils make
+conda activate libalea-ucrt
+
+$cc = (Get-Command x86_64-w64-mingw32-gcc).Source
+$ar = & $cc -print-prog-name=ar
+make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_OPENMP=1 full cli tools
+make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_OPENMP=1 test-unit test-integration test-lua
 ```
 
 #### Windows with MSVC
