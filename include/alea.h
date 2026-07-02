@@ -59,6 +59,8 @@ extern "C" {
 #define ALEA_VERSION_PATCH 0
 
 const char* alea_version(void);
+int alea_openmp_enabled(void);
+int alea_openmp_max_threads(void);
 
 /* ============================================================================
  * ERROR HANDLING

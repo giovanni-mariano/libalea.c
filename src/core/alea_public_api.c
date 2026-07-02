@@ -32,6 +32,10 @@
 #include "util/str_builder.h"
 #include "util/compat.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
 #define ALEA_VERSION_STRING \
@@ -45,6 +49,22 @@
 
 const char* alea_version(void) {
     return ALEA_VERSION_STRING;
+}
+
+int alea_openmp_enabled(void) {
+#ifdef _OPENMP
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+int alea_openmp_max_threads(void) {
+#ifdef _OPENMP
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
 }
 
 /* ============================================================================
