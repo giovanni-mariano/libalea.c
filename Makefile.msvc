@@ -91,9 +91,14 @@ LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 # plain `atomic` update, named `critical`, schedule(dynamic,N)). /openmp:llvm is
 # x64-only (matches this build); exes load libomp140.x86_64.dll at runtime, so
 # the wrapper puts that redist on PATH for test runs.
+# clang-cl does NOT accept bare -fopenmp in CL mode (it is silently ignored as
+# an unknown argument and the pragmas compile as no-ops); its supported
+# spelling is /openmp, an alias for -fopenmp with clang's full OpenMP runtime
+# (not the MSVC 2.0 one), which also defines _OPENMP and auto-injects a
+# dependent-lib directive for libomp.lib (conda llvm-openmp provides it).
 !IFDEF USE_OPENMP
 !IFDEF CONDA_CLANG
-OMP_FLAGS = -fopenmp /D_OPENMP=201511
+OMP_FLAGS = /openmp
 !ELSE
 OMP_FLAGS = /openmp:llvm
 !ENDIF
