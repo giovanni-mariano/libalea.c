@@ -92,7 +92,11 @@ LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 # x64-only (matches this build); exes load libomp140.x86_64.dll at runtime, so
 # the wrapper puts that redist on PATH for test runs.
 !IFDEF USE_OPENMP
+!IFDEF CONDA_CLANG
+OMP_FLAGS = /openmp:llvm /D_OPENMP=201511
+!ELSE
 OMP_FLAGS = /openmp:llvm
+!ENDIF
 !ELSE
 OMP_FLAGS =
 !ENDIF
