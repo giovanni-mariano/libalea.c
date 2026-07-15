@@ -149,6 +149,26 @@ const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
     return &model->inline_transforms.data[index];
 }
 
+static mcnp_model_t* finalize_loaded_model(mcnp_model_t* model) {
+    if (!model) return NULL;
+
+    double t0 = alea_monotonic_seconds();
+    if (alea_validate_cell_ids(model->sys) < 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ID, "Duplicate cell IDs");
+        mcnp_model_destroy(model);
+        return NULL;
+    }
+    double t1 = alea_monotonic_seconds();
+    if (load_profile_enabled()) {
+        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
+                "validate_cell_ids", t1 - t0);
+    }
+
+    model->sys->source = ALEA_SOURCE_MCNP;
+
+    return model;
+}
+
 void mcnp_model_register_hooks(mcnp_model_t* model) {
     if (!model || !model->sys) return;
     model->sys->cell_hook_userdata = model;
@@ -214,19 +234,10 @@ mcnp_model_t* mcnp_load(const char* filename) {
     mcnp_model_t* model = mcnp_convert_to_model(filename);
     if (!model) return NULL;
 
-    double t0 = alea_monotonic_seconds();
-    if (alea_validate_cell_ids(model->sys) < 0) {
-        alea_set_error_detail(ALEA_ERR_INVALID_ID, "Duplicate cell IDs");
-        mcnp_model_destroy(model);
+    model = finalize_loaded_model(model);
+    if (!model) {
         return NULL;
     }
-    double t1 = alea_monotonic_seconds();
-    if (load_profile_enabled()) {
-        fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n",
-                "validate_cell_ids", t1 - t0);
-    }
-
-    model->sys->source = ALEA_SOURCE_MCNP;
 
     /* Build cell adjacency lazily on first use (raycasting, slicing, mesh
      * export). Eager adjacency construction is prohibitively expensive on
@@ -245,19 +256,8 @@ mcnp_model_t* mcnp_load_string(const char* input, size_t len) {
     if (!input) return NULL;
 
     size_t actual_len = len > 0 ? len : strlen(input);
-
-    /* Write to temp file and use mcnp_load */
-    char tmppath[256];
-    FILE* f = alea_tmpfile(tmppath);
-    if (!f) return NULL;
-
-    fwrite(input, 1, actual_len, f);
-    fclose(f);
-
-    mcnp_model_t* model = mcnp_load(tmppath);
-    remove(tmppath);
-
-    return model;
+    mcnp_model_t* model = mcnp_convert_buffer_to_model(input, actual_len, "<memory>");
+    return finalize_loaded_model(model);
 }
 
 int mcnp_export(const mcnp_model_t* model, const char* filename) {

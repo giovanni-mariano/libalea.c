@@ -127,7 +127,11 @@ void mcnp_context_destroy(mcnp_context_t* ctx) {
 /* MAIN PARSER LOGIC                                                          */
 /* ========================================================================== */
 
-int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
+int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
+                      mcnp_context_t** out_context) {
+    if (!input || !out_context) return 0;
+    *out_context = NULL;
+
     double total_start = alea_monotonic_seconds();
     double cell_parse_time = 0.0;
     double surface_parse_time = 0.0;
@@ -138,21 +142,14 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
     size_t parsed_material_cards = 0;
     size_t parsed_transform_cards = 0;
 
-    alea_mapped_file_t mf = {0};
-    if (!alea_file_map(filename, &mf)) {
-        ALEA_LOG_ERROR("ERROR: Could not open or map file: %s\n", filename);
-        return 0;
-    }
-
-    mcnp_context_t* ctx = mcnp_context_create(filename);
+    mcnp_context_t* ctx = mcnp_context_create(source_name);
     if (!ctx) {
-        alea_file_unmap(&mf);
         return 0;
     }
 
     parser_state_t state = STATE_TITLE_CARD;
-    const char* current = mf.data;
-    const char* end = mf.data + mf.size;
+    const char* current = input;
+    const char* end = input + len;
     int line_num = 0;
     int had_fatal_error = 0;
 
@@ -434,10 +431,8 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
         current = peek_pos;
     }
 
-    alea_file_unmap(&mf);
     if (had_fatal_error) {
         mcnp_context_destroy(ctx);
-        *out_context = NULL;
         return 0;
     }
     *out_context = ctx;
@@ -463,6 +458,21 @@ int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
                 "parser_line_overhead", total - cards);
     }
     return 1;
+}
+
+int mcnp_parse_file(const char* filename, mcnp_context_t** out_context) {
+    if (!filename || !out_context) return 0;
+    *out_context = NULL;
+
+    alea_mapped_file_t mf = {0};
+    if (!alea_file_map(filename, &mf)) {
+        ALEA_LOG_ERROR("ERROR: Could not open or map file: %s\n", filename);
+        return 0;
+    }
+
+    int ok = mcnp_parse_buffer(mf.data, mf.size, filename, out_context);
+    alea_file_unmap(&mf);
+    return ok;
 }
 
 /* ========================================================================== */

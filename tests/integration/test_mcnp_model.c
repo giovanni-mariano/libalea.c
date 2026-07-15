@@ -54,6 +54,29 @@ TEST(model_load_basic) {
     mcnp_model_destroy(model);
 }
 
+TEST(model_load_string_uses_explicit_length) {
+    const char deck[] =
+        "Explicit length test\n"
+        "1 1 -7.8 -1 IMP:N=1.0\n"
+        "2 0 1 IMP:N=0\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1 26056.80c 1.0\n";
+    const char garbage[] = "this is not a valid MCNP deck";
+    char input[sizeof(deck) + sizeof(garbage)];
+
+    memcpy(input, deck, sizeof(deck) - 1);
+    memcpy(input + sizeof(deck) - 1, garbage, sizeof(garbage));
+
+    mcnp_model_t* model = mcnp_load_string(input, sizeof(deck) - 1);
+    ASSERT_NOT_NULL(model);
+    ASSERT_NOT_NULL(model->sys);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+
+    mcnp_model_destroy(model);
+}
+
 /* ========================================================================= */
 /* Importance parameters                                                     */
 /* ========================================================================= */

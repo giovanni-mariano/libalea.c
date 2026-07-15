@@ -351,24 +351,16 @@ static void reserve_from_mcnp(alea_system_t* sys, const mcnp_context_t* mcnp) {
 // COMPLETE FILE CONVERSION
 // ============================================================================
 
-mcnp_model_t* mcnp_convert_to_model(const char* filename) {
-    if (!filename) return NULL;
+static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
+                                           const char* source_name) {
+    if (!mcnp) return NULL;
 
     const int profile = load_profile_enabled();
     double t_convert0 = alea_monotonic_seconds();
     double t0, t1;
 
-    // Parse MCNP file
-    mcnp_context_t* mcnp = NULL;
-    t0 = alea_monotonic_seconds();
-    if (!mcnp_parse_file(filename, &mcnp) || !mcnp) {
-        ALEA_LOG_ERROR("Failed to parse MCNP file: %s\n", filename);
-        return NULL;
-    }
-    t1 = alea_monotonic_seconds();
-    load_profile_stage("parse_file", t0, t1);
-
-    ALEA_LOG_DEBUG("Parsed MCNP file: %zu surfaces, %zu cells, %zu materials\n",
+    ALEA_LOG_DEBUG("Parsed MCNP input %s: %zu surfaces, %zu cells, %zu materials\n",
+           source_name ? source_name : "<unknown>",
            mcnp->surface_count, mcnp->cell_count, mcnp->material_count);
 
     // Create CSG system with automatic sizing
@@ -604,4 +596,36 @@ interrupted:
     mcnp_model_destroy(model);
     mcnp_context_destroy(mcnp);
     return NULL;
+}
+
+mcnp_model_t* mcnp_convert_to_model(const char* filename) {
+    if (!filename) return NULL;
+
+    mcnp_context_t* mcnp = NULL;
+    double t0 = alea_monotonic_seconds();
+    if (!mcnp_parse_file(filename, &mcnp) || !mcnp) {
+        ALEA_LOG_ERROR("Failed to parse MCNP file: %s\n", filename);
+        return NULL;
+    }
+    double t1 = alea_monotonic_seconds();
+    load_profile_stage("parse_file", t0, t1);
+
+    return mcnp_context_to_model(mcnp, filename);
+}
+
+mcnp_model_t* mcnp_convert_buffer_to_model(const char* input, size_t len,
+                                           const char* source_name) {
+    if (!input) return NULL;
+
+    mcnp_context_t* mcnp = NULL;
+    const char* logical_name = source_name ? source_name : "<memory>";
+    double t0 = alea_monotonic_seconds();
+    if (!mcnp_parse_buffer(input, len, logical_name, &mcnp) || !mcnp) {
+        ALEA_LOG_ERROR("Failed to parse MCNP input: %s\n", logical_name);
+        return NULL;
+    }
+    double t1 = alea_monotonic_seconds();
+    load_profile_stage("parse_buffer", t0, t1);
+
+    return mcnp_context_to_model(mcnp, logical_name);
 }

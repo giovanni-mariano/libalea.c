@@ -23,5 +23,11 @@
  */
 mcnp_model_t* mcnp_convert_to_model(const char* filename);
 
+/**
+ * @brief Internal: Full MCNP buffer conversion returning model
+ */
+mcnp_model_t* mcnp_convert_buffer_to_model(const char* input, size_t len,
+                                           const char* source_name);
+
 
 #endif /* MCNP_MODEL_H */
