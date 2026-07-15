@@ -147,19 +147,21 @@ int ray_intersect_sphere(const alea_ray_t* ray,
 
 /**
  * Unified cylinder intersection: axis selects which 2D plane to project onto.
- * axis=0 (X-axis cylinder): project onto YZ, axis=1 (Y): XZ, axis=2 (Z): XY.
+ * The center is a full 3D point so coordinate and center are extracted with
+ * the same index — the perpendicular-axis order can never get out of sync
+ * with the call site (a swapped (x,z) pair for Y-cylinders once misplaced
+ * every C/Y intersection whose center had unequal components).
  */
 static int ray_intersect_cylinder(const alea_ray_t* ray,
-                                  int axis, double center0, double center1,
+                                  int axis, const double center[3],
                                   double radius, double* restrict t_out) {
     double o[3] = { ray->ox, ray->oy, ray->oz };
     double d[3] = { ray->dx, ray->dy, ray->dz };
-    /* Perpendicular axes: for axis X→(Y,Z), Y→(X,Z), Z→(X,Y) */
     int a0 = (axis + 1) % 3;
     int a1 = (axis + 2) % 3;
 
-    double p0 = o[a0] - center0;
-    double p1 = o[a1] - center1;
+    double p0 = o[a0] - center[a0];
+    double p1 = o[a1] - center[a1];
 
     double a = d[a0] * d[a0] + d[a1] * d[a1];
     double b = 2.0 * (p0 * d[a0] + p1 * d[a1]);
@@ -171,21 +173,22 @@ static int ray_intersect_cylinder(const alea_ray_t* ray,
 int ray_intersect_cylinder_x(const alea_ray_t* ray,
                              const alea_cylinder_x_data_t* cyl,
                              double* restrict t_out) {
-    return ray_intersect_cylinder(ray, 0, cyl->center_y, cyl->center_z, cyl->radius, t_out);
+    double center[3] = { 0.0, cyl->center_y, cyl->center_z };
+    return ray_intersect_cylinder(ray, 0, center, cyl->radius, t_out);
 }
 
 int ray_intersect_cylinder_y(const alea_ray_t* ray,
                              const alea_cylinder_y_data_t* cyl,
                              double* restrict t_out) {
-    /* axis=1 projects onto (z, x) — see a0/a1 mapping — so pass centers in
-     * that order. Passing (x, z) here swapped the cylinder center. */
-    return ray_intersect_cylinder(ray, 1, cyl->center_z, cyl->center_x, cyl->radius, t_out);
+    double center[3] = { cyl->center_x, 0.0, cyl->center_z };
+    return ray_intersect_cylinder(ray, 1, center, cyl->radius, t_out);
 }
 
 int ray_intersect_cylinder_z(const alea_ray_t* ray,
                              const alea_cylinder_z_data_t* cyl,
                              double* restrict t_out) {
-    return ray_intersect_cylinder(ray, 2, cyl->center_x, cyl->center_y, cyl->radius, t_out);
+    double center[3] = { cyl->center_x, cyl->center_y, 0.0 };
+    return ray_intersect_cylinder(ray, 2, center, cyl->radius, t_out);
 }
 
 /* ============================================================================
