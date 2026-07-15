@@ -145,24 +145,40 @@ static int l_find_cells_grid(lua_State* L) {
     int nu = (int)luaL_checkinteger(L, 3);
     int nv = (int)luaL_checkinteger(L, 4);
     int depth = (int)luaL_optinteger(L, 5, -1);
+    int use_ray_intervals = getenv("ALEA_PLOT_RAY_INTERVALS") != NULL;
 
     size_t total = (size_t)nu * (size_t)nv;
     int* cell_ids = (int*)calloc(total, sizeof(int));
     int* mat_ids  = (int*)calloc(total, sizeof(int));
     uint8_t* errors = (uint8_t*)calloc(total, sizeof(uint8_t));
-    if (!cell_ids || !mat_ids || !errors) {
+    int* secondary_ids = use_ray_intervals
+        ? (int*)calloc(total, sizeof(int)) : NULL;
+    uint8_t* coverage = use_ray_intervals
+        ? (uint8_t*)calloc(total, sizeof(uint8_t)) : NULL;
+    if (!cell_ids || !mat_ids || !errors ||
+        (use_ray_intervals && (!secondary_ids || !coverage))) {
         free(cell_ids); free(mat_ids); free(errors);
+        free(secondary_ids); free(coverage);
         return luaL_error(L, "find_cells_grid: out of memory");
     }
 
-    int rc = alea_find_cells_grid(sys, &view, nu, nv, depth,
-                                   cell_ids, mat_ids, errors);
+    int rc;
+    if (use_ray_intervals) {
+        rc = alea_find_cells_grid_coverage(
+            sys, &view, nu, nv, depth,
+            ALEA_GRID_COVERAGE_RAY_INTERVALS | ALEA_GRID_SECONDARY_CELL_IDS,
+            cell_ids, mat_ids, secondary_ids, coverage, errors);
+    } else {
+        rc = alea_find_cells_grid(sys, &view, nu, nv, depth,
+                                  cell_ids, mat_ids, errors);
+    }
     if (rc != 0) {
         free(cell_ids); free(mat_ids); free(errors);
+        free(secondary_ids); free(coverage);
         return luaL_error(L, "find_cells_grid failed: %s", alea_error());
     }
 
-    lua_createtable(L, 0, 3);
+    lua_createtable(L, 0, use_ray_intervals ? 5 : 3);
 
     /* cell_ids flat table */
     lua_createtable(L, (int)total, 0);
@@ -188,9 +204,27 @@ static int l_find_cells_grid(lua_State* L) {
     }
     lua_setfield(L, -2, "errors");
 
+    if (use_ray_intervals) {
+        lua_createtable(L, (int)total, 0);
+        for (size_t i = 0; i < total; i++) {
+            lua_pushinteger(L, coverage[i]);
+            lua_rawseti(L, -2, (lua_Integer)(i + 1));
+        }
+        lua_setfield(L, -2, "coverage");
+
+        lua_createtable(L, (int)total, 0);
+        for (size_t i = 0; i < total; i++) {
+            lua_pushinteger(L, secondary_ids[i]);
+            lua_rawseti(L, -2, (lua_Integer)(i + 1));
+        }
+        lua_setfield(L, -2, "secondary_cell_ids");
+    }
+
     free(cell_ids);
     free(mat_ids);
     free(errors);
+    free(secondary_ids);
+    free(coverage);
     return 1;
 }
 

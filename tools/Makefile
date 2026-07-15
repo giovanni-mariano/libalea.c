@@ -77,7 +77,7 @@ else
   PROBE_LIBS =
 endif
 
-TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
+TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/mc_plotter_experimental$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
 
 all: $(TOOLS)
 
@@ -85,6 +85,9 @@ $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 $(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c
+	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
+
+$(BIN_DIR)/mc_plotter_experimental$(EXEEXT): mc_plotter_experimental.c
 	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 $(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c

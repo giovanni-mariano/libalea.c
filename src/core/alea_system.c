@@ -151,6 +151,10 @@ static void alea_free_cell_dynamic_fields(alea_system_t* sys) {
     }
     free(sys->neighbor_pool);
     sys->neighbor_pool = NULL;
+    free(sys->surf_cell_pool);    sys->surf_cell_pool = NULL;
+    free(sys->surf_cell_offset);  sys->surf_cell_offset = NULL;
+    free(sys->surf_cell_count);   sys->surf_cell_count = NULL;
+    sys->surf_cell_num_surfaces = 0;
     sys->cell_adjacency_built = false;
 }
 
@@ -250,6 +254,10 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
     if (flags & ALEA_CACHE_ADJACENCY) {
         free(sys->neighbor_pool);
         sys->neighbor_pool = NULL;
+        free(sys->surf_cell_pool);    sys->surf_cell_pool = NULL;
+        free(sys->surf_cell_offset);  sys->surf_cell_offset = NULL;
+        free(sys->surf_cell_count);   sys->surf_cell_count = NULL;
+        sys->surf_cell_num_surfaces = 0;
         for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
             sys->cells.data[i].neighbors = NULL;
             sys->cells.data[i].neighbor_count = 0;
@@ -2267,11 +2275,11 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
 
 /**
  * @brief Entry in the surface-to-cells map
+ *
+ * Aliased to the public struct so the same pool can be persisted on the system
+ * and exposed via alea_surface_cells().
  */
-typedef struct {
-    uint32_t cell_index;
-    int8_t sense;  /* +1 or -1 */
-} surface_cell_ref_t;
+typedef struct alea_surface_cell_ref surface_cell_ref_t;
 
 typedef struct {
     surface_cell_ref_t* refs;
@@ -2356,6 +2364,10 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         free(sys->neighbor_pool);
         sys->neighbor_pool = NULL;
     }
+    free(sys->surf_cell_pool);    sys->surf_cell_pool = NULL;
+    free(sys->surf_cell_offset);  sys->surf_cell_offset = NULL;
+    free(sys->surf_cell_count);   sys->surf_cell_count = NULL;
+    sys->surf_cell_num_surfaces = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         sys->cells.data[i].neighbors = NULL;
         sys->cells.data[i].neighbor_count = 0;
@@ -2640,10 +2652,12 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     free(cell_surf_offsets);
     free(cell_surf_counts);
 
-    /* Free surf_map */
-    free(all_refs);     all_refs = NULL;
-    free(surf_offsets);  surf_offsets = NULL;
-    free(surf_counts);   surf_counts = NULL;
+    /* Persist the surface->cell map (transfer ownership to the system) for
+     * unpruned neighbor-walking; null the locals so cleanup does not free it. */
+    sys->surf_cell_pool = all_refs;          all_refs = NULL;
+    sys->surf_cell_offset = surf_offsets;    surf_offsets = NULL;
+    sys->surf_cell_count = surf_counts;      surf_counts = NULL;
+    sys->surf_cell_num_surfaces = num_surfaces;
 
     sys->cell_adjacency_built = true;
     atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_ADJACENCY);
@@ -2672,4 +2686,20 @@ int alea_find_neighbor_cell(const alea_system_t* sys,
     }
 
     return -1;  /* No neighbor found (exterior/void) */
+}
+
+int alea_surface_cells(const alea_system_t* sys, int mc_surface_id,
+                       const struct alea_surface_cell_ref** out_refs,
+                       size_t* out_count) {
+    if (!sys || !out_refs || !out_count) return -1;
+    *out_refs = NULL;
+    *out_count = 0;
+    if (!sys->surf_cell_pool || mc_surface_id < 0) return 0;
+    if ((size_t)mc_surface_id >= sys->mc_id_to_surface_size) return 0;
+    uint32_t surf_idx = sys->mc_id_to_surface[mc_surface_id];
+    if (surf_idx == UINT32_MAX ||
+        (size_t)surf_idx >= sys->surf_cell_num_surfaces) return 0;
+    *out_refs = &sys->surf_cell_pool[sys->surf_cell_offset[surf_idx]];
+    *out_count = sys->surf_cell_count[surf_idx];
+    return 0;
 }

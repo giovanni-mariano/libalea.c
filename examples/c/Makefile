@@ -6,7 +6,7 @@
 
 CC = gcc
 CFLAGS = -Wall -Wextra -g -std=c11
-INCLUDES = -I../../include
+INCLUDES = -I../../include -I../../src
 
 # OpenMP support (pass USE_OPENMP=1 to enable)
 ifdef USE_OPENMP
@@ -22,7 +22,7 @@ LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-arch
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 LIBS_NUCDATA = ../../bin/libalea_nucdata.a $(LIBS_CORE)
 
-EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo
+EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo slice_error_bench
 
 all: $(EXAMPLES)
 
@@ -40,6 +40,9 @@ render3d: render3d.c
 
 void_demo: void_demo.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
+
+slice_error_bench: slice_error_bench.c
+	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
 clean:
 	rm -f $(EXAMPLES) *.inp *.ppm *.bmp *.png

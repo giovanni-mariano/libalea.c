@@ -540,12 +540,15 @@ static void render_pixel_solid(alea_system_t* sys,
     } else {
         /* Non-lattice: hierarchical segment+hit trace. Steps cell-to-cell via
          * the spatial index instead of intersecting every surface along the
-         * ray (the old global surface-BVH path). Buffer-reuse nocache variant;
-         * caches are pre-built and the result was cleared above. */
+         * ray (the old global surface-BVH path). First-hit variant stops once a
+         * material segment reaches past the clip entry (t_min) — solid shading
+         * only needs the first visible material, so the rest of the ray (the
+         * bulk of the cost on deep models) is skipped. */
         alea_ray_t ray;
         alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
 
-        if (alea_raycast_hier_with_hits_nocache(sys, &ray, t_max, result) != 0)
+        if (alea_raycast_hier_firsthit_nocache(sys, &ray, t_min, t_max,
+                                               result) != 0)
             return;
     }
     /* Find first non-void segment in visible region (past clips) */

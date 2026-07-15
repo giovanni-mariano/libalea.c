@@ -133,6 +133,7 @@ typedef enum {
 #define ALEA_GRID_COVERAGE_EXACT           2u
 #define ALEA_GRID_SECONDARY_CELL_IDS       4u
 #define ALEA_GRID_PATH_IDS                 8u
+#define ALEA_GRID_COVERAGE_RAY_INTERVALS 16u
 
 /** Interned concrete universe path used by path-conditioned slice refinement */
 typedef struct {
@@ -195,6 +196,25 @@ typedef struct {
     size_t candidate_max;            /**< Max deduplicated spatial candidates */
     size_t contains_tests;           /**< Exact containment tests in spatial path */
 } alea_point_coverage_stats_t;
+
+/** Diagnostic counters from experimental ray-interval plot coverage */
+typedef struct {
+    size_t rows;                     /**< Slice rows visited */
+    size_t rays;                     /**< Row rays attempted */
+    size_t ray_errors;               /**< Row raycast failures */
+    size_t hits_total;               /**< Total raycast hits across rows */
+    size_t hits_max;                 /**< Maximum raycast hits on one row */
+    size_t intervals;                /**< Non-empty row intervals classified */
+    size_t interval_exact_queries;   /**< Exact midpoint coverage queries */
+    size_t pixels_filled;            /**< Pixels written from intervals */
+    size_t fallback_invocations;     /**< Calls that requested exact fallback */
+    size_t verifier_samples;         /**< Pixels checked by sampled verifier */
+    size_t verifier_mismatches;      /**< Verifier disagreements before filtering */
+    size_t boundary_checked;         /**< Boundary filter provisional overlaps checked */
+    size_t boundary_suppressed;      /**< Boundary-only overlaps downgraded */
+    size_t boundary_retained;        /**< Overlaps retained by boundary filter */
+    size_t boundary_inconclusive;    /**< Conservative boundary-filter keeps */
+} alea_ray_interval_stats_t;
 
 /** Label position information */
 typedef struct {
@@ -269,6 +289,29 @@ int alea_find_cells_grid(alea_system_t* sys,
                               int* out_cell_ids,
                               int* out_material_ids,
                               uint8_t* out_errors);
+
+/**
+ * @brief Fill a slice grid by scanline raytracing (drop-in for
+ *        alea_find_cells_grid).
+ *
+ * Traces one ray per image row within the slice plane and maps the resulting
+ * cell segments to column spans, costing O(cell-crossings/row) instead of one
+ * point query per pixel. Much faster at high resolution on large models.
+ *
+ * Fills out_cell_ids / out_material_ids identically to alea_find_cells_grid()
+ * (idx = j*nu + i, -1 / 0 for void). out_errors is set to all-clean: this fill
+ * does not detect overlaps; use the coverage/curve passes for that.
+ *
+ * Only the innermost level is supported; universe_depth != -1 transparently
+ * falls back to alea_find_cells_grid(). Requires the raycast module.
+ */
+int alea_find_cells_grid_raycast(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 int nu, int nv,
+                                 int universe_depth,
+                                 int* out_cell_ids,
+                                 int* out_material_ids,
+                                 uint8_t* out_errors);
 
 /**
  * @brief Find cells and coverage classes on a slice grid
@@ -493,6 +536,12 @@ void alea_point_coverage_stats_reset(void);
 
 /** Return diagnostics from exact point-coverage refinement */
 alea_point_coverage_stats_t alea_point_coverage_stats_get(void);
+
+/** Reset diagnostics for experimental ray-interval plot coverage */
+void alea_ray_interval_stats_reset(void);
+
+/** Return diagnostics from experimental ray-interval plot coverage */
+alea_ray_interval_stats_t alea_ray_interval_stats_get(void);
 
 /* ============================================================================
  * LABEL POSITION COMPUTATION
