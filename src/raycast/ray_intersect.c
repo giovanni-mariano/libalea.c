@@ -177,7 +177,9 @@ int ray_intersect_cylinder_x(const alea_ray_t* ray,
 int ray_intersect_cylinder_y(const alea_ray_t* ray,
                              const alea_cylinder_y_data_t* cyl,
                              double* restrict t_out) {
-    return ray_intersect_cylinder(ray, 1, cyl->center_x, cyl->center_z, cyl->radius, t_out);
+    /* axis=1 projects onto (z, x) — see a0/a1 mapping — so pass centers in
+     * that order. Passing (x, z) here swapped the cylinder center. */
+    return ray_intersect_cylinder(ray, 1, cyl->center_z, cyl->center_x, cyl->radius, t_out);
 }
 
 int ray_intersect_cylinder_z(const alea_ray_t* ray,
