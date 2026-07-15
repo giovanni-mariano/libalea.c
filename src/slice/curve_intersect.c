@@ -1728,6 +1728,18 @@ int alea_curve_scanline_intersect(const alea_curve_2d_t* curve,
 
                 double Ux = tor->Ux, Uy = tor->Uy, Uz = tor->Uz;
 
+                /* Shift the line origin Pv to its closest approach to the
+                 * torus center so that Pv·U = 0. This zeroes the cubic
+                 * coefficient of the quartic below, keeping Ferrari's
+                 * depressed-quartic reduction well-conditioned when the
+                 * scanline origin lies far from the torus (same fix as
+                 * ray_intersect_torus). Roots are mapped back by u_shift. */
+                double u_shift = -(Pvx*Ux + Pvy*Uy + Pvz*Uz) /
+                                 (Ux*Ux + Uy*Uy + Uz*Uz);
+                Pvx += u_shift * Ux;
+                Pvy += u_shift * Uy;
+                Pvz += u_shift * Uz;
+
                 /* Let's define:
                  * ρ² = x² + y² = (Pvx + u*Ux)² + (Pvy + u*Uy)²
                  * σ² = x² + y² + z² = ρ² + (Pvz + u*Uz)²
@@ -1774,9 +1786,10 @@ int alea_curve_scanline_intersect(const alea_curve_2d_t* curve,
                 double roots[4];
                 int n_roots = alea_solve_quartic(a4, a3, a2, a1, a0, roots);
 
-                /* Copy roots to output (up to max_intersections) */
+                /* Copy roots to output (up to max_intersections), mapping
+                 * back to the unshifted parameter */
                 for (int i = 0; i < n_roots && count < max_intersections; i++) {
-                    u_out[count++] = roots[i];
+                    u_out[count++] = roots[i] + u_shift;
                 }
                 return count;
             }

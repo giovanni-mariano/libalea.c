@@ -618,6 +618,16 @@ int ray_intersect_torus(const alea_ray_t* ray,
         dz = ray->dy;
     }
 
+    /* Shift the origin to the closest approach to the torus center so that
+     * sum_od = 0. This zeroes the cubic coefficient, so Ferrari's depressed-
+     * quartic reduction (whose constant term otherwise cancels catastrophically
+     * as ~B^4 terms) stays well-conditioned for rays starting far from the
+     * torus. Roots are mapped back by t_shift after solving. */
+    double t_shift = -(ox*dx + oy*dy + oz*dz) / (dx*dx + dy*dy + dz*dz);
+    ox += t_shift * dx;
+    oy += t_shift * dy;
+    oz += t_shift * dz;
+
     /*
      * For ray P + t*D, define:
      * sum_d2 = dx² + dy² + dz²  (should be 1 if normalized)
@@ -644,6 +654,10 @@ int ray_intersect_torus(const alea_ray_t* ray,
     /* Solve quartic */
     double roots[4];
     int n = alea_solve_quartic(c4, c3, c2, c1, c0, roots);
+
+    /* Map roots back to the original (unshifted) ray parameter */
+    for (int i = 0; i < n; i++)
+        roots[i] += t_shift;
 
     /* Filter positive roots */
     n = alea_filter_positive_roots(roots, n, RAY_EPSILON);
