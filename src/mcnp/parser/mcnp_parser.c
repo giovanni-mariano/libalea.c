@@ -129,7 +129,7 @@ void mcnp_context_destroy(mcnp_context_t* ctx) {
 
 int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
                       mcnp_context_t** out_context) {
-    if (!input || !out_context) return 0;
+    if (!input || len == 0 || !out_context) return 0;
     *out_context = NULL;
 
     double total_start = alea_monotonic_seconds();
