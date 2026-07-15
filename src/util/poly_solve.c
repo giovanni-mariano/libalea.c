@@ -12,6 +12,7 @@
 
 #include "poly_solve.h"
 #include <math.h>
+#include <float.h>
 #include <string.h>
 #include "util/math.h"
 
@@ -116,25 +117,59 @@ int alea_solve_cubic(double a, double b, double c, double d, double roots[3]) {
     return num_roots;
 }
 
+/* Evaluate monic quartic x⁴ + Bx³ + Cx² + Dx + E (Horner). */
+static inline double quartic_eval(double B, double C, double D, double E,
+                                  double x) {
+    return (((x + B) * x + C) * x + D) * x + E;
+}
+
+/* Evaluate derivative 4x³ + 3Bx² + 2Cx + D (Horner). */
+static inline double quartic_deriv(double B, double C, double D, double x) {
+    return ((4.0 * x + 3.0 * B) * x + 2.0 * C) * x + D;
+}
+
+/* Absolute-value evaluation |x|⁴ + |B||x|³ + ... — the natural error scale of
+ * quartic_eval at x; used to decide whether a residual is "numerically zero". */
+static inline double quartic_eval_scale(double B, double C, double D, double E,
+                                        double x) {
+    double ax = fabs(x);
+    return (((ax + fabs(B)) * ax + fabs(C)) * ax + fabs(D)) * ax + fabs(E);
+}
+
 /**
- * Polish roots via Newton-Raphson iteration (Horner evaluation).
- * 2 iterations per root; guards against near-degenerate derivative.
+ * Refine a root of the monic quartic inside a bracket [lo, hi] where
+ * f(lo) and f(hi) have opposite signs. Safeguarded Newton: take the Newton
+ * step when it stays inside the bracket, otherwise bisect. Converges
+ * quadratically near the root and never escapes the bracket.
  */
-static void newton_polish_quartic(double a, double b, double c, double d, double e,
-                                  double* roots, int count) {
-    for (int i = 0; i < count; i++) {
-        double x = roots[i];
-        for (int iter = 0; iter < 2; iter++) {
-            /* f(x) = ax^4 + bx^3 + cx^2 + dx + e  (Horner) */
-            double f = (((a * x + b) * x + c) * x + d) * x + e;
-            /* f'(x) = 4ax^3 + 3bx^2 + 2cx + d  (Horner) */
-            double fp = ((4.0 * a * x + 3.0 * b) * x + 2.0 * c) * x + d;
-            if (fabs(fp) > 1e-30) {
-                x -= f / fp;
-            }
+static double quartic_refine(double B, double C, double D, double E,
+                             double lo, double hi, double flo) {
+    double x = 0.5 * (lo + hi);
+    for (int iter = 0; iter < 100; iter++) {
+        double f = quartic_eval(B, C, D, E, x);
+        if (f == 0.0) return x;
+        /* Shrink bracket around the sign change */
+        if ((f > 0) == (flo > 0)) {
+            lo = x;
+        } else {
+            hi = x;
         }
-        roots[i] = x;
+        double fp = quartic_deriv(B, C, D, x);
+        double x_next;
+        if (fp != 0.0) {
+            x_next = x - f / fp;
+            if (!(x_next > lo && x_next < hi)) {
+                x_next = 0.5 * (lo + hi);  /* Newton left bracket: bisect */
+            }
+        } else {
+            x_next = 0.5 * (lo + hi);
+        }
+        if (fabs(x_next - x) <= 4.0 * DBL_EPSILON * (fabs(x_next) + 1.0)) {
+            return x_next;
+        }
+        x = x_next;
     }
+    return x;
 }
 
 int alea_solve_quartic(double a, double b, double c, double d, double e, double roots[4]) {
@@ -149,108 +184,78 @@ int alea_solve_quartic(double a, double b, double c, double d, double e, double 
     double D = d / a;
     double E = e / a;
 
-    /* Check for biquadratic: x⁴ + Cx² + E = 0 (B = D = 0) */
-    if (fabs(B) < EPSILON && fabs(D) < EPSILON) {
-        double quad_roots[2];
-        int n = alea_solve_quadratic(1.0, C, E, quad_roots);
-        int num_roots = 0;
-        for (int i = 0; i < n; i++) {
-            if (quad_roots[i] >= 0) {
-                double sq = sqrt(quad_roots[i]);
-                roots[num_roots++] = -sq;
-                roots[num_roots++] = sq;
-            } else if (quad_roots[i] > -EPSILON) {
-                roots[num_roots++] = 0;
-            }
-        }
-        sort_roots(roots, num_roots);
-        return num_roots;
-    }
-
-    /* Ferrari's method: reduce to depressed quartic then resolve cubic */
-
-    /* Substitution x = t - B/4 to get: t⁴ + pt² + qt + r = 0 */
-    double B2 = B * B;
-    double B3 = B2 * B;
-    double B4 = B2 * B2;
-
-    double p = C - 3.0 * B2 / 8.0;
-    double q = B3 / 8.0 - B * C / 2.0 + D;
-    double r = -3.0 * B4 / 256.0 + B2 * C / 16.0 - B * D / 4.0 + E;
-
-    double offset = -B / 4.0;
-
-    /* Check for depressed biquadratic (q = 0) */
-    if (fabs(q) < EPSILON) {
-        double quad_roots[2];
-        int n = alea_solve_quadratic(1.0, p, r, quad_roots);
-        int num_roots = 0;
-        for (int i = 0; i < n; i++) {
-            if (quad_roots[i] >= 0) {
-                double sq = sqrt(quad_roots[i]);
-                roots[num_roots++] = -sq + offset;
-                roots[num_roots++] = sq + offset;
-            } else if (quad_roots[i] > -EPSILON) {
-                roots[num_roots++] = offset;
-            }
-        }
-        sort_roots(roots, num_roots);
-        return num_roots;
-    }
-
-    /* Resolve cubic: 8m³ + 8pm² + (2p² - 8r)m - q² = 0 */
-    double cubic_roots[3];
-    int n_cubic = alea_solve_cubic(
-        8.0,
-        8.0 * p,
-        2.0 * p * p - 8.0 * r,
-        -q * q,
-        cubic_roots
-    );
-
-    /* Find a suitable root m (we need 2m + p > 0 for real factorization) */
-    double m = 0;
-    for (int i = n_cubic - 1; i >= 0; i--) {
-        if (2.0 * cubic_roots[i] + p > EPSILON) {
-            m = cubic_roots[i];
-            break;
-        }
-    }
-
-    if (2.0 * m + p <= EPSILON) {
-        /* Fallback: use largest root and hope for the best */
-        m = cubic_roots[n_cubic - 1];
-        if (2.0 * m + p < 0) {
-            /* No real solution possible with this method */
-            return 0;
-        }
-    }
-
-    /* Factor into two quadratics:
-     * t² + sqrt(2m+p)*t + (m + sqrt(m² - r)) = 0
-     * t² - sqrt(2m+p)*t + (m - sqrt(m² - r)) = 0
+    /* Robust real-root isolation. Closed-form (Ferrari) solutions are
+     * numerically fragile: the depressed-quartic reduction cancels
+     * catastrophically for large |B|, and near-biquadratic inputs make the
+     * resolvent-cubic factorization pick wrong branches (observed as lost
+     * torus intersections). Instead, isolate roots between the critical
+     * points of f (roots of the derivative cubic, where f is monotonic on
+     * each interval) and refine each bracketed root with safeguarded Newton.
      */
-    double sqrt_2mp = sqrt(2.0 * m + p);
-    double m2_r = m * m - r;
-    double sqrt_m2r = (m2_r >= 0) ? sqrt(m2_r) : 0;
 
-    /* Determine signs based on q */
-    double sign = (q >= 0) ? 1.0 : -1.0;
+    /* Critical points: roots of f'(x) = 4x³ + 3Bx² + 2Cx + D */
+    double crit[3];
+    int n_crit = alea_solve_cubic(4.0, 3.0 * B, 2.0 * C, D, crit);
 
-    double q1_roots[2], q2_roots[2];
-    int n1 = alea_solve_quadratic(1.0, sqrt_2mp, m - sign * sqrt_m2r, q1_roots);
-    int n2 = alea_solve_quadratic(1.0, -sqrt_2mp, m + sign * sqrt_m2r, q2_roots);
+    /* Polish critical points (the cubic solver itself is closed-form) */
+    for (int i = 0; i < n_crit; i++) {
+        double x = crit[i];
+        for (int it = 0; it < 3; it++) {
+            double g = quartic_deriv(B, C, D, x);
+            double gp = (12.0 * x + 6.0 * B) * x + 2.0 * C;
+            if (fabs(gp) > 1e-30) x -= g / gp;
+        }
+        crit[i] = x;
+    }
+    sort_roots(crit, n_crit);
+
+    /* Outer bound beyond all real roots (Fujiwara), also covering the
+     * critical points so every interval endpoint has a defined sign. */
+    double M = fabs(B);
+    double t2 = sqrt(fabs(C));       if (t2 > M) M = t2;
+    double t3 = cbrt(fabs(D));       if (t3 > M) M = t3;
+    double t4 = sqrt(sqrt(fabs(E))); if (t4 > M) M = t4;
+    M = 2.0 * M + 1.0;
+    if (n_crit > 0) {
+        double cmax = fabs(crit[0]);
+        if (fabs(crit[n_crit - 1]) > cmax) cmax = fabs(crit[n_crit - 1]);
+        if (cmax + 1.0 > M) M = cmax + 1.0;
+    }
+
+    /* Interval endpoints: -M, critical points, +M (f is monotonic between
+     * consecutive endpoints, so each sign change brackets exactly one root). */
+    double pts[5];
+    int n_pts = 0;
+    pts[n_pts++] = -M;
+    for (int i = 0; i < n_crit; i++) {
+        if (crit[i] > -M && crit[i] < M) pts[n_pts++] = crit[i];
+    }
+    pts[n_pts++] = M;
 
     int num_roots = 0;
-    for (int i = 0; i < n1; i++) {
-        roots[num_roots++] = q1_roots[i] + offset;
-    }
-    for (int i = 0; i < n2; i++) {
-        roots[num_roots++] = q2_roots[i] + offset;
-    }
+    double f_prev = quartic_eval(B, C, D, E, pts[0]);
+    for (int i = 1; i < n_pts; i++) {
+        double f_here = quartic_eval(B, C, D, E, pts[i]);
 
-    /* Polish roots via Newton-Raphson for improved accuracy */
-    newton_polish_quartic(a, b, c, d, e, roots, num_roots);
+        if ((f_prev > 0) != (f_here > 0)) {
+            /* Sign change: exactly one root in (pts[i-1], pts[i]) */
+            roots[num_roots++] = quartic_refine(B, C, D, E,
+                                                pts[i - 1], pts[i], f_prev);
+        } else if (i < n_pts - 1 &&
+                   fabs(f_here) <= 4.0 * DBL_EPSILON *
+                       quartic_eval_scale(B, C, D, E, pts[i])) {
+            /* Interior critical point with f ≈ 0: double (tangent) root.
+             * Report it twice so crossing parity is preserved. */
+            if (num_roots <= 2) {
+                roots[num_roots++] = pts[i];
+                roots[num_roots++] = pts[i];
+            }
+            /* Skip the sign-change test on the adjacent interval: treat the
+             * residual sign at this point as unreliable. */
+            f_here = f_prev;
+        }
+        f_prev = f_here;
+    }
 
     sort_roots(roots, num_roots);
     return num_roots;
