@@ -54,17 +54,16 @@ typedef struct { \
 \
 static inline name##_t name##_create(size_t initial_cap) { \
     name##_t map; \
+    map.entries = NULL; \
+    map.capacity = 0; \
     map.count = 0; \
-    size_t _cap = initial_cap < 8 ? 8 : initial_cap; \
-    /* Round up to next power of two */ \
-    _cap--; _cap |= _cap >> 1; _cap |= _cap >> 2; \
-    _cap |= _cap >> 4; _cap |= _cap >> 8; _cap |= _cap >> 16; \
-    _cap |= _cap >> 32; _cap++; \
-    /* Reject a round-up that wrapped to 0, or a size whose byte total would \
-     * overflow size_t. A wrapped capacity would yield mask = SIZE_MAX and \
-     * out-of-bounds indexing in get/put. */ \
-    if (_cap == 0 || _cap > SIZE_MAX / sizeof(name##_entry_t)) { \
-        map.entries = NULL; map.capacity = 0; return map; \
+    size_t _cap = 8; \
+    while (_cap < initial_cap) { \
+        if (_cap > SIZE_MAX / 2) return map; \
+        _cap *= 2; \
+    } \
+    if (_cap > SIZE_MAX / sizeof(name##_entry_t)) { \
+        return map; \
     } \
     map.capacity = _cap; \
     map.entries = (name##_entry_t*)malloc(map.capacity * sizeof(name##_entry_t)); \

@@ -187,6 +187,22 @@ void mcnp_context_destroy(mcnp_context_t* ctx);
 int mcnp_parse_file(const char* filename, mcnp_context_t** out_context);
 
 /**
+ * @brief Parses an MCNP input buffer and populates a new context.
+ *
+ * The input buffer does not need to be null-terminated. The parser does not
+ * take ownership of the buffer; all parsed data is copied into the returned
+ * context arena.
+ *
+ * @param input MCNP input text.
+ * @param len Number of bytes available at input.
+ * @param source_name Logical input name used for diagnostics.
+ * @param out_context A pointer to a context pointer that will be set to the newly created context.
+ * @return 1 on success, 0 on failure.
+ */
+int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
+                      mcnp_context_t** out_context);
+
+/**
  * @brief Print summary of parsed data (for debugging)
  * 
  * @param ctx The context to summarize
