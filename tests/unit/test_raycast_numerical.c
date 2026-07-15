@@ -328,4 +328,85 @@ TEST(sort_small_hit_array) {
     alea_raycast_result_free(&result);
 }
 
+/* =========================================================================
+ * Asymmetric-center cylinders (perpendicular-axis order regression)
+ *
+ * The infinite-cylinder equation is symmetric under swapping its two
+ * perpendicular coordinates, so any test with equal center components
+ * passes even if the implementation pairs coordinate and center in the
+ * wrong order. These tests use deliberately unequal center components and
+ * check the crossings against the closed-form values: a swapped pair
+ * intersects a cylinder at the transposed center and fails loudly.
+ * (A swapped (x,z) pair for C/Y once misplaced every asymmetric Y-cylinder
+ * crossing in raycast; slices were unaffected.)
+ * ========================================================================= */
+
+TEST(cylinder_x_asymmetric_center) {
+    alea_ray_t ray;
+    alea_cylinder_x_data_t cyl = { .center_y = 7.0, .center_z = -3.0,
+                                   .radius = 5.0 };
+    double t[2];
+
+    /* Ray along +Y in the cylinder's center plane z = -3:
+     * crossings at y = 7 ± 5, i.e. t = 102 and 112. */
+    alea_ray_init(&ray, 20.0, -100.0, -3.0, 0, 1, 0);
+    int count = ray_intersect_cylinder_x(&ray, &cyl, t);
+
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], 102.0, EPS);
+    ASSERT_NEAR(t[1], 112.0, EPS);
+}
+
+TEST(cylinder_y_asymmetric_center) {
+    alea_ray_t ray;
+    /* The E-lite surface that exposed the swap: C/Y 424.0 2.9 682.221 */
+    alea_cylinder_y_data_t cyl = { .center_x = 424.0, .center_z = 2.9,
+                                   .radius = 682.221 };
+    double t[2];
+
+    /* Ray along +X at z = 60: half-chord = sqrt(r² - (60 - 2.9)²),
+     * crossings at x = 424 ∓ half-chord. */
+    alea_ray_init(&ray, 300.0, 0.0, 60.0, 1, 0, 0);
+    int count = ray_intersect_cylinder_y(&ray, &cyl, t);
+
+    double dz = 60.0 - cyl.center_z;
+    double half_chord = sqrt(cyl.radius * cyl.radius - dz * dz);
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], 424.0 - half_chord - 300.0, EPS);
+    ASSERT_NEAR(t[1], 424.0 + half_chord - 300.0, EPS);
+}
+
+TEST(cylinder_y_asymmetric_center_along_z) {
+    alea_ray_t ray;
+    alea_cylinder_y_data_t cyl = { .center_x = 424.0, .center_z = 2.9,
+                                   .radius = 682.221 };
+    double t[2];
+
+    /* Same cylinder probed along +Z through its center plane x = 424:
+     * crossings at z = 2.9 ± r. Exercises the other perpendicular axis. */
+    alea_ray_init(&ray, 424.0, -50.0, -1000.0, 0, 0, 1);
+    int count = ray_intersect_cylinder_y(&ray, &cyl, t);
+
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], 1000.0 + 2.9 - 682.221, EPS);
+    ASSERT_NEAR(t[1], 1000.0 + 2.9 + 682.221, EPS);
+}
+
+TEST(cylinder_z_asymmetric_center) {
+    alea_ray_t ray;
+    alea_cylinder_z_data_t cyl = { .center_x = -12.0, .center_y = 34.0,
+                                   .radius = 8.0 };
+    double t[2];
+
+    /* Ray along +X at y = 30 (off-center chord):
+     * crossings at x = -12 ± sqrt(64 - 16). */
+    alea_ray_init(&ray, -100.0, 30.0, 5.0, 1, 0, 0);
+    int count = ray_intersect_cylinder_z(&ray, &cyl, t);
+
+    double half_chord = sqrt(64.0 - 16.0);
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], -12.0 - half_chord + 100.0, EPS);
+    ASSERT_NEAR(t[1], -12.0 + half_chord + 100.0, EPS);
+}
+
 TEST_MAIN()
