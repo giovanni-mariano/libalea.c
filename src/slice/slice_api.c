@@ -213,6 +213,15 @@ int alea_slice_curves_get(const alea_slice_curves_t* curves, size_t index, alea_
             out->data.parallel_lines.direction[1] = src->data.parallel_lines.direction[1];
             break;
 
+        /* The public structure intentionally does not expose the internal
+         * conic/torus coefficients, but consumers still need the curve family
+         * for sampled rendering and diagnostics. */
+        case ALEA_CURVE_PARABOLA:
+        case ALEA_CURVE_HYPERBOLA:
+        case ALEA_CURVE_QUARTIC:
+            out->type = src->type;
+            break;
+
         default:
             out->type = ALEA_CURVE_NONE;
             break;
