@@ -582,6 +582,59 @@ static void test_curve_two_cells(void) {
     alea_destroy(sys);
 }
 
+static int curves_have_surface_type(const alea_slice_curves_t* curves,
+                                    int surface_id, alea_curve_type_t type) {
+    size_t count = alea_slice_curves_count(curves);
+    for (size_t i = 0; i < count; i++) {
+        alea_curve_t curve;
+        assert(alea_slice_curves_get(curves, i, &curve) == 0);
+        if (curve.surface_id == surface_id && curve.type == type) return 1;
+    }
+    return 0;
+}
+
+static void test_curve_noncanonical_type_identity(void) {
+    printf("  test_curve_noncanonical_type_identity... ");
+
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+    int cone_idx = alea_cone_z_surface(sys, 10, 0, 0, 0, 1.0);
+    int torus_idx = alea_torus_z_surface(sys, 20, 0, 0, 0, 4.0, 1.0);
+    int material = alea_add_material(sys, 1);
+    alea_add_cell(sys, 10, alea_surface_at(sys, cone_idx)->neg_node,
+                  material, -1.0, 0);
+    alea_add_cell(sys, 20, alea_surface_at(sys, torus_idx)->neg_node,
+                  material, -1.0, 0);
+
+    alea_slice_view_t view;
+    alea_slice_curves_t* curves;
+
+    /* y=1 cuts x^2 + y^2 = z^2 as a hyperbola. */
+    alea_slice_view_axis(&view, 1, 1, -10, 10, -10, 10);
+    curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+    assert(curves_have_surface_type(curves, 10, ALEA_CURVE_HYPERBOLA));
+    alea_slice_curves_free(curves);
+
+    /* z=x+1 cuts the same cone as y^2=2x+1, a parabola. */
+    alea_slice_view_init(&view, 0, 0, 1, -1, 0, 1, 0, 1, 0,
+                         -10, 10, -10, 10);
+    curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+    assert(curves_have_surface_type(curves, 10, ALEA_CURVE_PARABOLA));
+    alea_slice_curves_free(curves);
+
+    /* A central Z-torus slice is represented by one quartic curve object. */
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+    assert(curves_have_surface_type(curves, 20, ALEA_CURVE_QUARTIC));
+    alea_slice_curves_free(curves);
+
+    alea_destroy(sys);
+    printf("OK\n");
+}
+
 /* ============================================================================
  * MAIN
  * ============================================================================ */
@@ -605,6 +658,7 @@ int main(void) {
     test_curve_box();
     test_curve_cylinder();
     test_curve_two_cells();
+    test_curve_noncanonical_type_identity();
 
     printf("\n=== All slice tests passed! ===\n\n");
     return 0;
