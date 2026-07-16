@@ -150,6 +150,56 @@ int alea_raycast_segment_path_get(const alea_raycast_result_t* result,
                                   size_t path_entry_index,
                                   alea_raycast_path_entry_t* out_entry);
 
+/* ============================================================================
+ * INTERVAL DEFECT CLASSIFICATION (geometry error detection, oracle-grade)
+ * ============================================================================ */
+
+/** Kinds for alea_ray_interval_finding_t. */
+#define ALEA_INTERVAL_OK             0  /**< exactly one containing chain */
+#define ALEA_INTERVAL_GAP            1  /**< no cell contains the interval */
+#define ALEA_INTERVAL_OVERLAP        2  /**< >=2 cells at the same depth */
+#define ALEA_INTERVAL_UNDEFINED_FILL 3  /**< container with no fill content */
+
+typedef struct {
+    double t_enter;
+    double t_exit;
+    int kind;            /**< ALEA_INTERVAL_* */
+    int cell_id;         /**< display owner (first containing chain); -1 gap */
+    int overlap_cell_id; /**< second claimant at the overlap depth, else -1 */
+    int depth;           /**< depth of the anomaly (overlap) or of the owner */
+} alea_ray_interval_finding_t;
+
+/**
+ * @brief Classify elementary ray intervals by cell ownership.
+ *
+ * Collects ALL surface crossings along the ray (global pipeline, including
+ * fill-transformed and synthetic lattice boundaries), then determines the
+ * complete containing-cell set of each interval with an uncached recursive
+ * query at an interior point. Within such an interval the owner set is
+ * invariant, so overlaps and gaps are detected regardless of their size —
+ * including overlaps in isolation (a cell fully inside another) that
+ * produce no ownership transition and are invisible to trace segments.
+ *
+ * Consecutive intervals with identical owner sets are merged. This is the
+ * completeness-first ("oracle") detector: cost is one recursive query per
+ * elementary interval; use trace()/segments for rendering speed.
+ *
+ * @param sys System
+ * @param ox,oy,oz Ray origin
+ * @param dx,dy,dz Ray direction (normalized internally)
+ * @param t_max Maximum distance (must be > 0)
+ * @param out Output findings array (may be NULL if max_out is 0)
+ * @param max_out Capacity of out
+ * @return Total number of merged intervals (may exceed max_out, in which
+ *         case only the first max_out are written), or -1 on error
+ */
+int alea_ray_classify_intervals(alea_system_t* sys,
+                                double ox, double oy, double oz,
+                                double dx, double dy, double dz,
+                                double t_max,
+                                alea_ray_interval_finding_t* out,
+                                size_t max_out);
+
 /**
  * @brief Calculate total path length through material
  *

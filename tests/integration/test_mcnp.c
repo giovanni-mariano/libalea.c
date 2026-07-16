@@ -15,6 +15,7 @@
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "raycast/raycast.h"
+#include "alea_raycast.h"
 
 /* ------------------------------------------------------------------------- */
 /* TRCL (Cell Transformation) Tests                                          */
@@ -915,6 +916,61 @@ TEST(undefined_fill_flagged) {
     }
     ASSERT(saw_flagged_container);
     alea_raycast_result_free(&r);
+
+    mcnp_model_destroy(model);
+}
+
+/*
+ * Interval defect classification: an isolated overlap (cell 2 fully inside
+ * cell 1, no complement) produces no ownership transition and is invisible
+ * to trace segments; the owner-set classifier must still report it with
+ * exact extent, and a coverage hole must classify as a gap.
+ */
+TEST(ray_classify_intervals) {
+    const char* input =
+        "Isolated overlap + gap\n"
+        "1 1 -1.0 -1 U=0\n"
+        "2 2 -1.0 -2 U=0\n"
+        "3 3 -1.0 -4 1 3 U=0\n"
+        "99 0 4\n"
+        "\n"
+        "1 SO 5\n"
+        "2 SO 3\n"
+        "3 SO 6\n"
+        "4 SO 10\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n"
+        "M3 1001.80c 1.0\n";
+    /* Radial structure: [0,3] cells 1+2 (overlap), (3,5] cell 1,
+     * (5,6) NOTHING (gap between SO 5 and SO 6), [6,10) cell 3. */
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+
+    alea_ray_interval_finding_t f[16];
+    int n = alea_ray_classify_intervals(sys, -10, 0, 0, 1, 0, 0, 20, f, 16);
+    ASSERT_EQ(n, 7);
+
+    /* -10..-6 cell 3; -6..-5 GAP; -5..-3 cell 1; -3..3 OVERLAP(1,2);
+       3..5 cell 1; 5..6 GAP; 6..10 cell 3 */
+    ASSERT_EQ(f[0].kind, ALEA_INTERVAL_OK);
+    ASSERT_EQ(f[0].cell_id, 3);
+    ASSERT_EQ(f[1].kind, ALEA_INTERVAL_GAP);
+    ASSERT_NEAR(f[1].t_enter, 4.0, 1e-6);
+    ASSERT_NEAR(f[1].t_exit, 5.0, 1e-6);
+    ASSERT_EQ(f[2].kind, ALEA_INTERVAL_OK);
+    ASSERT_EQ(f[2].cell_id, 1);
+    ASSERT_EQ(f[3].kind, ALEA_INTERVAL_OVERLAP);
+    ASSERT_EQ(f[3].cell_id, 1);
+    ASSERT_EQ(f[3].overlap_cell_id, 2);
+    ASSERT_NEAR(f[3].t_enter, 7.0, 1e-6);
+    ASSERT_NEAR(f[3].t_exit, 13.0, 1e-6);
+    ASSERT_EQ(f[4].kind, ALEA_INTERVAL_OK);
+    ASSERT_EQ(f[5].kind, ALEA_INTERVAL_GAP);
+    ASSERT_EQ(f[6].kind, ALEA_INTERVAL_OK);
+    ASSERT_EQ(f[6].cell_id, 3);
 
     mcnp_model_destroy(model);
 }
