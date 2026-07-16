@@ -593,6 +593,25 @@ static int curves_have_surface_type(const alea_slice_curves_t* curves,
     return 0;
 }
 
+static int labels_have_surface(const alea_label_position_t* labels,
+                               int count, int surface_id) {
+    for (int i = 0; i < count; i++) {
+        if (labels[i].id == surface_id) return 1;
+    }
+    return 0;
+}
+
+static void assert_surface_can_be_labelled(const alea_slice_curves_t* curves,
+                                           int surface_id) {
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    assert(alea_find_surface_label_positions(
+        curves, -10, 10, -10, 10, 160, 160, 2,
+        &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, surface_id));
+    free(labels);
+}
+
 static void test_curve_noncanonical_type_identity(void) {
     printf("  test_curve_noncanonical_type_identity... ");
 
@@ -614,6 +633,7 @@ static void test_curve_noncanonical_type_identity(void) {
     curves = alea_get_slice_curves(sys, &view);
     assert(curves != NULL);
     assert(curves_have_surface_type(curves, 10, ALEA_CURVE_HYPERBOLA));
+    assert_surface_can_be_labelled(curves, 10);
     alea_slice_curves_free(curves);
 
     /* z=x+1 cuts the same cone as y^2=2x+1, a parabola. */
@@ -622,6 +642,7 @@ static void test_curve_noncanonical_type_identity(void) {
     curves = alea_get_slice_curves(sys, &view);
     assert(curves != NULL);
     assert(curves_have_surface_type(curves, 10, ALEA_CURVE_PARABOLA));
+    assert_surface_can_be_labelled(curves, 10);
     alea_slice_curves_free(curves);
 
     /* A central Z-torus slice is represented by one quartic curve object. */
@@ -629,8 +650,50 @@ static void test_curve_noncanonical_type_identity(void) {
     curves = alea_get_slice_curves(sys, &view);
     assert(curves != NULL);
     assert(curves_have_surface_type(curves, 20, ALEA_CURVE_QUARTIC));
+    assert_surface_can_be_labelled(curves, 20);
     alea_slice_curves_free(curves);
 
+    alea_destroy(sys);
+    printf("OK\n");
+}
+
+static void test_surface_labels_filter_hidden_csg_boundary(void) {
+    printf("  test_surface_labels_filter_hidden_csg_boundary... ");
+
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+    int inner_idx = alea_sphere_surface(sys, 31, 0, 0, 0, 2.0);
+    int outer_idx = alea_sphere_surface(sys, 32, 0, 0, 0, 5.0);
+    alea_node_id_t inner = alea_surface_at(sys, inner_idx)->neg_node;
+    alea_node_id_t outer = alea_surface_at(sys, outer_idx)->neg_node;
+    alea_node_id_t redundant_union = alea_union(sys, outer, inner);
+    int material = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, redundant_union, material, -1.0, 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+    assert(curves_have_surface_type(curves, 31, ALEA_CURVE_CIRCLE));
+    assert(curves_have_surface_type(curves, 32, ALEA_CURVE_CIRCLE));
+
+    const int width = 160, height = 160;
+    int* cell_ids = malloc((size_t)width * height * sizeof(int));
+    assert(cell_ids != NULL);
+    assert(alea_find_cells_grid(sys, &view, width, height, -1,
+                                cell_ids, NULL, NULL) == 0);
+
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    assert(alea_find_surface_label_positions_on_boundaries(
+        curves, cell_ids, -10, 10, -10, 10, width, height, 2,
+        &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, 32));
+    assert(!labels_have_surface(labels, count, 31));
+
+    free(labels);
+    free(cell_ids);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
     printf("OK\n");
 }
@@ -659,6 +722,7 @@ int main(void) {
     test_curve_cylinder();
     test_curve_two_cells();
     test_curve_noncanonical_type_identity();
+    test_surface_labels_filter_hidden_csg_boundary();
 
     printf("\n=== All slice tests passed! ===\n\n");
     return 0;
