@@ -724,6 +724,11 @@ static int raycast_to_segments_impl(alea_system_t* sys,
                         ? result->hits.data[i].surface_id
                         : -1;
                 seg.enter_hit_index = (i > 0) ? (int)(i - 1) : -1;
+                seg.resolution_flags =
+                    (cell_idx >= 0 &&
+                     (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+                     alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
+                        ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
 
                 add_segment(result, &seg);
                 prev_cell_id = cell_id;
@@ -3122,6 +3127,11 @@ resolve_cell:;
             seg.enter_surface_id = prev_surface_id;
             seg.exit_surface_id = hit_surface_id;
             seg.enter_hit_index = pending_enter_hit_index;
+            seg.resolution_flags =
+                (cell_idx >= 0 &&
+                 (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+                 alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
+                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
             add_segment(result, &seg);
             prev_cell_idx = cell_idx;
         }

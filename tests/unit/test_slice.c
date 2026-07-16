@@ -698,6 +698,58 @@ static void test_surface_labels_filter_hidden_csg_boundary(void) {
     printf("OK\n");
 }
 
+static void assert_surface_labelled_on_grid(alea_system_t* sys,
+                                            const alea_slice_view_t* view,
+                                            int surface_id) {
+    const int width = 200, height = 200;
+    int* cell_ids = malloc((size_t)width * height * sizeof(int));
+    assert(cell_ids != NULL);
+    assert(alea_find_cells_grid(sys, view, width, height, -1,
+                                cell_ids, NULL, NULL) == 0);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, view);
+    assert(curves != NULL);
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    assert(alea_find_surface_label_positions_on_boundaries(
+        curves, cell_ids, -10, 10, -10, 10, width, height, 2,
+        &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, surface_id));
+    free(labels);
+    alea_slice_curves_free(curves);
+    free(cell_ids);
+}
+
+static void test_noncanonical_surface_labels_on_boundaries(void) {
+    printf("  test_noncanonical_surface_labels_on_boundaries... ");
+
+    alea_system_t* cone_sys = alea_create();
+    assert(cone_sys != NULL);
+    int cone_idx = alea_cone_z_surface(cone_sys, 41, 0, 0, 0, 1.0);
+    int material = alea_add_material(cone_sys, 1);
+    alea_add_cell(cone_sys, 1, alea_surface_at(cone_sys, cone_idx)->neg_node,
+                  material, -1.0, 0);
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0, 0, 1, -1, 0, 1, 0, 1, 0,
+                         -10, 10, -10, 10);
+    assert_surface_labelled_on_grid(cone_sys, &view, 41);
+    alea_slice_view_axis(&view, 1, 1, -10, 10, -10, 10);
+    assert_surface_labelled_on_grid(cone_sys, &view, 41);
+    alea_destroy(cone_sys);
+
+    alea_system_t* torus_sys = alea_create();
+    assert(torus_sys != NULL);
+    int torus_idx = alea_torus_z_surface(torus_sys, 42, 0, 0, 0, 4.0, 1.0);
+    material = alea_add_material(torus_sys, 1);
+    alea_add_cell(torus_sys, 1,
+                  alea_surface_at(torus_sys, torus_idx)->neg_node,
+                  material, -1.0, 0);
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    assert_surface_labelled_on_grid(torus_sys, &view, 42);
+    alea_destroy(torus_sys);
+
+    printf("OK\n");
+}
+
 /* ============================================================================
  * MAIN
  * ============================================================================ */
@@ -723,6 +775,7 @@ int main(void) {
     test_curve_two_cells();
     test_curve_noncanonical_type_identity();
     test_surface_labels_filter_hidden_csg_boundary();
+    test_noncanonical_surface_labels_on_boundaries();
 
     printf("\n=== All slice tests passed! ===\n\n");
     return 0;

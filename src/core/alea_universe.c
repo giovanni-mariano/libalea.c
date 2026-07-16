@@ -349,6 +349,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
             hit->local_x = lx;
             hit->local_y = ly;
             hit->local_z = lz;
+            hit->resolution_flags = ALEA_RESOLVE_UNDEFINED_FILL;
             (*hit_count)++;
         }
 
@@ -376,6 +377,8 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
         hit->local_x = lx;
         hit->local_y = ly;
         hit->local_z = lz;
+        hit->resolution_flags = alea_cell_entry_is_container(cell)
+            ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
         (*hit_count)++;
 
         if (g_debug_point_trace) {
@@ -1933,7 +1936,14 @@ static int find_cell_recursive(const alea_system_t* sys,
                 NULL, depth + 1, max_depth,
                 out_cell_index, out_cell_id, out_material, out_depth);
             if (result == 0) return 0;
-            continue;
+
+            /* Undefined fill inside a contained lattice element: the
+             * lattice cell is the answer (see fill branch below). */
+            if (out_cell_index) *out_cell_index = (int)cell_idx;
+            if (out_cell_id) *out_cell_id = cell->mc_cell_id;
+            if (out_material) *out_material = cell->material_id;
+            if (out_depth) *out_depth = depth;
+            return 0;
         }
 
         /* Non-lattice: evaluate CSG geometry */
@@ -1972,6 +1982,17 @@ static int find_cell_recursive(const alea_system_t* sys,
                     out_cell_index, out_cell_id, out_material, out_depth);
 
                 if (result == 0) return 0;
+
+                /* Undefined fill: the first containing candidate wins even
+                 * when its filling universe has no cell at the point — the
+                 * container is the answer (ALEA_RESOLVE_UNDEFINED_FILL at
+                 * the API boundary), matching the hier resolver and the ray
+                 * tracer instead of scanning siblings or reporting void. */
+                if (out_cell_index) *out_cell_index = (int)cell_idx;
+                if (out_cell_id) *out_cell_id = cell->mc_cell_id;
+                if (out_material) *out_material = cell->material_id;
+                if (out_depth) *out_depth = depth;
+                return 0;
 
             /* Terminal cell */
             } else {
@@ -2164,6 +2185,7 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
             out_hit->local_x = x;
             out_hit->local_y = y;
             out_hit->local_z = z;
+            out_hit->resolution_flags = 0;
             return 0;
         }
 
@@ -2196,6 +2218,8 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
     out_hit->local_x = x;
     out_hit->local_y = y;
     out_hit->local_z = z;
+    out_hit->resolution_flags = alea_cell_entry_is_container(cell)
+        ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
     return 0;
 }
 

@@ -80,6 +80,14 @@ typedef struct alea_cell_entry {
 
 ALEA_VEC_DEFINE(alea_cell_vec, alea_cell_entry_t);
 
+/** True for cells that are never a terminal answer: fill containers and
+ *  lattice cells. When a point resolver returns one, the fill chain below
+ *  it is unresolved (ALEA_RESOLVE_UNDEFINED_FILL). */
+static inline int alea_cell_entry_is_container(const alea_cell_entry_t* cell) {
+    return cell->fill_universe > 0 ||
+           (cell->lat_type != 0 && cell->lat_fill != NULL);
+}
+
 // ============================================================================
 // API - CELL OPERATIONS
 // ============================================================================

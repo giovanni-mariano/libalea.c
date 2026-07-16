@@ -1570,6 +1570,8 @@ static int hier_cache_try(alea_system_t* sys, double x, double y, double z,
         hit->local_x = lx;
         hit->local_y = ly;
         hit->local_z = lz;
+        hit->resolution_flags = alea_cell_entry_is_container(cell)
+            ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
     }
     return (int)hit_count;
 }
@@ -1606,6 +1608,7 @@ static int process_point_cell(alea_system_t* sys,
             hit->local_x = lx;
             hit->local_y = ly;
             hit->local_z = lz;
+            hit->resolution_flags = ALEA_RESOLVE_UNDEFINED_FILL;
             hier_cache_append(cell_index, hit, parent_transform,
                               true, fill_univ, ox, oy, oz);
             (*hit_count)++;
@@ -1639,6 +1642,8 @@ static int process_point_cell(alea_system_t* sys,
         hit->local_x = lx;
         hit->local_y = ly;
         hit->local_z = lz;
+        hit->resolution_flags = alea_cell_entry_is_container(cell)
+            ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
         hier_cache_append(cell_index, hit, parent_transform,
                           false, 0, 0.0, 0.0, 0.0);
         (*hit_count)++;
@@ -1752,6 +1757,11 @@ static void hier_deepest_store_hit(const alea_cell_entry_t* cell,
     out_hit->hit.local_x = lx;
     out_hit->hit.local_y = ly;
     out_hit->hit.local_z = lz;
+    /* A container survives as the final hit only when its fill descent
+     * stores nothing deeper — i.e. an undefined-fill fallback. Deeper
+     * stores overwrite this flag along with the rest of the hit. */
+    out_hit->hit.resolution_flags = alea_cell_entry_is_container(cell)
+        ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
     out_hit->transform = *transform;
     out_hit->lattice_cell_index = lattice_cell_index;
     if (lattice_cell_index >= 0 && lattice_transform) {

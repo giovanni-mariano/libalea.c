@@ -277,6 +277,14 @@ void alea_clear_error_detail(void);
  * DATA STRUCTURES (Read-only views for queries)
  * ============================================================================ */
 
+/** Resolution flags for alea_cell_hit_t / alea_ray_segment_t.
+ *  UNDEFINED_FILL: the answer is a fill or lattice container cell whose
+ *  filling universe has no containing cell at the query point (an MCNP
+ *  undefined region). The container is the deepest cell that actually
+ *  contains the point; the flag marks that the fill chain below it is
+ *  unresolved. */
+#define ALEA_RESOLVE_UNDEFINED_FILL 0x01
+
 /** @brief Point query result for hierarchical traversal */
 typedef struct {
     int cell_id;
@@ -286,6 +294,7 @@ typedef struct {
     int fill_universe;
     int depth;
     double local_x, local_y, local_z;
+    uint8_t resolution_flags;  /**< ALEA_RESOLVE_* bits (0 = fully resolved) */
 } alea_cell_hit_t;
 
 /** @brief Axis-aligned bounding box */
