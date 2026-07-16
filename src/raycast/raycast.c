@@ -450,23 +450,34 @@ int alea_raycast_surfaces_nocache(alea_system_t* sys,
 static int raycast_find_neighbor(alea_system_t* sys,
                                  int current_cell_idx,
                                  int surface_id,
+                                 double px, double py, double pz,
                                  int* out_cell_id, int* out_cell_idx,
                                  int* out_material_id, double* out_density) {
     if (!sys->cell_adjacency_built || current_cell_idx < 0) {
         return 0;
     }
 
-    int neighbor_idx = alea_find_neighbor_cell(sys, (uint32_t)current_cell_idx, surface_id);
-    if (neighbor_idx < 0) {
-        return 0;  /* No neighbor (exterior/void boundary) */
+    /* A surface may bound several cells, and crossing a surface referenced
+     * by a non-convex cell does not always leave that cell, so the first
+     * adjacency entry for surface_id is only a candidate: accept a neighbor
+     * only if it contains the sample point past the crossing. Callers gate
+     * this on universe-0 cells, whose local frame is the world frame. */
+    const alea_cell_entry_t* cell = &sys->cells.data[current_cell_idx];
+    for (size_t i = 0; i < cell->neighbor_count; i++) {
+        if (cell->neighbors[i].surface_id != surface_id) continue;
+        uint32_t nb_idx = cell->neighbors[i].neighbor_index;
+        if (nb_idx >= alea_vec_count(&sys->cells)) continue;
+        const alea_cell_entry_t* neighbor = &sys->cells.data[nb_idx];
+        if (neighbor->root_node_id == ALEA_NODE_ID_INVALID) continue;
+        if (!alea_contains_point(sys, neighbor->root_node_id, px, py, pz))
+            continue;
+        *out_cell_id = neighbor->mc_cell_id;
+        *out_cell_idx = (int)nb_idx;
+        *out_material_id = neighbor->material_id;
+        *out_density = neighbor->density;
+        return 1;
     }
-
-    const alea_cell_entry_t* neighbor = &sys->cells.data[neighbor_idx];
-    *out_cell_id = neighbor->mc_cell_id;
-    *out_cell_idx = neighbor_idx;
-    *out_material_id = neighbor->material_id;
-    *out_density = neighbor->density;
-    return 1;
+    return 0;  /* No containing neighbor (re-entrant crossing/exterior) */
 }
 
 static int cell_references_surface_id(const alea_system_t* sys,
@@ -564,9 +575,27 @@ static void find_cell_after_crossing(alea_system_t* sys,
         const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
         if (prev_cell->universe_id == 0 &&
             cell_references_surface_id(sys, prev_cell, crossed_surface_id)) {
+            double t_sample = t_prev +
+                fmin(0.5 * (t_curr - t_prev), SURFACE_SAMPLE_OFFSET);
+            double px, py, pz;
+            alea_ray_point_at(ray, t_sample, &px, &py, &pz);
             found = raycast_find_neighbor(sys, prev_cell_idx, crossed_surface_id,
+                                          px, py, pz,
                                           out_cell_id, out_cell_idx,
                                           out_material_id, out_density);
+            /* In hier mode a filled container is not a terminal answer:
+             * reject it so the full lookup descends into the fill. */
+            if (found && use_hier_lookup) {
+                const alea_cell_entry_t* nb = &sys->cells.data[*out_cell_idx];
+                if (nb->fill_universe > 0 ||
+                    (nb->lat_type != 0 && nb->lat_fill)) {
+                    found = 0;
+                    *out_cell_id = -1;
+                    *out_cell_idx = -1;
+                    *out_material_id = 0;
+                    *out_density = 0;
+                }
+            }
         }
     }
 
@@ -2546,6 +2575,28 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
 
     while (t_current < effective_t_max && max_iterations-- > 0) {
         result->step_iterations++;
+        /* Cell resolution samples just past the crossing at t_current, where
+         * quadric sign evaluation is numerically noisy. Midpoint verification
+         * after the crossing search jumps back here once with a sample point
+         * in the segment interior when the resolved cell fails to contain it. */
+        double t_sample = t_current + RAY_EPSILON;
+        int resolve_attempt = 0;
+        /* Snapshot of the attempt-0 outcome. The retry is accepted only when
+         * it verifies strictly better; otherwise this state is restored, so a
+         * failed retry can never degrade the pre-verification answer. */
+        int saved_valid = 0;
+        int saved_cell_idx = -1;
+        int saved_cell_id = -1;
+        int saved_material_id = 0;
+        double saved_density = 0;
+        double saved_t_next = 0;
+        int saved_hit_surface_id = -1;
+        int saved_next_enter_surface_id = -1;
+        alea_raycast_boundary_event_t saved_bevent;
+        alea_hier_ray_path_t saved_path;
+        memset(&saved_bevent, 0, sizeof(saved_bevent));
+        saved_path.count = 0;
+resolve_cell:;
         int cell_idx = -1;
         int cell_id = -1;
         int material_id = 0;
@@ -2561,11 +2612,27 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         if (prev_cell_idx >= 0 && prev_surface_id > 0) {
             const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
             if (!use_hier_lookup || prev_cell->universe_id == 0) {
+                double px, py, pz;
+                alea_ray_point_at(ray, t_sample, &px, &py, &pz);
                 found_via_neighbor = raycast_find_neighbor(sys, prev_cell_idx,
                                                            prev_surface_id,
+                                                           px, py, pz,
                                                            &cell_id, &cell_idx,
                                                            &material_id,
                                                            &density);
+                /* In hier mode a filled container is not a terminal answer:
+                 * reject it so the full lookup descends into the fill. */
+                if (found_via_neighbor && use_hier_lookup) {
+                    const alea_cell_entry_t* nb = &sys->cells.data[cell_idx];
+                    if (nb->fill_universe > 0 ||
+                        (nb->lat_type != 0 && nb->lat_fill)) {
+                        found_via_neighbor = 0;
+                        cell_idx = -1;
+                        cell_id = -1;
+                        material_id = 0;
+                        density = 0;
+                    }
+                }
             }
         }
 
@@ -2678,7 +2745,7 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
             (size_t)prev_cell_idx < alea_vec_count(&sys->cells)) {
             const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
             double px, py, pz;
-            alea_ray_point_at(ray, t_current + RAY_EPSILON, &px, &py, &pz);
+            alea_ray_point_at(ray, t_sample, &px, &py, &pz);
             int in_cell = 0;
             if (prev_cell->universe_id == 0) {
                 in_cell = prev_cell->root_node_id != ALEA_NODE_ID_INVALID &&
@@ -2705,7 +2772,7 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         /* Fall back to full lookup if neighbor lookup failed or not available */
         if (!found_via_neighbor) {
             double px, py, pz;
-            alea_ray_point_at(ray, t_current + RAY_EPSILON, &px, &py, &pz);
+            alea_ray_point_at(ray, t_sample, &px, &py, &pz);
             if (use_hier_lookup) {
                 cell_idx = find_cell_from_existing_hier_path(
                     sys, &current_path, px, py, pz,
@@ -2918,6 +2985,89 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         /* raycast_cell_surfaces returns DBL_MAX when no hit lies before t_max;
          * clamp so the terminal segment stops at the user's max_distance. */
         if (t_next > effective_t_max) t_next = effective_t_max;
+
+        /* Verify the resolved cell actually owns this segment. No surface of
+         * the chosen cell lies inside the open interval, so containment is
+         * constant across it: probing an interior point — well away from the
+         * numerically noisy boundary sample — catches both bogus adjacency
+         * transitions (non-convex cells re-entered across their own surface)
+         * and on-boundary sign noise picking a coincident sibling cell. On
+         * failure, redo the resolution once, sampling at the probe point. */
+        if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+            t_next - t_current > 1e-6) {
+            /* Probe at an irrational fraction of the interval, not the exact
+             * midpoint: a segment spanning lattice elements has periodic
+             * internal boundaries, and its midpoint can land exactly on one,
+             * where containment is numerically undefined. */
+            double t_probe = t_current +
+                0.381966011250105 * (t_next - t_current);
+            double mx, my, mz;
+            alea_ray_point_at(ray, t_probe, &mx, &my, &mz);
+            const alea_cell_entry_t* seg_cell = &sys->cells.data[cell_idx];
+            int probe_ok;
+            if (!use_hier_lookup && seg_cell->universe_id != 0) {
+                /* Flat mode resolves nested cells through the flat spatial
+                 * query; their CSG lives in a local frame we don't track
+                 * here, so containment against world coordinates would be
+                 * meaningless. Trust the resolution. */
+                probe_ok = 1;
+            } else if (!use_hier_lookup || seg_cell->universe_id == 0) {
+                probe_ok = seg_cell->root_node_id != ALEA_NODE_ID_INVALID &&
+                    alea_contains_point(sys, seg_cell->root_node_id,
+                                        mx, my, mz);
+            } else {
+                probe_ok = alea_hier_spatial_check_path_containment(
+                    sys, &current_path, (uint32_t)cell_idx, mx, my, mz,
+                    NULL, NULL, NULL) > 0;
+            }
+            if (resolve_attempt == 0) {
+                if (!probe_ok) {
+                    saved_valid = 1;
+                    saved_cell_idx = cell_idx;
+                    saved_cell_id = cell_id;
+                    saved_material_id = material_id;
+                    saved_density = density;
+                    saved_t_next = t_next;
+                    saved_hit_surface_id = hit_surface_id;
+                    saved_next_enter_surface_id = next_enter_surface_id;
+                    saved_bevent = bevent;
+                    saved_path = current_path;
+                    resolve_attempt = 1;
+                    t_sample = t_probe;
+                    goto resolve_cell;
+                }
+            } else if (saved_valid) {
+                /* The retry must verify at its own probe and resolve to a
+                 * terminal cell — a fill/lattice container is the descent's
+                 * "found nothing deeper" fallback, never an improvement. */
+                int is_container = use_hier_lookup &&
+                    (seg_cell->fill_universe > 0 ||
+                     (seg_cell->lat_type != 0 && seg_cell->lat_fill));
+                if (!probe_ok || is_container) {
+                    cell_idx = saved_cell_idx;
+                    cell_id = saved_cell_id;
+                    material_id = saved_material_id;
+                    density = saved_density;
+                    t_next = saved_t_next;
+                    hit_surface_id = saved_hit_surface_id;
+                    next_enter_surface_id = saved_next_enter_surface_id;
+                    bevent = saved_bevent;
+                    current_path = saved_path;
+                }
+            }
+        } else if (resolve_attempt == 1 && saved_valid) {
+            /* Retry resolved to void or a degenerate interval: keep the
+             * attempt-0 answer. */
+            cell_idx = saved_cell_idx;
+            cell_id = saved_cell_id;
+            material_id = saved_material_id;
+            density = saved_density;
+            t_next = saved_t_next;
+            hit_surface_id = saved_hit_surface_id;
+            next_enter_surface_id = saved_next_enter_surface_id;
+            bevent = saved_bevent;
+            current_path = saved_path;
+        }
 
         /* Emit a boundary hit for this step's physical surface crossing (if any)
          * before recording the segment, so the segment can reference it. The
