@@ -4415,47 +4415,11 @@ int alea_find_label_positions(
     return 0;
 }
 
-/**
- * @brief Evaluate curve position at parameter t
- */
-static int eval_curve_at_t(const alea_curve_t* curve, double t,
-                            double* out_x, double* out_y) {
-    switch (curve->type) {
-        case ALEA_CURVE_LINE:
-        case ALEA_CURVE_LINE_SEGMENT:
-            *out_x = curve->data.line.point[0] + t * curve->data.line.direction[0];
-            *out_y = curve->data.line.point[1] + t * curve->data.line.direction[1];
-            return 0;
-
-        case ALEA_CURVE_CIRCLE:
-        case ALEA_CURVE_ARC:
-            *out_x = curve->data.circle.center[0] + curve->data.circle.radius * cos(t);
-            *out_y = curve->data.circle.center[1] + curve->data.circle.radius * sin(t);
-            return 0;
-
-        case ALEA_CURVE_ELLIPSE:
-        case ALEA_CURVE_ELLIPSE_ARC: {
-            double c = cos(curve->data.ellipse.angle);
-            double s = sin(curve->data.ellipse.angle);
-            double lx = curve->data.ellipse.semi_a * cos(t);
-            double ly = curve->data.ellipse.semi_b * sin(t);
-            *out_x = curve->data.ellipse.center[0] + c * lx - s * ly;
-            *out_y = curve->data.ellipse.center[1] + s * lx + c * ly;
-            return 0;
-        }
-
-        default:
-            return -1;
-    }
-}
-
-/**
- * @brief Compute curve length estimate (for minimum length filtering)
- */
-static double estimate_curve_length(const alea_curve_t* curve,
-                                     double x_min, double x_max,
-                                     double y_min, double y_max,
-                                     int width, int height) {
+/** Compute a pixel-space length estimate for parametrically evaluable curves. */
+static double estimate_parametric_curve_length(const alea_curve_2d_t* curve,
+                                                double x_min, double x_max,
+                                                double y_min, double y_max,
+                                                int width, int height) {
     double dx = (x_max - x_min) / width;
 
     /* For circles: full circle if t_min == t_max, otherwise use arc angle */
@@ -4467,7 +4431,7 @@ static double estimate_curve_length(const alea_curve_t* curve,
 
     if (curve->type == ALEA_CURVE_ARC) {
         double r_pixels = curve->data.circle.radius / dx;
-        double arc_angle = curve->t_max - curve->t_min;
+        double arc_angle = curve->bounds.theta_end - curve->bounds.theta_start;
         if (arc_angle <= 0) arc_angle += 2 * M_PI;
         return r_pixels * arc_angle;
     }
@@ -4482,7 +4446,7 @@ static double estimate_curve_length(const alea_curve_t* curve,
     if (curve->type == ALEA_CURVE_ELLIPSE_ARC) {
         double avg_r = (curve->data.ellipse.semi_a + curve->data.ellipse.semi_b) / 2.0;
         double r_pixels = avg_r / dx;
-        double arc_angle = curve->t_max - curve->t_min;
+        double arc_angle = curve->bounds.theta_end - curve->bounds.theta_start;
         if (arc_angle <= 0) arc_angle += 2 * M_PI;
         return r_pixels * arc_angle;
     }
@@ -4491,8 +4455,8 @@ static double estimate_curve_length(const alea_curve_t* curve,
     if (curve->type == ALEA_CURVE_LINE ||
         curve->type == ALEA_CURVE_LINE_SEGMENT) {
         double x1, y1, x2, y2;
-        if (eval_curve_at_t(curve, curve->t_min, &x1, &y1) != 0) return 0;
-        if (eval_curve_at_t(curve, curve->t_max, &x2, &y2) != 0) return 0;
+        if (!alea_curve_eval(curve, curve->bounds.t_min, &x1, &y1)) return 0;
+        if (!alea_curve_eval(curve, curve->bounds.t_max, &x2, &y2)) return 0;
 
         double dy = (y_max - y_min) / height;
         double px1 = (x1 - x_min) / dx;
@@ -4547,32 +4511,31 @@ static int point_has_drawn_contour_nearby(const int* boundary_ids,
     return 0;
 }
 
-static void surface_label_param_range(const alea_curve_t* curve,
-                                      double* t_start,
-                                      double* t_end,
+static void surface_label_param_range(const alea_curve_2d_t* curve,
+                                      double* t_start, double* t_end,
                                       double* t_preferred) {
     if (curve->type == ALEA_CURVE_CIRCLE || curve->type == ALEA_CURVE_ELLIPSE) {
         *t_start = 0.0;
         *t_end = 2.0 * M_PI;
         *t_preferred = M_PI / 4.0;
-    } else if (curve->t_min == curve->t_max) {
+    } else if (curve->bounds.t_min == curve->bounds.t_max) {
         *t_start = 0.0;
         *t_end = 0.0;
         *t_preferred = 0.0;
     } else {
-        *t_start = curve->t_min;
-        *t_end = curve->t_max;
-        *t_preferred = (curve->t_min + curve->t_max) / 2.0;
+        *t_start = curve->bounds.t_min;
+        *t_end = curve->bounds.t_max;
+        *t_preferred = (curve->bounds.t_min + curve->bounds.t_max) / 2.0;
     }
 }
 
-static int surface_label_candidate(const alea_curve_t* curve,
-                                   const int* boundary_ids,
-                                   double x_min, double y_min,
-                                   double dx, double dy,
-                                   int width, int height,
-                                   int margin,
-                                   int* out_ix, int* out_iy) {
+static int parametric_surface_label_candidate(const alea_curve_2d_t* curve,
+                                              const int* boundary_ids,
+                                              double x_min, double y_min,
+                                              double dx, double dy,
+                                              int width, int height,
+                                              int margin,
+                                              int* out_ix, int* out_iy) {
     double t_start, t_end, t_preferred;
     surface_label_param_range(curve, &t_start, &t_end, &t_preferred);
 
@@ -4589,7 +4552,7 @@ static int surface_label_candidate(const alea_curve_t* curve,
         }
 
         double px, py;
-        if (eval_curve_at_t(curve, t, &px, &py) != 0) continue;
+        if (!alea_curve_eval(curve, t, &px, &py)) continue;
 
         int ix = (int)((px - x_min) / dx);
         int iy = (int)((py - y_min) / dy);
@@ -4621,6 +4584,84 @@ static int surface_label_candidate(const alea_curve_t* curve,
     return found;
 }
 
+static void sort_surface_label_roots(double* roots, int count) {
+    for (int i = 1; i < count; i++) {
+        double value = roots[i];
+        int j = i - 1;
+        while (j >= 0 && roots[j] > value) {
+            roots[j + 1] = roots[j];
+            j--;
+        }
+        roots[j + 1] = value;
+    }
+}
+
+/* General conics and torus quartics have no stable single parameter in the
+ * slice API. Walk horizontal viewport scanlines using the same intersection
+ * solver as rasterization, then select a central, non-tangent visible point. */
+static int scanline_surface_label_candidate(const alea_curve_2d_t* curve,
+                                            const int* boundary_ids,
+                                            double x_min, double x_max,
+                                            double y_min, double y_max,
+                                            double dx, double dy,
+                                            int width, int height,
+                                            int margin,
+                                            double* out_length,
+                                            int* out_ix, int* out_iy) {
+    double best_score = DBL_MAX;
+    int found = 0;
+    int visible_samples = 0;
+    const double cx = (width - 1) * 0.5;
+    const double cy = (height - 1) * 0.5;
+
+    (void)x_max;
+    (void)y_max;
+    for (int iy = margin; iy < height - margin; iy++) {
+        double v = y_min + (iy + 0.5) * dy;
+        double roots[8];
+        int count = alea_curve_scanline_intersect(curve, v, roots, 8);
+        if (count <= 0) continue;
+        sort_surface_label_roots(roots, count);
+
+        for (int r = 0; r < count; r++) {
+            double u = roots[r];
+            if (!isfinite(u) || u < x_min || u >= x_max) continue;
+            int ix = (int)((u - x_min) / dx);
+            if (ix < margin || ix >= width - margin) continue;
+            if (!point_has_drawn_contour_nearby(boundary_ids, width, height,
+                                                ix, iy)) {
+                continue;
+            }
+
+            visible_samples++;
+            double ddx = ix - cx;
+            double ddy = iy - cy;
+            double score = ddx * ddx + ddy * ddy;
+
+            /* Coincident roots indicate a tangent/branch tip. Prefer a stable
+             * interior portion when another candidate exists. */
+            double nearest = DBL_MAX;
+            if (r > 0) nearest = fmin(nearest, fabs(roots[r] - roots[r - 1]) / dx);
+            if (r + 1 < count)
+                nearest = fmin(nearest, fabs(roots[r + 1] - roots[r]) / dx);
+            if (nearest < 2.0) score += (double)width * height * 4.0;
+
+            if (!found || score < best_score) {
+                found = 1;
+                best_score = score;
+                *out_ix = ix;
+                *out_iy = iy;
+            }
+        }
+    }
+
+    /* Each retained crossing accounts for at least one pixel of vertical arc
+     * length. This conservative lower bound naturally handles multiple conic
+     * branches and multiple quartic loops. */
+    *out_length = (double)visible_samples;
+    return found;
+}
+
 int alea_find_surface_label_positions_on_boundaries(
     const alea_slice_curves_t* curves,
     const int* boundary_ids,
@@ -4638,7 +4679,8 @@ int alea_find_surface_label_positions_on_boundaries(
     *out_labels = NULL;
     *out_count = 0;
 
-    size_t num_curves = alea_slice_curves_count(curves);
+    const alea_curve_collection_t* collection = &curves->internal;
+    size_t num_curves = collection->curves.count;
     if (num_curves == 0) return 0;
 
     double dx = (x_max - x_min) / width;
@@ -4662,22 +4704,27 @@ int alea_find_surface_label_positions_on_boundaries(
 
     /* First pass: collect all valid label positions */
     for (size_t i = 0; i < num_curves; i++) {
-        alea_curve_t curve;
-        if (alea_slice_curves_get(curves, i, &curve) != 0) continue;
-
-        int surf_id = curve.surface_id;
+        const alea_curve_2d_t* curve = &collection->curves.data[i];
+        int surf_id = curve->surface_id;
         if (surf_id <= 0) continue;
 
-        /* Skip curves that are too short */
-        double curve_len = estimate_curve_length(&curve, x_min, x_max, y_min, y_max,
-                                                  width, height);
-        if (curve_len < MIN_CURVE_LENGTH) continue;
-
         int ix, iy;
-        if (!surface_label_candidate(&curve, boundary_ids,
-                                     x_min, y_min, dx, dy,
-                                     width, height, margin,
-                                     &ix, &iy)) {
+        double curve_len;
+        int found;
+        if (curve->type == ALEA_CURVE_PARABOLA ||
+            curve->type == ALEA_CURVE_HYPERBOLA ||
+            curve->type == ALEA_CURVE_QUARTIC) {
+            found = scanline_surface_label_candidate(
+                curve, boundary_ids, x_min, x_max, y_min, y_max,
+                dx, dy, width, height, margin, &curve_len, &ix, &iy);
+        } else {
+            curve_len = estimate_parametric_curve_length(
+                curve, x_min, x_max, y_min, y_max, width, height);
+            found = parametric_surface_label_candidate(
+                curve, boundary_ids, x_min, y_min, dx, dy,
+                width, height, margin, &ix, &iy);
+        }
+        if (!found || curve_len < MIN_CURVE_LENGTH) {
             continue;
         }
 
