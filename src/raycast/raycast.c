@@ -168,12 +168,16 @@ static void raycast_result_reset_counters(alea_raycast_result_t* result) {
 void alea_raycast_result_free(alea_raycast_result_t* result) {
     alea_vec_free(&result->hits);
     alea_vec_free(&result->segments);
+    alea_vec_free(&result->paths);
+    alea_vec_free(&result->path_entries);
     raycast_result_reset_counters(result);
 }
 
 void alea_raycast_result_clear(alea_raycast_result_t* result) {
     alea_vec_clear(&result->hits);
     alea_vec_clear(&result->segments);
+    alea_vec_clear(&result->paths);
+    alea_vec_clear(&result->path_entries);
     raycast_result_reset_counters(result);
 }
 
@@ -226,6 +230,104 @@ static bool raycast_primitive_copy_payload(const alea_system_t* sys,
 static int add_segment(alea_raycast_result_t* result, const alea_ray_segment_t* seg) {
     int res = alea_vec_push(&result->segments, *seg, alea_ray_segment_t);
     return res != 0 ? -1 : 0;
+}
+
+static uint64_t path_hash_bytes(uint64_t hash, const void* data, size_t size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static uint64_t path_entry_occurrence_key(uint64_t parent_key,
+                                           const alea_hier_ray_path_entry_t* entry) {
+    uint64_t hash = parent_key ? parent_key : UINT64_C(1469598103934665603);
+    hash = path_hash_bytes(hash, &entry->cell_index, sizeof(entry->cell_index));
+    hash = path_hash_bytes(hash, &entry->cell_id, sizeof(entry->cell_id));
+    hash = path_hash_bytes(hash, &entry->universe_id, sizeof(entry->universe_id));
+    hash = path_hash_bytes(hash, &entry->fill_universe, sizeof(entry->fill_universe));
+    hash = path_hash_bytes(hash, &entry->depth, sizeof(entry->depth));
+    hash = path_hash_bytes(hash, &entry->is_lattice, sizeof(entry->is_lattice));
+    hash = path_hash_bytes(hash, &entry->lat_fill_universe, sizeof(entry->lat_fill_universe));
+    hash = path_hash_bytes(hash, &entry->lat_ox, sizeof(entry->lat_ox));
+    hash = path_hash_bytes(hash, &entry->lat_oy, sizeof(entry->lat_oy));
+    hash = path_hash_bytes(hash, &entry->lat_oz, sizeof(entry->lat_oz));
+    hash = path_hash_bytes(hash, entry->transform.m, sizeof(entry->transform.m));
+    return hash;
+}
+
+static int ray_path_entry_equal(const alea_ray_path_entry_t* a,
+                                const alea_ray_path_entry_t* b) {
+    return a->cell_index == b->cell_index &&
+           a->cell_id == b->cell_id &&
+           a->material_id == b->material_id &&
+           a->universe_id == b->universe_id &&
+           a->fill_universe == b->fill_universe &&
+           a->depth == b->depth &&
+           a->is_lattice == b->is_lattice &&
+           a->lattice_origin[0] == b->lattice_origin[0] &&
+           a->lattice_origin[1] == b->lattice_origin[1] &&
+           a->lattice_origin[2] == b->lattice_origin[2] &&
+           a->occurrence_key == b->occurrence_key;
+}
+
+static int capture_hier_path(alea_raycast_result_t* result,
+                             const alea_hier_ray_path_t* path,
+                             uint32_t* out_path_index) {
+    *out_path_index = UINT32_MAX;
+    if (!result->capture_paths || !path || path->count <= 0) return 0;
+
+    size_t count = (size_t)path->count;
+    alea_ray_path_entry_t entries[ALEA_HIER_RAY_PATH_MAX];
+    uint64_t parent_key = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const alea_hier_ray_path_entry_t* src = &path->entries[i];
+        alea_ray_path_entry_t* dst = &entries[i];
+        dst->cell_index = src->cell_index;
+        dst->cell_id = src->cell_id;
+        dst->material_id = src->material_id;
+        dst->universe_id = src->universe_id;
+        dst->fill_universe = src->fill_universe;
+        dst->depth = src->depth;
+        dst->is_lattice = src->is_lattice;
+        dst->lattice_origin[0] = src->lat_ox;
+        dst->lattice_origin[1] = src->lat_oy;
+        dst->lattice_origin[2] = src->lat_oz;
+        parent_key = path_entry_occurrence_key(parent_key, src);
+        dst->occurrence_key = parent_key;
+    }
+
+    for (size_t i = 0; i < result->paths.count; ++i) {
+        const alea_ray_path_t* candidate = &result->paths.data[i];
+        if (candidate->count != count) continue;
+        int same = 1;
+        for (size_t j = 0; j < count; ++j) {
+            if (!ray_path_entry_equal(&result->path_entries.data[candidate->offset + j],
+                                      &entries[j])) {
+                same = 0;
+                break;
+            }
+        }
+        if (same) {
+            *out_path_index = (uint32_t)i;
+            return 0;
+        }
+    }
+
+    alea_ray_path_t record = {
+        .offset = (uint32_t)result->path_entries.count,
+        .count = (uint16_t)count,
+    };
+    for (size_t i = 0; i < count; ++i) {
+        if (alea_vec_push(&result->path_entries, entries[i], alea_ray_path_entry_t) != 0)
+            return -1;
+    }
+    if (alea_vec_push(&result->paths, record, alea_ray_path_t) != 0)
+        return -1;
+    *out_path_index = (uint32_t)(result->paths.count - 1);
+    return 0;
 }
 
 /* ============================================================================
@@ -724,6 +826,7 @@ static int raycast_to_segments_impl(alea_system_t* sys,
                         ? result->hits.data[i].surface_id
                         : -1;
                 seg.enter_hit_index = (i > 0) ? (int)(i - 1) : -1;
+                seg.path_index = UINT32_MAX;
                 seg.resolution_flags =
                     (cell_idx >= 0 &&
                      (size_t)cell_idx < alea_vec_count(&sys->cells) &&
@@ -3109,8 +3212,16 @@ resolve_cell:;
             exit_hit_index = boundary_event_emit_hit(sys, ray, &bevent, result);
         }
 
-        /* Add or extend segment */
-        if (cell_idx == prev_cell_idx && result->segments.count > 0) {
+        uint32_t path_index = UINT32_MAX;
+        if (use_hier_lookup && capture_hier_path(result, &current_path,
+                                                  &path_index) != 0) {
+            return -1;
+        }
+
+        /* Add or extend segment. A placement/lattice path change is a real
+         * ownership transition even if it resolves to the same leaf cell. */
+        if (cell_idx == prev_cell_idx && result->segments.count > 0 &&
+            result->segments.data[result->segments.count - 1].path_index == path_index) {
             /* Extend previous segment */
             alea_ray_segment_t* prev_seg =
                 &result->segments.data[result->segments.count - 1];
@@ -3127,6 +3238,7 @@ resolve_cell:;
             seg.enter_surface_id = prev_surface_id;
             seg.exit_surface_id = hit_surface_id;
             seg.enter_hit_index = pending_enter_hit_index;
+            seg.path_index = path_index;
             seg.resolution_flags =
                 (cell_idx >= 0 &&
                  (size_t)cell_idx < alea_vec_count(&sys->cells) &&

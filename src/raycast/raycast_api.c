@@ -17,6 +17,7 @@
 
 #define _USE_MATH_DEFINES
 #include "alea.h"
+#include "alea_raycast.h"
 #include "raycast.h"
 #include "bvh.h"
 #include "core/alea_system.h"
@@ -73,6 +74,44 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
     if (density) *density = seg->density;
     if (enter_surface_id) *enter_surface_id = seg->enter_surface_id;
     if (exit_surface_id) *exit_surface_id = seg->exit_surface_id;
+    return 0;
+}
+
+void alea_raycast_result_set_path_capture(alea_raycast_result_t* result,
+                                          int enabled) {
+    if (result) result->capture_paths = enabled ? 1 : 0;
+}
+
+size_t alea_raycast_segment_path_count(const alea_raycast_result_t* result,
+                                       size_t segment_index) {
+    if (!result || segment_index >= result->segments.count) return 0;
+    uint32_t path_index = result->segments.data[segment_index].path_index;
+    if (path_index == UINT32_MAX || path_index >= result->paths.count) return 0;
+    return result->paths.data[path_index].count;
+}
+
+int alea_raycast_segment_path_get(const alea_raycast_result_t* result,
+                                  size_t segment_index,
+                                  size_t path_entry_index,
+                                  alea_raycast_path_entry_t* out_entry) {
+    if (!result || !out_entry || segment_index >= result->segments.count) return -1;
+    uint32_t path_index = result->segments.data[segment_index].path_index;
+    if (path_index == UINT32_MAX || path_index >= result->paths.count) return -1;
+    const alea_ray_path_t* path = &result->paths.data[path_index];
+    if (path_entry_index >= path->count) return -1;
+    const alea_ray_path_entry_t* src =
+        &result->path_entries.data[path->offset + path_entry_index];
+    out_entry->cell_index = src->cell_index;
+    out_entry->cell_id = src->cell_id;
+    out_entry->material_id = src->material_id;
+    out_entry->universe_id = src->universe_id;
+    out_entry->fill_universe = src->fill_universe;
+    out_entry->depth = src->depth;
+    out_entry->is_lattice = src->is_lattice;
+    out_entry->lattice_origin[0] = src->lattice_origin[0];
+    out_entry->lattice_origin[1] = src->lattice_origin[1];
+    out_entry->lattice_origin[2] = src->lattice_origin[2];
+    out_entry->occurrence_key = src->occurrence_key;
     return 0;
 }
 

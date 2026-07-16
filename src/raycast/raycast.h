@@ -42,10 +42,30 @@ typedef struct {
     int exit_surface_id;  /* Surface crossed at t_exit: -1 none, 0 synthetic, >0 physical */
     int enter_hit_index;  /* Index into hits[] for the surface at t_enter, or -1 */
     uint8_t resolution_flags; /* ALEA_RESOLVE_* bits (alea_types.h) */
+    uint32_t path_index;  /* Result-local hierarchy path, UINT32_MAX if absent */
 } alea_ray_segment_t;
+
+typedef struct {
+    uint32_t offset;
+    uint16_t count;
+} alea_ray_path_t;
+
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    int material_id;
+    int universe_id;
+    int fill_universe;
+    int depth;
+    uint8_t is_lattice;
+    double lattice_origin[3];
+    uint64_t occurrence_key;
+} alea_ray_path_entry_t;
 
 ALEA_VEC_DEFINE(alea_ray_hit_vec, alea_ray_hit_t);
 ALEA_VEC_DEFINE(alea_ray_segment_vec, alea_ray_segment_t);
+ALEA_VEC_DEFINE(alea_ray_path_vec, alea_ray_path_t);
+ALEA_VEC_DEFINE(alea_ray_path_entry_vec, alea_ray_path_entry_t);
 
 /* Number of histogram bins for primitive-type instrumentation. Sized to
  * comfortably exceed the alea_primitive_type_t range (currently <= 22). */
@@ -56,6 +76,9 @@ struct alea_raycast_result {
     alea_ray_t ray;
     alea_ray_hit_vec_t hits;
     alea_ray_segment_vec_t segments;
+    alea_ray_path_vec_t paths;
+    alea_ray_path_entry_vec_t path_entries;
+    uint8_t capture_paths;
     int surfaces_tested;
     int bbox_culled;
     int point_lookups;
