@@ -877,6 +877,18 @@ TEST(undefined_fill_flagged) {
     ASSERT_EQ(hhit.hit.resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL,
               ALEA_RESOLVE_UNDEFINED_FILL);
 
+    /* Cache-poisoning order: an undefined-fill query caches a chain ending
+     * in the container; a following query where the fill HAS content must
+     * not be served that truncated chain (the container contains both
+     * points, so containment validation alone cannot reject it). */
+    alea_cell_hit_t chain[8];
+    int nh = alea_find_all_cells(sys, 5, 0, 0, chain, 8);   /* undefined   */
+    ASSERT_EQ(nh, 1);
+    nh = alea_find_all_cells(sys, -5, 0, 0, chain, 8);       /* covered     */
+    ASSERT_EQ(nh, 2);
+    ASSERT_EQ(chain[1].cell_id, 10);
+    ASSERT_EQ(chain[1].resolution_flags, 0);
+
     /* Trace segments carry the flag and agree with the point answers */
     alea_raycast_result_t r;
     alea_raycast_result_init(&r);

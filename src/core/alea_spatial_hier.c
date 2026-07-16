@@ -1532,6 +1532,21 @@ static int hier_cache_try(alea_system_t* sys, double x, double y, double z,
                           alea_cell_hit_t* out_hits, size_t max_hits) {
     if (g_hier_cache_count <= 0) return -1;
 
+    /* A cached chain that ends in a fill/lattice container is an
+     * undefined-fill fallback: the fill had no content at the cached point.
+     * At a different point the same container may resolve deeper, and no
+     * containment check on the cached entries can detect that — the missing
+     * depth is exactly what is not in the cache. Force a full descent. */
+    {
+        const hier_cached_cell_t* last = &g_hier_cache[g_hier_cache_count - 1];
+        if (!last->valid) return -1;
+        if ((size_t)last->cell_index >= alea_vec_count(&sys->cells)) return -1;
+        if (!last->is_lattice &&
+            alea_cell_entry_is_container(&sys->cells.data[last->cell_index]))
+            return -1;
+        if (last->is_lattice) return -1;
+    }
+
     size_t hit_count = 0;
     for (int i = 0; i < g_hier_cache_count && hit_count < max_hits; i++) {
         hier_cached_cell_t* ent = &g_hier_cache[i];
