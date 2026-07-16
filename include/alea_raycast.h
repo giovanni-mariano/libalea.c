@@ -25,6 +25,24 @@ extern "C" {
 /** Opaque raycast result type */
 typedef struct alea_raycast_result alea_raycast_result_t;
 
+/** One resolved hierarchy entry attached to an opt-in ray segment path.
+ *
+ * ``occurrence_key`` identifies this concrete occurrence, including its
+ * ancestor placement/lattice context.  It is stable for equivalent paths
+ * traced in opposite directions through an unchanged system.
+ */
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    int material_id;
+    int universe_id;
+    int fill_universe;
+    int depth;
+    uint8_t is_lattice;
+    double lattice_origin[3];
+    uint64_t occurrence_key;
+} alea_raycast_path_entry_t;
+
 /* ============================================================================
  * RAYCAST FUNCTIONS
  * ============================================================================ */
@@ -116,6 +134,21 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                                  double* t_enter, double* t_exit,
                                  int* cell_id, int* material_id, double* density,
                                  int* enter_surface_id, int* exit_surface_id);
+
+/** Enable or disable hierarchy-path capture for subsequent hierarchical traces.
+ * Disabled by default.  The setting survives result-buffer reuse. */
+void alea_raycast_result_set_path_capture(alea_raycast_result_t* result,
+                                          int enabled);
+
+/** Return the number of hierarchy entries attached to a segment. */
+size_t alea_raycast_segment_path_count(const alea_raycast_result_t* result,
+                                       size_t segment_index);
+
+/** Copy one hierarchy path entry attached to a segment. */
+int alea_raycast_segment_path_get(const alea_raycast_result_t* result,
+                                  size_t segment_index,
+                                  size_t path_entry_index,
+                                  alea_raycast_path_entry_t* out_entry);
 
 /**
  * @brief Calculate total path length through material
