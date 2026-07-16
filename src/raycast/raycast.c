@@ -2519,6 +2519,26 @@ resolve_cell:;
                         cell_id = -1;
                         material_id = 0;
                         density = 0;
+                    } else if (nb->universe_id == 0) {
+                        /* Neighbor resolution at the root bypasses the full
+                         * hierarchy lookup.  Refresh its path explicitly:
+                         * retaining the previous root entry would attach the
+                         * wrong owner occurrence to this segment. */
+                        current_path.count = 1;
+                        alea_hier_ray_path_entry_t* entry =
+                            &current_path.entries[0];
+                        entry->cell_index = (uint32_t)cell_idx;
+                        entry->cell_id = nb->mc_cell_id;
+                        entry->material_id = nb->material_id;
+                        entry->universe_id = nb->universe_id;
+                        entry->fill_universe = nb->fill_universe;
+                        entry->depth = 0;
+                        entry->is_lattice = 0;
+                        entry->lat_fill_universe = 0;
+                        entry->lat_ox = 0.0;
+                        entry->lat_oy = 0.0;
+                        entry->lat_oz = 0.0;
+                        alea_matrix_identity(&entry->transform);
                     }
                 }
             }
