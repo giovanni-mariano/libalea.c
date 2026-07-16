@@ -465,6 +465,16 @@ static int cell_references_surface_id(const alea_system_t* sys,
     return 0;
 }
 
+/* Hits from the all-cells queries are in DFS preorder. Follow the first
+ * strictly-deepening chain and take its deepest hit, so overlapping
+ * same-depth cells resolve to the first containing cell in deck order —
+ * matching the canonical resolver and the hier descent. */
+static int deepest_first_chain_index(const alea_cell_hit_t* hits, int n) {
+    int idx = 0;
+    while (idx + 1 < n && hits[idx + 1].depth == hits[idx].depth + 1) idx++;
+    return idx;
+}
+
 /**
  * @brief Full cell lookup via point-in-cell search
  */
@@ -481,7 +491,8 @@ static void raycast_find_cell_full(alea_system_t* sys,
     int num_hits = alea_find_all_cells_at_point(sys, px, py, pz, hits, 32);
 
     if (num_hits > 0) {
-        const alea_cell_hit_t* hit = &hits[num_hits - 1];
+        const alea_cell_hit_t* hit =
+            &hits[deepest_first_chain_index(hits, num_hits)];
         *out_cell_id = hit->cell_id;
         *out_cell_idx = hit->cell_index;
         *out_material_id = hit->material_id;
@@ -506,7 +517,8 @@ static void raycast_find_cell_full_hier(alea_system_t* sys,
                                                          hits, 32);
 
     if (num_hits > 0) {
-        const alea_cell_hit_t* hit = &hits[num_hits - 1];
+        const alea_cell_hit_t* hit =
+            &hits[deepest_first_chain_index(hits, num_hits)];
         *out_cell_id = hit->cell_id;
         *out_cell_idx = hit->cell_index;
         *out_material_id = hit->material_id;
@@ -2061,8 +2073,9 @@ static int find_cell_at_point(alea_system_t* sys,
     int num_hits = alea_find_all_cells_at_point(sys, px, py, pz, hits, 32);
 
     if (num_hits > 0) {
-        /* Use deepest cell (innermost in hierarchy) */
-        const alea_cell_hit_t* hit = &hits[num_hits - 1];
+        /* Deepest cell along the first containing chain */
+        const alea_cell_hit_t* hit =
+            &hits[deepest_first_chain_index(hits, num_hits)];
         if (out_material_id) *out_material_id = hit->material_id;
         if (out_density && hit->cell_index >= 0 &&
             (size_t)hit->cell_index < alea_vec_count(&sys->cells)) {
@@ -2684,30 +2697,42 @@ resolve_cell:;
                     sys, &current_path, (uint32_t)cell_idx, mx, my, mz,
                     NULL, NULL, NULL) > 0;
             }
-            if (resolve_attempt == 0) {
-                if (!probe_ok) {
-                    saved_valid = 1;
-                    saved_cell_idx = cell_idx;
-                    saved_cell_id = cell_id;
-                    saved_material_id = material_id;
-                    saved_density = density;
-                    saved_t_next = t_next;
-                    saved_hit_surface_id = hit_surface_id;
-                    saved_next_enter_surface_id = next_enter_surface_id;
-                    saved_bevent = bevent;
-                    saved_path = current_path;
-                    resolve_attempt = 1;
+            /* A retry must not climb the hierarchy: a shallower answer than
+             * attempt-0's is a "found nothing deeper" fallback (e.g. a fill
+             * container over an unsupported lattice region), not a
+             * correction. Equal-depth siblings (overlaps, re-crossed
+             * quartics) and deeper resolutions are legitimate. */
+            int depth_ok = !saved_valid || !use_hier_lookup ||
+                           current_path.count >= saved_path.count;
+            if (!probe_ok || !depth_ok) {
+                if (resolve_attempt < 2 && probe_ok == 0 && depth_ok) {
+                    /* Re-resolve, sampling at this interval's probe point.
+                     * A second retry handles the case where the region just
+                     * past t_current belongs to yet another cell than the
+                     * one found at the first retry's (stale) probe. */
+                    if (!saved_valid) {
+                        saved_valid = 1;
+                        saved_cell_idx = cell_idx;
+                        saved_cell_id = cell_id;
+                        saved_material_id = material_id;
+                        saved_density = density;
+                        saved_t_next = t_next;
+                        saved_hit_surface_id = hit_surface_id;
+                        saved_next_enter_surface_id = next_enter_surface_id;
+                        saved_bevent = bevent;
+                        saved_path = current_path;
+                    }
+                    resolve_attempt++;
                     t_sample = t_probe;
                     goto resolve_cell;
                 }
-            } else if (saved_valid) {
-                /* The retry must verify at its own probe and resolve to a
-                 * terminal cell — a fill/lattice container is the descent's
-                 * "found nothing deeper" fallback, never an improvement. */
-                int is_container = use_hier_lookup &&
-                    (seg_cell->fill_universe > 0 ||
-                     (seg_cell->lat_type != 0 && seg_cell->lat_fill));
-                if (!probe_ok || is_container) {
+                if (saved_valid && !depth_ok) {
+                    /* A retry that climbed the hierarchy is a "found nothing
+                     * deeper" fallback, never a correction: keep attempt 0.
+                     * A depth-consistent retry that merely fails its probe is
+                     * kept as-is — its error is bounded by its own short
+                     * interval, whereas restoring attempt-0 would reinstate
+                     * the full overrun that triggered the retry. */
                     cell_idx = saved_cell_idx;
                     cell_id = saved_cell_id;
                     material_id = saved_material_id;
@@ -2719,7 +2744,7 @@ resolve_cell:;
                     current_path = saved_path;
                 }
             }
-        } else if (resolve_attempt == 1 && saved_valid) {
+        } else if (resolve_attempt >= 1 && saved_valid) {
             /* Retry resolved to void or a degenerate interval: keep the
              * attempt-0 answer. */
             cell_idx = saved_cell_idx;

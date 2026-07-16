@@ -5,6 +5,7 @@
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
 #include "core/alea_system.h"
+#include "core/alea_universe.h"
 #include "core/alea_surface.h"
 #include "primitives/bbox.h"
 #include "alea_types.h"
@@ -1552,6 +1553,7 @@ static int hier_cache_try(alea_system_t* sys, double x, double y, double z,
             if (ox != ent->lat_ox || oy != ent->lat_oy || oz != ent->lat_oz) {
                 return -1;
             }
+            if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return -1;
         } else {
             if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
                 return -1;
@@ -1591,6 +1593,7 @@ static int process_point_cell(alea_system_t* sys,
             ? lattice_hex_lookup_local(cell, lx, ly, lz, &ox, &oy, &oz)
             : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
         if (fill_univ < 0) return 0;
+        if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return 0;
 
         if (*hit_count < max_hits) {
             alea_cell_hit_t* hit = &out_hits[*hit_count];
@@ -1800,6 +1803,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
             ? lattice_hex_lookup_local(cell, lx, ly, lz, &ox, &oy, &oz)
             : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
         if (fill_univ < 0) return 0;
+        if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return 0;
 
         hier_path_append(path, cell_index, cell, fill_univ,
                          depth, transform,
@@ -2015,6 +2019,7 @@ int alea_hier_spatial_get_cached_cell_state(alea_system_t* sys,
             if (ox != ent->lat_ox || oy != ent->lat_oy || oz != ent->lat_oz) {
                 return 0;
             }
+            if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return 0;
             lattice_cell_index = (int)ent->cell_index;
             lattice_transform = ent->transform;
             continue;
@@ -2080,6 +2085,7 @@ int alea_hier_spatial_check_path_containment(alea_system_t* sys,
             if (ox != ent->lat_ox || oy != ent->lat_oy || oz != ent->lat_oz) {
                 return 0;
             }
+            if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return 0;
             lattice_cell_index = (int)ent->cell_index;
             lattice_transform = ent->transform;
             continue;
@@ -2305,6 +2311,9 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
                 : lattice_rect_lookup(cell, parent_lx, parent_ly,
                                       parent_lz, &ox, &oy, &oz);
             if (fill_univ < 0) return 0;
+            if (!alea_lattice_cell_contains(sys, cell,
+                                            parent_lx, parent_ly, parent_lz))
+                return 0;
 
             alea_matrix_t element_translation;
             translation_matrix(&element_translation, ox, oy, oz);
