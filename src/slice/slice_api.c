@@ -257,9 +257,13 @@ void alea_slice_curves_free(alea_slice_curves_t* curves) {
  * ============================================================================ */
 
 /* Error codes */
-#define GRID_ERR_NONE      0
-#define GRID_ERR_OVERLAP   1
-#define GRID_ERR_UNDEFINED 2
+#define GRID_ERR_NONE           0
+#define GRID_ERR_OVERLAP        1
+#define GRID_ERR_UNDEFINED      2
+/* Deepest containing cell is a fill/lattice container whose filling universe
+ * has no cell at the point (MCNP undefined region): the pixel shows the
+ * container, flagged. */
+#define GRID_ERR_UNDEFINED_FILL 3
 
 /* Forward declarations for functions used across sections */
 static void get_clipped_param_range(const alea_curve_2d_t* curve,
@@ -657,6 +661,8 @@ static void find_cell_multilevel(alea_system_t* sys,
                 hit->local_x = lx;
                 hit->local_y = ly;
                 hit->local_z = lz;
+                hit->resolution_flags = alea_cell_entry_is_container(cell)
+                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
                 hits_found++;
             }
 
@@ -832,6 +838,13 @@ static void find_cell_multilevel(alea_system_t* sys,
                     break;
                 }
             }
+        }
+        /* Deepest-mode pick landed on an unresolved container: undefined
+         * fill. Requested-depth picks legitimately show containers, so the
+         * flag only applies to universe_depth < 0. Overlap keeps priority. */
+        if (*out_error == GRID_ERR_NONE && universe_depth < 0 &&
+            (hits[target_idx].resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL)) {
+            *out_error = GRID_ERR_UNDEFINED_FILL;
         }
     }
 

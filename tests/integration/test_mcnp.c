@@ -11,6 +11,7 @@
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "core/alea_universe.h"
+#include "core/alea_spatial_hier.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "raycast/raycast.h"
@@ -824,6 +825,84 @@ TEST(lattice_nested) {
 
     /* ---- Outside lattice bounds → void ---- */
     ASSERT_EQ(alea_find_cell_lazy(sys, 10, 0, 0, &cell_id, &material, NULL), -1);
+
+    mcnp_model_destroy(model);
+}
+
+/*
+ * Undefined-fill regions (Option C): a container whose filling universe has
+ * no cell at the point is returned as the answer, flagged
+ * ALEA_RESOLVE_UNDEFINED_FILL. Universe 10 covers only x < 0 of container
+ * cell 1; x > 0 inside the container is an MCNP undefined region.
+ */
+TEST(undefined_fill_flagged) {
+    const char* input =
+        "Undefined fill flag test\n"
+        "1 0 1 -2 3 -4 5 -6 FILL=10\n"
+        "2 0 -1 : 2 : -3 : 4 : -5 : 6\n"
+        "10 1 -1.0 -7 1 3 -4 5 -6 U=10\n"
+        "\n"
+        "1 PX -10\n"
+        "2 PX 10\n"
+        "3 PY -1\n"
+        "4 PY 1\n"
+        "5 PZ -1\n"
+        "6 PZ 1\n"
+        "7 PX 0\n"
+        "\n"
+        "M1 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    /* Covered half: terminal cell, no flag */
+    alea_cell_hit_t hit;
+    ASSERT_EQ(alea_find_deepest_cell_hit_at_point(sys, -5, 0, 0, &hit), 0);
+    ASSERT_EQ(hit.cell_id, 10);
+    ASSERT_EQ(hit.resolution_flags, 0);
+
+    /* Uncovered half: the container is the answer, flagged */
+    ASSERT_EQ(alea_find_deepest_cell_hit_at_point(sys, 5, 0, 0, &hit), 0);
+    ASSERT_EQ(hit.cell_id, 1);
+    ASSERT_EQ(hit.resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL,
+              ALEA_RESOLVE_UNDEFINED_FILL);
+
+    /* Hier resolver agrees, including the flag */
+    alea_hier_cell_hit_t hhit;
+    ASSERT_EQ(alea_hier_spatial_find_deepest_cell_at_point(sys, 5, 0, 0,
+                                                           &hhit), 1);
+    ASSERT_EQ(hhit.hit.cell_id, 1);
+    ASSERT_EQ(hhit.hit.resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL,
+              ALEA_RESOLVE_UNDEFINED_FILL);
+
+    /* Trace segments carry the flag and agree with the point answers */
+    alea_raycast_result_t r;
+    alea_raycast_result_init(&r);
+    ASSERT_EQ(alea_raycast_hier(sys, -5, 0, 0, 1, 0, 0, 15.0, &r), 0);
+    ASSERT(r.segments.count >= 2);
+    ASSERT_EQ(r.segments.data[0].cell_id, 10);
+    ASSERT_EQ(r.segments.data[0].resolution_flags, 0);
+    ASSERT_EQ(r.segments.data[1].cell_id, 1);
+    ASSERT_EQ(r.segments.data[1].resolution_flags &
+              ALEA_RESOLVE_UNDEFINED_FILL, ALEA_RESOLVE_UNDEFINED_FILL);
+    alea_raycast_result_free(&r);
+
+    /* Flat pipeline segments too */
+    alea_raycast_result_init(&r);
+    ASSERT_EQ(alea_raycast(sys, -5, 0, 0, 1, 0, 0, 15.0, &r), 0);
+    int saw_flagged_container = 0;
+    for (size_t i = 0; i < r.segments.count; i++) {
+        if (r.segments.data[i].cell_id == 1) {
+            saw_flagged_container = 1;
+            ASSERT_EQ(r.segments.data[i].resolution_flags &
+                      ALEA_RESOLVE_UNDEFINED_FILL,
+                      ALEA_RESOLVE_UNDEFINED_FILL);
+        }
+    }
+    ASSERT(saw_flagged_container);
+    alea_raycast_result_free(&r);
 
     mcnp_model_destroy(model);
 }
