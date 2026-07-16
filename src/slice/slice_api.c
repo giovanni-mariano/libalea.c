@@ -817,7 +817,17 @@ static void find_cell_multilevel(alea_system_t* sys,
     int target_depth;
 
     if (universe_depth < 0) {
-        target_idx = num_hits - 1;
+        /* Hits are in DFS preorder. Follow the first strictly-deepening
+         * chain and take its deepest hit: with overlapping same-depth
+         * cells this picks the first containing cell in deck order — the
+         * same precedence the canonical resolver (find_cell_recursive)
+         * and the ray tracer apply. hits[num_hits-1] would pick the last
+         * overlapping sibling instead. */
+        target_idx = 0;
+        while (target_idx + 1 < num_hits &&
+               hits[target_idx + 1].depth == hits[target_idx].depth + 1) {
+            target_idx++;
+        }
         target_depth = hits[target_idx].depth;
     } else {
         target_idx = -1;

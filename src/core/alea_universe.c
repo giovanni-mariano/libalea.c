@@ -336,6 +336,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
             ? lattice_hex_lookup(cell, lx, ly, lz, &ox, &oy, &oz)
             : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
         if (fill_univ < 0) return 0;
+        if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return 0;
 
         if (*hit_count < max_hits) {
             alea_cell_hit_t* hit = &out_hits[*hit_count];
@@ -1844,6 +1845,44 @@ int lattice_hex_lookup(const alea_cell_entry_t* cell,
     return cell->lat_fill[idx];
 }
 
+/* A lattice element lookup alone is not containment: axes with a single
+ * declared element skip their bound check entirely (e.g. any z maps onto a
+ * single-layer lattice), so points far outside the lattice's extent can
+ * still resolve to a "valid" element. This gate adds the missing bound
+ * check: for each single-element axis, the coordinate must lie within that
+ * element's window [lat_lower_left, lat_lower_left + pitch]. It reuses the
+ * exact lower_left/pitch values the lookups use, so in-range points are
+ * accepted identically to the lookups (no numerical cliffs at element
+ * boundaries). Multi-element axes are already bound-checked by the lookups.
+ * For hex lattices only the axial (z) axis applies; the transverse plane
+ * uses hex indexing with its own bound check. */
+int alea_lattice_cell_contains(const alea_system_t* sys,
+                               const alea_cell_entry_t* cell,
+                               double lx, double ly, double lz) {
+    if (!sys || !cell) return 0;
+
+    int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (nk == 1 && cell->lat_pitch[2] > 0.0) {
+        if (lz < cell->lat_lower_left[2] ||
+            lz > cell->lat_lower_left[2] + cell->lat_pitch[2]) return 0;
+    }
+
+    if (cell->lat_type != 2) {
+        int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+        int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+        if (ni == 1 && cell->lat_pitch[0] > 0.0) {
+            if (lx < cell->lat_lower_left[0] ||
+                lx > cell->lat_lower_left[0] + cell->lat_pitch[0]) return 0;
+        }
+        if (nj == 1 && cell->lat_pitch[1] > 0.0) {
+            if (ly < cell->lat_lower_left[1] ||
+                ly > cell->lat_lower_left[1] + cell->lat_pitch[1]) return 0;
+        }
+    }
+
+    return 1;
+}
+
 /* ============================================================================
  * LAZY POINT QUERY
  * ============================================================================ */
@@ -1878,13 +1917,14 @@ static int find_cell_recursive(const alea_system_t* sys,
         size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
         
-        /* Lattice cell: bounds check replaces CSG containment test */
+        /* Lattice cell: element lookup + window containment */
         if (cell->lat_type != 0 && cell->lat_fill) {
             double ox, oy, oz;
             int fill_univ = (cell->lat_type == 2)
                 ? lattice_hex_lookup(cell, lx, ly, lz, &ox, &oy, &oz)
                 : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
             if (fill_univ < 0) continue;
+            if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) continue;
 
             double elx = lx - ox, ely = ly - oy, elz = lz - oz;
 

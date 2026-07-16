@@ -345,4 +345,18 @@ int lattice_hex_lookup(const struct alea_cell_entry* cell,
                        double px, double py, double pz,
                        double* ox, double* oy, double* oz);
 
+/**
+ * @brief True lattice-cell containment: element lookup alone is not enough.
+ *
+ * Tests that the point, shifted back to MCNP element (0,0,0) by an integer
+ * number of lattice vectors, lies inside the lattice cell's CSG window.
+ * Call after a successful lattice_*_lookup to reject points that map to a
+ * valid element index but fall outside the lattice's actual extent (e.g.
+ * any z maps onto a single-layer lattice because the k bound check is
+ * skipped when nk == 1).
+ */
+int alea_lattice_cell_contains(const alea_system_t* sys,
+                               const struct alea_cell_entry* cell,
+                               double lx, double ly, double lz);
+
 #endif /* ALEA_UNIVERSE_H */
