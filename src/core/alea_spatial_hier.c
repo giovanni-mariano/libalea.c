@@ -1774,6 +1774,9 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                       hier_path_cache_t* path,
                                       hier_path_cache_t* best_path);
 
+/* Returns 1 if the candidate cell contains the point (lattice cells: the
+ * lattice lookup resolved an element), 0 if not, -1 on error. Containing
+ * candidates store their hit (and descend into fills) before returning. */
 static int hier_find_deepest_cell(alea_system_t* sys,
                                   alea_hier_spatial_index_t* idx,
                                   uint32_t cell_index,
@@ -1826,7 +1829,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                             out_hit, found,
                                             path, best_path);
         if (path) path->count = saved_path_count;
-        return rc;
+        return rc < 0 ? -1 : 1;
     }
 
     if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
@@ -1874,11 +1877,11 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                             out_hit, found,
                                             path, best_path);
         if (path) path->count = saved_path_count;
-        return rc;
+        return rc < 0 ? -1 : 1;
     }
 
     if (path) path->count = saved_path_count;
-    return 0;
+    return 1;
 }
 
 static int hier_find_deepest_universe(alea_system_t* sys,
@@ -1918,6 +1921,9 @@ static int hier_find_deepest_universe(alea_system_t* sys,
         if (!ctx.error && candidates.count > 1) {
             hier_cand_sort(&candidates);
         }
+        /* cell_pos order is universe definition (deck) order, and the first
+         * containing cell wins — the same precedence the canonical resolver
+         * (find_cell_recursive) applies when cells overlap. */
         for (size_t i = 0; !ctx.error && i < candidates.count; i++) {
             uint32_t cell_pos = candidates.data[i];
             if (cell_pos >= blas->cell_count) {
@@ -1933,6 +1939,7 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                             out_hit, found,
                                             path, best_path);
             if (rc < 0) ctx.error = -1;
+            if (rc > 0) break;
         }
         hier_cand_free(&candidates);
         return ctx.error ? -1 : 0;
@@ -1948,6 +1955,7 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                         out_hit, found,
                                         path, best_path);
         if (rc < 0) return -1;
+        if (rc > 0) break;
     }
 
     return 0;
@@ -2481,13 +2489,15 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
                 if (!cell_references_mc_surface(sys, cell, crossed_mc_surface_id))
                     continue;
                 if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-                    result = (int)cell_index;  /* keep last = highest cell_pos */
+                    /* First containing cell in deck order wins, matching the
+                     * canonical resolver's precedence for overlapping cells. */
+                    result = (int)cell_index;
+                    break;
                 }
             }
         }
         /* No surface hint, or no referencing candidate contained the point
-         * (coincident surfaces, etc.): exhaustive scan, identical to old
-         * behavior. */
+         * (coincident surfaces, etc.): exhaustive scan. */
         if (result < 0) {
             for (size_t i = 0; i < candidates.count; i++) {
                 uint32_t cell_pos = candidates.data[i];
@@ -2497,6 +2507,7 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
                 if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
                 if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
                     result = (int)cell_index;
+                    break;
                 }
             }
         }
@@ -2513,6 +2524,7 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
         if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
             result = (int)cell_index;
+            break;
         }
     }
     return result;

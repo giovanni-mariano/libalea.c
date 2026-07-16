@@ -450,9 +450,12 @@ TEST(hier_spatial_ordered_universe_lookup_preserves_cell_order) {
     ASSERT(large_cell >= 0);
     ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
 
+    /* Overlapping cells: the first containing cell in definition order wins,
+     * matching the canonical point resolver (find_cell_recursive). */
     int ordered = alea_hier_spatial_find_ordered_cell_in_universe(
         sys, 0, 0.0, 0.0, 0.0, -1);
-    ASSERT_EQ(ordered, large_cell);
+    ASSERT_EQ(ordered, small_cell);
+    (void)large_cell;
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
