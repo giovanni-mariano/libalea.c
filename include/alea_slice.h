@@ -47,6 +47,7 @@
 #define ALEA_SLICE_H
 
 #include "alea.h"
+#include "alea_raycast.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -235,6 +236,25 @@ void alea_slice_view_init(alea_slice_view_t* view,
                                double ux, double uy, double uz,
                                double u_min, double u_max,
                                double v_min, double v_max);
+
+/* ============================================================================
+ * COMPACT RAY-SLICE TRACING
+ * ============================================================================ */
+
+/**
+ * Trace one U-directed ray through each centered V row of a slice view.
+ *
+ * Reuses alea_raycast_batch_result_t and its requested-field options. The
+ * returned t_enter/t_exit arrays are expressed as clipped view-U coordinates
+ * in [view->u_min, view->u_max], rather than distances from each row origin.
+ * The result's ray offsets therefore index rows, in increasing V order.
+ */
+int alea_trace_ray_slice_compact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    size_t row_count,
+    const alea_raycast_batch_options_t* options,
+    alea_raycast_batch_result_t* result);
 
 /* ============================================================================
  * GRID-BASED CELL QUERIES

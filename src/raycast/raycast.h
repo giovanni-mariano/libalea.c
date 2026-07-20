@@ -7,6 +7,7 @@
 
 #include "alea_types.h"
 #include "util/alea_vec.h"
+#include "util/alea_atomic.h"
 #include <stddef.h>
 
 
@@ -79,6 +80,15 @@ struct alea_raycast_result {
     alea_ray_path_vec_t paths;
     alea_ray_path_entry_vec_t path_entries;
     uint8_t capture_paths;
+    /* Optional batch-wide live segment budget. The public single-ray APIs
+     * leave these unset; the compact batch API reserves before every append. */
+    atomic_uint_fast64_t* segment_counter;
+    uint64_t segment_limit;
+    uint8_t segment_limit_exceeded;
+    /* Optional batch-wide budget for the flattened full-path CSR output. */
+    atomic_uint_fast64_t* path_entry_counter;
+    uint64_t path_entry_limit;
+    uint8_t path_entry_limit_exceeded;
     int surfaces_tested;
     int bbox_culled;
     int point_lookups;

@@ -194,7 +194,32 @@ static bool raycast_primitive_copy_payload(const alea_system_t* sys,
     }
 }
 
+static int reserve_batch_budget(atomic_uint_fast64_t* counter, uint64_t limit,
+                                uint64_t amount) {
+    if (!counter || limit == 0 || amount == 0) return 0;
+    uint_fast64_t used = atomic_load_explicit(counter, memory_order_relaxed);
+    for (;;) {
+        if (used > limit || amount > limit - used) return -1;
+        if (atomic_compare_exchange_strong(counter, &used, used + amount)) {
+            return 0;
+        }
+    }
+}
+
 static int add_segment(alea_raycast_result_t* result, const alea_ray_segment_t* seg) {
+    if (reserve_batch_budget(result->segment_counter, result->segment_limit, 1) != 0) {
+        result->segment_limit_exceeded = 1;
+        return -1;
+    }
+    if (result->path_entry_counter && result->path_entry_limit != 0 &&
+        seg->path_index != UINT32_MAX && seg->path_index < result->paths.count) {
+        uint64_t path_count = result->paths.data[seg->path_index].count;
+        if (reserve_batch_budget(result->path_entry_counter,
+                                 result->path_entry_limit, path_count) != 0) {
+            result->path_entry_limit_exceeded = 1;
+            return -1;
+        }
+    }
     int res = alea_vec_push(&result->segments, *seg, alea_ray_segment_t);
     return res != 0 ? -1 : 0;
 }
@@ -800,7 +825,7 @@ static int raycast_to_segments_impl(alea_system_t* sys,
                      alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
                         ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
 
-                add_segment(result, &seg);
+                if (add_segment(result, &seg) != 0) return -1;
                 prev_cell_id = cell_id;
             }
         }
@@ -2928,7 +2953,7 @@ resolve_cell:;
                  (size_t)cell_idx < alea_vec_count(&sys->cells) &&
                  alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
                     ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
-            add_segment(result, &seg);
+            if (add_segment(result, &seg) != 0) return -1;
             prev_cell_idx = cell_idx;
         }
 

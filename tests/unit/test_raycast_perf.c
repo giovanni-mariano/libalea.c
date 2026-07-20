@@ -21,6 +21,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_raycast.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
 #include "raycast/bvh.h"
@@ -30,6 +31,7 @@
 #include <math.h>
 #include <time.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -325,6 +327,69 @@ TEST(perf_concentric_shells_20) {
     printf("[avg %.1f segs]  ", (double)total_segs / N);
 
     alea_raycast_result_free(&result);
+    alea_destroy(sys);
+}
+
+/*
+ * First compact-ABI measurement gate.  Both cases use the same prepared
+ * hierarchy and the identical packed rays.  The single-ray loop measures the
+ * existing rich-result call boundary; the compact call includes its native
+ * CSR assembly but no consumer-language conversion.
+ */
+TEST(perf_compact_hier_batch_20_shells) {
+    const size_t n_rays = 10000;
+    alea_system_t* sys = build_concentric_shells(20);
+    double* origins = calloc(n_rays * 3, sizeof(*origins));
+    double* directions = calloc(n_rays * 3, sizeof(*directions));
+    alea_raycast_result_t* single = alea_raycast_result_create();
+    alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+    alea_raycast_batch_options_t options = {
+        .struct_size = sizeof(options),
+        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY |
+                  ALEA_RAY_BATCH_SURFACES | ALEA_RAY_BATCH_RESOLUTION_FLAGS
+    };
+    uint32_t rng = 42;
+    size_t single_segments = 0;
+
+    ASSERT_TRUE(origins && directions && single && batch);
+    for (size_t i = 0; i < n_rays; i++) {
+        bench_random_ray(&rng, 15.0,
+                         &origins[i * 3], &origins[i * 3 + 1], &origins[i * 3 + 2],
+                         &directions[i * 3], &directions[i * 3 + 1],
+                         &directions[i * 3 + 2]);
+    }
+    alea_raycast_ensure_caches(sys);
+
+    {
+        BENCH_START();
+        for (size_t i = 0; i < n_rays; i++) {
+            ASSERT_EQ(alea_raycast_hier_fast_segments(
+                          sys,
+                          origins[i * 3], origins[i * 3 + 1], origins[i * 3 + 2],
+                          directions[i * 3], directions[i * 3 + 1], directions[i * 3 + 2],
+                          100.0, single),
+                      0);
+            single_segments += alea_raycast_segment_count(single);
+        }
+        BENCH_END("20 shells hierarchical single-ray", n_rays);
+        printf("[single-ray]  ");
+    }
+    printf("[%zu segments]  ", single_segments);
+
+    {
+        BENCH_START();
+        ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, n_rays, 100.0,
+                                           &options, batch), 0);
+        BENCH_END("20 shells compact batch (trace + CSR)", n_rays);
+        printf("[compact]  ");
+    }
+    printf("[%zu segments]  ", alea_raycast_batch_segment_count(batch));
+    ASSERT_EQ(alea_raycast_batch_segment_count(batch), single_segments);
+
+    alea_raycast_batch_result_destroy(batch);
+    alea_raycast_result_destroy(single);
+    free(directions);
+    free(origins);
     alea_destroy(sys);
 }
 
