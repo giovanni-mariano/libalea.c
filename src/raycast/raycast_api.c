@@ -75,6 +75,17 @@ struct alea_raycast_batch_result {
     uint8_t* path_is_lattice;
     double* path_lattice_origins_xyz;
     uint64_t* path_occurrence_keys;
+    struct {
+        uint8_t valid;
+        uint64_t system_id;
+        uint64_t geometry_generation;
+        double origin[3];
+        double u_axis[3];
+        double v_axis[3];
+        double u_min, u_max, v_min, v_max;
+        size_t row_count;
+        int projected_depth;
+    } fast_slice_cache;
 };
 
 typedef struct {
@@ -203,6 +214,71 @@ static int batch_validate_slice_view(const alea_slice_view_t* view) {
         return -1;
     }
     return 0;
+}
+
+static void batch_set_fast_slice_cache(alea_raycast_batch_result_t* result,
+                                       const alea_system_t* sys,
+                                       const alea_slice_view_t* view,
+                                       size_t row_count,
+                                       int projected_depth) {
+    if (!result || !sys || !view) return;
+    result->fast_slice_cache.valid = 1;
+    result->fast_slice_cache.system_id = sys->system_id;
+    result->fast_slice_cache.geometry_generation =
+        alea_system_geometry_generation(sys);
+    memcpy(result->fast_slice_cache.origin, view->plane.origin,
+           sizeof(result->fast_slice_cache.origin));
+    memcpy(result->fast_slice_cache.u_axis, view->plane.u_axis,
+           sizeof(result->fast_slice_cache.u_axis));
+    memcpy(result->fast_slice_cache.v_axis, view->plane.v_axis,
+           sizeof(result->fast_slice_cache.v_axis));
+    result->fast_slice_cache.u_min = view->u_min;
+    result->fast_slice_cache.u_max = view->u_max;
+    result->fast_slice_cache.v_min = view->v_min;
+    result->fast_slice_cache.v_max = view->v_max;
+    result->fast_slice_cache.row_count = row_count;
+    result->fast_slice_cache.projected_depth = projected_depth;
+}
+
+int alea_raycast_batch_result_matches_fast_slice_cache(
+    const alea_raycast_batch_result_t* result,
+    const alea_system_t* sys,
+    const alea_slice_view_t* view,
+    size_t row_count,
+    const alea_raycast_batch_options_t* render_options,
+    int projected_depth) {
+    uint32_t required_fields = render_options ? render_options->fields : 0;
+    if (!result || !sys || !view || !result->fast_slice_cache.valid) return 0;
+    if (result->fast_slice_cache.system_id != sys->system_id ||
+        result->fast_slice_cache.geometry_generation !=
+            alea_system_geometry_generation(sys) ||
+        result->fast_slice_cache.row_count != row_count ||
+        result->ray_count != row_count) return 0;
+    if (memcmp(result->fast_slice_cache.origin, view->plane.origin,
+               sizeof(result->fast_slice_cache.origin)) != 0 ||
+        memcmp(result->fast_slice_cache.u_axis, view->plane.u_axis,
+               sizeof(result->fast_slice_cache.u_axis)) != 0 ||
+        memcmp(result->fast_slice_cache.v_axis, view->plane.v_axis,
+               sizeof(result->fast_slice_cache.v_axis)) != 0 ||
+        result->fast_slice_cache.u_min != view->u_min ||
+        result->fast_slice_cache.u_max != view->u_max ||
+        result->fast_slice_cache.v_min != view->v_min ||
+        result->fast_slice_cache.v_max != view->v_max) return 0;
+    if ((result->fields & required_fields) != required_fields) return 0;
+    if (projected_depth >= 0 &&
+        (!(result->fields & ALEA_RAY_BATCH_PROJECTED_OWNER) ||
+         result->fast_slice_cache.projected_depth != projected_depth)) return 0;
+    return result->ray_offsets && result->t_enter && result->t_exit &&
+           result->cell_ids;
+}
+
+void alea_raycast_batch_result_swap_internal(
+    alea_raycast_batch_result_t* a,
+    alea_raycast_batch_result_t* b) {
+    if (!a || !b) return;
+    alea_raycast_batch_result_t tmp = *a;
+    *a = *b;
+    *b = tmp;
 }
 
 static void batch_store_projected_owner(alea_raycast_batch_result_t* result,
@@ -807,6 +883,8 @@ int alea_trace_ray_slice_compact(
         result->t_enter[i] = fmax(view->u_min, fmin(view->u_max, u_enter));
         result->t_exit[i] = fmax(view->u_min, fmin(view->u_max, u_exit));
     }
+    batch_set_fast_slice_cache(result, sys, view, row_count,
+                               options ? options->projected_depth : -1);
     return 0;
 }
 

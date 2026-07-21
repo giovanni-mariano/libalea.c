@@ -6,6 +6,8 @@
 #define ALEA_RAYCAST_INTERNAL_H
 
 #include "alea_types.h"
+#include "alea_raycast.h"
+#include "alea_slice.h"
 #include "util/alea_vec.h"
 #include "util/alea_atomic.h"
 #include <stddef.h>
@@ -178,6 +180,19 @@ void alea_raycast_result_clear(alea_raycast_result_t* result);
  */
 void alea_raycast_result_reserve(alea_raycast_result_t* result,
                                 size_t hit_cap, size_t seg_cap);
+
+/* Internal compact slice-cache contract.  The public batch result remains
+ * opaque; these helpers are consumed by the geo-validator implementation. */
+int alea_raycast_batch_result_matches_fast_slice_cache(
+    const alea_raycast_batch_result_t* result,
+    const alea_system_t* sys,
+    const alea_slice_view_t* view,
+    size_t row_count,
+    const alea_raycast_batch_options_t* render_options,
+    int projected_depth);
+void alea_raycast_batch_result_swap_internal(
+    alea_raycast_batch_result_t* a,
+    alea_raycast_batch_result_t* b);
 
 /**
  * @brief Cast ray and find all surface intersections

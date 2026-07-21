@@ -173,7 +173,8 @@ MESH_OBJS = \
 	$(BUILD)\mesh\mesh_export.obj
 
 GEO_VALIDATOR_OBJS = \
-	$(BUILD)\geo_validator\geo_validator.obj
+	$(BUILD)\geo_validator\geo_validator.obj \
+	$(BUILD)\geo_validator\ray_slice_validation.obj
 
 CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) \
 	$(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)

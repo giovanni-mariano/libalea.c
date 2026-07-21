@@ -8,6 +8,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_geo_validator.h"
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "raycast/raycast.h"
@@ -678,7 +679,7 @@ TEST(compact_ray_slice_matches_explicit_generic_batch) {
     alea_slice_view_t view;
     alea_slice_view_init(&view, 1.0, -2.0, 3.0, 1.0, 2.0, 3.0, 0.0, 0.0, 1.0,
                          -8.0, 9.0, -3.0, 4.0);
-    const size_t rows = 3;
+    enum { rows = 3 };
     double origins[rows * 3];
     double directions[rows * 3];
     for (size_t row = 0; row < rows; row++) {
@@ -720,6 +721,61 @@ TEST(compact_ray_slice_matches_explicit_generic_batch) {
     }
     alea_raycast_batch_result_destroy(generic);
     alea_raycast_batch_result_destroy(slice);
+    alea_destroy(sys);
+}
+
+TEST(compact_ray_slice_fast_bidirectional_reuses_plot_cache) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 3.0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0,
+                         0.0, 1.0, 0.0,
+                         -5.0, 5.0, -2.0, 2.0);
+    alea_raycast_batch_result_t* plot = alea_raycast_batch_result_create();
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(plot);
+    ASSERT_NOT_NULL(validation);
+    ASSERT_EQ(alea_trace_ray_slice_compact(sys, &view, 3, NULL, plot), 0);
+
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                               plot, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_reused_trace_mask(validation),
+              ALEA_RAY_SLICE_TRACE_FAST_FORWARD);
+    ASSERT_EQ(alea_ray_slice_validation_executed_trace_mask(validation),
+              ALEA_RAY_SLICE_TRACE_FAST_REVERSE);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation), 0);
+
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                               NULL, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_reused_trace_mask(validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_executed_trace_mask(validation),
+              ALEA_RAY_SLICE_TRACE_FAST_FORWARD |
+              ALEA_RAY_SLICE_TRACE_FAST_REVERSE);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation), 0);
+
+    /* Any geometry change makes the plotted trace stale: validation must
+     * rebuild forward rather than silently comparing a previous geometry. */
+    ASSERT(alea_sphere_surface(sys, 99, 20.0, 0.0, 0.0, 1.0) >= 0);
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                               plot, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_reused_trace_mask(validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_executed_trace_mask(validation),
+              ALEA_RAY_SLICE_TRACE_FAST_FORWARD |
+              ALEA_RAY_SLICE_TRACE_FAST_REVERSE);
+
+    alea_ray_slice_validation_result_destroy(validation);
+    alea_raycast_batch_result_destroy(plot);
     alea_destroy(sys);
 }
 

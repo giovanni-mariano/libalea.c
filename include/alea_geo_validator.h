@@ -11,6 +11,7 @@
 #define ALEA_GEO_VALIDATOR_H
 
 #include "alea.h"
+#include "alea_raycast.h"
 #include "alea_slice.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -126,6 +127,95 @@ int alea_validate_geometry_slice(alea_system_t* sys,
                                  const alea_slice_curves_t* curves,
                                  const alea_geom_validator_options_t* options,
                                  alea_geom_validator_result_t* result);
+
+/* ==========================================================================
+ * COMPACT RAY-SLICE DIRECTIONAL VALIDATION
+ * ==========================================================================
+ *
+ * This is a viewport-local diagnostic. A forward/reverse disagreement is a
+ * ray-tracing consistency signal; it is not by itself a geometry error.
+ */
+
+typedef struct alea_ray_slice_validation_result
+    alea_ray_slice_validation_result_t;
+
+#define ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL (1u << 0)
+
+#define ALEA_RAY_SLICE_DIAG_FAST_DIRECTION_MISMATCH (1u << 0)
+
+#define ALEA_RAY_SLICE_VALIDATION_INCLUDE_AGREEMENTS (1u << 0)
+
+#define ALEA_RAY_SLICE_TRACE_FAST_FORWARD (1u << 0)
+#define ALEA_RAY_SLICE_TRACE_FAST_REVERSE (1u << 1)
+
+#define ALEA_RAY_SLICE_VALIDATION_FIELD_FAST_FORWARD (1u << 0)
+#define ALEA_RAY_SLICE_VALIDATION_FIELD_FAST_REVERSE (1u << 1)
+#define ALEA_RAY_SLICE_VALIDATION_FIELD_OCCURRENCE_KEYS (1u << 2)
+
+typedef struct {
+    size_t struct_size;
+    uint32_t checks;
+    uint32_t flags;
+    int projected_depth;       /**< -1 = resolved leaf */
+    double absolute_tolerance; /**< 0 = native default */
+    double relative_tolerance; /**< 0 = native default */
+    uint64_t max_trace_intervals;
+    uint64_t max_path_entries;
+    uint64_t max_output_intervals;
+    uint64_t max_output_bytes;
+} alea_ray_slice_validation_options_t;
+
+void alea_ray_slice_validation_options_init(
+    alea_ray_slice_validation_options_t* options);
+
+alea_ray_slice_validation_result_t*
+alea_ray_slice_validation_result_create(void);
+
+void alea_ray_slice_validation_result_destroy(
+    alea_ray_slice_validation_result_t* result);
+
+size_t alea_ray_slice_validation_row_count(
+    const alea_ray_slice_validation_result_t* result);
+size_t alea_ray_slice_validation_interval_count(
+    const alea_ray_slice_validation_result_t* result);
+uint32_t alea_ray_slice_validation_fields(
+    const alea_ray_slice_validation_result_t* result);
+uint32_t alea_ray_slice_validation_executed_trace_mask(
+    const alea_ray_slice_validation_result_t* result);
+uint32_t alea_ray_slice_validation_reused_trace_mask(
+    const alea_ray_slice_validation_result_t* result);
+
+const uint64_t* alea_ray_slice_validation_row_offsets(
+    const alea_ray_slice_validation_result_t* result);
+const double* alea_ray_slice_validation_u_enter(
+    const alea_ray_slice_validation_result_t* result);
+const double* alea_ray_slice_validation_u_exit(
+    const alea_ray_slice_validation_result_t* result);
+const uint32_t* alea_ray_slice_validation_diagnostic_flags(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_fast_forward_cell_ids(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_fast_reverse_cell_ids(
+    const alea_ray_slice_validation_result_t* result);
+const uint64_t* alea_ray_slice_validation_fast_forward_occurrence_keys(
+    const alea_ray_slice_validation_result_t* result);
+const uint64_t* alea_ray_slice_validation_fast_reverse_occurrence_keys(
+    const alea_ray_slice_validation_result_t* result);
+
+/**
+ * Validate centered U-directed rows. `inout_fast_forward` is optional. When
+ * it holds a compatible result from alea_trace_ray_slice_compact(), the
+ * forward trace is reused and only the reverse trace is executed. Otherwise a
+ * replacement forward result is published there only after full success.
+ */
+int alea_validate_ray_slice_compact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    size_t row_count,
+    const alea_ray_slice_validation_options_t* validation_options,
+    const alea_raycast_batch_options_t* render_options,
+    alea_raycast_batch_result_t* inout_fast_forward,
+    alea_ray_slice_validation_result_t* out_validation);
 
 #ifdef __cplusplus
 }
