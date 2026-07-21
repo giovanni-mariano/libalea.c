@@ -527,6 +527,9 @@ $(BUILD)\mesh\mesh_export.obj: $(SRC)\mesh\mesh_export.c dirs
 $(BUILD)\geo_validator\geo_validator.obj: $(SRC)\geo_validator\geo_validator.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\geo_validator.c
 
+$(BUILD)\geo_validator\ray_slice_validation.obj: $(SRC)\geo_validator\ray_slice_validation.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\ray_slice_validation.c
+
 $(BUILD)\mcnp\parser\mcnp_parser.obj: $(SRC)\mcnp\parser\mcnp_parser.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\parser\ $(SRC)\mcnp\parser\mcnp_parser.c
 
