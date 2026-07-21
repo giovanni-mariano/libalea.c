@@ -1417,15 +1417,18 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         draw_material_labels(pixels, p->width, p->height, cell_ids, material_ids);
     }
     if (p->labels.show_surfaces) {
-        /* Get curves for surface labels */
-        alea_slice_curves_t* curves = get_curves_for_plot(sys, p);
-        if (curves) {
+        alea_slice_surface_boundary_map_t* boundary_map = NULL;
+        alea_slice_classify_point_fn classify =
+            (p->contour_mode == CONTOUR_BY_MATERIAL)
+                ? alea_slice_classify_material : alea_slice_classify_cell;
+        if (alea_slice_surface_boundary_map_create(
+                sys, &view, p->width, p->height, boundary_ids,
+                classify, NULL, &boundary_map) == 0 && boundary_map) {
             alea_label_position_t* surf_labels = NULL;
             int surf_count = 0;
-            if (alea_find_surface_label_positions_on_boundaries(curves,
-                    boundary_ids, p->u_min, p->u_max, p->v_min, p->v_max,
-                    p->width, p->height, 20,
-                    &surf_labels, &surf_count) == 0 && surf_labels) {
+            if (alea_find_surface_labels_on_boundary_map(
+                    boundary_map, 20, &surf_labels, &surf_count) == 0 &&
+                surf_labels) {
                 for (int i = 0; i < surf_count; i++) {
                     char label[32];
                     snprintf(label, sizeof(label), "S%d", surf_labels[i].id);
@@ -1436,7 +1439,7 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
                 }
                 free(surf_labels);
             }
-            alea_slice_curves_free(curves);
+            alea_slice_surface_boundary_map_free(boundary_map);
         }
     }
 

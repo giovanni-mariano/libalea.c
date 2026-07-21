@@ -204,6 +204,88 @@ typedef struct {
     int pixel_count;    /**< Region size (for cells/materials) or 0 (for surfaces) */
 } alea_label_position_t;
 
+/* ==========================================================================
+ * SURFACE BOUNDARY PROVENANCE
+ * ==========================================================================
+ *
+ * A grid says that two adjacent samples have different displayed identities,
+ * but does not retain which physical surface caused that transition.  This
+ * optional result records that provenance for callers which render contours
+ * or labels. */
+
+typedef struct alea_slice_surface_boundary_map alea_slice_surface_boundary_map_t;
+
+typedef enum {
+    ALEA_SLICE_EDGE_RIGHT = 0, /**< Edge from (x,y) to (x+1,y) */
+    ALEA_SLICE_EDGE_DOWN  = 1  /**< Edge from (x,y) to (x,y-1) */
+} alea_slice_edge_orientation_t;
+
+typedef enum {
+    ALEA_SLICE_BOUNDARY_NONE = 0,
+    ALEA_SLICE_BOUNDARY_VALID,
+    ALEA_SLICE_BOUNDARY_SYNTHETIC,
+    ALEA_SLICE_BOUNDARY_GAP,
+    ALEA_SLICE_BOUNDARY_OVERLAP,
+    ALEA_SLICE_BOUNDARY_AMBIGUOUS,
+    ALEA_SLICE_BOUNDARY_MULTI_HIT,
+    ALEA_SLICE_BOUNDARY_UNRESOLVED
+} alea_slice_boundary_status_t;
+
+typedef enum {
+    ALEA_SLICE_SAMPLE_SINGLE = 0,
+    ALEA_SLICE_SAMPLE_GAP,
+    ALEA_SLICE_SAMPLE_OVERLAP,
+    ALEA_SLICE_SAMPLE_UNRESOLVED
+} alea_slice_sample_status_t;
+
+typedef struct {
+    alea_slice_sample_status_t status;
+    int identity;              /**< Valid only when status is SINGLE */
+    int secondary_identity;    /**< Optional diagnostic overlap identity */
+} alea_slice_classification_t;
+
+typedef int (*alea_slice_classify_point_fn)(
+    alea_system_t* sys, double x, double y, double z, void* userdata,
+    alea_slice_classification_t* out);
+
+/** Built-in full-coverage classifiers for cell and material contour grids.
+ * They ignore userdata and may be passed directly to the map builder. */
+int alea_slice_classify_cell(alea_system_t* sys, double x, double y, double z,
+                             void* userdata, alea_slice_classification_t* out);
+int alea_slice_classify_material(alea_system_t* sys, double x, double y, double z,
+                                 void* userdata, alea_slice_classification_t* out);
+
+/** Build physical-surface provenance for transitions in a caller-owned grid.
+ * `classify` must apply the same displayed-identity semantics used to create
+ * `grid_ids`, and must report gaps/overlaps rather than resolving a winner. */
+int alea_slice_surface_boundary_map_create(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    alea_slice_surface_boundary_map_t** out_map);
+
+void alea_slice_surface_boundary_map_free(
+    alea_slice_surface_boundary_map_t* map);
+
+alea_slice_boundary_status_t alea_slice_surface_boundary_status(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation);
+
+size_t alea_slice_surface_boundary_surface_count(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation);
+
+int alea_slice_surface_boundary_surface_id(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t index);
+
+/** Find one visible label position for each sufficiently long attributed
+ * physical surface.  Valid and diagnostic (overlap/ambiguous/multi-hit)
+ * edges participate; synthetic, gap, and unresolved edges do not. */
+int alea_find_surface_labels_on_boundary_map(
+    const alea_slice_surface_boundary_map_t* map, int margin,
+    alea_label_position_t** out_labels, int* out_count);
+
 /* ============================================================================
  * SLICE VIEW SETUP
  * ============================================================================ */

@@ -66,6 +66,15 @@ struct alea_slice_curves {
     double view_v_min, view_v_max;
 };
 
+struct alea_slice_surface_boundary_map {
+    int width;
+    int height;
+    alea_slice_boundary_status_t* status; /* [2 * width * height] */
+    size_t* surface_offsets;              /* [2 * width * height + 1] */
+    int* surface_ids;                     /* CSR participant IDs */
+    size_t surface_count;
+};
+
 /* ============================================================================
  * SLICE VIEW SETUP
  * ============================================================================ */
@@ -5922,4 +5931,413 @@ void alea_plot_error_components_free(
     if (!result) return;
     free(result->components);
     free(result);
+}
+
+/* ============================================================================
+ * SURFACE BOUNDARY PROVENANCE
+ * ============================================================================ */
+
+typedef struct {
+    int ids[64];
+    size_t count;
+    int saw_synthetic;
+    int saw_gap;
+    int saw_overlap;
+    int saw_unresolved;
+} boundary_trace_t;
+
+static void boundary_trace_add_id(boundary_trace_t* trace, int surface_id) {
+    if (surface_id <= 0) return;
+    for (size_t i = 0; i < trace->count; i++)
+        if (trace->ids[i] == surface_id) return;
+    if (trace->count == sizeof(trace->ids) / sizeof(trace->ids[0])) {
+        trace->saw_unresolved = 1;
+        return;
+    }
+    trace->ids[trace->count++] = surface_id;
+}
+
+static void slice_world_point(const alea_slice_view_t* view, double u, double v,
+                              double out[3]) {
+    for (int i = 0; i < 3; i++)
+        out[i] = view->plane.origin[i] + u * view->plane.u_axis[i] +
+                 v * view->plane.v_axis[i];
+}
+
+static int trace_boundary_direction(alea_system_t* sys,
+                                    alea_raycast_result_t* result,
+                                    const double start[3], const double end[3],
+                                    alea_slice_classify_point_fn classify,
+                                    void* userdata,
+                                    boundary_trace_t* out) {
+    double dx = end[0] - start[0];
+    double dy = end[1] - start[1];
+    double dz = end[2] - start[2];
+    double length = sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(length > 0.0) || !isfinite(length)) return -1;
+    dx /= length; dy /= length; dz /= length;
+
+    /* Provenance needs every physical boundary crossed by this short edge.
+     * Use the canonical hit-producing tracer; the fast hierarchical API does
+     * not promise a full hit list. */
+    if (alea_raycast(sys, start[0], start[1], start[2],
+                     dx, dy, dz, length, result) != 0)
+        return -1;
+
+    const double endpoint_eps = length * 1e-8;
+    size_t segments = alea_raycast_segment_count(result);
+    for (size_t i = 0; i < segments; i++) {
+        double t_enter, t_exit, density;
+        int cell_id, material_id, enter_surface, exit_surface;
+        if (alea_raycast_segment_get(result, i, &t_enter, &t_exit,
+                                     &cell_id, &material_id, &density,
+                                     &enter_surface, &exit_surface) != 0)
+            return -1;
+        (void)t_enter; (void)cell_id; (void)material_id; (void)density;
+        (void)enter_surface;
+        if (exit_surface < 0 || t_exit <= endpoint_eps ||
+            t_exit >= length - endpoint_eps)
+            continue;
+        if (exit_surface == 0) {
+            out->saw_synthetic = 1;
+            continue;
+        }
+        /* The rendered grid already established that this edge changes the
+         * caller's displayed identity. Keep every physical hit so one clean
+         * hit in both directions is an exact attribution; several hits stay
+         * explicitly multi-hit rather than being assigned by proximity. */
+        boundary_trace_add_id(out, exit_surface);
+
+        /* Keep diagnostics clear of the surface tolerance, but never let a
+         * probe step past either endpoint of a short edge. */
+        double eps = fmin(length * 5e-2,
+                          fmin(t_exit, length - t_exit) * 0.5);
+        if (eps <= endpoint_eps) continue;
+        double before[3], after[3];
+        for (int c = 0; c < 3; c++) {
+            before[c] = start[c] + dx * (t_exit - eps);
+            after[c] = start[c] + dx * (t_exit + eps);
+        }
+        alea_slice_classification_t a = {0}, b = {0};
+        if (classify(sys, before[0], before[1], before[2], userdata, &a) != 0 ||
+            classify(sys, after[0], after[1], after[2], userdata, &b) != 0) {
+            out->saw_unresolved = 1;
+            continue;
+        }
+        if (a.status == ALEA_SLICE_SAMPLE_GAP ||
+            b.status == ALEA_SLICE_SAMPLE_GAP) {
+            out->saw_gap = 1;
+        } else if (a.status == ALEA_SLICE_SAMPLE_OVERLAP ||
+                   b.status == ALEA_SLICE_SAMPLE_OVERLAP) {
+            out->saw_overlap = 1;
+        } else if (a.status == ALEA_SLICE_SAMPLE_UNRESOLVED ||
+                   b.status == ALEA_SLICE_SAMPLE_UNRESOLVED) {
+            out->saw_unresolved = 1;
+        }
+    }
+    return 0;
+}
+
+static int boundary_trace_same_ids(const boundary_trace_t* a,
+                                   const boundary_trace_t* b) {
+    if (a->count != b->count) return 0;
+    for (size_t i = 0; i < a->count; i++) {
+        int found = 0;
+        for (size_t j = 0; j < b->count; j++)
+            if (a->ids[i] == b->ids[j]) { found = 1; break; }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+static int boundary_map_append_ids(alea_slice_surface_boundary_map_t* map,
+                                   const boundary_trace_t* a,
+                                   const boundary_trace_t* b,
+                                   size_t edge_start) {
+    for (size_t pass = 0; pass < 2; pass++) {
+        const boundary_trace_t* trace = pass == 0 ? a : b;
+        for (size_t i = 0; i < trace->count; i++) {
+            int duplicate = 0;
+            for (size_t j = edge_start; j < map->surface_count; j++) {
+                if (map->surface_ids[j] == trace->ids[i]) { duplicate = 1; break; }
+            }
+            if (duplicate) continue;
+            int* next = realloc(map->surface_ids,
+                                (map->surface_count + 1) * sizeof(*next));
+            if (!next) return -1;
+            map->surface_ids = next;
+            map->surface_ids[map->surface_count++] = trace->ids[i];
+        }
+    }
+    return 0;
+}
+
+static int slice_classify_builtin(alea_system_t* sys,
+                                  double x, double y, double z,
+                                  int material_identity,
+                                  alea_slice_classification_t* out) {
+    if (!sys || !out) return -1;
+    out->status = ALEA_SLICE_SAMPLE_UNRESOLVED;
+    out->identity = -1;
+    out->secondary_identity = -1;
+    alea_cell_hit_t hits[64];
+    int count = alea_find_all_cells_at_point(sys, x, y, z, hits, 64);
+    if (count < 0 || count >= (int)(sizeof(hits) / sizeof(hits[0]))) return -1;
+    if (count == 0) {
+        out->status = ALEA_SLICE_SAMPLE_GAP;
+        return 0;
+    }
+    int target_depth = hits[count - 1].depth;
+    int at_depth = 0;
+    for (int i = 0; i < count; i++) {
+        if (hits[i].depth != target_depth) continue;
+        int identity = material_identity ? hits[i].material_id : hits[i].cell_id;
+        if (at_depth == 0) out->identity = identity;
+        else if (at_depth == 1) out->secondary_identity = identity;
+        at_depth++;
+    }
+    if (at_depth == 0) {
+        out->status = ALEA_SLICE_SAMPLE_GAP;
+    } else if (at_depth == 1) {
+        out->status = ALEA_SLICE_SAMPLE_SINGLE;
+    } else {
+        out->status = ALEA_SLICE_SAMPLE_OVERLAP;
+    }
+    return 0;
+}
+
+int alea_slice_classify_cell(alea_system_t* sys, double x, double y, double z,
+                             void* userdata, alea_slice_classification_t* out) {
+    (void)userdata;
+    return slice_classify_builtin(sys, x, y, z, 0, out);
+}
+
+int alea_slice_classify_material(alea_system_t* sys, double x, double y, double z,
+                                 void* userdata, alea_slice_classification_t* out) {
+    (void)userdata;
+    return slice_classify_builtin(sys, x, y, z, 1, out);
+}
+
+int alea_slice_surface_boundary_map_create(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    alea_slice_surface_boundary_map_t** out_map) {
+    if (!sys || !view || !grid_ids || !classify || !out_map ||
+        width <= 0 || height <= 0)
+        return -1;
+    *out_map = NULL;
+    size_t pixels = (size_t)width * (size_t)height;
+    if (pixels > (SIZE_MAX / 2) - 1) return -1;
+    alea_slice_surface_boundary_map_t* map = calloc(1, sizeof(*map));
+    if (!map) return -1;
+    map->width = width;
+    map->height = height;
+    map->status = calloc(pixels * 2, sizeof(*map->status));
+    map->surface_offsets = calloc(pixels * 2 + 1, sizeof(*map->surface_offsets));
+    alea_raycast_result_t* ray = alea_raycast_result_create();
+    if (!map->status || !map->surface_offsets || !ray) {
+        alea_raycast_result_destroy(ray);
+        alea_slice_surface_boundary_map_free(map);
+        return -1;
+    }
+
+    double du = (view->u_max - view->u_min) / width;
+    double dv = (view->v_max - view->v_min) / height;
+    for (int orient = ALEA_SLICE_EDGE_RIGHT;
+         orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                size_t edge = (size_t)orient * pixels + (size_t)y * width + x;
+                map->surface_offsets[edge] = map->surface_count;
+                int nx = x + (orient == ALEA_SLICE_EDGE_RIGHT);
+                int ny = y - (orient == ALEA_SLICE_EDGE_DOWN);
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height ||
+                    grid_ids[y * width + x] == grid_ids[ny * width + nx])
+                    continue;
+                double u0 = view->u_min + (x + 0.5) * du;
+                double v0 = view->v_min + (y + 0.5) * dv;
+                double u1 = view->u_min + (nx + 0.5) * du;
+                double v1 = view->v_min + (ny + 0.5) * dv;
+                double start[3], end[3];
+                slice_world_point(view, u0, v0, start);
+                slice_world_point(view, u1, v1, end);
+                boundary_trace_t forward = {0}, reverse = {0};
+                int forward_rc = trace_boundary_direction(sys, ray, start, end, classify,
+                                                          classify_userdata, &forward);
+                int reverse_rc = trace_boundary_direction(sys, ray, end, start, classify,
+                                                          classify_userdata, &reverse);
+                if (forward_rc != 0 || reverse_rc != 0) {
+                    forward.saw_unresolved = 1;
+                }
+                if (boundary_map_append_ids(map, &forward, &reverse,
+                                            map->surface_offsets[edge]) != 0) {
+                    alea_raycast_result_destroy(ray);
+                    alea_slice_surface_boundary_map_free(map);
+                    return -1;
+                }
+                if (forward.saw_gap || reverse.saw_gap)
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_GAP;
+                else if (forward.saw_overlap || reverse.saw_overlap)
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_OVERLAP;
+                else if (forward.saw_unresolved || reverse.saw_unresolved)
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_UNRESOLVED;
+                else if (!boundary_trace_same_ids(&forward, &reverse))
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_AMBIGUOUS;
+                else if (forward.count > 1)
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_MULTI_HIT;
+                else if (forward.count == 1)
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_VALID;
+                else if (forward.saw_synthetic || reverse.saw_synthetic)
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_SYNTHETIC;
+                else
+                    map->status[edge] = ALEA_SLICE_BOUNDARY_UNRESOLVED;
+        }
+        }
+    }
+    map->surface_offsets[pixels * 2] = map->surface_count;
+    alea_raycast_result_destroy(ray);
+    *out_map = map;
+    return 0;
+}
+
+void alea_slice_surface_boundary_map_free(alea_slice_surface_boundary_map_t* map) {
+    if (!map) return;
+    free(map->status);
+    free(map->surface_offsets);
+    free(map->surface_ids);
+    free(map);
+}
+
+static int boundary_map_edge_index(const alea_slice_surface_boundary_map_t* map,
+                                   int x, int y,
+                                   alea_slice_edge_orientation_t orientation,
+                                   size_t* out) {
+    if (!map || x < 0 || x >= map->width || y < 0 || y >= map->height ||
+        (orientation != ALEA_SLICE_EDGE_RIGHT &&
+         orientation != ALEA_SLICE_EDGE_DOWN))
+        return -1;
+    *out = (size_t)orientation * (size_t)map->width * map->height +
+           (size_t)y * map->width + x;
+    return 0;
+}
+
+alea_slice_boundary_status_t alea_slice_surface_boundary_status(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation) {
+    size_t edge;
+    return boundary_map_edge_index(map, x, y, orientation, &edge) == 0
+        ? map->status[edge] : ALEA_SLICE_BOUNDARY_UNRESOLVED;
+}
+
+size_t alea_slice_surface_boundary_surface_count(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation) {
+    size_t edge;
+    if (boundary_map_edge_index(map, x, y, orientation, &edge) != 0) return 0;
+    return map->surface_offsets[edge + 1] - map->surface_offsets[edge];
+}
+
+int alea_slice_surface_boundary_surface_id(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t index) {
+    size_t edge;
+    if (boundary_map_edge_index(map, x, y, orientation, &edge) != 0 ||
+        index >= map->surface_offsets[edge + 1] - map->surface_offsets[edge])
+        return -1;
+    return map->surface_ids[map->surface_offsets[edge] + index];
+}
+
+static int boundary_status_is_labelable(alea_slice_boundary_status_t status) {
+    return status == ALEA_SLICE_BOUNDARY_VALID ||
+           status == ALEA_SLICE_BOUNDARY_OVERLAP ||
+           status == ALEA_SLICE_BOUNDARY_AMBIGUOUS ||
+           status == ALEA_SLICE_BOUNDARY_MULTI_HIT;
+}
+
+int alea_find_surface_labels_on_boundary_map(
+    const alea_slice_surface_boundary_map_t* map, int margin,
+    alea_label_position_t** out_labels, int* out_count) {
+    if (!map || !out_labels || !out_count || margin < 0) return -1;
+    *out_labels = NULL;
+    *out_count = 0;
+
+    typedef struct {
+        int id;
+        int edge_count;
+        double sum_x, sum_y;
+    } label_accum_t;
+    label_accum_t* accum = NULL;
+    size_t accum_count = 0;
+
+    size_t edges = (size_t)map->width * map->height * 2;
+    for (size_t edge = 0; edge < edges; edge++) {
+        if (!boundary_status_is_labelable(map->status[edge])) continue;
+        int x = (int)((edge % ((size_t)map->width * map->height)) % map->width);
+        int y = (int)((edge % ((size_t)map->width * map->height)) / map->width);
+        if (x < margin || x >= map->width - margin ||
+            y < margin || y >= map->height - margin)
+            continue;
+        for (size_t si = map->surface_offsets[edge];
+             si < map->surface_offsets[edge + 1]; si++) {
+            int id = map->surface_ids[si];
+            size_t ai;
+            for (ai = 0; ai < accum_count; ai++)
+                if (accum[ai].id == id) break;
+            if (ai == accum_count) {
+                label_accum_t* next = realloc(accum,
+                    (accum_count + 1) * sizeof(*next));
+                if (!next) { free(accum); return -1; }
+                accum = next;
+                accum[ai] = (label_accum_t){ .id = id };
+                accum_count++;
+            }
+            accum[ai].edge_count++;
+            accum[ai].sum_x += x;
+            accum[ai].sum_y += y;
+        }
+    }
+
+    const int min_edge_count = 30;
+    size_t label_count = 0;
+    for (size_t i = 0; i < accum_count; i++)
+        if (accum[i].edge_count >= min_edge_count) label_count++;
+    if (label_count == 0) { free(accum); return 0; }
+
+    alea_label_position_t* labels = calloc(label_count, sizeof(*labels));
+    if (!labels) { free(accum); return -1; }
+    size_t li = 0;
+    for (size_t ai = 0; ai < accum_count; ai++) {
+        if (accum[ai].edge_count < min_edge_count) continue;
+        double cx = accum[ai].sum_x / accum[ai].edge_count;
+        double cy = accum[ai].sum_y / accum[ai].edge_count;
+        double best = DBL_MAX;
+        int best_x = -1, best_y = -1;
+        for (size_t edge = 0; edge < edges; edge++) {
+            if (!boundary_status_is_labelable(map->status[edge])) continue;
+            int x = (int)((edge % ((size_t)map->width * map->height)) % map->width);
+            int y = (int)((edge % ((size_t)map->width * map->height)) / map->width);
+            if (x < margin || x >= map->width - margin ||
+                y < margin || y >= map->height - margin)
+                continue;
+            int has_id = 0;
+            for (size_t si = map->surface_offsets[edge];
+                 si < map->surface_offsets[edge + 1]; si++)
+                if (map->surface_ids[si] == accum[ai].id) { has_id = 1; break; }
+            if (!has_id) continue;
+            double dx = x - cx, dy = y - cy;
+            double d2 = dx * dx + dy * dy;
+            if (d2 < best) { best = d2; best_x = x; best_y = y; }
+        }
+        if (best_x >= 0) {
+            labels[li++] = (alea_label_position_t){
+                .id = accum[ai].id, .px = best_x, .py = best_y,
+                .pixel_count = accum[ai].edge_count
+            };
+        }
+    }
+    free(accum);
+    *out_labels = labels;
+    *out_count = (int)li;
+    return 0;
 }
