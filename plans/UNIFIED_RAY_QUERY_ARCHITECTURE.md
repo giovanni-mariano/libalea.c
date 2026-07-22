@@ -279,6 +279,10 @@ ID deterministically, while the explicit
 preserves every participant for diagnostics and label provenance.  Compact/batched
 materialization remains open work.
 
+Forward/reverse normalization is covered by an integration fixture: after
+reversing event order and transforming distance by `t_max - t`, the surface
+identity matches and the before/after cell and material ownership is swapped.
+
 Define the internal event before optimizing provenance:
 
 ```c

@@ -389,6 +389,57 @@ TEST(raycast_boundary_events_group_coincident_surfaces) {
     mcnp_model_destroy(model);
 }
 
+TEST(raycast_boundary_events_are_bidirectionally_normalized) {
+    const char* input =
+        "Bidirectional boundary events\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 1\n"
+        "\n"
+        "M1 1001.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_raycast_result_t forward_trace, reverse_trace;
+    alea_ray_boundary_event_result_t forward, reverse;
+    alea_raycast_result_init(&forward_trace);
+    alea_raycast_result_init(&reverse_trace);
+    alea_ray_boundary_event_result_init(&forward);
+    alea_ray_boundary_event_result_init(&reverse);
+    alea_ray_t forward_ray, reverse_ray;
+    ASSERT_EQ(alea_ray_init(&forward_ray, -2, 0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_ray_init(&reverse_ray, 2, 0, 0, -1, 0, 0), 0);
+    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(
+                  sys, &forward_ray, 4.0, &forward_trace, &forward), 0);
+    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(
+                  sys, &reverse_ray, 4.0, &reverse_trace, &reverse), 0);
+
+    ASSERT_EQ(forward.events.count, 2);
+    ASSERT_EQ(reverse.events.count, forward.events.count);
+    for (size_t i = 0; i < forward.events.count; i++) {
+        const alea_ray_boundary_event_t* f = &forward.events.data[i];
+        const alea_ray_boundary_event_t* r =
+            &reverse.events.data[reverse.events.count - 1 - i];
+        ASSERT_EQ(f->kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+        ASSERT_EQ(r->kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+        ASSERT_NEAR(f->t, 4.0 - r->t, 1e-9);
+        ASSERT_EQ(f->surface_id, r->surface_id);
+        ASSERT_EQ(f->cell_before, r->cell_after);
+        ASSERT_EQ(f->cell_after, r->cell_before);
+        ASSERT_EQ(f->material_before, r->material_after);
+        ASSERT_EQ(f->material_after, r->material_before);
+    }
+
+    alea_ray_boundary_event_result_free(&forward);
+    alea_ray_boundary_event_result_free(&reverse);
+    alea_raycast_result_free(&forward_trace);
+    alea_raycast_result_free(&reverse_trace);
+    mcnp_model_destroy(model);
+}
+
 TEST(raycast_descends_into_fill_universe) {
     const char* input =
         "Fill ray test\n"
