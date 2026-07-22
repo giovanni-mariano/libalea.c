@@ -495,6 +495,10 @@ TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     ASSERT_NOT_NULL(cache);
     ASSERT_EQ(alea_slice_directional_event_cache_matches(
                   cache, sys, &view, width, height), 1);
+    alea_slice_view_t shifted_view = view;
+    shifted_view.u_max += 0.01;
+    ASSERT_EQ(alea_slice_directional_event_cache_matches(
+                  cache, sys, &shifted_view, width, height), 0);
     const alea_ray_boundary_event_t* events = NULL;
     size_t event_count = 0;
     ASSERT_EQ(alea_slice_directional_event_cache_line_events(

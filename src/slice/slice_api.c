@@ -6122,10 +6122,19 @@ int alea_slice_directional_event_cache_matches(
     const alea_slice_directional_event_cache_t* cache,
     const alea_system_t* sys, const alea_slice_view_t* view,
     int width, int height) {
-    return cache && sys && view && cache->sys == sys &&
-           cache->geometry_generation == alea_system_geometry_generation(sys) &&
-           cache->width == width && cache->height == height &&
-           memcmp(&cache->view, view, sizeof(*view)) == 0;
+    if (!cache || !sys || !view || cache->sys != sys ||
+        cache->geometry_generation != alea_system_geometry_generation(sys) ||
+        cache->width != width || cache->height != height)
+        return 0;
+    for (int axis = 0; axis < 3; axis++) {
+        if (cache->view.plane.origin[axis] != view->plane.origin[axis] ||
+            cache->view.plane.normal[axis] != view->plane.normal[axis] ||
+            cache->view.plane.u_axis[axis] != view->plane.u_axis[axis] ||
+            cache->view.plane.v_axis[axis] != view->plane.v_axis[axis])
+            return 0;
+    }
+    return cache->view.u_min == view->u_min && cache->view.u_max == view->u_max &&
+           cache->view.v_min == view->v_min && cache->view.v_max == view->v_max;
 }
 
 int alea_slice_directional_event_cache_line_events(
