@@ -5973,19 +5973,19 @@ typedef struct {
     size_t* offsets;
     alea_ray_boundary_event_t* events;
     size_t event_count;
-} slice_directional_event_cache_t;
+} slice_directional_event_stream_t;
 
-static void slice_directional_event_cache_free(
-    slice_directional_event_cache_t* cache) {
+static void slice_directional_event_stream_free(
+    slice_directional_event_stream_t* cache) {
     if (!cache) return;
     free(cache->offsets);
     free(cache->events);
     memset(cache, 0, sizeof(*cache));
 }
 
-static int slice_directional_event_cache_build(
+static int slice_directional_event_stream_build(
     alea_system_t* sys, const alea_slice_view_t* view, int width, int height,
-    int orient, int reverse, slice_directional_event_cache_t* cache) {
+    int orient, int reverse, slice_directional_event_stream_t* cache) {
     const int line_count = orient == ALEA_SLICE_EDGE_RIGHT ? height : width;
     const int samples = orient == ALEA_SLICE_EDGE_RIGHT ? width : height;
     const double step = orient == ALEA_SLICE_EDGE_RIGHT
@@ -6076,12 +6076,60 @@ cleanup:
     for (int line = 0; line < line_count; line++) free(line_events ? line_events[line] : NULL);
     free(line_events);
     free(line_counts);
-    if (failed) slice_directional_event_cache_free(cache);
+    if (failed) slice_directional_event_stream_free(cache);
     return failed ? -1 : 0;
 }
 
+struct alea_slice_directional_event_cache {
+    const alea_system_t* sys;
+    uint64_t geometry_generation;
+    alea_slice_view_t view;
+    int width, height;
+    slice_directional_event_stream_t streams[2][2];
+};
+
+alea_slice_directional_event_cache_t* alea_slice_directional_event_cache_create(
+    alea_system_t* sys, const alea_slice_view_t* view, int width, int height) {
+    if (!sys || !view || width <= 0 || height <= 0) return NULL;
+    alea_slice_directional_event_cache_t* cache = calloc(1, sizeof(*cache));
+    if (!cache) return NULL;
+    cache->sys = sys;
+    cache->geometry_generation = alea_system_geometry_generation(sys);
+    cache->view = *view;
+    cache->width = width;
+    cache->height = height;
+    for (int orient = ALEA_SLICE_EDGE_RIGHT; orient <= ALEA_SLICE_EDGE_DOWN; orient++)
+        for (int reverse = 0; reverse <= 1; reverse++)
+            if (slice_directional_event_stream_build(sys, view, width, height,
+                                                     orient, reverse,
+                                                     &cache->streams[orient][reverse]) != 0) {
+                alea_slice_directional_event_cache_destroy(cache);
+                return NULL;
+            }
+    return cache;
+}
+
+void alea_slice_directional_event_cache_destroy(
+    alea_slice_directional_event_cache_t* cache) {
+    if (!cache) return;
+    for (int orient = ALEA_SLICE_EDGE_RIGHT; orient <= ALEA_SLICE_EDGE_DOWN; orient++)
+        for (int reverse = 0; reverse <= 1; reverse++)
+            slice_directional_event_stream_free(&cache->streams[orient][reverse]);
+    free(cache);
+}
+
+int alea_slice_directional_event_cache_matches(
+    const alea_slice_directional_event_cache_t* cache,
+    const alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height) {
+    return cache && sys && view && cache->sys == sys &&
+           cache->geometry_generation == alea_system_geometry_generation(sys) &&
+           cache->width == width && cache->height == height &&
+           memcmp(&cache->view, view, sizeof(*view)) == 0;
+}
+
 static int trace_boundary_from_cached_events(
-    alea_system_t* sys, const slice_directional_event_cache_t* cache,
+    alea_system_t* sys, const slice_directional_event_stream_t* cache,
     int line, double t_first, const double start[3], const double end[3],
     alea_slice_classify_point_fn classify, void* userdata,
     boundary_trace_t* out) {
@@ -6230,21 +6278,9 @@ int alea_slice_surface_boundary_map_create(
 
     double du = (view->u_max - view->u_min) / width;
     double dv = (view->v_max - view->v_min) / height;
-    slice_directional_event_cache_t caches[2][2] = {{{0}}};
-    for (int orient = ALEA_SLICE_EDGE_RIGHT;
-         orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
-        for (int reverse = 0; reverse <= 1; reverse++) {
-            if (slice_directional_event_cache_build(sys, view, width, height,
-                                                    orient, reverse,
-                                                    &caches[orient][reverse]) != 0) {
-                for (int o = ALEA_SLICE_EDGE_RIGHT; o <= ALEA_SLICE_EDGE_DOWN; o++)
-                    for (int r = 0; r <= 1; r++)
-                        slice_directional_event_cache_free(&caches[o][r]);
-                alea_slice_surface_boundary_map_free(map);
-                return -1;
-            }
-        }
-    }
+    alea_slice_directional_event_cache_t* cache =
+        alea_slice_directional_event_cache_create(sys, view, width, height);
+    if (!cache) { alea_slice_surface_boundary_map_free(map); return -1; }
     for (int orient = ALEA_SLICE_EDGE_RIGHT;
          orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
         for (int y = 0; y < height; y++) {
@@ -6270,19 +6306,17 @@ int alea_slice_surface_boundary_map_create(
                 double reverse_t = orient == ALEA_SLICE_EDGE_RIGHT
                     ? (width - 2 - x) * du : (y - 1) * dv;
                 int forward_rc = trace_boundary_from_cached_events(
-                    sys, &caches[orient][0], line, forward_t, start, end,
+                    sys, &cache->streams[orient][0], line, forward_t, start, end,
                     classify, classify_userdata, &forward);
                 int reverse_rc = trace_boundary_from_cached_events(
-                    sys, &caches[orient][1], line, reverse_t, end, start,
+                    sys, &cache->streams[orient][1], line, reverse_t, end, start,
                     classify, classify_userdata, &reverse);
                 if (forward_rc != 0 || reverse_rc != 0) {
                     forward.saw_unresolved = 1;
                 }
                 if (boundary_map_append_ids(map, &forward, &reverse,
                                             map->surface_offsets[edge]) != 0) {
-                    for (int o = ALEA_SLICE_EDGE_RIGHT; o <= ALEA_SLICE_EDGE_DOWN; o++)
-                        for (int r = 0; r <= 1; r++)
-                            slice_directional_event_cache_free(&caches[o][r]);
+                    alea_slice_directional_event_cache_destroy(cache);
                     alea_slice_surface_boundary_map_free(map);
                     return -1;
                 }
@@ -6306,10 +6340,7 @@ int alea_slice_surface_boundary_map_create(
         }
     }
     map->surface_offsets[pixels * 2] = map->surface_count;
-    for (int orient = ALEA_SLICE_EDGE_RIGHT;
-         orient <= ALEA_SLICE_EDGE_DOWN; orient++)
-        for (int reverse = 0; reverse <= 1; reverse++)
-            slice_directional_event_cache_free(&caches[orient][reverse]);
+    alea_slice_directional_event_cache_destroy(cache);
     *out_map = map;
     return 0;
 }

@@ -142,6 +142,20 @@ struct alea_raycast_result {
 /* Typedef for internal use */
 typedef struct alea_raycast_result alea_raycast_result_t;
 
+/* Internal canonical event cache for a slice view.  It is owned by the slice
+ * module and intentionally opaque; validator/provenance users share it only
+ * through identity-checked accessors. */
+typedef struct alea_slice_directional_event_cache alea_slice_directional_event_cache_t;
+
+alea_slice_directional_event_cache_t* alea_slice_directional_event_cache_create(
+    alea_system_t* sys, const alea_slice_view_t* view, int width, int height);
+void alea_slice_directional_event_cache_destroy(
+    alea_slice_directional_event_cache_t* cache);
+int alea_slice_directional_event_cache_matches(
+    const alea_slice_directional_event_cache_t* cache,
+    const alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height);
+
 /* ============================================================================
  * MAIN API
  * ============================================================================ */
