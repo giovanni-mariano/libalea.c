@@ -274,8 +274,9 @@ resolved ownership changes, retains synthetic lattice transitions, and records
 an unresolved event when ownership changes without a reportable surface.  The
 surface-boundary map now consumes this stream.  Coincident physical hits are
 grouped by crossing distance: the default reports the lowest positive surface
-ID deterministically, while `ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL` preserves
-every participant for diagnostics and label provenance.  Compact/batched
+ID deterministically, while the explicit
+`alea_ray_boundary_event_options_t.include_all_coincident_physical` option
+preserves every participant for diagnostics and label provenance.  Compact/batched
 materialization remains open work.
 
 Define the internal event before optimizing provenance:

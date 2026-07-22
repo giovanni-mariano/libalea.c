@@ -374,9 +374,11 @@ TEST(raycast_boundary_events_group_coincident_surfaces) {
     ASSERT_EQ(events.events.data[0].surface_id, 1);
     ASSERT_NEAR(events.events.data[0].t, 1.0, 1e-9);
 
-    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache_ex(
-                  sys, &ray, 2.0, ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL,
-                  &trace, &events), 0);
+    const alea_ray_boundary_event_options_t all_physical = {
+        .include_all_coincident_physical = true
+    };
+    ASSERT_EQ(alea_raycast_boundary_events_with_options(
+                  sys, &ray, 2.0, &all_physical, &trace, &events), 0);
     ASSERT_EQ(events.events.count, 2);
     ASSERT_EQ(events.events.data[0].surface_id, 1);
     ASSERT_EQ(events.events.data[1].surface_id, 2);

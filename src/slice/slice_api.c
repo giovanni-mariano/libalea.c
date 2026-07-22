@@ -5987,8 +5987,11 @@ static int trace_boundary_direction(alea_system_t* sys,
     /* Keep every exactly coincident physical participant: an edge with a
      * geometry ambiguity must expose all candidate labels, not an arbitrary
      * canonical representative. */
-    if (alea_raycast_boundary_events_reuse_nocache_ex(
-            sys, &ray, length, ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL,
+    const alea_ray_boundary_event_options_t event_options = {
+        .include_all_coincident_physical = true
+    };
+    if (alea_raycast_boundary_events_with_options(
+            sys, &ray, length, &event_options,
             result, events) != 0)
         return -1;
 

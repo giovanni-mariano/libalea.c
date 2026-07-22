@@ -1684,7 +1684,8 @@ static int boundary_event_append(alea_ray_boundary_event_result_t* events,
 static int boundary_events_append_group(
     const alea_raycast_result_t* trace,
     const alea_ray_segment_t* before, const alea_ray_segment_t* after,
-    unsigned flags, alea_ray_boundary_event_result_t* events) {
+    bool include_all_coincident_physical,
+    alea_ray_boundary_event_result_t* events) {
     const double t = before->t_exit;
     int ownership_changed = before->cell_id != after->cell_id ||
                             before->material_id != after->material_id;
@@ -1728,8 +1729,7 @@ static int boundary_events_append_group(
                 }
             }
         }
-        size_t emit_count = (flags & ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL)
-            ? physical_count : 1;
+        size_t emit_count = include_all_coincident_physical ? physical_count : 1;
         for (size_t i = 0; i < emit_count; i++) {
             const alea_ray_hit_t* hit = boundary_event_find_hit(trace, t,
                                                                  physical_ids[i]);
@@ -1755,10 +1755,11 @@ static int boundary_events_append_group(
     return 0;
 }
 
-int alea_raycast_boundary_events_reuse_nocache_ex(
-    alea_system_t* sys, const alea_ray_t* ray, double t_max, unsigned flags,
+int alea_raycast_boundary_events_with_options(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    const alea_ray_boundary_event_options_t* options,
     alea_raycast_result_t* trace, alea_ray_boundary_event_result_t* events) {
-    if (!trace || !events || (flags & ~ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL))
+    if (!trace || !events)
         return -1;
     alea_ray_boundary_event_result_clear(events);
     if (alea_raycast_global_reuse_nocache(sys, ray, t_max, trace) != 0)
@@ -1770,7 +1771,10 @@ int alea_raycast_boundary_events_reuse_nocache_ex(
         if (fabs(before->t_exit - after->t_enter) > RAY_EPSILON)
             continue;  /* Incomplete trace: do not invent an event. */
 
-        if (boundary_events_append_group(trace, before, after, flags, events) != 0) {
+        if (boundary_events_append_group(
+                trace, before, after,
+                options && options->include_all_coincident_physical,
+                events) != 0) {
             alea_ray_boundary_event_result_clear(events);
             return -1;
         }
@@ -1781,8 +1785,8 @@ int alea_raycast_boundary_events_reuse_nocache_ex(
 int alea_raycast_boundary_events_reuse_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* trace, alea_ray_boundary_event_result_t* events) {
-    return alea_raycast_boundary_events_reuse_nocache_ex(sys, ray, t_max, 0,
-                                                          trace, events);
+    return alea_raycast_boundary_events_with_options(sys, ray, t_max, NULL,
+                                                      trace, events);
 }
 
 /* ============================================================================
