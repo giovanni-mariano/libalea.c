@@ -22,6 +22,7 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_raycast.h"
+#include "alea_slice.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
 #include "raycast/bvh.h"
@@ -327,6 +328,40 @@ TEST(perf_concentric_shells_20) {
     printf("[avg %.1f segs]  ", (double)total_segs / N);
 
     alea_raycast_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(perf_directional_event_cache_sphere) {
+    const int width = 256, height = 256, iterations = 5;
+    alea_system_t* sys = build_single_sphere();
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -8.0, 8.0, -8.0, 8.0);
+
+    size_t total_events = 0;
+    BENCH_START();
+    for (int i = 0; i < iterations; i++) {
+        alea_slice_directional_event_cache_t* cache =
+            alea_slice_directional_event_cache_create(sys, &view, width, height);
+        ASSERT_NOT_NULL(cache);
+        for (int orient = ALEA_SLICE_EDGE_RIGHT;
+             orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
+            int lines = orient == ALEA_SLICE_EDGE_RIGHT ? height : width;
+            for (int reverse = 0; reverse <= 1; reverse++) {
+                for (int line = 0; line < lines; line++) {
+                    const alea_ray_boundary_event_t* events;
+                    size_t count;
+                    ASSERT_EQ(alea_slice_directional_event_cache_line_events(
+                                  cache, orient, reverse, line, &events, &count), 0);
+                    total_events += count;
+                }
+            }
+        }
+        alea_slice_directional_event_cache_destroy(cache);
+    }
+    BENCH_END("256x256 directional event cache (U/V +/-)", iterations);
+    printf("[avg %.1f events/cache]  ", (double)total_events / iterations);
     alea_destroy(sys);
 }
 
