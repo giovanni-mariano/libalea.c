@@ -392,7 +392,9 @@ two canonical short traces per changed edge.  The cache is not yet exposed to
 the validator because its existing compact hierarchy traces do not retain all
 coincident physical participants.  A future shared owner must preserve the
 canonical event contract, rather than treating the validator cache as an
-equivalent source.
+equivalent source.  Cache construction traces independent lines in parallel,
+then uses a prefix-sum and ordered copy to publish deterministic CSR storage;
+classification callbacks remain outside that parallel region.
 
 Create a shareable slice trace cache beneath validation and provenance:
 

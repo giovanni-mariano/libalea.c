@@ -5997,17 +5997,22 @@ static int slice_directional_event_cache_build(
     if (!cache->offsets) return -1;
     if (samples < 2) return 0;
 
-    alea_raycast_result_t trace;
-    alea_ray_boundary_event_result_t events;
-    alea_raycast_result_init(&trace);
-    alea_ray_boundary_event_result_init(&events);
     const alea_ray_boundary_event_options_t options = {
         .include_all_coincident_physical = true
     };
     const double length = (samples - 1) * step;
-    int rc = 0;
+    alea_ray_boundary_event_t** line_events = calloc(
+        (size_t)line_count, sizeof(*line_events));
+    size_t* line_counts = calloc((size_t)line_count, sizeof(*line_counts));
+    int failed = !line_events || !line_counts;
+    if (failed) goto cleanup;
+
+    #pragma omp parallel for schedule(static)
     for (int line = 0; line < line_count; line++) {
-        cache->offsets[line] = cache->event_count;
+        alea_raycast_result_t trace;
+        alea_ray_boundary_event_result_t events;
+        alea_raycast_result_init(&trace);
+        alea_ray_boundary_event_result_init(&events);
         double u0, v0, u1, v1;
         if (orient == ALEA_SLICE_EDGE_RIGHT) {
             u0 = reverse ? view->u_max - 0.5 * step : view->u_min + 0.5 * step;
@@ -6030,28 +6035,49 @@ static int slice_directional_event_cache_build(
                                  (end[2] - start[2]) / length);
         if (alea_raycast_boundary_events_with_options(
                 sys, &ray, length, &options, &trace, &events) != 0) {
-            rc = -1;
-            break;
+            #pragma omp atomic write
+            failed = 1;
+        } else if (events.events.count != 0) {
+            line_events[line] = malloc(events.events.count * sizeof(*line_events[line]));
+            if (!line_events[line]) {
+                #pragma omp atomic write
+                failed = 1;
+            } else {
+                memcpy(line_events[line], events.events.data,
+                       events.events.count * sizeof(*line_events[line]));
+                line_counts[line] = events.events.count;
+            }
         }
-        if (events.events.count > SIZE_MAX - cache->event_count ||
-            events.events.count > SIZE_MAX / sizeof(*cache->events) - cache->event_count) {
-            rc = -1;
-            break;
-        }
-        size_t next_count = cache->event_count + events.events.count;
-        alea_ray_boundary_event_t* next = realloc(
-            cache->events, next_count * sizeof(*next));
-        if (!next && next_count != 0) { rc = -1; break; }
-        cache->events = next;
-        memcpy(cache->events + cache->event_count, events.events.data,
-               events.events.count * sizeof(*cache->events));
-        cache->event_count = next_count;
+        alea_ray_boundary_event_result_free(&events);
+        alea_raycast_result_free(&trace);
     }
-    if (rc == 0) cache->offsets[line_count] = cache->event_count;
-    alea_ray_boundary_event_result_free(&events);
-    alea_raycast_result_free(&trace);
-    if (rc != 0) slice_directional_event_cache_free(cache);
-    return rc;
+    if (failed) goto cleanup;
+    for (int line = 0; line < line_count; line++) {
+        if (line_counts[line] > SIZE_MAX - cache->event_count) {
+            failed = 1;
+            goto cleanup;
+        }
+        cache->offsets[line] = cache->event_count;
+        cache->event_count += line_counts[line];
+    }
+    cache->offsets[line_count] = cache->event_count;
+    if (cache->event_count != 0) {
+        cache->events = malloc(cache->event_count * sizeof(*cache->events));
+        if (!cache->events) { failed = 1; goto cleanup; }
+        #pragma omp parallel for schedule(static)
+        for (int line = 0; line < line_count; line++) {
+            if (line_counts[line] != 0)
+                memcpy(cache->events + cache->offsets[line], line_events[line],
+                       line_counts[line] * sizeof(*cache->events));
+        }
+    }
+
+cleanup:
+    for (int line = 0; line < line_count; line++) free(line_events ? line_events[line] : NULL);
+    free(line_events);
+    free(line_counts);
+    if (failed) slice_directional_event_cache_free(cache);
+    return failed ? -1 : 0;
 }
 
 static int trace_boundary_from_cached_events(
