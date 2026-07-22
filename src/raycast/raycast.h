@@ -155,6 +155,10 @@ int alea_slice_directional_event_cache_matches(
     const alea_slice_directional_event_cache_t* cache,
     const alea_system_t* sys, const alea_slice_view_t* view,
     int width, int height);
+int alea_slice_directional_event_cache_line_events(
+    const alea_slice_directional_event_cache_t* cache,
+    alea_slice_edge_orientation_t orientation, int reverse, size_t line,
+    const alea_ray_boundary_event_t** out_events, size_t* out_count);
 
 /* ============================================================================
  * MAIN API

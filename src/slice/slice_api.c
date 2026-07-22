@@ -6128,6 +6128,23 @@ int alea_slice_directional_event_cache_matches(
            memcmp(&cache->view, view, sizeof(*view)) == 0;
 }
 
+int alea_slice_directional_event_cache_line_events(
+    const alea_slice_directional_event_cache_t* cache,
+    alea_slice_edge_orientation_t orientation, int reverse, size_t line,
+    const alea_ray_boundary_event_t** out_events, size_t* out_count) {
+    if (!cache || !out_events || !out_count ||
+        (orientation != ALEA_SLICE_EDGE_RIGHT &&
+         orientation != ALEA_SLICE_EDGE_DOWN) ||
+        (reverse != 0 && reverse != 1))
+        return -1;
+    const slice_directional_event_stream_t* stream =
+        &cache->streams[orientation][reverse];
+    if (line >= stream->line_count) return -1;
+    *out_count = stream->offsets[line + 1] - stream->offsets[line];
+    *out_events = *out_count ? stream->events + stream->offsets[line] : NULL;
+    return 0;
+}
+
 static int trace_boundary_from_cached_events(
     alea_system_t* sys, const slice_directional_event_stream_t* cache,
     int line, double t_first, const double start[3], const double end[3],

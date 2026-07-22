@@ -490,6 +490,23 @@ TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     ASSERT_EQ(found, 1);
 
     alea_slice_surface_boundary_map_free(map);
+    alea_slice_directional_event_cache_t* cache =
+        alea_slice_directional_event_cache_create(sys, &view, width, height);
+    ASSERT_NOT_NULL(cache);
+    ASSERT_EQ(alea_slice_directional_event_cache_matches(
+                  cache, sys, &view, width, height), 1);
+    const alea_ray_boundary_event_t* events = NULL;
+    size_t event_count = 0;
+    ASSERT_EQ(alea_slice_directional_event_cache_line_events(
+                  cache, ALEA_SLICE_EDGE_RIGHT, 0, 0, &events, &event_count), 0);
+    ASSERT(event_count >= 2);
+    ASSERT_NOT_NULL(events);
+    ASSERT_EQ(events[0].surface_id, 1);
+    ASSERT_EQ(events[1].surface_id, 2);
+    ASSERT(alea_sphere_surface(sys, 99, 10, 0, 0, 1) >= 0);
+    ASSERT_EQ(alea_slice_directional_event_cache_matches(
+                  cache, sys, &view, width, height), 0);
+    alea_slice_directional_event_cache_destroy(cache);
     mcnp_model_destroy(model);
 }
 
