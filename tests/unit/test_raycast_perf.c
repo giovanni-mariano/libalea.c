@@ -21,6 +21,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_geo_validator.h"
 #include "alea_mcnp.h"
 #include "alea_raycast.h"
 #include "alea_slice.h"
@@ -398,6 +399,60 @@ TEST(perf_directional_event_cache_lattice) {
     }
     BENCH_END("128x128 lattice directional event cache (U/V +/-)", iterations);
     printf("[avg %.1f events/cache]  ", (double)total_events / iterations);
+    mcnp_model_destroy(model);
+}
+
+TEST(perf_nested_fill_validator_and_event_cache) {
+    const int rows = 128, iterations = 3;
+    mcnp_model_t* model = mcnp_load("tests/data/nested_fill.mcnp");
+    if (!model) SKIP("nested-fill fixture not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -10.0, 10.0, -10.0, 10.0);
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(validation);
+
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++)
+            ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, rows, &options,
+                                                       NULL, NULL, validation), 0);
+        BENCH_END("128-row nested-fill fast bidirectional validator", iterations);
+        printf("[ownership only]  ");
+    }
+
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            alea_slice_directional_event_cache_t* cache =
+                alea_slice_directional_event_cache_create(sys, &view, rows, rows);
+            ASSERT_NOT_NULL(cache);
+            alea_slice_directional_event_cache_destroy(cache);
+        }
+        BENCH_END("128x128 nested-fill directional event cache", iterations);
+        printf("[canonical provenance]  ");
+    }
+
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, rows, &options,
+                                                       NULL, NULL, validation), 0);
+            alea_slice_directional_event_cache_t* cache =
+                alea_slice_directional_event_cache_create(sys, &view, rows, rows);
+            ASSERT_NOT_NULL(cache);
+            alea_slice_directional_event_cache_destroy(cache);
+        }
+        BENCH_END("128-row nested-fill validator + event cache", iterations);
+        printf("[current sequential combined cost]  ");
+    }
+
+    alea_ray_slice_validation_result_destroy(validation);
     mcnp_model_destroy(model);
 }
 
