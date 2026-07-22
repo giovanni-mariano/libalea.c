@@ -192,6 +192,44 @@ static void assert_reusable_global_raycast_equivalent(alea_system_t* sys,
     alea_raycast_result_free(&reusable);
 }
 
+static void assert_lattice_boundary_event_contract(alea_system_t* sys) {
+    alea_raycast_result_t trace;
+    alea_ray_boundary_event_result_t events;
+    alea_raycast_result_init(&trace);
+    alea_ray_boundary_event_result_init(&events);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -1.5, 0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(sys, &ray, 7.0,
+                                                          &trace, &events), 0);
+
+    /* Nine ownership boundaries: seven physical intersections and two
+     * synthetic lattice/DDA transitions. */
+    ASSERT_EQ(events.events.count, 9);
+    ASSERT_EQ(events.events.data[0].kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+    ASSERT_EQ(events.events.data[0].surface_id, 1);
+    ASSERT_EQ(events.events.data[0].cell_before, -1);
+    ASSERT_EQ(events.events.data[0].cell_after, 2);
+    ASSERT_NEAR(events.events.data[0].t, 0.5, 1e-9);
+
+    size_t synthetic_count = 0;
+    for (size_t i = 0; i < events.events.count; i++) {
+        if (events.events.data[i].kind == ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE) {
+            synthetic_count++;
+            ASSERT_EQ(events.events.data[i].surface_id, 0);
+        }
+    }
+    ASSERT_EQ(synthetic_count, 2);
+
+    /* Result storage is reusable and must not retain stale events. */
+    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(sys, &ray, 7.0,
+                                                          &trace, &events), 0);
+    ASSERT_EQ(events.events.count, 9);
+
+    alea_ray_boundary_event_result_free(&events);
+    alea_raycast_result_free(&trace);
+}
+
 static void assert_hier_raycast_equivalent(alea_system_t* sys,
                                            double ox, double oy, double oz,
                                            double dx, double dy, double dz,
@@ -724,6 +762,7 @@ TEST(lattice_raycast) {
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
     assert_reusable_global_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
+    assert_lattice_boundary_event_contract(sys);
     assert_hier_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
     assert_hier_cell_raycast_segments_equivalent(sys, -1.5, 0, 0,
                                                  1, 0, 0, 7.0);

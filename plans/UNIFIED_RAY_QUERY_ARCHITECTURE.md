@@ -267,6 +267,15 @@ retain data and whether the answer is complete, allowing traversal to stop.
 
 ## Phase 3: boundary-event contract
 
+**Implementation status (2026-07-22):** initial scalar collector landed.
+`alea_raycast_boundary_events_reuse_nocache()` derives an ordered event stream
+from the canonical reusable global trace.  It emits physical events only for
+resolved ownership changes, retains synthetic lattice transitions, and records
+an unresolved event when ownership changes without a reportable surface.  The
+surface-boundary map now consumes this stream.  Coincident-event grouping,
+all-intersection diagnostic mode, and compact/batched materialization remain
+open work.
+
 Define the internal event before optimizing provenance:
 
 ```c

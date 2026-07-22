@@ -48,6 +48,28 @@ typedef struct {
     uint32_t path_index;  /* Result-local hierarchy path, UINT32_MAX if absent */
 } alea_ray_segment_t;
 
+/* Internal, ordered ownership boundary.  This is intentionally distinct from
+ * alea_ray_hit_t: hits are mathematical intersections, whereas events are the
+ * subset that changes resolved ownership (plus synthetic lattice crossings). */
+typedef enum {
+    ALEA_RAY_BOUNDARY_EVENT_PHYSICAL,
+    ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE,
+    ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED
+} alea_ray_boundary_event_kind_t;
+
+typedef struct {
+    double t;
+    alea_ray_boundary_event_kind_t kind;
+    int surface_id;          /* -1 unresolved, 0 synthetic, >0 physical */
+    uint32_t primitive_id;   /* UINT32_MAX when no physical primitive applies */
+    int cell_before;
+    int cell_after;
+    int material_before;
+    int material_after;
+    uint8_t resolution_flags;
+    double nx, ny, nz;       /* zero for synthetic/unresolved events */
+} alea_ray_boundary_event_t;
+
 typedef struct {
     uint32_t offset;
     uint16_t count;
@@ -67,6 +89,7 @@ typedef struct {
 
 ALEA_VEC_DEFINE(alea_ray_hit_vec, alea_ray_hit_t);
 ALEA_VEC_DEFINE(alea_ray_segment_vec, alea_ray_segment_t);
+ALEA_VEC_DEFINE(alea_ray_boundary_event_vec, alea_ray_boundary_event_t);
 ALEA_VEC_DEFINE(alea_ray_path_vec, alea_ray_path_t);
 ALEA_VEC_DEFINE(alea_ray_path_entry_vec, alea_ray_path_entry_t);
 
@@ -351,6 +374,25 @@ int alea_raycast_global_reuse_nocache(alea_system_t* sys,
                                       const alea_ray_t* ray,
                                       double t_max,
                                       alea_raycast_result_t* result);
+
+/** Reusable ordered boundary-event storage for internal query consumers. */
+typedef struct {
+    alea_ray_boundary_event_vec_t events;
+} alea_ray_boundary_event_result_t;
+
+void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* result);
+void alea_ray_boundary_event_result_clear(alea_ray_boundary_event_result_t* result);
+void alea_ray_boundary_event_result_free(alea_ray_boundary_event_result_t* result);
+
+/**
+ * Trace canonical global hits/segments and derive ownership boundary events.
+ * Physical events are emitted only when adjacent resolved ownership changes;
+ * synthetic lattice crossings are retained even when ownership is unchanged.
+ */
+int alea_raycast_boundary_events_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* trace,
+    alea_ray_boundary_event_result_t* events);
 
 /* ============================================================================
  * QUERY HELPERS

@@ -1631,6 +1631,86 @@ int alea_raycast_global_reuse_nocache(alea_system_t* sys,
                                    result);
 }
 
+void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* result) {
+    if (!result) return;
+    memset(result, 0, sizeof(*result));
+}
+
+void alea_ray_boundary_event_result_clear(alea_ray_boundary_event_result_t* result) {
+    if (!result) return;
+    alea_vec_clear(&result->events);
+}
+
+void alea_ray_boundary_event_result_free(alea_ray_boundary_event_result_t* result) {
+    if (!result) return;
+    alea_vec_free(&result->events);
+}
+
+static const alea_ray_hit_t* boundary_event_find_hit(
+    const alea_raycast_result_t* trace, double t, int surface_id) {
+    for (size_t i = 0; i < trace->hits.count; i++) {
+        const alea_ray_hit_t* hit = &trace->hits.data[i];
+        if (hit->surface_id == surface_id &&
+            fabs(hit->t - t) <= RAY_EPSILON)
+            return hit;
+    }
+    return NULL;
+}
+
+int alea_raycast_boundary_events_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* trace,
+    alea_ray_boundary_event_result_t* events) {
+    if (!trace || !events) return -1;
+    alea_ray_boundary_event_result_clear(events);
+    if (alea_raycast_global_reuse_nocache(sys, ray, t_max, trace) != 0)
+        return -1;
+
+    for (size_t i = 0; i + 1 < trace->segments.count; i++) {
+        const alea_ray_segment_t* before = &trace->segments.data[i];
+        const alea_ray_segment_t* after = &trace->segments.data[i + 1];
+        if (fabs(before->t_exit - after->t_enter) > RAY_EPSILON)
+            continue;  /* Incomplete trace: do not invent an event. */
+
+        int surface_id = after->enter_surface_id;
+        if (surface_id < 0) surface_id = before->exit_surface_id;
+        int ownership_changed = before->cell_id != after->cell_id ||
+                                before->material_id != after->material_id;
+        if (surface_id != 0 && !ownership_changed)
+            continue;
+
+        alea_ray_boundary_event_t event = {
+            .t = before->t_exit,
+            .kind = surface_id > 0 ? ALEA_RAY_BOUNDARY_EVENT_PHYSICAL :
+                    surface_id == 0 ? ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE :
+                                      ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED,
+            .surface_id = surface_id,
+            .primitive_id = UINT32_MAX,
+            .cell_before = before->cell_id,
+            .cell_after = after->cell_id,
+            .material_before = before->material_id,
+            .material_after = after->material_id,
+            .resolution_flags = before->resolution_flags | after->resolution_flags,
+            .nx = 0, .ny = 0, .nz = 0
+        };
+        if (surface_id > 0) {
+            const alea_ray_hit_t* hit = boundary_event_find_hit(trace,
+                                                                 event.t, surface_id);
+            if (hit) {
+                event.primitive_id = hit->primitive_id;
+                event.nx = hit->nx;
+                event.ny = hit->ny;
+                event.nz = hit->nz;
+            }
+        }
+        if (alea_vec_push(&events->events, event, alea_ray_boundary_event_t) != 0) {
+            alea_ray_boundary_event_result_clear(events);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* ============================================================================
  * CONVENIENCE FUNCTIONS
  * ============================================================================ */

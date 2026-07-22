@@ -5967,6 +5967,7 @@ static void slice_world_point(const alea_slice_view_t* view, double u, double v,
 
 static int trace_boundary_direction(alea_system_t* sys,
                                     alea_raycast_result_t* result,
+                                    alea_ray_boundary_event_result_t* events,
                                     const double start[3], const double end[3],
                                     alea_slice_classify_point_fn classify,
                                     void* userdata,
@@ -5978,47 +5979,42 @@ static int trace_boundary_direction(alea_system_t* sys,
     if (!(length > 0.0) || !isfinite(length)) return -1;
     dx /= length; dy /= length; dz /= length;
 
-    /* Provenance needs every physical boundary crossed by this short edge.
-     * Use the canonical hit-producing tracer; the fast hierarchical API does
-     * not promise a full hit list. */
+    /* Provenance consumes ownership boundary events, not arbitrary nearby
+     * mathematical intersections.  The collector retains synthetic lattice
+     * crossings and exposes the canonical physical surface identity. */
     alea_ray_t ray;
     alea_ray_init_normalized(&ray, start[0], start[1], start[2], dx, dy, dz);
-    if (alea_raycast_global_reuse_nocache(sys, &ray, length, result) != 0)
+    if (alea_raycast_boundary_events_reuse_nocache(sys, &ray, length,
+                                                    result, events) != 0)
         return -1;
 
     const double endpoint_eps = length * 1e-8;
-    size_t segments = alea_raycast_segment_count(result);
-    for (size_t i = 0; i < segments; i++) {
-        double t_enter, t_exit, density;
-        int cell_id, material_id, enter_surface, exit_surface;
-        if (alea_raycast_segment_get(result, i, &t_enter, &t_exit,
-                                     &cell_id, &material_id, &density,
-                                     &enter_surface, &exit_surface) != 0)
-            return -1;
-        (void)t_enter; (void)cell_id; (void)material_id; (void)density;
-        (void)enter_surface;
-        if (exit_surface < 0 || t_exit <= endpoint_eps ||
-            t_exit >= length - endpoint_eps)
+    for (size_t i = 0; i < events->events.count; i++) {
+        const alea_ray_boundary_event_t* event = &events->events.data[i];
+        if (event->t <= endpoint_eps || event->t >= length - endpoint_eps)
             continue;
-        if (exit_surface == 0) {
+        if (event->kind == ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE) {
             out->saw_synthetic = 1;
             continue;
         }
+        if (event->kind == ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED) {
+            out->saw_unresolved = 1;
+            continue;
+        }
         /* The rendered grid already established that this edge changes the
-         * caller's displayed identity. Keep every physical hit so one clean
-         * hit in both directions is an exact attribution; several hits stay
-         * explicitly multi-hit rather than being assigned by proximity. */
-        boundary_trace_add_id(out, exit_surface);
+         * caller's displayed identity. Keep every ownership-changing physical
+         * event; several events remain explicitly multi-hit. */
+        boundary_trace_add_id(out, event->surface_id);
 
         /* Keep diagnostics clear of the surface tolerance, but never let a
          * probe step past either endpoint of a short edge. */
         double eps = fmin(length * 5e-2,
-                          fmin(t_exit, length - t_exit) * 0.5);
+                          fmin(event->t, length - event->t) * 0.5);
         if (eps <= endpoint_eps) continue;
         double before[3], after[3];
         for (int c = 0; c < 3; c++) {
-            before[c] = start[c] + dx * (t_exit - eps);
-            after[c] = start[c] + dx * (t_exit + eps);
+            before[c] = start[c] + dx * (event->t - eps);
+            after[c] = start[c] + dx * (event->t + eps);
         }
         alea_slice_classification_t a = {0}, b = {0};
         if (classify(sys, before[0], before[1], before[2], userdata, &a) != 0 ||
@@ -6143,6 +6139,8 @@ int alea_slice_surface_boundary_map_create(
         alea_slice_surface_boundary_map_free(map);
         return -1;
     }
+    alea_ray_boundary_event_result_t events;
+    alea_ray_boundary_event_result_init(&events);
 
     double du = (view->u_max - view->u_min) / width;
     double dv = (view->v_max - view->v_min) / height;
@@ -6165,15 +6163,18 @@ int alea_slice_surface_boundary_map_create(
                 slice_world_point(view, u0, v0, start);
                 slice_world_point(view, u1, v1, end);
                 boundary_trace_t forward = {0}, reverse = {0};
-                int forward_rc = trace_boundary_direction(sys, ray, start, end, classify,
+                int forward_rc = trace_boundary_direction(sys, ray, &events,
+                                                          start, end, classify,
                                                           classify_userdata, &forward);
-                int reverse_rc = trace_boundary_direction(sys, ray, end, start, classify,
+                int reverse_rc = trace_boundary_direction(sys, ray, &events,
+                                                          end, start, classify,
                                                           classify_userdata, &reverse);
                 if (forward_rc != 0 || reverse_rc != 0) {
                     forward.saw_unresolved = 1;
                 }
                 if (boundary_map_append_ids(map, &forward, &reverse,
                                             map->surface_offsets[edge]) != 0) {
+                    alea_ray_boundary_event_result_free(&events);
                     alea_raycast_result_destroy(ray);
                     alea_slice_surface_boundary_map_free(map);
                     return -1;
@@ -6198,6 +6199,7 @@ int alea_slice_surface_boundary_map_create(
         }
     }
     map->surface_offsets[pixels * 2] = map->surface_count;
+    alea_ray_boundary_event_result_free(&events);
     alea_raycast_result_destroy(ray);
     *out_map = map;
     return 0;
