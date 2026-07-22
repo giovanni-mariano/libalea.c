@@ -272,9 +272,11 @@ retain data and whether the answer is complete, allowing traversal to stop.
 from the canonical reusable global trace.  It emits physical events only for
 resolved ownership changes, retains synthetic lattice transitions, and records
 an unresolved event when ownership changes without a reportable surface.  The
-surface-boundary map now consumes this stream.  Coincident-event grouping,
-all-intersection diagnostic mode, and compact/batched materialization remain
-open work.
+surface-boundary map now consumes this stream.  Coincident physical hits are
+grouped by crossing distance: the default reports the lowest positive surface
+ID deterministically, while `ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL` preserves
+every participant for diagnostics and label provenance.  Compact/batched
+materialization remains open work.
 
 Define the internal event before optimizing provenance:
 

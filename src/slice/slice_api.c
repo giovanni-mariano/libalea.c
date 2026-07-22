@@ -5984,8 +5984,12 @@ static int trace_boundary_direction(alea_system_t* sys,
      * crossings and exposes the canonical physical surface identity. */
     alea_ray_t ray;
     alea_ray_init_normalized(&ray, start[0], start[1], start[2], dx, dy, dz);
-    if (alea_raycast_boundary_events_reuse_nocache(sys, &ray, length,
-                                                    result, events) != 0)
+    /* Keep every exactly coincident physical participant: an edge with a
+     * geometry ambiguity must expose all candidate labels, not an arbitrary
+     * canonical representative. */
+    if (alea_raycast_boundary_events_reuse_nocache_ex(
+            sys, &ray, length, ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL,
+            result, events) != 0)
         return -1;
 
     const double endpoint_eps = length * 1e-8;

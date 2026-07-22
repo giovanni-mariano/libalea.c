@@ -343,6 +343,50 @@ TEST(parse_simple_box) {
     mcnp_model_destroy(model);
 }
 
+TEST(raycast_boundary_events_group_coincident_surfaces) {
+    const char* input =
+        "Coincident boundary-event surfaces\n"
+        "1 1 -1.0 -1\n"
+        "2 2 -1.0 1\n"
+        "3 0 2\n"
+        "\n"
+        "1 PX 0\n"
+        "2 PX 0\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    alea_raycast_result_t trace;
+    alea_ray_boundary_event_result_t events;
+    ASSERT_EQ(alea_ray_init(&ray, -1, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_init(&trace);
+    alea_ray_boundary_event_result_init(&events);
+
+    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(sys, &ray, 2.0,
+                                                          &trace, &events), 0);
+    ASSERT_EQ(events.events.count, 1);
+    ASSERT_EQ(events.events.data[0].kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+    ASSERT_EQ(events.events.data[0].surface_id, 1);
+    ASSERT_NEAR(events.events.data[0].t, 1.0, 1e-9);
+
+    ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache_ex(
+                  sys, &ray, 2.0, ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL,
+                  &trace, &events), 0);
+    ASSERT_EQ(events.events.count, 2);
+    ASSERT_EQ(events.events.data[0].surface_id, 1);
+    ASSERT_EQ(events.events.data[1].surface_id, 2);
+    ASSERT_NEAR(events.events.data[0].t, events.events.data[1].t, 1e-12);
+
+    alea_ray_boundary_event_result_free(&events);
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(model);
+}
+
 TEST(raycast_descends_into_fill_universe) {
     const char* input =
         "Fill ray test\n"

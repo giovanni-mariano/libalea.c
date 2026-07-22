@@ -380,6 +380,13 @@ typedef struct {
     alea_ray_boundary_event_vec_t events;
 } alea_ray_boundary_event_result_t;
 
+enum {
+    /* Emit each reportable physical surface in a coincident crossing group.
+     * The default emits the lowest positive surface ID as the deterministic
+     * canonical representative. Synthetic lattice events are always emitted. */
+    ALEA_RAY_BOUNDARY_EVENTS_ALL_PHYSICAL = 1u << 0
+};
+
 void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* result);
 void alea_ray_boundary_event_result_clear(alea_ray_boundary_event_result_t* result);
 void alea_ray_boundary_event_result_free(alea_ray_boundary_event_result_t* result);
@@ -392,6 +399,11 @@ void alea_ray_boundary_event_result_free(alea_ray_boundary_event_result_t* resul
 int alea_raycast_boundary_events_reuse_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* trace,
+    alea_ray_boundary_event_result_t* events);
+
+int alea_raycast_boundary_events_reuse_nocache_ex(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    unsigned flags, alea_raycast_result_t* trace,
     alea_ray_boundary_event_result_t* events);
 
 /* ============================================================================
