@@ -385,6 +385,15 @@ current scalar-`t_max` adapter.
 
 ## Phase 6: shared directional slice traces
 
+**Implementation status (2026-07-22):** the surface-boundary map now builds
+private canonical event caches for U+/U-/V+/V-.  Each cache is CSR by slice
+line and maps its event intervals back to changed grid edges; this replaces
+two canonical short traces per changed edge.  The cache is not yet exposed to
+the validator because its existing compact hierarchy traces do not retain all
+coincident physical participants.  A future shared owner must preserve the
+canonical event contract, rather than treating the validator cache as an
+equivalent source.
+
 Create a shareable slice trace cache beneath validation and provenance:
 
 ```text
