@@ -507,6 +507,12 @@ TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     ASSERT_NOT_NULL(events);
     ASSERT_EQ(events[0].surface_id, 1);
     ASSERT_EQ(events[1].surface_id, 2);
+    alea_slice_surface_boundary_map_t* shared_map = NULL;
+    ASSERT_EQ(alea_slice_surface_boundary_map_create_with_event_cache(
+                  sys, &view, width, height, ids, alea_slice_classify_cell,
+                  NULL, cache, &shared_map), 0);
+    ASSERT_NOT_NULL(shared_map);
+    alea_slice_surface_boundary_map_free(shared_map);
     ASSERT(alea_sphere_surface(sys, 99, 10, 0, 0, 1) >= 0);
     ASSERT_EQ(alea_slice_directional_event_cache_matches(
                   cache, sys, &view, width, height), 0);

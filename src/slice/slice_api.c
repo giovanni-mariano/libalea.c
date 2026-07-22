@@ -6280,10 +6280,11 @@ int alea_slice_classify_material(alea_system_t* sys, double x, double y, double 
     return slice_classify_builtin(sys, x, y, z, 1, out);
 }
 
-int alea_slice_surface_boundary_map_create(
+static int slice_surface_boundary_map_create_impl(
     alea_system_t* sys, const alea_slice_view_t* view,
     int width, int height, const int* grid_ids,
     alea_slice_classify_point_fn classify, void* classify_userdata,
+    const alea_slice_directional_event_cache_t* supplied_cache,
     alea_slice_surface_boundary_map_t** out_map) {
     if (!sys || !view || !grid_ids || !classify || !out_map ||
         width <= 0 || height <= 0)
@@ -6304,9 +6305,18 @@ int alea_slice_surface_boundary_map_create(
 
     double du = (view->u_max - view->u_min) / width;
     double dv = (view->v_max - view->v_min) / height;
-    alea_slice_directional_event_cache_t* cache =
-        alea_slice_directional_event_cache_create(sys, view, width, height);
-    if (!cache) { alea_slice_surface_boundary_map_free(map); return -1; }
+    alea_slice_directional_event_cache_t* owned_cache = NULL;
+    const alea_slice_directional_event_cache_t* cache = supplied_cache;
+    if (cache) {
+        if (!alea_slice_directional_event_cache_matches(cache, sys, view, width, height)) {
+            alea_slice_surface_boundary_map_free(map);
+            return -1;
+        }
+    } else {
+        owned_cache = alea_slice_directional_event_cache_create(sys, view, width, height);
+        if (!owned_cache) { alea_slice_surface_boundary_map_free(map); return -1; }
+        cache = owned_cache;
+    }
     for (int orient = ALEA_SLICE_EDGE_RIGHT;
          orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
         for (int y = 0; y < height; y++) {
@@ -6342,7 +6352,7 @@ int alea_slice_surface_boundary_map_create(
                 }
                 if (boundary_map_append_ids(map, &forward, &reverse,
                                             map->surface_offsets[edge]) != 0) {
-                    alea_slice_directional_event_cache_destroy(cache);
+                    alea_slice_directional_event_cache_destroy(owned_cache);
                     alea_slice_surface_boundary_map_free(map);
                     return -1;
                 }
@@ -6366,9 +6376,29 @@ int alea_slice_surface_boundary_map_create(
         }
     }
     map->surface_offsets[pixels * 2] = map->surface_count;
-    alea_slice_directional_event_cache_destroy(cache);
+    alea_slice_directional_event_cache_destroy(owned_cache);
     *out_map = map;
     return 0;
+}
+
+int alea_slice_surface_boundary_map_create(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    alea_slice_surface_boundary_map_t** out_map) {
+    return slice_surface_boundary_map_create_impl(
+        sys, view, width, height, grid_ids, classify, classify_userdata,
+        NULL, out_map);
+}
+
+int alea_slice_surface_boundary_map_create_with_event_cache(
+    alea_system_t* sys, const alea_slice_view_t* view, int width, int height,
+    const int* grid_ids, alea_slice_classify_point_fn classify,
+    void* classify_userdata, const alea_slice_directional_event_cache_t* cache,
+    alea_slice_surface_boundary_map_t** out_map) {
+    return slice_surface_boundary_map_create_impl(
+        sys, view, width, height, grid_ids, classify, classify_userdata,
+        cache, out_map);
 }
 
 void alea_slice_surface_boundary_map_free(alea_slice_surface_boundary_map_t* map) {
