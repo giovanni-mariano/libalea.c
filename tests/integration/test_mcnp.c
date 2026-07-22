@@ -14,6 +14,7 @@
 #include "core/alea_spatial_hier.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
+#include "alea_slice.h"
 #include "raycast/raycast.h"
 #include "alea_raycast.h"
 
@@ -437,6 +438,58 @@ TEST(raycast_boundary_events_are_bidirectionally_normalized) {
     alea_ray_boundary_event_result_free(&reverse);
     alea_raycast_result_free(&forward_trace);
     alea_raycast_result_free(&reverse_trace);
+    mcnp_model_destroy(model);
+}
+
+TEST(surface_boundary_map_keeps_coincident_surface_labels) {
+    const char* input =
+        "Coincident surface labels\n"
+        "1 1 -1.0 -1\n"
+        "2 2 -1.0 1\n"
+        "3 0 2\n"
+        "\n"
+        "1 PX 0\n"
+        "2 PX 0\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int width = 8, height = 1;
+    int ids[width * height];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -0.1, 0.1);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, width, height, -1,
+                                   ids, NULL, NULL), 0);
+
+    alea_slice_surface_boundary_map_t* map = NULL;
+    ASSERT_EQ(alea_slice_surface_boundary_map_create(
+                  sys, &view, width, height, ids,
+                  alea_slice_classify_cell, NULL, &map), 0);
+    ASSERT_NOT_NULL(map);
+
+    int found = 0;
+    for (int x = 0; x + 1 < width; x++) {
+        if (ids[x] == ids[x + 1]) continue;
+        /* Coincident boundary definitions are a geometric overlap. The map
+         * must still retain both candidate surface IDs for diagnostics/labels. */
+        ASSERT_EQ(alea_slice_surface_boundary_status(
+                      map, x, 0, ALEA_SLICE_EDGE_RIGHT),
+                  ALEA_SLICE_BOUNDARY_OVERLAP);
+        ASSERT_EQ(alea_slice_surface_boundary_surface_count(
+                      map, x, 0, ALEA_SLICE_EDGE_RIGHT), 2);
+        ASSERT_EQ(alea_slice_surface_boundary_surface_id(
+                      map, x, 0, ALEA_SLICE_EDGE_RIGHT, 0), 1);
+        ASSERT_EQ(alea_slice_surface_boundary_surface_id(
+                      map, x, 0, ALEA_SLICE_EDGE_RIGHT, 1), 2);
+        found++;
+    }
+    ASSERT_EQ(found, 1);
+
+    alea_slice_surface_boundary_map_free(map);
     mcnp_model_destroy(model);
 }
 
