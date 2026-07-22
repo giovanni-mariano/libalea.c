@@ -338,6 +338,20 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                        double t_max,
                                        alea_raycast_result_t* result);
 
+/**
+ * Buffer-reuse canonical global raycast.
+ *
+ * Matches alea_raycast()'s global surface/fill/lattice pipeline but clears
+ * logical result contents rather than freeing vector capacity. The caller
+ * supplies a normalized alea_ray_t and must have prepared raycast caches.
+ * Intended for high-frequency internal loops that require canonical lattice
+ * semantics without per-ray allocation churn.
+ */
+int alea_raycast_global_reuse_nocache(alea_system_t* sys,
+                                      const alea_ray_t* ray,
+                                      double t_max,
+                                      alea_raycast_result_t* result);
+
 /* ============================================================================
  * QUERY HELPERS
  * ============================================================================ */

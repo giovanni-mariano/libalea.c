@@ -138,6 +138,60 @@ static void assert_raycast_results_equivalent(alea_system_t* sys,
     alea_raycast_result_free(&cell_aware);
 }
 
+/* The reusable internal path is deliberately a semantic twin of the public
+ * hit-producing raycast.  Keep this comparison here because lattice crossing
+ * synthesis is the part most likely to diverge during future optimizations. */
+static void assert_reusable_global_raycast_equivalent(alea_system_t* sys,
+                                                      double ox, double oy, double oz,
+                                                      double dx, double dy, double dz,
+                                                      double t_max) {
+    alea_raycast_result_t canonical;
+    alea_raycast_result_t reusable;
+    alea_raycast_result_init(&canonical);
+    alea_raycast_result_init(&reusable);
+
+    ASSERT_EQ(alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, &canonical), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, ox, oy, oz, dx, dy, dz), 0);
+    ASSERT_EQ(alea_raycast_global_reuse_nocache(sys, &ray, t_max, &reusable), 0);
+
+    ASSERT_EQ(canonical.hits.count, reusable.hits.count);
+    for (size_t i = 0; i < canonical.hits.count; i++) {
+        ASSERT_NEAR(canonical.hits.data[i].t, reusable.hits.data[i].t, 1e-9);
+        ASSERT_EQ(canonical.hits.data[i].surface_id,
+                  reusable.hits.data[i].surface_id);
+        ASSERT_EQ(canonical.hits.data[i].primitive_id,
+                  reusable.hits.data[i].primitive_id);
+    }
+
+    ASSERT_EQ(canonical.segments.count, reusable.segments.count);
+    for (size_t i = 0; i < canonical.segments.count; i++) {
+        ASSERT_NEAR(canonical.segments.data[i].t_enter,
+                    reusable.segments.data[i].t_enter, 1e-9);
+        ASSERT_NEAR(canonical.segments.data[i].t_exit,
+                    reusable.segments.data[i].t_exit, 1e-9);
+        ASSERT_EQ(canonical.segments.data[i].cell_id,
+                  reusable.segments.data[i].cell_id);
+        ASSERT_EQ(canonical.segments.data[i].material_id,
+                  reusable.segments.data[i].material_id);
+        ASSERT_NEAR(canonical.segments.data[i].density,
+                    reusable.segments.data[i].density, 1e-12);
+        ASSERT_EQ(canonical.segments.data[i].enter_surface_id,
+                  reusable.segments.data[i].enter_surface_id);
+        ASSERT_EQ(canonical.segments.data[i].exit_surface_id,
+                  reusable.segments.data[i].exit_surface_id);
+    }
+
+    /* Repeat with the same buffer: capacity may be retained, contents may not. */
+    ASSERT_EQ(alea_raycast_global_reuse_nocache(sys, &ray, t_max, &reusable), 0);
+    ASSERT_EQ(canonical.hits.count, reusable.hits.count);
+    ASSERT_EQ(canonical.segments.count, reusable.segments.count);
+
+    alea_raycast_result_free(&canonical);
+    alea_raycast_result_free(&reusable);
+}
+
 static void assert_hier_raycast_equivalent(alea_system_t* sys,
                                            double ox, double oy, double oz,
                                            double dx, double dy, double dz,
@@ -669,6 +723,7 @@ TEST(lattice_raycast) {
     alea_build_universe_index(sys);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
     assert_raycast_results_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
+    assert_reusable_global_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
     assert_hier_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
     assert_hier_cell_raycast_segments_equivalent(sys, -1.5, 0, 0,
                                                  1, 0, 0, 7.0);

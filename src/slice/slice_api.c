@@ -10,6 +10,7 @@
 #include "alea.h"
 #include "slice/curve_intersect.h"  /* Must come before alea_slice.h for extended enum */
 #include "alea_slice.h"
+#include "raycast/raycast.h"
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
@@ -5980,8 +5981,9 @@ static int trace_boundary_direction(alea_system_t* sys,
     /* Provenance needs every physical boundary crossed by this short edge.
      * Use the canonical hit-producing tracer; the fast hierarchical API does
      * not promise a full hit list. */
-    if (alea_raycast(sys, start[0], start[1], start[2],
-                     dx, dy, dz, length, result) != 0)
+    alea_ray_t ray;
+    alea_ray_init_normalized(&ray, start[0], start[1], start[2], dx, dy, dz);
+    if (alea_raycast_global_reuse_nocache(sys, &ray, length, result) != 0)
         return -1;
 
     const double endpoint_eps = length * 1e-8;

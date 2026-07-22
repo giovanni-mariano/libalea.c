@@ -1616,6 +1616,21 @@ static int raycast_global_pipeline(alea_system_t* sys,
     return raycast_to_segments_impl(sys, t_max, result, use_hier_lookup);
 }
 
+int alea_raycast_global_reuse_nocache(alea_system_t* sys,
+                                      const alea_ray_t* ray,
+                                      double t_max,
+                                      alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+
+    /* This is the reusable counterpart to alea_raycast(). It intentionally
+     * assumes the caller prepared the raycast caches, as render loops do. */
+    alea_raycast_result_clear(result);
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    return raycast_global_pipeline(sys, ray, 0, effective_t_max,
+                                   system_has_lattice_cells(sys), false,
+                                   result);
+}
+
 /* ============================================================================
  * CONVENIENCE FUNCTIONS
  * ============================================================================ */

@@ -534,8 +534,11 @@ static void render_pixel_solid(alea_system_t* sys,
 
     if (sys->has_lattice) {
         /* Lattice models need full traversal (surface + DDA + segments).
-         * Call alea_raycast directly to avoid a wasted surfaces-only pass. */
-        if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result) != 0)
+         * Use the canonical reusable path to avoid freeing the worker-local
+         * result buffers between pixels. */
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
+            alea_raycast_global_reuse_nocache(sys, &ray, t_max, result) != 0)
             return;
     } else {
         /* Non-lattice: hierarchical segment+hit trace. Steps cell-to-cell via
@@ -694,7 +697,9 @@ static void render_pixel_xray(alea_system_t* sys,
      * traversal which handles lattice DDA + fill expansion. */
     alea_raycast_result_clear(result);
     if (sys->has_lattice) {
-        if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, 0, result) != 0)
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
+            alea_raycast_global_reuse_nocache(sys, &ray, 0, result) != 0)
             return;
     } else {
         alea_ray_t ray;
