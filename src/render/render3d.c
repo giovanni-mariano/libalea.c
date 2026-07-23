@@ -541,14 +541,41 @@ static void render_pixel_solid(alea_system_t* sys,
             alea_raycast_global_reuse_nocache(sys, &ray, t_max, result) != 0)
             return;
     } else {
-        /* Non-lattice: hierarchical segment+hit trace. Steps cell-to-cell via
-         * the spatial index instead of intersecting every surface along the
-         * ray (the old global surface-BVH path). Buffer-reuse nocache variant;
-         * caches are pre-built and the result was cleared above. */
+        /* Non-lattice solid rendering needs exactly one visible interval.
+         * Stop inside the hierarchical stepper and materialize only the tiny
+         * compatibility record consumed by the common shading code below. */
         alea_ray_t ray;
         alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+        alea_ray_first_visible_result_t visible;
+        if (alea_raycast_hier_first_visible_nocache(
+                sys, &ray, t_min, t_max, -1, 1, result, &visible) != 0 ||
+            !visible.found)
+            return;
 
-        if (alea_raycast_hier_with_hits_nocache(sys, &ray, t_max, result) != 0)
+        alea_ray_segment_t seg = {
+            .t_enter = visible.t,
+            .t_exit = t_max,
+            .cell_id = visible.cell_id,
+            .material_id = visible.material_id,
+            .density = visible.density,
+            .enter_surface_id = visible.surface_id,
+            .exit_surface_id = -1,
+            .enter_hit_index = -1,
+            .resolution_flags = visible.resolution_flags,
+            .path_index = UINT32_MAX
+        };
+        if (visible.surface_id > 0) {
+            const alea_ray_hit_t hit = {
+                .t = visible.t,
+                .surface_id = visible.surface_id,
+                .primitive_id = visible.primitive_id,
+                .nx = visible.nx, .ny = visible.ny, .nz = visible.nz
+            };
+            if (alea_vec_push(&result->hits, hit, alea_ray_hit_t) != 0)
+                return;
+            seg.enter_hit_index = 0;
+        }
+        if (alea_vec_push(&result->segments, seg, alea_ray_segment_t) != 0)
             return;
     }
     /* Find first non-void segment in visible region (past clips) */
@@ -745,6 +772,125 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = accum_b + cfg->background[2] * bg_factor;
 }
 
+/* Compact X-ray tiles are scheduled outside the batch executor's OpenMP
+ * region.  That keeps one parallel level while avoiding per-pixel result
+ * vectors and nested parallel tracing.  Lattice and AA paths intentionally
+ * retain the canonical scalar renderer below. */
+static int render_scene_xray_batched(alea_system_t* sys,
+                                     const render_config_t* cfg,
+                                     const render_camera_t* cam,
+                                     render_framebuffer_t* fb,
+                                     int tile) {
+    const int w = fb->width, h = fb->height;
+    const int tiles_x = (w + tile - 1) / tile;
+    const int tiles_y = (h + tile - 1) / tile;
+    const int n_tiles = tiles_x * tiles_y;
+    const alea_raycast_batch_options_t options = {
+        .struct_size = sizeof(options),
+        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY
+    };
+
+    for (int tile_index = 0; tile_index < n_tiles; tile_index++) {
+        const int tx = tile_index % tiles_x, ty = tile_index / tiles_x;
+        const int x0 = tx * tile, y0 = ty * tile;
+        const int x1 = (x0 + tile < w) ? x0 + tile : w;
+        const int y1 = (y0 + tile < h) ? y0 + tile : h;
+        const size_t ray_count = (size_t)(x1 - x0) * (size_t)(y1 - y0);
+        double* origins = malloc(ray_count * 3 * sizeof(*origins));
+        double* directions = malloc(ray_count * 3 * sizeof(*directions));
+        alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+        if (!origins || !directions || !batch) {
+            free(origins); free(directions);
+            alea_raycast_batch_result_destroy(batch);
+            return -1;
+        }
+        size_t ray_index = 0;
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++, ray_index++) {
+                render_camera_ray(cam, w, h, x + 0.5, y + 0.5,
+                                  &origins[ray_index * 3],
+                                  &origins[ray_index * 3 + 1],
+                                  &origins[ray_index * 3 + 2],
+                                  &directions[ray_index * 3],
+                                  &directions[ray_index * 3 + 1],
+                                  &directions[ray_index * 3 + 2]);
+            }
+        }
+        const int batch_rc = alea_raycast_hier_batch(
+            sys, origins, directions, ray_count, 0, &options, batch);
+        free(origins); free(directions);
+        if (batch_rc != 0) {
+            /* Retain the established best-effort renderer behavior if a
+             * compact allocation or trace fails for this tile. */
+            alea_raycast_result_t fallback;
+            alea_raycast_result_init(&fallback);
+            ray_index = 0;
+            for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++, ray_index++) {
+                const size_t pixel = (size_t)y * w + x;
+                float color[3]; int cell_id;
+                render_pixel_xray(sys, cfg, cam, x + 0.5, y + 0.5, w, h,
+                                  &fallback, color, &cell_id);
+                fb->color[pixel * 3] = color[0];
+                fb->color[pixel * 3 + 1] = color[1];
+                fb->color[pixel * 3 + 2] = color[2];
+                fb->cell_id[pixel] = cell_id;
+            }
+            alea_raycast_result_free(&fallback);
+            alea_raycast_batch_result_destroy(batch);
+            continue;
+        }
+        const uint64_t* offsets = alea_raycast_batch_ray_offsets(batch);
+        const double* enters = alea_raycast_batch_t_enter(batch);
+        const double* exits = alea_raycast_batch_t_exit(batch);
+        const int32_t* cells = alea_raycast_batch_cell_ids(batch);
+        const int32_t* materials = alea_raycast_batch_material_ids(batch);
+        const double* densities = alea_raycast_batch_densities(batch);
+        if (!offsets || !enters || !exits || !cells || !materials || !densities) {
+            alea_raycast_batch_result_destroy(batch);
+            return -1;
+        }
+        ray_index = 0;
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++, ray_index++) {
+            float accum_r = 0, accum_g = 0, accum_b = 0, accum_alpha = 0;
+            int cell_id = -1;
+            for (size_t i = offsets[ray_index]; i < offsets[ray_index + 1]; i++) {
+                if (cells[i] < 0 || materials[i] == 0) continue;
+                const double len = exits[i] - enters[i];
+                if (len <= 0 || len > 1e10) continue;
+                float alpha = (float)(fabs(densities[i]) * len * cfg->xray_density_scale);
+                if (alpha > 1.0f) alpha = 1.0f;
+                float cr, cg, cb;
+                const int color_id = cfg->color_mode == RENDER_COLOR_CELL ?
+                    cells[i] : materials[i];
+                render_get_color(color_id, cfg->color_mode, cfg, &cr, &cg, &cb);
+                const float factor = alpha * (1.0f - accum_alpha);
+                accum_r += cr * factor; accum_g += cg * factor; accum_b += cb * factor;
+                accum_alpha += factor;
+                if (accum_alpha > 0.99f) break;
+                if (cell_id < 0) cell_id = cells[i];
+            }
+            const size_t pixel = (size_t)y * w + x;
+            const float bg_factor = 1.0f - accum_alpha;
+            fb->color[pixel * 3] = accum_r + cfg->background[0] * bg_factor;
+            fb->color[pixel * 3 + 1] = accum_g + cfg->background[1] * bg_factor;
+            fb->color[pixel * 3 + 2] = accum_b + cfg->background[2] * bg_factor;
+            fb->cell_id[pixel] = cell_id;
+            if (fb->material_id) fb->material_id[pixel] = 0;
+            if (fb->depth) fb->depth[pixel] = 1e30f;
+            if (fb->normal) {
+                fb->normal[pixel * 3] = 0;
+                fb->normal[pixel * 3 + 1] = 0;
+                fb->normal[pixel * 3 + 2] = 0;
+            }
+        }
+        alea_raycast_batch_result_destroy(batch);
+        fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)", tile_index + 1, n_tiles,
+                100.0 * (tile_index + 1) / n_tiles);
+    }
+    fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
+    return 0;
+}
+
 /* ============================================================================
  * TILE-BASED PARALLEL RENDERING
  * ============================================================================ */
@@ -777,6 +923,9 @@ int render_scene(alea_system_t* sys,
     fprintf(stderr, "render: %dx%d, %d tiles (%dx%d), %d thread%s, aa=%dx%d\n",
             w, h, n_tiles, tile, tile, num_threads,
             num_threads > 1 ? "s" : "", aa, aa);
+
+    if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1)
+        return render_scene_xray_batched(sys, cfg, cam, fb, tile);
 
     int progress_done = 0;
 

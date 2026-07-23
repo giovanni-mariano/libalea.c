@@ -724,6 +724,184 @@ TEST(compact_ray_slice_matches_explicit_generic_batch) {
     alea_destroy(sys);
 }
 
+TEST(compact_batch_internal_segments_support_per_ray_ranges) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    const double origins[] = {-5, 0, 0, -5, 0, 0};
+    const double directions[] = {1, 0, 0, 1, 0, 0};
+    const double t_mins[] = {4.0, 0.0};
+    const double t_maxs[] = {7.0, 4.0};
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_SEGMENTS,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    const alea_raycast_batch_options_t options = {
+        .struct_size = sizeof(options),
+        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_SURFACES
+    };
+    alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+    ASSERT_NOT_NULL(batch);
+    ASSERT_EQ(alea_raycast_hier_batch_query_nocache(
+                  sys, origins, directions, 2, &query, &options, batch), 0);
+    const uint64_t* offsets = alea_raycast_batch_ray_offsets(batch);
+    const double* enter = alea_raycast_batch_t_enter(batch);
+    const double* exit = alea_raycast_batch_t_exit(batch);
+    const int32_t* cells = alea_raycast_batch_cell_ids(batch);
+    const int32_t* enter_surfaces = alea_raycast_batch_enter_surface_ids(batch);
+    ASSERT_EQ(offsets[0], 0);
+    ASSERT_EQ(offsets[1], 1);
+    ASSERT_EQ(offsets[2], 3);
+    ASSERT_NEAR(enter[0], 4.0, EPS);
+    ASSERT_NEAR(exit[0], 7.0, EPS);
+    ASSERT_EQ(cells[0], 10);
+    ASSERT_EQ(enter_surfaces[0], -1);
+    ASSERT_NEAR(enter[1], 0.0, EPS);
+    ASSERT_NEAR(exit[1], 3.0, EPS);
+    ASSERT_EQ(cells[1], -1);
+    ASSERT_NEAR(enter[2], 3.0, EPS);
+    ASSERT_NEAR(exit[2], 4.0, EPS);
+    ASSERT_EQ(cells[2], 10);
+    alea_raycast_batch_result_destroy(batch);
+    alea_destroy(sys);
+}
+
+TEST(compact_batch_internal_first_visible_preserves_order_and_ranges) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    const double origins[] = {-5, 0, 0, -5, 0, 0, -5, 5, 0};
+    const double directions[] = {1, 0, 0, 1, 0, 0, 1, 0, 0};
+    const double t_mins[] = {0.0, 4.0, 0.0};
+    const double t_maxs[] = {8.0, 8.0, 8.0};
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_DENSITY |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                  ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS,
+        .material_filter = -1,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    alea_ray_first_visible_batch_result_t batch;
+    alea_ray_first_visible_batch_result_init(&batch);
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, origins, directions, 3, &query, &batch), 0);
+    ASSERT_EQ(batch.ray_count, 3);
+    ASSERT_EQ(batch.found[0], 1);
+    ASSERT_EQ(batch.found[1], 1);
+    ASSERT_EQ(batch.found[2], 0);
+    ASSERT_NEAR(batch.t[0], 3.0, EPS);
+    ASSERT_NEAR(batch.t[1], 4.0, EPS);
+    ASSERT_EQ(batch.cell_ids[0], 10);
+    ASSERT_EQ(batch.cell_ids[1], 10);
+    ASSERT_EQ(batch.cell_ids[2], -1);
+    ASSERT_EQ(batch.surface_ids[0], 1);
+    ASSERT_EQ(batch.surface_ids[1], -1);
+    ASSERT_NEAR(fabs(batch.normals_xyz[0]), 1.0, EPS);
+    ASSERT_NEAR(batch.normals_xyz[3], 0.0, EPS);
+    alea_ray_batch_query_t limited = query;
+    limited.max_output_bytes = 1;
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, origins, directions, 3, &limited, &batch), -1);
+    ASSERT_EQ(batch.ray_count, 3);
+    ASSERT_EQ(batch.found[0], 1);
+    alea_ray_first_visible_batch_result_free(&batch);
+    alea_destroy(sys);
+}
+
+TEST(compact_batch_internal_any_hit_preserves_order_and_filters) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    const double origins[] = {-5, 0, 0, -5, 0, 0, -5, 5, 0};
+    const double directions[] = {1, 0, 0, 1, 0, 0, 1, 0, 0};
+    const double t_mins[] = {0.0, 4.0, 0.0};
+    const double t_maxs[] = {8.0, 8.0, 8.0};
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .material_filter = -1,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    alea_ray_any_hit_batch_result_t batch;
+    alea_ray_any_hit_batch_result_init(&batch);
+    ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                  sys, origins, directions, 3, &query, &batch), 0);
+    ASSERT_EQ(batch.ray_count, 3);
+    ASSERT_EQ(batch.hits[0], 1);
+    ASSERT_EQ(batch.hits[1], 1);
+    ASSERT_EQ(batch.hits[2], 0);
+    alea_ray_batch_query_t filtered = query;
+    filtered.material_filter = 99;
+    ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                  sys, origins, directions, 3, &filtered, &batch), 0);
+    ASSERT_EQ(batch.hits[0], 0);
+    ASSERT_EQ(batch.hits[1], 0);
+    ASSERT_EQ(batch.hits[2], 0);
+    alea_ray_any_hit_batch_result_free(&batch);
+    alea_destroy(sys);
+}
+
+TEST(compact_batch_internal_boundary_events_preserve_canonical_contract) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    const double origins[] = {-5, 0, 0, -5, 0, 0, -5, 5, 0};
+    const double directions[] = {1, 0, 0, 1, 0, 0, 1, 0, 0};
+    const double t_mins[] = {0.0, 4.0, 0.0};
+    const double t_maxs[] = {8.0, 8.0, 8.0};
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+        .fields = ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .material_filter = -1,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    alea_ray_boundary_event_batch_result_t batch;
+    alea_ray_boundary_event_batch_result_init(&batch);
+    ASSERT_EQ(alea_raycast_boundary_events_batch_nocache(
+                  sys, origins, directions, 3, &query, &batch), 0);
+    ASSERT_EQ(batch.ray_count, 3);
+    ASSERT_EQ(batch.event_count, 3);
+    ASSERT_EQ(batch.ray_offsets[0], 0);
+    ASSERT_EQ(batch.ray_offsets[1], 2);
+    ASSERT_EQ(batch.ray_offsets[2], 3);
+    ASSERT_EQ(batch.ray_offsets[3], 3);
+    ASSERT_NEAR(batch.t[0], 3.0, EPS);
+    ASSERT_NEAR(batch.t[1], 7.0, EPS);
+    ASSERT_NEAR(batch.t[2], 7.0, EPS);
+    ASSERT_EQ(batch.kinds[0], ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+    ASSERT_EQ(batch.surface_ids[0], 1);
+    ASSERT_EQ(batch.cell_before[0], -1);
+    ASSERT_EQ(batch.cell_after[0], 10);
+    ASSERT_EQ(batch.cell_before[1], 10);
+    ASSERT_EQ(batch.cell_after[1], -1);
+    ASSERT_NEAR(fabs(batch.normals_xyz[0]), 1.0, EPS);
+    ASSERT_NE(batch.primitive_ids[0], UINT32_MAX);
+    alea_ray_boundary_event_batch_result_free(&batch);
+    alea_destroy(sys);
+}
+
 TEST(compact_ray_slice_fast_bidirectional_reuses_plot_cache) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

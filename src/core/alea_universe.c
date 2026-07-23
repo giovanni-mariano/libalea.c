@@ -2016,7 +2016,7 @@ int alea_find_cell_lazy(const alea_system_t* sys,
     if (!sys) return -1;
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+                              "alea_find_cell_lazy: universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
     
@@ -2134,7 +2134,7 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
 
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+                              "alea_find_all_cells_at_point: universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
 
@@ -2194,7 +2194,7 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
 
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+                              "alea_find_deepest_cell_hit_at_point: universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
 

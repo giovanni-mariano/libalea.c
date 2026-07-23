@@ -173,6 +173,50 @@ Instrument representative workloads before changing behavior:
 - time split between traversal, classification, and assembly;
 - peak and transient memory.
 
+**Implementation status (2026-07-23):** an initial maintained audit is now
+recorded below.  The existing `test_raycast_perf` fixture supplies the
+cross-workload baseline; its values are comparative observations on the
+executing machine, not portable acceptance thresholds.
+
+| Entry point | Traversal and observable output | Cache, storage, and stop policy |
+|---|---|---|
+| `alea_raycast()` | Global surface pipeline; hits and ownership segments, including canonical lattice handling. | Reinitializes the supplied result (releases retained vectors); traces to `t_max`. |
+| `alea_raycast_cell_aware()` | Cell-aware segment trace; delegates lattice systems to canonical global tracing. | Requires prepared raycast caches for non-lattice systems; reinitializes result; full trace. |
+| `alea_raycast_hier_fast_segments()` | Hierarchical cell-aware segment trace. | Prepares hierarchical/cell-surface caches; reinitializes result; full trace. |
+| `alea_raycast_hier_batch()` / internal batch query | Compact hierarchical segment CSR batch. | Prepares its execution prerequisites; publishes output transactionally; per-ray ranges are internal-only. |
+| `alea_trace_ray_slice_compact()` | Adapts slice rows into the compact hierarchical segment batch. | Temporary ray arrays plus transactional compact result; full rows. |
+| `alea_ray_first_cell()` | Hierarchical early first cell for non-lattice; canonical global fallback for lattice. | Prepares caches and reuses a thread-local trace; stops at the first resolved cell. |
+| `alea_ray_is_occluded()` | Hierarchical any-hit when eligible; global interval walk otherwise. | Reuses thread-local storage; stops at the first non-void interval. |
+| Renderer direct paths | Non-lattice solid uses hierarchical first-visible; lattice solid uses reusable canonical tracing; X-ray uses compact batches where eligible. | Worker-local reusable traces; first-visible/any-hit policies stop early, X-ray consumes all segments. |
+| Geometry-validator paths | Forward/reverse compact segment batches, optionally augmented by the slice directional event cache. | Ownership-only mode retains no event cache; provenance is opt-in and transactionally published. |
+
+The fixture was run with `USE_OPENMP=1` after cache extraction.  Key current
+observations are: 20-shell first-visible completed in 6.30 us/ray versus 58.02
+us/ray for a full trace (2 versus 41 final steps); compact 20-shell batching
+completed in 2.31 us/ray versus 8.50 us/ray for scalar traces with equal
+segment totals; and compact X-ray tiles completed in 8.53 us/ray versus 29.93
+us/ray for reusable scalar rays, again with equal segment totals.  Directional
+event-cache construction and shared-validator fixtures cover sphere, lattice,
+and nested-fill cases.
+
+`test_raycast_perf` now also reports retained rich-result capacity, compact
+published-result bytes, known caller-side transient input bytes, and cold versus
+warm query-cache preparation.  The latest run retained 6,144 bytes for the
+20-shell reusable trace, published 1,713,040 bytes for the corresponding
+10,000-ray compact result (with 480,000 known caller-side input bytes), and
+retained 3,584 bytes for the X-ray scalar scratch result (with 49,152 bytes of
+tile inputs).  Cold cache preparation took 134 us and the warm call was below
+the timer resolution on that run.
+
+Remaining audit gap: these are portable ownership measurements, not exact
+allocator-call counts or a process-wide peak. Internal worker scratch and
+allocator overhead remain deliberately unreported until a cross-platform
+design is justified. Any future allocator audit must be opt-in and use
+project-owned allocation wrappers/counters that compile on Windows, Linux,
+and macOS; it must not depend on `LD_PRELOAD`, a particular CRT allocator,
+or platform heap-profiler APIs. Platform profilers may remain supplementary
+developer tools, never a correctness or release requirement.
+
 ## Phase 1: internal reusable canonical tracing
 
 **Implementation status (2026-07-22):** complete.  The internal entry point is
@@ -211,6 +255,36 @@ Initial migrations:
 Do not change public `alea_raycast()` allocation behavior in this phase.
 
 ## Phase 2: query descriptor and result policy
+
+**Implementation status (2026-07-23):** initial internal descriptor and
+policy dispatcher landed as `alea_raycast_query_reuse_nocache()`.  It supports
+any-hit, first-cell, first-visible, segments, and boundary-event selection;
+honours query ranges, material filters, and scalar/event/segment budgets; and
+clears all supplied reusable outputs transactionally on failure.  Segments,
+events, any-hit, and first-cell currently use the canonical reusable global
+trace.  Non-lattice first-visible uses the hierarchical stepper and stops
+after the first verified qualifying interval without materializing hit or
+segment vectors.  The first-visible policy records only the accepted visible
+interval and treats a `t_min`-clipped interval as a cross-section with no
+reportable surface boundary.  Specialized writers/traversal early-stop for
+the other policies remain follow-up work.
+
+The descriptor now also carries an internal backend selector: `AUTO` retains
+the existing policy, `GLOBAL` forces canonical surface collection, and
+`FAST_FORWARD`, `FAST_REVERSE`, and `FAST_FORWARD_REVERSE` select the
+hierarchical stepper.  Reverse requires a finite range and normalizes its
+segments back to the caller's ray coordinates.  Bidirectional mode publishes
+the forward result only when its normalized reverse counterpart agrees on
+interval ownership; disagreement is a query failure rather than a silent
+preference.  Fast boundary events retain forward physical-hit provenance.
+
+Scalar `SEGMENTS` now uses the same range normalization as the compact
+executor: intervals ending at or before `t_min` are omitted, and an interval
+crossing `t_min` begins at `t_min` with no reportable enter surface.
+Non-lattice `FIRST_CELL` now uses the hierarchical verified-interval stepper
+and returns before hit or segment materialization, including ranged and
+material-filtered queries; lattice systems retain the canonical reusable trace
+fallback.
 
 Define an internal query descriptor:
 
@@ -326,6 +400,15 @@ Add canonical event fixtures before any consumer migration.
 
 ## Phase 4: specialized query policies
 
+**Implementation status (2026-07-22):** non-lattice `FIRST_VISIBLE` is now a
+specialized hierarchical policy via
+`alea_raycast_hier_first_visible_nocache()`.  It retains the stepper's
+ownership verification and boundary-normal semantics, then returns before
+hit/segment/path materialization or traversal beyond the accepted interval.
+Lattice systems deliberately retain the canonical reusable trace fallback.
+The matching non-lattice any-hit policy reuses this traversal without normal
+evaluation and now backs shadow occlusion queries.
+
 ### Any hit
 
 Keep and align the existing occlusion path. Stop on the first qualifying
@@ -362,6 +445,27 @@ Return the documented event stream needed by slice provenance and diagnostics.
 
 ## Phase 5: compact batch executor
 
+**Implementation status (2026-07-22):** the initial private executor is
+`alea_raycast_hier_batch_query_nocache()`.  The existing public
+`alea_raycast_hier_batch()` now adapts its scalar `t_max` input into that
+executor.  The internal descriptor currently accepts `SEGMENTS` only, with
+per-ray `t_min`/`t_max` arrays; a clipped leading segment begins at `t_min`
+and has no reportable enter surface, matching cross-section semantics.  It
+retains the existing parallel trace, deterministic CSR order, transactional
+publication, and budgets.  A private `FIRST_VISIBLE` SoA writer now provides
+one ordered record per input ray, including optional density/surface/normal/
+resolution fields and byte-budgeted transactional publication; it uses the
+non-lattice early-stop policy.  A private `ANY_HIT` writer similarly publishes
+one byte per input ray, supports per-ray ranges/material filters and
+transactional byte budgets, and uses the no-normal early-stop policy.  Lattice
+first-visible/any-hit batch queries use the canonical reusable scalar-query
+fallback, preserving semantics while foregoing non-lattice early termination.
+A
+private `BOUNDARY_EVENTS` CSR writer now batches the canonical scalar event
+collector for lattice and non-lattice systems, preserving physical,
+synthetic-lattice, unresolved, and coincident-event semantics; it supports
+per-ray ranges plus event/byte budgets and optional primitive/normal arrays.
+
 Generalize compact batch orchestration to accept query intent and requested
 fields while preserving current batch APIs through adapters.
 
@@ -388,13 +492,28 @@ current scalar-`t_max` adapter.
 **Implementation status (2026-07-22):** the surface-boundary map now builds
 private canonical event caches for U+/U-/V+/V-.  Each cache is CSR by slice
 line and maps its event intervals back to changed grid edges; this replaces
-two canonical short traces per changed edge.  The cache is not yet exposed to
-the validator because its existing compact hierarchy traces do not retain all
-coincident physical participants.  A future shared owner must preserve the
-canonical event contract, rather than treating the validator cache as an
+two canonical short traces per changed edge.  A private cache-aware validator
+entry point now augments its ownership intervals with canonical U-direction
+boundary evidence (forward/reverse surface IDs and coincident, synthetic, or
+unresolved flags).  The normal public validator remains ownership-only and
+does not create or retain event caches.  A future public owner must preserve
+the canonical event contract, rather than treating the validator cache as an
 equivalent source.  Cache construction traces independent lines in parallel,
 then uses a prefix-sum and ordered copy to publish deterministic CSR storage;
 classification callbacks remain outside that parallel region.
+
+**Implementation status (2026-07-23):** cache construction, opaque storage,
+and identity-checked accessors now live in `src/slice/slice_directional_trace.c`.
+`slice_api.c` retains boundary-map assembly and consumes directional events only
+through the cache accessor, so the CSR layout is private to the trace module.
+
+**Implementation status (2026-07-23, completion):** the private cache now
+also declares its field/depth/budget/completeness contract and retains compact
+ownership CSR traces for U+/U-/V+/V-.  Compatible U traces are reused by the
+cache-aware validator; incomplete or contradictory directional evidence for a
+boundary-map edge is discarded in favour of canonical reusable short-edge
+event traces.  The sphere, lattice, and nested-fill performance fixtures now
+report cache-hit trace masks, cache-miss fallback, and shared-consumer paths.
 
 Create a shareable slice trace cache beneath validation and provenance:
 
@@ -429,7 +548,57 @@ Map right edges from U traces and down edges from V traces. If trace semantics
 are incomplete or inconsistent for an edge, fall back to canonical reusable
 short-edge boundary-event tracing.
 
+### Provenance-aware validator follow-up
+
+This is opt-in and must not change ownership-only validator output or cost.
+When enabled with a matching canonical event cache, each emitted directional
+mismatch interval records boundary metadata for both `u_enter` and `u_exit`:
+
+- forward/reverse physical surface IDs;
+- flags for coincident physical participants, synthetic lattice crossings,
+  and unresolved events;
+- `-1` when no reportable physical surface belongs to that boundary.
+
+The metadata describes diagnostic evidence, not a proof of invalid geometry.
+It must be allocated, byte-budgeted, published, and freed transactionally with
+the existing interval CSR result. Cache reuse requires identical system,
+geometry generation, view, and sampling dimensions; otherwise the validator
+falls back to ownership-only operation unless the caller explicitly requests a
+fresh provenance cache. Benchmark ownership-only, provenance-only, and shared
+combined paths on simple, fill, and lattice fixtures before exposing this mode
+to C/Lua users.
+
+**Implementation status (2026-07-22):** an internal nested-fill performance
+fixture now reports ownership-only validation, canonical cache construction,
+and the shared cache-aware validator path.  Separate simple-sphere and
+lattice fixtures exercise the same shared path.  These measurements remain
+informational until a public C/Lua provenance API is proposed.
+
 ## Phase 7: 3D renderer migration
+
+**Implementation status (2026-07-22):** non-lattice solid rendering now uses
+the specialized first-visible policy and materializes only the one compact
+compatibility record required by its existing shading code.  Lattice solid
+rendering remains on canonical reusable traces.  Non-lattice, single-sample
+X-ray rendering now traces each tile through the compact CSR segment executor
+at the outer scheduling level, avoiding nested OpenMP; lattice and supersampled
+X-ray retain the canonical per-ray path.  Renderer clipping, depth, normal,
+color, hierarchy, and compact-X-ray tile-order tests pass.  The ray performance fixture
+compares full hierarchical tracing with first-visible on 20 concentric shells;
+the early-stop path completed two steps versus 41 for the full trace in the
+current run.  A second fixture compares reusable scalar X-ray camera segments
+with compact 32x32 tile CSR output and asserts equal segment totals.
+Cross-machine timings are intentionally not recorded as an acceptance
+threshold.
+
+**Validation status (2026-07-23):** `test_render3d` now covers the lattice
+fallback explicitly in both solid and X-ray modes, in addition to the existing
+simple/fill solid tests, clipping/depth/normal checks, and byte-identical
+non-lattice compact-X-ray output across tile sizes.  The current OpenMP run
+passed all 20 renderer tests.  The performance fixture continues to show
+first-visible work reduction on 20 shells and equal segment totals for scalar
+versus compact X-ray camera traces; its machine-local timings remain
+informational.
 
 ### Solid mode
 
@@ -460,6 +629,40 @@ fill occurrence, and normals must match the current canonical path before
 first-visible or batch migration.
 
 ## Phase 8: public API consolidation
+
+**Implementation status (2026-07-23):** public C and Lua entry points now
+cover first-visible, boundary-event, and directional slice-cache validation
+queries.  Both C APIs use opaque
+reusable results and prefix-compatible option structs; C/Lua tests cover
+ranges, field suppression, event budgets, cache identity, provenance, and
+result clearing on failure.  The directional cache remains opaque and its
+event layout private behind accessors.
+
+**Hardening status (2026-07-23):** public C tests cover compatible reuse,
+view/dimension mismatch, geometry-generation invalidation, transactional
+validation-result preservation, and the boundary-map shared-cache entry
+point. Lua tests cover compatible reuse plus view and geometry invalidation.
+The API documentation now defines cache ownership/lifetime, read-only sharing,
+leaf-depth reuse, provenance, and fallback behaviour. Public cache ABI is now
+ready for the full correctness/performance release gate.
+
+**Release-gate status (2026-07-23):** passed. `make USE_OPENMP=1 test` passed
+the complete C unit and integration suite; the full Lua suite passed after
+directional-cache userdata was made a tracked system dependency; and raycast
+plus renderer determinism tests passed with `OMP_NUM_THREADS=1` and `4`.
+The shared cache benchmarks retained deterministic `0x3` U-trace reuse on
+sphere, lattice, and nested-fill fixtures. On this machine the shared lattice
+validator measured 4.36 ms at one thread and 1.59 ms at four threads; these
+remain informational, not acceptance thresholds.
+
+**Completion status (2026-07-23):** complete. The public ABI remains opaque
+and accessor-based, existing entry points remain compatibility APIs, and C/Lua
+coverage includes the stabilized directional cache contract. The correctness
+matrix was exercised by the full suite plus raycast/render runs at 1, 2, 4,
+and 8 OpenMP threads (including dynamic scheduling). The only retained
+plan-wide measurement limitation is the Phase 0 audit note: no portable exact
+allocator-call or process-wide peak-memory counter is presently reported; any
+future counter must use the Windows-safe project-owned wrapper design above.
 
 Only after internal migrations stabilize:
 
@@ -552,7 +755,7 @@ src/raycast/
 
 src/slice/
   slice_api.c
-  slice_directional_trace.c shared U/V cache orchestration (new, later)
+  slice_directional_trace.c shared U/V cache orchestration
 
 src/render/
   render3d.c                consumer; no duplicate traversal logic

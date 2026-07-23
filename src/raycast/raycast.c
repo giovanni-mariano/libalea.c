@@ -57,6 +57,14 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    double effective_t_max,
                                    bool use_hier_lookup,
                                    bool emit_hits,
+                                   alea_ray_first_visible_result_t* first_visible,
+                                   int* first_cell_id,
+                                   double* first_cell_t,
+                                   double first_cell_t_min,
+                                   int first_cell_material_filter,
+                                   double visible_t_min,
+                                   int visible_material_filter,
+                                   bool visible_wants_normal,
                                    alea_raycast_result_t* result);
 
 /* ============================================================================
@@ -1663,7 +1671,17 @@ static int boundary_event_append(alea_ray_boundary_event_result_t* events,
                                  double t,
                                  alea_ray_boundary_event_kind_t kind,
                                  int surface_id,
-                                 const alea_ray_hit_t* hit) {
+                                 const alea_ray_hit_t* hit,
+                                 const alea_ray_boundary_event_options_internal_t* options) {
+    if (options &&
+        ((options->max_events && events->events.count >= options->max_events) ||
+         (options->max_output_bytes &&
+          events->events.count >=
+              options->max_output_bytes / sizeof(*events->events.data)))) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "boundary-event query output limit exceeded");
+        return -1;
+    }
     alea_ray_boundary_event_t event = {
         .t = t,
         .kind = kind,
@@ -1685,12 +1703,15 @@ static int boundary_events_append_group(
     const alea_raycast_result_t* trace,
     const alea_ray_segment_t* before, const alea_ray_segment_t* after,
     bool include_all_coincident_physical,
+    const alea_ray_boundary_event_options_internal_t* options,
     alea_ray_boundary_event_result_t* events) {
     const double t = before->t_exit;
     int ownership_changed = before->cell_id != after->cell_id ||
                             before->material_id != after->material_id;
-    int physical_ids[64];
+    int lowest_physical_id = -1;
+    int* physical_ids = NULL;
     size_t physical_count = 0;
+    size_t physical_capacity = 0;
     int saw_synthetic = 0;
 
     for (size_t i = 0; i < trace->hits.count; i++) {
@@ -1701,12 +1722,35 @@ static int boundary_events_append_group(
             continue;
         }
         if (hit->surface_id <= 0) continue;
+        if (!include_all_coincident_physical) {
+            if (lowest_physical_id < 0 || hit->surface_id < lowest_physical_id)
+                lowest_physical_id = hit->surface_id;
+            continue;
+        }
         size_t j;
         for (j = 0; j < physical_count; j++)
             if (physical_ids[j] == hit->surface_id) break;
         if (j == physical_count) {
-            if (physical_count == sizeof(physical_ids) / sizeof(physical_ids[0]))
-                return -1;
+            if (physical_count == physical_capacity) {
+                size_t next_capacity = physical_capacity ? physical_capacity * 2 : 16;
+                if (next_capacity < physical_capacity ||
+                    next_capacity > (size_t)-1 / sizeof(*physical_ids)) {
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                          "too many coincident boundary surfaces");
+                    free(physical_ids);
+                    return -1;
+                }
+                int* next_ids = realloc(physical_ids,
+                                        next_capacity * sizeof(*physical_ids));
+                if (!next_ids) {
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                          "failed to grow coincident boundary surface list");
+                    free(physical_ids);
+                    return -1;
+                }
+                physical_ids = next_ids;
+                physical_capacity = next_capacity;
+            }
             physical_ids[physical_count++] = hit->surface_id;
         }
     }
@@ -1716,33 +1760,42 @@ static int boundary_events_append_group(
     if (before->exit_surface_id == 0 || after->enter_surface_id == 0)
         saw_synthetic = 1;
 
-    if (ownership_changed && physical_count != 0) {
+    if (ownership_changed &&
+        (include_all_coincident_physical ? physical_count != 0 : lowest_physical_id >= 0)) {
         /* Surface ID is the deterministic reporting tie-breaker: the lowest
          * positive MC surface ID wins in the normal path.  Diagnostic mode
          * preserves every physical participant at this crossing. */
-        for (size_t i = 0; i < physical_count; i++) {
-            for (size_t j = i + 1; j < physical_count; j++) {
-                if (physical_ids[j] < physical_ids[i]) {
-                    int tmp = physical_ids[i];
-                    physical_ids[i] = physical_ids[j];
-                    physical_ids[j] = tmp;
+        if (include_all_coincident_physical) {
+            for (size_t i = 0; i < physical_count; i++) {
+                for (size_t j = i + 1; j < physical_count; j++) {
+                    if (physical_ids[j] < physical_ids[i]) {
+                        int tmp = physical_ids[i];
+                        physical_ids[i] = physical_ids[j];
+                        physical_ids[j] = tmp;
+                    }
                 }
             }
         }
         size_t emit_count = include_all_coincident_physical ? physical_count : 1;
         for (size_t i = 0; i < emit_count; i++) {
+            int surface_id = include_all_coincident_physical ? physical_ids[i] :
+                                                            lowest_physical_id;
             const alea_ray_hit_t* hit = boundary_event_find_hit(trace, t,
-                                                                 physical_ids[i]);
+                                                                 surface_id);
             if (boundary_event_append(events, before, after, t,
                                       ALEA_RAY_BOUNDARY_EVENT_PHYSICAL,
-                                      physical_ids[i], hit) != 0)
+                                      surface_id, hit, options) != 0) {
+                free(physical_ids);
                 return -1;
+            }
         }
     } else if (ownership_changed && !saw_synthetic) {
         if (boundary_event_append(events, before, after, t,
                                   ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED,
-                                  -1, NULL) != 0)
+                                  -1, NULL, options) != 0) {
+            free(physical_ids);
             return -1;
+        }
     }
 
     /* Physical events are emitted first; the synthetic event follows at the
@@ -1750,20 +1803,51 @@ static int boundary_events_append_group(
     if (saw_synthetic &&
         boundary_event_append(events, before, after, t,
                               ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE,
-                              0, NULL) != 0)
+                              0, NULL, options) != 0) {
+        free(physical_ids);
         return -1;
+    }
+    free(physical_ids);
     return 0;
 }
 
+static int boundary_events_from_trace(
+    const alea_raycast_result_t* trace,
+    const alea_ray_boundary_event_options_internal_t* options,
+    alea_ray_boundary_event_result_t* events);
+
 int alea_raycast_boundary_events_with_options(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
-    const alea_ray_boundary_event_options_t* options,
+    const alea_ray_boundary_event_options_internal_t* options,
     alea_raycast_result_t* trace, alea_ray_boundary_event_result_t* events) {
     if (!trace || !events)
         return -1;
     alea_ray_boundary_event_result_clear(events);
-    if (alea_raycast_global_reuse_nocache(sys, ray, t_max, trace) != 0)
+    /* Boundary events need the same ownership resolver as public first-hit
+     * queries.  The legacy global path eventually falls back to a recursive
+     * point lookup, which is both slower and cannot resolve filled/lattice
+     * models reliably once the hierarchical cache is the active backend. */
+    alea_raycast_result_clear(trace);
+    double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    if (raycast_global_pipeline(sys, ray, 0, effective_t_max,
+                                system_has_lattice_cells(sys), true,
+                                trace) != 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "boundary-event trace failed while resolving ray intervals");
         return -1;
+    }
+    return boundary_events_from_trace(trace, options, events);
+}
+
+/* Derive events without retracing.  This is the bridge used by the query
+ * dispatcher while batch/event materialization remains a later phase. */
+static int boundary_events_from_trace(
+    const alea_raycast_result_t* trace,
+    const alea_ray_boundary_event_options_internal_t* options,
+    alea_ray_boundary_event_result_t* events) {
+    if (!trace || !events)
+        return -1;
+    alea_ray_boundary_event_result_clear(events);
 
     for (size_t i = 0; i + 1 < trace->segments.count; i++) {
         const alea_ray_segment_t* before = &trace->segments.data[i];
@@ -1774,6 +1858,7 @@ int alea_raycast_boundary_events_with_options(
         if (boundary_events_append_group(
                 trace, before, after,
                 options && options->include_all_coincident_physical,
+                options,
                 events) != 0) {
             alea_ray_boundary_event_result_clear(events);
             return -1;
@@ -1787,6 +1872,296 @@ int alea_raycast_boundary_events_reuse_nocache(
     alea_raycast_result_t* trace, alea_ray_boundary_event_result_t* events) {
     return alea_raycast_boundary_events_with_options(sys, ray, t_max, NULL,
                                                       trace, events);
+}
+
+static void ray_query_output_clear(alea_ray_query_output_t* output) {
+    if (!output) return;
+    memset(output, 0, sizeof(*output));
+    output->first_cell_id = -1;
+    output->first_visible.cell_id = -1;
+    output->first_visible.material_id = 0;
+    output->first_visible.surface_id = -1;
+    output->first_visible.primitive_id = UINT32_MAX;
+}
+
+static bool ray_query_accepts_material(const alea_ray_query_t* query,
+                                       const alea_ray_segment_t* seg,
+                                       bool require_nonvoid) {
+    if (seg->cell_id < 0) return false;
+    if (require_nonvoid && seg->material_id == 0) return false;
+    return query->material_filter < 0 ||
+           seg->material_id == query->material_filter;
+}
+
+static const alea_ray_hit_t* ray_query_enter_hit(
+    const alea_raycast_result_t* trace, const alea_ray_segment_t* seg) {
+    if (seg->enter_hit_index >= 0 &&
+        (size_t)seg->enter_hit_index < trace->hits.count)
+        return &trace->hits.data[seg->enter_hit_index];
+    return boundary_event_find_hit(trace, seg->t_enter, seg->enter_surface_id);
+}
+
+/* Keep scalar SEGMENTS queries consistent with the compact executor: an
+ * interval that begins before the requested range becomes a cross-section,
+ * not a surface entry.  This mutates only the reusable logical contents and
+ * therefore retains all caller-owned capacity. */
+static void ray_query_clip_segments(alea_raycast_result_t* trace,
+                                    double t_min) {
+    if (t_min <= 0.0) return;
+    size_t write = 0;
+    for (size_t i = 0; i < trace->segments.count; i++) {
+        alea_ray_segment_t segment = trace->segments.data[i];
+        if (segment.t_exit <= t_min + RAY_EPSILON) continue;
+        if (segment.t_enter < t_min) {
+            segment.t_enter = t_min;
+            segment.enter_surface_id = -1;
+            segment.enter_hit_index = -1;
+        }
+        trace->segments.data[write++] = segment;
+    }
+    trace->segments.count = write;
+}
+
+static int ray_query_fast_forward_trace(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max, bool emit_hits,
+                                        alea_raycast_result_t* trace) {
+    alea_raycast_result_clear(trace);
+    trace->ray = *ray;
+    return raycast_cell_aware_impl(sys, ray, t_max, true, emit_hits,
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false,
+                                   trace);
+}
+
+static int ray_query_fast_reverse_trace(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double t_max, bool emit_hits,
+                                        alea_raycast_result_t* trace) {
+    if (!isfinite(t_max) || t_max <= 0 || t_max == DBL_MAX) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "FAST_REVERSE requires a finite positive t_max");
+        return -1;
+    }
+    double ex, ey, ez;
+    alea_ray_point_at(ray, t_max, &ex, &ey, &ez);
+    alea_ray_t reverse_ray;
+    alea_ray_init_normalized(&reverse_ray, ex, ey, ez,
+                             -ray->dx, -ray->dy, -ray->dz);
+
+    alea_raycast_result_t reverse;
+    alea_raycast_result_init(&reverse);
+    int rc = ray_query_fast_forward_trace(sys, &reverse_ray, t_max,
+                                           emit_hits, &reverse);
+    if (rc != 0) {
+        alea_raycast_result_free(&reverse);
+        return -1;
+    }
+    alea_raycast_result_clear(trace);
+    trace->ray = *ray;
+    if (alea_vec_reserve(&trace->segments, reverse.segments.count,
+                         alea_ray_segment_t) != 0) {
+        alea_raycast_result_free(&reverse);
+        return -1;
+    }
+    for (size_t i = 0; i < reverse.segments.count; i++) {
+        const alea_ray_segment_t* src =
+            &reverse.segments.data[reverse.segments.count - 1 - i];
+        alea_ray_segment_t dst = *src;
+        dst.t_enter = t_max - src->t_exit;
+        dst.t_exit = t_max - src->t_enter;
+        dst.enter_surface_id = src->exit_surface_id;
+        dst.exit_surface_id = src->enter_surface_id;
+        dst.enter_hit_index = -1;
+        trace->segments.data[trace->segments.count++] = dst;
+    }
+    /* Reverse-hit normalization is intentionally deferred.  Fast boundary
+     * provenance requests retain the verified forward trace in bidirectional
+     * mode, and FAST_REVERSE exposes segment ownership only for now. */
+    alea_raycast_result_free(&reverse);
+    return 0;
+}
+
+static int ray_query_segments_match(const alea_raycast_result_t* forward,
+                                    const alea_raycast_result_t* reverse) {
+    if (forward->segments.count != reverse->segments.count)
+        return 0;
+    for (size_t i = 0; i < forward->segments.count; i++) {
+        const alea_ray_segment_t* a = &forward->segments.data[i];
+        const alea_ray_segment_t* b = &reverse->segments.data[i];
+        if (fabs(a->t_enter - b->t_enter) > RAY_EPSILON ||
+            fabs(a->t_exit - b->t_exit) > RAY_EPSILON ||
+            a->cell_id != b->cell_id || a->material_id != b->material_id)
+            return 0;
+    }
+    return 1;
+}
+
+int alea_raycast_query_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_ray_query_t* query, alea_raycast_result_t* trace,
+    alea_ray_boundary_event_result_t* events,
+    alea_ray_query_output_t* output) {
+    /* Clear every valid caller-owned output before validation too: malformed
+     * descriptors must not leave a previous ray's answer observable. */
+    ray_query_output_clear(output);
+    if (events) alea_ray_boundary_event_result_clear(events);
+    if (trace) alea_raycast_result_clear(trace);
+    if (!sys || !ray || !query || !trace) return -1;
+    if (query->kind < ALEA_RAY_QUERY_ANY_HIT ||
+        query->kind > ALEA_RAY_QUERY_BOUNDARY_EVENTS)
+        return -1;
+    if (query->backend < ALEA_RAY_QUERY_BACKEND_AUTO ||
+        query->backend > ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE)
+        return -1;
+    if (!isfinite(query->t_min) || !isfinite(query->t_max) ||
+        query->t_min < 0 ||
+        (query->t_max > 0 && query->t_min > query->t_max))
+        return -1;
+    if (query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS && !events)
+        return -1;
+
+    const double t_max = query->t_max <= 0 ? DBL_MAX : query->t_max;
+    if (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+        query->kind == ALEA_RAY_QUERY_FIRST_CELL && output &&
+        !system_has_lattice_cells(sys)) {
+        if (alea_raycast_hier_first_cell_nocache(
+                sys, ray, query->t_min, t_max, query->material_filter,
+                trace, &output->first_cell_id,
+                &output->first_cell_t) != 0)
+            goto fail;
+        return 0;
+    }
+    if (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+        query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE &&
+        !system_has_lattice_cells(sys)) {
+        /* The hierarchical stepper validates each interval before returning,
+         * then stops before allocating its segment/hit representation. */
+        if (!output || alea_raycast_hier_first_visible_nocache(
+                            sys, ray, query->t_min, t_max,
+                            query->material_filter,
+                            (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) != 0,
+                            trace,
+                            &output->first_visible) != 0)
+            goto fail;
+        return 0;
+    }
+    if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
+        query->backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE ||
+        query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE) {
+        const bool emit_hits = query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS ||
+            (query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE &&
+             (query->fields & (ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                               ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                               ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)) != 0);
+        if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD) {
+            if (ray_query_fast_forward_trace(sys, ray, t_max, emit_hits, trace) != 0)
+                goto fail;
+        } else if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE) {
+            if (ray_query_fast_reverse_trace(sys, ray, t_max, emit_hits, trace) != 0)
+                goto fail;
+        } else {
+            alea_raycast_result_t reverse;
+            alea_raycast_result_init(&reverse);
+            int rc = ray_query_fast_forward_trace(sys, ray, t_max, emit_hits, trace);
+            if (rc == 0)
+                rc = ray_query_fast_reverse_trace(sys, ray, t_max, false, &reverse);
+            if (rc == 0 && !ray_query_segments_match(trace, &reverse)) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                      "FAST_FORWARD_REVERSE segment disagreement");
+                rc = -1;
+            }
+            alea_raycast_result_free(&reverse);
+            if (rc != 0) goto fail;
+        }
+    } else if (alea_raycast_global_reuse_nocache(sys, ray, t_max, trace) != 0) {
+        goto fail;
+    }
+
+    if (query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS) {
+        const alea_ray_boundary_event_options_internal_t event_options = {
+            .max_events = query->max_events,
+            .max_output_bytes = query->max_output_bytes
+        };
+        if (boundary_events_from_trace(trace, &event_options, events) != 0)
+            goto fail;
+        size_t write = 0;
+        for (size_t i = 0; i < events->events.count; i++) {
+            const alea_ray_boundary_event_t event = events->events.data[i];
+            if (event.t + RAY_EPSILON < query->t_min ||
+                event.t > t_max + RAY_EPSILON)
+                continue;
+            events->events.data[write++] = event;
+        }
+        events->events.count = write;
+        if ((query->max_events && write > query->max_events) ||
+            (query->max_output_bytes &&
+             write > query->max_output_bytes / sizeof(*events->events.data)))
+            goto fail;
+        return 0;
+    }
+
+    if (query->kind == ALEA_RAY_QUERY_SEGMENTS) {
+        ray_query_clip_segments(trace, query->t_min);
+        const size_t count = trace->segments.count;
+        if ((query->max_events && count > query->max_events) ||
+            (query->max_output_bytes &&
+             count > query->max_output_bytes / sizeof(*trace->segments.data)))
+            goto fail;
+        return 0;
+    }
+
+    for (size_t i = 0; i < trace->segments.count; i++) {
+        const alea_ray_segment_t* seg = &trace->segments.data[i];
+        if (seg->t_exit <= query->t_min + RAY_EPSILON)
+            continue;
+
+        if (query->kind == ALEA_RAY_QUERY_FIRST_CELL) {
+            if (!ray_query_accepts_material(query, seg, false)) continue;
+            if (output) {
+                output->first_cell_id = seg->cell_id;
+                output->first_cell_t = fmax(seg->t_enter, query->t_min);
+            }
+            return 0;
+        }
+
+        if (!ray_query_accepts_material(query, seg, true)) continue;
+        if (query->kind == ALEA_RAY_QUERY_ANY_HIT) {
+            if (output) output->any_hit = true;
+            return 0;
+        }
+
+        /* FIRST_VISIBLE: an interval clipped by t_min has no reportable
+         * geometry boundary, matching the renderer's cross-section rule. */
+        if (output) {
+            alea_ray_first_visible_result_t* hit = &output->first_visible;
+            const bool crossed_boundary = seg->t_enter >= query->t_min - RAY_EPSILON;
+            const alea_ray_hit_t* enter = crossed_boundary
+                ? ray_query_enter_hit(trace, seg) : NULL;
+            hit->found = true;
+            hit->t = fmax(seg->t_enter, query->t_min);
+            hit->cell_id = seg->cell_id;
+            hit->material_id = seg->material_id;
+            hit->density = seg->density;
+            hit->resolution_flags = seg->resolution_flags;
+            if (enter) {
+                hit->surface_id = enter->surface_id;
+                hit->primitive_id = enter->primitive_id;
+                if (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) {
+                    hit->nx = enter->nx;
+                    hit->ny = enter->ny;
+                    hit->nz = enter->nz;
+                }
+            }
+        }
+        return 0;
+    }
+    return 0;
+
+fail:
+    alea_raycast_result_clear(trace);
+    if (events) alea_ray_boundary_event_result_clear(events);
+    ray_query_output_clear(output);
+    return -1;
 }
 
 /* ============================================================================
@@ -1840,7 +2215,7 @@ int alea_raycast_hier(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = ray;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   result);
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
 }
 
 int alea_raycast_hier_blas_experimental(alea_system_t* sys,
@@ -1875,29 +2250,44 @@ int alea_ray_first_cell(alea_system_t* sys,
                        double dx, double dy, double dz,
                        double t_max,
                        double* out_t) {
-    alea_raycast_result_t result;
-    alea_raycast_result_init(&result);
-
-    int rc = alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
-    if (rc != 0) {
-        alea_raycast_result_free(&result);
-        return -1;
+    if (!sys) return -1;
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) return -1;
+    if (!system_has_lattice_cells(sys)) {
+        if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
+        static ALEA_THREAD_LOCAL alea_raycast_result_t hier_tls_result;
+        static ALEA_THREAD_LOCAL int hier_tls_init = 0;
+        if (!hier_tls_init) {
+            alea_raycast_result_init(&hier_tls_result);
+            hier_tls_init = 1;
+        }
+        int first_cell = -1;
+        if (alea_raycast_hier_first_cell_nocache(
+                sys, &ray, 0, t_max, -1, &hier_tls_result, &first_cell, out_t) != 0)
+            return -1;
+        return first_cell;
     }
 
-    int first_cell = -1;
-    if (result.segments.count > 0) {
-        /* Find first non-void segment */
-        for (size_t i = 0; i < result.segments.count; i++) {
-            if (result.segments.data[i].cell_id >= 0) {
-                first_cell = result.segments.data[i].cell_id;
-                if (out_t) *out_t = result.segments.data[i].t_enter;
-                break;
-            }
+    /* Synthetic lattice ownership remains canonical until its early-stop
+     * policy can prove equivalence with global DDA traversal. */
+    if (alea_raycast_ensure_caches(sys) != 0) return -1;
+    static ALEA_THREAD_LOCAL alea_raycast_result_t lattice_tls_result;
+    static ALEA_THREAD_LOCAL int lattice_tls_init = 0;
+    if (!lattice_tls_init) {
+        alea_raycast_result_init(&lattice_tls_result);
+        lattice_tls_init = 1;
+    }
+    if (alea_raycast_global_reuse_nocache(sys, &ray, t_max,
+                                           &lattice_tls_result) != 0)
+        return -1;
+    for (size_t i = 0; i < lattice_tls_result.segments.count; i++) {
+        const alea_ray_segment_t* segment = &lattice_tls_result.segments.data[i];
+        if (segment->cell_id >= 0) {
+            if (out_t) *out_t = segment->t_enter;
+            return segment->cell_id;
         }
     }
-
-    alea_raycast_result_free(&result);
-    return first_cell;
+    return -1;
 }
 
 int alea_ray_is_occluded(alea_system_t* sys,
@@ -1906,23 +2296,20 @@ int alea_ray_is_occluded(alea_system_t* sys,
                         double t_max) {
     if (!sys) return 0;
 
-    if (raycast_prefers_hier_mode(sys)) {
-        alea_raycast_result_t result;
-        alea_raycast_result_init(&result);
-        int rc = alea_raycast_hier(sys, ox, oy, oz, dx, dy, dz, t_max, &result);
-        if (rc != 0) {
-            alea_raycast_result_free(&result);
-            return 0;
+    if (raycast_prefers_hier_mode(sys) && !system_has_lattice_cells(sys)) {
+        if (alea_raycast_ensure_hier_caches(sys) != 0) return 0;
+        static ALEA_THREAD_LOCAL alea_raycast_result_t hier_tls_result;
+        static ALEA_THREAD_LOCAL int hier_tls_init = 0;
+        if (!hier_tls_init) {
+            alea_raycast_result_init(&hier_tls_result);
+            hier_tls_init = 1;
         }
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) return 0;
         int occluded = 0;
-        for (size_t i = 0; i < result.segments.count; i++) {
-            if (result.segments.data[i].cell_id >= 0 &&
-                result.segments.data[i].material_id != 0) {
-                occluded = 1;
-                break;
-            }
-        }
-        alea_raycast_result_free(&result);
+        if (alea_raycast_hier_any_hit_nocache(
+                sys, &ray, 0, t_max, -1, &hier_tls_result, &occluded) != 0)
+            return 0;
         return occluded;
     }
 
@@ -2090,6 +2477,34 @@ static int boundary_event_emit_hit(alea_system_t* sys,
         return -1;
     }
     return hit_index;
+}
+
+/* Populate the one normal needed by FIRST_VISIBLE without allocating or
+ * appending a hit record. */
+static void boundary_event_first_visible_normal(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_raycast_boundary_event_t* ev,
+    bool include_normal, alea_ray_first_visible_result_t* visible) {
+    if (!ev->has_physical_surface ||
+        ev->primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
+        ev->primitive_id >= alea_vec_count(&sys->primitives))
+        return;
+    visible->surface_id = ev->surface_id;
+    visible->primitive_id = ev->primitive_id;
+    if (!include_normal) return;
+    const alea_primitive_entry_t* prim = &sys->primitives.data[ev->primitive_id];
+    alea_primitive_data_t prim_data;
+    if (!raycast_primitive_copy_payload(sys, ev->primitive_id,
+                                        prim->type, &prim_data))
+        return;
+    double wx, wy, wz;
+    alea_ray_point_at(ray, ev->t, &wx, &wy, &wz);
+    alea_matrix_transform_point_inverse(&ev->transform, &wx, &wy, &wz);
+    double nlx, nly, nlz;
+    primitive_normal_at(prim->type, &prim_data, wx, wy, wz,
+                        &nlx, &nly, &nlz);
+    boundary_event_world_normal(&ev->transform, nlx, nly, nlz,
+                                &visible->nx, &visible->ny, &visible->nz);
 }
 
 /**
@@ -2645,6 +3060,14 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    double effective_t_max,
                                    bool use_hier_lookup,
                                    bool emit_hits,
+                                   alea_ray_first_visible_result_t* first_visible,
+                                   int* first_cell_id,
+                                   double* first_cell_t,
+                                   double first_cell_t_min,
+                                   int first_cell_material_filter,
+                                   double visible_t_min,
+                                   int visible_material_filter,
+                                   bool visible_wants_normal,
                                    alea_raycast_result_t* result) {
     /* Current position along ray */
     double t_current = 0;
@@ -2819,7 +3242,7 @@ resolve_cell:;
          * emit_hits is set; the segment-only path never touches it, so it adds
          * no work to the hot loop. */
         alea_raycast_boundary_event_t bevent;
-        if (emit_hits) {
+        if (emit_hits || first_visible) {
             bevent.t = 0;
             bevent.surface_id = -1;
             bevent.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
@@ -2855,7 +3278,7 @@ resolve_cell:;
                                            &terminal_prim_id);
             result->terminal_surfaces_tested +=
                 result->surfaces_tested - surfaces_tested_before;
-            if (emit_hits) {
+            if (emit_hits || first_visible) {
                 bevent.t = t_next;
                 bevent.surface_id = hit_surface_id;
                 bevent.primitive_id = terminal_prim_id;
@@ -2888,7 +3311,7 @@ resolve_cell:;
                 if (t_lattice_surface < t_next - RAY_EPSILON) {
                     t_next = t_lattice_surface;
                     hit_surface_id = lattice_surface_id;
-                    if (emit_hits) {
+                    if (emit_hits || first_visible) {
                         bevent.t = t_lattice_surface;
                         bevent.surface_id = lattice_surface_id;
                         bevent.primitive_id = lattice_prim_id;
@@ -2903,7 +3326,7 @@ resolve_cell:;
                     if (fabs(t_lattice_surface - t_lattice_next) <= RAY_EPSILON) {
                         hit_surface_id = lattice_surface_id;
                         next_enter_surface_id = 0;
-                        if (emit_hits) {
+                        if (emit_hits || first_visible) {
                             bevent.t = t_lattice_next;
                             bevent.surface_id = lattice_surface_id;
                             bevent.primitive_id = lattice_prim_id;
@@ -2913,7 +3336,7 @@ resolve_cell:;
                         }
                     } else {
                         hit_surface_id = 0;
-                        if (emit_hits) {
+                        if (emit_hits || first_visible) {
                             /* Pure synthetic DDA boundary: no physical surface. */
                             bevent.t = t_lattice_next;
                             bevent.surface_id = 0;
@@ -2927,7 +3350,7 @@ resolve_cell:;
                            lattice_surface_id >= 0) {
                     hit_surface_id = lattice_surface_id;
                     next_enter_surface_id = 0;
-                    if (emit_hits) {
+                    if (emit_hits || first_visible) {
                         bevent.surface_id = lattice_surface_id;
                         bevent.primitive_id = lattice_prim_id;
                         bevent.has_physical_surface = (lattice_surface_id > 0);
@@ -2953,7 +3376,7 @@ resolve_cell:;
                     t_next = t_ancestor;
                     hit_surface_id = ancestor_surface_id;
                     next_enter_surface_id = ancestor_surface_id;
-                    if (emit_hits) {
+                    if (emit_hits || first_visible) {
                         bevent.t = t_ancestor;
                         bevent.surface_id = ancestor_surface_id;
                         bevent.primitive_id = ancestor_prim_id;
@@ -2968,7 +3391,7 @@ resolve_cell:;
             t_next = find_closest_intersection(sys, ray,
                                                t_current + RAY_EPSILON, effective_t_max,
                                                &hit_surface_id, &void_prim_id);
-            if (emit_hits) {
+            if (emit_hits || first_visible) {
                 /* Void-region global search runs in the world frame. */
                 bevent.t = t_next;
                 bevent.surface_id = hit_surface_id;
@@ -3084,6 +3507,44 @@ resolve_cell:;
             current_path = saved_path;
         }
 
+        /* FIRST_CELL and FIRST_VISIBLE consume a verified interval before
+         * hit/segment materialization, so work behind the answer is avoided. */
+        if (first_cell_id && cell_id >= 0 &&
+            (first_cell_material_filter < 0 ||
+             material_id == first_cell_material_filter) &&
+            t_next > first_cell_t_min + RAY_EPSILON) {
+            *first_cell_id = cell_id;
+            if (first_cell_t) *first_cell_t = fmax(t_current, first_cell_t_min);
+            return 0;
+        }
+
+        /* FIRST_VISIBLE consumes this completed interval immediately.  It is
+         * deliberately after ownership verification but before hit/segment
+         * materialization, so work behind the winning interval is avoided. */
+        if (first_visible && cell_id >= 0 && material_id != 0 &&
+            (visible_material_filter < 0 ||
+             material_id == visible_material_filter) &&
+            t_next > visible_t_min + RAY_EPSILON) {
+            memset(first_visible, 0, sizeof(*first_visible));
+            first_visible->found = true;
+            first_visible->t = fmax(t_current, visible_t_min);
+            first_visible->cell_id = cell_id;
+            first_visible->material_id = material_id;
+            first_visible->density = density;
+            first_visible->surface_id = -1;
+            first_visible->primitive_id = UINT32_MAX;
+            first_visible->resolution_flags =
+                (cell_idx >= 0 &&
+                 (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+                 alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
+                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
+            if (t_current >= visible_t_min - RAY_EPSILON)
+                boundary_event_first_visible_normal(sys, ray, &bevent,
+                                                    visible_wants_normal,
+                                                    first_visible);
+            return 0;
+        }
+
         /* Emit a boundary hit for this step's physical surface crossing (if any)
          * before recording the segment, so the segment can reference it. The
          * progress-guard and t_max clamps only fire when no physical surface was
@@ -3094,39 +3555,45 @@ resolve_cell:;
             exit_hit_index = boundary_event_emit_hit(sys, ray, &bevent, result);
         }
 
-        uint32_t path_index = UINT32_MAX;
-        if (use_hier_lookup && capture_hier_path(result, &current_path,
-                                                  &path_index) != 0) {
-            return -1;
-        }
+        if (!first_visible && !first_cell_id) {
+            uint32_t path_index = UINT32_MAX;
+            if (use_hier_lookup && capture_hier_path(result, &current_path,
+                                                      &path_index) != 0) {
+                return -1;
+            }
 
-        /* Add or extend segment. A placement/lattice path change is a real
-         * ownership transition even if it resolves to the same leaf cell. */
-        if (cell_idx == prev_cell_idx && result->segments.count > 0 &&
-            result->segments.data[result->segments.count - 1].path_index == path_index) {
-            /* Extend previous segment */
-            alea_ray_segment_t* prev_seg =
-                &result->segments.data[result->segments.count - 1];
-            prev_seg->t_exit = t_next;
-            prev_seg->exit_surface_id = hit_surface_id;
+            /* Add or extend segment. A placement/lattice path change is a real
+             * ownership transition even if it resolves to the same leaf cell. */
+            if (cell_idx == prev_cell_idx && result->segments.count > 0 &&
+                result->segments.data[result->segments.count - 1].path_index == path_index) {
+                /* Extend previous segment */
+                alea_ray_segment_t* prev_seg =
+                    &result->segments.data[result->segments.count - 1];
+                prev_seg->t_exit = t_next;
+                prev_seg->exit_surface_id = hit_surface_id;
+            } else {
+                /* Create new segment */
+                alea_ray_segment_t seg;
+                seg.t_enter = t_current;
+                seg.t_exit = t_next;
+                seg.cell_id = cell_id;
+                seg.material_id = material_id;
+                seg.density = density;
+                seg.enter_surface_id = prev_surface_id;
+                seg.exit_surface_id = hit_surface_id;
+                seg.enter_hit_index = pending_enter_hit_index;
+                seg.path_index = path_index;
+                seg.resolution_flags =
+                    (cell_idx >= 0 &&
+                     (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+                     alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
+                        ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
+                if (add_segment(result, &seg) != 0) return -1;
+                prev_cell_idx = cell_idx;
+            }
         } else {
-            /* Create new segment */
-            alea_ray_segment_t seg;
-            seg.t_enter = t_current;
-            seg.t_exit = t_next;
-            seg.cell_id = cell_id;
-            seg.material_id = material_id;
-            seg.density = density;
-            seg.enter_surface_id = prev_surface_id;
-            seg.exit_surface_id = hit_surface_id;
-            seg.enter_hit_index = pending_enter_hit_index;
-            seg.path_index = path_index;
-            seg.resolution_flags =
-                (cell_idx >= 0 &&
-                 (size_t)cell_idx < alea_vec_count(&sys->cells) &&
-                 alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
-                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
-            if (add_segment(result, &seg) != 0) return -1;
+            /* Preserve the stepper's neighbor/path locality without retaining
+             * the interval that FIRST_VISIBLE has already classified. */
             prev_cell_idx = cell_idx;
         }
 
@@ -3180,7 +3647,7 @@ int alea_raycast_cell_aware(alea_system_t* sys,
     }
 
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, false,
-                                   result);
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
 }
 
 int alea_raycast_hier_cell_aware(alea_system_t* sys,
@@ -3214,7 +3681,7 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   result);
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
 }
 
 int alea_raycast_hier_with_hits(alea_system_t* sys,
@@ -3238,7 +3705,7 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true,
-                                   result);
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
 }
 
 /* Buffer-reuse hierarchical variants: take a pre-normalized ray, assume query
@@ -3254,7 +3721,56 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
-                                   result);
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+}
+
+int alea_raycast_hier_first_visible_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    int material_filter, int include_normal, alea_raycast_result_t* scratch,
+    alea_ray_first_visible_result_t* out_visible) {
+    if (!sys || !ray || !scratch || !out_visible || t_min < 0 ||
+        (t_max > 0 && t_min > t_max) || system_has_lattice_cells(sys))
+        return -1;
+    alea_raycast_result_clear(scratch);
+    memset(out_visible, 0, sizeof(*out_visible));
+    out_visible->cell_id = -1;
+    out_visible->surface_id = -1;
+    out_visible->primitive_id = UINT32_MAX;
+    const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
+    scratch->ray = *ray;
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
+                                   out_visible, NULL, NULL, 0, -1,
+                                   t_min, material_filter, include_normal != 0,
+                                   scratch);
+}
+
+int alea_raycast_hier_first_cell_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    int material_filter, alea_raycast_result_t* scratch,
+    int* out_cell_id, double* out_t) {
+    if (!sys || !ray || !scratch || !out_cell_id || t_min < 0 ||
+        (t_max > 0 && t_min > t_max) || system_has_lattice_cells(sys))
+        return -1;
+    *out_cell_id = -1;
+    alea_raycast_result_clear(scratch);
+    scratch->ray = *ray;
+    const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
+                                   NULL, out_cell_id, out_t, t_min, material_filter,
+                                   0, -1, false,
+                                   scratch);
+}
+
+int alea_raycast_hier_any_hit_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    int material_filter, alea_raycast_result_t* scratch, int* out_hit) {
+    if (!out_hit) return -1;
+    *out_hit = 0;
+    alea_ray_first_visible_result_t visible;
+    int rc = alea_raycast_hier_first_visible_nocache(
+        sys, ray, t_min, t_max, material_filter, 0, scratch, &visible);
+    if (rc == 0) *out_hit = visible.found ? 1 : 0;
+    return rc;
 }
 
 int alea_raycast_hier_segments_nocache(alea_system_t* sys,
@@ -3265,5 +3781,5 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
     return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   result);
+                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
 }

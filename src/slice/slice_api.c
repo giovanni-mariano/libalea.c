@@ -5965,208 +5965,24 @@ static void slice_world_point(const alea_slice_view_t* view, double u, double v,
                  v * view->plane.v_axis[i];
 }
 
-/* Canonical events are traced once per slice line, rather than once per
- * changed grid edge.  Four caches (U+/U-/V+/V-) preserve the directional
- * provenance contract and can later be shared with slice diagnostics. */
-typedef struct {
-    size_t line_count;
-    size_t* offsets;
-    alea_ray_boundary_event_t* events;
-    size_t event_count;
-} slice_directional_event_stream_t;
-
-static void slice_directional_event_stream_free(
-    slice_directional_event_stream_t* cache) {
-    if (!cache) return;
-    free(cache->offsets);
-    free(cache->events);
-    memset(cache, 0, sizeof(*cache));
-}
-
-static int slice_directional_event_stream_build(
-    alea_system_t* sys, const alea_slice_view_t* view, int width, int height,
-    int orient, int reverse, slice_directional_event_stream_t* cache) {
-    const int line_count = orient == ALEA_SLICE_EDGE_RIGHT ? height : width;
-    const int samples = orient == ALEA_SLICE_EDGE_RIGHT ? width : height;
-    const double step = orient == ALEA_SLICE_EDGE_RIGHT
-        ? (view->u_max - view->u_min) / width
-        : (view->v_max - view->v_min) / height;
-    memset(cache, 0, sizeof(*cache));
-    cache->line_count = (size_t)line_count;
-    cache->offsets = calloc((size_t)line_count + 1, sizeof(*cache->offsets));
-    if (!cache->offsets) return -1;
-    if (samples < 2) return 0;
-
-    const alea_ray_boundary_event_options_t options = {
-        .include_all_coincident_physical = true
-    };
-    const double length = (samples - 1) * step;
-    alea_ray_boundary_event_t** line_events = calloc(
-        (size_t)line_count, sizeof(*line_events));
-    size_t* line_counts = calloc((size_t)line_count, sizeof(*line_counts));
-    int failed = !line_events || !line_counts;
-    if (failed) goto cleanup;
-
-    #pragma omp parallel for schedule(static)
-    for (int line = 0; line < line_count; line++) {
-        alea_raycast_result_t trace;
-        alea_ray_boundary_event_result_t events;
-        alea_raycast_result_init(&trace);
-        alea_ray_boundary_event_result_init(&events);
-        double u0, v0, u1, v1;
-        if (orient == ALEA_SLICE_EDGE_RIGHT) {
-            u0 = reverse ? view->u_max - 0.5 * step : view->u_min + 0.5 * step;
-            u1 = reverse ? view->u_min + 0.5 * step : view->u_max - 0.5 * step;
-            v0 = v1 = view->v_min + (line + 0.5) *
-                (view->v_max - view->v_min) / height;
-        } else {
-            v0 = reverse ? view->v_min + 0.5 * step : view->v_max - 0.5 * step;
-            v1 = reverse ? view->v_max - 0.5 * step : view->v_min + 0.5 * step;
-            u0 = u1 = view->u_min + (line + 0.5) *
-                (view->u_max - view->u_min) / width;
-        }
-        double start[3], end[3];
-        slice_world_point(view, u0, v0, start);
-        slice_world_point(view, u1, v1, end);
-        alea_ray_t ray;
-        alea_ray_init_normalized(&ray, start[0], start[1], start[2],
-                                 (end[0] - start[0]) / length,
-                                 (end[1] - start[1]) / length,
-                                 (end[2] - start[2]) / length);
-        if (alea_raycast_boundary_events_with_options(
-                sys, &ray, length, &options, &trace, &events) != 0) {
-            #pragma omp atomic write
-            failed = 1;
-        } else if (events.events.count != 0) {
-            line_events[line] = malloc(events.events.count * sizeof(*line_events[line]));
-            if (!line_events[line]) {
-                #pragma omp atomic write
-                failed = 1;
-            } else {
-                memcpy(line_events[line], events.events.data,
-                       events.events.count * sizeof(*line_events[line]));
-                line_counts[line] = events.events.count;
-            }
-        }
-        alea_ray_boundary_event_result_free(&events);
-        alea_raycast_result_free(&trace);
-    }
-    if (failed) goto cleanup;
-    for (int line = 0; line < line_count; line++) {
-        if (line_counts[line] > SIZE_MAX - cache->event_count) {
-            failed = 1;
-            goto cleanup;
-        }
-        cache->offsets[line] = cache->event_count;
-        cache->event_count += line_counts[line];
-    }
-    cache->offsets[line_count] = cache->event_count;
-    if (cache->event_count != 0) {
-        cache->events = malloc(cache->event_count * sizeof(*cache->events));
-        if (!cache->events) { failed = 1; goto cleanup; }
-        #pragma omp parallel for schedule(static)
-        for (int line = 0; line < line_count; line++) {
-            if (line_counts[line] != 0)
-                memcpy(cache->events + cache->offsets[line], line_events[line],
-                       line_counts[line] * sizeof(*cache->events));
-        }
-    }
-
-cleanup:
-    for (int line = 0; line < line_count; line++) free(line_events ? line_events[line] : NULL);
-    free(line_events);
-    free(line_counts);
-    if (failed) slice_directional_event_stream_free(cache);
-    return failed ? -1 : 0;
-}
-
-struct alea_slice_directional_event_cache {
-    const alea_system_t* sys;
-    uint64_t geometry_generation;
-    alea_slice_view_t view;
-    int width, height;
-    slice_directional_event_stream_t streams[2][2];
-};
-
-alea_slice_directional_event_cache_t* alea_slice_directional_event_cache_create(
-    alea_system_t* sys, const alea_slice_view_t* view, int width, int height) {
-    if (!sys || !view || width <= 0 || height <= 0) return NULL;
-    alea_slice_directional_event_cache_t* cache = calloc(1, sizeof(*cache));
-    if (!cache) return NULL;
-    cache->sys = sys;
-    cache->geometry_generation = alea_system_geometry_generation(sys);
-    cache->view = *view;
-    cache->width = width;
-    cache->height = height;
-    for (int orient = ALEA_SLICE_EDGE_RIGHT; orient <= ALEA_SLICE_EDGE_DOWN; orient++)
-        for (int reverse = 0; reverse <= 1; reverse++)
-            if (slice_directional_event_stream_build(sys, view, width, height,
-                                                     orient, reverse,
-                                                     &cache->streams[orient][reverse]) != 0) {
-                alea_slice_directional_event_cache_destroy(cache);
-                return NULL;
-            }
-    return cache;
-}
-
-void alea_slice_directional_event_cache_destroy(
-    alea_slice_directional_event_cache_t* cache) {
-    if (!cache) return;
-    for (int orient = ALEA_SLICE_EDGE_RIGHT; orient <= ALEA_SLICE_EDGE_DOWN; orient++)
-        for (int reverse = 0; reverse <= 1; reverse++)
-            slice_directional_event_stream_free(&cache->streams[orient][reverse]);
-    free(cache);
-}
-
-int alea_slice_directional_event_cache_matches(
-    const alea_slice_directional_event_cache_t* cache,
-    const alea_system_t* sys, const alea_slice_view_t* view,
-    int width, int height) {
-    if (!cache || !sys || !view || cache->sys != sys ||
-        cache->geometry_generation != alea_system_geometry_generation(sys) ||
-        cache->width != width || cache->height != height)
-        return 0;
-    for (int axis = 0; axis < 3; axis++) {
-        if (cache->view.plane.origin[axis] != view->plane.origin[axis] ||
-            cache->view.plane.normal[axis] != view->plane.normal[axis] ||
-            cache->view.plane.u_axis[axis] != view->plane.u_axis[axis] ||
-            cache->view.plane.v_axis[axis] != view->plane.v_axis[axis])
-            return 0;
-    }
-    return cache->view.u_min == view->u_min && cache->view.u_max == view->u_max &&
-           cache->view.v_min == view->v_min && cache->view.v_max == view->v_max;
-}
-
-int alea_slice_directional_event_cache_line_events(
-    const alea_slice_directional_event_cache_t* cache,
-    alea_slice_edge_orientation_t orientation, int reverse, size_t line,
-    const alea_ray_boundary_event_t** out_events, size_t* out_count) {
-    if (!cache || !out_events || !out_count ||
-        (orientation != ALEA_SLICE_EDGE_RIGHT &&
-         orientation != ALEA_SLICE_EDGE_DOWN) ||
-        (reverse != 0 && reverse != 1))
-        return -1;
-    const slice_directional_event_stream_t* stream =
-        &cache->streams[orientation][reverse];
-    if (line >= stream->line_count) return -1;
-    *out_count = stream->offsets[line + 1] - stream->offsets[line];
-    *out_events = *out_count ? stream->events + stream->offsets[line] : NULL;
-    return 0;
-}
-
 static int trace_boundary_from_cached_events(
-    alea_system_t* sys, const slice_directional_event_stream_t* cache,
-    int line, double t_first, const double start[3], const double end[3],
+    alea_system_t* sys, const alea_slice_directional_event_cache_t* cache,
+    alea_slice_edge_orientation_t orientation, int reverse, int line,
+    double t_first, const double start[3], const double end[3],
     alea_slice_classify_point_fn classify, void* userdata,
     boundary_trace_t* out) {
-    if (!cache || line < 0 || (size_t)line >= cache->line_count) return -1;
+    const alea_ray_boundary_event_t* events;
+    size_t event_count;
+    if (line < 0 || alea_slice_directional_event_cache_line_events(
+            cache, orientation, reverse, (size_t)line, &events, &event_count) != 0)
+        return -1;
     double dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
     double length = sqrt(dx * dx + dy * dy + dz * dz);
     if (!(length > 0.0)) return -1;
     dx /= length; dy /= length; dz /= length;
     const double endpoint_eps = length * 1e-8;
-    for (size_t i = cache->offsets[line]; i < cache->offsets[line + 1]; i++) {
-        const alea_ray_boundary_event_t* event = &cache->events[i];
+    for (size_t i = 0; i < event_count; i++) {
+        const alea_ray_boundary_event_t* event = &events[i];
         double t = event->t - t_first;
         if (t <= endpoint_eps || t >= length - endpoint_eps) continue;
         if (event->kind == ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE) {
@@ -6197,6 +6013,69 @@ static int trace_boundary_from_cached_events(
             out->saw_unresolved = 1;
         }
     }
+    return 0;
+}
+
+/* The long directional streams are an acceleration only.  This is the
+ * canonical short-edge contract used when a stream is incomplete or the two
+ * directions disagree: collect physical/synthetic events on this exact edge
+ * and classify immediately around each crossing. */
+static int trace_boundary_short_canonical(
+    alea_system_t* sys, const double start[3], const double end[3],
+    alea_slice_classify_point_fn classify, void* userdata,
+    boundary_trace_t* out) {
+    double dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
+    double length = sqrt(dx * dx + dy * dy + dz * dz);
+    alea_raycast_result_t trace;
+    alea_ray_boundary_event_result_t event_result;
+    alea_ray_boundary_event_options_internal_t options = {
+        .include_all_coincident_physical = true
+    };
+    if (!(length > 0.0)) return -1;
+    dx /= length; dy /= length; dz /= length;
+    alea_ray_t ray;
+    alea_ray_init_normalized(&ray, start[0], start[1], start[2], dx, dy, dz);
+    alea_raycast_result_init(&trace);
+    alea_ray_boundary_event_result_init(&event_result);
+    if (alea_raycast_boundary_events_with_options(sys, &ray, length, &options,
+                                                  &trace, &event_result) != 0) {
+        alea_ray_boundary_event_result_free(&event_result);
+        alea_raycast_result_free(&trace);
+        return -1;
+    }
+    const double endpoint_eps = length * 1e-8;
+    for (size_t i = 0; i < event_result.events.count; i++) {
+        const alea_ray_boundary_event_t* event = &event_result.events.data[i];
+        double t = event->t;
+        if (t <= endpoint_eps || t >= length - endpoint_eps) continue;
+        if (event->kind == ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE) {
+            out->saw_synthetic = 1; continue;
+        }
+        if (event->kind == ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED) {
+            out->saw_unresolved = 1; continue;
+        }
+        boundary_trace_add_id(out, event->surface_id);
+        double eps = fmin(length * 5e-2, fmin(t, length - t) * 0.5);
+        if (eps <= endpoint_eps) continue;
+        double before[3], after[3];
+        for (int c = 0; c < 3; c++) {
+            double direction = c == 0 ? dx : c == 1 ? dy : dz;
+            before[c] = start[c] + direction * (t - eps);
+            after[c] = start[c] + direction * (t + eps);
+        }
+        alea_slice_classification_t a = {0}, b = {0};
+        if (classify(sys, before[0], before[1], before[2], userdata, &a) != 0 ||
+            classify(sys, after[0], after[1], after[2], userdata, &b) != 0)
+            out->saw_unresolved = 1;
+        else if (a.status == ALEA_SLICE_SAMPLE_GAP || b.status == ALEA_SLICE_SAMPLE_GAP)
+            out->saw_gap = 1;
+        else if (a.status == ALEA_SLICE_SAMPLE_OVERLAP || b.status == ALEA_SLICE_SAMPLE_OVERLAP)
+            out->saw_overlap = 1;
+        else if (a.status == ALEA_SLICE_SAMPLE_UNRESOLVED || b.status == ALEA_SLICE_SAMPLE_UNRESOLVED)
+            out->saw_unresolved = 1;
+    }
+    alea_ray_boundary_event_result_free(&event_result);
+    alea_raycast_result_free(&trace);
     return 0;
 }
 
@@ -6342,13 +6221,26 @@ static int slice_surface_boundary_map_create_impl(
                 double reverse_t = orient == ALEA_SLICE_EDGE_RIGHT
                     ? (width - 2 - x) * du : (y - 1) * dv;
                 int forward_rc = trace_boundary_from_cached_events(
-                    sys, &cache->streams[orient][0], line, forward_t, start, end,
+                    sys, cache, orient, 0, line, forward_t, start, end,
                     classify, classify_userdata, &forward);
                 int reverse_rc = trace_boundary_from_cached_events(
-                    sys, &cache->streams[orient][1], line, reverse_t, end, start,
+                    sys, cache, orient, 1, line, reverse_t, end, start,
                     classify, classify_userdata, &reverse);
                 if (forward_rc != 0 || reverse_rc != 0) {
                     forward.saw_unresolved = 1;
+                }
+                if (forward_rc != 0 || reverse_rc != 0 ||
+                    forward.saw_unresolved || reverse.saw_unresolved ||
+                    !boundary_trace_same_ids(&forward, &reverse)) {
+                    /* Discard suspect long-line evidence; the precise short
+                     * edge is the reporting authority for this map entry. */
+                    forward = (boundary_trace_t){0};
+                    reverse = (boundary_trace_t){0};
+                    if (trace_boundary_short_canonical(sys, start, end, classify,
+                                                       classify_userdata, &forward) != 0 ||
+                        trace_boundary_short_canonical(sys, end, start, classify,
+                                                       classify_userdata, &reverse) != 0)
+                        forward.saw_unresolved = 1;
                 }
                 if (boundary_map_append_ids(map, &forward, &reverse,
                                             map->surface_offsets[edge]) != 0) {
@@ -6397,6 +6289,16 @@ int alea_slice_surface_boundary_map_create_with_event_cache(
     void* classify_userdata, const alea_slice_directional_event_cache_t* cache,
     alea_slice_surface_boundary_map_t** out_map) {
     return slice_surface_boundary_map_create_impl(
+        sys, view, width, height, grid_ids, classify, classify_userdata,
+        cache, out_map);
+}
+
+int alea_slice_surface_boundary_map_create_with_directional_cache(
+    alea_system_t* sys, const alea_slice_view_t* view, int width, int height,
+    const int* grid_ids, alea_slice_classify_point_fn classify,
+    void* classify_userdata, const alea_slice_directional_trace_cache_t* cache,
+    alea_slice_surface_boundary_map_t** out_map) {
+    return alea_slice_surface_boundary_map_create_with_event_cache(
         sys, view, width, height, grid_ids, classify, classify_userdata,
         cache, out_map);
 }

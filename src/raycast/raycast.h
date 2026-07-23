@@ -8,6 +8,7 @@
 #include "alea_types.h"
 #include "alea_raycast.h"
 #include "alea_slice.h"
+#include "alea_geo_validator.h"
 #include "util/alea_vec.h"
 #include "util/alea_atomic.h"
 #include <stddef.h>
@@ -69,6 +70,71 @@ typedef struct {
     uint8_t resolution_flags;
     double nx, ny, nz;       /* zero for synthetic/unresolved events */
 } alea_ray_boundary_event_t;
+
+/* Internal query contract.  This deliberately lives below the public API
+ * while consumers converge on its result and budget semantics. */
+typedef enum {
+    ALEA_RAY_QUERY_ANY_HIT,
+    ALEA_RAY_QUERY_FIRST_CELL,
+    ALEA_RAY_QUERY_FIRST_VISIBLE,
+    ALEA_RAY_QUERY_SEGMENTS,
+    ALEA_RAY_QUERY_BOUNDARY_EVENTS
+} alea_ray_query_kind_t;
+
+/* Traversal selection is deliberately independent of query kind.  AUTO
+ * preserves the legacy policy; the FAST modes use the hierarchical stepper.
+ * FAST_FORWARD_REVERSE returns the forward trace only after it agrees with a
+ * normalized reverse trace. */
+typedef enum {
+    ALEA_RAY_QUERY_BACKEND_AUTO = 0,
+    ALEA_RAY_QUERY_BACKEND_GLOBAL,
+    ALEA_RAY_QUERY_BACKEND_FAST_FORWARD,
+    ALEA_RAY_QUERY_BACKEND_FAST_REVERSE,
+    ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE
+} alea_ray_query_backend_t;
+
+enum {
+    ALEA_RAY_QUERY_FIELD_CELL_ID          = 1u << 0,
+    ALEA_RAY_QUERY_FIELD_MATERIAL_ID      = 1u << 1,
+    ALEA_RAY_QUERY_FIELD_DENSITY          = 1u << 2,
+    ALEA_RAY_QUERY_FIELD_SURFACE_ID       = 1u << 3,
+    ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL   = 1u << 4,
+    ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS = 1u << 5,
+    ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID     = 1u << 6
+};
+
+typedef struct {
+    alea_ray_query_kind_t kind;
+    alea_ray_query_backend_t backend;
+    uint32_t fields;
+    double t_min;
+    double t_max;             /* <= 0 means unbounded */
+    int material_filter;      /* -1 accepts every non-void material */
+    uint64_t max_events;      /* 0 means unbounded */
+    uint64_t max_output_bytes;/* 0 means unbounded */
+} alea_ray_query_t;
+
+typedef struct {
+    bool found;
+    double t;
+    int cell_id;
+    int material_id;
+    double density;
+    int surface_id;
+    uint32_t primitive_id;
+    uint8_t resolution_flags;
+    double nx, ny, nz;
+} alea_ray_first_visible_result_t;
+
+/* Query policies publish only the scalar answer they own. Segment output is
+ * returned through the supplied reusable trace; boundary output through the
+ * supplied reusable event vector. */
+typedef struct {
+    bool any_hit;
+    int first_cell_id;
+    double first_cell_t;
+    alea_ray_first_visible_result_t first_visible;
+} alea_ray_query_output_t;
 
 typedef struct {
     uint32_t offset;
@@ -159,11 +225,52 @@ int alea_slice_directional_event_cache_line_events(
     const alea_slice_directional_event_cache_t* cache,
     alea_slice_edge_orientation_t orientation, int reverse, size_t line,
     const alea_ray_boundary_event_t** out_events, size_t* out_count);
+int alea_slice_directional_event_cache_dimensions(
+    const alea_slice_directional_event_cache_t* cache,
+    int* out_width, int* out_height);
+/* Cache-contract inspection and ownership-trace reuse are private to slice
+ * consumers.  The ownership contract retains occurrence keys at the declared
+ * projected depth.  A nonzero complete result means the requested semantics
+ * were fully materialized (rather than merely having an event stream available). */
+int alea_slice_directional_event_cache_contract(
+    const alea_slice_directional_event_cache_t* cache,
+    alea_slice_edge_orientation_t orientation, int reverse,
+    uint32_t required_event_fields, int projected_depth,
+    uint64_t max_events, uint64_t max_output_bytes, int* out_complete);
+const alea_raycast_batch_result_t*
+alea_slice_directional_event_cache_ownership_trace(
+    const alea_slice_directional_event_cache_t* cache,
+    alea_slice_edge_orientation_t orientation, int reverse,
+    int projected_depth, uint32_t required_fields);
 int alea_slice_surface_boundary_map_create_with_event_cache(
     alea_system_t* sys, const alea_slice_view_t* view, int width, int height,
     const int* grid_ids, alea_slice_classify_point_fn classify,
     void* classify_userdata, const alea_slice_directional_event_cache_t* cache,
     alea_slice_surface_boundary_map_t** out_map);
+
+/* Private Phase 6 validator extension.  A matching canonical event cache
+ * augments mismatch intervals with boundary evidence; it never changes the
+ * ownership comparison itself. */
+int alea_validate_ray_slice_compact_with_event_cache(
+    alea_system_t* sys, const alea_slice_view_t* view, size_t row_count,
+    const alea_ray_slice_validation_options_t* validation_options,
+    const alea_raycast_batch_options_t* render_options,
+    alea_raycast_batch_result_t* inout_fast_forward,
+    const alea_slice_directional_event_cache_t* event_cache,
+    alea_ray_slice_validation_result_t* out_validation);
+
+const int32_t* alea_ray_slice_validation_u_enter_forward_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_u_enter_reverse_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_u_exit_forward_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_u_exit_reverse_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result);
+const uint32_t* alea_ray_slice_validation_u_enter_provenance_flags_internal(
+    const alea_ray_slice_validation_result_t* result);
+const uint32_t* alea_ray_slice_validation_u_exit_provenance_flags_internal(
+    const alea_ray_slice_validation_result_t* result);
 
 /* ============================================================================
  * MAIN API
@@ -239,6 +346,91 @@ int alea_raycast_batch_result_matches_fast_slice_cache(
 void alea_raycast_batch_result_swap_internal(
     alea_raycast_batch_result_t* a,
     alea_raycast_batch_result_t* b);
+
+/* Phase 5 internal compact executor.  Public alea_raycast_hier_batch() is a
+ * scalar-t_max SEGMENTS adapter.  Ranges are per input ray; t_max <= 0 means
+ * unbounded, matching the scalar API.  Only SEGMENTS is materialized in this
+ * first increment; other query kinds remain deliberately unsupported rather
+ * than silently producing a segment CSR with different semantics. */
+typedef struct {
+    alea_ray_query_kind_t kind;
+    uint32_t fields;
+    int material_filter;
+    const double* t_mins;
+    const double* t_maxs;
+    uint64_t max_events;
+    uint64_t max_output_bytes;
+} alea_ray_batch_query_t;
+
+int alea_raycast_hier_batch_query_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    const alea_raycast_batch_options_t* options,
+    alea_raycast_batch_result_t* result);
+
+/* Private SoA writer for FIRST_VISIBLE batch queries.  Cell/material/distance
+ * are always present; surface, normal, and resolution arrays are allocated
+ * only when requested by alea_ray_batch_query_t.fields. */
+typedef struct {
+    size_t ray_count;
+    uint8_t* found;
+    double* t;
+    int32_t* cell_ids;
+    int32_t* material_ids;
+    double* densities;
+    int32_t* surface_ids;
+    uint32_t* primitive_ids;
+    uint8_t* resolution_flags;
+    double* normals_xyz;
+} alea_ray_first_visible_batch_result_t;
+
+void alea_ray_first_visible_batch_result_init(
+    alea_ray_first_visible_batch_result_t* result);
+void alea_ray_first_visible_batch_result_free(
+    alea_ray_first_visible_batch_result_t* result);
+int alea_raycast_hier_first_visible_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_first_visible_batch_result_t* result);
+
+/** Private compact writer for ANY_HIT batch queries. */
+typedef struct {
+    size_t ray_count;
+    uint8_t* hits;
+} alea_ray_any_hit_batch_result_t;
+
+void alea_ray_any_hit_batch_result_init(alea_ray_any_hit_batch_result_t* result);
+void alea_ray_any_hit_batch_result_free(alea_ray_any_hit_batch_result_t* result);
+int alea_raycast_hier_any_hit_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_any_hit_batch_result_t* result);
+
+/* Private CSR writer for the canonical BOUNDARY_EVENTS contract. */
+typedef struct {
+    size_t ray_count;
+    size_t event_count;
+    uint64_t* ray_offsets;
+    double* t;
+    uint8_t* kinds;
+    int32_t* surface_ids;
+    int32_t* cell_before;
+    int32_t* cell_after;
+    int32_t* material_before;
+    int32_t* material_after;
+    uint8_t* resolution_flags;
+    uint32_t* primitive_ids;
+    double* normals_xyz;
+} alea_ray_boundary_event_batch_result_t;
+
+void alea_ray_boundary_event_batch_result_init(
+    alea_ray_boundary_event_batch_result_t* result);
+void alea_ray_boundary_event_batch_result_free(
+    alea_ray_boundary_event_batch_result_t* result);
+int alea_raycast_boundary_events_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_boundary_event_batch_result_t* result);
 
 /**
  * @brief Cast ray and find all surface intersections
@@ -373,6 +565,29 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
                                         alea_raycast_result_t* result);
 
 /**
+ * Non-lattice hierarchical first-visible query.  Stops after resolving the
+ * first qualifying material interval and does not append hit or segment
+ * vectors. Caches must be prepared; result is scratch/instrumentation only.
+ */
+int alea_raycast_hier_first_visible_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    int material_filter, int include_normal, alea_raycast_result_t* scratch,
+    alea_ray_first_visible_result_t* out_visible);
+
+/* Resolve the first non-void cell interval without materializing hits or
+ * segments.  Non-lattice only; lattice callers retain canonical tracing. */
+int alea_raycast_hier_first_cell_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    int material_filter,
+    alea_raycast_result_t* scratch, int* out_cell_id, double* out_t);
+
+/** Non-lattice hierarchical occlusion policy. Stops at the first non-void
+ * material interval and leaves scratch hit/segment/path vectors empty. */
+int alea_raycast_hier_any_hit_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    int material_filter, alea_raycast_result_t* scratch, int* out_hit);
+
+/**
  * @brief Buffer-reuse hierarchical raycast, segments only (no hit list).
  *
  * Like alea_raycast_hier_with_hits_nocache() but skips boundary-hit
@@ -408,7 +623,10 @@ typedef struct {
      * The default reports the lowest positive surface ID as the deterministic
      * canonical representative. Synthetic lattice events are always emitted. */
     bool include_all_coincident_physical;
-} alea_ray_boundary_event_options_t;
+    /* Zero means unlimited. These are enforced while materializing events. */
+    uint64_t max_events;
+    uint64_t max_output_bytes;
+} alea_ray_boundary_event_options_internal_t;
 
 void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* result);
 void alea_ray_boundary_event_result_clear(alea_ray_boundary_event_result_t* result);
@@ -426,9 +644,24 @@ int alea_raycast_boundary_events_reuse_nocache(
 
 int alea_raycast_boundary_events_with_options(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
-    const alea_ray_boundary_event_options_t* options,
+    const alea_ray_boundary_event_options_internal_t* options,
     alea_raycast_result_t* trace,
     alea_ray_boundary_event_result_t* events);
+
+/**
+ * Execute an internal semantic ray query using reusable caller-owned storage.
+ * Caches must already be prepared.  The current implementation deliberately
+ * shares the canonical global trace; query kind controls materialization and
+ * answer selection, so consumers can migrate before traversal early-stop
+ * specializations land.  SEGMENTS clips its reusable segment vector to
+ * [t_min, t_max]; a leading clipped interval has no reportable enter surface.
+ * On failure every supplied output is cleared.
+ */
+int alea_raycast_query_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_ray_query_t* query, alea_raycast_result_t* trace,
+    alea_ray_boundary_event_result_t* events,
+    alea_ray_query_output_t* output);
 
 /* ============================================================================
  * QUERY HELPERS

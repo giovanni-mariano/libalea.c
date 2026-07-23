@@ -2280,3 +2280,66 @@ Human-readable error message for an error code.
 | `ALEA_ERR_NOT_FOUND` | ZAID not found in xsdir |
 | `ALEA_ERR_INVALID_ARG` | Invalid data format |
 | `ALEA_ERR_UNSUPPORTED` | Unsupported operation (e.g. broadening to lower T) |
+
+## Ray-query convenience APIs
+
+`alea_ray_first_visible_query()` and `alea_ray_boundary_event_query()` use
+caller-owned opaque reusable results. Create a result once, reuse it for
+successive rays, then destroy it. A failed query clears its result.
+
+Both option structures accept an older prefix when `struct_size` is set to
+that prefix's size. Zero `t_max` means an unbounded ray.
+
+### First visible
+
+`alea_ray_first_visible_query()` returns the first non-void interval in the
+requested range. Request `ALEA_RAY_FIRST_VISIBLE_SURFACE_ID` and/or
+`ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL` when those fields are needed.
+If `t_min` cuts through an existing interval, the result is a cross-section
+and has no reportable surface ID or normal.
+
+### Boundary events
+
+`alea_ray_boundary_event_query()` returns ordered ownership boundaries.
+Kinds are physical, synthetic lattice, or unresolved. By default coincident
+physical surfaces use the lowest positive surface ID; set
+`include_all_coincident_physical` for every participant. Event order and
+ownership fields are deterministic. `max_events` and `max_output_bytes` reject
+oversized results rather than truncating them.
+
+## Directional slice trace caches
+
+`alea_slice_directional_trace_cache_create()` creates an opaque reusable cache
+for a slice view and sampling dimensions. It contains canonical U+/U-/V+/V-
+boundary events plus ownership traces, and is invalid after a geometry change.
+Pass it to `alea_validate_ray_slice_compact_with_directional_cache()` to reuse
+the U ownership traces and obtain endpoint provenance arrays through the
+`alea_ray_slice_validation_u_*_surface_ids()` and provenance-flag accessors.
+The cache must be destroyed before its system.
+It is valid only for the exact system generation, slice basis and bounds, and
+sampling dimensions used at construction. Cache-aware calls reject a mismatch
+without modifying an already published validation result. The cache is
+read-only after construction and may be shared by independent consumers that
+only read it; do not mutate the system while it is in use.
+
+`alea_slice_surface_boundary_map_create_with_directional_cache()` is the
+public provenance-map consumer for the same cache. It retains the canonical
+short-edge fallback when directional stream evidence is incomplete or
+contradictory.
+
+Lua exposes the same workflow as
+`sys:directional_trace_cache(view, width, height)` and
+`sys:validate_ray_slice(view, rows [, options [, cache]])`. The returned table
+contains intervals, trace reuse/execution masks, and (when a cache is supplied)
+canonical forward endpoint surface IDs.
+Lua cache userdata defers `sys:destroy()` until the cache is collected, so Lua
+callers cannot free the system before a live cache; C callers must still destroy
+their cache before destroying the system.
+
+The currently published cache owns leaf-level ownership traces
+(`projected_depth = -1`) with occurrence keys. A validation request for another
+projected depth still receives canonical provenance from a matching cache, but
+executes fresh ownership traces for that depth. Lua options accept
+`projected_depth`, `include_agreements`, `absolute_tolerance`, and
+`relative_tolerance`; C callers use `alea_ray_slice_validation_options_t` and
+its documented interval/path/output budgets.

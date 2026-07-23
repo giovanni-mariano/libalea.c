@@ -28,6 +28,42 @@ typedef struct alea_raycast_result alea_raycast_result_t;
 /** Opaque compact result for a batch of hierarchical ray traces. */
 typedef struct alea_raycast_batch_result alea_raycast_batch_result_t;
 
+/** Opaque reusable answer for a first-visible ray query. */
+typedef struct alea_ray_first_visible_query_result
+    alea_ray_first_visible_query_result_t;
+typedef struct alea_ray_boundary_event_query_result
+    alea_ray_boundary_event_query_result_t;
+
+#define ALEA_RAY_FIRST_VISIBLE_SURFACE_ID      (1u << 0)
+#define ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL  (1u << 1)
+
+/** Public first-visible query options.  Set struct_size to sizeof(*options).
+ * A zero t_max is unbounded; material_filter < 0 accepts every non-void
+ * material.  Older struct prefixes are accepted safely. */
+typedef struct {
+    size_t struct_size;
+    uint32_t fields;
+    double t_min;
+    double t_max;
+    int material_filter;
+} alea_ray_first_visible_options_t;
+
+#define ALEA_RAY_EVENT_PHYSICAL          0
+#define ALEA_RAY_EVENT_SYNTHETIC_LATTICE 1
+#define ALEA_RAY_EVENT_UNRESOLVED        2
+#define ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID (1u << 0)
+#define ALEA_RAY_BOUNDARY_EVENT_NORMAL       (1u << 1)
+
+typedef struct {
+    size_t struct_size;
+    uint32_t fields;
+    double t_min;
+    double t_max;
+    uint64_t max_events;
+    uint64_t max_output_bytes;
+    int include_all_coincident_physical;
+} alea_ray_boundary_event_options_t;
+
 /* Optional fields in alea_raycast_batch_result_t. Distances and cell IDs are
  * always present; an accessor for an unrequested optional field returns NULL. */
 #define ALEA_RAY_BATCH_MATERIAL          (1u << 0)
@@ -241,6 +277,61 @@ int alea_ray_first_cell(alea_system_t* sys,
                             double ox, double oy, double oz,
                             double dx, double dy, double dz,
                             double t_max, double* out_t);
+
+/* ==========================================================================
+ * FIRST-VISIBLE QUERY
+ * ========================================================================== */
+
+void alea_ray_first_visible_options_init(
+    alea_ray_first_visible_options_t* options);
+alea_ray_first_visible_query_result_t* alea_ray_first_visible_query_result_create(void);
+void alea_ray_first_visible_query_result_destroy(
+    alea_ray_first_visible_query_result_t* result);
+
+/** Execute a reusable first-visible query.  On failure, `result` is cleared.
+ * Returned pointers remain valid until the next query on `result` or its
+ * destruction. */
+int alea_ray_first_visible_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_first_visible_options_t* options,
+    alea_ray_first_visible_query_result_t* result);
+
+int alea_ray_first_visible_found(
+    const alea_ray_first_visible_query_result_t* result);
+double alea_ray_first_visible_t(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_cell_id(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_material_id(
+    const alea_ray_first_visible_query_result_t* result);
+double alea_ray_first_visible_density(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_surface_id(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_normal(
+    const alea_ray_first_visible_query_result_t* result,
+    double* nx, double* ny, double* nz);
+
+/* ==========================================================================
+ * BOUNDARY-EVENT QUERY
+ * ========================================================================== */
+
+void alea_ray_boundary_event_options_init(
+    alea_ray_boundary_event_options_t* options);
+alea_ray_boundary_event_query_result_t* alea_ray_boundary_event_query_result_create(void);
+void alea_ray_boundary_event_query_result_destroy(
+    alea_ray_boundary_event_query_result_t* result);
+int alea_ray_boundary_event_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_boundary_event_options_t* options,
+    alea_ray_boundary_event_query_result_t* result);
+size_t alea_ray_boundary_event_count(
+    const alea_ray_boundary_event_query_result_t* result);
+int alea_ray_boundary_event_get(
+    const alea_ray_boundary_event_query_result_t* result, size_t index,
+    double* t, int* kind, int* surface_id, int* cell_before, int* cell_after,
+    int* material_before, int* material_after, uint32_t* resolution_flags,
+    uint32_t* primitive_id, double* nx, double* ny, double* nz);
 
 /**
  * @brief Get number of segments in raycast result

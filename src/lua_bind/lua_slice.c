@@ -15,8 +15,43 @@ typedef struct {
     alea_slice_curves_t* ptr;
 } alea_lua_slice_curves_t;
 
+typedef struct {
+    alea_slice_directional_trace_cache_t* ptr;
+    alea_lua_system_t* system;
+} alea_lua_directional_trace_cache_t;
 static alea_lua_slice_curves_t* check_curves(lua_State* L, int idx) {
     return (alea_lua_slice_curves_t*)luaL_checkudata(L, idx, ALEA_CURVES_MT);
+}
+
+/* sys:directional_trace_cache(view, width, height) -> cache */
+static int l_directional_trace_cache(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_slice_view_t view;
+    alea_lua_to_slice_view(L, 2, &view);
+    int width = (int)luaL_checkinteger(L, 3);
+    int height = (int)luaL_checkinteger(L, 4);
+    alea_lua_directional_trace_cache_t* ud =
+        (alea_lua_directional_trace_cache_t*)lua_newuserdata(L, sizeof(*ud));
+    ud->system = alea_check_system(L, 1);
+    ud->ptr = alea_slice_directional_trace_cache_create(sys, &view, width, height);
+    if (!ud->ptr) return luaL_error(L, "directional_trace_cache failed");
+    ud->system->active_directional_trace_caches++;
+    luaL_setmetatable(L, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
+    return 1;
+}
+
+static int l_directional_trace_cache_gc(lua_State* L) {
+    alea_lua_directional_trace_cache_t* ud =
+        (alea_lua_directional_trace_cache_t*)luaL_checkudata(
+            L, 1, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
+    alea_slice_directional_trace_cache_destroy(ud->ptr);
+    ud->ptr = NULL;
+    if (ud->system) {
+        ud->system->active_directional_trace_caches--;
+        alea_lua_system_release_if_pending(ud->system);
+        ud->system = NULL;
+    }
+    return 0;
 }
 
 /* ============================================================================
@@ -484,6 +519,7 @@ static const luaL_Reg slice_system_methods[] = {
     {"find_cells_grid",    l_find_cells_grid},
     {"check_grid_overlaps",l_check_grid_overlaps},
     {"get_slice_curves",   l_get_slice_curves},
+    {"directional_trace_cache", l_directional_trace_cache},
     {NULL, NULL}
 };
 
@@ -512,6 +548,11 @@ int luaopen_alea_slice(lua_State* L) {
     lua_newtable(L);
     luaL_setfuncs(L, curves_methods, 0);
     lua_setfield(L, -2, "__index");
+    lua_pop(L, 1);
+
+    luaL_newmetatable(L, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
+    lua_pushcfunction(L, l_directional_trace_cache_gc);
+    lua_setfield(L, -2, "__gc");
     lua_pop(L, 1);
 
     /* Add module-level functions to alea table (top of stack) */

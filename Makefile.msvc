@@ -164,6 +164,7 @@ RAYCAST_OBJS = \
 
 SLICE_OBJS = \
 	$(BUILD)\slice\curve_intersect.obj \
+	$(BUILD)\slice\slice_directional_trace.obj \
 	$(BUILD)\slice\slice_api.obj
 
 RENDER_OBJS = \
@@ -514,6 +515,9 @@ $(BUILD)\raycast\raycast_api.obj: $(SRC)\raycast\raycast_api.c dirs
 
 $(BUILD)\slice\curve_intersect.obj: $(SRC)\slice\curve_intersect.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $(SRC)\slice\curve_intersect.c
+
+$(BUILD)\slice\slice_directional_trace.obj: $(SRC)\slice\slice_directional_trace.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $(SRC)\slice\slice_directional_trace.c
 
 $(BUILD)\slice\slice_api.obj: $(SRC)\slice\slice_api.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $(SRC)\slice\slice_api.c

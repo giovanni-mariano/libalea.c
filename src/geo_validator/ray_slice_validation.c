@@ -7,6 +7,7 @@
 #include "raycast/raycast.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,12 @@ struct alea_ray_slice_validation_result {
     int32_t* fast_reverse_cell_ids;
     uint64_t* fast_forward_occurrence_keys;
     uint64_t* fast_reverse_occurrence_keys;
+    int32_t* u_enter_forward_surface_ids;
+    int32_t* u_enter_reverse_surface_ids;
+    int32_t* u_exit_forward_surface_ids;
+    int32_t* u_exit_reverse_surface_ids;
+    uint32_t* u_enter_provenance_flags;
+    uint32_t* u_exit_provenance_flags;
 };
 
 typedef struct {
@@ -62,6 +69,12 @@ static void validation_result_free_buffers(
     free(result->fast_reverse_cell_ids);
     free(result->fast_forward_occurrence_keys);
     free(result->fast_reverse_occurrence_keys);
+    free(result->u_enter_forward_surface_ids);
+    free(result->u_enter_reverse_surface_ids);
+    free(result->u_exit_forward_surface_ids);
+    free(result->u_exit_reverse_surface_ids);
+    free(result->u_enter_provenance_flags);
+    free(result->u_exit_provenance_flags);
     memset(result, 0, sizeof(*result));
 }
 
@@ -181,6 +194,75 @@ static uint64_t selected_key(const trace_view_t* trace, size_t row, double u,
     return key;
 }
 
+/* Find the canonical event evidence nearest a normalized U boundary.  The
+ * event cache uses pixel-centre endpoints, so its local tolerance also covers
+ * the small traversal epsilon used for synthetic lattice crossings. */
+static int event_evidence_at_u(
+    const alea_slice_directional_event_cache_t* cache, int width,
+    size_t row, int reverse, double u, const alea_slice_view_t* view,
+    double tolerance, int32_t* out_surface_id, uint32_t* out_flags) {
+    const alea_ray_boundary_event_t* events = NULL;
+    size_t count = 0;
+    *out_surface_id = -1;
+    *out_flags = 0;
+    if (alea_slice_directional_event_cache_line_events(
+            cache, ALEA_SLICE_EDGE_RIGHT, reverse, row, &events, &count) != 0)
+        return -1;
+    const double du = (view->u_max - view->u_min) / (double)width;
+    const double origin_u = reverse ? view->u_max - 0.5 * du
+                                    : view->u_min + 0.5 * du;
+    const double event_tolerance = fmax(tolerance, fabs(du) * 1e-7);
+    for (size_t i = 0; i < count; i++) {
+        const double event_u = reverse ? origin_u - events[i].t
+                                       : origin_u + events[i].t;
+        if (fabs(event_u - u) > event_tolerance) continue;
+        if (events[i].kind == ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE) {
+            *out_flags |= ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_SYNTHETIC;
+        } else if (events[i].kind == ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED) {
+            *out_flags |= ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_UNRESOLVED;
+        } else if (events[i].surface_id > 0) {
+            if (*out_surface_id > 0)
+                *out_flags |= ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_COINCIDENT;
+            if (*out_surface_id < 0 || events[i].surface_id < *out_surface_id)
+                *out_surface_id = events[i].surface_id;
+        }
+    }
+    return 0;
+}
+
+static int populate_boundary_provenance(
+    alea_ray_slice_validation_result_t* candidate,
+    const alea_slice_directional_event_cache_t* cache, int width,
+    const alea_slice_view_t* view, double tolerance) {
+    for (size_t row = 0; row < candidate->row_count; row++) {
+        for (size_t i = candidate->row_offsets[row];
+             i < candidate->row_offsets[row + 1]; i++) {
+            uint32_t forward_flags, reverse_flags;
+            if (event_evidence_at_u(cache, width, row, 0, candidate->u_enter[i],
+                                    view, tolerance,
+                                    &candidate->u_enter_forward_surface_ids[i],
+                                    &forward_flags) != 0 ||
+                event_evidence_at_u(cache, width, row, 1, candidate->u_enter[i],
+                                    view, tolerance,
+                                    &candidate->u_enter_reverse_surface_ids[i],
+                                    &reverse_flags) != 0)
+                return -1;
+            candidate->u_enter_provenance_flags[i] = forward_flags | reverse_flags;
+            if (event_evidence_at_u(cache, width, row, 0, candidate->u_exit[i],
+                                    view, tolerance,
+                                    &candidate->u_exit_forward_surface_ids[i],
+                                    &forward_flags) != 0 ||
+                event_evidence_at_u(cache, width, row, 1, candidate->u_exit[i],
+                                    view, tolerance,
+                                    &candidate->u_exit_reverse_surface_ids[i],
+                                    &reverse_flags) != 0)
+                return -1;
+            candidate->u_exit_provenance_flags[i] = forward_flags | reverse_flags;
+        }
+    }
+    return 0;
+}
+
 void alea_ray_slice_validation_options_init(
     alea_ray_slice_validation_options_t* options) {
     if (!options) return;
@@ -237,10 +319,35 @@ const uint64_t* alea_ray_slice_validation_fast_forward_occurrence_keys(
     const alea_ray_slice_validation_result_t* result) { return result ? result->fast_forward_occurrence_keys : NULL; }
 const uint64_t* alea_ray_slice_validation_fast_reverse_occurrence_keys(
     const alea_ray_slice_validation_result_t* result) { return result ? result->fast_reverse_occurrence_keys : NULL; }
+const int32_t* alea_ray_slice_validation_u_enter_forward_surface_ids(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_forward_surface_ids : NULL; }
+const int32_t* alea_ray_slice_validation_u_enter_reverse_surface_ids(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_reverse_surface_ids : NULL; }
+const int32_t* alea_ray_slice_validation_u_exit_forward_surface_ids(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_exit_forward_surface_ids : NULL; }
+const int32_t* alea_ray_slice_validation_u_exit_reverse_surface_ids(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_exit_reverse_surface_ids : NULL; }
+const uint32_t* alea_ray_slice_validation_u_enter_provenance_flags(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_provenance_flags : NULL; }
+const uint32_t* alea_ray_slice_validation_u_exit_provenance_flags(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_exit_provenance_flags : NULL; }
+const int32_t* alea_ray_slice_validation_u_enter_forward_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_forward_surface_ids : NULL; }
+const int32_t* alea_ray_slice_validation_u_enter_reverse_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_reverse_surface_ids : NULL; }
+const int32_t* alea_ray_slice_validation_u_exit_forward_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_exit_forward_surface_ids : NULL; }
+const int32_t* alea_ray_slice_validation_u_exit_reverse_surface_ids_internal(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_exit_reverse_surface_ids : NULL; }
+const uint32_t* alea_ray_slice_validation_u_enter_provenance_flags_internal(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_provenance_flags : NULL; }
+const uint32_t* alea_ray_slice_validation_u_exit_provenance_flags_internal(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->u_exit_provenance_flags : NULL; }
 
 static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
                               validation_row_t* rows, size_t row_count,
-                              const alea_ray_slice_validation_options_t* options) {
+                              const alea_ray_slice_validation_options_t* options,
+                              int include_provenance) {
     size_t total = 0, bytes = 0;
     for (size_t row = 0; row < row_count; row++) {
         if (rows[row].count > SIZE_MAX - total) return -1;
@@ -258,6 +365,11 @@ static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
     ADD_BYTES(total, double); ADD_BYTES(total, double); ADD_BYTES(total, uint32_t);
     ADD_BYTES(total, int32_t); ADD_BYTES(total, int32_t);
     ADD_BYTES(total, uint64_t); ADD_BYTES(total, uint64_t);
+    if (include_provenance) {
+        ADD_BYTES(total, int32_t); ADD_BYTES(total, int32_t);
+        ADD_BYTES(total, int32_t); ADD_BYTES(total, int32_t);
+        ADD_BYTES(total, uint32_t); ADD_BYTES(total, uint32_t);
+    }
 #undef ADD_BYTES
     if (options->max_output_bytes && bytes > options->max_output_bytes) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW, "ray slice validation output byte limit exceeded");
@@ -275,6 +387,20 @@ static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
         !candidate->diagnostic_flags || !candidate->fast_forward_cell_ids ||
         !candidate->fast_reverse_cell_ids || !candidate->fast_forward_occurrence_keys ||
         !candidate->fast_reverse_occurrence_keys) return -1;
+    if (include_provenance) {
+        candidate->u_enter_forward_surface_ids = malloc(total ? total * sizeof(*candidate->u_enter_forward_surface_ids) : 1);
+        candidate->u_enter_reverse_surface_ids = malloc(total ? total * sizeof(*candidate->u_enter_reverse_surface_ids) : 1);
+        candidate->u_exit_forward_surface_ids = malloc(total ? total * sizeof(*candidate->u_exit_forward_surface_ids) : 1);
+        candidate->u_exit_reverse_surface_ids = malloc(total ? total * sizeof(*candidate->u_exit_reverse_surface_ids) : 1);
+        candidate->u_enter_provenance_flags = malloc(total ? total * sizeof(*candidate->u_enter_provenance_flags) : 1);
+        candidate->u_exit_provenance_flags = malloc(total ? total * sizeof(*candidate->u_exit_provenance_flags) : 1);
+        if (!candidate->u_enter_forward_surface_ids ||
+            !candidate->u_enter_reverse_surface_ids ||
+            !candidate->u_exit_forward_surface_ids ||
+            !candidate->u_exit_reverse_surface_ids ||
+            !candidate->u_enter_provenance_flags ||
+            !candidate->u_exit_provenance_flags) return -1;
+    }
     candidate->row_count = row_count;
     candidate->interval_count = total;
     candidate->fields = ALEA_RAY_SLICE_VALIDATION_FIELD_FAST_FORWARD |
@@ -297,19 +423,22 @@ static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
     return 0;
 }
 
-int alea_validate_ray_slice_compact(
+int alea_validate_ray_slice_compact_with_event_cache(
     alea_system_t* sys, const alea_slice_view_t* view, size_t row_count,
     const alea_ray_slice_validation_options_t* validation_options,
     const alea_raycast_batch_options_t* render_options,
     alea_raycast_batch_result_t* inout_fast_forward,
+    const alea_slice_directional_event_cache_t* event_cache,
     alea_ray_slice_validation_result_t* out_validation) {
     alea_ray_slice_validation_options_t defaults, options;
     alea_raycast_batch_options_t forward_options, reverse_options;
-    alea_raycast_batch_result_t *fresh_forward = NULL, *reverse = NULL;
-    const alea_raycast_batch_result_t* forward;
+    alea_raycast_batch_result_t *fresh_forward = NULL, *fresh_reverse = NULL;
+    const alea_raycast_batch_result_t* reverse = NULL;
+    const alea_raycast_batch_result_t* forward = NULL;
     validation_row_t* rows = NULL;
     alea_ray_slice_validation_result_t candidate = {0};
     double *origins = NULL, *directions = NULL;
+    int event_cache_width = 0, event_cache_height = 0;
     int cache_hit = 0, rc = -1;
 
     if (!sys || !view || !out_validation) {
@@ -343,7 +472,26 @@ int alea_validate_ray_slice_compact(
         alea_set_error_detail(ALEA_ERR_INVALID_ARG, "render options struct_size is too small");
         return -1;
     }
+    if (event_cache) {
+        if (row_count > INT_MAX) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "validation rows exceed event-cache range");
+            return -1;
+        }
+        if (alea_slice_directional_event_cache_dimensions(
+                event_cache, &event_cache_width, &event_cache_height) != 0 ||
+            event_cache_height != (int)row_count ||
+            !alea_slice_directional_event_cache_matches(
+                event_cache, sys, view, event_cache_width, event_cache_height)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "event cache does not match validation view or rows");
+            return -1;
+        }
+    }
 
+    /* The directional cache owns both U traces.  Prefer a caller-supplied
+     * compatible forward trace (it may carry richer requested fields), then
+     * fall back to the cache's ownership trace. */
     cache_hit = inout_fast_forward &&
         alea_raycast_batch_result_matches_fast_slice_cache(
             inout_fast_forward, sys, view, row_count, render_options,
@@ -352,9 +500,24 @@ int alea_validate_ray_slice_compact(
         alea_raycast_batch_segment_count(inout_fast_forward) > options.max_trace_intervals)
         cache_hit = 0;
 
+    if (!cache_hit && event_cache && options.projected_depth == -1) {
+        const alea_raycast_batch_result_t* cached =
+            alea_slice_directional_event_cache_ownership_trace(
+                event_cache, ALEA_SLICE_EDGE_RIGHT, 0, -1,
+                ALEA_RAY_BATCH_PROJECTED_OWNER);
+        if (cached && (!options.max_trace_intervals ||
+                       alea_raycast_batch_segment_count(cached) <= options.max_trace_intervals)) {
+            forward = cached;
+            cache_hit = 1;
+            candidate.reused_trace_mask |= ALEA_RAY_SLICE_TRACE_FAST_FORWARD;
+        }
+    }
+
     if (cache_hit) {
-        forward = inout_fast_forward;
-        candidate.reused_trace_mask |= ALEA_RAY_SLICE_TRACE_FAST_FORWARD;
+        if (!forward) {
+            forward = inout_fast_forward;
+            candidate.reused_trace_mask |= ALEA_RAY_SLICE_TRACE_FAST_FORWARD;
+        }
     } else {
         memset(&forward_options, 0, sizeof(forward_options));
         if (render_options) forward_options = *render_options;
@@ -412,12 +575,25 @@ int alea_validate_ray_slice_compact(
         reverse_options.fields = ALEA_RAY_BATCH_PROJECTED_OWNER;
         reverse_options.projected_depth = options.projected_depth;
         reverse_options.max_segments = remaining;
-        reverse = alea_raycast_batch_result_create();
-        if (!reverse || alea_raycast_hier_batch(sys, origins, directions, row_count,
-                                                view->u_max - view->u_min,
-                                                &reverse_options, reverse) != 0)
-            goto cleanup;
-        candidate.executed_trace_mask |= ALEA_RAY_SLICE_TRACE_FAST_REVERSE;
+        if (event_cache && options.projected_depth == -1) {
+            reverse = alea_slice_directional_event_cache_ownership_trace(
+                event_cache, ALEA_SLICE_EDGE_RIGHT, 1, -1,
+                ALEA_RAY_BATCH_PROJECTED_OWNER);
+            if (reverse && (!options.max_trace_intervals ||
+                            alea_raycast_batch_segment_count(reverse) <= remaining))
+                candidate.reused_trace_mask |= ALEA_RAY_SLICE_TRACE_FAST_REVERSE;
+            else
+                reverse = NULL;
+        }
+        if (!reverse) {
+            fresh_reverse = alea_raycast_batch_result_create();
+            if (!fresh_reverse || alea_raycast_hier_batch(sys, origins, directions, row_count,
+                                                          view->u_max - view->u_min,
+                                                          &reverse_options, fresh_reverse) != 0)
+                goto cleanup;
+            reverse = fresh_reverse;
+            candidate.executed_trace_mask |= ALEA_RAY_SLICE_TRACE_FAST_REVERSE;
+        }
     }
 
     rows = calloc(row_count, sizeof(*rows));
@@ -520,10 +696,22 @@ int alea_validate_ray_slice_compact(
             free(boundaries);
         }
     }
-    if (allocate_candidate(&candidate, rows, row_count, &options) != 0) {
+    if (allocate_candidate(&candidate, rows, row_count, &options,
+                           event_cache != NULL) != 0) {
         if (alea_error_code() == ALEA_OK)
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "failed to allocate validation result");
         goto cleanup;
+    }
+    if (event_cache) {
+        double tolerance = options.absolute_tolerance > 0.0 ?
+            options.absolute_tolerance : 1e-9;
+        if (populate_boundary_provenance(&candidate, event_cache,
+                                         event_cache_width, view,
+                                         tolerance) != 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "failed to read matching event cache");
+            goto cleanup;
+        }
     }
     validation_result_free_buffers(out_validation);
     *out_validation = candidate;
@@ -541,7 +729,30 @@ cleanup:
         free(rows);
     }
     validation_result_free_buffers(&candidate);
-    alea_raycast_batch_result_destroy(reverse);
+    alea_raycast_batch_result_destroy(fresh_reverse);
     alea_raycast_batch_result_destroy(fresh_forward);
     return rc;
+}
+
+int alea_validate_ray_slice_compact(
+    alea_system_t* sys, const alea_slice_view_t* view, size_t row_count,
+    const alea_ray_slice_validation_options_t* validation_options,
+    const alea_raycast_batch_options_t* render_options,
+    alea_raycast_batch_result_t* inout_fast_forward,
+    alea_ray_slice_validation_result_t* out_validation) {
+    return alea_validate_ray_slice_compact_with_event_cache(
+        sys, view, row_count, validation_options, render_options,
+        inout_fast_forward, NULL, out_validation);
+}
+
+int alea_validate_ray_slice_compact_with_directional_cache(
+    alea_system_t* sys, const alea_slice_view_t* view, size_t row_count,
+    const alea_ray_slice_validation_options_t* validation_options,
+    const alea_raycast_batch_options_t* render_options,
+    alea_raycast_batch_result_t* inout_fast_forward,
+    const alea_slice_directional_trace_cache_t* cache,
+    alea_ray_slice_validation_result_t* out_validation) {
+    return alea_validate_ray_slice_compact_with_event_cache(
+        sys, view, row_count, validation_options, render_options,
+        inout_fast_forward, cache, out_validation);
 }

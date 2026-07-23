@@ -15,6 +15,7 @@
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_slice.h"
+#include "alea_geo_validator.h"
 #include "raycast/raycast.h"
 #include "alea_raycast.h"
 
@@ -375,7 +376,7 @@ TEST(raycast_boundary_events_group_coincident_surfaces) {
     ASSERT_EQ(events.events.data[0].surface_id, 1);
     ASSERT_NEAR(events.events.data[0].t, 1.0, 1e-9);
 
-    const alea_ray_boundary_event_options_t all_physical = {
+    const alea_ray_boundary_event_options_internal_t all_physical = {
         .include_all_coincident_physical = true
     };
     ASSERT_EQ(alea_raycast_boundary_events_with_options(
@@ -384,6 +385,50 @@ TEST(raycast_boundary_events_group_coincident_surfaces) {
     ASSERT_EQ(events.events.data[0].surface_id, 1);
     ASSERT_EQ(events.events.data[1].surface_id, 2);
     ASSERT_NEAR(events.events.data[0].t, events.events.data[1].t, 1e-12);
+
+    alea_ray_boundary_event_result_free(&events);
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(model);
+}
+
+TEST(raycast_boundary_events_support_many_coincident_surfaces) {
+    char input[8192];
+    size_t used = (size_t)snprintf(input, sizeof(input),
+        "Many coincident boundary-event surfaces\n"
+        "1 1 -1.0 -1\n"
+        "2 2 -1.0 1\n"
+        "3 0 2\n\n");
+    ASSERT(used < sizeof(input));
+    for (int surface_id = 1; surface_id <= 65; surface_id++) {
+        int written = snprintf(input + used, sizeof(input) - used,
+                               "%d PX 0\n", surface_id);
+        ASSERT(written > 0 && (size_t)written < sizeof(input) - used);
+        used += (size_t)written;
+    }
+    int written = snprintf(input + used, sizeof(input) - used,
+                           "\nM1 1001.80c 1.0\nM2 1001.80c 1.0\n");
+    ASSERT(written > 0 && (size_t)written < sizeof(input) - used);
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    alea_raycast_result_t trace;
+    alea_ray_boundary_event_result_t events;
+    ASSERT_EQ(alea_ray_init(&ray, -1, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_init(&trace);
+    alea_ray_boundary_event_result_init(&events);
+
+    const alea_ray_boundary_event_options_internal_t all_physical = {
+        .include_all_coincident_physical = true
+    };
+    ASSERT_EQ(alea_raycast_boundary_events_with_options(
+                  sys, &ray, 2.0, &all_physical, &trace, &events), 0);
+    ASSERT_EQ(events.events.count, 65);
+    ASSERT_EQ(events.events.data[0].surface_id, 1);
+    ASSERT_EQ(events.events.data[64].surface_id, 65);
 
     alea_ray_boundary_event_result_free(&events);
     alea_raycast_result_free(&trace);
@@ -441,6 +486,247 @@ TEST(raycast_boundary_events_are_bidirectionally_normalized) {
     mcnp_model_destroy(model);
 }
 
+TEST(raycast_internal_query_policies_match_canonical_trace) {
+    const char* input =
+        "Internal ray query policies\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 1\n"
+        "\n"
+        "M1 1001.80c 1.0\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    alea_raycast_result_t trace;
+    alea_ray_boundary_event_result_t events;
+    alea_ray_query_output_t output;
+    ASSERT_EQ(alea_ray_init(&ray, -2, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_init(&trace);
+    alea_ray_boundary_event_result_init(&events);
+
+    const alea_ray_query_t visible = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_ID,
+        .t_min = 0,
+        .t_max = 4,
+        .material_filter = -1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &visible, &trace, NULL, &output), 0);
+    ASSERT(output.first_visible.found);
+    ASSERT_EQ(output.first_visible.cell_id, 1);
+    ASSERT_EQ(output.first_visible.material_id, 1);
+    ASSERT_EQ(output.first_visible.surface_id, 1);
+    ASSERT_NEAR(output.first_visible.t, 1.0, 1e-9);
+    ASSERT_NEAR(fabs(output.first_visible.nx), 1.0, 1e-9);
+    ASSERT_EQ(trace.hits.count, 0);
+    ASSERT_EQ(trace.segments.count, 0);
+    const int first_visible_steps = trace.step_iterations;
+
+    alea_raycast_result_t full_trace;
+    alea_raycast_result_init(&full_trace);
+    ASSERT_EQ(alea_raycast_hier_with_hits_nocache(sys, &ray, 4.0,
+                                                   &full_trace), 0);
+    ASSERT(full_trace.segments.count > 0);
+    ASSERT_NEAR(full_trace.segments.data[1].t_enter,
+                output.first_visible.t, 1e-9);
+    ASSERT_EQ(full_trace.segments.data[1].cell_id,
+              output.first_visible.cell_id);
+    ASSERT(full_trace.step_iterations > first_visible_steps);
+    alea_raycast_result_free(&full_trace);
+
+    int first_cell_id = -1;
+    double first_cell_t = -1;
+    ASSERT_EQ(alea_raycast_hier_first_cell_nocache(
+                  sys, &ray, 0, 4.0, -1,
+                  &trace, &first_cell_id, &first_cell_t), 0);
+    ASSERT_EQ(first_cell_id, 2);
+    ASSERT_NEAR(first_cell_t, 0.0, 1e-9);
+    ASSERT_EQ(trace.hits.count, 0);
+    ASSERT_EQ(trace.segments.count, 0);
+    const alea_ray_query_t first_cell = {
+        .kind = ALEA_RAY_QUERY_FIRST_CELL,
+        .t_min = 0, .t_max = 4, .material_filter = -1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &first_cell, &trace, NULL, &output), 0);
+    ASSERT_EQ(output.first_cell_id, 2);
+    ASSERT_NEAR(output.first_cell_t, 0.0, 1e-9);
+    ASSERT_EQ(trace.segments.count, 0);
+    const alea_ray_query_t filtered_first_cell = {
+        .kind = ALEA_RAY_QUERY_FIRST_CELL,
+        .t_min = 1.5, .t_max = 4, .material_filter = 1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &filtered_first_cell, &trace, NULL, &output), 0);
+    ASSERT_EQ(output.first_cell_id, 1);
+    ASSERT_NEAR(output.first_cell_t, 1.5, 1e-9);
+    ASSERT_EQ(trace.segments.count, 0);
+
+    alea_ray_first_visible_options_t public_visible;
+    alea_ray_first_visible_options_init(&public_visible);
+    public_visible.fields = ALEA_RAY_FIRST_VISIBLE_SURFACE_ID |
+                            ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL;
+    public_visible.t_max = 4;
+    alea_ray_first_visible_query_result_t* public_result =
+        alea_ray_first_visible_query_result_create();
+    ASSERT_NOT_NULL(public_result);
+    ASSERT_EQ(alea_ray_first_visible_query(sys, -2, 0, 0, 1, 0, 0,
+                                           &public_visible, public_result), 0);
+    ASSERT(alea_ray_first_visible_found(public_result));
+    ASSERT_EQ(alea_ray_first_visible_cell_id(public_result), 1);
+    ASSERT_NEAR(alea_ray_first_visible_t(public_result), 1.0, 1e-9);
+    ASSERT_EQ(alea_ray_first_visible_surface_id(public_result), 1);
+    double public_nx, public_ny, public_nz;
+    ASSERT_EQ(alea_ray_first_visible_normal(public_result,
+                                             &public_nx, &public_ny, &public_nz), 0);
+    ASSERT_NEAR(fabs(public_nx), 1.0, 1e-9);
+    /* Older callers may provide only the stable options prefix; omitted
+     * material_filter must retain its documented default. */
+    public_visible.material_filter = 99;
+    public_visible.struct_size = offsetof(alea_ray_first_visible_options_t,
+                                          material_filter);
+    ASSERT_EQ(alea_ray_first_visible_query(sys, -2, 0, 0, 1, 0, 0,
+                                           &public_visible, public_result), 0);
+    ASSERT(alea_ray_first_visible_found(public_result));
+    alea_ray_first_visible_query_result_destroy(public_result);
+
+    alea_ray_query_t no_normal = visible;
+    no_normal.fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &no_normal, &trace, NULL, &output), 0);
+    ASSERT(output.first_visible.found);
+    ASSERT_EQ(output.first_visible.surface_id, 1);
+    ASSERT_NEAR(output.first_visible.nx, 0.0, 1e-12);
+    ASSERT_NEAR(output.first_visible.ny, 0.0, 1e-12);
+    ASSERT_NEAR(output.first_visible.nz, 0.0, 1e-12);
+
+    int occluded = 0;
+    ASSERT_EQ(alea_raycast_hier_any_hit_nocache(
+                  sys, &ray, 0, 4, -1, &trace, &occluded), 0);
+    ASSERT_EQ(occluded, 1);
+    ASSERT_EQ(trace.hits.count, 0);
+    ASSERT_EQ(trace.segments.count, 0);
+
+    alea_ray_query_t clipped = visible;
+    clipped.t_min = 1.5;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &clipped, &trace, NULL, &output), 0);
+    ASSERT(output.first_visible.found);
+    ASSERT_NEAR(output.first_visible.t, 1.5, 1e-9);
+    ASSERT_EQ(output.first_visible.surface_id, -1);
+
+    const alea_ray_query_t any_hit = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .t_min = 0, .t_max = 4, .material_filter = 1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &any_hit, &trace, NULL, &output), 0);
+    ASSERT(output.any_hit);
+
+    /* Scalar SEGMENTS must have the same range/cross-section semantics as
+     * the compact per-ray executor. */
+    const alea_ray_query_t segments = {
+        .kind = ALEA_RAY_QUERY_SEGMENTS,
+        .t_min = 1.5, .t_max = 4, .material_filter = -1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &segments, &trace, NULL, &output), 0);
+    ASSERT_EQ(trace.segments.count, 2);
+    ASSERT_NEAR(trace.segments.data[0].t_enter, 1.5, 1e-9);
+    ASSERT_NEAR(trace.segments.data[0].t_exit, 3.0, 1e-9);
+    ASSERT_EQ(trace.segments.data[0].cell_id, 1);
+    ASSERT_EQ(trace.segments.data[0].enter_surface_id, -1);
+    ASSERT_EQ(trace.segments.data[0].enter_hit_index, -1);
+    ASSERT_NEAR(trace.segments.data[1].t_enter, 3.0, 1e-9);
+    ASSERT_NEAR(trace.segments.data[1].t_exit, 4.0, 1e-9);
+    ASSERT_EQ(trace.segments.data[1].cell_id, 2);
+
+    alea_ray_query_t fast_segments = segments;
+    fast_segments.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &fast_segments, &trace, NULL, &output), 0);
+    ASSERT_EQ(trace.segments.count, 2);
+    ASSERT_NEAR(trace.segments.data[0].t_enter, 1.5, 1e-9);
+    ASSERT_NEAR(trace.segments.data[0].t_exit, 3.0, 1e-9);
+    ASSERT_EQ(trace.segments.data[0].cell_id, 1);
+
+    fast_segments.backend = ALEA_RAY_QUERY_BACKEND_FAST_REVERSE;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &fast_segments, &trace, NULL, &output), 0);
+    ASSERT_EQ(trace.segments.count, 2);
+    ASSERT_NEAR(trace.segments.data[0].t_enter, 1.5, 1e-9);
+    ASSERT_NEAR(trace.segments.data[0].t_exit, 3.0, 1e-9);
+    ASSERT_EQ(trace.segments.data[0].cell_id, 1);
+
+    fast_segments.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &fast_segments, &trace, NULL, &output), 0);
+    ASSERT_EQ(trace.segments.count, 2);
+    ASSERT_EQ(trace.segments.data[0].cell_id, 1);
+
+    const alea_ray_query_t boundaries = {
+        .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+        .t_min = 0, .t_max = 4, .material_filter = -1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &boundaries, &trace, &events, &output), 0);
+    ASSERT_EQ(events.events.count, 2);
+    ASSERT_EQ(events.events.data[0].surface_id, 1);
+
+    alea_ray_query_t fast_boundaries = boundaries;
+    fast_boundaries.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &fast_boundaries, &trace, &events, &output), 0);
+    ASSERT_EQ(events.events.count, 2);
+    ASSERT_EQ(events.events.data[0].surface_id, 1);
+
+    alea_ray_boundary_event_options_t public_events;
+    alea_ray_boundary_event_options_init(&public_events);
+    public_events.fields = ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID |
+                           ALEA_RAY_BOUNDARY_EVENT_NORMAL;
+    public_events.t_max = 4;
+    alea_ray_boundary_event_query_result_t* public_event_result =
+        alea_ray_boundary_event_query_result_create();
+    ASSERT_NOT_NULL(public_event_result);
+    ASSERT_EQ(alea_ray_boundary_event_query(sys, -2, 0, 0, 1, 0, 0,
+                                            &public_events, public_event_result), 0);
+    ASSERT_EQ(alea_ray_boundary_event_count(public_event_result), 2);
+    int public_surface, public_kind;
+    ASSERT_EQ(alea_ray_boundary_event_get(public_event_result, 0, NULL,
+                                          &public_kind, &public_surface, NULL, NULL,
+                                          NULL, NULL, NULL, NULL, NULL, NULL, NULL), 0);
+    ASSERT_EQ(public_kind, ALEA_RAY_EVENT_PHYSICAL);
+    ASSERT_EQ(public_surface, 1);
+    public_events.max_events = 1;
+    ASSERT_EQ(alea_ray_boundary_event_query(sys, -2, 0, 0, 1, 0, 0,
+                                            &public_events, public_event_result), -1);
+    ASSERT_EQ(alea_ray_boundary_event_count(public_event_result), 0);
+    /* An older options prefix omits max_events and must retain its default. */
+    public_events.struct_size = offsetof(alea_ray_boundary_event_options_t,
+                                         max_events);
+    ASSERT_EQ(alea_ray_boundary_event_query(sys, -2, 0, 0, 1, 0, 0,
+                                            &public_events, public_event_result), 0);
+    ASSERT_EQ(alea_ray_boundary_event_count(public_event_result), 2);
+    alea_ray_boundary_event_query_result_destroy(public_event_result);
+
+    alea_ray_query_t bounded = boundaries;
+    bounded.max_events = 1;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &bounded, &trace, &events, &output), -1);
+    ASSERT_EQ(events.events.count, 0);
+    ASSERT_EQ(trace.segments.count, 0);
+
+    alea_ray_boundary_event_result_free(&events);
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(model);
+}
+
 TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     const char* input =
         "Coincident surface labels\n"
@@ -490,14 +776,14 @@ TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     ASSERT_EQ(found, 1);
 
     alea_slice_surface_boundary_map_free(map);
-    alea_slice_directional_event_cache_t* cache =
-        alea_slice_directional_event_cache_create(sys, &view, width, height);
+    alea_slice_directional_trace_cache_t* cache =
+        alea_slice_directional_trace_cache_create(sys, &view, width, height);
     ASSERT_NOT_NULL(cache);
-    ASSERT_EQ(alea_slice_directional_event_cache_matches(
+    ASSERT_EQ(alea_slice_directional_trace_cache_matches(
                   cache, sys, &view, width, height), 1);
     alea_slice_view_t shifted_view = view;
     shifted_view.u_max += 0.01;
-    ASSERT_EQ(alea_slice_directional_event_cache_matches(
+    ASSERT_EQ(alea_slice_directional_trace_cache_matches(
                   cache, sys, &shifted_view, width, height), 0);
     const alea_ray_boundary_event_t* events = NULL;
     size_t event_count = 0;
@@ -508,15 +794,76 @@ TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     ASSERT_EQ(events[0].surface_id, 1);
     ASSERT_EQ(events[1].surface_id, 2);
     alea_slice_surface_boundary_map_t* shared_map = NULL;
-    ASSERT_EQ(alea_slice_surface_boundary_map_create_with_event_cache(
+    ASSERT_EQ(alea_slice_surface_boundary_map_create_with_directional_cache(
                   sys, &view, width, height, ids, alea_slice_classify_cell,
                   NULL, cache, &shared_map), 0);
     ASSERT_NOT_NULL(shared_map);
     alea_slice_surface_boundary_map_free(shared_map);
+    alea_ray_slice_validation_options_t validation_options;
+    alea_ray_slice_validation_options_init(&validation_options);
+    validation_options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    validation_options.flags = ALEA_RAY_SLICE_VALIDATION_INCLUDE_AGREEMENTS;
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(validation);
+    ASSERT_EQ(alea_validate_ray_slice_compact_with_directional_cache(
+                  sys, &view, height, &validation_options, NULL, NULL,
+                  cache, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_reused_trace_mask(validation),
+              ALEA_RAY_SLICE_TRACE_FAST_FORWARD |
+              ALEA_RAY_SLICE_TRACE_FAST_REVERSE);
+    ASSERT_EQ(alea_ray_slice_validation_executed_trace_mask(validation), 0);
+    ASSERT(alea_ray_slice_validation_interval_count(validation) > 0);
+    ASSERT_NOT_NULL(
+        alea_ray_slice_validation_u_enter_forward_surface_ids(validation));
+    ASSERT_NOT_NULL(
+        alea_ray_slice_validation_u_enter_reverse_surface_ids(validation));
+    ASSERT_NOT_NULL(
+        alea_ray_slice_validation_u_enter_provenance_flags(validation));
+    const int32_t* provenance_enter =
+        alea_ray_slice_validation_u_enter_forward_surface_ids(validation);
+    const int32_t* provenance_exit =
+        alea_ray_slice_validation_u_exit_forward_surface_ids(validation);
+    const uint32_t* provenance_enter_flags =
+        alea_ray_slice_validation_u_enter_provenance_flags(validation);
+    const uint32_t* provenance_exit_flags =
+        alea_ray_slice_validation_u_exit_provenance_flags(validation);
+    int found_coincident_boundary = 0;
+    for (size_t i = 0; i < alea_ray_slice_validation_interval_count(validation); i++) {
+        if ((provenance_enter[i] == 1 &&
+             (provenance_enter_flags[i] & ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_COINCIDENT)) ||
+            (provenance_exit[i] == 1 &&
+             (provenance_exit_flags[i] & ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_COINCIDENT))) {
+            found_coincident_boundary = 1;
+            break;
+        }
+    }
+    ASSERT(found_coincident_boundary);
+    /* Explicit provenance reuse rejects a cache with different sampling
+     * dimensions and preserves the last published diagnostic result. */
+    alea_slice_directional_trace_cache_t* incompatible_cache =
+        alea_slice_directional_trace_cache_create(sys, &view, width, height + 1);
+    ASSERT_NOT_NULL(incompatible_cache);
+    const size_t published_interval_count =
+        alea_ray_slice_validation_interval_count(validation);
+    ASSERT_EQ(alea_validate_ray_slice_compact_with_directional_cache(
+                  sys, &view, height, &validation_options, NULL, NULL,
+                  incompatible_cache, validation), -1);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation),
+              published_interval_count);
+    alea_slice_directional_trace_cache_destroy(incompatible_cache);
     ASSERT(alea_sphere_surface(sys, 99, 10, 0, 0, 1) >= 0);
-    ASSERT_EQ(alea_slice_directional_event_cache_matches(
+    ASSERT_EQ(alea_slice_directional_trace_cache_matches(
                   cache, sys, &view, width, height), 0);
-    alea_slice_directional_event_cache_destroy(cache);
+    /* A stale public cache is rejected transactionally: the last diagnostic
+     * publication remains available to the caller. */
+    ASSERT_EQ(alea_validate_ray_slice_compact_with_directional_cache(
+                  sys, &view, height, &validation_options, NULL, NULL,
+                  cache, validation), -1);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation),
+              published_interval_count);
+    alea_ray_slice_validation_result_destroy(validation);
+    alea_slice_directional_trace_cache_destroy(cache);
     mcnp_model_destroy(model);
 }
 
@@ -880,6 +1227,65 @@ TEST(lattice_public_point_query_matches_deepest_hit) {
     ASSERT_EQ(cell_id, 4);
     ASSERT_EQ(material, 4);
 
+    mcnp_model_destroy(model);
+}
+
+TEST(lattice_compact_first_visible_and_any_hit_use_canonical_fallback) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    const double origins[] = {-5.0, 0.0, 0.0};
+    const double directions[] = {1.0, 0.0, 0.0};
+    const double t_mins[] = {0.0};
+    const double t_maxs[] = {12.0};
+    const alea_ray_batch_query_t visible_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_ID,
+        .material_filter = -1,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    alea_ray_first_visible_batch_result_t visible;
+    alea_ray_first_visible_batch_result_init(&visible);
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, origins, directions, 1, &visible_query, &visible), 0);
+    ASSERT_EQ(visible.ray_count, 1);
+
+    alea_ray_t ray;
+    alea_raycast_result_t trace;
+    alea_ray_query_output_t scalar;
+    alea_raycast_result_init(&trace);
+    ASSERT_EQ(alea_ray_init(&ray, origins[0], origins[1], origins[2],
+                            directions[0], directions[1], directions[2]), 0);
+    const alea_ray_query_t scalar_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = visible_query.fields,
+        .t_min = 0.0, .t_max = 12.0, .material_filter = -1
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &scalar_query, &trace, NULL, &scalar), 0);
+    ASSERT_EQ(visible.found[0], scalar.first_visible.found ? 1 : 0);
+    if (visible.found[0]) {
+        ASSERT_NEAR(visible.t[0], scalar.first_visible.t, 1e-9);
+        ASSERT_EQ(visible.cell_ids[0], scalar.first_visible.cell_id);
+        ASSERT_EQ(visible.material_ids[0], scalar.first_visible.material_id);
+    }
+
+    const alea_ray_batch_query_t any_query = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .material_filter = -1,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    alea_ray_any_hit_batch_result_t any;
+    alea_ray_any_hit_batch_result_init(&any);
+    ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                  sys, origins, directions, 1, &any_query, &any), 0);
+    ASSERT_EQ(any.hits[0], visible.found[0]);
+    alea_ray_any_hit_batch_result_free(&any);
+    alea_raycast_result_free(&trace);
+    alea_ray_first_visible_batch_result_free(&visible);
     mcnp_model_destroy(model);
 }
 

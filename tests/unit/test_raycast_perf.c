@@ -25,6 +25,7 @@
 #include "alea_mcnp.h"
 #include "alea_raycast.h"
 #include "alea_slice.h"
+#include "render/render3d.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
 #include "raycast/bvh.h"
@@ -55,6 +56,28 @@ static double now_sec(void) {
     printf("%.3f ms total, %.2f us/op (%d ops)  ", \
            _dt * 1e3, _us, (int)(n_ops)); \
 } while(0)
+
+/* Audit helpers intentionally report storage owned by the query result, not
+ * allocator-implementation details.  This keeps the benchmark portable while
+ * making retained-capacity growth and compact-result publication visible. */
+static size_t raycast_result_retained_bytes(const alea_raycast_result_t* result) {
+    return result->hits.capacity * sizeof(*result->hits.data) +
+           result->segments.capacity * sizeof(*result->segments.data) +
+           result->paths.capacity * sizeof(*result->paths.data) +
+           result->path_entries.capacity * sizeof(*result->path_entries.data);
+}
+
+static size_t batch_published_bytes(const alea_raycast_batch_result_t* result,
+                                    uint32_t fields) {
+    const size_t rays = alea_raycast_batch_ray_count(result);
+    const size_t segments = alea_raycast_batch_segment_count(result);
+    size_t bytes = (rays + 1) * sizeof(uint64_t) + 2 * segments * sizeof(double);
+    if (fields & ALEA_RAY_BATCH_MATERIAL) bytes += segments * sizeof(int32_t);
+    if (fields & ALEA_RAY_BATCH_DENSITY) bytes += segments * sizeof(double);
+    if (fields & ALEA_RAY_BATCH_SURFACES) bytes += 2 * segments * sizeof(int32_t);
+    if (fields & ALEA_RAY_BATCH_RESOLUTION_FLAGS) bytes += segments * sizeof(uint8_t);
+    return bytes;
+}
 
 /* =========================================================================
  * Geometry builders
@@ -333,6 +356,48 @@ TEST(perf_concentric_shells_20) {
     alea_destroy(sys);
 }
 
+TEST(perf_first_visible_vs_full_trace_20_shells) {
+    const int N = 10000;
+    alea_system_t* sys = build_concentric_shells(20);
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(sys), 0);
+
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_raycast_result_reserve(&scratch, 64, 32);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -20, 0.125, 0, 1, 0, 0), 0);
+
+    {
+        BENCH_START();
+        for (int i = 0; i < N; i++) {
+            alea_raycast_result_clear(&scratch);
+            ASSERT_EQ(alea_raycast_hier_with_hits_nocache(sys, &ray, 100,
+                                                           &scratch), 0);
+        }
+        BENCH_END("20 shells full hierarchical trace", N);
+    }
+    const int full_steps = scratch.step_iterations;
+    const size_t full_retained = raycast_result_retained_bytes(&scratch);
+    printf("[%d final steps, %zu retained bytes]  ", full_steps, full_retained);
+
+    alea_ray_first_visible_result_t visible;
+    {
+        BENCH_START();
+        for (int i = 0; i < N; i++) {
+            ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                          sys, &ray, 0, 100, -1, 0, &scratch, &visible), 0);
+            ASSERT(visible.found);
+        }
+        BENCH_END("20 shells first-visible early stop", N);
+    }
+    printf("[%d final steps, %zu retained bytes]  ", scratch.step_iterations,
+           raycast_result_retained_bytes(&scratch));
+    ASSERT(scratch.step_iterations < full_steps);
+
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
 TEST(perf_directional_event_cache_sphere) {
     const int width = 256, height = 256, iterations = 5;
     alea_system_t* sys = build_single_sphere();
@@ -402,6 +467,65 @@ TEST(perf_directional_event_cache_lattice) {
     mcnp_model_destroy(model);
 }
 
+TEST(perf_shared_validator_event_cache_sphere) {
+    const int samples = 64;
+    alea_system_t* sys = build_single_sphere();
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -8.0, 8.0, -8.0, 8.0);
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(validation);
+    BENCH_START();
+    alea_slice_directional_event_cache_t* cache =
+        alea_slice_directional_event_cache_create(sys, &view, samples, samples);
+    ASSERT_NOT_NULL(cache);
+    ASSERT_EQ(alea_validate_ray_slice_compact_with_event_cache(
+                  sys, &view, samples, &options, NULL, NULL, cache,
+                  validation), 0);
+    BENCH_END("64x64 sphere shared validator + event cache", 1);
+    printf("[%zu intervals, cache-hit traces=0x%x]  ",
+           alea_ray_slice_validation_interval_count(validation),
+           alea_ray_slice_validation_reused_trace_mask(validation));
+    alea_slice_directional_event_cache_destroy(cache);
+    alea_ray_slice_validation_result_destroy(validation);
+    alea_destroy(sys);
+}
+
+TEST(perf_shared_validator_event_cache_lattice) {
+    const int samples = 64;
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("lattice fixture not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -2.0, 6.0, -2.0, 6.0);
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(validation);
+    BENCH_START();
+    alea_slice_directional_event_cache_t* cache =
+        alea_slice_directional_event_cache_create(sys, &view, samples, samples);
+    ASSERT_NOT_NULL(cache);
+    ASSERT_EQ(alea_validate_ray_slice_compact_with_event_cache(
+                  sys, &view, samples, &options, NULL, NULL, cache,
+                  validation), 0);
+    BENCH_END("64x64 lattice shared validator + event cache", 1);
+    printf("[%zu intervals, cache-hit traces=0x%x]  ",
+           alea_ray_slice_validation_interval_count(validation),
+           alea_ray_slice_validation_reused_trace_mask(validation));
+    alea_slice_directional_event_cache_destroy(cache);
+    alea_ray_slice_validation_result_destroy(validation);
+    mcnp_model_destroy(model);
+}
+
 TEST(perf_nested_fill_validator_and_event_cache) {
     const int rows = 128, iterations = 3;
     mcnp_model_t* model = mcnp_load("tests/data/nested_fill.mcnp");
@@ -423,7 +547,7 @@ TEST(perf_nested_fill_validator_and_event_cache) {
             ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, rows, &options,
                                                        NULL, NULL, validation), 0);
         BENCH_END("128-row nested-fill fast bidirectional validator", iterations);
-        printf("[ownership only]  ");
+        printf("[cache-miss fallback]  ");
     }
 
     {
@@ -441,15 +565,19 @@ TEST(perf_nested_fill_validator_and_event_cache) {
     {
         BENCH_START();
         for (int i = 0; i < iterations; i++) {
-            ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, rows, &options,
-                                                       NULL, NULL, validation), 0);
             alea_slice_directional_event_cache_t* cache =
                 alea_slice_directional_event_cache_create(sys, &view, rows, rows);
             ASSERT_NOT_NULL(cache);
+            ASSERT_EQ(alea_validate_ray_slice_compact_with_event_cache(
+                          sys, &view, rows, &options, NULL, NULL, cache,
+                          validation), 0);
+            ASSERT_NOT_NULL(
+                alea_ray_slice_validation_u_enter_provenance_flags_internal(validation));
             alea_slice_directional_event_cache_destroy(cache);
         }
-        BENCH_END("128-row nested-fill validator + event cache", iterations);
-        printf("[current sequential combined cost]  ");
+        BENCH_END("128-row nested-fill shared validator + event cache", iterations);
+        printf("[shared consumers, cache-hit traces=0x%x]  ",
+               alea_ray_slice_validation_reused_trace_mask(validation));
     }
 
     alea_ray_slice_validation_result_destroy(validation);
@@ -511,11 +639,112 @@ TEST(perf_compact_hier_batch_20_shells) {
     }
     printf("[%zu segments]  ", alea_raycast_batch_segment_count(batch));
     ASSERT_EQ(alea_raycast_batch_segment_count(batch), single_segments);
+    printf("[%zu published bytes, %zu known transient input bytes]  ",
+           batch_published_bytes(batch, options.fields),
+           n_rays * 6 * sizeof(double));
 
     alea_raycast_batch_result_destroy(batch);
     alea_raycast_result_destroy(single);
     free(directions);
     free(origins);
+    alea_destroy(sys);
+}
+
+/* Mirrors the non-lattice, single-sample X-ray renderer's ray layout.  The
+ * scalar side retains one scratch result, while the compact side publishes a
+ * CSR result per tile; timings are informational and segment totals must
+ * remain identical. */
+TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
+    const int width = 96, height = 96, tile = 32;
+    alea_system_t* sys = build_concentric_shells(20);
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(sys), 0);
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.width = width; cfg.height = height;
+    cfg.eye[0] = 0; cfg.eye[1] = -20; cfg.eye[2] = 0;
+    cfg.target[0] = 0; cfg.target[1] = 0; cfg.target[2] = 0;
+    cfg.eye_set = 1; cfg.target_set = 1;
+    render_camera_t cam;
+    ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+    const size_t tile_capacity = (size_t)tile * tile;
+    double* origins = malloc(tile_capacity * 3 * sizeof(*origins));
+    double* directions = malloc(tile_capacity * 3 * sizeof(*directions));
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_raycast_result_reserve(&scratch, 0, 64);
+    ASSERT_NOT_NULL(origins);
+    ASSERT_NOT_NULL(directions);
+    size_t scalar_segments = 0, compact_segments = 0;
+
+    {
+        BENCH_START();
+        for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+            double ox, oy, oz, dx, dy, dz;
+            render_camera_ray(&cam, width, height, x + 0.5, y + 0.5,
+                              &ox, &oy, &oz, &dx, &dy, &dz);
+            alea_ray_t ray;
+            ASSERT_EQ(alea_ray_init(&ray, ox, oy, oz, dx, dy, dz), 0);
+            alea_raycast_result_clear(&scratch);
+            ASSERT_EQ(alea_raycast_hier_segments_nocache(sys, &ray, 0, &scratch), 0);
+            scalar_segments += scratch.segments.count;
+        }
+        BENCH_END("X-ray camera reusable scalar segments", width * height);
+    }
+    printf("[%zu segments]  ", scalar_segments);
+
+    const alea_raycast_batch_options_t options = {
+        .struct_size = sizeof(options),
+        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY
+    };
+    {
+        BENCH_START();
+        for (int y0 = 0; y0 < height; y0 += tile) {
+            for (int x0 = 0; x0 < width; x0 += tile) {
+            const int x1 = x0 + tile < width ? x0 + tile : width;
+            const int y1 = y0 + tile < height ? y0 + tile : height;
+            size_t ray_count = 0;
+            for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++, ray_count++)
+                render_camera_ray(&cam, width, height, x + 0.5, y + 0.5,
+                                  &origins[ray_count * 3], &origins[ray_count * 3 + 1],
+                                  &origins[ray_count * 3 + 2], &directions[ray_count * 3],
+                                  &directions[ray_count * 3 + 1], &directions[ray_count * 3 + 2]);
+            alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+            ASSERT_NOT_NULL(batch);
+            ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, ray_count,
+                                               0, &options, batch), 0);
+            compact_segments += alea_raycast_batch_segment_count(batch);
+                alea_raycast_batch_result_destroy(batch);
+            }
+        }
+        BENCH_END("X-ray camera compact 32x32 tile CSR", width * height);
+    }
+    printf("[%zu segments]  ", compact_segments);
+    ASSERT_EQ(compact_segments, scalar_segments);
+    printf("[%zu retained scalar bytes, %zu known tile-input bytes]  ",
+           raycast_result_retained_bytes(&scratch), tile_capacity * 6 * sizeof(double));
+
+    alea_raycast_result_free(&scratch);
+    free(origins); free(directions);
+    render_config_free(&cfg);
+    alea_destroy(sys);
+}
+
+TEST(perf_query_cache_prepare_audit) {
+    alea_system_t* sys = build_concentric_shells(20);
+    ASSERT_NOT_NULL(sys);
+    ASSERT(!alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST));
+    {
+        BENCH_START();
+        ASSERT_EQ(alea_raycast_ensure_caches(sys), 0);
+        BENCH_END("query-cache cold preparation (20 shells)", 1);
+    }
+    ASSERT(alea_system_query_cache_ready(sys, ALEA_CACHE_RAYCAST));
+    {
+        BENCH_START();
+        ASSERT_EQ(alea_raycast_ensure_caches(sys), 0);
+        BENCH_END("query-cache warm preparation (cache hit)", 1);
+    }
     alea_destroy(sys);
 }
 

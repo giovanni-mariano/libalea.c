@@ -20,6 +20,7 @@
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "raycast.h"
+#include "ray_epsilon.h"
 #include "bvh.h"
 #include "core/alea_system.h"
 #include "primitives/bbox.h"
@@ -438,13 +439,12 @@ const uint64_t* alea_raycast_batch_path_occurrence_keys(const alea_raycast_batch
     return result ? result->path_occurrence_keys : NULL;
 }
 
-int alea_raycast_hier_batch(alea_system_t* sys,
-                            const double* origins_xyz,
-                            const double* directions_xyz,
-                            size_t ray_count,
-                            double t_max,
-                            const alea_raycast_batch_options_t* options,
-                            alea_raycast_batch_result_t* result) {
+static int raycast_hier_batch_execute(
+    alea_system_t* sys, const double* origins_xyz,
+    const double* directions_xyz, size_t ray_count,
+    double scalar_t_max, const double* t_mins, const double* t_maxs,
+    const alea_raycast_batch_options_t* options,
+    alea_raycast_batch_result_t* result) {
     const uint32_t known_fields = ALEA_RAY_BATCH_MATERIAL |
                                   ALEA_RAY_BATCH_DENSITY |
                                   ALEA_RAY_BATCH_SURFACES |
@@ -465,9 +465,21 @@ int alea_raycast_hier_batch(alea_system_t* sys,
                               "batch raycast requires a system and result");
         return -1;
     }
-    if (!isfinite(t_max)) {
+    if (!t_maxs && !isfinite(scalar_t_max)) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG, "batch t_max must be finite");
         return -1;
+    }
+    if (t_mins || t_maxs) {
+        for (size_t i = 0; i < ray_count; i++) {
+            const double t_min = t_mins ? t_mins[i] : 0.0;
+            const double t_max = t_maxs ? t_maxs[i] : scalar_t_max;
+            if (!isfinite(t_min) || !isfinite(t_max) || t_min < 0.0 ||
+                (t_max > 0.0 && t_min > t_max)) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                      "batch ray %zu has an invalid t range", i);
+                return -1;
+            }
+        }
     }
     if (options) {
         if (options->struct_size < sizeof(*options)) {
@@ -533,8 +545,24 @@ int alea_raycast_hier_batch(alea_system_t* sys,
             traces[i].status = -1;
             continue;
         }
+        const double ray_t_max = t_maxs ? t_maxs[i] : scalar_t_max;
         traces[i].status = alea_raycast_hier_segments_nocache(
-            sys, &ray, t_max, &traces[i].trace);
+            sys, &ray, ray_t_max, &traces[i].trace);
+        if (traces[i].status == 0 && t_mins && t_mins[i] > 0.0) {
+            const double ray_t_min = t_mins[i];
+            size_t write = 0;
+            for (size_t j = 0; j < traces[i].trace.segments.count; j++) {
+                alea_ray_segment_t segment = traces[i].trace.segments.data[j];
+                if (segment.t_exit <= ray_t_min + RAY_EPSILON) continue;
+                if (segment.t_enter < ray_t_min) {
+                    segment.t_enter = ray_t_min;
+                    segment.enter_surface_id = -1;
+                    segment.enter_hit_index = -1;
+                }
+                traces[i].trace.segments.data[write++] = segment;
+            }
+            traces[i].trace.segments.count = write;
+        }
     }
     for (size_t i = 0; i < ray_count; i++) {
         if (traces[i].status != 0 || alea_interrupted()) {
@@ -814,6 +842,622 @@ cleanup:
     return -1;
 }
 
+int alea_raycast_hier_batch(alea_system_t* sys,
+                            const double* origins_xyz,
+                            const double* directions_xyz,
+                            size_t ray_count,
+                            double t_max,
+                            const alea_raycast_batch_options_t* options,
+                            alea_raycast_batch_result_t* result) {
+    return raycast_hier_batch_execute(sys, origins_xyz, directions_xyz,
+                                      ray_count, t_max, NULL, NULL,
+                                      options, result);
+}
+
+int alea_raycast_hier_batch_query_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    const alea_raycast_batch_options_t* options,
+    alea_raycast_batch_result_t* result) {
+    if (!query) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "batch query descriptor is required");
+        return -1;
+    }
+    if (query->kind != ALEA_RAY_QUERY_SEGMENTS) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                              "compact batch query kind is not implemented");
+        return -1;
+    }
+    /* A NULL t_max array is an unbounded range for every ray. */
+    return raycast_hier_batch_execute(sys, origins_xyz, directions_xyz,
+                                      ray_count, 0.0, query->t_mins,
+                                      query->t_maxs, options, result);
+}
+
+void alea_ray_first_visible_batch_result_init(
+    alea_ray_first_visible_batch_result_t* result) {
+    if (result) memset(result, 0, sizeof(*result));
+}
+
+void alea_ray_first_visible_batch_result_free(
+    alea_ray_first_visible_batch_result_t* result) {
+    if (!result) return;
+    free(result->found);
+    free(result->t);
+    free(result->cell_ids);
+    free(result->material_ids);
+    free(result->densities);
+    free(result->surface_ids);
+    free(result->primitive_ids);
+    free(result->resolution_flags);
+    free(result->normals_xyz);
+    memset(result, 0, sizeof(*result));
+}
+
+static int first_visible_batch_add_bytes(size_t* total, size_t count,
+                                         size_t element_size) {
+    return batch_add_output_bytes(total, count, element_size);
+}
+
+int alea_raycast_hier_first_visible_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_first_visible_batch_result_t* result) {
+    const uint32_t known_fields = ALEA_RAY_QUERY_FIELD_CELL_ID |
+                                  ALEA_RAY_QUERY_FIELD_MATERIAL_ID |
+                                  ALEA_RAY_QUERY_FIELD_DENSITY |
+                                  ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                                  ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS |
+                                  ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID;
+    alea_ray_first_visible_batch_result_t next;
+    int* statuses = NULL;
+    size_t output_bytes = 0;
+    memset(&next, 0, sizeof(next));
+    if (!sys || !query || !result) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "first-visible batch requires system, query, and result");
+        return -1;
+    }
+    if (query->kind != ALEA_RAY_QUERY_FIRST_VISIBLE ||
+        (query->fields & ~known_fields)) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                              "unsupported first-visible batch query descriptor");
+        return -1;
+    }
+    if (batch_validate_ray_inputs(origins_xyz, directions_xyz, ray_count) != 0)
+        return -1;
+    for (size_t i = 0; i < ray_count; i++) {
+        const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
+        const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
+        if (!isfinite(t_min) || !isfinite(t_max) || t_min < 0.0 ||
+            (t_max > 0.0 && t_min > t_max)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "batch ray %zu has an invalid t range", i);
+            return -1;
+        }
+    }
+    if (alea_interrupted()) {
+        alea_set_error_detail(ALEA_ERR_INTERRUPTED, "batch raycast interrupted");
+        return -1;
+    }
+    if ((sys->has_lattice ? alea_raycast_ensure_caches(sys) :
+                             alea_raycast_ensure_hier_caches(sys)) != 0)
+        return -1;
+
+    int overflow =
+        first_visible_batch_add_bytes(&output_bytes, ray_count, sizeof(*next.found)) ||
+        first_visible_batch_add_bytes(&output_bytes, ray_count, sizeof(*next.t)) ||
+        first_visible_batch_add_bytes(&output_bytes, ray_count, sizeof(*next.cell_ids)) ||
+        first_visible_batch_add_bytes(&output_bytes, ray_count, sizeof(*next.material_ids));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_DENSITY)
+        overflow |= first_visible_batch_add_bytes(&output_bytes, ray_count,
+                                                  sizeof(*next.densities));
+    if (query->fields & (ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                         ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)) {
+        overflow |= first_visible_batch_add_bytes(&output_bytes, ray_count,
+                                                  sizeof(*next.surface_ids));
+        overflow |= first_visible_batch_add_bytes(&output_bytes, ray_count,
+                                                  sizeof(*next.primitive_ids));
+    }
+    if (query->fields & ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS)
+        overflow |= first_visible_batch_add_bytes(&output_bytes, ray_count,
+                                                  sizeof(*next.resolution_flags));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) {
+        if (ray_count > SIZE_MAX / 3 ||
+            first_visible_batch_add_bytes(&output_bytes, ray_count * 3,
+                                          sizeof(*next.normals_xyz)))
+            overflow = 1;
+    }
+    if (overflow || (query->max_output_bytes &&
+                     output_bytes > query->max_output_bytes)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "first-visible batch output exceeds byte limit");
+        return -1;
+    }
+
+    next.ray_count = ray_count;
+    next.found = batch_alloc_array(ray_count, sizeof(*next.found));
+    next.t = batch_alloc_array(ray_count, sizeof(*next.t));
+    next.cell_ids = batch_alloc_array(ray_count, sizeof(*next.cell_ids));
+    next.material_ids = batch_alloc_array(ray_count, sizeof(*next.material_ids));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_DENSITY)
+        next.densities = batch_alloc_array(ray_count, sizeof(*next.densities));
+    if (query->fields & (ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                         ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)) {
+        next.surface_ids = batch_alloc_array(ray_count, sizeof(*next.surface_ids));
+        next.primitive_ids = batch_alloc_array(ray_count, sizeof(*next.primitive_ids));
+    }
+    if (query->fields & ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS)
+        next.resolution_flags = batch_alloc_array(ray_count, sizeof(*next.resolution_flags));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL)
+        next.normals_xyz = batch_alloc_array(ray_count * 3, sizeof(*next.normals_xyz));
+    if (!next.found || !next.t || !next.cell_ids || !next.material_ids ||
+        ((query->fields & ALEA_RAY_QUERY_FIELD_DENSITY) && !next.densities) ||
+        ((query->fields & (ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                           ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)) &&
+         (!next.surface_ids || !next.primitive_ids)) ||
+        ((query->fields & ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS) &&
+         !next.resolution_flags) ||
+        ((query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) &&
+         !next.normals_xyz)) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate first-visible batch output");
+        goto fail;
+    }
+    statuses = calloc(ray_count ? ray_count : 1, sizeof(*statuses));
+    if (!statuses) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate first-visible batch statuses");
+        goto fail;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel
+#endif
+    {
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+#ifdef _OPENMP
+        #pragma omp for schedule(static)
+#endif
+        for (size_t i = 0; i < ray_count; i++) {
+            if (alea_interrupted()) {
+                statuses[i] = -1;
+                continue;
+            }
+            alea_ray_t ray;
+            const double* o = &origins_xyz[i * 3];
+            const double* d = &directions_xyz[i * 3];
+            alea_ray_first_visible_result_t visible;
+            int rc = -1;
+            if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) == 0) {
+                if (sys->has_lattice) {
+                    const alea_ray_query_t scalar_query = {
+                        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+                        .fields = query->fields,
+                        .t_min = query->t_mins ? query->t_mins[i] : 0.0,
+                        .t_max = query->t_maxs ? query->t_maxs[i] : 0.0,
+                        .material_filter = query->material_filter
+                    };
+                    alea_ray_query_output_t scalar_output;
+                    rc = alea_raycast_query_reuse_nocache(
+                        sys, &ray, &scalar_query, &scratch, NULL, &scalar_output);
+                    visible = scalar_output.first_visible;
+                } else {
+                    rc = alea_raycast_hier_first_visible_nocache(
+                        sys, &ray, query->t_mins ? query->t_mins[i] : 0.0,
+                        query->t_maxs ? query->t_maxs[i] : 0.0,
+                        query->material_filter,
+                        (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) != 0,
+                        &scratch, &visible);
+                }
+            }
+            if (rc != 0) {
+                statuses[i] = -1;
+                continue;
+            }
+            next.found[i] = visible.found ? 1 : 0;
+            next.t[i] = visible.t;
+            next.cell_ids[i] = visible.cell_id;
+            next.material_ids[i] = visible.material_id;
+            if (next.densities) next.densities[i] = visible.density;
+            if (next.surface_ids) next.surface_ids[i] = visible.surface_id;
+            if (next.primitive_ids) next.primitive_ids[i] = visible.primitive_id;
+            if (next.resolution_flags) next.resolution_flags[i] = visible.resolution_flags;
+            if (next.normals_xyz) {
+                next.normals_xyz[i * 3] = visible.nx;
+                next.normals_xyz[i * 3 + 1] = visible.ny;
+                next.normals_xyz[i * 3 + 2] = visible.nz;
+            }
+        }
+        alea_raycast_result_free(&scratch);
+    }
+    for (size_t i = 0; i < ray_count; i++) {
+        if (statuses[i] != 0 || alea_interrupted()) {
+            alea_set_error_detail(alea_interrupted() ? ALEA_ERR_INTERRUPTED :
+                                  ALEA_ERR_INVALID_STATE,
+                                  "first-visible batch raycast failed");
+            goto fail;
+        }
+    }
+    free(statuses);
+    alea_ray_first_visible_batch_result_free(result);
+    *result = next;
+    return 0;
+
+fail:
+    free(statuses);
+    alea_ray_first_visible_batch_result_free(&next);
+    return -1;
+}
+
+void alea_ray_any_hit_batch_result_init(alea_ray_any_hit_batch_result_t* result) {
+    if (result) memset(result, 0, sizeof(*result));
+}
+
+void alea_ray_any_hit_batch_result_free(alea_ray_any_hit_batch_result_t* result) {
+    if (!result) return;
+    free(result->hits);
+    memset(result, 0, sizeof(*result));
+}
+
+int alea_raycast_hier_any_hit_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_any_hit_batch_result_t* result) {
+    alea_ray_any_hit_batch_result_t next = {0};
+    int* statuses = NULL;
+    if (!sys || !query || !result) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "any-hit batch requires system, query, and result");
+        return -1;
+    }
+    if (query->kind != ALEA_RAY_QUERY_ANY_HIT || query->fields != 0) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                              "any-hit batch does not materialize fields");
+        return -1;
+    }
+    if (batch_validate_ray_inputs(origins_xyz, directions_xyz, ray_count) != 0)
+        return -1;
+    for (size_t i = 0; i < ray_count; i++) {
+        const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
+        const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
+        if (!isfinite(t_min) || !isfinite(t_max) || t_min < 0.0 ||
+            (t_max > 0.0 && t_min > t_max)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "batch ray %zu has an invalid t range", i);
+            return -1;
+        }
+    }
+    if (query->max_output_bytes && ray_count > query->max_output_bytes) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "any-hit batch output exceeds byte limit");
+        return -1;
+    }
+    if (alea_interrupted()) {
+        alea_set_error_detail(ALEA_ERR_INTERRUPTED, "batch raycast interrupted");
+        return -1;
+    }
+    if ((sys->has_lattice ? alea_raycast_ensure_caches(sys) :
+                             alea_raycast_ensure_hier_caches(sys)) != 0)
+        return -1;
+    next.ray_count = ray_count;
+    next.hits = batch_alloc_array(ray_count, sizeof(*next.hits));
+    statuses = calloc(ray_count ? ray_count : 1, sizeof(*statuses));
+    if (!next.hits || !statuses) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate any-hit batch output");
+        goto fail;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel
+#endif
+    {
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+#ifdef _OPENMP
+        #pragma omp for schedule(static)
+#endif
+        for (size_t i = 0; i < ray_count; i++) {
+            if (alea_interrupted()) {
+                statuses[i] = -1;
+                continue;
+            }
+            alea_ray_t ray;
+            const double* o = &origins_xyz[i * 3];
+            const double* d = &directions_xyz[i * 3];
+            int hit = 0;
+            int rc = -1;
+            if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) == 0) {
+                if (sys->has_lattice) {
+                    const alea_ray_query_t scalar_query = {
+                        .kind = ALEA_RAY_QUERY_ANY_HIT,
+                        .t_min = query->t_mins ? query->t_mins[i] : 0.0,
+                        .t_max = query->t_maxs ? query->t_maxs[i] : 0.0,
+                        .material_filter = query->material_filter
+                    };
+                    alea_ray_query_output_t scalar_output;
+                    rc = alea_raycast_query_reuse_nocache(
+                        sys, &ray, &scalar_query, &scratch, NULL, &scalar_output);
+                    hit = scalar_output.any_hit ? 1 : 0;
+                } else {
+                    rc = alea_raycast_hier_any_hit_nocache(
+                        sys, &ray, query->t_mins ? query->t_mins[i] : 0.0,
+                        query->t_maxs ? query->t_maxs[i] : 0.0,
+                        query->material_filter, &scratch, &hit);
+                }
+            }
+            if (rc != 0) {
+                statuses[i] = -1;
+                continue;
+            }
+            next.hits[i] = hit ? 1 : 0;
+        }
+        alea_raycast_result_free(&scratch);
+    }
+    for (size_t i = 0; i < ray_count; i++) {
+        if (statuses[i] != 0 || alea_interrupted()) {
+            alea_set_error_detail(alea_interrupted() ? ALEA_ERR_INTERRUPTED :
+                                  ALEA_ERR_INVALID_STATE,
+                                  "any-hit batch raycast failed");
+            goto fail;
+        }
+    }
+    free(statuses);
+    alea_ray_any_hit_batch_result_free(result);
+    *result = next;
+    return 0;
+
+fail:
+    free(statuses);
+    alea_ray_any_hit_batch_result_free(&next);
+    return -1;
+}
+
+typedef struct {
+    alea_raycast_result_t trace;
+    alea_ray_boundary_event_result_t events;
+    int status;
+} alea_batch_event_tmp_t;
+
+void alea_ray_boundary_event_batch_result_init(
+    alea_ray_boundary_event_batch_result_t* result) {
+    if (result) memset(result, 0, sizeof(*result));
+}
+
+void alea_ray_boundary_event_batch_result_free(
+    alea_ray_boundary_event_batch_result_t* result) {
+    if (!result) return;
+    free(result->ray_offsets);
+    free(result->t);
+    free(result->kinds);
+    free(result->surface_ids);
+    free(result->cell_before);
+    free(result->cell_after);
+    free(result->material_before);
+    free(result->material_after);
+    free(result->resolution_flags);
+    free(result->primitive_ids);
+    free(result->normals_xyz);
+    memset(result, 0, sizeof(*result));
+}
+
+int alea_raycast_boundary_events_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_boundary_event_batch_result_t* result) {
+    const uint32_t known_fields = ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                                  ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID;
+    alea_ray_boundary_event_batch_result_t next = {0};
+    alea_batch_event_tmp_t* temporary = NULL;
+    size_t output_bytes = 0;
+    if (!sys || !query || !result) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "boundary-event batch requires system, query, and result");
+        return -1;
+    }
+    if (query->kind != ALEA_RAY_QUERY_BOUNDARY_EVENTS ||
+        (query->fields & ~known_fields) || query->material_filter >= 0) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                              "unsupported boundary-event batch query descriptor");
+        return -1;
+    }
+    if (batch_validate_ray_inputs(origins_xyz, directions_xyz, ray_count) != 0)
+        return -1;
+    for (size_t i = 0; i < ray_count; i++) {
+        const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
+        const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
+        if (!isfinite(t_min) || !isfinite(t_max) || t_min < 0.0 ||
+            (t_max > 0.0 && t_min > t_max)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "batch ray %zu has an invalid t range", i);
+            return -1;
+        }
+    }
+    if (alea_interrupted()) {
+        alea_set_error_detail(ALEA_ERR_INTERRUPTED, "batch raycast interrupted");
+        return -1;
+    }
+    if (alea_raycast_ensure_caches(sys) != 0) return -1;
+    if (ray_count > SIZE_MAX / sizeof(*temporary)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "boundary-event batch temporary storage overflows");
+        return -1;
+    }
+    temporary = calloc(ray_count ? ray_count : 1, sizeof(*temporary));
+    if (!temporary) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate boundary-event batch temporaries");
+        return -1;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t i = 0; i < ray_count; i++) {
+        alea_raycast_result_init(&temporary[i].trace);
+        alea_ray_boundary_event_result_init(&temporary[i].events);
+        if (alea_interrupted()) {
+            temporary[i].status = -1;
+            continue;
+        }
+        alea_ray_t ray;
+        const double* o = &origins_xyz[i * 3];
+        const double* d = &directions_xyz[i * 3];
+        const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
+        const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
+        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
+            alea_raycast_boundary_events_reuse_nocache(
+                sys, &ray, t_max, &temporary[i].trace,
+                &temporary[i].events) != 0) {
+            temporary[i].status = -1;
+            continue;
+        }
+        size_t write = 0;
+        for (size_t j = 0; j < temporary[i].events.events.count; j++) {
+            const alea_ray_boundary_event_t event =
+                temporary[i].events.events.data[j];
+            if (event.t + RAY_EPSILON < t_min) continue;
+            temporary[i].events.events.data[write++] = event;
+        }
+        temporary[i].events.events.count = write;
+    }
+    for (size_t i = 0; i < ray_count; i++) {
+        if (temporary[i].status != 0 || alea_interrupted()) {
+            alea_set_error_detail(alea_interrupted() ? ALEA_ERR_INTERRUPTED :
+                                  ALEA_ERR_INVALID_STATE,
+                                  "boundary-event batch raycast failed");
+            goto fail;
+        }
+    }
+
+    next.ray_count = ray_count;
+    next.ray_offsets = batch_alloc_array(ray_count + 1, sizeof(*next.ray_offsets));
+    if (!next.ray_offsets) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate boundary-event batch offsets");
+        goto fail;
+    }
+    next.ray_offsets[0] = 0;
+    for (size_t i = 0; i < ray_count; i++) {
+        const size_t count = temporary[i].events.events.count;
+        if (count > UINT64_MAX - next.ray_offsets[i]) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "boundary-event batch offsets overflow");
+            goto fail;
+        }
+        next.ray_offsets[i + 1] = next.ray_offsets[i] + count;
+    }
+    if (next.ray_offsets[ray_count] > SIZE_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "boundary-event batch count overflows size_t");
+        goto fail;
+    }
+    next.event_count = (size_t)next.ray_offsets[ray_count];
+    if (query->max_events && next.event_count > query->max_events) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "boundary-event batch event limit exceeded");
+        goto fail;
+    }
+    int overflow =
+        batch_add_output_bytes(&output_bytes, ray_count + 1,
+                               sizeof(*next.ray_offsets)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.t)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.kinds)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.surface_ids)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.cell_before)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.cell_after)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.material_before)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count, sizeof(*next.material_after)) ||
+        batch_add_output_bytes(&output_bytes, next.event_count,
+                               sizeof(*next.resolution_flags));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)
+        overflow |= batch_add_output_bytes(&output_bytes, next.event_count,
+                                           sizeof(*next.primitive_ids));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) {
+        if (next.event_count > SIZE_MAX / 3 ||
+            batch_add_output_bytes(&output_bytes, next.event_count * 3,
+                                   sizeof(*next.normals_xyz)))
+            overflow = 1;
+    }
+    if (overflow || (query->max_output_bytes &&
+                     output_bytes > query->max_output_bytes)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "boundary-event batch output exceeds byte limit");
+        goto fail;
+    }
+    next.t = batch_alloc_array(next.event_count, sizeof(*next.t));
+    next.kinds = batch_alloc_array(next.event_count, sizeof(*next.kinds));
+    next.surface_ids = batch_alloc_array(next.event_count, sizeof(*next.surface_ids));
+    next.cell_before = batch_alloc_array(next.event_count, sizeof(*next.cell_before));
+    next.cell_after = batch_alloc_array(next.event_count, sizeof(*next.cell_after));
+    next.material_before = batch_alloc_array(next.event_count, sizeof(*next.material_before));
+    next.material_after = batch_alloc_array(next.event_count, sizeof(*next.material_after));
+    next.resolution_flags = batch_alloc_array(next.event_count,
+                                              sizeof(*next.resolution_flags));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)
+        next.primitive_ids = batch_alloc_array(next.event_count,
+                                               sizeof(*next.primitive_ids));
+    if (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL)
+        next.normals_xyz = batch_alloc_array(next.event_count * 3,
+                                             sizeof(*next.normals_xyz));
+    if (!next.t || !next.kinds || !next.surface_ids || !next.cell_before ||
+        !next.cell_after || !next.material_before || !next.material_after ||
+        !next.resolution_flags ||
+        ((query->fields & ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID) &&
+         !next.primitive_ids) ||
+        ((query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) &&
+         !next.normals_xyz)) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate boundary-event batch output");
+        goto fail;
+    }
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t i = 0; i < ray_count; i++) {
+        const size_t dst = (size_t)next.ray_offsets[i];
+        for (size_t j = 0; j < temporary[i].events.events.count; j++) {
+            const alea_ray_boundary_event_t* event =
+                &temporary[i].events.events.data[j];
+            const size_t k = dst + j;
+            next.t[k] = event->t;
+            next.kinds[k] = (uint8_t)event->kind;
+            next.surface_ids[k] = event->surface_id;
+            next.cell_before[k] = event->cell_before;
+            next.cell_after[k] = event->cell_after;
+            next.material_before[k] = event->material_before;
+            next.material_after[k] = event->material_after;
+            next.resolution_flags[k] = event->resolution_flags;
+            if (next.primitive_ids) next.primitive_ids[k] = event->primitive_id;
+            if (next.normals_xyz) {
+                next.normals_xyz[k * 3] = event->nx;
+                next.normals_xyz[k * 3 + 1] = event->ny;
+                next.normals_xyz[k * 3 + 2] = event->nz;
+            }
+        }
+    }
+    for (size_t i = 0; i < ray_count; i++) {
+        alea_ray_boundary_event_result_free(&temporary[i].events);
+        alea_raycast_result_free(&temporary[i].trace);
+    }
+    free(temporary);
+    alea_ray_boundary_event_batch_result_free(result);
+    *result = next;
+    return 0;
+
+fail:
+    for (size_t i = 0; i < ray_count; i++) {
+        alea_ray_boundary_event_result_free(&temporary[i].events);
+        alea_raycast_result_free(&temporary[i].trace);
+    }
+    free(temporary);
+    alea_ray_boundary_event_batch_result_free(&next);
+    return -1;
+}
+
 int alea_trace_ray_slice_compact(
     alea_system_t* sys,
     const alea_slice_view_t* view,
@@ -888,6 +1532,229 @@ int alea_trace_ray_slice_compact(
     return 0;
 }
 
+
+struct alea_ray_boundary_event_query_result {
+    alea_raycast_result_t scratch;
+    alea_ray_boundary_event_result_t events;
+    uint32_t fields;
+};
+
+void alea_ray_boundary_event_options_init(
+    alea_ray_boundary_event_options_t* options) {
+    if (!options) return;
+    memset(options, 0, sizeof(*options));
+    options->struct_size = sizeof(*options);
+}
+
+alea_ray_boundary_event_query_result_t* alea_ray_boundary_event_query_result_create(void) {
+    alea_ray_boundary_event_query_result_t* result = calloc(1, sizeof(*result));
+    if (!result) return NULL;
+    alea_raycast_result_init(&result->scratch);
+    alea_ray_boundary_event_result_init(&result->events);
+    return result;
+}
+
+void alea_ray_boundary_event_query_result_destroy(
+    alea_ray_boundary_event_query_result_t* result) {
+    if (!result) return;
+    alea_raycast_result_free(&result->scratch);
+    alea_ray_boundary_event_result_free(&result->events);
+    free(result);
+}
+
+int alea_ray_boundary_event_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_boundary_event_options_t* input,
+    alea_ray_boundary_event_query_result_t* result) {
+    alea_ray_boundary_event_options_t defaults, options;
+    if (!sys || !result) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "boundary-event query requires system and result");
+        return -1;
+    }
+    alea_ray_boundary_event_options_init(&defaults); options = defaults;
+    if (input) {
+        if (input->struct_size < sizeof(input->struct_size)) goto invalid;
+        size_t bytes = input->struct_size < sizeof(options) ? input->struct_size : sizeof(options);
+        memcpy(&options, input, bytes);
+    }
+    if ((options.fields & ~(ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID |
+                            ALEA_RAY_BOUNDARY_EVENT_NORMAL)) ||
+        options.t_min < 0 || (options.t_max > 0 && options.t_min > options.t_max)) goto invalid;
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) goto invalid;
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "boundary-event query failed to prepare raycast caches");
+        goto fail;
+    }
+    const alea_ray_boundary_event_options_internal_t internal_options = {
+        .include_all_coincident_physical = options.include_all_coincident_physical != 0,
+        .max_events = options.max_events,
+        .max_output_bytes = options.max_output_bytes
+    };
+    if (alea_raycast_boundary_events_with_options(
+            sys, &ray, options.t_max, &internal_options, &result->scratch,
+            &result->events) != 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "boundary-event query failed to materialize events");
+        goto fail;
+    }
+    size_t write = 0;
+    for (size_t i = 0; i < result->events.events.count; i++) {
+        alea_ray_boundary_event_t event = result->events.events.data[i];
+        if (event.t + RAY_EPSILON < options.t_min) continue;
+        result->events.events.data[write++] = event;
+    }
+    result->events.events.count = write;
+    if ((options.max_events && write > options.max_events) ||
+        (options.max_output_bytes &&
+         write > options.max_output_bytes / sizeof(*result->events.events.data))) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "boundary-event query output limit exceeded");
+        goto fail;
+    }
+    result->fields = options.fields;
+    return 0;
+invalid:
+    alea_set_error_detail(ALEA_ERR_INVALID_ARG, "invalid boundary-event query options");
+fail:
+    alea_raycast_result_clear(&result->scratch);
+    alea_ray_boundary_event_result_clear(&result->events);
+    result->fields = 0;
+    return -1;
+}
+
+size_t alea_ray_boundary_event_count(const alea_ray_boundary_event_query_result_t* result) {
+    return result ? result->events.events.count : 0;
+}
+
+int alea_ray_boundary_event_get(const alea_ray_boundary_event_query_result_t* result,
+    size_t index, double* t, int* kind, int* surface_id, int* cell_before,
+    int* cell_after, int* material_before, int* material_after,
+    uint32_t* resolution_flags, uint32_t* primitive_id,
+    double* nx, double* ny, double* nz) {
+    if (!result || index >= result->events.events.count) return -1;
+    const alea_ray_boundary_event_t* event = &result->events.events.data[index];
+    if (t) *t = event->t;
+    if (kind) *kind = (int)event->kind;
+    if (surface_id) *surface_id = event->surface_id;
+    if (cell_before) *cell_before = event->cell_before;
+    if (cell_after) *cell_after = event->cell_after;
+    if (material_before) *material_before = event->material_before;
+    if (material_after) *material_after = event->material_after;
+    if (resolution_flags) *resolution_flags = event->resolution_flags;
+    if (primitive_id) *primitive_id = (result->fields & ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID) ? event->primitive_id : UINT32_MAX;
+    if (nx) *nx = (result->fields & ALEA_RAY_BOUNDARY_EVENT_NORMAL) ? event->nx : 0;
+    if (ny) *ny = (result->fields & ALEA_RAY_BOUNDARY_EVENT_NORMAL) ? event->ny : 0;
+    if (nz) *nz = (result->fields & ALEA_RAY_BOUNDARY_EVENT_NORMAL) ? event->nz : 0;
+    return 0;
+}
+
+struct alea_ray_first_visible_query_result {
+    alea_raycast_result_t scratch;
+    alea_ray_first_visible_result_t answer;
+    uint32_t fields;
+};
+
+void alea_ray_first_visible_options_init(
+    alea_ray_first_visible_options_t* options) {
+    if (!options) return;
+    memset(options, 0, sizeof(*options));
+    options->struct_size = sizeof(*options);
+    options->material_filter = -1;
+}
+
+alea_ray_first_visible_query_result_t* alea_ray_first_visible_query_result_create(void) {
+    alea_ray_first_visible_query_result_t* result = calloc(1, sizeof(*result));
+    if (!result) return NULL;
+    alea_raycast_result_init(&result->scratch);
+    result->answer.cell_id = -1;
+    result->answer.surface_id = -1;
+    result->answer.primitive_id = UINT32_MAX;
+    return result;
+}
+
+void alea_ray_first_visible_query_result_destroy(
+    alea_ray_first_visible_query_result_t* result) {
+    if (!result) return;
+    alea_raycast_result_free(&result->scratch);
+    free(result);
+}
+
+int alea_ray_first_visible_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_first_visible_options_t* input,
+    alea_ray_first_visible_query_result_t* result) {
+    alea_ray_first_visible_options_t defaults, options;
+    if (!sys || !result) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "first-visible query requires system and result");
+        return -1;
+    }
+    alea_ray_first_visible_options_init(&defaults);
+    options = defaults;
+    if (input) {
+        if (input->struct_size < sizeof(input->struct_size)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "first-visible options struct_size is too small");
+            goto fail;
+        }
+        size_t bytes = input->struct_size < sizeof(options) ?
+            input->struct_size : sizeof(options);
+        memcpy(&options, input, bytes);
+        if (bytes < offsetof(alea_ray_first_visible_options_t, material_filter) +
+                        sizeof(options.material_filter))
+            options.material_filter = -1;
+    }
+    if (options.fields & ~(ALEA_RAY_FIRST_VISIBLE_SURFACE_ID |
+                           ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL) ||
+        options.t_min < 0 || (options.t_max > 0 && options.t_min > options.t_max)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "invalid first-visible query options");
+        goto fail;
+    }
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "first-visible ray direction is zero");
+        goto fail;
+    }
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST_HIER) != 0)
+        goto fail;
+    const alea_ray_query_t query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = (options.fields & ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL) ?
+            ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL : 0,
+        .t_min = options.t_min, .t_max = options.t_max,
+        .material_filter = options.material_filter
+    };
+    alea_ray_query_output_t output;
+    if (alea_raycast_query_reuse_nocache(sys, &ray, &query, &result->scratch,
+                                         NULL, &output) != 0)
+        goto fail;
+    result->answer = output.first_visible;
+    result->fields = options.fields;
+    return 0;
+fail:
+    alea_raycast_result_clear(&result->scratch);
+    memset(&result->answer, 0, sizeof(result->answer));
+    result->answer.cell_id = -1; result->answer.surface_id = -1;
+    result->answer.primitive_id = UINT32_MAX; result->fields = 0;
+    return -1;
+}
+
+int alea_ray_first_visible_found(const alea_ray_first_visible_query_result_t* result) { return result && result->answer.found; }
+double alea_ray_first_visible_t(const alea_ray_first_visible_query_result_t* result) { return result && result->answer.found ? result->answer.t : 0; }
+int alea_ray_first_visible_cell_id(const alea_ray_first_visible_query_result_t* result) { return result && result->answer.found ? result->answer.cell_id : -1; }
+int alea_ray_first_visible_material_id(const alea_ray_first_visible_query_result_t* result) { return result && result->answer.found ? result->answer.material_id : 0; }
+double alea_ray_first_visible_density(const alea_ray_first_visible_query_result_t* result) { return result && result->answer.found ? result->answer.density : 0; }
+int alea_ray_first_visible_surface_id(const alea_ray_first_visible_query_result_t* result) { return result && result->answer.found && (result->fields & ALEA_RAY_FIRST_VISIBLE_SURFACE_ID) ? result->answer.surface_id : -1; }
+int alea_ray_first_visible_normal(const alea_ray_first_visible_query_result_t* result, double* nx, double* ny, double* nz) {
+    if (!result || !result->answer.found || !(result->fields & ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL)) return -1;
+    if (nx) *nx = result->answer.nx;
+    if (ny) *ny = result->answer.ny;
+    if (nz) *nz = result->answer.nz;
+    return 0;
+}
 
 alea_raycast_result_t* alea_raycast_result_create(void) {
     alea_raycast_result_t* result = calloc(1, sizeof(alea_raycast_result_t));

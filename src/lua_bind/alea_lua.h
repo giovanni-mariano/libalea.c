@@ -23,6 +23,7 @@
 #define ALEA_VOIDRESULT_MT  "alea.VoidResult"
 #define ALEA_FRAMEBUFFER_MT "alea.Framebuffer"
 #define ALEA_GEOMRESULT_MT  "alea.GeometryValidationResult"
+#define ALEA_DIRECTIONAL_TRACE_CACHE_MT "alea.DirectionalTraceCache"
 
 /* ============================================================================
  * Userdata types
@@ -35,6 +36,7 @@ typedef struct {
     int owned;            /* 1 if we should destroy on __gc */
     int destroy_pending;  /* destroy requested while dependent userdata exists */
     int active_void_results;
+    int active_directional_trace_caches;
 } alea_lua_system_t;
 
 typedef struct {
@@ -57,6 +59,7 @@ static inline void alea_lua_system_init(alea_lua_system_t* ud) {
     ud->owned = 1;
     ud->destroy_pending = 0;
     ud->active_void_results = 0;
+    ud->active_directional_trace_caches = 0;
 }
 
 static inline alea_system_t* alea_get_sys(lua_State* L, int idx) {

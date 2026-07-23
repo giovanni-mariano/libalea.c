@@ -16,6 +16,11 @@ typedef struct {
     alea_slice_curves_t* ptr;
 } alea_lua_slice_curves_t;
 
+typedef struct {
+    alea_slice_directional_trace_cache_t* ptr;
+    alea_lua_system_t* system;
+} alea_lua_directional_trace_cache_t;
+
 static alea_lua_geom_result_t* check_geom_result(lua_State* L, int idx) {
     return (alea_lua_geom_result_t*)luaL_checkudata(L, idx, ALEA_GEOMRESULT_MT);
 }
@@ -322,10 +327,81 @@ static int l_geom_gc(lua_State* L) {
     return 0;
 }
 
+/* sys:validate_ray_slice(view, rows [, options [, cache]]) -> intervals */
+static int l_validate_ray_slice(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_slice_view_t view;
+    alea_lua_to_slice_view(L, 2, &view);
+    size_t rows = (size_t)luaL_checkinteger(L, 3);
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    if (lua_istable(L, 4)) {
+        lua_getfield(L, 4, "projected_depth");
+        if (!lua_isnil(L, -1)) options.projected_depth = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 4, "include_agreements");
+        if (lua_toboolean(L, -1)) options.flags |= ALEA_RAY_SLICE_VALIDATION_INCLUDE_AGREEMENTS;
+        lua_pop(L, 1);
+        lua_getfield(L, 4, "absolute_tolerance");
+        if (!lua_isnil(L, -1)) options.absolute_tolerance = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 4, "relative_tolerance");
+        if (!lua_isnil(L, -1)) options.relative_tolerance = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    const alea_slice_directional_trace_cache_t* cache = NULL;
+    if (!lua_isnoneornil(L, 5)) {
+        alea_lua_directional_trace_cache_t* ud =
+            (alea_lua_directional_trace_cache_t*)luaL_checkudata(
+                L, 5, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
+        if (!ud->ptr) return luaL_error(L, "directional trace cache freed");
+        cache = ud->ptr;
+    }
+    alea_ray_slice_validation_result_t* result =
+        alea_ray_slice_validation_result_create();
+    if (!result) return luaL_error(L, "validate_ray_slice: out of memory");
+    int rc = cache ? alea_validate_ray_slice_compact_with_directional_cache(
+                         sys, &view, rows, &options, NULL, NULL, cache, result) :
+                     alea_validate_ray_slice_compact(
+                         sys, &view, rows, &options, NULL, NULL, result);
+    if (rc != 0) {
+        alea_ray_slice_validation_result_destroy(result);
+        return luaL_error(L, "validate_ray_slice failed: %s", alea_error());
+    }
+    size_t count = alea_ray_slice_validation_interval_count(result);
+    const uint64_t* offsets = alea_ray_slice_validation_row_offsets(result);
+    const double* begin = alea_ray_slice_validation_u_enter(result);
+    const double* end = alea_ray_slice_validation_u_exit(result);
+    const uint32_t* flags = alea_ray_slice_validation_diagnostic_flags(result);
+    const int32_t* enter_surface = alea_ray_slice_validation_u_enter_forward_surface_ids(result);
+    const int32_t* exit_surface = alea_ray_slice_validation_u_exit_forward_surface_ids(result);
+    lua_createtable(L, (int)count, 3);
+    for (size_t row = 0; row < rows; row++) {
+        for (size_t i = (size_t)offsets[row]; i < (size_t)offsets[row + 1]; i++) {
+            lua_createtable(L, 0, 5);
+            lua_pushinteger(L, (lua_Integer)(row + 1)); lua_setfield(L, -2, "row");
+            lua_pushnumber(L, begin[i]); lua_setfield(L, -2, "u_enter");
+            lua_pushnumber(L, end[i]); lua_setfield(L, -2, "u_exit");
+            lua_pushinteger(L, flags[i]); lua_setfield(L, -2, "flags");
+            if (enter_surface) { lua_pushinteger(L, enter_surface[i]); lua_setfield(L, -2, "enter_surface_id"); }
+            if (exit_surface) { lua_pushinteger(L, exit_surface[i]); lua_setfield(L, -2, "exit_surface_id"); }
+            lua_rawseti(L, -2, (lua_Integer)(i + 1));
+        }
+    }
+    lua_pushinteger(L, alea_ray_slice_validation_reused_trace_mask(result));
+    lua_setfield(L, -2, "reused_trace_mask");
+    lua_pushinteger(L, alea_ray_slice_validation_executed_trace_mask(result));
+    lua_setfield(L, -2, "executed_trace_mask");
+    alea_ray_slice_validation_result_destroy(result);
+    return 1;
+}
+
 static const luaL_Reg geom_system_methods[] = {
     {"validate_geometry",       l_validate_geometry},
     {"validate_geometry_ray",   l_validate_geometry_ray},
     {"validate_geometry_slice", l_validate_geometry_slice},
+    {"validate_ray_slice",      l_validate_ray_slice},
     {NULL, NULL}
 };
 

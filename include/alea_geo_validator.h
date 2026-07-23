@@ -202,6 +202,26 @@ const uint64_t* alea_ray_slice_validation_fast_forward_occurrence_keys(
 const uint64_t* alea_ray_slice_validation_fast_reverse_occurrence_keys(
     const alea_ray_slice_validation_result_t* result);
 
+/* Optional provenance attached by validation with a directional trace cache.
+ * Each array has interval_count entries; a surface ID of -1 means no physical
+ * surface is reportable at that endpoint. */
+const int32_t* alea_ray_slice_validation_u_enter_forward_surface_ids(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_u_enter_reverse_surface_ids(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_u_exit_forward_surface_ids(
+    const alea_ray_slice_validation_result_t* result);
+const int32_t* alea_ray_slice_validation_u_exit_reverse_surface_ids(
+    const alea_ray_slice_validation_result_t* result);
+const uint32_t* alea_ray_slice_validation_u_enter_provenance_flags(
+    const alea_ray_slice_validation_result_t* result);
+const uint32_t* alea_ray_slice_validation_u_exit_provenance_flags(
+    const alea_ray_slice_validation_result_t* result);
+
+#define ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_COINCIDENT (1u << 0)
+#define ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_SYNTHETIC  (1u << 1)
+#define ALEA_RAY_SLICE_BOUNDARY_PROVENANCE_UNRESOLVED (1u << 2)
+
 /**
  * Validate centered U-directed rows. `inout_fast_forward` is optional. When
  * it holds a compatible result from alea_trace_ray_slice_compact(), the
@@ -215,6 +235,16 @@ int alea_validate_ray_slice_compact(
     const alea_ray_slice_validation_options_t* validation_options,
     const alea_raycast_batch_options_t* render_options,
     alea_raycast_batch_result_t* inout_fast_forward,
+    alea_ray_slice_validation_result_t* out_validation);
+
+/** As above, but reuses a matching public directional trace cache and emits
+ * canonical boundary provenance.  A mismatch is rejected transactionally. */
+int alea_validate_ray_slice_compact_with_directional_cache(
+    alea_system_t* sys, const alea_slice_view_t* view, size_t row_count,
+    const alea_ray_slice_validation_options_t* validation_options,
+    const alea_raycast_batch_options_t* render_options,
+    alea_raycast_batch_result_t* inout_fast_forward,
+    const alea_slice_directional_trace_cache_t* cache,
     alea_ray_slice_validation_result_t* out_validation);
 
 #ifdef __cplusplus

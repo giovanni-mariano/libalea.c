@@ -214,6 +214,8 @@ typedef struct {
  * or labels. */
 
 typedef struct alea_slice_surface_boundary_map alea_slice_surface_boundary_map_t;
+typedef struct alea_slice_directional_event_cache
+    alea_slice_directional_trace_cache_t;
 
 typedef enum {
     ALEA_SLICE_EDGE_RIGHT = 0, /**< Edge from (x,y) to (x+1,y) */
@@ -262,6 +264,15 @@ int alea_slice_surface_boundary_map_create(
     alea_system_t* sys, const alea_slice_view_t* view,
     int width, int height, const int* grid_ids,
     alea_slice_classify_point_fn classify, void* classify_userdata,
+    alea_slice_surface_boundary_map_t** out_map);
+
+/** Build a boundary map using a matching reusable directional trace cache.
+ * The cache remains owned by the caller and must outlive this call. */
+int alea_slice_surface_boundary_map_create_with_directional_cache(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    const alea_slice_directional_trace_cache_t* cache,
     alea_slice_surface_boundary_map_t** out_map);
 
 void alea_slice_surface_boundary_map_free(
@@ -322,6 +333,19 @@ void alea_slice_view_init(alea_slice_view_t* view,
 /* ============================================================================
  * COMPACT RAY-SLICE TRACING
  * ============================================================================ */
+
+/** Opaque reusable U+/U-/V+/V- directional trace cache.  It captures the
+ * system generation, view, sampling dimensions, complete canonical boundary
+ * events, and ownership traces.  Destroy it before destroying its system. */
+alea_slice_directional_trace_cache_t*
+alea_slice_directional_trace_cache_create(
+    alea_system_t* sys, const alea_slice_view_t* view, int width, int height);
+void alea_slice_directional_trace_cache_destroy(
+    alea_slice_directional_trace_cache_t* cache);
+int alea_slice_directional_trace_cache_matches(
+    const alea_slice_directional_trace_cache_t* cache,
+    const alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height);
 
 /**
  * Trace one U-directed ray through each centered V row of a slice view.
