@@ -1476,13 +1476,20 @@ static int volume_paths_enumerate_lattice(alea_system_t* sys,
                     double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
                     translation.m[3] = step.i * p + step.j * p * 0.5;
                     translation.m[7] = step.j * p * sqrt(3.0) * 0.5;
-                    translation.m[11] = (nk == 1)
-                        ? 0.0
-                        : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    translation.m[11] = cell->lat_fill_zero_element_coords
+                        ? step.k * cell->lat_pitch[2]
+                        : ((nk == 1) ? 0.0
+                           : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
                 } else {
-                    translation.m[3] = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-                    translation.m[7] = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-                    translation.m[11] = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        translation.m[3] = step.i * cell->lat_pitch[0];
+                        translation.m[7] = step.j * cell->lat_pitch[1];
+                        translation.m[11] = step.k * cell->lat_pitch[2];
+                    } else {
+                        translation.m[3] = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+                        translation.m[7] = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+                        translation.m[11] = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    }
                 }
                 translation.has_inverse = false;
 
@@ -1618,7 +1625,7 @@ static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
 
         i = ri;
         j = rk;
-        k = (nk == 1) ? cell->lat_fill_dims[4]
+        k = (nk == 1 && !cell->lat_fill_repeating) ? cell->lat_fill_dims[4]
                       : cell->lat_fill_dims[4] +
                         (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
         oi = i - cell->lat_fill_dims[0];
@@ -1626,21 +1633,34 @@ static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
         ok = k - cell->lat_fill_dims[4];
         *ox = ri * p + rk * p * 0.5;
         *oy = rk * p * sqrt(3.0) * 0.5;
-        *oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        *oz = cell->lat_fill_zero_element_coords
+            ? k * cell->lat_pitch[2]
+            : ((nk == 1 && !cell->lat_fill_repeating) ? 0.0
+               : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
     } else {
         oi = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-        oj = (nj == 1) ? 0 : (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-        ok = (nk == 1) ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+        oj = (cell->lat_fill_repeating || nj > 1)
+            ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+        ok = (cell->lat_fill_repeating || nk > 1)
+            ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
         i = cell->lat_fill_dims[0] + oi;
         j = cell->lat_fill_dims[2] + oj;
         k = cell->lat_fill_dims[4] + ok;
-        *ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-        *oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-        *oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        if (cell->lat_fill_zero_element_coords) {
+            *ox = i * cell->lat_pitch[0];
+            *oy = j * cell->lat_pitch[1];
+            *oz = k * cell->lat_pitch[2];
+        } else {
+            *ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+            *oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+            *oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        }
     }
 
-    if (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk) return -1;
-    size_t linear = (size_t)(oi * nj * nk + oj * nk + ok);
+    if (!cell->lat_fill_repeating &&
+        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)) return -1;
+    size_t linear = cell->lat_fill_repeating
+        ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
     if (linear >= cell->lat_fill_count) return -1;
 
     step->lattice_cell_index = -1;
@@ -2398,6 +2418,8 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     memcpy(info->lat_fill_dims, c->lat_fill_dims, sizeof(info->lat_fill_dims));
     info->lat_fill = c->lat_fill;
     info->lat_fill_count = c->lat_fill_count;
+    info->lat_fill_repeating = (int)c->lat_fill_repeating;
+    info->lat_fill_zero_element_coords = (int)c->lat_fill_zero_element_coords;
     memcpy(info->lat_pitch, c->lat_pitch, sizeof(info->lat_pitch));
     memcpy(info->lat_lower_left, c->lat_lower_left, sizeof(info->lat_lower_left));
 

@@ -25,6 +25,7 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 #include "util/math.h"
 #include <stdio.h>
 
@@ -1241,16 +1242,19 @@ static void raycast_lattice_rect(alea_system_t* sys,
     double pz = lat_cell->lat_pitch[2];
     const double* ll = lat_cell->lat_lower_left;
 
-    /* Lattice bounding box */
+    /* Explicit arrays are finite.  A simple MCNP FILL=N repeats the
+     * fundamental element indefinitely and is clipped by its parent fill
+     * occurrence, so its DDA spans the caller's ray interval. */
     alea_bbox_t lat_bbox = {
         .min_x = ll[0], .max_x = ll[0] + ni * px,
         .min_y = ll[1], .max_y = ll[1] + nj * py,
         .min_z = ll[2], .max_z = ll[2] + nk * pz,
     };
 
-    double t_enter, t_exit;
-    if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, t_min, t_max, &t_enter, &t_exit))
-        return;
+    double t_enter = t_min, t_exit = t_max;
+    if (!lat_cell->lat_fill_repeating &&
+        !ray_bbox_slab_enter_exit(ray, &lat_bbox, t_min, t_max,
+                                  &t_enter, &t_exit)) return;
 
     /* Starting point (nudge slightly inside) */
     double start_t = t_enter + RAY_EPSILON;
@@ -1259,16 +1263,20 @@ static void raycast_lattice_rect(alea_system_t* sys,
     double sz = ray->oz + start_t * ray->dz;
 
     int i = (int)floor((sx - ll[0]) / px);
-    int j = (nj == 1) ? 0 : (int)floor((sy - ll[1]) / py);
-    int k = (nk == 1) ? 0 : (int)floor((sz - ll[2]) / pz);
+    int j = (lat_cell->lat_fill_repeating || nj > 1)
+        ? (int)floor((sy - ll[1]) / py) : 0;
+    int k = (lat_cell->lat_fill_repeating || nk > 1)
+        ? (int)floor((sz - ll[2]) / pz) : 0;
 
     /* Clamp to valid range (handles edge cases) */
-    if (i < 0) i = 0;
-    if (i >= ni) i = ni - 1;
-    if (j < 0) j = 0;
-    if (j >= nj) j = nj - 1;
-    if (k < 0) k = 0;
-    if (k >= nk) k = nk - 1;
+    if (!lat_cell->lat_fill_repeating) {
+        if (i < 0) i = 0;
+        if (i >= ni) i = ni - 1;
+        if (j < 0) j = 0;
+        if (j >= nj) j = nj - 1;
+        if (k < 0) k = 0;
+        if (k >= nk) k = nk - 1;
+    }
 
     /* DDA step direction and delta-t per cell crossing */
     int step_i = (ray->dx > 0) ? 1 : -1;
@@ -1283,13 +1291,15 @@ static void raycast_lattice_rect(alea_system_t* sys,
     } else {
         t_next_i = DBL_MAX;
     }
-    if (nj > 1 && fabs(ray->dy) > RAY_EPSILON) {
+    if ((lat_cell->lat_fill_repeating || nj > 1) &&
+        fabs(ray->dy) > RAY_EPSILON) {
         double boundary = ll[1] + ((ray->dy > 0) ? (j + 1) : j) * py;
         t_next_j = (boundary - ray->oy) / ray->dy;
     } else {
         t_next_j = DBL_MAX;
     }
-    if (nk > 1 && fabs(ray->dz) > RAY_EPSILON) {
+    if ((lat_cell->lat_fill_repeating || nk > 1) &&
+        fabs(ray->dz) > RAY_EPSILON) {
         double boundary = ll[2] + ((ray->dz > 0) ? (k + 1) : k) * pz;
         t_next_k = (boundary - ray->oz) / ray->dz;
     } else {
@@ -1298,10 +1308,19 @@ static void raycast_lattice_rect(alea_system_t* sys,
 
     /* Walk through lattice elements */
     double t_cur = t_enter;
-    int max_steps = 2 * (ni + nj + nk) + 4;  /* Safety limit: diagonal ray crosses ~3N boundaries */
+    int max_steps = 2 * (ni + nj + nk) + 4;
+    if (lat_cell->lat_fill_repeating) {
+        double span = t_exit - t_enter;
+        double crossings = fabs(ray->dx) * span / px
+                         + fabs(ray->dy) * span / py
+                         + fabs(ray->dz) * span / pz;
+        max_steps = (crossings < (double)INT_MAX - 8.0)
+            ? (int)ceil(crossings) + 8 : INT_MAX;
+    }
 
     for (int step = 0; step < max_steps; step++) {
-        if (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk)
+        if (!lat_cell->lat_fill_repeating &&
+            (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk))
             break;
 
         /* Emit synthetic hit at internal element boundaries so the
@@ -1325,14 +1344,22 @@ static void raycast_lattice_rect(alea_system_t* sys,
         if (t_min_next > t_exit) t_min_next = t_exit;
 
         /* Get universe for this element */
-        size_t idx = (size_t)(i * nj * nk + j * nk + k);
+        size_t idx = lat_cell->lat_fill_repeating
+            ? 0 : (size_t)(i * nj * nk + j * nk + k);
         if (idx < lat_cell->lat_fill_count) {
             int univ_id = lat_cell->lat_fill[idx];
 
             /* Translate ray to element-local coordinates */
-            double cx = ll[0] + (i + 0.5) * px;
-            double cy = ll[1] + (j + 0.5) * py;
-            double cz = ll[2] + (k + 0.5) * pz;
+            double cx, cy, cz;
+            if (lat_cell->lat_fill_zero_element_coords) {
+                cx = (lat_cell->lat_fill_dims[0] + i) * px;
+                cy = (lat_cell->lat_fill_dims[2] + j) * py;
+                cz = (lat_cell->lat_fill_dims[4] + k) * pz;
+            } else {
+                cx = ll[0] + (i + 0.5) * px;
+                cy = ll[1] + (j + 0.5) * py;
+                cz = ll[2] + (k + 0.5) * pz;
+            }
 
             alea_ray_t local_ray = *ray;
             local_ray.ox -= cx;
@@ -2626,11 +2653,10 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
         .min_z = ll[2], .max_z = ll[2] + nk * pz,
     };
 
-    double t_enter, t_exit;
-    if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, 0.0, t_max,
-                                  &t_enter, &t_exit)) {
-        return t_max;
-    }
+    double t_enter = 0.0, t_exit = t_max;
+    if (!lat_cell->lat_fill_repeating &&
+        !ray_bbox_slab_enter_exit(ray, &lat_bbox, 0.0, t_max,
+                                  &t_enter, &t_exit)) return t_max;
 
     double sample_t = t_min + RAY_EPSILON;
     double sx = ray->ox + sample_t * ray->dx;
@@ -2638,15 +2664,19 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
     double sz = ray->oz + sample_t * ray->dz;
 
     int i = (int)floor((sx - ll[0]) / px);
-    int j = (nj == 1) ? 0 : (int)floor((sy - ll[1]) / py);
-    int k = (nk == 1) ? 0 : (int)floor((sz - ll[2]) / pz);
+    int j = (lat_cell->lat_fill_repeating || nj > 1)
+        ? (int)floor((sy - ll[1]) / py) : 0;
+    int k = (lat_cell->lat_fill_repeating || nk > 1)
+        ? (int)floor((sz - ll[2]) / pz) : 0;
 
-    if (i < 0) i = 0;
-    if (i >= ni) i = ni - 1;
-    if (j < 0) j = 0;
-    if (j >= nj) j = nj - 1;
-    if (k < 0) k = 0;
-    if (k >= nk) k = nk - 1;
+    if (!lat_cell->lat_fill_repeating) {
+        if (i < 0) i = 0;
+        if (i >= ni) i = ni - 1;
+        if (j < 0) j = 0;
+        if (j >= nj) j = nj - 1;
+        if (k < 0) k = 0;
+        if (k >= nk) k = nk - 1;
+    }
 
     (void)t_enter;
     (void)t_exit;
@@ -2654,25 +2684,27 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
     if (fabs(ray->dx) > RAY_EPSILON) {
         int crosses_outer_edge = (ray->dx > 0.0 && i + 1 >= ni) ||
                                  (ray->dx < 0.0 && i <= 0);
-        if (!crosses_outer_edge) {
+        if (lat_cell->lat_fill_repeating || !crosses_outer_edge) {
             double boundary = ll[0] + ((ray->dx > 0.0) ? (i + 1) : i) * px;
             double t = (boundary - ray->ox) / ray->dx;
             if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
         }
     }
-    if (nj > 1 && fabs(ray->dy) > RAY_EPSILON) {
+    if ((lat_cell->lat_fill_repeating || nj > 1) &&
+        fabs(ray->dy) > RAY_EPSILON) {
         int crosses_outer_edge = (ray->dy > 0.0 && j + 1 >= nj) ||
                                  (ray->dy < 0.0 && j <= 0);
-        if (!crosses_outer_edge) {
+        if (lat_cell->lat_fill_repeating || !crosses_outer_edge) {
             double boundary = ll[1] + ((ray->dy > 0.0) ? (j + 1) : j) * py;
             double t = (boundary - ray->oy) / ray->dy;
             if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
         }
     }
-    if (nk > 1 && fabs(ray->dz) > RAY_EPSILON) {
+    if ((lat_cell->lat_fill_repeating || nk > 1) &&
+        fabs(ray->dz) > RAY_EPSILON) {
         int crosses_outer_edge = (ray->dz > 0.0 && k + 1 >= nk) ||
                                  (ray->dz < 0.0 && k <= 0);
-        if (!crosses_outer_edge) {
+        if (lat_cell->lat_fill_repeating || !crosses_outer_edge) {
             double boundary = ll[2] + ((ray->dz > 0.0) ? (k + 1) : k) * pz;
             double t = (boundary - ray->oz) / ray->dz;
             if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;

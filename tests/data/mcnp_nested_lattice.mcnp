@@ -28,8 +28,8 @@ c Inner lattice element bounds (pitch 1)
 14 py 1
 15 pz -0.5
 16 pz  0.5
-c Fuel pin cylinder
-10 cz 0.2
+c Fuel pin cylinder in the (0,0,0) inner element's [0,1]x[0,1] coordinates
+10 c/z 0.5 0.5 0.2
 
 m1 92235.80c 1.0
 m2 1001.80c 2.0  8016.80c 1.0

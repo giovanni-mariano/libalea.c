@@ -12,6 +12,9 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_mcnp.h"
+#include "alea_slice.h"
+#include "alea_raycast.h"
+#include "raycast/raycast.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include <string.h>
@@ -239,6 +242,163 @@ TEST(cell_lat_rect) {
     alea_cell_info_t info;
     ASSERT_EQ(alea_cell_find_info(sys, 1, &info), 0);
     ASSERT_EQ(info.lat_type, 1);
+    ASSERT_FALSE(info.lat_fill_repeating);
+    ASSERT_TRUE(info.lat_fill_zero_element_coords);
+
+    const char* tmpfile = "test_finite_lat_rt_tmp.mcnp";
+    ASSERT_EQ(mcnp_export(model, tmpfile), 0);
+    mcnp_model_t* roundtrip = mcnp_load(tmpfile);
+    ASSERT_NOT_NULL(roundtrip);
+    ASSERT_EQ(alea_cell_find_info(roundtrip->sys, 1, &info), 0);
+    ASSERT_FALSE(info.lat_fill_repeating);
+    mcnp_model_destroy(roundtrip);
+    remove(tmpfile);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(cell_lat_rect_simple_fill_repeats) {
+    const char* input =
+        "Test repeating LAT=1 simple fill\n"
+        "1 0 -1 2 -3 4 -5 6 LAT=1 FILL=2 U=10\n"
+        "10 1 -1.0 -7 U=2\n"
+        "11 0 7 U=2\n"
+        "100 0 -100 FILL=10\n"
+        "200 0 100\n"
+        "\n"
+        "1 PX 1.0\n"
+        "2 PX -1.0\n"
+        "3 PY 1.0\n"
+        "4 PY -1.0\n"
+        "5 PZ 1.0\n"
+        "6 PZ -1.0\n"
+        "7 SO 0.3\n"
+        "100 SO 50.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+
+    alea_cell_info_t info;
+    ASSERT_EQ(alea_cell_find_info(sys, 1, &info), 0);
+    ASSERT_TRUE(info.lat_fill_repeating);
+    ASSERT_TRUE(info.lat_fill_zero_element_coords);
+
+    /* The simple fill repeats the U=2 sphere in adjacent lattice elements. */
+    ASSERT_EQ(alea_material_at(sys, 0.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 2.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, -2.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 0.0, 2.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 0.0, 0.0, 2.0), 1);
+
+    /* The hierarchy-backed resolver used by slice grids must follow the
+     * same repeated element, rather than returning the LAT container as an
+     * undefined fill outside the fundamental element. */
+    alea_cell_hit_t hits[8];
+    int hit_count = alea_find_all_cells(sys, 2.0, 0.0, 0.0, hits, 8);
+    ASSERT(hit_count >= 3);
+    ASSERT_EQ(hits[hit_count - 1].material_id, 1);
+    ASSERT_EQ(hits[hit_count - 1].resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL, 0);
+
+    alea_slice_view_t view = {
+        .plane = {
+            .origin = {0.0, 0.0, 0.0},
+            .normal = {0.0, 0.0, 1.0},
+            .u_axis = {1.0, 0.0, 0.0},
+            .v_axis = {0.0, 1.0, 0.0}
+        },
+        .u_min = 1.9, .u_max = 2.1,
+        .v_min = -0.1, .v_max = 0.1
+    };
+    int grid_cell = -1, grid_material = -1;
+    uint8_t grid_error = 0xff;
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, 1, 1, -1,
+                                   &grid_cell, &grid_material, &grid_error), 0);
+    ASSERT_EQ(grid_material, 1);
+    ASSERT_EQ(grid_error, 0);
+
+    alea_raycast_result_t ray_result;
+    alea_raycast_result_init(&ray_result);
+    ASSERT_EQ(alea_raycast(sys, -4.5, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           9.0, &ray_result), 0);
+    int repeated_sphere_segments = 0;
+    for (size_t i = 0; i < ray_result.segments.count; i++) {
+        if (ray_result.segments.data[i].material_id == 1)
+            repeated_sphere_segments++;
+    }
+    ASSERT(repeated_sphere_segments >= 5);
+    alea_raycast_result_free(&ray_result);
+
+    const char* tmpfile = "test_repeating_lat_rt_tmp.mcnp";
+    ASSERT_EQ(mcnp_export(model, tmpfile), 0);
+    mcnp_model_t* roundtrip = mcnp_load(tmpfile);
+    ASSERT_NOT_NULL(roundtrip);
+    ASSERT_EQ(alea_cell_find_info(roundtrip->sys, 1, &info), 0);
+    ASSERT_TRUE(info.lat_fill_repeating);
+    mcnp_model_destroy(roundtrip);
+    remove(tmpfile);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(cell_lat_rect_preserves_zero_element_coordinates) {
+    /* MCNP filling-universe surfaces use the coordinate system of lattice
+     * element (0,0,0); they are not implicitly recentered at the origin. */
+    const char* input =
+        "Test non-origin repeating LAT=1\n"
+        "1 0 -1 2 -3 4 -5 6 LAT=1 FILL=2 U=10\n"
+        "10 1 -1.0 -7 U=2\n"
+        "11 0 7 U=2\n"
+        "100 0 -100 FILL=10\n"
+        "200 0 100\n"
+        "\n"
+        "1 PX 12.0\n"
+        "2 PX 10.0\n"
+        "3 PY 1.0\n"
+        "4 PY -1.0\n"
+        "5 PZ 1.0\n"
+        "6 PZ -1.0\n"
+        "7 S 11.0 0.0 0.0 0.3\n"
+        "100 SO 50.0\n"
+        "\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+
+    alea_cell_info_t info;
+    ASSERT_EQ(alea_cell_find_info(sys, 1, &info), 0);
+    ASSERT_TRUE(info.lat_fill_repeating);
+    ASSERT_TRUE(info.lat_fill_zero_element_coords);
+
+    /* Element zero remains at the authored x=11 coordinates.  Neighbouring
+     * elements remove only their +/-2 index displacement on descent. */
+    ASSERT_EQ(alea_material_at(sys, 11.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 13.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 9.0, 0.0, 0.0), 1);
+    ASSERT_EQ(alea_material_at(sys, 12.0, 0.0, 0.0), 0);
+
+    alea_cell_hit_t hits[8];
+    int n = alea_find_all_cells(sys, 13.0, 0.0, 0.0, hits, 8);
+    ASSERT(n >= 3);
+    ASSERT_EQ(hits[n - 1].cell_id, 10);
+    ASSERT_NEAR(hits[n - 1].local_x, 11.0, 1e-4);
+    ASSERT_EQ(hits[n - 1].resolution_flags, 0);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_raycast_result_t ray_result;
+    alea_raycast_result_init(&ray_result);
+    ASSERT_EQ(alea_raycast(sys, 8.5, 0.0, 0.0, 1.0, 0.0, 0.0,
+                           5.0, &ray_result), 0);
+    int material_segments = 0;
+    for (size_t i = 0; i < ray_result.segments.count; i++) {
+        if (ray_result.segments.data[i].material_id == 1)
+            material_segments++;
+    }
+    ASSERT(material_segments >= 3);
+    alea_raycast_result_free(&ray_result);
+
     mcnp_model_destroy(model);
 }
 

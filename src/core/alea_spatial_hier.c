@@ -425,6 +425,10 @@ static alea_bbox_t local_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
 }
 
 static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
+    if (cell->lat_fill_repeating) {
+        const double inf = 1e30;
+        return (alea_bbox_t){-inf, inf, -inf, inf, -inf, inf};
+    }
     if (cell->lat_type == 1) {
         int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
         int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
@@ -933,19 +937,31 @@ static int lattice_rect_lookup(const alea_cell_entry_t* cell,
     int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
 
+    if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 ||
+        cell->lat_pitch[2] <= 0.0) return -1;
     int i = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-    int j = (nj == 1) ? 0 : (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-    int k = (nk == 1) ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+    int j = (cell->lat_fill_repeating || nj > 1)
+        ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+    int k = (cell->lat_fill_repeating || nk > 1)
+        ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
 
-    if (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk) {
+    if (!cell->lat_fill_repeating &&
+        (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk)) {
         return -1;
     }
 
-    *ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-    *oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-    *oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+    if (cell->lat_fill_zero_element_coords) {
+        *ox = (cell->lat_fill_dims[0] + i) * cell->lat_pitch[0];
+        *oy = (cell->lat_fill_dims[2] + j) * cell->lat_pitch[1];
+        *oz = (cell->lat_fill_dims[4] + k) * cell->lat_pitch[2];
+    } else {
+        *ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
+        *oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
+        *oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+    }
 
-    size_t idx = (size_t)(i * nj * nk + j * nk + k);
+    size_t idx = cell->lat_fill_repeating
+        ? 0 : (size_t)(i * nj * nk + j * nk + k);
     if (idx >= cell->lat_fill_count) return -1;
 
     return cell->lat_fill[idx];
@@ -986,18 +1002,23 @@ static int lattice_hex_lookup_local(const alea_cell_entry_t* cell,
 
     int oi = ri - cell->lat_fill_dims[0];
     int oj = rk - cell->lat_fill_dims[2];
-    int ok = (nk == 1) ? 0
+    int ok = (nk == 1 && !cell->lat_fill_repeating) ? 0
            : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
 
-    if (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk) {
+    if (!cell->lat_fill_repeating &&
+        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)) {
         return -1;
     }
 
     *ox = ri * p + rk * p * 0.5;
     *oy = rk * p * M_SQRT3 * 0.5;
-    *oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+    *oz = cell->lat_fill_zero_element_coords
+        ? (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2]
+        : ((nk == 1 && !cell->lat_fill_repeating) ? 0.0
+           : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
 
-    size_t idx = (size_t)(oi * nj * nk + oj * nk + ok);
+    size_t idx = cell->lat_fill_repeating
+        ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
     if (idx >= cell->lat_fill_count) return -1;
 
     return cell->lat_fill[idx];
@@ -3267,17 +3288,19 @@ static int query_lattice_cell_direct(alea_system_t* sys,
         }
         i0 = (int)floor((local_query->min_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
         i1 = (int)floor((local_query->max_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-        j0 = (nj == 1) ? 0 : (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-        j1 = (nj == 1) ? 0 : (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-        k0 = (nk == 1) ? 0 : (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
-        k1 = (nk == 1) ? 0 : (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+        j0 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+        j1 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+        k0 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
+        k1 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
 
-        if (i0 < 0) i0 = 0;
-        if (j0 < 0) j0 = 0;
-        if (k0 < 0) k0 = 0;
-        if (i1 >= ni) i1 = ni - 1;
-        if (j1 >= nj) j1 = nj - 1;
-        if (k1 >= nk) k1 = nk - 1;
+        if (!cell->lat_fill_repeating) {
+            if (i0 < 0) i0 = 0;
+            if (j0 < 0) j0 = 0;
+            if (k0 < 0) k0 = 0;
+            if (i1 >= ni) i1 = ni - 1;
+            if (j1 >= nj) j1 = nj - 1;
+            if (k1 >= nk) k1 = nk - 1;
+        }
     }
 
     if (i0 > i1 || j0 > j1 || k0 > k1) return 0;
@@ -3285,7 +3308,8 @@ static int query_lattice_cell_direct(alea_system_t* sys,
     for (int i = i0; i <= i1; i++) {
         for (int j = j0; j <= j1; j++) {
             for (int k = k0; k <= k1; k++) {
-                size_t fill_index = (size_t)(i * nj * nk + j * nk + k);
+                size_t fill_index = cell->lat_fill_repeating
+                    ? 0 : (size_t)(i * nj * nk + j * nk + k);
                 if (fill_index >= cell->lat_fill_count) continue;
 
                 int fill_universe = cell->lat_fill[fill_index];
@@ -3298,11 +3322,19 @@ static int query_lattice_cell_direct(alea_system_t* sys,
                     double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
                     ox = ri * p + rk * p * 0.5;
                     oy = rk * p * M_SQRT3 * 0.5;
-                    oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                    oz = cell->lat_fill_zero_element_coords
+                       ? (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2]
+                       : ((nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2]);
                 } else {
-                    ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-                    oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-                    oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        ox = (i + cell->lat_fill_dims[0]) * cell->lat_pitch[0];
+                        oy = (j + cell->lat_fill_dims[2]) * cell->lat_pitch[1];
+                        oz = (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2];
+                    } else {
+                        ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
+                        oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
+                        oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                    }
                 }
 
                 alea_matrix_t element_translation;
@@ -3558,17 +3590,19 @@ static int query_lattice_cell_chain(alea_system_t* sys,
         }
         i0 = (int)floor((local_query->min_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
         i1 = (int)floor((local_query->max_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-        j0 = (nj == 1) ? 0 : (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-        j1 = (nj == 1) ? 0 : (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-        k0 = (nk == 1) ? 0 : (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
-        k1 = (nk == 1) ? 0 : (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+        j0 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+        j1 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+        k0 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
+        k1 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
 
-        if (i0 < 0) i0 = 0;
-        if (j0 < 0) j0 = 0;
-        if (k0 < 0) k0 = 0;
-        if (i1 >= ni) i1 = ni - 1;
-        if (j1 >= nj) j1 = nj - 1;
-        if (k1 >= nk) k1 = nk - 1;
+        if (!cell->lat_fill_repeating) {
+            if (i0 < 0) i0 = 0;
+            if (j0 < 0) j0 = 0;
+            if (k0 < 0) k0 = 0;
+            if (i1 >= ni) i1 = ni - 1;
+            if (j1 >= nj) j1 = nj - 1;
+            if (k1 >= nk) k1 = nk - 1;
+        }
     }
 
     if (i0 > i1 || j0 > j1 || k0 > k1) return 0;
@@ -3576,7 +3610,8 @@ static int query_lattice_cell_chain(alea_system_t* sys,
     for (int i = i0; i <= i1; i++) {
         for (int j = j0; j <= j1; j++) {
             for (int k = k0; k <= k1; k++) {
-                size_t fill_index = (size_t)(i * nj * nk + j * nk + k);
+                size_t fill_index = cell->lat_fill_repeating
+                    ? 0 : (size_t)(i * nj * nk + j * nk + k);
                 if (fill_index >= cell->lat_fill_count) continue;
 
                 int fill_universe = cell->lat_fill[fill_index];
@@ -3589,11 +3624,19 @@ static int query_lattice_cell_chain(alea_system_t* sys,
                     double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
                     ox = ri * p + rk * p * 0.5;
                     oy = rk * p * M_SQRT3 * 0.5;
-                    oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                    oz = cell->lat_fill_zero_element_coords
+                       ? (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2]
+                       : ((nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2]);
                 } else {
-                    ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-                    oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-                    oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        ox = (i + cell->lat_fill_dims[0]) * cell->lat_pitch[0];
+                        oy = (j + cell->lat_fill_dims[2]) * cell->lat_pitch[1];
+                        oz = (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2];
+                    } else {
+                        ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
+                        oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
+                        oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+                    }
                 }
 
                 alea_matrix_t element_translation;

@@ -2444,8 +2444,10 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
         for (int ei = imin; ei <= imax; ei++) {
             for (int ej = jmin; ej <= jmax; ej++) {
                 for (int ek = kmin; ek <= kmax; ek++) {
-                    /* Element center */
-                    double cx, cy, cz;
+                    /* Physical element center (for viewport culling) and the
+                     * fill-universe translation are not always identical.
+                     * MCNP authors child surfaces in element (0,0,0)'s frame. */
+                    double cx, cy, cz, tx, ty, tz;
                     if (cell->lat_type == 2) {
                         /* Hex: axial (ei, ej) */
                         cx = ei * p + ej * p * 0.5;
@@ -2460,6 +2462,13 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                     cz = (nk == 1) ? 0.0
                        : cell->lat_lower_left[2]
                        + (ek - kmin + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        tx = (cell->lat_type == 2) ? cx : ei * cell->lat_pitch[0];
+                        ty = (cell->lat_type == 2) ? cy : ej * cell->lat_pitch[1];
+                        tz = ek * cell->lat_pitch[2];
+                    } else {
+                        tx = cx; ty = cy; tz = cz;
+                    }
 
                     /* Quick viewport cull: element center ± pitch */
                     double margin = (cell->lat_type == 2)
@@ -2495,9 +2504,9 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                     /* Translation transform for this element */
                     alea_matrix_t elem_tr;
                     alea_matrix_identity(&elem_tr);
-                    elem_tr.m[3]  = cx;
-                    elem_tr.m[7]  = cy;
-                    elem_tr.m[11] = cz;
+                    elem_tr.m[3]  = tx;
+                    elem_tr.m[7]  = ty;
+                    elem_tr.m[11] = tz;
 
                     /* Stamp each surface of every cell in the fill universe */
                     for (size_t fi = 0; fi < fill_univ->cell_indices.count; fi++) {

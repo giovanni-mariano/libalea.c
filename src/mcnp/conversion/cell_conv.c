@@ -774,6 +774,10 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
     entry->fill_universe = params.fill_universe;
     entry->fill_transform = params.fill_transform;
     entry->lat_type = params.lat_type;
+    /* MCNP defines this cell as lattice element (0,0,0).  Filling-universe
+     * surfaces are authored in that element's coordinates, so other elements
+     * remove only their integer-index displacement, not their absolute center. */
+    entry->lat_fill_zero_element_coords = params.lat_type > 0;
 
     // Temperature: convert MCNP MeV to Kelvin
     if (params.has_tmp) {
@@ -827,7 +831,9 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         // Don't free params.lat_fill - ownership transferred
     }
 
-    // For simple FILL=N with LAT, synthesize a 1x1x1 lattice fill.
+    // For simple FILL=N with LAT, synthesize the single universe value and
+    // remember that it repeats in every lattice element.  Unlike an explicit
+    // 0:0 0:0 0:0 array, MCNP's simple form describes an infinite lattice.
     // Mirrors apply_lattice_to_cell in the OpenMC importer: when lat_fill is
     // populated, fill_universe is cleared so the exporter doesn't emit two
     // FILL keywords (one from the non-lattice path, one from the lattice path).
@@ -837,8 +843,9 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             fill[0] = entry->fill_universe;
             entry->lat_fill = fill;
             entry->lat_fill_count = 1;
+            entry->lat_fill_repeating = 1;
             entry->fill_universe = 0;
-            // lat_fill_dims defaults to [0,0,0,0,0,0] giving 1x1x1
+            // The zero dimensions retain the fundamental element's index.
         }
     }
     if (profile) {

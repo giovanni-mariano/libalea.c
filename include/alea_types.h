@@ -321,6 +321,8 @@ typedef struct {
     int lat_fill_dims[6];   /**< Lattice dimensions: imin,imax,jmin,jmax,kmin,kmax */
     const int* lat_fill;    /**< Array of universe IDs (NULL if no lattice) */
     size_t lat_fill_count;  /**< Number of elements in lat_fill */
+    int lat_fill_repeating; /**< Nonzero when a simple FILL=N repeats indefinitely */
+    int lat_fill_zero_element_coords; /**< Fill universe uses the lattice's (0,0,0)-element coordinates */
     double lat_pitch[3];    /**< Element pitch in each dimension */
     double lat_lower_left[3]; /**< Lower-left corner of the lattice */
     const char* comments;     /**< "C" comment lines before cell (NULL if none) */

@@ -502,16 +502,14 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
         mcnp_str_int(&s, cell->lat_type);
     }
 
-    /* Lattice FILL: emit simple "FILL=N" for 1x1x1 lattices (single element,
-     * single universe), and the explicit "FILL=imin:imax ... U U U" array
-     * form otherwise. Both are valid MCNP; the simple form is idiomatic for
-     * degenerate 1x1x1 lattices that act as positioning wrappers. */
+    /* A simple FILL=N is an indefinitely repeated lattice.  Keep explicit
+     * one-element arrays explicit: collapsing one to FILL=N would silently
+     * change its finite extent on round-trip. */
     if (cell->lat_fill && cell->lat_fill_count > 0) {
-        int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
         int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
         int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
 
-        if (cell->lat_fill_count == 1 && ni == 1 && nj == 1 && nk == 1) {
+        if (cell->lat_fill_repeating && cell->lat_fill_count == 1) {
             /* Flatten override: when the lat_fill[0] universe is a passthrough,
              * the pre-pass redirects FILL to its target. */
             int fill_univ = (flatten && flatten->override_fill_universe > 0)
@@ -1091,7 +1089,8 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
     if (flatten && surf_offsets) {
         for (size_t i = 0; i < n_cells; i++) {
             const alea_cell_entry_t* lc = &sys->cells.data[i];
-            if (lc->lat_type == 0 || !lc->lat_fill || lc->lat_fill_count != 1) continue;
+            if (lc->lat_type == 0 || !lc->lat_fill ||
+                lc->lat_fill_repeating || lc->lat_fill_count != 1) continue;
             int ni = lc->lat_fill_dims[1] - lc->lat_fill_dims[0] + 1;
             int nj = lc->lat_fill_dims[3] - lc->lat_fill_dims[2] + 1;
             int nk = lc->lat_fill_dims[5] - lc->lat_fill_dims[4] + 1;
@@ -1108,10 +1107,17 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
             if (inner->root_node_id != ALEA_NODE_ID_INVALID) continue;
             if (inner->lat_type != 0) continue;
 
-            /* Element center C = lower_left + pitch/2 in the lattice frame. */
-            double cx = lc->lat_lower_left[0] + 0.5 * lc->lat_pitch[0];
-            double cy = lc->lat_lower_left[1] + 0.5 * lc->lat_pitch[1];
-            double cz = lc->lat_lower_left[2] + 0.5 * lc->lat_pitch[2];
+            /* Translation into the sole element.  MCNP-native lattices keep
+             * the fill universe in element (0,0,0)'s authored coordinates. */
+            double cx = lc->lat_fill_zero_element_coords
+                ? lc->lat_fill_dims[0] * lc->lat_pitch[0]
+                : lc->lat_lower_left[0] + 0.5 * lc->lat_pitch[0];
+            double cy = lc->lat_fill_zero_element_coords
+                ? lc->lat_fill_dims[2] * lc->lat_pitch[1]
+                : lc->lat_lower_left[1] + 0.5 * lc->lat_pitch[1];
+            double cz = lc->lat_fill_zero_element_coords
+                ? lc->lat_fill_dims[4] * lc->lat_pitch[2]
+                : lc->lat_lower_left[2] + 0.5 * lc->lat_pitch[2];
 
             /* Check if the passthrough's translation cancels C: T == -C. */
             int cancels = 0;

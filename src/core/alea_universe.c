@@ -1765,20 +1765,34 @@ static int lattice_rect_lookup(const alea_cell_entry_t* cell,
     int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
 
+    if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 ||
+        cell->lat_pitch[2] <= 0.0) return -1;
+
     int i = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-    int j = (nj == 1) ? 0 : (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-    int k = (nk == 1) ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+    int j = (cell->lat_fill_repeating || nj > 1)
+        ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+    int k = (cell->lat_fill_repeating || nk > 1)
+        ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
 
     /* Clamp to bounds */
-    if (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk)
+    if (!cell->lat_fill_repeating &&
+        (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk))
         return -1;
 
-    /* Element origin = lower_left + (i+0.5, j+0.5, k+0.5) * pitch */
-    *ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-    *oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-    *oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+    if (cell->lat_fill_zero_element_coords) {
+        /* MCNP child coordinates are those of lattice element (0,0,0).
+         * Translate only by the selected element's integer displacement. */
+        *ox = (cell->lat_fill_dims[0] + i) * cell->lat_pitch[0];
+        *oy = (cell->lat_fill_dims[2] + j) * cell->lat_pitch[1];
+        *oz = (cell->lat_fill_dims[4] + k) * cell->lat_pitch[2];
+    } else {
+        *ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
+        *oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
+        *oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
+    }
 
-    size_t idx = (size_t)(i * nj * nk + j * nk + k);
+    size_t idx = cell->lat_fill_repeating
+        ? 0 : (size_t)(i * nj * nk + j * nk + k);
     if (idx >= cell->lat_fill_count) return -1;
 
     return cell->lat_fill[idx];
@@ -1831,18 +1845,23 @@ int lattice_hex_lookup(const alea_cell_entry_t* cell,
     int oj = rk - cell->lat_fill_dims[2];
 
     /* Z index (linear, same as rectangular) */
-    int ok = (nk == 1) ? 0
+    int ok = (nk == 1 && !cell->lat_fill_repeating) ? 0
            : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
 
-    if (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)
+    if (!cell->lat_fill_repeating &&
+        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk))
         return -1;
 
     /* Element center in Cartesian */
     *ox = ri * p + rk * p * 0.5;
     *oy = rk * p * M_SQRT3 * 0.5;
-    *oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+    *oz = cell->lat_fill_zero_element_coords
+        ? (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2]
+        : ((nk == 1 && !cell->lat_fill_repeating) ? 0.0
+           : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
 
-    size_t idx = (size_t)(oi * nj * nk + oj * nk + ok);
+    size_t idx = cell->lat_fill_repeating
+        ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
     if (idx >= cell->lat_fill_count) return -1;
 
     return cell->lat_fill[idx];
@@ -1863,6 +1882,7 @@ int alea_lattice_cell_contains(const alea_system_t* sys,
                                const alea_cell_entry_t* cell,
                                double lx, double ly, double lz) {
     if (!sys || !cell) return 0;
+    if (cell->lat_fill_repeating) return 1;
 
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (nk == 1 && cell->lat_pitch[2] > 0.0) {
@@ -2335,8 +2355,9 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
  * clip region, recursing into each element's fill universe.
  *
  * Conventions:
- *   - Element local coords are translated by the element origin so that
- *     each element's fill universe sees coordinates centered on the element.
+ *   - Element local coords use either the element center (OpenMC-style) or
+ *     the displacement from MCNP lattice element (0,0,0), as recorded on
+ *     the imported lattice cell.
  *   - The lattice cell's CSG (root_node_id) is pushed onto the parent_stack
  *     so each emitted leaf gets intersected with the lattice shell — same
  *     model as fill cells.
@@ -2495,19 +2516,27 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
                 int fill_univ = cell->lat_fill[idx];
                 if (fill_univ <= 0) continue;
 
-                /* Element center in lattice-local frame. */
+                /* Lattice-local translation into the filling universe. */
                 double ox, oy, oz;
                 if (cell->lat_type == 1) {
-                    ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-                    oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-                    oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        ox = (cell->lat_fill_dims[0] + oi) * cell->lat_pitch[0];
+                        oy = (cell->lat_fill_dims[2] + oj) * cell->lat_pitch[1];
+                        oz = (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2];
+                    } else {
+                        ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+                        oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+                        oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    }
                 } else {
                     int ri = oi + cell->lat_fill_dims[0];
                     int rk = oj + cell->lat_fill_dims[2];
                     ox = ri * p + rk * p * 0.5;
                     oy = rk * p * M_SQRT3 * 0.5;
-                    oz = (nk == 1) ? 0.0
-                       : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    oz = cell->lat_fill_zero_element_coords
+                       ? (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2]
+                       : ((nk == 1) ? 0.0
+                          : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
                 }
 
                 /* Element translation: element-local -> lattice-local.
