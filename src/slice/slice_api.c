@@ -25,18 +25,40 @@
 #include "util/math.h"
 #include "util/alea_log.h"
 
-/* Grid query diagnostic counters — printed when ALEA_GRID_STATS=1.
- * Atomics are cheap vs CSG eval cost; no compile flag needed. */
-static _Atomic size_t g_px_total         = 0;
-static _Atomic size_t g_px_hint_full     = 0; /* all depths resolved by adjacency */
-static _Atomic size_t g_px_hint_partial  = 0; /* adjacency broke mid-hierarchy */
-static _Atomic size_t g_px_full_fallback = 0; /* no hint → full alea_find_all_cells_at_point */
-static _Atomic size_t g_univ_hint_cell   = 0; /* exact hint cell hit */
-static _Atomic size_t g_univ_neighbor    = 0; /* neighbor walk hit */
-static _Atomic size_t g_univ_blas        = 0; /* BLAS query used */
-static _Atomic size_t g_univ_linear      = 0; /* linear scan fallback */
-static _Atomic size_t g_csg_prim_evals   = 0; /* total primitive evaluations */
-static _Atomic size_t g_csg_bool_ops     = 0; /* total boolean ops in CSG tree */
+/* Grid query diagnostics are opt-in. Each OpenMP worker updates a private
+ * instance and merges it once after the grid loop, avoiding shared cache-line
+ * traffic in the per-pixel hot path. A NULL pointer disables collection. */
+typedef struct {
+    size_t px_total;
+    size_t px_hint_full;      /* all depths resolved by adjacency */
+    size_t px_hint_partial;   /* adjacency broke mid-hierarchy */
+    size_t px_full_fallback;  /* no hint -> full alea_find_all_cells_at_point */
+    size_t univ_hint_cell;    /* exact hint cell hit */
+    size_t univ_neighbor;     /* neighbor walk hit */
+    size_t univ_blas;         /* BLAS query used */
+    size_t univ_linear;       /* linear scan fallback */
+    size_t csg_prim_evals;    /* total primitive evaluations */
+    size_t csg_bool_ops;      /* total boolean ops in CSG tree */
+} grid_query_stats_t;
+
+#define GRID_STAT_INC(stats, field) \
+    do { if ((stats) != NULL) (stats)->field++; } while (0)
+
+#ifdef _OPENMP
+static void grid_query_stats_merge(grid_query_stats_t* dst,
+                                   const grid_query_stats_t* src) {
+    dst->px_total += src->px_total;
+    dst->px_hint_full += src->px_hint_full;
+    dst->px_hint_partial += src->px_hint_partial;
+    dst->px_full_fallback += src->px_full_fallback;
+    dst->univ_hint_cell += src->univ_hint_cell;
+    dst->univ_neighbor += src->univ_neighbor;
+    dst->univ_blas += src->univ_blas;
+    dst->univ_linear += src->univ_linear;
+    dst->csg_prim_evals += src->csg_prim_evals;
+    dst->csg_bool_ops += src->csg_bool_ops;
+}
+#endif
 
 static alea_tile_coverage_stats_t g_tile_coverage_stats;
 static alea_point_coverage_stats_t g_point_coverage_stats;
@@ -517,7 +539,8 @@ static int slice_path_table_intern_hint(alea_slice_path_table_t* table,
 static int find_cell_in_universe_with_hint(alea_system_t* sys,
                                             double lx, double ly, double lz,
                                             int universe_id,
-                                            int hint_cell_idx) {
+                                            int hint_cell_idx,
+                                            grid_query_stats_t* stats) {
     /* Try hint cell first (adjacency cache).
      * Always verify with alea_contains_point — this is cheap for the common
      * case (point still inside the same cell, single CSG eval with early exit)
@@ -528,7 +551,7 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
         if (cell->universe_id == universe_id &&
             cell->root_node_id != ALEA_NODE_ID_INVALID &&
             alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-            atomic_fetch_add_explicit(&g_univ_hint_cell, 1, memory_order_relaxed);
+            GRID_STAT_INC(stats, univ_hint_cell);
             return hint_cell_idx;
         }
 
@@ -554,7 +577,7 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
                 }
 
                 if (alea_contains_point(sys, neighbor->root_node_id, lx, ly, lz)) {
-                    atomic_fetch_add_explicit(&g_univ_neighbor, 1, memory_order_relaxed);
+                    GRID_STAT_INC(stats, univ_neighbor);
                     return neighbor_idx;
                 }
             }
@@ -568,8 +591,8 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
     if (sys->hier_spatial_index) {
         int found = alea_hier_spatial_find_cell_in_universe(sys, universe_id,
                                                             lx, ly, lz);
-        if (found >= 0) { atomic_fetch_add_explicit(&g_univ_blas, 1, memory_order_relaxed); return found; }
-        if (found == -1) { atomic_fetch_add_explicit(&g_univ_blas, 1, memory_order_relaxed); return -1; }
+        if (found >= 0) { GRID_STAT_INC(stats, univ_blas); return found; }
+        if (found == -1) { GRID_STAT_INC(stats, univ_blas); return -1; }
         /* found == -2: hier index not usable for this universe, fall through. */
     }
 
@@ -577,7 +600,7 @@ static int find_cell_in_universe_with_hint(alea_system_t* sys,
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
 
-    atomic_fetch_add_explicit(&g_univ_linear, 1, memory_order_relaxed);
+    GRID_STAT_INC(stats, univ_linear);
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         size_t cell_idx = univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
@@ -616,12 +639,13 @@ static void find_cell_multilevel(alea_system_t* sys,
                                   alea_multilevel_hint_t* out_hint,
                                   int* out_cell_id,
                                   int* out_material_id,
-                                  uint8_t* out_error) {
+                                  uint8_t* out_error,
+                                  grid_query_stats_t* stats) {
     *out_cell_id = -1;
     if (out_material_id) *out_material_id = 0;
     if (out_error) *out_error = GRID_ERR_NONE;
     if (out_hint) multilevel_hint_init(out_hint);
-    atomic_fetch_add_explicit(&g_px_total, 1, memory_order_relaxed);
+    GRID_STAT_INC(stats, px_total);
 
     /* Use multi-level walking only when we have valid previous hints */
     bool use_multilevel = (prev_hint != NULL && prev_hint->valid_depth >= 0 &&
@@ -651,7 +675,8 @@ static void find_cell_multilevel(alea_system_t* sys,
             /* Try adjacency walking at this depth */
             int cell_idx = find_cell_in_universe_with_hint(sys, lx, ly, lz,
                                                            current_universe,
-                                                           level_hint->cell_index);
+                                                           level_hint->cell_index,
+                                                           stats);
 
             if (cell_idx < 0) {
                 /* Adjacency walk failed - need full search from here */
@@ -679,7 +704,7 @@ static void find_cell_multilevel(alea_system_t* sys,
             /* Check for target depth */
             if (universe_depth >= 0 && depth >= universe_depth) {
                 /* Reached target depth — full adjacency success */
-                atomic_fetch_add_explicit(&g_px_hint_full, 1, memory_order_relaxed);
+                GRID_STAT_INC(stats, px_hint_full);
                 *out_cell_id = cell->mc_cell_id;
                 if (out_material_id) *out_material_id = cell->material_id;
                 if (out_hint) {
@@ -741,7 +766,7 @@ static void find_cell_multilevel(alea_system_t* sys,
                 /* Terminal cell (no fill) - this is the innermost */
                 if (universe_depth < 0) {
                     /* Full adjacency success — reached terminal cell */
-                    atomic_fetch_add_explicit(&g_px_hint_full, 1, memory_order_relaxed);
+                    GRID_STAT_INC(stats, px_hint_full);
                     *out_cell_id = cell->mc_cell_id;
                     if (out_material_id) *out_material_id = cell->material_id;
                     if (out_hint) {
@@ -763,7 +788,7 @@ static void find_cell_multilevel(alea_system_t* sys,
                 sys->cells.data[last->cell_index].lat_type != 0;
             if (last->fill_universe <= 0 && !last_is_lattice) {
                 /* This is a terminal cell — partial adjacency success */
-                atomic_fetch_add_explicit(&g_px_hint_partial, 1, memory_order_relaxed);
+                GRID_STAT_INC(stats, px_hint_partial);
                 *out_cell_id = last->cell_id;
                 if (out_material_id) *out_material_id = last->material_id;
                 if (out_hint) {
@@ -776,9 +801,9 @@ static void find_cell_multilevel(alea_system_t* sys,
 
     /* Fall back to full hierarchy traversal */
     if (use_multilevel)
-        atomic_fetch_add_explicit(&g_px_hint_partial, 1, memory_order_relaxed);
+        GRID_STAT_INC(stats, px_hint_partial);
     else
-        atomic_fetch_add_explicit(&g_px_full_fallback, 1, memory_order_relaxed);
+        GRID_STAT_INC(stats, px_full_fallback);
 
     alea_cell_hit_t hits[32];
     int num_hits = alea_find_all_cells_at_point(sys, gx, gy, gz, hits, 32);
@@ -905,8 +930,10 @@ int alea_find_cells_grid(alea_system_t* sys,
      * - Works for ALL depths, not just depth=0
      */
 
+    const bool stats_en = getenv("ALEA_GRID_STATS") != NULL;
+    grid_query_stats_t grid_stats = {0};
+
 #ifdef _OPENMP
-    bool stats_en = getenv("ALEA_GRID_STATS") != NULL;
     /* ALEA_GRID_VERIFY_INTERVAL=N: every N-th pixel also runs a full recursive
      * search to detect overlapping geometry. 0 or unset = no periodic scan
      * (relies on boundary-pixel second pass only). Useful for finding geometry
@@ -915,6 +942,8 @@ int alea_find_cells_grid(alea_system_t* sys,
     int overlap_interval = (vi_env && atoi(vi_env) > 0) ? atoi(vi_env) : 0;
     #pragma omp parallel
     {
+        grid_query_stats_t thread_stats = {0};
+        grid_query_stats_t* active_stats = stats_en ? &thread_stats : NULL;
         if (stats_en) alea_perf_reset();
         #pragma omp for schedule(dynamic, 4)
         for (int j = 0; j < nv; j++) {
@@ -938,7 +967,8 @@ int alea_find_cells_grid(alea_system_t* sys,
                  * alea_contains_point, then falls back to BLAS on miss. */
                 find_cell_multilevel(sys, x, y, z, universe_depth,
                                      &row_hint, &curr_hint,
-                                     &cell_id, &material_id, &error);
+                                     &cell_id, &material_id, &error,
+                                     active_stats);
 
                 out_cell_ids[idx] = cell_id;
                 if (out_material_ids) out_material_ids[idx] = material_id;
@@ -967,12 +997,15 @@ int alea_find_cells_grid(alea_system_t* sys,
         /* Collect per-thread CSG counters after the for barrier */
         if (stats_en) {
             alea_perf_counters_t c = alea_perf_get();
-            atomic_fetch_add_explicit(&g_csg_prim_evals, c.primitive_evaluations, memory_order_relaxed);
-            atomic_fetch_add_explicit(&g_csg_bool_ops,   c.boolean_operations,     memory_order_relaxed);
+            thread_stats.csg_prim_evals = c.primitive_evaluations;
+            thread_stats.csg_bool_ops = c.boolean_operations;
+            #pragma omp critical(alea_grid_stats_merge)
+            grid_query_stats_merge(&grid_stats, &thread_stats);
         }
     }
 #else
     /* Sequential version with full coherence (horizontal + vertical hints) */
+    if (stats_en) alea_perf_reset();
     alea_multilevel_hint_t* prev_row_hints = calloc(nu, sizeof(alea_multilevel_hint_t));
     alea_multilevel_hint_t* curr_row_hints = calloc(nu, sizeof(alea_multilevel_hint_t));
     if (!prev_row_hints || !curr_row_hints) {
@@ -1012,7 +1045,8 @@ int alea_find_cells_grid(alea_system_t* sys,
 
             find_cell_multilevel(sys, x, y, z, universe_depth,
                                  hint, &curr_row_hints[i],
-                                 &cell_id, &material_id, &error);
+                                 &cell_id, &material_id, &error,
+                                 stats_en ? &grid_stats : NULL);
 
             row_hint = curr_row_hints[i];
 
@@ -1025,6 +1059,12 @@ int alea_find_cells_grid(alea_system_t* sys,
         alea_multilevel_hint_t* tmp = prev_row_hints;
         prev_row_hints = curr_row_hints;
         curr_row_hints = tmp;
+    }
+
+    if (stats_en) {
+        alea_perf_counters_t c = alea_perf_get();
+        grid_stats.csg_prim_evals = c.primitive_evaluations;
+        grid_stats.csg_bool_ops = c.boolean_operations;
     }
 
     free(prev_row_hints);
@@ -1080,15 +1120,15 @@ int alea_find_cells_grid(alea_system_t* sys,
     }
 
     /* Print query stats when ALEA_GRID_STATS=1 */
-    if (getenv("ALEA_GRID_STATS")) {
-        size_t total    = atomic_load(&g_px_total);
-        size_t hint_f   = atomic_load(&g_px_hint_full);
-        size_t hint_p   = atomic_load(&g_px_hint_partial);
-        size_t fallback = atomic_load(&g_px_full_fallback);
-        size_t uh_cell  = atomic_load(&g_univ_hint_cell);
-        size_t uh_nbr   = atomic_load(&g_univ_neighbor);
-        size_t uh_blas  = atomic_load(&g_univ_blas);
-        size_t uh_lin   = atomic_load(&g_univ_linear);
+    if (stats_en) {
+        size_t total    = grid_stats.px_total;
+        size_t hint_f   = grid_stats.px_hint_full;
+        size_t hint_p   = grid_stats.px_hint_partial;
+        size_t fallback = grid_stats.px_full_fallback;
+        size_t uh_cell  = grid_stats.univ_hint_cell;
+        size_t uh_nbr   = grid_stats.univ_neighbor;
+        size_t uh_blas  = grid_stats.univ_blas;
+        size_t uh_lin   = grid_stats.univ_linear;
         size_t univ_total = uh_cell + uh_nbr + uh_blas + uh_lin;
         fprintf(stdout, "\n[GRID STATS] pixels=%zu\n", total);
         fprintf(stdout, "  adjacency full:    %6zu (%5.1f%%)\n", hint_f,   total ? 100.0*hint_f/total   : 0.0);
@@ -1100,18 +1140,12 @@ int alea_find_cells_grid(alea_system_t* sys,
         fprintf(stdout, "  neighbor:   %6zu (%5.1f%%)\n", uh_nbr,  univ_total ? 100.0*uh_nbr/univ_total  : 0.0);
         fprintf(stdout, "  BLAS:       %6zu (%5.1f%%)\n", uh_blas, univ_total ? 100.0*uh_blas/univ_total : 0.0);
         fprintf(stdout, "  linear:     %6zu (%5.1f%%)\n", uh_lin,  univ_total ? 100.0*uh_lin/univ_total  : 0.0);
-        size_t prim = atomic_load(&g_csg_prim_evals);
-        size_t bops = atomic_load(&g_csg_bool_ops);
+        size_t prim = grid_stats.csg_prim_evals;
+        size_t bops = grid_stats.csg_bool_ops;
         fprintf(stdout, "[CSG EVALS] prim=%zu bool_ops=%zu per_pixel=%.0f prim+bool=%.0f\n",
                 prim, bops, total ? (double)(prim+bops)/total : 0.0,
                 total ? (double)(prim+bops)/total : 0.0);
         fflush(stdout);
-        /* Reset for next call */
-        atomic_store(&g_px_total, 0); atomic_store(&g_px_hint_full, 0);
-        atomic_store(&g_px_hint_partial, 0); atomic_store(&g_px_full_fallback, 0);
-        atomic_store(&g_univ_hint_cell, 0); atomic_store(&g_univ_neighbor, 0);
-        atomic_store(&g_univ_blas, 0); atomic_store(&g_univ_linear, 0);
-        atomic_store(&g_csg_prim_evals, 0); atomic_store(&g_csg_bool_ops, 0);
     }
 
     return 0;
@@ -1189,7 +1223,7 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
             uint8_t error = 0;
             find_cell_multilevel(sys, x, y, z, universe_depth,
                                  hint, &curr_row_hints[i],
-                                 &cell_id, &material_id, &error);
+                                 &cell_id, &material_id, &error, NULL);
 
             row_hint = curr_row_hints[i];
 
