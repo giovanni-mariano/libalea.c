@@ -1012,66 +1012,12 @@ int alea_raycast_hier_first_visible_batch_nocache(
         goto fail;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel
-#endif
-    {
-        alea_raycast_result_t scratch;
-        alea_raycast_result_init(&scratch);
-#ifdef _OPENMP
-        #pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < ray_count; i++) {
-            if (alea_interrupted()) {
-                statuses[i] = -1;
-                continue;
-            }
-            alea_ray_t ray;
-            const double* o = &origins_xyz[i * 3];
-            const double* d = &directions_xyz[i * 3];
-            alea_ray_first_visible_result_t visible;
-            int rc = -1;
-            if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) == 0) {
-                if (sys->has_lattice) {
-                    const alea_ray_query_t scalar_query = {
-                        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
-                        .fields = query->fields,
-                        .t_min = query->t_mins ? query->t_mins[i] : 0.0,
-                        .t_max = query->t_maxs ? query->t_maxs[i] : 0.0,
-                        .material_filter = query->material_filter
-                    };
-                    alea_ray_query_output_t scalar_output;
-                    rc = alea_raycast_query_reuse_nocache(
-                        sys, &ray, &scalar_query, &scratch, NULL, &scalar_output);
-                    visible = scalar_output.first_visible;
-                } else {
-                    rc = alea_raycast_hier_first_visible_nocache(
-                        sys, &ray, query->t_mins ? query->t_mins[i] : 0.0,
-                        query->t_maxs ? query->t_maxs[i] : 0.0,
-                        query->material_filter,
-                        (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) != 0,
-                        &scratch, &visible);
-                }
-            }
-            if (rc != 0) {
-                statuses[i] = -1;
-                continue;
-            }
-            next.found[i] = visible.found ? 1 : 0;
-            next.t[i] = visible.t;
-            next.cell_ids[i] = visible.cell_id;
-            next.material_ids[i] = visible.material_id;
-            if (next.densities) next.densities[i] = visible.density;
-            if (next.surface_ids) next.surface_ids[i] = visible.surface_id;
-            if (next.primitive_ids) next.primitive_ids[i] = visible.primitive_id;
-            if (next.resolution_flags) next.resolution_flags[i] = visible.resolution_flags;
-            if (next.normals_xyz) {
-                next.normals_xyz[i * 3] = visible.nx;
-                next.normals_xyz[i * 3 + 1] = visible.ny;
-                next.normals_xyz[i * 3 + 2] = visible.nz;
-            }
-        }
-        alea_raycast_result_free(&scratch);
+    if (alea_raycast_hier_first_visible_batch_execute_nocache(
+            sys, origins_xyz, directions_xyz, ray_count, query, &next,
+            statuses) != 0 && !alea_interrupted()) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "native first-visible packet traversal failed");
+        goto fail;
     }
     for (size_t i = 0; i < ray_count; i++) {
         if (statuses[i] != 0 || alea_interrupted()) {
@@ -1151,51 +1097,12 @@ int alea_raycast_hier_any_hit_batch_nocache(
         goto fail;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel
-#endif
-    {
-        alea_raycast_result_t scratch;
-        alea_raycast_result_init(&scratch);
-#ifdef _OPENMP
-        #pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < ray_count; i++) {
-            if (alea_interrupted()) {
-                statuses[i] = -1;
-                continue;
-            }
-            alea_ray_t ray;
-            const double* o = &origins_xyz[i * 3];
-            const double* d = &directions_xyz[i * 3];
-            int hit = 0;
-            int rc = -1;
-            if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) == 0) {
-                if (sys->has_lattice) {
-                    const alea_ray_query_t scalar_query = {
-                        .kind = ALEA_RAY_QUERY_ANY_HIT,
-                        .t_min = query->t_mins ? query->t_mins[i] : 0.0,
-                        .t_max = query->t_maxs ? query->t_maxs[i] : 0.0,
-                        .material_filter = query->material_filter
-                    };
-                    alea_ray_query_output_t scalar_output;
-                    rc = alea_raycast_query_reuse_nocache(
-                        sys, &ray, &scalar_query, &scratch, NULL, &scalar_output);
-                    hit = scalar_output.any_hit ? 1 : 0;
-                } else {
-                    rc = alea_raycast_hier_any_hit_nocache(
-                        sys, &ray, query->t_mins ? query->t_mins[i] : 0.0,
-                        query->t_maxs ? query->t_maxs[i] : 0.0,
-                        query->material_filter, &scratch, &hit);
-                }
-            }
-            if (rc != 0) {
-                statuses[i] = -1;
-                continue;
-            }
-            next.hits[i] = hit ? 1 : 0;
-        }
-        alea_raycast_result_free(&scratch);
+    if (alea_raycast_hier_any_hit_batch_execute_nocache(
+            sys, origins_xyz, directions_xyz, ray_count, query, &next,
+            statuses) != 0 && !alea_interrupted()) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "native any-hit packet traversal failed");
+        goto fail;
     }
     for (size_t i = 0; i < ray_count; i++) {
         if (statuses[i] != 0 || alea_interrupted()) {

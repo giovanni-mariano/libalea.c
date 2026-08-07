@@ -327,16 +327,10 @@ static void run_hier_center_queries(alea_system_t* sys, size_t max_queries) {
     }
 
     double t1 = now_seconds();
-    const alea_hier_spatial_stats_t* stats =
-        alea_hier_spatial_index_stats(sys->hier_spatial_index);
     printf("Hierarchical center-query probe:\n");
     printf("  queries=%zu errors=%zu total_hits=%zu time=%.3f s avg=%.3f ms/query\n",
            done, errors, total_hits, t1 - t0,
            done ? (t1 - t0) * 1000.0 / (double)done : 0.0);
-    if (stats) {
-        printf("  point_queries=%zu\n", stats->point_queries);
-    }
-
     /* Per-query distribution */
     if (done > 0) {
         double total_ms = 0;

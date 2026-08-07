@@ -1,13 +1,17 @@
 # Unified Ray Query Architecture Plan
 
-**Status:** In progress — Phase 1 landed; later phases remain design work  
-**Owning module:** `raycast`  
+**Status:** In progress — unified query policies landed; lattice/DDA first-visible remains
+
+**Owning module:** `raycast`
+
 **Primary consumers:** 3D renderer, slice boundary provenance, compact slice
-validation, transport and analysis APIs  
+validation, transport and analysis APIs
+
 **Related plans:**
 
 - `plans/NATIVE_COMPACT_RAYCAST_BATCH.md`
 - `plans/NATIVE_BIDIRECTIONAL_RAY_SLICE_VALIDATION.md`
+- `plans/PLAN_LATTICE_AWARE_GRID_COHERENCE.md`
 - `plans/SURFACE_BOUNDARY_PROVENANCE_LABELS.md`
 - `plans/PARALLEL_SURFACE_BOUNDARY_MAP.md`
 
@@ -434,6 +438,32 @@ Clipping must be expressed as a traversal-independent acceptance policy or as
 one/more ray intervals. Do not put renderer clip-plane structs into the public
 raycast API.
 
+#### Lattice/DDA first-visible completion
+
+This architecture is not complete while lattice `FIRST_VISIBLE` falls back to
+`alea_raycast_global_reuse_nocache()` and projects an answer from a complete
+canonical trace. The grid-coherence work and this migration are now one
+coordinated program in `PLAN_LATTICE_AWARE_GRID_COHERENCE.md`.
+
+The shared core delivers canonical lattice locations, entry-indexed path
+validation, and lattice-location-to-child path rebuilding. Raycast retains
+ownership of DDA boundary stepping, physical/synthetic event ordering,
+verified intervals, requested fields, and early-stop policy.
+
+Migration is gated in this order:
+
+1. refactor rectangular/hexagonal DDA onto the shared location/path-transition
+   primitives with full output still enabled;
+2. prove complete trace, occurrence, event, surface, and normal parity;
+3. attach scalar `FIRST_VISIBLE` and stop after the first accepted verified
+   interval;
+4. enable compact batch `FIRST_VISIBLE`; and
+5. migrate lattice solid rendering after image and performance parity.
+
+Visibility beginning at a synthetic DDA transition reports `surface_id == 0`,
+no physical primitive, and no physical normal. Point-grid coherence is not
+used as a ray traversal; only the neutral core primitives are shared.
+
 ### Segments
 
 Preserve complete ordered intervals for X-ray, transport, and analysis. Avoid
@@ -772,9 +802,15 @@ Add all new source files to `Makefile` and `Makefile.msvc` in the same change.
 5. Generalize compact batch execution.
 6. Add shared U/V directional slice traces.
 7. Migrate boundary provenance with canonical fallback.
-8. Benchmark and migrate solid first-visible rendering.
-9. Benchmark and migrate X-ray batch rendering.
-10. Consolidate public APIs only after internal consumers prove the design.
+8. Benchmark and migrate non-lattice solid first-visible rendering.
+9. Complete the shared lattice-location/path-transition foundation with the
+   grid coherence work.
+10. Refactor lattice DDA onto that foundation and prove complete-trace parity.
+11. Enable scalar/batch lattice first-visible and migrate lattice solid
+    rendering after correctness and work-reduction gates pass.
+12. Benchmark and migrate X-ray batch rendering independently; it still needs
+    complete segments.
+13. Consolidate public APIs only after internal consumers prove the design.
 
 Each step must be independently mergeable and leave existing public behavior
 working. Do not combine the semantic event change, batch rewrite, renderer

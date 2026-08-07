@@ -181,7 +181,6 @@ typedef struct {
     int hier_max_universe_cells;
     int hier_largest_universe_id;
     size_t memory_bytes;
-    size_t point_queries;
 } alea_query_acceleration_stats_t;
 
 /**

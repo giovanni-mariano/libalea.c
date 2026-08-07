@@ -194,6 +194,132 @@ static void assert_reusable_global_raycast_equivalent(alea_system_t* sys,
     alea_raycast_result_free(&reusable);
 }
 
+/* FIRST_VISIBLE and ANY_HIT must retain the global trace's answer even when
+ * reaching it requires entering a finite lattice from void.  Exercise the
+ * public batch wrapper too: today it orchestrates scalar queries, so this is
+ * both a policy and an API-contract regression test. */
+static void assert_lattice_query_policy_equivalent(
+    alea_system_t* sys,
+    double ox, double oy, double oz,
+    double dx, double dy, double dz,
+    double t_min, double t_max,
+    int material_filter) {
+    alea_ray_t ray;
+    alea_raycast_result_t global_scratch;
+    alea_raycast_result_t hier_scratch;
+    alea_ray_query_output_t global_output;
+    alea_ray_first_visible_result_t hier_visible;
+    alea_raycast_result_init(&global_scratch);
+    alea_raycast_result_init(&hier_scratch);
+    ASSERT_EQ(alea_ray_init(&ray, ox, oy, oz, dx, dy, dz), 0);
+
+    const alea_ray_query_t query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .t_min = t_min, .t_max = t_max, .material_filter = material_filter,
+        .backend = ALEA_RAY_QUERY_BACKEND_GLOBAL
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &query, &global_scratch, NULL, &global_output), 0);
+    ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                  sys, &ray, t_min, t_max, material_filter, 1,
+                  &hier_scratch, &hier_visible), 0);
+    ASSERT_EQ(hier_visible.found, global_output.first_visible.found);
+    if (hier_visible.found) {
+        ASSERT_NEAR(hier_visible.t, global_output.first_visible.t, 1e-9);
+        ASSERT_EQ(hier_visible.cell_id, global_output.first_visible.cell_id);
+        ASSERT_EQ(hier_visible.material_id, global_output.first_visible.material_id);
+        ASSERT_EQ(hier_visible.surface_id, global_output.first_visible.surface_id);
+        ASSERT_NEAR(hier_visible.nx, global_output.first_visible.nx, 1e-9);
+        ASSERT_NEAR(hier_visible.ny, global_output.first_visible.ny, 1e-9);
+        ASSERT_NEAR(hier_visible.nz, global_output.first_visible.nz, 1e-9);
+    }
+    ASSERT_EQ(hier_scratch.segments.count, 0);
+
+    int any_hit = 0;
+    ASSERT_EQ(alea_raycast_hier_any_hit_nocache(
+                  sys, &ray, t_min, t_max, material_filter,
+                  &hier_scratch, &any_hit), 0);
+    ASSERT_EQ(any_hit, global_output.first_visible.found ? 1 : 0);
+
+    const double origins[] = {ox, oy, oz};
+    const double directions[] = {dx, dy, dz};
+    const double t_mins[] = {t_min};
+    const double t_maxs[] = {t_max};
+    const alea_ray_batch_query_t batch_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = query.fields,
+        .material_filter = material_filter,
+        .t_mins = t_mins,
+        .t_maxs = t_maxs
+    };
+    alea_ray_first_visible_batch_result_t batch;
+    alea_ray_first_visible_batch_result_init(&batch);
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, origins, directions, 1, &batch_query, &batch), 0);
+    ASSERT_EQ(batch.found[0], global_output.first_visible.found ? 1 : 0);
+    if (batch.found[0]) {
+        ASSERT_NEAR(batch.t[0], global_output.first_visible.t, 1e-9);
+        ASSERT_EQ(batch.cell_ids[0], global_output.first_visible.cell_id);
+        ASSERT_EQ(batch.material_ids[0], global_output.first_visible.material_id);
+        ASSERT_EQ(batch.surface_ids[0], global_output.first_visible.surface_id);
+    }
+    alea_ray_first_visible_batch_result_free(&batch);
+    alea_raycast_result_free(&hier_scratch);
+    alea_raycast_result_free(&global_scratch);
+}
+
+static void assert_hier_packet_batch_matches_scalar(
+    alea_system_t* sys, const double* origins, const double* directions,
+    size_t ray_count, const double* t_mins, const double* t_maxs,
+    int material_filter) {
+    const alea_ray_batch_query_t visible_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .material_filter = material_filter,
+        .t_mins = t_mins, .t_maxs = t_maxs
+    };
+    const alea_ray_batch_query_t any_query = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .material_filter = material_filter,
+        .t_mins = t_mins, .t_maxs = t_maxs
+    };
+    alea_ray_first_visible_batch_result_t visible;
+    alea_ray_any_hit_batch_result_t any;
+    alea_raycast_result_t scratch;
+    alea_ray_first_visible_batch_result_init(&visible);
+    alea_ray_any_hit_batch_result_init(&any);
+    alea_raycast_result_init(&scratch);
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, origins, directions, ray_count, &visible_query, &visible), 0);
+    ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                  sys, origins, directions, ray_count, &any_query, &any), 0);
+    for (size_t i = 0; i < ray_count; i++) {
+        alea_ray_t ray;
+        alea_ray_first_visible_result_t scalar;
+        ASSERT_EQ(alea_ray_init(&ray, origins[i * 3], origins[i * 3 + 1],
+                                origins[i * 3 + 2], directions[i * 3],
+                                directions[i * 3 + 1], directions[i * 3 + 2]), 0);
+        ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                      sys, &ray, t_mins ? t_mins[i] : 0.0,
+                      t_maxs ? t_maxs[i] : 0.0, material_filter, 1,
+                      &scratch, &scalar), 0);
+        ASSERT_EQ(visible.found[i], scalar.found ? 1 : 0);
+        ASSERT_EQ(any.hits[i], scalar.found ? 1 : 0);
+        if (scalar.found) {
+            ASSERT_NEAR(visible.t[i], scalar.t, 1e-9);
+            ASSERT_EQ(visible.cell_ids[i], scalar.cell_id);
+            ASSERT_EQ(visible.material_ids[i], scalar.material_id);
+            ASSERT_EQ(visible.surface_ids[i], scalar.surface_id);
+        }
+    }
+    alea_raycast_result_free(&scratch);
+    alea_ray_any_hit_batch_result_free(&any);
+    alea_ray_first_visible_batch_result_free(&visible);
+}
+
 static void assert_lattice_boundary_event_contract(alea_system_t* sys) {
     alea_raycast_result_t trace;
     alea_ray_boundary_event_result_t events;
@@ -205,9 +331,9 @@ static void assert_lattice_boundary_event_contract(alea_system_t* sys) {
     ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(sys, &ray, 7.0,
                                                           &trace, &events), 0);
 
-    /* Nine ownership boundaries: seven physical intersections and two
-     * synthetic lattice/DDA transitions. */
-    ASSERT_EQ(events.events.count, 9);
+    /* Ten ownership boundaries: seven physical intersections, two internal
+     * DDA transitions, and the finite lattice-array exit. */
+    ASSERT_EQ(events.events.count, 10);
     ASSERT_EQ(events.events.data[0].kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
     ASSERT_EQ(events.events.data[0].surface_id, 1);
     ASSERT_EQ(events.events.data[0].cell_before, -1);
@@ -221,12 +347,12 @@ static void assert_lattice_boundary_event_contract(alea_system_t* sys) {
             ASSERT_EQ(events.events.data[i].surface_id, 0);
         }
     }
-    ASSERT_EQ(synthetic_count, 2);
+    ASSERT_EQ(synthetic_count, 3);
 
     /* Result storage is reusable and must not retain stale events. */
     ASSERT_EQ(alea_raycast_boundary_events_reuse_nocache(sys, &ray, 7.0,
                                                           &trace, &events), 0);
-    ASSERT_EQ(events.events.count, 9);
+    ASSERT_EQ(events.events.count, 10);
 
     alea_ray_boundary_event_result_free(&events);
     alea_raycast_result_free(&trace);
@@ -946,6 +1072,42 @@ TEST(raycast_hier_transformed_fill_matches_flat) {
     mcnp_model_destroy(model);
 }
 
+TEST(lattice_entry_respects_transformed_fill_ancestors) {
+    const char* input =
+        "Inactive transformed lattice placement\n"
+        /* The fill is translated to x=5, but its enclosing cell only exists
+         * at x<0.  Its lattice BVH box still overlaps x=[4,6], so DDA entry
+         * must reject that placement through its enclosing-chain check. */
+        "1 0 -1 FILL=10 (5 0 0)\n"
+        "2 0 1\n"
+        "100 0 2 -3 4 -5 6 -7 LAT=1 U=10 FILL=1:1 0:0 0:0\n"
+        "     1\n"
+        "10 1 -1.0 -8 U=1\n"
+        "11 2 -1.0 8 U=1\n"
+        "\n"
+        "1 PX 0\n"
+        "2 PX -1\n"
+        "3 PX 1\n"
+        "4 PY -1\n"
+        "5 PY 1\n"
+        "6 PZ -1\n"
+        "7 PZ 1\n"
+        "8 CZ 0.3\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_material_at(sys, 5.0, 0.0, 0.0), 0);
+    assert_lattice_query_policy_equivalent(
+        sys, 3.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 4.0, -1);
+
+    mcnp_model_destroy(model);
+}
+
 TEST(raycast_hier_fill_container_exit_precedes_terminal_surface) {
     const char* input =
         "Fill container boundary ray test\n"
@@ -1230,7 +1392,7 @@ TEST(lattice_public_point_query_matches_deepest_hit) {
     mcnp_model_destroy(model);
 }
 
-TEST(lattice_compact_first_visible_and_any_hit_use_canonical_fallback) {
+TEST(lattice_compact_first_visible_and_any_hit_match_canonical_trace) {
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
     if (!model) SKIP("Test data file not found");
     alea_system_t* sys = model->sys;
@@ -1261,7 +1423,8 @@ TEST(lattice_compact_first_visible_and_any_hit_use_canonical_fallback) {
     const alea_ray_query_t scalar_query = {
         .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
         .fields = visible_query.fields,
-        .t_min = 0.0, .t_max = 12.0, .material_filter = -1
+        .t_min = 0.0, .t_max = 12.0, .material_filter = -1,
+        .backend = ALEA_RAY_QUERY_BACKEND_GLOBAL
     };
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
                   sys, &ray, &scalar_query, &trace, NULL, &scalar), 0);
@@ -1271,6 +1434,26 @@ TEST(lattice_compact_first_visible_and_any_hit_use_canonical_fallback) {
         ASSERT_EQ(visible.cell_ids[0], scalar.first_visible.cell_id);
         ASSERT_EQ(visible.material_ids[0], scalar.first_visible.material_id);
     }
+
+    /* The hierarchical early-stop path must be equivalent to the canonical
+     * full lattice trace, without retaining segments behind the answer. */
+    alea_raycast_result_t hier_scratch;
+    alea_ray_first_visible_result_t hier_visible;
+    alea_raycast_result_init(&hier_scratch);
+    ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                  sys, &ray, 0.0, 12.0, -1, 1,
+                  &hier_scratch, &hier_visible), 0);
+    ASSERT_EQ(hier_visible.found, scalar.first_visible.found);
+    if (hier_visible.found) {
+        ASSERT_NEAR(hier_visible.t, scalar.first_visible.t, 1e-9);
+        ASSERT_EQ(hier_visible.cell_id, scalar.first_visible.cell_id);
+        ASSERT_EQ(hier_visible.material_id, scalar.first_visible.material_id);
+        ASSERT_EQ(hier_visible.surface_id, scalar.first_visible.surface_id);
+        ASSERT_NEAR(hier_visible.nx, scalar.first_visible.nx, 1e-9);
+        ASSERT_NEAR(hier_visible.ny, scalar.first_visible.ny, 1e-9);
+        ASSERT_NEAR(hier_visible.nz, scalar.first_visible.nz, 1e-9);
+    }
+    ASSERT_EQ(hier_scratch.segments.count, 0);
 
     const alea_ray_batch_query_t any_query = {
         .kind = ALEA_RAY_QUERY_ANY_HIT,
@@ -1284,8 +1467,27 @@ TEST(lattice_compact_first_visible_and_any_hit_use_canonical_fallback) {
                   sys, origins, directions, 1, &any_query, &any), 0);
     ASSERT_EQ(any.hits[0], visible.found[0]);
     alea_ray_any_hit_batch_result_free(&any);
+    alea_raycast_result_free(&hier_scratch);
     alea_raycast_result_free(&trace);
     alea_ray_first_visible_batch_result_free(&visible);
+    mcnp_model_destroy(model);
+}
+
+TEST(lattice_rect_query_policies_match_global_forward_and_reverse) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    assert_lattice_query_policy_equivalent(
+        sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 12.0, -1);
+    assert_lattice_query_policy_equivalent(
+        sys, 5.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 7.0, -1);
+    assert_lattice_query_policy_equivalent(
+        sys, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.2, 10.0, 3);
+    assert_lattice_query_policy_equivalent(
+        sys, 5.5, 0.0, 0.0, -1.0, 0.0, 0.0, 1.2, 7.0, 1);
+
     mcnp_model_destroy(model);
 }
 
@@ -1349,6 +1551,11 @@ TEST(lattice_raycast) {
     assert_hier_raycast_equivalent(sys, -1.5, 0, 0, 1, 0, 0, 7.0);
     assert_hier_cell_raycast_segments_equivalent(sys, -1.5, 0, 0,
                                                  1, 0, 0, 7.0);
+    /* Exercise negative DDA stepping through the same synthetic boundaries. */
+    assert_raycast_results_equivalent(sys, 5.5, 0, 0, -1, 0, 0, 7.0);
+    assert_hier_raycast_equivalent(sys, 5.5, 0, 0, -1, 0, 0, 7.0);
+    assert_hier_cell_raycast_segments_equivalent(sys, 5.5, 0, 0,
+                                                 -1, 0, 0, 7.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
@@ -1412,6 +1619,10 @@ TEST(lattice_hex_raycast) {
     assert_hier_raycast_equivalent(sys, -0.5, 0, 0, 1, 0, 0, 5.0);
     assert_hier_cell_raycast_segments_equivalent(sys, -0.5, 0, 0,
                                                  1, 0, 0, 5.0);
+    assert_raycast_results_equivalent(sys, 4.5, 0, 0, -1, 0, 0, 5.0);
+    assert_hier_raycast_equivalent(sys, 4.5, 0, 0, -1, 0, 0, 5.0);
+    assert_hier_cell_raycast_segments_equivalent(sys, 4.5, 0, 0,
+                                                 -1, 0, 0, 5.0);
 
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
@@ -1437,7 +1648,71 @@ TEST(lattice_hex_raycast) {
     ASSERT(found_mat1 >= 1);
     ASSERT(found_mat3 >= 1);
 
+    /* Filter past the first element so this parity case crosses a synthetic
+     * hex-DDA transition before reaching the visible material. */
+    alea_ray_t ray;
+    alea_raycast_result_t global_trace;
+    alea_raycast_result_t hier_scratch;
+    alea_ray_query_output_t global_output;
+    alea_ray_first_visible_result_t hier_visible;
+    alea_raycast_result_init(&global_trace);
+    alea_raycast_result_init(&hier_scratch);
+    ASSERT_EQ(alea_ray_init(&ray, -0.5, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+    const alea_ray_query_t global_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .t_min = 0.0, .t_max = 5.0, .material_filter = 3,
+        .backend = ALEA_RAY_QUERY_BACKEND_GLOBAL
+    };
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &global_query, &global_trace,
+                  NULL, &global_output), 0);
+    ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                  sys, &ray, 0.0, 5.0, 3, 1,
+                  &hier_scratch, &hier_visible), 0);
+    ASSERT_EQ(hier_visible.found, global_output.first_visible.found);
+    ASSERT(hier_visible.found);
+    ASSERT_NEAR(hier_visible.t, global_output.first_visible.t, 1e-9);
+    ASSERT_EQ(hier_visible.cell_id, global_output.first_visible.cell_id);
+    ASSERT_EQ(hier_visible.material_id, global_output.first_visible.material_id);
+    ASSERT_EQ(hier_visible.surface_id, global_output.first_visible.surface_id);
+    ASSERT_EQ(hier_scratch.segments.count, 0);
+    alea_raycast_result_free(&hier_scratch);
+    alea_raycast_result_free(&global_trace);
+
     alea_raycast_result_free(&result);
+    openmc_model_destroy(omc);
+}
+
+TEST(lattice_hex_query_policies_match_global_forward_and_reverse) {
+    openmc_model_t* omc = openmc_load("tests/data/openmc_hex_lattice.xml");
+    if (!omc) SKIP("Test data file not found");
+    alea_system_t* sys = omc->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    assert_lattice_query_policy_equivalent(
+        sys, -0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 5.0, -1);
+    assert_lattice_query_policy_equivalent(
+        sys, 4.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 5.0, -1);
+    assert_lattice_query_policy_equivalent(
+        sys, -0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 1.2, 5.0, 3);
+    assert_lattice_query_policy_equivalent(
+        sys, 4.5, 0.0, 0.0, -1.0, 0.0, 0.0, 0.8, 5.0, 1);
+
+    const double origins[] = {
+        -0.5, 0.0, 0.0, 4.5, 0.0, 0.0, -0.5, 0.0, 0.0,
+        4.5, 0.0, 0.0, -0.5, 3.5, 0.0
+    };
+    const double directions[] = {
+        1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        -1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+    };
+    const double t_mins[] = {0.0, 0.0, 1.2, 0.8, 0.0};
+    const double t_maxs[] = {5.0, 5.0, 5.0, 5.0, 5.0};
+    assert_hier_packet_batch_matches_scalar(
+        sys, origins, directions, 5, t_mins, t_maxs, 3);
+
     openmc_model_destroy(omc);
 }
 
@@ -1464,6 +1739,7 @@ TEST(lattice_nested) {
     alea_system_t* sys = model->sys;
 
     alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
     int cell_id, material;
 
@@ -1503,6 +1779,137 @@ TEST(lattice_nested) {
 
     /* ---- Outside lattice bounds → void ---- */
     ASSERT_EQ(alea_find_cell_lazy(sys, 10, 0, 0, &cell_id, &material, NULL), -1);
+
+    /* Exercise the scalar early-stop path before packetizing it. The complete
+     * trace reference is covered separately: nested lattice ray stepping must
+     * first prove it can descend and accept a terminal interval. */
+    alea_ray_t nested_ray;
+    alea_raycast_result_t nested_scratch;
+    alea_ray_first_visible_result_t nested_visible;
+    alea_raycast_result_init(&nested_scratch);
+    ASSERT_EQ(alea_ray_init(&nested_ray, -2.0, -0.5, 0.0,
+                            1.0, 0.0, 0.0), 0);
+    ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                  sys, &nested_ray, 0.0, 6.0, -1, 1,
+                  &nested_scratch, &nested_visible), 0);
+    ASSERT(nested_visible.found);
+    ASSERT_EQ(nested_scratch.segments.count, 0);
+    const alea_ray_first_visible_result_t scalar_visible = nested_visible;
+
+    const alea_ray_query_t nested_fast_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .t_min = 0.0, .t_max = 6.0, .material_filter = -1,
+        .backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD
+    };
+    alea_ray_query_output_t nested_fast_output;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &nested_ray, &nested_fast_query, &nested_scratch,
+                  NULL, &nested_fast_output), 0);
+    ASSERT_EQ(nested_fast_output.first_visible.found, scalar_visible.found);
+    ASSERT_NEAR(nested_fast_output.first_visible.t, scalar_visible.t, 1e-9);
+    ASSERT_EQ(nested_fast_output.first_visible.cell_id, scalar_visible.cell_id);
+    ASSERT_EQ(nested_fast_output.first_visible.material_id,
+              scalar_visible.material_id);
+    ASSERT_EQ(nested_fast_output.first_visible.surface_id,
+              scalar_visible.surface_id);
+    alea_raycast_result_free(&nested_scratch);
+
+    const double nested_origins[] = {-2.0, -0.5, 0.0};
+    const double nested_directions[] = {1.0, 0.0, 0.0};
+    const double nested_t_mins[] = {0.0};
+    const double nested_t_maxs[] = {6.0};
+    const alea_ray_batch_query_t nested_batch_query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .material_filter = -1,
+        .t_mins = nested_t_mins,
+        .t_maxs = nested_t_maxs
+    };
+    alea_ray_first_visible_batch_result_t nested_batch_visible;
+    alea_ray_first_visible_batch_result_init(&nested_batch_visible);
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, nested_origins, nested_directions, 1,
+                  &nested_batch_query, &nested_batch_visible), 0);
+    ASSERT_EQ(nested_batch_visible.found[0], scalar_visible.found ? 1 : 0);
+    ASSERT_NEAR(nested_batch_visible.t[0], scalar_visible.t, 1e-9);
+    ASSERT_EQ(nested_batch_visible.cell_ids[0], scalar_visible.cell_id);
+    ASSERT_EQ(nested_batch_visible.material_ids[0], scalar_visible.material_id);
+    ASSERT_EQ(nested_batch_visible.surface_ids[0], scalar_visible.surface_id);
+    alea_ray_first_visible_batch_result_free(&nested_batch_visible);
+
+    const alea_ray_batch_query_t nested_any_query = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .material_filter = -1,
+        .t_mins = nested_t_mins,
+        .t_maxs = nested_t_maxs
+    };
+    alea_ray_any_hit_batch_result_t nested_batch_any;
+    alea_ray_any_hit_batch_result_init(&nested_batch_any);
+    ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                  sys, nested_origins, nested_directions, 1,
+                  &nested_any_query, &nested_batch_any), 0);
+    ASSERT_EQ(nested_batch_any.hits[0], scalar_visible.found ? 1 : 0);
+    alea_ray_any_hit_batch_result_free(&nested_batch_any);
+
+    const double packet_origins[] = {
+        -2.0, -0.5, 0.0, -2.0, 0.5, 0.0, 4.0, -0.5, 0.0,
+        4.0, 0.5, 0.0, -2.0, 3.0, 0.0
+    };
+    const double packet_directions[] = {
+        1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0,
+        -1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+    };
+    const double packet_t_mins[] = {0.0, 0.5, 0.0, 0.5, 0.0};
+    const double packet_t_maxs[] = {6.0, 6.0, 6.0, 6.0, 6.0};
+    assert_hier_packet_batch_matches_scalar(
+        sys, packet_origins, packet_directions, 5, packet_t_mins,
+        packet_t_maxs, -1);
+
+    alea_raycast_result_init(&nested_scratch);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, -2.0, -0.5, 0.0, 1.0, 0.0, 0.0, 6.0,
+                  &nested_scratch), 0);
+    ASSERT(nested_scratch.segments.count > 0);
+    alea_raycast_result_free(&nested_scratch);
+
+    alea_raycast_result_init(&nested_scratch);
+    ASSERT_EQ(alea_raycast_hier_with_hits(
+                  sys, -2.0, -0.5, 0.0, 1.0, 0.0, 0.0, 6.0,
+                  &nested_scratch), 0);
+    ASSERT(nested_scratch.segments.count > 0);
+    alea_raycast_result_free(&nested_scratch);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(lattice_nested_transformed_packet_parity) {
+    mcnp_model_t* model =
+        mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_id, material;
+    ASSERT_EQ(alea_find_cell_lazy(sys, 4.5, -0.5, 0.0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(material, 1);
+    const double origins[] = {
+        3.0, -0.5, 0.0, 3.0, 0.5, 0.0, 9.0, -0.5, 0.0,
+        9.0, 0.5, 0.0, 3.0, 3.0, 0.0
+    };
+    const double directions[] = {
+        1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0,
+        -1.0, 0.0, 0.0, 1.0, 0.0, 0.0
+    };
+    const double t_mins[] = {0.0, 0.5, 0.0, 0.5, 0.0};
+    const double t_maxs[] = {8.0, 8.0, 8.0, 8.0, 8.0};
+    assert_hier_packet_batch_matches_scalar(
+        sys, origins, directions, 5, t_mins, t_maxs, -1);
+    assert_hier_packet_batch_matches_scalar(
+        sys, origins, directions, 5, t_mins, t_maxs, 3);
 
     mcnp_model_destroy(model);
 }

@@ -56,6 +56,9 @@ typedef struct {
     int depth;
     uint8_t is_lattice;
     int lat_fill_universe;
+    int lat_i;
+    int lat_j;
+    int lat_k;
     double lat_ox;
     double lat_oy;
     double lat_oz;
@@ -66,6 +69,26 @@ typedef struct {
     int count;
     alea_hier_ray_path_entry_t entries[ALEA_HIER_RAY_PATH_MAX];
 } alea_hier_ray_path_t;
+
+/* Worker-local state for coherent point/path queries.  It is deliberately
+ * bounded by one path per active worker; callers swap two workspaces rather
+ * than retaining a path for every grid column. */
+typedef struct {
+    alea_hier_ray_path_t path;
+    alea_hier_cell_hit_t deepest;
+    uint64_t system_id;
+    uint64_t geometry_generation;
+    uint8_t complete;
+    uint8_t overflowed;
+} alea_hier_coherence_state_t;
+
+typedef enum {
+    ALEA_HIER_COH_ROOT_QUERY,
+    ALEA_HIER_COH_PATH_REUSED,
+    ALEA_HIER_COH_LATTICE_TRANSITION,
+    ALEA_HIER_COH_PREFIX_RESTART,
+    ALEA_HIER_COH_FULL_FALLBACK
+} alea_hier_coherence_kind_t;
 
 typedef struct {
     uint32_t cell_index;
@@ -102,7 +125,6 @@ typedef struct {
     int max_universe_cells;
     int largest_universe_id;
     size_t memory_bytes;
-    size_t point_queries;
 } alea_hier_spatial_stats_t;
 
 int alea_hier_spatial_index_build(alea_system_t* sys);
@@ -132,9 +154,22 @@ int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
                                          double z,
                                          alea_hier_cell_hit_t* out_hit,
                                          alea_hier_ray_path_t* out_path);
+void alea_hier_coherence_state_clear(alea_hier_coherence_state_t* state);
+/* Resolve a point from a worker-local prior path when its validated prefix
+ * still applies.  The result always follows canonical deck-order ownership. */
+int alea_hier_spatial_resolve_coherent(
+    alea_system_t* sys,
+    double x, double y, double z,
+    const alea_hier_coherence_state_t* previous,
+    alea_hier_coherence_state_t* current,
+    alea_hier_cell_hit_t* out_hit,
+    alea_hier_coherence_kind_t* out_kind);
+/* Validate the ancestor prefix through target_entry.  The entry index is
+ * required because one cell definition may occur multiple times in a path
+ * through distinct placements. */
 int alea_hier_spatial_check_path_containment(alea_system_t* sys,
                                              const alea_hier_ray_path_t* path,
-                                             uint32_t cell_index,
+                                             int target_entry,
                                              double x,
                                              double y,
                                              double z,
@@ -149,6 +184,17 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
                                             double z,
                                             alea_hier_cell_hit_t* out_hit,
                                             alea_hier_ray_path_t* out_path);
+/* Replace a lattice entry's selected element, retain its validated ancestors,
+ * and descend canonically from that concrete child placement. `location` must
+ * be the canonical element containing (x,y,z) at `lattice_entry`. */
+int alea_hier_path_enter_lattice_location(
+    alea_system_t* sys,
+    const alea_hier_ray_path_t* path,
+    int lattice_entry,
+    double x, double y, double z,
+    const alea_lattice_location_t* location,
+    alea_hier_cell_hit_t* out_hit,
+    alea_hier_ray_path_t* out_path);
 
 /**
  * @brief Reset the hier point-query coherence cache.
@@ -238,11 +284,35 @@ int alea_hier_spatial_query_placements_ray(alea_system_t* sys,
                                            double t_max,
                                            alea_hier_placement_ray_candidate_t* out_hits,
                                            size_t max_hits);
+typedef int (*alea_hier_lattice_placement_ray_visitor_t)(
+    uint32_t placement_index,
+    uint32_t lattice_cell_index,
+    const alea_matrix_t* transform,
+    double t_enter,
+    double t_exit,
+    void* userdata);
+int alea_hier_spatial_visit_lattice_placements_ray(
+    alea_system_t* sys,
+    double ox, double oy, double oz,
+    double inv_dx, double inv_dy, double inv_dz,
+    double t_min, double t_max,
+    alea_hier_lattice_placement_ray_visitor_t visitor,
+    void* userdata);
 int alea_hier_spatial_check_placement_chain(alea_system_t* sys,
                                             uint32_t placement_index,
                                             double x,
                                             double y,
                                             double z);
+/* Validate the enclosing fill-placement chain for a lattice placement.
+ * The lattice element itself is intentionally omitted: its finite extent and
+ * occupancy are established by lattice DDA, whereas the lattice cell's CSG
+ * describes one repeated template element rather than the full array. */
+int alea_hier_spatial_check_lattice_placement_ancestors(
+    alea_system_t* sys,
+    uint32_t placement_index,
+    double x,
+    double y,
+    double z);
 
 /**
  * @brief Return the precomputed per-cell fill transform (forward + inverse)

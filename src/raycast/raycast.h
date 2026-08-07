@@ -393,6 +393,14 @@ int alea_raycast_hier_first_visible_batch_nocache(
     size_t ray_count, const alea_ray_batch_query_t* query,
     alea_ray_first_visible_batch_result_t* result);
 
+/* Internal packet executor. The API layer owns validation/allocation and
+ * checks statuses after the parallel region; this function owns only bounded
+ * lane traversal and direct SoA writes. */
+int alea_raycast_hier_first_visible_batch_execute_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_first_visible_batch_result_t* result, int* statuses);
+
 /** Private compact writer for ANY_HIT batch queries. */
 typedef struct {
     size_t ray_count;
@@ -405,6 +413,10 @@ int alea_raycast_hier_any_hit_batch_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query,
     alea_ray_any_hit_batch_result_t* result);
+int alea_raycast_hier_any_hit_batch_execute_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_any_hit_batch_result_t* result, int* statuses);
 
 /* Private CSR writer for the canonical BOUNDARY_EVENTS contract. */
 typedef struct {

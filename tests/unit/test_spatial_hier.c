@@ -10,6 +10,7 @@
 #include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
 #include "core/alea_transform.h"
+#include "core/alea_universe.h"
 #include "raycast/raycast.h"
 
 /* This file intentionally exercises deprecated flat-spatial compatibility APIs
@@ -307,6 +308,208 @@ TEST(hier_spatial_point_query_matches_recursive_lattice) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_paths_record_logical_lattice_occurrences) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    const alea_cell_entry_t* lattice = NULL;
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        if (sys->cells.data[i].lat_type != 0 && sys->cells.data[i].lat_fill) {
+            lattice = &sys->cells.data[i];
+            break;
+        }
+    }
+    ASSERT_NOT_NULL(lattice);
+
+    const double points[2][3] = {{0.0, 0.0, 0.0}, {2.0, 0.0, 0.0}};
+    alea_lattice_location_t locations[2];
+    alea_hier_ray_path_t paths[2];
+    for (int n = 0; n < 2; n++) {
+        alea_hier_cell_hit_t hit;
+        ASSERT_EQ(alea_lattice_locate_point(sys, lattice,
+                                             points[n][0], points[n][1], points[n][2],
+                                             &locations[n]), 1);
+        ASSERT_EQ(alea_hier_spatial_find_path_at_point(
+                      sys, points[n][0], points[n][1], points[n][2],
+                      &hit, &paths[n]), 1);
+        ASSERT(paths[n].count >= 2);
+        ASSERT_EQ(paths[n].entries[0].is_lattice, 1);
+        ASSERT_EQ(paths[n].entries[0].lat_i, locations[n].i);
+        ASSERT_EQ(paths[n].entries[0].lat_j, locations[n].j);
+        ASSERT_EQ(paths[n].entries[0].lat_k, locations[n].k);
+    }
+    ASSERT(locations[0].i != locations[1].i ||
+           locations[0].j != locations[1].j ||
+           locations[0].k != locations[1].k);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(hier_spatial_candidate_lookup_resolves_lattice_container) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    int lattice_cell = -1;
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        if (sys->cells.data[i].universe_id == 0 &&
+            sys->cells.data[i].lat_type != 0 && sys->cells.data[i].lat_fill) {
+            lattice_cell = (int)i;
+            break;
+        }
+    }
+    ASSERT(lattice_cell >= 0);
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+    ASSERT_EQ(alea_hier_spatial_find_cell_in_universe(sys, 0,
+                                                       0.0, 0.0, 0.0),
+              lattice_cell);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(hier_path_restart_rebuilds_changed_lattice_element) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_hier_cell_hit_t start_hit;
+    alea_hier_ray_path_t start_path;
+    ASSERT_EQ(alea_hier_spatial_find_path_at_point(sys, 0.0, 0.0, 0.0,
+                                                   &start_hit, &start_path), 1);
+    ASSERT(start_path.count >= 2);
+    ASSERT_EQ(start_path.entries[0].is_lattice, 1);
+
+    alea_hier_cell_hit_t restarted_hit;
+    alea_hier_ray_path_t restarted_path;
+    ASSERT_EQ(alea_hier_spatial_find_path_from_parent(
+                  sys, &start_path, 0, 2.0, 0.0, 0.0,
+                  &restarted_hit, &restarted_path), 1);
+
+    const alea_cell_entry_t* lattice =
+        &sys->cells.data[start_path.entries[0].cell_index];
+    alea_lattice_location_t location;
+    ASSERT_EQ(alea_lattice_locate_point(sys, lattice, 2.0, 0.0, 0.0,
+                                         &location), 1);
+    alea_hier_cell_hit_t direct_hit;
+    alea_hier_ray_path_t direct_path;
+    ASSERT_EQ(alea_hier_path_enter_lattice_location(
+                  sys, &start_path, 0, 2.0, 0.0, 0.0, &location,
+                  &direct_hit, &direct_path), 1);
+
+    alea_hier_cell_hit_t reference_hit;
+    alea_hier_ray_path_t reference_path;
+    ASSERT_EQ(alea_hier_spatial_find_path_at_point(sys, 2.0, 0.0, 0.0,
+                                                   &reference_hit, &reference_path), 1);
+
+    /* The worker-local resolver is the grid/DDA-facing entry point. It must
+     * retain the lattice container and rebuild just the changed placement. */
+    alea_hier_coherence_state_t state_a, state_b;
+    alea_hier_coherence_state_clear(&state_a);
+    alea_hier_coherence_state_clear(&state_b);
+    alea_hier_cell_hit_t coherent_hit;
+    alea_hier_coherence_kind_t coherence_kind;
+    ASSERT_EQ(alea_hier_spatial_resolve_coherent(
+                  sys, 0.0, 0.0, 0.0, NULL, &state_a, &coherent_hit,
+                  &coherence_kind), 1);
+    ASSERT_EQ(coherence_kind, ALEA_HIER_COH_ROOT_QUERY);
+    ASSERT_EQ(alea_hier_spatial_resolve_coherent(
+                  sys, 2.0, 0.0, 0.0, &state_a, &state_b, &coherent_hit,
+                  &coherence_kind), 1);
+    ASSERT_EQ(coherence_kind, ALEA_HIER_COH_LATTICE_TRANSITION);
+    ASSERT_EQ(coherent_hit.hit.cell_id, reference_hit.hit.cell_id);
+    ASSERT_EQ(state_b.path.count, reference_path.count);
+
+    ASSERT_EQ(restarted_hit.hit.cell_id, reference_hit.hit.cell_id);
+    ASSERT_EQ(direct_hit.hit.cell_id, reference_hit.hit.cell_id);
+    ASSERT_EQ(restarted_path.count, reference_path.count);
+    ASSERT_EQ(direct_path.count, reference_path.count);
+    for (int i = 0; i < reference_path.count; i++) {
+        ASSERT_EQ(restarted_path.entries[i].cell_index,
+                  reference_path.entries[i].cell_index);
+        ASSERT_EQ(restarted_path.entries[i].lat_i,
+                  reference_path.entries[i].lat_i);
+        ASSERT_EQ(restarted_path.entries[i].lat_j,
+                  reference_path.entries[i].lat_j);
+        ASSERT_EQ(restarted_path.entries[i].lat_k,
+                  reference_path.entries[i].lat_k);
+        ASSERT_EQ(direct_path.entries[i].cell_index,
+                  reference_path.entries[i].cell_index);
+        ASSERT_EQ(direct_path.entries[i].lat_i,
+                  reference_path.entries[i].lat_i);
+        ASSERT_EQ(direct_path.entries[i].lat_j,
+                  reference_path.entries[i].lat_j);
+        ASSERT_EQ(direct_path.entries[i].lat_k,
+                  reference_path.entries[i].lat_k);
+        ASSERT_EQ(state_b.path.entries[i].cell_index,
+                  reference_path.entries[i].cell_index);
+        ASSERT_EQ(state_b.path.entries[i].lat_i,
+                  reference_path.entries[i].lat_i);
+        ASSERT_EQ(state_b.path.entries[i].lat_j,
+                  reference_path.entries[i].lat_j);
+        ASSERT_EQ(state_b.path.entries[i].lat_k,
+                  reference_path.entries[i].lat_k);
+        for (int m = 0; m < 12; m++) {
+            ASSERT_EQ(restarted_path.entries[i].transform.m[m],
+                      reference_path.entries[i].transform.m[m]);
+            ASSERT_EQ(restarted_path.entries[i].transform.inv[m],
+                      reference_path.entries[i].transform.inv[m]);
+            ASSERT_EQ(direct_path.entries[i].transform.m[m],
+                      reference_path.entries[i].transform.m[m]);
+            ASSERT_EQ(direct_path.entries[i].transform.inv[m],
+                      reference_path.entries[i].transform.inv[m]);
+            ASSERT_EQ(state_b.path.entries[i].transform.m[m],
+                      reference_path.entries[i].transform.m[m]);
+            ASSERT_EQ(state_b.path.entries[i].transform.inv[m],
+                      reference_path.entries[i].transform.inv[m]);
+        }
+    }
+
+    mcnp_model_destroy(model);
+}
+
+TEST(lattice_location_round_trips_indices_and_enforces_window) {
+    const struct {
+        const char* path;
+        int lat_type;
+    } cases[] = {
+        {"tests/data/mcnp_lattice_eval.mcnp", 1},
+        {"tests/data/mcnp_hex_lattice.mcnp", 2},
+    };
+
+    for (size_t n = 0; n < sizeof(cases) / sizeof(cases[0]); n++) {
+        mcnp_model_t* model = mcnp_load(cases[n].path);
+        if (!model) SKIP("Test data file not found");
+        alea_system_t* sys = model->sys;
+        const alea_cell_entry_t* lattice = NULL;
+        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+            if (sys->cells.data[i].lat_type == cases[n].lat_type) {
+                lattice = &sys->cells.data[i];
+                break;
+            }
+        }
+        ASSERT_NOT_NULL(lattice);
+
+        alea_lattice_location_t point_location;
+        ASSERT_EQ(alea_lattice_locate_point(sys, lattice, 0.0, 0.0, 0.0,
+                                             &point_location), 1);
+
+        alea_lattice_location_t indexed_location;
+        ASSERT_EQ(alea_lattice_location_from_indices(
+                      lattice, point_location.i, point_location.j,
+                      point_location.k, &indexed_location), 1);
+        ASSERT_EQ(indexed_location.fill_universe, point_location.fill_universe);
+        ASSERT_EQ(indexed_location.linear_index, point_location.linear_index);
+        ASSERT_EQ(indexed_location.ox, point_location.ox);
+        ASSERT_EQ(indexed_location.oy, point_location.oy);
+        ASSERT_EQ(indexed_location.oz, point_location.oz);
+
+        ASSERT_EQ(alea_lattice_locate_point(sys, lattice, 0.0, 0.0, 2.0,
+                                             &point_location), 0);
+        mcnp_model_destroy(model);
+    }
+}
+
 TEST(hier_spatial_hex_lattice_points_return_expected_terminals) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -591,11 +794,11 @@ TEST(hier_spatial_path_query_returns_explicit_fill_chain) {
     int lattice_cell_index = -2;
     alea_matrix_t lattice_transform;
     ASSERT_EQ(alea_hier_spatial_check_path_containment(
-                  sys, &path, (uint32_t)terminal, 0.1, 0.0, 0.0,
+                  sys, &path, 1, 0.1, 0.0, 0.0,
                   &transform, &lattice_cell_index, &lattice_transform), 1);
     ASSERT_EQ(lattice_cell_index, -1);
     ASSERT_EQ(alea_hier_spatial_check_path_containment(
-                  sys, &path, (uint32_t)terminal, 20.0, 0.0, 0.0,
+                  sys, &path, 1, 20.0, 0.0, 0.0,
                   NULL, NULL, NULL), 0);
 
     alea_hier_cell_hit_t refreshed_hit;
@@ -610,6 +813,51 @@ TEST(hier_spatial_path_query_returns_explicit_fill_chain) {
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_path_containment_targets_exact_repeated_entry) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    int sphere = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 100.0);
+    ASSERT(sphere >= 0);
+    int cell = alea_add_cell(sys, 1, alea_surface_at(sys, sphere)->neg_node,
+                             mat, 1.0, 0);
+    ASSERT(cell >= 0);
+
+    /* Two occurrences of the same definition have different placements.
+     * A cell index alone cannot identify which transform the caller means. */
+    alea_hier_ray_path_t path;
+    memset(&path, 0, sizeof(path));
+    path.count = 2;
+    for (int i = 0; i < path.count; i++) {
+        path.entries[i].cell_index = (uint32_t)cell;
+        path.entries[i].cell_id = 1;
+        path.entries[i].universe_id = 0;
+        path.entries[i].depth = i;
+        alea_matrix_identity(&path.entries[i].transform);
+    }
+    path.entries[1].transform.m[3] = 10.0;
+    path.entries[1].transform.has_inverse = false;
+    ASSERT(alea_matrix_invert(&path.entries[1].transform));
+
+    alea_matrix_t first_transform;
+    alea_matrix_t second_transform;
+    ASSERT_EQ(alea_hier_spatial_check_path_containment(
+                  sys, &path, 0, 0.0, 0.0, 0.0,
+                  &first_transform, NULL, NULL), 1);
+    ASSERT_EQ(alea_hier_spatial_check_path_containment(
+                  sys, &path, 1, 0.0, 0.0, 0.0,
+                  &second_transform, NULL, NULL), 1);
+    ASSERT_EQ(first_transform.inv[3], 0.0);
+    ASSERT_EQ(second_transform.inv[3], -10.0);
+    ASSERT_EQ(alea_hier_spatial_check_path_containment(
+                  sys, &path, 2, 0.0, 0.0, 0.0,
+                  NULL, NULL, NULL), -1);
+
+    alea_destroy(sys);
 }
 
 TEST(hier_spatial_direct_region_query_resolves_fill) {

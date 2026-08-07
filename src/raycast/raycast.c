@@ -252,6 +252,9 @@ static uint64_t path_entry_occurrence_key(uint64_t parent_key,
     hash = path_hash_bytes(hash, &entry->depth, sizeof(entry->depth));
     hash = path_hash_bytes(hash, &entry->is_lattice, sizeof(entry->is_lattice));
     hash = path_hash_bytes(hash, &entry->lat_fill_universe, sizeof(entry->lat_fill_universe));
+    hash = path_hash_bytes(hash, &entry->lat_i, sizeof(entry->lat_i));
+    hash = path_hash_bytes(hash, &entry->lat_j, sizeof(entry->lat_j));
+    hash = path_hash_bytes(hash, &entry->lat_k, sizeof(entry->lat_k));
     hash = path_hash_bytes(hash, &entry->lat_ox, sizeof(entry->lat_ox));
     hash = path_hash_bytes(hash, &entry->lat_oy, sizeof(entry->lat_oy));
     hash = path_hash_bytes(hash, &entry->lat_oz, sizeof(entry->lat_oz));
@@ -994,6 +997,10 @@ static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_cell_entry_t* lat_cell,
                                 double t_min, double t_max,
                                 alea_raycast_result_t* result);
+static double lattice_next_boundary(const alea_ray_t* ray,
+                                    const alea_cell_entry_t* lat_cell,
+                                    double t_min,
+                                    double t_max);
 
 static int raycast_root_blas_surfaces(alea_system_t* sys,
                                       const alea_ray_t* ray,
@@ -1223,6 +1230,210 @@ static void raycast_add_fill_hits(alea_system_t* sys,
 
 /* ray_bbox_slab_enter_exit in ray_bbox.h replaces ray_bbox_slab_enter_exit */
 
+static int lattice_rect_bounds(const alea_cell_entry_t* cell,
+                               alea_bbox_t* out_bounds) {
+    if (!cell || !out_bounds || cell->lat_pitch[0] <= 0.0 ||
+        cell->lat_pitch[1] <= 0.0 || cell->lat_pitch[2] <= 0.0) {
+        return -1;
+    }
+    const int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    const int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    const int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (ni <= 0 || nj <= 0 || nk <= 0) return -1;
+    *out_bounds = (alea_bbox_t){
+        .min_x = cell->lat_lower_left[0],
+        .max_x = cell->lat_lower_left[0] + ni * cell->lat_pitch[0],
+        .min_y = cell->lat_lower_left[1],
+        .max_y = cell->lat_lower_left[1] + nj * cell->lat_pitch[1],
+        .min_z = cell->lat_lower_left[2],
+        .max_z = cell->lat_lower_left[2] + nk * cell->lat_pitch[2]
+    };
+    return 0;
+}
+
+static int lattice_hex_bounds(const alea_cell_entry_t* cell,
+                              alea_bbox_t* out_bounds) {
+    if (!cell || !out_bounds || cell->lat_pitch[0] <= 0.0) return -1;
+    const int imin = cell->lat_fill_dims[0], imax = cell->lat_fill_dims[1];
+    const int jmin = cell->lat_fill_dims[2], jmax = cell->lat_fill_dims[3];
+    const int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (imax < imin || jmax < jmin || nk <= 0) return -1;
+
+    double min_x = DBL_MAX, max_x = -DBL_MAX;
+    double min_y = DBL_MAX, max_y = -DBL_MAX;
+    const double pitch = cell->lat_pitch[0];
+    const double radius = pitch / M_SQRT3;
+    for (int i = imin; i <= imax; i++) {
+        for (int j = jmin; j <= jmax; j++) {
+            const double x = i * pitch + j * pitch * 0.5;
+            const double y = j * pitch * M_SQRT3 * 0.5;
+            if (x - radius < min_x) min_x = x - radius;
+            if (x + radius > max_x) max_x = x + radius;
+            if (y - pitch * 0.5 < min_y) min_y = y - pitch * 0.5;
+            if (y + pitch * 0.5 > max_y) max_y = y + pitch * 0.5;
+        }
+    }
+    *out_bounds = (alea_bbox_t){
+        .min_x = min_x, .max_x = max_x,
+        .min_y = min_y, .max_y = max_y,
+        .min_z = nk > 1 ? cell->lat_lower_left[2] : -1e30,
+        .max_z = nk > 1 ? cell->lat_lower_left[2] + nk * cell->lat_pitch[2]
+                         : 1e30
+    };
+    return 0;
+}
+
+/* The geometry-specific DDA walkers only decide the next interval and its
+ * canonical lattice location.  Publishing the synthetic transition and
+ * tracing the selected element are shared so full-trace and future early-stop
+ * steppers cannot acquire different element-local ray conventions. */
+static int raycast_lattice_element_step(
+    alea_system_t* sys,
+    const alea_ray_t* ray,
+    const alea_lattice_location_t* location,
+    double t_enter,
+    double t_exit,
+    bool emit_synthetic_transition,
+    alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+    if (emit_synthetic_transition) {
+        alea_ray_hit_t boundary = {
+            .t = t_enter,
+            .surface_id = 0,
+            .primitive_id = ALEA_PRIMITIVE_ID_INVALID
+        };
+        if (add_hit(result, &boundary) != 0) {
+            ALEA_LOG_WARN("add_hit failed (out of memory) - lattice raycast incomplete");
+            return -1;
+        }
+    }
+    if (!location || t_exit <= t_enter) return 0;
+
+    alea_ray_t local_ray = *ray;
+    local_ray.ox -= location->ox;
+    local_ray.oy -= location->oy;
+    local_ray.oz -= location->oz;
+    raycast_universe_surfaces(sys, &local_ray, location->fill_universe,
+                              t_enter, t_exit, result);
+    return 0;
+}
+
+static bool raycast_has_hit_at(const alea_raycast_result_t* result, double t) {
+    if (!result) return false;
+    for (size_t i = 0; i < result->hits.count; i++) {
+        /* Parsed lattice pitch/bounds can differ slightly from the source CSG
+         * plane used to infer them.  Treat a nearby physical hit as the same
+         * ownership boundary so the DDA does not publish a micro-segment. */
+        if (result->hits.data[i].surface_id > 0 &&
+            fabs(result->hits.data[i].t - t) <= SURFACE_SAMPLE_OFFSET)
+            return true;
+    }
+    return false;
+}
+
+static int lattice_raycast_interval(const alea_ray_t* ray,
+                                    const alea_cell_entry_t* cell,
+                                    double t_min, double t_max,
+                                    double* out_enter, double* out_exit) {
+    if (!ray || !cell || !out_enter || !out_exit) return -1;
+    *out_enter = t_min;
+    *out_exit = t_max;
+
+    alea_bbox_t bounds;
+    if (cell->lat_type == 1) {
+        if (lattice_rect_bounds(cell, &bounds) != 0) return -1;
+        if (cell->lat_fill_repeating) return 0;
+    } else if (cell->lat_type == 2) {
+        if (lattice_hex_bounds(cell, &bounds) != 0) return -1;
+    } else {
+        return -1;
+    }
+    return ray_bbox_slab_enter_exit(ray, &bounds, t_min, t_max,
+                                    out_enter, out_exit) ? 0 : 1;
+}
+
+static int lattice_raycast_step_limit(const alea_ray_t* ray,
+                                      const alea_cell_entry_t* cell,
+                                      double t_enter, double t_exit) {
+    const int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+    const int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+    const int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (ni <= 0 || nj <= 0 || nk <= 0) return 0;
+    if (cell->lat_type == 1 && cell->lat_fill_repeating) {
+        const double span = t_exit - t_enter;
+        const double crossings = fabs(ray->dx) * span / cell->lat_pitch[0]
+            + fabs(ray->dy) * span / cell->lat_pitch[1]
+            + fabs(ray->dz) * span / cell->lat_pitch[2];
+        return crossings < (double)INT_MAX - 8.0
+            ? (int)ceil(crossings) + 8 : INT_MAX;
+    }
+    return cell->lat_type == 1 ? 2 * (ni + nj + nk) + 4
+                               : 3 * (ni + nj + nk) + 10;
+}
+
+/* Full global tracing uses the same boundary query as the cell-aware
+ * first-visible walker.  Geometry-specific rectangular/hex math is confined
+ * to lattice_next_boundary(); this loop owns interval construction, canonical
+ * location lookup, synthetic event publication, and element-local tracing. */
+static void raycast_lattice_walk(alea_system_t* sys,
+                                 const alea_ray_t* ray,
+                                 const alea_cell_entry_t* cell,
+                                 double t_min, double t_max,
+                                 alea_raycast_result_t* result) {
+    double t_enter, t_exit;
+    const int interval = lattice_raycast_interval(ray, cell, t_min, t_max,
+                                                  &t_enter, &t_exit);
+    if (interval != 0 || t_exit <= t_enter) return;
+
+    const int max_steps = lattice_raycast_step_limit(ray, cell, t_enter, t_exit);
+    alea_lattice_location_t previous;
+    int have_previous = 0;
+    double t_current = t_enter;
+    if (t_enter > t_min + RAY_EPSILON &&
+        !raycast_has_hit_at(result, t_enter)) {
+        if (raycast_lattice_element_step(sys, ray, NULL, t_enter, t_enter,
+                                         true, result) != 0) {
+            return;
+        }
+    }
+    for (int step = 0; step < max_steps && t_current < t_exit; step++) {
+        double t_next = lattice_next_boundary(ray, cell, t_current, t_exit);
+        if (t_next <= t_current + RAY_EPSILON || t_next > t_exit)
+            t_next = t_exit;
+        const double t_sample = t_current +
+            0.5 * (t_next - t_current);
+        double x, y, z;
+        alea_ray_point_at(ray, t_sample, &x, &y, &z);
+        alea_lattice_location_t location;
+        const int has_location = alea_lattice_locate_point(
+            sys, cell, x, y, z, &location) == 1;
+
+        const bool changed = !have_previous || !has_location ||
+            location.i != previous.i || location.j != previous.j ||
+            location.k != previous.k ||
+            location.fill_universe != previous.fill_universe;
+        const bool emit_synthetic = step > 0 &&
+            t_current > t_enter + RAY_EPSILON && changed;
+        if (raycast_lattice_element_step(
+                sys, ray, has_location ? &location : NULL,
+                t_current, t_next, emit_synthetic, result) != 0) {
+            return;
+        }
+        if (has_location) {
+            previous = location;
+            have_previous = 1;
+        } else {
+            have_previous = 0;
+        }
+        t_current = t_next;
+    }
+    if (t_exit < t_max - RAY_EPSILON &&
+        !raycast_has_hit_at(result, t_exit)) {
+        (void)raycast_lattice_element_step(sys, ray, NULL, t_exit, t_exit,
+                                           true, result);
+    }
+}
+
 /**
  * DDA raycast through a rectangular lattice.
  * Steps through elements along the ray, raycasting base universe surfaces
@@ -1233,341 +1444,16 @@ static void raycast_lattice_rect(alea_system_t* sys,
                                  const alea_cell_entry_t* lat_cell,
                                  double t_min, double t_max,
                                  alea_raycast_result_t* result) {
-    int ni = lat_cell->lat_fill_dims[1] - lat_cell->lat_fill_dims[0] + 1;
-    int nj = lat_cell->lat_fill_dims[3] - lat_cell->lat_fill_dims[2] + 1;
-    int nk = lat_cell->lat_fill_dims[5] - lat_cell->lat_fill_dims[4] + 1;
-
-    double px = lat_cell->lat_pitch[0];
-    double py = lat_cell->lat_pitch[1];
-    double pz = lat_cell->lat_pitch[2];
-    const double* ll = lat_cell->lat_lower_left;
-
-    /* Explicit arrays are finite.  A simple MCNP FILL=N repeats the
-     * fundamental element indefinitely and is clipped by its parent fill
-     * occurrence, so its DDA spans the caller's ray interval. */
-    alea_bbox_t lat_bbox = {
-        .min_x = ll[0], .max_x = ll[0] + ni * px,
-        .min_y = ll[1], .max_y = ll[1] + nj * py,
-        .min_z = ll[2], .max_z = ll[2] + nk * pz,
-    };
-
-    double t_enter = t_min, t_exit = t_max;
-    if (!lat_cell->lat_fill_repeating &&
-        !ray_bbox_slab_enter_exit(ray, &lat_bbox, t_min, t_max,
-                                  &t_enter, &t_exit)) return;
-
-    /* Starting point (nudge slightly inside) */
-    double start_t = t_enter + RAY_EPSILON;
-    double sx = ray->ox + start_t * ray->dx;
-    double sy = ray->oy + start_t * ray->dy;
-    double sz = ray->oz + start_t * ray->dz;
-
-    int i = (int)floor((sx - ll[0]) / px);
-    int j = (lat_cell->lat_fill_repeating || nj > 1)
-        ? (int)floor((sy - ll[1]) / py) : 0;
-    int k = (lat_cell->lat_fill_repeating || nk > 1)
-        ? (int)floor((sz - ll[2]) / pz) : 0;
-
-    /* Clamp to valid range (handles edge cases) */
-    if (!lat_cell->lat_fill_repeating) {
-        if (i < 0) i = 0;
-        if (i >= ni) i = ni - 1;
-        if (j < 0) j = 0;
-        if (j >= nj) j = nj - 1;
-        if (k < 0) k = 0;
-        if (k >= nk) k = nk - 1;
-    }
-
-    /* DDA step direction and delta-t per cell crossing */
-    int step_i = (ray->dx > 0) ? 1 : -1;
-    int step_j = (ray->dy > 0) ? 1 : -1;
-    int step_k = (ray->dz > 0) ? 1 : -1;
-
-    /* Distance to next grid boundary in each dimension */
-    double t_next_i, t_next_j, t_next_k;
-    if (fabs(ray->dx) > RAY_EPSILON) {
-        double boundary = ll[0] + ((ray->dx > 0) ? (i + 1) : i) * px;
-        t_next_i = (boundary - ray->ox) / ray->dx;
-    } else {
-        t_next_i = DBL_MAX;
-    }
-    if ((lat_cell->lat_fill_repeating || nj > 1) &&
-        fabs(ray->dy) > RAY_EPSILON) {
-        double boundary = ll[1] + ((ray->dy > 0) ? (j + 1) : j) * py;
-        t_next_j = (boundary - ray->oy) / ray->dy;
-    } else {
-        t_next_j = DBL_MAX;
-    }
-    if ((lat_cell->lat_fill_repeating || nk > 1) &&
-        fabs(ray->dz) > RAY_EPSILON) {
-        double boundary = ll[2] + ((ray->dz > 0) ? (k + 1) : k) * pz;
-        t_next_k = (boundary - ray->oz) / ray->dz;
-    } else {
-        t_next_k = DBL_MAX;
-    }
-
-    /* Walk through lattice elements */
-    double t_cur = t_enter;
-    int max_steps = 2 * (ni + nj + nk) + 4;
-    if (lat_cell->lat_fill_repeating) {
-        double span = t_exit - t_enter;
-        double crossings = fabs(ray->dx) * span / px
-                         + fabs(ray->dy) * span / py
-                         + fabs(ray->dz) * span / pz;
-        max_steps = (crossings < (double)INT_MAX - 8.0)
-            ? (int)ceil(crossings) + 8 : INT_MAX;
-    }
-
-    for (int step = 0; step < max_steps; step++) {
-        if (!lat_cell->lat_fill_repeating &&
-            (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk))
-            break;
-
-        /* Emit synthetic hit at internal element boundaries so the
-         * segment builder knows to re-query the cell at transitions
-         * between lattice elements.  surface_id=0 causes the segment
-         * builder to skip the (universe-unaware) neighbor lookup and
-         * fall through to a full point query. */
-        if (step > 0 && t_cur > t_enter + RAY_EPSILON) {
-            alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0,
-                                   .primitive_id = ALEA_PRIMITIVE_ID_INVALID };
-            if (add_hit(result, &bnd) != 0) {
-                ALEA_LOG_WARN("add_hit failed (out of memory) - lattice raycast incomplete");
-                return;
-            }
-        }
-
-        /* t range for this element */
-        double t_min_next = t_next_i;
-        if (t_next_j < t_min_next) t_min_next = t_next_j;
-        if (t_next_k < t_min_next) t_min_next = t_next_k;
-        if (t_min_next > t_exit) t_min_next = t_exit;
-
-        /* Get universe for this element */
-        size_t idx = lat_cell->lat_fill_repeating
-            ? 0 : (size_t)(i * nj * nk + j * nk + k);
-        if (idx < lat_cell->lat_fill_count) {
-            int univ_id = lat_cell->lat_fill[idx];
-
-            /* Translate ray to element-local coordinates */
-            double cx, cy, cz;
-            if (lat_cell->lat_fill_zero_element_coords) {
-                cx = (lat_cell->lat_fill_dims[0] + i) * px;
-                cy = (lat_cell->lat_fill_dims[2] + j) * py;
-                cz = (lat_cell->lat_fill_dims[4] + k) * pz;
-            } else {
-                cx = ll[0] + (i + 0.5) * px;
-                cy = ll[1] + (j + 0.5) * py;
-                cz = ll[2] + (k + 0.5) * pz;
-            }
-
-            alea_ray_t local_ray = *ray;
-            local_ray.ox -= cx;
-            local_ray.oy -= cy;
-            local_ray.oz -= cz;
-
-            raycast_universe_surfaces(sys, &local_ray, univ_id,
-                                      t_cur, t_min_next, result);
-        }
-
-        /* Step to next element */
-        t_cur = t_min_next;
-        if (t_cur >= t_exit) break;
-
-        /* Step indices and recalculate boundary positions from scratch
-         * to avoid accumulating floating-point errors. */
-        if (t_next_i <= t_next_j && t_next_i <= t_next_k) {
-            i += step_i;
-            if (fabs(ray->dx) > RAY_EPSILON) {
-                double boundary = ll[0] + ((ray->dx > 0) ? (i + 1) : i) * px;
-                t_next_i = (boundary - ray->ox) / ray->dx;
-            }
-        } else if (t_next_j <= t_next_k) {
-            j += step_j;
-            if (fabs(ray->dy) > RAY_EPSILON) {
-                double boundary = ll[1] + ((ray->dy > 0) ? (j + 1) : j) * py;
-                t_next_j = (boundary - ray->oy) / ray->dy;
-            }
-        } else {
-            k += step_k;
-            if (fabs(ray->dz) > RAY_EPSILON) {
-                double boundary = ll[2] + ((ray->dz > 0) ? (k + 1) : k) * pz;
-                t_next_k = (boundary - ray->oz) / ray->dz;
-            }
-        }
-    }
+    raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, result);
 }
 
-/**
- * Hex DDA: walk a ray through a hex lattice, raycasting fill‐universe
- * surfaces in each element.  Uses 3-axis DDA on the oblique hex
- * coordinate system (fi, fj, fi+fj) to find element transitions.
- */
 static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_ray_t* ray,
                                 const alea_cell_entry_t* lat_cell,
                                 double t_min, double t_max,
                                 alea_raycast_result_t* result) {
-    double p = lat_cell->lat_pitch[0];
-    if (p <= 0.0) return;
-
-    /* M_M_SQRT3 from util/math.h */
-
-    int imin = lat_cell->lat_fill_dims[0], imax = lat_cell->lat_fill_dims[1];
-    int jmin = lat_cell->lat_fill_dims[2], jmax = lat_cell->lat_fill_dims[3];
-    int nk   = lat_cell->lat_fill_dims[5] - lat_cell->lat_fill_dims[4] + 1;
-    int ni   = imax - imin + 1;
-    int nj   = jmax - jmin + 1;
-
-    /* AABB of all hex element centers, expanded by circumradius */
-    double bb_min_x =  DBL_MAX, bb_max_x = -DBL_MAX;
-    double bb_min_y =  DBL_MAX, bb_max_y = -DBL_MAX;
-    double R = p / M_SQRT3;  /* circumradius */
-
-    for (int ci = imin; ci <= imax; ci++) {
-        for (int cj = jmin; cj <= jmax; cj++) {
-            double cx = ci * p + cj * p * 0.5;
-            double cy = cj * p * M_SQRT3 * 0.5;
-            if (cx - R < bb_min_x) bb_min_x = cx - R;
-            if (cx + R > bb_max_x) bb_max_x = cx + R;
-            if (cy - p * 0.5 < bb_min_y) bb_min_y = cy - p * 0.5;
-            if (cy + p * 0.5 > bb_max_y) bb_max_y = cy + p * 0.5;
-        }
-    }
-
-    alea_bbox_t lat_bbox = {
-        .min_x = bb_min_x, .max_x = bb_max_x,
-        .min_y = bb_min_y, .max_y = bb_max_y,
-        .min_z = (nk > 1) ? lat_cell->lat_lower_left[2] : -1e30,
-        .max_z = (nk > 1) ? lat_cell->lat_lower_left[2]
-                           + nk * lat_cell->lat_pitch[2] : 1e30,
-    };
-
-    double t_enter, t_exit;
-    if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, t_min, t_max, &t_enter, &t_exit))
-        return;
-
-    /* ---- oblique coordinate rates along the ray ---- */
-    double inv_p = 1.0 / p;
-    double inv_ps = inv_p / M_SQRT3;          /* 1 / (p * sqrt3) */
-    double dq = ray->dx * inv_p - ray->dy * inv_ps;          /* dfi/dt */
-    double dr = 2.0 * ray->dy * inv_ps;                      /* dfj/dt */
-    double ds = -dq - dr;                                     /* d(-fi-fj)/dt */
-
-    /* Starting oblique coords at t_enter */
-    double sx = ray->ox + t_enter * ray->dx;
-    double sy = ray->oy + t_enter * ray->dy;
-    double q0 = sx * inv_p - sy * inv_ps;
-    double r0 = 2.0 * sy * inv_ps;
-    double s0 = -q0 - r0;
-
-    /* Helper: compute first half-integer boundary crossing after val in
-     * the direction of step.  Boundaries are at n + 0.5. */
-    #define NEXT_HALF(val, rate, t_out) do {                       \
-        if (fabs(rate) > RAY_EPSILON) {                            \
-            double bnd;                                            \
-            if ((rate) > 0) {                                      \
-                bnd = floor((val) + 0.5) + 0.5;                   \
-                if (bnd <= (val) + RAY_EPSILON) bnd += 1.0;        \
-            } else {                                               \
-                bnd = ceil((val) - 0.5) - 0.5;                    \
-                if (bnd >= (val) - RAY_EPSILON) bnd -= 1.0;        \
-            }                                                      \
-            (t_out) = t_enter + (bnd - (val)) / (rate);            \
-        } else {                                                   \
-            (t_out) = DBL_MAX;                                     \
-        }                                                          \
-    } while(0)
-
-    double t_next_q;  NEXT_HALF(q0, dq, t_next_q);
-    double t_next_r;  NEXT_HALF(r0, dr, t_next_r);
-    double t_next_s;  NEXT_HALF(s0, ds, t_next_s);
-    #undef NEXT_HALF
-
-    /* ---- Walk through hex elements ---- */
-    double t_cur = t_enter;
-    double prev_cx = DBL_MAX;   /* track previous element center */
-    double prev_cy = DBL_MAX;
-    int max_steps = 3 * (ni + nj + nk) + 10;
-
-    for (int step = 0; step < max_steps; step++) {
-        if (t_cur >= t_exit - RAY_EPSILON) break;
-
-        /* Nearest boundary crossing among the 3 axes */
-        double t_next = t_next_q;
-        if (t_next_r < t_next) t_next = t_next_r;
-        if (t_next_s < t_next) t_next = t_next_s;
-        if (t_next > t_exit) t_next = t_exit;
-
-        /* Identify hex element at midpoint of this interval */
-        double t_mid = 0.5 * (t_cur + t_next);
-        double mx = ray->ox + t_mid * ray->dx;
-        double my = ray->oy + t_mid * ray->dy;
-        double mz = ray->oz + t_mid * ray->dz;
-
-        double ox, oy, oz;
-        int univ = lattice_hex_lookup(lat_cell, mx, my, mz, &ox, &oy, &oz);
-
-        if (univ >= 0) {
-            /* Emit boundary hit when we enter a new hex element */
-            int new_elem = (fabs(ox - prev_cx) > RAY_EPSILON ||
-                            fabs(oy - prev_cy) > RAY_EPSILON);
-            if (new_elem && prev_cx < DBL_MAX && t_cur > t_enter + RAY_EPSILON) {
-                alea_ray_hit_t bnd = { .t = t_cur, .surface_id = 0,
-                                       .primitive_id = ALEA_PRIMITIVE_ID_INVALID };
-                if (add_hit(result, &bnd) != 0) {
-                    ALEA_LOG_WARN("add_hit failed (out of memory) - hex lattice raycast incomplete");
-                    return;
-                }
-            }
-            if (new_elem) { prev_cx = ox; prev_cy = oy; }
-
-            /* Raycast fill universe in element-local coordinates */
-            alea_ray_t local_ray = *ray;
-            local_ray.ox -= ox;
-            local_ray.oy -= oy;
-            local_ray.oz -= oz;
-            raycast_universe_surfaces(sys, &local_ray, univ,
-                                      t_cur, t_next, result);
-        }
-
-        /* Advance DDA — recompute next boundaries from current position
-         * to avoid accumulating floating-point drift from repeated += dt */
-        t_cur = t_next;
-        if (fabs(t_next - t_next_q) < RAY_EPSILON) {
-            double cur_q = (ray->ox + t_cur * ray->dx) * inv_p
-                         - (ray->oy + t_cur * ray->dy) * inv_ps;
-            double bnd = (dq > 0) ? floor(cur_q + 0.5) + 0.5
-                                  : ceil(cur_q - 0.5) - 0.5;
-            if ((dq > 0 && bnd <= cur_q + RAY_EPSILON) ||
-                (dq < 0 && bnd >= cur_q - RAY_EPSILON))
-                bnd += (dq > 0) ? 1.0 : -1.0;
-            t_next_q = t_cur + (bnd - cur_q) / dq;
-        }
-        if (fabs(t_next - t_next_r) < RAY_EPSILON) {
-            double cur_r = 2.0 * (ray->oy + t_cur * ray->dy) * inv_ps;
-            double bnd = (dr > 0) ? floor(cur_r + 0.5) + 0.5
-                                  : ceil(cur_r - 0.5) - 0.5;
-            if ((dr > 0 && bnd <= cur_r + RAY_EPSILON) ||
-                (dr < 0 && bnd >= cur_r - RAY_EPSILON))
-                bnd += (dr > 0) ? 1.0 : -1.0;
-            t_next_r = t_cur + (bnd - cur_r) / dr;
-        }
-        if (fabs(t_next - t_next_s) < RAY_EPSILON) {
-            double cur_q2 = (ray->ox + t_cur * ray->dx) * inv_p
-                          - (ray->oy + t_cur * ray->dy) * inv_ps;
-            double cur_r2 = 2.0 * (ray->oy + t_cur * ray->dy) * inv_ps;
-            double cur_s = -cur_q2 - cur_r2;
-            double bnd = (ds > 0) ? floor(cur_s + 0.5) + 0.5
-                                  : ceil(cur_s - 0.5) - 0.5;
-            if ((ds > 0 && bnd <= cur_s + RAY_EPSILON) ||
-                (ds < 0 && bnd >= cur_s - RAY_EPSILON))
-                bnd += (ds > 0) ? 1.0 : -1.0;
-            t_next_s = t_cur + (bnd - cur_s) / ds;
-        }
-    }
+    raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, result);
 }
-
 /**
  * Add lattice surface hits for all lattice cells the ray may cross.
  * Called after alea_raycast_surfaces() and before sorting/dedup.
@@ -2059,8 +1945,7 @@ int alea_raycast_query_reuse_nocache(
         return 0;
     }
     if (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE &&
-        !system_has_lattice_cells(sys)) {
+        query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE) {
         /* The hierarchical stepper validates each interval before returning,
          * then stops before allocating its segment/hit representation. */
         if (!output || alea_raycast_hier_first_visible_nocache(
@@ -2438,6 +2323,31 @@ typedef struct {
     bool is_synthetic_lattice_boundary;
 } alea_raycast_boundary_event_t;
 
+/* Persistent portion of one hierarchical ray walk.  Keeping this explicit
+ * lets the scalar adapter run to completion while a future packet executor
+ * advances the same walk one verified interval at a time. */
+typedef struct {
+    double t_current;
+    int prev_cell_idx;
+    int prev_surface_id;
+    int pending_enter_hit_index;
+    alea_raycast_boundary_event_t enter_event;
+    alea_hier_ray_path_t current_path;
+    double pending_lattice_entry_sample;
+    int iterations_remaining;
+} raycast_cell_aware_state_t;
+
+static void raycast_cell_aware_state_init(raycast_cell_aware_state_t* state) {
+    memset(state, 0, sizeof(*state));
+    state->prev_cell_idx = -2;
+    state->prev_surface_id = -1;
+    state->pending_enter_hit_index = -1;
+    state->enter_event.surface_id = -1;
+    state->enter_event.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+    alea_matrix_identity(&state->enter_event.transform);
+    state->iterations_remaining = 10000;
+}
+
 /* Map a primitive-local normal back to world space.
  *
  * Normals transform by the inverse-transpose of the local->world linear part.
@@ -2647,11 +2557,8 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
 
     if (px <= 0.0 || py <= 0.0 || pz <= 0.0) return t_max;
 
-    alea_bbox_t lat_bbox = {
-        .min_x = ll[0], .max_x = ll[0] + ni * px,
-        .min_y = ll[1], .max_y = ll[1] + nj * py,
-        .min_z = ll[2], .max_z = ll[2] + nk * pz,
-    };
+    alea_bbox_t lat_bbox;
+    if (lattice_rect_bounds(lat_cell, &lat_bbox) != 0) return t_max;
 
     double t_enter = 0.0, t_exit = t_max;
     if (!lat_cell->lat_fill_repeating &&
@@ -2682,33 +2589,21 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
     (void)t_exit;
     double t_next = t_max;
     if (fabs(ray->dx) > RAY_EPSILON) {
-        int crosses_outer_edge = (ray->dx > 0.0 && i + 1 >= ni) ||
-                                 (ray->dx < 0.0 && i <= 0);
-        if (lat_cell->lat_fill_repeating || !crosses_outer_edge) {
-            double boundary = ll[0] + ((ray->dx > 0.0) ? (i + 1) : i) * px;
-            double t = (boundary - ray->ox) / ray->dx;
-            if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
-        }
+        double boundary = ll[0] + ((ray->dx > 0.0) ? (i + 1) : i) * px;
+        double t = (boundary - ray->ox) / ray->dx;
+        if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
     }
     if ((lat_cell->lat_fill_repeating || nj > 1) &&
         fabs(ray->dy) > RAY_EPSILON) {
-        int crosses_outer_edge = (ray->dy > 0.0 && j + 1 >= nj) ||
-                                 (ray->dy < 0.0 && j <= 0);
-        if (lat_cell->lat_fill_repeating || !crosses_outer_edge) {
-            double boundary = ll[1] + ((ray->dy > 0.0) ? (j + 1) : j) * py;
-            double t = (boundary - ray->oy) / ray->dy;
-            if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
-        }
+        double boundary = ll[1] + ((ray->dy > 0.0) ? (j + 1) : j) * py;
+        double t = (boundary - ray->oy) / ray->dy;
+        if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
     }
     if ((lat_cell->lat_fill_repeating || nk > 1) &&
         fabs(ray->dz) > RAY_EPSILON) {
-        int crosses_outer_edge = (ray->dz > 0.0 && k + 1 >= nk) ||
-                                 (ray->dz < 0.0 && k <= 0);
-        if (lat_cell->lat_fill_repeating || !crosses_outer_edge) {
-            double boundary = ll[2] + ((ray->dz > 0.0) ? (k + 1) : k) * pz;
-            double t = (boundary - ray->oz) / ray->dz;
-            if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
-        }
+        double boundary = ll[2] + ((ray->dz > 0.0) ? (k + 1) : k) * pz;
+        double t = (boundary - ray->oz) / ray->dz;
+        if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
     }
 
     return (t_next < t_max) ? t_next : t_max;
@@ -2721,32 +2616,8 @@ static double lattice_hex_next_boundary(const alea_ray_t* ray,
     double p = lat_cell->lat_pitch[0];
     if (p <= 0.0) return t_max;
 
-    int imin = lat_cell->lat_fill_dims[0], imax = lat_cell->lat_fill_dims[1];
-    int jmin = lat_cell->lat_fill_dims[2], jmax = lat_cell->lat_fill_dims[3];
-    int nk = lat_cell->lat_fill_dims[5] - lat_cell->lat_fill_dims[4] + 1;
-
-    double bb_min_x = DBL_MAX, bb_max_x = -DBL_MAX;
-    double bb_min_y = DBL_MAX, bb_max_y = -DBL_MAX;
-    double r = p / M_SQRT3;
-
-    for (int ci = imin; ci <= imax; ci++) {
-        for (int cj = jmin; cj <= jmax; cj++) {
-            double cx = ci * p + cj * p * 0.5;
-            double cy = cj * p * M_SQRT3 * 0.5;
-            if (cx - r < bb_min_x) bb_min_x = cx - r;
-            if (cx + r > bb_max_x) bb_max_x = cx + r;
-            if (cy - p * 0.5 < bb_min_y) bb_min_y = cy - p * 0.5;
-            if (cy + p * 0.5 > bb_max_y) bb_max_y = cy + p * 0.5;
-        }
-    }
-
-    alea_bbox_t lat_bbox = {
-        .min_x = bb_min_x, .max_x = bb_max_x,
-        .min_y = bb_min_y, .max_y = bb_max_y,
-        .min_z = (nk > 1) ? lat_cell->lat_lower_left[2] : -1e30,
-        .max_z = (nk > 1) ? lat_cell->lat_lower_left[2]
-                           + nk * lat_cell->lat_pitch[2] : 1e30,
-    };
+    alea_bbox_t lat_bbox;
+    if (lattice_hex_bounds(lat_cell, &lat_bbox) != 0) return t_max;
 
     double t_enter, t_exit;
     if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, 0.0, t_max,
@@ -2790,17 +2661,6 @@ static double lattice_hex_next_boundary(const alea_ray_t* ray,
     CONSIDER_NEXT_HALF(s, ds);
 #undef CONSIDER_NEXT_HALF
 
-    if (t_next < t_max) {
-        double probe_t = t_next + RAY_EPSILON;
-        double px = ray->ox + probe_t * ray->dx;
-        double py = ray->oy + probe_t * ray->dy;
-        double pz = ray->oz + probe_t * ray->dz;
-        double ox, oy, oz;
-        if (lattice_hex_lookup(lat_cell, px, py, pz, &ox, &oy, &oz) < 0) {
-            return t_max;
-        }
-    }
-
     return (t_next < t_max) ? t_next : t_max;
 }
 
@@ -2813,6 +2673,116 @@ static double lattice_next_boundary(const alea_ray_t* ray,
     if (lat_cell->lat_type == 2)
         return lattice_hex_next_boundary(ray, lat_cell, t_min, t_max);
     return t_max;
+}
+
+/* Find the first DDA interval after t_min that has a canonical finite-lattice
+ * location.  This lets the hierarchical walker enter a lattice while its
+ * current ownership is void or an unresolved fill container. */
+static double lattice_first_valid_entry(const alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        const alea_cell_entry_t* cell,
+                                        double t_min,
+                                        double t_max,
+                                        double* out_sample) {
+    if (out_sample) *out_sample = -1.0;
+    double t_enter, t_exit;
+    if (lattice_raycast_interval(ray, cell, t_min, t_max,
+                                 &t_enter, &t_exit) != 0 ||
+        t_exit <= t_enter + RAY_EPSILON) {
+        return DBL_MAX;
+    }
+
+    const int max_steps = lattice_raycast_step_limit(ray, cell,
+                                                      t_enter, t_exit);
+    int previous_valid = 0;
+    double t_current = t_enter;
+    for (int step = 0; step < max_steps && t_current < t_exit; step++) {
+        double t_next = lattice_next_boundary(ray, cell, t_current, t_exit);
+        if (t_next <= t_current + RAY_EPSILON || t_next > t_exit)
+            t_next = t_exit;
+        double x, y, z;
+        alea_ray_point_at(ray, t_current + 0.5 * (t_next - t_current),
+                          &x, &y, &z);
+        alea_lattice_location_t location;
+        const int valid = alea_lattice_locate_point(sys, cell, x, y, z,
+                                                     &location) == 1;
+        if (valid && !previous_valid && t_current > t_min + RAY_EPSILON) {
+            if (out_sample) {
+                *out_sample = t_current +
+                    fmin(DDA_SAMPLE_OFFSET, 0.25 * (t_next - t_current));
+            }
+            return t_current;
+        }
+        previous_valid = valid;
+        t_current = t_next;
+    }
+    return DBL_MAX;
+}
+
+typedef struct {
+    const alea_system_t* sys;
+    const alea_ray_t* ray;
+    double t_min;
+    double t_max;
+    double closest;
+    double sample;
+} lattice_entry_visit_ctx_t;
+
+static int visit_lattice_entry(uint32_t placement_index,
+                               uint32_t lattice_cell_index,
+                               const alea_matrix_t* transform,
+                               double placement_enter,
+                               double placement_exit,
+                               void* userdata) {
+    (void)placement_index;
+    lattice_entry_visit_ctx_t* ctx = userdata;
+    if (!ctx || !transform ||
+        lattice_cell_index >= alea_vec_count(&ctx->sys->cells)) {
+        return -1;
+    }
+    const alea_cell_entry_t* cell =
+        &ctx->sys->cells.data[lattice_cell_index];
+    alea_ray_t local_ray;
+    transform_ray_inverse(transform, ctx->ray, &local_ray);
+    double sample = -1.0;
+    double t = lattice_first_valid_entry(
+        ctx->sys, &local_ray, cell,
+        fmax(ctx->t_min, placement_enter),
+        fmin(ctx->t_max, placement_exit), &sample);
+    if (t < ctx->closest) {
+        double x, y, z;
+        alea_ray_point_at(ctx->ray, sample, &x, &y, &z);
+        int valid = alea_hier_spatial_check_lattice_placement_ancestors(
+            (alea_system_t*)ctx->sys, placement_index, x, y, z);
+        if (valid < 0) return -1;
+        if (!valid) return 0;
+        ctx->closest = t;
+        ctx->sample = sample;
+    }
+    return 0;
+}
+
+static double system_first_lattice_entry(alea_system_t* sys,
+                                         const alea_ray_t* ray,
+                                         double t_min,
+                                         double t_max,
+                                         double* out_sample) {
+    lattice_entry_visit_ctx_t ctx = {
+        .sys = sys,
+        .ray = ray,
+        .t_min = t_min,
+        .t_max = t_max,
+        .closest = DBL_MAX,
+        .sample = -1.0
+    };
+    if (alea_hier_spatial_visit_lattice_placements_ray(
+            sys, ray->ox, ray->oy, ray->oz,
+            ray->inv_dx, ray->inv_dy, ray->inv_dz,
+            t_min, t_max, visit_lattice_entry, &ctx) != 0) {
+        return DBL_MAX;
+    }
+    if (out_sample) *out_sample = ctx.sample;
+    return ctx.closest;
 }
 
 /**
@@ -2901,9 +2871,29 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
     for (int parent = current_path->count - 2; parent >= 0; parent--) {
         alea_hier_cell_hit_t hit_with_transform;
         alea_hier_ray_path_t candidate_path;
-        int found = alea_hier_spatial_find_path_from_parent(
-            sys, current_path, parent, px, py, pz,
-            &hit_with_transform, &candidate_path);
+        const alea_hier_ray_path_entry_t* parent_entry =
+            &current_path->entries[parent];
+        int found;
+        if (parent_entry->is_lattice &&
+            (size_t)parent_entry->cell_index < alea_vec_count(&sys->cells)) {
+            const alea_cell_entry_t* lattice =
+                &sys->cells.data[parent_entry->cell_index];
+            double lx = px, ly = py, lz = pz;
+            alea_matrix_transform_point_inverse(&parent_entry->transform,
+                                                &lx, &ly, &lz);
+            alea_lattice_location_t location;
+            if (alea_lattice_locate_point(sys, lattice, lx, ly, lz,
+                                          &location) != 1) {
+                continue;
+            }
+            found = alea_hier_path_enter_lattice_location(
+                sys, current_path, parent, px, py, pz, &location,
+                &hit_with_transform, &candidate_path);
+        } else {
+            found = alea_hier_spatial_find_path_from_parent(
+                sys, current_path, parent, px, py, pz,
+                &hit_with_transform, &candidate_path);
+        }
         if (found < 0) return -2;
         if (found == 0) continue;
 
@@ -2944,10 +2934,6 @@ static int find_cell_from_root_universe(alea_system_t* sys,
     if ((size_t)root_cell >= alea_vec_count(&sys->cells)) return -2;
 
     const alea_cell_entry_t* cell = &sys->cells.data[root_cell];
-    if (cell->lat_type != 0 && cell->lat_fill) {
-        return -1;
-    }
-
     alea_hier_ray_path_t root_path;
     root_path.count = 1;
     alea_hier_ray_path_entry_t* ent = &root_path.entries[0];
@@ -2959,12 +2945,30 @@ static int find_cell_from_root_universe(alea_system_t* sys,
     ent->depth = 0;
     ent->is_lattice = 0;
     ent->lat_fill_universe = 0;
+    ent->lat_i = 0;
+    ent->lat_j = 0;
+    ent->lat_k = 0;
     ent->lat_ox = 0.0;
     ent->lat_oy = 0.0;
     ent->lat_oz = 0.0;
     alea_matrix_identity(&ent->transform);
 
-    if (cell->fill_universe > 0) {
+    if (cell->lat_type != 0 && cell->lat_fill) {
+        alea_lattice_location_t location;
+        if (alea_lattice_locate_point(sys, cell, px, py, pz, &location) != 1)
+            return -1;
+        ent->fill_universe = location.fill_universe;
+        ent->is_lattice = 1;
+        ent->lat_fill_universe = location.fill_universe;
+        ent->lat_i = location.i;
+        ent->lat_j = location.j;
+        ent->lat_k = location.k;
+        ent->lat_ox = location.ox;
+        ent->lat_oy = location.oy;
+        ent->lat_oz = location.oz;
+    }
+
+    if (cell->fill_universe > 0 || ent->is_lattice) {
         alea_hier_cell_hit_t hit_with_transform;
         alea_hier_ray_path_t candidate_path;
         int found = alea_hier_spatial_find_path_from_parent(
@@ -3087,40 +3091,47 @@ static double find_closest_intersection(alea_system_t* sys,
     return closest_t;
 }
 
-static int raycast_cell_aware_impl(alea_system_t* sys,
-                                   const alea_ray_t* ray,
-                                   double effective_t_max,
-                                   bool use_hier_lookup,
-                                   bool emit_hits,
-                                   alea_ray_first_visible_result_t* first_visible,
-                                   int* first_cell_id,
-                                   double* first_cell_t,
-                                   double first_cell_t_min,
-                                   int first_cell_material_filter,
-                                   double visible_t_min,
-                                   int visible_material_filter,
-                                   bool visible_wants_normal,
-                                   alea_raycast_result_t* result) {
+static int raycast_cell_aware_resume(alea_system_t* sys,
+                                     const alea_ray_t* ray,
+                                     double effective_t_max,
+                                     bool use_hier_lookup,
+                                     bool emit_hits,
+                                     alea_ray_first_visible_result_t* first_visible,
+                                     int* first_cell_id,
+                                     double* first_cell_t,
+                                     double first_cell_t_min,
+                                     int first_cell_material_filter,
+                                     double visible_t_min,
+                                     int visible_material_filter,
+                                     bool visible_wants_normal,
+                                     alea_raycast_result_t* result,
+                                     raycast_cell_aware_state_t* state,
+                                     int step_budget) {
+    if (!state || step_budget <= 0) return -1;
     /* Current position along ray */
-    double t_current = 0;
-    int prev_cell_idx = -2;  /* -2 = no previous */
-    int prev_surface_id = -1;  /* Surface ID we're about to cross */
+    double t_current = state->t_current;
+    int prev_cell_idx = state->prev_cell_idx;
+    int prev_surface_id = state->prev_surface_id;
     /* Hit index of the surface crossed at t_current (the next segment's
      * enter boundary), or -1. Only maintained when emit_hits is set. */
-    int pending_enter_hit_index = -1;
-    alea_hier_ray_path_t current_path;
-    current_path.count = 0;
+    int pending_enter_hit_index = state->pending_enter_hit_index;
+    /* The physical or synthetic event that entered the current interval.
+     * FIRST_VISIBLE reports an entering surface, so it must not reuse the
+     * current iteration's exit event. */
+    alea_raycast_boundary_event_t enter_event = state->enter_event;
+    alea_hier_ray_path_t current_path = state->current_path;
+    double pending_lattice_entry_sample = state->pending_lattice_entry_sample;
 
-    /* Safety limit to prevent infinite loops */
-    int max_iterations = 10000;
-
-    while (t_current < effective_t_max && max_iterations-- > 0) {
+    while (t_current < effective_t_max && step_budget-- > 0 &&
+           state->iterations_remaining-- > 0) {
         result->step_iterations++;
         /* Cell resolution samples just past the crossing at t_current, where
          * quadric sign evaluation is numerically noisy. Midpoint verification
          * after the crossing search jumps back here once with a sample point
          * in the segment interior when the resolved cell fails to contain it. */
-        double t_sample = t_current + RAY_EPSILON;
+        double t_sample = pending_lattice_entry_sample > t_current
+            ? pending_lattice_entry_sample : t_current + RAY_EPSILON;
+        pending_lattice_entry_sample = -1.0;
         int resolve_attempt = 0;
         /* Snapshot of the attempt-0 outcome. The retry is accepted only when
          * it verifies strictly better; otherwise this state is restored, so a
@@ -3188,6 +3199,9 @@ resolve_cell:;
                         entry->depth = 0;
                         entry->is_lattice = 0;
                         entry->lat_fill_universe = 0;
+                        entry->lat_i = 0;
+                        entry->lat_j = 0;
+                        entry->lat_k = 0;
                         entry->lat_ox = 0.0;
                         entry->lat_oy = 0.0;
                         entry->lat_oz = 0.0;
@@ -3214,11 +3228,11 @@ resolve_cell:;
                 alea_matrix_identity(&lattice_transform);
             } else {
                 in_cell = alea_hier_spatial_check_path_containment(
-                    sys, &current_path, (uint32_t)prev_cell_idx, px, py, pz,
+                    sys, &current_path, current_path.count - 1, px, py, pz,
                     &cell_transform, &lattice_cell_index, &lattice_transform);
                 if (in_cell < 0) in_cell = 0;
             }
-            if (in_cell) {
+            if (in_cell && !alea_cell_entry_is_container(prev_cell)) {
                 cell_idx = prev_cell_idx;
                 cell_id = prev_cell->mc_cell_id;
                 material_id = prev_cell->material_id;
@@ -3343,6 +3357,21 @@ resolve_cell:;
                 if (t_lattice_surface < t_next - RAY_EPSILON) {
                     t_next = t_lattice_surface;
                     hit_surface_id = lattice_surface_id;
+                    if (fabs(t_lattice_surface - t_lattice_next) <=
+                        SURFACE_SAMPLE_OFFSET) {
+                        const double post_t =
+                            fmax(t_lattice_surface, t_lattice_next) +
+                            10.0 * RAY_EPSILON;
+                        double post_x, post_y, post_z;
+                        alea_ray_point_at(&lattice_ray, post_t,
+                                          &post_x, &post_y, &post_z);
+                        alea_lattice_location_t post_location;
+                        if (alea_lattice_locate_point(
+                                sys, lattice_cell, post_x, post_y, post_z,
+                                &post_location) != 1) {
+                            pending_lattice_entry_sample = post_t;
+                        }
+                    }
                     if (emit_hits || first_visible) {
                         bevent.t = t_lattice_surface;
                         bevent.surface_id = lattice_surface_id;
@@ -3434,6 +3463,29 @@ resolve_cell:;
             }
         }
 
+        if (use_hier_lookup && lattice_cell_index < 0 &&
+            (cell_idx < 0 ||
+             ((size_t)cell_idx < alea_vec_count(&sys->cells) &&
+              alea_cell_entry_is_container(&sys->cells.data[cell_idx])))) {
+            double entry_sample = -1.0;
+            double t_lattice_entry = system_first_lattice_entry(
+                sys, ray, t_current + RAY_EPSILON, effective_t_max,
+                &entry_sample);
+            if (t_lattice_entry < t_next - SURFACE_SAMPLE_OFFSET) {
+                t_next = t_lattice_entry;
+                hit_surface_id = 0;
+                next_enter_surface_id = 0;
+                pending_lattice_entry_sample = entry_sample;
+                if (emit_hits || first_visible) {
+                    bevent.t = t_lattice_entry;
+                    bevent.surface_id = 0;
+                    bevent.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+                    bevent.has_physical_surface = false;
+                    bevent.is_synthetic_lattice_boundary = true;
+                }
+            }
+        }
+
         /* Ensure we make progress at any scale:
          * absolute 1e-10 dominates near origin; relative 1e-6 at large t */
         if (t_next <= t_current + RAY_EPSILON) {
@@ -3475,7 +3527,7 @@ resolve_cell:;
                                         mx, my, mz);
             } else {
                 probe_ok = alea_hier_spatial_check_path_containment(
-                    sys, &current_path, (uint32_t)cell_idx, mx, my, mz,
+                    sys, &current_path, current_path.count - 1, mx, my, mz,
                     NULL, NULL, NULL) > 0;
             }
             /* A retry must not climb the hierarchy: a shallower answer than
@@ -3563,7 +3615,13 @@ resolve_cell:;
             first_visible->cell_id = cell_id;
             first_visible->material_id = material_id;
             first_visible->density = density;
-            first_visible->surface_id = -1;
+            /* Synthetic lattice entries are observable boundaries in the
+             * canonical trace (surface id 0).  Preserve that identity only
+             * when visibility begins at the interval entry; a clipped query
+             * begins in the interval interior and has no entering boundary. */
+            first_visible->surface_id =
+                t_current >= visible_t_min - RAY_EPSILON
+                    ? enter_event.surface_id : -1;
             first_visible->primitive_id = UINT32_MAX;
             first_visible->resolution_flags =
                 (cell_idx >= 0 &&
@@ -3571,7 +3629,7 @@ resolve_cell:;
                  alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
                     ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
             if (t_current >= visible_t_min - RAY_EPSILON)
-                boundary_event_first_visible_normal(sys, ray, &bevent,
+                boundary_event_first_visible_normal(sys, ray, &enter_event,
                                                     visible_wants_normal,
                                                     first_visible);
             return 0;
@@ -3635,9 +3693,20 @@ resolve_cell:;
         if (next_enter_surface_id < 0)
             next_enter_surface_id = hit_surface_id;
         prev_surface_id = next_enter_surface_id;
+        enter_event = bevent;
 
         /* Move past the intersection */
         t_current = t_next;
+
+        /* Persist only the state needed to resume at the next verified
+         * interval. Per-step candidate and retry variables remain local. */
+        state->t_current = t_current;
+        state->prev_cell_idx = prev_cell_idx;
+        state->prev_surface_id = prev_surface_id;
+        state->pending_enter_hit_index = pending_enter_hit_index;
+        state->enter_event = enter_event;
+        state->current_path = current_path;
+        state->pending_lattice_entry_sample = pending_lattice_entry_sample;
 
         /* If we hit nothing, we're done */
         if (t_next >= effective_t_max - RAY_EPSILON) {
@@ -3645,7 +3714,227 @@ resolve_cell:;
         }
     }
 
+    if (t_current < effective_t_max && state->iterations_remaining > 0 &&
+        step_budget <= 0) {
+        return 1;  /* yielded after the requested number of intervals */
+    }
     return 0;
+}
+
+static int raycast_cell_aware_impl(alea_system_t* sys,
+                                   const alea_ray_t* ray,
+                                   double effective_t_max,
+                                   bool use_hier_lookup,
+                                   bool emit_hits,
+                                   alea_ray_first_visible_result_t* first_visible,
+                                   int* first_cell_id,
+                                   double* first_cell_t,
+                                   double first_cell_t_min,
+                                   int first_cell_material_filter,
+                                   double visible_t_min,
+                                   int visible_material_filter,
+                                   bool visible_wants_normal,
+                                   alea_raycast_result_t* result) {
+    raycast_cell_aware_state_t state;
+    raycast_cell_aware_state_init(&state);
+    return raycast_cell_aware_resume(
+        sys, ray, effective_t_max, use_hier_lookup, emit_hits,
+        first_visible, first_cell_id, first_cell_t, first_cell_t_min,
+        first_cell_material_filter, visible_t_min, visible_material_filter,
+        visible_wants_normal, result, &state, INT_MAX);
+}
+
+#ifndef RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
+#define RAYCAST_FIRST_VISIBLE_PACKET_WIDTH 4
+#endif
+
+typedef struct {
+    alea_ray_t ray;
+    raycast_cell_aware_state_t state;
+    alea_raycast_result_t scratch;
+    alea_ray_first_visible_result_t visible;
+    size_t ray_index;
+    uint8_t active;
+} raycast_first_visible_lane_t;
+
+static void raycast_first_visible_lane_init(
+    raycast_first_visible_lane_t* lane,
+    size_t ray_index,
+    const double* origins_xyz,
+    const double* directions_xyz) {
+    memset(lane, 0, sizeof(*lane));
+    lane->ray_index = ray_index;
+    const double* o = &origins_xyz[ray_index * 3];
+    const double* d = &directions_xyz[ray_index * 3];
+    if (alea_ray_init(&lane->ray, o[0], o[1], o[2],
+                      d[0], d[1], d[2]) != 0) {
+        return;
+    }
+    raycast_cell_aware_state_init(&lane->state);
+    alea_raycast_result_init(&lane->scratch);
+    lane->scratch.ray = lane->ray;
+    lane->visible.cell_id = -1;
+    lane->visible.surface_id = -1;
+    lane->visible.primitive_id = UINT32_MAX;
+    lane->active = 1;
+}
+
+static void raycast_first_visible_lane_store(
+    const raycast_first_visible_lane_t* lane,
+    alea_ray_first_visible_batch_result_t* result) {
+    const size_t i = lane->ray_index;
+    const alea_ray_first_visible_result_t* visible = &lane->visible;
+    result->found[i] = visible->found ? 1 : 0;
+    result->t[i] = visible->t;
+    result->cell_ids[i] = visible->cell_id;
+    result->material_ids[i] = visible->material_id;
+    if (result->densities) result->densities[i] = visible->density;
+    if (result->surface_ids) result->surface_ids[i] = visible->surface_id;
+    if (result->primitive_ids) result->primitive_ids[i] = visible->primitive_id;
+    if (result->resolution_flags)
+        result->resolution_flags[i] = visible->resolution_flags;
+    if (result->normals_xyz) {
+        result->normals_xyz[i * 3] = visible->nx;
+        result->normals_xyz[i * 3 + 1] = visible->ny;
+        result->normals_xyz[i * 3 + 2] = visible->nz;
+    }
+}
+
+int alea_raycast_hier_first_visible_batch_execute_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_first_visible_batch_result_t* result, int* statuses) {
+    if (!sys || !origins_xyz || !directions_xyz || !query || !result ||
+        !statuses) {
+        return -1;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t packet_start = 0; packet_start < ray_count;
+         packet_start += RAYCAST_FIRST_VISIBLE_PACKET_WIDTH) {
+        raycast_first_visible_lane_t lanes[RAYCAST_FIRST_VISIBLE_PACKET_WIDTH];
+        const size_t remaining = ray_count - packet_start;
+        const size_t packet_end = packet_start +
+            (remaining < RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
+                 ? remaining : RAYCAST_FIRST_VISIBLE_PACKET_WIDTH);
+        size_t active_count = 0;
+        for (size_t i = packet_start; i < packet_end; i++) {
+            raycast_first_visible_lane_init(&lanes[i - packet_start], i,
+                                            origins_xyz, directions_xyz);
+            if (!lanes[i - packet_start].active) {
+                statuses[i] = -1;
+                continue;
+            }
+            active_count++;
+        }
+
+        while (active_count > 0 && !alea_interrupted()) {
+            for (size_t slot = 0; slot < packet_end - packet_start; slot++) {
+                raycast_first_visible_lane_t* lane = &lanes[slot];
+                if (!lane->active) continue;
+                const size_t i = lane->ray_index;
+                const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
+                const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
+                const double effective_t_max = t_max <= 0.0 ? DBL_MAX : t_max;
+                const int rc = raycast_cell_aware_resume(
+                    sys, &lane->ray, effective_t_max, true, false,
+                    &lane->visible, NULL, NULL, 0.0, -1,
+                    t_min, query->material_filter,
+                    (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) != 0,
+                    &lane->scratch, &lane->state, 1);
+                if (rc < 0) {
+                    statuses[i] = -1;
+                    lane->active = 0;
+                    active_count--;
+                    continue;
+                }
+                if (rc == 0) {
+                    raycast_first_visible_lane_store(lane, result);
+                    lane->active = 0;
+                    active_count--;
+                }
+            }
+        }
+        for (size_t slot = 0; slot < packet_end - packet_start; slot++) {
+            raycast_first_visible_lane_t* lane = &lanes[slot];
+            if (lane->active) {
+                statuses[lane->ray_index] = -1;
+                lane->active = 0;
+            }
+            alea_raycast_result_free(&lane->scratch);
+        }
+    }
+    return alea_interrupted() ? -1 : 0;
+}
+
+int alea_raycast_hier_any_hit_batch_execute_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_ray_any_hit_batch_result_t* result, int* statuses) {
+    if (!sys || !origins_xyz || !directions_xyz || !query || !result ||
+        !statuses) {
+        return -1;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t packet_start = 0; packet_start < ray_count;
+         packet_start += RAYCAST_FIRST_VISIBLE_PACKET_WIDTH) {
+        raycast_first_visible_lane_t lanes[RAYCAST_FIRST_VISIBLE_PACKET_WIDTH];
+        const size_t remaining = ray_count - packet_start;
+        const size_t packet_end = packet_start +
+            (remaining < RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
+                 ? remaining : RAYCAST_FIRST_VISIBLE_PACKET_WIDTH);
+        size_t active_count = 0;
+        for (size_t i = packet_start; i < packet_end; i++) {
+            raycast_first_visible_lane_init(&lanes[i - packet_start], i,
+                                            origins_xyz, directions_xyz);
+            if (!lanes[i - packet_start].active) {
+                statuses[i] = -1;
+                continue;
+            }
+            active_count++;
+        }
+
+        while (active_count > 0 && !alea_interrupted()) {
+            for (size_t slot = 0; slot < packet_end - packet_start; slot++) {
+                raycast_first_visible_lane_t* lane = &lanes[slot];
+                if (!lane->active) continue;
+                const size_t i = lane->ray_index;
+                const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
+                const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
+                const double effective_t_max = t_max <= 0.0 ? DBL_MAX : t_max;
+                const int rc = raycast_cell_aware_resume(
+                    sys, &lane->ray, effective_t_max, true, false,
+                    &lane->visible, NULL, NULL, 0.0, -1,
+                    t_min, query->material_filter, false,
+                    &lane->scratch, &lane->state, 1);
+                if (rc < 0) {
+                    statuses[i] = -1;
+                    lane->active = 0;
+                    active_count--;
+                    continue;
+                }
+                if (rc == 0) {
+                    result->hits[i] = lane->visible.found ? 1 : 0;
+                    lane->active = 0;
+                    active_count--;
+                }
+            }
+        }
+        for (size_t slot = 0; slot < packet_end - packet_start; slot++) {
+            raycast_first_visible_lane_t* lane = &lanes[slot];
+            if (lane->active) {
+                statuses[lane->ray_index] = -1;
+                lane->active = 0;
+            }
+            alea_raycast_result_free(&lane->scratch);
+        }
+    }
+    return alea_interrupted() ? -1 : 0;
 }
 
 int alea_raycast_cell_aware(alea_system_t* sys,
@@ -3761,7 +4050,7 @@ int alea_raycast_hier_first_visible_nocache(
     int material_filter, int include_normal, alea_raycast_result_t* scratch,
     alea_ray_first_visible_result_t* out_visible) {
     if (!sys || !ray || !scratch || !out_visible || t_min < 0 ||
-        (t_max > 0 && t_min > t_max) || system_has_lattice_cells(sys))
+        (t_max > 0 && t_min > t_max))
         return -1;
     alea_raycast_result_clear(scratch);
     memset(out_visible, 0, sizeof(*out_visible));

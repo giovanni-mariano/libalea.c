@@ -585,6 +585,203 @@ TEST(perf_nested_fill_validator_and_event_cache) {
 }
 
 /*
+ * Native early-stop packet measurement.  Both cases use the same prepared
+ * hierarchy, packed rays, acceptance policy, and requested fields.  The
+ * scalar loop is the pre-packet baseline; the batch call includes output
+ * allocation and direct SoA publication.
+ */
+TEST(perf_first_visible_native_packet_vs_scalar_20_shells) {
+    const size_t n_rays = 10000;
+    alea_system_t* sys = build_concentric_shells(20);
+    double* origins = calloc(n_rays * 3, sizeof(*origins));
+    double* directions = calloc(n_rays * 3, sizeof(*directions));
+    alea_raycast_result_t scratch;
+    alea_ray_first_visible_batch_result_t batch;
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_DENSITY |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
+                  ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS,
+        .material_filter = -1
+    };
+    uint32_t rng = 42;
+    size_t scalar_found = 0;
+
+    ASSERT_TRUE(sys && origins && directions);
+    for (size_t i = 0; i < n_rays; i++) {
+        bench_random_ray(&rng, 15.0,
+                         &origins[i * 3], &origins[i * 3 + 1], &origins[i * 3 + 2],
+                         &directions[i * 3], &directions[i * 3 + 1],
+                         &directions[i * 3 + 2]);
+    }
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(sys), 0);
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_batch_result_init(&batch);
+
+    {
+        BENCH_START();
+        for (size_t i = 0; i < n_rays; i++) {
+            alea_ray_t ray;
+            alea_ray_first_visible_result_t visible;
+            ASSERT_EQ(alea_ray_init(&ray,
+                                    origins[i * 3], origins[i * 3 + 1], origins[i * 3 + 2],
+                                    directions[i * 3], directions[i * 3 + 1],
+                                    directions[i * 3 + 2]), 0);
+            ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                          sys, &ray, 0.0, 0.0, -1, 1, &scratch, &visible), 0);
+            scalar_found += visible.found ? 1u : 0u;
+        }
+        BENCH_END("20 shells scalar first-visible", n_rays);
+        printf("[%zu found]  ", scalar_found);
+    }
+
+    {
+        BENCH_START();
+        ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                      sys, origins, directions, n_rays, &query, &batch), 0);
+        BENCH_END("20 shells native first-visible packet", n_rays);
+        size_t batch_found = 0;
+        for (size_t i = 0; i < n_rays; i++) batch_found += batch.found[i] ? 1u : 0u;
+        printf("[%zu found, %zu published bytes]  ", batch_found,
+               n_rays * (sizeof(*batch.found) + sizeof(*batch.t) +
+                         sizeof(*batch.cell_ids) + sizeof(*batch.material_ids) +
+                         sizeof(*batch.densities) + sizeof(*batch.surface_ids) +
+                         sizeof(*batch.primitive_ids) + sizeof(*batch.resolution_flags) +
+                         3 * sizeof(*batch.normals_xyz)));
+        ASSERT_EQ(batch_found, scalar_found);
+    }
+
+    alea_ray_first_visible_batch_result_free(&batch);
+    alea_raycast_result_free(&scratch);
+    free(directions);
+    free(origins);
+    alea_destroy(sys);
+}
+
+TEST(perf_first_visible_native_packet_vs_scalar_lattice) {
+    const size_t n_rays = 10000;
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("lattice fixture not found");
+    alea_system_t* sys = model->sys;
+    double* origins = calloc(n_rays * 3, sizeof(*origins));
+    double* directions = calloc(n_rays * 3, sizeof(*directions));
+    alea_raycast_result_t scratch;
+    alea_ray_first_visible_batch_result_t batch;
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_ID |
+                  ALEA_RAY_QUERY_FIELD_RESOLUTION_FLAGS,
+        .material_filter = -1
+    };
+    size_t scalar_found = 0;
+
+    ASSERT_TRUE(origins && directions);
+    for (size_t i = 0; i < n_rays; i++) {
+        origins[i * 3] = -2.0;
+        origins[i * 3 + 1] = -0.95 + 0.1 * (double)(i % 50);
+        origins[i * 3 + 2] = 0.0;
+        directions[i * 3] = 1.0;
+    }
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_batch_result_init(&batch);
+
+    {
+        BENCH_START();
+        for (size_t i = 0; i < n_rays; i++) {
+            alea_ray_t ray;
+            alea_ray_first_visible_result_t visible;
+            ASSERT_EQ(alea_ray_init(&ray,
+                                    origins[i * 3], origins[i * 3 + 1], origins[i * 3 + 2],
+                                    directions[i * 3], directions[i * 3 + 1],
+                                    directions[i * 3 + 2]), 0);
+            ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                          sys, &ray, 0.0, 0.0, -1, 0, &scratch, &visible), 0);
+            scalar_found += visible.found ? 1u : 0u;
+        }
+        BENCH_END("lattice scalar first-visible", n_rays);
+        printf("[%zu found]  ", scalar_found);
+    }
+    {
+        BENCH_START();
+        ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                      sys, origins, directions, n_rays, &query, &batch), 0);
+        BENCH_END("lattice native first-visible packet", n_rays);
+        size_t batch_found = 0;
+        for (size_t i = 0; i < n_rays; i++) batch_found += batch.found[i] ? 1u : 0u;
+        printf("[%zu found]  ", batch_found);
+        ASSERT_EQ(batch_found, scalar_found);
+    }
+
+    alea_ray_first_visible_batch_result_free(&batch);
+    alea_raycast_result_free(&scratch);
+    free(directions);
+    free(origins);
+    mcnp_model_destroy(model);
+}
+
+TEST(perf_any_hit_native_packet_vs_scalar_20_shells) {
+    const size_t n_rays = 10000;
+    alea_system_t* sys = build_concentric_shells(20);
+    double* origins = calloc(n_rays * 3, sizeof(*origins));
+    double* directions = calloc(n_rays * 3, sizeof(*directions));
+    alea_raycast_result_t scratch;
+    alea_ray_any_hit_batch_result_t batch;
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .material_filter = -1
+    };
+    uint32_t rng = 42;
+    size_t scalar_hits = 0;
+
+    ASSERT_TRUE(sys && origins && directions);
+    for (size_t i = 0; i < n_rays; i++) {
+        bench_random_ray(&rng, 15.0,
+                         &origins[i * 3], &origins[i * 3 + 1], &origins[i * 3 + 2],
+                         &directions[i * 3], &directions[i * 3 + 1],
+                         &directions[i * 3 + 2]);
+    }
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(sys), 0);
+    alea_raycast_result_init(&scratch);
+    alea_ray_any_hit_batch_result_init(&batch);
+
+    {
+        BENCH_START();
+        for (size_t i = 0; i < n_rays; i++) {
+            alea_ray_t ray;
+            int hit = 0;
+            ASSERT_EQ(alea_ray_init(&ray,
+                                    origins[i * 3], origins[i * 3 + 1], origins[i * 3 + 2],
+                                    directions[i * 3], directions[i * 3 + 1],
+                                    directions[i * 3 + 2]), 0);
+            ASSERT_EQ(alea_raycast_hier_any_hit_nocache(
+                          sys, &ray, 0.0, 0.0, -1, &scratch, &hit), 0);
+            scalar_hits += hit ? 1u : 0u;
+        }
+        BENCH_END("20 shells scalar any-hit", n_rays);
+        printf("[%zu hits]  ", scalar_hits);
+    }
+    {
+        BENCH_START();
+        ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                      sys, origins, directions, n_rays, &query, &batch), 0);
+        BENCH_END("20 shells native any-hit packet", n_rays);
+        size_t batch_hits = 0;
+        for (size_t i = 0; i < n_rays; i++) batch_hits += batch.hits[i] ? 1u : 0u;
+        printf("[%zu hits, %zu published bytes]  ", batch_hits,
+               n_rays * sizeof(*batch.hits));
+        ASSERT_EQ(batch_hits, scalar_hits);
+    }
+
+    alea_ray_any_hit_batch_result_free(&batch);
+    alea_raycast_result_free(&scratch);
+    free(directions);
+    free(origins);
+    alea_destroy(sys);
+}
+
+/*
  * First compact-ABI measurement gate.  Both cases use the same prepared
  * hierarchy and the identical packed rays.  The single-ray loop measures the
  * existing rich-result call boundary; the compact call includes its native

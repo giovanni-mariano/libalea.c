@@ -339,8 +339,36 @@ alea_node_id_t alea_clone_tree_to_system(alea_system_t* dst,
                                         primitive_remap_t* remap);
 
 
-/* Lattice index lookup (used by raycast DDA) */
+/* Canonical lattice element mapping. Coordinates are logical lattice indices
+ * (the values declared in lat_fill_dims); linear_index is the position in
+ * lat_fill (zero for a repeating lattice). */
 struct alea_cell_entry;
+typedef struct {
+    int fill_universe;
+    int i;
+    int j;
+    int k;
+    size_t linear_index;
+    double ox;
+    double oy;
+    double oz;
+} alea_lattice_location_t;
+
+/* Returns 1 on success, 0 for an out-of-range finite lattice element, and
+ * -1 for invalid lattice metadata. */
+int alea_lattice_location_from_indices(const struct alea_cell_entry* cell,
+                                       int i, int j, int k,
+                                       alea_lattice_location_t* out);
+
+/* Locate a point and verify that it is inside the lattice cell's CSG window.
+ * Returns 1 on success, 0 when the point is outside, and -1 for invalid
+ * lattice metadata. */
+int alea_lattice_locate_point(const alea_system_t* sys,
+                              const struct alea_cell_entry* cell,
+                              double lx, double ly, double lz,
+                              alea_lattice_location_t* out);
+
+/* Compatibility lookup retained for the hex DDA ray marcher. */
 int lattice_hex_lookup(const struct alea_cell_entry* cell,
                        double px, double py, double pz,
                        double* ox, double* oy, double* oz);

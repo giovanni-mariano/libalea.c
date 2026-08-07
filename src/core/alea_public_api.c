@@ -372,7 +372,6 @@ int alea_query_acceleration_stats(const alea_system_t* sys,
     out_stats->hier_max_universe_cells = stats->max_universe_cells;
     out_stats->hier_largest_universe_id = stats->largest_universe_id;
     out_stats->memory_bytes = stats->memory_bytes;
-    out_stats->point_queries = stats->point_queries;
     return 0;
 }
 

@@ -43,7 +43,7 @@ static int l_query_acceleration_stats(lua_State* L) {
     if (alea_query_acceleration_stats(sys, &stats) != 0)
         return luaL_error(L, "query_acceleration_stats failed: %s", alea_error());
 
-    lua_createtable(L, 0, 21);
+    lua_createtable(L, 0, 20);
     lua_pushboolean(L, stats.built);                             lua_setfield(L, -2, "built");
     lua_pushinteger(L, (lua_Integer)stats.hier_universe_count);   lua_setfield(L, -2, "hier_universe_count");
     lua_pushinteger(L, (lua_Integer)stats.hier_blas_count);       lua_setfield(L, -2, "hier_blas_count");
@@ -61,7 +61,6 @@ static int l_query_acceleration_stats(lua_State* L) {
     lua_pushinteger(L, (lua_Integer)stats.hier_max_universe_cells); lua_setfield(L, -2, "hier_max_universe_cells");
     lua_pushinteger(L, (lua_Integer)stats.hier_largest_universe_id); lua_setfield(L, -2, "hier_largest_universe_id");
     lua_pushinteger(L, (lua_Integer)stats.memory_bytes);          lua_setfield(L, -2, "memory_bytes");
-    lua_pushinteger(L, (lua_Integer)stats.point_queries);         lua_setfield(L, -2, "point_queries");
     return 1;
 }
 

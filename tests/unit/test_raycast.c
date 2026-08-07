@@ -779,10 +779,16 @@ TEST(compact_batch_internal_first_visible_preserves_order_and_ranges) {
     ASSERT(surface >= 0 && material >= 0);
     ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
                          material, -1.0, 0) >= 0);
-    const double origins[] = {-5, 0, 0, -5, 0, 0, -5, 5, 0};
-    const double directions[] = {1, 0, 0, 1, 0, 0, 1, 0, 0};
-    const double t_mins[] = {0.0, 4.0, 0.0};
-    const double t_maxs[] = {8.0, 8.0, 8.0};
+    const double origins[] = {
+        -5, 0, 0, -5, 0, 0, -5, 5, 0, -5, 0, 0, -5, 5, 0,
+        -5, 0, 0, -5, 0, 0, -5, 5, 0, -5, 0, 0
+    };
+    const double directions[] = {
+        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
+        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0
+    };
+    const double t_mins[] = {0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0};
+    const double t_maxs[] = {8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0};
     const alea_ray_batch_query_t query = {
         .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
         .fields = ALEA_RAY_QUERY_FIELD_DENSITY |
@@ -796,8 +802,8 @@ TEST(compact_batch_internal_first_visible_preserves_order_and_ranges) {
     alea_ray_first_visible_batch_result_t batch;
     alea_ray_first_visible_batch_result_init(&batch);
     ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
-                  sys, origins, directions, 3, &query, &batch), 0);
-    ASSERT_EQ(batch.ray_count, 3);
+                  sys, origins, directions, 5, &query, &batch), 0);
+    ASSERT_EQ(batch.ray_count, 5);
     ASSERT_EQ(batch.found[0], 1);
     ASSERT_EQ(batch.found[1], 1);
     ASSERT_EQ(batch.found[2], 0);
@@ -806,16 +812,39 @@ TEST(compact_batch_internal_first_visible_preserves_order_and_ranges) {
     ASSERT_EQ(batch.cell_ids[0], 10);
     ASSERT_EQ(batch.cell_ids[1], 10);
     ASSERT_EQ(batch.cell_ids[2], -1);
+    ASSERT_EQ(batch.found[3], 1);
+    ASSERT_EQ(batch.found[4], 0);
+    ASSERT_NEAR(batch.t[3], 3.0, EPS);
+    ASSERT_EQ(batch.cell_ids[3], 10);
+    ASSERT_EQ(batch.cell_ids[4], -1);
     ASSERT_EQ(batch.surface_ids[0], 1);
     ASSERT_EQ(batch.surface_ids[1], -1);
     ASSERT_NEAR(fabs(batch.normals_xyz[0]), 1.0, EPS);
     ASSERT_NEAR(batch.normals_xyz[3], 0.0, EPS);
+    const size_t packet_counts[] = {0, 1, 3, 4, 5, 9};
+    const uint8_t expected_found[] = {1, 1, 0, 1, 0, 1, 1, 0, 1};
+    for (size_t count_index = 0;
+         count_index < sizeof(packet_counts) / sizeof(packet_counts[0]);
+         count_index++) {
+        const size_t count = packet_counts[count_index];
+        ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                      sys, origins, directions, count, &query, &batch), 0);
+        ASSERT_EQ(batch.ray_count, count);
+        for (size_t i = 0; i < count; i++)
+            ASSERT_EQ(batch.found[i], expected_found[i]);
+    }
     alea_ray_batch_query_t limited = query;
     limited.max_output_bytes = 1;
     ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
-                  sys, origins, directions, 3, &limited, &batch), -1);
-    ASSERT_EQ(batch.ray_count, 3);
+                  sys, origins, directions, 9, &limited, &batch), -1);
+    ASSERT_EQ(batch.ray_count, 9);
     ASSERT_EQ(batch.found[0], 1);
+    alea_interrupt();
+    ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                  sys, origins, directions, 9, &query, &batch), -1);
+    ASSERT_EQ(batch.ray_count, 9);
+    ASSERT_EQ(batch.found[0], 1);
+    alea_clear_interrupt();
     alea_ray_first_visible_batch_result_free(&batch);
     alea_destroy(sys);
 }
@@ -828,10 +857,16 @@ TEST(compact_batch_internal_any_hit_preserves_order_and_filters) {
     ASSERT(surface >= 0 && material >= 0);
     ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
                          material, -1.0, 0) >= 0);
-    const double origins[] = {-5, 0, 0, -5, 0, 0, -5, 5, 0};
-    const double directions[] = {1, 0, 0, 1, 0, 0, 1, 0, 0};
-    const double t_mins[] = {0.0, 4.0, 0.0};
-    const double t_maxs[] = {8.0, 8.0, 8.0};
+    const double origins[] = {
+        -5, 0, 0, -5, 0, 0, -5, 5, 0, -5, 0, 0, -5, 5, 0,
+        -5, 0, 0, -5, 0, 0, -5, 5, 0, -5, 0, 0
+    };
+    const double directions[] = {
+        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
+        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0
+    };
+    const double t_mins[] = {0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0};
+    const double t_maxs[] = {8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0};
     const alea_ray_batch_query_t query = {
         .kind = ALEA_RAY_QUERY_ANY_HIT,
         .material_filter = -1,
@@ -841,18 +876,40 @@ TEST(compact_batch_internal_any_hit_preserves_order_and_filters) {
     alea_ray_any_hit_batch_result_t batch;
     alea_ray_any_hit_batch_result_init(&batch);
     ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
-                  sys, origins, directions, 3, &query, &batch), 0);
-    ASSERT_EQ(batch.ray_count, 3);
+                  sys, origins, directions, 5, &query, &batch), 0);
+    ASSERT_EQ(batch.ray_count, 5);
     ASSERT_EQ(batch.hits[0], 1);
     ASSERT_EQ(batch.hits[1], 1);
     ASSERT_EQ(batch.hits[2], 0);
+    ASSERT_EQ(batch.hits[3], 1);
+    ASSERT_EQ(batch.hits[4], 0);
     alea_ray_batch_query_t filtered = query;
     filtered.material_filter = 99;
     ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
-                  sys, origins, directions, 3, &filtered, &batch), 0);
+                  sys, origins, directions, 5, &filtered, &batch), 0);
     ASSERT_EQ(batch.hits[0], 0);
     ASSERT_EQ(batch.hits[1], 0);
     ASSERT_EQ(batch.hits[2], 0);
+    ASSERT_EQ(batch.hits[3], 0);
+    ASSERT_EQ(batch.hits[4], 0);
+    const size_t packet_counts[] = {0, 1, 3, 4, 5, 9};
+    const uint8_t expected_hits[] = {1, 1, 0, 1, 0, 1, 1, 0, 1};
+    for (size_t count_index = 0;
+         count_index < sizeof(packet_counts) / sizeof(packet_counts[0]);
+         count_index++) {
+        const size_t count = packet_counts[count_index];
+        ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                      sys, origins, directions, count, &query, &batch), 0);
+        ASSERT_EQ(batch.ray_count, count);
+        for (size_t i = 0; i < count; i++)
+            ASSERT_EQ(batch.hits[i], expected_hits[i]);
+    }
+    alea_interrupt();
+    ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                  sys, origins, directions, 9, &query, &batch), -1);
+    ASSERT_EQ(batch.ray_count, 9);
+    ASSERT_EQ(batch.hits[0], 1);
+    alea_clear_interrupt();
     alea_ray_any_hit_batch_result_free(&batch);
     alea_destroy(sys);
 }

@@ -30,13 +30,11 @@
  * traffic in the per-pixel hot path. A NULL pointer disables collection. */
 typedef struct {
     size_t px_total;
-    size_t px_hint_full;      /* all depths resolved by adjacency */
-    size_t px_hint_partial;   /* adjacency broke mid-hierarchy */
-    size_t px_full_fallback;  /* no hint -> full alea_find_all_cells_at_point */
-    size_t univ_hint_cell;    /* exact hint cell hit */
-    size_t univ_neighbor;     /* neighbor walk hit */
-    size_t univ_blas;         /* BLAS query used */
-    size_t univ_linear;       /* linear scan fallback */
+    size_t rich_root_queries;
+    size_t rich_path_reused;
+    size_t rich_lattice_transitions;
+    size_t rich_prefix_restarts;
+    size_t rich_full_fallbacks;
     size_t csg_prim_evals;    /* total primitive evaluations */
     size_t csg_bool_ops;      /* total boolean ops in CSG tree */
 } grid_query_stats_t;
@@ -48,13 +46,11 @@ typedef struct {
 static void grid_query_stats_merge(grid_query_stats_t* dst,
                                    const grid_query_stats_t* src) {
     dst->px_total += src->px_total;
-    dst->px_hint_full += src->px_hint_full;
-    dst->px_hint_partial += src->px_hint_partial;
-    dst->px_full_fallback += src->px_full_fallback;
-    dst->univ_hint_cell += src->univ_hint_cell;
-    dst->univ_neighbor += src->univ_neighbor;
-    dst->univ_blas += src->univ_blas;
-    dst->univ_linear += src->univ_linear;
+    dst->rich_root_queries += src->rich_root_queries;
+    dst->rich_path_reused += src->rich_path_reused;
+    dst->rich_lattice_transitions += src->rich_lattice_transitions;
+    dst->rich_prefix_restarts += src->rich_prefix_restarts;
+    dst->rich_full_fallbacks += src->rich_full_fallbacks;
     dst->csg_prim_evals += src->csg_prim_evals;
     dst->csg_bool_ops += src->csg_bool_ops;
 }
@@ -404,487 +400,96 @@ static int slice_path_table_intern(alea_slice_path_table_t* table,
     return 0;
 }
 
-/* ============================================================================
- * PER-UNIVERSE ADJACENCY HINTS
- * ============================================================================ */
+/* Select the same target depth policy as the grid's primary cell output,
+ * but take its concrete placement transform from the canonical rich path.
+ * In particular this keeps occurrence identity for repeated cells and lattice
+ * elements; a slice-local hint cannot reconstruct that information safely. */
+static int slice_project_hier_path(const alea_hier_ray_path_t* path,
+                                   int universe_depth,
+                                   const alea_hier_ray_path_entry_t** out_entry) {
+    if (!path || !out_entry || path->count <= 0) return -1;
 
-/**
- * Maximum nesting depth for multi-level hints.
- * Typical reactor models rarely exceed 4-5 levels.
- */
-#define MAX_HINT_DEPTH 8
-
-/**
- * @brief Hint information for a single depth level
- *
- * Stores the cell index, universe, and accumulated transform
- * to allow adjacency walking within a nested universe.
- */
-typedef struct {
-    int cell_index;              /**< Cell index at this depth (-1 if invalid) */
-    int universe_id;             /**< Universe ID at this depth */
-    alea_matrix_t transform;      /**< Accumulated transform: world -> local */
-} alea_level_hint_t;
-
-/**
- * @brief Multi-level hint structure for per-universe adjacency
- *
- * Tracks the cell path through the hierarchy for coherence-based lookup.
- * When adjacent pixels share the same parent path, we can use adjacency
- * walking at each level instead of full hierarchy traversal.
- */
-typedef struct {
-    int valid_depth;                      /**< Deepest valid depth (-1 if none) */
-    alea_level_hint_t levels[MAX_HINT_DEPTH];  /**< Hints at each depth */
-} alea_multilevel_hint_t;
-
-/**
- * @brief Initialize a multi-level hint to empty state
- */
-static void multilevel_hint_init(alea_multilevel_hint_t* hint) {
-    hint->valid_depth = -1;
-    for (int d = 0; d < MAX_HINT_DEPTH; d++) {
-        hint->levels[d].cell_index = -1;
-        hint->levels[d].universe_id = -1;
-    }
-}
-
-/**
- * @brief Build multi-level hints from a hierarchy traversal result
- *
- * @param sys CSG system
- * @param hits Array of cell hits from alea_find_all_cells_at_point()
- * @param num_hits Number of hits
- * @param hint Output multi-level hint structure
- */
-static void multilevel_hint_from_hits(alea_system_t* sys,
-                                       const alea_cell_hit_t* hits,
-                                       int num_hits,
-                                       alea_multilevel_hint_t* hint) {
-    multilevel_hint_init(hint);
-    if (num_hits <= 0 || num_hits > MAX_HINT_DEPTH) return;
-
-    /* Build transform chain from root to each level */
-    alea_matrix_t accumulated;
-    alea_matrix_identity(&accumulated);
-
-    for (int i = 0; i < num_hits && i < MAX_HINT_DEPTH; i++) {
-        const alea_cell_hit_t* h = &hits[i];
-        alea_level_hint_t* level = &hint->levels[i];
-
-        level->cell_index = h->cell_index;
-        level->universe_id = h->universe_id;
-        level->transform = accumulated;  /* Copy current accumulated transform */
-
-        /* If this cell has a fill, compose with its transform for next level */
-        if (h->fill_universe > 0 && h->cell_index >= 0 &&
-            (size_t)h->cell_index < alea_vec_count(&sys->cells)) {
-            const alea_cell_entry_t* cell = &sys->cells.data[h->cell_index];
-            if (cell->fill_transform > 0) {
-                const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
-                if (tr) {
-                    alea_matrix_t fill_mat;
-                    /* Use tr->cosines which has pre-computed direction cosines */
-                    if (!alea_matrix_from_mcnp(&fill_mat, tr->cosines,
-                                               tr->value_count, false)) {
-                        return;
-                    }
-                    alea_matrix_t new_acc;
-                    alea_matrix_multiply(&new_acc, &accumulated, &fill_mat);
-                    accumulated = new_acc;
-                }
-            }
-        }
-
-        hint->valid_depth = i;
-    }
-}
-
-static int slice_path_table_intern_hint(alea_slice_path_table_t* table,
-                                        const alea_multilevel_hint_t* hint,
-                                        int universe_depth,
-                                        uint32_t* out_id) {
-    if (!table || !hint || !out_id || hint->valid_depth < 0)
-        return -1;
-
-    int depth = universe_depth < 0 ? hint->valid_depth : universe_depth;
-    if (depth < 0 || depth > hint->valid_depth || depth >= MAX_HINT_DEPTH)
-        return -1;
-
-    const alea_level_hint_t* level = &hint->levels[depth];
-    if (level->cell_index < 0)
-        return -1;
-
-    alea_matrix_t transform = level->transform;
-    if (!transform.has_inverse && !alea_matrix_invert(&transform))
-        return -1;
-
-    return slice_path_table_intern(table, level->universe_id, depth,
-                                   &transform, out_id);
-}
-
-/**
- * @brief Find cell at a specific depth using adjacency walking within that universe
- *
- * Prerequisites:
- * - Parent path (depths 0..depth-1) is already validated
- * - Local coordinates at this depth are known
- *
- * @param sys CSG system
- * @param lx,ly,lz Point in local coordinates at this depth
- * @param universe_id Universe to search in
- * @param hint_cell_idx Previous cell index at this depth (for adjacency walking)
- * @return Cell index found, or -1 if not found
- */
-static int find_cell_in_universe_with_hint(alea_system_t* sys,
-                                            double lx, double ly, double lz,
-                                            int universe_id,
-                                            int hint_cell_idx,
-                                            grid_query_stats_t* stats) {
-    /* Try hint cell first (adjacency cache).
-     * Always verify with alea_contains_point — this is cheap for the common
-     * case (point still inside the same cell, single CSG eval with early exit)
-     * and immediately detects cell-boundary crossings without losing information. */
-    if (hint_cell_idx >= 0 && (size_t)hint_cell_idx < alea_vec_count(&sys->cells)) {
-        const alea_cell_entry_t* cell = &sys->cells.data[hint_cell_idx];
-
-        if (cell->universe_id == universe_id &&
-            cell->root_node_id != ALEA_NODE_ID_INVALID &&
-            alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-            GRID_STAT_INC(stats, univ_hint_cell);
-            return hint_cell_idx;
-        }
-
-        /* Try neighbors of hint cell */
-        if (sys->cell_adjacency_built && cell->neighbors) {
-            for (size_t n = 0; n < cell->neighbor_count; n++) {
-                int neighbor_idx = (int)cell->neighbors[n].neighbor_index;
-                if (neighbor_idx < 0 || (size_t)neighbor_idx >= alea_vec_count(&sys->cells)) continue;
-
-                const alea_cell_entry_t* neighbor = &sys->cells.data[neighbor_idx];
-
-                /* Neighbor must be in same universe */
-                if (neighbor->universe_id != universe_id) continue;
-                if (neighbor->root_node_id == ALEA_NODE_ID_INVALID) continue;
-
-                /* Quick bbox check */
-                const alea_bbox_t bbox_v = alea_node_bbox_get(&sys->nodes.data[neighbor->root_node_id].bbox);
-                const alea_bbox_t* bbox = &bbox_v;
-                if (lx < bbox->min_x || lx > bbox->max_x ||
-                    ly < bbox->min_y || ly > bbox->max_y ||
-                    lz < bbox->min_z || lz > bbox->max_z) {
-                    continue;
-                }
-
-                if (alea_contains_point(sys, neighbor->root_node_id, lx, ly, lz)) {
-                    GRID_STAT_INC(stats, univ_neighbor);
-                    return neighbor_idx;
-                }
-            }
-        }
-    }
-
-    /* Hier-spatial fast path: BLAS-pruned lookup before linear scan. On
-     * models with very large universes the linear scan would do O(N)
-     * alea_contains_point evaluations per pixel after every adjacency miss.
-     * The BLAS reduces that to O(log N). */
-    if (sys->hier_spatial_index) {
-        int found = alea_hier_spatial_find_cell_in_universe(sys, universe_id,
-                                                            lx, ly, lz);
-        if (found >= 0) { GRID_STAT_INC(stats, univ_blas); return found; }
-        if (found == -1) { GRID_STAT_INC(stats, univ_blas); return -1; }
-        /* found == -2: hier index not usable for this universe, fall through. */
-    }
-
-    /* Fall back to linear search within universe */
-    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
-    if (!univ) return -1;
-
-    GRID_STAT_INC(stats, univ_linear);
-    for (size_t i = 0; i < univ->cell_indices.count; i++) {
-        size_t cell_idx = univ->cell_indices.data[i];
-        const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-
-        if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
-
-        if (alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
-            return (int)cell_idx;
-        }
-    }
-
-    return -1;  /* Not found in this universe */
-}
-
-/**
- * @brief Find cell with multi-level adjacency walking
- *
- * Uses hints at each depth level for coherence-based optimization:
- * 1. At each depth, if parent path matches previous pixel, use adjacency walking
- * 2. If adjacency walk succeeds, continue to next depth with updated transform
- * 3. If it fails at any level, fall back to full search from that level
- *
- * @param sys CSG system
- * @param gx,gy,gz Point in global coordinates
- * @param universe_depth Target depth (-1 for innermost)
- * @param prev_hint Previous pixel's multi-level hint (NULL for no hint)
- * @param out_hint Output hint for current pixel (can be NULL)
- * @param out_cell_id Output cell ID
- * @param out_material_id Output material ID (can be NULL)
- * @param out_error Output error code (can be NULL)
- */
-static void find_cell_multilevel(alea_system_t* sys,
-                                  double gx, double gy, double gz,
-                                  int universe_depth,
-                                  const alea_multilevel_hint_t* prev_hint,
-                                  alea_multilevel_hint_t* out_hint,
-                                  int* out_cell_id,
-                                  int* out_material_id,
-                                  uint8_t* out_error,
-                                  grid_query_stats_t* stats) {
-    *out_cell_id = -1;
-    if (out_material_id) *out_material_id = 0;
-    if (out_error) *out_error = GRID_ERR_NONE;
-    if (out_hint) multilevel_hint_init(out_hint);
-    GRID_STAT_INC(stats, px_total);
-
-    /* Use multi-level walking only when we have valid previous hints */
-    bool use_multilevel = (prev_hint != NULL && prev_hint->valid_depth >= 0 &&
-                           sys->cell_adjacency_built);
-
-    if (use_multilevel) {
-        /* Try to walk through hierarchy using hints at each level */
-        alea_matrix_t accumulated;
-        alea_matrix_identity(&accumulated);
-        int current_universe = 0;  /* Start at root universe */
-        double lx = gx, ly = gy, lz = gz;  /* Local coordinates (start = global) */
-        int hits_found = 0;
-        alea_cell_hit_t local_hits[MAX_HINT_DEPTH];
-
-        for (int depth = 0; depth <= prev_hint->valid_depth && depth < MAX_HINT_DEPTH; depth++) {
-            const alea_level_hint_t* level_hint = &prev_hint->levels[depth];
-
-            /* Check if parent path still matches (for depth > 0) */
-            bool parent_matches = true;
-            if (depth > 0) {
-                /* We've already validated depths 0..depth-1 by the loop */
-                parent_matches = (level_hint->cell_index >= 0);
-            }
-
-            if (!parent_matches) break;
-
-            /* Try adjacency walking at this depth */
-            int cell_idx = find_cell_in_universe_with_hint(sys, lx, ly, lz,
-                                                           current_universe,
-                                                           level_hint->cell_index,
-                                                           stats);
-
-            if (cell_idx < 0) {
-                /* Adjacency walk failed - need full search from here */
-                break;
-            }
-
-            /* Record this hit */
-            const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-            if (hits_found < MAX_HINT_DEPTH) {
-                alea_cell_hit_t* hit = &local_hits[hits_found];
-                hit->cell_id = cell->mc_cell_id;
-                hit->cell_index = cell_idx;
-                hit->material_id = cell->material_id;
-                hit->universe_id = current_universe;
-                hit->fill_universe = cell->fill_universe;
-                hit->depth = depth;
-                hit->local_x = lx;
-                hit->local_y = ly;
-                hit->local_z = lz;
-                hit->resolution_flags = alea_cell_entry_is_container(cell)
-                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
-                hits_found++;
-            }
-
-            /* Check for target depth */
-            if (universe_depth >= 0 && depth >= universe_depth) {
-                /* Reached target depth — full adjacency success */
-                GRID_STAT_INC(stats, px_hint_full);
-                *out_cell_id = cell->mc_cell_id;
-                if (out_material_id) *out_material_id = cell->material_id;
-                if (out_hint) {
-                    multilevel_hint_from_hits(sys, local_hits, hits_found, out_hint);
-                }
-                return;
-            }
-
-            /* Lattice element selection needs DDA, which this adjacency fast
-             * path cannot do (lattice cells carry lat_type, not a single
-             * fill_universe). Bail to the full hierarchy query below, which
-             * descends into the lattice element correctly — otherwise the
-             * lattice container cell would be wrongly reported as terminal. */
-            if (cell->lat_type != 0) {
-                break;
-            }
-
-            /* If cell has a fill, continue to next level */
-            if (cell->fill_universe > 0) {
-                /* Prefer the precomputed per-cell fill matrix from the hier
-                 * index — it avoids `alea_matrix_from_mcnp` (transform-table
-                 * lookup + invert) per pixel per descent. Falls back to the
-                 * per-pixel build if the hier cache is unavailable. */
-                const alea_matrix_t* cached_fill =
-                    alea_hier_spatial_get_cell_fill_matrix(sys, (uint32_t)cell_idx);
-                alea_matrix_t fill_transform_local;
-                const alea_matrix_t* fill_transform = cached_fill;
-                if (!fill_transform) {
-                    if (cell->fill_transform > 0) {
-                        const alea_transform_t* tr = alea_get_transform(sys, cell->fill_transform);
-                        if (tr) {
-                            if (!alea_matrix_from_mcnp(&fill_transform_local, tr->cosines,
-                                                       tr->value_count, false)) {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    } else {
-                        alea_matrix_identity(&fill_transform_local);
-                    }
-                    fill_transform = &fill_transform_local;
-                }
-
-                /* Compose with accumulated transform */
-                alea_matrix_t new_accumulated;
-                alea_matrix_multiply(&new_accumulated, &accumulated, fill_transform);
-                accumulated = new_accumulated;
-
-                /* Transform point to fill universe coordinates */
-                /* Use a copy for inversion to preserve accumulated for next iteration */
-                alea_matrix_t inv_accumulated = accumulated;
-                if (!alea_matrix_invert(&inv_accumulated)) break;
-                lx = gx; ly = gy; lz = gz;
-                alea_matrix_transform_point_inverse(&inv_accumulated, &lx, &ly, &lz);
-
-                current_universe = cell->fill_universe;
-            } else {
-                /* Terminal cell (no fill) - this is the innermost */
-                if (universe_depth < 0) {
-                    /* Full adjacency success — reached terminal cell */
-                    GRID_STAT_INC(stats, px_hint_full);
-                    *out_cell_id = cell->mc_cell_id;
-                    if (out_material_id) *out_material_id = cell->material_id;
-                    if (out_hint) {
-                        multilevel_hint_from_hits(sys, local_hits, hits_found, out_hint);
-                    }
-                    return;
-                }
-                break;  /* No more levels to explore */
-            }
-        }
-
-        /* If we got some hits but didn't complete, we might have partial success */
-        if (hits_found > 0 && universe_depth < 0) {
-            /* Return deepest hit found */
-            alea_cell_hit_t* last = &local_hits[hits_found - 1];
-            bool last_is_lattice =
-                last->cell_index >= 0 &&
-                (size_t)last->cell_index < alea_vec_count(&sys->cells) &&
-                sys->cells.data[last->cell_index].lat_type != 0;
-            if (last->fill_universe <= 0 && !last_is_lattice) {
-                /* This is a terminal cell — partial adjacency success */
-                GRID_STAT_INC(stats, px_hint_partial);
-                *out_cell_id = last->cell_id;
-                if (out_material_id) *out_material_id = last->material_id;
-                if (out_hint) {
-                    multilevel_hint_from_hits(sys, local_hits, hits_found, out_hint);
-                }
-                return;
-            }
-        }
-    }
-
-    /* Fall back to full hierarchy traversal */
-    if (use_multilevel)
-        GRID_STAT_INC(stats, px_hint_partial);
-    else
-        GRID_STAT_INC(stats, px_full_fallback);
-
-    alea_cell_hit_t hits[32];
-    int num_hits = alea_find_all_cells_at_point(sys, gx, gy, gz, hits, 32);
-
-    if (num_hits <= 0) {
-        if (out_error) *out_error = GRID_ERR_UNDEFINED;
-        return;
-    }
-
-    /* Build output hint from hits */
-    if (out_hint) {
-        multilevel_hint_from_hits(sys, hits, num_hits, out_hint);
-    }
-
-    /* Determine target depth */
-    int target_idx;
-    int target_depth;
-
+    int target = -1;
     if (universe_depth < 0) {
-        /* Hits are in DFS preorder. Follow the first strictly-deepening
-         * chain and take its deepest hit: with overlapping same-depth
-         * cells this picks the first containing cell in deck order — the
-         * same precedence the canonical resolver (find_cell_recursive)
-         * and the ray tracer apply. hits[num_hits-1] would pick the last
-         * overlapping sibling instead. */
-        target_idx = 0;
-        while (target_idx + 1 < num_hits &&
-               hits[target_idx + 1].depth == hits[target_idx].depth + 1) {
-            target_idx++;
-        }
-        target_depth = hits[target_idx].depth;
+        target = path->count - 1;
     } else {
-        target_idx = -1;
-        target_depth = universe_depth;
-
-        for (int i = 0; i < num_hits; i++) {
-            if (hits[i].depth == universe_depth) {
-                target_idx = i;
+        for (int i = 0; i < path->count; i++) {
+            if (path->entries[i].depth == universe_depth) {
+                target = i;
                 break;
             }
         }
-
-        if (target_idx < 0) {
-            for (int i = num_hits - 1; i >= 0; i--) {
-                if (hits[i].depth <= universe_depth) {
-                    target_idx = i;
-                    target_depth = hits[i].depth;
+        if (target < 0) {
+            for (int i = path->count - 1; i >= 0; i--) {
+                if (path->entries[i].depth <= universe_depth) {
+                    target = i;
                     break;
                 }
             }
         }
-
-        if (target_idx < 0) {
-            if (out_error) *out_error = GRID_ERR_UNDEFINED;
-            return;
-        }
     }
 
-    /* Check for overlap at target depth */
-    if (out_error) {
-        int count_at_depth = 0;
-        for (int i = 0; i < num_hits; i++) {
-            if (hits[i].depth == target_depth) {
-                count_at_depth++;
-                if (count_at_depth > 1) {
-                    *out_error = GRID_ERR_OVERLAP;
-                    break;
-                }
-            }
-        }
-        /* Deepest-mode pick landed on an unresolved container: undefined
-         * fill. Requested-depth picks legitimately show containers, so the
-         * flag only applies to universe_depth < 0. Overlap keeps priority. */
-        if (*out_error == GRID_ERR_NONE && universe_depth < 0 &&
-            (hits[target_idx].resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL)) {
-            *out_error = GRID_ERR_UNDEFINED_FILL;
+    if (target < 0) return -1;
+    *out_entry = &path->entries[target];
+    return 0;
+}
+
+/* Primary grid projection from a canonical rich path. Overlap reporting stays
+ * separate because a first-owner path intentionally contains one branch only. */
+static int slice_resolve_grid_rich(alea_system_t* sys,
+                                   const alea_hier_coherence_state_t* previous,
+                                   double x, double y, double z,
+                                   int universe_depth,
+                                   alea_hier_coherence_state_t* current,
+                                   int* out_cell_id,
+                                   int* out_material_id,
+                                   uint8_t* out_error,
+                                   grid_query_stats_t* stats) {
+    if (!out_cell_id || !out_material_id || !out_error) return -1;
+    *out_cell_id = -1;
+    *out_material_id = 0;
+    *out_error = GRID_ERR_NONE;
+
+    alea_hier_cell_hit_t deepest;
+    alea_hier_coherence_kind_t kind;
+    int rc = alea_hier_spatial_resolve_coherent(
+        sys, x, y, z, previous, current, &deepest, &kind);
+    GRID_STAT_INC(stats, px_total);
+    if (rc > 0) {
+        switch (kind) {
+        case ALEA_HIER_COH_ROOT_QUERY:
+            GRID_STAT_INC(stats, rich_root_queries);
+            break;
+        case ALEA_HIER_COH_PATH_REUSED:
+            GRID_STAT_INC(stats, rich_path_reused);
+            break;
+        case ALEA_HIER_COH_LATTICE_TRANSITION:
+            GRID_STAT_INC(stats, rich_lattice_transitions);
+            break;
+        case ALEA_HIER_COH_PREFIX_RESTART:
+            GRID_STAT_INC(stats, rich_prefix_restarts);
+            break;
+        case ALEA_HIER_COH_FULL_FALLBACK:
+            GRID_STAT_INC(stats, rich_full_fallbacks);
+            break;
         }
     }
+    if (rc < 0) return -1;
+    if (rc == 0) {
+        *out_error = GRID_ERR_UNDEFINED;
+        return 0;
+    }
 
-    *out_cell_id = hits[target_idx].cell_id;
-    if (out_material_id) *out_material_id = hits[target_idx].material_id;
+    const alea_hier_ray_path_entry_t* target = NULL;
+    if (slice_project_hier_path(&current->path, universe_depth, &target) != 0)
+        return -1;
+    *out_cell_id = target->cell_id;
+    *out_material_id = target->material_id;
+    if (universe_depth < 0 &&
+        (deepest.hit.resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL)) {
+        *out_error = GRID_ERR_UNDEFINED_FILL;
+    }
+    return 1;
 }
 
 int alea_find_cells_grid(alea_system_t* sys,
@@ -923,13 +528,6 @@ int alea_find_cells_grid(alea_system_t* sys,
         memset(out_errors, 0, nu * nv);
     }
 
-    /*
-     * Per-universe adjacency optimization:
-     * - Track multi-level hints (cell path at each depth)
-     * - When parent path matches, use adjacency walking at each level
-     * - Works for ALL depths, not just depth=0
-     */
-
     const bool stats_en = getenv("ALEA_GRID_STATS") != NULL;
     grid_query_stats_t grid_stats = {0};
 
@@ -948,8 +546,12 @@ int alea_find_cells_grid(alea_system_t* sys,
         #pragma omp for schedule(dynamic, 4)
         for (int j = 0; j < nv; j++) {
             double v = v_min + (j + 0.5) * dv;
-            alea_multilevel_hint_t row_hint;
-            multilevel_hint_init(&row_hint);
+            alea_hier_coherence_state_t state_a;
+            alea_hier_coherence_state_t state_b;
+            alea_hier_coherence_state_t* previous_state = &state_a;
+            alea_hier_coherence_state_t* current_state = &state_b;
+            alea_hier_coherence_state_clear(previous_state);
+            alea_hier_coherence_state_clear(current_state);
 
             for (int i = 0; i < nu; i++) {
                 double u = u_min + (i + 0.5) * du;
@@ -960,19 +562,23 @@ int alea_find_cells_grid(alea_system_t* sys,
                 double z = origin[2] + u * u_axis[2] + v * v_axis[2];
 
                 int cell_id = -1, material_id = 0;
-                uint8_t error = 0;
-                alea_multilevel_hint_t curr_hint;
-
-                /* Adjacency-cached cell find: always verifies hint cell with
-                 * alea_contains_point, then falls back to BLAS on miss. */
-                find_cell_multilevel(sys, x, y, z, universe_depth,
-                                     &row_hint, &curr_hint,
-                                     &cell_id, &material_id, &error,
-                                     active_stats);
-
+                uint8_t error = GRID_ERR_NONE;
+                int rich_rc = slice_resolve_grid_rich(
+                    sys, previous_state, x, y, z, universe_depth, current_state,
+                    &cell_id, &material_id, &error, active_stats);
+                if (rich_rc < 0) {
+                    cell_id = -1;
+                    material_id = 0;
+                    error = GRID_ERR_UNDEFINED;
+                    alea_hier_coherence_state_clear(current_state);
+                }
                 out_cell_ids[idx] = cell_id;
                 if (out_material_ids) out_material_ids[idx] = material_id;
                 if (out_errors) out_errors[idx] = error;
+
+                alea_hier_coherence_state_t* state_tmp = previous_state;
+                previous_state = current_state;
+                current_state = state_tmp;
 
                 /* Periodic full-universe overlap scan. Finds geometry errors in
                  * interior pixels that the boundary-pixel second pass would miss. */
@@ -990,8 +596,6 @@ int alea_find_cells_grid(alea_system_t* sys,
                         if (cnt > 1) out_errors[idx] = GRID_ERR_OVERLAP;
                     }
                 }
-
-                row_hint = curr_hint;
             }
         }
         /* Collect per-thread CSG counters after the for barrier */
@@ -1004,24 +608,17 @@ int alea_find_cells_grid(alea_system_t* sys,
         }
     }
 #else
-    /* Sequential version with full coherence (horizontal + vertical hints) */
+    /* Sequential version with row-local rich-path coherence. */
     if (stats_en) alea_perf_reset();
-    alea_multilevel_hint_t* prev_row_hints = calloc(nu, sizeof(alea_multilevel_hint_t));
-    alea_multilevel_hint_t* curr_row_hints = calloc(nu, sizeof(alea_multilevel_hint_t));
-    if (!prev_row_hints || !curr_row_hints) {
-        free(prev_row_hints);
-        free(curr_row_hints);
-        return -1;
-    }
-    for (int i = 0; i < nu; i++) {
-        multilevel_hint_init(&prev_row_hints[i]);
-        multilevel_hint_init(&curr_row_hints[i]);
-    }
 
     for (int j = 0; j < nv; j++) {
         double v = v_min + (j + 0.5) * dv;
-        alea_multilevel_hint_t row_hint;
-        multilevel_hint_init(&row_hint);
+        alea_hier_coherence_state_t state_a;
+        alea_hier_coherence_state_t state_b;
+        alea_hier_coherence_state_t* previous_state = &state_a;
+        alea_hier_coherence_state_t* current_state = &state_b;
+        alea_hier_coherence_state_clear(previous_state);
+        alea_hier_coherence_state_clear(current_state);
 
         for (int i = 0; i < nu; i++) {
             double u = u_min + (i + 0.5) * du;
@@ -1031,34 +628,29 @@ int alea_find_cells_grid(alea_system_t* sys,
             double y = origin[1] + u * u_axis[1] + v * v_axis[1];
             double z = origin[2] + u * u_axis[2] + v * v_axis[2];
 
-            /* Choose best hint: prefer horizontal neighbor, then vertical */
-            const alea_multilevel_hint_t* hint = NULL;
-            if (row_hint.valid_depth >= 0) {
-                hint = &row_hint;
-            } else if (prev_row_hints[i].valid_depth >= 0) {
-                hint = &prev_row_hints[i];
-            }
-
             int cell_id = -1;
             int material_id = 0;
-            uint8_t error = 0;
+            uint8_t error = GRID_ERR_NONE;
 
-            find_cell_multilevel(sys, x, y, z, universe_depth,
-                                 hint, &curr_row_hints[i],
-                                 &cell_id, &material_id, &error,
-                                 stats_en ? &grid_stats : NULL);
-
-            row_hint = curr_row_hints[i];
-
+            int rich_rc = slice_resolve_grid_rich(
+                sys, previous_state, x, y, z, universe_depth, current_state,
+                &cell_id, &material_id, &error,
+                stats_en ? &grid_stats : NULL);
+            if (rich_rc < 0) {
+                cell_id = -1;
+                material_id = 0;
+                error = GRID_ERR_UNDEFINED;
+                alea_hier_coherence_state_clear(current_state);
+            }
             out_cell_ids[idx] = cell_id;
             if (out_material_ids) out_material_ids[idx] = material_id;
             if (out_errors) out_errors[idx] = error;
+
+            alea_hier_coherence_state_t* state_tmp = previous_state;
+            previous_state = current_state;
+            current_state = state_tmp;
         }
 
-        /* Swap row buffers */
-        alea_multilevel_hint_t* tmp = prev_row_hints;
-        prev_row_hints = curr_row_hints;
-        curr_row_hints = tmp;
     }
 
     if (stats_en) {
@@ -1067,12 +659,10 @@ int alea_find_cells_grid(alea_system_t* sys,
         grid_stats.csg_bool_ops = c.boolean_operations;
     }
 
-    free(prev_row_hints);
-    free(curr_row_hints);
 #endif
 
     /* Second pass: recheck boundary pixels for overlap detection.
-     * The adjacency optimization finds one cell per pixel without checking
+     * The first-owner coherent resolver finds one cell per pixel without checking
      * for overlaps. Re-query boundary pixels (where a 4-connected neighbor
      * has a different cell ID) using full hierarchy search.
      *
@@ -1121,27 +711,25 @@ int alea_find_cells_grid(alea_system_t* sys,
 
     /* Print query stats when ALEA_GRID_STATS=1 */
     if (stats_en) {
-        size_t total    = grid_stats.px_total;
-        size_t hint_f   = grid_stats.px_hint_full;
-        size_t hint_p   = grid_stats.px_hint_partial;
-        size_t fallback = grid_stats.px_full_fallback;
-        size_t uh_cell  = grid_stats.univ_hint_cell;
-        size_t uh_nbr   = grid_stats.univ_neighbor;
-        size_t uh_blas  = grid_stats.univ_blas;
-        size_t uh_lin   = grid_stats.univ_linear;
-        size_t univ_total = uh_cell + uh_nbr + uh_blas + uh_lin;
+        const size_t total = grid_stats.px_total;
         fprintf(stdout, "\n[GRID STATS] pixels=%zu\n", total);
-        fprintf(stdout, "  adjacency full:    %6zu (%5.1f%%)\n", hint_f,   total ? 100.0*hint_f/total   : 0.0);
-        fprintf(stdout, "  adjacency partial: %6zu (%5.1f%%)\n", hint_p,   total ? 100.0*hint_p/total   : 0.0);
-        fprintf(stdout, "  full fallback:     %6zu (%5.1f%%)\n", fallback, total ? 100.0*fallback/total : 0.0);
-        fprintf(stdout, "[UNIV LOOKUPS] total=%zu per_pixel=%.1f\n",
-                univ_total, total ? (double)univ_total/total : 0.0);
-        fprintf(stdout, "  hint cell:  %6zu (%5.1f%%)\n", uh_cell, univ_total ? 100.0*uh_cell/univ_total : 0.0);
-        fprintf(stdout, "  neighbor:   %6zu (%5.1f%%)\n", uh_nbr,  univ_total ? 100.0*uh_nbr/univ_total  : 0.0);
-        fprintf(stdout, "  BLAS:       %6zu (%5.1f%%)\n", uh_blas, univ_total ? 100.0*uh_blas/univ_total : 0.0);
-        fprintf(stdout, "  linear:     %6zu (%5.1f%%)\n", uh_lin,  univ_total ? 100.0*uh_lin/univ_total  : 0.0);
-        size_t prim = grid_stats.csg_prim_evals;
-        size_t bops = grid_stats.csg_bool_ops;
+        fprintf(stdout, "  root query:         %6zu (%5.1f%%)\n",
+                grid_stats.rich_root_queries,
+                total ? 100.0 * grid_stats.rich_root_queries / total : 0.0);
+        fprintf(stdout, "  complete reuse:     %6zu (%5.1f%%)\n",
+                grid_stats.rich_path_reused,
+                total ? 100.0 * grid_stats.rich_path_reused / total : 0.0);
+        fprintf(stdout, "  lattice transition: %6zu (%5.1f%%)\n",
+                grid_stats.rich_lattice_transitions,
+                total ? 100.0 * grid_stats.rich_lattice_transitions / total : 0.0);
+        fprintf(stdout, "  prefix restart:     %6zu (%5.1f%%)\n",
+                grid_stats.rich_prefix_restarts,
+                total ? 100.0 * grid_stats.rich_prefix_restarts / total : 0.0);
+        fprintf(stdout, "  full fallback:      %6zu (%5.1f%%)\n",
+                grid_stats.rich_full_fallbacks,
+                total ? 100.0 * grid_stats.rich_full_fallbacks / total : 0.0);
+        const size_t prim = grid_stats.csg_prim_evals;
+        const size_t bops = grid_stats.csg_bool_ops;
         fprintf(stdout, "[CSG EVALS] prim=%zu bool_ops=%zu per_pixel=%.0f prim+bool=%.0f\n",
                 prim, bops, total ? (double)(prim+bops)/total : 0.0,
                 total ? (double)(prim+bops)/total : 0.0);
@@ -1185,24 +773,14 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
     for (size_t i = 0; i < n; i++) out_path_ids[i] = UINT32_MAX;
     alea_slice_path_table_free(out_paths);
 
-    alea_multilevel_hint_t* prev_row_hints =
-        calloc((size_t)nu, sizeof(*prev_row_hints));
-    alea_multilevel_hint_t* curr_row_hints =
-        calloc((size_t)nu, sizeof(*curr_row_hints));
-    if (!prev_row_hints || !curr_row_hints) {
-        free(prev_row_hints);
-        free(curr_row_hints);
-        return -1;
-    }
-    for (int i = 0; i < nu; i++) {
-        multilevel_hint_init(&prev_row_hints[i]);
-        multilevel_hint_init(&curr_row_hints[i]);
-    }
-
     for (int j = 0; j < nv; j++) {
         double v = v_min + (j + 0.5) * dv;
-        alea_multilevel_hint_t row_hint;
-        multilevel_hint_init(&row_hint);
+        alea_hier_coherence_state_t state_a;
+        alea_hier_coherence_state_t state_b;
+        alea_hier_coherence_state_t* previous_state = &state_a;
+        alea_hier_coherence_state_t* current_state = &state_b;
+        alea_hier_coherence_state_clear(previous_state);
+        alea_hier_coherence_state_clear(current_state);
 
         for (int i = 0; i < nu; i++) {
             double u = u_min + (i + 0.5) * du;
@@ -1211,47 +789,40 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
             double y = origin[1] + u * u_axis[1] + v * v_axis[1];
             double z = origin[2] + u * u_axis[2] + v * v_axis[2];
 
-            const alea_multilevel_hint_t* hint = NULL;
-            if (row_hint.valid_depth >= 0) {
-                hint = &row_hint;
-            } else if (prev_row_hints[i].valid_depth >= 0) {
-                hint = &prev_row_hints[i];
-            }
-
             int cell_id = -1;
             int material_id = 0;
-            uint8_t error = 0;
-            find_cell_multilevel(sys, x, y, z, universe_depth,
-                                 hint, &curr_row_hints[i],
-                                 &cell_id, &material_id, &error, NULL);
+            uint8_t error = GRID_ERR_NONE;
 
-            row_hint = curr_row_hints[i];
+            int rich_rc = slice_resolve_grid_rich(
+                sys, previous_state, x, y, z, universe_depth, current_state,
+                &cell_id, &material_id, &error, NULL);
+            if (rich_rc < 0) {
+                return -1;
+            }
 
             out_cell_ids[idx] = cell_id;
             if (out_material_ids) out_material_ids[idx] = material_id;
             if (out_errors) out_errors[idx] = error;
 
-            if (cell_id >= 0) {
+            if (rich_rc > 0) {
+                const alea_hier_ray_path_entry_t* target = NULL;
                 uint32_t path_id = UINT32_MAX;
-                if (slice_path_table_intern_hint(out_paths,
-                                                 &curr_row_hints[i],
-                                                 universe_depth,
-                                                 &path_id) != 0) {
-                    free(prev_row_hints);
-                    free(curr_row_hints);
+                if (slice_project_hier_path(&current_state->path, universe_depth,
+                                            &target) != 0 ||
+                    slice_path_table_intern(out_paths, target->universe_id,
+                                            target->depth, &target->transform,
+                                            &path_id) != 0) {
                     return -1;
                 }
                 out_path_ids[idx] = path_id;
             }
+
+            alea_hier_coherence_state_t* state_tmp = previous_state;
+            previous_state = current_state;
+            current_state = state_tmp;
         }
 
-        alea_multilevel_hint_t* tmp = prev_row_hints;
-        prev_row_hints = curr_row_hints;
-        curr_row_hints = tmp;
     }
-
-    free(prev_row_hints);
-    free(curr_row_hints);
 
     if (out_errors) {
         for (int j = 0; j < nv; j++) {

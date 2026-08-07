@@ -298,6 +298,39 @@ TEST(grid_overlap_detected) {
     alea_destroy(sys);
 }
 
+TEST(grid_coherence_preserves_first_owner_in_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int first_sphere = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int later_sphere = alea_sphere_surface(sys, 2, -3.0, 0.0, 0.0, 2.0);
+    ASSERT(first_sphere >= 0 && later_sphere >= 0);
+    int first_mat = alea_add_material(sys, 1);
+    int later_mat = alea_add_material(sys, 2);
+    ASSERT(first_mat >= 0 && later_mat >= 0);
+    /* Cell 1 is first in deck order, but a left-to-right row starts in cell 2
+     * alone and then enters their overlap. The stale cell-2 hint must not win. */
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, first_sphere, -1),
+                         first_mat, -1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, alea_halfspace(sys, later_sphere, -1),
+                         later_mat, -1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[6];
+    int material_ids[6];
+    uint8_t errors[6];
+    alea_slice_view_t view;
+    /* Centres: -4.5, -3.5, -2.5, -1.5, -0.5, 0.5. */
+    alea_slice_view_axis(&view, 2, 0.0, -5.0, 1.0, -1.0, 1.0);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, 6, 1, -1,
+                                   cell_ids, material_ids, errors), 0);
+    ASSERT_EQ(material_ids[0], 2);
+    ASSERT_EQ(material_ids[3], 1);
+    ASSERT_EQ(cell_ids[3], 1);
+
+    alea_destroy(sys);
+}
+
 /* =========================================================================
  * Test 4b: coverage grid classifies undefined/one/multi pixels
  * ========================================================================= */
@@ -797,6 +830,67 @@ TEST(grid_path_ids_filled_universe) {
     ASSERT_EQ(paths.records[fill_path].depth, 1);
 
     alea_slice_path_table_free(&paths);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_path_ids_distinguish_lattice_element_placements) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[3];
+    uint8_t coverage[3];
+    uint8_t errors[3];
+    uint32_t path_ids[3];
+    alea_slice_path_table_t paths = {0};
+    alea_slice_view_t view;
+    /* Pixel centers are x = 0, 2, 4. The first and third select the same
+     * child universe but different lattice elements. */
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 5.0, -1.0, 1.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage_paths(
+                  sys, &view, 3, 1, -1,
+                  ALEA_GRID_COVERAGE_FAST | ALEA_GRID_PATH_IDS,
+                  cell_ids, NULL, NULL, coverage, errors, path_ids, &paths), 0);
+    ASSERT_EQ(cell_ids[0], 1);
+    ASSERT_EQ(cell_ids[2], 1);
+    ASSERT(path_ids[0] != UINT32_MAX);
+    ASSERT(path_ids[2] != UINT32_MAX);
+    ASSERT(path_ids[0] != path_ids[2]);
+
+    const alea_slice_path_record_t* left = &paths.records[path_ids[0]];
+    const alea_slice_path_record_t* right = &paths.records[path_ids[2]];
+    ASSERT_EQ(left->universe_id, 1);
+    ASSERT_EQ(right->universe_id, 1);
+    ASSERT_EQ(left->depth, 1);
+    ASSERT_EQ(right->depth, 1);
+    ASSERT(left->world_to_local[3] != right->world_to_local[3]);
+
+    alea_slice_path_table_free(&paths);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_hex_lattice_coherent_walk_resolves_child_cells) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_hex_lattice.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[3];
+    uint8_t errors[3];
+    alea_slice_view_t view;
+    /* Pixel centers are x = -2, 0, 2 at y = z = 0. The latter two cover
+     * the canonical hex-lattice regression points in one coherent row. */
+    alea_slice_view_axis(&view, 2, 0.0, -3.0, 3.0, -1.0, 1.0);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, 3, 1, -1,
+                                   cell_ids, NULL, errors), 0);
+    ASSERT_EQ(cell_ids[1], 1);
+    ASSERT_EQ(cell_ids[2], 3);
+    ASSERT_EQ(errors[0], 0);
+    ASSERT_EQ(errors[1], 0);
+    ASSERT_EQ(errors[2], 0);
+
     mcnp_model_destroy(model);
 }
 
