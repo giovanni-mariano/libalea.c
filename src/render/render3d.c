@@ -532,52 +532,42 @@ static void render_pixel_solid(alea_system_t* sys,
     /* Full raycast from origin */
     alea_raycast_result_clear(result);
 
-    if (sys->has_lattice) {
-        /* Lattice models need full traversal (surface + DDA + segments).
-         * Use the canonical reusable path to avoid freeing the worker-local
-         * result buffers between pixels. */
-        alea_ray_t ray;
-        if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
-            alea_raycast_global_reuse_nocache(sys, &ray, t_max, result) != 0)
-            return;
-    } else {
-        /* Non-lattice solid rendering needs exactly one visible interval.
-         * Stop inside the hierarchical stepper and materialize only the tiny
-         * compatibility record consumed by the common shading code below. */
-        alea_ray_t ray;
-        alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
-        alea_ray_first_visible_result_t visible;
-        if (alea_raycast_hier_first_visible_nocache(
-                sys, &ray, t_min, t_max, -1, 1, result, &visible) != 0 ||
-            !visible.found)
-            return;
+    /* Solid rendering needs exactly one visible interval.  The hierarchical
+     * stepper handles lattice DDA and fill expansion, so it can stop as soon
+     * as that interval is found instead of materializing a full global trace. */
+    alea_ray_t ray;
+    alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+    alea_ray_first_visible_result_t visible;
+    if (alea_raycast_hier_first_visible_nocache(
+            sys, &ray, t_min, t_max, -1, 1, result, &visible) != 0 ||
+        !visible.found)
+        return;
 
-        alea_ray_segment_t seg = {
-            .t_enter = visible.t,
-            .t_exit = t_max,
-            .cell_id = visible.cell_id,
-            .material_id = visible.material_id,
-            .density = visible.density,
-            .enter_surface_id = visible.surface_id,
-            .exit_surface_id = -1,
-            .enter_hit_index = -1,
-            .resolution_flags = visible.resolution_flags,
-            .path_index = UINT32_MAX
+    alea_ray_segment_t seg = {
+        .t_enter = visible.t,
+        .t_exit = t_max,
+        .cell_id = visible.cell_id,
+        .material_id = visible.material_id,
+        .density = visible.density,
+        .enter_surface_id = visible.surface_id,
+        .exit_surface_id = -1,
+        .enter_hit_index = -1,
+        .resolution_flags = visible.resolution_flags,
+        .path_index = UINT32_MAX
+    };
+    if (visible.surface_id > 0) {
+        const alea_ray_hit_t hit = {
+            .t = visible.t,
+            .surface_id = visible.surface_id,
+            .primitive_id = visible.primitive_id,
+            .nx = visible.nx, .ny = visible.ny, .nz = visible.nz
         };
-        if (visible.surface_id > 0) {
-            const alea_ray_hit_t hit = {
-                .t = visible.t,
-                .surface_id = visible.surface_id,
-                .primitive_id = visible.primitive_id,
-                .nx = visible.nx, .ny = visible.ny, .nz = visible.nz
-            };
-            if (alea_vec_push(&result->hits, hit, alea_ray_hit_t) != 0)
-                return;
-            seg.enter_hit_index = 0;
-        }
-        if (alea_vec_push(&result->segments, seg, alea_ray_segment_t) != 0)
+        if (alea_vec_push(&result->hits, hit, alea_ray_hit_t) != 0)
             return;
+        seg.enter_hit_index = 0;
     }
+    if (alea_vec_push(&result->segments, seg, alea_ray_segment_t) != 0)
+        return;
     /* Find first non-void segment in visible region (past clips) */
     for (size_t i = 0; i < result->segments.count; i++) {
         const alea_ray_segment_t* seg = &result->segments.data[i];
