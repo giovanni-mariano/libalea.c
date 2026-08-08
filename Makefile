@@ -229,7 +229,8 @@ RAYCAST_SRCS = \
 SLICE_SRCS = \
 	$(SLICE_DIR)/curve_intersect.c \
 	$(SLICE_DIR)/slice_directional_trace.c \
-	$(SLICE_DIR)/slice_api.c
+	$(SLICE_DIR)/slice_api.c \
+	$(SLICE_DIR)/slice_ray_raster.c
 
 # Render module (3D batch renderer)
 RENDER_SRCS = \

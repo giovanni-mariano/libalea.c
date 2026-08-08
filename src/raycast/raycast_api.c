@@ -273,6 +273,34 @@ int alea_raycast_batch_result_matches_fast_slice_cache(
            result->cell_ids;
 }
 
+int alea_raycast_batch_result_get_compact_slice_provenance(
+    const alea_raycast_batch_result_t* result,
+    const alea_slice_view_t* view,
+    size_t row_count,
+    int* out_projected_depth) {
+    if (out_projected_depth) *out_projected_depth = -1;
+    if (!result || !view || !result->fast_slice_cache.valid ||
+        result->fast_slice_cache.row_count != row_count ||
+        result->ray_count != row_count ||
+        !result->ray_offsets || !result->t_enter || !result->t_exit ||
+        !result->cell_ids)
+        return 0;
+    if (memcmp(result->fast_slice_cache.origin, view->plane.origin,
+               sizeof(result->fast_slice_cache.origin)) != 0 ||
+        memcmp(result->fast_slice_cache.u_axis, view->plane.u_axis,
+               sizeof(result->fast_slice_cache.u_axis)) != 0 ||
+        memcmp(result->fast_slice_cache.v_axis, view->plane.v_axis,
+               sizeof(result->fast_slice_cache.v_axis)) != 0 ||
+        result->fast_slice_cache.u_min != view->u_min ||
+        result->fast_slice_cache.u_max != view->u_max ||
+        result->fast_slice_cache.v_min != view->v_min ||
+        result->fast_slice_cache.v_max != view->v_max)
+        return 0;
+    if (out_projected_depth)
+        *out_projected_depth = result->fast_slice_cache.projected_depth;
+    return 1;
+}
+
 void alea_raycast_batch_result_swap_internal(
     alea_raycast_batch_result_t* a,
     alea_raycast_batch_result_t* b) {

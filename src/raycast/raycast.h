@@ -343,6 +343,11 @@ int alea_raycast_batch_result_matches_fast_slice_cache(
     size_t row_count,
     const alea_raycast_batch_options_t* render_options,
     int projected_depth);
+int alea_raycast_batch_result_get_compact_slice_provenance(
+    const alea_raycast_batch_result_t* result,
+    const alea_slice_view_t* view,
+    size_t row_count,
+    int* out_projected_depth);
 void alea_raycast_batch_result_swap_internal(
     alea_raycast_batch_result_t* a,
     alea_raycast_batch_result_t* b);

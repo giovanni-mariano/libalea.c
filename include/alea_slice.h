@@ -363,6 +363,63 @@ int alea_trace_ray_slice_compact(
     alea_raycast_batch_result_t* result);
 
 /* ============================================================================
+ * RAY-SLICE RASTERIZATION
+ * ============================================================================ */
+
+typedef uint32_t alea_slice_raster_fields_t;
+
+#define ALEA_SLICE_RASTER_CELL_ID          (1u << 0)
+#define ALEA_SLICE_RASTER_MATERIAL_ID      (1u << 1)
+#define ALEA_SLICE_RASTER_UNIVERSE_ID      (1u << 2)
+#define ALEA_SLICE_RASTER_FILL_UNIVERSE    (1u << 3)
+#define ALEA_SLICE_RASTER_DENSITY          (1u << 4)
+#define ALEA_SLICE_RASTER_RESOLUTION_FLAGS (1u << 5)
+
+/** Caller-owned, tightly packed row-major ray-slice raster buffers.
+ * Every requested field requires a non-NULL, non-overlapping buffer with
+ * nu * nv elements. Unrequested pointers are ignored. */
+typedef struct {
+    size_t struct_size;
+    size_t nu;
+    size_t nv;
+    alea_slice_raster_fields_t fields;
+    int32_t* cell_ids;
+    int32_t* material_ids;
+    int32_t* universe_ids;
+    int32_t* fill_universe_ids;
+    double* densities;
+    uint8_t* resolution_flags;
+} alea_slice_raster_t;
+
+/** Options for fused ray-slice tracing and rasterization. */
+typedef struct {
+    size_t struct_size;
+    int projected_depth;             /**< -1 = leaf; >= 0 = hierarchy depth */
+    uint64_t max_segments;           /**< 0 = unbounded */
+    uint64_t max_trace_output_bytes; /**< 0 = unbounded compact temporary */
+} alea_slice_raster_options_t;
+
+void alea_slice_raster_init(alea_slice_raster_t* raster);
+void alea_slice_raster_options_init(alea_slice_raster_options_t* options);
+
+/** Rasterize a compact result produced by alea_trace_ray_slice_compact().
+ * The result must match view and output->nv. On validation failure, requested
+ * output buffers are left unchanged. Cell/material/universe/fill values follow
+ * the result's projected depth; density is always resolved leaf density. */
+int alea_rasterize_ray_slice_compact(
+    const alea_slice_view_t* view,
+    const alea_raycast_batch_result_t* segments,
+    alea_slice_raster_t* output);
+
+/** Trace centered U-directed slice rows and rasterize them into caller buffers.
+ * The compact temporary is internal and never retained after return. */
+int alea_trace_ray_slice_raster(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_raster_options_t* options,
+    alea_slice_raster_t* output);
+
+/* ============================================================================
  * GRID-BASED CELL QUERIES
  * ============================================================================ */
 
