@@ -16,6 +16,13 @@ focused C benchmark/example.
 - `plans/UNIFIED_RAY_QUERY_ARCHITECTURE.md`
 - `plans/PLAN_NATIVE_BATCH_LATTICE_DDA.md`
 
+**Implementation record (2026-08-08):** The public standalone and fused APIs,
+compact-slice provenance checks, demand-driven compact fields, serial and
+thresholded OpenMP row filling, focused benchmark, API documentation, and
+native tests are implemented. The test matrix covers ordinary geometry,
+projected rectangular lattices, nested lattices, undefined fills, invalid
+descriptors, compact byte limits, and one/four-thread determinism.
+
 ## Executive decision
 
 Add a renderer-independent ray-slice rasterizer to libalea. It will consume the

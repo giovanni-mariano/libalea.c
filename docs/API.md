@@ -2307,6 +2307,56 @@ physical surfaces use the lowest positive surface ID; set
 ownership fields are deterministic. `max_events` and `max_output_bytes` reject
 oversized results rather than truncating them.
 
+## Ray-slice rasterization
+
+`alea_rasterize_ray_slice_compact()` fills caller-owned, tightly packed
+row-major raster arrays from a result created by
+`alea_trace_ray_slice_compact()`. The compact result must match the exact view
+and row count; generic ray batches are rejected because their intervals are ray
+distances rather than slice-U coordinates. Validation failures leave requested
+output buffers unchanged.
+
+`alea_trace_ray_slice_raster()` is the fused alternative. It derives the
+compact fields required by the requested raster fields, creates a temporary
+compact result, rasterizes it, and releases it before returning. Its
+`max_trace_output_bytes` limit applies only to that temporary compact result;
+callers own and budget the raster buffers themselves.
+
+Raster ownership uses horizontal pixel centers. For an interval
+`[u_enter, u_exit)`, a row with width `nu`, and pixel pitch
+`du = (u_max-u_min)/nu`, the filled range is `[ceil((u_enter-u_min)/du-0.5),
+ceil((u_exit-u_min)/du-0.5))`, clamped to `[0, nu]`. Void defaults are cell
+`-1`, material `0`, universe `-1`, fill universe `-1`, density `0.0`, and
+resolution flags `0`. Density is always the resolved leaf density; projected
+owner depth applies to cell, material, universe, and fill-universe fields.
+
+```c
+size_t pixels = nu * nv;
+int32_t* cells = malloc(pixels * sizeof(*cells));
+int32_t* materials = malloc(pixels * sizeof(*materials));
+alea_slice_raster_t raster;
+alea_slice_raster_init(&raster);
+raster.nu = nu;
+raster.nv = nv;
+raster.fields = ALEA_SLICE_RASTER_CELL_ID |
+                ALEA_SLICE_RASTER_MATERIAL_ID;
+raster.cell_ids = cells;
+raster.material_ids = materials;
+
+alea_slice_raster_options_t options;
+alea_slice_raster_options_init(&options);  /* leaf ownership, no trace limit */
+if (alea_trace_ray_slice_raster(sys, &view, &options, &raster) != 0) {
+    /* cells and materials are unchanged on validation/trace failure */
+}
+free(materials);
+free(cells);
+```
+
+Requested output buffers must not overlap. The rasterizer may fill independent
+rows in parallel for large rasters, but produces the same bytes at every OpenMP
+thread count. See `examples/c/ray_slice_raster_bench.c` for compact-trace,
+standalone-raster, and fused timings.
+
 ## Directional slice trace caches
 
 `alea_slice_directional_trace_cache_create()` creates an opaque reusable cache
