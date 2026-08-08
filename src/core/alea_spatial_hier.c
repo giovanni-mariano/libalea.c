@@ -1785,6 +1785,12 @@ static void hier_deepest_store_hit(const alea_cell_entry_t* cell,
     *found = 1;
 }
 
+/* hint_path is the previous query's path, or NULL. Each universe probes the
+ * cell recorded there at its own depth (and that cell's adjacency neighbours)
+ * before descending the BLAS: neighbouring points overwhelmingly land in the
+ * same cell or one next to it, and the probe costs a handful of containment
+ * tests against the BLAS's candidate sweep. Only the deck-first owner of an
+ * overlap can differ, so callers pass a hint under coherent ownership only. */
 static int hier_find_deepest_universe(alea_system_t* sys,
                                       alea_hier_spatial_index_t* idx,
                                       int universe_id,
@@ -1798,7 +1804,8 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                       alea_hier_cell_hit_t* out_hit,
                                       int* found,
                                       hier_path_cache_t* path,
-                                      hier_path_cache_t* best_path);
+                                      hier_path_cache_t* best_path,
+                                      const alea_hier_ray_path_t* hint_path);
 
 /* Returns 1 if the candidate cell contains the point (lattice cells: the
  * lattice lookup resolved an element), 0 if not, -1 on error. Containing
@@ -1816,7 +1823,8 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                   alea_hier_cell_hit_t* out_hit,
                                   int* found,
                                   hier_path_cache_t* path,
-                                  hier_path_cache_t* best_path) {
+                                  hier_path_cache_t* best_path,
+                                  const alea_hier_ray_path_t* hint_path) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
 
     if (cell->lat_type != 0 && cell->lat_fill) {
@@ -1855,7 +1863,7 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                             &element_transform,
                                             (int)cell_index, transform,
                                             out_hit, found,
-                                            path, best_path);
+                                            path, best_path, hint_path);
         if (path) path->count = saved_path_count;
         return rc < 0 ? -1 : 1;
     }
@@ -1903,13 +1911,82 @@ static int hier_find_deepest_cell(alea_system_t* sys,
                                             lattice_cell_index,
                                             lattice_transform,
                                             out_hit, found,
-                                            path, best_path);
+                                            path, best_path, hint_path);
         if (path) path->count = saved_path_count;
         return rc < 0 ? -1 : 1;
     }
 
     if (path) path->count = saved_path_count;
     return 1;
+}
+
+/* Cheap bbox reject before a full CSG containment test on a hinted cell. */
+static bool hier_cell_bbox_contains(const alea_system_t* sys,
+                                    const alea_cell_entry_t* cell,
+                                    double lx, double ly, double lz) {
+    if (cell->root_node_id == ALEA_NODE_ID_INVALID) return true;
+    const alea_bbox_t bbox =
+        alea_node_bbox_get(&sys->nodes.data[cell->root_node_id].bbox);
+    return !(lx < bbox.min_x || lx > bbox.max_x ||
+             ly < bbox.min_y || ly > bbox.max_y ||
+             lz < bbox.min_z || lz > bbox.max_z);
+}
+
+/* Probe the hinted cell for this universe/depth, then its adjacency
+ * neighbours. Returns 1 when one of them resolved the point (out_hit and the
+ * paths are then complete), 0 when the caller must run the BLAS query, -1 on
+ * error. Failed probes leave path/best_path untouched. */
+static int hier_probe_hint_cells(alea_system_t* sys,
+                                 alea_hier_spatial_index_t* idx,
+                                 int universe_id,
+                                 double lx,
+                                 double ly,
+                                 double lz,
+                                 int depth,
+                                 const alea_matrix_t* transform,
+                                 int lattice_cell_index,
+                                 const alea_matrix_t* lattice_transform,
+                                 alea_hier_cell_hit_t* out_hit,
+                                 int* found,
+                                 hier_path_cache_t* path,
+                                 hier_path_cache_t* best_path,
+                                 const alea_hier_ray_path_t* hint_path) {
+    uint32_t hint_cell = 0;
+    bool has_hint = false;
+    for (int i = 0; i < hint_path->count; i++) {
+        const alea_hier_ray_path_entry_t* entry = &hint_path->entries[i];
+        if (entry->depth == depth && entry->universe_id == universe_id &&
+            (size_t)entry->cell_index < alea_vec_count(&sys->cells)) {
+            hint_cell = entry->cell_index;
+            has_hint = true;
+            break;
+        }
+    }
+    if (!has_hint) return 0;
+
+    int rc = hier_find_deepest_cell(sys, idx, hint_cell, lx, ly, lz, depth,
+                                    transform, lattice_cell_index,
+                                    lattice_transform, out_hit, found,
+                                    path, best_path, hint_path);
+    if (rc != 0) return rc;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[hint_cell];
+    if (!sys->cell_adjacency_built || !cell->neighbors) return 0;
+
+    for (size_t n = 0; n < cell->neighbor_count; n++) {
+        uint32_t neighbor_index = cell->neighbors[n].neighbor_index;
+        if ((size_t)neighbor_index >= alea_vec_count(&sys->cells)) continue;
+        const alea_cell_entry_t* neighbor = &sys->cells.data[neighbor_index];
+        if (neighbor->universe_id != universe_id) continue;
+        if (!hier_cell_bbox_contains(sys, neighbor, lx, ly, lz)) continue;
+
+        rc = hier_find_deepest_cell(sys, idx, neighbor_index, lx, ly, lz,
+                                    depth, transform, lattice_cell_index,
+                                    lattice_transform, out_hit, found,
+                                    path, best_path, hint_path);
+        if (rc != 0) return rc;
+    }
+    return 0;
 }
 
 static int hier_find_deepest_universe(alea_system_t* sys,
@@ -1925,11 +2002,20 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                       alea_hier_cell_hit_t* out_hit,
                                       int* found,
                                       hier_path_cache_t* path,
-                                      hier_path_cache_t* best_path) {
+                                      hier_path_cache_t* best_path,
+                                      const alea_hier_ray_path_t* hint_path) {
     if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
 
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
+
+    if (hint_path) {
+        int rc = hier_probe_hint_cells(sys, idx, universe_id, lx, ly, lz,
+                                       depth, transform, lattice_cell_index,
+                                       lattice_transform, out_hit, found,
+                                       path, best_path, hint_path);
+        if (rc != 0) return rc < 0 ? -1 : 0;
+    }
 
     const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (blas && blas->built && blas->node_count > 0) {
@@ -1965,7 +2051,7 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                             lattice_cell_index,
                                             lattice_transform,
                                             out_hit, found,
-                                            path, best_path);
+                                            path, best_path, hint_path);
             if (rc < 0) ctx.error = -1;
             if (rc > 0) break;
         }
@@ -1981,7 +2067,7 @@ static int hier_find_deepest_universe(alea_system_t* sys,
                                         lattice_cell_index,
                                         lattice_transform,
                                         out_hit, found,
-                                        path, best_path);
+                                        path, best_path, hint_path);
         if (rc < 0) return -1;
         if (rc > 0) break;
     }
@@ -2202,12 +2288,13 @@ int alea_hier_spatial_find_cells_at_point_uncached(alea_system_t* sys,
                                                 out_hits, max_hits, 0);
 }
 
-int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
-                                         double x,
-                                         double y,
-                                         double z,
-                                         alea_hier_cell_hit_t* out_hit,
-                                         alea_hier_ray_path_t* out_path) {
+static int hier_find_path_at_point_hinted(alea_system_t* sys,
+                                          double x,
+                                          double y,
+                                          double z,
+                                          alea_hier_cell_hit_t* out_hit,
+                                          alea_hier_ray_path_t* out_path,
+                                          const alea_hier_ray_path_t* hint_path) {
     if (!sys || !out_hit) return -1;
     if (out_path) out_path->count = 0;
 
@@ -2243,7 +2330,7 @@ int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
     hier_path_clear(&best_path);
     int rc = hier_find_deepest_universe(sys, idx, 0, x, y, z, 0,
                                         &identity, -1, NULL, out_hit, &found,
-                                        &path, &best_path);
+                                        &path, &best_path, hint_path);
     if (rc < 0) {
         hier_cache_invalidate();
         return -1;
@@ -2257,6 +2344,16 @@ int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
     }
 
     return found ? 1 : 0;
+}
+
+int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
+                                         double x,
+                                         double y,
+                                         double z,
+                                         alea_hier_cell_hit_t* out_hit,
+                                         alea_hier_ray_path_t* out_path) {
+    return hier_find_path_at_point_hinted(sys, x, y, z, out_hit, out_path,
+                                          NULL);
 }
 
 int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
@@ -2288,14 +2385,16 @@ static int hier_path_check_canonical_owners(alea_system_t* sys,
     return 1;
 }
 
-int alea_hier_path_enter_lattice_location(
+static int hier_path_enter_lattice_location_impl(
     alea_system_t* sys,
     const alea_hier_ray_path_t* path,
     int lattice_entry,
     double x, double y, double z,
     const alea_lattice_location_t* location,
     alea_hier_cell_hit_t* out_hit,
-    alea_hier_ray_path_t* out_path) {
+    alea_hier_ray_path_t* out_path,
+    alea_hier_coherence_ownership_t ownership,
+    const alea_hier_ray_path_t* hint_path) {
     if (!sys || !path || !location || !out_hit || lattice_entry < 0 ||
         lattice_entry >= path->count) return -1;
     if (out_path) out_path->count = 0;
@@ -2313,19 +2412,23 @@ int alea_hier_path_enter_lattice_location(
         int valid = alea_hier_spatial_check_path_containment(
             sys, path, lattice_entry - 1, x, y, z, NULL, NULL, NULL);
         if (valid <= 0) return valid;
-        valid = hier_path_check_canonical_owners(sys, path,
-                                                  lattice_entry - 1,
-                                                  x, y, z);
-        if (valid <= 0) return valid;
+        if (ownership == ALEA_HIER_COH_OWNERSHIP_CANONICAL) {
+            valid = hier_path_check_canonical_owners(sys, path,
+                                                      lattice_entry - 1,
+                                                      x, y, z);
+            if (valid <= 0) return valid;
+        }
     }
 
     double parent_lx = x, parent_ly = y, parent_lz = z;
     alea_matrix_transform_point_inverse(&parent->transform,
                                         &parent_lx, &parent_ly, &parent_lz);
-    int owner = alea_hier_spatial_find_ordered_cell_in_universe(
-        sys, parent->universe_id, parent_lx, parent_ly, parent_lz, -1);
-    if (owner == -2) return -1;
-    if (owner != (int)parent->cell_index) return 0;
+    if (ownership == ALEA_HIER_COH_OWNERSHIP_CANONICAL) {
+        int owner = alea_hier_spatial_find_ordered_cell_in_universe(
+            sys, parent->universe_id, parent_lx, parent_ly, parent_lz, -1);
+        if (owner == -2) return -1;
+        if (owner != (int)parent->cell_index) return 0;
+    }
 
     const alea_cell_entry_t* cell = &sys->cells.data[parent->cell_index];
     alea_lattice_location_t actual;
@@ -2369,7 +2472,7 @@ int alea_hier_path_enter_lattice_location(
         parent_lx - location->ox, parent_ly - location->oy,
         parent_lz - location->oz, parent->depth + 1, &transform,
         (int)parent->cell_index, &parent->transform, out_hit, &found,
-        &prefix, &best_path);
+        &prefix, &best_path, hint_path);
     if (rc < 0) return -1;
     if (!found) return 0;
 
@@ -2378,14 +2481,30 @@ int alea_hier_path_enter_lattice_location(
     return 1;
 }
 
-int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
-                                            const alea_hier_ray_path_t* path,
-                                            int parent_entry,
-                                            double x,
-                                            double y,
-                                            double z,
-                                            alea_hier_cell_hit_t* out_hit,
-                                            alea_hier_ray_path_t* out_path) {
+int alea_hier_path_enter_lattice_location(
+    alea_system_t* sys,
+    const alea_hier_ray_path_t* path,
+    int lattice_entry,
+    double x, double y, double z,
+    const alea_lattice_location_t* location,
+    alea_hier_cell_hit_t* out_hit,
+    alea_hier_ray_path_t* out_path) {
+    return hier_path_enter_lattice_location_impl(
+        sys, path, lattice_entry, x, y, z, location, out_hit, out_path,
+        ALEA_HIER_COH_OWNERSHIP_CANONICAL, NULL);
+}
+
+static int hier_find_path_from_parent_impl(
+    alea_system_t* sys,
+    const alea_hier_ray_path_t* path,
+    int parent_entry,
+    double x,
+    double y,
+    double z,
+    alea_hier_cell_hit_t* out_hit,
+    alea_hier_ray_path_t* out_path,
+    alea_hier_coherence_ownership_t ownership,
+    const alea_hier_ray_path_t* hint_path) {
     if (!sys || !path || !out_hit || parent_entry < -1) return -1;
     if (out_path) out_path->count = 0;
 
@@ -2424,9 +2543,9 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
                                           parent_lz, &location) != 1) {
                 return 0;
             }
-            return alea_hier_path_enter_lattice_location(
+            return hier_path_enter_lattice_location_impl(
                 sys, path, parent_entry, x, y, z, &location,
-                out_hit, out_path);
+                out_hit, out_path, ownership, hint_path);
         }
 
         /* Lattice parents returned above through the shared location
@@ -2434,9 +2553,11 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
         int valid = alea_hier_spatial_check_path_containment(
             sys, path, parent_entry, x, y, z, NULL, NULL, NULL);
         if (valid <= 0) return valid;
-        valid = hier_path_check_canonical_owners(sys, path, parent_entry,
-                                                  x, y, z);
-        if (valid <= 0) return valid;
+        if (ownership == ALEA_HIER_COH_OWNERSHIP_CANONICAL) {
+            valid = hier_path_check_canonical_owners(sys, path, parent_entry,
+                                                      x, y, z);
+            if (valid <= 0) return valid;
+        }
 
         const alea_cell_entry_t* cell = &sys->cells.data[parent->cell_index];
         double parent_lx = x;
@@ -2477,13 +2598,26 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
                                         &transform,
                                         -1, NULL,
                                         out_hit, &found,
-                                        &prefix, &best_path);
+                                        &prefix, &best_path, hint_path);
     if (rc < 0) return -1;
     if (!found) return 0;
 
     hier_path_commit_to_cache(&best_path);
     hier_path_export(&best_path, out_path);
     return 1;
+}
+
+int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
+                                            const alea_hier_ray_path_t* path,
+                                            int parent_entry,
+                                            double x,
+                                            double y,
+                                            double z,
+                                            alea_hier_cell_hit_t* out_hit,
+                                            alea_hier_ray_path_t* out_path) {
+    return hier_find_path_from_parent_impl(
+        sys, path, parent_entry, x, y, z, out_hit, out_path,
+        ALEA_HIER_COH_OWNERSHIP_CANONICAL, NULL);
 }
 
 /* Clears the live fields only.  path.entries is a fixed 64-slot array (~17 KB)
@@ -2594,11 +2728,18 @@ int alea_hier_spatial_resolve_coherent(
         }
     }
 
+    /* Under coherent ownership the previous path also seeds the descent: each
+     * universe tries the cell it held there (and its neighbours) before the
+     * BLAS query, which is what keeps a sweep of adjacent points cheap. */
+    const alea_hier_ray_path_t* hint_path =
+        (has_previous && ownership == ALEA_HIER_COH_OWNERSHIP_COHERENT)
+            ? &previous->path : NULL;
+
     if (has_previous) {
         for (int parent = previous->path.count - 2; parent >= 0; parent--) {
-            int rc = alea_hier_spatial_find_path_from_parent(
+            int rc = hier_find_path_from_parent_impl(
                 sys, &previous->path, parent, x, y, z, out_hit,
-                &current->path);
+                &current->path, ownership, hint_path);
             if (rc < 0) return -1;
             if (rc == 0) continue;
             hier_coherence_store(sys, current, out_hit, generation);
@@ -2620,8 +2761,8 @@ int alea_hier_spatial_resolve_coherent(
         }
     }
 
-    int rc = alea_hier_spatial_find_path_at_point(sys, x, y, z, out_hit,
-                                                   &current->path);
+    int rc = hier_find_path_at_point_hinted(sys, x, y, z, out_hit,
+                                            &current->path, hint_path);
     if (rc <= 0) return rc;
     hier_coherence_store(sys, current, out_hit, generation);
     if (out_kind)
