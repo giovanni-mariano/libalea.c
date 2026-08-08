@@ -452,8 +452,13 @@ static int slice_resolve_grid_rich(alea_system_t* sys,
 
     alea_hier_cell_hit_t deepest;
     alea_hier_coherence_kind_t kind;
+    /* Coherent ownership: re-deriving the deck-first owner per point would only
+     * change the cell reported inside an overlap, and those pixels are already
+     * flagged by the boundary/periodic passes below, which query overlaps
+     * directly instead of through the cached path. */
     int rc = alea_hier_spatial_resolve_coherent(
-        sys, x, y, z, previous, current, &deepest, &kind);
+        sys, x, y, z, previous, ALEA_HIER_COH_OWNERSHIP_COHERENT,
+        current, &deepest, &kind);
     GRID_STAT_INC(stats, px_total);
     if (rc > 0) {
         switch (kind) {

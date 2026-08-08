@@ -155,12 +155,30 @@ int alea_hier_spatial_find_path_at_point(alea_system_t* sys,
                                          alea_hier_cell_hit_t* out_hit,
                                          alea_hier_ray_path_t* out_path);
 void alea_hier_coherence_state_clear(alea_hier_coherence_state_t* state);
+
+/* How a reused path resolves ownership.  The two modes differ only where more
+ * than one cell of a universe contains the point, which is illegal geometry:
+ * elsewhere the owner is unique and both agree. */
+typedef enum {
+    /* Accept the cached path once it still contains the point.  Ownership in
+     * an overlap then follows the scan that produced the path, the way a
+     * tracked particle keeps the cell it entered.  Cheap: no owner lookup. */
+    ALEA_HIER_COH_OWNERSHIP_COHERENT = 0,
+    /* Re-derive the deck-first owner at every level, so the result matches a
+     * from-scratch query point for point regardless of how the sweep was
+     * split.  Costs a BVH descent per level per point. */
+    ALEA_HIER_COH_OWNERSHIP_CANONICAL = 1
+} alea_hier_coherence_ownership_t;
+
 /* Resolve a point from a worker-local prior path when its validated prefix
- * still applies.  The result always follows canonical deck-order ownership. */
+ * still applies.  Callers that report overlaps separately (the grid's boundary
+ * pass, the geometry validator) want ALEA_HIER_COH_OWNERSHIP_COHERENT; ask for
+ * CANONICAL only when the result must be independent of the sweep order. */
 int alea_hier_spatial_resolve_coherent(
     alea_system_t* sys,
     double x, double y, double z,
     const alea_hier_coherence_state_t* previous,
+    alea_hier_coherence_ownership_t ownership,
     alea_hier_coherence_state_t* current,
     alea_hier_cell_hit_t* out_hit,
     alea_hier_coherence_kind_t* out_kind);

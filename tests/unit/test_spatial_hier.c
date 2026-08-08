@@ -368,6 +368,101 @@ TEST(hier_spatial_candidate_lookup_resolves_lattice_container) {
     mcnp_model_destroy(model);
 }
 
+/* Sweep a straight run of points through the coherent resolver, the way a grid
+ * row does, and record the cell reported at each one. */
+static void coherent_scan_cell_ids(alea_system_t* sys,
+                                   alea_hier_coherence_ownership_t ownership,
+                                   double x0, double dx, double y, double z,
+                                   int n, int* out_cell_ids) {
+    alea_hier_coherence_state_t state_a, state_b;
+    alea_hier_coherence_state_t* previous = &state_a;
+    alea_hier_coherence_state_t* current = &state_b;
+    alea_hier_coherence_state_clear(previous);
+    alea_hier_coherence_state_clear(current);
+
+    for (int i = 0; i < n; i++) {
+        double x = x0 + i * dx;
+        alea_hier_cell_hit_t hit;
+        alea_hier_coherence_kind_t kind;
+        int rc = alea_hier_spatial_resolve_coherent(
+            sys, x, y, z, i == 0 ? NULL : previous, ownership,
+            current, &hit, &kind);
+        out_cell_ids[i] = rc > 0 ? hit.hit.cell_id : -1;
+        if (rc > 0) {
+            /* Whatever the mode reports must actually contain the point. */
+            ASSERT_EQ(alea_hier_spatial_check_path_containment(
+                          sys, &current->path, current->path.count - 1,
+                          x, y, z, NULL, NULL, NULL), 1);
+        }
+        alea_hier_coherence_state_t* tmp = previous;
+        previous = current;
+        current = tmp;
+    }
+}
+
+/* Where every point has a unique owner, the cheap mode must be indistinguishable
+ * from deck-order re-derivation and from a cold query. */
+TEST(hier_coherent_ownership_matches_canonical_without_overlaps) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    enum { N = 64 };
+    const double x0 = -0.93, dx = 0.09, y = 0.17, z = 0.0;
+    int coherent[N], canonical[N];
+    coherent_scan_cell_ids(sys, ALEA_HIER_COH_OWNERSHIP_COHERENT,
+                           x0, dx, y, z, N, coherent);
+    coherent_scan_cell_ids(sys, ALEA_HIER_COH_OWNERSHIP_CANONICAL,
+                           x0, dx, y, z, N, canonical);
+
+    int saw_transition = 0;
+    for (int i = 0; i < N; i++) {
+        alea_hier_cell_hit_t cold;
+        ASSERT_EQ(alea_hier_spatial_find_path_at_point(sys, x0 + i * dx, y, z,
+                                                       &cold, NULL), 1);
+        ASSERT_EQ(coherent[i], canonical[i]);
+        ASSERT_EQ(coherent[i], cold.hit.cell_id);
+        if (i > 0 && coherent[i] != coherent[i - 1]) saw_transition = 1;
+    }
+    /* A scan that never left one cell would prove nothing about path reuse. */
+    ASSERT(saw_transition);
+
+    mcnp_model_destroy(model);
+}
+
+/* In an overlap the modes are meant to disagree: coherent keeps the cell the
+ * sweep entered, canonical re-derives the deck-first owner. */
+TEST(hier_coherent_ownership_keeps_entered_cell_in_overlap) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_overlap.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    /* Cells 1 and 2 are spheres at x=0 and x=3, both r=5, so on the axis they
+     * share -2 < x < 5.  Sweeping leftwards enters the shared region from the
+     * cell-2 side, against deck order. */
+    enum { N = 5 };
+    const double x0 = 6.0, dx = -1.0, y = 0.0, z = 0.0;
+    int coherent[N], canonical[N];
+    coherent_scan_cell_ids(sys, ALEA_HIER_COH_OWNERSHIP_COHERENT,
+                           x0, dx, y, z, N, coherent);
+    coherent_scan_cell_ids(sys, ALEA_HIER_COH_OWNERSHIP_CANONICAL,
+                           x0, dx, y, z, N, canonical);
+
+    /* x = 6: outside sphere 1, both modes must say cell 2. */
+    ASSERT_EQ(coherent[0], 2);
+    ASSERT_EQ(canonical[0], 2);
+    /* x = 4, 3, 2: inside both.  Coherent carries cell 2 in, canonical resets
+     * to the deck-first owner. */
+    for (int i = 1; i < N; i++) {
+        ASSERT_EQ(coherent[i], 2);
+        ASSERT_EQ(canonical[i], 1);
+    }
+
+    mcnp_model_destroy(model);
+}
+
 TEST(hier_path_restart_rebuilds_changed_lattice_element) {
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
     if (!model) SKIP("Test data file not found");
@@ -410,11 +505,12 @@ TEST(hier_path_restart_rebuilds_changed_lattice_element) {
     alea_hier_cell_hit_t coherent_hit;
     alea_hier_coherence_kind_t coherence_kind;
     ASSERT_EQ(alea_hier_spatial_resolve_coherent(
-                  sys, 0.0, 0.0, 0.0, NULL, &state_a, &coherent_hit,
-                  &coherence_kind), 1);
+                  sys, 0.0, 0.0, 0.0, NULL, ALEA_HIER_COH_OWNERSHIP_CANONICAL,
+                  &state_a, &coherent_hit, &coherence_kind), 1);
     ASSERT_EQ(coherence_kind, ALEA_HIER_COH_ROOT_QUERY);
     ASSERT_EQ(alea_hier_spatial_resolve_coherent(
-                  sys, 2.0, 0.0, 0.0, &state_a, &state_b, &coherent_hit,
+                  sys, 2.0, 0.0, 0.0, &state_a,
+                  ALEA_HIER_COH_OWNERSHIP_CANONICAL, &state_b, &coherent_hit,
                   &coherence_kind), 1);
     ASSERT_EQ(coherence_kind, ALEA_HIER_COH_LATTICE_TRANSITION);
     ASSERT_EQ(coherent_hit.hit.cell_id, reference_hit.hit.cell_id);

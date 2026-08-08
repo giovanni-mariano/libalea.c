@@ -2559,6 +2559,7 @@ int alea_hier_spatial_resolve_coherent(
     alea_system_t* sys,
     double x, double y, double z,
     const alea_hier_coherence_state_t* previous,
+    alea_hier_coherence_ownership_t ownership,
     alea_hier_coherence_state_t* current,
     alea_hier_cell_hit_t* out_hit,
     alea_hier_coherence_kind_t* out_kind) {
@@ -2578,7 +2579,7 @@ int alea_hier_spatial_resolve_coherent(
         int valid = alea_hier_spatial_check_path_containment(
             sys, &previous->path, previous->path.count - 1, x, y, z,
             NULL, NULL, NULL);
-        if (valid > 0)
+        if (valid > 0 && ownership == ALEA_HIER_COH_OWNERSHIP_CANONICAL)
             valid = hier_path_check_canonical_owners(
                 sys, &previous->path, previous->path.count - 1, x, y, z);
         if (valid > 0 && hier_coherence_hit_from_path(

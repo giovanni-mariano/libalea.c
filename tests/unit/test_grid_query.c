@@ -298,7 +298,7 @@ TEST(grid_overlap_detected) {
     alea_destroy(sys);
 }
 
-TEST(grid_coherence_preserves_first_owner_in_overlap) {
+TEST(grid_coherence_reports_swept_owner_and_flags_overlap) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
 
@@ -309,7 +309,10 @@ TEST(grid_coherence_preserves_first_owner_in_overlap) {
     int later_mat = alea_add_material(sys, 2);
     ASSERT(first_mat >= 0 && later_mat >= 0);
     /* Cell 1 is first in deck order, but a left-to-right row starts in cell 2
-     * alone and then enters their overlap. The stale cell-2 hint must not win. */
+     * alone and then enters their overlap, so the sweep carries cell 2 in.
+     * The grid resolves ownership coherently rather than re-deriving deck order
+     * per pixel; what it owes the caller in an overlap is the error flag, not a
+     * particular one of the two claimants. */
     ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, first_sphere, -1),
                          first_mat, -1.0, 0) >= 0);
     ASSERT(alea_add_cell(sys, 2, alea_halfspace(sys, later_sphere, -1),
@@ -324,9 +327,17 @@ TEST(grid_coherence_preserves_first_owner_in_overlap) {
     alea_slice_view_axis(&view, 2, 0.0, -5.0, 1.0, -1.0, 1.0);
     ASSERT_EQ(alea_find_cells_grid(sys, &view, 6, 1, -1,
                                    cell_ids, material_ids, errors), 0);
+    /* x = -4.5: cell 2 alone, before the overlap. */
     ASSERT_EQ(material_ids[0], 2);
-    ASSERT_EQ(material_ids[3], 1);
-    ASSERT_EQ(cell_ids[3], 1);
+    ASSERT_EQ(errors[0], ALEA_GRID_OK);
+    /* x = -1.5: claimed by both. The swept cell is kept... */
+    ASSERT_EQ(cell_ids[3], 2);
+    ASSERT_EQ(material_ids[3], 2);
+    /* ...and the pixel is reported as an overlap regardless of which won. */
+    ASSERT_EQ(errors[3], ALEA_GRID_OVERLAP);
+    /* x = -0.5: cell 1 alone, past the overlap. */
+    ASSERT_EQ(cell_ids[4], 1);
+    ASSERT_EQ(errors[4], ALEA_GRID_OK);
 
     alea_destroy(sys);
 }
