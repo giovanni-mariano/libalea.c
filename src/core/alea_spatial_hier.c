@@ -2486,10 +2486,17 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
     return 1;
 }
 
+/* Clears the live fields only.  path.entries is a fixed 64-slot array (~17 KB)
+ * and every reader is bounded by path.count, so the tail is dead storage;
+ * zeroing it here ran once per grid point and dominated coherent queries. */
 void alea_hier_coherence_state_clear(alea_hier_coherence_state_t* state) {
     if (!state) return;
-    memset(state, 0, sizeof(*state));
     state->path.count = 0;
+    memset(&state->deepest, 0, sizeof(state->deepest));
+    state->system_id = 0;
+    state->geometry_generation = 0;
+    state->complete = 0;
+    state->overflowed = 0;
     state->deepest.lattice_cell_index = -1;
     alea_matrix_identity(&state->deepest.lattice_transform);
 }
