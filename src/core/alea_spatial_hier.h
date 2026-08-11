@@ -309,12 +309,25 @@ typedef int (*alea_hier_lattice_placement_ray_visitor_t)(
     double t_enter,
     double t_exit,
     void* userdata);
+/* Visit the exact enclosing fill cells that constrain a lattice occurrence.
+ * `transform` maps the visited cell's local frame to world space.  The
+ * lattice fundamental cell is intentionally excluded: it describes one
+ * repeated element rather than the occurrence support. */
+typedef int (*alea_hier_lattice_ancestor_visitor_t)(
+    uint32_t cell_index,
+    const alea_matrix_t* transform,
+    void* userdata);
 int alea_hier_spatial_visit_lattice_placements_ray(
     alea_system_t* sys,
     double ox, double oy, double oz,
     double inv_dx, double inv_dy, double inv_dz,
     double t_min, double t_max,
     alea_hier_lattice_placement_ray_visitor_t visitor,
+    void* userdata);
+int alea_hier_spatial_visit_lattice_placement_ancestors(
+    alea_system_t* sys,
+    uint32_t placement_index,
+    alea_hier_lattice_ancestor_visitor_t visitor,
     void* userdata);
 int alea_hier_spatial_check_placement_chain(alea_system_t* sys,
                                             uint32_t placement_index,
@@ -326,6 +339,15 @@ int alea_hier_spatial_check_placement_chain(alea_system_t* sys,
  * occupancy are established by lattice DDA, whereas the lattice cell's CSG
  * describes one repeated template element rather than the full array. */
 int alea_hier_spatial_check_lattice_placement_ancestors(
+    alea_system_t* sys,
+    uint32_t placement_index,
+    double x,
+    double y,
+    double z);
+/* As above, but also requires every enclosing cell to be the canonical
+ * deck-order owner in its universe.  Use this before publishing a synthetic
+ * lattice-entry event in potentially overlapping input. */
+int alea_hier_spatial_check_lattice_placement_canonical_ancestors(
     alea_system_t* sys,
     uint32_t placement_index,
     double x,

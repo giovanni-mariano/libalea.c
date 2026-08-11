@@ -163,6 +163,20 @@ ALEA_VEC_DEFINE(alea_ray_path_entry_vec, alea_ray_path_entry_t);
  * comfortably exceed the alea_primitive_type_t range (currently <= 22). */
 #define ALEA_RAYCAST_PRIM_TYPE_BINS 32
 
+/* Bounded, diagnostic-only attribution of work performed to find enclosing
+ * hierarchy boundaries.  Sixteen cells is sufficient to expose the dominant
+ * owners in a single ray without allocating or maintaining a per-system map
+ * on the ray-walk hot path. */
+#define ALEA_RAYCAST_ANCESTOR_HOT_CELLS 16
+
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    uint64_t surface_tests;
+    uint64_t queries;
+    uint64_t winning_events;
+} alea_raycast_ancestor_cell_stat_t;
+
 /* Use struct tag matching the public API forward declaration */
 struct alea_raycast_result {
     alea_ray_t ray;
@@ -203,6 +217,32 @@ struct alea_raycast_result {
     uint32_t max_cell_surface_count; /* largest crossed surface_index_count */
     uint64_t sum_cell_surface_count; /* sum of crossed surface_index_count (for avg) */
     uint32_t prim_type_tests[ALEA_RAYCAST_PRIM_TYPE_BINS]; /* tests by primitive type */
+
+    /* Ancestor-boundary diagnostics.  These are deliberately bounded: they
+     * identify the first distinct active ancestors seen by a ray and account
+     * any remaining ones in the unattributed totals.  They are evidence for
+     * choosing an acceleration strategy, not a correctness cache key. */
+    uint64_t ancestor_surface_queries;
+    uint64_t ancestor_path_entries_examined;
+    uint32_t ancestor_max_path_depth;
+    uint64_t ancestor_unattributed_surface_tests;
+    uint64_t ancestor_unattributed_queries;
+    uint64_t ancestor_unattributed_winning_events;
+    alea_raycast_ancestor_cell_stat_t
+        ancestor_hot_cells[ALEA_RAYCAST_ANCESTOR_HOT_CELLS];
+
+    /* Private lattice-entry work counters. These identify work performed while
+     * the hierarchical walker is unresolved (void/container), rather than the
+     * DDA/surface work of an already-resolved lattice segment. */
+    uint64_t lattice_entry_calls;
+    uint64_t lattice_entry_candidates;
+    uint64_t lattice_entry_dda_steps;
+    uint64_t lattice_entry_no_entry_results;
+    uint64_t lattice_entry_future_entry_results;
+    uint64_t lattice_entry_already_inside_results;
+    uint64_t lattice_entry_ancestor_surface_tests;
+    uint64_t lattice_entry_ancestor_events;
+    uint64_t lattice_entry_canonical_rejections;
 };
 
 /* Typedef for internal use */

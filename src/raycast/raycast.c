@@ -139,6 +139,22 @@ static void raycast_result_reset_counters(alea_raycast_result_t* result) {
     result->max_cell_surface_count = 0;
     result->sum_cell_surface_count = 0;
     memset(result->prim_type_tests, 0, sizeof(result->prim_type_tests));
+    result->ancestor_surface_queries = 0;
+    result->ancestor_path_entries_examined = 0;
+    result->ancestor_max_path_depth = 0;
+    result->ancestor_unattributed_surface_tests = 0;
+    result->ancestor_unattributed_queries = 0;
+    result->ancestor_unattributed_winning_events = 0;
+    memset(result->ancestor_hot_cells, 0, sizeof(result->ancestor_hot_cells));
+    result->lattice_entry_calls = 0;
+    result->lattice_entry_candidates = 0;
+    result->lattice_entry_dda_steps = 0;
+    result->lattice_entry_no_entry_results = 0;
+    result->lattice_entry_future_entry_results = 0;
+    result->lattice_entry_already_inside_results = 0;
+    result->lattice_entry_ancestor_surface_tests = 0;
+    result->lattice_entry_ancestor_events = 0;
+    result->lattice_entry_canonical_rejections = 0;
 }
 
 void alea_raycast_result_free(alea_raycast_result_t* result) {
@@ -2452,6 +2468,66 @@ static void boundary_event_first_visible_normal(
  * of the closest surface (ALEA_PRIMITIVE_ID_INVALID if none), so the caller
  * can build a boundary event without re-scanning the cell.
  */
+static double raycast_tree_closest_surface(alea_system_t* sys,
+                                           const alea_ray_t* ray,
+                                           alea_node_id_t node_id,
+                                           double t_min,
+                                           double t_max,
+                                           alea_raycast_result_t* result,
+                                           int* out_surface_id,
+                                           uint32_t* out_primitive_id) {
+    if (node_id >= alea_vec_count(&sys->nodes)) return DBL_MAX;
+    const alea_node_t* node = &sys->nodes.data[node_id];
+    alea_operation_t op = ALEA_GET_OPERATION(node);
+    if (op == ALEA_OP_PRIMITIVE) {
+        if (node->primitive.primitive_id >= alea_vec_count(&sys->primitives))
+            return DBL_MAX;
+        const alea_primitive_entry_t* prim =
+            &sys->primitives.data[node->primitive.primitive_id];
+        alea_primitive_data_t prim_data;
+        if (!raycast_primitive_copy_payload(sys, node->primitive.primitive_id,
+                                            prim->type, &prim_data)) {
+            return DBL_MAX;
+        }
+        if (result) {
+            result->surfaces_tested++;
+            if ((unsigned)prim->type < ALEA_RAYCAST_PRIM_TYPE_BINS)
+                result->prim_type_tests[prim->type]++;
+        }
+        double closest = DBL_MAX;
+        double intersections[4];
+        int count = ray_intersect_primitive(ray, prim->type, &prim_data,
+                                            intersections);
+        for (int i = 0; i < count; i++) {
+            if (intersections[i] > t_min && intersections[i] < t_max &&
+                intersections[i] < closest) {
+                closest = intersections[i];
+            }
+        }
+        if (closest < DBL_MAX) {
+            *out_surface_id = node->primitive.mc_surface_id;
+            if (out_primitive_id) *out_primitive_id = node->primitive.primitive_id;
+        }
+        return closest;
+    }
+
+    double left = raycast_tree_closest_surface(
+        sys, ray, node->operation.left, t_min, t_max, result,
+        out_surface_id, out_primitive_id);
+    if (op == ALEA_OP_COMPLEMENT) return left;
+    int right_surface_id = -1;
+    uint32_t right_primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+    double right = raycast_tree_closest_surface(
+        sys, ray, node->operation.right, t_min, t_max, result,
+        &right_surface_id, &right_primitive_id);
+    if (right < left) {
+        *out_surface_id = right_surface_id;
+        if (out_primitive_id) *out_primitive_id = right_primitive_id;
+        return right;
+    }
+    return left;
+}
+
 static double raycast_cell_surfaces(alea_system_t* sys,
                                     const alea_ray_t* ray,
                                     const alea_cell_entry_t* cell,
@@ -2463,9 +2539,13 @@ static double raycast_cell_surfaces(alea_system_t* sys,
     *out_surface_id = -1;
     if (out_primitive_id) *out_primitive_id = ALEA_PRIMITIVE_ID_INVALID;
 
-    /* Safety check: surface index must be built */
+    /* A few imported/container cells deliberately have no usable surface
+     * index.  Their CSG is still exact occurrence support, so retain a
+     * bounded tree fallback for ancestor-event queries and traversal. */
     if (!cell->surface_indices || cell->surface_index_count == 0) {
-        return DBL_MAX;  /* No surfaces indexed for this cell */
+        return raycast_tree_closest_surface(
+            sys, ray, cell->root_node_id, t_min, t_max, result,
+            out_surface_id, out_primitive_id);
     }
 
     /* Test each surface belonging to this cell */
@@ -2499,6 +2579,25 @@ static double raycast_cell_surfaces(alea_system_t* sys,
     return closest_t;
 }
 
+static alea_raycast_ancestor_cell_stat_t*
+raycast_ancestor_cell_stat(alea_raycast_result_t* result,
+                           uint32_t cell_index, int cell_id) {
+    for (size_t i = 0; i < ALEA_RAYCAST_ANCESTOR_HOT_CELLS; ++i) {
+        alea_raycast_ancestor_cell_stat_t* stat = &result->ancestor_hot_cells[i];
+        if (stat->queries != 0 && stat->cell_index == cell_index)
+            return stat;
+    }
+    for (size_t i = 0; i < ALEA_RAYCAST_ANCESTOR_HOT_CELLS; ++i) {
+        alea_raycast_ancestor_cell_stat_t* stat = &result->ancestor_hot_cells[i];
+        if (stat->queries == 0) {
+            stat->cell_index = cell_index;
+            stat->cell_id = cell_id;
+            return stat;
+        }
+    }
+    return NULL;
+}
+
 static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
                                                   const alea_ray_t* ray,
                                                   const alea_hier_ray_path_t* path,
@@ -2515,6 +2614,13 @@ static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
     if (out_primitive_id) *out_primitive_id = ALEA_PRIMITIVE_ID_INVALID;
 
     if (!path || path->count <= 1) return closest_t;
+    if (result) {
+        uint32_t depth = (uint32_t)(path->count - 1);
+        result->ancestor_surface_queries++;
+        result->ancestor_path_entries_examined += depth;
+        if (depth > result->ancestor_max_path_depth)
+            result->ancestor_max_path_depth = depth;
+    }
 
     for (int i = 0; i < path->count - 1; i++) {
         const alea_hier_ray_path_entry_t* entry = &path->entries[i];
@@ -2530,13 +2636,27 @@ static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
 
         int surface_id = -1;
         uint32_t prim_id = ALEA_PRIMITIVE_ID_INVALID;
+        int tested_before = result ? result->surfaces_tested : 0;
         double t = raycast_cell_surfaces(sys, &local_ray, cell, t_min, t_max,
                                          result, &surface_id, &prim_id);
+        int tested = result ? result->surfaces_tested - tested_before : 0;
+        alea_raycast_ancestor_cell_stat_t* stat = result
+            ? raycast_ancestor_cell_stat(result, entry->cell_index, cell->mc_cell_id)
+            : NULL;
+        if (stat) {
+            stat->queries++;
+            stat->surface_tests += (uint64_t)tested;
+        } else if (result) {
+            result->ancestor_unattributed_queries++;
+            result->ancestor_unattributed_surface_tests += (uint64_t)tested;
+        }
         if (t < closest_t) {
             closest_t = t;
             *out_surface_id = surface_id;
             if (out_primitive_id) *out_primitive_id = prim_id;
             if (out_transform) *out_transform = entry->transform;
+            if (stat) stat->winning_events++;
+            else if (result) result->ancestor_unattributed_winning_events++;
         }
     }
 
@@ -2675,49 +2795,18 @@ static double lattice_next_boundary(const alea_ray_t* ray,
     return t_max;
 }
 
-/* Find the first DDA interval after t_min that has a canonical finite-lattice
- * location.  This lets the hierarchical walker enter a lattice while its
- * current ownership is void or an unresolved fill container. */
-static double lattice_first_valid_entry(const alea_system_t* sys,
-                                        const alea_ray_t* ray,
-                                        const alea_cell_entry_t* cell,
-                                        double t_min,
-                                        double t_max,
-                                        double* out_sample) {
-    if (out_sample) *out_sample = -1.0;
-    double t_enter, t_exit;
-    if (lattice_raycast_interval(ray, cell, t_min, t_max,
-                                 &t_enter, &t_exit) != 0 ||
-        t_exit <= t_enter + RAY_EPSILON) {
-        return DBL_MAX;
-    }
+typedef enum {
+    LATTICE_ENTRY_NO_ENTRY,
+    LATTICE_ENTRY_FUTURE_ENTRY,
+    LATTICE_ENTRY_ALREADY_INSIDE,
+    LATTICE_ENTRY_ERROR
+} lattice_entry_kind_t;
 
-    const int max_steps = lattice_raycast_step_limit(ray, cell,
-                                                      t_enter, t_exit);
-    int previous_valid = 0;
-    double t_current = t_enter;
-    for (int step = 0; step < max_steps && t_current < t_exit; step++) {
-        double t_next = lattice_next_boundary(ray, cell, t_current, t_exit);
-        if (t_next <= t_current + RAY_EPSILON || t_next > t_exit)
-            t_next = t_exit;
-        double x, y, z;
-        alea_ray_point_at(ray, t_current + 0.5 * (t_next - t_current),
-                          &x, &y, &z);
-        alea_lattice_location_t location;
-        const int valid = alea_lattice_locate_point(sys, cell, x, y, z,
-                                                     &location) == 1;
-        if (valid && !previous_valid && t_current > t_min + RAY_EPSILON) {
-            if (out_sample) {
-                *out_sample = t_current +
-                    fmin(DDA_SAMPLE_OFFSET, 0.25 * (t_next - t_current));
-            }
-            return t_current;
-        }
-        previous_valid = valid;
-        t_current = t_next;
-    }
-    return DBL_MAX;
-}
+typedef struct {
+    lattice_entry_kind_t kind;
+    double t;
+    double sample;
+} lattice_entry_query_t;
 
 typedef struct {
     const alea_system_t* sys;
@@ -2725,7 +2814,214 @@ typedef struct {
     double t_min;
     double t_max;
     double closest;
-    double sample;
+    alea_raycast_result_t* result;
+} lattice_ancestor_event_ctx_t;
+
+static int visit_lattice_ancestor_surface(uint32_t cell_index,
+                                          const alea_matrix_t* transform,
+                                          void* userdata) {
+    lattice_ancestor_event_ctx_t* ctx = userdata;
+    if (!ctx || !transform || cell_index >= alea_vec_count(&ctx->sys->cells)) {
+        return -1;
+    }
+    const alea_cell_entry_t* cell = &ctx->sys->cells.data[cell_index];
+    alea_ray_t local_ray;
+    transform_ray_inverse(transform, ctx->ray, &local_ray);
+    int surface_id = -1;
+    uint32_t primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+    int tested_before = ctx->result ? ctx->result->surfaces_tested : 0;
+    double t = raycast_cell_surfaces((alea_system_t*)ctx->sys, &local_ray,
+                                     cell, ctx->t_min, ctx->t_max,
+                                     ctx->result, &surface_id, &primitive_id);
+    if (ctx->result) {
+        ctx->result->lattice_entry_ancestor_surface_tests +=
+            ctx->result->surfaces_tested - tested_before;
+    }
+    if (t < ctx->closest) ctx->closest = t;
+    return 0;
+}
+
+/* Return the next exact enclosing-cell surface for this occurrence.  The
+ * support AABB only found the candidate; these surfaces determine when a
+ * repeating lattice can actually become active. */
+static int lattice_next_ancestor_event(const alea_system_t* sys,
+                                       uint32_t placement_index,
+                                       const alea_ray_t* ray,
+                                       double t_min,
+                                       double t_max,
+                                       alea_raycast_result_t* result,
+                                       double* out_t) {
+    if (!out_t) return -1;
+    *out_t = DBL_MAX;
+    lattice_ancestor_event_ctx_t ctx = {
+        .sys = sys,
+        .ray = ray,
+        .t_min = t_min,
+        .t_max = t_max,
+        .closest = DBL_MAX,
+        .result = result
+    };
+    int rc = alea_hier_spatial_visit_lattice_placement_ancestors(
+        (alea_system_t*)sys, placement_index,
+        visit_lattice_ancestor_surface, &ctx);
+    if (rc != 0) return -1;
+    *out_t = ctx.closest;
+    if (result && ctx.closest < DBL_MAX) {
+        result->lattice_entry_ancestor_events++;
+    }
+    return 0;
+}
+
+static int lattice_placement_ancestors_active(const alea_system_t* sys,
+                                               uint32_t placement_index,
+                                               const alea_ray_t* ray,
+                                               double t,
+                                               double t_max) {
+    double sample = t + RAY_EPSILON;
+    if (sample >= t_max) return 0;
+    double x, y, z;
+    alea_ray_point_at(ray, sample, &x, &y, &z);
+    return alea_hier_spatial_check_lattice_placement_ancestors(
+        (alea_system_t*)sys, placement_index, x, y, z);
+}
+
+/* Find the first interval after t_min where both the lattice element and its
+ * enclosing occurrence are active.  A repeating lattice is locally valid in
+ * every pitch, so while the exact ancestor CSG is false we jump directly to
+ * its next surface rather than walking pitches that cannot contribute. */
+static lattice_entry_query_t lattice_first_valid_entry(
+    const alea_system_t* sys,
+    const alea_ray_t* local_ray,
+    const alea_ray_t* world_ray,
+    const alea_cell_entry_t* cell,
+    uint32_t placement_index,
+    double t_min,
+    double t_max,
+    alea_raycast_result_t* result) {
+    lattice_entry_query_t out = {
+        .kind = LATTICE_ENTRY_NO_ENTRY,
+        .t = DBL_MAX,
+        .sample = -1.0
+    };
+    double t_enter, t_exit;
+    if (lattice_raycast_interval(local_ray, cell, t_min, t_max,
+                                 &t_enter, &t_exit) != 0 ||
+        t_exit <= t_enter + RAY_EPSILON) {
+        if (result) result->lattice_entry_no_entry_results++;
+        return out;
+    }
+
+    const int max_steps = lattice_raycast_step_limit(local_ray, cell,
+                                                      t_enter, t_exit);
+    double t_current = t_enter;
+    int ancestor_active = lattice_placement_ancestors_active(
+        sys, placement_index, world_ray, t_current, t_exit);
+    if (ancestor_active < 0) {
+        out.kind = LATTICE_ENTRY_ERROR;
+        return out;
+    }
+    double t_ancestor = DBL_MAX;
+    if (lattice_next_ancestor_event(sys, placement_index, world_ray,
+                                    t_current + RAY_EPSILON, t_exit,
+                                    result, &t_ancestor) != 0) {
+        out.kind = LATTICE_ENTRY_ERROR;
+        return out;
+    }
+
+    for (int step = 0; step < max_steps && t_current < t_exit; step++) {
+        /* Outside the occurrence support, lattice periodicity is irrelevant.
+         * Move to the next exact ancestor event in one step. */
+        if (!ancestor_active) {
+            if (t_ancestor >= t_exit - RAY_EPSILON) break;
+            t_current = t_ancestor;
+            ancestor_active = lattice_placement_ancestors_active(
+                sys, placement_index, world_ray, t_current, t_exit);
+            if (ancestor_active < 0) {
+                out.kind = LATTICE_ENTRY_ERROR;
+                return out;
+            }
+            if (lattice_next_ancestor_event(
+                    sys, placement_index, world_ray,
+                    t_current + RAY_EPSILON, t_exit, result,
+                    &t_ancestor) != 0) {
+                out.kind = LATTICE_ENTRY_ERROR;
+                return out;
+            }
+            continue;
+        }
+
+        if (result) result->lattice_entry_dda_steps++;
+        double t_lattice = lattice_next_boundary(local_ray, cell,
+                                                 t_current, t_exit);
+        double t_next = fmin(t_lattice, t_ancestor);
+        if (t_next <= t_current + RAY_EPSILON || t_next > t_exit)
+            t_next = t_exit;
+        double x, y, z;
+        alea_ray_point_at(local_ray, t_current + 0.5 * (t_next - t_current),
+                          &x, &y, &z);
+        alea_lattice_location_t location;
+        const int valid = alea_lattice_locate_point(sys, cell, x, y, z,
+                                                     &location) == 1;
+        if (valid) {
+            /* CSG containment alone is insufficient in overlapping decks:
+             * publishing a synthetic transition for a shadowed fill would
+             * make the next resolver sample ambiguous.  Leave the ordinary
+             * global surface walker in charge until ownership changes. */
+            int canonical =
+                alea_hier_spatial_check_lattice_placement_canonical_ancestors(
+                    (alea_system_t*)sys, placement_index,
+                    world_ray->ox + (t_current + RAY_EPSILON) * world_ray->dx,
+                    world_ray->oy + (t_current + RAY_EPSILON) * world_ray->dy,
+                    world_ray->oz + (t_current + RAY_EPSILON) * world_ray->dz);
+            if (canonical < 0) {
+                out.kind = LATTICE_ENTRY_ERROR;
+                return out;
+            }
+            if (!canonical) {
+                if (result) result->lattice_entry_canonical_rejections++;
+                return out;
+            }
+            out.t = t_current;
+            out.sample = t_current +
+                fmin(DDA_SAMPLE_OFFSET, 0.25 * (t_next - t_current));
+            if (t_current <= t_min + RAY_EPSILON) {
+                out.kind = LATTICE_ENTRY_ALREADY_INSIDE;
+                if (result) result->lattice_entry_already_inside_results++;
+            } else {
+                out.kind = LATTICE_ENTRY_FUTURE_ENTRY;
+                if (result) result->lattice_entry_future_entry_results++;
+            }
+            return out;
+        }
+
+        if (t_ancestor <= t_lattice + RAY_EPSILON) {
+            ancestor_active = lattice_placement_ancestors_active(
+                sys, placement_index, world_ray, t_next, t_exit);
+            if (ancestor_active < 0) {
+                out.kind = LATTICE_ENTRY_ERROR;
+                return out;
+            }
+            if (lattice_next_ancestor_event(
+                    sys, placement_index, world_ray,
+                    t_next + RAY_EPSILON, t_exit, result,
+                    &t_ancestor) != 0) {
+                out.kind = LATTICE_ENTRY_ERROR;
+                return out;
+            }
+        }
+        t_current = t_next;
+    }
+    if (result) result->lattice_entry_no_entry_results++;
+    return out;
+}
+
+typedef struct {
+    const alea_system_t* sys;
+    const alea_ray_t* ray;
+    double t_min;
+    double t_max;
+    lattice_entry_query_t closest;
+    alea_raycast_result_t* result;
 } lattice_entry_visit_ctx_t;
 
 static int visit_lattice_entry(uint32_t placement_index,
@@ -2742,47 +3038,61 @@ static int visit_lattice_entry(uint32_t placement_index,
     }
     const alea_cell_entry_t* cell =
         &ctx->sys->cells.data[lattice_cell_index];
+    if (ctx->result) ctx->result->lattice_entry_candidates++;
     alea_ray_t local_ray;
     transform_ray_inverse(transform, ctx->ray, &local_ray);
-    double sample = -1.0;
-    double t = lattice_first_valid_entry(
-        ctx->sys, &local_ray, cell,
+    lattice_entry_query_t entry = lattice_first_valid_entry(
+        ctx->sys, &local_ray, ctx->ray, cell, placement_index,
         fmax(ctx->t_min, placement_enter),
-        fmin(ctx->t_max, placement_exit), &sample);
-    if (t < ctx->closest) {
+        fmin(ctx->t_max, placement_exit), ctx->result);
+    if (entry.kind == LATTICE_ENTRY_ERROR) return -1;
+    if (entry.kind != LATTICE_ENTRY_FUTURE_ENTRY ||
+        entry.t >= ctx->closest.t) {
+        return 0;
+    }
+    {
         double x, y, z;
-        alea_ray_point_at(ctx->ray, sample, &x, &y, &z);
-        int valid = alea_hier_spatial_check_lattice_placement_ancestors(
+        alea_ray_point_at(ctx->ray, entry.sample, &x, &y, &z);
+        int valid = alea_hier_spatial_check_lattice_placement_canonical_ancestors(
             (alea_system_t*)ctx->sys, placement_index, x, y, z);
         if (valid < 0) return -1;
         if (!valid) return 0;
-        ctx->closest = t;
-        ctx->sample = sample;
+        ctx->closest = entry;
     }
     return 0;
 }
 
-static double system_first_lattice_entry(alea_system_t* sys,
-                                         const alea_ray_t* ray,
-                                         double t_min,
-                                         double t_max,
-                                         double* out_sample) {
+static int system_first_lattice_entry(alea_system_t* sys,
+                                      const alea_ray_t* ray,
+                                      double t_min,
+                                      double t_max,
+                                      alea_raycast_result_t* result,
+                                      lattice_entry_query_t* out_entry) {
+    if (!out_entry) return -1;
+    out_entry->kind = LATTICE_ENTRY_NO_ENTRY;
+    out_entry->t = DBL_MAX;
+    out_entry->sample = -1.0;
+    if (result) result->lattice_entry_calls++;
     lattice_entry_visit_ctx_t ctx = {
         .sys = sys,
         .ray = ray,
         .t_min = t_min,
         .t_max = t_max,
-        .closest = DBL_MAX,
-        .sample = -1.0
+        .closest = {
+            .kind = LATTICE_ENTRY_NO_ENTRY,
+            .t = DBL_MAX,
+            .sample = -1.0
+        },
+        .result = result
     };
     if (alea_hier_spatial_visit_lattice_placements_ray(
             sys, ray->ox, ray->oy, ray->oz,
             ray->inv_dx, ray->inv_dy, ray->inv_dz,
             t_min, t_max, visit_lattice_entry, &ctx) != 0) {
-        return DBL_MAX;
+        return -1;
     }
-    if (out_sample) *out_sample = ctx.sample;
-    return ctx.closest;
+    *out_entry = ctx.closest;
+    return 0;
 }
 
 /**
@@ -3467,17 +3777,20 @@ resolve_cell:;
             (cell_idx < 0 ||
              ((size_t)cell_idx < alea_vec_count(&sys->cells) &&
               alea_cell_entry_is_container(&sys->cells.data[cell_idx])))) {
-            double entry_sample = -1.0;
-            double t_lattice_entry = system_first_lattice_entry(
+            lattice_entry_query_t lattice_entry;
+            if (system_first_lattice_entry(
                 sys, ray, t_current + RAY_EPSILON, effective_t_max,
-                &entry_sample);
-            if (t_lattice_entry < t_next - SURFACE_SAMPLE_OFFSET) {
-                t_next = t_lattice_entry;
+                result, &lattice_entry) != 0) {
+                return -1;
+            }
+            if (lattice_entry.kind == LATTICE_ENTRY_FUTURE_ENTRY &&
+                lattice_entry.t < t_next - SURFACE_SAMPLE_OFFSET) {
+                t_next = lattice_entry.t;
                 hit_surface_id = 0;
                 next_enter_surface_id = 0;
-                pending_lattice_entry_sample = entry_sample;
+                pending_lattice_entry_sample = lattice_entry.sample;
                 if (emit_hits || first_visible) {
-                    bevent.t = t_lattice_entry;
+                    bevent.t = lattice_entry.t;
                     bevent.surface_id = 0;
                     bevent.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
                     bevent.has_physical_surface = false;

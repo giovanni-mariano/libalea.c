@@ -425,6 +425,28 @@ static alea_bbox_t local_cell_bbox(alea_system_t* sys, uint32_t cell_index) {
     return bbox;
 }
 
+/* `local_cell_bbox()` deliberately substitutes a finite fallback for unknown
+ * or unbounded geometry so general index construction remains practical. That
+ * fallback is not safe to use as a pruning clip for a descendant occurrence:
+ * it could exclude real geometry. Keep the trust decision separate from the
+ * usable general-purpose bbox. */
+static int local_cell_bbox_is_trusted_conservative(alea_system_t* sys,
+                                                   uint32_t cell_index) {
+    if (!sys || cell_index >= alea_vec_count(&sys->cells)) return 0;
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    if (cell->root_node_id == ALEA_NODE_ID_INVALID) return 0;
+
+    const alea_node_t* root = &sys->nodes.data[cell->root_node_id];
+    alea_bbox_t bbox = root->bbox.min_x <= root->bbox.max_x
+        ? alea_node_bbox_get(&root->bbox)
+        : alea_get_bbox(sys, cell->root_node_id);
+    if (!alea_bbox_is_valid(&bbox)) return 0;
+
+    return bbox.min_x > -1e10 && bbox.max_x < 1e10 &&
+           bbox.min_y > -1e10 && bbox.max_y < 1e10 &&
+           bbox.min_z > -1e10 && bbox.max_z < 1e10;
+}
+
 static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
     if (cell->lat_fill_repeating) {
         const double inf = 1e30;
@@ -936,6 +958,8 @@ static int collect_placements_recursive(alea_system_t* sys,
                                         int universe_id,
                                         uint32_t parent_placement_id,
                                         const alea_matrix_t* accumulated,
+                                        const alea_bbox_t* support_bbox,
+                                        int support_bbox_trusted,
                                         int depth) {
     if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
     if (g_alea_interrupted) return -1;
@@ -959,11 +983,26 @@ static int collect_placements_recursive(alea_system_t* sys,
         alea_bbox_t world_bbox = accumulated ? alea_bbox_transform(&local_bbox, accumulated) : local_bbox;
 
         if (cell->lat_type != 0 && cell->lat_fill) {
+            /* A simple LAT=1 FILL=N is infinite in its own universe. Its
+             * world support is nevertheless constrained by the fill cells
+             * that led to this occurrence. Use that conservative support for
+             * TLAS pruning; exact ancestor CSG remains the query authority. */
+            alea_bbox_t placement_bbox = world_bbox;
+            if (support_bbox_trusted && support_bbox &&
+                alea_bbox_is_valid(support_bbox)) {
+                if (cell->lat_fill_repeating) {
+                    placement_bbox = *support_bbox;
+                } else {
+                    alea_bbox_t clipped = alea_bbox_intersection(
+                        &placement_bbox, support_bbox);
+                    if (alea_bbox_is_valid(&clipped)) placement_bbox = clipped;
+                }
+            }
             idx->stats.lattice_cell_count++;
             if (append_placement(idx, parent_placement_id, cell_index,
                                  universe_id, depth + 1,
                                  HIER_PLACEMENT_LATTICE,
-                                 &local_bbox, &world_bbox,
+                                 &local_bbox, &placement_bbox,
                                  accumulated, NULL) != 0) {
                 return -1;
             }
@@ -986,6 +1025,28 @@ static int collect_placements_recursive(alea_system_t* sys,
             }
 
             uint32_t child_id = UINT32_MAX;
+            alea_bbox_t child_support;
+            int child_support_trusted = 0;
+            /* A finite support inherited from an outer fill remains a valid
+             * conservative bound even when this cell is unbounded or its own
+             * CSG bbox is unavailable. */
+            if (support_bbox_trusted && support_bbox &&
+                alea_bbox_is_valid(support_bbox)) {
+                child_support = *support_bbox;
+                child_support_trusted = 1;
+            }
+            if (local_cell_bbox_is_trusted_conservative(sys, cell_index)) {
+                if (child_support_trusted) {
+                    alea_bbox_t clipped = alea_bbox_intersection(
+                        &child_support, &world_bbox);
+                    if (alea_bbox_is_valid(&clipped)) {
+                        child_support = clipped;
+                    }
+                } else if (alea_bbox_is_valid(&world_bbox)) {
+                    child_support = world_bbox;
+                    child_support_trusted = 1;
+                }
+            }
             idx->stats.fill_cell_count++;
             if (append_placement(idx, parent_placement_id, cell_index,
                                  cell->fill_universe, depth + 1,
@@ -997,6 +1058,8 @@ static int collect_placements_recursive(alea_system_t* sys,
 
             if (collect_placements_recursive(sys, idx, cell->fill_universe,
                                              child_id, &child_transform,
+                                             child_support_trusted ? &child_support : NULL,
+                                             child_support_trusted,
                                              depth + 1) != 0) {
                 return -1;
             }
@@ -1020,7 +1083,8 @@ static int collect_placements(alea_system_t* sys, alea_hier_spatial_index_t* idx
         return -1;
     }
 
-    return collect_placements_recursive(sys, idx, 0, root_id, &identity, 0);
+    return collect_placements_recursive(sys, idx, 0, root_id, &identity,
+                                        NULL, 0, 0);
 }
 
 /* Build a top-level BVH over placement world bboxes. Stored as a phantom
@@ -1320,6 +1384,89 @@ int alea_hier_spatial_check_lattice_placement_ancestors(
         current = placement->parent_id;
     }
 
+    return -1;
+}
+
+int alea_hier_spatial_check_lattice_placement_canonical_ancestors(
+    alea_system_t* sys,
+    uint32_t placement_index,
+    double x,
+    double y,
+    double z) {
+    if (!sys || !sys->hier_spatial_index) return -1;
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    if (!idx->built || (size_t)placement_index >= idx->placement_count) {
+        return -1;
+    }
+
+    uint32_t current = idx->placements[placement_index].parent_id;
+    int guard = 0;
+    while ((size_t)current < idx->placement_count &&
+           guard++ < HIER_MAX_PLACEMENT_DEPTH) {
+        const hier_placement_t* placement = &idx->placements[current];
+        if (placement->parent_id == UINT32_MAX ||
+            placement->parent_cell_index == UINT32_MAX) {
+            return 1;
+        }
+        if ((size_t)placement->parent_id >= idx->placement_count ||
+            (size_t)placement->parent_cell_index >= alea_vec_count(&sys->cells)) {
+            return -1;
+        }
+
+        const hier_placement_t* parent =
+            &idx->placements[placement->parent_id];
+        const alea_matrix_t* parent_transform = placement_transform(idx, parent);
+        if (!parent_transform) return -1;
+
+        double lx = x, ly = y, lz = z;
+        alea_matrix_transform_point_inverse(parent_transform, &lx, &ly, &lz);
+        const alea_cell_entry_t* parent_cell =
+            &sys->cells.data[placement->parent_cell_index];
+        int owner = alea_hier_spatial_find_ordered_cell_in_universe(
+            sys, parent_cell->universe_id, lx, ly, lz, -1);
+        if (owner == -2) return -1;
+        if (owner != (int)placement->parent_cell_index) return 0;
+
+        current = placement->parent_id;
+    }
+    return -1;
+}
+
+int alea_hier_spatial_visit_lattice_placement_ancestors(
+    alea_system_t* sys,
+    uint32_t placement_index,
+    alea_hier_lattice_ancestor_visitor_t visitor,
+    void* userdata) {
+    if (!sys || !sys->hier_spatial_index || !visitor) return -1;
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    if (!idx->built || (size_t)placement_index >= idx->placement_count) {
+        return -1;
+    }
+
+    /* Match alea_hier_spatial_check_lattice_placement_ancestors(): each
+     * placement stores the enclosing cell definition, while its parent
+     * placement supplies that cell's local-to-world transform. */
+    uint32_t current = idx->placements[placement_index].parent_id;
+    int guard = 0;
+    while ((size_t)current < idx->placement_count &&
+           guard++ < HIER_MAX_PLACEMENT_DEPTH) {
+        const hier_placement_t* placement = &idx->placements[current];
+        if (placement->parent_id == UINT32_MAX ||
+            placement->parent_cell_index == UINT32_MAX) {
+            return 0;
+        }
+        if ((size_t)placement->parent_id >= idx->placement_count ||
+            (size_t)placement->parent_cell_index >= alea_vec_count(&sys->cells)) {
+            return -1;
+        }
+        const hier_placement_t* parent =
+            &idx->placements[placement->parent_id];
+        const alea_matrix_t* transform = placement_transform(idx, parent);
+        if (!transform) return -1;
+        int rc = visitor(placement->parent_cell_index, transform, userdata);
+        if (rc != 0) return rc;
+        current = placement->parent_id;
+    }
     return -1;
 }
 

@@ -1108,6 +1108,132 @@ TEST(lattice_entry_respects_transformed_fill_ancestors) {
     mcnp_model_destroy(model);
 }
 
+TEST(repeating_lattice_support_bounds_prune_inactive_transformed_fill) {
+    const char* input =
+        "Inactive transformed repeating lattice placement\n"
+        /* Cell 1 owns a finite sphere at the origin, but its filled universe is translated to x=5.
+         * The simple LAT=1 FILL=1 form is infinite in that child universe.
+         * Its occurrence must still be pruned for a ray wholly in x>0 from
+         * the trusted support bounds of cell 1, before lattice DDA begins. */
+        "1 0 -1 FILL=10 (5 0 0)\n"
+        "100 0 -8 9 -10 11 -12 13 LAT=1 U=10 FILL=1\n"
+        "10 1 -1.0 -14 U=1\n"
+        "11 2 -1.0 14 U=1\n"
+        "\n"
+        "1 SO 1\n"
+        "2 PX -1\n"
+        "3 PY -1\n"
+        "4 PY 1\n"
+        "5 PZ -1\n"
+        "6 PZ 1\n"
+        "8 PX -1\n"
+        "9 PX 1\n"
+        "10 PY -1\n"
+        "11 PY 1\n"
+        "12 PZ -1\n"
+        "13 PZ 1\n"
+        "14 CZ 0.3\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_raycast_result_t trace;
+    alea_raycast_result_init(&trace);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 3.0, 0.0, 0.0, 1.0, 0.0, 0.0, 10000.0, &trace), 0);
+    ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT_EQ(trace.lattice_entry_candidates, 0);
+    ASSERT_EQ(trace.lattice_entry_dda_steps, 0);
+    ASSERT_EQ(trace.lattice_entry_future_entry_results, 0);
+
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(model);
+}
+
+TEST(repeating_lattice_jumps_to_exact_ancestor_support_entry) {
+    const char* input =
+        "Repeating lattice must not DDA through inactive support bounds\n"
+        /* The support AABB spans x=[-100,100], but cell 1 is only the thin
+         * spherical shell 99 < r < 100.  A ray from the origin reaches the
+         * actual occurrence at x=99.  The lattice pitch is one, so the old
+         * entry search walked roughly one hundred irrelevant pitches first. */
+        "1 0 -1 2 FILL=10\n"
+        "100 0 -3 LAT=1 U=10 FILL=1\n"
+        "10 1 -1.0 -9 U=1\n"
+        "\n"
+        "1 SO 100\n"
+        "2 SO 99\n"
+        "3 RPP -0.5 0.5 -0.5 0.5 -0.5 0.5\n"
+        "9 SO 0.25\n"
+        "\n"
+        "M1 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_raycast_result_t trace;
+    alea_raycast_result_init(&trace);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 110.0, &trace), 0);
+    ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT(trace.lattice_entry_candidates > 0);
+    ASSERT(trace.lattice_entry_ancestor_surface_tests > 0);
+    ASSERT(trace.lattice_entry_ancestor_events > 0);
+    ASSERT(trace.lattice_entry_dda_steps < 10);
+
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(model);
+}
+
+TEST(repeating_lattice_entry_respects_canonical_competing_owner) {
+    const char* input =
+        "Overlapping root fill must shadow later lattice occurrence\n"
+        /* Cell 1 is deck-first and contains the ray, but its child universe
+         * has no matching cell. Cell 2 has the same CSG and fills a repeating
+         * lattice. The entry helper must not manufacture a transition into
+         * cell 2 merely because its enclosing CSG also contains the point. */
+        "1 0 -1 FILL=20\n"
+        "2 0 -1 FILL=10\n"
+        "100 0 -3 LAT=1 U=10 FILL=1\n"
+        "10 1 -1.0 -4 U=1\n"
+        "200 0 -5 U=20\n"
+        "\n"
+        "1 SO 10\n"
+        "3 RPP -0.5 0.5 -0.5 0.5 -0.5 0.5\n"
+        "4 SO 0.25\n"
+        "5 S 1000 0 0 1\n"
+        "\n"
+        "M1 1001.80c 1.0\n";
+
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_raycast_result_t trace;
+    alea_raycast_result_init(&trace);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0, &trace), 0);
+    ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT(trace.lattice_entry_candidates > 0);
+    ASSERT(trace.lattice_entry_canonical_rejections > 0);
+    ASSERT_EQ(trace.lattice_entry_future_entry_results, 0);
+
+    for (size_t i = 0; i < trace.segments.count; i++) {
+        ASSERT_NE(trace.segments.data[i].cell_id, 10);
+    }
+
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(model);
+}
+
 TEST(raycast_hier_fill_container_exit_precedes_terminal_surface) {
     const char* input =
         "Fill container boundary ray test\n"

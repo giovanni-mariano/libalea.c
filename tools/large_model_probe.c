@@ -74,6 +74,66 @@ static void print_surface_instrumentation(const alea_raycast_result_t* result) {
     printf("\n");
 }
 
+static void print_lattice_entry_instrumentation(
+    const alea_raycast_result_t* result) {
+    printf("  lattice_entry: calls=%llu candidates=%llu dda_steps=%llu "
+           "no_entry=%llu future=%llu already_inside=%llu\n",
+           (unsigned long long)result->lattice_entry_calls,
+           (unsigned long long)result->lattice_entry_candidates,
+           (unsigned long long)result->lattice_entry_dda_steps,
+           (unsigned long long)result->lattice_entry_no_entry_results,
+           (unsigned long long)result->lattice_entry_future_entry_results,
+           (unsigned long long)result->lattice_entry_already_inside_results);
+    printf("  lattice_entry_support: ancestor_surface_tests=%llu "
+           "ancestor_events=%llu canonical_rejections=%llu\n",
+           (unsigned long long)result->lattice_entry_ancestor_surface_tests,
+           (unsigned long long)result->lattice_entry_ancestor_events,
+           (unsigned long long)result->lattice_entry_canonical_rejections);
+}
+
+static void print_cell_surface_index_stats(const alea_system_t* sys) {
+    static const size_t limits[] = {16, 32, 64, 128, 256, 512};
+    size_t buckets[sizeof(limits) / sizeof(limits[0]) + 1] = {0};
+    uint64_t total = 0;
+    for (size_t i = 0; i < sys->cells.count; ++i) {
+        size_t count = sys->cells.data[i].surface_index_count;
+        total += count;
+        size_t bucket = 0;
+        while (bucket < sizeof(limits) / sizeof(limits[0]) &&
+               count > limits[bucket]) bucket++;
+        buckets[bucket]++;
+    }
+    printf("  cell_surface_index: refs=%llu", (unsigned long long)total);
+    for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); ++i)
+        printf(" <=%zu:%zu", limits[i], buckets[i]);
+    printf(" >%zu:%zu\n", limits[sizeof(limits) / sizeof(limits[0]) - 1],
+           buckets[sizeof(limits) / sizeof(limits[0])]);
+}
+
+static void print_ancestor_surface_instrumentation(
+    const alea_raycast_result_t* result) {
+    printf("  ancestor_queries=%llu path_entries=%llu max_depth=%u\n",
+           (unsigned long long)result->ancestor_surface_queries,
+           (unsigned long long)result->ancestor_path_entries_examined,
+           result->ancestor_max_path_depth);
+    for (size_t i = 0; i < ALEA_RAYCAST_ANCESTOR_HOT_CELLS; ++i) {
+        const alea_raycast_ancestor_cell_stat_t* stat =
+            &result->ancestor_hot_cells[i];
+        if (!stat->queries) continue;
+        printf("  ancestor_cell: id=%d index=%u queries=%llu tests=%llu wins=%llu\n",
+               stat->cell_id, stat->cell_index,
+               (unsigned long long)stat->queries,
+               (unsigned long long)stat->surface_tests,
+               (unsigned long long)stat->winning_events);
+    }
+    if (result->ancestor_unattributed_queries) {
+        printf("  ancestor_other: queries=%llu tests=%llu wins=%llu\n",
+               (unsigned long long)result->ancestor_unattributed_queries,
+               (unsigned long long)result->ancestor_unattributed_surface_tests,
+               (unsigned long long)result->ancestor_unattributed_winning_events);
+    }
+}
+
 static size_t point_bvh_threshold(void) {
     const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
     if (env && env[0]) {
@@ -484,6 +544,9 @@ static int run_hier_raycast(alea_system_t* sys,
            result.hits.count, result.segments.count, result.surfaces_tested,
            result.point_lookups, result.step_iterations, t1 - t0);
     print_surface_instrumentation(&result);
+    print_lattice_entry_instrumentation(&result);
+    print_ancestor_surface_instrumentation(&result);
+    print_cell_surface_index_stats(sys);
     if (blas_experimental) {
         printf("  blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
                result.blas_placement_candidates,
@@ -530,6 +593,8 @@ static int run_hier_raycast(alea_system_t* sys,
                result.surfaces_tested, result.point_lookups,
                result.step_iterations);
         print_surface_instrumentation(&result);
+        print_lattice_entry_instrumentation(&result);
+        print_ancestor_surface_instrumentation(&result);
         if (blas_experimental) {
             printf("  warm_last_blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
                    result.blas_placement_candidates,
