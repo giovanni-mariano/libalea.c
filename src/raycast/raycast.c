@@ -3200,7 +3200,12 @@ static int find_cell_from_existing_hier_path(alea_system_t* sys,
                 sys, current_path, parent, px, py, pz, &location,
                 &hit_with_transform, &candidate_path);
         } else {
-            found = alea_hier_spatial_find_path_from_parent(
+            /* A terminal-child boundary does not change a still-containing
+             * ordinary fill owner.  Preserve that tracked owner rather than
+             * issuing a deck-order universe query for every ancestor restart.
+             * Lattice transitions above remain canonical because their
+             * selected element can change at the boundary. */
+            found = alea_hier_spatial_find_path_from_parent_coherent(
                 sys, current_path, parent, px, py, pz,
                 &hit_with_transform, &candidate_path);
         }

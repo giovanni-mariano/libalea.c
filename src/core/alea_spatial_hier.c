@@ -2767,6 +2767,20 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
         ALEA_HIER_COH_OWNERSHIP_CANONICAL, NULL);
 }
 
+int alea_hier_spatial_find_path_from_parent_coherent(
+    alea_system_t* sys,
+    const alea_hier_ray_path_t* path,
+    int parent_entry,
+    double x,
+    double y,
+    double z,
+    alea_hier_cell_hit_t* out_hit,
+    alea_hier_ray_path_t* out_path) {
+    return hier_find_path_from_parent_impl(
+        sys, path, parent_entry, x, y, z, out_hit, out_path,
+        ALEA_HIER_COH_OWNERSHIP_COHERENT, NULL);
+}
+
 /* Clears the live fields only.  path.entries is a fixed 64-slot array (~17 KB)
  * and every reader is bounded by path.count, so the tail is dead storage;
  * zeroing it here ran once per grid point and dominated coherent queries. */

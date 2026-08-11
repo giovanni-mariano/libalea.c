@@ -907,6 +907,16 @@ TEST(hier_spatial_path_query_returns_explicit_fill_chain) {
     ASSERT_EQ(refreshed_path.entries[0].cell_id, 1);
     ASSERT_EQ(refreshed_path.entries[1].cell_id, 2);
 
+    /* Ray restarts use the coherent form: a valid ordinary fill prefix must
+     * rebuild the same child path without a deck-order owner query. */
+    ASSERT_EQ(alea_hier_spatial_find_path_from_parent_coherent(
+                  sys, &path, 0, 0.1, 0.0, 0.0,
+                  &refreshed_hit, &refreshed_path), 1);
+    ASSERT_EQ(refreshed_hit.hit.cell_id, 2);
+    ASSERT_EQ(refreshed_path.count, 2);
+    ASSERT_EQ(refreshed_path.entries[0].cell_id, 1);
+    ASSERT_EQ(refreshed_path.entries[1].cell_id, 2);
+
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }

@@ -202,6 +202,20 @@ int alea_hier_spatial_find_path_from_parent(alea_system_t* sys,
                                             double z,
                                             alea_hier_cell_hit_t* out_hit,
                                             alea_hier_ray_path_t* out_path);
+/* Restart below an already validated ordinary fill without re-deriving its
+ * deck-order owner.  This is the particle-tracking form of the operation:
+ * in illegal overlaps, it retains the path's current owner while that owner
+ * still contains the point.  Keep the canonical function above for callers
+ * that deliberately need point-query/deck-order semantics. */
+int alea_hier_spatial_find_path_from_parent_coherent(
+    alea_system_t* sys,
+    const alea_hier_ray_path_t* path,
+    int parent_entry,
+    double x,
+    double y,
+    double z,
+    alea_hier_cell_hit_t* out_hit,
+    alea_hier_ray_path_t* out_path);
 /* Replace a lattice entry's selected element, retain its validated ancestors,
  * and descend canonically from that concrete child placement. `location` must
  * be the canonical element containing (x,y,z) at `lattice_entry`. */

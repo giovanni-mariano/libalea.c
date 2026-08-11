@@ -2,9 +2,10 @@
 
 **Date:** 2026-08-09
 **Status:** In progress — support-bounds pruning, lattice-entry exact-ancestor
-event acceleration, and canonical-owner gating implemented. The supplied
-non-lattice E-lite ray is now attributed to repeated ancestor-surface scans;
-its elapsed-time optimization remains.
+event acceleration, canonical-owner gating, and coherent ordinary-fill ray
+restarts implemented. The supplied non-lattice E-lite ray is now attributed to
+the former per-restart canonical owner query. This recovered a substantial
+part of the elapsed-time regression; the remaining baseline gap is tracked.
 **Target branch:** `feature/unified-ray-query`
 **Reference baseline:** `9313e4e` (2026-08-02, repeating `LAT=1` fill fix)
 **Primary workload:** `/home/giovanni/projects/test_aleathor/mcnp_files/E-lite_R250630.mcnp`
@@ -146,13 +147,21 @@ prefix, including ordinary non-lattice fills. That helper invokes
 the former cheap CSG containment check into a BLAS candidate query and
 deck-order scan at many of the ray's 793 steps.
 
-The fix must retain canonical ownership where it can change (lattice element
-transitions and overlapping-owner boundary events), but must not repeat a
-full owner query for an unchanged ordinary ancestor after a terminal-child
-boundary. Add an exact owner-validity token to the coherent path state and
-invalidate it only when a relevant ancestor/competing-owner event is crossed.
-The non-overlap and competing-owner integration cases must be compared against
-the pre-fix behavior before this fast path is enabled.
+The implemented fix retains canonical ownership for root resolution and lattice
+element transitions, but uses coherent ownership when ray traversal restarts
+below an already-containing ordinary fill. That path validates the full
+ancestor containment chain, then descends without re-running the costly
+deck-order universe query. In illegal overlaps it intentionally preserves the
+tracked owner; the existing canonical entry point remains available for strict
+point-query or diagnostic callers. The non-overlap hierarchy regression and
+the existing competing-owner coherence tests cover those two contracts.
+
+On the supplied non-lattice E-lite ray, this retains the exact prior output
+(160 segments, 793 steps, and 171,345 surface tests) and changes the warmed
+mean from about 2.90 s to **1.409 s**: a 2.1x speedup. The `9313e4e` reference
+is still about 0.746 s, so this commit isolates and removes the known ordered-
+universe restart overhead but does not claim to have recovered every cost added
+by the later rich-path traversal work.
 
 ### 2.1 Shared execution path
 
