@@ -2171,6 +2171,7 @@ typedef struct {
     size_t count;
     size_t overlap_owner_count;
     int saw_occurrence_keys;
+    int stop_after_first;
 } coverage_stream_probe_t;
 
 static int probe_coverage_interval(
@@ -2182,7 +2183,7 @@ static int probe_coverage_interval(
     for (size_t i = 0; i < interval->owner_count; i++)
         if (interval->owners[i].occurrence_key != 0)
             probe->saw_occurrence_keys = 1;
-    return 0;
+    return probe->stop_after_first && probe->count == 1;
 }
 
 /*
@@ -2240,6 +2241,14 @@ TEST(ray_classify_intervals) {
     ASSERT_EQ(probe.count, (size_t)n);
     ASSERT_EQ(probe.overlap_owner_count, 2);
     ASSERT(probe.saw_occurrence_keys);
+    alea_raycast_result_free(&coverage_scratch);
+
+    alea_raycast_result_init(&coverage_scratch);
+    coverage_stream_probe_t stopped_probe = { .stop_after_first = 1 };
+    ASSERT_EQ(alea_ray_coverage_sweep_reuse_nocache(
+                  sys, &diagnostic_ray, 20.0, &coverage_scratch,
+                  probe_coverage_interval, &stopped_probe), 1);
+    ASSERT_EQ(stopped_probe.count, 1);
     alea_raycast_result_free(&coverage_scratch);
 
     /* -10..-6 cell 3; -6..-5 GAP; -5..-3 cell 1; -3..3 OVERLAP(1,2);

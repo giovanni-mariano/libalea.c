@@ -135,8 +135,8 @@ int alea_ray_coverage_sweep_reuse_nocache(
             current.t_exit = t_current;
         } else {
             if (have_current) {
-                if (callback(context, &current) != 0) return -1;
                 total++;
+                if (callback(context, &current) != 0) return total;
             }
             for (int owner = 0; owner < hit_count; owner++) {
                 current_owners[owner] = (alea_ray_coverage_owner_t){
@@ -164,8 +164,8 @@ int alea_ray_coverage_sweep_reuse_nocache(
         if (t_previous >= t_max) break;
     }
     if (have_current) {
-        if (callback(context, &current) != 0) return -1;
         total++;
+        if (callback(context, &current) != 0) return total;
     }
     return total;
 }
