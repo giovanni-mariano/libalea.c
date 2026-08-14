@@ -48,23 +48,33 @@ int alea_ray_query_lower(const alea_ray_query_t* query,
         plan.requirements.need_surface_identity = 1;
 
     if (query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS) {
-        plan.engine = ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS;
-        plan.ownership = ALEA_RAY_OWNERSHIP_SELECT_CANONICAL;
         plan.requirements.need_selected_owner = 1;
-        plan.requirements.need_all_coincident_primitives = 1;
         plan.requirements.need_surface_identity = 1;
+        if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
+            query->backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE ||
+            query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE) {
+            /* Compatibility boundary events from the selected walker retain
+             * only its winning crossing.  They are not complete provenance. */
+            plan.engine = ALEA_RAY_ENGINE_SELECTED_WALKER;
+            plan.ownership = ALEA_RAY_OWNERSHIP_TRACK_COHERENT;
+        } else {
+            plan.engine = ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS;
+            plan.ownership = ALEA_RAY_OWNERSHIP_SELECT_CANONICAL;
+            plan.requirements.need_all_coincident_primitives = 1;
+        }
     } else {
         plan.requirements.need_selected_owner = 1;
     }
 
-    if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
+    if (query->kind != ALEA_RAY_QUERY_BOUNDARY_EVENTS &&
+        (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
         query->backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE ||
         query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE ||
         (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
          (query->kind == ALEA_RAY_QUERY_FIRST_CELL ||
           query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE ||
           query->kind == ALEA_RAY_QUERY_ANY_HIT ||
-          query->kind == ALEA_RAY_QUERY_SEGMENTS))) {
+          query->kind == ALEA_RAY_QUERY_SEGMENTS)))) {
         plan.engine = ALEA_RAY_ENGINE_SELECTED_WALKER;
         plan.ownership = ALEA_RAY_OWNERSHIP_TRACK_COHERENT;
     }

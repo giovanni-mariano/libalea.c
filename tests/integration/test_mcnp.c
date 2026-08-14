@@ -2229,6 +2229,13 @@ TEST(ray_query_lowering_declares_semantics) {
     ASSERT_EQ(plan.ownership, ALEA_RAY_OWNERSHIP_SELECT_CANONICAL);
     ASSERT(plan.requirements.need_all_coincident_primitives);
 
+    alea_ray_query_t fast_boundaries = boundaries;
+    fast_boundaries.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD;
+    ASSERT_EQ(alea_ray_query_lower(&fast_boundaries, &plan), 0);
+    ASSERT_EQ(plan.engine, ALEA_RAY_ENGINE_SELECTED_WALKER);
+    ASSERT_EQ(plan.ownership, ALEA_RAY_OWNERSHIP_TRACK_COHERENT);
+    ASSERT(!plan.requirements.need_all_coincident_primitives);
+
     const alea_ray_query_t invalid = {
         .kind = ALEA_RAY_QUERY_ANY_HIT,
         .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
