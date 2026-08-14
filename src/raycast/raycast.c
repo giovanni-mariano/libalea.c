@@ -1990,9 +1990,7 @@ int alea_raycast_query_reuse_nocache(
     if (plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS &&
         plan.engine == ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS) {
         const alea_ray_boundary_event_options_internal_t event_options = {
-            .include_all_coincident_physical = true,
-            .max_events = plan.max_events,
-            .max_output_bytes = plan.max_output_bytes
+            .include_all_coincident_physical = true
         };
         if (alea_raycast_boundary_events_with_options(
                 sys, ray, t_max, &event_options, trace, events) != 0)
@@ -2006,6 +2004,10 @@ int alea_raycast_query_reuse_nocache(
             events->events.data[write++] = event;
         }
         events->events.count = write;
+        if ((plan.max_events && write > plan.max_events) ||
+            (plan.max_output_bytes &&
+             write > plan.max_output_bytes / sizeof(*events->events.data)))
+            goto fail;
         return 0;
     }
     if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&

@@ -874,6 +874,16 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     ASSERT_EQ(events.events.count, 2);
     ASSERT_EQ(events.events.data[0].surface_id, 1);
 
+    /* Event limits apply to the requested ray range, not crossings clipped
+     * away by t_min. */
+    alea_ray_query_t clipped_boundaries = boundaries;
+    clipped_boundaries.t_min = 2.0;
+    clipped_boundaries.max_events = 1;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &clipped_boundaries, &trace, &events, &output), 0);
+    ASSERT_EQ(events.events.count, 1);
+    ASSERT(events.events.data[0].t >= clipped_boundaries.t_min);
+
     alea_ray_query_t fast_boundaries = boundaries;
     fast_boundaries.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE;
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
