@@ -1987,6 +1987,27 @@ int alea_raycast_query_reuse_nocache(
         if (output) output->any_hit = any_hit != 0;
         return 0;
     }
+    if (plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS &&
+        plan.engine == ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS) {
+        const alea_ray_boundary_event_options_internal_t event_options = {
+            .include_all_coincident_physical = true,
+            .max_events = plan.max_events,
+            .max_output_bytes = plan.max_output_bytes
+        };
+        if (alea_raycast_boundary_events_with_options(
+                sys, ray, t_max, &event_options, trace, events) != 0)
+            goto fail;
+        size_t write = 0;
+        for (size_t i = 0; i < events->events.count; i++) {
+            const alea_ray_boundary_event_t event = events->events.data[i];
+            if (event.t + RAY_EPSILON < plan.t_min ||
+                event.t > t_max + RAY_EPSILON)
+                continue;
+            events->events.data[write++] = event;
+        }
+        events->events.count = write;
+        return 0;
+    }
     if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
         plan.product == ALEA_RAY_QUERY_SEGMENTS) {
         /* Selected intervals always use the coherent hierarchical walker.
