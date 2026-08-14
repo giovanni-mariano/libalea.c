@@ -114,6 +114,55 @@ typedef struct {
     uint64_t max_output_bytes;/* 0 means unbounded */
 } alea_ray_query_t;
 
+/* Ownership semantics are intentionally independent of a consumer product.
+ * TRACK_COHERENT is the selected-owner policy used by the fast hierarchical
+ * walker. SELECT_CANONICAL is a deterministic point/compatibility selection.
+ * COMPLETE_COVERAGE is reserved for the independent diagnostic sweep and must
+ * never be silently substituted by either selected-owner policy. */
+typedef enum {
+    ALEA_RAY_OWNERSHIP_TRACK_COHERENT,
+    ALEA_RAY_OWNERSHIP_SELECT_CANONICAL,
+    ALEA_RAY_OWNERSHIP_COMPLETE_COVERAGE
+} alea_ray_ownership_policy_t;
+
+typedef enum {
+    ALEA_RAY_ENGINE_SELECTED_WALKER,
+    ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS,
+    ALEA_RAY_ENGINE_GLOBAL_COVERAGE
+} alea_ray_engine_t;
+
+/* Engine work requirements, deliberately not a public field mask. */
+typedef struct {
+    uint8_t need_selected_owner;
+    uint8_t need_complete_coverage;
+    uint8_t need_density;
+    uint8_t need_surface_identity;
+    uint8_t need_all_coincident_primitives;
+    uint8_t need_normal;
+    uint8_t need_occurrence_key;
+    uint8_t need_projected_owner;
+    uint8_t need_full_path;
+} alea_ray_requirements_t;
+
+/* Immutable, allocation-free lowering of an internal query descriptor.
+ * Consumers use this rather than interpreting descriptor field bits in their
+ * hot traversal path. */
+typedef struct {
+    alea_ray_query_kind_t product;
+    alea_ray_query_backend_t backend;
+    alea_ray_engine_t engine;
+    alea_ray_ownership_policy_t ownership;
+    alea_ray_requirements_t requirements;
+    double t_min;
+    double t_max;
+    int material_filter;
+    uint64_t max_events;
+    uint64_t max_output_bytes;
+} alea_ray_plan_t;
+
+int alea_ray_query_lower(const alea_ray_query_t* query,
+                         alea_ray_plan_t* out_plan);
+
 typedef struct {
     bool found;
     double t;
@@ -669,6 +718,32 @@ int alea_raycast_global_reuse_nocache(alea_system_t* sys,
                                       const alea_ray_t* ray,
                                       double t_max,
                                       alea_raycast_result_t* result);
+
+/**
+ * Enumerate the global diagnostic breakpoint set without constructing
+ * selected-owner segments.  The returned hit vector contains physical,
+ * fill-transformed, and synthetic lattice crossings in deterministic order.
+ * This is deliberately separate from the selected-owner walker: callers that
+ * need complete coverage must not accidentally inherit deck-precedence
+ * segments from a production trace.
+ *
+ * Caches must already be prepared and result is caller-owned reusable
+ * scratch.  Only result->hits is materialized.
+ */
+int alea_raycast_global_breakpoints_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* result);
+
+/**
+ * Complete-coverage diagnostic sweep behind the legacy public interval
+ * classifier.  It uses global breakpoints and recursive all-owner point
+ * resolution for each open interval; it never consumes selected segments.
+ * Caches and the universe index must already be prepared.
+ */
+int alea_ray_coverage_classify_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_interval_finding_t* out, size_t max_out);
 
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {

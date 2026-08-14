@@ -754,6 +754,8 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
                   sys, &ray, &any_hit, &trace, NULL, &output), 0);
     ASSERT(output.any_hit);
+    ASSERT_EQ(trace.hits.count, 0);
+    ASSERT_EQ(trace.segments.count, 0);
 
     /* Scalar SEGMENTS must have the same range/cross-section semantics as
      * the compact per-ray executor. */
@@ -2159,6 +2161,19 @@ TEST(ray_classify_intervals) {
     ASSERT_NOT_NULL(model);
     alea_system_t* sys = model->sys;
 
+    /* The coverage oracle consumes global breakpoints only.  It must not
+     * build deck-precedence segments as an implementation side effect. */
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_ray_t diagnostic_ray;
+    ASSERT_EQ(alea_ray_init(&diagnostic_ray, -10, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_t breakpoint_scratch;
+    alea_raycast_result_init(&breakpoint_scratch);
+    ASSERT_EQ(alea_raycast_global_breakpoints_reuse_nocache(
+                  sys, &diagnostic_ray, 20.0, &breakpoint_scratch), 0);
+    ASSERT(breakpoint_scratch.hits.count > 0);
+    ASSERT_EQ(breakpoint_scratch.segments.count, 0);
+    alea_raycast_result_free(&breakpoint_scratch);
+
     alea_ray_interval_finding_t f[16];
     int n = alea_ray_classify_intervals(sys, -10, 0, 0, 1, 0, 0, 20, f, 16);
     ASSERT_EQ(n, 7);
@@ -2183,6 +2198,43 @@ TEST(ray_classify_intervals) {
     ASSERT_EQ(f[6].cell_id, 3);
 
     mcnp_model_destroy(model);
+}
+
+TEST(ray_query_lowering_declares_semantics) {
+    const alea_ray_query_t visible = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .fields = ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL,
+        .t_min = 0.25,
+        .t_max = 8.0,
+        .material_filter = -1
+    };
+    alea_ray_plan_t plan;
+    ASSERT_EQ(alea_ray_query_lower(&visible, &plan), 0);
+    ASSERT_EQ(plan.engine, ALEA_RAY_ENGINE_SELECTED_WALKER);
+    ASSERT_EQ(plan.ownership, ALEA_RAY_OWNERSHIP_TRACK_COHERENT);
+    ASSERT(plan.requirements.need_selected_owner);
+    ASSERT(plan.requirements.need_surface_identity);
+    ASSERT(plan.requirements.need_normal);
+
+    const alea_ray_query_t boundaries = {
+        .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .t_max = 8.0,
+        .material_filter = -1
+    };
+    ASSERT_EQ(alea_ray_query_lower(&boundaries, &plan), 0);
+    ASSERT_EQ(plan.engine, ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS);
+    ASSERT_EQ(plan.ownership, ALEA_RAY_OWNERSHIP_SELECT_CANONICAL);
+    ASSERT(plan.requirements.need_all_coincident_primitives);
+
+    const alea_ray_query_t invalid = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .t_min = 2.0,
+        .t_max = 1.0
+    };
+    ASSERT_EQ(alea_ray_query_lower(&invalid, &plan), -1);
 }
 
 TEST_MAIN()

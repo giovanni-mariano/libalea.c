@@ -1568,6 +1568,26 @@ int alea_raycast_global_reuse_nocache(alea_system_t* sys,
                                    result);
 }
 
+int alea_raycast_global_breakpoints_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* result) {
+    if (!sys || !ray || !result) return -1;
+
+    /* Keep this deliberately below raycast_global_pipeline(): that helper
+     * materializes precedence-selected segments as a compatibility service.
+     * Coverage diagnostics need only the complete geometric partition. */
+    alea_raycast_result_clear(result);
+    const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
+    if (raycast_surfaces_impl(sys, ray, 0, effective_t_max, result) != 0)
+        return -1;
+    if (system_has_fill_cells(sys))
+        raycast_add_fill_hits(sys, ray, 0, effective_t_max, result);
+    if (system_has_lattice_cells(sys))
+        raycast_add_lattice_hits(sys, ray, 0, effective_t_max, result);
+    dedup_sorted_hits(result);
+    return 0;
+}
+
 void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));
@@ -1813,13 +1833,13 @@ static void ray_query_output_clear(alea_ray_query_output_t* output) {
     output->first_visible.primitive_id = UINT32_MAX;
 }
 
-static bool ray_query_accepts_material(const alea_ray_query_t* query,
+static bool ray_plan_accepts_material(const alea_ray_plan_t* plan,
                                        const alea_ray_segment_t* seg,
                                        bool require_nonvoid) {
     if (seg->cell_id < 0) return false;
     if (require_nonvoid && seg->material_id == 0) return false;
-    return query->material_filter < 0 ||
-           seg->material_id == query->material_filter;
+    return plan->material_filter < 0 ||
+           seg->material_id == plan->material_filter;
 }
 
 static const alea_ray_hit_t* ray_query_enter_hit(
@@ -1936,55 +1956,57 @@ int alea_raycast_query_reuse_nocache(
     if (events) alea_ray_boundary_event_result_clear(events);
     if (trace) alea_raycast_result_clear(trace);
     if (!sys || !ray || !query || !trace) return -1;
-    if (query->kind < ALEA_RAY_QUERY_ANY_HIT ||
-        query->kind > ALEA_RAY_QUERY_BOUNDARY_EVENTS)
+    alea_ray_plan_t plan;
+    if (alea_ray_query_lower(query, &plan) != 0)
         return -1;
-    if (query->backend < ALEA_RAY_QUERY_BACKEND_AUTO ||
-        query->backend > ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE)
-        return -1;
-    if (!isfinite(query->t_min) || !isfinite(query->t_max) ||
-        query->t_min < 0 ||
-        (query->t_max > 0 && query->t_min > query->t_max))
-        return -1;
-    if (query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS && !events)
+    if (plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS && !events)
         return -1;
 
-    const double t_max = query->t_max <= 0 ? DBL_MAX : query->t_max;
-    if (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        query->kind == ALEA_RAY_QUERY_FIRST_CELL && output &&
+    const double t_max = plan.t_max;
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+        plan.product == ALEA_RAY_QUERY_FIRST_CELL && output &&
         !system_has_lattice_cells(sys)) {
         if (alea_raycast_hier_first_cell_nocache(
-                sys, ray, query->t_min, t_max, query->material_filter,
+                sys, ray, plan.t_min, t_max, plan.material_filter,
                 trace, &output->first_cell_id,
                 &output->first_cell_t) != 0)
             goto fail;
         return 0;
     }
-    if (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE) {
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+        plan.product == ALEA_RAY_QUERY_FIRST_VISIBLE) {
         /* The hierarchical stepper validates each interval before returning,
          * then stops before allocating its segment/hit representation. */
         if (!output || alea_raycast_hier_first_visible_nocache(
-                            sys, ray, query->t_min, t_max,
-                            query->material_filter,
-                            (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) != 0,
+                            sys, ray, plan.t_min, t_max,
+                            plan.material_filter,
+                            plan.requirements.need_normal != 0,
                             trace,
                             &output->first_visible) != 0)
             goto fail;
         return 0;
     }
-    if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
-        query->backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE ||
-        query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE) {
-        const bool emit_hits = query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS ||
-            (query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE &&
-             (query->fields & (ALEA_RAY_QUERY_FIELD_SURFACE_ID |
-                               ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
-                               ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID)) != 0);
-        if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD) {
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+        plan.product == ALEA_RAY_QUERY_ANY_HIT &&
+        !system_has_lattice_cells(sys)) {
+        int any_hit = 0;
+        if (alea_raycast_hier_any_hit_nocache(
+                sys, ray, plan.t_min, t_max, plan.material_filter,
+                trace, &any_hit) != 0)
+            goto fail;
+        if (output) output->any_hit = any_hit != 0;
+        return 0;
+    }
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
+        plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE ||
+        plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE) {
+        const bool emit_hits = plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS ||
+            (plan.product == ALEA_RAY_QUERY_FIRST_VISIBLE &&
+             plan.requirements.need_surface_identity);
+        if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD) {
             if (ray_query_fast_forward_trace(sys, ray, t_max, emit_hits, trace) != 0)
                 goto fail;
-        } else if (query->backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE) {
+        } else if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE) {
             if (ray_query_fast_reverse_trace(sys, ray, t_max, emit_hits, trace) != 0)
                 goto fail;
         } else {
@@ -2005,55 +2027,55 @@ int alea_raycast_query_reuse_nocache(
         goto fail;
     }
 
-    if (query->kind == ALEA_RAY_QUERY_BOUNDARY_EVENTS) {
+    if (plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS) {
         const alea_ray_boundary_event_options_internal_t event_options = {
-            .max_events = query->max_events,
-            .max_output_bytes = query->max_output_bytes
+            .max_events = plan.max_events,
+            .max_output_bytes = plan.max_output_bytes
         };
         if (boundary_events_from_trace(trace, &event_options, events) != 0)
             goto fail;
         size_t write = 0;
         for (size_t i = 0; i < events->events.count; i++) {
             const alea_ray_boundary_event_t event = events->events.data[i];
-            if (event.t + RAY_EPSILON < query->t_min ||
+            if (event.t + RAY_EPSILON < plan.t_min ||
                 event.t > t_max + RAY_EPSILON)
                 continue;
             events->events.data[write++] = event;
         }
         events->events.count = write;
-        if ((query->max_events && write > query->max_events) ||
-            (query->max_output_bytes &&
-             write > query->max_output_bytes / sizeof(*events->events.data)))
+        if ((plan.max_events && write > plan.max_events) ||
+            (plan.max_output_bytes &&
+             write > plan.max_output_bytes / sizeof(*events->events.data)))
             goto fail;
         return 0;
     }
 
-    if (query->kind == ALEA_RAY_QUERY_SEGMENTS) {
-        ray_query_clip_segments(trace, query->t_min);
+    if (plan.product == ALEA_RAY_QUERY_SEGMENTS) {
+        ray_query_clip_segments(trace, plan.t_min);
         const size_t count = trace->segments.count;
-        if ((query->max_events && count > query->max_events) ||
-            (query->max_output_bytes &&
-             count > query->max_output_bytes / sizeof(*trace->segments.data)))
+        if ((plan.max_events && count > plan.max_events) ||
+            (plan.max_output_bytes &&
+             count > plan.max_output_bytes / sizeof(*trace->segments.data)))
             goto fail;
         return 0;
     }
 
     for (size_t i = 0; i < trace->segments.count; i++) {
         const alea_ray_segment_t* seg = &trace->segments.data[i];
-        if (seg->t_exit <= query->t_min + RAY_EPSILON)
+        if (seg->t_exit <= plan.t_min + RAY_EPSILON)
             continue;
 
-        if (query->kind == ALEA_RAY_QUERY_FIRST_CELL) {
-            if (!ray_query_accepts_material(query, seg, false)) continue;
+        if (plan.product == ALEA_RAY_QUERY_FIRST_CELL) {
+            if (!ray_plan_accepts_material(&plan, seg, false)) continue;
             if (output) {
                 output->first_cell_id = seg->cell_id;
-                output->first_cell_t = fmax(seg->t_enter, query->t_min);
+                output->first_cell_t = fmax(seg->t_enter, plan.t_min);
             }
             return 0;
         }
 
-        if (!ray_query_accepts_material(query, seg, true)) continue;
-        if (query->kind == ALEA_RAY_QUERY_ANY_HIT) {
+        if (!ray_plan_accepts_material(&plan, seg, true)) continue;
+        if (plan.product == ALEA_RAY_QUERY_ANY_HIT) {
             if (output) output->any_hit = true;
             return 0;
         }
@@ -2062,11 +2084,12 @@ int alea_raycast_query_reuse_nocache(
          * geometry boundary, matching the renderer's cross-section rule. */
         if (output) {
             alea_ray_first_visible_result_t* hit = &output->first_visible;
-            const bool crossed_boundary = seg->t_enter >= query->t_min - RAY_EPSILON;
+            const bool crossed_boundary =
+                seg->t_enter >= plan.t_min - RAY_EPSILON;
             const alea_ray_hit_t* enter = crossed_boundary
                 ? ray_query_enter_hit(trace, seg) : NULL;
             hit->found = true;
-            hit->t = fmax(seg->t_enter, query->t_min);
+            hit->t = fmax(seg->t_enter, plan.t_min);
             hit->cell_id = seg->cell_id;
             hit->material_id = seg->material_id;
             hit->density = seg->density;
@@ -2074,7 +2097,7 @@ int alea_raycast_query_reuse_nocache(
             if (enter) {
                 hit->surface_id = enter->surface_id;
                 hit->primitive_id = enter->primitive_id;
-                if (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) {
+                if (plan.requirements.need_normal) {
                     hit->nx = enter->nx;
                     hit->ny = enter->ny;
                     hit->nz = enter->nz;

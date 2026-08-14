@@ -2252,8 +2252,6 @@ int alea_estimate_path_volumes(alea_system_t* sys,
  * Interval defect classification (see alea_raycast.h)
  * ============================================================================ */
 
-#include "core/alea_universe.h"
-
 int alea_ray_classify_intervals(alea_system_t* sys,
                                 double ox, double oy, double oz,
                                 double dx, double dy, double dz,
@@ -2263,125 +2261,19 @@ int alea_ray_classify_intervals(alea_system_t* sys,
     if (!sys || t_max <= 0.0) return -1;
 
     /* The recursive owner-set query requires the universe index; the global
-     * hit pipeline requires the raycast caches. */
+     * diagnostic breakpoint enumerator requires the raycast caches. */
     if (!sys->universe_index_built && alea_build_universe_index(sys) != 0)
         return -1;
     if (alea_raycast_ensure_caches(sys) != 0)
         return -1;
 
-    /* Global pipeline: every crossing along the ray (physical surfaces,
-     * fill-transformed universe content, synthetic lattice boundaries).
-     * The precedence segments it also builds are ignored — only the
-     * breakpoint list matters here. */
-    alea_raycast_result_t r;
-    alea_raycast_result_init(&r);
-    if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, &r) != 0) {
-        alea_raycast_result_free(&r);
-        return -1;
-    }
-
     alea_ray_t ray;
-    alea_ray_init(&ray, ox, oy, oz, dx, dy, dz);
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) return -1;
 
-    enum { CLASSIFY_MAX_OWNERS = 32 };
-    alea_cell_hit_t hits[CLASSIFY_MAX_OWNERS];
-    int prev_ids[CLASSIFY_MAX_OWNERS];
-    int prev_n = -1;
-    alea_ray_interval_finding_t cur = {0};
-    int have_cur = 0;
-    size_t total = 0;
-    int failed = 0;
-
-    double t_prev = 0.0;
-    for (size_t i = 0; i <= r.hits.count && !failed; i++) {
-        double t_curr = (i < r.hits.count) ? r.hits.data[i].t : t_max;
-        if (t_curr > t_max) t_curr = t_max;
-
-        /* Skip slivers below the merge tolerance: grazing/tangential hits. */
-        if (t_curr - t_prev > 1e-9) {
-            /* Interior probe at an irrational fraction (never lands on a
-             * periodic internal plane even for symmetric intervals). */
-            double tp = t_prev + 0.381966011250105 * (t_curr - t_prev);
-            double px, py, pz;
-            alea_ray_point_at(&ray, tp, &px, &py, &pz);
-
-            /* Complete owner set: uncached recursive query — the coherence
-             * caches hide co-claimants by design and must stay out. */
-            int n = alea_find_all_cells_at_point_recursive(
-                sys, px, py, pz, hits, CLASSIFY_MAX_OWNERS);
-            if (n < 0) { failed = 1; break; }
-
-            int ids[CLASSIFY_MAX_OWNERS];
-            for (int k = 0; k < n; k++) ids[k] = hits[k].cell_id;
-
-            int same = have_cur && n == prev_n &&
-                       memcmp(ids, prev_ids, (size_t)n * sizeof(int)) == 0;
-            if (same) {
-                cur.t_exit = t_curr;
-            } else {
-                if (have_cur) {
-                    if (total < max_out && out) out[total] = cur;
-                    total++;
-                }
-
-                int kind = ALEA_INTERVAL_OK;
-                int cell_id = -1, overlap_cell = -1, depth = -1;
-                if (n == 0) {
-                    kind = ALEA_INTERVAL_GAP;
-                } else {
-                    /* Overlap: some depth claimed by more than one cell.
-                     * Report the shallowest duplicated depth and its first
-                     * two claimants (hits are in DFS deck order). */
-                    int dup_depth = -1;
-                    for (int a = 0; a < n && dup_depth < 0; a++) {
-                        for (int b = a + 1; b < n; b++) {
-                            if (hits[b].depth == hits[a].depth) {
-                                dup_depth = hits[a].depth;
-                                cell_id = hits[a].cell_id;
-                                overlap_cell = hits[b].cell_id;
-                                break;
-                            }
-                        }
-                    }
-                    if (dup_depth >= 0) {
-                        kind = ALEA_INTERVAL_OVERLAP;
-                        depth = dup_depth;
-                    } else {
-                        /* Single chain: deepest hit of the first DFS chain */
-                        int ti = 0;
-                        while (ti + 1 < n &&
-                               hits[ti + 1].depth == hits[ti].depth + 1)
-                            ti++;
-                        cell_id = hits[ti].cell_id;
-                        depth = hits[ti].depth;
-                        kind = (hits[ti].resolution_flags &
-                                ALEA_RESOLVE_UNDEFINED_FILL)
-                                   ? ALEA_INTERVAL_UNDEFINED_FILL
-                                   : ALEA_INTERVAL_OK;
-                    }
-                }
-
-                cur.t_enter = t_prev;
-                cur.t_exit = t_curr;
-                cur.kind = kind;
-                cur.cell_id = cell_id;
-                cur.overlap_cell_id = overlap_cell;
-                cur.depth = depth;
-                have_cur = 1;
-                prev_n = n;
-                memcpy(prev_ids, ids, (size_t)n * sizeof(int));
-            }
-        }
-
-        t_prev = t_curr;
-        if (t_prev >= t_max) break;
-    }
-
-    if (have_cur && !failed) {
-        if (total < max_out && out) out[total] = cur;
-        total++;
-    }
-
-    alea_raycast_result_free(&r);
-    return failed ? -1 : (int)total;
+    alea_raycast_result_t breakpoints;
+    alea_raycast_result_init(&breakpoints);
+    const int count = alea_ray_coverage_classify_reuse_nocache(
+        sys, &ray, t_max, &breakpoints, out, max_out);
+    alea_raycast_result_free(&breakpoints);
+    return count;
 }
