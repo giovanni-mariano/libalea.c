@@ -2018,11 +2018,8 @@ int alea_raycast_query_reuse_nocache(
             int rc = ray_query_fast_forward_trace(sys, ray, t_max, emit_hits, trace);
             if (rc == 0)
                 rc = ray_query_fast_reverse_trace(sys, ray, t_max, false, &reverse);
-            if (rc == 0 && !ray_query_segments_match(trace, &reverse)) {
-                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                                      "FAST_FORWARD_REVERSE segment disagreement");
-                rc = -1;
-            }
+            if (rc == 0 && !ray_query_segments_match(trace, &reverse) && output)
+                output->directional_mismatch = true;
             alea_raycast_result_free(&reverse);
             if (rc != 0) goto fail;
         }

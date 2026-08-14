@@ -83,8 +83,9 @@ typedef enum {
 
 /* Traversal selection is deliberately independent of query kind.  AUTO
  * preserves the legacy policy; the FAST modes use the hierarchical stepper.
- * FAST_FORWARD_REVERSE returns the forward trace only after it agrees with a
- * normalized reverse trace. */
+ * FAST_FORWARD_REVERSE returns the forward trace and records whether it
+ * disagrees with a normalized reverse trace.  The disagreement is diagnostic
+ * evidence, not a traversal failure or a geometry-validity verdict. */
 typedef enum {
     ALEA_RAY_QUERY_BACKEND_AUTO = 0,
     ALEA_RAY_QUERY_BACKEND_GLOBAL,
@@ -180,6 +181,7 @@ typedef struct {
  * supplied reusable event vector. */
 typedef struct {
     bool any_hit;
+    bool directional_mismatch;
     int first_cell_id;
     double first_cell_t;
     alea_ray_first_visible_result_t first_visible;

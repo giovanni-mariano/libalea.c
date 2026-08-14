@@ -830,6 +830,7 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     fast_segments.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE;
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
                   sys, &ray, &fast_segments, &trace, NULL, &output), 0);
+    ASSERT(!output.directional_mismatch);
     ASSERT_EQ(trace.segments.count, 2);
     ASSERT_EQ(trace.segments.data[0].cell_id, 1);
 
