@@ -17,7 +17,13 @@
 #include <limits.h>
 #include <string.h>
 
-enum { ALEA_RAY_COVERAGE_MAX_OWNERS = 32 };
+/* Keep one sentinel slot beyond the published diagnostic budget.  Recursive
+ * all-owner resolution stops at its supplied capacity, so this is how the
+ * sweep distinguishes a complete 32-owner set from a truncated one. */
+enum {
+    ALEA_RAY_COVERAGE_OWNER_BUDGET = 32,
+    ALEA_RAY_COVERAGE_MAX_OWNERS = ALEA_RAY_COVERAGE_OWNER_BUDGET + 1
+};
 #define ALEA_RAY_COVERAGE_MIN_INTERVAL 1e-9
 
 static int coverage_owner_sets_equal(const alea_cell_hit_t* a, int a_count,
@@ -105,8 +111,16 @@ int alea_ray_coverage_classify_reuse_nocache(
         alea_cell_hit_t hits[ALEA_RAY_COVERAGE_MAX_OWNERS];
         const int hit_count = alea_find_all_cells_at_point_recursive(
             sys, x, y, z, hits, ALEA_RAY_COVERAGE_MAX_OWNERS);
-        if (hit_count < 0 || hit_count > ALEA_RAY_COVERAGE_MAX_OWNERS)
+        if (hit_count < 0)
             return -1;
+        if (hit_count >= ALEA_RAY_COVERAGE_MAX_OWNERS) {
+            /* The legacy classifier has no truncated finding ABI.  Failing
+             * is therefore the only honest result: reporting no overlap here
+             * would turn an incomplete diagnostic into apparent success. */
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "ray coverage owner budget exceeded");
+            return -1;
+        }
 
         if (have_current && coverage_owner_sets_equal(
                 hits, hit_count, previous, previous_count)) {

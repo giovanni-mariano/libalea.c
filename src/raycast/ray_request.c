@@ -63,7 +63,8 @@ int alea_ray_query_lower(const alea_ray_query_t* query,
         (query->backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
          (query->kind == ALEA_RAY_QUERY_FIRST_CELL ||
           query->kind == ALEA_RAY_QUERY_FIRST_VISIBLE ||
-          query->kind == ALEA_RAY_QUERY_ANY_HIT))) {
+          query->kind == ALEA_RAY_QUERY_ANY_HIT ||
+          query->kind == ALEA_RAY_QUERY_SEGMENTS))) {
         plan.engine = ALEA_RAY_ENGINE_SELECTED_WALKER;
         plan.ownership = ALEA_RAY_OWNERSHIP_TRACK_COHERENT;
     }

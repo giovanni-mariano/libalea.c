@@ -1997,7 +1997,12 @@ int alea_raycast_query_reuse_nocache(
         if (output) output->any_hit = any_hit != 0;
         return 0;
     }
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+        plan.product == ALEA_RAY_QUERY_SEGMENTS &&
+        !system_has_lattice_cells(sys)) {
+        if (ray_query_fast_forward_trace(sys, ray, t_max, false, trace) != 0)
+            goto fail;
+    } else if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||
         plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_REVERSE ||
         plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD_REVERSE) {
         const bool emit_hits = plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS ||

@@ -765,6 +765,7 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     };
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
                   sys, &ray, &segments, &trace, NULL, &output), 0);
+    ASSERT_EQ(trace.hits.count, 0);
     ASSERT_EQ(trace.segments.count, 2);
     ASSERT_NEAR(trace.segments.data[0].t_enter, 1.5, 1e-9);
     ASSERT_NEAR(trace.segments.data[0].t_exit, 3.0, 1e-9);
