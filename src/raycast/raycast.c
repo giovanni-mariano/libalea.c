@@ -3490,7 +3490,8 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
                                      bool visible_wants_normal,
                                      alea_raycast_result_t* result,
                                      alea_ray_walk_t* state,
-                                     int step_budget) {
+                                     int step_budget,
+                                     alea_ray_selected_interval_t* out_selected) {
     if (!state || step_budget <= 0) return -1;
     /* Current position along ray */
     double t_current = state->t_current;
@@ -3998,6 +3999,27 @@ resolve_cell:;
                     ? ALEA_RESOLVE_UNDEFINED_FILL : 0
         };
 
+        /* The selected-interval facade consumes the geometric result before
+         * any compatibility publication or query-specific stop policy. */
+        if (out_selected) {
+            prev_cell_idx = cell_idx;
+            if (next_enter_surface_id < 0)
+                next_enter_surface_id = hit_surface_id;
+            prev_surface_id = next_enter_surface_id;
+            enter_event = bevent;
+            t_current = t_next;
+            state->t_current = t_current;
+            state->prev_cell_idx = prev_cell_idx;
+            state->prev_surface_id = prev_surface_id;
+            state->pending_enter_hit_index = pending_enter_hit_index;
+            state->enter_event = enter_event;
+            state->current_path = current_path;
+            state->pending_lattice_entry_sample = pending_lattice_entry_sample;
+            *out_selected = selected;
+            out_selected->path = &state->current_path;
+            return 0;
+        }
+
         /* FIRST_CELL and FIRST_VISIBLE consume a verified interval before
          * hit/segment materialization, so work behind the answer is avoided. */
         if (first_cell_id && selected.cell_id >= 0 &&
@@ -4102,7 +4124,21 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         sys, ray, effective_t_max, use_hier_lookup, emit_hits,
         first_visible, first_cell_id, first_cell_t, first_cell_t_min,
         first_cell_material_filter, visible_t_min, visible_material_filter,
-        visible_wants_normal, result, &state, INT_MAX);
+        visible_wants_normal, result, &state, INT_MAX, NULL);
+}
+
+/* Advance the coherent hierarchical walk by one verified interval.  The
+ * returned interval is scratch-backed through `walk` and must be consumed
+ * before the next call.  A return of 1 means the finite walk is exhausted. */
+static int alea_ray_walk_next_selected(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch, alea_ray_walk_t* walk,
+    alea_ray_selected_interval_t* out_interval) {
+    if (!out_interval || walk->t_current >= t_max - RAY_EPSILON)
+        return 1;
+    return raycast_cell_aware_resume(
+        sys, ray, t_max, true, false, NULL, NULL, NULL, 0.0, -1,
+        0.0, -1, false, scratch, walk, 1, out_interval);
 }
 
 static int alea_ray_walk_next_first_visible(
@@ -4112,7 +4148,7 @@ static int alea_ray_walk_next_first_visible(
     alea_ray_first_visible_result_t* visible) {
     return raycast_cell_aware_resume(
         sys, ray, t_max, true, false, visible, NULL, NULL, 0.0, -1,
-        t_min, material_filter, include_normal, scratch, walk, 1);
+        t_min, material_filter, include_normal, scratch, walk, 1, NULL);
 }
 
 #ifndef RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
@@ -4445,22 +4481,49 @@ int alea_raycast_hier_first_cell_nocache(
     alea_raycast_result_clear(scratch);
     scratch->ray = *ray;
     const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
-    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   NULL, out_cell_id, out_t, t_min, material_filter,
-                                   0, -1, false,
-                                   scratch);
+    alea_ray_walk_t walk;
+    alea_ray_walk_init(&walk);
+    for (;;) {
+        alea_ray_selected_interval_t interval;
+        const int rc = alea_ray_walk_next_selected(
+            sys, ray, effective_t_max, scratch, &walk, &interval);
+        if (rc < 0) return -1;
+        if (rc > 0) return 0;
+        if (interval.cell_id >= 0 &&
+            (material_filter < 0 || interval.material_id == material_filter) &&
+            interval.t_exit > t_min + RAY_EPSILON) {
+            *out_cell_id = interval.cell_id;
+            if (out_t) *out_t = fmax(interval.t_enter, t_min);
+            return 0;
+        }
+    }
 }
 
 int alea_raycast_hier_any_hit_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
     int material_filter, alea_raycast_result_t* scratch, int* out_hit) {
-    if (!out_hit) return -1;
+    if (!sys || !ray || !scratch || !out_hit || t_min < 0 ||
+        (t_max > 0 && t_min > t_max))
+        return -1;
     *out_hit = 0;
-    alea_ray_first_visible_result_t visible;
-    int rc = alea_raycast_hier_first_visible_nocache(
-        sys, ray, t_min, t_max, material_filter, 0, scratch, &visible);
-    if (rc == 0) *out_hit = visible.found ? 1 : 0;
-    return rc;
+    alea_raycast_result_clear(scratch);
+    scratch->ray = *ray;
+    const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
+    alea_ray_walk_t walk;
+    alea_ray_walk_init(&walk);
+    for (;;) {
+        alea_ray_selected_interval_t interval;
+        const int rc = alea_ray_walk_next_selected(
+            sys, ray, effective_t_max, scratch, &walk, &interval);
+        if (rc < 0) return -1;
+        if (rc > 0) return 0;
+        if (interval.cell_id >= 0 && interval.material_id != 0 &&
+            (material_filter < 0 || interval.material_id == material_filter) &&
+            interval.t_exit > t_min + RAY_EPSILON) {
+            *out_hit = 1;
+            return 0;
+        }
+    }
 }
 
 int alea_raycast_hier_segments_nocache(alea_system_t* sys,
