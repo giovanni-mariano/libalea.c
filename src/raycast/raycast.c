@@ -61,6 +61,7 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    alea_raycast_result_t* result);
 static int ray_selected_interval_trace(alea_system_t* sys,
                                        const alea_ray_t* ray, double t_max,
+                                       bool emit_hits,
                                        alea_raycast_result_t* result);
 
 /* ============================================================================
@@ -1872,9 +1873,7 @@ static int ray_query_fast_forward_trace(alea_system_t* sys,
                                         alea_raycast_result_t* trace) {
     alea_raycast_result_clear(trace);
     trace->ray = *ray;
-    if (!emit_hits)
-        return ray_selected_interval_trace(sys, ray, t_max, trace);
-    return raycast_cell_aware_impl(sys, ray, t_max, true, emit_hits, trace);
+    return ray_selected_interval_trace(sys, ray, t_max, emit_hits, trace);
 }
 
 static int ray_query_fast_reverse_trace(alea_system_t* sys,
@@ -2162,7 +2161,7 @@ int alea_raycast_hier(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = ray;
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false, result);
+    return ray_selected_interval_trace(sys, &ray, effective_t_max, false, result);
 }
 
 int alea_raycast_hier_blas_experimental(alea_system_t* sys,
@@ -4102,7 +4101,7 @@ static int alea_ray_walk_next_selected(
  * normal no-hit production traces through the combined compatibility loop. */
 static int ray_selected_interval_trace(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
-    alea_raycast_result_t* result) {
+    bool emit_hits, alea_raycast_result_t* result) {
     alea_ray_walk_t walk;
     alea_ray_walk_init(&walk);
     int published_prev_cell_idx = -2;
@@ -4114,9 +4113,10 @@ static int ray_selected_interval_trace(
         if (rc < 0) return -1;
         if (rc == 2) return 0;
         if (ray_selected_interval_publish(
-                sys, ray, &interval, true, false, result,
+                sys, ray, &interval, true, emit_hits, result,
                 &published_prev_cell_idx, &pending_enter_hit_index) != 0)
             return -1;
+        walk.pending_enter_hit_index = pending_enter_hit_index;
         if (rc == 0) return 0;
     }
 }
@@ -4392,7 +4392,7 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
     result->ray = ray;
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false, result);
+    return ray_selected_interval_trace(sys, &ray, effective_t_max, false, result);
 }
 
 int alea_raycast_hier_with_hits(alea_system_t* sys,
@@ -4415,7 +4415,7 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
     result->ray = ray;
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true, result);
+    return ray_selected_interval_trace(sys, &ray, effective_t_max, true, result);
 }
 
 /* Buffer-reuse hierarchical variants: take a pre-normalized ray, assume query
@@ -4430,7 +4430,7 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
     if (!sys || !ray || !result) return -1;
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
-    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true, result);
+    return ray_selected_interval_trace(sys, ray, effective_t_max, true, result);
 }
 
 int alea_raycast_hier_first_visible_nocache(
@@ -4528,5 +4528,5 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     if (!sys || !ray || !result) return -1;
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
-    return ray_selected_interval_trace(sys, ray, effective_t_max, result);
+    return ray_selected_interval_trace(sys, ray, effective_t_max, false, result);
 }
