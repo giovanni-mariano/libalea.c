@@ -1964,8 +1964,7 @@ int alea_raycast_query_reuse_nocache(
 
     const double t_max = plan.t_max;
     if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        plan.product == ALEA_RAY_QUERY_FIRST_CELL && output &&
-        !system_has_lattice_cells(sys)) {
+        plan.product == ALEA_RAY_QUERY_FIRST_CELL && output) {
         if (alea_raycast_hier_first_cell_nocache(
                 sys, ray, plan.t_min, t_max, plan.material_filter,
                 trace, &output->first_cell_id,
@@ -2208,41 +2207,18 @@ int alea_ray_first_cell(alea_system_t* sys,
     if (!sys) return -1;
     alea_ray_t ray;
     if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) return -1;
-    if (!system_has_lattice_cells(sys)) {
-        if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
-        static ALEA_THREAD_LOCAL alea_raycast_result_t hier_tls_result;
-        static ALEA_THREAD_LOCAL int hier_tls_init = 0;
-        if (!hier_tls_init) {
-            alea_raycast_result_init(&hier_tls_result);
-            hier_tls_init = 1;
-        }
-        int first_cell = -1;
-        if (alea_raycast_hier_first_cell_nocache(
-                sys, &ray, 0, t_max, -1, &hier_tls_result, &first_cell, out_t) != 0)
-            return -1;
-        return first_cell;
+    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
+    static ALEA_THREAD_LOCAL alea_raycast_result_t hier_tls_result;
+    static ALEA_THREAD_LOCAL int hier_tls_init = 0;
+    if (!hier_tls_init) {
+        alea_raycast_result_init(&hier_tls_result);
+        hier_tls_init = 1;
     }
-
-    /* Synthetic lattice ownership remains canonical until its early-stop
-     * policy can prove equivalence with global DDA traversal. */
-    if (alea_raycast_ensure_caches(sys) != 0) return -1;
-    static ALEA_THREAD_LOCAL alea_raycast_result_t lattice_tls_result;
-    static ALEA_THREAD_LOCAL int lattice_tls_init = 0;
-    if (!lattice_tls_init) {
-        alea_raycast_result_init(&lattice_tls_result);
-        lattice_tls_init = 1;
-    }
-    if (alea_raycast_global_reuse_nocache(sys, &ray, t_max,
-                                           &lattice_tls_result) != 0)
+    int first_cell = -1;
+    if (alea_raycast_hier_first_cell_nocache(
+            sys, &ray, 0, t_max, -1, &hier_tls_result, &first_cell, out_t) != 0)
         return -1;
-    for (size_t i = 0; i < lattice_tls_result.segments.count; i++) {
-        const alea_ray_segment_t* segment = &lattice_tls_result.segments.data[i];
-        if (segment->cell_id >= 0) {
-            if (out_t) *out_t = segment->t_enter;
-            return segment->cell_id;
-        }
-    }
-    return -1;
+    return first_cell;
 }
 
 int alea_ray_is_occluded(alea_system_t* sys,
@@ -4415,7 +4391,7 @@ int alea_raycast_hier_first_cell_nocache(
     int material_filter, alea_raycast_result_t* scratch,
     int* out_cell_id, double* out_t) {
     if (!sys || !ray || !scratch || !out_cell_id || t_min < 0 ||
-        (t_max > 0 && t_min > t_max) || system_has_lattice_cells(sys))
+        (t_max > 0 && t_min > t_max))
         return -1;
     *out_cell_id = -1;
     alea_raycast_result_clear(scratch);

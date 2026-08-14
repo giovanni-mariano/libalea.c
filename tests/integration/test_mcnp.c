@@ -222,6 +222,28 @@ static void assert_lattice_query_policy_equivalent(
     };
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
                   sys, &ray, &query, &global_scratch, NULL, &global_output), 0);
+
+    const alea_ray_query_t first_cell_global = {
+        .kind = ALEA_RAY_QUERY_FIRST_CELL,
+        .backend = ALEA_RAY_QUERY_BACKEND_GLOBAL,
+        .t_min = t_min, .t_max = t_max, .material_filter = material_filter
+    };
+    alea_ray_query_output_t global_first_cell;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &first_cell_global, &global_scratch, NULL,
+                  &global_first_cell), 0);
+    alea_ray_query_t first_cell_auto = first_cell_global;
+    first_cell_auto.backend = ALEA_RAY_QUERY_BACKEND_AUTO;
+    alea_ray_query_output_t auto_first_cell;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &first_cell_auto, &hier_scratch, NULL,
+                  &auto_first_cell), 0);
+    ASSERT_EQ(auto_first_cell.first_cell_id, global_first_cell.first_cell_id);
+    ASSERT_NEAR(auto_first_cell.first_cell_t, global_first_cell.first_cell_t,
+                1e-9);
+    ASSERT_EQ(hier_scratch.hits.count, 0);
+    ASSERT_EQ(hier_scratch.segments.count, 0);
+
     ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
                   sys, &ray, t_min, t_max, material_filter, 1,
                   &hier_scratch, &hier_visible), 0);
