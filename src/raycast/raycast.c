@@ -2355,6 +2355,25 @@ typedef struct {
     int iterations_remaining;
 } alea_ray_walk_t;
 
+/* One verified open interval produced by the selected-owner walk.  This is
+ * deliberately private while compatibility APIs still publish their legacy
+ * segment/hit vectors. Keeping it separate from those vectors makes the
+ * geometric step independent of path capture and hit materialization. */
+typedef struct {
+    double t_enter;
+    double t_exit;
+    int cell_index;
+    int cell_id;
+    int material_id;
+    double density;
+    int enter_surface_id;
+    int exit_surface_id;
+    alea_raycast_boundary_event_t enter_event;
+    alea_raycast_boundary_event_t exit_event;
+    const alea_hier_ray_path_t* path;
+    uint8_t resolution_flags;
+} alea_ray_selected_interval_t;
+
 static void alea_ray_walk_init(alea_ray_walk_t* state) {
     memset(state, 0, sizeof(*state));
     state->prev_cell_idx = -2;
@@ -2460,6 +2479,54 @@ static void boundary_event_first_visible_normal(
                         &nlx, &nly, &nlz);
     boundary_event_world_normal(&ev->transform, nlx, nly, nlz,
                                 &visible->nx, &visible->ny, &visible->nz);
+}
+
+/* Compatibility publication adapter for a verified selected interval. The
+ * walker does not need public paths, hit indices, or segment storage to
+ * establish ownership and endpoints. */
+static int ray_selected_interval_publish(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_ray_selected_interval_t* interval, bool use_hier_lookup,
+    bool emit_hits, alea_raycast_result_t* result, int* io_prev_cell_idx,
+    int* io_pending_enter_hit_index) {
+    int exit_hit_index = -1;
+    if (emit_hits) {
+        exit_hit_index = boundary_event_emit_hit(
+            sys, ray, &interval->exit_event, result);
+    }
+
+    uint32_t path_index = UINT32_MAX;
+    if (use_hier_lookup && capture_hier_path(result, interval->path,
+                                              &path_index) != 0) {
+        return -1;
+    }
+
+    if (interval->cell_index == *io_prev_cell_idx &&
+        result->segments.count > 0 &&
+        result->segments.data[result->segments.count - 1].path_index == path_index) {
+        alea_ray_segment_t* previous =
+            &result->segments.data[result->segments.count - 1];
+        previous->t_exit = interval->t_exit;
+        previous->exit_surface_id = interval->exit_surface_id;
+    } else {
+        const alea_ray_segment_t segment = {
+            .t_enter = interval->t_enter,
+            .t_exit = interval->t_exit,
+            .cell_id = interval->cell_id,
+            .material_id = interval->material_id,
+            .density = interval->density,
+            .enter_surface_id = interval->enter_surface_id,
+            .exit_surface_id = interval->exit_surface_id,
+            .enter_hit_index = *io_pending_enter_hit_index,
+            .resolution_flags = interval->resolution_flags,
+            .path_index = path_index
+        };
+        if (add_segment(result, &segment) != 0) return -1;
+    }
+
+    *io_prev_cell_idx = interval->cell_index;
+    if (emit_hits) *io_pending_enter_hit_index = exit_hit_index;
+    return 0;
 }
 
 /**
@@ -3911,104 +3978,76 @@ resolve_cell:;
             current_path = saved_path;
         }
 
+        bevent.t = t_next;
+        const alea_ray_selected_interval_t selected = {
+            .t_enter = t_current,
+            .t_exit = t_next,
+            .cell_index = cell_idx,
+            .cell_id = cell_id,
+            .material_id = material_id,
+            .density = density,
+            .enter_surface_id = prev_surface_id,
+            .exit_surface_id = hit_surface_id,
+            .enter_event = enter_event,
+            .exit_event = bevent,
+            .path = &current_path,
+            .resolution_flags =
+                (cell_idx >= 0 &&
+                 (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+                 alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
+                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0
+        };
+
         /* FIRST_CELL and FIRST_VISIBLE consume a verified interval before
          * hit/segment materialization, so work behind the answer is avoided. */
-        if (first_cell_id && cell_id >= 0 &&
+        if (first_cell_id && selected.cell_id >= 0 &&
             (first_cell_material_filter < 0 ||
-             material_id == first_cell_material_filter) &&
-            t_next > first_cell_t_min + RAY_EPSILON) {
-            *first_cell_id = cell_id;
-            if (first_cell_t) *first_cell_t = fmax(t_current, first_cell_t_min);
+             selected.material_id == first_cell_material_filter) &&
+            selected.t_exit > first_cell_t_min + RAY_EPSILON) {
+            *first_cell_id = selected.cell_id;
+            if (first_cell_t) *first_cell_t = fmax(selected.t_enter, first_cell_t_min);
             return 0;
         }
 
         /* FIRST_VISIBLE consumes this completed interval immediately.  It is
          * deliberately after ownership verification but before hit/segment
          * materialization, so work behind the winning interval is avoided. */
-        if (first_visible && cell_id >= 0 && material_id != 0 &&
+        if (first_visible && selected.cell_id >= 0 && selected.material_id != 0 &&
             (visible_material_filter < 0 ||
-             material_id == visible_material_filter) &&
-            t_next > visible_t_min + RAY_EPSILON) {
+             selected.material_id == visible_material_filter) &&
+            selected.t_exit > visible_t_min + RAY_EPSILON) {
             memset(first_visible, 0, sizeof(*first_visible));
             first_visible->found = true;
-            first_visible->t = fmax(t_current, visible_t_min);
-            first_visible->cell_id = cell_id;
-            first_visible->material_id = material_id;
-            first_visible->density = density;
+            first_visible->t = fmax(selected.t_enter, visible_t_min);
+            first_visible->cell_id = selected.cell_id;
+            first_visible->material_id = selected.material_id;
+            first_visible->density = selected.density;
             /* Synthetic lattice entries are observable boundaries in the
              * canonical trace (surface id 0).  Preserve that identity only
              * when visibility begins at the interval entry; a clipped query
              * begins in the interval interior and has no entering boundary. */
             first_visible->surface_id =
-                t_current >= visible_t_min - RAY_EPSILON
-                    ? enter_event.surface_id : -1;
+                selected.t_enter >= visible_t_min - RAY_EPSILON
+                    ? selected.enter_event.surface_id : -1;
             first_visible->primitive_id = UINT32_MAX;
-            first_visible->resolution_flags =
-                (cell_idx >= 0 &&
-                 (size_t)cell_idx < alea_vec_count(&sys->cells) &&
-                 alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
-                    ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
-            if (t_current >= visible_t_min - RAY_EPSILON)
-                boundary_event_first_visible_normal(sys, ray, &enter_event,
+            first_visible->resolution_flags = selected.resolution_flags;
+            if (selected.t_enter >= visible_t_min - RAY_EPSILON)
+                boundary_event_first_visible_normal(sys, ray, &selected.enter_event,
                                                     visible_wants_normal,
                                                     first_visible);
             return 0;
         }
 
-        /* Emit a boundary hit for this step's physical surface crossing (if any)
-         * before recording the segment, so the segment can reference it. The
-         * progress-guard and t_max clamps only fire when no physical surface was
-         * found (has_physical_surface == false), so they never spawn a hit. */
-        int exit_hit_index = -1;
-        if (emit_hits) {
-            bevent.t = t_next;
-            exit_hit_index = boundary_event_emit_hit(sys, ray, &bevent, result);
-        }
-
         if (!first_visible && !first_cell_id) {
-            uint32_t path_index = UINT32_MAX;
-            if (use_hier_lookup && capture_hier_path(result, &current_path,
-                                                      &path_index) != 0) {
+            if (ray_selected_interval_publish(
+                    sys, ray, &selected, use_hier_lookup, emit_hits, result,
+                    &prev_cell_idx, &pending_enter_hit_index) != 0)
                 return -1;
-            }
-
-            /* Add or extend segment. A placement/lattice path change is a real
-             * ownership transition even if it resolves to the same leaf cell. */
-            if (cell_idx == prev_cell_idx && result->segments.count > 0 &&
-                result->segments.data[result->segments.count - 1].path_index == path_index) {
-                /* Extend previous segment */
-                alea_ray_segment_t* prev_seg =
-                    &result->segments.data[result->segments.count - 1];
-                prev_seg->t_exit = t_next;
-                prev_seg->exit_surface_id = hit_surface_id;
-            } else {
-                /* Create new segment */
-                alea_ray_segment_t seg;
-                seg.t_enter = t_current;
-                seg.t_exit = t_next;
-                seg.cell_id = cell_id;
-                seg.material_id = material_id;
-                seg.density = density;
-                seg.enter_surface_id = prev_surface_id;
-                seg.exit_surface_id = hit_surface_id;
-                seg.enter_hit_index = pending_enter_hit_index;
-                seg.path_index = path_index;
-                seg.resolution_flags =
-                    (cell_idx >= 0 &&
-                     (size_t)cell_idx < alea_vec_count(&sys->cells) &&
-                     alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
-                        ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
-                if (add_segment(result, &seg) != 0) return -1;
-                prev_cell_idx = cell_idx;
-            }
         } else {
             /* Preserve the stepper's neighbor/path locality without retaining
              * the interval that FIRST_VISIBLE has already classified. */
             prev_cell_idx = cell_idx;
         }
-
-        /* The hit at t_next is the enter boundary of the next segment. */
-        if (emit_hits) pending_enter_hit_index = exit_hit_index;
 
         if (next_enter_surface_id < 0)
             next_enter_surface_id = hit_surface_id;
