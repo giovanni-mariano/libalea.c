@@ -2529,6 +2529,30 @@ static int ray_selected_interval_publish(
     return 0;
 }
 
+static bool ray_selected_interval_first_visible(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_ray_selected_interval_t* interval, double t_min,
+    int material_filter, bool include_normal,
+    alea_ray_first_visible_result_t* out_visible) {
+    if (interval->cell_id < 0 || interval->material_id == 0 ||
+        (material_filter >= 0 && interval->material_id != material_filter) ||
+        interval->t_exit <= t_min + RAY_EPSILON) {
+        return false;
+    }
+    out_visible->found = true;
+    out_visible->t = fmax(interval->t_enter, t_min);
+    out_visible->cell_id = interval->cell_id;
+    out_visible->material_id = interval->material_id;
+    out_visible->density = interval->density;
+    out_visible->resolution_flags = interval->resolution_flags;
+    if (interval->t_enter >= t_min - RAY_EPSILON) {
+        out_visible->surface_id = interval->enter_event.surface_id;
+        boundary_event_first_visible_normal(
+            sys, ray, &interval->enter_event, include_normal, out_visible);
+    }
+    return true;
+}
+
 /**
  * Test ray against a specific cell's surfaces only.
  * Returns closest hit distance, or DBL_MAX if no hit.
@@ -4128,18 +4152,21 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
         visible_wants_normal, result, &state, INT_MAX, NULL);
 }
 
-/* Advance the coherent hierarchical walk by one verified interval.  The
+/* Advance the coherent hierarchical walk by one verified interval. The
  * returned interval is scratch-backed through `walk` and must be consumed
- * before the next call.  A return of 1 means the finite walk is exhausted. */
+ * before the next call. Returns 1 when another interval may follow, 0 for
+ * the terminal interval, and 2 when the walk was already exhausted. */
 static int alea_ray_walk_next_selected(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* scratch, alea_ray_walk_t* walk,
     alea_ray_selected_interval_t* out_interval) {
     if (!out_interval || walk->t_current >= t_max - RAY_EPSILON)
-        return 1;
-    return raycast_cell_aware_resume(
+        return 2;
+    const int rc = raycast_cell_aware_resume(
         sys, ray, t_max, true, false, NULL, NULL, NULL, 0.0, -1,
         0.0, -1, false, scratch, walk, 1, out_interval);
+    if (rc != 0) return rc;
+    return out_interval->t_exit >= t_max - RAY_EPSILON ? 0 : 1;
 }
 
 static int alea_ray_walk_next_first_visible(
@@ -4147,9 +4174,16 @@ static int alea_ray_walk_next_first_visible(
     double t_min, int material_filter, bool include_normal,
     alea_raycast_result_t* scratch, alea_ray_walk_t* walk,
     alea_ray_first_visible_result_t* visible) {
-    return raycast_cell_aware_resume(
-        sys, ray, t_max, true, false, visible, NULL, NULL, 0.0, -1,
-        t_min, material_filter, include_normal, scratch, walk, 1, NULL);
+    alea_ray_selected_interval_t interval;
+    const int rc = alea_ray_walk_next_selected(
+        sys, ray, t_max, scratch, walk, &interval);
+    if (rc < 0) return rc;
+    if (rc == 2) return 0;
+    if (ray_selected_interval_first_visible(
+            sys, ray, &interval, t_min, material_filter, include_normal,
+            visible))
+        return 0;
+    return rc == 0 ? 0 : 1;
 }
 
 #ifndef RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
@@ -4472,25 +4506,12 @@ int alea_raycast_hier_first_visible_nocache(
         const int rc = alea_ray_walk_next_selected(
             sys, ray, effective_t_max, scratch, &walk, &interval);
         if (rc < 0) return -1;
-        if (rc > 0) return 0;
-        if (interval.cell_id < 0 || interval.material_id == 0 ||
-            (material_filter >= 0 && interval.material_id != material_filter) ||
-            interval.t_exit <= t_min + RAY_EPSILON) {
-            continue;
-        }
-        out_visible->found = true;
-        out_visible->t = fmax(interval.t_enter, t_min);
-        out_visible->cell_id = interval.cell_id;
-        out_visible->material_id = interval.material_id;
-        out_visible->density = interval.density;
-        out_visible->resolution_flags = interval.resolution_flags;
-        if (interval.t_enter >= t_min - RAY_EPSILON) {
-            out_visible->surface_id = interval.enter_event.surface_id;
-            boundary_event_first_visible_normal(
-                sys, ray, &interval.enter_event, include_normal != 0,
-                out_visible);
-        }
-        return 0;
+        if (rc == 2) return 0;
+        if (ray_selected_interval_first_visible(
+                sys, ray, &interval, t_min, material_filter,
+                include_normal != 0, out_visible))
+            return 0;
+        if (rc == 0) return 0;
     }
 }
 
@@ -4512,7 +4533,7 @@ int alea_raycast_hier_first_cell_nocache(
         const int rc = alea_ray_walk_next_selected(
             sys, ray, effective_t_max, scratch, &walk, &interval);
         if (rc < 0) return -1;
-        if (rc > 0) return 0;
+        if (rc == 2) return 0;
         if (interval.cell_id >= 0 &&
             (material_filter < 0 || interval.material_id == material_filter) &&
             interval.t_exit > t_min + RAY_EPSILON) {
@@ -4520,6 +4541,7 @@ int alea_raycast_hier_first_cell_nocache(
             if (out_t) *out_t = fmax(interval.t_enter, t_min);
             return 0;
         }
+        if (rc == 0) return 0;
     }
 }
 
@@ -4540,13 +4562,14 @@ int alea_raycast_hier_any_hit_nocache(
         const int rc = alea_ray_walk_next_selected(
             sys, ray, effective_t_max, scratch, &walk, &interval);
         if (rc < 0) return -1;
-        if (rc > 0) return 0;
+        if (rc == 2) return 0;
         if (interval.cell_id >= 0 && interval.material_id != 0 &&
             (material_filter < 0 || interval.material_id == material_filter) &&
             interval.t_exit > t_min + RAY_EPSILON) {
             *out_hit = 1;
             return 0;
         }
+        if (rc == 0) return 0;
     }
 }
 
