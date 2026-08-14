@@ -1987,8 +1987,7 @@ int alea_raycast_query_reuse_nocache(
         return 0;
     }
     if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        plan.product == ALEA_RAY_QUERY_ANY_HIT &&
-        !system_has_lattice_cells(sys)) {
+        plan.product == ALEA_RAY_QUERY_ANY_HIT) {
         int any_hit = 0;
         if (alea_raycast_hier_any_hit_nocache(
                 sys, ray, plan.t_min, t_max, plan.material_filter,
@@ -2252,7 +2251,7 @@ int alea_ray_is_occluded(alea_system_t* sys,
                         double t_max) {
     if (!sys) return 0;
 
-    if (raycast_prefers_hier_mode(sys) && !system_has_lattice_cells(sys)) {
+    if (raycast_prefers_hier_mode(sys)) {
         if (alea_raycast_ensure_hier_caches(sys) != 0) return 0;
         static ALEA_THREAD_LOCAL alea_raycast_result_t hier_tls_result;
         static ALEA_THREAD_LOCAL int hier_tls_init = 0;

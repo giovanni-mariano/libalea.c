@@ -243,6 +243,18 @@ static void assert_lattice_query_policy_equivalent(
                   &hier_scratch, &any_hit), 0);
     ASSERT_EQ(any_hit, global_output.first_visible.found ? 1 : 0);
 
+    const alea_ray_query_t any_query = {
+        .kind = ALEA_RAY_QUERY_ANY_HIT,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .t_min = t_min, .t_max = t_max, .material_filter = material_filter
+    };
+    alea_ray_query_output_t any_output;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &any_query, &hier_scratch, NULL, &any_output), 0);
+    ASSERT_EQ(any_output.any_hit, any_hit != 0);
+    ASSERT_EQ(hier_scratch.hits.count, 0);
+    ASSERT_EQ(hier_scratch.segments.count, 0);
+
     const double origins[] = {ox, oy, oz};
     const double directions[] = {dx, dy, dz};
     const double t_mins[] = {t_min};
