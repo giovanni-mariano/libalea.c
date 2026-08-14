@@ -53,12 +53,10 @@ static bool raycast_prefers_hier_mode(const alea_system_t* sys) {
     return true;  /* hierarchical spatial index is the only backend */
 }
 
-static int raycast_cell_aware_impl(alea_system_t* sys,
-                                   const alea_ray_t* ray,
-                                   double effective_t_max,
-                                   bool use_hier_lookup,
-                                   bool emit_hits,
-                                   alea_raycast_result_t* result);
+static int raycast_flat_cell_aware_impl(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double effective_t_max,
+                                        alea_raycast_result_t* result);
 static int ray_selected_interval_trace(alea_system_t* sys,
                                        const alea_ray_t* ray, double t_max,
                                        bool emit_hits,
@@ -4066,18 +4064,16 @@ resolve_cell:;
     return 0;
 }
 
-/* The compatibility adapter runs the selected walker to completion.  Packet
- * and fixed-output consumers use the one-step façade below instead. */
-static int raycast_cell_aware_impl(alea_system_t* sys,
-                                   const alea_ray_t* ray,
-                                   double effective_t_max,
-                                   bool use_hier_lookup,
-                                   bool emit_hits,
-                                   alea_raycast_result_t* result) {
+/* Legacy flat-cell compatibility adapter. Hierarchical consumers stream
+ * selected intervals through their dedicated adapters instead. */
+static int raycast_flat_cell_aware_impl(alea_system_t* sys,
+                                        const alea_ray_t* ray,
+                                        double effective_t_max,
+                                        alea_raycast_result_t* result) {
     alea_ray_walk_t state;
     alea_ray_walk_init(&state);
     return raycast_cell_aware_resume(
-        sys, ray, effective_t_max, use_hier_lookup, emit_hits,
+        sys, ray, effective_t_max, false, false,
         result, &state, INT_MAX, NULL);
 }
 
@@ -4359,7 +4355,7 @@ int alea_raycast_cell_aware(alea_system_t* sys,
         return -1;
     }
 
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, false, result);
+    return raycast_flat_cell_aware_impl(sys, &ray, effective_t_max, result);
 }
 
 int alea_raycast_hier_cell_aware(alea_system_t* sys,
