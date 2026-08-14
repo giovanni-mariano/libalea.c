@@ -2133,6 +2133,24 @@ TEST(undefined_fill_flagged) {
     mcnp_model_destroy(model);
 }
 
+typedef struct {
+    size_t count;
+    size_t overlap_owner_count;
+    int saw_occurrence_keys;
+} coverage_stream_probe_t;
+
+static int probe_coverage_interval(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    coverage_stream_probe_t* probe = context;
+    probe->count++;
+    if (interval->kind == ALEA_RAY_COVERAGE_OVERLAP)
+        probe->overlap_owner_count = interval->owner_count;
+    for (size_t i = 0; i < interval->owner_count; i++)
+        if (interval->owners[i].occurrence_key != 0)
+            probe->saw_occurrence_keys = 1;
+    return 0;
+}
+
 /*
  * Interval defect classification: an isolated overlap (cell 2 fully inside
  * cell 1, no complement) produces no ownership transition and is invisible
@@ -2178,6 +2196,17 @@ TEST(ray_classify_intervals) {
     alea_ray_interval_finding_t f[16];
     int n = alea_ray_classify_intervals(sys, -10, 0, 0, 1, 0, 0, 20, f, 16);
     ASSERT_EQ(n, 7);
+
+    alea_raycast_result_t coverage_scratch;
+    alea_raycast_result_init(&coverage_scratch);
+    coverage_stream_probe_t probe = {0};
+    ASSERT_EQ(alea_ray_coverage_sweep_reuse_nocache(
+                  sys, &diagnostic_ray, 20.0, &coverage_scratch,
+                  probe_coverage_interval, &probe), n);
+    ASSERT_EQ(probe.count, (size_t)n);
+    ASSERT_EQ(probe.overlap_owner_count, 2);
+    ASSERT(probe.saw_occurrence_keys);
+    alea_raycast_result_free(&coverage_scratch);
 
     /* -10..-6 cell 3; -6..-5 GAP; -5..-3 cell 1; -3..3 OVERLAP(1,2);
        3..5 cell 1; 5..6 GAP; 6..10 cell 3 */

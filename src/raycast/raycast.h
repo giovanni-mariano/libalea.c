@@ -745,6 +745,43 @@ int alea_ray_coverage_classify_reuse_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_interval_finding_t* out, size_t max_out);
 
+typedef enum {
+    ALEA_RAY_COVERAGE_UNIQUE,
+    ALEA_RAY_COVERAGE_GAP,
+    ALEA_RAY_COVERAGE_OVERLAP,
+    ALEA_RAY_COVERAGE_UNDEFINED_FILL
+} alea_ray_coverage_kind_t;
+
+typedef struct {
+    int cell_id;
+    int cell_index;
+    int material_id;
+    int universe_id;
+    int fill_universe;
+    int depth;
+    uint64_t occurrence_key;
+    uint8_t resolution_flags;
+} alea_ray_coverage_owner_t;
+
+/* The owners span is valid only for the duration of the callback. */
+typedef struct {
+    double t_enter;
+    double t_exit;
+    alea_ray_coverage_kind_t kind;
+    const alea_ray_coverage_owner_t* owners;
+    size_t owner_count;
+} alea_ray_coverage_interval_t;
+
+typedef int (*alea_ray_coverage_interval_callback_t)(
+    void* context, const alea_ray_coverage_interval_t* interval);
+
+/* Stream merged complete-coverage intervals without allocating public output.
+ * The callback may stop the sweep by returning nonzero. */
+int alea_ray_coverage_sweep_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_interval_callback_t callback, void* context);
+
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;
