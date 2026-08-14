@@ -2005,6 +2005,34 @@ int alea_raycast_query_reuse_nocache(
         if (output) output->any_hit = any_hit != 0;
         return 0;
     }
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD &&
+        plan.product == ALEA_RAY_QUERY_FIRST_CELL && output) {
+        if (alea_raycast_hier_first_cell_nocache(
+                sys, ray, plan.t_min, t_max, plan.material_filter,
+                trace, &output->first_cell_id, &output->first_cell_t) != 0)
+            goto fail;
+        return 0;
+    }
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD &&
+        plan.product == ALEA_RAY_QUERY_FIRST_VISIBLE) {
+        if (!output || alea_raycast_hier_first_visible_nocache(
+                            sys, ray, plan.t_min, t_max,
+                            plan.material_filter,
+                            plan.requirements.need_normal != 0,
+                            trace, &output->first_visible) != 0)
+            goto fail;
+        return 0;
+    }
+    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD &&
+        plan.product == ALEA_RAY_QUERY_ANY_HIT) {
+        int any_hit = 0;
+        if (alea_raycast_hier_any_hit_nocache(
+                sys, ray, plan.t_min, t_max, plan.material_filter,
+                trace, &any_hit) != 0)
+            goto fail;
+        if (output) output->any_hit = any_hit != 0;
+        return 0;
+    }
     if (plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS &&
         plan.engine == ALEA_RAY_ENGINE_GLOBAL_BREAKPOINTS) {
         const alea_ray_boundary_event_options_internal_t event_options = {

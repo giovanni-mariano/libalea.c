@@ -719,6 +719,17 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     ASSERT_EQ(trace.segments.count, 0);
     const int first_visible_steps = trace.step_iterations;
 
+    alea_ray_query_t fast_visible = visible;
+    fast_visible.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &fast_visible, &trace, NULL, &output), 0);
+    ASSERT(output.first_visible.found);
+    ASSERT_EQ(output.first_visible.cell_id, 1);
+    ASSERT_EQ(output.first_visible.surface_id, 1);
+    ASSERT_NEAR(fabs(output.first_visible.nx), 1.0, 1e-9);
+    ASSERT_EQ(trace.hits.count, 0);
+    ASSERT_EQ(trace.segments.count, 0);
+
     alea_raycast_result_t full_trace;
     alea_raycast_result_init(&full_trace);
     ASSERT_EQ(alea_raycast_hier_with_hits_nocache(sys, &ray, 4.0,
@@ -746,6 +757,13 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     };
     ASSERT_EQ(alea_raycast_query_reuse_nocache(
                   sys, &ray, &first_cell, &trace, NULL, &output), 0);
+    ASSERT_EQ(output.first_cell_id, 2);
+    ASSERT_NEAR(output.first_cell_t, 0.0, 1e-9);
+    ASSERT_EQ(trace.segments.count, 0);
+    alea_ray_query_t fast_first_cell = first_cell;
+    fast_first_cell.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &fast_first_cell, &trace, NULL, &output), 0);
     ASSERT_EQ(output.first_cell_id, 2);
     ASSERT_NEAR(output.first_cell_t, 0.0, 1e-9);
     ASSERT_EQ(trace.segments.count, 0);
