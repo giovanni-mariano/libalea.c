@@ -2322,6 +2322,17 @@ TEST(ray_query_lowering_declares_semantics) {
     ASSERT(plan.requirements.need_surface_identity);
     ASSERT(plan.requirements.need_normal);
 
+    const alea_ray_query_t segments = {
+        .kind = ALEA_RAY_QUERY_SEGMENTS,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .t_max = 8.0,
+        .material_filter = -1
+    };
+    ASSERT_EQ(alea_ray_query_lower(&segments, &plan), 0);
+    ASSERT_EQ(plan.engine, ALEA_RAY_ENGINE_SELECTED_WALKER);
+    ASSERT_EQ(plan.ownership, ALEA_RAY_OWNERSHIP_TRACK_COHERENT);
+    ASSERT(plan.requirements.need_selected_owner);
+
     const alea_ray_query_t boundaries = {
         .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
         .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
