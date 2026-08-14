@@ -1754,8 +1754,10 @@ static int boundary_events_append_group(
     return 0;
 }
 
-static int boundary_events_from_trace(
-    const alea_raycast_result_t* trace,
+/* Ownership transitions come from adjacent selected segments; physical
+ * provenance comes from the independently enumerated crossing trace. */
+static int boundary_events_from_segments_and_crossings(
+    const alea_raycast_result_t* selected_trace,
     const alea_raycast_result_t* crossings,
     const alea_ray_boundary_event_options_internal_t* options,
     alea_ray_boundary_event_result_t* events);
@@ -1790,25 +1792,27 @@ int alea_raycast_boundary_events_with_options(
                               "boundary-event trace failed while resolving ray intervals");
         return -1;
     }
-    const int rc = boundary_events_from_trace(trace, &crossings, options, events);
+    const int rc = boundary_events_from_segments_and_crossings(
+        trace, &crossings, options, events);
     alea_raycast_result_free(&crossings);
     return rc;
 }
 
-/* Derive events without retracing.  This is the bridge used by the query
- * dispatcher while batch/event materialization remains a later phase. */
-static int boundary_events_from_trace(
-    const alea_raycast_result_t* trace,
+/* This bridge accepts separately-produced selected ownership and crossing
+ * provenance traces. Fast compatibility backends may provide one trace for
+ * both; global diagnostic backends deliberately do not. */
+static int boundary_events_from_segments_and_crossings(
+    const alea_raycast_result_t* selected_trace,
     const alea_raycast_result_t* crossings,
     const alea_ray_boundary_event_options_internal_t* options,
     alea_ray_boundary_event_result_t* events) {
-    if (!trace || !crossings || !events)
+    if (!selected_trace || !crossings || !events)
         return -1;
     alea_ray_boundary_event_result_clear(events);
 
-    for (size_t i = 0; i + 1 < trace->segments.count; i++) {
-        const alea_ray_segment_t* before = &trace->segments.data[i];
-        const alea_ray_segment_t* after = &trace->segments.data[i + 1];
+    for (size_t i = 0; i + 1 < selected_trace->segments.count; i++) {
+        const alea_ray_segment_t* before = &selected_trace->segments.data[i];
+        const alea_ray_segment_t* after = &selected_trace->segments.data[i + 1];
         if (fabs(before->t_exit - after->t_enter) > RAY_EPSILON)
             continue;  /* Incomplete trace: do not invent an event. */
 
@@ -2062,7 +2066,8 @@ int alea_raycast_query_reuse_nocache(
         /* Apply output limits only after the requested ray range has clipped
          * the event stream, matching the global boundary adapter above. */
         const alea_ray_boundary_event_options_internal_t event_options = {0};
-        if (boundary_events_from_trace(trace, trace, &event_options, events) != 0)
+        if (boundary_events_from_segments_and_crossings(
+                trace, trace, &event_options, events) != 0)
             goto fail;
         size_t write = 0;
         for (size_t i = 0; i < events->events.count; i++) {
