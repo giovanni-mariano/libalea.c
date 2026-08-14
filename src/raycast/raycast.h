@@ -671,24 +671,24 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
                                         alea_raycast_result_t* result);
 
 /**
- * Non-lattice hierarchical first-visible query.  Stops after resolving the
- * first qualifying material interval and does not append hit or segment
- * vectors. Caches must be prepared; result is scratch/instrumentation only.
+ * Hierarchical first-visible query. Stops after resolving the first qualifying
+ * material interval (including lattice DDA/fill traversal) and does not append
+ * hit or segment vectors. Caches must be prepared; result is scratch only.
  */
 int alea_raycast_hier_first_visible_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
     int material_filter, int include_normal, alea_raycast_result_t* scratch,
     alea_ray_first_visible_result_t* out_visible);
 
-/* Resolve the first non-void cell interval without materializing hits or
- * segments.  Non-lattice only; lattice callers retain canonical tracing. */
+/* Resolve the first owned cell interval without materializing hits or
+ * segments. Supports hierarchy, fills, and lattice DDA. */
 int alea_raycast_hier_first_cell_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
     int material_filter,
     alea_raycast_result_t* scratch, int* out_cell_id, double* out_t);
 
-/** Non-lattice hierarchical occlusion policy. Stops at the first non-void
- * material interval and leaves scratch hit/segment/path vectors empty. */
+/** Hierarchical occlusion policy. Stops at the first non-void material
+ * interval and leaves scratch hit/segment/path vectors empty. */
 int alea_raycast_hier_any_hit_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
     int material_filter, alea_raycast_result_t* scratch, int* out_hit);
