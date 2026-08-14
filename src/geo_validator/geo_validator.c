@@ -951,7 +951,7 @@ static int validate_surface_sample(alea_system_t* sys,
     if (!ambiguous &&
         cov_plus.klass == COVERAGE_ONE &&
         cov_minus.klass == COVERAGE_ONE &&
-        cov_plus.primary_cell_idx == cov_minus.primary_cell_idx) {
+        cov_plus.primary_occurrence_key == cov_minus.primary_occurrence_key) {
         return 0;
     }
 
