@@ -2354,9 +2354,9 @@ typedef struct {
     alea_hier_ray_path_t current_path;
     double pending_lattice_entry_sample;
     int iterations_remaining;
-} raycast_cell_aware_state_t;
+} alea_ray_walk_t;
 
-static void raycast_cell_aware_state_init(raycast_cell_aware_state_t* state) {
+static void alea_ray_walk_init(alea_ray_walk_t* state) {
     memset(state, 0, sizeof(*state));
     state->prev_cell_idx = -2;
     state->prev_surface_id = -1;
@@ -3423,7 +3423,7 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
                                      int visible_material_filter,
                                      bool visible_wants_normal,
                                      alea_raycast_result_t* result,
-                                     raycast_cell_aware_state_t* state,
+                                     alea_ray_walk_t* state,
                                      int step_budget) {
     if (!state || step_budget <= 0) return -1;
     /* Current position along ray */
@@ -4042,6 +4042,8 @@ resolve_cell:;
     return 0;
 }
 
+/* The compatibility adapter runs the selected walker to completion.  Packet
+ * and fixed-output consumers use the one-step façade below instead. */
 static int raycast_cell_aware_impl(alea_system_t* sys,
                                    const alea_ray_t* ray,
                                    double effective_t_max,
@@ -4056,13 +4058,23 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    int visible_material_filter,
                                    bool visible_wants_normal,
                                    alea_raycast_result_t* result) {
-    raycast_cell_aware_state_t state;
-    raycast_cell_aware_state_init(&state);
+    alea_ray_walk_t state;
+    alea_ray_walk_init(&state);
     return raycast_cell_aware_resume(
         sys, ray, effective_t_max, use_hier_lookup, emit_hits,
         first_visible, first_cell_id, first_cell_t, first_cell_t_min,
         first_cell_material_filter, visible_t_min, visible_material_filter,
         visible_wants_normal, result, &state, INT_MAX);
+}
+
+static int alea_ray_walk_next_first_visible(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    double t_min, int material_filter, bool include_normal,
+    alea_raycast_result_t* scratch, alea_ray_walk_t* walk,
+    alea_ray_first_visible_result_t* visible) {
+    return raycast_cell_aware_resume(
+        sys, ray, t_max, true, false, visible, NULL, NULL, 0.0, -1,
+        t_min, material_filter, include_normal, scratch, walk, 1);
 }
 
 #ifndef RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
@@ -4071,7 +4083,7 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
 
 typedef struct {
     alea_ray_t ray;
-    raycast_cell_aware_state_t state;
+    alea_ray_walk_t state;
     alea_raycast_result_t scratch;
     alea_ray_first_visible_result_t visible;
     size_t ray_index;
@@ -4091,7 +4103,7 @@ static void raycast_first_visible_lane_init(
                       d[0], d[1], d[2]) != 0) {
         return;
     }
-    raycast_cell_aware_state_init(&lane->state);
+    alea_ray_walk_init(&lane->state);
     alea_raycast_result_init(&lane->scratch);
     lane->scratch.ray = lane->ray;
     lane->visible.cell_id = -1;
@@ -4159,12 +4171,11 @@ int alea_raycast_hier_first_visible_batch_execute_nocache(
                 const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
                 const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
                 const double effective_t_max = t_max <= 0.0 ? DBL_MAX : t_max;
-                const int rc = raycast_cell_aware_resume(
-                    sys, &lane->ray, effective_t_max, true, false,
-                    &lane->visible, NULL, NULL, 0.0, -1,
-                    t_min, query->material_filter,
+                const int rc = alea_ray_walk_next_first_visible(
+                    sys, &lane->ray, effective_t_max, t_min,
+                    query->material_filter,
                     (query->fields & ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL) != 0,
-                    &lane->scratch, &lane->state, 1);
+                    &lane->scratch, &lane->state, &lane->visible);
                 if (rc < 0) {
                     statuses[i] = -1;
                     lane->active = 0;
@@ -4228,11 +4239,10 @@ int alea_raycast_hier_any_hit_batch_execute_nocache(
                 const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
                 const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
                 const double effective_t_max = t_max <= 0.0 ? DBL_MAX : t_max;
-                const int rc = raycast_cell_aware_resume(
-                    sys, &lane->ray, effective_t_max, true, false,
-                    &lane->visible, NULL, NULL, 0.0, -1,
-                    t_min, query->material_filter, false,
-                    &lane->scratch, &lane->state, 1);
+                const int rc = alea_ray_walk_next_first_visible(
+                    sys, &lane->ray, effective_t_max, t_min,
+                    query->material_filter, false,
+                    &lane->scratch, &lane->state, &lane->visible);
                 if (rc < 0) {
                     statuses[i] = -1;
                     lane->active = 0;
