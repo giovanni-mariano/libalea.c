@@ -58,14 +58,6 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    double effective_t_max,
                                    bool use_hier_lookup,
                                    bool emit_hits,
-                                   alea_ray_first_visible_result_t* first_visible,
-                                   int* first_cell_id,
-                                   double* first_cell_t,
-                                   double first_cell_t_min,
-                                   int first_cell_material_filter,
-                                   double visible_t_min,
-                                   int visible_material_filter,
-                                   bool visible_wants_normal,
                                    alea_raycast_result_t* result);
 
 /* ============================================================================
@@ -1877,9 +1869,7 @@ static int ray_query_fast_forward_trace(alea_system_t* sys,
                                         alea_raycast_result_t* trace) {
     alea_raycast_result_clear(trace);
     trace->ray = *ray;
-    return raycast_cell_aware_impl(sys, ray, t_max, true, emit_hits,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false,
-                                   trace);
+    return raycast_cell_aware_impl(sys, ray, t_max, true, emit_hits, trace);
 }
 
 static int ray_query_fast_reverse_trace(alea_system_t* sys,
@@ -2167,8 +2157,7 @@ int alea_raycast_hier(alea_system_t* sys,
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = ray;
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false, result);
 }
 
 int alea_raycast_hier_blas_experimental(alea_system_t* sys,
@@ -3504,14 +3493,6 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
                                      double effective_t_max,
                                      bool use_hier_lookup,
                                      bool emit_hits,
-                                     alea_ray_first_visible_result_t* first_visible,
-                                     int* first_cell_id,
-                                     double* first_cell_t,
-                                     double first_cell_t_min,
-                                     int first_cell_material_filter,
-                                     double visible_t_min,
-                                     int visible_material_filter,
-                                     bool visible_wants_normal,
                                      alea_raycast_result_t* result,
                                      alea_ray_walk_t* state,
                                      int step_budget,
@@ -3530,7 +3511,7 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
     alea_raycast_boundary_event_t enter_event = state->enter_event;
     alea_hier_ray_path_t current_path = state->current_path;
     double pending_lattice_entry_sample = state->pending_lattice_entry_sample;
-    const bool need_boundary_event = emit_hits || first_visible || out_selected;
+    const bool need_boundary_event = emit_hits || out_selected;
 
     while (t_current < effective_t_max && step_budget-- > 0 &&
            state->iterations_remaining-- > 0) {
@@ -4045,56 +4026,10 @@ resolve_cell:;
             return 0;
         }
 
-        /* FIRST_CELL and FIRST_VISIBLE consume a verified interval before
-         * hit/segment materialization, so work behind the answer is avoided. */
-        if (first_cell_id && selected.cell_id >= 0 &&
-            (first_cell_material_filter < 0 ||
-             selected.material_id == first_cell_material_filter) &&
-            selected.t_exit > first_cell_t_min + RAY_EPSILON) {
-            *first_cell_id = selected.cell_id;
-            if (first_cell_t) *first_cell_t = fmax(selected.t_enter, first_cell_t_min);
-            return 0;
-        }
-
-        /* FIRST_VISIBLE consumes this completed interval immediately.  It is
-         * deliberately after ownership verification but before hit/segment
-         * materialization, so work behind the winning interval is avoided. */
-        if (first_visible && selected.cell_id >= 0 && selected.material_id != 0 &&
-            (visible_material_filter < 0 ||
-             selected.material_id == visible_material_filter) &&
-            selected.t_exit > visible_t_min + RAY_EPSILON) {
-            memset(first_visible, 0, sizeof(*first_visible));
-            first_visible->found = true;
-            first_visible->t = fmax(selected.t_enter, visible_t_min);
-            first_visible->cell_id = selected.cell_id;
-            first_visible->material_id = selected.material_id;
-            first_visible->density = selected.density;
-            /* Synthetic lattice entries are observable boundaries in the
-             * canonical trace (surface id 0).  Preserve that identity only
-             * when visibility begins at the interval entry; a clipped query
-             * begins in the interval interior and has no entering boundary. */
-            first_visible->surface_id =
-                selected.t_enter >= visible_t_min - RAY_EPSILON
-                    ? selected.enter_event.surface_id : -1;
-            first_visible->primitive_id = UINT32_MAX;
-            first_visible->resolution_flags = selected.resolution_flags;
-            if (selected.t_enter >= visible_t_min - RAY_EPSILON)
-                boundary_event_first_visible_normal(sys, ray, &selected.enter_event,
-                                                    visible_wants_normal,
-                                                    first_visible);
-            return 0;
-        }
-
-        if (!first_visible && !first_cell_id) {
-            if (ray_selected_interval_publish(
-                    sys, ray, &selected, use_hier_lookup, emit_hits, result,
-                    &prev_cell_idx, &pending_enter_hit_index) != 0)
-                return -1;
-        } else {
-            /* Preserve the stepper's neighbor/path locality without retaining
-             * the interval that FIRST_VISIBLE has already classified. */
-            prev_cell_idx = cell_idx;
-        }
+        if (ray_selected_interval_publish(
+                sys, ray, &selected, use_hier_lookup, emit_hits, result,
+                &prev_cell_idx, &pending_enter_hit_index) != 0)
+            return -1;
 
         if (next_enter_surface_id < 0)
             next_enter_surface_id = hit_surface_id;
@@ -4134,22 +4069,12 @@ static int raycast_cell_aware_impl(alea_system_t* sys,
                                    double effective_t_max,
                                    bool use_hier_lookup,
                                    bool emit_hits,
-                                   alea_ray_first_visible_result_t* first_visible,
-                                   int* first_cell_id,
-                                   double* first_cell_t,
-                                   double first_cell_t_min,
-                                   int first_cell_material_filter,
-                                   double visible_t_min,
-                                   int visible_material_filter,
-                                   bool visible_wants_normal,
                                    alea_raycast_result_t* result) {
     alea_ray_walk_t state;
     alea_ray_walk_init(&state);
     return raycast_cell_aware_resume(
         sys, ray, effective_t_max, use_hier_lookup, emit_hits,
-        first_visible, first_cell_id, first_cell_t, first_cell_t_min,
-        first_cell_material_filter, visible_t_min, visible_material_filter,
-        visible_wants_normal, result, &state, INT_MAX, NULL);
+        result, &state, INT_MAX, NULL);
 }
 
 /* Advance the coherent hierarchical walk by one verified interval. The
@@ -4163,8 +4088,7 @@ static int alea_ray_walk_next_selected(
     if (!out_interval || walk->t_current >= t_max - RAY_EPSILON)
         return 2;
     const int rc = raycast_cell_aware_resume(
-        sys, ray, t_max, true, false, NULL, NULL, NULL, 0.0, -1,
-        0.0, -1, false, scratch, walk, 1, out_interval);
+        sys, ray, t_max, true, false, scratch, walk, 1, out_interval);
     if (rc != 0) return rc;
     return out_interval->t_exit >= t_max - RAY_EPSILON ? 0 : 1;
 }
@@ -4407,8 +4331,7 @@ int alea_raycast_cell_aware(alea_system_t* sys,
         return -1;
     }
 
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, false,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+    return raycast_cell_aware_impl(sys, &ray, effective_t_max, false, false, result);
 }
 
 int alea_raycast_hier_cell_aware(alea_system_t* sys,
@@ -4441,8 +4364,7 @@ int alea_raycast_hier_fast_segments(alea_system_t* sys,
     result->ray = ray;
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, false, result);
 }
 
 int alea_raycast_hier_with_hits(alea_system_t* sys,
@@ -4465,8 +4387,7 @@ int alea_raycast_hier_with_hits(alea_system_t* sys,
     result->ray = ray;
 
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
-    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+    return raycast_cell_aware_impl(sys, &ray, effective_t_max, true, true, result);
 }
 
 /* Buffer-reuse hierarchical variants: take a pre-normalized ray, assume query
@@ -4481,8 +4402,7 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
     if (!sys || !ray || !result) return -1;
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
-    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, true, result);
 }
 
 int alea_raycast_hier_first_visible_nocache(
@@ -4580,6 +4500,5 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     if (!sys || !ray || !result) return -1;
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
-    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   NULL, NULL, NULL, 0, -1, 0, -1, false, result);
+    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false, result);
 }
