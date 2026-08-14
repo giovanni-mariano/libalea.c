@@ -1598,9 +1598,9 @@ void alea_ray_boundary_event_result_free(alea_ray_boundary_event_result_t* resul
 }
 
 static const alea_ray_hit_t* boundary_event_find_hit(
-    const alea_raycast_result_t* trace, double t, int surface_id) {
-    for (size_t i = 0; i < trace->hits.count; i++) {
-        const alea_ray_hit_t* hit = &trace->hits.data[i];
+    const alea_raycast_result_t* crossings, double t, int surface_id) {
+    for (size_t i = 0; i < crossings->hits.count; i++) {
+        const alea_ray_hit_t* hit = &crossings->hits.data[i];
         if (hit->surface_id == surface_id &&
             fabs(hit->t - t) <= RAY_EPSILON)
             return hit;
@@ -1643,7 +1643,7 @@ static int boundary_event_append(alea_ray_boundary_event_result_t* events,
 }
 
 static int boundary_events_append_group(
-    const alea_raycast_result_t* trace,
+    const alea_raycast_result_t* crossings,
     const alea_ray_segment_t* before, const alea_ray_segment_t* after,
     bool include_all_coincident_physical,
     const alea_ray_boundary_event_options_internal_t* options,
@@ -1657,8 +1657,8 @@ static int boundary_events_append_group(
     size_t physical_capacity = 0;
     int saw_synthetic = 0;
 
-    for (size_t i = 0; i < trace->hits.count; i++) {
-        const alea_ray_hit_t* hit = &trace->hits.data[i];
+    for (size_t i = 0; i < crossings->hits.count; i++) {
+        const alea_ray_hit_t* hit = &crossings->hits.data[i];
         if (fabs(hit->t - t) > RAY_EPSILON) continue;
         if (hit->surface_id == 0) {
             saw_synthetic = 1;
@@ -1723,7 +1723,7 @@ static int boundary_events_append_group(
         for (size_t i = 0; i < emit_count; i++) {
             int surface_id = include_all_coincident_physical ? physical_ids[i] :
                                                             lowest_physical_id;
-            const alea_ray_hit_t* hit = boundary_event_find_hit(trace, t,
+            const alea_ray_hit_t* hit = boundary_event_find_hit(crossings, t,
                                                                  surface_id);
             if (boundary_event_append(events, before, after, t,
                                       ALEA_RAY_BOUNDARY_EVENT_PHYSICAL,
@@ -1756,6 +1756,7 @@ static int boundary_events_append_group(
 
 static int boundary_events_from_trace(
     const alea_raycast_result_t* trace,
+    const alea_raycast_result_t* crossings,
     const alea_ray_boundary_event_options_internal_t* options,
     alea_ray_boundary_event_result_t* events);
 
@@ -1772,23 +1773,36 @@ int alea_raycast_boundary_events_with_options(
      * models reliably once the hierarchical cache is the active backend. */
     alea_raycast_result_clear(trace);
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
+    alea_raycast_result_t crossings;
+    alea_raycast_result_init(&crossings);
+    if (alea_raycast_global_breakpoints_reuse_nocache(
+            sys, ray, effective_t_max, &crossings) != 0) {
+        alea_raycast_result_free(&crossings);
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "boundary-event breakpoint enumeration failed");
+        return -1;
+    }
     if (raycast_global_pipeline(sys, ray, 0, effective_t_max,
                                 system_has_lattice_cells(sys), true,
                                 trace) != 0) {
+        alea_raycast_result_free(&crossings);
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "boundary-event trace failed while resolving ray intervals");
         return -1;
     }
-    return boundary_events_from_trace(trace, options, events);
+    const int rc = boundary_events_from_trace(trace, &crossings, options, events);
+    alea_raycast_result_free(&crossings);
+    return rc;
 }
 
 /* Derive events without retracing.  This is the bridge used by the query
  * dispatcher while batch/event materialization remains a later phase. */
 static int boundary_events_from_trace(
     const alea_raycast_result_t* trace,
+    const alea_raycast_result_t* crossings,
     const alea_ray_boundary_event_options_internal_t* options,
     alea_ray_boundary_event_result_t* events) {
-    if (!trace || !events)
+    if (!trace || !crossings || !events)
         return -1;
     alea_ray_boundary_event_result_clear(events);
 
@@ -1799,7 +1813,7 @@ static int boundary_events_from_trace(
             continue;  /* Incomplete trace: do not invent an event. */
 
         if (boundary_events_append_group(
-                trace, before, after,
+                crossings, before, after,
                 options && options->include_all_coincident_physical,
                 options,
                 events) != 0) {
@@ -2048,7 +2062,7 @@ int alea_raycast_query_reuse_nocache(
         /* Apply output limits only after the requested ray range has clipped
          * the event stream, matching the global boundary adapter above. */
         const alea_ray_boundary_event_options_internal_t event_options = {0};
-        if (boundary_events_from_trace(trace, &event_options, events) != 0)
+        if (boundary_events_from_trace(trace, trace, &event_options, events) != 0)
             goto fail;
         size_t write = 0;
         for (size_t i = 0; i < events->events.count; i++) {
