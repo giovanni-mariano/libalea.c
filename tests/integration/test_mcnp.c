@@ -891,6 +891,15 @@ TEST(raycast_internal_query_policies_match_canonical_trace) {
     ASSERT_EQ(events.events.count, 2);
     ASSERT_EQ(events.events.data[0].surface_id, 1);
 
+    alea_ray_query_t clipped_fast_boundaries = fast_boundaries;
+    clipped_fast_boundaries.t_min = 2.0;
+    clipped_fast_boundaries.max_events = 1;
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &clipped_fast_boundaries,
+                  &trace, &events, &output), 0);
+    ASSERT_EQ(events.events.count, 1);
+    ASSERT(events.events.data[0].t >= clipped_fast_boundaries.t_min);
+
     alea_ray_boundary_event_options_t public_events;
     alea_ray_boundary_event_options_init(&public_events);
     public_events.fields = ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID |

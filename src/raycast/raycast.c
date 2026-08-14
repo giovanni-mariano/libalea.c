@@ -2045,10 +2045,9 @@ int alea_raycast_query_reuse_nocache(
     }
 
     if (plan.product == ALEA_RAY_QUERY_BOUNDARY_EVENTS) {
-        const alea_ray_boundary_event_options_internal_t event_options = {
-            .max_events = plan.max_events,
-            .max_output_bytes = plan.max_output_bytes
-        };
+        /* Apply output limits only after the requested ray range has clipped
+         * the event stream, matching the global boundary adapter above. */
+        const alea_ray_boundary_event_options_internal_t event_options = {0};
         if (boundary_events_from_trace(trace, &event_options, events) != 0)
             goto fail;
         size_t write = 0;
