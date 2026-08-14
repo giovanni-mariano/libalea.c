@@ -33,7 +33,9 @@ typedef struct {
     coverage_class_t klass;
     int primary_cell_id;
     int primary_cell_idx;
+    uint64_t primary_occurrence_key;
     int secondary_cell_id;
+    uint64_t secondary_occurrence_key;
     int universe_id;
     int depth;
     int count_at_depth;
@@ -197,14 +199,17 @@ static int find_point_coverage(alea_system_t* sys,
     out->klass = COVERAGE_NONE;
     out->primary_cell_id = -1;
     out->primary_cell_idx = -1;
+    out->primary_occurrence_key = 0;
     out->secondary_cell_id = -1;
+    out->secondary_occurrence_key = 0;
     out->universe_id = 0;
     out->depth = universe_depth;
     out->target_depth = universe_depth;
 
     alea_cell_hit_t hits[VALIDATOR_HIT_CAP];
-    int n = alea_find_all_cells_at_point_recursive(sys, x, y, z,
-                                                   hits, VALIDATOR_HIT_CAP);
+    uint64_t occurrence_keys[VALIDATOR_HIT_CAP];
+    int n = alea_find_all_cells_at_point_coverage_recursive(
+        sys, x, y, z, hits, occurrence_keys, VALIDATOR_HIT_CAP);
     if (n < 0) return -1;
     if (n >= VALIDATOR_HIT_CAP) out->truncated = 1;
     if (n == 0) return 0;
@@ -224,10 +229,12 @@ static int find_point_coverage(alea_system_t* sys,
         if (count == 0) {
             out->primary_cell_id = hits[i].cell_id;
             out->primary_cell_idx = hits[i].cell_index;
+            out->primary_occurrence_key = occurrence_keys[i];
             out->universe_id = hits[i].universe_id;
             out->depth = hits[i].depth;
         } else if (count == 1) {
             out->secondary_cell_id = hits[i].cell_id;
+            out->secondary_occurrence_key = occurrence_keys[i];
         }
         count++;
     }
@@ -241,12 +248,12 @@ static int find_point_coverage(alea_system_t* sys,
 static int same_coverage(const point_coverage_t* a, const point_coverage_t* b) {
     if (a->klass != b->klass) return 0;
     if (a->klass == COVERAGE_ONE &&
-        a->primary_cell_idx != b->primary_cell_idx) {
+        a->primary_occurrence_key != b->primary_occurrence_key) {
         return 0;
     }
     if (a->klass == COVERAGE_MULTI &&
-        (a->primary_cell_id != b->primary_cell_id ||
-         a->secondary_cell_id != b->secondary_cell_id)) {
+        (a->primary_occurrence_key != b->primary_occurrence_key ||
+         a->secondary_occurrence_key != b->secondary_occurrence_key)) {
         return 0;
     }
     return 1;
@@ -379,7 +386,9 @@ static void coverage_from_cell(const alea_system_t* sys, int cell_idx,
     out->klass = COVERAGE_NONE;
     out->primary_cell_id = -1;
     out->primary_cell_idx = -1;
+    out->primary_occurrence_key = 0;
     out->secondary_cell_id = -1;
+    out->secondary_occurrence_key = 0;
     out->universe_id = 0;
     out->depth = 0;
     out->target_depth = 0;
