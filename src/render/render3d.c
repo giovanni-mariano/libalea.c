@@ -709,21 +709,14 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = cfg->background[2];
     *out_cell_id = -1;
 
-    /* Full raycast. Non-lattice uses the hierarchical segment tracer (segments
-     * only — x-ray needs no surface normals); lattice keeps the full global
-     * traversal which handles lattice DDA + fill expansion. */
+    /* X-ray consumes only selected material intervals.  The hierarchical
+     * segment tracer handles both fill expansion and lattice DDA, so avoid
+     * reconstructing the global diagnostic trace for every pixel. */
     alea_raycast_result_clear(result);
-    if (sys->has_lattice) {
-        alea_ray_t ray;
-        if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
-            alea_raycast_global_reuse_nocache(sys, &ray, 0, result) != 0)
-            return;
-    } else {
-        alea_ray_t ray;
-        alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
-        if (alea_raycast_hier_segments_nocache(sys, &ray, 0, result) != 0)
-            return;
-    }
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
+        alea_raycast_hier_segments_nocache(sys, &ray, 0, result) != 0)
+        return;
 
     /* Accumulate density-weighted color */
     float accum_r = 0, accum_g = 0, accum_b = 0;
