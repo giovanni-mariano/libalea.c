@@ -1996,8 +1996,10 @@ int alea_raycast_query_reuse_nocache(
         return 0;
     }
     if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        plan.product == ALEA_RAY_QUERY_SEGMENTS &&
-        !system_has_lattice_cells(sys)) {
+        plan.product == ALEA_RAY_QUERY_SEGMENTS) {
+        /* Selected intervals always use the coherent hierarchical walker.
+         * Lattices used to fall through to the global tracer here, which
+         * made AUTO depend on model topology rather than query semantics. */
         if (ray_query_fast_forward_trace(sys, ray, t_max, false, trace) != 0)
             goto fail;
     } else if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD ||

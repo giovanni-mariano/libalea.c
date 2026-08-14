@@ -277,6 +277,37 @@ static void assert_lattice_query_policy_equivalent(
     ASSERT_EQ(hier_scratch.hits.count, 0);
     ASSERT_EQ(hier_scratch.segments.count, 0);
 
+    /* AUTO selected intervals must use the same coherent lattice walker as
+     * the explicit forward backend, rather than silently changing engines
+     * when a model contains lattice placements. */
+    const alea_ray_query_t segments_auto = {
+        .kind = ALEA_RAY_QUERY_SEGMENTS,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .t_min = t_min, .t_max = t_max, .material_filter = material_filter
+    };
+    alea_ray_query_t segments_fast = segments_auto;
+    segments_fast.backend = ALEA_RAY_QUERY_BACKEND_FAST_FORWARD;
+    alea_raycast_result_t auto_segments;
+    alea_raycast_result_t fast_segments;
+    alea_raycast_result_init(&auto_segments);
+    alea_raycast_result_init(&fast_segments);
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &segments_auto, &auto_segments, NULL, NULL), 0);
+    ASSERT_EQ(alea_raycast_query_reuse_nocache(
+                  sys, &ray, &segments_fast, &fast_segments, NULL, NULL), 0);
+    ASSERT_EQ(auto_segments.hits.count, 0);
+    ASSERT_EQ(auto_segments.segments.count, fast_segments.segments.count);
+    for (size_t i = 0; i < auto_segments.segments.count; i++) {
+        const alea_ray_segment_t* a = &auto_segments.segments.data[i];
+        const alea_ray_segment_t* b = &fast_segments.segments.data[i];
+        ASSERT_NEAR(a->t_enter, b->t_enter, 1e-9);
+        ASSERT_NEAR(a->t_exit, b->t_exit, 1e-9);
+        ASSERT_EQ(a->cell_id, b->cell_id);
+        ASSERT_EQ(a->material_id, b->material_id);
+    }
+    alea_raycast_result_free(&fast_segments);
+    alea_raycast_result_free(&auto_segments);
+
     const double origins[] = {ox, oy, oz};
     const double directions[] = {dx, dy, dz};
     const double t_mins[] = {t_min};
