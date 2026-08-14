@@ -3506,6 +3506,7 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
     alea_raycast_boundary_event_t enter_event = state->enter_event;
     alea_hier_ray_path_t current_path = state->current_path;
     double pending_lattice_entry_sample = state->pending_lattice_entry_sample;
+    const bool need_boundary_event = emit_hits || first_visible || out_selected;
 
     while (t_current < effective_t_max && step_budget-- > 0 &&
            state->iterations_remaining-- > 0) {
@@ -3673,7 +3674,7 @@ resolve_cell:;
          * emit_hits is set; the segment-only path never touches it, so it adds
          * no work to the hot loop. */
         alea_raycast_boundary_event_t bevent;
-        if (emit_hits || first_visible) {
+        if (need_boundary_event) {
             bevent.t = 0;
             bevent.surface_id = -1;
             bevent.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
@@ -3709,7 +3710,7 @@ resolve_cell:;
                                            &terminal_prim_id);
             result->terminal_surfaces_tested +=
                 result->surfaces_tested - surfaces_tested_before;
-            if (emit_hits || first_visible) {
+            if (need_boundary_event) {
                 bevent.t = t_next;
                 bevent.surface_id = hit_surface_id;
                 bevent.primitive_id = terminal_prim_id;
@@ -3757,7 +3758,7 @@ resolve_cell:;
                             pending_lattice_entry_sample = post_t;
                         }
                     }
-                    if (emit_hits || first_visible) {
+                    if (need_boundary_event) {
                         bevent.t = t_lattice_surface;
                         bevent.surface_id = lattice_surface_id;
                         bevent.primitive_id = lattice_prim_id;
@@ -3772,7 +3773,7 @@ resolve_cell:;
                     if (fabs(t_lattice_surface - t_lattice_next) <= RAY_EPSILON) {
                         hit_surface_id = lattice_surface_id;
                         next_enter_surface_id = 0;
-                        if (emit_hits || first_visible) {
+                        if (need_boundary_event) {
                             bevent.t = t_lattice_next;
                             bevent.surface_id = lattice_surface_id;
                             bevent.primitive_id = lattice_prim_id;
@@ -3782,7 +3783,7 @@ resolve_cell:;
                         }
                     } else {
                         hit_surface_id = 0;
-                        if (emit_hits || first_visible) {
+                        if (need_boundary_event) {
                             /* Pure synthetic DDA boundary: no physical surface. */
                             bevent.t = t_lattice_next;
                             bevent.surface_id = 0;
@@ -3796,7 +3797,7 @@ resolve_cell:;
                            lattice_surface_id >= 0) {
                     hit_surface_id = lattice_surface_id;
                     next_enter_surface_id = 0;
-                    if (emit_hits || first_visible) {
+                    if (need_boundary_event) {
                         bevent.surface_id = lattice_surface_id;
                         bevent.primitive_id = lattice_prim_id;
                         bevent.has_physical_surface = (lattice_surface_id > 0);
@@ -3822,7 +3823,7 @@ resolve_cell:;
                     t_next = t_ancestor;
                     hit_surface_id = ancestor_surface_id;
                     next_enter_surface_id = ancestor_surface_id;
-                    if (emit_hits || first_visible) {
+                    if (need_boundary_event) {
                         bevent.t = t_ancestor;
                         bevent.surface_id = ancestor_surface_id;
                         bevent.primitive_id = ancestor_prim_id;
@@ -3837,7 +3838,7 @@ resolve_cell:;
             t_next = find_closest_intersection(sys, ray,
                                                t_current + RAY_EPSILON, effective_t_max,
                                                &hit_surface_id, &void_prim_id);
-            if (emit_hits || first_visible) {
+            if (need_boundary_event) {
                 /* Void-region global search runs in the world frame. */
                 bevent.t = t_next;
                 bevent.surface_id = hit_surface_id;
@@ -3864,7 +3865,7 @@ resolve_cell:;
                 hit_surface_id = 0;
                 next_enter_surface_id = 0;
                 pending_lattice_entry_sample = lattice_entry.sample;
-                if (emit_hits || first_visible) {
+                if (need_boundary_event) {
                     bevent.t = lattice_entry.t;
                     bevent.surface_id = 0;
                     bevent.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
@@ -4464,10 +4465,33 @@ int alea_raycast_hier_first_visible_nocache(
     out_visible->primitive_id = UINT32_MAX;
     const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
     scratch->ray = *ray;
-    return raycast_cell_aware_impl(sys, ray, effective_t_max, true, false,
-                                   out_visible, NULL, NULL, 0, -1,
-                                   t_min, material_filter, include_normal != 0,
-                                   scratch);
+    alea_ray_walk_t walk;
+    alea_ray_walk_init(&walk);
+    for (;;) {
+        alea_ray_selected_interval_t interval;
+        const int rc = alea_ray_walk_next_selected(
+            sys, ray, effective_t_max, scratch, &walk, &interval);
+        if (rc < 0) return -1;
+        if (rc > 0) return 0;
+        if (interval.cell_id < 0 || interval.material_id == 0 ||
+            (material_filter >= 0 && interval.material_id != material_filter) ||
+            interval.t_exit <= t_min + RAY_EPSILON) {
+            continue;
+        }
+        out_visible->found = true;
+        out_visible->t = fmax(interval.t_enter, t_min);
+        out_visible->cell_id = interval.cell_id;
+        out_visible->material_id = interval.material_id;
+        out_visible->density = interval.density;
+        out_visible->resolution_flags = interval.resolution_flags;
+        if (interval.t_enter >= t_min - RAY_EPSILON) {
+            out_visible->surface_id = interval.enter_event.surface_id;
+            boundary_event_first_visible_normal(
+                sys, ray, &interval.enter_event, include_normal != 0,
+                out_visible);
+        }
+        return 0;
+    }
 }
 
 int alea_raycast_hier_first_cell_nocache(
