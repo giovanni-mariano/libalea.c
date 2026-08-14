@@ -208,6 +208,14 @@ int alea_find_all_cells_at_point_recursive(const alea_system_t* sys,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits);
 
+/* Diagnostic-only complete-coverage query.  occurrence_keys is parallel to
+ * out_hits and distinguishes repeated/transformed/lattice placements of the
+ * same cell definition.  The keys are process-local identities, not a public
+ * persistent identifier. */
+int alea_find_all_cells_at_point_coverage_recursive(
+    const alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys, size_t max_hits);
+
 /**
  * @brief Enable/disable debug point trace output
  * @param enable Non-zero to enable, 0 to disable

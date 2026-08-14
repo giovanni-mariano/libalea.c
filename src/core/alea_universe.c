@@ -50,6 +50,8 @@ typedef struct {
     double lx, ly, lz;
     const alea_matrix_t* accumulated_transform;
     int depth;
+    uint64_t occurrence_seed;
+    uint64_t* occurrence_keys;
     alea_size_vec_t* candidate_positions;
     int error;
 } universe_point_query_ctx_t;
@@ -84,8 +86,17 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                     const alea_matrix_t* accumulated_transform,
                                     int depth,
                                     alea_cell_hit_t* out_hits,
+                                    uint64_t* occurrence_keys,
                                     size_t max_hits,
-                                    size_t* hit_count);
+                                    size_t* hit_count,
+                                    uint64_t occurrence_seed);
+
+static uint64_t occurrence_key_mix(uint64_t key, uint64_t value) {
+    /* FNV-1a gives a deterministic compact identity for a concrete hierarchy
+     * path.  It is only compared within one diagnostic query. */
+    key ^= value;
+    return key * UINT64_C(1099511628211);
+}
 int lattice_hex_lookup(const alea_cell_entry_t* cell,
                        double px, double py, double pz,
                        double* ox, double* oy, double* oz);
@@ -323,9 +334,13 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                             const alea_matrix_t* accumulated_transform,
                                             int depth,
                                             alea_cell_hit_t* out_hits,
+                                            uint64_t* occurrence_keys,
                                             size_t max_hits,
-                                            size_t* hit_count) {
+                                            size_t* hit_count,
+                                            uint64_t occurrence_seed) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+    const uint64_t cell_key = occurrence_key_mix(
+        occurrence_seed, ((uint64_t)cell_idx << 1) | UINT64_C(1));
 
     if (cell->lat_type != 0 && cell->lat_fill) {
         alea_lattice_location_t location;
@@ -333,6 +348,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
             return 0;
 
         if (*hit_count < max_hits) {
+            const size_t hit_index = *hit_count;
             alea_cell_hit_t* hit = &out_hits[*hit_count];
             hit->cell_id = cell->mc_cell_id;
             hit->cell_index = (int)cell_idx;
@@ -344,6 +360,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
             hit->local_y = ly;
             hit->local_z = lz;
             hit->resolution_flags = ALEA_RESOLVE_UNDEFINED_FILL;
+            if (occurrence_keys) occurrence_keys[hit_index] = cell_key;
             (*hit_count)++;
         }
 
@@ -354,7 +371,12 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                         elx, ely, elz,
                                         location.fill_universe, NULL,
                                         depth + 1,
-                                        out_hits, max_hits, hit_count);
+                                        out_hits, occurrence_keys, max_hits, hit_count,
+                                        occurrence_key_mix(
+                                            occurrence_key_mix(cell_key,
+                                                (uint32_t)location.i),
+                                            ((uint64_t)(uint32_t)location.j << 32) |
+                                            (uint32_t)location.k));
     }
 
     g_point_bvh_stats.exact_cell_tests++;
@@ -363,6 +385,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
     }
 
     if (*hit_count < max_hits) {
+        const size_t hit_index = *hit_count;
         alea_cell_hit_t* hit = &out_hits[*hit_count];
         hit->cell_id = cell->mc_cell_id;
         hit->cell_index = (int)cell_idx;
@@ -375,6 +398,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
         hit->local_z = lz;
         hit->resolution_flags = alea_cell_entry_is_container(cell)
             ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
+        if (occurrence_keys) occurrence_keys[hit_index] = cell_key;
         (*hit_count)++;
 
         if (g_debug_point_trace) {
@@ -420,7 +444,8 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                         cell->fill_universe,
                                         &new_accumulated,
                                         depth + 1,
-                                        out_hits, max_hits, hit_count);
+                                        out_hits, occurrence_keys, max_hits, hit_count,
+                                        cell_key);
     }
 
     return 0;
@@ -2048,8 +2073,10 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                     const alea_matrix_t* accumulated_transform,
                                     int depth,
                                     alea_cell_hit_t* out_hits,
+                                    uint64_t* occurrence_keys,
                                     size_t max_hits,
-                                    size_t* hit_count) {
+                                    size_t* hit_count,
+                                    uint64_t occurrence_seed) {
     if (*hit_count >= max_hits) return 0;
     if (depth >= MAX_FLATTEN_DEPTH) return 0;
 
@@ -2072,6 +2099,8 @@ static int find_all_cells_recursive(const alea_system_t* sys,
             .lx = lx, .ly = ly, .lz = lz,
             .accumulated_transform = accumulated_transform,
             .depth = depth,
+            .occurrence_seed = occurrence_seed,
+            .occurrence_keys = occurrence_keys,
             .candidate_positions = &candidates,
             .error = 0
         };
@@ -2090,8 +2119,10 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                                       accumulated_transform,
                                                       depth,
                                                       out_hits,
+                                                      occurrence_keys,
                                                       max_hits,
-                                                      hit_count);
+                                                      hit_count,
+                                                      occurrence_seed);
             if (rc < 0) ctx.error = -1;
         }
         alea_vec_free(&candidates);
@@ -2110,8 +2141,10 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                                   accumulated_transform,
                                                   depth,
                                                   out_hits,
+                                                  occurrence_keys,
                                                   max_hits,
-                                                  hit_count);
+                                                  hit_count,
+                                                  occurrence_seed);
         if (rc < 0) return -1;
     }
 
@@ -2121,6 +2154,7 @@ static int find_all_cells_recursive(const alea_system_t* sys,
 static int find_all_cells_at_point_impl(alea_system_t* sys,
                                         double x, double y, double z,
                                         alea_cell_hit_t* out_hits,
+                                        uint64_t* occurrence_keys,
                                         size_t max_hits,
                                         bool force_recursive) {
     if (!sys || !out_hits || max_hits == 0) return -1;
@@ -2128,7 +2162,7 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
     /* Default fast path: the hierarchical spatial index. The recursive walker
      * is reserved for callers that need exact multi-cell coverage (overlap
      * detection, force_recursive) and for the debug-trace path. */
-    if (!g_debug_point_trace && !force_recursive) {
+    if (!occurrence_keys && !g_debug_point_trace && !force_recursive) {
         int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
                                                       out_hits, max_hits);
         if (n >= 0) return n;
@@ -2144,7 +2178,8 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
     size_t hit_count = 0;
     int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
                                           0, NULL, 0,
-                                          out_hits, max_hits, &hit_count);
+                                          out_hits, occurrence_keys, max_hits, &hit_count,
+                                          UINT64_C(1469598103934665603));
     if (result < 0) return -1;
     return (int)hit_count;
 }
@@ -2153,7 +2188,7 @@ int alea_find_all_cells_at_point(alea_system_t* sys,
                                 double x, double y, double z,
                                 alea_cell_hit_t* out_hits,
                                 size_t max_hits) {
-    return find_all_cells_at_point_impl(sys, x, y, z, out_hits, max_hits, false);
+    return find_all_cells_at_point_impl(sys, x, y, z, out_hits, NULL, max_hits, false);
 }
 
 int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
@@ -2231,7 +2266,16 @@ int alea_find_all_cells_at_point_recursive(const alea_system_t* sys,
                                           double x, double y, double z,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits) {
-    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits, max_hits, true);
+    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits,
+                                        NULL, max_hits, true);
+}
+
+int alea_find_all_cells_at_point_coverage_recursive(
+    const alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys, size_t max_hits) {
+    if (!occurrence_keys) return -1;
+    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits,
+                                        occurrence_keys, max_hits, true);
 }
 
 /* ============================================================================

@@ -2238,4 +2238,31 @@ TEST(ray_query_lowering_declares_semantics) {
     ASSERT_EQ(alea_ray_query_lower(&invalid, &plan), -1);
 }
 
+TEST(coverage_occurrence_keys_distinguish_lattice_elements) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_prepare_query_acceleration(model->sys), 0);
+
+    alea_cell_hit_t origin_hits[8], repeated_hits[8];
+    uint64_t origin_keys[8], repeated_keys[8];
+    const int origin_count = alea_find_all_cells_at_point_coverage_recursive(
+        model->sys, 0.0, 0.0, 0.0, origin_hits, origin_keys, 8);
+    const int repeated_count = alea_find_all_cells_at_point_coverage_recursive(
+        model->sys, 4.0, 0.0, 0.0, repeated_hits, repeated_keys, 8);
+    ASSERT(origin_count > 1);
+    ASSERT_EQ(origin_count, repeated_count);
+
+    int origin_child = -1, repeated_child = -1;
+    for (int i = 0; i < origin_count; i++)
+        if (origin_hits[i].depth > 0) { origin_child = i; break; }
+    for (int i = 0; i < repeated_count; i++)
+        if (repeated_hits[i].depth > 0) { repeated_child = i; break; }
+    ASSERT(origin_child >= 0);
+    ASSERT(repeated_child >= 0);
+    ASSERT_EQ(origin_hits[origin_child].cell_index,
+              repeated_hits[repeated_child].cell_index);
+    ASSERT(origin_keys[origin_child] != repeated_keys[repeated_child]);
+    mcnp_model_destroy(model);
+}
+
 TEST_MAIN()

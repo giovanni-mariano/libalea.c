@@ -26,19 +26,14 @@ enum {
 };
 #define ALEA_RAY_COVERAGE_MIN_INTERVAL 1e-9
 
-static int coverage_owner_sets_equal(const alea_cell_hit_t* a, int a_count,
-                                     const alea_cell_hit_t* b, int b_count) {
+static int coverage_owner_sets_equal(const uint64_t* a, int a_count,
+                                     const uint64_t* b, int b_count) {
     if (a_count != b_count) return 0;
-    /* Cell ID is presentation data, not ownership identity.  Preserve the
-     * concrete cell/universe/depth tuple so duplicated user IDs cannot make
-     * two different coverage sets merge.  Full occurrence keys will replace
-     * this tuple when they are promoted from hierarchy scratch state. */
+    /* Cell ID is presentation data, not ownership identity.  The recursive
+     * coverage resolver derives each key from the concrete fill/lattice path,
+     * so repeated or transformed occurrences cannot collapse here. */
     for (int i = 0; i < a_count; i++) {
-        if (a[i].cell_index != b[i].cell_index ||
-            a[i].universe_id != b[i].universe_id ||
-            a[i].fill_universe != b[i].fill_universe ||
-            a[i].depth != b[i].depth ||
-            a[i].resolution_flags != b[i].resolution_flags)
+        if (a[i] != b[i])
             return 0;
     }
     return 1;
@@ -88,7 +83,7 @@ int alea_ray_coverage_classify_reuse_nocache(
             sys, ray, t_max, breakpoint_scratch) != 0)
         return -1;
 
-    alea_cell_hit_t previous[ALEA_RAY_COVERAGE_MAX_OWNERS];
+    uint64_t previous_keys[ALEA_RAY_COVERAGE_MAX_OWNERS];
     int previous_count = -1;
     alea_ray_interval_finding_t current = {0};
     int have_current = 0;
@@ -109,8 +104,9 @@ int alea_ray_coverage_classify_reuse_nocache(
         double x, y, z;
         alea_ray_point_at(ray, sample_t, &x, &y, &z);
         alea_cell_hit_t hits[ALEA_RAY_COVERAGE_MAX_OWNERS];
-        const int hit_count = alea_find_all_cells_at_point_recursive(
-            sys, x, y, z, hits, ALEA_RAY_COVERAGE_MAX_OWNERS);
+        uint64_t occurrence_keys[ALEA_RAY_COVERAGE_MAX_OWNERS];
+        const int hit_count = alea_find_all_cells_at_point_coverage_recursive(
+            sys, x, y, z, hits, occurrence_keys, ALEA_RAY_COVERAGE_MAX_OWNERS);
         if (hit_count < 0)
             return -1;
         if (hit_count >= ALEA_RAY_COVERAGE_MAX_OWNERS) {
@@ -123,7 +119,7 @@ int alea_ray_coverage_classify_reuse_nocache(
         }
 
         if (have_current && coverage_owner_sets_equal(
-                hits, hit_count, previous, previous_count)) {
+                occurrence_keys, hit_count, previous_keys, previous_count)) {
             current.t_exit = t_current;
         } else {
             if (have_current) {
@@ -134,7 +130,8 @@ int alea_ray_coverage_classify_reuse_nocache(
                                          t_current, &current);
             have_current = 1;
             previous_count = hit_count;
-            memcpy(previous, hits, (size_t)hit_count * sizeof(*hits));
+            memcpy(previous_keys, occurrence_keys,
+                   (size_t)hit_count * sizeof(*occurrence_keys));
         }
         t_previous = t_current;
         if (t_previous >= t_max) break;
