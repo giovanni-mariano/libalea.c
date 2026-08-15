@@ -288,6 +288,30 @@ TEST(geo_validator_transformed_lattice_trace_matches_coverage) {
     mcnp_model_destroy(model);
 }
 
+TEST(geo_validator_transformed_lattice_reverse_trace_matches_coverage) {
+    mcnp_model_t* model =
+        mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_raycast_result_t selected;
+    alea_raycast_result_init(&selected);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(model->sys,
+                                               9, -0.5, 0, -1, 0, 0, 8,
+                                               &selected), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 9, -0.5, 0, -1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT(alea_ray_coverage_sweep_reuse_nocache(
+               model->sys, &ray, 8, &scratch,
+               check_selected_coverage_parity, &parity) > 0);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+    alea_raycast_result_free(&scratch);
+    alea_raycast_result_free(&selected);
+    mcnp_model_destroy(model);
+}
+
 TEST(geo_validator_detects_nested_overlap_flat) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

@@ -68,7 +68,8 @@ sets as explicit truncated intervals rather than discarding the ray with an
 overflow failure.  Global breakpoint
 enumeration respects enclosing fill transforms and transformed nested lattice
 occurrences; parity accepts the explicit undefined-fill classification and the
-native DDA boundary tolerance.  Renderer/batch consolidation, performance
+native DDA boundary tolerance, including reverse traversal through the
+transformed nested-lattice fixture.  Renderer/batch consolidation, performance
 recovery, and executor work remain later phases.
 
 ## 2. Decision summary
