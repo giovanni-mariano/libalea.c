@@ -58,9 +58,11 @@ exterior gaps), assert visible truncation under the crossing budget, and verify
 that requesting segment surface IDs does not change selected endpoints or
 ownership.
 
-The remaining Phase 5 work is to make complete before/after coverage directly
-available to transition classification and complete the remaining
-production-versus-coverage matrix.  The diagnostic limit audit now propagates
+The remaining Phase 5 work is to complete the remaining
+production-versus-coverage matrix.  The validator now retains the complete
+coverage trace long enough to use exact before/after ownership at grouped
+crossings, while retaining adaptive samples for ambiguity evidence and for
+legacy small-gap neighbor probing.  The diagnostic limit audit now propagates
 the shared nested-lattice recursion budget and reports saturated coverage owner
 sets as explicit truncated intervals rather than discarding the ray with an
 overflow failure.  Global breakpoint
