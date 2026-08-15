@@ -1000,12 +1000,12 @@ static void transform_ray_inverse(const alea_matrix_t* mat,
 static void raycast_lattice_rect(alea_system_t* sys,
                                  const alea_ray_t* ray,
                                  const alea_cell_entry_t* lat_cell,
-                                 double t_min, double t_max,
+                                 double t_min, double t_max, int depth,
                                  alea_raycast_result_t* result);
 static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_ray_t* ray,
                                 const alea_cell_entry_t* lat_cell,
-                                double t_min, double t_max,
+                                double t_min, double t_max, int depth,
                                 alea_raycast_result_t* result);
 static void raycast_lattice_universe_hits_recursive(
     alea_system_t* sys, const alea_ray_t* ray, int universe_id,
@@ -1136,10 +1136,10 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
                                               local_min, local_max, result);
             if (cell->lat_type == 1 && cell->lat_fill) {
                 raycast_lattice_rect(sys, &local_ray, cell,
-                                     local_min, local_max, result);
+                                     local_min, local_max, 0, result);
             } else if (cell->lat_type == 2 && cell->lat_fill) {
                 raycast_lattice_hex(sys, &local_ray, cell,
-                                    local_min, local_max, result);
+                                    local_min, local_max, 0, result);
             }
         }
     }
@@ -1171,12 +1171,12 @@ static void transform_ray_inverse(const alea_matrix_t* mat,
 static void raycast_lattice_rect(alea_system_t* sys,
                                  const alea_ray_t* ray,
                                  const alea_cell_entry_t* lat_cell,
-                                 double t_min, double t_max,
+                                 double t_min, double t_max, int depth,
                                  alea_raycast_result_t* result);
 static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_ray_t* ray,
                                 const alea_cell_entry_t* lat_cell,
-                                double t_min, double t_max,
+                                double t_min, double t_max, int depth,
                                 alea_raycast_result_t* result);
 
 static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
@@ -1210,10 +1210,10 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
          * expressed in this universe's local coordinates, not world space. */
         if (cell->lat_type == 1 && cell->lat_fill) {
             raycast_lattice_rect(sys, &parent_local_ray, cell,
-                                 t_min, t_max, result);
+                                 t_min, t_max, depth, result);
         } else if (cell->lat_type == 2 && cell->lat_fill) {
             raycast_lattice_hex(sys, &parent_local_ray, cell,
-                                t_min, t_max, result);
+                                t_min, t_max, depth, result);
         }
 
         if (cell->fill_universe <= 0)
@@ -1330,6 +1330,7 @@ static int raycast_lattice_element_step(
     double t_enter,
     double t_exit,
     bool emit_synthetic_transition,
+    int depth,
     alea_raycast_result_t* result) {
     if (!sys || !ray || !result) return -1;
     if (emit_synthetic_transition) {
@@ -1352,7 +1353,8 @@ static int raycast_lattice_element_step(
     raycast_universe_surfaces(sys, &local_ray, location->fill_universe,
                               t_enter, t_exit, result);
     raycast_lattice_universe_hits_recursive(
-        sys, &local_ray, location->fill_universe, t_enter, t_exit, 0, result);
+        sys, &local_ray, location->fill_universe, t_enter, t_exit,
+        depth + 1, result);
     return 0;
 }
 
@@ -1416,7 +1418,7 @@ static int lattice_raycast_step_limit(const alea_ray_t* ray,
 static void raycast_lattice_walk(alea_system_t* sys,
                                  const alea_ray_t* ray,
                                  const alea_cell_entry_t* cell,
-                                 double t_min, double t_max,
+                                 double t_min, double t_max, int depth,
                                  alea_raycast_result_t* result) {
     double t_enter, t_exit;
     const int interval = lattice_raycast_interval(ray, cell, t_min, t_max,
@@ -1430,7 +1432,7 @@ static void raycast_lattice_walk(alea_system_t* sys,
     if (t_enter > t_min + RAY_EPSILON &&
         !raycast_has_hit_at(result, t_enter)) {
         if (raycast_lattice_element_step(sys, ray, NULL, t_enter, t_enter,
-                                         true, result) != 0) {
+                                         true, depth, result) != 0) {
             return;
         }
     }
@@ -1454,7 +1456,7 @@ static void raycast_lattice_walk(alea_system_t* sys,
             t_current > t_enter + RAY_EPSILON && changed;
         if (raycast_lattice_element_step(
                 sys, ray, has_location ? &location : NULL,
-                t_current, t_next, emit_synthetic, result) != 0) {
+                t_current, t_next, emit_synthetic, depth, result) != 0) {
             return;
         }
         if (has_location) {
@@ -1468,7 +1470,7 @@ static void raycast_lattice_walk(alea_system_t* sys,
     if (t_exit < t_max - RAY_EPSILON &&
         !raycast_has_hit_at(result, t_exit)) {
         (void)raycast_lattice_element_step(sys, ray, NULL, t_exit, t_exit,
-                                           true, result);
+                                           true, depth, result);
     }
 }
 
@@ -1480,17 +1482,17 @@ static void raycast_lattice_walk(alea_system_t* sys,
 static void raycast_lattice_rect(alea_system_t* sys,
                                  const alea_ray_t* ray,
                                  const alea_cell_entry_t* lat_cell,
-                                 double t_min, double t_max,
+                                 double t_min, double t_max, int depth,
                                  alea_raycast_result_t* result) {
-    raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, result);
+    raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, depth, result);
 }
 
 static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_ray_t* ray,
                                 const alea_cell_entry_t* lat_cell,
-                                double t_min, double t_max,
+                                double t_min, double t_max, int depth,
                                 alea_raycast_result_t* result) {
-    raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, result);
+    raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, depth, result);
 }
 
 /* A lattice element can itself contain another lattice.  Descend with the
@@ -1508,9 +1510,9 @@ static void raycast_lattice_universe_hits_recursive(
         if (cell_index >= alea_vec_count(&sys->cells)) continue;
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
         if (cell->lat_type == 1 && cell->lat_fill) {
-            raycast_lattice_rect(sys, ray, cell, t_min, t_max, result);
+            raycast_lattice_rect(sys, ray, cell, t_min, t_max, depth, result);
         } else if (cell->lat_type == 2 && cell->lat_fill) {
-            raycast_lattice_hex(sys, ray, cell, t_min, t_max, result);
+            raycast_lattice_hex(sys, ray, cell, t_min, t_max, depth, result);
         }
     }
 }
@@ -1527,9 +1529,9 @@ static void raycast_add_lattice_hits(alea_system_t* sys,
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
 
         if (cell->lat_type == 1) {
-            raycast_lattice_rect(sys, ray, cell, t_min, t_max, result);
+            raycast_lattice_rect(sys, ray, cell, t_min, t_max, 0, result);
         } else if (cell->lat_type == 2) {
-            raycast_lattice_hex(sys, ray, cell, t_min, t_max, result);
+            raycast_lattice_hex(sys, ray, cell, t_min, t_max, 0, result);
         }
     }
 }
