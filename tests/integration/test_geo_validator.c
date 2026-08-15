@@ -381,7 +381,9 @@ TEST(geo_validator_reports_ambiguous_boundary) {
     ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
                                          -2, 0, 0, 1, 0, 0, 4,
                                          &result), 0);
-    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY) > 0);
+    /* The coincident plane/sphere pair is one crossing group, so it must
+     * produce one ambiguity finding rather than one per raw surface hit. */
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY), 1);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);

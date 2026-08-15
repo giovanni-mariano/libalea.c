@@ -816,40 +816,55 @@ static int validate_one_ray(alea_system_t* sys,
     size_t max_crossings = options->max_crossings;
     if (max_crossings == 0) max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
 
-    for (size_t i = 0; i < ray_result.hits.count; i++) {
+    for (size_t i = 0; i < ray_result.hits.count;) {
         if (result->crossings_checked >= max_crossings) {
             result->truncated = 1;
             break;
         }
         if (result->truncated) break;
 
-        alea_ray_hit_t* hit = &ray_result.hits.data[i];
+        /* One diagnostic crossing is one coincident distance group, not one
+         * raw mathematical hit.  Surface cards folded onto a primitive and
+         * genuinely coincident primitives must therefore share the same
+         * before/after coverage sample and yield at most one finding. */
+        const double t = ray_result.hits.data[i].t;
+        size_t group_end = i + 1;
+        while (group_end < ray_result.hits.count &&
+               fabs(ray_result.hits.data[group_end].t - t) <= DEDUP_EPSILON) {
+            group_end++;
+        }
+
+        size_t physical_index = SIZE_MAX;
+        uint32_t physical_primitive = ALEA_PRIMITIVE_ID_INVALID;
+        int has_synthetic = 0;
+        uint32_t event_flags = previous_cov.truncated
+            ? ALEA_GEOM_EVENT_TRUNCATED_COVERAGE : 0;
+        for (size_t j = i; j < group_end; j++) {
+            const alea_ray_hit_t* candidate = &ray_result.hits.data[j];
+            if (candidate->surface_id == 0) {
+                has_synthetic = 1;
+            } else if (candidate->surface_id > 0) {
+                if (physical_index == SIZE_MAX) {
+                    physical_index = j;
+                    physical_primitive = candidate->primitive_id;
+                } else if (candidate->primitive_id != physical_primitive) {
+                    event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
+                }
+            }
+        }
 
         /* A pure lattice DDA boundary has no physical surface to validate,
          * but it still changes the concrete occurrence that later physical
-         * crossings must use as their predecessor.  Do not silently carry
-         * ownership across it.  If a physical surface is coincident with the
-         * synthetic transition, leave the whole group to that physical
-         * crossing: sampling here would incorrectly make its after-side look
-         * like its before-side. */
-        if (hit->surface_id == 0) {
-            int has_physical_at_same_t = 0;
-            for (size_t j = 0; j < ray_result.hits.count; j++) {
-                if (fabs(ray_result.hits.data[j].t - hit->t) > DEDUP_EPSILON)
-                    continue;
-                if (ray_result.hits.data[j].surface_id > 0) {
-                    has_physical_at_same_t = 1;
-                    break;
-                }
-            }
-            if (has_physical_at_same_t) continue;
-            if (i > 0 && ray_result.hits.data[i - 1].surface_id == 0 &&
-                fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON) {
+         * crossings must use as their predecessor.  A synthetic event that
+         * coincides with a physical one is covered by the physical crossing;
+         * otherwise it refreshes coverage without an adjacency verdict. */
+        if (physical_index == SIZE_MAX) {
+            if (!has_synthetic) {
+                i = group_end;
                 continue;
             }
-
             double crossing[3];
-            alea_ray_point_at(ray, hit->t, &crossing[0], &crossing[1],
+            alea_ray_point_at(ray, t, &crossing[0], &crossing[1],
                               &crossing[2]);
             double direction[3] = { ray->dx, ray->dy, ray->dz };
             alea_geom_validator_options_t depth_options;
@@ -874,46 +889,18 @@ static int validate_one_ray(alea_system_t* sys,
             }
             previous_cov = after_cov;
             result->crossings_checked++;
+            i = group_end;
             continue;
         }
-        if (hit->surface_id < 0) continue;
 
-        /* Collapse duplicate hits from deduplicated surface cards: the same
-         * physical primitive can appear once per mc_surface_id at the same t.
-         * Treat them as a single crossing so we neither double-classify nor
-         * report a spurious coincident-surface ambiguity. */
-        if (i > 0 &&
-            fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON &&
-            ray_result.hits.data[i - 1].primitive_id == hit->primitive_id) {
-            continue;
-        }
+        const alea_ray_hit_t* hit = &ray_result.hits.data[physical_index];
 
         int previous_cell_idx = (previous_cov.klass == COVERAGE_ONE)
             ? previous_cov.primary_cell_idx
             : -1;
 
-        uint32_t event_flags = 0;
-        if (previous_cov.truncated) event_flags |= ALEA_GEOM_EVENT_TRUNCATED_COVERAGE;
-
-        /* Coincident-surface ambiguity is keyed on canonical primitive identity:
-         * two hits at the same t are only genuinely coincident if they are
-         * distinct primitives, not duplicate cards of one primitive. */
-        for (size_t j = i + 1; j < ray_result.hits.count; j++) {
-            if (fabs(ray_result.hits.data[j].t - hit->t) > DEDUP_EPSILON)
-                break;
-            if (ray_result.hits.data[j].primitive_id != hit->primitive_id) {
-                event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
-                break;
-            }
-        }
-        if (i > 0 &&
-            fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON &&
-            ray_result.hits.data[i - 1].primitive_id != hit->primitive_id) {
-            event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
-        }
-
         double crossing[3];
-        alea_ray_point_at(ray, hit->t, &crossing[0], &crossing[1], &crossing[2]);
+        alea_ray_point_at(ray, t, &crossing[0], &crossing[1], &crossing[2]);
         double direction[3] = { ray->dx, ray->dy, ray->dz };
         point_coverage_t after_cov;
         alea_geom_validator_options_t depth_options;
@@ -941,6 +928,7 @@ static int validate_one_ray(alea_system_t* sys,
         }
         previous_cov = after_cov;
         result->crossings_checked++;
+        i = group_end;
     }
 
     alea_raycast_result_free(&ray_result);
