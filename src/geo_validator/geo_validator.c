@@ -139,6 +139,54 @@ static int append_error(alea_geom_validator_result_t* result,
     return 0;
 }
 
+typedef struct {
+    const alea_ray_t* ray;
+    const alea_geom_validator_options_t* options;
+    alea_geom_validator_result_t* result;
+} ray_coverage_finding_context_t;
+
+/* Coverage is the diagnostic oracle for conditions a selected owner trace can
+ * hide. Gap intervals are intentionally not emitted here: a validator ray may
+ * legitimately start or end outside the configured model domain. */
+static int append_ray_coverage_finding(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    ray_coverage_finding_context_t* ctx = context;
+    if (interval->kind != ALEA_RAY_COVERAGE_OVERLAP &&
+        interval->kind != ALEA_RAY_COVERAGE_UNDEFINED_FILL)
+        return 0;
+
+    alea_geom_error_t error;
+    init_geom_error(&error);
+    error.type = interval->kind == ALEA_RAY_COVERAGE_OVERLAP
+        ? ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING
+        : ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
+    error.source = ALEA_GEOM_EVENT_SOURCE_RAY;
+    error.t = interval->t_enter;
+    error.offset = interval->t_exit - interval->t_enter;
+    error.found_cell_count = (int)interval->owner_count;
+    if (interval->owner_count > 0) {
+        error.found_cell_id = interval->owners[0].cell_id;
+        error.universe_id = interval->owners[0].universe_id;
+        error.universe_depth = interval->owners[0].depth;
+    }
+    if (interval->owner_count > 1)
+        error.secondary_cell_id = interval->owners[1].cell_id;
+    alea_ray_point_at(ctx->ray, interval->t_enter,
+                      &error.crossing_point[0], &error.crossing_point[1],
+                      &error.crossing_point[2]);
+    const double sample_t = interval->t_enter +
+        0.381966011250105 * (interval->t_exit - interval->t_enter);
+    alea_ray_point_at(ctx->ray, sample_t,
+                      &error.sample_point[0], &error.sample_point[1],
+                      &error.sample_point[2]);
+    error.direction[0] = ctx->ray->dx;
+    error.direction[1] = ctx->ray->dy;
+    error.direction[2] = ctx->ray->dz;
+    if (append_error(ctx->result, ctx->options, &error) != 0)
+        return -1;
+    return ctx->result->truncated ? 1 : 0;
+}
+
 /* Match on the canonical (deduplicated) primitive identity, mirroring MCNP's
  * surface equivalence.  Two distinct surface cards that fold onto the same
  * primitive must be treated as the same boundary, otherwise we would invent
@@ -737,6 +785,18 @@ static int validate_one_ray(alea_system_t* sys,
                             double t_max,
                             const alea_geom_validator_options_t* options,
                             alea_geom_validator_result_t* result) {
+    alea_raycast_result_t coverage_scratch;
+    alea_raycast_result_init(&coverage_scratch);
+    ray_coverage_finding_context_t coverage_context = {
+        .ray = ray, .options = options, .result = result
+    };
+    const int coverage_rc = alea_ray_coverage_sweep_reuse_nocache(
+        sys, ray, t_max, &coverage_scratch,
+        append_ray_coverage_finding, &coverage_context);
+    alea_raycast_result_free(&coverage_scratch);
+    if (coverage_rc < 0) return -1;
+    if (result->truncated) return 0;
+
     point_coverage_t previous_cov;
     if (validate_initial_point(sys, ray, options, result, &previous_cov) != 0)
         return -1;
