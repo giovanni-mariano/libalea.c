@@ -60,10 +60,10 @@ ownership.
 
 The remaining Phase 5 work is to make complete before/after coverage directly
 available to transition classification, finish the diagnostic limit audit, and
-complete the production-versus-coverage matrix for deep transformed fixtures.
-Global breakpoint enumeration now respects enclosing fill transforms for
-lattices; recursively transformed nested lattices still need full interval
-parity with the selected walker.  Renderer/batch consolidation, performance
+complete the remaining production-versus-coverage matrix.  Global breakpoint
+enumeration respects enclosing fill transforms and transformed nested lattice
+occurrences; parity accepts the explicit undefined-fill classification and the
+native DDA boundary tolerance.  Renderer/batch consolidation, performance
 recovery, and executor work remain later phases.
 
 ## 2. Decision summary
