@@ -5,6 +5,7 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_geo_validator.h"
+#include "alea_mcnp.h"
 
 static alea_system_t* build_split_box_system(void) {
     alea_system_t* sys = alea_create();
@@ -485,6 +486,34 @@ TEST(geo_validator_clean_adjacent_hier) {
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
+}
+
+/* Lattice DDA boundaries are synthetic (surface ID zero), but they still
+ * change the concrete occurrence used by the following physical transition.
+ * This deck crosses two internal lattice boundaries between its cylinder
+ * surfaces. */
+TEST(geo_validator_tracks_synthetic_lattice_boundaries) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID |
+                  ALEA_GEOM_VALIDATE_HIERARCHICAL;
+    opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(model->sys, &opts,
+                                         -1.5, 0, 0, 1, 0, 0, 7.0,
+                                         &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+    /* Six cylinder crossings plus lattice entry/exit are physical.  The
+     * validator must also account for at least one internal DDA transition. */
+    ASSERT(result.crossings_checked > 8);
+
+    alea_geom_validator_result_free(&result);
+    mcnp_model_destroy(model);
 }
 
 TEST(geo_validator_non_strict_uses_fast_adjacency_path) {

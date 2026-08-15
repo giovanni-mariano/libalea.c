@@ -824,7 +824,59 @@ static int validate_one_ray(alea_system_t* sys,
         if (result->truncated) break;
 
         alea_ray_hit_t* hit = &ray_result.hits.data[i];
-        if (hit->surface_id <= 0) continue;
+
+        /* A pure lattice DDA boundary has no physical surface to validate,
+         * but it still changes the concrete occurrence that later physical
+         * crossings must use as their predecessor.  Do not silently carry
+         * ownership across it.  If a physical surface is coincident with the
+         * synthetic transition, leave the whole group to that physical
+         * crossing: sampling here would incorrectly make its after-side look
+         * like its before-side. */
+        if (hit->surface_id == 0) {
+            int has_physical_at_same_t = 0;
+            for (size_t j = 0; j < ray_result.hits.count; j++) {
+                if (fabs(ray_result.hits.data[j].t - hit->t) > DEDUP_EPSILON)
+                    continue;
+                if (ray_result.hits.data[j].surface_id > 0) {
+                    has_physical_at_same_t = 1;
+                    break;
+                }
+            }
+            if (has_physical_at_same_t) continue;
+            if (i > 0 && ray_result.hits.data[i - 1].surface_id == 0 &&
+                fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON) {
+                continue;
+            }
+
+            double crossing[3];
+            alea_ray_point_at(ray, hit->t, &crossing[0], &crossing[1],
+                              &crossing[2]);
+            double direction[3] = { ray->dx, ray->dy, ray->dz };
+            alea_geom_validator_options_t depth_options;
+            const alea_geom_validator_options_t* sampling_options = options;
+            if (options->universe_depth < 0 &&
+                previous_cov.klass == COVERAGE_ONE) {
+                depth_options = *options;
+                depth_options.universe_depth = previous_cov.depth;
+                sampling_options = &depth_options;
+            }
+            point_coverage_t after_cov;
+            double sample_point[3];
+            double offset = 0.0;
+            int ambiguous = 0;
+            uint32_t flags = 0;
+            if (sample_coverage_ladder(sys, crossing, direction,
+                                       sampling_options, &after_cov,
+                                       sample_point, &offset, &ambiguous,
+                                       &flags, result) != 0) {
+                alea_raycast_result_free(&ray_result);
+                return -1;
+            }
+            previous_cov = after_cov;
+            result->crossings_checked++;
+            continue;
+        }
+        if (hit->surface_id < 0) continue;
 
         /* Collapse duplicate hits from deduplicated surface cards: the same
          * physical primitive can appear once per mc_surface_id at the same t.
