@@ -544,6 +544,12 @@ static int classify_transition(alea_system_t* sys,
     }
 
     if (cov->klass == COVERAGE_MULTI) {
+        /* Ray validation has already emitted the complete extent of this
+         * overlap from the coverage sweep.  A sampled boundary can only add a
+         * duplicate point finding; keep it for slice validation, where no
+         * ray-wide coverage interval exists. */
+        if (source == ALEA_GEOM_EVENT_SOURCE_RAY)
+            return 0;
         err.type = ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
         return append_error(result, options, &err);
     }

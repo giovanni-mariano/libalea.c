@@ -644,14 +644,20 @@ TEST(geo_validator_reports_overlap_count) {
                                          -4, 0, 0, 1, 0, 0, 8,
                                          &result), 0);
 
+    int overlap_count = 0;
     int saw_three_way = 0;
     for (size_t i = 0; i < result.error_count; i++) {
         if (result.errors[i].type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING &&
             result.errors[i].found_cell_count >= 3) {
             saw_three_way = 1;
         }
+        if (result.errors[i].type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING)
+            overlap_count++;
     }
     ASSERT(saw_three_way);
+    /* Nested spheres produce three distinct complete coverage sets along
+     * this ray: two-owner, three-owner, then two-owner again. */
+    ASSERT_EQ(overlap_count, 3);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
