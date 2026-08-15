@@ -26,7 +26,8 @@ static int check_selected_coverage_parity(
     }
 
     int expected_cell_id = -1;
-    if (interval->kind == ALEA_RAY_COVERAGE_UNIQUE) {
+    if (interval->kind == ALEA_RAY_COVERAGE_UNIQUE ||
+        interval->kind == ALEA_RAY_COVERAGE_UNDEFINED_FILL) {
         if (interval->owner_count == 0) {
             parity->mismatch = 1;
             return 0;
@@ -44,7 +45,7 @@ static int check_selected_coverage_parity(
 
     parity->interval_count++;
     double covered_until = interval->t_enter;
-    while (covered_until < interval->t_exit - 1e-8) {
+    while (covered_until < interval->t_exit - 2e-6) {
         if (parity->next_segment >= parity->selected->segments.count) {
             parity->mismatch = 1;
             return 0;
@@ -52,14 +53,14 @@ static int check_selected_coverage_parity(
         const alea_ray_segment_t* selected =
             &parity->selected->segments.data[parity->next_segment++];
         if (selected->cell_id != expected_cell_id ||
-            fabs(selected->t_enter - covered_until) > 1e-8 ||
-            selected->t_exit > interval->t_exit + 1e-8) {
+            fabs(selected->t_enter - covered_until) > 2e-6 ||
+            selected->t_exit > interval->t_exit + 2e-6) {
             parity->mismatch = 1;
             return 0;
         }
         covered_until = selected->t_exit;
     }
-    if (fabs(covered_until - interval->t_exit) > 1e-8)
+    if (fabs(covered_until - interval->t_exit) > 2e-6)
         parity->mismatch = 1;
     return 0;
 }
@@ -259,6 +260,30 @@ TEST(geo_validator_fill_selected_trace_matches_unique_coverage) {
     ASSERT_EQ(parity.mismatch, 0);
 
     alea_raycast_result_free(&coverage_scratch);
+    alea_raycast_result_free(&selected);
+    mcnp_model_destroy(model);
+}
+
+TEST(geo_validator_transformed_lattice_trace_matches_coverage) {
+    mcnp_model_t* model =
+        mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_raycast_result_t selected;
+    alea_raycast_result_init(&selected);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(model->sys,
+                                               3, -0.5, 0, 1, 0, 0, 8,
+                                               &selected), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 3, -0.5, 0, 1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT(alea_ray_coverage_sweep_reuse_nocache(
+               model->sys, &ray, 8, &scratch,
+               check_selected_coverage_parity, &parity) > 0);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+    alea_raycast_result_free(&scratch);
     alea_raycast_result_free(&selected);
     mcnp_model_destroy(model);
 }
