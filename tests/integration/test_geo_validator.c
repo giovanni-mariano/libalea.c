@@ -155,6 +155,16 @@ TEST(geo_validator_detects_nested_overlap_flat) {
     alea_geom_validator_result_init(&result);
     ASSERT_EQ(alea_validate_geometry(sys, &opts, &result), 0);
     ASSERT(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) > 0);
+    int saw_coverage_interval = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        const alea_geom_error_t* error = &result.errors[i];
+        if (error->type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING &&
+            error->source == ALEA_GEOM_EVENT_SOURCE_RAY && error->offset > 0.0) {
+            saw_coverage_interval = 1;
+            break;
+        }
+    }
+    ASSERT(saw_coverage_interval);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
