@@ -557,6 +557,60 @@ TEST(compact_ray_slice_returns_view_u_coordinates) {
     alea_destroy(sys);
 }
 
+TEST(compact_batch_surface_fields_preserve_selected_segments) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    int material = alea_add_material(sys, 7);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.5, 0) >= 0);
+
+    const double origins[] = {-10, 0, 0, 10, 0, 0};
+    const double directions[] = {1, 0, 0, -1, 0, 0};
+    const alea_raycast_batch_options_t surface_off = {
+        .struct_size = sizeof(surface_off),
+        .fields = ALEA_RAY_BATCH_MATERIAL
+    };
+    const alea_raycast_batch_options_t surface_on = {
+        .struct_size = sizeof(surface_on),
+        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_SURFACES
+    };
+    alea_raycast_batch_result_t* off = alea_raycast_batch_result_create();
+    alea_raycast_batch_result_t* on = alea_raycast_batch_result_create();
+    ASSERT_NOT_NULL(off);
+    ASSERT_NOT_NULL(on);
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
+                                      &surface_off, off), 0);
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
+                                      &surface_on, on), 0);
+
+    ASSERT_NULL(alea_raycast_batch_enter_surface_ids(off));
+    ASSERT_NOT_NULL(alea_raycast_batch_enter_surface_ids(on));
+    ASSERT_EQ(alea_raycast_batch_ray_count(off), alea_raycast_batch_ray_count(on));
+    ASSERT_EQ(alea_raycast_batch_segment_count(off),
+              alea_raycast_batch_segment_count(on));
+    const uint64_t* off_offsets = alea_raycast_batch_ray_offsets(off);
+    const uint64_t* on_offsets = alea_raycast_batch_ray_offsets(on);
+    const double* off_enter = alea_raycast_batch_t_enter(off);
+    const double* on_enter = alea_raycast_batch_t_enter(on);
+    const double* off_exit = alea_raycast_batch_t_exit(off);
+    const double* on_exit = alea_raycast_batch_t_exit(on);
+    const int32_t* off_cells = alea_raycast_batch_cell_ids(off);
+    const int32_t* on_cells = alea_raycast_batch_cell_ids(on);
+    for (size_t i = 0; i <= 2; i++)
+        ASSERT_EQ(off_offsets[i], on_offsets[i]);
+    for (size_t i = 0; i < alea_raycast_batch_segment_count(off); i++) {
+        ASSERT_NEAR(off_enter[i], on_enter[i], EPS);
+        ASSERT_NEAR(off_exit[i], on_exit[i], EPS);
+        ASSERT_EQ(off_cells[i], on_cells[i]);
+    }
+
+    alea_raycast_batch_result_destroy(on);
+    alea_raycast_batch_result_destroy(off);
+    alea_destroy(sys);
+}
+
 /* The same child universe occurs twice through different transformed fills.
  * This exercises hierarchy-path CSR and transformed placement metadata, not
  * just flat segment values. */
