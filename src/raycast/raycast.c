@@ -2025,7 +2025,10 @@ int alea_raycast_query_reuse_nocache(
         return -1;
 
     const double t_max = plan.t_max;
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+    const bool selected_scalar_backend =
+        plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO ||
+        plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD;
+    if (selected_scalar_backend &&
         plan.product == ALEA_RAY_QUERY_FIRST_CELL && output) {
         if (alea_raycast_hier_first_cell_nocache(
                 sys, ray, plan.t_min, t_max, plan.material_filter,
@@ -2034,7 +2037,7 @@ int alea_raycast_query_reuse_nocache(
             goto fail;
         return 0;
     }
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
+    if (selected_scalar_backend &&
         plan.product == ALEA_RAY_QUERY_FIRST_VISIBLE) {
         /* The hierarchical stepper validates each interval before returning,
          * then stops before allocating its segment/hit representation. */
@@ -2047,35 +2050,7 @@ int alea_raycast_query_reuse_nocache(
             goto fail;
         return 0;
     }
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_AUTO &&
-        plan.product == ALEA_RAY_QUERY_ANY_HIT) {
-        int any_hit = 0;
-        if (alea_raycast_hier_any_hit_nocache(
-                sys, ray, plan.t_min, t_max, plan.material_filter,
-                trace, &any_hit) != 0)
-            goto fail;
-        if (output) output->any_hit = any_hit != 0;
-        return 0;
-    }
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD &&
-        plan.product == ALEA_RAY_QUERY_FIRST_CELL && output) {
-        if (alea_raycast_hier_first_cell_nocache(
-                sys, ray, plan.t_min, t_max, plan.material_filter,
-                trace, &output->first_cell_id, &output->first_cell_t) != 0)
-            goto fail;
-        return 0;
-    }
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD &&
-        plan.product == ALEA_RAY_QUERY_FIRST_VISIBLE) {
-        if (!output || alea_raycast_hier_first_visible_nocache(
-                            sys, ray, plan.t_min, t_max,
-                            plan.material_filter,
-                            plan.requirements.need_normal != 0,
-                            trace, &output->first_visible) != 0)
-            goto fail;
-        return 0;
-    }
-    if (plan.backend == ALEA_RAY_QUERY_BACKEND_FAST_FORWARD &&
+    if (selected_scalar_backend &&
         plan.product == ALEA_RAY_QUERY_ANY_HIT) {
         int any_hit = 0;
         if (alea_raycast_hier_any_hit_nocache(

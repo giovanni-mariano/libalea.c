@@ -1,6 +1,6 @@
 # Ray-query architecture with first-class geometry diagnostics
 
-**Status:** In progress — Phases 3–4 substantially implemented; Phase 5 active
+**Status:** In progress — Phases 3–5 substantially implemented; Phase 6 begun
 
 **Priority:** Correct architecture first; preserve and recover performance within
 that architecture
@@ -69,7 +69,9 @@ overflow failure.  Global breakpoint
 enumeration respects enclosing fill transforms and transformed nested lattice
 occurrences; parity accepts the explicit undefined-fill classification and the
 native DDA boundary tolerance, including reverse traversal through the
-transformed nested-lattice fixture.  Renderer/batch consolidation, performance
+transformed nested-lattice fixture.  Phase 6 has begun by consolidating AUTO
+and FAST_FORWARD first-cell, first-visible, and any-hit dispatch onto their
+shared selected-walker implementation.  Renderer/batch consolidation, performance
 recovery, and executor work remain later phases.
 
 ## 2. Decision summary
