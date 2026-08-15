@@ -803,7 +803,11 @@ static int validate_one_ray(alea_system_t* sys,
 
     alea_raycast_result_t ray_result;
     alea_raycast_result_init(&ray_result);
-    int rc = alea_raycast_surfaces_nocache(sys, ray, 0.0, t_max, &ray_result);
+    /* Use the diagnostic breakpoint engine rather than bare root surfaces:
+     * fills and lattice transitions must participate in the same crossing
+     * vocabulary as boundary provenance and coverage validation. */
+    int rc = alea_raycast_global_breakpoints_reuse_nocache(
+        sys, ray, t_max, &ray_result);
     if (rc != 0) {
         alea_raycast_result_free(&ray_result);
         return -1;
