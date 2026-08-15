@@ -125,12 +125,15 @@ int alea_ray_coverage_sweep_reuse_nocache(
         const int hit_count = alea_find_all_cells_at_point_coverage_recursive(
             sys, x, y, z, hits, occurrence_keys, ALEA_RAY_COVERAGE_MAX_OWNERS);
         if (hit_count < 0) return -1;
-        if (hit_count >= ALEA_RAY_COVERAGE_MAX_OWNERS) {
-            alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                                  "ray coverage owner budget exceeded");
-            return -1;
-        }
-        if (have_current && coverage_owner_sets_equal(
+        const int owners_truncated =
+            hit_count >= ALEA_RAY_COVERAGE_MAX_OWNERS;
+        const int retained_count = owners_truncated
+            ? ALEA_RAY_COVERAGE_OWNER_BUDGET : hit_count;
+        /* A saturated owner buffer proves that the complete set is not
+         * available, but it is still useful diagnostic output.  Keep the
+         * retained prefix and publish an explicit truncated interval instead
+         * of failing the whole sweep. */
+        if (!owners_truncated && have_current && coverage_owner_sets_equal(
                 occurrence_keys, hit_count, previous_keys, previous_count)) {
             current.t_exit = t_current;
         } else {
@@ -138,7 +141,7 @@ int alea_ray_coverage_sweep_reuse_nocache(
                 total++;
                 if (callback(context, &current) != 0) return total;
             }
-            for (int owner = 0; owner < hit_count; owner++) {
+            for (int owner = 0; owner < retained_count; owner++) {
                 current_owners[owner] = (alea_ray_coverage_owner_t){
                     .cell_id = hits[owner].cell_id,
                     .cell_index = hits[owner].cell_index,
@@ -152,13 +155,16 @@ int alea_ray_coverage_sweep_reuse_nocache(
             }
             current = (alea_ray_coverage_interval_t){
                 .t_enter = t_previous, .t_exit = t_current,
-                .kind = coverage_kind(current_owners, (size_t)hit_count),
-                .owners = current_owners, .owner_count = (size_t)hit_count
+                .kind = owners_truncated
+                    ? ALEA_RAY_COVERAGE_TRUNCATED
+                    : coverage_kind(current_owners, (size_t)retained_count),
+                .owners = current_owners,
+                .owner_count = (size_t)retained_count
             };
             have_current = 1;
-            previous_count = hit_count;
+            previous_count = retained_count;
             memcpy(previous_keys, occurrence_keys,
-                   (size_t)hit_count * sizeof(*occurrence_keys));
+                   (size_t)retained_count * sizeof(*occurrence_keys));
         }
         t_previous = t_current;
         if (t_previous >= t_max) break;

@@ -151,6 +151,13 @@ typedef struct {
 static int append_ray_coverage_finding(
     void* context, const alea_ray_coverage_interval_t* interval) {
     ray_coverage_finding_context_t* ctx = context;
+    if (interval->kind == ALEA_RAY_COVERAGE_TRUNCATED) {
+        /* Complete coverage is no longer knowable past the owner budget.
+         * Preserve any earlier findings, but do not continue and present a
+         * partial diagnostic as exhaustive. */
+        ctx->result->truncated = 1;
+        return 1;
+    }
     if (interval->kind != ALEA_RAY_COVERAGE_OVERLAP &&
         interval->kind != ALEA_RAY_COVERAGE_UNDEFINED_FILL)
         return 0;

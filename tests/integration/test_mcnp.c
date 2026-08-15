@@ -2240,6 +2240,7 @@ typedef struct {
     size_t count;
     size_t overlap_owner_count;
     int saw_occurrence_keys;
+    int saw_truncated;
     int stop_after_first;
 } coverage_stream_probe_t;
 
@@ -2249,6 +2250,8 @@ static int probe_coverage_interval(
     probe->count++;
     if (interval->kind == ALEA_RAY_COVERAGE_OVERLAP)
         probe->overlap_owner_count = interval->owner_count;
+    if (interval->kind == ALEA_RAY_COVERAGE_TRUNCATED)
+        probe->saw_truncated = 1;
     for (size_t i = 0; i < interval->owner_count; i++)
         if (interval->owners[i].occurrence_key != 0)
             probe->saw_occurrence_keys = 1;
@@ -2340,6 +2343,35 @@ TEST(ray_classify_intervals) {
     ASSERT_EQ(f[6].cell_id, 3);
 
     mcnp_model_destroy(model);
+}
+
+TEST(ray_coverage_reports_owner_budget_truncation) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    /* The coverage API retains 32 owners and reserves one sentinel slot to
+     * detect saturation.  All cells intentionally claim the same volume. */
+    for (int i = 0; i < 33; i++)
+        ASSERT(alea_add_cell(sys, i + 1, inside, material, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -2, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    coverage_stream_probe_t probe = {0};
+    ASSERT_EQ(alea_ray_coverage_sweep_reuse_nocache(
+                  sys, &ray, 4.0, &scratch,
+                  probe_coverage_interval, &probe), 3);
+    ASSERT_EQ(probe.count, 3);
+    ASSERT(probe.saw_truncated);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
 }
 
 TEST(ray_query_lowering_declares_semantics) {

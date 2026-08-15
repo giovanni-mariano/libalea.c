@@ -751,7 +751,10 @@ typedef enum {
     ALEA_RAY_COVERAGE_UNIQUE,
     ALEA_RAY_COVERAGE_GAP,
     ALEA_RAY_COVERAGE_OVERLAP,
-    ALEA_RAY_COVERAGE_UNDEFINED_FILL
+    ALEA_RAY_COVERAGE_UNDEFINED_FILL,
+    /* The owner set exceeded the diagnostic budget.  owners contains the
+     * retained prefix only and must not be treated as a complete set. */
+    ALEA_RAY_COVERAGE_TRUNCATED
 } alea_ray_coverage_kind_t;
 
 typedef struct {

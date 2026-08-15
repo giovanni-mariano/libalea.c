@@ -650,6 +650,33 @@ TEST(geo_validator_marks_crossing_budget_truncation) {
     alea_destroy(sys);
 }
 
+TEST(geo_validator_marks_coverage_owner_budget_truncation) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    for (int i = 0; i < 33; i++)
+        ASSERT(alea_add_cell(sys, i + 1, inside, material, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &result), 0);
+    ASSERT_EQ(result.truncated, 1);
+    ASSERT_EQ(result.crossings_checked, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
 TEST(geo_validator_clean_adjacent_hier) {
     alea_system_t* sys = build_split_box_system();
     ASSERT_NOT_NULL(sys);

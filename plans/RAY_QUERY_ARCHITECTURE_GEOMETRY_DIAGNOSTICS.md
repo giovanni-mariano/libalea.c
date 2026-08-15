@@ -59,8 +59,11 @@ that requesting segment surface IDs does not change selected endpoints or
 ownership.
 
 The remaining Phase 5 work is to make complete before/after coverage directly
-available to transition classification, finish the diagnostic limit audit, and
-complete the remaining production-versus-coverage matrix.  Global breakpoint
+available to transition classification and complete the remaining
+production-versus-coverage matrix.  The diagnostic limit audit now propagates
+the shared nested-lattice recursion budget and reports saturated coverage owner
+sets as explicit truncated intervals rather than discarding the ray with an
+overflow failure.  Global breakpoint
 enumeration respects enclosing fill transforms and transformed nested lattice
 occurrences; parity accepts the explicit undefined-fill classification and the
 native DDA boundary tolerance.  Renderer/batch consolidation, performance
