@@ -6,6 +6,52 @@
 #include "alea.h"
 #include "alea_geo_validator.h"
 #include "alea_mcnp.h"
+#include "raycast/raycast.h"
+
+#include <math.h>
+
+typedef struct {
+    const alea_raycast_result_t* selected;
+    size_t next_segment;
+    size_t interval_count;
+    int mismatch;
+} selected_coverage_parity_t;
+
+static int check_selected_coverage_parity(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    selected_coverage_parity_t* parity = context;
+    if (parity->next_segment >= parity->selected->segments.count) {
+        parity->mismatch = 1;
+        return 0;
+    }
+
+    int expected_cell_id = -1;
+    if (interval->kind == ALEA_RAY_COVERAGE_UNIQUE) {
+        if (interval->owner_count == 0) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        size_t deepest = 0;
+        for (size_t i = 1; i < interval->owner_count; i++) {
+            if (interval->owners[i].depth > interval->owners[deepest].depth)
+                deepest = i;
+        }
+        expected_cell_id = interval->owners[deepest].cell_id;
+    } else if (interval->kind != ALEA_RAY_COVERAGE_GAP) {
+        parity->mismatch = 1;
+        return 0;
+    }
+
+    const alea_ray_segment_t* selected =
+        &parity->selected->segments.data[parity->next_segment++];
+    parity->interval_count++;
+    if (selected->cell_id != expected_cell_id ||
+        fabs(selected->t_enter - interval->t_enter) > 1e-8 ||
+        fabs(selected->t_exit - interval->t_exit) > 1e-8) {
+        parity->mismatch = 1;
+    }
+    return 0;
+}
 
 static alea_system_t* build_split_box_system(void) {
     alea_system_t* sys = alea_create();
@@ -124,6 +170,33 @@ TEST(geo_validator_clean_adjacent_flat) {
     ASSERT(result.crossings_checked > 0);
 
     alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_selected_trace_matches_unique_coverage) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_raycast_result_t selected, coverage_scratch;
+    alea_raycast_result_init(&selected);
+    alea_raycast_result_init(&coverage_scratch);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(sys,
+                                               -4, 0, 0, 1, 0, 0, 8,
+                                               &selected), 0);
+    ASSERT_EQ(selected.segments.count, 4);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -4, 0, 0, 1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT_EQ(alea_ray_coverage_sweep_reuse_nocache(
+                  sys, &ray, 8, &coverage_scratch,
+                  check_selected_coverage_parity, &parity), 4);
+    ASSERT_EQ(parity.interval_count, 4);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+
+    alea_raycast_result_free(&coverage_scratch);
+    alea_raycast_result_free(&selected);
     alea_destroy(sys);
 }
 
