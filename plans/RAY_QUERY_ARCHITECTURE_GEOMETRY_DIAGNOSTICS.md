@@ -53,12 +53,14 @@ coverage intervals for overlap and undefined-fill findings, groups coincident
 mathematical hits into one crossing decision, preserves adaptive boundary
 sampling for transition evidence, and refreshes concrete ownership across
 synthetic lattice DDA transitions.  Tests now cross-check selected traces
-against uniquely owned coverage (including exterior gaps), and assert visible
-truncation under the crossing budget.
+against uniquely owned coverage for both flat and lattice fixtures (including
+exterior gaps), assert visible truncation under the crossing budget, and verify
+that requesting segment surface IDs does not change selected endpoints or
+ownership.
 
 The remaining Phase 5 work is to make complete before/after coverage directly
 available to transition classification, finish the diagnostic limit audit, and
-complete the production-versus-coverage matrix for hierarchy and lattice
+complete the production-versus-coverage matrix for transformed and deep-fill
 fixtures.  Renderer/batch consolidation, performance recovery, and executor
 work remain later phases.
 
