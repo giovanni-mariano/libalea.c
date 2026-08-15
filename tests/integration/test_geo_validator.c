@@ -42,14 +42,25 @@ static int check_selected_coverage_parity(
         return 0;
     }
 
-    const alea_ray_segment_t* selected =
-        &parity->selected->segments.data[parity->next_segment++];
     parity->interval_count++;
-    if (selected->cell_id != expected_cell_id ||
-        fabs(selected->t_enter - interval->t_enter) > 1e-8 ||
-        fabs(selected->t_exit - interval->t_exit) > 1e-8) {
-        parity->mismatch = 1;
+    double covered_until = interval->t_enter;
+    while (covered_until < interval->t_exit - 1e-8) {
+        if (parity->next_segment >= parity->selected->segments.count) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        const alea_ray_segment_t* selected =
+            &parity->selected->segments.data[parity->next_segment++];
+        if (selected->cell_id != expected_cell_id ||
+            fabs(selected->t_enter - covered_until) > 1e-8 ||
+            selected->t_exit > interval->t_exit + 1e-8) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        covered_until = selected->t_exit;
     }
+    if (fabs(covered_until - interval->t_exit) > 1e-8)
+        parity->mismatch = 1;
     return 0;
 }
 

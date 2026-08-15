@@ -1007,6 +1007,9 @@ static void raycast_lattice_hex(alea_system_t* sys,
                                 const alea_cell_entry_t* lat_cell,
                                 double t_min, double t_max,
                                 alea_raycast_result_t* result);
+static void raycast_lattice_universe_hits_recursive(
+    alea_system_t* sys, const alea_ray_t* ray, int universe_id,
+    double t_min, double t_max, int depth, alea_raycast_result_t* result);
 static double lattice_next_boundary(const alea_ray_t* ray,
                                     const alea_cell_entry_t* lat_cell,
                                     double t_min,
@@ -1165,6 +1168,17 @@ static void transform_ray_inverse(const alea_matrix_t* mat,
     }
 }
 
+static void raycast_lattice_rect(alea_system_t* sys,
+                                 const alea_ray_t* ray,
+                                 const alea_cell_entry_t* lat_cell,
+                                 double t_min, double t_max,
+                                 alea_raycast_result_t* result);
+static void raycast_lattice_hex(alea_system_t* sys,
+                                const alea_ray_t* ray,
+                                const alea_cell_entry_t* lat_cell,
+                                double t_min, double t_max,
+                                alea_raycast_result_t* result);
+
 static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
                                                  const alea_ray_t* global_ray,
                                                  int universe_id,
@@ -1190,6 +1204,18 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
             continue;
 
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+
+        /* Global diagnostic breakpoints must use the same occurrence frame as
+         * selected traversal.  A lattice nested below a transformed fill is
+         * expressed in this universe's local coordinates, not world space. */
+        if (cell->lat_type == 1 && cell->lat_fill) {
+            raycast_lattice_rect(sys, &parent_local_ray, cell,
+                                 t_min, t_max, result);
+        } else if (cell->lat_type == 2 && cell->lat_fill) {
+            raycast_lattice_hex(sys, &parent_local_ray, cell,
+                                t_min, t_max, result);
+        }
+
         if (cell->fill_universe <= 0)
             continue;
 
@@ -1325,6 +1351,8 @@ static int raycast_lattice_element_step(
     local_ray.oz -= location->oz;
     raycast_universe_surfaces(sys, &local_ray, location->fill_universe,
                               t_enter, t_exit, result);
+    raycast_lattice_universe_hits_recursive(
+        sys, &local_ray, location->fill_universe, t_enter, t_exit, 0, result);
     return 0;
 }
 
@@ -1463,6 +1491,28 @@ static void raycast_lattice_hex(alea_system_t* sys,
                                 double t_min, double t_max,
                                 alea_raycast_result_t* result) {
     raycast_lattice_walk(sys, ray, lat_cell, t_min, t_max, result);
+}
+
+/* A lattice element can itself contain another lattice.  Descend with the
+ * element-local ray so global diagnostic breakpoints retain the same nested
+ * lattice coordinate convention as the selected walker. */
+static void raycast_lattice_universe_hits_recursive(
+    alea_system_t* sys, const alea_ray_t* ray, int universe_id,
+    double t_min, double t_max, int depth, alea_raycast_result_t* result) {
+    if (!sys || !ray || !result || depth >= MAX_FILL_RAYCAST_DEPTH)
+        return;
+    const alea_universe_t* universe = alea_get_universe(sys, universe_id);
+    if (!universe) return;
+    for (size_t i = 0; i < universe->cell_indices.count; i++) {
+        const size_t cell_index = universe->cell_indices.data[i];
+        if (cell_index >= alea_vec_count(&sys->cells)) continue;
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        if (cell->lat_type == 1 && cell->lat_fill) {
+            raycast_lattice_rect(sys, ray, cell, t_min, t_max, result);
+        } else if (cell->lat_type == 2 && cell->lat_fill) {
+            raycast_lattice_hex(sys, ray, cell, t_min, t_max, result);
+        }
+    }
 }
 /**
  * Add lattice surface hits for all lattice cells the ray may cross.
