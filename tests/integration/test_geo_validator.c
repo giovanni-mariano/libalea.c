@@ -467,6 +467,28 @@ TEST(geo_validator_truncates_at_max_errors) {
     alea_destroy(sys);
 }
 
+TEST(geo_validator_marks_crossing_budget_truncation) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+    opts.max_crossings = 1;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -4, 0, 0, 1, 0, 0, 8,
+                                         &result), 0);
+    ASSERT_EQ(result.truncated, 1);
+    ASSERT_EQ(result.crossings_checked, 1);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
 TEST(geo_validator_clean_adjacent_hier) {
     alea_system_t* sys = build_split_box_system();
     ASSERT_NOT_NULL(sys);
