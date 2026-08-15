@@ -4622,3 +4622,36 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     result->ray = *ray;
     return ray_selected_interval_trace(sys, ray, effective_t_max, false, result);
 }
+
+int alea_raycast_hier_visit_segments_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch,
+    alea_raycast_selected_segment_callback_t callback, void* context) {
+    if (!sys || !ray || !scratch || !callback) return -1;
+    alea_raycast_result_clear(scratch);
+    scratch->ray = *ray;
+    const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
+    alea_ray_walk_t walk;
+    alea_ray_walk_init(&walk);
+    for (;;) {
+        alea_ray_selected_interval_t interval;
+        const int rc = alea_ray_walk_next_selected(
+            sys, ray, effective_t_max, scratch, &walk, &interval);
+        if (rc < 0) return -1;
+        if (rc == 2) return 0;
+        const alea_ray_segment_t segment = {
+            .t_enter = interval.t_enter,
+            .t_exit = interval.t_exit,
+            .cell_id = interval.cell_id,
+            .material_id = interval.material_id,
+            .density = interval.density,
+            .enter_surface_id = -1,
+            .exit_surface_id = -1,
+            .enter_hit_index = -1,
+            .resolution_flags = interval.resolution_flags
+        };
+        const int callback_rc = callback(context, &segment);
+        if (callback_rc < 0) return -1;
+        if (callback_rc > 0 || rc == 0) return 0;
+    }
+}

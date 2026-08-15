@@ -692,6 +692,41 @@ static void render_pixel_solid(alea_system_t* sys,
  * PER-PIXEL RENDERING (X-RAY MODE)
  * ============================================================================ */
 
+typedef struct {
+    const render_config_t* cfg;
+    float accum_r;
+    float accum_g;
+    float accum_b;
+    float accum_alpha;
+    int cell_id;
+} render_xray_accumulator_t;
+
+static int render_xray_accumulate_segment(
+    void* context, const alea_ray_segment_t* seg) {
+    render_xray_accumulator_t* accum = context;
+    if (seg->cell_id < 0 || seg->material_id == 0) return 0;
+    const double len = seg->t_exit - seg->t_enter;
+    if (len <= 0 || len > 1e10) return 0;
+
+    float alpha = (float)(fabs(seg->density) * len *
+                          accum->cfg->xray_density_scale);
+    if (alpha > 1.0f) alpha = 1.0f;
+
+    float cr, cg, cb;
+    const int color_id = accum->cfg->color_mode == RENDER_COLOR_CELL
+        ? seg->cell_id : seg->material_id;
+    render_get_color(color_id, accum->cfg->color_mode, accum->cfg,
+                     &cr, &cg, &cb);
+    const float factor = alpha * (1.0f - accum->accum_alpha);
+    accum->accum_r += cr * factor;
+    accum->accum_g += cg * factor;
+    accum->accum_b += cb * factor;
+    accum->accum_alpha += factor;
+    if (accum->accum_alpha > 0.99f) return 1;
+    if (accum->cell_id < 0) accum->cell_id = seg->cell_id;
+    return 0;
+}
+
 static void render_pixel_xray(alea_system_t* sys,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
@@ -709,50 +744,22 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = cfg->background[2];
     *out_cell_id = -1;
 
-    /* X-ray consumes only selected material intervals.  The hierarchical
-     * segment tracer handles both fill expansion and lattice DDA, so avoid
-     * reconstructing the global diagnostic trace for every pixel. */
-    alea_raycast_result_clear(result);
+    /* X-ray consumes selected material intervals directly.  The callback
+     * adapter handles fills and lattice DDA without publishing a per-pixel
+     * segment vector. */
+    render_xray_accumulator_t accum = { .cfg = cfg, .cell_id = -1 };
     alea_ray_t ray;
     if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
-        alea_raycast_hier_segments_nocache(sys, &ray, 0, result) != 0)
+        alea_raycast_hier_visit_segments_nocache(
+            sys, &ray, 0, result, render_xray_accumulate_segment, &accum) != 0)
         return;
 
-    /* Accumulate density-weighted color */
-    float accum_r = 0, accum_g = 0, accum_b = 0;
-    float accum_alpha = 0;
-    float scale = cfg->xray_density_scale;
-
-    for (size_t i = 0; i < result->segments.count; i++) {
-        const alea_ray_segment_t* seg = &result->segments.data[i];
-        if (seg->cell_id < 0 || seg->material_id == 0) continue;
-        double len = seg->t_exit - seg->t_enter;
-        if (len <= 0 || len > 1e10) continue;
-
-        float alpha = (float)(fabs(seg->density) * len * scale);
-        if (alpha > 1.0f) alpha = 1.0f;
-
-        float cr, cg, cb;
-        int color_id = (cfg->color_mode == RENDER_COLOR_CELL) ? seg->cell_id : seg->material_id;
-        render_get_color(color_id, cfg->color_mode, cfg, &cr, &cg, &cb);
-
-        /* Front-to-back compositing */
-        float factor = alpha * (1.0f - accum_alpha);
-        accum_r += cr * factor;
-        accum_g += cg * factor;
-        accum_b += cb * factor;
-        accum_alpha += factor;
-
-        if (accum_alpha > 0.99f) break;
-
-        if (*out_cell_id < 0) *out_cell_id = seg->cell_id;
-    }
-
     /* Composite over background */
-    float bg_factor = 1.0f - accum_alpha;
-    out_color[0] = accum_r + cfg->background[0] * bg_factor;
-    out_color[1] = accum_g + cfg->background[1] * bg_factor;
-    out_color[2] = accum_b + cfg->background[2] * bg_factor;
+    const float bg_factor = 1.0f - accum.accum_alpha;
+    out_color[0] = accum.accum_r + cfg->background[0] * bg_factor;
+    out_color[1] = accum.accum_g + cfg->background[1] * bg_factor;
+    out_color[2] = accum.accum_b + cfg->background[2] * bg_factor;
+    *out_cell_id = accum.cell_id;
 }
 
 /* Compact X-ray tiles are scheduled outside the batch executor's OpenMP

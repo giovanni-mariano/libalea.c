@@ -707,6 +707,18 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                        double t_max,
                                        alea_raycast_result_t* result);
 
+/* Internal scalar streaming adapter for consumers that need selected material
+ * intervals but do not need to publish a segment vector.  Return a positive
+ * value from the callback to stop successfully; return a negative value to
+ * abort the walk as an error. */
+typedef int (*alea_raycast_selected_segment_callback_t)(
+    void* context, const alea_ray_segment_t* segment);
+
+int alea_raycast_hier_visit_segments_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch,
+    alea_raycast_selected_segment_callback_t callback, void* context);
+
 /**
  * Buffer-reuse canonical global raycast.
  *

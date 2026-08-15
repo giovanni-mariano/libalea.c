@@ -71,7 +71,9 @@ occurrences; parity accepts the explicit undefined-fill classification and the
 native DDA boundary tolerance, including reverse traversal through the
 transformed nested-lattice fixture.  Phase 6 has begun by consolidating AUTO
 and FAST_FORWARD first-cell, first-visible, and any-hit dispatch onto their
-shared selected-walker implementation.  Renderer/batch consolidation, performance
+shared selected-walker implementation.  Scalar X-ray compositing now streams
+selected intervals directly and can stop at saturation without publishing a
+per-pixel segment vector.  Renderer/batch consolidation, performance
 recovery, and executor work remain later phases.
 
 ## 2. Decision summary
