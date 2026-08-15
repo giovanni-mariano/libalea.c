@@ -236,6 +236,20 @@ TEST(cauchy_crofton_rays_are_deterministic_and_bound_to_sphere) {
 /* Full Raycast Tests                                                         */
 /* ------------------------------------------------------------------------- */
 
+typedef struct {
+    size_t count;
+    double material_length;
+} selected_segment_probe_t;
+
+static int probe_selected_segment(void* context,
+                                  const alea_ray_segment_t* segment) {
+    selected_segment_probe_t* probe = context;
+    probe->count++;
+    if (segment->cell_id >= 0 && segment->material_id != 0)
+        probe->material_length += segment->t_exit - segment->t_enter;
+    return 0;
+}
+
 TEST(raycast_simple_geometry) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -266,6 +280,34 @@ TEST(raycast_simple_geometry) {
     ASSERT(result.segments.count >= 1);
 
     alea_raycast_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(raycast_selected_segment_visitor_streams_without_publication) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    ASSERT(surface >= 0);
+    const alea_node_id_t inside = alea_surface_at(sys, surface)->neg_node;
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, -2.7, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -10, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    selected_segment_probe_t probe = {0};
+    ASSERT_EQ(alea_raycast_hier_visit_segments_nocache(
+                  sys, &ray, 100, &scratch,
+                  probe_selected_segment, &probe), 0);
+    ASSERT_EQ(probe.count, 3);
+    ASSERT_NEAR(probe.material_length, 10.0, EPS);
+    ASSERT_EQ(scratch.segments.count, 0);
+    ASSERT_EQ(scratch.hits.count, 0);
+
+    alea_raycast_result_free(&scratch);
     alea_destroy(sys);
 }
 
