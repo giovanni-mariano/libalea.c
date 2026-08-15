@@ -60,9 +60,11 @@ ownership.
 
 The remaining Phase 5 work is to make complete before/after coverage directly
 available to transition classification, finish the diagnostic limit audit, and
-complete the production-versus-coverage matrix for transformed and deep-fill
-fixtures.  Renderer/batch consolidation, performance recovery, and executor
-work remain later phases.
+complete the production-versus-coverage matrix for deep transformed fixtures.
+Global breakpoint enumeration now respects enclosing fill transforms for
+lattices; recursively transformed nested lattices still need full interval
+parity with the selected walker.  Renderer/batch consolidation, performance
+recovery, and executor work remain later phases.
 
 ## 2. Decision summary
 
