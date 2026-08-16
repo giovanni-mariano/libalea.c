@@ -100,7 +100,10 @@ or DDA step; the exact ancestor-support case makes six entry calls, visits six
 TLAS nodes and leaves, examines six candidates, takes five DDA steps, and
 records 18 ancestor surface tests and eight ownership events.  This is a
 reproducible local guard for the entry-search fixes while the optional E-lite
-deck remains unavailable.
+deck remains unavailable.  Its eight-ray compact-batch companion reports the
+maximum per-ray values (6 calls, 6 TLAS nodes/leaves, 6 candidates, 5 DDA
+steps, 18 ancestor tests, and 8 events), so aggregate throughput cannot hide
+an expensive lattice-entry outlier.
 
 A same-walker spot measurement separates selected-segment publication from
 traversal: reusable rich segment-vector output took 145.5 us/ray for the

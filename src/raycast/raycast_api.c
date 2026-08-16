@@ -87,6 +87,7 @@ struct alea_raycast_batch_result {
         size_t row_count;
         int projected_depth;
     } fast_slice_cache;
+    alea_raycast_batch_work_stats_t work_stats;
 };
 
 typedef struct {
@@ -384,6 +385,41 @@ size_t alea_raycast_batch_segment_count(const alea_raycast_batch_result_t* resul
     return result ? result->segment_count : 0;
 }
 
+int alea_raycast_batch_result_get_work_stats_internal(
+    const alea_raycast_batch_result_t* result,
+    alea_raycast_batch_work_stats_t* out_stats) {
+    if (!result || !out_stats) return -1;
+    *out_stats = result->work_stats;
+    return 0;
+}
+
+static void batch_work_stats_accumulate(
+    alea_raycast_batch_work_stats_t* stats,
+    const alea_raycast_result_t* trace) {
+#define BATCH_WORK_MAX(field, source) \
+    do { if (stats->field < trace->source) stats->field = trace->source; } while (0)
+    BATCH_WORK_MAX(max_lattice_entry_calls, lattice_entry_calls);
+    BATCH_WORK_MAX(max_lattice_entry_tlas_nodes_tested,
+                   lattice_entry_tlas_nodes_tested);
+    BATCH_WORK_MAX(max_lattice_entry_tlas_leaves_visited,
+                   lattice_entry_tlas_leaves_visited);
+    BATCH_WORK_MAX(max_lattice_entry_candidates, lattice_entry_candidates);
+    BATCH_WORK_MAX(max_lattice_entry_dda_steps, lattice_entry_dda_steps);
+    BATCH_WORK_MAX(max_lattice_entry_no_entry_results,
+                   lattice_entry_no_entry_results);
+    BATCH_WORK_MAX(max_lattice_entry_future_entry_results,
+                   lattice_entry_future_entry_results);
+    BATCH_WORK_MAX(max_lattice_entry_already_inside_results,
+                   lattice_entry_already_inside_results);
+    BATCH_WORK_MAX(max_lattice_entry_ancestor_surface_tests,
+                   lattice_entry_ancestor_surface_tests);
+    BATCH_WORK_MAX(max_lattice_entry_ancestor_events,
+                   lattice_entry_ancestor_events);
+    BATCH_WORK_MAX(max_lattice_entry_canonical_rejections,
+                   lattice_entry_canonical_rejections);
+#undef BATCH_WORK_MAX
+}
+
 uint32_t alea_raycast_batch_fields(const alea_raycast_batch_result_t* result) {
     return result ? result->fields : 0;
 }
@@ -609,6 +645,9 @@ static int raycast_hier_batch_execute(
             goto cleanup;
         }
     }
+
+    for (size_t i = 0; i < ray_count; i++)
+        batch_work_stats_accumulate(&next.work_stats, &traces[i].trace);
 
     next.ray_count = ray_count;
     next.fields = fields;

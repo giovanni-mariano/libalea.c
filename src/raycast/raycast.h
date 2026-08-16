@@ -445,6 +445,27 @@ void alea_raycast_batch_result_swap_internal(
     alea_raycast_batch_result_t* a,
     alea_raycast_batch_result_t* b);
 
+/* Private batch-level maxima of per-ray lattice-entry work.  This preserves
+ * the public batch ABI while allowing benchmark and diagnostic code to expose
+ * outlier rays instead of hiding them behind aggregate throughput. */
+typedef struct {
+    uint64_t max_lattice_entry_calls;
+    uint64_t max_lattice_entry_tlas_nodes_tested;
+    uint64_t max_lattice_entry_tlas_leaves_visited;
+    uint64_t max_lattice_entry_candidates;
+    uint64_t max_lattice_entry_dda_steps;
+    uint64_t max_lattice_entry_no_entry_results;
+    uint64_t max_lattice_entry_future_entry_results;
+    uint64_t max_lattice_entry_already_inside_results;
+    uint64_t max_lattice_entry_ancestor_surface_tests;
+    uint64_t max_lattice_entry_ancestor_events;
+    uint64_t max_lattice_entry_canonical_rejections;
+} alea_raycast_batch_work_stats_t;
+
+int alea_raycast_batch_result_get_work_stats_internal(
+    const alea_raycast_batch_result_t* result,
+    alea_raycast_batch_work_stats_t* out_stats);
+
 /* Phase 5 internal compact executor.  Public alea_raycast_hier_batch() is a
  * scalar-t_max SEGMENTS adapter.  Ranges are per input ray; t_max <= 0 means
  * unbounded, matching the scalar API.  Only SEGMENTS is materialized in this

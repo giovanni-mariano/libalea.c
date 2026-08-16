@@ -1083,6 +1083,47 @@ TEST(perf_lattice_entry_attribution) {
     ASSERT(trace.lattice_entry_ancestor_surface_tests > 0);
     ASSERT(trace.lattice_entry_ancestor_events > 0);
     ASSERT(trace.lattice_entry_dda_steps < 10);
+
+    {
+        enum { batch_rays = 8 };
+        double origins[batch_rays * 3] = {0};
+        double directions[batch_rays * 3] = {0};
+        for (size_t i = 0; i < batch_rays; i++) directions[i * 3] = 1.0;
+        alea_raycast_batch_options_t options = {
+            .struct_size = sizeof(options),
+            .fields = ALEA_RAY_BATCH_MATERIAL
+        };
+        alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+        alea_raycast_batch_work_stats_t batch_stats;
+        ASSERT_NOT_NULL(batch);
+        ASSERT_EQ(alea_raycast_hier_batch(exact_support->sys, origins, directions,
+                                          batch_rays, 110.0, &options, batch), 0);
+        ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(
+                      batch, &batch_stats), 0);
+        printf("[batch max calls=%llu TLAS nodes=%llu leaves=%llu candidates=%llu "
+               "DDA=%llu ancestor tests=%llu events=%llu]  ",
+               (unsigned long long)batch_stats.max_lattice_entry_calls,
+               (unsigned long long)batch_stats.max_lattice_entry_tlas_nodes_tested,
+               (unsigned long long)batch_stats.max_lattice_entry_tlas_leaves_visited,
+               (unsigned long long)batch_stats.max_lattice_entry_candidates,
+               (unsigned long long)batch_stats.max_lattice_entry_dda_steps,
+               (unsigned long long)batch_stats.max_lattice_entry_ancestor_surface_tests,
+               (unsigned long long)batch_stats.max_lattice_entry_ancestor_events);
+        ASSERT_EQ(batch_stats.max_lattice_entry_calls, trace.lattice_entry_calls);
+        ASSERT_EQ(batch_stats.max_lattice_entry_tlas_nodes_tested,
+                  trace.lattice_entry_tlas_nodes_tested);
+        ASSERT_EQ(batch_stats.max_lattice_entry_tlas_leaves_visited,
+                  trace.lattice_entry_tlas_leaves_visited);
+        ASSERT_EQ(batch_stats.max_lattice_entry_candidates,
+                  trace.lattice_entry_candidates);
+        ASSERT_EQ(batch_stats.max_lattice_entry_dda_steps,
+                  trace.lattice_entry_dda_steps);
+        ASSERT_EQ(batch_stats.max_lattice_entry_ancestor_surface_tests,
+                  trace.lattice_entry_ancestor_surface_tests);
+        ASSERT_EQ(batch_stats.max_lattice_entry_ancestor_events,
+                  trace.lattice_entry_ancestor_events);
+        alea_raycast_batch_result_destroy(batch);
+    }
     alea_raycast_result_free(&trace);
     mcnp_model_destroy(exact_support);
 }
