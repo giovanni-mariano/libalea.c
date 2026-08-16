@@ -940,6 +940,38 @@ TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
     alea_destroy(sys);
 }
 
+/* End-to-end scheduling measurement for the renderer's fixed-output X-ray
+ * path.  This intentionally includes camera setup, tile ownership, and
+ * framebuffer writes rather than extrapolating from traversal alone. */
+TEST(perf_xray_render_frame_fixed_tile_scheduling) {
+    const int width = 96, height = 96;
+    alea_system_t* sys = build_concentric_shells(20);
+    ASSERT_NOT_NULL(sys);
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.width = width;
+    cfg.height = height;
+    cfg.tile_size = 32;
+    cfg.aa_samples = 1;
+    cfg.render_mode = RENDER_MODE_XRAY;
+    cfg.eye[0] = 0; cfg.eye[1] = -20; cfg.eye[2] = 0;
+    cfg.target[0] = 0; cfg.target[1] = 0; cfg.target[2] = 0;
+    cfg.eye_set = 1; cfg.target_set = 1;
+    render_camera_t cam;
+    ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+    render_framebuffer_t* framebuffer =
+        render_framebuffer_create(width, height, 0);
+    ASSERT_NOT_NULL(framebuffer);
+    {
+        BENCH_START();
+        ASSERT_EQ(render_scene(sys, &cfg, &cam, framebuffer), 0);
+        BENCH_END("X-ray render 96x96 fixed tile scheduling", width * height);
+    }
+    render_framebuffer_free(framebuffer);
+    render_config_free(&cfg);
+    alea_destroy(sys);
+}
+
 TEST(perf_query_cache_prepare_audit) {
     alea_system_t* sys = build_concentric_shells(20);
     ASSERT_NOT_NULL(sys);
