@@ -36,6 +36,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -970,6 +971,107 @@ TEST(perf_xray_render_frame_fixed_tile_scheduling) {
     render_framebuffer_free(framebuffer);
     render_config_free(&cfg);
     alea_destroy(sys);
+}
+
+/* Two deterministic lattice-entry cases retained from the hierarchy
+ * correctness suite.  They make the entry-search attribution observable in
+ * the normal performance report without requiring the optional E-lite deck:
+ * one transformed occurrence is pruned from trusted ancestor support before
+ * DDA, while the other enters a thin active ancestor shell without stepping
+ * through its large conservative AABB. */
+TEST(perf_lattice_entry_attribution) {
+    const char* transformed_prune_input =
+        "Inactive transformed repeating lattice placement\n"
+        "1 0 -1 FILL=10 (5 0 0)\n"
+        "100 0 -8 9 -10 11 -12 13 LAT=1 U=10 FILL=1\n"
+        "10 1 -1.0 -14 U=1\n"
+        "11 2 -1.0 14 U=1\n"
+        "\n"
+        "1 SO 1\n"
+        "2 PX -1\n"
+        "3 PY -1\n"
+        "4 PY 1\n"
+        "5 PZ -1\n"
+        "6 PZ 1\n"
+        "8 PX -1\n"
+        "9 PX 1\n"
+        "10 PY -1\n"
+        "11 PY 1\n"
+        "12 PZ -1\n"
+        "13 PZ 1\n"
+        "14 CZ 0.3\n"
+        "\n"
+        "M1 1001.80c 1.0\n"
+        "M2 1001.80c 1.0\n";
+    const char* exact_support_input =
+        "Repeating lattice exact ancestor support entry\n"
+        "1 0 -1 2 FILL=10\n"
+        "100 0 -3 LAT=1 U=10 FILL=1\n"
+        "10 1 -1.0 -9 U=1\n"
+        "\n"
+        "1 SO 100\n"
+        "2 SO 99\n"
+        "3 RPP -0.5 0.5 -0.5 0.5 -0.5 0.5\n"
+        "9 SO 0.25\n"
+        "\n"
+        "M1 1001.80c 1.0\n";
+    const int iterations = 1000;
+    alea_raycast_result_t trace;
+
+    mcnp_model_t* transformed =
+        mcnp_load_string(transformed_prune_input, strlen(transformed_prune_input));
+    ASSERT_NOT_NULL(transformed);
+    ASSERT_EQ(alea_prepare_query_acceleration(transformed->sys), 0);
+    alea_raycast_result_init(&trace);
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            alea_raycast_result_clear(&trace);
+            ASSERT_EQ(alea_raycast_hier_fast_segments(
+                          transformed->sys, 3.0, 0.0, 0.0,
+                          1.0, 0.0, 0.0, 10000.0, &trace), 0);
+        }
+        BENCH_END("lattice entry transformed-support prune", iterations);
+    }
+    printf("[calls=%zu candidates=%zu DDA=%zu future=%zu]  ",
+           trace.lattice_entry_calls, trace.lattice_entry_candidates,
+           trace.lattice_entry_dda_steps, trace.lattice_entry_future_entry_results);
+    ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT_EQ(trace.lattice_entry_candidates, 0);
+    ASSERT_EQ(trace.lattice_entry_dda_steps, 0);
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(transformed);
+
+    mcnp_model_t* exact_support =
+        mcnp_load_string(exact_support_input, strlen(exact_support_input));
+    ASSERT_NOT_NULL(exact_support);
+    ASSERT_EQ(alea_prepare_query_acceleration(exact_support->sys), 0);
+    alea_raycast_result_init(&trace);
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            alea_raycast_result_clear(&trace);
+            ASSERT_EQ(alea_raycast_hier_fast_segments(
+                          exact_support->sys, 0.0, 0.0, 0.0,
+                          1.0, 0.0, 0.0, 110.0, &trace), 0);
+        }
+        BENCH_END("lattice entry exact ancestor support", iterations);
+    }
+    printf("[calls=%zu candidates=%zu DDA=%zu ancestor tests=%zu events=%zu "
+           "future=%zu canonical rejects=%zu]  ",
+           trace.lattice_entry_calls, trace.lattice_entry_candidates,
+           trace.lattice_entry_dda_steps,
+           trace.lattice_entry_ancestor_surface_tests,
+           trace.lattice_entry_ancestor_events,
+           trace.lattice_entry_future_entry_results,
+           trace.lattice_entry_canonical_rejections);
+    ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT(trace.lattice_entry_candidates > 0);
+    ASSERT(trace.lattice_entry_ancestor_surface_tests > 0);
+    ASSERT(trace.lattice_entry_ancestor_events > 0);
+    ASSERT(trace.lattice_entry_dda_steps < 10);
+    alea_raycast_result_free(&trace);
+    mcnp_model_destroy(exact_support);
 }
 
 TEST(perf_query_cache_prepare_audit) {

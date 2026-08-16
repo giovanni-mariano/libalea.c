@@ -93,6 +93,14 @@ us/ray; packet/scalar first-visible 6.0/6.8 us/ray; packet/scalar any-hit
 comparison point only: compiler flags, affinity, and the optional E-lite input
 are not yet controlled or available in this checkout.
 
+The performance suite also now prints deterministic lattice-entry attribution
+for the two critical local cases.  The transformed inactive occurrence makes
+one entry call and is pruned before candidate examination or DDA; the exact
+ancestor-support case makes six entry calls, examines six candidates, takes
+five DDA steps, and records 18 ancestor surface tests and eight ownership
+events.  This is a reproducible local guard for the entry-search fixes while
+the optional E-lite deck remains unavailable.
+
 ## 2. Decision summary
 
 The architecture has two scalar traversal engines, not one monolithic walker:
