@@ -847,9 +847,21 @@ TEST(perf_compact_hier_batch_20_shells) {
     alea_destroy(sys);
 }
 
+typedef struct {
+    size_t* segment_counts;
+} xray_batch_count_context_t;
+
+static int count_xray_batch_segment(void* context, size_t ray_index,
+                                    const alea_ray_segment_t* segment) {
+    (void)segment;
+    xray_batch_count_context_t* counts = context;
+    counts->segment_counts[ray_index]++;
+    return 0;
+}
+
 /* Mirrors the non-lattice, single-sample X-ray renderer's ray layout.  The
- * scalar side retains one scratch result, while the compact side publishes a
- * CSR result per tile; timings are informational and segment totals must
+ * scalar side retains one scratch result, while the compact side streams into
+ * fixed per-ray slots; timings are informational and segment totals must
  * remain identical. */
 TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
     const int width = 96, height = 96, tile = 32;
@@ -867,11 +879,13 @@ TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
     const size_t tile_capacity = (size_t)tile * tile;
     double* origins = malloc(tile_capacity * 3 * sizeof(*origins));
     double* directions = malloc(tile_capacity * 3 * sizeof(*directions));
+    size_t* segment_counts = calloc(tile_capacity, sizeof(*segment_counts));
     alea_raycast_result_t scratch;
     alea_raycast_result_init(&scratch);
     alea_raycast_result_reserve(&scratch, 0, 64);
     ASSERT_NOT_NULL(origins);
     ASSERT_NOT_NULL(directions);
+    ASSERT_NOT_NULL(segment_counts);
     size_t scalar_segments = 0, compact_segments = 0;
 
     {
@@ -890,10 +904,6 @@ TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
     }
     printf("[%zu segments]  ", scalar_segments);
 
-    const alea_raycast_batch_options_t options = {
-        .struct_size = sizeof(options),
-        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY
-    };
     {
         BENCH_START();
         for (int y0 = 0; y0 < height; y0 += tile) {
@@ -906,15 +916,18 @@ TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
                                   &origins[ray_count * 3], &origins[ray_count * 3 + 1],
                                   &origins[ray_count * 3 + 2], &directions[ray_count * 3],
                                   &directions[ray_count * 3 + 1], &directions[ray_count * 3 + 2]);
-            alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
-            ASSERT_NOT_NULL(batch);
-            ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, ray_count,
-                                               0, &options, batch), 0);
-            compact_segments += alea_raycast_batch_segment_count(batch);
-                alea_raycast_batch_result_destroy(batch);
+            memset(segment_counts, 0, ray_count * sizeof(*segment_counts));
+            xray_batch_count_context_t count_context = {
+                .segment_counts = segment_counts
+            };
+            ASSERT_EQ(alea_raycast_hier_visit_segments_batch_nocache(
+                          sys, origins, directions, ray_count, 0,
+                          count_xray_batch_segment, &count_context), 0);
+            for (size_t i = 0; i < ray_count; i++)
+                compact_segments += segment_counts[i];
             }
         }
-        BENCH_END("X-ray camera compact 32x32 tile CSR", width * height);
+        BENCH_END("X-ray camera compact 32x32 fixed-output visitor", width * height);
     }
     printf("[%zu segments]  ", compact_segments);
     ASSERT_EQ(compact_segments, scalar_segments);
@@ -922,7 +935,7 @@ TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
            raycast_result_retained_bytes(&scratch), tile_capacity * 6 * sizeof(double));
 
     alea_raycast_result_free(&scratch);
-    free(origins); free(directions);
+    free(origins); free(directions); free(segment_counts);
     render_config_free(&cfg);
     alea_destroy(sys);
 }

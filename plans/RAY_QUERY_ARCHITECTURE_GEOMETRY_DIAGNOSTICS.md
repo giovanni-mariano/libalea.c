@@ -1,6 +1,6 @@
 # Ray-query architecture with first-class geometry diagnostics
 
-**Status:** In progress — Phases 3–6 substantially implemented; Phase 7 active
+**Status:** In progress — Phases 3–7 substantially implemented; Phase 9 measurement active
 
 **Priority:** Correct architecture first; preserve and recover performance within
 that architecture
@@ -77,6 +77,10 @@ per-pixel segment vector.  Compact X-ray tiles use the same internal
 ray-indexed interval visitor and fixed accumulator slots rather than a public
 batch-result CSR round trip.  Renderer/batch consolidation, performance
 recovery, and executor work remain later phases.
+
+The X-ray performance fixture now measures the fixed-output batch visitor used
+by compact tiles, rather than the retired CSR publication route.  Its timings
+are informational until repeated under a controlled benchmark protocol.
 
 ## 2. Decision summary
 
