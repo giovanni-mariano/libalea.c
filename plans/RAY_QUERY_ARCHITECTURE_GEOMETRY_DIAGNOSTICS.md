@@ -1,6 +1,6 @@
 # Ray-query architecture with first-class geometry diagnostics
 
-**Status:** In progress — Phases 3–5 substantially implemented; Phase 6 begun
+**Status:** In progress — Phases 3–6 substantially implemented; Phase 7 active
 
 **Priority:** Correct architecture first; preserve and recover performance within
 that architecture
