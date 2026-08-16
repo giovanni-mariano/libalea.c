@@ -80,6 +80,13 @@ static size_t batch_published_bytes(const alea_raycast_batch_result_t* result,
     return bytes;
 }
 
+static int count_selected_segment(void* context,
+                                  const alea_ray_segment_t* segment) {
+    (void)segment;
+    (*(size_t*)context)++;
+    return 0;
+}
+
 /* =========================================================================
  * Geometry builders
  * ========================================================================= */
@@ -1072,6 +1079,54 @@ TEST(perf_lattice_entry_attribution) {
     ASSERT(trace.lattice_entry_dda_steps < 10);
     alea_raycast_result_free(&trace);
     mcnp_model_destroy(exact_support);
+}
+
+/* The two paths below execute the same selected-owner walker.  Keeping the
+ * rich result reserved makes their steady-state difference attributable to
+ * result publication and segment-vector writes, rather than allocator growth. */
+TEST(perf_selected_segment_publication_vs_streaming) {
+    const int iterations = 10000;
+    alea_system_t* sys = build_concentric_shells(20);
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(sys), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -20.0, 0.125, 0.0, 1.0, 0.0, 0.0), 0);
+    alea_raycast_result_t rich, streamed;
+    alea_raycast_result_init(&rich);
+    alea_raycast_result_init(&streamed);
+    alea_raycast_result_reserve(&rich, 0, 64);
+    size_t rich_segments = 0, streamed_segments = 0;
+
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            alea_raycast_result_clear(&rich);
+            ASSERT_EQ(alea_raycast_hier_segments_nocache(sys, &ray, 100.0,
+                                                          &rich), 0);
+            rich_segments += rich.segments.count;
+        }
+        BENCH_END("selected intervals rich segment publication", iterations);
+    }
+    printf("[%zu segments, %zu retained bytes]  ", rich_segments,
+           raycast_result_retained_bytes(&rich));
+
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            ASSERT_EQ(alea_raycast_hier_visit_segments_nocache(
+                          sys, &ray, 100.0, &streamed,
+                          count_selected_segment, &streamed_segments), 0);
+        }
+        BENCH_END("selected intervals streamed fixed output", iterations);
+    }
+    printf("[%zu segments, %zu retained bytes]  ", streamed_segments,
+           raycast_result_retained_bytes(&streamed));
+    ASSERT_EQ(streamed_segments, rich_segments);
+    ASSERT_EQ(streamed.segments.count, 0);
+
+    alea_raycast_result_free(&streamed);
+    alea_raycast_result_free(&rich);
+    alea_destroy(sys);
 }
 
 TEST(perf_query_cache_prepare_audit) {

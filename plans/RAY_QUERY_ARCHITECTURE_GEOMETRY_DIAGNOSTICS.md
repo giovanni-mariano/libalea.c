@@ -101,6 +101,13 @@ five DDA steps, and records 18 ancestor surface tests and eight ownership
 events.  This is a reproducible local guard for the entry-search fixes while
 the optional E-lite deck remains unavailable.
 
+A same-walker spot measurement separates selected-segment publication from
+traversal: reusable rich segment-vector output took 145.5 us/ray for the
+20-shell fixture, versus 137.2 us/ray for streamed fixed output, while
+avoiding 3,584 retained result bytes.  This is not yet a controlled regression
+threshold, but it confirms the renderer migration removes measurable
+publication work without changing selected traversal semantics.
+
 ## 2. Decision summary
 
 The architecture has two scalar traversal engines, not one monolithic walker:
