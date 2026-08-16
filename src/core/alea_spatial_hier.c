@@ -3608,10 +3608,12 @@ static int visit_lattice_placements_ray_node(
     double inv_dx, double inv_dy, double inv_dz,
     double t_min, double t_max,
     alea_hier_lattice_placement_ray_visitor_t visitor,
+    alea_hier_lattice_placement_ray_stats_t* stats,
     void* userdata) {
     const hier_universe_blas_t* tlas = &idx->tlas;
     if (node_index >= tlas->node_count) return -1;
     const hier_bvh_node_t* node = &tlas->nodes[node_index];
+    if (stats) stats->nodes_tested++;
     double node_enter, node_exit;
     if (!hier_fbbox_ray_enter_exit(&node->bbox, ox, oy, oz,
                                    inv_dx, inv_dy, inv_dz,
@@ -3623,12 +3625,14 @@ static int visit_lattice_placements_ray_node(
     if (node->count == 0) {
         int rc = visit_lattice_placements_ray_node(
             idx, node->left_or_first, ox, oy, oz,
-            inv_dx, inv_dy, inv_dz, t_min, t_max, visitor, userdata);
+            inv_dx, inv_dy, inv_dz, t_min, t_max, visitor, stats, userdata);
         if (rc != 0) return rc;
         return visit_lattice_placements_ray_node(
             idx, node->right_child, ox, oy, oz,
-            inv_dx, inv_dy, inv_dz, t_min, t_max, visitor, userdata);
+            inv_dx, inv_dy, inv_dz, t_min, t_max, visitor, stats, userdata);
     }
+
+    if (stats) stats->leaves_visited++;
 
     for (uint16_t i = 0; i < node->count; i++) {
         uint32_t pos = tlas->indices[node->left_or_first + i];
@@ -3659,6 +3663,7 @@ int alea_hier_spatial_visit_lattice_placements_ray(
     double inv_dx, double inv_dy, double inv_dz,
     double t_min, double t_max,
     alea_hier_lattice_placement_ray_visitor_t visitor,
+    alea_hier_lattice_placement_ray_stats_t* stats,
     void* userdata) {
     if (!sys || !visitor) return -1;
     if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
@@ -3668,7 +3673,7 @@ int alea_hier_spatial_visit_lattice_placements_ray(
     if (!idx->tlas_built || idx->tlas.node_count == 0) return 0;
     return visit_lattice_placements_ray_node(
         idx, 0, ox, oy, oz, inv_dx, inv_dy, inv_dz,
-        t_min, t_max, visitor, userdata);
+        t_min, t_max, visitor, stats, userdata);
 }
 
 static int append_region_hit(alea_system_t* sys,

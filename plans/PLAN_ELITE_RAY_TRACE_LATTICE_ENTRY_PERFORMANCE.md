@@ -338,10 +338,10 @@ coarse branch points rather than timing inside the hot loop. At minimum collect:
 - emitted segment and path counts;
 - maximum counter values per ray in a batch, not only totals.
 
-Implemented so far: per-ray entry calls, candidates, DDA steps, outcome
-counts, ancestor surface/event counts, and canonical-owner rejections. TLAS
-node/leaf attribution and maximum-per-batch reporting remain for the E-lite
-benchmark harness.
+Implemented so far: per-ray entry calls, TLAS node/leaf visits, candidates,
+DDA steps, outcome counts, ancestor surface/event counts, and canonical-owner
+rejections. Maximum-per-batch reporting remains for the E-lite benchmark
+harness.
 
 Expose new counters only through the already-private result or an internal
 test/benchmark accessor. Do not change the stable public API for temporary

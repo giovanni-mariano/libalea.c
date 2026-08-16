@@ -323,6 +323,13 @@ typedef int (*alea_hier_lattice_placement_ray_visitor_t)(
     double t_enter,
     double t_exit,
     void* userdata);
+/* Optional traversal attribution for a single lattice-placement ray query.
+ * Nodes include every TLAS node whose bounds are tested; leaves include only
+ * leaves whose bounds overlap the ray interval. */
+typedef struct {
+    uint64_t nodes_tested;
+    uint64_t leaves_visited;
+} alea_hier_lattice_placement_ray_stats_t;
 /* Visit the exact enclosing fill cells that constrain a lattice occurrence.
  * `transform` maps the visited cell's local frame to world space.  The
  * lattice fundamental cell is intentionally excluded: it describes one
@@ -337,6 +344,7 @@ int alea_hier_spatial_visit_lattice_placements_ray(
     double inv_dx, double inv_dy, double inv_dz,
     double t_min, double t_max,
     alea_hier_lattice_placement_ray_visitor_t visitor,
+    alea_hier_lattice_placement_ray_stats_t* stats,
     void* userdata);
 int alea_hier_spatial_visit_lattice_placement_ancestors(
     alea_system_t* sys,

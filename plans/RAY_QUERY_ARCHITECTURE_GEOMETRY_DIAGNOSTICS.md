@@ -95,11 +95,12 @@ are not yet controlled or available in this checkout.
 
 The performance suite also now prints deterministic lattice-entry attribution
 for the two critical local cases.  The transformed inactive occurrence makes
-one entry call and is pruned before candidate examination or DDA; the exact
-ancestor-support case makes six entry calls, examines six candidates, takes
-five DDA steps, and records 18 ancestor surface tests and eight ownership
-events.  This is a reproducible local guard for the entry-search fixes while
-the optional E-lite deck remains unavailable.
+one entry call, tests one TLAS node, and is pruned before a leaf, candidate,
+or DDA step; the exact ancestor-support case makes six entry calls, visits six
+TLAS nodes and leaves, examines six candidates, takes five DDA steps, and
+records 18 ancestor surface tests and eight ownership events.  This is a
+reproducible local guard for the entry-search fixes while the optional E-lite
+deck remains unavailable.
 
 A same-walker spot measurement separates selected-segment publication from
 traversal: reusable rich segment-vector output took 145.5 us/ray for the

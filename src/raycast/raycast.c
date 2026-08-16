@@ -141,6 +141,8 @@ static void raycast_result_reset_counters(alea_raycast_result_t* result) {
     result->ancestor_unattributed_winning_events = 0;
     memset(result->ancestor_hot_cells, 0, sizeof(result->ancestor_hot_cells));
     result->lattice_entry_calls = 0;
+    result->lattice_entry_tlas_nodes_tested = 0;
+    result->lattice_entry_tlas_leaves_visited = 0;
     result->lattice_entry_candidates = 0;
     result->lattice_entry_dda_steps = 0;
     result->lattice_entry_no_entry_results = 0;
@@ -3253,6 +3255,7 @@ static int system_first_lattice_entry(alea_system_t* sys,
     out_entry->t = DBL_MAX;
     out_entry->sample = -1.0;
     if (result) result->lattice_entry_calls++;
+    alea_hier_lattice_placement_ray_stats_t placement_stats = {0};
     lattice_entry_visit_ctx_t ctx = {
         .sys = sys,
         .ray = ray,
@@ -3268,8 +3271,12 @@ static int system_first_lattice_entry(alea_system_t* sys,
     if (alea_hier_spatial_visit_lattice_placements_ray(
             sys, ray->ox, ray->oy, ray->oz,
             ray->inv_dx, ray->inv_dy, ray->inv_dz,
-            t_min, t_max, visit_lattice_entry, &ctx) != 0) {
+            t_min, t_max, visit_lattice_entry, &placement_stats, &ctx) != 0) {
         return -1;
+    }
+    if (result) {
+        result->lattice_entry_tlas_nodes_tested += placement_stats.nodes_tested;
+        result->lattice_entry_tlas_leaves_visited += placement_stats.leaves_visited;
     }
     *out_entry = ctx.closest;
     return 0;

@@ -1040,10 +1040,13 @@ TEST(perf_lattice_entry_attribution) {
         }
         BENCH_END("lattice entry transformed-support prune", iterations);
     }
-    printf("[calls=%zu candidates=%zu DDA=%zu future=%zu]  ",
-           trace.lattice_entry_calls, trace.lattice_entry_candidates,
+    printf("[calls=%zu TLAS nodes=%zu leaves=%zu candidates=%zu DDA=%zu future=%zu]  ",
+           trace.lattice_entry_calls, trace.lattice_entry_tlas_nodes_tested,
+           trace.lattice_entry_tlas_leaves_visited, trace.lattice_entry_candidates,
            trace.lattice_entry_dda_steps, trace.lattice_entry_future_entry_results);
     ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT(trace.lattice_entry_tlas_nodes_tested > 0);
+    ASSERT_EQ(trace.lattice_entry_tlas_leaves_visited, 0);
     ASSERT_EQ(trace.lattice_entry_candidates, 0);
     ASSERT_EQ(trace.lattice_entry_dda_steps, 0);
     alea_raycast_result_free(&trace);
@@ -1064,15 +1067,18 @@ TEST(perf_lattice_entry_attribution) {
         }
         BENCH_END("lattice entry exact ancestor support", iterations);
     }
-    printf("[calls=%zu candidates=%zu DDA=%zu ancestor tests=%zu events=%zu "
+    printf("[calls=%zu TLAS nodes=%zu leaves=%zu candidates=%zu DDA=%zu ancestor tests=%zu events=%zu "
            "future=%zu canonical rejects=%zu]  ",
-           trace.lattice_entry_calls, trace.lattice_entry_candidates,
+           trace.lattice_entry_calls, trace.lattice_entry_tlas_nodes_tested,
+           trace.lattice_entry_tlas_leaves_visited, trace.lattice_entry_candidates,
            trace.lattice_entry_dda_steps,
            trace.lattice_entry_ancestor_surface_tests,
            trace.lattice_entry_ancestor_events,
            trace.lattice_entry_future_entry_results,
            trace.lattice_entry_canonical_rejections);
     ASSERT(trace.lattice_entry_calls > 0);
+    ASSERT(trace.lattice_entry_tlas_nodes_tested > 0);
+    ASSERT(trace.lattice_entry_tlas_leaves_visited > 0);
     ASSERT(trace.lattice_entry_candidates > 0);
     ASSERT(trace.lattice_entry_ancestor_surface_tests > 0);
     ASSERT(trace.lattice_entry_ancestor_events > 0);

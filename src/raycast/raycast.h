@@ -286,6 +286,8 @@ struct alea_raycast_result {
      * the hierarchical walker is unresolved (void/container), rather than the
      * DDA/surface work of an already-resolved lattice segment. */
     uint64_t lattice_entry_calls;
+    uint64_t lattice_entry_tlas_nodes_tested;
+    uint64_t lattice_entry_tlas_leaves_visited;
     uint64_t lattice_entry_candidates;
     uint64_t lattice_entry_dda_steps;
     uint64_t lattice_entry_no_entry_results;
