@@ -24,7 +24,6 @@
 #define ALEA_MCNP_H
 
 #include "alea.h"
-#include "util/alea_vec.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,8 +66,6 @@ typedef struct {
     uint8_t reserved[6];
     double values[13];
 } mcnp_inline_transform_t;
-
-ALEA_VEC_DEFINE(mcnp_inline_transform_vec, mcnp_inline_transform_t);
 
 typedef struct {
     double imp_n, imp_p, imp_e;
@@ -126,7 +123,9 @@ typedef struct {
     mcnp_cell_params_t* cell_params;        /* parallel array, indexed like sys->cells */
     size_t cell_params_count;
     size_t cell_params_capacity;
-    mcnp_inline_transform_vec_t inline_transforms;
+    mcnp_inline_transform_t* inline_transforms;
+    size_t inline_transform_count;
+    size_t inline_transform_capacity;
     mcnp_export_config_t export_config;
 } mcnp_model_t;
 
@@ -202,33 +201,13 @@ mcnp_cell_params_t* mcnp_cell_params(mcnp_model_t* m, size_t idx);
  */
 const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t idx);
 
-uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
-                                         const double* values,
-                                         int count,
-                                         int degrees);
+/**
+ * @brief Get an inline transform by index (bounds-checked)
+ * @return Borrowed transform pointer, or NULL if the index is invalid
+ */
 const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
     const mcnp_model_t* model,
     uint32_t index);
-
-/**
- * @brief Ensure cell_params array has room for at least `cap` entries
- * @return 0 on success, -1 on allocation failure
- */
-int mcnp_model_reserve_params(mcnp_model_t* model, size_t cap);
-
-/**
- * @brief Append a new cell params entry with defaults (imp=1.0)
- * @return Index of new entry, or -1 on failure
- */
-int mcnp_model_add_params(mcnp_model_t* model);
-
-/**
- * @brief Register cell callbacks on the system for this model
- *
- * After calling this, any alea_add_cell() / split / merge / etc.
- * will automatically grow/copy the parallel params array.
- */
-void mcnp_model_register_hooks(mcnp_model_t* model);
 
 /**
  * @brief Create a non-owning model wrapper around an existing system

@@ -773,7 +773,11 @@ TEST_LINK = $(MODULE_LINK)
 # Build + run every tests\unit\*.c and tests\integration\*.c.
 # nmake has no $(wildcard); a cmd FOR loop discovers the sources at run time.
 # (`%%f` -> `%f` is passed to cmd, which is what a command-line FOR expects.)
-test: test-unit test-integration test-lua
+test: check-public-headers test-unit test-integration test-lua
+
+check-public-headers:
+	@echo CHECK public headers
+	@$(CC) /nologo /std:c11 /W3 /WX /I include /Zs tests\public_headers.c
 
 test-unit: libs
 	@if not exist $(BIN)\tests\unit mkdir $(BIN)\tests\unit
