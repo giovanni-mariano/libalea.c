@@ -3614,7 +3614,11 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
      * FIRST_VISIBLE reports an entering surface, so it must not reuse the
      * current iteration's exit event. */
     alea_raycast_boundary_event_t enter_event = state->enter_event;
-    alea_hier_ray_path_t current_path = state->current_path;
+    /* The lane owns the authoritative path.  Operating on it in place avoids
+     * copying the fixed 64-entry path into and out of a local value at every
+     * one-interval yield.  The retry path below still takes an explicit
+     * snapshot only when midpoint verification actually re-resolves. */
+    alea_hier_ray_path_t* current_path = &state->current_path;
     double pending_lattice_entry_sample = state->pending_lattice_entry_sample;
     const bool need_boundary_event = emit_hits || out_selected;
 
@@ -3684,9 +3688,9 @@ resolve_cell:;
                          * hierarchy lookup.  Refresh its path explicitly:
                          * retaining the previous root entry would attach the
                          * wrong owner occurrence to this segment. */
-                        current_path.count = 1;
+                        current_path->count = 1;
                         alea_hier_ray_path_entry_t* entry =
-                            &current_path.entries[0];
+                            &current_path->entries[0];
                         entry->cell_index = (uint32_t)cell_idx;
                         entry->cell_id = nb->mc_cell_id;
                         entry->material_id = nb->material_id;
@@ -3724,7 +3728,7 @@ resolve_cell:;
                 alea_matrix_identity(&lattice_transform);
             } else {
                 in_cell = alea_hier_spatial_check_path_containment(
-                    sys, &current_path, current_path.count - 1, px, py, pz,
+                    sys, current_path, current_path->count - 1, px, py, pz,
                     &cell_transform, &lattice_cell_index, &lattice_transform);
                 if (in_cell < 0) in_cell = 0;
             }
@@ -3743,10 +3747,10 @@ resolve_cell:;
             alea_ray_point_at(ray, t_sample, &px, &py, &pz);
             if (use_hier_lookup) {
                 cell_idx = find_cell_from_existing_hier_path(
-                    sys, &current_path, px, py, pz,
+                    sys, current_path, px, py, pz,
                     &material_id, &density,
                     &cell_transform, &lattice_cell_index,
-                    &lattice_transform, &current_path);
+                    &lattice_transform, current_path);
                 if (cell_idx == -2) return -1;
             }
             if (use_hier_lookup && cell_idx < 0) {
@@ -3754,7 +3758,7 @@ resolve_cell:;
                     sys, px, py, pz, prev_surface_id,
                     &material_id, &density,
                     &cell_transform, &lattice_cell_index,
-                    &lattice_transform, &current_path);
+                    &lattice_transform, current_path);
                 if (cell_idx == -2) return -1;
             }
             if (cell_idx < 0) {
@@ -3763,10 +3767,10 @@ resolve_cell:;
                     ? find_cell_at_point_hier_path(
                         sys, px, py, pz, &material_id, &density,
                         &cell_transform, &lattice_cell_index,
-                        &lattice_transform, &current_path)
+                        &lattice_transform, current_path)
                     : find_cell_at_point(sys, px, py, pz,
                                          &material_id, &density);
-                if (use_hier_lookup && cell_idx < 0) current_path.count = 0;
+                if (use_hier_lookup && cell_idx < 0) current_path->count = 0;
             }
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
                 cell_id = sys->cells.data[cell_idx].mc_cell_id;
@@ -3916,14 +3920,14 @@ resolve_cell:;
                     }
                 }
             }
-            if (use_hier_lookup && current_path.count > 1) {
+            if (use_hier_lookup && current_path->count > 1) {
                 int ancestor_surface_id = -1;
                 uint32_t ancestor_prim_id = ALEA_PRIMITIVE_ID_INVALID;
                 alea_matrix_t ancestor_transform;
                 alea_matrix_identity(&ancestor_transform);
                 int ancestor_tested_before = result->surfaces_tested;
                 double t_ancestor = raycast_hier_path_ancestor_surfaces(
-                    sys, ray, &current_path, (uint32_t)cell_idx,
+                    sys, ray, current_path, (uint32_t)cell_idx,
                     lattice_cell_index, t_current + RAY_EPSILON,
                     effective_t_max, result, &ancestor_surface_id,
                     &ancestor_prim_id, &ancestor_transform);
@@ -4026,7 +4030,7 @@ resolve_cell:;
                                         mx, my, mz);
             } else {
                 probe_ok = alea_hier_spatial_check_path_containment(
-                    sys, &current_path, current_path.count - 1, mx, my, mz,
+                    sys, current_path, current_path->count - 1, mx, my, mz,
                     NULL, NULL, NULL) > 0;
             }
             /* A retry must not climb the hierarchy: a shallower answer than
@@ -4035,7 +4039,7 @@ resolve_cell:;
              * correction. Equal-depth siblings (overlaps, re-crossed
              * quartics) and deeper resolutions are legitimate. */
             int depth_ok = !saved_valid || !use_hier_lookup ||
-                           current_path.count >= saved_path.count;
+                           current_path->count >= saved_path.count;
             if (!probe_ok || !depth_ok) {
                 if (resolve_attempt < 2 && probe_ok == 0 && depth_ok) {
                     /* Re-resolve, sampling at this interval's probe point.
@@ -4052,7 +4056,7 @@ resolve_cell:;
                         saved_hit_surface_id = hit_surface_id;
                         saved_next_enter_surface_id = next_enter_surface_id;
                         saved_bevent = bevent;
-                        saved_path = current_path;
+                        saved_path = *current_path;
                     }
                     resolve_attempt++;
                     t_sample = t_probe;
@@ -4073,7 +4077,7 @@ resolve_cell:;
                     hit_surface_id = saved_hit_surface_id;
                     next_enter_surface_id = saved_next_enter_surface_id;
                     bevent = saved_bevent;
-                    current_path = saved_path;
+                    *current_path = saved_path;
                 }
             }
         } else if (resolve_attempt >= 1 && saved_valid) {
@@ -4087,7 +4091,7 @@ resolve_cell:;
             hit_surface_id = saved_hit_surface_id;
             next_enter_surface_id = saved_next_enter_surface_id;
             bevent = saved_bevent;
-            current_path = saved_path;
+            *current_path = saved_path;
         }
 
         bevent.t = t_next;
@@ -4102,7 +4106,7 @@ resolve_cell:;
             .exit_surface_id = hit_surface_id,
             .enter_event = enter_event,
             .exit_event = bevent,
-            .path = &current_path,
+            .path = current_path,
             .resolution_flags =
                 (cell_idx >= 0 &&
                  (size_t)cell_idx < alea_vec_count(&sys->cells) &&
@@ -4124,7 +4128,6 @@ resolve_cell:;
             state->prev_surface_id = prev_surface_id;
             state->pending_enter_hit_index = pending_enter_hit_index;
             state->enter_event = enter_event;
-            state->current_path = current_path;
             state->pending_lattice_entry_sample = pending_lattice_entry_sample;
             *out_selected = selected;
             out_selected->path = &state->current_path;
@@ -4151,7 +4154,6 @@ resolve_cell:;
         state->prev_surface_id = prev_surface_id;
         state->pending_enter_hit_index = pending_enter_hit_index;
         state->enter_event = enter_event;
-        state->current_path = current_path;
         state->pending_lattice_entry_sample = pending_lattice_entry_sample;
 
         /* If we hit nothing, we're done */

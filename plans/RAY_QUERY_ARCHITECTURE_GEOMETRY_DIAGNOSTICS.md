@@ -113,6 +113,18 @@ X-ray scalar/fixed-output fixture was 56.91/59.67 versus 43.37/45.19 us/pixel
 the retained-output semantics must remain intact while Phase 9 attributes and
 recovers the added overhead.
 
+The regression was traced to whole-capacity hierarchy-path copies at every
+one-interval walker yield.  `alea_ray_walk_t` now owns the authoritative path
+in place; the stepper snapshots it only when midpoint verification actually
+re-resolves a candidate.  Three portable-release candidate runs produced
+medians of 60.8 us/ray for the full selected trace, 11.35/11.29 us/ray for
+scalar/compact batch segments, and 34.97/34.02 us/pixel for scalar/fixed-output
+X-ray.  Fresh reference runs in the same window measured 86.0, 12.24/14.47,
+and 43.62/44.34 respectively.  Host variance remains visible, but the same
+outputs and the recovery across both rich and streaming consumers confirm that
+the avoidable resumable-state copying—not geometric work or scheduling—was the
+dominant local regression.
+
 The performance suite also now prints deterministic lattice-entry attribution
 for the two critical local cases.  The transformed inactive occurrence makes
 one entry call, tests one TLAS node, and is pruned before a leaf, candidate,
