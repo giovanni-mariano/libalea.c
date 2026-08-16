@@ -126,6 +126,20 @@ static void raycast_result_reset_counters(alea_raycast_result_t* result) {
     result->blas_cell_candidates = 0;
     result->blas_cells_tested = 0;
     result->blas_hits_before_dedup = 0;
+    result->owner_neighbor_attempts = 0;
+    result->owner_neighbor_hits = 0;
+    result->owner_path_attempts = 0;
+    result->owner_path_hits = 0;
+    result->owner_root_queries = 0;
+    result->owner_root_hits = 0;
+    result->owner_full_queries = 0;
+    result->owner_full_hits = 0;
+    result->boundary_event_enrichments = 0;
+    result->path_snapshot_copies = 0;
+    result->path_snapshot_entries = 0;
+    result->selected_intervals_yielded = 0;
+    result->result_buffer_growths = 0;
+    result->result_buffer_growth_bytes = 0;
     result->terminal_surfaces_tested = 0;
     result->lattice_surfaces_tested = 0;
     result->ancestor_surfaces_tested = 0;
@@ -175,8 +189,21 @@ void alea_raycast_result_reserve(alea_raycast_result_t* result,
     alea_vec_reserve(&result->segments, seg_cap, alea_ray_segment_t);
 }
 
+static void record_result_buffer_growth(alea_raycast_result_t* result,
+                                        size_t old_capacity,
+                                        size_t new_capacity,
+                                        size_t element_size) {
+    if (new_capacity <= old_capacity) return;
+    result->result_buffer_growths++;
+    result->result_buffer_growth_bytes +=
+        (uint64_t)(new_capacity - old_capacity) * element_size;
+}
+
 static int add_hit(alea_raycast_result_t* result, const alea_ray_hit_t* hit) {
+    size_t old_capacity = result->hits.capacity;
     int res = alea_vec_push(&result->hits, *hit, alea_ray_hit_t);
+    record_result_buffer_growth(result, old_capacity, result->hits.capacity,
+                                sizeof(alea_ray_hit_t));
     return res != 0 ? -1 : 0;
 }
 
@@ -241,7 +268,10 @@ static int add_segment(alea_raycast_result_t* result, const alea_ray_segment_t* 
             return -1;
         }
     }
+    size_t old_capacity = result->segments.capacity;
     int res = alea_vec_push(&result->segments, *seg, alea_ray_segment_t);
+    record_result_buffer_growth(result, old_capacity, result->segments.capacity,
+                                sizeof(alea_ray_segment_t));
     return res != 0 ? -1 : 0;
 }
 
@@ -337,10 +367,20 @@ static int capture_hier_path(alea_raycast_result_t* result,
         .count = (uint16_t)count,
     };
     for (size_t i = 0; i < count; ++i) {
-        if (alea_vec_push(&result->path_entries, entries[i], alea_ray_path_entry_t) != 0)
+        size_t old_capacity = result->path_entries.capacity;
+        int push_result = alea_vec_push(&result->path_entries, entries[i],
+                                        alea_ray_path_entry_t);
+        record_result_buffer_growth(result, old_capacity,
+                                    result->path_entries.capacity,
+                                    sizeof(alea_ray_path_entry_t));
+        if (push_result != 0)
             return -1;
     }
-    if (alea_vec_push(&result->paths, record, alea_ray_path_t) != 0)
+    size_t old_capacity = result->paths.capacity;
+    int push_result = alea_vec_push(&result->paths, record, alea_ray_path_t);
+    record_result_buffer_growth(result, old_capacity, result->paths.capacity,
+                                sizeof(alea_ray_path_t));
+    if (push_result != 0)
         return -1;
     *out_path_index = (uint32_t)(result->paths.count - 1);
     return 0;
@@ -1428,7 +1468,7 @@ static void raycast_lattice_walk(alea_system_t* sys,
     if (interval != 0 || t_exit <= t_enter) return;
 
     const int max_steps = lattice_raycast_step_limit(ray, cell, t_enter, t_exit);
-    alea_lattice_location_t previous;
+    alea_lattice_location_t previous = {0};
     int have_previous = 0;
     double t_current = t_enter;
     if (t_enter > t_min + RAY_EPSILON &&
@@ -2472,6 +2512,18 @@ static void alea_ray_walk_init(alea_ray_walk_t* state) {
     state->enter_event.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
     alea_matrix_identity(&state->enter_event.transform);
     state->iterations_remaining = 10000;
+}
+
+static void ray_path_copy_live(alea_hier_ray_path_t* dst,
+                               const alea_hier_ray_path_t* src) {
+    int count = src->count;
+    if (count < 0) count = 0;
+    if (count > ALEA_HIER_RAY_PATH_MAX) count = ALEA_HIER_RAY_PATH_MAX;
+    dst->count = count;
+    if (count > 0) {
+        memcpy(dst->entries, src->entries,
+               (size_t)count * sizeof(*dst->entries));
+    }
 }
 
 /* Map a primitive-local normal back to world space.
@@ -3662,6 +3714,7 @@ resolve_cell:;
 
         /* Try neighbor lookup first if we have previous cell and surface info */
         if (prev_cell_idx >= 0 && prev_surface_id > 0) {
+            result->owner_neighbor_attempts++;
             const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
             if (!use_hier_lookup || prev_cell->universe_id == 0) {
                 double px, py, pz;
@@ -3709,12 +3762,14 @@ resolve_cell:;
                     }
                 }
             }
+            if (found_via_neighbor) result->owner_neighbor_hits++;
         }
 
         /* In hierarchical mode, avoid a full root-to-deepest lookup when the
          * sampled point remains inside the cached placement path. */
         if (!found_via_neighbor && use_hier_lookup && prev_cell_idx >= 0 &&
             (size_t)prev_cell_idx < alea_vec_count(&sys->cells)) {
+            result->owner_path_attempts++;
             const alea_cell_entry_t* prev_cell = &sys->cells.data[prev_cell_idx];
             double px, py, pz;
             alea_ray_point_at(ray, t_sample, &px, &py, &pz);
@@ -3738,6 +3793,7 @@ resolve_cell:;
                 material_id = prev_cell->material_id;
                 density = prev_cell->density;
                 found_via_neighbor = 1;
+                result->owner_path_hits++;
             }
         }
 
@@ -3754,15 +3810,18 @@ resolve_cell:;
                 if (cell_idx == -2) return -1;
             }
             if (use_hier_lookup && cell_idx < 0) {
+                result->owner_root_queries++;
                 cell_idx = find_cell_from_root_universe(
                     sys, px, py, pz, prev_surface_id,
                     &material_id, &density,
                     &cell_transform, &lattice_cell_index,
                     &lattice_transform, current_path);
                 if (cell_idx == -2) return -1;
+                if (cell_idx >= 0) result->owner_root_hits++;
             }
             if (cell_idx < 0) {
                 result->point_lookups++;
+                if (use_hier_lookup) result->owner_full_queries++;
                 cell_idx = use_hier_lookup
                     ? find_cell_at_point_hier_path(
                         sys, px, py, pz, &material_id, &density,
@@ -3770,6 +3829,8 @@ resolve_cell:;
                         &lattice_transform, current_path)
                     : find_cell_at_point(sys, px, py, pz,
                                          &material_id, &density);
+                if (use_hier_lookup && cell_idx >= 0)
+                    result->owner_full_hits++;
                 if (use_hier_lookup && cell_idx < 0) current_path->count = 0;
             }
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
@@ -4056,7 +4117,10 @@ resolve_cell:;
                         saved_hit_surface_id = hit_surface_id;
                         saved_next_enter_surface_id = next_enter_surface_id;
                         saved_bevent = bevent;
-                        saved_path = *current_path;
+                        ray_path_copy_live(&saved_path, current_path);
+                        result->path_snapshot_copies++;
+                        result->path_snapshot_entries +=
+                            (uint64_t)saved_path.count;
                     }
                     resolve_attempt++;
                     t_sample = t_probe;
@@ -4077,7 +4141,7 @@ resolve_cell:;
                     hit_surface_id = saved_hit_surface_id;
                     next_enter_surface_id = saved_next_enter_surface_id;
                     bevent = saved_bevent;
-                    *current_path = saved_path;
+                    ray_path_copy_live(current_path, &saved_path);
                 }
             }
         } else if (resolve_attempt >= 1 && saved_valid) {
@@ -4091,7 +4155,7 @@ resolve_cell:;
             hit_surface_id = saved_hit_surface_id;
             next_enter_surface_id = saved_next_enter_surface_id;
             bevent = saved_bevent;
-            *current_path = saved_path;
+            ray_path_copy_live(current_path, &saved_path);
         }
 
         bevent.t = t_next;
@@ -4117,6 +4181,8 @@ resolve_cell:;
         /* The selected-interval facade consumes the geometric result before
          * any compatibility publication or query-specific stop policy. */
         if (out_selected) {
+            result->selected_intervals_yielded++;
+            if (need_boundary_event) result->boundary_event_enrichments++;
             prev_cell_idx = cell_idx;
             if (next_enter_surface_id < 0)
                 next_enter_surface_id = hit_surface_id;

@@ -847,6 +847,25 @@ TEST(perf_compact_hier_batch_20_shells) {
     printf("[%zu published bytes, %zu known transient input bytes]  ",
            batch_published_bytes(batch, options.fields),
            n_rays * 6 * sizeof(double));
+    alea_raycast_batch_work_stats_t work_stats;
+    ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(
+                  batch, &work_stats), 0);
+    printf("[max owner neighbor=%llu/%llu path=%llu/%llu root=%llu/%llu "
+           "full=%llu/%llu boundary=%llu snapshots=%llu/%llu "
+           "growths=%llu/%lluB]  ",
+           (unsigned long long)work_stats.max_owner_neighbor_hits,
+           (unsigned long long)work_stats.max_owner_neighbor_attempts,
+           (unsigned long long)work_stats.max_owner_path_hits,
+           (unsigned long long)work_stats.max_owner_path_attempts,
+           (unsigned long long)work_stats.max_owner_root_hits,
+           (unsigned long long)work_stats.max_owner_root_queries,
+           (unsigned long long)work_stats.max_owner_full_hits,
+           (unsigned long long)work_stats.max_owner_full_queries,
+           (unsigned long long)work_stats.max_boundary_event_enrichments,
+           (unsigned long long)work_stats.max_path_snapshot_copies,
+           (unsigned long long)work_stats.max_path_snapshot_entries,
+           (unsigned long long)work_stats.max_result_buffer_growths,
+           (unsigned long long)work_stats.max_result_buffer_growth_bytes);
 
     alea_raycast_batch_result_destroy(batch);
     alea_raycast_result_destroy(single);
@@ -1170,10 +1189,68 @@ TEST(perf_selected_segment_publication_vs_streaming) {
            raycast_result_retained_bytes(&streamed));
     ASSERT_EQ(streamed_segments, rich_segments);
     ASSERT_EQ(streamed.segments.count, 0);
+    printf("[owner neighbor=%llu/%llu path=%llu/%llu root=%llu/%llu "
+           "full=%llu/%llu boundary=%llu snapshots=%llu/%llu "
+           "growths=%llu/%lluB]  ",
+           (unsigned long long)streamed.owner_neighbor_hits,
+           (unsigned long long)streamed.owner_neighbor_attempts,
+           (unsigned long long)streamed.owner_path_hits,
+           (unsigned long long)streamed.owner_path_attempts,
+           (unsigned long long)streamed.owner_root_hits,
+           (unsigned long long)streamed.owner_root_queries,
+           (unsigned long long)streamed.owner_full_hits,
+           (unsigned long long)streamed.owner_full_queries,
+           (unsigned long long)streamed.boundary_event_enrichments,
+           (unsigned long long)streamed.path_snapshot_copies,
+           (unsigned long long)streamed.path_snapshot_entries,
+           (unsigned long long)streamed.result_buffer_growths,
+           (unsigned long long)streamed.result_buffer_growth_bytes);
+    ASSERT_EQ(streamed.owner_neighbor_attempts, rich.owner_neighbor_attempts);
+    ASSERT_EQ(streamed.owner_neighbor_hits, rich.owner_neighbor_hits);
+    ASSERT_EQ(streamed.owner_path_attempts, rich.owner_path_attempts);
+    ASSERT_EQ(streamed.owner_path_hits, rich.owner_path_hits);
+    ASSERT_EQ(streamed.owner_root_queries, rich.owner_root_queries);
+    ASSERT_EQ(streamed.owner_root_hits, rich.owner_root_hits);
+    ASSERT_EQ(streamed.owner_full_queries, rich.owner_full_queries);
+    ASSERT_EQ(streamed.owner_full_hits, rich.owner_full_hits);
+    ASSERT_EQ(streamed.boundary_event_enrichments,
+              rich.boundary_event_enrichments);
+    ASSERT_EQ(streamed.path_snapshot_copies, 0);
+    ASSERT_EQ(rich.path_snapshot_copies, 0);
+    ASSERT_EQ(streamed.result_buffer_growths, 0);
+    ASSERT_EQ(rich.result_buffer_growths, 0);
+    ASSERT_EQ(streamed.selected_intervals_yielded,
+              rich.selected_intervals_yielded);
 
     alea_raycast_result_free(&streamed);
     alea_raycast_result_free(&rich);
     alea_destroy(sys);
+}
+
+TEST(perf_query_lowering) {
+    const int iterations = 1000000;
+    const alea_ray_query_t query = {
+        .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
+        .backend = ALEA_RAY_QUERY_BACKEND_AUTO,
+        .fields = ALEA_RAY_QUERY_FIELD_CELL_ID |
+                  ALEA_RAY_QUERY_FIELD_MATERIAL_ID,
+        .t_min = 0.0,
+        .t_max = 100.0,
+        .material_filter = -1
+    };
+    alea_ray_plan_t plan;
+    uint64_t checksum = 0;
+    int status = 0;
+    {
+        BENCH_START();
+        for (int i = 0; i < iterations; i++) {
+            status |= alea_ray_query_lower(&query, &plan);
+            checksum += (uint64_t)plan.engine + plan.requirements.need_selected_owner;
+        }
+        BENCH_END("semantic query lowering", iterations);
+    }
+    ASSERT_EQ(status, 0);
+    ASSERT_EQ(checksum, (uint64_t)iterations);
 }
 
 TEST(perf_query_cache_prepare_audit) {

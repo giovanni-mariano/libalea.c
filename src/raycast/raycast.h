@@ -256,6 +256,23 @@ struct alea_raycast_result {
     size_t blas_cells_tested;
     size_t blas_hits_before_dedup;
 
+    /* Selected-walker ownership and optional-work attribution.  These count
+     * coarse decisions only; no timers or allocator hooks enter the hot loop. */
+    uint64_t owner_neighbor_attempts;
+    uint64_t owner_neighbor_hits;
+    uint64_t owner_path_attempts;
+    uint64_t owner_path_hits;
+    uint64_t owner_root_queries;
+    uint64_t owner_root_hits;
+    uint64_t owner_full_queries;
+    uint64_t owner_full_hits;
+    uint64_t boundary_event_enrichments;
+    uint64_t path_snapshot_copies;
+    uint64_t path_snapshot_entries;
+    uint64_t selected_intervals_yielded;
+    uint64_t result_buffer_growths;
+    uint64_t result_buffer_growth_bytes;
+
     /* Phase 2 per-ray surface-test instrumentation (cheap, always-on).
      * Attributes the surfaces_tested total across the cell-aware stepper's
      * sources and characterises the crossed cells, so an acceleration
@@ -449,6 +466,20 @@ void alea_raycast_batch_result_swap_internal(
  * the public batch ABI while allowing benchmark and diagnostic code to expose
  * outlier rays instead of hiding them behind aggregate throughput. */
 typedef struct {
+    uint64_t max_owner_neighbor_attempts;
+    uint64_t max_owner_neighbor_hits;
+    uint64_t max_owner_path_attempts;
+    uint64_t max_owner_path_hits;
+    uint64_t max_owner_root_queries;
+    uint64_t max_owner_root_hits;
+    uint64_t max_owner_full_queries;
+    uint64_t max_owner_full_hits;
+    uint64_t max_boundary_event_enrichments;
+    uint64_t max_path_snapshot_copies;
+    uint64_t max_path_snapshot_entries;
+    uint64_t max_selected_intervals_yielded;
+    uint64_t max_result_buffer_growths;
+    uint64_t max_result_buffer_growth_bytes;
     uint64_t max_lattice_entry_calls;
     uint64_t max_lattice_entry_tlas_nodes_tested;
     uint64_t max_lattice_entry_tlas_leaves_visited;

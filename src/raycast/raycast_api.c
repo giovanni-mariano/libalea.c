@@ -398,6 +398,22 @@ static void batch_work_stats_accumulate(
     const alea_raycast_result_t* trace) {
 #define BATCH_WORK_MAX(field, source) \
     do { if (stats->field < trace->source) stats->field = trace->source; } while (0)
+    BATCH_WORK_MAX(max_owner_neighbor_attempts, owner_neighbor_attempts);
+    BATCH_WORK_MAX(max_owner_neighbor_hits, owner_neighbor_hits);
+    BATCH_WORK_MAX(max_owner_path_attempts, owner_path_attempts);
+    BATCH_WORK_MAX(max_owner_path_hits, owner_path_hits);
+    BATCH_WORK_MAX(max_owner_root_queries, owner_root_queries);
+    BATCH_WORK_MAX(max_owner_root_hits, owner_root_hits);
+    BATCH_WORK_MAX(max_owner_full_queries, owner_full_queries);
+    BATCH_WORK_MAX(max_owner_full_hits, owner_full_hits);
+    BATCH_WORK_MAX(max_boundary_event_enrichments,
+                   boundary_event_enrichments);
+    BATCH_WORK_MAX(max_path_snapshot_copies, path_snapshot_copies);
+    BATCH_WORK_MAX(max_path_snapshot_entries, path_snapshot_entries);
+    BATCH_WORK_MAX(max_selected_intervals_yielded,
+                   selected_intervals_yielded);
+    BATCH_WORK_MAX(max_result_buffer_growths, result_buffer_growths);
+    BATCH_WORK_MAX(max_result_buffer_growth_bytes, result_buffer_growth_bytes);
     BATCH_WORK_MAX(max_lattice_entry_calls, lattice_entry_calls);
     BATCH_WORK_MAX(max_lattice_entry_tlas_nodes_tested,
                    lattice_entry_tlas_nodes_tested);

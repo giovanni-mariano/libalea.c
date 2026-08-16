@@ -144,6 +144,28 @@ avoiding 3,584 retained result bytes.  This is not yet a controlled regression
 threshold, but it confirms the renderer migration removes measurable
 publication work without changing selected traversal semantics.
 
+Fine-grained, counter-only attribution now covers each selected-owner
+resolution tier (neighbor, coherent path, root universe, and full hierarchy),
+selected boundary enrichment, rare retry-path snapshots including the live
+entry count, selected intervals yielded, and result-vector capacity growths
+including bytes.  Batch reports retain the maximum per ray so outliers are not
+hidden by aggregate throughput.  On the 20-shell worst ray, neighbor reuse
+resolved 19 of 39 attempts, coherent-path reuse resolved 0 of 20, root lookup
+resolved 20 of 22, and the full fallback resolved 0 of 2.  The ray yielded and
+enriched 41 selected intervals, took no retry snapshot, and a fresh compact
+trace grew its result storage seven times by 3,584 bytes.  The warmed reusable
+rich trace and fixed-output visitor both grew no result storage.
+
+Three warmed portable-release runs with this attribution had medians of 53.44
+us/ray for the full selected trace, 8.78/11.32 us/ray for scalar/compact batch
+segments, 32.36/32.39 us/pixel for scalar/fixed-output X-ray, and 54.87/53.49
+us/ray for rich/streamed selected publication.  Semantic query lowering alone
+had a 12.95 ns median over one million calls.  Host variance prevents treating
+the improvement over the earlier instrument-free candidate as a speedup, but
+these samples expose no recovered-path regression from the coarse counters.
+The release-only lattice-walk maybe-uninitialized warning was also removed by
+initializing the prior lattice location before its guarded first use.
+
 ## 2. Decision summary
 
 The architecture has two scalar traversal engines, not one monolithic walker:
