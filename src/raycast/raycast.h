@@ -719,6 +719,17 @@ int alea_raycast_hier_visit_segments_nocache(
     alea_raycast_result_t* scratch,
     alea_raycast_selected_segment_callback_t callback, void* context);
 
+/* Internal fixed-output batch companion to the scalar visitor.  The callback
+ * may run concurrently for different ray_index values and must therefore use
+ * per-ray output slots or otherwise provide its own synchronization. */
+typedef int (*alea_raycast_batch_selected_segment_callback_t)(
+    void* context, size_t ray_index, const alea_ray_segment_t* segment);
+
+int alea_raycast_hier_visit_segments_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, double t_max,
+    alea_raycast_batch_selected_segment_callback_t callback, void* context);
+
 /**
  * Buffer-reuse canonical global raycast.
  *

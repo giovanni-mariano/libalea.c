@@ -727,6 +727,17 @@ static int render_xray_accumulate_segment(
     return 0;
 }
 
+typedef struct {
+    render_xray_accumulator_t* accumulators;
+} render_xray_batch_context_t;
+
+static int render_xray_accumulate_batch_segment(
+    void* context, size_t ray_index, const alea_ray_segment_t* segment) {
+    render_xray_batch_context_t* batch = context;
+    return render_xray_accumulate_segment(&batch->accumulators[ray_index],
+                                          segment);
+}
+
 static void render_pixel_xray(alea_system_t* sys,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
@@ -775,10 +786,6 @@ static int render_scene_xray_batched(alea_system_t* sys,
     const int tiles_x = (w + tile - 1) / tile;
     const int tiles_y = (h + tile - 1) / tile;
     const int n_tiles = tiles_x * tiles_y;
-    const alea_raycast_batch_options_t options = {
-        .struct_size = sizeof(options),
-        .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY
-    };
 
     for (int tile_index = 0; tile_index < n_tiles; tile_index++) {
         const int tx = tile_index % tiles_x, ty = tile_index / tiles_x;
@@ -788,10 +795,11 @@ static int render_scene_xray_batched(alea_system_t* sys,
         const size_t ray_count = (size_t)(x1 - x0) * (size_t)(y1 - y0);
         double* origins = malloc(ray_count * 3 * sizeof(*origins));
         double* directions = malloc(ray_count * 3 * sizeof(*directions));
-        alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
-        if (!origins || !directions || !batch) {
+        render_xray_accumulator_t* accumulators = calloc(
+            ray_count ? ray_count : 1, sizeof(*accumulators));
+        if (!origins || !directions || !accumulators) {
             free(origins); free(directions);
-            alea_raycast_batch_result_destroy(batch);
+            free(accumulators);
             return -1;
         }
         size_t ray_index = 0;
@@ -804,10 +812,16 @@ static int render_scene_xray_batched(alea_system_t* sys,
                                   &directions[ray_index * 3],
                                   &directions[ray_index * 3 + 1],
                                   &directions[ray_index * 3 + 2]);
+                accumulators[ray_index].cfg = cfg;
+                accumulators[ray_index].cell_id = -1;
             }
         }
-        const int batch_rc = alea_raycast_hier_batch(
-            sys, origins, directions, ray_count, 0, &options, batch);
+        render_xray_batch_context_t batch_context = {
+            .accumulators = accumulators
+        };
+        const int batch_rc = alea_raycast_hier_visit_segments_batch_nocache(
+            sys, origins, directions, ray_count, 0,
+            render_xray_accumulate_batch_segment, &batch_context);
         free(origins); free(directions);
         if (batch_rc != 0) {
             /* Retain the established best-effort renderer behavior if a
@@ -826,45 +840,18 @@ static int render_scene_xray_batched(alea_system_t* sys,
                 fb->cell_id[pixel] = cell_id;
             }
             alea_raycast_result_free(&fallback);
-            alea_raycast_batch_result_destroy(batch);
+            free(accumulators);
             continue;
-        }
-        const uint64_t* offsets = alea_raycast_batch_ray_offsets(batch);
-        const double* enters = alea_raycast_batch_t_enter(batch);
-        const double* exits = alea_raycast_batch_t_exit(batch);
-        const int32_t* cells = alea_raycast_batch_cell_ids(batch);
-        const int32_t* materials = alea_raycast_batch_material_ids(batch);
-        const double* densities = alea_raycast_batch_densities(batch);
-        if (!offsets || !enters || !exits || !cells || !materials || !densities) {
-            alea_raycast_batch_result_destroy(batch);
-            return -1;
         }
         ray_index = 0;
         for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++, ray_index++) {
-            float accum_r = 0, accum_g = 0, accum_b = 0, accum_alpha = 0;
-            int cell_id = -1;
-            for (size_t i = offsets[ray_index]; i < offsets[ray_index + 1]; i++) {
-                if (cells[i] < 0 || materials[i] == 0) continue;
-                const double len = exits[i] - enters[i];
-                if (len <= 0 || len > 1e10) continue;
-                float alpha = (float)(fabs(densities[i]) * len * cfg->xray_density_scale);
-                if (alpha > 1.0f) alpha = 1.0f;
-                float cr, cg, cb;
-                const int color_id = cfg->color_mode == RENDER_COLOR_CELL ?
-                    cells[i] : materials[i];
-                render_get_color(color_id, cfg->color_mode, cfg, &cr, &cg, &cb);
-                const float factor = alpha * (1.0f - accum_alpha);
-                accum_r += cr * factor; accum_g += cg * factor; accum_b += cb * factor;
-                accum_alpha += factor;
-                if (accum_alpha > 0.99f) break;
-                if (cell_id < 0) cell_id = cells[i];
-            }
+            const render_xray_accumulator_t* accum = &accumulators[ray_index];
             const size_t pixel = (size_t)y * w + x;
-            const float bg_factor = 1.0f - accum_alpha;
-            fb->color[pixel * 3] = accum_r + cfg->background[0] * bg_factor;
-            fb->color[pixel * 3 + 1] = accum_g + cfg->background[1] * bg_factor;
-            fb->color[pixel * 3 + 2] = accum_b + cfg->background[2] * bg_factor;
-            fb->cell_id[pixel] = cell_id;
+            const float bg_factor = 1.0f - accum->accum_alpha;
+            fb->color[pixel * 3] = accum->accum_r + cfg->background[0] * bg_factor;
+            fb->color[pixel * 3 + 1] = accum->accum_g + cfg->background[1] * bg_factor;
+            fb->color[pixel * 3 + 2] = accum->accum_b + cfg->background[2] * bg_factor;
+            fb->cell_id[pixel] = accum->cell_id;
             if (fb->material_id) fb->material_id[pixel] = 0;
             if (fb->depth) fb->depth[pixel] = 1e30f;
             if (fb->normal) {
@@ -873,7 +860,7 @@ static int render_scene_xray_batched(alea_system_t* sys,
                 fb->normal[pixel * 3 + 2] = 0;
             }
         }
-        alea_raycast_batch_result_destroy(batch);
+        free(accumulators);
         fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)", tile_index + 1, n_tiles,
                 100.0 * (tile_index + 1) / n_tiles);
     }

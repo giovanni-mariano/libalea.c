@@ -4655,3 +4655,53 @@ int alea_raycast_hier_visit_segments_nocache(
         if (callback_rc > 0 || rc == 0) return 0;
     }
 }
+
+typedef struct {
+    alea_raycast_batch_selected_segment_callback_t callback;
+    void* context;
+    size_t ray_index;
+} raycast_batch_segment_bridge_t;
+
+static int raycast_batch_segment_bridge(void* context,
+                                        const alea_ray_segment_t* segment) {
+    raycast_batch_segment_bridge_t* bridge = context;
+    return bridge->callback(bridge->context, bridge->ray_index, segment);
+}
+
+int alea_raycast_hier_visit_segments_batch_nocache(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, double t_max,
+    alea_raycast_batch_selected_segment_callback_t callback, void* context) {
+    if (!sys || !origins_xyz || !directions_xyz || !callback ||
+        !isfinite(t_max) || t_max < 0.0)
+        return -1;
+    if (alea_system_prepare_query_caches(sys,
+            ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_CELL_SURFACES) != 0)
+        return -1;
+    atomic_int failed;
+    atomic_init(&failed, 0);
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t i = 0; i < ray_count; i++) {
+        if (atomic_load(&failed) || alea_interrupted()) continue;
+        const double* origin = &origins_xyz[i * 3];
+        const double* direction = &directions_xyz[i * 3];
+        alea_ray_t ray;
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        raycast_batch_segment_bridge_t bridge = {
+            .callback = callback, .context = context, .ray_index = i
+        };
+        int rc = alea_ray_init(&ray, origin[0], origin[1], origin[2],
+                               direction[0], direction[1], direction[2]);
+        if (rc == 0) {
+            rc = alea_raycast_hier_visit_segments_nocache(
+                sys, &ray, t_max, &scratch, raycast_batch_segment_bridge,
+                &bridge);
+        }
+        alea_raycast_result_free(&scratch);
+        if (rc != 0) atomic_store(&failed, 1);
+    }
+    return atomic_load(&failed) || alea_interrupted() ? -1 : 0;
+}

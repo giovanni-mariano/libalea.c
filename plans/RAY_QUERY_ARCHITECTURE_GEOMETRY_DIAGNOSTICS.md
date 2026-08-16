@@ -73,7 +73,9 @@ transformed nested-lattice fixture.  Phase 6 has begun by consolidating AUTO
 and FAST_FORWARD first-cell, first-visible, and any-hit dispatch onto their
 shared selected-walker implementation.  Scalar X-ray compositing now streams
 selected intervals directly and can stop at saturation without publishing a
-per-pixel segment vector.  Renderer/batch consolidation, performance
+per-pixel segment vector.  Compact X-ray tiles use the same internal
+ray-indexed interval visitor and fixed accumulator slots rather than a public
+batch-result CSR round trip.  Renderer/batch consolidation, performance
 recovery, and executor work remain later phases.
 
 ## 2. Decision summary

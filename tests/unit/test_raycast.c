@@ -250,6 +250,21 @@ static int probe_selected_segment(void* context,
     return 0;
 }
 
+typedef struct {
+    size_t counts[2];
+    double material_lengths[2];
+} batch_selected_segment_probe_t;
+
+static int probe_batch_selected_segment(void* context, size_t ray_index,
+                                        const alea_ray_segment_t* segment) {
+    batch_selected_segment_probe_t* probe = context;
+    if (ray_index >= 2) return -1;
+    probe->counts[ray_index]++;
+    if (segment->cell_id >= 0 && segment->material_id != 0)
+        probe->material_lengths[ray_index] += segment->t_exit - segment->t_enter;
+    return 0;
+}
+
 TEST(raycast_simple_geometry) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -308,6 +323,30 @@ TEST(raycast_selected_segment_visitor_streams_without_publication) {
     ASSERT_EQ(scratch.hits.count, 0);
 
     alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+TEST(raycast_batch_selected_segment_visitor_preserves_ray_slots) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    ASSERT(surface >= 0);
+    const alea_node_id_t inside = alea_surface_at(sys, surface)->neg_node;
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, -2.7, 0) >= 0);
+
+    const double origins[6] = { -10, 0, 0, 20, 0, 0 };
+    const double directions[6] = { 1, 0, 0, 1, 0, 0 };
+    batch_selected_segment_probe_t probe = {0};
+    ASSERT_EQ(alea_raycast_hier_visit_segments_batch_nocache(
+                  sys, origins, directions, 2, 100,
+                  probe_batch_selected_segment, &probe), 0);
+    ASSERT_EQ(probe.counts[0], 3);
+    ASSERT_NEAR(probe.material_lengths[0], 10.0, EPS);
+    ASSERT_EQ(probe.counts[1], 1);
+    ASSERT_NEAR(probe.material_lengths[1], 0.0, EPS);
+
     alea_destroy(sys);
 }
 
