@@ -10,6 +10,12 @@ part of the elapsed-time regression; the remaining baseline gap is tracked.
 **Reference baseline:** `9313e4e` (2026-08-02, repeating `LAT=1` fill fix)
 **Primary workload:** `/home/giovanni/projects/test_aleathor/mcnp_files/E-lite_R250630.mcnp`
 
+**Comparability:** The recorded E-lite timings were obtained on a different
+computer from the current checkout.  They are historical evidence and may be
+used only for paired baseline/current runs under the same host and build
+matrix; they must not be compared numerically with the local synthetic-fixture
+measurements in the architecture plan.
+
 ## 1. Problem statement
 
 On the E-lite model, both of these operations are approximately five times slower than with the 2026-08-02 libalea revision:

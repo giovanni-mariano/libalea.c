@@ -93,6 +93,13 @@ us/ray; packet/scalar first-visible 6.0/6.8 us/ray; packet/scalar any-hit
 comparison point only: compiler flags, affinity, and the optional E-lite input
 are not yet controlled or available in this checkout.
 
+The historical E-lite timings in the focused performance subplan were measured
+on a different computer.  They remain useful for paired A/B comparisons made
+there, but are not numerically comparable to this local fixture baseline and
+must not be used as a local acceptance threshold.  Any E-lite recovery claim
+requires repeated baseline/current runs on the same host, compiler/build
+configuration, thread setting, affinity policy, and warmed-cache protocol.
+
 The performance suite also now prints deterministic lattice-entry attribution
 for the two critical local cases.  The transformed inactive occurrence makes
 one entry call, tests one TLAS node, and is pruned before a leaf, candidate,
