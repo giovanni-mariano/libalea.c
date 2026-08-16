@@ -1,6 +1,6 @@
 # Ray-query architecture with first-class geometry diagnostics
 
-**Status:** In progress — Phases 3–7 substantially implemented; Phase 9 measurement active
+**Status:** In progress — Phases 3–8 substantially implemented; Phase 9 measurement active
 
 **Priority:** Correct architecture first; preserve and recover performance within
 that architecture
@@ -73,9 +73,10 @@ transformed nested-lattice fixture.  Phase 6 has begun by consolidating AUTO
 and FAST_FORWARD first-cell, first-visible, and any-hit dispatch onto their
 shared selected-walker implementation.  Scalar X-ray compositing now streams
 selected intervals directly and can stop at saturation without publishing a
-per-pixel segment vector.  Compact X-ray tiles use the same internal
-ray-indexed interval visitor and fixed accumulator slots rather than a public
-batch-result CSR round trip.  Renderer/batch consolidation, performance
+per-pixel segment vector.  Compact X-ray tiles stream into fixed accumulators
+rather than a public batch-result CSR round trip.  X-ray rendering now owns one frame-level OpenMP
+tile region with serial worker-local ray consumers, rather than opening a
+parallel batch region for every tile.  Performance
 recovery, and executor work remain later phases.
 
 The X-ray performance fixture now measures the fixed-output batch visitor used

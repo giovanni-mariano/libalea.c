@@ -727,17 +727,6 @@ static int render_xray_accumulate_segment(
     return 0;
 }
 
-typedef struct {
-    render_xray_accumulator_t* accumulators;
-} render_xray_batch_context_t;
-
-static int render_xray_accumulate_batch_segment(
-    void* context, size_t ray_index, const alea_ray_segment_t* segment) {
-    render_xray_batch_context_t* batch = context;
-    return render_xray_accumulate_segment(&batch->accumulators[ray_index],
-                                          segment);
-}
-
 static void render_pixel_xray(alea_system_t* sys,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
@@ -773,10 +762,9 @@ static void render_pixel_xray(alea_system_t* sys,
     *out_cell_id = accum.cell_id;
 }
 
-/* Compact X-ray tiles are scheduled outside the batch executor's OpenMP
- * region.  That keeps one parallel level while avoiding per-pixel result
- * vectors and nested parallel tracing.  Lattice and AA paths intentionally
- * retain the canonical scalar renderer below. */
+/* X-ray owns one frame-level tile region.  Each tile uses a serial selected
+ * interval consumer with worker-local scratch, avoiding a nested OpenMP batch
+ * region per tile as well as any public batch-result publication. */
 static int render_scene_xray_batched(alea_system_t* sys,
                                      const render_config_t* cfg,
                                      const render_camera_t* cam,
@@ -787,71 +775,26 @@ static int render_scene_xray_batched(alea_system_t* sys,
     const int tiles_y = (h + tile - 1) / tile;
     const int n_tiles = tiles_x * tiles_y;
 
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic, 1)
+#endif
     for (int tile_index = 0; tile_index < n_tiles; tile_index++) {
         const int tx = tile_index % tiles_x, ty = tile_index / tiles_x;
         const int x0 = tx * tile, y0 = ty * tile;
         const int x1 = (x0 + tile < w) ? x0 + tile : w;
         const int y1 = (y0 + tile < h) ? y0 + tile : h;
-        const size_t ray_count = (size_t)(x1 - x0) * (size_t)(y1 - y0);
-        double* origins = malloc(ray_count * 3 * sizeof(*origins));
-        double* directions = malloc(ray_count * 3 * sizeof(*directions));
-        render_xray_accumulator_t* accumulators = calloc(
-            ray_count ? ray_count : 1, sizeof(*accumulators));
-        if (!origins || !directions || !accumulators) {
-            free(origins); free(directions);
-            free(accumulators);
-            return -1;
-        }
-        size_t ray_index = 0;
-        for (int y = y0; y < y1; y++) {
-            for (int x = x0; x < x1; x++, ray_index++) {
-                render_camera_ray(cam, w, h, x + 0.5, y + 0.5,
-                                  &origins[ray_index * 3],
-                                  &origins[ray_index * 3 + 1],
-                                  &origins[ray_index * 3 + 2],
-                                  &directions[ray_index * 3],
-                                  &directions[ray_index * 3 + 1],
-                                  &directions[ray_index * 3 + 2]);
-                accumulators[ray_index].cfg = cfg;
-                accumulators[ray_index].cell_id = -1;
-            }
-        }
-        render_xray_batch_context_t batch_context = {
-            .accumulators = accumulators
-        };
-        const int batch_rc = alea_raycast_hier_visit_segments_batch_nocache(
-            sys, origins, directions, ray_count, 0,
-            render_xray_accumulate_batch_segment, &batch_context);
-        free(origins); free(directions);
-        if (batch_rc != 0) {
-            /* Retain the established best-effort renderer behavior if a
-             * compact allocation or trace fails for this tile. */
-            alea_raycast_result_t fallback;
-            alea_raycast_result_init(&fallback);
-            ray_index = 0;
-            for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++, ray_index++) {
-                const size_t pixel = (size_t)y * w + x;
-                float color[3]; int cell_id;
-                render_pixel_xray(sys, cfg, cam, x + 0.5, y + 0.5, w, h,
-                                  &fallback, color, &cell_id);
-                fb->color[pixel * 3] = color[0];
-                fb->color[pixel * 3 + 1] = color[1];
-                fb->color[pixel * 3 + 2] = color[2];
-                fb->cell_id[pixel] = cell_id;
-            }
-            alea_raycast_result_free(&fallback);
-            free(accumulators);
-            continue;
-        }
-        ray_index = 0;
-        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++, ray_index++) {
-            const render_xray_accumulator_t* accum = &accumulators[ray_index];
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
             const size_t pixel = (size_t)y * w + x;
-            const float bg_factor = 1.0f - accum->accum_alpha;
-            fb->color[pixel * 3] = accum->accum_r + cfg->background[0] * bg_factor;
-            fb->color[pixel * 3 + 1] = accum->accum_g + cfg->background[1] * bg_factor;
-            fb->color[pixel * 3 + 2] = accum->accum_b + cfg->background[2] * bg_factor;
-            fb->cell_id[pixel] = accum->cell_id;
+            float color[3];
+            int cell_id;
+            render_pixel_xray(sys, cfg, cam, x + 0.5, y + 0.5, w, h,
+                              &scratch, color, &cell_id);
+            fb->color[pixel * 3] = color[0];
+            fb->color[pixel * 3 + 1] = color[1];
+            fb->color[pixel * 3 + 2] = color[2];
+            fb->cell_id[pixel] = cell_id;
             if (fb->material_id) fb->material_id[pixel] = 0;
             if (fb->depth) fb->depth[pixel] = 1e30f;
             if (fb->normal) {
@@ -860,9 +803,11 @@ static int render_scene_xray_batched(alea_system_t* sys,
                 fb->normal[pixel * 3 + 2] = 0;
             }
         }
-        free(accumulators);
+#ifndef _OPENMP
         fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)", tile_index + 1, n_tiles,
                 100.0 * (tile_index + 1) / n_tiles);
+#endif
+        alea_raycast_result_free(&scratch);
     }
     fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
     return 0;
