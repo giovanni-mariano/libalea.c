@@ -83,6 +83,16 @@ The X-ray performance fixture now measures the fixed-output batch visitor used
 by compact tiles, rather than the retired CSR publication route.  Its timings
 are informational until repeated under a controlled benchmark protocol.
 
+### Local Phase 9 baseline (2026-08-16)
+
+Three warmed, single-thread fixture runs on this checkout produced these median
+costs: 20-shell full trace 146.2 us/ray versus early first-visible 12.3
+us/ray; packet/scalar first-visible 6.0/6.8 us/ray; packet/scalar any-hit
+5.6/6.7 us/ray; scalar/fixed-output X-ray visitor 73.5/72.4 us/ray; and the
+96x96 fixed-tile X-ray frame 38.2 us/pixel.  These figures establish a local
+comparison point only: compiler flags, affinity, and the optional E-lite input
+are not yet controlled or available in this checkout.
+
 ## 2. Decision summary
 
 The architecture has two scalar traversal engines, not one monolithic walker:
