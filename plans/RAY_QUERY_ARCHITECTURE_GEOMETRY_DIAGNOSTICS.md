@@ -100,6 +100,19 @@ must not be used as a local acceptance threshold.  Any E-lite recovery claim
 requires repeated baseline/current runs on the same host, compiler/build
 configuration, thread setting, affinity policy, and warmed-cache protocol.
 
+### Same-host release comparison (2026-08-16)
+
+Three warmed `RELEASE=1 PORTABLE=1` runs compared this branch with
+`feature/unified-ray-query` (`3858845`) in isolated worktrees on this host.
+The current branch retained identical 20-shell segment and step counts, but
+its median full selected trace was 114.4 versus 86.0 us/ray (+33%).  Scalar
+first-visible was 9.03 versus 8.14 us/ray (+11%); scalar/compact batch segment
+traces were 14.88/16.44 versus 11.91/12.80 us/ray (+25%/+28%); and the shared
+X-ray scalar/fixed-output fixture was 56.91/59.67 versus 43.37/45.19 us/pixel
+(+31%/+32%).  This is a same-work regression signal, not an E-lite result;
+the retained-output semantics must remain intact while Phase 9 attributes and
+recovers the added overhead.
+
 The performance suite also now prints deterministic lattice-entry attribution
 for the two critical local cases.  The transformed inactive occurrence makes
 one entry call, tests one TLAS node, and is pruned before a leaf, candidate,
