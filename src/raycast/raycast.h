@@ -913,6 +913,54 @@ int alea_ray_coverage_rows_serial_reuse_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_row_interval_callback_t callback, void* context);
 
+/* Compact scalar coverage-slice publication.  These are internal result
+ * types until the Phase 11 installed API stabilizes.  All arrays are owned by
+ * the result and are published transactionally by the serial builder. */
+typedef struct {
+    size_t max_rows;
+    size_t max_intervals;
+    size_t max_owners;
+    size_t max_bytes;
+} alea_ray_coverage_slice_limits_t;
+
+typedef struct {
+    size_t row_count;
+    size_t interval_count;
+    size_t owner_count;
+    size_t* row_offsets;              /* row_count + 1 */
+    uint8_t* row_direction_tags;      /* row_count */
+    double* row_transverse_coordinates; /* row_count */
+    double* t_enter;                  /* interval_count */
+    double* t_exit;                   /* interval_count */
+    uint8_t* kinds;                   /* alea_ray_coverage_kind_t */
+    size_t* owner_offsets;            /* interval_count + 1 */
+    size_t* owner_count_lower_bounds; /* interval_count */
+    int* owner_cell_ids;
+    int* owner_cell_indices;
+    int* owner_material_ids;
+    int* owner_universe_ids;
+    int* owner_fill_universes;
+    int* owner_depths;
+    uint64_t* owner_occurrence_keys;
+    uint64_t* owner_parent_occurrence_keys;
+    uint8_t* owner_resolution_flags;
+} alea_ray_coverage_slice_result_t;
+
+void alea_ray_coverage_slice_limits_init(
+    alea_ray_coverage_slice_limits_t* limits);
+void alea_ray_coverage_slice_result_init(
+    alea_ray_coverage_slice_result_t* result);
+void alea_ray_coverage_slice_result_free(
+    alea_ray_coverage_slice_result_t* result);
+
+/* Build scalar row/interval/owner CSR output.  On failure, result retains its
+ * previous successful publication. */
+int alea_ray_coverage_slice_build_serial_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_slice_result_t* result);
+
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;

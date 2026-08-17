@@ -86,8 +86,11 @@ foundation only: the validator can project an explicit world-space AABB domain
 onto a ray and report interior gaps.  An ordered serial coverage-row adapter
 now streams exact intervals through one reusable breakpoint scratch result and
 preserves caller-owned row provenance without rich per-row output.  Target-
-occurrence domains, adaptive rows, public CSR publication, and executor
-integration remain later work.
+occurrence domains and adaptive rows remain later work.  The serial compact
+materializer now publishes deterministic row/interval/owner CSR with explicit
+row, interval, owner, and byte budgets, and preserves the last successful
+result on failure; public API stabilization and executor integration remain
+later work.
 
 The remaining Phase 5 work is to complete the remaining
 production-versus-coverage matrix.  The validator now retains the complete

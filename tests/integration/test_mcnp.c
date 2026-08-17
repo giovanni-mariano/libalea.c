@@ -2505,6 +2505,72 @@ TEST(ray_coverage_rows_stream_in_input_order) {
     alea_destroy(sys);
 }
 
+TEST(ray_coverage_slice_builds_transactional_csr) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const alea_ray_coverage_domain_t domain = {
+        .t_min = 0.5, .t_max = 3.5, .has_domain = 1
+    };
+    alea_ray_coverage_row_t rows[2] = {
+        { .t_max = 4.0, .domain = domain, .use_domain = 1,
+          .direction_tag = 4, .transverse_coordinate = 0.0 },
+        { .t_max = 4.0, .domain = domain, .use_domain = 1,
+          .direction_tag = 4, .transverse_coordinate = 2.0 }
+    };
+    ASSERT_EQ(alea_ray_init(&rows[0].ray, -2, 0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_ray_init(&rows[1].ray, -2, 2, 0, 1, 0, 0), 0);
+
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_coverage_slice_result_t result;
+    alea_ray_coverage_slice_result_init(&result);
+    alea_ray_coverage_slice_limits_t limits;
+    alea_ray_coverage_slice_limits_init(&limits);
+    ASSERT_EQ(alea_ray_coverage_slice_build_serial_nocache(
+                  sys, rows, 2, &limits, &scratch, &result), 0);
+    ASSERT_EQ(result.row_count, (size_t)2);
+    ASSERT_EQ(result.interval_count, (size_t)4);
+    ASSERT_EQ(result.owner_count, (size_t)1);
+    ASSERT_EQ(result.row_offsets[0], (size_t)0);
+    ASSERT_EQ(result.row_offsets[1], (size_t)3);
+    ASSERT_EQ(result.row_offsets[2], (size_t)4);
+    ASSERT_EQ(result.row_direction_tags[0], (uint8_t)4);
+    ASSERT_NEAR(result.row_transverse_coordinates[1], 2.0, 1e-12);
+    ASSERT_EQ(result.kinds[0], (uint8_t)ALEA_RAY_COVERAGE_GAP);
+    ASSERT_EQ(result.kinds[1], (uint8_t)ALEA_RAY_COVERAGE_UNIQUE);
+    ASSERT_EQ(result.kinds[3], (uint8_t)ALEA_RAY_COVERAGE_GAP);
+    ASSERT_NEAR(result.t_enter[1], 1.0, 1e-9);
+    ASSERT_NEAR(result.t_exit[1], 3.0, 1e-9);
+    ASSERT_EQ(result.owner_offsets[0], (size_t)0);
+    ASSERT_EQ(result.owner_offsets[1], (size_t)0);
+    ASSERT_EQ(result.owner_offsets[2], (size_t)1);
+    ASSERT_EQ(result.owner_offsets[4], (size_t)1);
+    ASSERT_EQ(result.owner_count_lower_bounds[1], (size_t)1);
+    ASSERT_EQ(result.owner_cell_ids[0], 1);
+    ASSERT_EQ(result.owner_parent_occurrence_keys[0], (uint64_t)0);
+
+    const size_t* previous_offsets = result.row_offsets;
+    limits.max_intervals = 3;
+    ASSERT_EQ(alea_ray_coverage_slice_build_serial_nocache(
+                  sys, rows, 2, &limits, &scratch, &result), -1);
+    ASSERT_EQ(result.row_offsets, previous_offsets);
+    ASSERT_EQ(result.interval_count, (size_t)4);
+    ASSERT_EQ(result.owner_count, (size_t)1);
+
+    alea_ray_coverage_slice_result_free(&result);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
 TEST(ray_query_lowering_declares_semantics) {
     const alea_ray_query_t visible = {
         .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,
