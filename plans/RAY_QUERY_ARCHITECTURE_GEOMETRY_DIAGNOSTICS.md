@@ -1221,16 +1221,101 @@ publication when a resource limit prevents completion.  The adaptive
 controller now uses that executor for every sampled wave while preserving its
 serial policy and refinement-status contract.  The compact ray-slice validator
 now selects the executor for base and adaptive coverage rows, using the
-configured OpenMP worker count when enabled.  Consolidating production
-fixed-output scheduling is now underway: first-visible and any-hit batch APIs
+configured OpenMP worker count when enabled.  Production fixed-output
+scheduling is now consolidated: first-visible and any-hit batch APIs
 own their OpenMP regions while the packet traversal routines are worker bodies
-only.  Remaining executor work is shared fixed-output scheduling policy and
-broader multi-worker/resource-limit acceptance coverage.
+only.  They now use one shared fixed-output scheduling boundary and retain the
+previous publication when output preflight fails.  Boundary-event batches now
+reuse one rich trace/event scratch pair per worker, stage only compact events
+and local row offsets in worker arenas, reserve the event budget across the
+whole operation, and compact transactionally in input order.  Coverage worker
+arenas likewise reserve interval, owner, and published-byte budgets across the
+whole operation rather than granting each worker an independent copy of the
+limit.  Remaining executor work is broader multi-worker/resource-limit
+acceptance coverage and a measured decision about the legacy selected-segment
+CSR batch path.
+
+### Phase 10 completion policy and implementation sequence
+
+The coverage-slice executor is the mandatory variable-output acceptance case
+for this phase.  Phase 10 does not require every public CSR producer to be
+rewritten before Phase 11 may begin.  In particular, migrating the selected-
+segment batch's projected-owner and full-path products is follow-on executor
+work unless measurements show that its current per-ray rich temporaries are a
+material performance or memory problem.  This distinction prevents a large
+publication refactor from delaying the diagnostic coverage API without
+evidence that the refactor benefits current users.
+
+Proceed in the following order:
+
+1. **Close the coverage executor gate.** Exercise one, several, and more-
+   workers-than-rows configurations; serial and OpenMP builds; base and
+   multi-wave adaptive slices; exact and one-below row, interval, owner, and
+   byte limits; explicit owner truncation; interruption; and one selected-row
+   failure.  Every operation failure must preserve the last successful result.
+   Refinement depth, row, and spacing limits must instead publish the completed
+   sample with explicit refinement-limited status.
+2. **Measure the remaining segment batch before redesigning it.** Record
+   traversal time, staging/publication time, allocation count, retained
+   temporary capacity, and peak bytes for: no optional fields; material and
+   density; surfaces; projected owner; and full paths.  Measure both cheap rays
+   with few crossings and deep lattice/path-heavy rays, using one thread and a
+   controlled multi-thread configuration.  Report output segment/path counts
+   so different work cannot be compared accidentally.
+3. **Migrate the common segment product only if justified.** The first arena
+   increment should support segments plus material, density, surfaces, and
+   resolution flags.  One worker owns one reusable scalar trace scratch, a
+   compact segment arena, and local ray offsets.  It must not retain one
+   `alea_raycast_result_t` per input ray.  Workers process deterministic
+   row-strided jobs; after all workers succeed, a serial or disjoint-range
+   compactor publishes input-order CSR transactionally.
+4. **Treat projected-owner and full-path publication as a separate increment.**
+   A segment-arena entry must carry enough compact path reference data to
+   reproduce the existing requested-depth projection.  A path arena stores
+   deduplicated or explicitly repeated path entries with local segment-path
+   offsets; final compaction rebases both segment and path offsets.  Do not
+   retain raw pointers into reusable trace scratch, and do not silently rerun
+   traversal in a second pass.  Surface-off, projection-off, and path-off
+   queries allocate and populate none of those fields.
+5. **Retire the compatibility path only after parity and performance gates.**
+   Compare every published array, work-attribution maximum, limit outcome, and
+   previous-result lifetime between old and arena implementations.  Keep a
+   temporary test-only comparison switch until scalar/OpenMP parity and the
+   resource-limit matrix pass.  Remove the old per-ray-rich staging only after
+   the arena path is no slower beyond normal measurement noise, or after a
+   documented memory-scaling benefit justifies a small measured cost.
+
+For segment batches, the expected benefit is primarily memory scaling and
+allocator behavior: temporary storage should scale with worker count rather
+than ray count, while the required final CSR output still scales with result
+size.  Existing same-walker measurements put rich-versus-streamed publication
+overhead at roughly 2.5--6% on the recorded shell fixture.  The larger observed
+scalar/compact-batch difference must not be attributed entirely to staging
+without separating scheduling, packet behavior, traversal, and publication.
+Rendering and X-ray hot paths already use fixed or streaming consumers, so a
+full-path arena rewrite is not an urgent renderer optimization.
+
+Use these stop/go rules:
+
+- Proceed with the common segment arena when temporary peak memory is material
+  for production slice sizes, allocations/allocator contention are visible,
+  or publication is at least about 5% of same-work batch time.
+- Proceed with projected-owner/full-path arenas only when those products are
+  used at scale or their measured temporary memory is material.  Otherwise
+  preserve the compatible implementation and document the deferred work.
+- Do not claim a traversal speedup from an executor-only change.  Compare
+  identical scalar consumers and report traversal and publication separately.
+- Additional SIMD remains out of scope until the arena result is stable and a
+  profile identifies lane work, rather than allocation or compaction, as the
+  remaining bottleneck.
 
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
 - Add fixed-output executor publication.
-- Replace per-ray rich temporaries with per-worker variable-output arenas.
+- Replace per-ray rich temporaries with per-worker variable-output arenas for
+  the mandatory coverage product and for other CSR products selected by the
+  measurement policy above; document intentionally retained compatibility
+  paths.
 - Compact transactionally into public CSR order.
 - Make coverage slices the acceptance case for variable-output execution:
   schedule one independent row job per sampled ray, reuse worker breakpoint

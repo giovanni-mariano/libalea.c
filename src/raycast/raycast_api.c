@@ -95,6 +95,7 @@ typedef struct {
     int status;
 } alea_batch_trace_tmp_t;
 
+
 static void batch_result_free_buffers(alea_raycast_batch_result_t* result) {
     if (!result) return;
     free(result->ray_offsets);
@@ -137,6 +138,7 @@ static int batch_add_output_bytes(size_t* total, size_t count, size_t element_si
     *total += bytes;
     return 0;
 }
+
 
 static int batch_validate_ray_inputs(const double* origins_xyz,
                                      const double* directions_xyz,
@@ -982,6 +984,54 @@ static int first_visible_batch_add_bytes(size_t* total, size_t count,
     return batch_add_output_bytes(total, count, element_size);
 }
 
+/* Fixed-output queries publish directly into preallocated SoA arrays, so the
+ * executor boundary only needs to own one operation-wide region and collect
+ * per-ray status.  Keep that policy here, rather than letting each semantic
+ * query grow its own OpenMP wrapper.  The worker remains a packet traversal
+ * body and is also used unchanged by serial builds. */
+typedef int (*raycast_fixed_batch_worker_t)(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query, void* result,
+    int* statuses);
+
+static int raycast_fixed_batch_execute(
+    raycast_fixed_batch_worker_t worker, alea_system_t* sys,
+    const double* origins_xyz, const double* directions_xyz, size_t ray_count,
+    const alea_ray_batch_query_t* query, void* result, int* statuses) {
+    int execute_rc = 0;
+#ifdef _OPENMP
+    #pragma omp parallel shared(execute_rc)
+    {
+        const int local_rc = worker(sys, origins_xyz, directions_xyz, ray_count,
+                                    query, result, statuses);
+        if (local_rc != 0) {
+            #pragma omp atomic write
+            execute_rc = local_rc;
+        }
+    }
+#else
+    execute_rc = worker(sys, origins_xyz, directions_xyz, ray_count, query,
+                        result, statuses);
+#endif
+    return execute_rc;
+}
+
+static int raycast_first_visible_batch_worker(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query, void* result,
+    int* statuses) {
+    return alea_raycast_hier_first_visible_batch_execute_nocache(
+        sys, origins_xyz, directions_xyz, ray_count, query, result, statuses);
+}
+
+static int raycast_any_hit_batch_worker(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query, void* result,
+    int* statuses) {
+    return alea_raycast_hier_any_hit_batch_execute_nocache(
+        sys, origins_xyz, directions_xyz, ray_count, query, result, statuses);
+}
+
 int alea_raycast_hier_first_visible_batch_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query,
@@ -1095,21 +1145,9 @@ int alea_raycast_hier_first_visible_batch_nocache(
         goto fail;
     }
 
-    int execute_rc = 0;
-#ifdef _OPENMP
-    #pragma omp parallel shared(execute_rc)
-    {
-        const int local_rc = alea_raycast_hier_first_visible_batch_execute_nocache(
-            sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
-        if (local_rc != 0) {
-            #pragma omp atomic write
-            execute_rc = local_rc;
-        }
-    }
-#else
-    execute_rc = alea_raycast_hier_first_visible_batch_execute_nocache(
-        sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
-#endif
+    const int execute_rc = raycast_fixed_batch_execute(
+        raycast_first_visible_batch_worker, sys, origins_xyz, directions_xyz,
+        ray_count, query, &next, statuses);
     if (execute_rc != 0 && !alea_interrupted()) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "native first-visible packet traversal failed");
@@ -1193,21 +1231,9 @@ int alea_raycast_hier_any_hit_batch_nocache(
         goto fail;
     }
 
-    int execute_rc = 0;
-#ifdef _OPENMP
-    #pragma omp parallel shared(execute_rc)
-    {
-        const int local_rc = alea_raycast_hier_any_hit_batch_execute_nocache(
-            sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
-        if (local_rc != 0) {
-            #pragma omp atomic write
-            execute_rc = local_rc;
-        }
-    }
-#else
-    execute_rc = alea_raycast_hier_any_hit_batch_execute_nocache(
-        sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
-#endif
+    const int execute_rc = raycast_fixed_batch_execute(
+        raycast_any_hit_batch_worker, sys, origins_xyz, directions_xyz,
+        ray_count, query, &next, statuses);
     if (execute_rc != 0 && !alea_interrupted()) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "native any-hit packet traversal failed");
@@ -1232,11 +1258,80 @@ fail:
     return -1;
 }
 
+/* Variable-output boundary batches keep one reusable scalar trace/event pair
+ * per worker.  The worker arena retains only compact events and local CSR
+ * offsets; it never keeps one rich trace per input ray. */
 typedef struct {
     alea_raycast_result_t trace;
     alea_ray_boundary_event_result_t events;
-    int status;
-} alea_batch_event_tmp_t;
+    alea_ray_boundary_event_vec_t arena;
+    uint64_t* row_offsets;
+    size_t row_count;
+} alea_batch_event_worker_t;
+
+static void batch_event_worker_free(alea_batch_event_worker_t* worker) {
+    if (!worker) return;
+    alea_raycast_result_free(&worker->trace);
+    alea_ray_boundary_event_result_free(&worker->events);
+    alea_vec_free(&worker->arena);
+    free(worker->row_offsets);
+    memset(worker, 0, sizeof(*worker));
+}
+
+static int batch_event_worker_build(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, const alea_ray_batch_query_t* query,
+    alea_batch_event_worker_t* worker, size_t worker_index, size_t worker_count,
+    atomic_uint_fast64_t* live_event_count) {
+    const size_t owned_rows = ray_count > worker_index
+        ? 1 + (ray_count - 1 - worker_index) / worker_count : 0;
+    worker->row_offsets = calloc(owned_rows + 1, sizeof(*worker->row_offsets));
+    if (!worker->row_offsets) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate boundary-event worker offsets");
+        return -1;
+    }
+    worker->row_count = owned_rows;
+    alea_raycast_result_init(&worker->trace);
+    alea_ray_boundary_event_result_init(&worker->events);
+    alea_vec_init(&worker->arena);
+    size_t local_row = 0;
+    for (size_t row = worker_index; row < ray_count;
+         row += worker_count, local_row++) {
+        if (alea_interrupted()) return -1;
+        alea_raycast_result_clear(&worker->trace);
+        alea_ray_boundary_event_result_clear(&worker->events);
+        alea_ray_t ray;
+        const double* o = &origins_xyz[row * 3];
+        const double* d = &directions_xyz[row * 3];
+        const double t_min = query->t_mins ? query->t_mins[row] : 0.0;
+        const double t_max = query->t_maxs ? query->t_maxs[row] : 0.0;
+        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
+            alea_raycast_boundary_events_reuse_nocache(
+                sys, &ray, t_max, &worker->trace, &worker->events) != 0)
+            return -1;
+        worker->row_offsets[local_row] = worker->arena.count;
+        for (size_t event = 0; event < worker->events.events.count; event++) {
+            const alea_ray_boundary_event_t value =
+                worker->events.events.data[event];
+            if (value.t + RAY_EPSILON < t_min) continue;
+            if (query->max_events != 0 &&
+                atomic_fetch_add(live_event_count, 1) >= query->max_events) {
+                alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                      "boundary-event batch event limit exceeded");
+                return -1;
+            }
+            if (alea_vec_push(&worker->arena, value,
+                              alea_ray_boundary_event_t) != 0) {
+                alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                      "failed to append boundary-event worker arena");
+                return -1;
+            }
+        }
+        worker->row_offsets[local_row + 1] = worker->arena.count;
+    }
+    return 0;
+}
 
 void alea_ray_boundary_event_batch_result_init(
     alea_ray_boundary_event_batch_result_t* result) {
@@ -1267,7 +1362,9 @@ int alea_raycast_boundary_events_batch_nocache(
     const uint32_t known_fields = ALEA_RAY_QUERY_FIELD_SURFACE_NORMAL |
                                   ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID;
     alea_ray_boundary_event_batch_result_t next = {0};
-    alea_batch_event_tmp_t* temporary = NULL;
+    alea_batch_event_worker_t* workers = NULL;
+    size_t worker_count = 1;
+    atomic_uint_fast64_t live_event_count;
     size_t output_bytes = 0;
     if (!sys || !query || !result) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG,
@@ -1297,51 +1394,37 @@ int alea_raycast_boundary_events_batch_nocache(
         return -1;
     }
     if (alea_raycast_ensure_caches(sys) != 0) return -1;
-    if (ray_count > SIZE_MAX / sizeof(*temporary)) {
+    atomic_init(&live_event_count, 0);
+ #ifdef _OPENMP
+    worker_count = (size_t)omp_get_max_threads();
+ #endif
+    if (worker_count > ray_count && ray_count != 0) worker_count = ray_count;
+    if (worker_count == 0 || worker_count > SIZE_MAX / sizeof(*workers)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                              "boundary-event batch temporary storage overflows");
+                              "boundary-event batch worker storage overflows");
         return -1;
     }
-    temporary = calloc(ray_count ? ray_count : 1, sizeof(*temporary));
-    if (!temporary) {
+    workers = calloc(worker_count, sizeof(*workers));
+    if (!workers) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
-                              "failed to allocate boundary-event batch temporaries");
+                              "failed to allocate boundary-event batch workers");
         return -1;
     }
 
 #ifdef _OPENMP
     #pragma omp parallel for schedule(static)
 #endif
-    for (size_t i = 0; i < ray_count; i++) {
-        alea_raycast_result_init(&temporary[i].trace);
-        alea_ray_boundary_event_result_init(&temporary[i].events);
-        if (alea_interrupted()) {
-            temporary[i].status = -1;
-            continue;
+    for (size_t worker = 0; worker < worker_count; worker++) {
+        if (batch_event_worker_build(sys, origins_xyz, directions_xyz,
+                                     ray_count, query, &workers[worker], worker,
+                                     worker_count, &live_event_count) != 0) {
+            /* The caller checks every worker after the region so no thread
+             * mutates a shared result or error state while traversing. */
+            workers[worker].row_count = SIZE_MAX;
         }
-        alea_ray_t ray;
-        const double* o = &origins_xyz[i * 3];
-        const double* d = &directions_xyz[i * 3];
-        const double t_min = query->t_mins ? query->t_mins[i] : 0.0;
-        const double t_max = query->t_maxs ? query->t_maxs[i] : 0.0;
-        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
-            alea_raycast_boundary_events_reuse_nocache(
-                sys, &ray, t_max, &temporary[i].trace,
-                &temporary[i].events) != 0) {
-            temporary[i].status = -1;
-            continue;
-        }
-        size_t write = 0;
-        for (size_t j = 0; j < temporary[i].events.events.count; j++) {
-            const alea_ray_boundary_event_t event =
-                temporary[i].events.events.data[j];
-            if (event.t + RAY_EPSILON < t_min) continue;
-            temporary[i].events.events.data[write++] = event;
-        }
-        temporary[i].events.events.count = write;
     }
-    for (size_t i = 0; i < ray_count; i++) {
-        if (temporary[i].status != 0 || alea_interrupted()) {
+    for (size_t worker = 0; worker < worker_count; worker++) {
+        if (workers[worker].row_count == SIZE_MAX || alea_interrupted()) {
             alea_set_error_detail(alea_interrupted() ? ALEA_ERR_INTERRUPTED :
                                   ALEA_ERR_INVALID_STATE,
                                   "boundary-event batch raycast failed");
@@ -1358,7 +1441,11 @@ int alea_raycast_boundary_events_batch_nocache(
     }
     next.ray_offsets[0] = 0;
     for (size_t i = 0; i < ray_count; i++) {
-        const size_t count = temporary[i].events.events.count;
+        const size_t worker_index = i % worker_count;
+        const size_t local_row = i / worker_count;
+        const alea_batch_event_worker_t* worker = &workers[worker_index];
+        const size_t count = (size_t)(worker->row_offsets[local_row + 1] -
+                                      worker->row_offsets[local_row]);
         if (count > UINT64_MAX - next.ray_offsets[i]) {
             alea_set_error_detail(ALEA_ERR_OVERFLOW,
                                   "boundary-event batch offsets overflow");
@@ -1435,10 +1522,15 @@ int alea_raycast_boundary_events_batch_nocache(
 #endif
     for (size_t i = 0; i < ray_count; i++) {
         const size_t dst = (size_t)next.ray_offsets[i];
-        for (size_t j = 0; j < temporary[i].events.events.count; j++) {
+        const size_t worker_index = i % worker_count;
+        const size_t local_row = i / worker_count;
+        const alea_batch_event_worker_t* worker = &workers[worker_index];
+        const size_t begin = (size_t)worker->row_offsets[local_row];
+        const size_t end = (size_t)worker->row_offsets[local_row + 1];
+        for (size_t j = begin; j < end; j++) {
             const alea_ray_boundary_event_t* event =
-                &temporary[i].events.events.data[j];
-            const size_t k = dst + j;
+                &worker->arena.data[j];
+            const size_t k = dst + j - begin;
             next.t[k] = event->t;
             next.kinds[k] = (uint8_t)event->kind;
             next.surface_ids[k] = event->surface_id;
@@ -1455,21 +1547,17 @@ int alea_raycast_boundary_events_batch_nocache(
             }
         }
     }
-    for (size_t i = 0; i < ray_count; i++) {
-        alea_ray_boundary_event_result_free(&temporary[i].events);
-        alea_raycast_result_free(&temporary[i].trace);
-    }
-    free(temporary);
+    for (size_t worker = 0; worker < worker_count; worker++)
+        batch_event_worker_free(&workers[worker]);
+    free(workers);
     alea_ray_boundary_event_batch_result_free(result);
     *result = next;
     return 0;
 
 fail:
-    for (size_t i = 0; i < ray_count; i++) {
-        alea_ray_boundary_event_result_free(&temporary[i].events);
-        alea_raycast_result_free(&temporary[i].trace);
-    }
-    free(temporary);
+    for (size_t worker = 0; worker < worker_count; worker++)
+        batch_event_worker_free(&workers[worker]);
+    free(workers);
     alea_ray_boundary_event_batch_result_free(&next);
     return -1;
 }

@@ -446,7 +446,33 @@ typedef struct {
     const alea_ray_coverage_slice_limits_t* limits;
     size_t next_row_offset;
     int failed;
+    /* Set only by the parallel executor.  Local arena counts remain useful
+     * for compaction, but resource limits describe one published operation,
+     * not an independently budgeted worker shard. */
+    struct coverage_executor_counters* executor_counters;
 } coverage_slice_builder_t;
+
+typedef struct coverage_executor_counters {
+    atomic_size_t intervals;
+    atomic_size_t owners;
+    atomic_size_t bytes;
+} coverage_executor_counters_t;
+
+/* Atomically reserve a portion of an operation-wide budget.  Reservations are
+ * deliberately not rolled back on a later allocation failure: that operation
+ * is discarded transactionally, and retaining the reservation prevents other
+ * workers from growing staging while failure is propagating. */
+static int coverage_executor_reserve(atomic_size_t* counter, size_t amount,
+                                     size_t limit) {
+    size_t current = atomic_load(counter);
+    for (;;) {
+        if (amount > SIZE_MAX - current ||
+            (limit != 0 && amount > limit - current))
+            return -1;
+        if (atomic_compare_exchange_weak(counter, &current, current + amount))
+            return 0;
+    }
+}
 
 static int coverage_slice_append(void* context, size_t row_index,
                                  const alea_ray_coverage_interval_t* interval) {
@@ -454,25 +480,44 @@ static int coverage_slice_append(void* context, size_t row_index,
     alea_ray_coverage_slice_result_t* result = builder->result;
     const size_t interval_count = result->interval_count;
     const size_t owner_count = result->owner_count;
+    size_t bytes;
     if (interval_count == SIZE_MAX ||
         interval->owner_count > SIZE_MAX - owner_count ||
-        (builder->limits->max_intervals != 0 &&
-         interval_count >= builder->limits->max_intervals) ||
-        (builder->limits->max_owners != 0 &&
-         interval->owner_count > builder->limits->max_owners - owner_count)) {
+        coverage_slice_published_bytes(result->row_count, interval_count + 1,
+                                       owner_count + interval->owner_count,
+                                       &bytes)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW,
                               "coverage slice output limit exceeded");
         builder->failed = 1;
         return -1;
     }
-    size_t bytes;
-    if (coverage_slice_published_bytes(result->row_count, interval_count + 1,
-                                       owner_count + interval->owner_count,
-                                       &bytes) ||
-        (builder->limits->max_bytes != 0 &&
-         bytes > builder->limits->max_bytes)) {
+    if (builder->executor_counters) {
+        size_t empty_bytes, appended_bytes;
+        if (coverage_slice_published_bytes(0, 0, 0, &empty_bytes) ||
+            coverage_slice_published_bytes(0, 1, interval->owner_count,
+                                           &appended_bytes) ||
+            appended_bytes < empty_bytes ||
+            coverage_executor_reserve(&builder->executor_counters->intervals,
+                                      1, builder->limits->max_intervals) ||
+            coverage_executor_reserve(&builder->executor_counters->owners,
+                                      interval->owner_count,
+                                      builder->limits->max_owners) ||
+            coverage_executor_reserve(&builder->executor_counters->bytes,
+                                      appended_bytes - empty_bytes,
+                                      builder->limits->max_bytes)) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "coverage slice output limit exceeded");
+            builder->failed = 1;
+            return -1;
+        }
+    } else if ((builder->limits->max_intervals != 0 &&
+                interval_count >= builder->limits->max_intervals) ||
+               (builder->limits->max_owners != 0 &&
+                interval->owner_count > builder->limits->max_owners - owner_count) ||
+               (builder->limits->max_bytes != 0 &&
+                bytes > builder->limits->max_bytes)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                              "coverage slice byte limit exceeded");
+                              "coverage slice output limit exceeded");
         builder->failed = 1;
         return -1;
     }
@@ -1007,7 +1052,8 @@ static int coverage_executor_reset_arena(
 static int coverage_executor_build_worker(
     alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
     const alea_ray_coverage_slice_limits_t* limits,
-    alea_ray_coverage_executor_t* executor, size_t worker_index) {
+    alea_ray_coverage_executor_t* executor, size_t worker_index,
+    coverage_executor_counters_t* counters) {
     alea_ray_coverage_worker_scratch_t* worker = &executor->workers[worker_index];
     const size_t workers = executor->worker_count;
     const size_t owned_rows = row_count > worker_index
@@ -1018,7 +1064,8 @@ static int coverage_executor_build_worker(
         return -1;
     }
     coverage_slice_builder_t builder = {
-        .result = &worker->arena, .limits = limits, .next_row_offset = 0
+        .result = &worker->arena, .limits = limits, .next_row_offset = 0,
+        .executor_counters = counters
     };
     size_t local_row = 0;
     for (size_t row = worker_index; row < row_count; row += workers, local_row++) {
@@ -1133,6 +1180,10 @@ int alea_ray_coverage_slice_build_executor_nocache(
         return -1;
     }
     int failed = 0;
+    coverage_executor_counters_t counters;
+    atomic_init(&counters.intervals, 0);
+    atomic_init(&counters.owners, 0);
+    atomic_init(&counters.bytes, row_bytes);
 #ifdef _OPENMP
     if (executor->worker_count <= (size_t)INT_MAX) {
         /* Parallelize worker arenas, not individual rows: a worker index owns
@@ -1141,7 +1192,7 @@ int alea_ray_coverage_slice_build_executor_nocache(
         #pragma omp parallel for schedule(static) shared(failed)
         for (size_t worker = 0; worker < executor->worker_count; worker++) {
             int rc = coverage_executor_build_worker(
-                sys, rows, row_count, limits, executor, worker);
+                sys, rows, row_count, limits, executor, worker, &counters);
             if (rc != 0) {
                 #pragma omp atomic write
                 failed = 1;
@@ -1152,7 +1203,7 @@ int alea_ray_coverage_slice_build_executor_nocache(
     {
         for (size_t worker = 0; worker < executor->worker_count; worker++)
             if (coverage_executor_build_worker(sys, rows, row_count, limits,
-                                               executor, worker) != 0) {
+                                               executor, worker, &counters) != 0) {
                 failed = 1;
                 break;
             }

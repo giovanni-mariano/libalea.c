@@ -380,6 +380,25 @@ static void assert_hier_packet_batch_matches_scalar(
             ASSERT_EQ(visible.surface_ids[i], scalar.surface_id);
         }
     }
+
+    /* Fixed-output execution is transactional too: a preflight resource
+     * rejection must leave the prior multi-ray publication usable. */
+    if (ray_count > 1) {
+        const uint8_t* visible_found = visible.found;
+        const uint8_t* any_hits = any.hits;
+        alea_ray_batch_query_t limited_visible = visible_query;
+        alea_ray_batch_query_t limited_any = any_query;
+        limited_visible.max_output_bytes = 1;
+        limited_any.max_output_bytes = ray_count - 1;
+        ASSERT_EQ(alea_raycast_hier_first_visible_batch_nocache(
+                      sys, origins, directions, ray_count, &limited_visible,
+                      &visible), -1);
+        ASSERT_EQ(visible.found, visible_found);
+        ASSERT_EQ(alea_raycast_hier_any_hit_batch_nocache(
+                      sys, origins, directions, ray_count, &limited_any,
+                      &any), -1);
+        ASSERT_EQ(any.hits, any_hits);
+    }
     alea_raycast_result_free(&scratch);
     alea_ray_any_hit_batch_result_free(&any);
     alea_ray_first_visible_batch_result_free(&visible);
@@ -576,6 +595,42 @@ TEST(raycast_boundary_events_group_coincident_surfaces) {
     ASSERT_EQ(events.events.data[0].surface_id, 1);
     ASSERT_EQ(events.events.data[1].surface_id, 2);
     ASSERT_NEAR(events.events.data[0].t, events.events.data[1].t, 1e-12);
+
+    /* Boundary-event batches stage compact records in worker arenas but must
+     * retain input order and t-min clipping through transactional compaction. */
+    const double batch_origins[] = {
+        -1, 0, 0, -1, 0, 0, -1, 0, 0
+    };
+    const double batch_directions[] = {
+        1, 0, 0, 1, 0, 0, 1, 0, 0
+    };
+    const double batch_t_mins[] = {0.0, 1.1, 0.0};
+    const double batch_t_maxs[] = {2.0, 2.0, 2.0};
+    const alea_ray_batch_query_t batch_query = {
+        .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+        .material_filter = -1,
+        .t_mins = batch_t_mins, .t_maxs = batch_t_maxs
+    };
+    alea_ray_boundary_event_batch_result_t batch = {0};
+    ASSERT_EQ(alea_raycast_boundary_events_batch_nocache(
+                  sys, batch_origins, batch_directions, 3, &batch_query,
+                  &batch), 0);
+    ASSERT_EQ(batch.event_count, (size_t)2);
+    ASSERT_EQ(batch.ray_offsets[0], (uint64_t)0);
+    ASSERT_EQ(batch.ray_offsets[1], (uint64_t)1);
+    ASSERT_EQ(batch.ray_offsets[2], (uint64_t)1);
+    ASSERT_EQ(batch.ray_offsets[3], (uint64_t)2);
+    ASSERT_NEAR(batch.t[0], 1.0, 1e-9);
+    ASSERT_NEAR(batch.t[1], 1.0, 1e-9);
+    const uint64_t* batch_offsets = batch.ray_offsets;
+    alea_ray_batch_query_t limited_batch_query = batch_query;
+    limited_batch_query.max_events = 1;
+    ASSERT_EQ(alea_raycast_boundary_events_batch_nocache(
+                  sys, batch_origins, batch_directions, 3,
+                  &limited_batch_query, &batch), -1);
+    ASSERT_EQ(batch.ray_offsets, batch_offsets);
+    ASSERT_EQ(batch.event_count, (size_t)2);
+    alea_ray_boundary_event_batch_result_free(&batch);
 
     alea_ray_boundary_event_result_free(&events);
     alea_raycast_result_free(&trace);
@@ -2690,6 +2745,24 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
                   sys, rows, 2, &limits, &scratch, &result), -1);
     ASSERT_EQ(result.row_offsets, previous_offsets);
     ASSERT_EQ(result.interval_count, (size_t)4);
+
+    /* The executor reserves this limit across all worker arenas, rather than
+     * giving every worker an independent copy of the operation budget. */
+    alea_ray_coverage_executor_init(&executor);
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 3), 0);
+    alea_ray_coverage_slice_result_init(&executor_result);
+    limits.max_bytes = published_bytes;
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &executor_result), 0);
+    ASSERT_EQ(executor_result.interval_count, (size_t)4);
+    const size_t* executor_byte_limited_offsets = executor_result.row_offsets;
+    limits.max_bytes = published_bytes - 1;
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &executor_result), -1);
+    ASSERT_EQ(executor_result.row_offsets, executor_byte_limited_offsets);
+    ASSERT_EQ(executor_result.interval_count, (size_t)4);
+    alea_ray_coverage_slice_result_free(&executor_result);
+    alea_ray_coverage_executor_free(&executor);
 
     alea_ray_coverage_slice_result_free(&result);
     alea_raycast_result_free(&scratch);
