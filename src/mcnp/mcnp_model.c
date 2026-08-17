@@ -232,6 +232,21 @@ void mcnp_model_destroy(mcnp_model_t* model) {
     free(model);
 }
 
+alea_system_t* mcnp_model_system(mcnp_model_t* model) {
+    return model ? model->sys : NULL;
+}
+
+alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
+    if (!model) return NULL;
+
+    alea_system_t* sys = model->sys;
+    if (!sys) return NULL;
+
+    model->sys = NULL;
+    model->owns_sys = 0;
+    return sys;
+}
+
 mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     if (!sys) return NULL;
 

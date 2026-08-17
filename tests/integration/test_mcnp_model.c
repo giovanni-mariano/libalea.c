@@ -602,6 +602,25 @@ TEST(model_wrap_hooks_sync) {
     alea_system_destroy(sys);
 }
 
+TEST(model_system_access_and_transfer) {
+    alea_system_t* sys = alea_system_create();
+    ASSERT_NOT_NULL(sys);
+
+    mcnp_model_t* model = mcnp_model_wrap(sys);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(mcnp_model_system(model), sys);
+
+    alea_system_t* taken = mcnp_model_take_system(model);
+    ASSERT_EQ(taken, sys);
+    ASSERT_NULL(mcnp_model_system(model));
+    ASSERT_NULL(mcnp_model_take_system(model));
+
+    mcnp_model_destroy(model);
+    alea_system_destroy(taken);
+    ASSERT_NULL(mcnp_model_system(NULL));
+    ASSERT_NULL(mcnp_model_take_system(NULL));
+}
+
 /* ========================================================================= */
 /* Export without model: defaults used                                       */
 /* ========================================================================= */

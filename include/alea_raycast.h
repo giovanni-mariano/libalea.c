@@ -356,6 +356,24 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                                  int* cell_id, int* material_id, double* density,
                                  int* enter_surface_id, int* exit_surface_id);
 
+/** Get per-segment resolution flags. Returns 0 on success, -1 on error. */
+int alea_raycast_segment_resolution_flags(const alea_raycast_result_t* result,
+                                          size_t index,
+                                          uint8_t* out_flags);
+
+/** Return the number of physical boundary hits retained by a raycast result. */
+size_t alea_raycast_hit_count(const alea_raycast_result_t* result);
+
+/**
+ * @brief Get one retained physical boundary hit.
+ *
+ * @return 0 on success, -1 for a null result, invalid index, or null output.
+ */
+int alea_raycast_hit_get(const alea_raycast_result_t* result,
+                         size_t index,
+                         double* out_t,
+                         int* out_surface_id);
+
 /** Enable or disable hierarchy-path capture for subsequent hierarchical traces.
  * Disabled by default.  The setting survives result-buffer reuse. */
 void alea_raycast_result_set_path_capture(alea_raycast_result_t* result,

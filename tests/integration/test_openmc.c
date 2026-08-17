@@ -20,6 +20,25 @@
 /* Parse tests                                                               */
 /* ========================================================================= */
 
+TEST(openmc_model_system_access_and_transfer) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    openmc_model_t* model = openmc_model_wrap(sys);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(openmc_model_system(model), sys);
+
+    alea_system_t* taken = openmc_model_take_system(model);
+    ASSERT_EQ(taken, sys);
+    ASSERT_NULL(openmc_model_system(model));
+    ASSERT_NULL(openmc_model_take_system(model));
+
+    openmc_model_destroy(model);
+    alea_destroy(taken);
+    ASSERT_NULL(openmc_model_system(NULL));
+    ASSERT_NULL(openmc_model_take_system(NULL));
+}
+
 TEST(openmc_parse_simple) {
     openmc_model_t* omc = openmc_load("tests/data/openmc_simple.xml");
     if (!omc) SKIP("Test data file not found");

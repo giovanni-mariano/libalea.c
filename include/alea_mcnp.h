@@ -191,6 +191,25 @@ int mcnp_export_system_stream(alea_system_t* sys, FILE* out);
 void mcnp_model_destroy(mcnp_model_t* model);
 
 /**
+ * @brief Return the model's system as a borrowed pointer, or NULL if detached.
+ *
+ * The pointer remains valid until the model is destroyed or detached with
+ * mcnp_model_take_system().
+ */
+alea_system_t* mcnp_model_system(mcnp_model_t* model);
+
+/**
+ * @brief Detach the model's system and return it.
+ *
+ * The returned system remains valid after mcnp_model_destroy(). Calling this
+ * more than once returns NULL after the first successful transfer. For a model
+ * created by mcnp_load(), the caller becomes responsible for alea_destroy().
+ * A wrapper created by mcnp_model_wrap() remains non-owning; its original
+ * caller retains that responsibility.
+ */
+alea_system_t* mcnp_model_take_system(mcnp_model_t* model);
+
+/**
  * @brief Get cell params by index (bounds-checked)
  * @return Pointer to params, or NULL if out of range
  */

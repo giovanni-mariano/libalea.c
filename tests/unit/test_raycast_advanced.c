@@ -385,6 +385,26 @@ TEST(ray_public_api) {
     ASSERT_EQ(enter_surface_id, -1);
     ASSERT_EQ(exit_surface_id, 1);
 
+    uint8_t resolution_flags = 0xff;
+    ASSERT_EQ(alea_raycast_segment_resolution_flags(result, 0,
+                                                     &resolution_flags), 0);
+    ASSERT_EQ(resolution_flags, 0);
+    ASSERT_EQ(alea_raycast_segment_resolution_flags(result, seg_count,
+                                                     &resolution_flags), -1);
+    ASSERT_EQ(alea_raycast_segment_resolution_flags(result, 0, NULL), -1);
+
+    size_t hit_count = alea_raycast_hit_count(result);
+    ASSERT(hit_count >= 2);
+    double hit_t = 0.0;
+    int hit_surface_id = -1;
+    ASSERT_EQ(alea_raycast_hit_get(result, 0, &hit_t, &hit_surface_id), 0);
+    ASSERT(hit_t >= 0.0);
+    ASSERT_EQ(hit_surface_id, 1);
+    ASSERT_EQ(alea_raycast_hit_get(result, hit_count, &hit_t,
+                                   &hit_surface_id), -1);
+    ASSERT_EQ(alea_raycast_hit_get(result, 0, NULL, &hit_surface_id), -1);
+    ASSERT_EQ(alea_raycast_hit_get(result, 0, &hit_t, NULL), -1);
+
     alea_raycast_result_destroy(result);
     mcnp_model_destroy(model);
 }

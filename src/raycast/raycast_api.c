@@ -1780,6 +1780,30 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
     return 0;
 }
 
+int alea_raycast_segment_resolution_flags(const alea_raycast_result_t* result,
+                                          size_t index,
+                                          uint8_t* out_flags) {
+    if (!result || !out_flags || index >= result->segments.count) return -1;
+    *out_flags = result->segments.data[index].resolution_flags;
+    return 0;
+}
+
+size_t alea_raycast_hit_count(const alea_raycast_result_t* result) {
+    return result ? result->hits.count : 0;
+}
+
+int alea_raycast_hit_get(const alea_raycast_result_t* result,
+                         size_t index,
+                         double* out_t,
+                         int* out_surface_id) {
+    if (!result || !out_t || !out_surface_id || index >= result->hits.count) {
+        return -1;
+    }
+    *out_t = result->hits.data[index].t;
+    *out_surface_id = result->hits.data[index].surface_id;
+    return 0;
+}
+
 void alea_raycast_result_set_path_capture(alea_raycast_result_t* result,
                                           int enabled) {
     if (result) result->capture_paths = enabled ? 1 : 0;

@@ -14,7 +14,6 @@
 #include "alea.h"
 #include "alea_raycast.h"
 #include "alea_slice.h"
-#include "core/alea_system.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +38,7 @@ static alea_system_t* make_scene(void) {
     int material = alea_add_material(sys, 1);
     int sphere = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 4.0);
     if (material < 0 || sphere < 0 ||
-        alea_add_cell(sys, 1, alea_surface_at(sys, sphere)->neg_node,
+        alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
                       material, -1.0, 0) < 0) {
         alea_destroy(sys);
         return NULL;

@@ -31,6 +31,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "alea_types.h"
+#include "alea_log.h"
 
 /* alea_cell_hit_t is defined in core/alea_universe.h (included via alea_system.h) */
 /* void_result_t is forward-declared in alea_types.h */
@@ -223,11 +224,6 @@ int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
  *   int idx = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
  *   alea_node_id_t interior = alea_halfspace(sys, idx, -1);
  * ============================================================================ */
-
-/**
- * @brief Access surface entry by index (stable after vector growth)
- */
-#define alea_surface_at(sys, idx) (&(sys)->surfaces.data[idx])
 
 /**
  * @brief Create a plane surface with automatic registration
@@ -787,21 +783,6 @@ int alea_void_merge(alea_system_t* sys, void_result_t* result);
 /* ============================================================================
  * LOGGING
  * ============================================================================ */
-
-/* Log level: 0=none, 1=error, 2=warn, 3=info, 4=debug, 5=trace */
-#ifndef ALEA_LOG_LEVEL_DEFINED
-#define ALEA_LOG_LEVEL_DEFINED
-typedef enum {
-    ALEA_LOG_LEVEL_NONE  = 0,
-    ALEA_LOG_LEVEL_ERROR = 1,
-    ALEA_LOG_LEVEL_WARN  = 2,
-    ALEA_LOG_LEVEL_INFO  = 3,
-    ALEA_LOG_LEVEL_DEBUG = 4,
-    ALEA_LOG_LEVEL_TRACE = 5
-} alea_log_level_t;
-#endif
-void alea_log_set_level(alea_log_level_t level);
-alea_log_level_t alea_log_get_level(void);
 
 /* ============================================================================
  * MATERIAL OPERATIONS
