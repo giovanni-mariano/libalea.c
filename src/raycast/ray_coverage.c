@@ -978,6 +978,14 @@ int alea_ray_coverage_executor_prepare(alea_ray_coverage_executor_t* executor,
     return 0;
 }
 
+alea_ray_coverage_worker_scratch_t*
+alea_ray_coverage_executor_worker_for_row(
+    alea_ray_coverage_executor_t* executor, size_t row_index) {
+    if (!executor || !executor->workers || executor->worker_count == 0)
+        return NULL;
+    return &executor->workers[row_index % executor->worker_count];
+}
+
 #undef COVERAGE_SLICE_REALLOC
 
 typedef struct {

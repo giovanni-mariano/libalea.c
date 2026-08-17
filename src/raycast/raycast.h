@@ -1074,6 +1074,10 @@ void alea_ray_coverage_executor_init(alea_ray_coverage_executor_t* executor);
 void alea_ray_coverage_executor_free(alea_ray_coverage_executor_t* executor);
 int alea_ray_coverage_executor_prepare(alea_ray_coverage_executor_t* executor,
                                         size_t worker_count);
+/* Stable row ownership for serial and future OpenMP schedulers. */
+alea_ray_coverage_worker_scratch_t*
+alea_ray_coverage_executor_worker_for_row(
+    alea_ray_coverage_executor_t* executor, size_t row_index);
 
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {

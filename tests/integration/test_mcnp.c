@@ -2491,6 +2491,10 @@ TEST(ray_coverage_rows_stream_in_input_order) {
     ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
     ASSERT_EQ(executor.worker_count, (size_t)2);
     ASSERT_NOT_NULL(executor.workers);
+    ASSERT_EQ(alea_ray_coverage_executor_worker_for_row(&executor, 0),
+              &executor.workers[0]);
+    ASSERT_EQ(alea_ray_coverage_executor_worker_for_row(&executor, 3),
+              &executor.workers[1]);
     ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 1), 0);
     ASSERT_EQ(executor.worker_count, (size_t)1);
     alea_ray_coverage_executor_free(&executor);
