@@ -827,8 +827,11 @@ int alea_ray_coverage_classify_reuse_nocache(
 typedef enum {
     ALEA_RAY_COVERAGE_UNIQUE,
     ALEA_RAY_COVERAGE_GAP,
+    ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR,
     ALEA_RAY_COVERAGE_OVERLAP,
     ALEA_RAY_COVERAGE_UNDEFINED_FILL,
+    /* The ownership records cannot be normalized into complete chains. */
+    ALEA_RAY_COVERAGE_UNRESOLVED,
     /* The owner set exceeded the diagnostic budget.  owners contains the
      * retained prefix only and must not be treated as a complete set. */
     ALEA_RAY_COVERAGE_TRUNCATED
@@ -842,6 +845,7 @@ typedef struct {
     int fill_universe;
     int depth;
     uint64_t occurrence_key;
+    uint64_t parent_occurrence_key; /* zero = root-universe claimant */
     uint8_t resolution_flags;
 } alea_ray_coverage_owner_t;
 
@@ -851,11 +855,23 @@ typedef struct {
     double t_exit;
     alea_ray_coverage_kind_t kind;
     const alea_ray_coverage_owner_t* owners;
-    size_t owner_count;
+    size_t owner_count;             /* retained owner records */
+    size_t owner_count_lower_bound; /* exact unless kind is TRUNCATED */
 } alea_ray_coverage_interval_t;
 
 typedef int (*alea_ray_coverage_interval_callback_t)(
     void* context, const alea_ray_coverage_interval_t* interval);
+
+/* Internal diagnostic-domain contract.  The observation interval is always
+ * [0, t_max] for the current scalar sweep.  When has_domain is set, only the
+ * closed t-domain requires ownership; unowned portions outside it are either
+ * omitted or emitted as ALLOWED_EXTERIOR. */
+typedef struct {
+    double t_min;
+    double t_max;
+    uint8_t has_domain;
+    uint8_t report_allowed_exterior;
+} alea_ray_coverage_domain_t;
 
 /* Stream merged complete-coverage intervals without allocating public output.
  * The callback may stop the sweep by returning nonzero. */
@@ -863,6 +879,39 @@ int alea_ray_coverage_sweep_reuse_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_interval_callback_t callback, void* context);
+
+/* Domain-aware internal coverage sweep.  The supplied domain is intersected
+ * with [0, t_max]; its entry/exit become interval boundaries even when they
+ * are not geometry crossings. */
+int alea_ray_coverage_sweep_domain_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    const alea_ray_coverage_domain_t* domain,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_interval_callback_t callback, void* context);
+
+/* One serial coverage-row specification.  direction_tag and
+ * transverse_coordinate are caller-owned provenance used by slice consumers;
+ * this scalar adapter preserves input row order and does not interpret them. */
+typedef struct {
+    alea_ray_t ray;
+    double t_max;
+    alea_ray_coverage_domain_t domain;
+    uint8_t use_domain;
+    uint8_t direction_tag;
+    double transverse_coordinate;
+} alea_ray_coverage_row_t;
+
+typedef int (*alea_ray_coverage_row_interval_callback_t)(
+    void* context, size_t row_index,
+    const alea_ray_coverage_interval_t* interval);
+
+/* Run complete coverage for ordered slice rows with one caller-owned reusable
+ * breakpoint scratch result.  The callback span is valid only until the next
+ * interval.  Any nonzero callback return aborts the operation with -1. */
+int alea_ray_coverage_rows_serial_reuse_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_row_interval_callback_t callback, void* context);
 
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {

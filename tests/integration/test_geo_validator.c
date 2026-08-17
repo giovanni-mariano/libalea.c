@@ -17,6 +17,30 @@ typedef struct {
     int mismatch;
 } selected_coverage_parity_t;
 
+static int coverage_interval_has_single_owner_chain(
+    const alea_ray_coverage_interval_t* interval) {
+    size_t roots = 0;
+    size_t child_count[33] = {0};
+    if (interval->owner_count > 32) return 0;
+    for (size_t i = 0; i < interval->owner_count; i++) {
+        const alea_ray_coverage_owner_t* owner = &interval->owners[i];
+        if (owner->parent_occurrence_key == 0) {
+            roots++;
+            continue;
+        }
+        size_t parent = 0;
+        while (parent < interval->owner_count &&
+               interval->owners[parent].occurrence_key !=
+                   owner->parent_occurrence_key)
+            parent++;
+        if (parent == interval->owner_count ||
+            owner->depth != interval->owners[parent].depth + 1 ||
+            ++child_count[parent] > 1)
+            return 0;
+    }
+    return roots == 1;
+}
+
 static int check_selected_coverage_parity(
     void* context, const alea_ray_coverage_interval_t* interval) {
     selected_coverage_parity_t* parity = context;
@@ -29,6 +53,10 @@ static int check_selected_coverage_parity(
     if (interval->kind == ALEA_RAY_COVERAGE_UNIQUE ||
         interval->kind == ALEA_RAY_COVERAGE_UNDEFINED_FILL) {
         if (interval->owner_count == 0) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        if (!coverage_interval_has_single_owner_chain(interval)) {
             parity->mismatch = 1;
             return 0;
         }
@@ -180,6 +208,45 @@ TEST(geo_validator_clean_adjacent_flat) {
     ASSERT_EQ(alea_validate_geometry(sys, &opts, &result), 0);
     ASSERT_EQ(result.error_count, 0);
     ASSERT(result.crossings_checked > 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_domain_bounds_report_interior_gaps) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int sphere_si = alea_sphere_surface(sys, 10, 0, 0, 0, 1.0);
+    ASSERT(sphere_si >= 0);
+    alea_node_id_t sphere = alea_halfspace(sys, sphere_si, -1);
+    ASSERT_NE(sphere, ALEA_NODE_ID_INVALID);
+    int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, sphere, material, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID |
+                  ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS;
+    opts.validation_bounds[0] = -1.5;
+    opts.validation_bounds[1] = 1.5;
+    opts.validation_bounds[2] = -0.5;
+    opts.validation_bounds[3] = 0.5;
+    opts.validation_bounds[4] = -0.5;
+    opts.validation_bounds[5] = 0.5;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4.0,
+                                         &result), 0);
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_INTERIOR_GAP), 2);
+    ASSERT_EQ(result.error_count, (size_t)2);
+    ASSERT_NEAR(result.errors[0].t, 0.5, 1e-9);
+    ASSERT_NEAR(result.errors[0].offset, 0.5, 1e-9);
+    ASSERT_NEAR(result.errors[1].t, 3.0, 1e-9);
+    ASSERT_NEAR(result.errors[1].offset, 0.5, 1e-9);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);

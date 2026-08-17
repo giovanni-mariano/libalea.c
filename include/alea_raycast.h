@@ -396,8 +396,10 @@ int alea_raycast_segment_path_get(const alea_raycast_result_t* result,
 /** Kinds for alea_ray_interval_finding_t. */
 #define ALEA_INTERVAL_OK             0  /**< exactly one containing chain */
 #define ALEA_INTERVAL_GAP            1  /**< no cell contains the interval */
-#define ALEA_INTERVAL_OVERLAP        2  /**< >=2 cells at the same depth */
+#define ALEA_INTERVAL_OVERLAP        2  /**< claimants cannot form one ownership chain */
 #define ALEA_INTERVAL_UNDEFINED_FILL 3  /**< container with no fill content */
+#define ALEA_INTERVAL_UNRESOLVED     4  /**< coverage ancestry/numerics indeterminate */
+#define ALEA_INTERVAL_TRUNCATED      5  /**< owner budget prevented complete coverage */
 
 typedef struct {
     double t_enter;

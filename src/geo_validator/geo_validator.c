@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "geo_validator.h"
+#include "raycast/ray_bbox.h"
 
 #include "alea_slice.h"
 #include "core/alea_cell.h"
@@ -93,6 +94,8 @@ const char* alea_geom_error_type_name(alea_geom_error_type_t type) {
             return "missing_neighbor";
         case ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY:
             return "ambiguous_boundary";
+        case ALEA_GEOM_ERR_INTERIOR_GAP:
+            return "interior_gap";
         default:
             return "unknown";
     }
@@ -143,6 +146,7 @@ typedef struct {
     const alea_ray_t* ray;
     const alea_geom_validator_options_t* options;
     alea_geom_validator_result_t* result;
+    int report_gaps;
 } ray_coverage_finding_context_t;
 
 typedef struct {
@@ -162,27 +166,31 @@ typedef struct {
 } ray_coverage_trace_t;
 
 /* Coverage is the diagnostic oracle for conditions a selected owner trace can
- * hide. Gap intervals are intentionally not emitted here: a validator ray may
- * legitimately start or end outside the configured model domain. */
+ * hide. Gaps are emitted only by an explicit domain-aware sweep: a legacy
+ * validator ray may legitimately start or end outside the model. */
 static int append_ray_coverage_finding(
     void* context, const alea_ray_coverage_interval_t* interval) {
     ray_coverage_finding_context_t* ctx = context;
-    if (interval->kind == ALEA_RAY_COVERAGE_TRUNCATED) {
-        /* Complete coverage is no longer knowable past the owner budget.
-         * Preserve any earlier findings, but do not continue and present a
-         * partial diagnostic as exhaustive. */
+    if (interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
+        interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED) {
+        /* Complete coverage is no longer knowable after owner saturation or
+         * an unresolved ownership chain. Preserve earlier findings, but do
+         * not continue and present a partial diagnostic as exhaustive. */
         ctx->result->truncated = 1;
         return 1;
     }
+    const int is_gap = interval->kind == ALEA_RAY_COVERAGE_GAP &&
+        ctx->report_gaps;
     if (interval->kind != ALEA_RAY_COVERAGE_OVERLAP &&
-        interval->kind != ALEA_RAY_COVERAGE_UNDEFINED_FILL)
+        interval->kind != ALEA_RAY_COVERAGE_UNDEFINED_FILL && !is_gap)
         return 0;
 
     alea_geom_error_t error;
     init_geom_error(&error);
-    error.type = interval->kind == ALEA_RAY_COVERAGE_OVERLAP
-        ? ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING
-        : ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
+    error.type = is_gap ? ALEA_GEOM_ERR_INTERIOR_GAP
+        : interval->kind == ALEA_RAY_COVERAGE_OVERLAP
+            ? ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING
+            : ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
     error.source = ALEA_GEOM_EVENT_SOURCE_RAY;
     error.t = interval->t_enter;
     error.offset = interval->t_exit - interval->t_enter;
@@ -208,6 +216,12 @@ static int append_ray_coverage_finding(
     if (append_error(ctx->result, ctx->options, &error) != 0)
         return -1;
     return ctx->result->truncated ? 1 : 0;
+}
+
+static int append_ray_coverage_gap_finding(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    if (interval->kind != ALEA_RAY_COVERAGE_GAP) return 0;
+    return append_ray_coverage_finding(context, interval);
 }
 
 static void ray_coverage_trace_free(ray_coverage_trace_t* trace) {
@@ -371,11 +385,14 @@ static int coverage_interval_to_point(
     out->universe_id = 0;
     out->depth = universe_depth;
     out->target_depth = universe_depth;
-    out->truncated = interval->kind == ALEA_RAY_COVERAGE_TRUNCATED;
+    out->truncated = interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
+        interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED;
     if (interval->kind == ALEA_RAY_COVERAGE_GAP ||
+        interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED ||
         interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
         interval->owner_count == 0) {
-        return interval->kind != ALEA_RAY_COVERAGE_TRUNCATED;
+        return interval->kind != ALEA_RAY_COVERAGE_TRUNCATED &&
+            interval->kind != ALEA_RAY_COVERAGE_UNRESOLVED;
     }
 
     int target_depth = universe_depth;
@@ -921,8 +938,45 @@ static int prepare_validator(alea_system_t* sys,
         local_options->ray_count = VALIDATOR_DEFAULT_RAYS;
     if (local_options->sample_offset <= 0.0)
         local_options->sample_offset = SURFACE_SAMPLE_OFFSET;
+    if (local_options->flags & ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS) {
+        const double* b = local_options->validation_bounds;
+        if (!isfinite(b[0]) || !isfinite(b[1]) || !isfinite(b[2]) ||
+            !isfinite(b[3]) || !isfinite(b[4]) || !isfinite(b[5]) ||
+            b[0] > b[1] || b[2] > b[3] || b[4] > b[5]) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "geometry validator: invalid validation_bounds");
+            return -1;
+        }
+    }
 
     return alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST);
+}
+
+/* Convert the optional closed world-space validation AABB into the scalar
+ * coverage sweep's ray-parameter domain.  A ray that misses the domain has no
+ * coverage obligation and therefore produces no domain-gap findings. */
+static int validator_coverage_domain_for_ray(
+    const alea_geom_validator_options_t* options, const alea_ray_t* ray,
+    double t_max, alea_ray_coverage_domain_t* out_domain) {
+    if (!(options->flags & ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS))
+        return 0;
+    const double* b = options->validation_bounds;
+    const alea_bbox_t bounds = {
+        .min_x = b[0], .max_x = b[1],
+        .min_y = b[2], .max_y = b[3],
+        .min_z = b[4], .max_z = b[5]
+    };
+    double t_enter = 0.0, t_exit = 0.0;
+    if (!ray_bbox_slab_enter_exit(ray, &bounds, 0.0, t_max,
+                                  &t_enter, &t_exit))
+        return 1;
+    *out_domain = (alea_ray_coverage_domain_t){
+        .t_min = t_enter,
+        .t_max = t_exit,
+        .has_domain = 1,
+        .report_allowed_exterior = 0
+    };
+    return 2;
 }
 
 static int validate_one_ray(alea_system_t* sys,
@@ -946,6 +1000,33 @@ static int validate_one_ray(alea_system_t* sys,
     if (result->truncated) {
         ray_coverage_trace_free(&coverage_trace);
         return 0;
+    }
+
+    alea_ray_coverage_domain_t domain;
+    const int domain_rc = validator_coverage_domain_for_ray(
+        options, ray, t_max, &domain);
+    if (domain_rc == 1) {
+        ray_coverage_trace_free(&coverage_trace);
+        return 0;
+    }
+    if (domain_rc == 2) {
+        ray_coverage_finding_context_t gap_findings = {
+            .ray = ray, .options = options, .result = result, .report_gaps = 1
+        };
+        alea_raycast_result_t domain_scratch;
+        alea_raycast_result_init(&domain_scratch);
+        const int gap_rc = alea_ray_coverage_sweep_domain_reuse_nocache(
+            sys, ray, t_max, &domain, &domain_scratch,
+            append_ray_coverage_gap_finding, &gap_findings);
+        alea_raycast_result_free(&domain_scratch);
+        if (gap_rc < 0) {
+            ray_coverage_trace_free(&coverage_trace);
+            return -1;
+        }
+        if (result->truncated) {
+            ray_coverage_trace_free(&coverage_trace);
+            return 0;
+        }
     }
 
     point_coverage_t previous_cov;

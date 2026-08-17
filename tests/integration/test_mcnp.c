@@ -2244,6 +2244,21 @@ typedef struct {
     int stop_after_first;
 } coverage_stream_probe_t;
 
+typedef struct {
+    alea_ray_coverage_kind_t kinds[8];
+    double enters[8];
+    double exits[8];
+    size_t count;
+} coverage_kind_trace_t;
+
+typedef struct {
+    size_t row_indices[8];
+    alea_ray_coverage_kind_t kinds[8];
+    double enters[8];
+    double exits[8];
+    size_t count;
+} coverage_row_trace_t;
+
 static int probe_coverage_interval(
     void* context, const alea_ray_coverage_interval_t* interval) {
     coverage_stream_probe_t* probe = context;
@@ -2256,6 +2271,29 @@ static int probe_coverage_interval(
         if (interval->owners[i].occurrence_key != 0)
             probe->saw_occurrence_keys = 1;
     return probe->stop_after_first && probe->count == 1;
+}
+
+static int collect_coverage_kind(void* context,
+                                 const alea_ray_coverage_interval_t* interval) {
+    coverage_kind_trace_t* trace = context;
+    if (trace->count >= 8) return -1;
+    trace->kinds[trace->count] = interval->kind;
+    trace->enters[trace->count] = interval->t_enter;
+    trace->exits[trace->count] = interval->t_exit;
+    trace->count++;
+    return 0;
+}
+
+static int collect_coverage_row(void* context, size_t row_index,
+                                const alea_ray_coverage_interval_t* interval) {
+    coverage_row_trace_t* trace = context;
+    if (trace->count >= 8) return -1;
+    trace->row_indices[trace->count] = row_index;
+    trace->kinds[trace->count] = interval->kind;
+    trace->enters[trace->count] = interval->t_enter;
+    trace->exits[trace->count] = interval->t_exit;
+    trace->count++;
+    return 0;
 }
 
 /*
@@ -2370,6 +2408,99 @@ TEST(ray_coverage_reports_owner_budget_truncation) {
                   probe_coverage_interval, &probe), 3);
     ASSERT_EQ(probe.count, 3);
     ASSERT(probe.saw_truncated);
+    alea_raycast_result_free(&scratch);
+
+    /* The legacy interval adapter must preserve incomplete coverage rather
+     * than deriving an overlap/unique answer from the retained owner prefix. */
+    alea_ray_interval_finding_t findings[4];
+    const int finding_count = alea_ray_classify_intervals(
+        sys, -2, 0, 0, 1, 0, 0, 4.0, findings, 4);
+    ASSERT_EQ(finding_count, 3);
+    ASSERT_EQ(findings[1].kind, ALEA_INTERVAL_TRUNCATED);
+
+    alea_destroy(sys);
+}
+
+TEST(ray_coverage_domain_partitions_exterior_from_interior_gap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -2, 0, 0, 1, 0, 0), 0);
+    const alea_ray_coverage_domain_t domain = {
+        .t_min = 0.5, .t_max = 3.5,
+        .has_domain = 1, .report_allowed_exterior = 1
+    };
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    coverage_kind_trace_t trace = {0};
+    ASSERT_EQ(alea_ray_coverage_sweep_domain_reuse_nocache(
+                  sys, &ray, 4.0, &domain, &scratch,
+                  collect_coverage_kind, &trace), 5);
+    ASSERT_EQ(trace.count, (size_t)5);
+    ASSERT_EQ(trace.kinds[0], ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR);
+    ASSERT_NEAR(trace.exits[0], 0.5, 1e-9);
+    ASSERT_EQ(trace.kinds[1], ALEA_RAY_COVERAGE_GAP);
+    ASSERT_NEAR(trace.enters[1], 0.5, 1e-9);
+    ASSERT_NEAR(trace.exits[1], 1.0, 1e-9);
+    ASSERT_EQ(trace.kinds[2], ALEA_RAY_COVERAGE_UNIQUE);
+    ASSERT_EQ(trace.kinds[3], ALEA_RAY_COVERAGE_GAP);
+    ASSERT_EQ(trace.kinds[4], ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR);
+    ASSERT_NEAR(trace.enters[4], 3.5, 1e-9);
+
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+TEST(ray_coverage_rows_stream_in_input_order) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const alea_ray_coverage_domain_t domain = {
+        .t_min = 0.5, .t_max = 3.5, .has_domain = 1
+    };
+    alea_ray_coverage_row_t rows[2] = {
+        { .t_max = 4.0, .domain = domain, .use_domain = 1,
+          .direction_tag = 0, .transverse_coordinate = 0.0 },
+        { .t_max = 4.0, .domain = domain, .use_domain = 1,
+          .direction_tag = 0, .transverse_coordinate = 2.0 }
+    };
+    ASSERT_EQ(alea_ray_init(&rows[0].ray, -2, 0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_ray_init(&rows[1].ray, -2, 2, 0, 1, 0, 0), 0);
+
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    coverage_row_trace_t trace = {0};
+    ASSERT_EQ(alea_ray_coverage_rows_serial_reuse_nocache(
+                  sys, rows, 2, &scratch, collect_coverage_row, &trace), 0);
+    ASSERT_EQ(trace.count, (size_t)4);
+    ASSERT_EQ(trace.row_indices[0], (size_t)0);
+    ASSERT_EQ(trace.row_indices[1], (size_t)0);
+    ASSERT_EQ(trace.row_indices[2], (size_t)0);
+    ASSERT_EQ(trace.row_indices[3], (size_t)1);
+    ASSERT_EQ(trace.kinds[0], ALEA_RAY_COVERAGE_GAP);
+    ASSERT_EQ(trace.kinds[1], ALEA_RAY_COVERAGE_UNIQUE);
+    ASSERT_EQ(trace.kinds[2], ALEA_RAY_COVERAGE_GAP);
+    ASSERT_EQ(trace.kinds[3], ALEA_RAY_COVERAGE_GAP);
+    ASSERT_NEAR(trace.enters[3], 0.5, 1e-9);
+    ASSERT_NEAR(trace.exits[3], 3.5, 1e-9);
+
     alea_raycast_result_free(&scratch);
     alea_destroy(sys);
 }

@@ -26,6 +26,16 @@ It incorporates the strongest parts of:
 - `plans/RAY_EVENT_SURFACE_ID_PLOTTING.md`;
 - `plans/NATIVE_BIDIRECTIONAL_RAY_SLICE_VALIDATION.md`.
 
+This plan owns ray-query and coverage semantics.  The installed-header and
+binding-boundary mechanics remain owned by:
+
+- `plans/PLAN_PUBLIC_API_BINDING_BOUNDARY.md`; and
+- `plans/BINDINGS.md`.
+
+Phase 11 defines the diagnostic data that those plans must expose, but does not
+otherwise reopen their extension ownership, packaging, or installation
+decisions.
+
 Those documents remain useful as implementation history, performance evidence,
 or focused subplans. Where they conflict on architecture, this plan takes
 precedence after review and acceptance.
@@ -57,6 +67,27 @@ against uniquely owned coverage for both flat and lattice fixtures (including
 exterior gaps), assert visible truncation under the crossing budget, and verify
 that requesting segment surface IDs does not change selected endpoints or
 ownership.
+
+The explicit coverage-domain contract, adaptive coverage-row orchestration,
+executor CSR publication, and installed coverage-slice API specified below are
+remaining work; they are not implied complete by the Phase 3–8 checkpoint.
+
+### Coverage foundation checkpoint (2026-08-17)
+
+The internal complete-coverage resolver now retains the immediate concrete
+parent occurrence alongside every occurrence key.  Coverage classification uses
+that parent-linked chain rather than depth alone, and reports unresolved chains
+separately from owner-budget truncation.  The internal scalar sweep accepts a
+finite ray-parameter validation domain, partitions at its entry and exit, and
+can report exterior unowned intervals separately from interior gaps.  The
+legacy interval adapter now preserves explicit truncated coverage rather than
+reclassifying a retained owner prefix as complete.  This is the semantic
+foundation only: the validator can project an explicit world-space AABB domain
+onto a ray and report interior gaps.  An ordered serial coverage-row adapter
+now streams exact intervals through one reusable breakpoint scratch result and
+preserves caller-owned row provenance without rich per-row output.  Target-
+occurrence domains, adaptive rows, public CSR publication, and executor
+integration remain later work.
 
 The remaining Phase 5 work is to complete the remaining
 production-versus-coverage matrix.  The validator now retains the complete
@@ -434,7 +465,8 @@ records limits, tolerances, geometry generation, and required caches.
 Diagnostic lowering also records the coverage domain:
 
 - target universe occurrence or hierarchy depth;
-- finite ray interval or enclosing validation bounds;
+- finite observation interval and, when gap validity is requested, explicit
+  enclosing validation bounds or domain intervals;
 - whether exterior unowned space is allowed;
 - whether material-zero cells are reported as owned void;
 - how undefined or missing fills are classified.
@@ -442,6 +474,37 @@ Diagnostic lowering also records the coverage domain:
 A material-zero cell is still defined ownership and is not automatically a
 gap. Likewise, unowned space outside the configured model domain may be allowed
 exterior rather than an error.
+
+Coverage classification follows these domain rules:
+
+- the observation interval says where to collect evidence; it does not by
+  itself define where ownership is required;
+- the validation domain is an explicit closed world-space region, target
+  occurrence, or ordered set of ray-parameter intervals derived from one;
+- an explicitly selected enclosing graveyard occurrence may define that
+  domain, but the mere presence or absence of graveyard cells does not infer an
+  envelope;
+- unowned space inside the configured validation domain is an interior gap;
+- unowned space outside that domain is excluded or reported as allowed
+  exterior according to the request;
+- viewport clipping clips the observation interval only.  It neither turns an
+  exterior interval into a gap nor suppresses a real gap that intersects the
+  domain;
+- domain entry and exit points participate in the interval partition even when
+  they are not geometry-surface crossings;
+- a container whose requested fill or lattice occurrence cannot resolve is an
+  undefined fill, not an ordinary gap;
+- retained owners are unique only when their parent-occurrence relationships
+  form exactly one legal ancestor-to-descendant chain.  Same-depth claimants,
+  branching descendants, and any other incomparable concrete occurrences form
+  an overlap; and
+- a saturated owner budget produces explicit truncated coverage and can never
+  be reported as unique ownership or successful validation.
+
+A request that asks whether gaps are errors but supplies neither a closed
+domain nor an explicit policy treating all observed unowned space uniformly is
+invalid.  Lowering rejects it before traversal; the sweep must not guess an
+interior/exterior boundary from the first or last geometry crossing.
 
 ## 8. Product-to-engine matrix
 
@@ -456,6 +519,7 @@ exterior rather than an error.
 | Segment surface IDs | Hierarchical walker | coherent selected | one enter/exit ID |
 | Complete boundary provenance | Global sweep | selected plus crossing groups | events |
 | Coverage intervals | Global sweep | complete coverage | diagnostic intervals |
+| Coverage slice | Global sweep | complete coverage | variable CSR intervals grouped by row |
 | Gap/overlap classification | Global sweep | complete coverage | findings |
 | Point ownership compatibility | Point resolver | canonical selected | one owner |
 | Forward/reverse comparison | Hierarchical walker twice | coherent selected | mismatch evidence |
@@ -477,12 +541,18 @@ typedef struct {
     int universe_id;
     int depth;
     uint64_t occurrence_key;
+    uint64_t parent_occurrence_key;
+    uint32_t chain_id;
     uint32_t path_slot;
 } alea_ray_owner_ref_t;
 ```
 
 Occurrence identity is mandatory internally. Cell ID alone is insufficient for
-repeated and transformed placements.
+repeated and transformed placements.  Complete coverage also retains an exact
+parent relation or equivalent path-prefix relation.  Depth and an opaque
+occurrence key alone do not prove that two owners belong to the same chain.
+`chain_id` is local to one normalized coverage set; it is not global geometry
+identity.
 
 ### Minimal crossing token
 
@@ -531,6 +601,7 @@ typedef enum {
     ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR,
     ALEA_RAY_COVERAGE_OVERLAP,
     ALEA_RAY_COVERAGE_UNDEFINED_FILL,
+    ALEA_RAY_COVERAGE_UNRESOLVED,
     ALEA_RAY_COVERAGE_TRUNCATED
 } alea_ray_coverage_kind_t;
 
@@ -539,14 +610,17 @@ typedef struct {
     double t_exit;
     alea_ray_coverage_kind_t kind;
     const alea_ray_owner_ref_t* owners;
-    size_t owner_count;
+    size_t owner_count;              /* retained records */
+    size_t owner_count_lower_bound;  /* exact when not truncated */
     int diagnostic_depth;
     uint32_t flags;
 } alea_ray_coverage_interval_t;
 ```
 
 Scratch-backed spans are valid only until the next step. Consumers that retain
-them must materialize them explicitly.
+them must materialize them explicitly.  A truncated interval reports how many
+records were retained and the proven lower bound on the complete owner count;
+neither value may be presented as an exact complete count.
 
 ## 10. Hierarchical selected-owner walker
 
@@ -612,16 +686,20 @@ For every non-degenerate interval between breakpoints:
 
 1. Choose a robust interior sample away from its boundaries.
 2. Execute `COMPLETE_COVERAGE` resolution.
-3. Organize claimants by hierarchy depth and concrete occurrence.
+3. Normalize claimants into parent-linked concrete occurrence chains.  Reject
+   missing parents, cycles, or ambiguous parentage as unresolved evidence.
 4. Classify:
    - no claimant inside the configured validation domain: gap;
-   - no claimant outside an allow-exterior domain: allowed exterior;
-   - one valid hierarchy chain: unique;
-   - multiple claimants at one depth: overlap;
+   - no claimant outside the validation domain, when explicit exterior
+     reporting is requested: allowed exterior;
+   - exactly one valid hierarchy chain: unique;
+   - multiple incomparable or branching claimants: overlap;
    - selected container with no resolved fill content: undefined fill;
+   - missing/cyclic/ambiguous ancestry or indeterminate numerical sampling:
+     unresolved;
    - owner limit exceeded: truncated.
 5. Merge consecutive intervals only when their complete normalized coverage
-   sets and classifications match.
+   sets, parent relationships, and classifications match.
 
 ### Step C: classify boundaries
 
@@ -707,6 +785,31 @@ The validation system therefore combines:
 - Surface-normal samples on analytical boundaries.
 - Slice-curve sampling for small or nested features.
 - Forward/reverse consistency checks.
+
+Viewport-oriented validation should support adaptive coverage rows. It begins
+with a deterministic coarse row set, then refines between rows whose coverage
+signatures differ, around confirmed findings, and in regions with high crossing
+density. Optional orthogonal slice directions reduce the probability of
+missing thin direction-aligned defects. Refinement is a validator probe policy;
+it must not alter complete-coverage classification on any sampled ray.
+
+For refinement, a coverage signature is the ordered sequence of coverage kinds
+and normalized owner-chain identities on a row.  Floating endpoint values are
+not part of identity equality; endpoint displacement and crossing density are
+separate refinement signals with documented tolerances.  Every request sets a
+maximum refinement depth, maximum generated rows, minimum transverse spacing,
+and total diagnostic byte/work budgets.  Refinement proceeds in deterministic
+waves and publishes rows ordered first by direction ordinal and then by
+transverse view coordinate.  Orthogonal passes retain distinct direction tags;
+finding aggregation may deduplicate their world-space evidence but must retain
+all contributing probes.
+
+Reaching a configured refinement depth, row, or probe-work limit is a
+successful but explicitly refinement-limited diagnostic result: completed rows
+are published, the limiting reason is recorded, and the report must not claim
+that adaptive criteria converged.  This differs from failing to execute or
+materialize an already selected row because of scratch, output-capacity,
+arithmetic, allocation, or interruption failure.
 
 Reports and documentation must describe sampling coverage. “No errors found”
 means no errors were found by the configured probes, not a mathematical proof
@@ -805,6 +908,25 @@ a local finding arena; results are merged deterministically by input ray index
 and within-ray distance. Random-ray generation must be deterministic by seed
 and ray index, independent of thread count.
 
+A coverage slice is the required variable-output diagnostic executor case.
+Each row runs the serial complete-coverage consumer with worker-owned reusable
+breakpoint and owner-resolution scratch. Each worker appends coverage intervals
+and concrete owner records to its local arena. Only after all rows succeed are
+row counts and owner counts prefix-summed and compacted transactionally into
+deterministic CSR order. No public rich result is allocated per row or per
+elementary interval.
+
+"All rows succeed" distinguishes result completeness from diagnostic
+classification.  Owner-set saturation is a successful query result containing
+an explicit `TRUNCATED` interval and retained owner prefix; it prevents a
+successful geometry-validation verdict.  Reaching a configured probe-selection
+limit also publishes all completed scheduled rows with explicit
+refinement-limited metadata.  In contrast, inability to execute or materialize
+an already selected row because of interval, scratch, arena-capacity, or byte
+limits, interruption, arithmetic overflow, or allocation failure aborts the
+operation and leaves the prior public result unchanged.  These operation-level
+failures never publish a partial CSR.
+
 The more general executor and per-worker CSR arena design remain later work in
 `luporini_implementation.md`.
 
@@ -888,7 +1010,8 @@ from its selected segments.
   policy, output, allocation, cache, threading, and failure contract.
 - Freeze deterministic fixtures for hierarchy, transforms, fills, rectangular
   and hexagonal lattices, coincidence, gaps, isolated overlaps, undefined
-  fills, clipping, occurrence paths, and forward/reverse comparison.
+  fills, explicit validation domains, clipping, occurrence paths, and
+  forward/reverse comparison.
 - Record scalar, packet, compact-batch, renderer, and validator performance.
 - Preserve the E-lite ray measurements and exact build commands.
 - Record intermediate backup-branch revisions or archive reproducible patches;
@@ -940,6 +1063,10 @@ documented coherent/canonical difference on deliberate overlaps.
 - Group coincident crossings by primitive identity with optional surface-card
   labels.
 - Implement complete occurrence-sensitive coverage resolution.
+- Normalize retained owners by exact parent/path relationship rather than
+  inferring a legal chain from depth alone.
+- Partition at explicit validation-domain boundaries and keep observation
+  clipping independent of interior/exterior classification.
 - Produce coverage intervals and merge identical coverage sets.
 - Migrate `alea_ray_classify_intervals()` onto this engine without changing its
   public behavior.
@@ -960,6 +1087,15 @@ traversal is demonstrably unable to replace this oracle.
 - Preserve surface/slice-driven validation for hidden nested overlaps.
 - Treat forward/reverse mismatch as a consistency diagnostic, not a geometry
   verdict.
+- Introduce a serial slice-row coverage consumer using the same complete
+  breakpoint and all-owner engine as `alea_ray_classify_intervals()`. It
+  produces exact interval extents along the sampled row and retains every
+  concrete owner occurrence subject to explicit budgets.
+- Add deterministic adaptive-row orchestration with bounded refinement waves,
+  stable direction/coordinate order, and explicit row provenance.
+- Keep directional mismatch evidence in a distinct finding class. A mismatch
+  may request complete-coverage confirmation, but it must never be mapped
+  directly to overlap, gap, or undefined fill.
 - Add production-versus-coverage cross-checks for test and diagnostic modes.
 
 **Gate:** existing validator tests pass, isolated/nested overlaps remain
@@ -1031,9 +1167,70 @@ Only after the prior gates:
 - Add fixed-output executor publication.
 - Replace per-ray rich temporaries with per-worker variable-output arenas.
 - Compact transactionally into public CSR order.
+- Make coverage slices the acceptance case for variable-output execution:
+  schedule one independent row job per sampled ray, reuse worker breakpoint
+  and owner scratch, collect intervals and owner records in worker arenas, and
+  publish row/interval/owner CSR arrays only after every row succeeds.
+- Enforce row/refinement probe limits and interval, owner, scratch-capacity, and
+  byte resource budgets.  A reached probe limit publishes explicit
+  refinement-limited metadata.  Interruption, overflow, allocation failure, or
+  inability to complete a selected row publishes no partial result.
+  Per-interval owner-set saturation instead publishes explicit `TRUNCATED`
+  coverage and prevents a successful validation verdict.
+- Preserve identical classification, owner identity, row order, and CSR
+  offsets between serial and OpenMP execution.  Identical input rays invoke the
+  same scalar consumer and therefore publish identical endpoints; documented
+  tolerances apply only when comparing independently normalized directions.
 - Consider additional SIMD only from profiling evidence.
 
-**Gate:** executor changes scheduling and publication, not semantic traversal.
+**Gate:** executor changes scheduling and publication, not semantic traversal;
+the coverage-slice executor performs one OpenMP region per operation, allocates
+no rich result per row, publishes transactionally, and matches the serial
+coverage oracle for every row.
+
+### Phase 11a: publish libalea diagnostic coverage products
+
+Only after the semantic and executor gates:
+
+- Finalize installed-header adapters for scalar coverage rays and compact
+  coverage slices without exposing executor scratch or arena layouts.
+- Publish borrowed read-only arrays for row offsets; direction tags and
+  transverse view coordinates; interval scan-coordinate extents and kinds;
+  owner offsets; concrete cell/occurrence identities; parent-owner indices or
+  an equivalent reconstructable chain relation; hierarchy depths; resolution
+  flags; explicit owner-truncation metadata; and slice-level refinement-limit
+  status and reason.
+- Define the slice coordinate contract explicitly: each direction tag selects
+  the active view axis, the row coordinate lies on its transverse axis, and
+  interval extents increase along the active scan axis.  Generic non-view ray
+  products continue to use ray parameter `t` and are not silently mixed into
+  this layout.
+- Document result lifetime, coverage-domain options, budgets, interruption,
+  deterministic ordering, and the fact that finite sampling is not proof of
+  global validity.
+- Preserve existing scalar compatibility APIs through adapters.
+- Add installed-header consumer tests that compile without `src/` headers.
+
+**Gate:** public-consumer compilation, scalar/executor parity, deterministic
+serial/OpenMP CSR order, ancestry reconstruction, domain classification, and
+failure atomicity pass entirely within the libalea repository.
+
+### Phase 11b: integrate the external AleaTHOR consumer
+
+After the libalea API gate:
+
+- Migrate AleaTHOR to the installed compact coverage-slice API, add
+  `error_mode="coverage"`, and present bidirectional disagreement separately as
+  trace-consistency evidence rather than overlap evidence.
+- Keep adaptive probe selection in libalea's geometry-validator orchestration;
+  AleaTHOR supplies viewport, direction, refinement, and resource budgets and
+  owns only NumPy conversion and presentation.
+
+**Gate:** AleaTHOR renders confirmed overlap, gap, and undefined-fill intervals
+without internal headers or per-row Python calls, and the relevant AleaTHOR
+tests pass.  Failure of this external integration gate does not make the
+already-passed libalea API gate indeterminate; it blocks the overall
+cross-repository delivery.
 
 ## 21. Test matrix
 
@@ -1041,16 +1238,18 @@ Only after the prior gates:
 | --- | --- |
 | Primitive crossings | tangent, near-tangent, large `t`, coincident cards, distinct coincident primitives |
 | Selected ownership | root, void, graveyard, ordinary fill, transformed fill, deep chain |
-| Occurrence identity | repeated cell at different transforms, re-entrant fill, same cell in multiple lattice elements |
+| Occurrence identity | repeated cell at different transforms, re-entrant fill, same cell in multiple lattice elements, different-depth incomparable branches, missing/ambiguous parent relation |
 | Lattices | rect/hex, finite/repeating, inactive support, neighbor changes, forward/reverse |
 | Coverage | unique chain, exterior gap, interior gap, isolated total overlap, partial overlap, more than two claimants |
+| Coverage domains | explicit bounds, target occurrence, graveyard-selected domain, observation clip crossing a domain edge, rejected gap request without a domain |
+| Coverage slices | coarse/adaptive rows, bounded termination, clipped endpoints, orthogonal directions, published row coordinates/tags, deterministic CSR order, scalar/executor parity |
 | Undefined state | missing fill universe, unresolved container, truncated owner set |
 | Transitions | expected neighbor, implicit neighbor, missing neighbor, non-adjacent transition |
 | Provenance | no surfaces, one surface ID, all coincident participants, primitive, normal, synthetic DDA |
 | Query products | first cell, first visible, any hit, selected intervals, coverage intervals, events |
-| Directional checks | agreement, mismatch, same wrong selected owner, occurrence-key mismatch |
+| Directional checks | agreement, mismatch, same wrong selected owner, occurrence-key mismatch, clean tangent mismatch without coverage error, overlap hidden by directional agreement |
 | Diagnostics | explicit ray, random rays, slice rows, surface samples, curve samples |
-| Limits | events, segments, owners, paths, bytes, interruption, allocation failure |
+| Limits | events, segments, owners, paths, rows, refinement depth, arena capacity, bytes, interruption, allocation failure; owner saturation and refinement-limited publication versus operation failure |
 | Threading | serial/OpenMP parity, deterministic ordering, deterministic random seeds |
 
 For every uniquely owned fixture, assert parity among coherent selected,
@@ -1072,10 +1271,15 @@ Track:
 - Terminal, ancestor, lattice, and global primitive tests.
 - Coherent path reuse and fallback counts.
 - Complete owner queries.
+- Breakpoints enumerated and coverage intervals produced.
+- Concrete owners retained and saturated/truncated owner sets.
+- Initial and adaptively refined coverage rows.
 - Live path bytes copied.
-- Scratch and published bytes.
+- Worker-arena, scratch, and published bytes.
 - Allocations per ray/tile/frame.
 - OpenMP regions per operation.
+- Time separated into breakpoint enumeration, complete ownership, finding
+  classification, and publication.
 
 Targets:
 
@@ -1112,17 +1316,24 @@ Targets:
 
 ## 24. Completion criteria
 
-This architecture is ready for executor work only when:
+The libalea architecture and public diagnostic handoff are complete only when:
 
 - [ ] The three ownership policies are explicit and tested.
 - [ ] The hierarchical selected-owner walker yields verified intervals without
       consumer-specific output branches.
 - [ ] The global diagnostic sweep enumerates breakpoints independently and
       yields complete coverage intervals.
+- [ ] Gap classification uses an explicit validation domain and never infers
+      interior/exterior state from viewport or ray clipping.
 - [ ] Isolated overlaps and gaps are detected with correct extents.
-- [ ] Occurrence-sensitive overlaps cannot collapse by cell ID.
+- [ ] Occurrence-sensitive overlaps cannot collapse by cell ID, and legal
+      nested ownership is verified by parent/path ancestry rather than depth
+      alone.
 - [ ] Geometry validators consume explicit coverage/transition evidence.
 - [ ] Directional mismatches remain diagnostic signals, not validity verdicts.
+- [ ] Scalar and executor coverage slices agree exactly for sampled rows and
+      publish deterministic CSR output, including row coordinates and direction
+      tags and explicit refinement-limit status, for serial and OpenMP builds.
 - [ ] Production queries perform no complete diagnostic ownership work.
 - [ ] First-visible, any-hit, segments, and X-ray use concrete scalar consumers.
 - [ ] Surface provenance is optional and ownership-neutral.
@@ -1131,8 +1342,18 @@ This architecture is ready for executor work only when:
 - [ ] Serial/OpenMP, lattice, provenance, diagnostic, and failure test matrices
       pass.
 - [ ] Known performance regressions are recovered or explicitly attributed.
-- [ ] Public APIs remain compatible through adapters.
+- [ ] Public APIs remain compatible through adapters, and the installed
+      coverage API passes consumer tests without internal headers.
 
-At that point, the executor plan can optimize how independent rays are
-scheduled and how their outputs are published without reopening the meaning of
-a ray query or a geometry finding.
+The cross-repository delivery is complete only when:
+
+- [ ] AleaTHOR consumes the installed compact coverage-slice API and labels
+      bidirectional mismatches separately from confirmed geometry findings.
+- [ ] The relevant AleaTHOR tests pass without per-row Python calls or libalea
+      internal headers.
+
+The Phase 10 executor may begin only after the earlier semantic gates. Phase
+11a publishes stable libalea products without reopening the meaning of a ray
+query or geometry finding; Phase 11b validates that contract in AleaTHOR
+without making local libalea completion depend on an unavailable external
+checkout.

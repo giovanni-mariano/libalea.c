@@ -108,6 +108,25 @@ static void parse_validator_options(lua_State* L,
         else
             options->flags &= ~ALEA_GEOM_VALIDATE_STRICT_ADJACENCY;
     }
+
+    lua_getfield(L, idx, "validation_bounds");
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "domain_bounds");
+    }
+    if (!lua_isnil(L, -1)) {
+        luaL_checktype(L, -1, LUA_TTABLE);
+        if (lua_rawlen(L, -1) != 6)
+            luaL_error(L,
+                       "validation_bounds must be {min_x, max_x, min_y, max_y, min_z, max_z}");
+        for (int i = 0; i < 6; i++) {
+            lua_rawgeti(L, -1, i + 1);
+            options->validation_bounds[i] = luaL_checknumber(L, -1);
+            lua_pop(L, 1);
+        }
+        options->flags |= ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS;
+    }
+    lua_pop(L, 1);
 }
 
 static void push_vec3(lua_State* L, const double v[3]) {

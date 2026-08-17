@@ -25,14 +25,18 @@ typedef enum {
     ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING,
     ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION,
     ALEA_GEOM_ERR_MISSING_NEIGHBOR,
-    ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+    ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY,
+    ALEA_GEOM_ERR_INTERIOR_GAP
 } alea_geom_error_type_t;
 
 typedef enum {
     ALEA_GEOM_VALIDATE_RAYS                = 1u << 0,
     ALEA_GEOM_VALIDATE_STRICT_ADJACENCY    = 1u << 1,
     ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID = 1u << 2,
-    ALEA_GEOM_VALIDATE_HIERARCHICAL        = 1u << 3
+    ALEA_GEOM_VALIDATE_HIERARCHICAL        = 1u << 3,
+    /* validation_bounds defines a closed world-space AABB inside which
+     * unowned coverage is an interior-gap finding. */
+    ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS       = 1u << 4
 } alea_geom_validate_flags_t;
 
 typedef enum {
@@ -61,6 +65,9 @@ typedef struct {
     double t_max;
     uint64_t seed;
     int ray_count;
+    /* [min_x, max_x, min_y, max_y, min_z, max_z]; consulted only with
+     * ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS. */
+    double validation_bounds[6];
 } alea_geom_validator_options_t;
 
 typedef struct {

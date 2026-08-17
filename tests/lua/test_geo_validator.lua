@@ -50,6 +50,16 @@ assert(summary.total == bad:error_count(), "summary total should match error_cou
 assert((summary.undefined_after_crossing or 0) > 0,
        "summary should include undefined-region diagnostics")
 
+local gaps = undefined:validate_geometry_ray(
+    -2, 0, 0, 1, 0, 0, 4,
+    {allow_exterior_void = true,
+     validation_bounds = {-1.5, 1.5, -0.5, 0.5, -0.5, 0.5}}
+)
+assert(gaps:error_count() == 2,
+       "an explicit validation domain should report both interior gaps")
+assert((gaps:summary().interior_gap or 0) == 2,
+       "domain gaps should use the interior_gap finding kind")
+
 undefined:destroy()
 
 -- Surface/slice-driven validation (Phase 5)
