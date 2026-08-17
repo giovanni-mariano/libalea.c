@@ -118,9 +118,21 @@ requests supplying neither are rejected before traversal.  A regression fixture
 covers the concentric-cell total overlap that produces perfect forward/reverse
 agreement and is invisible to the bidirectional check.
 
-Remaining Phase 5 work is adaptive-row orchestration inside the validator: the
-slice validator currently samples one deterministic row per output row and does
-not yet drive refinement waves.
+The slice validator now drives the adaptive controller as well.  Refinement is
+opt-in: at the default depth of zero the published row count still equals the
+requested row count and no row provenance is published, so existing callers are
+unaffected.  Above zero, refined rows are sampled between the requested rows and
+published in transverse order with per-row transverse coordinates, direction
+tags, and a base-row index that marks refined rows explicitly.  Refinement
+drives coverage probes only: the bidirectional traces and the event cache are
+both defined on the requested viewport rows, so a refined row reports its
+coverage finding and publishes no directional or boundary-provenance evidence
+rather than borrowing a neighbouring row's.  Depth, row-budget, and spacing
+limits publish completed rows with an explicit refinement-limited status,
+distinct from operation failure, which publishes nothing.
+
+This closes Phase 5.  The remaining work is Phase 9 attribution, the Phase 10
+executor, and the Phase 11 public coverage API.
 
 The remaining Phase 5 work is to complete the remaining
 production-versus-coverage matrix.  The validator now retains the complete
@@ -1133,6 +1145,7 @@ traversal is demonstrably unable to replace this oracle.
 
 **Gate:** existing validator tests pass, isolated/nested overlaps remain
 detectable, and truncated diagnostics cannot report success silently.
+*Met 2026-08-17.*
 
 ### Phase 6: migrate concrete production consumers
 
@@ -1362,8 +1375,8 @@ The libalea architecture and public diagnostic handoff are complete only when:
 - [ ] Occurrence-sensitive overlaps cannot collapse by cell ID, and legal
       nested ownership is verified by parent/path ancestry rather than depth
       alone.
-- [ ] Geometry validators consume explicit coverage/transition evidence.
-- [ ] Directional mismatches remain diagnostic signals, not validity verdicts.
+- [x] Geometry validators consume explicit coverage/transition evidence.
+- [x] Directional mismatches remain diagnostic signals, not validity verdicts.
 - [ ] Scalar and executor coverage slices agree exactly for sampled rows and
       publish deterministic CSR output, including row coordinates and direction
       tags and explicit refinement-limit status, for serial and OpenMP builds.
