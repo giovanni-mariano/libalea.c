@@ -15,6 +15,7 @@
 #include "core/alea_universe.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -632,30 +633,133 @@ int alea_ray_coverage_slice_rows_same_signature(
     return 1;
 }
 
-int alea_ray_coverage_slice_mark_refinement_boundaries(
+void alea_ray_coverage_refinement_policy_init(
+    alea_ray_coverage_refinement_policy_t* policy) {
+    if (!policy) return;
+    memset(policy, 0, sizeof(*policy));
+    policy->signals = ALEA_RAY_COVERAGE_REFINE_SIGNATURE;
+}
+
+/* A coverage kind that a probe should look at more closely.  Allowed exterior
+ * is a configured domain answer, not a defect. */
+static int coverage_kind_is_finding(uint8_t kind) {
+    return kind != ALEA_RAY_COVERAGE_UNIQUE &&
+           kind != ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR;
+}
+
+static int coverage_row_has_finding(
+    const alea_ray_coverage_slice_result_t* result, size_t begin, size_t end) {
+    for (size_t i = begin; i < end; i++)
+        if (coverage_kind_is_finding(result->kinds[i])) return 1;
+    return 0;
+}
+
+/* Paired endpoint displacement between two rows of equal interval count.  The
+ * signature deliberately ignores endpoints, so this is the only signal that
+ * sees a boundary sliding while owner identity stays put. */
+static int coverage_rows_endpoints_displaced(
+    const alea_ray_coverage_slice_result_t* result, size_t first_begin,
+    size_t second_begin, size_t count, double tolerance) {
+    if (!result->t_enter || !result->t_exit) return -1;
+    for (size_t offset = 0; offset < count; offset++) {
+        const size_t first = first_begin + offset;
+        const size_t second = second_begin + offset;
+        if (fabs(result->t_enter[first] - result->t_enter[second]) > tolerance ||
+            fabs(result->t_exit[first] - result->t_exit[second]) > tolerance)
+            return 1;
+    }
+    return 0;
+}
+
+int alea_ray_coverage_slice_mark_refinement_boundaries_policy(
     const alea_ray_coverage_slice_result_t* result,
-    uint8_t* out_refine_between) {
+    const alea_ray_coverage_refinement_policy_t* policy,
+    uint8_t* out_refine_between, size_t* out_spacing_limited) {
+    alea_ray_coverage_refinement_policy_t defaults;
+    if (!policy) {
+        alea_ray_coverage_refinement_policy_init(&defaults);
+        policy = &defaults;
+    }
     if (!result || (result->row_count > 1 && !out_refine_between) ||
         (result->row_count != 0 && (!result->row_direction_tags ||
                                     !result->row_transverse_coordinates)))
         return -1;
+    if (policy->signals & ~(uint32_t)(ALEA_RAY_COVERAGE_REFINE_SIGNATURE |
+                                      ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT |
+                                      ALEA_RAY_COVERAGE_REFINE_DENSITY |
+                                      ALEA_RAY_COVERAGE_REFINE_FINDING))
+        return -1;
+    if (policy->min_transverse_spacing < 0.0 ||
+        policy->endpoint_displacement < 0.0 ||
+        ((policy->signals & ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT) &&
+         !(policy->endpoint_displacement > 0.0)) ||
+        ((policy->signals & ALEA_RAY_COVERAGE_REFINE_DENSITY) &&
+         policy->crossing_density == 0))
+        return -1;
+    if (out_spacing_limited) *out_spacing_limited = 0;
+
     int marked = 0;
     for (size_t row = 0; row + 1 < result->row_count; row++) {
         out_refine_between[row] = 0;
         if (result->row_direction_tags[row] != result->row_direction_tags[row + 1])
             continue;
-        if (result->row_transverse_coordinates[row] >=
-            result->row_transverse_coordinates[row + 1])
+        const double first_coordinate = result->row_transverse_coordinates[row];
+        const double second_coordinate =
+            result->row_transverse_coordinates[row + 1];
+        if (first_coordinate >= second_coordinate) return -1;
+        size_t first_begin, first_end, second_begin, second_end;
+        if (coverage_slice_row_interval_range(result, row, &first_begin,
+                                              &first_end) != 0 ||
+            coverage_slice_row_interval_range(result, row + 1, &second_begin,
+                                              &second_end) != 0)
             return -1;
-        const int same = alea_ray_coverage_slice_rows_same_signature(
-            result, row, row + 1);
-        if (same < 0) return -1;
-        if (!same) {
-            out_refine_between[row] = 1;
-            marked++;
+        const size_t first_count = first_end - first_begin;
+        const size_t second_count = second_end - second_begin;
+
+        int select = 0;
+        if (policy->signals & ALEA_RAY_COVERAGE_REFINE_SIGNATURE) {
+            const int same = alea_ray_coverage_slice_rows_same_signature(
+                result, row, row + 1);
+            if (same < 0) return -1;
+            if (!same) select = 1;
         }
+        if (!select && (policy->signals & ALEA_RAY_COVERAGE_REFINE_DENSITY) &&
+            (first_count >= policy->crossing_density ||
+             second_count >= policy->crossing_density))
+            select = 1;
+        if (!select && (policy->signals & ALEA_RAY_COVERAGE_REFINE_FINDING) &&
+            (coverage_row_has_finding(result, first_begin, first_end) ||
+             coverage_row_has_finding(result, second_begin, second_end)))
+            select = 1;
+        if (!select && (policy->signals & ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT) &&
+            first_count == second_count) {
+            const int displaced = coverage_rows_endpoints_displaced(
+                result, first_begin, second_begin, first_count,
+                policy->endpoint_displacement);
+            if (displaced < 0) return -1;
+            if (displaced) select = 1;
+        }
+        if (!select) continue;
+
+        /* Splitting halves the gap; refuse to generate rows the caller has
+         * declared too close to distinguish. */
+        if (policy->min_transverse_spacing > 0.0 &&
+            0.5 * (second_coordinate - first_coordinate) <
+                policy->min_transverse_spacing) {
+            if (out_spacing_limited) (*out_spacing_limited)++;
+            continue;
+        }
+        out_refine_between[row] = 1;
+        marked++;
     }
     return marked;
+}
+
+int alea_ray_coverage_slice_mark_refinement_boundaries(
+    const alea_ray_coverage_slice_result_t* result,
+    uint8_t* out_refine_between) {
+    return alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+        result, NULL, out_refine_between, NULL);
 }
 
 static int coverage_rows_midpoint(const alea_ray_coverage_row_t* first,
@@ -726,9 +830,10 @@ int alea_ray_coverage_rows_refine_midpoints(
     return 0;
 }
 
-int alea_ray_coverage_slice_build_adaptive_serial_nocache(
+int alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
     alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
     size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_refinement_policy_t* policy,
     const alea_ray_coverage_slice_limits_t* limits,
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_slice_result_t* result) {
@@ -758,16 +863,23 @@ int alea_ray_coverage_slice_build_adaptive_serial_nocache(
                 goto fail;
             }
         }
-        const int marked = alea_ray_coverage_slice_mark_refinement_boundaries(
-            &current, refine_between);
+        size_t spacing_limited = 0;
+        const int marked = alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+            &current, policy, refine_between, &spacing_limited);
         if (marked < 0) {
             free(refine_between);
             goto fail;
         }
         if (marked == 0 || depth >= max_refinement_depth) {
-            current.refinement_status = marked == 0
-                ? ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE
-                : ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH;
+            if (marked != 0)
+                current.refinement_status =
+                    ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH;
+            else if (spacing_limited != 0)
+                current.refinement_status =
+                    ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING;
+            else
+                current.refinement_status =
+                    ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE;
             free(refine_between);
             free(owned_rows);
             alea_ray_coverage_slice_result_free(result);
@@ -818,6 +930,17 @@ fail:
     free(owned_rows);
     alea_ray_coverage_slice_result_free(&current);
     return -1;
+}
+
+int alea_ray_coverage_slice_build_adaptive_serial_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
+    size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_slice_result_t* result) {
+    return alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
+        sys, initial_rows, initial_row_count, max_refinement_depth, NULL,
+        limits, breakpoint_scratch, result);
 }
 
 #undef COVERAGE_SLICE_REALLOC

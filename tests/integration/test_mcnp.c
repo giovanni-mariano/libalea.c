@@ -2635,6 +2635,137 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     alea_destroy(sys);
 }
 
+/* Signature equality deliberately ignores endpoints, so two chords through one
+ * sphere look identical to it.  The displacement, density, and finding signals
+ * exist precisely to keep such a pair refinable. */
+TEST(ray_coverage_refinement_signals_select_matching_rows) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const alea_ray_coverage_domain_t domain = {
+        .t_min = 0.5, .t_max = 3.5, .has_domain = 1
+    };
+    alea_ray_coverage_row_t rows[2] = {
+        { .t_max = 4.0, .domain = domain, .use_domain = 1,
+          .direction_tag = 0, .transverse_coordinate = 0.0 },
+        { .t_max = 4.0, .domain = domain, .use_domain = 1,
+          .direction_tag = 0, .transverse_coordinate = 0.5 }
+    };
+    ASSERT_EQ(alea_ray_init(&rows[0].ray, -2, 0.0, 0, 1, 0, 0), 0);
+    ASSERT_EQ(alea_ray_init(&rows[1].ray, -2, 0.5, 0, 1, 0, 0), 0);
+
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_coverage_slice_result_t result;
+    alea_ray_coverage_slice_result_init(&result);
+    alea_ray_coverage_slice_limits_t limits;
+    alea_ray_coverage_slice_limits_init(&limits);
+    ASSERT_EQ(alea_ray_coverage_slice_build_serial_nocache(
+                  sys, rows, 2, &limits, &scratch, &result), 0);
+    /* Both rows: GAP, UNIQUE, GAP -- identical owners, displaced boundaries. */
+    ASSERT_EQ(result.row_count, (size_t)2);
+    ASSERT_EQ(result.interval_count, (size_t)6);
+    ASSERT_EQ(alea_ray_coverage_slice_rows_same_signature(&result, 0, 1), 1);
+    ASSERT_NEAR(result.t_enter[1], 1.0, 1e-9);
+    ASSERT_NEAR(result.t_enter[4], 2.0 - sqrt(0.75), 1e-9);
+
+    uint8_t refine_between[1] = {0};
+    size_t spacing_limited = 123;
+    alea_ray_coverage_refinement_policy_t policy;
+    alea_ray_coverage_refinement_policy_init(&policy);
+    ASSERT_EQ(policy.signals, (uint32_t)ALEA_RAY_COVERAGE_REFINE_SIGNATURE);
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, &spacing_limited), 0);
+    ASSERT_EQ(refine_between[0], (uint8_t)0);
+    ASSERT_EQ(spacing_limited, (size_t)0);
+
+    /* Endpoints move by about 0.134; a tolerance either side of that decides. */
+    policy.signals = ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT;
+    policy.endpoint_displacement = 0.01;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), 1);
+    ASSERT_EQ(refine_between[0], (uint8_t)1);
+    policy.endpoint_displacement = 0.5;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), 0);
+    ASSERT_EQ(refine_between[0], (uint8_t)0);
+
+    policy.signals = ALEA_RAY_COVERAGE_REFINE_DENSITY;
+    policy.crossing_density = 3;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), 1);
+    policy.crossing_density = 4;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), 0);
+
+    /* Both rows carry GAP intervals, so the finding signal selects the pair. */
+    policy.signals = ALEA_RAY_COVERAGE_REFINE_FINDING;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), 1);
+
+    /* Splitting a 0.5 gap yields 0.25 spacing, below the configured minimum. */
+    policy.min_transverse_spacing = 0.4;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, &spacing_limited), 0);
+    ASSERT_EQ(refine_between[0], (uint8_t)0);
+    ASSERT_EQ(spacing_limited, (size_t)1);
+    policy.min_transverse_spacing = 0.2;
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, &spacing_limited), 1);
+    ASSERT_EQ(spacing_limited, (size_t)0);
+
+    /* A selected signal without its tolerance is a policy error, not a
+     * silently disabled probe. */
+    policy = (alea_ray_coverage_refinement_policy_t){
+        .signals = ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT
+    };
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), -1);
+    policy = (alea_ray_coverage_refinement_policy_t){
+        .signals = ALEA_RAY_COVERAGE_REFINE_DENSITY
+    };
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), -1);
+    policy = (alea_ray_coverage_refinement_policy_t){ .signals = 1u << 16 };
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+                  &result, &policy, refine_between, NULL), -1);
+
+    /* A spacing-limited wave is a successful, explicitly limited result. */
+    alea_ray_coverage_slice_result_t adaptive;
+    alea_ray_coverage_slice_result_init(&adaptive);
+    policy = (alea_ray_coverage_refinement_policy_t){
+        .signals = ALEA_RAY_COVERAGE_REFINE_FINDING,
+        .min_transverse_spacing = 0.4
+    };
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
+                  sys, rows, 2, 4, &policy, NULL, &scratch, &adaptive), 0);
+    ASSERT_EQ(adaptive.row_count, (size_t)2);
+    ASSERT_EQ(adaptive.refinement_status,
+              ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING);
+
+    /* Relaxing the spacing lets the same signal refine until it is reached. */
+    policy.min_transverse_spacing = 0.1;
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
+                  sys, rows, 2, 4, &policy, NULL, &scratch, &adaptive), 0);
+    ASSERT_EQ(adaptive.row_count, (size_t)5);
+    ASSERT_EQ(adaptive.refinement_status,
+              ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING);
+    ASSERT_NEAR(adaptive.row_transverse_coordinates[1], 0.125, 1e-12);
+    alea_ray_coverage_slice_result_free(&adaptive);
+
+    alea_ray_coverage_slice_result_free(&result);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
 TEST(ray_query_lowering_declares_semantics) {
     const alea_ray_query_t visible = {
         .kind = ALEA_RAY_QUERY_FIRST_VISIBLE,

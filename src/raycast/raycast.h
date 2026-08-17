@@ -926,7 +926,10 @@ typedef struct {
 typedef enum {
     ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE = 0,
     ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH,
-    ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS,
+    /* Candidate pairs remained, but splitting them would have produced rows
+     * closer than the configured minimum transverse spacing. */
+    ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING
 } alea_ray_coverage_refinement_status_t;
 
 typedef struct {
@@ -976,11 +979,50 @@ int alea_ray_coverage_slice_rows_same_signature(
     const alea_ray_coverage_slice_result_t* result,
     size_t first_row, size_t second_row);
 
-/* Mark adjacent same-direction row pairs whose signatures differ.  The output
+/* Adaptive refinement probe signals.  Signature difference alone cannot see a
+ * defect that displaces boundaries without changing owner identity, nor a
+ * dense or already-suspect region whose neighbours happen to agree. */
+#define ALEA_RAY_COVERAGE_REFINE_SIGNATURE    (1u << 0)
+#define ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT (1u << 1)
+#define ALEA_RAY_COVERAGE_REFINE_DENSITY      (1u << 2)
+#define ALEA_RAY_COVERAGE_REFINE_FINDING      (1u << 3)
+
+/* Probe-selection policy.  This governs which rows are sampled; it never
+ * changes complete-coverage classification on any sampled ray. */
+typedef struct {
+    uint32_t signals;
+    /* Absolute transverse distance below which a pair is never split.  A pair
+     * spanning g is split into gaps of g/2, so a pair is suppressed when
+     * g < 2 * min_transverse_spacing.  Zero disables the limit. */
+    double min_transverse_spacing;
+    /* Absolute scan-coordinate tolerance for ALEA_RAY_COVERAGE_REFINE_
+     * DISPLACEMENT.  Paired endpoints further apart than this refine even when
+     * owner identity matches.  Must be > 0 when that signal is selected. */
+    double endpoint_displacement;
+    /* Interval count at or above which a row is considered dense for
+     * ALEA_RAY_COVERAGE_REFINE_DENSITY.  Must be > 0 when selected. */
+    size_t crossing_density;
+} alea_ray_coverage_refinement_policy_t;
+
+/* Defaults to signature-only refinement with no spacing limit, matching the
+ * behaviour of alea_ray_coverage_slice_mark_refinement_boundaries(). */
+void alea_ray_coverage_refinement_policy_init(
+    alea_ray_coverage_refinement_policy_t* policy);
+
+/* Mark adjacent same-direction row pairs selected by the policy.  The output
  * has row_count - 1 entries and is ordered with the published rows.  A marked
  * pair is a deterministic candidate for a later midpoint refinement wave;
- * this helper never generates rays or changes classification.  Returns the
- * number of marked pairs, or -1 for malformed/non-monotonic row provenance. */
+ * this helper never generates rays or changes classification.  When
+ * out_spacing_limited is non-NULL it receives the number of pairs a signal
+ * selected but the minimum transverse spacing suppressed.  Returns the number
+ * of marked pairs, or -1 for malformed/non-monotonic row provenance or an
+ * inconsistent policy. */
+int alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+    const alea_ray_coverage_slice_result_t* result,
+    const alea_ray_coverage_refinement_policy_t* policy,
+    uint8_t* out_refine_between, size_t* out_spacing_limited);
+
+/* Signature-only adapter over the policy marker. */
 int alea_ray_coverage_slice_mark_refinement_boundaries(
     const alea_ray_coverage_slice_result_t* result,
     uint8_t* out_refine_between);
@@ -996,9 +1038,20 @@ int alea_ray_coverage_rows_refine_midpoints(
     alea_ray_coverage_row_t* out_rows, size_t out_capacity,
     size_t* out_row_count);
 
-/* Run bounded deterministic refinement waves serially.  Reaching the depth or
- * row-selection limit publishes the completed sampled rows with the matching
- * refinement_status; an output/materialization failure leaves result intact. */
+/* Run bounded deterministic refinement waves serially under an explicit probe
+ * policy.  Reaching the depth, row-selection, or minimum-spacing limit
+ * publishes the completed sampled rows with the matching refinement_status; an
+ * output/materialization failure leaves result intact.  A NULL policy selects
+ * signature-only refinement. */
+int alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
+    size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_refinement_policy_t* policy,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_slice_result_t* result);
+
+/* Signature-only adapter over the policy builder. */
 int alea_ray_coverage_slice_build_adaptive_serial_nocache(
     alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
     size_t initial_row_count, size_t max_refinement_depth,
