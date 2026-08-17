@@ -149,15 +149,6 @@ typedef struct {
     int log_level;
 } render_config_t;
 
-/** Per-pixel hit result (internal) */
-typedef struct {
-    float color[3];         /**< Final shaded color */
-    int cell_id;            /**< Cell ID at this pixel (-1 for background) */
-    int material_id;        /**< Material ID */
-    float depth;            /**< Distance from camera */
-    float normal[3];        /**< World-space normal */
-} render_pixel_t;
-
 /** Framebuffer */
 typedef struct {
     int width;

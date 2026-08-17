@@ -102,6 +102,25 @@ int openmc_export_system_stream(alea_system_t* sys, FILE* out);
 void openmc_model_destroy(openmc_model_t* model);
 
 /**
+ * @brief Return the model's system as a borrowed pointer, or NULL if detached.
+ *
+ * The pointer remains valid until the model is destroyed or detached with
+ * openmc_model_take_system().
+ */
+alea_system_t* openmc_model_system(openmc_model_t* model);
+
+/**
+ * @brief Detach the model's system and return it.
+ *
+ * The returned system remains valid after openmc_model_destroy(). Calling this
+ * more than once returns NULL after the first successful transfer. For a model
+ * created by openmc_load(), the caller becomes responsible for alea_destroy().
+ * A wrapper created by openmc_model_wrap() remains non-owning; its original
+ * caller retains that responsibility.
+ */
+alea_system_t* openmc_model_take_system(openmc_model_t* model);
+
+/**
  * @brief Create a non-owning model wrapper around an existing system
  *
  * The returned model does NOT own the system — openmc_model_destroy()

@@ -22,22 +22,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
-
-
-/**
- * @brief Log levels (in order of severity)
- */
-#ifndef ALEA_LOG_LEVEL_DEFINED
-#define ALEA_LOG_LEVEL_DEFINED
-typedef enum {
-    ALEA_LOG_LEVEL_NONE  = 0,   // No logging
-    ALEA_LOG_LEVEL_ERROR = 1,   // Errors only
-    ALEA_LOG_LEVEL_WARN  = 2,   // Warnings and errors
-    ALEA_LOG_LEVEL_INFO  = 3,   // Informational messages
-    ALEA_LOG_LEVEL_DEBUG = 4,   // Debug output
-    ALEA_LOG_LEVEL_TRACE = 5    // Detailed tracing
-} alea_log_level_t;
-#endif
+#include <alea_log.h>
 
 /**
  * @brief Log output target
@@ -48,18 +33,6 @@ typedef enum {
     ALEA_LOG_TARGET_FILE   = 2,  // Custom file
     ALEA_LOG_TARGET_CALLBACK = 3 // User callback
 } alea_log_target_t;
-
-/**
- * @brief Callback type for custom log handlers
- *
- * @param level Log level of the message
- * @param file Source file (may be NULL if not available)
- * @param line Source line (0 if not available)
- * @param message Formatted message string
- * @param user_data User-provided context
- */
-typedef void (*alea_log_callback_t)(alea_log_level_t level, const char* file,
-                                    int line, const char* message, void* user_data);
 
 /**
  * @brief Log configuration structure
@@ -93,11 +66,6 @@ alea_log_level_t alea_log_get_level(void);
  * @brief Set log output to a file
  */
 void alea_log_set_file(FILE* file);
-
-/**
- * @brief Set custom log callback
- */
-void alea_log_set_callback(alea_log_callback_t callback, void* user_data);
 
 /**
  * @brief Configure timestamp display

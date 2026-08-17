@@ -115,6 +115,40 @@ const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t i
     return &m->cell_params[idx];
 }
 
+static int reserve_inline_transforms(mcnp_model_t* model, size_t cap) {
+    if (cap <= model->inline_transform_capacity) return 0;
+    const size_t max_elems = SIZE_MAX / sizeof(*model->inline_transforms);
+    if (cap > max_elems) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "Inline transform count %zu exceeds allocation limit",
+                              cap);
+        return -1;
+    }
+
+    size_t new_cap = model->inline_transform_capacity;
+    if (new_cap == 0) new_cap = 16;
+    while (new_cap < cap) {
+        if (new_cap > max_elems / 2) {
+            new_cap = cap;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    mcnp_inline_transform_t* new_arr = realloc(
+        model->inline_transforms, new_cap * sizeof(*new_arr));
+    if (!new_arr) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "Failed to grow inline transforms to %zu elements",
+                              new_cap);
+        return -1;
+    }
+
+    model->inline_transforms = new_arr;
+    model->inline_transform_capacity = new_cap;
+    return 0;
+}
+
 uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
                                          const double* values,
                                          int count,
@@ -123,14 +157,16 @@ uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
         return MCNP_INLINE_TRANSFORM_INVALID;
     }
 
-    size_t idx = alea_vec_count(&model->inline_transforms);
-    if (idx > UINT32_MAX) {
+    size_t idx = model->inline_transform_count;
+    if (idx >= UINT32_MAX) {
         return MCNP_INLINE_TRANSFORM_INVALID;
     }
 
-    mcnp_inline_transform_t* tr = alea_vec_push_uninit(
-        &model->inline_transforms, mcnp_inline_transform_t);
-    if (!tr) return MCNP_INLINE_TRANSFORM_INVALID;
+    if (reserve_inline_transforms(model, idx + 1) < 0) {
+        return MCNP_INLINE_TRANSFORM_INVALID;
+    }
+    mcnp_inline_transform_t* tr = &model->inline_transforms[idx];
+    model->inline_transform_count++;
 
     memset(tr, 0, sizeof(*tr));
     tr->count = (uint8_t)count;
@@ -143,10 +179,10 @@ const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
     const mcnp_model_t* model,
     uint32_t index) {
     if (!model || index == MCNP_INLINE_TRANSFORM_INVALID ||
-        (size_t)index >= alea_vec_count(&model->inline_transforms)) {
+        (size_t)index >= model->inline_transform_count) {
         return NULL;
     }
-    return &model->inline_transforms.data[index];
+    return &model->inline_transforms[index];
 }
 
 static mcnp_model_t* finalize_loaded_model(mcnp_model_t* model) {
@@ -192,8 +228,23 @@ void mcnp_model_destroy(mcnp_model_t* model) {
     }
 
     free(model->cell_params);
-    alea_vec_free(&model->inline_transforms);
+    free(model->inline_transforms);
     free(model);
+}
+
+alea_system_t* mcnp_model_system(mcnp_model_t* model) {
+    return model ? model->sys : NULL;
+}
+
+alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
+    if (!model) return NULL;
+
+    alea_system_t* sys = model->sys;
+    if (!sys) return NULL;
+
+    model->sys = NULL;
+    model->owns_sys = 0;
+    return sys;
 }
 
 mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {

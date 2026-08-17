@@ -14,6 +14,14 @@
 
 #include "alea_mcnp.h"
 
+/* Internal storage and lifecycle helpers. */
+int mcnp_model_reserve_params(mcnp_model_t* model, size_t cap);
+int mcnp_model_add_params(mcnp_model_t* model);
+void mcnp_model_register_hooks(mcnp_model_t* model);
+uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
+                                         const double* values,
+                                         int count,
+                                         int degrees);
 
 /**
  * @brief Internal: Full MCNP file conversion returning model

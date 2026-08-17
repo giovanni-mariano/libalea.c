@@ -313,12 +313,12 @@ static alea_node_id_t create_box_from_planes(
     }
 
     /* Get nodes with appropriate senses for inside box */
-    planes[0] = alea_surface_at(sys, px0_idx)->pos_node;  /* x > min_x */
-    planes[1] = alea_surface_at(sys, px1_idx)->neg_node;  /* x < max_x */
-    planes[2] = alea_surface_at(sys, py0_idx)->pos_node;  /* y > min_y */
-    planes[3] = alea_surface_at(sys, py1_idx)->neg_node;  /* y < max_y */
-    planes[4] = alea_surface_at(sys, pz0_idx)->pos_node;  /* z > min_z */
-    planes[5] = alea_surface_at(sys, pz1_idx)->neg_node;  /* z < max_z */
+    planes[0] = alea_halfspace(sys, px0_idx, +1);  /* x > min_x */
+    planes[1] = alea_halfspace(sys, px1_idx, -1);  /* x < max_x */
+    planes[2] = alea_halfspace(sys, py0_idx, +1);  /* y > min_y */
+    planes[3] = alea_halfspace(sys, py1_idx, -1);  /* y < max_y */
+    planes[4] = alea_halfspace(sys, pz0_idx, +1);  /* z > min_z */
+    planes[5] = alea_halfspace(sys, pz1_idx, -1);  /* z < max_z */
 
     /* Create intersection: planes[0] ∩ planes[1] ∩ ... ∩ planes[5] */
     alea_node_id_t result = alea_create_intersection(sys, planes[0], planes[1]);

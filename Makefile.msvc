@@ -309,6 +309,7 @@ ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDAT
 # inference. Regenerate: `find include src -name '*.h' | grep -v lua_bind`.
 HEADERS = \
 	include\alea.h \
+	include\alea_log.h \
 	include\alea_geo_validator.h \
 	include\alea_mcnp.h \
 	include\alea_mesh.h \

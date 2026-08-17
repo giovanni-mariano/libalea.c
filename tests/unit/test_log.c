@@ -7,7 +7,22 @@
  */
 
 #include "alea_test.h"
+#include "alea_log.h"
 #include "util/alea_log.h"
+
+static int callback_count;
+static alea_log_level_t callback_level;
+static void* callback_user_data;
+
+static void test_log_callback(alea_log_level_t level, const char* file,
+                              int line, const char* message, void* user_data) {
+    (void)file;
+    (void)line;
+    (void)message;
+    callback_count++;
+    callback_level = level;
+    callback_user_data = user_data;
+}
 
 TEST(log_default_level) {
     /* Default level is WARN, so INFO/DEBUG should be filtered */
@@ -71,6 +86,26 @@ TEST(log_short_aliases) {
 
     alea_log_set_level(ALEA_LOG_LEVEL_WARN);
     ASSERT_TRUE(1);
+}
+
+TEST(log_public_callback) {
+    int user_data = 42;
+    callback_count = 0;
+    callback_level = ALEA_LOG_LEVEL_NONE;
+    callback_user_data = NULL;
+
+    alea_log_set_level(ALEA_LOG_LEVEL_INFO);
+    alea_log_set_callback(test_log_callback, &user_data);
+    ALEA_LOG_INFO("Public callback test");
+
+    ASSERT_EQ(callback_count, 1);
+    ASSERT_EQ(callback_level, ALEA_LOG_LEVEL_INFO);
+    ASSERT_EQ(callback_user_data, &user_data);
+
+    alea_log_set_callback(NULL, NULL);
+    ALEA_LOG_INFO("Callback has been cleared");
+    ASSERT_EQ(callback_count, 1);
+    alea_log_set_level(ALEA_LOG_LEVEL_WARN);
 }
 
 TEST_MAIN()
