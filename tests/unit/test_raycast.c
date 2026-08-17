@@ -692,6 +692,34 @@ TEST(compact_batch_surface_fields_preserve_selected_segments) {
         ASSERT_EQ(off_cells[i], on_cells[i]);
     }
 
+    /* The common worker-arena route has the same operation-wide limits and
+     * transactional lifetime contract as the legacy rich-trace route. */
+    const size_t segment_count = alea_raycast_batch_segment_count(on);
+    ASSERT(segment_count > 0);
+    alea_raycast_batch_options_t limited = surface_on;
+    limited.max_segments = segment_count;
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
+                                      &limited, on), 0);
+    const uint64_t* previous_offsets = alea_raycast_batch_ray_offsets(on);
+    limited.max_segments = segment_count - 1;
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
+                                      &limited, on), -1);
+    ASSERT_EQ(alea_raycast_batch_ray_offsets(on), previous_offsets);
+    ASSERT_EQ(alea_raycast_batch_segment_count(on), segment_count);
+
+    const size_t exact_bytes = 3 * sizeof(uint64_t) + segment_count *
+        (2 * sizeof(double) + 4 * sizeof(int32_t));
+    limited.max_segments = 0;
+    limited.max_output_bytes = exact_bytes;
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
+                                      &limited, on), 0);
+    previous_offsets = alea_raycast_batch_ray_offsets(on);
+    limited.max_output_bytes = exact_bytes - 1;
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
+                                      &limited, on), -1);
+    ASSERT_EQ(alea_raycast_batch_ray_offsets(on), previous_offsets);
+    ASSERT_EQ(alea_raycast_batch_segment_count(on), segment_count);
+
     alea_raycast_batch_result_destroy(on);
     alea_raycast_batch_result_destroy(off);
     alea_destroy(sys);
