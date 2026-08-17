@@ -77,6 +77,17 @@ static size_t batch_published_bytes(const alea_raycast_batch_result_t* result,
     if (fields & ALEA_RAY_BATCH_DENSITY) bytes += segments * sizeof(double);
     if (fields & ALEA_RAY_BATCH_SURFACES) bytes += 2 * segments * sizeof(int32_t);
     if (fields & ALEA_RAY_BATCH_RESOLUTION_FLAGS) bytes += segments * sizeof(uint8_t);
+    if (fields & ALEA_RAY_BATCH_PROJECTED_OWNER) {
+        bytes += 5 * segments * sizeof(int32_t);
+        bytes += segments * (sizeof(uint8_t) + sizeof(uint64_t));
+    }
+    if (fields & ALEA_RAY_BATCH_FULL_PATHS) {
+        const size_t paths = alea_raycast_batch_path_entry_count(result);
+        bytes += (segments + 1) * sizeof(uint64_t);
+        bytes += 5 * paths * sizeof(int32_t);
+        bytes += paths * (sizeof(uint8_t) + sizeof(uint64_t));
+        bytes += 3 * paths * sizeof(double);
+    }
     return bytes;
 }
 
@@ -835,18 +846,32 @@ TEST(perf_compact_hier_batch_20_shells) {
     }
     printf("[%zu segments]  ", single_segments);
 
-    {
+    const struct {
+        const char* label;
+        uint32_t fields;
+    } compact_cases[] = {
+        { "20 shells compact batch base CSR", 0 },
+        { "20 shells compact batch ordinary fields", options.fields },
+        { "20 shells compact batch projected owner",
+          options.fields | ALEA_RAY_BATCH_PROJECTED_OWNER },
+        { "20 shells compact batch full paths",
+          options.fields | ALEA_RAY_BATCH_FULL_PATHS }
+    };
+    for (size_t c = 0; c < sizeof(compact_cases) / sizeof(compact_cases[0]); c++) {
+        options.fields = compact_cases[c].fields;
         BENCH_START();
         ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, n_rays, 100.0,
                                            &options, batch), 0);
-        BENCH_END("20 shells compact batch (trace + CSR)", n_rays);
-        printf("[compact]  ");
+        BENCH_END(compact_cases[c].label, n_rays);
+        ASSERT_EQ(alea_raycast_batch_segment_count(batch), single_segments);
+        printf("[%zu segments, %zu path entries, %zu published bytes]  ",
+               alea_raycast_batch_segment_count(batch),
+               alea_raycast_batch_path_entry_count(batch),
+               batch_published_bytes(batch, options.fields));
     }
-    printf("[%zu segments]  ", alea_raycast_batch_segment_count(batch));
-    ASSERT_EQ(alea_raycast_batch_segment_count(batch), single_segments);
-    printf("[%zu published bytes, %zu known transient input bytes]  ",
-           batch_published_bytes(batch, options.fields),
-           n_rays * 6 * sizeof(double));
+    options.fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY |
+                     ALEA_RAY_BATCH_SURFACES | ALEA_RAY_BATCH_RESOLUTION_FLAGS;
+    printf("[%zu known transient input bytes]  ", n_rays * 6 * sizeof(double));
     alea_raycast_batch_work_stats_t work_stats;
     ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(
                   batch, &work_stats), 0);
