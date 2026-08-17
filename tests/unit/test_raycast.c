@@ -1185,6 +1185,75 @@ TEST(compact_ray_slice_fast_bidirectional_reuses_plot_cache) {
 /* Two concentric cells are a total overlap that no selected-owner trace can
  * see: forward and reverse both pick the same claimant and agree.  Only the
  * complete-coverage sweep reports it. */
+TEST(public_compact_coverage_slice_publishes_borrowed_csr) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         material, 1.0, 0) >= 0);
+    const double origins[] = {-2, 0, 0, -2, 2, 0};
+    const double directions[] = {1, 0, 0, 1, 0, 0};
+    const uint8_t tags[] = {4, 4};
+    const double coordinates[] = {0, 2};
+    alea_ray_coverage_slice_options_t options;
+    alea_ray_coverage_slice_options_init(&options);
+    options.t_max = 4.0;
+    options.flags = ALEA_RAY_COVERAGE_DOMAIN;
+    options.domain_t_min = 0.5;
+    options.domain_t_max = 3.5;
+    alea_ray_coverage_slice_result_t* result =
+        alea_ray_coverage_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_ray_coverage_slice_query(
+                  sys, origins, directions, 2, tags, coordinates, &options,
+                  result), 0);
+    ASSERT_EQ(alea_ray_coverage_slice_row_count(result), (size_t)2);
+    ASSERT_EQ(alea_ray_coverage_slice_interval_count(result), (size_t)4);
+    ASSERT_EQ(alea_ray_coverage_slice_owner_count(result), (size_t)1);
+    const size_t* offsets = alea_ray_coverage_slice_row_offsets(result);
+    const uint8_t* kinds = alea_ray_coverage_slice_kinds(result);
+    const int* owner_cells = alea_ray_coverage_slice_owner_cell_ids(result);
+    ASSERT_NOT_NULL(offsets);
+    ASSERT_NOT_NULL(kinds);
+    ASSERT_NOT_NULL(owner_cells);
+    ASSERT_EQ(offsets[0], (size_t)0);
+    ASSERT_EQ(offsets[1], (size_t)3);
+    ASSERT_EQ(offsets[2], (size_t)4);
+    ASSERT_EQ(kinds[1], (uint8_t)ALEA_RAY_COVERAGE_UNIQUE);
+    ASSERT_EQ(owner_cells[0], 1);
+    alea_ray_coverage_slice_result_t* scalar =
+        alea_ray_coverage_slice_result_create();
+    ASSERT_NOT_NULL(scalar);
+    ASSERT_EQ(alea_ray_coverage_query(sys, -2, 0, 0, 1, 0, 0,
+                                      &options, scalar), 0);
+    ASSERT_EQ(alea_ray_coverage_slice_row_count(scalar), (size_t)1);
+    ASSERT_EQ(alea_ray_coverage_slice_interval_count(scalar), (size_t)3);
+    alea_ray_coverage_slice_result_destroy(scalar);
+    alea_ray_coverage_slice_result_t* adaptive =
+        alea_ray_coverage_slice_result_create();
+    ASSERT_NOT_NULL(adaptive);
+    options.max_refinement_depth = 1;
+    ASSERT_EQ(alea_ray_coverage_slice_query(
+                  sys, origins, directions, 2, tags, coordinates, &options,
+                  adaptive), 0);
+    ASSERT_EQ(alea_ray_coverage_slice_row_count(adaptive), (size_t)3);
+    ASSERT_EQ(alea_ray_coverage_slice_refinement_status(adaptive),
+              ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
+    options.max_refinement_depth = 0;
+    alea_ray_coverage_slice_result_destroy(adaptive);
+    const size_t* previous_offsets = offsets;
+    options.max_output_bytes = 1;
+    ASSERT_EQ(alea_ray_coverage_slice_query(
+                  sys, origins, directions, 2, tags, coordinates, &options,
+                  result), -1);
+    ASSERT_EQ(alea_ray_coverage_slice_row_offsets(result), previous_offsets);
+    ASSERT_EQ(alea_ray_coverage_slice_interval_count(result), (size_t)4);
+    alea_ray_coverage_slice_result_destroy(result);
+    alea_destroy(sys);
+}
+
 TEST(compact_ray_slice_coverage_reports_overlap_and_gaps) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

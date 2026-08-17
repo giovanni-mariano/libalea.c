@@ -1422,6 +1422,20 @@ Only after the semantic and executor gates:
 serial/OpenMP CSR order, ancestry reconstruction, domain classification, and
 failure atomicity pass entirely within the libalea repository.
 
+### Phase 11a checkpoint (2026-08-17)
+
+The first installed coverage API increment is now present in `alea_raycast.h`.
+It exposes an opaque reusable coverage result; a scalar-ray adapter; and a
+packed-row, executor-backed slice query.  The result publishes borrowed,
+read-only row/interval/owner CSR arrays, row provenance, concrete owner and
+parent occurrence identities, resolution flags, coverage kinds, and
+refinement status without exposing any scratch or worker-arena type.  The
+public options carry validation-domain, exterior-reporting, refinement, and
+resource-budget controls.  Queries prepare their required caches internally,
+preserve the prior publication on failure, and use the same deterministic
+executor as the internal API.  An installed-header-only consumer compile test
+and public scalar/adaptive CSR tests now cover this boundary.
+
 ### Phase 11b: integrate the external AleaTHOR consumer
 
 After the libalea API gate:

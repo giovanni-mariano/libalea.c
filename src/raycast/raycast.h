@@ -829,19 +829,6 @@ int alea_ray_coverage_classify_reuse_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_interval_finding_t* out, size_t max_out);
 
-typedef enum {
-    ALEA_RAY_COVERAGE_UNIQUE,
-    ALEA_RAY_COVERAGE_GAP,
-    ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR,
-    ALEA_RAY_COVERAGE_OVERLAP,
-    ALEA_RAY_COVERAGE_UNDEFINED_FILL,
-    /* The ownership records cannot be normalized into complete chains. */
-    ALEA_RAY_COVERAGE_UNRESOLVED,
-    /* The owner set exceeded the diagnostic budget.  owners contains the
-     * retained prefix only and must not be treated as a complete set. */
-    ALEA_RAY_COVERAGE_TRUNCATED
-} alea_ray_coverage_kind_t;
-
 typedef struct {
     int cell_id;
     int cell_index;
@@ -928,16 +915,7 @@ typedef struct {
     size_t max_bytes;
 } alea_ray_coverage_slice_limits_t;
 
-typedef enum {
-    ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE = 0,
-    ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH,
-    ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS,
-    /* Candidate pairs remained, but splitting them would have produced rows
-     * closer than the configured minimum transverse spacing. */
-    ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING
-} alea_ray_coverage_refinement_status_t;
-
-typedef struct {
+struct alea_ray_coverage_slice_result {
     size_t row_count;
     size_t interval_count;
     size_t owner_count;
@@ -959,7 +937,7 @@ typedef struct {
     uint64_t* owner_occurrence_keys;
     uint64_t* owner_parent_occurrence_keys;
     uint8_t* owner_resolution_flags;
-} alea_ray_coverage_slice_result_t;
+};
 
 void alea_ray_coverage_slice_limits_init(
     alea_ray_coverage_slice_limits_t* limits);
@@ -987,11 +965,6 @@ int alea_ray_coverage_slice_rows_same_signature(
 /* Adaptive refinement probe signals.  Signature difference alone cannot see a
  * defect that displaces boundaries without changing owner identity, nor a
  * dense or already-suspect region whose neighbours happen to agree. */
-#define ALEA_RAY_COVERAGE_REFINE_SIGNATURE    (1u << 0)
-#define ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT (1u << 1)
-#define ALEA_RAY_COVERAGE_REFINE_DENSITY      (1u << 2)
-#define ALEA_RAY_COVERAGE_REFINE_FINDING      (1u << 3)
-
 /* Probe-selection policy.  This governs which rows are sampled; it never
  * changes complete-coverage classification on any sampled ray. */
 typedef struct {

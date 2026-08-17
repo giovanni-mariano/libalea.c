@@ -33,6 +33,8 @@ typedef struct alea_ray_first_visible_query_result
     alea_ray_first_visible_query_result_t;
 typedef struct alea_ray_boundary_event_query_result
     alea_ray_boundary_event_query_result_t;
+typedef struct alea_ray_coverage_slice_result
+    alea_ray_coverage_slice_result_t;
 
 #define ALEA_RAY_FIRST_VISIBLE_SURFACE_ID      (1u << 0)
 #define ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL  (1u << 1)
@@ -84,6 +86,59 @@ typedef struct {
     uint64_t max_path_entries; /**< Applies to flattened full-path CSR output */
     uint64_t max_output_bytes; /**< 0 = unbounded compact-array allocation */
 } alea_raycast_batch_options_t;
+
+/* Complete-ownership diagnostic coverage is published as input-order CSR:
+ * rows -> intervals -> concrete owner occurrences.  Returned arrays are
+ * borrowed and remain valid until the next successful query on the result or
+ * until its destruction. */
+typedef enum {
+    ALEA_RAY_COVERAGE_UNIQUE,
+    ALEA_RAY_COVERAGE_GAP,
+    ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR,
+    ALEA_RAY_COVERAGE_OVERLAP,
+    ALEA_RAY_COVERAGE_UNDEFINED_FILL,
+    ALEA_RAY_COVERAGE_UNRESOLVED,
+    ALEA_RAY_COVERAGE_TRUNCATED
+} alea_ray_coverage_kind_t;
+
+typedef enum {
+    ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE = 0,
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH,
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS,
+    ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING
+} alea_ray_coverage_refinement_status_t;
+
+#define ALEA_RAY_COVERAGE_DOMAIN             (1u << 0)
+#define ALEA_RAY_COVERAGE_REPORT_EXTERIOR    (1u << 1)
+#define ALEA_RAY_COVERAGE_REFINE_SIGNATURE    (1u << 0)
+#define ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT (1u << 1)
+#define ALEA_RAY_COVERAGE_REFINE_DENSITY      (1u << 2)
+#define ALEA_RAY_COVERAGE_REFINE_FINDING      (1u << 3)
+
+/** Options for compact complete-coverage rows. Set struct_size to
+ * sizeof(*options). t_max must be finite and positive. When DOMAIN is set,
+ * [domain_t_min, domain_t_max] is the ownership-validation domain; otherwise
+ * unowned intervals are reported as gaps. REPORT_EXTERIOR requires DOMAIN.
+ * Zero resource limits are unlimited. A nonzero max_refinement_depth enables
+ * deterministic midpoint refinement; a zero refinement_signals field uses
+ * signature-only selection.
+ */
+typedef struct {
+    size_t struct_size;
+    uint32_t flags;
+    double t_max;
+    double domain_t_min;
+    double domain_t_max;
+    uint64_t max_rows;
+    uint64_t max_intervals;
+    uint64_t max_owners;
+    uint64_t max_output_bytes;
+    size_t max_refinement_depth;
+    uint32_t refinement_signals;
+    double min_transverse_spacing;
+    double endpoint_displacement;
+    size_t crossing_density;
+} alea_ray_coverage_slice_options_t;
 
 /** One resolved hierarchy entry attached to an opt-in ray segment path.
  *
@@ -262,6 +317,74 @@ const double* alea_raycast_batch_path_lattice_origins_xyz(
     const alea_raycast_batch_result_t* result);
 const uint64_t* alea_raycast_batch_path_occurrence_keys(
     const alea_raycast_batch_result_t* result);
+
+/* ==========================================================================
+ * COMPACT COMPLETE-COVERAGE DIAGNOSTICS
+ * ========================================================================== */
+
+void alea_ray_coverage_slice_options_init(
+    alea_ray_coverage_slice_options_t* options);
+alea_ray_coverage_slice_result_t* alea_ray_coverage_slice_result_create(void);
+void alea_ray_coverage_slice_result_destroy(
+    alea_ray_coverage_slice_result_t* result);
+
+/** Scalar adapter over alea_ray_coverage_slice_query(). It publishes one row
+ * of compact CSR data using the same ownership and resource-limit contract. */
+int alea_ray_coverage_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_coverage_slice_options_t* options,
+    alea_ray_coverage_slice_result_t* result);
+
+/** Build complete ownership coverage for packed XYZ rays. direction_tags and
+ * transverse_coordinates are optional row provenance arrays; NULL supplies
+ * zeros. Output row order always matches the input. On failure, result keeps
+ * its prior successful publication. */
+int alea_ray_coverage_slice_query(alea_system_t* sys,
+    const double* origins_xyz, const double* directions_xyz, size_t row_count,
+    const uint8_t* direction_tags, const double* transverse_coordinates,
+    const alea_ray_coverage_slice_options_t* options,
+    alea_ray_coverage_slice_result_t* result);
+
+size_t alea_ray_coverage_slice_row_count(
+    const alea_ray_coverage_slice_result_t* result);
+size_t alea_ray_coverage_slice_interval_count(
+    const alea_ray_coverage_slice_result_t* result);
+size_t alea_ray_coverage_slice_owner_count(
+    const alea_ray_coverage_slice_result_t* result);
+int alea_ray_coverage_slice_refinement_status(
+    const alea_ray_coverage_slice_result_t* result);
+const size_t* alea_ray_coverage_slice_row_offsets(
+    const alea_ray_coverage_slice_result_t* result);
+const uint8_t* alea_ray_coverage_slice_row_direction_tags(
+    const alea_ray_coverage_slice_result_t* result);
+const double* alea_ray_coverage_slice_row_transverse_coordinates(
+    const alea_ray_coverage_slice_result_t* result);
+const double* alea_ray_coverage_slice_t_enter(
+    const alea_ray_coverage_slice_result_t* result);
+const double* alea_ray_coverage_slice_t_exit(
+    const alea_ray_coverage_slice_result_t* result);
+const uint8_t* alea_ray_coverage_slice_kinds(
+    const alea_ray_coverage_slice_result_t* result);
+const size_t* alea_ray_coverage_slice_owner_offsets(
+    const alea_ray_coverage_slice_result_t* result);
+const size_t* alea_ray_coverage_slice_owner_count_lower_bounds(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_cell_ids(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_material_ids(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_universe_ids(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_fill_universes(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_depths(
+    const alea_ray_coverage_slice_result_t* result);
+const uint64_t* alea_ray_coverage_slice_owner_occurrence_keys(
+    const alea_ray_coverage_slice_result_t* result);
+const uint64_t* alea_ray_coverage_slice_owner_parent_occurrence_keys(
+    const alea_ray_coverage_slice_result_t* result);
+const uint8_t* alea_ray_coverage_slice_owner_resolution_flags(
+    const alea_ray_coverage_slice_result_t* result);
 
 /**
  * @brief Find first cell along ray

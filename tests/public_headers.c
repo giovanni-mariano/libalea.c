@@ -30,6 +30,9 @@ void public_api_smoke(void) {
     alea_node_id_t inside = alea_halfspace(sys, surface, -1);
     alea_node_id_t outside = alea_halfspace(sys, surface, +1);
     alea_raycast_result_t* result = alea_raycast_result_create();
+    alea_ray_coverage_slice_result_t* coverage =
+        alea_ray_coverage_slice_result_create();
+    alea_ray_coverage_slice_options_t coverage_options;
     uint8_t flags = 0;
     double hit_t = 0.0;
     int hit_surface_id = -1;
@@ -39,7 +42,11 @@ void public_api_smoke(void) {
     (void)alea_raycast_segment_resolution_flags(result, 0, &flags);
     (void)alea_raycast_hit_count(result);
     (void)alea_raycast_hit_get(result, 0, &hit_t, &hit_surface_id);
+    alea_ray_coverage_slice_options_init(&coverage_options);
+    (void)alea_ray_coverage_slice_row_count(coverage);
+    (void)alea_ray_coverage_slice_row_offsets(coverage);
     alea_log_set_callback(NULL, NULL);
     alea_raycast_result_destroy(result);
+    alea_ray_coverage_slice_result_destroy(coverage);
     alea_destroy(sys);
 }
