@@ -2563,6 +2563,26 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries(
                   &result, refine_between), 1);
     ASSERT_EQ(refine_between[0], (uint8_t)1);
+    alea_ray_coverage_row_t refined_rows[3] = {0};
+    size_t refined_count = 0;
+    ASSERT_EQ(alea_ray_coverage_rows_refine_midpoints(
+                  rows, 2, refine_between, 3, refined_rows, 3,
+                  &refined_count), 0);
+    ASSERT_EQ(refined_count, (size_t)3);
+    ASSERT_NEAR(refined_rows[0].transverse_coordinate, 0.0, 1e-12);
+    ASSERT_NEAR(refined_rows[1].transverse_coordinate, 1.0, 1e-12);
+    ASSERT_NEAR(refined_rows[2].transverse_coordinate, 2.0, 1e-12);
+    ASSERT_NEAR(refined_rows[1].ray.oy, 1.0, 1e-12);
+    const alea_ray_coverage_row_t untouched_row = {
+        .direction_tag = 99, .transverse_coordinate = -1.0
+    };
+    alea_ray_coverage_row_t failed_refinement[3] = { untouched_row };
+    size_t failed_count = 123;
+    ASSERT_EQ(alea_ray_coverage_rows_refine_midpoints(
+                  rows, 2, refine_between, 2, failed_refinement, 3,
+                  &failed_count), -1);
+    ASSERT_EQ(failed_refinement[0].direction_tag, (uint8_t)99);
+    ASSERT_EQ(failed_count, (size_t)123);
 
     const size_t* previous_offsets = result.row_offsets;
     limits.max_intervals = 3;

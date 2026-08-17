@@ -978,6 +978,17 @@ int alea_ray_coverage_slice_mark_refinement_boundaries(
     const alea_ray_coverage_slice_result_t* result,
     uint8_t* out_refine_between);
 
+/* Materialize one deterministic midpoint-refinement wave selected by
+ * out_refine_between.  Input rows and markers are in existing published order;
+ * marked pairs must be adjacent rows of one direction with increasing
+ * transverse coordinates.  max_rows == 0 is unlimited.  The caller supplies
+ * all output storage, and failure leaves it untouched. */
+int alea_ray_coverage_rows_refine_midpoints(
+    const alea_ray_coverage_row_t* rows, size_t row_count,
+    const uint8_t* refine_between, size_t max_rows,
+    alea_ray_coverage_row_t* out_rows, size_t out_capacity,
+    size_t* out_row_count);
+
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;

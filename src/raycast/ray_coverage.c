@@ -658,6 +658,74 @@ int alea_ray_coverage_slice_mark_refinement_boundaries(
     return marked;
 }
 
+static int coverage_rows_midpoint(const alea_ray_coverage_row_t* first,
+                                  const alea_ray_coverage_row_t* second,
+                                  alea_ray_coverage_row_t* midpoint) {
+    if (first->direction_tag != second->direction_tag ||
+        first->transverse_coordinate >= second->transverse_coordinate ||
+        first->ray.dx != second->ray.dx || first->ray.dy != second->ray.dy ||
+        first->ray.dz != second->ray.dz ||
+        first->use_domain != second->use_domain ||
+        first->domain.has_domain != second->domain.has_domain ||
+        first->domain.report_allowed_exterior !=
+            second->domain.report_allowed_exterior)
+        return -1;
+    *midpoint = *first;
+    midpoint->transverse_coordinate = 0.5 *
+        (first->transverse_coordinate + second->transverse_coordinate);
+    midpoint->t_max = 0.5 * (first->t_max + second->t_max);
+    midpoint->domain.t_min = 0.5 *
+        (first->domain.t_min + second->domain.t_min);
+    midpoint->domain.t_max = 0.5 *
+        (first->domain.t_max + second->domain.t_max);
+    return alea_ray_init(&midpoint->ray,
+                         0.5 * (first->ray.ox + second->ray.ox),
+                         0.5 * (first->ray.oy + second->ray.oy),
+                         0.5 * (first->ray.oz + second->ray.oz),
+                         first->ray.dx, first->ray.dy, first->ray.dz);
+}
+
+int alea_ray_coverage_rows_refine_midpoints(
+    const alea_ray_coverage_row_t* rows, size_t row_count,
+    const uint8_t* refine_between, size_t max_rows,
+    alea_ray_coverage_row_t* out_rows, size_t out_capacity,
+    size_t* out_row_count) {
+    if ((!rows && row_count != 0) || !out_row_count ||
+        (row_count > 1 && !refine_between) ||
+        (row_count != 0 && out_rows == rows))
+        return -1;
+    size_t marked = 0;
+    for (size_t row = 0; row + 1 < row_count; row++) {
+        if (!refine_between[row]) continue;
+        alea_ray_coverage_row_t midpoint;
+        if (coverage_rows_midpoint(&rows[row], &rows[row + 1],
+                                   &midpoint) != 0)
+            return -1;
+        if (marked == SIZE_MAX - row_count) return -1;
+        marked++;
+    }
+    const size_t refined_count = row_count + marked;
+    if ((max_rows != 0 && refined_count > max_rows) ||
+        refined_count > out_capacity ||
+        (refined_count != 0 && !out_rows)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "coverage refinement row limit exceeded");
+        return -1;
+    }
+    size_t output = 0;
+    for (size_t row = 0; row < row_count; row++) {
+        out_rows[output++] = rows[row];
+        if (row + 1 < row_count && refine_between[row]) {
+            if (coverage_rows_midpoint(&rows[row], &rows[row + 1],
+                                       &out_rows[output]) != 0)
+                return -1;
+            output++;
+        }
+    }
+    *out_row_count = refined_count;
+    return 0;
+}
+
 #undef COVERAGE_SLICE_REALLOC
 
 typedef struct {

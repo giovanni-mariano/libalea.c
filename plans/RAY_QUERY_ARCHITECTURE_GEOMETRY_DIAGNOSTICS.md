@@ -90,8 +90,9 @@ Occurrence domains remain later work.  The serial compact materializer now
 publishes deterministic row/interval/owner CSR with explicit row, interval,
 owner, and byte budgets, and preserves the last successful result on failure.
 Its endpoint-independent signature comparator now marks same-direction row
-boundaries for deterministic midpoint refinement; generating bounded waves,
-and public API stabilization and executor integration, remain later work.
+boundaries and builds one bounded deterministic midpoint-refinement wave;
+multi-wave validator orchestration, public API stabilization, and executor
+integration remain later work.
 
 The remaining Phase 5 work is to complete the remaining
 production-versus-coverage matrix.  The validator now retains the complete
