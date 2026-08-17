@@ -1309,6 +1309,29 @@ Use these stop/go rules:
   profile identifies lane work, rather than allocation or compaction, as the
   remaining bottleneck.
 
+### Segment-publication measurement checkpoint (2026-08-17)
+
+The compact-batch performance fixture now runs the same prepared 20-shell
+geometry and the same 10,000 packed rays through four publication products:
+base CSR, ordinary material/density/surface/resolution fields, projected owner,
+and full paths.  It reports segment count, path-entry count, and exact
+published CSR bytes for each product.  This is the required measurement
+instrumentation for deciding whether to replace segment-batch staging; it is
+not itself a performance gate.
+
+Three warmed `RELEASE=1 PORTABLE=1 USE_OPENMP=1 OMP_NUM_THREADS=1` samples on
+this host retained 44,136 segments in every product and 32,866 path entries in
+the full-path product.  Median observed times were 17.61 us/ray for the
+single-ray comparison, 20.76 for base CSR, 16.64 for ordinary fields, 20.76
+for projected owner, and 28.01 for full paths.  Published bytes were 786,184,
+1,713,040, 2,992,984, and 3,808,034 respectively.  Run-to-run variation was
+large (especially base CSR and full paths), and the scalar comparison does not
+publish equivalent optional fields.  Therefore these samples do **not** yet
+justify a segment-arena rewrite or a traversal-speed claim.  Before that
+decision, repeat under a controlled affinity policy and add allocation and
+temporary-capacity counters to distinguish path capture and final CSR copying
+from per-ray staging.
+
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
 - Add fixed-output executor publication.
