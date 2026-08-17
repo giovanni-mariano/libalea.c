@@ -223,6 +223,7 @@ RAYCAST_SRCS = \
 	$(RAYCAST_DIR)/raycast.c \
 	$(RAYCAST_DIR)/ray_request.c \
 	$(RAYCAST_DIR)/ray_coverage.c \
+	$(RAYCAST_DIR)/ray_coverage_api.c \
 	$(RAYCAST_DIR)/ray_intersect.c \
 	$(RAYCAST_DIR)/bvh.c \
 	$(RAYCAST_DIR)/raycast_api.c
