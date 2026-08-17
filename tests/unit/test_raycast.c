@@ -666,6 +666,11 @@ TEST(compact_batch_surface_fields_preserve_selected_segments) {
     ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 2, 30,
                                       &surface_on, on), 0);
 
+    alea_raycast_batch_work_stats_t work_stats;
+    ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(on, &work_stats), 0);
+    ASSERT_EQ(work_stats.peak_trace_staging_bytes, 0);
+    ASSERT_EQ(work_stats.total_result_buffer_growths, 0);
+
     ASSERT_NULL(alea_raycast_batch_enter_surface_ids(off));
     ASSERT_NOT_NULL(alea_raycast_batch_enter_surface_ids(on));
     ASSERT_EQ(alea_raycast_batch_ray_count(off), alea_raycast_batch_ray_count(on));

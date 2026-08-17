@@ -1344,6 +1344,17 @@ density, surface, and resolution fields.  Keep projected-owner and full-path
 publication on the compatible per-ray path until their separate arena design
 and parity suite are ready.
 
+The first common segment-arena increment is now implemented.  It assigns each
+input ray deterministically to one worker arena, reuses one rich traversal
+scratch result per worker, retains only compact segment records plus local row
+offsets, then transactionally compacts those arenas into input-order public
+CSR arrays.  Base and ordinary optional-field batches therefore no longer keep
+one rich result per ray; their legacy trace-staging counters are zero.  Global
+segment and output-byte limits, range clipping, interruption, and failure
+atomicity keep their previous public contracts.  Projected-owner and full-path
+requests intentionally dispatch to the existing rich per-ray compatibility
+route because they require captured hierarchy paths.
+
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
 - Add fixed-output executor publication.

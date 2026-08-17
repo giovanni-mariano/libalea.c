@@ -95,6 +95,18 @@ typedef struct {
     int status;
 } alea_batch_trace_tmp_t;
 
+/* Common segment products retain only segments in a worker-owned arena.  The
+ * richer per-ray trace remains necessary for projected-owner and full-path
+ * products, which depend on the captured hierarchy path. */
+typedef struct {
+    alea_raycast_result_t trace;
+    alea_ray_segment_vec_t arena;
+    uint64_t* row_offsets;
+    size_t row_count;
+    int status;
+    alea_raycast_batch_work_stats_t work_stats;
+} alea_batch_segment_worker_t;
+
 
 static void batch_result_free_buffers(alea_raycast_batch_result_t* result) {
     if (!result) return;
@@ -474,6 +486,289 @@ static void batch_work_stats_accumulate(
 #undef BATCH_WORK_MAX
 }
 
+static void batch_work_stats_merge(alea_raycast_batch_work_stats_t* target,
+                                   const alea_raycast_batch_work_stats_t* source) {
+#define BATCH_WORK_MERGE(field) \
+    do { if (target->field < source->field) target->field = source->field; } while (0)
+    BATCH_WORK_MERGE(max_owner_neighbor_attempts);
+    BATCH_WORK_MERGE(max_owner_neighbor_hits);
+    BATCH_WORK_MERGE(max_owner_path_attempts);
+    BATCH_WORK_MERGE(max_owner_path_hits);
+    BATCH_WORK_MERGE(max_owner_root_queries);
+    BATCH_WORK_MERGE(max_owner_root_hits);
+    BATCH_WORK_MERGE(max_owner_full_queries);
+    BATCH_WORK_MERGE(max_owner_full_hits);
+    BATCH_WORK_MERGE(max_boundary_event_enrichments);
+    BATCH_WORK_MERGE(max_path_snapshot_copies);
+    BATCH_WORK_MERGE(max_path_snapshot_entries);
+    BATCH_WORK_MERGE(max_selected_intervals_yielded);
+    BATCH_WORK_MERGE(max_result_buffer_growths);
+    BATCH_WORK_MERGE(max_result_buffer_growth_bytes);
+    BATCH_WORK_MERGE(max_lattice_entry_calls);
+    BATCH_WORK_MERGE(max_lattice_entry_tlas_nodes_tested);
+    BATCH_WORK_MERGE(max_lattice_entry_tlas_leaves_visited);
+    BATCH_WORK_MERGE(max_lattice_entry_candidates);
+    BATCH_WORK_MERGE(max_lattice_entry_dda_steps);
+    BATCH_WORK_MERGE(max_lattice_entry_no_entry_results);
+    BATCH_WORK_MERGE(max_lattice_entry_future_entry_results);
+    BATCH_WORK_MERGE(max_lattice_entry_already_inside_results);
+    BATCH_WORK_MERGE(max_lattice_entry_ancestor_surface_tests);
+    BATCH_WORK_MERGE(max_lattice_entry_ancestor_events);
+    BATCH_WORK_MERGE(max_lattice_entry_canonical_rejections);
+#undef BATCH_WORK_MERGE
+}
+
+static void batch_segment_worker_free(alea_batch_segment_worker_t* worker) {
+    if (!worker) return;
+    alea_raycast_result_free(&worker->trace);
+    alea_vec_free(&worker->arena);
+    free(worker->row_offsets);
+    memset(worker, 0, sizeof(*worker));
+}
+
+static int batch_segment_worker_build(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, double scalar_t_max, const double* t_mins,
+    const double* t_maxs, uint64_t max_segments,
+    atomic_uint_fast64_t* live_segment_count,
+    alea_batch_segment_worker_t* worker, size_t worker_index,
+    size_t worker_count) {
+    const size_t owned_rows = ray_count > worker_index
+        ? 1 + (ray_count - 1 - worker_index) / worker_count : 0;
+    worker->row_offsets = calloc(owned_rows + 1, sizeof(*worker->row_offsets));
+    if (!worker->row_offsets) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate segment worker offsets");
+        return -1;
+    }
+    worker->row_count = owned_rows;
+    alea_raycast_result_init(&worker->trace);
+    alea_vec_init(&worker->arena);
+    for (size_t row = worker_index, local_row = 0; row < ray_count;
+         row += worker_count, local_row++) {
+        if (alea_interrupted()) return -1;
+        alea_raycast_result_clear(&worker->trace);
+        if (max_segments != 0) {
+            worker->trace.segment_counter = live_segment_count;
+            worker->trace.segment_limit = max_segments;
+        }
+        const double* o = &origins_xyz[row * 3];
+        const double* d = &directions_xyz[row * 3];
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
+            alea_raycast_hier_segments_nocache(
+                sys, &ray, t_maxs ? t_maxs[row] : scalar_t_max,
+                &worker->trace) != 0) {
+            worker->status = -1;
+            return -1;
+        }
+        if (t_mins && t_mins[row] > 0.0) {
+            const double t_min = t_mins[row];
+            size_t write = 0;
+            for (size_t j = 0; j < worker->trace.segments.count; j++) {
+                alea_ray_segment_t segment = worker->trace.segments.data[j];
+                if (segment.t_exit <= t_min + RAY_EPSILON) continue;
+                if (segment.t_enter < t_min) {
+                    segment.t_enter = t_min;
+                    segment.enter_surface_id = -1;
+                    segment.enter_hit_index = -1;
+                }
+                worker->trace.segments.data[write++] = segment;
+            }
+            worker->trace.segments.count = write;
+        }
+        worker->row_offsets[local_row] = worker->arena.count;
+        for (size_t j = 0; j < worker->trace.segments.count; j++) {
+            if (alea_vec_push(&worker->arena, worker->trace.segments.data[j],
+                              alea_ray_segment_t) != 0) {
+                alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                      "failed to append segment worker arena");
+                worker->status = -1;
+                return -1;
+            }
+        }
+        worker->row_offsets[local_row + 1] = worker->arena.count;
+        batch_work_stats_accumulate(&worker->work_stats, &worker->trace);
+    }
+    return 0;
+}
+
+static int raycast_hier_batch_execute_common_arena(
+    alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
+    size_t ray_count, double scalar_t_max, const double* t_mins,
+    const double* t_maxs, uint32_t fields, uint64_t max_segments,
+    uint64_t max_output_bytes, atomic_uint_fast64_t* live_segment_count,
+    alea_raycast_batch_result_t* result) {
+    size_t worker_count = 1;
+    alea_batch_segment_worker_t* workers = NULL;
+    alea_raycast_batch_result_t next = {0};
+#ifdef _OPENMP
+    worker_count = (size_t)omp_get_max_threads();
+#endif
+    if (worker_count == 0) worker_count = 1;
+    if (ray_count != 0 && worker_count > ray_count) worker_count = ray_count;
+    if (worker_count > SIZE_MAX / sizeof(*workers)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "batch worker storage overflows");
+        return -1;
+    }
+    workers = calloc(worker_count, sizeof(*workers));
+    if (!workers) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate segment worker arenas");
+        return -1;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t worker_index = 0; worker_index < worker_count; worker_index++)
+        workers[worker_index].status = batch_segment_worker_build(
+            sys, origins_xyz, directions_xyz, ray_count, scalar_t_max, t_mins,
+            t_maxs, max_segments, live_segment_count, &workers[worker_index],
+            worker_index, worker_count);
+
+    for (size_t i = 0; i < worker_count; i++) {
+        if (workers[i].status != 0 || alea_interrupted()) {
+            if (alea_interrupted())
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED, "batch raycast interrupted");
+            else if (workers[i].trace.segment_limit_exceeded)
+                alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                      "batch segment limit (%llu) exceeded",
+                                      (unsigned long long)max_segments);
+            else if (alea_error_code() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE, "batch raycast failed");
+            goto cleanup;
+        }
+    }
+
+    next.ray_count = ray_count;
+    next.fields = fields;
+    next.ray_offsets = batch_alloc_array(ray_count + 1, sizeof(*next.ray_offsets));
+    if (!next.ray_offsets) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "failed to allocate batch offsets");
+        goto cleanup;
+    }
+    next.ray_offsets[0] = 0;
+    for (size_t row = 0; row < ray_count; row++) {
+        const size_t worker_index = row % worker_count;
+        const size_t local_row = row / worker_count;
+        const alea_batch_segment_worker_t* worker = &workers[worker_index];
+        const uint64_t count = worker->row_offsets[local_row + 1] -
+                               worker->row_offsets[local_row];
+        if (count > UINT64_MAX - next.ray_offsets[row]) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW, "batch segment offsets overflow");
+            goto cleanup;
+        }
+        next.ray_offsets[row + 1] = next.ray_offsets[row] + count;
+    }
+    if (next.ray_offsets[ray_count] > SIZE_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "batch segment count overflows size_t");
+        goto cleanup;
+    }
+    next.segment_count = (size_t)next.ray_offsets[ray_count];
+    if (max_segments != 0 && next.ray_offsets[ray_count] > max_segments) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "batch segment limit (%llu) exceeded",
+                              (unsigned long long)max_segments);
+        goto cleanup;
+    }
+    if (max_output_bytes != 0) {
+        size_t output_bytes = 0;
+        int overflow =
+            batch_add_output_bytes(&output_bytes, ray_count + 1,
+                                   sizeof(*next.ray_offsets)) ||
+            batch_add_output_bytes(&output_bytes, next.segment_count,
+                                   sizeof(*next.t_enter)) ||
+            batch_add_output_bytes(&output_bytes, next.segment_count,
+                                   sizeof(*next.t_exit)) ||
+            batch_add_output_bytes(&output_bytes, next.segment_count,
+                                   sizeof(*next.cell_ids));
+        if (fields & ALEA_RAY_BATCH_MATERIAL)
+            overflow |= batch_add_output_bytes(&output_bytes, next.segment_count,
+                                               sizeof(*next.material_ids));
+        if (fields & ALEA_RAY_BATCH_DENSITY)
+            overflow |= batch_add_output_bytes(&output_bytes, next.segment_count,
+                                               sizeof(*next.densities));
+        if (fields & ALEA_RAY_BATCH_SURFACES) {
+            overflow |= batch_add_output_bytes(&output_bytes, next.segment_count,
+                                               sizeof(*next.enter_surface_ids));
+            overflow |= batch_add_output_bytes(&output_bytes, next.segment_count,
+                                               sizeof(*next.exit_surface_ids));
+        }
+        if (fields & ALEA_RAY_BATCH_RESOLUTION_FLAGS)
+            overflow |= batch_add_output_bytes(&output_bytes, next.segment_count,
+                                               sizeof(*next.resolution_flags));
+        if (overflow || output_bytes > max_output_bytes) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "batch compact output exceeds byte limit (%llu)",
+                                  (unsigned long long)max_output_bytes);
+            goto cleanup;
+        }
+    }
+    next.t_enter = batch_alloc_array(next.segment_count, sizeof(*next.t_enter));
+    next.t_exit = batch_alloc_array(next.segment_count, sizeof(*next.t_exit));
+    next.cell_ids = batch_alloc_array(next.segment_count, sizeof(*next.cell_ids));
+    if (fields & ALEA_RAY_BATCH_MATERIAL)
+        next.material_ids = batch_alloc_array(next.segment_count, sizeof(*next.material_ids));
+    if (fields & ALEA_RAY_BATCH_DENSITY)
+        next.densities = batch_alloc_array(next.segment_count, sizeof(*next.densities));
+    if (fields & ALEA_RAY_BATCH_SURFACES) {
+        next.enter_surface_ids = batch_alloc_array(next.segment_count,
+                                                    sizeof(*next.enter_surface_ids));
+        next.exit_surface_ids = batch_alloc_array(next.segment_count,
+                                                   sizeof(*next.exit_surface_ids));
+    }
+    if (fields & ALEA_RAY_BATCH_RESOLUTION_FLAGS)
+        next.resolution_flags = batch_alloc_array(next.segment_count,
+                                                  sizeof(*next.resolution_flags));
+    if (!next.t_enter || !next.t_exit || !next.cell_ids ||
+        ((fields & ALEA_RAY_BATCH_MATERIAL) && !next.material_ids) ||
+        ((fields & ALEA_RAY_BATCH_DENSITY) && !next.densities) ||
+        ((fields & ALEA_RAY_BATCH_SURFACES) &&
+         (!next.enter_surface_ids || !next.exit_surface_ids)) ||
+        ((fields & ALEA_RAY_BATCH_RESOLUTION_FLAGS) && !next.resolution_flags)) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate batch segment fields");
+        goto cleanup;
+    }
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (size_t row = 0; row < ray_count; row++) {
+        const size_t worker_index = row % worker_count;
+        const size_t local_row = row / worker_count;
+        const alea_batch_segment_worker_t* worker = &workers[worker_index];
+        const size_t begin = (size_t)worker->row_offsets[local_row];
+        const size_t end = (size_t)worker->row_offsets[local_row + 1];
+        size_t dst = (size_t)next.ray_offsets[row];
+        for (size_t source = begin; source < end; source++, dst++) {
+            const alea_ray_segment_t* seg = &worker->arena.data[source];
+            next.t_enter[dst] = seg->t_enter;
+            next.t_exit[dst] = seg->t_exit;
+            next.cell_ids[dst] = (int32_t)seg->cell_id;
+            if (next.material_ids) next.material_ids[dst] = (int32_t)seg->material_id;
+            if (next.densities) next.densities[dst] = seg->density;
+            if (next.enter_surface_ids) next.enter_surface_ids[dst] = (int32_t)seg->enter_surface_id;
+            if (next.exit_surface_ids) next.exit_surface_ids[dst] = (int32_t)seg->exit_surface_id;
+            if (next.resolution_flags) next.resolution_flags[dst] = seg->resolution_flags;
+        }
+    }
+    for (size_t i = 0; i < worker_count; i++) {
+        batch_work_stats_merge(&next.work_stats, &workers[i].work_stats);
+        batch_segment_worker_free(&workers[i]);
+    }
+    free(workers);
+    batch_result_free_buffers(result);
+    *result = next;
+    return 0;
+
+cleanup:
+    for (size_t i = 0; i < worker_count; i++) batch_segment_worker_free(&workers[i]);
+    free(workers);
+    batch_result_free_buffers(&next);
+    return -1;
+}
+
 uint32_t alea_raycast_batch_fields(const alea_raycast_batch_result_t* result) {
     return result ? result->fields : 0;
 }
@@ -626,6 +921,13 @@ static int raycast_hier_batch_execute(
         return -1;
     atomic_init(&live_segment_count, 0);
     atomic_init(&live_path_entry_count, 0);
+    if ((fields & (ALEA_RAY_BATCH_PROJECTED_OWNER |
+                   ALEA_RAY_BATCH_FULL_PATHS)) == 0) {
+        return raycast_hier_batch_execute_common_arena(
+            sys, origins_xyz, directions_xyz, ray_count, scalar_t_max,
+            t_mins, t_maxs, fields, max_segments, max_output_bytes,
+            &live_segment_count, result);
+    }
     if (ray_count > SIZE_MAX / sizeof(*traces)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW, "batch temporary storage overflows");
         return -1;
