@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 struct alea_ray_slice_validation_result {
     size_t row_count;
     size_t interval_count;
@@ -643,13 +647,14 @@ int alea_validate_ray_slice_compact_with_event_cache(
     double *origins = NULL, *directions = NULL;
     alea_ray_coverage_row_t* coverage_rows = NULL;
     alea_ray_coverage_slice_result_t coverage_result;
-    alea_raycast_result_t coverage_scratch;
+    alea_ray_coverage_executor_t coverage_executor;
     const alea_ray_coverage_slice_result_t* coverage = NULL;
     size_t* row_base_indices = NULL;
     uint8_t* row_tags = NULL;
     const double* row_coordinates = NULL;
     size_t out_row_count = row_count;
     int coverage_initialized = 0;
+    int coverage_executor_initialized = 0;
     int event_cache_width = 0, event_cache_height = 0;
     int cache_hit = 0, rc = -1;
 
@@ -856,13 +861,21 @@ int alea_validate_ray_slice_compact_with_event_cache(
         coverage_limits.max_rows = (size_t)options.max_coverage_rows;
         if (build_coverage_rows(view, row_count, &options, &coverage_rows) != 0)
             goto cleanup;
-        alea_raycast_result_init(&coverage_scratch);
         alea_ray_coverage_slice_result_init(&coverage_result);
+        alea_ray_coverage_executor_init(&coverage_executor);
+        size_t coverage_workers = 1;
+#ifdef _OPENMP
+        coverage_workers = (size_t)omp_get_max_threads();
+#endif
+        if (alea_ray_coverage_executor_prepare(&coverage_executor,
+                                               coverage_workers) != 0)
+            goto cleanup;
+        coverage_executor_initialized = 1;
         coverage_initialized = 1;
         if (options.coverage_max_refinement_depth == 0) {
-            if (alea_ray_coverage_slice_build_serial_nocache(
+            if (alea_ray_coverage_slice_build_executor_nocache(
                     sys, coverage_rows, row_count, &coverage_limits,
-                    &coverage_scratch, &coverage_result) != 0) {
+                    &coverage_executor, &coverage_result) != 0) {
                 if (alea_error_code() == ALEA_OK)
                     alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                                           "coverage slice classification failed");
@@ -876,11 +889,11 @@ int alea_validate_ray_slice_compact_with_event_cache(
             policy.endpoint_displacement = options.coverage_endpoint_displacement;
             policy.crossing_density = (size_t)options.coverage_crossing_density;
             policy.min_transverse_spacing = options.coverage_min_transverse_spacing;
-            if (alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
-                    sys, coverage_rows, row_count,
-                    options.coverage_max_refinement_depth, &policy,
-                    &coverage_limits, &coverage_scratch,
-                    &coverage_result) != 0) {
+            if (alea_ray_coverage_slice_build_adaptive_policy_executor_nocache(
+                sys, coverage_rows, row_count,
+                options.coverage_max_refinement_depth, &policy,
+                &coverage_limits, &coverage_executor,
+                &coverage_result) != 0) {
                 if (alea_error_code() == ALEA_OK)
                     alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                                           "coverage refinement policy is inconsistent");
@@ -1128,8 +1141,9 @@ cleanup:
     free(row_tags);
     if (coverage_initialized) {
         alea_ray_coverage_slice_result_free(&coverage_result);
-        alea_raycast_result_free(&coverage_scratch);
     }
+    if (coverage_executor_initialized)
+        alea_ray_coverage_executor_free(&coverage_executor);
     if (rows) {
         for (size_t row = 0; row < out_row_count; row++) validation_row_free(&rows[row]);
         free(rows);

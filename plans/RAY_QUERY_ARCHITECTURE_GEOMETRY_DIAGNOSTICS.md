@@ -1219,9 +1219,10 @@ the worker arenas transactionally into input-order CSR.  The executor result
 is byte-for-byte equal to the serial CSR fixture and retains the previous
 publication when a resource limit prevents completion.  The adaptive
 controller now uses that executor for every sampled wave while preserving its
-serial policy and refinement-status contract.  Integrating executor-owned
-adaptive work into the validator and consolidating production fixed-output
-scheduling remain the next increments.
+serial policy and refinement-status contract.  The compact ray-slice validator
+now selects the executor for base and adaptive coverage rows, using the
+configured OpenMP worker count when enabled.  Consolidating production
+fixed-output scheduling remains the next increment.
 
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
