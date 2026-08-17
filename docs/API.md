@@ -2307,6 +2307,82 @@ physical surfaces use the lowest positive surface ID; set
 ownership fields are deterministic. `max_events` and `max_output_bytes` reject
 oversized results rather than truncating them.
 
+### Complete coverage slices
+
+`alea_ray_coverage_query()` and `alea_ray_coverage_slice_query()` answer the
+diagnostic question that selected-owner tracing cannot: which concrete owner
+occurrences claim each elementary ray interval. They use the global
+breakpoint/complete-owner engine and publish input-order CSR data:
+
+```text
+row_offsets:   rows      -> intervals
+owner_offsets: intervals -> concrete owner occurrences
+```
+
+Create one `alea_ray_coverage_slice_result_t`, reuse it for many queries, and
+destroy it when finished. Every accessor returns a borrowed read-only array;
+it remains valid until the next successful query using that result or until
+the result is destroyed. A failed query leaves the previous publication
+unchanged.
+
+```c
+const double origins[] = {-2, 0, 0, -2, 2, 0};
+const double directions[] = {1, 0, 0, 1, 0, 0};
+const uint8_t direction_tags[] = {0, 0};
+const double row_coordinates[] = {0, 2};
+
+alea_ray_coverage_slice_options_t options;
+alea_ray_coverage_slice_options_init(&options);
+options.t_max = 4.0;
+options.flags = ALEA_RAY_COVERAGE_DOMAIN;
+options.domain_t_min = 0.5;
+options.domain_t_max = 3.5;
+
+alea_ray_coverage_slice_result_t* coverage =
+    alea_ray_coverage_slice_result_create();
+if (alea_ray_coverage_slice_query(sys, origins, directions, 2,
+                                  direction_tags, row_coordinates,
+                                  &options, coverage) != 0) {
+    /* coverage still contains its previous successful result, if any */
+}
+
+const size_t* rows = alea_ray_coverage_slice_row_offsets(coverage);
+const double* t0 = alea_ray_coverage_slice_t_enter(coverage);
+const double* t1 = alea_ray_coverage_slice_t_exit(coverage);
+const uint8_t* kinds = alea_ray_coverage_slice_kinds(coverage);
+const size_t* owners = alea_ray_coverage_slice_owner_offsets(coverage);
+const int* owner_cells = alea_ray_coverage_slice_owner_cell_ids(coverage);
+
+for (size_t row = 0; row < alea_ray_coverage_slice_row_count(coverage); row++)
+    for (size_t interval = rows[row]; interval < rows[row + 1]; interval++)
+        for (size_t owner = owners[interval]; owner < owners[interval + 1]; owner++)
+            /* [t0[interval], t1[interval]] has kind kinds[interval],
+               claimed by owner_cells[owner] */;
+
+alea_ray_coverage_slice_result_destroy(coverage);
+```
+
+`ALEA_RAY_COVERAGE_UNIQUE` means one complete owner chain; `GAP`, `OVERLAP`,
+`UNDEFINED_FILL`, and `UNRESOLVED` are geometry findings or indeterminate
+coverage. `TRUNCATED` means the owner budget retained only a prefix, so its
+owners must not be treated as complete; use `owner_count_lower_bounds` to see
+the minimum known count. `ALLOWED_EXTERIOR` is reported only with both
+`ALEA_RAY_COVERAGE_DOMAIN` and `ALEA_RAY_COVERAGE_REPORT_EXTERIOR`.
+
+The owner arrays expose cell, material, universe, fill-universe, depth,
+occurrence key, immediate parent occurrence key, and resolution flags. The
+occurrence-key arrays distinguish concrete placements such as repeated lattice
+elements; cell ID alone is not owner identity.
+
+`max_rows`, `max_intervals`, `max_owners`, and `max_output_bytes` bound the
+published CSR output; zero means unlimited. Set `max_refinement_depth` to
+enable deterministic midpoint refinement. The optional signature,
+displacement, density, and finding signals select adjacent rows to split;
+`alea_ray_coverage_slice_refinement_status()` reports whether the published
+sample completed or stopped at a depth, row, or spacing limit.
+`alea_ray_coverage_query()` is the scalar one-row adapter over the same
+contract.
+
 ## Ray-slice rasterization
 
 `alea_rasterize_ray_slice_compact()` fills caller-owned, tightly packed
