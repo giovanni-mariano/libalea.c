@@ -1149,4 +1149,133 @@ TEST(compact_ray_slice_fast_bidirectional_reuses_plot_cache) {
     alea_destroy(sys);
 }
 
+/* Two concentric cells are a total overlap that no selected-owner trace can
+ * see: forward and reverse both pick the same claimant and agree.  Only the
+ * complete-coverage sweep reports it. */
+TEST(compact_ray_slice_coverage_reports_overlap_and_gaps) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int outer = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 3.0);
+    const int inner = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(outer >= 0 && inner >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, outer)->neg_node,
+                         material, -1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 20, alea_surface_at(sys, inner)->neg_node,
+                         material, -1.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0,
+                         0.0, 1.0, 0.0,
+                         -5.0, 5.0, -2.0, 2.0);
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(validation);
+
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_COVERAGE;
+
+    /* Neither an explicit domain nor a uniform policy: lowering must reject
+     * the request rather than guess where ownership is required. */
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), -1);
+    options.coverage_flags = ALEA_RAY_SLICE_COVERAGE_HAS_DOMAIN |
+                             ALEA_RAY_SLICE_COVERAGE_UNOWNED_IS_EXTERIOR;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), -1);
+    options.coverage_flags = ALEA_RAY_SLICE_COVERAGE_HAS_DOMAIN;
+    options.coverage_domain_u_min = 2.0;
+    options.coverage_domain_u_max = 2.0;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), -1);
+
+    /* An explicit domain spanning the view: unowned space inside it is an
+     * interior gap. */
+    options.coverage_domain_u_min = -5.0;
+    options.coverage_domain_u_max = 5.0;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    ASSERT(alea_ray_slice_validation_fields(validation) &
+           ALEA_RAY_SLICE_VALIDATION_FIELD_COVERAGE);
+    const uint64_t* offsets = alea_ray_slice_validation_row_offsets(validation);
+    const double* u_enter = alea_ray_slice_validation_u_enter(validation);
+    const double* u_exit = alea_ray_slice_validation_u_exit(validation);
+    const uint32_t* flags =
+        alea_ray_slice_validation_diagnostic_flags(validation);
+    const uint32_t* owners =
+        alea_ray_slice_validation_coverage_owner_counts(validation);
+    ASSERT_NOT_NULL(offsets);
+    ASSERT_NOT_NULL(owners);
+    ASSERT_EQ(alea_ray_slice_validation_row_count(validation), (size_t)3);
+
+    /* The centre row crosses both spheres: gap, overlap, gap.  The uniquely
+     * owned shell intervals are the expected answer and are not reported. */
+    const size_t begin = (size_t)offsets[1], end = (size_t)offsets[2];
+    ASSERT_EQ(end - begin, (size_t)3);
+    ASSERT_EQ(flags[begin], ALEA_RAY_SLICE_DIAG_COVERAGE_GAP);
+    ASSERT_NEAR(u_enter[begin], -5.0, 1e-9);
+    ASSERT_NEAR(u_exit[begin], -3.0, 1e-9);
+    ASSERT_EQ(owners[begin], (uint32_t)0);
+    ASSERT_EQ(flags[begin + 1], ALEA_RAY_SLICE_DIAG_COVERAGE_OVERLAP);
+    ASSERT_NEAR(u_enter[begin + 1], -1.0, 1e-9);
+    ASSERT_NEAR(u_exit[begin + 1], 1.0, 1e-9);
+    ASSERT_EQ(owners[begin + 1], (uint32_t)2);
+    ASSERT_EQ(flags[begin + 2], ALEA_RAY_SLICE_DIAG_COVERAGE_GAP);
+    ASSERT_NEAR(u_enter[begin + 2], 3.0, 1e-9);
+    ASSERT_NEAR(u_exit[begin + 2], 5.0, 1e-9);
+
+    /* An off-centre row misses the inner sphere and reports gaps only. */
+    for (size_t i = (size_t)offsets[0]; i < (size_t)offsets[1]; i++)
+        ASSERT_EQ(flags[i], ALEA_RAY_SLICE_DIAG_COVERAGE_GAP);
+
+    /* The uniform policy declares all unowned space exterior, so the same
+     * geometry yields the overlap alone.  Nothing about the viewport changed. */
+    options.coverage_flags = ALEA_RAY_SLICE_COVERAGE_UNOWNED_IS_EXTERIOR;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    offsets = alea_ray_slice_validation_row_offsets(validation);
+    flags = alea_ray_slice_validation_diagnostic_flags(validation);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation), (size_t)1);
+    ASSERT_EQ(offsets[1], (uint64_t)0);
+    ASSERT_EQ(offsets[2], (uint64_t)1);
+    ASSERT_EQ(flags[0], ALEA_RAY_SLICE_DIAG_COVERAGE_OVERLAP);
+
+    options.coverage_flags = ALEA_RAY_SLICE_COVERAGE_UNOWNED_IS_EXTERIOR |
+                             ALEA_RAY_SLICE_COVERAGE_REPORT_EXTERIOR;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    offsets = alea_ray_slice_validation_row_offsets(validation);
+    flags = alea_ray_slice_validation_diagnostic_flags(validation);
+    ASSERT_EQ((size_t)offsets[2] - (size_t)offsets[1], (size_t)3);
+    ASSERT_EQ(flags[(size_t)offsets[1]],
+              ALEA_RAY_SLICE_DIAG_COVERAGE_ALLOWED_EXTERIOR);
+    ASSERT_EQ(flags[(size_t)offsets[1] + 1],
+              ALEA_RAY_SLICE_DIAG_COVERAGE_OVERLAP);
+
+    /* Directional agreement is not evidence of validity: the same rows the
+     * coverage sweep condemns produce no bidirectional mismatch at all. */
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    options.coverage_flags = 0;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation), (size_t)0);
+    ASSERT_EQ(alea_ray_slice_validation_fields(validation) &
+              ALEA_RAY_SLICE_VALIDATION_FIELD_COVERAGE, (uint32_t)0);
+
+    /* Both checks together keep the two evidence classes in separate flags. */
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL |
+                     ALEA_RAY_SLICE_VALIDATE_COVERAGE;
+    options.coverage_flags = ALEA_RAY_SLICE_COVERAGE_UNOWNED_IS_EXTERIOR;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    flags = alea_ray_slice_validation_diagnostic_flags(validation);
+    ASSERT_EQ(alea_ray_slice_validation_interval_count(validation), (size_t)1);
+    ASSERT_EQ(flags[0], ALEA_RAY_SLICE_DIAG_COVERAGE_OVERLAP);
+
+    alea_ray_slice_validation_result_destroy(validation);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

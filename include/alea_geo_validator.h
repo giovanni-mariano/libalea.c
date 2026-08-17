@@ -147,10 +147,35 @@ typedef struct alea_ray_slice_validation_result
     alea_ray_slice_validation_result_t;
 
 #define ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL (1u << 0)
+/** Classify each row with the complete-coverage sweep.  This is the only
+ *  check that can report gaps and overlaps: a bidirectional comparison can
+ *  agree on the same incomplete ownership interpretation in both directions. */
+#define ALEA_RAY_SLICE_VALIDATE_COVERAGE (1u << 1)
 
+/** Trace-consistency evidence.  Not a geometry verdict. */
 #define ALEA_RAY_SLICE_DIAG_FAST_DIRECTION_MISMATCH (1u << 0)
 
+/** Confirmed complete-coverage classifications. */
+#define ALEA_RAY_SLICE_DIAG_COVERAGE_GAP             (1u << 1)
+#define ALEA_RAY_SLICE_DIAG_COVERAGE_OVERLAP         (1u << 2)
+#define ALEA_RAY_SLICE_DIAG_COVERAGE_UNDEFINED_FILL  (1u << 3)
+/** Coverage could not be established; neither a finding nor a clean result. */
+#define ALEA_RAY_SLICE_DIAG_COVERAGE_UNRESOLVED      (1u << 4)
+#define ALEA_RAY_SLICE_DIAG_COVERAGE_TRUNCATED       (1u << 5)
+/** Unowned space outside the configured validation domain. */
+#define ALEA_RAY_SLICE_DIAG_COVERAGE_ALLOWED_EXTERIOR (1u << 6)
+
 #define ALEA_RAY_SLICE_VALIDATION_INCLUDE_AGREEMENTS (1u << 0)
+
+/** Coverage domain policy.  Exactly one of these is required when
+ *  ALEA_RAY_SLICE_VALIDATE_COVERAGE is requested: the viewport extent never
+ *  defines by itself where ownership is required, so unowned space cannot be
+ *  classified without an explicit domain or an explicit uniform policy. */
+#define ALEA_RAY_SLICE_COVERAGE_HAS_DOMAIN          (1u << 0)
+/** Treat all observed unowned space as allowed exterior; never a gap. */
+#define ALEA_RAY_SLICE_COVERAGE_UNOWNED_IS_EXTERIOR (1u << 1)
+/** Emit allowed-exterior intervals rather than omitting them. */
+#define ALEA_RAY_SLICE_COVERAGE_REPORT_EXTERIOR     (1u << 2)
 
 #define ALEA_RAY_SLICE_TRACE_FAST_FORWARD (1u << 0)
 #define ALEA_RAY_SLICE_TRACE_FAST_REVERSE (1u << 1)
@@ -158,6 +183,7 @@ typedef struct alea_ray_slice_validation_result
 #define ALEA_RAY_SLICE_VALIDATION_FIELD_FAST_FORWARD (1u << 0)
 #define ALEA_RAY_SLICE_VALIDATION_FIELD_FAST_REVERSE (1u << 1)
 #define ALEA_RAY_SLICE_VALIDATION_FIELD_OCCURRENCE_KEYS (1u << 2)
+#define ALEA_RAY_SLICE_VALIDATION_FIELD_COVERAGE (1u << 3)
 
 typedef struct {
     size_t struct_size;
@@ -170,6 +196,19 @@ typedef struct {
     uint64_t max_path_entries;
     uint64_t max_output_intervals;
     uint64_t max_output_bytes;
+    uint32_t coverage_flags;   /**< ALEA_RAY_SLICE_COVERAGE_* */
+    /** Explicit validation domain in view U coordinates, used only with
+     *  ALEA_RAY_SLICE_COVERAGE_HAS_DOMAIN.  Unowned space inside it is an
+     *  interior gap; unowned space outside it is allowed exterior.  Viewport
+     *  clipping narrows observation only and never reclassifies either. */
+    double coverage_domain_u_min;
+    double coverage_domain_u_max;
+    /** Publication budget for retained concrete owner records across the whole
+     *  slice.  Exhausting it is an operation failure that publishes nothing,
+     *  which is distinct from per-interval owner-set saturation: that is a
+     *  successful result carrying ALEA_RAY_SLICE_DIAG_COVERAGE_TRUNCATED, and
+     *  it prevents a successful validation verdict.  0 = unlimited. */
+    uint64_t max_coverage_owners;
 } alea_ray_slice_validation_options_t;
 
 void alea_ray_slice_validation_options_init(
@@ -207,6 +246,13 @@ const int32_t* alea_ray_slice_validation_fast_reverse_cell_ids(
 const uint64_t* alea_ray_slice_validation_fast_forward_occurrence_keys(
     const alea_ray_slice_validation_result_t* result);
 const uint64_t* alea_ray_slice_validation_fast_reverse_occurrence_keys(
+    const alea_ray_slice_validation_result_t* result);
+
+/* Retained concrete owner records backing each interval's coverage
+ * classification.  Present only when ALEA_RAY_SLICE_VALIDATION_FIELD_COVERAGE
+ * is set.  For a TRUNCATED interval this is the retained prefix, not the
+ * complete owner count. */
+const uint32_t* alea_ray_slice_validation_coverage_owner_counts(
     const alea_ray_slice_validation_result_t* result);
 
 /* Optional provenance attached by validation with a directional trace cache.
