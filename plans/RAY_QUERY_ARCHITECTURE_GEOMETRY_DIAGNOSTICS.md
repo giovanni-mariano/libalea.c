@@ -92,9 +92,35 @@ publishes deterministic row/interval/owner CSR with explicit row, interval,
 owner, and byte budgets, and preserves the last successful result on failure.
 Its endpoint-independent signature comparator now marks same-direction row
 boundaries, and the serial controller builds bounded deterministic midpoint
-waves while publishing complete, maximum-depth, or maximum-row status. Validator
-integration, public API stabilization, and executor integration remain later
-work.
+waves while publishing complete, maximum-depth, or maximum-row status. Public
+API stabilization and executor integration remain later work.
+
+### Refinement policy and validator coverage checkpoint (2026-08-17)
+
+Adaptive probe selection is now an explicit policy rather than signature
+difference alone.  Endpoint displacement, crossing density, and confirmed
+findings are separate selectable signals, each requiring its own tolerance
+instead of silently disabling itself; the minimum transverse spacing limit
+suppresses pairs whose midpoint split would fall below it, and the controller
+publishes the completed rows with an explicit minimum-spacing status rather
+than claiming convergence.  Refinement remains probe selection only and does
+not alter classification on any sampled ray.  The signature-only entry points
+remain as adapters.
+
+The compact ray-slice validator now consumes the complete-coverage slice
+builder.  Coverage breakpoints partition each row alongside the selected
+traces, so a boundary that does not change selected ownership still splits the
+row, and every elementary interval carries its coverage classification and
+retained owner count.  Directional disagreement keeps a distinct flag and is
+never merged into a coverage finding.  Coverage requires exactly one of an
+explicit U-space validation domain or a declared uniform exterior policy;
+requests supplying neither are rejected before traversal.  A regression fixture
+covers the concentric-cell total overlap that produces perfect forward/reverse
+agreement and is invisible to the bidirectional check.
+
+Remaining Phase 5 work is adaptive-row orchestration inside the validator: the
+slice validator currently samples one deterministic row per output row and does
+not yet drive refinement waves.
 
 The remaining Phase 5 work is to complete the remaining
 production-versus-coverage matrix.  The validator now retains the complete
