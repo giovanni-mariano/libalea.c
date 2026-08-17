@@ -1332,6 +1332,18 @@ decision, repeat under a controlled affinity policy and add allocation and
 temporary-capacity counters to distinguish path capture and final CSR copying
 from per-ray staging.
 
+Those counters are now present in the private batch work statistics.  On the
+same fixture, base and ordinary-field products retained 3,311,168 bytes of
+simultaneously live legacy trace staging across 10,000 rays; projected-owner
+and full-path products retained 5,488,232 bytes.  The corresponding total
+trace-buffer growth was 21,266/3,311,168 bytes and 44,602/5,488,232 bytes.
+Because this temporary storage scales with ray count while the common segment
+product is used by compact slices, it meets the memory-scaling trigger for the
+common segment-arena increment.  Begin that increment for base, material,
+density, surface, and resolution fields.  Keep projected-owner and full-path
+publication on the compatible per-ray path until their separate arena design
+and parity suite are ready.
+
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
 - Add fixed-output executor publication.
