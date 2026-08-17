@@ -2473,6 +2473,39 @@ TEST(ray_coverage_reports_owner_budget_truncation) {
     ASSERT_EQ(finding_count, 3);
     ASSERT_EQ(findings[1].kind, ALEA_INTERVAL_TRUNCATED);
 
+    /* The executor must preserve owner saturation as published data, while
+     * enforcing max_owners across all worker arenas rather than per worker. */
+    alea_ray_coverage_row_t rows[2] = {
+        { .ray = ray, .t_max = 4.0, .direction_tag = 1,
+          .transverse_coordinate = 0.0 },
+        { .ray = ray, .t_max = 4.0, .direction_tag = 1,
+          .transverse_coordinate = 1.0 }
+    };
+    alea_ray_coverage_slice_limits_t limits;
+    alea_ray_coverage_slice_limits_init(&limits);
+    alea_ray_coverage_executor_t executor;
+    alea_ray_coverage_executor_init(&executor);
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
+    alea_ray_coverage_slice_result_t slice;
+    alea_ray_coverage_slice_result_init(&slice);
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &slice), 0);
+    ASSERT_EQ(slice.row_count, (size_t)2);
+    ASSERT_EQ(slice.interval_count, (size_t)6);
+    ASSERT_EQ(slice.owner_count, (size_t)64);
+    ASSERT_EQ(slice.kinds[1], (uint8_t)ALEA_RAY_COVERAGE_TRUNCATED);
+    ASSERT_EQ(slice.kinds[4], (uint8_t)ALEA_RAY_COVERAGE_TRUNCATED);
+    ASSERT_EQ(slice.owner_count_lower_bounds[1], (size_t)33);
+    ASSERT_EQ(slice.owner_count_lower_bounds[4], (size_t)33);
+    const size_t* prior_offsets = slice.row_offsets;
+    limits.max_owners = 63;
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &slice), -1);
+    ASSERT_EQ(slice.row_offsets, prior_offsets);
+    ASSERT_EQ(slice.owner_count, (size_t)64);
+    alea_ray_coverage_slice_result_free(&slice);
+    alea_ray_coverage_executor_free(&executor);
+
     alea_destroy(sys);
 }
 
