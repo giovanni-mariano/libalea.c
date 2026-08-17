@@ -2697,6 +2697,23 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(executor_result.row_offsets, executor_previous_offsets);
     ASSERT_EQ(executor_result.interval_count, (size_t)4);
     limits.max_intervals = 0;
+    /* A malformed row owned by a different worker aborts the complete
+     * operation; already-staged rows never leak into publication. */
+    alea_ray_coverage_row_t invalid_rows[2] = { rows[0], rows[1] };
+    invalid_rows[1].t_max = 0.0;
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, invalid_rows, 2, &limits, &executor,
+                  &executor_result), -1);
+    ASSERT_EQ(executor_result.row_offsets, executor_previous_offsets);
+    ASSERT_EQ(executor_result.interval_count, (size_t)4);
+    /* Interruption is an operation failure too and must retain the last
+     * publication without depending on a scheduling race. */
+    alea_interrupt();
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &executor_result), -1);
+    ASSERT_EQ(executor_result.row_offsets, executor_previous_offsets);
+    ASSERT_EQ(executor_result.interval_count, (size_t)4);
+    alea_clear_interrupt();
     alea_ray_coverage_slice_result_free(&executor_result);
     alea_ray_coverage_executor_free(&executor);
 
