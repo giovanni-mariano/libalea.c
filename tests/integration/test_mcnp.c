@@ -2566,6 +2566,22 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(result.interval_count, (size_t)4);
     ASSERT_EQ(result.owner_count, (size_t)1);
 
+    /* The byte limit measures the published CSR arrays exactly, rather than
+     * allocator capacity.  One byte below this known result must also retain
+     * the prior publication. */
+    const size_t published_bytes =
+        3 * sizeof(size_t) + 2 * sizeof(uint8_t) + 2 * sizeof(double) +
+        4 * (2 * sizeof(double) + sizeof(uint8_t) + sizeof(size_t)) +
+        5 * sizeof(size_t) +
+        6 * sizeof(int) + 2 * sizeof(uint64_t) + sizeof(uint8_t);
+    limits = (alea_ray_coverage_slice_limits_t){
+        .max_bytes = published_bytes - 1
+    };
+    ASSERT_EQ(alea_ray_coverage_slice_build_serial_nocache(
+                  sys, rows, 2, &limits, &scratch, &result), -1);
+    ASSERT_EQ(result.row_offsets, previous_offsets);
+    ASSERT_EQ(result.interval_count, (size_t)4);
+
     alea_ray_coverage_slice_result_free(&result);
     alea_raycast_result_free(&scratch);
     alea_destroy(sys);
