@@ -726,6 +726,100 @@ int alea_ray_coverage_rows_refine_midpoints(
     return 0;
 }
 
+int alea_ray_coverage_slice_build_adaptive_serial_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
+    size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_slice_result_t* result) {
+    if (!sys || (!initial_rows && initial_row_count != 0) ||
+        !breakpoint_scratch || !result)
+        return -1;
+    const alea_ray_coverage_slice_limits_t unlimited = {0};
+    if (!limits) limits = &unlimited;
+    const alea_ray_coverage_row_t* current_rows = initial_rows;
+    size_t current_row_count = initial_row_count;
+    alea_ray_coverage_row_t* owned_rows = NULL;
+    alea_ray_coverage_slice_result_t current;
+    alea_ray_coverage_slice_result_init(&current);
+
+    for (size_t depth = 0;; depth++) {
+        if (alea_ray_coverage_slice_build_serial_nocache(
+                sys, current_rows, current_row_count, limits,
+                breakpoint_scratch, &current) != 0)
+            goto fail;
+        uint8_t* refine_between = NULL;
+        if (current_row_count > 1) {
+            refine_between = calloc(current_row_count - 1,
+                                    sizeof(*refine_between));
+            if (!refine_between) {
+                alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                      "failed to allocate coverage refinement marks");
+                goto fail;
+            }
+        }
+        const int marked = alea_ray_coverage_slice_mark_refinement_boundaries(
+            &current, refine_between);
+        if (marked < 0) {
+            free(refine_between);
+            goto fail;
+        }
+        if (marked == 0 || depth >= max_refinement_depth) {
+            current.refinement_status = marked == 0
+                ? ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE
+                : ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH;
+            free(refine_between);
+            free(owned_rows);
+            alea_ray_coverage_slice_result_free(result);
+            *result = current;
+            return 0;
+        }
+        if ((size_t)marked > SIZE_MAX - current_row_count ||
+            (limits->max_rows != 0 &&
+             current_row_count + (size_t)marked > limits->max_rows)) {
+            current.refinement_status = ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS;
+            free(refine_between);
+            free(owned_rows);
+            alea_ray_coverage_slice_result_free(result);
+            *result = current;
+            return 0;
+        }
+        const size_t next_row_count = current_row_count + (size_t)marked;
+        if (next_row_count > SIZE_MAX / sizeof(*owned_rows)) {
+            free(refine_between);
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "coverage refinement row storage overflows");
+            goto fail;
+        }
+        alea_ray_coverage_row_t* next_rows = malloc(
+            next_row_count * sizeof(*next_rows));
+        if (!next_rows) {
+            free(refine_between);
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "failed to allocate coverage refinement rows");
+            goto fail;
+        }
+        size_t produced = 0;
+        const int refine_rc = alea_ray_coverage_rows_refine_midpoints(
+            current_rows, current_row_count, refine_between, limits->max_rows,
+            next_rows, next_row_count, &produced);
+        free(refine_between);
+        if (refine_rc != 0 || produced != next_row_count) {
+            free(next_rows);
+            goto fail;
+        }
+        free(owned_rows);
+        owned_rows = next_rows;
+        current_rows = owned_rows;
+        current_row_count = next_row_count;
+    }
+
+fail:
+    free(owned_rows);
+    alea_ray_coverage_slice_result_free(&current);
+    return -1;
+}
+
 #undef COVERAGE_SLICE_REALLOC
 
 typedef struct {

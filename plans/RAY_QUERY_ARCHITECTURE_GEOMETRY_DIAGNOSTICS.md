@@ -68,9 +68,10 @@ exterior gaps), assert visible truncation under the crossing budget, and verify
 that requesting segment surface IDs does not change selected endpoints or
 ownership.
 
-The explicit coverage-domain contract, adaptive coverage-row orchestration,
-executor CSR publication, and installed coverage-slice API specified below are
-remaining work; they are not implied complete by the Phase 3–8 checkpoint.
+The explicit coverage-domain contract, validator integration of adaptive
+coverage rows, executor CSR publication, and installed coverage-slice API
+specified below are remaining work; they are not implied complete by the
+Phase 3–8 checkpoint.
 
 ### Coverage foundation checkpoint (2026-08-17)
 
@@ -90,9 +91,10 @@ Occurrence domains remain later work.  The serial compact materializer now
 publishes deterministic row/interval/owner CSR with explicit row, interval,
 owner, and byte budgets, and preserves the last successful result on failure.
 Its endpoint-independent signature comparator now marks same-direction row
-boundaries and builds one bounded deterministic midpoint-refinement wave;
-multi-wave validator orchestration, public API stabilization, and executor
-integration remain later work.
+boundaries, and the serial controller builds bounded deterministic midpoint
+waves while publishing complete, maximum-depth, or maximum-row status. Validator
+integration, public API stabilization, and executor integration remain later
+work.
 
 The remaining Phase 5 work is to complete the remaining
 production-versus-coverage matrix.  The validator now retains the complete

@@ -2584,6 +2584,28 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(failed_refinement[0].direction_tag, (uint8_t)99);
     ASSERT_EQ(failed_count, (size_t)123);
 
+    alea_ray_coverage_slice_result_t adaptive;
+    alea_ray_coverage_slice_result_init(&adaptive);
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_serial_nocache(
+                  sys, rows, 2, 0, NULL, &scratch, &adaptive), 0);
+    ASSERT_EQ(adaptive.row_count, (size_t)2);
+    ASSERT_EQ(adaptive.refinement_status,
+              ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
+    alea_ray_coverage_slice_result_free(&adaptive);
+    limits = (alea_ray_coverage_slice_limits_t){ .max_rows = 2 };
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_serial_nocache(
+                  sys, rows, 2, 2, &limits, &scratch, &adaptive), 0);
+    ASSERT_EQ(adaptive.row_count, (size_t)2);
+    ASSERT_EQ(adaptive.refinement_status,
+              ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS);
+    alea_ray_coverage_slice_result_free(&adaptive);
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_serial_nocache(
+                  sys, rows, 2, 1, NULL, &scratch, &adaptive), 0);
+    ASSERT_EQ(adaptive.row_count, (size_t)3);
+    ASSERT_EQ(adaptive.refinement_status,
+              ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
+    alea_ray_coverage_slice_result_free(&adaptive);
+
     const size_t* previous_offsets = result.row_offsets;
     limits.max_intervals = 3;
     ASSERT_EQ(alea_ray_coverage_slice_build_serial_nocache(

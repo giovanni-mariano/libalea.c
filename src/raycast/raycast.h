@@ -923,10 +923,17 @@ typedef struct {
     size_t max_bytes;
 } alea_ray_coverage_slice_limits_t;
 
+typedef enum {
+    ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE = 0,
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH,
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS
+} alea_ray_coverage_refinement_status_t;
+
 typedef struct {
     size_t row_count;
     size_t interval_count;
     size_t owner_count;
+    alea_ray_coverage_refinement_status_t refinement_status;
     size_t* row_offsets;              /* row_count + 1 */
     uint8_t* row_direction_tags;      /* row_count */
     double* row_transverse_coordinates; /* row_count */
@@ -988,6 +995,16 @@ int alea_ray_coverage_rows_refine_midpoints(
     const uint8_t* refine_between, size_t max_rows,
     alea_ray_coverage_row_t* out_rows, size_t out_capacity,
     size_t* out_row_count);
+
+/* Run bounded deterministic refinement waves serially.  Reaching the depth or
+ * row-selection limit publishes the completed sampled rows with the matching
+ * refinement_status; an output/materialization failure leaves result intact. */
+int alea_ray_coverage_slice_build_adaptive_serial_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
+    size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_slice_result_t* result);
 
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
