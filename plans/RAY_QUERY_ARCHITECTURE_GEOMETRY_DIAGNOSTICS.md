@@ -1222,7 +1222,10 @@ controller now uses that executor for every sampled wave while preserving its
 serial policy and refinement-status contract.  The compact ray-slice validator
 now selects the executor for base and adaptive coverage rows, using the
 configured OpenMP worker count when enabled.  Consolidating production
-fixed-output scheduling remains the next increment.
+fixed-output scheduling is now underway: first-visible and any-hit batch APIs
+own their OpenMP regions while the packet traversal routines are worker bodies
+only.  Remaining executor work is shared fixed-output scheduling policy and
+broader multi-worker/resource-limit acceptance coverage.
 
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.

@@ -4370,8 +4370,10 @@ int alea_raycast_hier_first_visible_batch_execute_nocache(
         return -1;
     }
 
+    /* The API/executor boundary owns the parallel region.  This worker body is
+     * called by every participating thread and distributes packet jobs once. */
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
+    #pragma omp for schedule(static)
 #endif
     for (size_t packet_start = 0; packet_start < ray_count;
          packet_start += RAYCAST_FIRST_VISIBLE_PACKET_WIDTH) {
@@ -4438,8 +4440,9 @@ int alea_raycast_hier_any_hit_batch_execute_nocache(
         return -1;
     }
 
+    /* See first-visible: scheduling ownership is outside geometric traversal. */
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
+    #pragma omp for schedule(static)
 #endif
     for (size_t packet_start = 0; packet_start < ray_count;
          packet_start += RAYCAST_FIRST_VISIBLE_PACKET_WIDTH) {

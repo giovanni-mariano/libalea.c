@@ -1095,9 +1095,22 @@ int alea_raycast_hier_first_visible_batch_nocache(
         goto fail;
     }
 
-    if (alea_raycast_hier_first_visible_batch_execute_nocache(
-            sys, origins_xyz, directions_xyz, ray_count, query, &next,
-            statuses) != 0 && !alea_interrupted()) {
+    int execute_rc = 0;
+#ifdef _OPENMP
+    #pragma omp parallel shared(execute_rc)
+    {
+        const int local_rc = alea_raycast_hier_first_visible_batch_execute_nocache(
+            sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
+        if (local_rc != 0) {
+            #pragma omp atomic write
+            execute_rc = local_rc;
+        }
+    }
+#else
+    execute_rc = alea_raycast_hier_first_visible_batch_execute_nocache(
+        sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
+#endif
+    if (execute_rc != 0 && !alea_interrupted()) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "native first-visible packet traversal failed");
         goto fail;
@@ -1180,9 +1193,22 @@ int alea_raycast_hier_any_hit_batch_nocache(
         goto fail;
     }
 
-    if (alea_raycast_hier_any_hit_batch_execute_nocache(
-            sys, origins_xyz, directions_xyz, ray_count, query, &next,
-            statuses) != 0 && !alea_interrupted()) {
+    int execute_rc = 0;
+#ifdef _OPENMP
+    #pragma omp parallel shared(execute_rc)
+    {
+        const int local_rc = alea_raycast_hier_any_hit_batch_execute_nocache(
+            sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
+        if (local_rc != 0) {
+            #pragma omp atomic write
+            execute_rc = local_rc;
+        }
+    }
+#else
+    execute_rc = alea_raycast_hier_any_hit_batch_execute_nocache(
+        sys, origins_xyz, directions_xyz, ray_count, query, &next, statuses);
+#endif
+    if (execute_rc != 0 && !alea_interrupted()) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "native any-hit packet traversal failed");
         goto fail;
