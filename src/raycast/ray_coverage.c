@@ -569,6 +569,95 @@ int alea_ray_coverage_slice_build_serial_nocache(
     return 0;
 }
 
+static int coverage_slice_row_interval_range(
+    const alea_ray_coverage_slice_result_t* result, size_t row,
+    size_t* begin, size_t* end) {
+    if (!result || row >= result->row_count || !result->row_offsets ||
+        !result->owner_offsets ||
+        (result->interval_count != 0 &&
+         (!result->kinds || !result->owner_count_lower_bounds)) ||
+        (result->owner_count != 0 &&
+         (!result->owner_occurrence_keys ||
+          !result->owner_parent_occurrence_keys ||
+          !result->owner_resolution_flags)))
+        return -1;
+    *begin = result->row_offsets[row];
+    *end = result->row_offsets[row + 1];
+    if (*begin > *end || *end > result->interval_count ||
+        result->owner_offsets[0] != 0 ||
+        result->owner_offsets[result->interval_count] != result->owner_count)
+        return -1;
+    return 0;
+}
+
+int alea_ray_coverage_slice_rows_same_signature(
+    const alea_ray_coverage_slice_result_t* result,
+    size_t first_row, size_t second_row) {
+    size_t first_begin, first_end, second_begin, second_end;
+    if (coverage_slice_row_interval_range(result, first_row,
+                                          &first_begin, &first_end) != 0 ||
+        coverage_slice_row_interval_range(result, second_row,
+                                          &second_begin, &second_end) != 0)
+        return -1;
+    if (first_end - first_begin != second_end - second_begin) return 0;
+    for (size_t offset = 0; offset < first_end - first_begin; offset++) {
+        const size_t first = first_begin + offset;
+        const size_t second = second_begin + offset;
+        const size_t first_owners = result->owner_offsets[first + 1] -
+            result->owner_offsets[first];
+        const size_t second_owners = result->owner_offsets[second + 1] -
+            result->owner_offsets[second];
+        if (result->owner_offsets[first] > result->owner_offsets[first + 1] ||
+            result->owner_offsets[second] > result->owner_offsets[second + 1] ||
+            result->owner_offsets[first + 1] > result->owner_count ||
+            result->owner_offsets[second + 1] > result->owner_count)
+            return -1;
+        if (result->kinds[first] != result->kinds[second] ||
+            result->owner_count_lower_bounds[first] !=
+                result->owner_count_lower_bounds[second] ||
+            first_owners != second_owners)
+            return 0;
+        for (size_t owner = 0; owner < first_owners; owner++) {
+            const size_t first_owner = result->owner_offsets[first] + owner;
+            const size_t second_owner = result->owner_offsets[second] + owner;
+            if (result->owner_occurrence_keys[first_owner] !=
+                    result->owner_occurrence_keys[second_owner] ||
+                result->owner_parent_occurrence_keys[first_owner] !=
+                    result->owner_parent_occurrence_keys[second_owner] ||
+                result->owner_resolution_flags[first_owner] !=
+                    result->owner_resolution_flags[second_owner])
+                return 0;
+        }
+    }
+    return 1;
+}
+
+int alea_ray_coverage_slice_mark_refinement_boundaries(
+    const alea_ray_coverage_slice_result_t* result,
+    uint8_t* out_refine_between) {
+    if (!result || (result->row_count > 1 && !out_refine_between) ||
+        (result->row_count != 0 && (!result->row_direction_tags ||
+                                    !result->row_transverse_coordinates)))
+        return -1;
+    int marked = 0;
+    for (size_t row = 0; row + 1 < result->row_count; row++) {
+        out_refine_between[row] = 0;
+        if (result->row_direction_tags[row] != result->row_direction_tags[row + 1])
+            continue;
+        if (result->row_transverse_coordinates[row] >=
+            result->row_transverse_coordinates[row + 1])
+            return -1;
+        const int same = alea_ray_coverage_slice_rows_same_signature(
+            result, row, row + 1);
+        if (same < 0) return -1;
+        if (!same) {
+            out_refine_between[row] = 1;
+            marked++;
+        }
+    }
+    return marked;
+}
+
 #undef COVERAGE_SLICE_REALLOC
 
 typedef struct {

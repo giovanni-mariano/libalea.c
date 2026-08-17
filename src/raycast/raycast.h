@@ -961,6 +961,23 @@ int alea_ray_coverage_slice_build_serial_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_slice_result_t* result);
 
+/* Compare the adaptive-refinement signature of two published rows.  Endpoints
+ * and row coordinates are intentionally excluded; kind, owner-chain identity,
+ * retained owner count, truncation lower bound, and resolution flags are not.
+ * Returns 1 when equal, 0 when different, and -1 for malformed input. */
+int alea_ray_coverage_slice_rows_same_signature(
+    const alea_ray_coverage_slice_result_t* result,
+    size_t first_row, size_t second_row);
+
+/* Mark adjacent same-direction row pairs whose signatures differ.  The output
+ * has row_count - 1 entries and is ordered with the published rows.  A marked
+ * pair is a deterministic candidate for a later midpoint refinement wave;
+ * this helper never generates rays or changes classification.  Returns the
+ * number of marked pairs, or -1 for malformed/non-monotonic row provenance. */
+int alea_ray_coverage_slice_mark_refinement_boundaries(
+    const alea_ray_coverage_slice_result_t* result,
+    uint8_t* out_refine_between);
+
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;

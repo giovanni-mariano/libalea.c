@@ -2557,6 +2557,12 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(result.owner_count_lower_bounds[1], (size_t)1);
     ASSERT_EQ(result.owner_cell_ids[0], 1);
     ASSERT_EQ(result.owner_parent_occurrence_keys[0], (uint64_t)0);
+    ASSERT_EQ(alea_ray_coverage_slice_rows_same_signature(&result, 0, 0), 1);
+    ASSERT_EQ(alea_ray_coverage_slice_rows_same_signature(&result, 0, 1), 0);
+    uint8_t refine_between[1] = {0};
+    ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries(
+                  &result, refine_between), 1);
+    ASSERT_EQ(refine_between[0], (uint8_t)1);
 
     const size_t* previous_offsets = result.row_offsets;
     limits.max_intervals = 3;
