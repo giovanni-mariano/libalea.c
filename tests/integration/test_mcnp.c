@@ -2580,7 +2580,8 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
      * executor compacts back to exactly the serial CSR order. */
     alea_ray_coverage_executor_t executor;
     alea_ray_coverage_executor_init(&executor);
-    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
+    /* More workers than rows exercises deterministic empty worker arenas. */
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 3), 0);
     alea_ray_coverage_slice_result_t executor_result;
     alea_ray_coverage_slice_result_init(&executor_result);
     ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(

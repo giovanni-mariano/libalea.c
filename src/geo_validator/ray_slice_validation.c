@@ -867,6 +867,9 @@ int alea_validate_ray_slice_compact_with_event_cache(
 #ifdef _OPENMP
         coverage_workers = (size_t)omp_get_max_threads();
 #endif
+        /* No worker can own a row beyond the requested slice, so avoid
+         * allocating unused breakpoint/arena state on high-core hosts. */
+        if (coverage_workers > row_count) coverage_workers = row_count;
         if (alea_ray_coverage_executor_prepare(&coverage_executor,
                                                coverage_workers) != 0)
             goto cleanup;
