@@ -864,10 +864,17 @@ TEST(perf_compact_hier_batch_20_shells) {
                                            &options, batch), 0);
         BENCH_END(compact_cases[c].label, n_rays);
         ASSERT_EQ(alea_raycast_batch_segment_count(batch), single_segments);
+        alea_raycast_batch_work_stats_t case_stats;
+        ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(
+                      batch, &case_stats), 0);
         printf("[%zu segments, %zu path entries, %zu published bytes]  ",
                alea_raycast_batch_segment_count(batch),
                alea_raycast_batch_path_entry_count(batch),
                batch_published_bytes(batch, options.fields));
+        printf("[trace staging=%lluB, growths=%llu/%lluB]  ",
+               (unsigned long long)case_stats.peak_trace_staging_bytes,
+               (unsigned long long)case_stats.total_result_buffer_growths,
+               (unsigned long long)case_stats.total_result_buffer_growth_bytes);
     }
     options.fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY |
                      ALEA_RAY_BATCH_SURFACES | ALEA_RAY_BATCH_RESOLUTION_FLAGS;

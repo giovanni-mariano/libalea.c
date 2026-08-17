@@ -139,6 +139,42 @@ static int batch_add_output_bytes(size_t* total, size_t count, size_t element_si
     return 0;
 }
 
+static uint64_t batch_trace_retained_bytes(const alea_raycast_result_t* trace) {
+    size_t bytes = 0;
+    const struct { size_t count, size; } buffers[] = {
+        { trace->hits.capacity, sizeof(*trace->hits.data) },
+        { trace->segments.capacity, sizeof(*trace->segments.data) },
+        { trace->paths.capacity, sizeof(*trace->paths.data) },
+        { trace->path_entries.capacity, sizeof(*trace->path_entries.data) }
+    };
+    for (size_t i = 0; i < sizeof(buffers) / sizeof(buffers[0]); i++) {
+        if (buffers[i].count > SIZE_MAX / buffers[i].size ||
+            bytes > SIZE_MAX - buffers[i].count * buffers[i].size)
+            return UINT64_MAX;
+        bytes += buffers[i].count * buffers[i].size;
+    }
+    return bytes > UINT64_MAX ? UINT64_MAX : (uint64_t)bytes;
+}
+
+static void batch_work_stats_add_staging(alea_raycast_batch_work_stats_t* stats,
+                                         const alea_raycast_result_t* trace) {
+    const uint64_t retained = batch_trace_retained_bytes(trace);
+    if (UINT64_MAX - stats->total_result_buffer_growths <
+        trace->result_buffer_growths)
+        stats->total_result_buffer_growths = UINT64_MAX;
+    else
+        stats->total_result_buffer_growths += trace->result_buffer_growths;
+    if (UINT64_MAX - stats->total_result_buffer_growth_bytes <
+        trace->result_buffer_growth_bytes)
+        stats->total_result_buffer_growth_bytes = UINT64_MAX;
+    else
+        stats->total_result_buffer_growth_bytes += trace->result_buffer_growth_bytes;
+    if (UINT64_MAX - stats->peak_trace_staging_bytes < retained)
+        stats->peak_trace_staging_bytes = UINT64_MAX;
+    else
+        stats->peak_trace_staging_bytes += retained;
+}
+
 
 static int batch_validate_ray_inputs(const double* origins_xyz,
                                      const double* directions_xyz,
@@ -664,8 +700,10 @@ static int raycast_hier_batch_execute(
         }
     }
 
-    for (size_t i = 0; i < ray_count; i++)
+    for (size_t i = 0; i < ray_count; i++) {
         batch_work_stats_accumulate(&next.work_stats, &traces[i].trace);
+        batch_work_stats_add_staging(&next.work_stats, &traces[i].trace);
+    }
 
     next.ray_count = ray_count;
     next.fields = fields;

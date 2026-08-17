@@ -480,6 +480,11 @@ typedef struct {
     uint64_t max_selected_intervals_yielded;
     uint64_t max_result_buffer_growths;
     uint64_t max_result_buffer_growth_bytes;
+    /* Aggregate legacy per-ray staging retained before CSR compaction.  These
+     * distinguish total temporary allocation work from the worst single ray. */
+    uint64_t total_result_buffer_growths;
+    uint64_t total_result_buffer_growth_bytes;
+    uint64_t peak_trace_staging_bytes;
     uint64_t max_lattice_entry_calls;
     uint64_t max_lattice_entry_tlas_nodes_tested;
     uint64_t max_lattice_entry_tlas_leaves_visited;
