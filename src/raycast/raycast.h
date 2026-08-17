@@ -1059,10 +1059,13 @@ int alea_ray_coverage_slice_build_adaptive_serial_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_slice_result_t* result);
 
-/* Phase 10 executor scratch.  One worker owns one reusable breakpoint result;
- * scheduler/output policy remain outside the scalar coverage engine. */
+/* Phase 10 executor storage.  One worker owns reusable scalar breakpoint
+ * scratch and a variable-output coverage arena.  The arena is internal staging
+ * only: callers receive CSR output after deterministic transactional
+ * compaction, never a worker-local layout. */
 typedef struct {
     alea_raycast_result_t breakpoint_scratch;
+    alea_ray_coverage_slice_result_t arena;
 } alea_ray_coverage_worker_scratch_t;
 
 typedef struct {
@@ -1078,6 +1081,16 @@ int alea_ray_coverage_executor_prepare(alea_ray_coverage_executor_t* executor,
 alea_ray_coverage_worker_scratch_t*
 alea_ray_coverage_executor_worker_for_row(
     alea_ray_coverage_executor_t* executor, size_t row_index);
+
+/* Execute independent coverage rows into worker-local reusable arenas, then
+ * compact them in input row order.  Each row is assigned to
+ * row_index % worker_count in both serial and OpenMP builds.  Failure leaves
+ * result's previous publication intact. */
+int alea_ray_coverage_slice_build_executor_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_ray_coverage_executor_t* executor,
+    alea_ray_coverage_slice_result_t* result);
 
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {

@@ -1,6 +1,6 @@
 # Ray-query architecture with first-class geometry diagnostics
 
-**Status:** In progress — Phases 3–8 substantially implemented; Phase 9 measurement active
+**Status:** In progress — Phases 3–9 substantially implemented; Phase 10 executor increment active
 
 **Priority:** Correct architecture first; preserve and recover performance within
 that architecture
@@ -1212,9 +1212,13 @@ Only after the prior gates:
 
 Executor work has begun without changing ray or coverage semantics.  The
 internal coverage executor now owns an explicit, preallocated collection of
-worker-local reusable breakpoint scratch results.  It is intentionally only
-the scratch-lifetime seam: row scheduling, worker append arenas, parallel
-compaction, and the OpenMP owning region remain the next increments.
+worker-local reusable breakpoint scratch results and variable-output coverage
+arenas.  One operation now schedules deterministic row-strided worker jobs in
+one OpenMP region (with the same assignment in serial builds), then compacts
+the worker arenas transactionally into input-order CSR.  The executor result
+is byte-for-byte equal to the serial CSR fixture and retains the previous
+publication when a resource limit prevents completion.  Adaptive-wave
+scheduling and integration into the validator remain the next increments.
 
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.

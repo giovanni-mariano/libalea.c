@@ -949,8 +949,10 @@ void alea_ray_coverage_executor_init(alea_ray_coverage_executor_t* executor) {
 
 void alea_ray_coverage_executor_free(alea_ray_coverage_executor_t* executor) {
     if (!executor) return;
-    for (size_t worker = 0; worker < executor->worker_count; worker++)
+    for (size_t worker = 0; worker < executor->worker_count; worker++) {
         alea_raycast_result_free(&executor->workers[worker].breakpoint_scratch);
+        alea_ray_coverage_slice_result_free(&executor->workers[worker].arena);
+    }
     free(executor->workers);
     memset(executor, 0, sizeof(*executor));
 }
@@ -984,6 +986,184 @@ alea_ray_coverage_executor_worker_for_row(
     if (!executor || !executor->workers || executor->worker_count == 0)
         return NULL;
     return &executor->workers[row_index % executor->worker_count];
+}
+
+/* Keep arena allocations owned by the executor across operations.  Counts and
+ * row provenance are overwritten before use; published result ownership never
+ * aliases this staging storage. */
+static int coverage_executor_reset_arena(
+    alea_ray_coverage_worker_scratch_t* worker, size_t row_count) {
+    alea_ray_coverage_slice_result_t* arena = &worker->arena;
+    arena->row_count = row_count;
+    arena->interval_count = 0;
+    arena->owner_count = 0;
+    arena->refinement_status = ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE;
+    if (coverage_slice_reserve_rows(arena, row_count) != 0 ||
+        coverage_slice_reserve_intervals(arena, 0) != 0)
+        return -1;
+    return 0;
+}
+
+static int coverage_executor_build_worker(
+    alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_ray_coverage_executor_t* executor, size_t worker_index) {
+    alea_ray_coverage_worker_scratch_t* worker = &executor->workers[worker_index];
+    const size_t workers = executor->worker_count;
+    const size_t owned_rows = row_count > worker_index
+        ? 1 + (row_count - 1 - worker_index) / workers : 0;
+    if (coverage_executor_reset_arena(worker, owned_rows) != 0) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate coverage worker arena");
+        return -1;
+    }
+    coverage_slice_builder_t builder = {
+        .result = &worker->arena, .limits = limits, .next_row_offset = 0
+    };
+    size_t local_row = 0;
+    for (size_t row = worker_index; row < row_count; row += workers, local_row++) {
+        worker->arena.row_direction_tags[local_row] = rows[row].direction_tag;
+        worker->arena.row_transverse_coordinates[local_row] =
+            rows[row].transverse_coordinate;
+        if (rows[row].t_max <= 0.0) return -1;
+        coverage_row_callback_context_t context = {
+            .callback = coverage_slice_append, .context = &builder,
+            .row_index = local_row, .callback_failed = 0
+        };
+        const int rc = rows[row].use_domain
+            ? alea_ray_coverage_sweep_domain_reuse_nocache(
+                  sys, &rows[row].ray, rows[row].t_max, &rows[row].domain,
+                  &worker->breakpoint_scratch, coverage_row_interval_callback,
+                  &context)
+            : alea_ray_coverage_sweep_reuse_nocache(
+                  sys, &rows[row].ray, rows[row].t_max,
+                  &worker->breakpoint_scratch, coverage_row_interval_callback,
+                  &context);
+        if (rc < 0 || context.callback_failed || builder.failed) return -1;
+    }
+    while (builder.next_row_offset <= owned_rows)
+        worker->arena.row_offsets[builder.next_row_offset++] =
+            worker->arena.interval_count;
+    return 0;
+}
+
+static int coverage_executor_compact(
+    const alea_ray_coverage_row_t* rows, size_t row_count,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_ray_coverage_executor_t* executor,
+    alea_ray_coverage_slice_result_t* result) {
+    alea_ray_coverage_slice_result_t candidate;
+    alea_ray_coverage_slice_result_init(&candidate);
+    candidate.row_count = row_count;
+    if (coverage_slice_reserve_rows(&candidate, row_count) != 0 ||
+        coverage_slice_reserve_intervals(&candidate, 0) != 0) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate compacted coverage slice");
+        goto fail;
+    }
+    coverage_slice_builder_t builder = {
+        .result = &candidate, .limits = limits, .next_row_offset = 0
+    };
+    for (size_t row = 0; row < row_count; row++) {
+        const size_t worker_index = row % executor->worker_count;
+        const size_t local_row = row / executor->worker_count;
+        const alea_ray_coverage_slice_result_t* arena =
+            &executor->workers[worker_index].arena;
+        const size_t begin = arena->row_offsets[local_row];
+        const size_t end = arena->row_offsets[local_row + 1];
+        candidate.row_direction_tags[row] = rows[row].direction_tag;
+        candidate.row_transverse_coordinates[row] = rows[row].transverse_coordinate;
+        for (size_t interval_index = begin; interval_index < end; interval_index++) {
+            const size_t owner_begin = arena->owner_offsets[interval_index];
+            const size_t owner_end = arena->owner_offsets[interval_index + 1];
+            if (owner_end < owner_begin || owner_end - owner_begin >
+                ALEA_RAY_COVERAGE_OWNER_BUDGET) goto fail;
+            alea_ray_coverage_owner_t owners[ALEA_RAY_COVERAGE_OWNER_BUDGET];
+            for (size_t owner = 0; owner < owner_end - owner_begin; owner++) {
+                const size_t source = owner_begin + owner;
+                owners[owner] = (alea_ray_coverage_owner_t){
+                    .cell_id = arena->owner_cell_ids[source],
+                    .cell_index = arena->owner_cell_indices[source],
+                    .material_id = arena->owner_material_ids[source],
+                    .universe_id = arena->owner_universe_ids[source],
+                    .fill_universe = arena->owner_fill_universes[source],
+                    .depth = arena->owner_depths[source],
+                    .occurrence_key = arena->owner_occurrence_keys[source],
+                    .parent_occurrence_key = arena->owner_parent_occurrence_keys[source],
+                    .resolution_flags = arena->owner_resolution_flags[source]
+                };
+            }
+            const alea_ray_coverage_interval_t interval = {
+                .t_enter = arena->t_enter[interval_index],
+                .t_exit = arena->t_exit[interval_index],
+                .kind = (alea_ray_coverage_kind_t)arena->kinds[interval_index],
+                .owners = owners, .owner_count = owner_end - owner_begin,
+                .owner_count_lower_bound =
+                    arena->owner_count_lower_bounds[interval_index]
+            };
+            if (coverage_slice_append(&builder, row, &interval) != 0) goto fail;
+        }
+    }
+    while (builder.next_row_offset <= row_count)
+        candidate.row_offsets[builder.next_row_offset++] = candidate.interval_count;
+    alea_ray_coverage_slice_result_free(result);
+    *result = candidate;
+    return 0;
+fail:
+    alea_ray_coverage_slice_result_free(&candidate);
+    return -1;
+}
+
+int alea_ray_coverage_slice_build_executor_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_ray_coverage_executor_t* executor,
+    alea_ray_coverage_slice_result_t* result) {
+    if (!sys || (!rows && row_count != 0) || !executor ||
+        !executor->workers || executor->worker_count == 0 || !result)
+        return -1;
+    const alea_ray_coverage_slice_limits_t unlimited = {0};
+    if (!limits) limits = &unlimited;
+    size_t row_bytes;
+    if ((limits->max_rows != 0 && row_count > limits->max_rows) ||
+        coverage_slice_published_bytes(row_count, 0, 0, &row_bytes) != 0 ||
+        (limits->max_bytes != 0 && row_bytes > limits->max_bytes)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "coverage slice row limit exceeded");
+        return -1;
+    }
+    int failed = 0;
+#ifdef _OPENMP
+    if (executor->worker_count <= (size_t)INT_MAX) {
+        /* Parallelize worker arenas, not individual rows: a worker index owns
+         * its scratch for the entire operation even if the runtime chooses
+         * fewer threads than requested. */
+        #pragma omp parallel for schedule(static) shared(failed)
+        for (size_t worker = 0; worker < executor->worker_count; worker++) {
+            int rc = coverage_executor_build_worker(
+                sys, rows, row_count, limits, executor, worker);
+            if (rc != 0) {
+                #pragma omp atomic write
+                failed = 1;
+            }
+        }
+    } else
+#endif
+    {
+        for (size_t worker = 0; worker < executor->worker_count; worker++)
+            if (coverage_executor_build_worker(sys, rows, row_count, limits,
+                                               executor, worker) != 0) {
+                failed = 1;
+                break;
+            }
+    }
+    if (failed || alea_interrupted()) {
+        if (alea_interrupted())
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                  "coverage slice execution interrupted");
+        return -1;
+    }
+    return coverage_executor_compact(rows, row_count, limits, executor, result);
 }
 
 #undef COVERAGE_SLICE_REALLOC

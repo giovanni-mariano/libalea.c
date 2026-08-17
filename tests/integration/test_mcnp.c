@@ -2575,6 +2575,42 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(alea_ray_coverage_slice_mark_refinement_boundaries(
                   &result, refine_between), 1);
     ASSERT_EQ(refine_between[0], (uint8_t)1);
+
+    /* Phase 10 must change only scheduling and staging: the worker-arena
+     * executor compacts back to exactly the serial CSR order. */
+    alea_ray_coverage_executor_t executor;
+    alea_ray_coverage_executor_init(&executor);
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
+    alea_ray_coverage_slice_result_t executor_result;
+    alea_ray_coverage_slice_result_init(&executor_result);
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &executor_result), 0);
+    ASSERT_EQ(executor_result.row_count, result.row_count);
+    ASSERT_EQ(executor_result.interval_count, result.interval_count);
+    ASSERT_EQ(executor_result.owner_count, result.owner_count);
+    ASSERT_EQ(memcmp(executor_result.row_offsets, result.row_offsets,
+                     3 * sizeof(*result.row_offsets)), 0);
+    ASSERT_EQ(memcmp(executor_result.t_enter, result.t_enter,
+                     4 * sizeof(*result.t_enter)), 0);
+    ASSERT_EQ(memcmp(executor_result.t_exit, result.t_exit,
+                     4 * sizeof(*result.t_exit)), 0);
+    ASSERT_EQ(memcmp(executor_result.kinds, result.kinds,
+                     4 * sizeof(*result.kinds)), 0);
+    ASSERT_EQ(memcmp(executor_result.owner_offsets, result.owner_offsets,
+                     5 * sizeof(*result.owner_offsets)), 0);
+    ASSERT_EQ(memcmp(executor_result.owner_occurrence_keys,
+                     result.owner_occurrence_keys,
+                     sizeof(*result.owner_occurrence_keys)), 0);
+    const size_t* executor_previous_offsets = executor_result.row_offsets;
+    limits.max_intervals = 3;
+    ASSERT_EQ(alea_ray_coverage_slice_build_executor_nocache(
+                  sys, rows, 2, &limits, &executor, &executor_result), -1);
+    ASSERT_EQ(executor_result.row_offsets, executor_previous_offsets);
+    ASSERT_EQ(executor_result.interval_count, (size_t)4);
+    limits.max_intervals = 0;
+    alea_ray_coverage_slice_result_free(&executor_result);
+    alea_ray_coverage_executor_free(&executor);
+
     alea_ray_coverage_row_t refined_rows[3] = {0};
     size_t refined_count = 0;
     ASSERT_EQ(alea_ray_coverage_rows_refine_midpoints(
