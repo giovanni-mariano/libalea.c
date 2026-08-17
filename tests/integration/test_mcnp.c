@@ -2748,10 +2748,34 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
     ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
     ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_policy_executor_nocache(
                   sys, rows, 2, 1, NULL, &limits, &executor, &adaptive), 0);
+    alea_ray_coverage_slice_result_t serial_adaptive;
+    alea_ray_coverage_slice_result_init(&serial_adaptive);
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_serial_nocache(
+                  sys, rows, 2, 1, &limits, &scratch, &serial_adaptive), 0);
     ASSERT_EQ(adaptive.row_count, (size_t)3);
+    ASSERT_EQ(adaptive.row_count, serial_adaptive.row_count);
+    ASSERT_EQ(adaptive.interval_count, serial_adaptive.interval_count);
+    ASSERT_EQ(adaptive.owner_count, serial_adaptive.owner_count);
     ASSERT_EQ(adaptive.refinement_status,
               ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
+    ASSERT_EQ(adaptive.refinement_status, serial_adaptive.refinement_status);
     ASSERT_NEAR(adaptive.row_transverse_coordinates[1], 1.0, 1e-12);
+    ASSERT_EQ(memcmp(adaptive.row_offsets, serial_adaptive.row_offsets,
+                     (adaptive.row_count + 1) * sizeof(*adaptive.row_offsets)), 0);
+    ASSERT_EQ(memcmp(adaptive.t_enter, serial_adaptive.t_enter,
+                     adaptive.interval_count * sizeof(*adaptive.t_enter)), 0);
+    ASSERT_EQ(memcmp(adaptive.t_exit, serial_adaptive.t_exit,
+                     adaptive.interval_count * sizeof(*adaptive.t_exit)), 0);
+    ASSERT_EQ(memcmp(adaptive.kinds, serial_adaptive.kinds,
+                     adaptive.interval_count * sizeof(*adaptive.kinds)), 0);
+    ASSERT_EQ(memcmp(adaptive.owner_offsets, serial_adaptive.owner_offsets,
+                     (adaptive.interval_count + 1) *
+                     sizeof(*adaptive.owner_offsets)), 0);
+    ASSERT_EQ(memcmp(adaptive.owner_occurrence_keys,
+                     serial_adaptive.owner_occurrence_keys,
+                     adaptive.owner_count *
+                     sizeof(*adaptive.owner_occurrence_keys)), 0);
+    alea_ray_coverage_slice_result_free(&serial_adaptive);
     alea_ray_coverage_slice_result_free(&adaptive);
     alea_ray_coverage_executor_free(&executor);
 
