@@ -184,6 +184,28 @@ typedef struct alea_ray_slice_validation_result
 #define ALEA_RAY_SLICE_VALIDATION_FIELD_FAST_REVERSE (1u << 1)
 #define ALEA_RAY_SLICE_VALIDATION_FIELD_OCCURRENCE_KEYS (1u << 2)
 #define ALEA_RAY_SLICE_VALIDATION_FIELD_COVERAGE (1u << 3)
+/** Published rows carry transverse coordinates, direction tags, and base-row
+ *  provenance.  Set whenever adaptive refinement was requested. */
+#define ALEA_RAY_SLICE_VALIDATION_FIELD_ADAPTIVE_ROWS (1u << 4)
+
+/** Adaptive refinement probe signals.  Signature difference alone cannot see a
+ *  boundary that moves without changing owner identity, a region already
+ *  carrying findings, or a dense row whose neighbours happen to agree. */
+#define ALEA_RAY_SLICE_REFINE_SIGNATURE    (1u << 0)
+#define ALEA_RAY_SLICE_REFINE_DISPLACEMENT (1u << 1)
+#define ALEA_RAY_SLICE_REFINE_DENSITY      (1u << 2)
+#define ALEA_RAY_SLICE_REFINE_FINDING      (1u << 3)
+
+/** Why adaptive refinement stopped.  Every value but CONVERGED means the
+ *  adaptive criteria did not converge: completed rows are published, but the
+ *  report must not claim the viewport was sampled to the requested criteria. */
+typedef enum {
+    ALEA_RAY_SLICE_REFINEMENT_NOT_REQUESTED = 0,
+    ALEA_RAY_SLICE_REFINEMENT_CONVERGED,
+    ALEA_RAY_SLICE_REFINEMENT_MAX_DEPTH,
+    ALEA_RAY_SLICE_REFINEMENT_MAX_ROWS,
+    ALEA_RAY_SLICE_REFINEMENT_MIN_SPACING
+} alea_ray_slice_refinement_status_t;
 
 typedef struct {
     size_t struct_size;
@@ -209,6 +231,28 @@ typedef struct {
      *  successful result carrying ALEA_RAY_SLICE_DIAG_COVERAGE_TRUNCATED, and
      *  it prevents a successful validation verdict.  0 = unlimited. */
     uint64_t max_coverage_owners;
+
+    /** Maximum adaptive refinement waves.  0 (the default) samples exactly the
+     *  requested rows and leaves the published row count equal to row_count.
+     *  Above 0, refined rows are published between the requested rows in
+     *  transverse order, so the published row count grows and the caller must
+     *  read row provenance rather than assume a one-to-one row mapping.
+     *  Refinement drives coverage probes only: a refined row carries no
+     *  bidirectional or event-cache evidence, because both are defined on the
+     *  requested viewport rows. */
+    uint32_t coverage_max_refinement_depth;
+    /** ALEA_RAY_SLICE_REFINE_* signals.  0 selects signature difference. */
+    uint32_t coverage_refine_signals;
+    /** Required, and only used, with ALEA_RAY_SLICE_REFINE_DISPLACEMENT. */
+    double coverage_endpoint_displacement;
+    /** Required, and only used, with ALEA_RAY_SLICE_REFINE_DENSITY. */
+    uint64_t coverage_crossing_density;
+    /** Transverse spacing below which a row pair is never split.  0 = no
+     *  spacing limit. */
+    double coverage_min_transverse_spacing;
+    /** Publication budget for total sampled rows.  Reaching it publishes the
+     *  completed rows with MAX_ROWS status rather than failing.  0 = unlimited. */
+    uint64_t max_coverage_rows;
 } alea_ray_slice_validation_options_t;
 
 void alea_ray_slice_validation_options_init(
@@ -246,6 +290,23 @@ const int32_t* alea_ray_slice_validation_fast_reverse_cell_ids(
 const uint64_t* alea_ray_slice_validation_fast_forward_occurrence_keys(
     const alea_ray_slice_validation_result_t* result);
 const uint64_t* alea_ray_slice_validation_fast_reverse_occurrence_keys(
+    const alea_ray_slice_validation_result_t* result);
+
+/* Adaptive row provenance.  Present only with
+ * ALEA_RAY_SLICE_VALIDATION_FIELD_ADAPTIVE_ROWS.  Each array has row_count
+ * entries and is ordered first by direction ordinal, then by transverse view
+ * coordinate.  A base-row index of SIZE_MAX marks a refined row, which carries
+ * coverage evidence only. */
+const double* alea_ray_slice_validation_row_transverse_coordinates(
+    const alea_ray_slice_validation_result_t* result);
+const uint8_t* alea_ray_slice_validation_row_direction_tags(
+    const alea_ray_slice_validation_result_t* result);
+const size_t* alea_ray_slice_validation_row_base_indices(
+    const alea_ray_slice_validation_result_t* result);
+
+/* Why refinement stopped.  Anything but CONVERGED (or NOT_REQUESTED) means the
+ * published rows are an explicitly refinement-limited sample. */
+alea_ray_slice_refinement_status_t alea_ray_slice_validation_refinement_status(
     const alea_ray_slice_validation_result_t* result);
 
 /* Retained concrete owner records backing each interval's coverage

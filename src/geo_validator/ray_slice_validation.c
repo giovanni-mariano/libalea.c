@@ -18,7 +18,11 @@ struct alea_ray_slice_validation_result {
     uint32_t fields;
     uint32_t executed_trace_mask;
     uint32_t reused_trace_mask;
+    alea_ray_slice_refinement_status_t refinement_status;
     uint64_t* row_offsets;
+    double* row_transverse_coordinates;
+    uint8_t* row_direction_tags;
+    size_t* row_base_indices;
     double* u_enter;
     double* u_exit;
     uint32_t* diagnostic_flags;
@@ -64,6 +68,9 @@ static void validation_result_free_buffers(
     alea_ray_slice_validation_result_t* result) {
     if (!result) return;
     free(result->row_offsets);
+    free(result->row_transverse_coordinates);
+    free(result->row_direction_tags);
+    free(result->row_base_indices);
     free(result->u_enter);
     free(result->u_exit);
     free(result->diagnostic_flags);
@@ -365,27 +372,44 @@ static int event_evidence_at_u(
 
 static int populate_boundary_provenance(
     alea_ray_slice_validation_result_t* candidate,
+    const size_t* row_base_indices,
     const alea_slice_directional_event_cache_t* cache, int width,
     const alea_slice_view_t* view, double tolerance) {
     for (size_t row = 0; row < candidate->row_count; row++) {
+        /* The event cache is defined on the requested viewport rows.  A refined
+         * row has no cached line, so it publishes no boundary provenance rather
+         * than borrowing a neighbour's. */
+        const size_t base = row_base_indices[row];
+        if (base == SIZE_MAX) {
+            for (size_t i = candidate->row_offsets[row];
+                 i < candidate->row_offsets[row + 1]; i++) {
+                candidate->u_enter_forward_surface_ids[i] = -1;
+                candidate->u_enter_reverse_surface_ids[i] = -1;
+                candidate->u_exit_forward_surface_ids[i] = -1;
+                candidate->u_exit_reverse_surface_ids[i] = -1;
+                candidate->u_enter_provenance_flags[i] = 0;
+                candidate->u_exit_provenance_flags[i] = 0;
+            }
+            continue;
+        }
         for (size_t i = candidate->row_offsets[row];
              i < candidate->row_offsets[row + 1]; i++) {
             uint32_t forward_flags, reverse_flags;
-            if (event_evidence_at_u(cache, width, row, 0, candidate->u_enter[i],
+            if (event_evidence_at_u(cache, width, base, 0, candidate->u_enter[i],
                                     view, tolerance,
                                     &candidate->u_enter_forward_surface_ids[i],
                                     &forward_flags) != 0 ||
-                event_evidence_at_u(cache, width, row, 1, candidate->u_enter[i],
+                event_evidence_at_u(cache, width, base, 1, candidate->u_enter[i],
                                     view, tolerance,
                                     &candidate->u_enter_reverse_surface_ids[i],
                                     &reverse_flags) != 0)
                 return -1;
             candidate->u_enter_provenance_flags[i] = forward_flags | reverse_flags;
-            if (event_evidence_at_u(cache, width, row, 0, candidate->u_exit[i],
+            if (event_evidence_at_u(cache, width, base, 0, candidate->u_exit[i],
                                     view, tolerance,
                                     &candidate->u_exit_forward_surface_ids[i],
                                     &forward_flags) != 0 ||
-                event_evidence_at_u(cache, width, row, 1, candidate->u_exit[i],
+                event_evidence_at_u(cache, width, base, 1, candidate->u_exit[i],
                                     view, tolerance,
                                     &candidate->u_exit_reverse_surface_ids[i],
                                     &reverse_flags) != 0)
@@ -454,6 +478,17 @@ const uint64_t* alea_ray_slice_validation_fast_reverse_occurrence_keys(
     const alea_ray_slice_validation_result_t* result) { return result ? result->fast_reverse_occurrence_keys : NULL; }
 const uint32_t* alea_ray_slice_validation_coverage_owner_counts(
     const alea_ray_slice_validation_result_t* result) { return result ? result->coverage_owner_counts : NULL; }
+const double* alea_ray_slice_validation_row_transverse_coordinates(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->row_transverse_coordinates : NULL; }
+const uint8_t* alea_ray_slice_validation_row_direction_tags(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->row_direction_tags : NULL; }
+const size_t* alea_ray_slice_validation_row_base_indices(
+    const alea_ray_slice_validation_result_t* result) { return result ? result->row_base_indices : NULL; }
+alea_ray_slice_refinement_status_t alea_ray_slice_validation_refinement_status(
+    const alea_ray_slice_validation_result_t* result) {
+    return result ? result->refinement_status
+                  : ALEA_RAY_SLICE_REFINEMENT_NOT_REQUESTED;
+}
 const int32_t* alea_ray_slice_validation_u_enter_forward_surface_ids(
     const alea_ray_slice_validation_result_t* result) { return result ? result->u_enter_forward_surface_ids : NULL; }
 const int32_t* alea_ray_slice_validation_u_enter_reverse_surface_ids(
@@ -482,7 +517,11 @@ const uint32_t* alea_ray_slice_validation_u_exit_provenance_flags_internal(
 static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
                               validation_row_t* rows, size_t row_count,
                               const alea_ray_slice_validation_options_t* options,
-                              int include_provenance, int include_coverage) {
+                              int include_provenance, int include_coverage,
+                              const double* row_coordinates,
+                              const uint8_t* row_tags,
+                              const size_t* row_base_indices) {
+    const int include_rows = row_coordinates != NULL;
     size_t total = 0, bytes = 0;
     for (size_t row = 0; row < row_count; row++) {
         if (rows[row].count > SIZE_MAX - total) return -1;
@@ -501,6 +540,10 @@ static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
     ADD_BYTES(total, int32_t); ADD_BYTES(total, int32_t);
     ADD_BYTES(total, uint64_t); ADD_BYTES(total, uint64_t);
     if (include_coverage) ADD_BYTES(total, uint32_t);
+    if (include_rows) {
+        ADD_BYTES(row_count, double); ADD_BYTES(row_count, uint8_t);
+        ADD_BYTES(row_count, size_t);
+    }
     if (include_provenance) {
         ADD_BYTES(total, int32_t); ADD_BYTES(total, int32_t);
         ADD_BYTES(total, int32_t); ADD_BYTES(total, int32_t);
@@ -527,6 +570,20 @@ static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
         candidate->coverage_owner_counts = malloc(total ? total * sizeof(*candidate->coverage_owner_counts) : 1);
         if (!candidate->coverage_owner_counts) return -1;
     }
+    if (include_rows) {
+        candidate->row_transverse_coordinates = malloc(row_count ? row_count * sizeof(*candidate->row_transverse_coordinates) : 1);
+        candidate->row_direction_tags = malloc(row_count ? row_count * sizeof(*candidate->row_direction_tags) : 1);
+        candidate->row_base_indices = malloc(row_count ? row_count * sizeof(*candidate->row_base_indices) : 1);
+        if (!candidate->row_transverse_coordinates ||
+            !candidate->row_direction_tags || !candidate->row_base_indices)
+            return -1;
+        memcpy(candidate->row_transverse_coordinates, row_coordinates,
+               row_count * sizeof(*row_coordinates));
+        memcpy(candidate->row_direction_tags, row_tags,
+               row_count * sizeof(*row_tags));
+        memcpy(candidate->row_base_indices, row_base_indices,
+               row_count * sizeof(*row_base_indices));
+    }
     if (include_provenance) {
         candidate->u_enter_forward_surface_ids = malloc(total ? total * sizeof(*candidate->u_enter_forward_surface_ids) : 1);
         candidate->u_enter_reverse_surface_ids = malloc(total ? total * sizeof(*candidate->u_enter_reverse_surface_ids) : 1);
@@ -548,6 +605,8 @@ static int allocate_candidate(alea_ray_slice_validation_result_t* candidate,
                         ALEA_RAY_SLICE_VALIDATION_FIELD_OCCURRENCE_KEYS;
     if (include_coverage)
         candidate->fields |= ALEA_RAY_SLICE_VALIDATION_FIELD_COVERAGE;
+    if (include_rows)
+        candidate->fields |= ALEA_RAY_SLICE_VALIDATION_FIELD_ADAPTIVE_ROWS;
     size_t dst = 0;
     for (size_t row = 0; row < row_count; row++) {
         candidate->row_offsets[row] = dst;
@@ -586,6 +645,10 @@ int alea_validate_ray_slice_compact_with_event_cache(
     alea_ray_coverage_slice_result_t coverage_result;
     alea_raycast_result_t coverage_scratch;
     const alea_ray_coverage_slice_result_t* coverage = NULL;
+    size_t* row_base_indices = NULL;
+    uint8_t* row_tags = NULL;
+    const double* row_coordinates = NULL;
+    size_t out_row_count = row_count;
     int coverage_initialized = 0;
     int event_cache_width = 0, event_cache_height = 0;
     int cache_hit = 0, rc = -1;
@@ -637,6 +700,21 @@ int alea_validate_ray_slice_compact_with_event_cache(
                                   "coverage validation domain must be a non-empty U range");
             return -1;
         }
+        if (options.coverage_refine_signals &
+            ~(uint32_t)(ALEA_RAY_SLICE_REFINE_SIGNATURE |
+                        ALEA_RAY_SLICE_REFINE_DISPLACEMENT |
+                        ALEA_RAY_SLICE_REFINE_DENSITY |
+                        ALEA_RAY_SLICE_REFINE_FINDING)) {
+            alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                                  "unsupported coverage refinement signal");
+            return -1;
+        }
+    } else if (options.coverage_max_refinement_depth != 0) {
+        /* Refinement drives coverage probes; without the coverage check there
+         * is nothing for a refined row to measure. */
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "adaptive refinement requires the coverage check");
+        return -1;
     }
     if (options.checks == 0 && !inout_fast_forward) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG, "empty validation requires a forward cache destination");
@@ -775,23 +853,93 @@ int alea_validate_ray_slice_compact_with_event_cache(
         alea_ray_coverage_slice_limits_init(&coverage_limits);
         coverage_limits.max_owners = (size_t)options.max_coverage_owners;
         coverage_limits.max_intervals = (size_t)options.max_trace_intervals;
+        coverage_limits.max_rows = (size_t)options.max_coverage_rows;
         if (build_coverage_rows(view, row_count, &options, &coverage_rows) != 0)
             goto cleanup;
         alea_raycast_result_init(&coverage_scratch);
         alea_ray_coverage_slice_result_init(&coverage_result);
         coverage_initialized = 1;
-        if (alea_ray_coverage_slice_build_serial_nocache(
-                sys, coverage_rows, row_count, &coverage_limits,
-                &coverage_scratch, &coverage_result) != 0) {
-            if (alea_error_code() == ALEA_OK)
-                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                                      "coverage slice classification failed");
-            goto cleanup;
+        if (options.coverage_max_refinement_depth == 0) {
+            if (alea_ray_coverage_slice_build_serial_nocache(
+                    sys, coverage_rows, row_count, &coverage_limits,
+                    &coverage_scratch, &coverage_result) != 0) {
+                if (alea_error_code() == ALEA_OK)
+                    alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                          "coverage slice classification failed");
+                goto cleanup;
+            }
+        } else {
+            alea_ray_coverage_refinement_policy_t policy;
+            alea_ray_coverage_refinement_policy_init(&policy);
+            if (options.coverage_refine_signals != 0)
+                policy.signals = options.coverage_refine_signals;
+            policy.endpoint_displacement = options.coverage_endpoint_displacement;
+            policy.crossing_density = (size_t)options.coverage_crossing_density;
+            policy.min_transverse_spacing = options.coverage_min_transverse_spacing;
+            if (alea_ray_coverage_slice_build_adaptive_policy_serial_nocache(
+                    sys, coverage_rows, row_count,
+                    options.coverage_max_refinement_depth, &policy,
+                    &coverage_limits, &coverage_scratch,
+                    &coverage_result) != 0) {
+                if (alea_error_code() == ALEA_OK)
+                    alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                          "coverage refinement policy is inconsistent");
+                goto cleanup;
+            }
+            switch (coverage_result.refinement_status) {
+            case ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE:
+                candidate.refinement_status = ALEA_RAY_SLICE_REFINEMENT_CONVERGED;
+                break;
+            case ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH:
+                candidate.refinement_status = ALEA_RAY_SLICE_REFINEMENT_MAX_DEPTH;
+                break;
+            case ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS:
+                candidate.refinement_status = ALEA_RAY_SLICE_REFINEMENT_MAX_ROWS;
+                break;
+            case ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING:
+                candidate.refinement_status = ALEA_RAY_SLICE_REFINEMENT_MIN_SPACING;
+                break;
+            }
         }
         coverage = &coverage_result;
+        out_row_count = coverage_result.row_count;
+        if (out_row_count < row_count) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "coverage refinement dropped requested rows");
+            goto cleanup;
+        }
     }
 
-    rows = calloc(row_count, sizeof(*rows));
+    /* Map published rows back to the requested viewport rows.  Refined rows sit
+     * strictly between requested transverse coordinates, so a single ordered
+     * walk separates them; a refined row keeps SIZE_MAX and carries coverage
+     * evidence only. */
+    row_base_indices = malloc(out_row_count * sizeof(*row_base_indices));
+    if (!row_base_indices) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate validation row provenance");
+        goto cleanup;
+    }
+    if (out_row_count == row_count) {
+        for (size_t row = 0; row < row_count; row++) row_base_indices[row] = row;
+    } else {
+        size_t base = 0;
+        for (size_t row = 0; row < out_row_count; row++) {
+            if (base < row_count &&
+                coverage->row_transverse_coordinates[row] ==
+                    coverage_rows[base].transverse_coordinate)
+                row_base_indices[row] = base++;
+            else
+                row_base_indices[row] = SIZE_MAX;
+        }
+        if (base != row_count) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "coverage refinement lost a requested row coordinate");
+            goto cleanup;
+        }
+    }
+
+    rows = calloc(out_row_count, sizeof(*rows));
     if (!rows) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "failed to allocate validation rows");
         goto cleanup;
@@ -829,10 +977,15 @@ int alea_validate_ray_slice_compact_with_event_cache(
         double span = view->u_max - view->u_min;
         if (relative * fmax(1.0, span) > tolerance)
             tolerance = relative * fmax(1.0, span);
-        for (size_t row = 0; row < row_count; row++) {
-            size_t fc = (size_t)(fwd.offsets[row + 1] - fwd.offsets[row]);
-            size_t rcnt = reverse ?
-                (size_t)(rev.offsets[row + 1] - rev.offsets[row]) : 0;
+        for (size_t row = 0; row < out_row_count; row++) {
+            /* Selected traces exist only for the requested viewport rows; a
+             * refined row contributes coverage evidence alone. */
+            const size_t base = row_base_indices[row];
+            const int has_selected = base != SIZE_MAX;
+            size_t fc = has_selected ?
+                (size_t)(fwd.offsets[base + 1] - fwd.offsets[base]) : 0;
+            size_t rcnt = (has_selected && reverse) ?
+                (size_t)(rev.offsets[base + 1] - rev.offsets[base]) : 0;
             /* Coverage breakpoints partition the row alongside the selected
              * traces: a coverage boundary need not be a selected transition. */
             size_t coverage_begin = 0, coverage_end = 0;
@@ -858,9 +1011,10 @@ int alea_validate_ray_slice_compact_with_event_cache(
             size_t count = 0;
             boundaries[count++] = view->u_min;
             boundaries[count++] = view->u_max;
-            if (add_trace_boundaries(&fwd, row, boundaries, &count, cap) != 0 ||
-                (reverse &&
-                 add_trace_boundaries(&rev, row, boundaries, &count, cap) != 0) ||
+            if ((has_selected &&
+                 add_trace_boundaries(&fwd, base, boundaries, &count, cap) != 0) ||
+                (has_selected && reverse &&
+                 add_trace_boundaries(&rev, base, boundaries, &count, cap) != 0) ||
                 (coverage &&
                  add_coverage_boundaries(coverage, coverage_begin, coverage_end,
                                          view->u_min, view->u_max, boundaries,
@@ -882,9 +1036,9 @@ int alea_validate_ray_slice_compact_with_event_cache(
                 int32_t fcell = -1, rcell = -1;
                 uint64_t fkey = UINT64_MAX, rkey = UINT64_MAX;
                 uint32_t flags = 0;
-                if (reverse) {
-                    fkey = selected_key(&fwd, row, mid, tolerance, &fcell);
-                    rkey = selected_key(&rev, row, mid, tolerance, &rcell);
+                if (reverse && has_selected) {
+                    fkey = selected_key(&fwd, base, mid, tolerance, &fcell);
+                    rkey = selected_key(&rev, base, mid, tolerance, &rcell);
                     const int mismatch = (fkey != UINT64_MAX && rkey != UINT64_MAX) ?
                         fkey != rkey : fcell != rcell;
                     /* Directional disagreement is trace-consistency evidence
@@ -926,8 +1080,22 @@ int alea_validate_ray_slice_compact_with_event_cache(
             free(boundaries);
         }
     }
-    if (allocate_candidate(&candidate, rows, row_count, &options,
-                           event_cache != NULL, coverage != NULL) != 0) {
+    /* Row provenance is published whenever refinement was requested, so the
+     * caller never has to infer which published rows it asked for. */
+    if (options.coverage_max_refinement_depth != 0) {
+        row_tags = calloc(out_row_count, sizeof(*row_tags));
+        if (!row_tags) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "failed to allocate validation row tags");
+            goto cleanup;
+        }
+        for (size_t row = 0; row < out_row_count; row++)
+            row_tags[row] = coverage->row_direction_tags[row];
+        row_coordinates = coverage->row_transverse_coordinates;
+    }
+    if (allocate_candidate(&candidate, rows, out_row_count, &options,
+                           event_cache != NULL, coverage != NULL,
+                           row_coordinates, row_tags, row_base_indices) != 0) {
         if (alea_error_code() == ALEA_OK)
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "failed to allocate validation result");
         goto cleanup;
@@ -935,7 +1103,8 @@ int alea_validate_ray_slice_compact_with_event_cache(
     if (event_cache) {
         double tolerance = options.absolute_tolerance > 0.0 ?
             options.absolute_tolerance : 1e-9;
-        if (populate_boundary_provenance(&candidate, event_cache,
+        if (populate_boundary_provenance(&candidate, row_base_indices,
+                                         event_cache,
                                          event_cache_width, view,
                                          tolerance) != 0) {
             alea_set_error_detail(ALEA_ERR_INVALID_STATE,
@@ -955,12 +1124,14 @@ cleanup:
     free(origins);
     free(directions);
     free(coverage_rows);
+    free(row_base_indices);
+    free(row_tags);
     if (coverage_initialized) {
         alea_ray_coverage_slice_result_free(&coverage_result);
         alea_raycast_result_free(&coverage_scratch);
     }
     if (rows) {
-        for (size_t row = 0; row < row_count; row++) validation_row_free(&rows[row]);
+        for (size_t row = 0; row < out_row_count; row++) validation_row_free(&rows[row]);
         free(rows);
     }
     validation_result_free_buffers(&candidate);

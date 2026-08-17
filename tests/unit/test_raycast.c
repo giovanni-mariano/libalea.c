@@ -1278,4 +1278,159 @@ TEST(compact_ray_slice_coverage_reports_overlap_and_gaps) {
     alea_destroy(sys);
 }
 
+/* The inner cell only shows up on rows close to the centre, so adjacent
+ * coverage signatures differ and adaptive refinement has something to find
+ * between the requested rows. */
+TEST(compact_ray_slice_coverage_refines_rows_adaptively) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int outer = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 3.0);
+    const int inner = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(outer >= 0 && inner >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, outer)->neg_node,
+                         material, -1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 20, alea_surface_at(sys, inner)->neg_node,
+                         material, -1.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0,
+                         0.0, 1.0, 0.0,
+                         -5.0, 5.0, -2.0, 2.0);
+    alea_ray_slice_validation_result_t* validation =
+        alea_ray_slice_validation_result_create();
+    ASSERT_NOT_NULL(validation);
+
+    alea_ray_slice_validation_options_t options;
+    alea_ray_slice_validation_options_init(&options);
+    options.checks = ALEA_RAY_SLICE_VALIDATE_COVERAGE;
+    options.coverage_flags = ALEA_RAY_SLICE_COVERAGE_UNOWNED_IS_EXTERIOR;
+
+    /* No refinement requested: the published rows stay one-to-one with the
+     * requested rows and no row provenance is published. */
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_row_count(validation), (size_t)3);
+    ASSERT_EQ(alea_ray_slice_validation_fields(validation) &
+              ALEA_RAY_SLICE_VALIDATION_FIELD_ADAPTIVE_ROWS, (uint32_t)0);
+    ASSERT_EQ(alea_ray_slice_validation_refinement_status(validation),
+              ALEA_RAY_SLICE_REFINEMENT_NOT_REQUESTED);
+    ASSERT_NULL(alea_ray_slice_validation_row_base_indices(validation));
+
+    /* Refinement without the coverage check has nothing to measure. */
+    options.checks = ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    options.coverage_max_refinement_depth = 1;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), -1);
+
+    /* One wave splits both differing pairs, publishing five ordered rows. */
+    options.checks = ALEA_RAY_SLICE_VALIDATE_COVERAGE |
+                     ALEA_RAY_SLICE_VALIDATE_FAST_BIDIRECTIONAL;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_row_count(validation), (size_t)5);
+    ASSERT(alea_ray_slice_validation_fields(validation) &
+           ALEA_RAY_SLICE_VALIDATION_FIELD_ADAPTIVE_ROWS);
+    ASSERT_EQ(alea_ray_slice_validation_refinement_status(validation),
+              ALEA_RAY_SLICE_REFINEMENT_MAX_DEPTH);
+
+    const size_t* base = alea_ray_slice_validation_row_base_indices(validation);
+    const double* coordinates =
+        alea_ray_slice_validation_row_transverse_coordinates(validation);
+    const uint8_t* tags = alea_ray_slice_validation_row_direction_tags(validation);
+    ASSERT_NOT_NULL(base);
+    ASSERT_NOT_NULL(coordinates);
+    ASSERT_NOT_NULL(tags);
+    /* Requested rows keep their index; refined rows sit between them. */
+    ASSERT_EQ(base[0], (size_t)0);
+    ASSERT_EQ(base[1], SIZE_MAX);
+    ASSERT_EQ(base[2], (size_t)1);
+    ASSERT_EQ(base[3], SIZE_MAX);
+    ASSERT_EQ(base[4], (size_t)2);
+    ASSERT_NEAR(coordinates[0], -4.0 / 3.0, 1e-12);
+    ASSERT_NEAR(coordinates[1], -2.0 / 3.0, 1e-12);
+    ASSERT_NEAR(coordinates[2], 0.0, 1e-12);
+    ASSERT_NEAR(coordinates[3], 2.0 / 3.0, 1e-12);
+    ASSERT_NEAR(coordinates[4], 4.0 / 3.0, 1e-12);
+    for (size_t row = 0; row + 1 < 5; row++) {
+        ASSERT_EQ(tags[row], (uint8_t)0);
+        ASSERT(coordinates[row] < coordinates[row + 1]);
+    }
+
+    /* A refined row still reports the overlap it was generated to find, and
+     * reports no directional evidence: the fast traces cover the requested
+     * viewport rows only. */
+    const uint64_t* offsets = alea_ray_slice_validation_row_offsets(validation);
+    const uint32_t* flags =
+        alea_ray_slice_validation_diagnostic_flags(validation);
+    const int32_t* forward_cells =
+        alea_ray_slice_validation_fast_forward_cell_ids(validation);
+    const uint32_t* owners =
+        alea_ray_slice_validation_coverage_owner_counts(validation);
+    ASSERT_EQ((size_t)offsets[4] - (size_t)offsets[3], (size_t)1);
+    const size_t refined = (size_t)offsets[3];
+    ASSERT_EQ(flags[refined], ALEA_RAY_SLICE_DIAG_COVERAGE_OVERLAP);
+    ASSERT_EQ(owners[refined], (uint32_t)2);
+    ASSERT_EQ(forward_cells[refined], -1);
+
+    /* With an event cache the requested rows keep boundary provenance, while a
+     * refined row publishes none rather than borrowing a neighbour's line. */
+    alea_slice_directional_event_cache_t* cache =
+        alea_slice_directional_event_cache_create(sys, &view, 64, 3);
+    ASSERT_NOT_NULL(cache);
+    options.flags = ALEA_RAY_SLICE_VALIDATION_INCLUDE_AGREEMENTS;
+    ASSERT_EQ(alea_validate_ray_slice_compact_with_event_cache(
+                  sys, &view, 3, &options, NULL, NULL, cache, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_row_count(validation), (size_t)5);
+    offsets = alea_ray_slice_validation_row_offsets(validation);
+    base = alea_ray_slice_validation_row_base_indices(validation);
+    const int32_t* enter_surfaces =
+        alea_ray_slice_validation_u_enter_forward_surface_ids(validation);
+    ASSERT_NOT_NULL(enter_surfaces);
+    int requested_surface_seen = 0;
+    for (size_t row = 0; row < 5; row++) {
+        for (size_t i = (size_t)offsets[row]; i < (size_t)offsets[row + 1]; i++) {
+            if (base[row] == SIZE_MAX)
+                ASSERT_EQ(enter_surfaces[i], -1);
+            else if (enter_surfaces[i] > 0)
+                requested_surface_seen = 1;
+        }
+    }
+    ASSERT_EQ(requested_surface_seen, 1);
+    alea_slice_directional_event_cache_destroy(cache);
+    options.flags = 0;
+
+    /* Row budget and spacing limits publish completed rows with an explicit
+     * limited status rather than claiming the criteria converged. */
+    options.checks = ALEA_RAY_SLICE_VALIDATE_COVERAGE;
+    options.coverage_max_refinement_depth = 4;
+    options.max_coverage_rows = 3;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_row_count(validation), (size_t)3);
+    ASSERT_EQ(alea_ray_slice_validation_refinement_status(validation),
+              ALEA_RAY_SLICE_REFINEMENT_MAX_ROWS);
+
+    options.max_coverage_rows = 0;
+    options.coverage_min_transverse_spacing = 1.0;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), 0);
+    ASSERT_EQ(alea_ray_slice_validation_row_count(validation), (size_t)3);
+    ASSERT_EQ(alea_ray_slice_validation_refinement_status(validation),
+              ALEA_RAY_SLICE_REFINEMENT_MIN_SPACING);
+
+    /* A signal that needs a tolerance must not silently disable itself. */
+    options.coverage_min_transverse_spacing = 0.0;
+    options.coverage_refine_signals = ALEA_RAY_SLICE_REFINE_DISPLACEMENT;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), -1);
+    options.coverage_refine_signals = 1u << 20;
+    ASSERT_EQ(alea_validate_ray_slice_compact(sys, &view, 3, &options, NULL,
+                                              NULL, validation), -1);
+
+    alea_ray_slice_validation_result_destroy(validation);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()
