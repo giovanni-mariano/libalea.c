@@ -1217,8 +1217,11 @@ arenas.  One operation now schedules deterministic row-strided worker jobs in
 one OpenMP region (with the same assignment in serial builds), then compacts
 the worker arenas transactionally into input-order CSR.  The executor result
 is byte-for-byte equal to the serial CSR fixture and retains the previous
-publication when a resource limit prevents completion.  Adaptive-wave
-scheduling and integration into the validator remain the next increments.
+publication when a resource limit prevents completion.  The adaptive
+controller now uses that executor for every sampled wave while preserving its
+serial policy and refinement-status contract.  Integrating executor-owned
+adaptive work into the validator and consolidating production fixed-output
+scheduling remain the next increments.
 
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.

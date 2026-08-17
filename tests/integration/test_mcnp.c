@@ -2654,6 +2654,18 @@ TEST(ray_coverage_slice_builds_transactional_csr) {
               ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
     alea_ray_coverage_slice_result_free(&adaptive);
 
+    alea_ray_coverage_slice_limits_init(&limits);
+    alea_ray_coverage_executor_init(&executor);
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
+    ASSERT_EQ(alea_ray_coverage_slice_build_adaptive_policy_executor_nocache(
+                  sys, rows, 2, 1, NULL, &limits, &executor, &adaptive), 0);
+    ASSERT_EQ(adaptive.row_count, (size_t)3);
+    ASSERT_EQ(adaptive.refinement_status,
+              ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
+    ASSERT_NEAR(adaptive.row_transverse_coordinates[1], 1.0, 1e-12);
+    alea_ray_coverage_slice_result_free(&adaptive);
+    alea_ray_coverage_executor_free(&executor);
+
     const size_t* previous_offsets = result.row_offsets;
     limits.max_intervals = 3;
     ASSERT_EQ(alea_ray_coverage_slice_build_serial_nocache(

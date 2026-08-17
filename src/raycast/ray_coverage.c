@@ -1166,6 +1166,77 @@ int alea_ray_coverage_slice_build_executor_nocache(
     return coverage_executor_compact(rows, row_count, limits, executor, result);
 }
 
+int alea_ray_coverage_slice_build_adaptive_policy_executor_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
+    size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_refinement_policy_t* policy,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_ray_coverage_executor_t* executor,
+    alea_ray_coverage_slice_result_t* result) {
+    if (!sys || (!initial_rows && initial_row_count != 0) || !executor || !result)
+        return -1;
+    const alea_ray_coverage_slice_limits_t unlimited = {0};
+    if (!limits) limits = &unlimited;
+    const alea_ray_coverage_row_t* current_rows = initial_rows;
+    size_t current_row_count = initial_row_count;
+    alea_ray_coverage_row_t* owned_rows = NULL;
+    alea_ray_coverage_slice_result_t current;
+    alea_ray_coverage_slice_result_init(&current);
+    for (size_t depth = 0;; depth++) {
+        if (alea_ray_coverage_slice_build_executor_nocache(
+                sys, current_rows, current_row_count, limits, executor,
+                &current) != 0) goto fail;
+        uint8_t* marks = current_row_count > 1
+            ? calloc(current_row_count - 1, sizeof(*marks)) : NULL;
+        if (current_row_count > 1 && !marks) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "failed to allocate coverage refinement marks");
+            goto fail;
+        }
+        size_t spacing_limited = 0;
+        const int marked = alea_ray_coverage_slice_mark_refinement_boundaries_policy(
+            &current, policy, marks, &spacing_limited);
+        if (marked < 0) { free(marks); goto fail; }
+        if (marked == 0 || depth >= max_refinement_depth) {
+            current.refinement_status = marked != 0
+                ? ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH
+                : spacing_limited != 0 ? ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING
+                                       : ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE;
+            free(marks); free(owned_rows);
+            alea_ray_coverage_slice_result_free(result);
+            *result = current;
+            return 0;
+        }
+        if ((size_t)marked > SIZE_MAX - current_row_count ||
+            (limits->max_rows != 0 &&
+             current_row_count + (size_t)marked > limits->max_rows)) {
+            current.refinement_status = ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS;
+            free(marks); free(owned_rows);
+            alea_ray_coverage_slice_result_free(result);
+            *result = current;
+            return 0;
+        }
+        const size_t next_count = current_row_count + (size_t)marked;
+        if (next_count > SIZE_MAX / sizeof(*owned_rows)) { free(marks); goto fail; }
+        alea_ray_coverage_row_t* next = malloc(next_count * sizeof(*next));
+        if (!next) { free(marks); goto fail; }
+        size_t produced = 0;
+        const int rc = alea_ray_coverage_rows_refine_midpoints(
+            current_rows, current_row_count, marks, limits->max_rows, next,
+            next_count, &produced);
+        free(marks);
+        if (rc != 0 || produced != next_count) { free(next); goto fail; }
+        free(owned_rows);
+        owned_rows = next;
+        current_rows = owned_rows;
+        current_row_count = next_count;
+    }
+fail:
+    free(owned_rows);
+    alea_ray_coverage_slice_result_free(&current);
+    return -1;
+}
+
 #undef COVERAGE_SLICE_REALLOC
 
 typedef struct {

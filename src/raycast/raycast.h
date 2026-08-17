@@ -1092,6 +1092,17 @@ int alea_ray_coverage_slice_build_executor_nocache(
     alea_ray_coverage_executor_t* executor,
     alea_ray_coverage_slice_result_t* result);
 
+/* Executor-backed counterpart of the serial adaptive controller.  Every
+ * sampled wave uses the same worker arenas and transactional CSR builder;
+ * refinement remains probe selection only. */
+int alea_ray_coverage_slice_build_adaptive_policy_executor_nocache(
+    alea_system_t* sys, const alea_ray_coverage_row_t* initial_rows,
+    size_t initial_row_count, size_t max_refinement_depth,
+    const alea_ray_coverage_refinement_policy_t* policy,
+    const alea_ray_coverage_slice_limits_t* limits,
+    alea_ray_coverage_executor_t* executor,
+    alea_ray_coverage_slice_result_t* result);
+
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;
