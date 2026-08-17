@@ -1355,6 +1355,17 @@ atomicity keep their previous public contracts.  Projected-owner and full-path
 requests intentionally dispatch to the existing rich per-ray compatibility
 route because they require captured hierarchy paths.
 
+The Phase 10 acceptance matrix is now closed for the implemented executor
+products.  Coverage tests exercise serial, multiple, and more-workers-than-
+rows configurations; adaptive waves; exact and one-below interval, owner, and
+byte limits; owner truncation; malformed rows; interruption; and prior-result
+preservation.  The common segment-arena tests exercise one- and multi-thread
+execution, scalar field parity, exact and one-below segment and output-byte
+limits, and transactional preservation.  This completes the Phase 10 handoff
+gate.  A projected-owner/full-path arena is a deliberately deferred follow-on
+with its own compact path-reference representation and parity/performance
+gate; it is not a prerequisite for the Phase 11a public coverage API.
+
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
 - Add fixed-output executor publication.
