@@ -1436,6 +1436,17 @@ preserve the prior publication on failure, and use the same deterministic
 executor as the internal API.  An installed-header-only consumer compile test
 and public scalar/adaptive CSR tests now cover this boundary.
 
+Release measurement on the prepared 20-shell, 10,000-ray fixture confirms the
+memory-scaling purpose of the common segment arena. In one sample with one
+thread, base and ordinary-field CSR each retained zero legacy trace-staging
+bytes (5.97 us/ray); projected-owner and full-path compatibility products
+retained 5,488,232 bytes (9.45 and 8.12 us/ray). With four threads, the same
+products measured 2.98, 2.87, 4.09, and 4.14 us/ray respectively, with the
+same output counts and staging classification. These are environment-sensitive
+samples, not a traversal-speed claim; they support retaining projected/full-
+path arena work as deferred memory work rather than expanding this release's
+executor scope.
+
 ### Phase 11b: integrate the external AleaTHOR consumer
 
 After the libalea API gate:

@@ -1231,6 +1231,24 @@ TEST(public_compact_coverage_slice_publishes_borrowed_csr) {
     ASSERT_EQ(alea_ray_coverage_slice_row_count(scalar), (size_t)1);
     ASSERT_EQ(alea_ray_coverage_slice_interval_count(scalar), (size_t)3);
     alea_ray_coverage_slice_result_destroy(scalar);
+    alea_ray_coverage_slice_result_t* exterior =
+        alea_ray_coverage_slice_result_create();
+    ASSERT_NOT_NULL(exterior);
+    options.flags = ALEA_RAY_COVERAGE_DOMAIN |
+                    ALEA_RAY_COVERAGE_REPORT_EXTERIOR;
+    options.domain_t_min = 1.0;
+    options.domain_t_max = 3.0;
+    ASSERT_EQ(alea_ray_coverage_query(sys, -2, 0, 0, 1, 0, 0,
+                                      &options, exterior), 0);
+    ASSERT_EQ(alea_ray_coverage_slice_interval_count(exterior), (size_t)3);
+    const uint8_t* exterior_kinds = alea_ray_coverage_slice_kinds(exterior);
+    ASSERT_EQ(exterior_kinds[0], (uint8_t)ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR);
+    ASSERT_EQ(exterior_kinds[1], (uint8_t)ALEA_RAY_COVERAGE_UNIQUE);
+    ASSERT_EQ(exterior_kinds[2], (uint8_t)ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR);
+    alea_ray_coverage_slice_result_destroy(exterior);
+    options.flags = ALEA_RAY_COVERAGE_DOMAIN;
+    options.domain_t_min = 0.5;
+    options.domain_t_max = 3.5;
     alea_ray_coverage_slice_result_t* adaptive =
         alea_ray_coverage_slice_result_create();
     ASSERT_NOT_NULL(adaptive);
