@@ -1208,6 +1208,14 @@ earlier phases, but it must not dictate incorrect interfaces.
 
 Only after the prior gates:
 
+### Phase 10 kickoff (2026-08-17)
+
+Executor work has begun without changing ray or coverage semantics.  The
+internal coverage executor now owns an explicit, preallocated collection of
+worker-local reusable breakpoint scratch results.  It is intentionally only
+the scratch-lifetime seam: row scheduling, worker append arenas, parallel
+compaction, and the OpenMP owning region remain the next increments.
+
 - Implement worker scratch lifetime and capacity.
 - Centralize OpenMP region ownership.
 - Add fixed-output executor publication.

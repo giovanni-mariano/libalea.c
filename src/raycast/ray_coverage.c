@@ -943,6 +943,41 @@ int alea_ray_coverage_slice_build_adaptive_serial_nocache(
         limits, breakpoint_scratch, result);
 }
 
+void alea_ray_coverage_executor_init(alea_ray_coverage_executor_t* executor) {
+    if (executor) memset(executor, 0, sizeof(*executor));
+}
+
+void alea_ray_coverage_executor_free(alea_ray_coverage_executor_t* executor) {
+    if (!executor) return;
+    for (size_t worker = 0; worker < executor->worker_count; worker++)
+        alea_raycast_result_free(&executor->workers[worker].breakpoint_scratch);
+    free(executor->workers);
+    memset(executor, 0, sizeof(*executor));
+}
+
+int alea_ray_coverage_executor_prepare(alea_ray_coverage_executor_t* executor,
+                                        size_t worker_count) {
+    if (!executor || worker_count == 0 ||
+        worker_count > SIZE_MAX / sizeof(*executor->workers)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "invalid coverage executor worker count");
+        return -1;
+    }
+    alea_ray_coverage_worker_scratch_t* workers = calloc(
+        worker_count, sizeof(*workers));
+    if (!workers) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate coverage executor workers");
+        return -1;
+    }
+    for (size_t worker = 0; worker < worker_count; worker++)
+        alea_raycast_result_init(&workers[worker].breakpoint_scratch);
+    alea_ray_coverage_executor_free(executor);
+    executor->workers = workers;
+    executor->worker_count = worker_count;
+    return 0;
+}
+
 #undef COVERAGE_SLICE_REALLOC
 
 typedef struct {

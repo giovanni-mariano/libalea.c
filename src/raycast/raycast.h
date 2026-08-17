@@ -1059,6 +1059,22 @@ int alea_ray_coverage_slice_build_adaptive_serial_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_slice_result_t* result);
 
+/* Phase 10 executor scratch.  One worker owns one reusable breakpoint result;
+ * scheduler/output policy remain outside the scalar coverage engine. */
+typedef struct {
+    alea_raycast_result_t breakpoint_scratch;
+} alea_ray_coverage_worker_scratch_t;
+
+typedef struct {
+    alea_ray_coverage_worker_scratch_t* workers;
+    size_t worker_count;
+} alea_ray_coverage_executor_t;
+
+void alea_ray_coverage_executor_init(alea_ray_coverage_executor_t* executor);
+void alea_ray_coverage_executor_free(alea_ray_coverage_executor_t* executor);
+int alea_ray_coverage_executor_prepare(alea_ray_coverage_executor_t* executor,
+                                        size_t worker_count);
+
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;

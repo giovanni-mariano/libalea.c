@@ -2486,6 +2486,14 @@ TEST(ray_coverage_rows_stream_in_input_order) {
 
     alea_raycast_result_t scratch;
     alea_raycast_result_init(&scratch);
+    alea_ray_coverage_executor_t executor;
+    alea_ray_coverage_executor_init(&executor);
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 2), 0);
+    ASSERT_EQ(executor.worker_count, (size_t)2);
+    ASSERT_NOT_NULL(executor.workers);
+    ASSERT_EQ(alea_ray_coverage_executor_prepare(&executor, 1), 0);
+    ASSERT_EQ(executor.worker_count, (size_t)1);
+    alea_ray_coverage_executor_free(&executor);
     coverage_row_trace_t trace = {0};
     ASSERT_EQ(alea_ray_coverage_rows_serial_reuse_nocache(
                   sys, rows, 2, &scratch, collect_coverage_row, &trace), 0);
