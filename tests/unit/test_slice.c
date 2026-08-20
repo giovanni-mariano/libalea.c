@@ -698,6 +698,57 @@ static void test_surface_labels_filter_hidden_csg_boundary(void) {
     printf("OK\n");
 }
 
+/* A plane split exercises a sparse label candidate that crosses the exact
+ * finite RIGHT edge at its midpoint.  It must survive canonical provenance,
+ * not only the geometry-only boundary-grid placement path. */
+static void test_surface_labels_verify_plane_interface(void) {
+    printf("  test_surface_labels_verify_plane_interface... ");
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+    int plane = alea_plane_surface(sys, 71, 1, 0, 0, 0);
+    int box = alea_box_surface(sys, 72, -8, 8, -8, 8, -2, 2);
+    assert(plane >= 0 && box >= 0);
+    alea_node_id_t left = alea_intersection(
+        sys, alea_surface_at(sys, plane)->neg_node,
+        alea_surface_at(sys, box)->neg_node);
+    alea_node_id_t right = alea_intersection(
+        sys, alea_surface_at(sys, plane)->pos_node,
+        alea_surface_at(sys, box)->neg_node);
+    int material = alea_add_material(sys, 1);
+    assert(material >= 0);
+    assert(alea_add_cell(sys, 1, left, material, -1.0, 0) >= 0);
+    assert(alea_add_cell(sys, 2, right, material, -2.0, 0) >= 0);
+    assert(alea_prepare_query_acceleration(sys) == 0);
+
+    const int width = 160, height = 160;
+    int* ids = malloc((size_t)width * height * sizeof(*ids));
+    assert(ids != NULL);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    assert(alea_find_cells_grid(sys, &view, width, height, -1,
+                                ids, NULL, NULL) == 0);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    assert(alea_find_surface_label_positions_on_boundaries(
+        curves, ids, -10, 10, -10, 10, width, height, 2,
+        &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, 71));
+    free(labels);
+    labels = NULL;
+    count = 0;
+    assert(alea_find_surface_label_positions_with_provenance(
+        sys, &view, curves, ids, -10, 10, -10, 10, width, height, 2,
+        0, &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, 71));
+    free(labels);
+    alea_slice_curves_free(curves);
+    free(ids);
+    alea_destroy(sys);
+    printf("OK\n");
+}
+
 /* Full circles use a fixed geometric anchor.  With a rendered boundary grid,
  * the analytical candidate search must move only a colliding label so two
  * concentric boundaries remain readable. */
@@ -890,6 +941,7 @@ int main(void) {
     test_curve_two_cells();
     test_curve_noncanonical_type_identity();
     test_surface_labels_filter_hidden_csg_boundary();
+    test_surface_labels_verify_plane_interface();
     test_concentric_surface_labels_do_not_stack();
     test_noncanonical_surface_labels_on_boundaries();
     test_boundary_map_labels_each_disconnected_arc();

@@ -178,6 +178,56 @@ TEST(surface_boundary_map_ignores_cell_only_event_for_material_grid) {
     alea_destroy(sys);
 }
 
+TEST(surface_boundary_map_keeps_distinct_crossings_in_distinct_groups) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int first = alea_plane_surface(sys, 11, 1.0, 0.0, 0.0, 0.10);
+    int second = alea_plane_surface(sys, 12, 1.0, 0.0, 0.0, -0.10);
+    ASSERT(first >= 0 && second >= 0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    alea_node_id_t first_neg = alea_halfspace(sys, first, -1);
+    alea_node_id_t first_pos = alea_halfspace(sys, first, 1);
+    alea_node_id_t second_neg = alea_halfspace(sys, second, -1);
+    alea_node_id_t second_pos = alea_halfspace(sys, second, 1);
+    ASSERT(alea_add_cell(sys, 1, first_neg, material, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, alea_intersection(sys, first_pos, second_neg),
+                         material, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 3, second_pos, material, 1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int width = 2, height = 1;
+    int ids[width * height];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -0.5, 0.5);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, width, height, -1,
+                                   ids, NULL, NULL), 0);
+    alea_slice_surface_boundary_map_t* map = NULL;
+    ASSERT_EQ(alea_slice_surface_boundary_map_create(
+                  sys, &view, width, height, ids, alea_slice_classify_cell,
+                  NULL, &map), 0);
+    ASSERT_NOT_NULL(map);
+    ASSERT_EQ(alea_slice_surface_boundary_status(
+                  map, 0, 0, ALEA_SLICE_EDGE_RIGHT),
+              ALEA_SLICE_BOUNDARY_MULTI_HIT);
+    ASSERT_EQ(alea_slice_surface_boundary_group_count(
+                  map, 0, 0, ALEA_SLICE_EDGE_RIGHT), 2);
+    ASSERT_EQ(alea_slice_surface_boundary_group_surface_count(
+                  map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 0), 1);
+    ASSERT_EQ(alea_slice_surface_boundary_group_surface_id(
+                  map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 0, 0), 11);
+    ASSERT_EQ(alea_slice_surface_boundary_group_surface_count(
+                  map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 1), 1);
+    ASSERT_EQ(alea_slice_surface_boundary_group_surface_id(
+                  map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 1, 0), 12);
+    ASSERT(alea_slice_surface_boundary_group_fraction(
+               map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 0) <
+           alea_slice_surface_boundary_group_fraction(
+               map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 1));
+    alea_slice_surface_boundary_map_free(map);
+    alea_destroy(sys);
+}
+
 TEST(surface_boundary_map_keeps_coincident_ids_in_one_crossing_group) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -229,6 +279,29 @@ TEST(surface_boundary_map_keeps_coincident_ids_in_one_crossing_group) {
     ASSERT_EQ(alea_slice_surface_boundary_group_surface_id(
                   map, 0, 0, ALEA_SLICE_EDGE_RIGHT, 0, 1), 2);
 
+    alea_slice_surface_boundary_map_free(map);
+
+    /* A longer coincident contour gives each participant a boundary-map
+     * label. Their representative pixel must be shared so higher layers can
+     * recover this exact causal group rather than infer coincidence from a
+     * random nearby anchor. */
+    const int label_width = 64, label_height = 64;
+    int label_ids[label_width * label_height];
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, label_width, label_height, -1,
+                                   label_ids, NULL, NULL), 0);
+    map = NULL;
+    ASSERT_EQ(alea_slice_surface_boundary_map_create(
+                  sys, &view, label_width, label_height, label_ids,
+                  alea_slice_classify_cell, NULL, &map), 0);
+    alea_label_position_t* labels = NULL;
+    int label_count = 0;
+    ASSERT_EQ(alea_find_surface_labels_on_boundary_map(map, 2, &labels,
+                                                        &label_count), 0);
+    ASSERT_EQ(label_count, 2);
+    ASSERT_EQ(labels[0].px, labels[1].px);
+    ASSERT_EQ(labels[0].py, labels[1].py);
+    free(labels);
     alea_slice_surface_boundary_map_free(map);
     alea_destroy(sys);
 }
