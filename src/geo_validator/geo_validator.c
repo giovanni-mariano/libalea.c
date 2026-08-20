@@ -49,12 +49,31 @@ typedef struct {
     int truncated;
 } point_coverage_t;
 
+static int cell_references_primitive(const alea_system_t* sys,
+                                     const alea_cell_entry_t* cell,
+                                     uint32_t primitive_id);
+
 static int point_coverage_primary_has_cell_index(const point_coverage_t* cov,
                                                   int cell_index) {
     if (!cov || cell_index < 0) return 0;
     for (size_t index = 0; index < cov->primary_ancestor_count; index++)
         if (cov->primary_ancestor_cell_indices[index] == cell_index)
             return 1;
+    return 0;
+}
+
+static int point_coverage_primary_ancestor_references_primitive(
+    const alea_system_t* sys, const point_coverage_t* cov,
+    uint32_t primitive_id) {
+    if (!sys || !cov || primitive_id == ALEA_PRIMITIVE_ID_INVALID) return 0;
+    for (size_t index = 0; index < cov->primary_ancestor_count; index++) {
+        int cell_index = cov->primary_ancestor_cell_indices[index];
+        if (cell_index < 0 ||
+            (size_t)cell_index >= alea_vec_count(&sys->cells)) continue;
+        if (cell_references_primitive(sys, &sys->cells.data[cell_index],
+                                      primitive_id))
+            return 1;
+    }
     return 0;
 }
 
@@ -854,6 +873,15 @@ static int classify_transition(alea_system_t* sys,
     }
 
     if (previous_references_surface) {
+        /* Dense shared surfaces are deliberately omitted from the adjacency
+         * clique to keep memory bounded.  The resolved occurrence chain still
+         * proves a valid transition when one of its enclosing fill/lattice
+         * owners references the crossed primitive. */
+        if (cov->klass == COVERAGE_ONE &&
+            point_coverage_primary_ancestor_references_primitive(
+                sys, cov, primitive_id)) {
+            return 0;
+        }
         if (cov->klass == COVERAGE_ONE &&
             cov->primary_cell_idx >= 0 &&
             (size_t)cov->primary_cell_idx < alea_vec_count(&sys->cells) &&

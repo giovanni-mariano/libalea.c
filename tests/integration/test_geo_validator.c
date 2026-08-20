@@ -6,6 +6,7 @@
 #include "alea.h"
 #include "alea_geo_validator.h"
 #include "alea_mcnp.h"
+#include "core/alea_cell.h"
 #include "raycast/raycast.h"
 
 #include <math.h>
@@ -164,6 +165,47 @@ fail:
     return NULL;
 }
 
+static alea_system_t* build_dense_shared_fill_boundary_system(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    int x_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int y_si = alea_plane_surface(sys, 11, 0, 1, 0, 10);
+    int box_si = alea_box_surface(sys, 20, -3, 3, -3, 3, -3, 3);
+    if (x_si < 0 || y_si < 0 || box_si < 0) goto fail;
+
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t x_negative = alea_halfspace(sys, x_si, -1);
+    alea_node_id_t x_positive = alea_halfspace(sys, x_si, 1);
+    alea_node_id_t y_above_box = alea_halfspace(sys, y_si, 1);
+    alea_node_id_t left = alea_intersection(sys, box, x_negative);
+    alea_node_id_t right = alea_intersection(sys, box, x_positive);
+    alea_node_id_t empty_shared = alea_intersection(sys, right, y_above_box);
+    if (box == ALEA_NODE_ID_INVALID || x_negative == ALEA_NODE_ID_INVALID ||
+        x_positive == ALEA_NODE_ID_INVALID || y_above_box == ALEA_NODE_ID_INVALID ||
+        left == ALEA_NODE_ID_INVALID || right == ALEA_NODE_ID_INVALID ||
+        empty_shared == ALEA_NODE_ID_INVALID) goto fail;
+
+    int material = alea_add_material(sys, 1);
+    int left_idx = alea_add_cell(sys, 1, left, material, 1.0, 0);
+    int parent_idx = alea_add_cell(sys, 2, right, material, 1.0, 0);
+    if (left_idx < 0 || parent_idx < 0 ||
+        alea_set_cell_fill(sys, parent_idx, 7, 0) != 0 ||
+        alea_add_cell(sys, 3, right, material, 1.0, 7) < 0) goto fail;
+
+    /* 129 references make the x-plane intentionally exceed the adjacency
+     * clique limit. These cells are empty at the witness point. */
+    for (int id = 4; id < 131; id++) {
+        if (alea_add_cell(sys, id, empty_shared, material, 1.0, 0) < 0)
+            goto fail;
+    }
+    return sys;
+
+fail:
+    alea_destroy(sys);
+    return NULL;
+}
+
 static alea_system_t* build_finite_cylinder_complement_system(void) {
     alea_system_t* sys = alea_create();
     if (!sys) return NULL;
@@ -290,6 +332,26 @@ TEST(geo_validator_resolves_sectorized_shared_surface_neighbor) {
     alea_geom_validator_result_free(&fast_result);
     alea_geom_validator_result_free(&slice_result);
     alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_accepts_dense_shared_fill_parent_transition) {
+    alea_system_t* sys = build_dense_shared_fill_boundary_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+
+    alea_geom_validator_result_free(&result);
     alea_destroy(sys);
 }
 
