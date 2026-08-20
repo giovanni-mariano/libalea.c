@@ -50,6 +50,11 @@ static void parse_validator_options(lua_State* L,
     idx = lua_absindex(L, idx);
     luaL_checktype(L, idx, LUA_TTABLE);
 
+    lua_getfield(L, idx, "hierarchical");
+    if (!lua_isnil(L, -1))
+        luaL_error(L, "'hierarchical' was removed: geometry validation always uses occurrence-aware hierarchy traversal");
+    lua_pop(L, 1);
+
     lua_getfield(L, idx, "ray_count");
     if (!lua_isnil(L, -1))
         options->ray_count = (int)luaL_checkinteger(L, -1);
@@ -92,14 +97,6 @@ static void parse_validator_options(lua_State* L,
             options->flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
         else
             options->flags &= ~ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
-    }
-
-    if (get_bool_field(L, idx, "hierarchical", &value) ||
-        get_bool_field(L, idx, "hier", &value)) {
-        if (value)
-            options->flags |= ALEA_GEOM_VALIDATE_HIERARCHICAL;
-        else
-            options->flags &= ~ALEA_GEOM_VALIDATE_HIERARCHICAL;
     }
 
     if (get_bool_field(L, idx, "strict", &value)) {

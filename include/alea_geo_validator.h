@@ -33,7 +33,6 @@ typedef enum {
     ALEA_GEOM_VALIDATE_RAYS                = 1u << 0,
     ALEA_GEOM_VALIDATE_STRICT_ADJACENCY    = 1u << 1,
     ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID = 1u << 2,
-    ALEA_GEOM_VALIDATE_HIERARCHICAL        = 1u << 3,
     /* validation_bounds defines a closed world-space AABB inside which
      * unowned coverage is an interior-gap finding. */
     ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS       = 1u << 4

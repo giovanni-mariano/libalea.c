@@ -949,8 +949,7 @@ TEST(geo_validator_clean_adjacent_hier) {
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
-    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID |
-                  ALEA_GEOM_VALIDATE_HIERARCHICAL;
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
     opts.ray_count = 24;
     opts.seed = 7;
 
@@ -974,8 +973,7 @@ TEST(geo_validator_tracks_synthetic_lattice_boundaries) {
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
-    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID |
-                  ALEA_GEOM_VALIDATE_HIERARCHICAL;
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
     opts.sample_offset = 0.01;
 
     alea_geom_validator_result_t result;
