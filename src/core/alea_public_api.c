@@ -396,6 +396,18 @@ int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
     return alea_find_all_cells_at_point(sys, x, y, z, (alea_cell_hit_t*)hits, max_hits);
 }
 
+int alea_find_all_cells_coverage_chain(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       alea_cell_hit_t* hits,
+                                       uint64_t* occurrence_keys,
+                                       uint64_t* parent_occurrence_keys,
+                                       size_t max_hits) {
+    if (!sys || !hits || !occurrence_keys || !parent_occurrence_keys ||
+        max_hits == 0) return -1;
+    return alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, x, y, z, hits, occurrence_keys, parent_occurrence_keys, max_hits);
+}
+
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z) {
     if (!sys) return false;

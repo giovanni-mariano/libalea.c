@@ -204,6 +204,15 @@ int alea_query_acceleration_stats(const alea_system_t* sys,
 int alea_find_cell(alea_system_t* sys, double x, double y, double z);
 int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
                             alea_cell_hit_t* hits, size_t max_hits);
+/** Complete diagnostic ownership query with concrete occurrence ancestry.
+ * Returns the retained hit count, which equals max_hits when the caller must
+ * treat the owner set as potentially truncated. */
+int alea_find_all_cells_coverage_chain(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       alea_cell_hit_t* hits,
+                                       uint64_t* occurrence_keys,
+                                       uint64_t* parent_occurrence_keys,
+                                       size_t max_hits);
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z);
 /* Legacy convenience wrapper.
