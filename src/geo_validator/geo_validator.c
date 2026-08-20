@@ -108,6 +108,104 @@ static void init_geom_error(alea_geom_error_t* err) {
     err->primitive_id = ALEA_PRIMITIVE_ID_INVALID;
 }
 
+typedef struct {
+    int type, source, previous_cell_id, found_cell_id, secondary_cell_id;
+    int expected_neighbor_cell_id, universe_depth;
+    uint32_t primitive_id;
+} error_signature_t;
+
+typedef struct {
+    error_signature_t key;
+    size_t count;
+    int used;
+} error_signature_entry_t;
+
+typedef struct {
+    error_signature_entry_t* entries;
+    size_t capacity, count;
+} error_signature_table_t;
+
+static uint64_t signature_hash_mix(uint64_t hash, uint64_t value) {
+    hash ^= value;
+    return hash * UINT64_C(1099511628211);
+}
+
+static error_signature_t error_signature(const alea_geom_error_t* error) {
+    return (error_signature_t){
+        .type = (int)error->type, .source = (int)error->source,
+        .previous_cell_id = error->previous_cell_id,
+        .found_cell_id = error->found_cell_id,
+        .secondary_cell_id = error->secondary_cell_id,
+        .expected_neighbor_cell_id = error->expected_neighbor_cell_id,
+        .universe_depth = error->universe_depth,
+        .primitive_id = error->primitive_id,
+    };
+}
+
+static int signatures_equal(error_signature_t a, error_signature_t b) {
+    return a.type == b.type && a.source == b.source &&
+        a.previous_cell_id == b.previous_cell_id &&
+        a.found_cell_id == b.found_cell_id &&
+        a.secondary_cell_id == b.secondary_cell_id &&
+        a.expected_neighbor_cell_id == b.expected_neighbor_cell_id &&
+        a.universe_depth == b.universe_depth && a.primitive_id == b.primitive_id;
+}
+
+static uint64_t signature_hash(error_signature_t key) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    hash = signature_hash_mix(hash, (uint32_t)key.type);
+    hash = signature_hash_mix(hash, (uint32_t)key.source);
+    hash = signature_hash_mix(hash, (uint32_t)key.previous_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.found_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.secondary_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.expected_neighbor_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.universe_depth);
+    return signature_hash_mix(hash, key.primitive_id);
+}
+
+static int signature_table_grow(error_signature_table_t* table) {
+    size_t capacity = table->capacity ? table->capacity * 2 : 16;
+    if (capacity < table->capacity ||
+        capacity > SIZE_MAX / sizeof(*table->entries)) return -1;
+    error_signature_entry_t* entries = calloc(capacity, sizeof(*entries));
+    if (!entries) return -1;
+    for (size_t i = 0; i < table->capacity; i++) {
+        error_signature_entry_t entry = table->entries[i];
+        if (!entry.used) continue;
+        size_t index = (size_t)signature_hash(entry.key) & (capacity - 1);
+        while (entries[index].used) index = (index + 1) & (capacity - 1);
+        entries[index] = entry;
+    }
+    free(table->entries);
+    table->entries = entries;
+    table->capacity = capacity;
+    return 0;
+}
+
+static error_signature_entry_t* signature_table_entry(
+    alea_geom_validator_result_t* result, const alea_geom_error_t* error) {
+    error_signature_table_t* table = result->signature_table;
+    if (!table) {
+        table = calloc(1, sizeof(*table));
+        if (!table) return NULL;
+        result->signature_table = table;
+    }
+    if (table->capacity == 0 || table->count * 10 >= table->capacity * 7) {
+        if (signature_table_grow(table) != 0) return NULL;
+    }
+    error_signature_t key = error_signature(error);
+    size_t index = (size_t)signature_hash(key) & (table->capacity - 1);
+    while (table->entries[index].used &&
+           !signatures_equal(table->entries[index].key, key))
+        index = (index + 1) & (table->capacity - 1);
+    if (!table->entries[index].used) {
+        table->entries[index].used = 1;
+        table->entries[index].key = key;
+        table->count++;
+    }
+    return &table->entries[index];
+}
+
 void alea_geom_validator_options_init(alea_geom_validator_options_t* options) {
     if (!options) return;
     memset(options, 0, sizeof(*options));
@@ -131,6 +229,11 @@ void alea_geom_validator_result_init(alea_geom_validator_result_t* result) {
 void alea_geom_validator_result_free(alea_geom_validator_result_t* result) {
     if (!result) return;
     free(result->errors);
+    if (result->signature_table) {
+        error_signature_table_t* table = result->signature_table;
+        free(table->entries);
+        free(table);
+    }
     memset(result, 0, sizeof(*result));
 }
 
@@ -166,28 +269,20 @@ int alea_geom_validator_error_get(const alea_geom_validator_result_t* result,
     return 0;
 }
 
-static int same_error_signature(const alea_geom_error_t* a,
-                                const alea_geom_error_t* b) {
-    return a->type == b->type && a->source == b->source &&
-        a->primitive_id == b->primitive_id &&
-        a->previous_cell_id == b->previous_cell_id &&
-        a->found_cell_id == b->found_cell_id &&
-        a->secondary_cell_id == b->secondary_cell_id &&
-        a->expected_neighbor_cell_id == b->expected_neighbor_cell_id &&
-        a->universe_depth == b->universe_depth;
-}
-
 static int append_error(alea_geom_validator_result_t* result,
                         const alea_geom_validator_options_t* options,
                         const alea_geom_error_t* error) {
+    error_signature_entry_t* signature_entry = NULL;
     if (options->max_samples_per_signature > 0) {
-        size_t matches = 0;
-        for (size_t i = 0; i < result->error_count; i++) {
-            if (same_error_signature(&result->errors[i], error) &&
-                ++matches >= options->max_samples_per_signature) {
-                result->suppressed_samples++;
-                return 0;
-            }
+        signature_entry = signature_table_entry(result, error);
+        if (!signature_entry) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "geometry validator: out of memory tracking signatures");
+            return -1;
+        }
+        if (signature_entry->count >= options->max_samples_per_signature) {
+            result->suppressed_samples++;
+            return 0;
         }
     }
     size_t max_errors = options->max_errors;
@@ -212,6 +307,7 @@ static int append_error(alea_geom_validator_result_t* result,
     }
 
     result->errors[result->error_count++] = *error;
+    if (signature_entry) signature_entry->count++;
     return 0;
 }
 
