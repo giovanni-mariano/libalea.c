@@ -762,6 +762,15 @@ int alea_find_surface_label_positions_on_boundaries(
     int* out_count
 );
 
+/* Fast analytical labels with sparse physical-surface verification. */
+int alea_find_surface_label_positions_with_provenance(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves, const int* boundary_ids,
+    double x_min, double x_max, double y_min, double y_max,
+    int width, int height, int margin,
+    alea_label_position_t** out_labels, int* out_count
+);
+
 /* ============================================================================
  * ANALYTICAL CURVE API
  * ============================================================================ */
