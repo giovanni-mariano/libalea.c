@@ -742,6 +742,15 @@ static void test_surface_labels_verify_plane_interface(void) {
         sys, &view, curves, ids, -10, 10, -10, 10, width, height, 2,
         0, &labels, &count) == 0);
     assert(labels_have_surface(labels, count, 71));
+    const alea_label_position_t* plane_label = NULL;
+    for (int i = 0; i < count; i++)
+        if (labels[i].id == 71) { plane_label = &labels[i]; break; }
+    assert(plane_label != NULL);
+    assert(plane_label->provenance_edge_x >= 0);
+    assert(plane_label->provenance_edge_y >= 0);
+    assert(plane_label->provenance_orientation == ALEA_SLICE_EDGE_RIGHT ||
+           plane_label->provenance_orientation == ALEA_SLICE_EDGE_DOWN);
+    assert(plane_label->provenance_group >= 0);
     free(labels);
     alea_slice_curves_free(curves);
     free(ids);

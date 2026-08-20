@@ -4215,6 +4215,7 @@ typedef struct {
     int edge_x, edge_y;
     alea_slice_edge_orientation_t edge_orientation;
     double edge_fraction;
+    int provenance_group;
 } surface_label_candidate_t;
 
 typedef struct surface_label_provenance_cache surface_label_provenance_cache_t;
@@ -4408,6 +4409,7 @@ static int parametric_surface_label_candidate(const alea_curve_2d_t* curve,
             out_candidate->v = points[s].v;
             out_candidate->edge_x = -1;
             out_candidate->edge_y = -1;
+            out_candidate->provenance_group = -1;
             best_t = points[s].t;
         }
     }
@@ -4553,6 +4555,7 @@ static int scanline_surface_label_candidate(const alea_curve_2d_t* curve,
             } else {
                 out_candidate->edge_x = -1;
                 out_candidate->edge_y = -1;
+                out_candidate->provenance_group = -1;
             }
         }
     }
@@ -4609,7 +4612,10 @@ static int find_surface_label_candidates_on_boundaries(
         int surf_id = curve->surface_id;
         if (surf_id <= 0) continue;
 
-        surface_label_candidate_t candidate = {.surf_id = surf_id};
+        surface_label_candidate_t candidate = {
+            .surf_id = surf_id, .edge_x = -1, .edge_y = -1,
+            .provenance_group = -1
+        };
         double curve_len;
         int found;
         if (curve->type == ALEA_CURVE_PARABOLA ||
@@ -4699,7 +4705,7 @@ static void slice_world_point(const alea_slice_view_t* view, double u, double v,
 static int label_edge_has_surface_canonical(
     alea_system_t* sys, const double start[3], const double end[3],
     double fraction, double fraction_tolerance, int surface_id,
-    int material_boundary, const surface_label_candidate_t* candidate,
+    int material_boundary, surface_label_candidate_t* candidate,
     surface_label_provenance_cache_t* cache);
 static surface_label_provenance_cache_t*
 surface_label_provenance_cache_create(void);
@@ -4711,7 +4717,7 @@ static int label_point_has_surface_provenance(
     const int* boundary_ids, int width, int height,
     double x_min, double y_min, double du, double dv, double u, double v,
     int surface_id, int material_boundary,
-    const surface_label_candidate_t* candidate,
+    surface_label_candidate_t* candidate,
     surface_label_provenance_cache_t* cache) {
     if (!boundary_ids) return 0;
     double px = (u - x_min) / du - 0.5;
@@ -4790,6 +4796,10 @@ int alea_find_surface_label_positions_with_provenance(
         (*out_labels)[i].id = candidates[i].surf_id;
         (*out_labels)[i].px = candidates[i].px;
         (*out_labels)[i].py = candidates[i].py;
+        (*out_labels)[i].provenance_edge_x = -1;
+        (*out_labels)[i].provenance_edge_y = -1;
+        (*out_labels)[i].provenance_orientation = -1;
+        (*out_labels)[i].provenance_group = -1;
     }
     double du = (x_max - x_min) / width, dv = (y_max - y_min) / height;
     surface_label_provenance_cache_t* provenance_cache =
@@ -4840,7 +4850,8 @@ int alea_find_surface_label_positions_with_provenance(
                         int edge_x = (int)floor(pixel_u);
                         surface_label_candidate_t point = {
                             .surf_id = curve->surface_id, .px = px, .py = iy,
-                            .u = u, .v = v, .edge_x = -1, .edge_y = -1};
+                            .u = u, .v = v, .edge_x = -1, .edge_y = -1,
+                            .provenance_group = -1};
                         if (edge_x >= 0 && edge_x + 1 < width &&
                             boundary_ids[iy * width + edge_x] !=
                                 boundary_ids[iy * width + edge_x + 1]) {
@@ -4897,7 +4908,8 @@ int alea_find_surface_label_positions_with_provenance(
                     continue;
                 surface_label_candidate_t point = {
                     .surf_id = curve->surface_id, .px = px, .py = py,
-                    .u = u, .v = v, .edge_x = -1, .edge_y = -1
+                    .u = u, .v = v, .edge_x = -1, .edge_y = -1,
+                    .provenance_group = -1
                 };
                 double edge_score = parametric_candidate_find_right_edge(
                     curve, lo, hi, t, boundary_ids, width, height,
@@ -4932,7 +4944,17 @@ int alea_find_surface_label_positions_with_provenance(
                 }
             }
         }
-        if (verified) (*out_labels)[write++] = (*out_labels)[i];
+        if (verified) {
+            if (candidates[i].provenance_group >= 0) {
+                (*out_labels)[i].provenance_edge_x = candidates[i].edge_x;
+                (*out_labels)[i].provenance_edge_y = candidates[i].edge_y;
+                (*out_labels)[i].provenance_orientation =
+                    candidates[i].edge_orientation;
+                (*out_labels)[i].provenance_group =
+                    candidates[i].provenance_group;
+            }
+            (*out_labels)[write++] = (*out_labels)[i];
+        }
     }
     free(candidates);
     surface_label_provenance_cache_destroy(provenance_cache);
@@ -6367,7 +6389,7 @@ static int boundary_trace_same_ids(const boundary_trace_t* a,
 static int label_edge_has_surface_canonical(
     alea_system_t* sys, const double start[3], const double end[3],
     double fraction, double fraction_tolerance, int surface_id,
-    int material_boundary, const surface_label_candidate_t* candidate,
+    int material_boundary, surface_label_candidate_t* candidate,
     surface_label_provenance_cache_t* cache) {
     surface_label_provenance_cache_entry_t* cached =
         surface_label_provenance_cache_find(cache, candidate, material_boundary);
@@ -6400,7 +6422,10 @@ static int label_edge_has_surface_canonical(
         if (fabs(trace->groups[g].fraction - fraction) > fraction_tolerance)
             continue;
         for (size_t i = 0; i < trace->groups[g].count; i++)
-            if (trace->groups[g].ids[i] == surface_id) return 1;
+            if (trace->groups[g].ids[i] == surface_id) {
+                if (candidate) candidate->provenance_group = (int)g;
+                return 1;
+            }
     }
     return 0;
 }

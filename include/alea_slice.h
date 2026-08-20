@@ -202,6 +202,11 @@ typedef struct {
     int id;             /**< Cell/material/surface ID */
     int px, py;         /**< Pixel coordinates for label placement */
     int pixel_count;    /**< Region size (for cells/materials) or 0 (for surfaces) */
+    /* Exact causal crossing that certified a sparse surface label, or -1
+     * when the label has no provenance edge (ordinary region labels). */
+    int provenance_edge_x, provenance_edge_y;
+    int provenance_orientation;
+    int provenance_group;
 } alea_label_position_t;
 
 /* ==========================================================================
