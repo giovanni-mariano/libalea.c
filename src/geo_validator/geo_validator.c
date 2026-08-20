@@ -115,6 +115,7 @@ void alea_geom_validator_options_init(alea_geom_validator_options_t* options) {
                      ALEA_GEOM_VALIDATE_STRICT_ADJACENCY;
     options->universe_depth = -1;
     options->max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
+    options->max_samples_per_signature = 4;
     options->max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
     options->sample_offset = SURFACE_SAMPLE_OFFSET;
     options->t_max = 0.0;
@@ -165,9 +166,30 @@ int alea_geom_validator_error_get(const alea_geom_validator_result_t* result,
     return 0;
 }
 
+static int same_error_signature(const alea_geom_error_t* a,
+                                const alea_geom_error_t* b) {
+    return a->type == b->type && a->source == b->source &&
+        a->primitive_id == b->primitive_id &&
+        a->previous_cell_id == b->previous_cell_id &&
+        a->found_cell_id == b->found_cell_id &&
+        a->secondary_cell_id == b->secondary_cell_id &&
+        a->expected_neighbor_cell_id == b->expected_neighbor_cell_id &&
+        a->universe_depth == b->universe_depth;
+}
+
 static int append_error(alea_geom_validator_result_t* result,
                         const alea_geom_validator_options_t* options,
                         const alea_geom_error_t* error) {
+    if (options->max_samples_per_signature > 0) {
+        size_t matches = 0;
+        for (size_t i = 0; i < result->error_count; i++) {
+            if (same_error_signature(&result->errors[i], error) &&
+                ++matches >= options->max_samples_per_signature) {
+                result->suppressed_samples++;
+                return 0;
+            }
+        }
+    }
     size_t max_errors = options->max_errors;
     if (max_errors == 0) max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
     if (result->error_count >= max_errors) {

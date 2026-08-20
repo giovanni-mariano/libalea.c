@@ -1210,6 +1210,13 @@ TEST(geo_validator_slice_detects_nested_overlap) {
     ASSERT(saw_slice_location);
 
     alea_geom_validator_result_free(&result);
+    opts.max_samples_per_signature = 1;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING), 1);
+    ASSERT(result.suppressed_samples > 0);
+    ASSERT_EQ(result.truncated, 0);
+    alea_geom_validator_result_free(&result);
     alea_slice_curves_free(curves);
     alea_destroy(sys);
 }

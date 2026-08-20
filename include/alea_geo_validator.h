@@ -62,6 +62,9 @@ typedef struct {
     unsigned flags;
     int universe_depth;
     size_t max_errors;
+    /* Retain at most this many raw samples with the same causal signature.
+     * Zero disables this local cap. */
+    size_t max_samples_per_signature;
     size_t max_crossings;
     double sample_offset;
     double t_max;
@@ -103,6 +106,7 @@ typedef struct {
     size_t adjacency_hits;
     size_t exact_queries;
     size_t ambiguous_crossings;
+    size_t suppressed_samples;
     int truncated;
 } alea_geom_validator_result_t;
 

@@ -70,6 +70,11 @@ static void parse_validator_options(lua_State* L,
         options->max_errors = (size_t)luaL_checkinteger(L, -1);
     lua_pop(L, 1);
 
+    lua_getfield(L, idx, "max_samples_per_signature");
+    if (!lua_isnil(L, -1))
+        options->max_samples_per_signature = (size_t)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+
     lua_getfield(L, idx, "max_crossings");
     if (!lua_isnil(L, -1))
         options->max_crossings = (size_t)luaL_checkinteger(L, -1);
