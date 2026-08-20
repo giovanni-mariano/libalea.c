@@ -251,11 +251,22 @@ typedef int (*alea_slice_classify_point_fn)(
     alea_slice_classification_t* out);
 
 /** Built-in full-coverage classifiers for cell and material contour grids.
- * They ignore userdata and may be passed directly to the map builder. */
+ * They select innermost ownership and ignore userdata. */
 int alea_slice_classify_cell(alea_system_t* sys, double x, double y, double z,
                              void* userdata, alea_slice_classification_t* out);
 int alea_slice_classify_material(alea_system_t* sys, double x, double y, double z,
                                  void* userdata, alea_slice_classification_t* out);
+
+/** Depth-aware variants of the built-in classifiers. `userdata` may point to
+ * an int universe depth using the same convention as alea_find_cells_grid:
+ * -1 selects innermost ownership; non-negative values select that depth with
+ * the renderer's deepest-not-deeper fallback. A NULL userdata uses -1. */
+int alea_slice_classify_cell_at_depth(
+    alea_system_t* sys, double x, double y, double z, void* userdata,
+    alea_slice_classification_t* out);
+int alea_slice_classify_material_at_depth(
+    alea_system_t* sys, double x, double y, double z, void* userdata,
+    alea_slice_classification_t* out);
 
 /** Build physical-surface provenance for transitions in a caller-owned grid.
  * `classify` must apply the same displayed-identity semantics used to create
@@ -290,9 +301,26 @@ int alea_slice_surface_boundary_surface_id(
     const alea_slice_surface_boundary_map_t* map, int x, int y,
     alea_slice_edge_orientation_t orientation, size_t index);
 
+/** Ordered causal crossing groups on one rendered grid edge. Fractions are
+ * measured from the edge's documented right/down start pixel centre. */
+size_t alea_slice_surface_boundary_group_count(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation);
+double alea_slice_surface_boundary_group_fraction(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t group_index);
+size_t alea_slice_surface_boundary_group_surface_count(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t group_index);
+int alea_slice_surface_boundary_group_surface_id(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t group_index,
+    size_t surface_index);
+
 /** Find one visible label position for each sufficiently long attributed
- * physical surface.  Valid and diagnostic (overlap/ambiguous/multi-hit)
- * edges participate; synthetic, gap, and unresolved edges do not. */
+ * physical surface. Only directionally agreed valid crossings (including
+ * agreed multi-hit edges) participate; diagnostic, synthetic, gap, and
+ * unresolved edges do not certify a normal surface label. */
 int alea_find_surface_labels_on_boundary_map(
     const alea_slice_surface_boundary_map_t* map, int margin,
     alea_label_position_t** out_labels, int* out_count);
@@ -767,7 +795,7 @@ int alea_find_surface_label_positions_with_provenance(
     alea_system_t* sys, const alea_slice_view_t* view,
     const alea_slice_curves_t* curves, const int* boundary_ids,
     double x_min, double x_max, double y_min, double y_max,
-    int width, int height, int margin,
+    int width, int height, int margin, int material_boundary,
     alea_label_position_t** out_labels, int* out_count
 );
 

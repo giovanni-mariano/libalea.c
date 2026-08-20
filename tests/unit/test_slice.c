@@ -687,7 +687,7 @@ static void test_surface_labels_filter_hidden_csg_boundary(void) {
     int count = 0;
     assert(alea_find_surface_label_positions_with_provenance(
         sys, &view, curves, cell_ids, -10, 10, -10, 10, width, height, 2,
-        &labels, &count) == 0);
+        0, &labels, &count) == 0);
     assert(labels_have_surface(labels, count, 32));
     assert(!labels_have_surface(labels, count, 31));
 
@@ -760,9 +760,9 @@ static void assert_surface_labelled_on_grid(alea_system_t* sys,
     assert(curves != NULL);
     alea_label_position_t* labels = NULL;
     int count = 0;
-    assert(alea_find_surface_label_positions_on_boundaries(
-        curves, cell_ids, -10, 10, -10, 10, width, height, 2,
-        &labels, &count) == 0);
+    assert(alea_find_surface_label_positions_with_provenance(
+        sys, view, curves, cell_ids, -10, 10, -10, 10, width, height, 2,
+        0, &labels, &count) == 0);
     assert(labels_have_surface(labels, count, surface_id));
     free(labels);
     alea_slice_curves_free(curves);
