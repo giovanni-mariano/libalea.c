@@ -65,6 +65,9 @@ typedef struct {
     /* Retain at most this many raw samples with the same causal signature.
      * Zero disables this local cap. */
     size_t max_samples_per_signature;
+    /* Bound analytical sampling work per curve. Zero uses the hard safety
+     * ceiling (2000); interactive callers use the default 512. */
+    size_t max_samples_per_curve;
     size_t max_crossings;
     double sample_offset;
     double t_max;

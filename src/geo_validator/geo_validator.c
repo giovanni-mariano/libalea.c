@@ -214,6 +214,7 @@ void alea_geom_validator_options_init(alea_geom_validator_options_t* options) {
     options->universe_depth = -1;
     options->max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
     options->max_samples_per_signature = 4;
+    options->max_samples_per_curve = 512;
     options->max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
     options->sample_offset = SURFACE_SAMPLE_OFFSET;
     options->t_max = 0.0;
@@ -1722,7 +1723,10 @@ int alea_validate_geometry_slice(alea_system_t* sys,
         }
         int n_samples = (int)(arc / sample_spacing);
         if (n_samples < 2) n_samples = 2;
-        if (n_samples > 2000) n_samples = 2000;
+        size_t sample_cap = local.max_samples_per_curve;
+        if (sample_cap == 0) sample_cap = 2000;
+        if (sample_cap < 2) sample_cap = 2;
+        if ((size_t)n_samples > sample_cap) n_samples = (int)sample_cap;
 
         double dt_finite = (t_hi - t_lo) * 1e-6;
         if (dt_finite < 1e-15) dt_finite = 1e-15;
