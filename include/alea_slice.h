@@ -330,6 +330,19 @@ int alea_find_surface_labels_on_boundary_map(
     const alea_slice_surface_boundary_map_t* map, int margin,
     alea_label_position_t** out_labels, int* out_count);
 
+/** Find surface labels from a bounded sample of transitions in a rendered
+ * identity grid.  At most `max_queries` changed pixel edges are attributed
+ * with canonical bidirectional short-edge traces; no analytical curve list or
+ * viewport-wide directional event cache is built.  This is the interactive
+ * large-model path.  `max_labels` bounds the returned ranked surface labels.
+ * Both limits must be positive. */
+int alea_find_surface_labels_sparse_on_grid(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    int margin, size_t max_queries, size_t max_labels,
+    alea_label_position_t** out_labels, int* out_count);
+
 /* ============================================================================
  * SLICE VIEW SETUP
  * ============================================================================ */

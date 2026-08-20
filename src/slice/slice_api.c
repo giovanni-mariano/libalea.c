@@ -6124,9 +6124,11 @@ typedef struct {
 typedef struct {
     int edge_x, edge_y;
     alea_slice_edge_orientation_t orientation;
+    double fraction;
+    int surface_id;
     int material_boundary;
-    int resolved;
-    boundary_trace_t trace;
+    int verified;
+    int group;
 } surface_label_provenance_cache_entry_t;
 
 struct surface_label_provenance_cache {
@@ -6149,13 +6151,16 @@ static void surface_label_provenance_cache_destroy(
 static surface_label_provenance_cache_entry_t*
 surface_label_provenance_cache_find(
     surface_label_provenance_cache_t* cache,
-    const surface_label_candidate_t* candidate, int material_boundary) {
+    const surface_label_candidate_t* candidate, int surface_id,
+    int material_boundary) {
     if (!cache || !candidate || candidate->edge_x < 0) return NULL;
     for (size_t i = 0; i < cache->count; i++) {
         surface_label_provenance_cache_entry_t* entry = &cache->entries[i];
         if (entry->edge_x == candidate->edge_x &&
             entry->edge_y == candidate->edge_y &&
             entry->orientation == candidate->edge_orientation &&
+            fabs(entry->fraction - candidate->edge_fraction) <= 1e-4 &&
+            entry->surface_id == surface_id &&
             entry->material_boundary == material_boundary)
             return entry;
     }
@@ -6171,6 +6176,8 @@ surface_label_provenance_cache_find(
     *entry = (surface_label_provenance_cache_entry_t){
         .edge_x = candidate->edge_x, .edge_y = candidate->edge_y,
         .orientation = candidate->edge_orientation,
+        .fraction = candidate->edge_fraction, .surface_id = surface_id,
+        .group = -1,
         .material_boundary = material_boundary
     };
     return entry;
@@ -6392,41 +6399,42 @@ static int label_edge_has_surface_canonical(
     int material_boundary, surface_label_candidate_t* candidate,
     surface_label_provenance_cache_t* cache) {
     surface_label_provenance_cache_entry_t* cached =
-        surface_label_provenance_cache_find(cache, candidate, material_boundary);
-    boundary_trace_t forward = {0}, reverse = {0};
-    boundary_trace_t* trace = &forward;
-    int resolved = 0;
-    if (cached && cached->resolved) {
-        if (cached->resolved < 0) return 0;
-        trace = &cached->trace;
-        resolved = 1;
+        surface_label_provenance_cache_find(cache, candidate, surface_id,
+                                            material_boundary);
+    if (cached && cached->verified) {
+        if (cached->verified > 0 && candidate)
+            candidate->provenance_group = cached->group;
+        return cached->verified > 0;
     }
+    boundary_trace_t forward = {0}, reverse = {0};
     alea_slice_classify_point_fn classify = material_boundary
         ? alea_slice_classify_material : alea_slice_classify_cell;
-    if (!resolved) {
-        int valid = trace_boundary_short_canonical(sys, start, end, classify,
+    int valid = trace_boundary_short_canonical(sys, start, end, classify,
                                                    NULL, &forward) == 0 &&
-            trace_boundary_short_canonical(sys, end, start, classify, NULL,
+        trace_boundary_short_canonical(sys, end, start, classify, NULL,
                                            &reverse) == 0 &&
-            !forward.saw_synthetic && !reverse.saw_synthetic &&
-            !forward.saw_gap && !reverse.saw_gap &&
-            !forward.saw_unresolved && !reverse.saw_unresolved &&
-            boundary_trace_same_ids(&forward, &reverse);
-        if (cached) {
-            cached->resolved = valid ? 1 : -1;
-            if (valid) cached->trace = forward;
-        }
-        if (!valid) return 0;
+        !forward.saw_synthetic && !reverse.saw_synthetic &&
+        !forward.saw_gap && !reverse.saw_gap &&
+        !forward.saw_unresolved && !reverse.saw_unresolved &&
+        boundary_trace_same_ids(&forward, &reverse);
+    if (!valid) {
+        if (cached) cached->verified = -1;
+        return 0;
     }
-    for (size_t g = 0; g < trace->group_count; g++) {
-        if (fabs(trace->groups[g].fraction - fraction) > fraction_tolerance)
+    for (size_t g = 0; g < forward.group_count; g++) {
+        if (fabs(forward.groups[g].fraction - fraction) > fraction_tolerance)
             continue;
-        for (size_t i = 0; i < trace->groups[g].count; i++)
-            if (trace->groups[g].ids[i] == surface_id) {
+        for (size_t i = 0; i < forward.groups[g].count; i++)
+            if (forward.groups[g].ids[i] == surface_id) {
                 if (candidate) candidate->provenance_group = (int)g;
+                if (cached) {
+                    cached->verified = 1;
+                    cached->group = (int)g;
+                }
                 return 1;
             }
     }
+    if (cached) cached->verified = -1;
     return 0;
 }
 
@@ -6460,6 +6468,346 @@ static int boundary_trace_same_ids(const boundary_trace_t* a,
         }
     }
     return 1;
+}
+
+/* One changed rendered edge selected by the bounded sparse-grid sampler. */
+typedef struct {
+    int x, y;
+    int orientation;
+    int identity_lo, identity_hi;
+    size_t support;
+    double centre_distance;
+} sparse_grid_edge_t;
+
+typedef struct {
+    alea_label_position_t label;
+    size_t support;
+} sparse_grid_observation_t;
+
+typedef struct {
+    alea_label_position_t label;
+    size_t observations;
+    size_t support;
+    double centre_distance;
+} sparse_grid_ranked_label_t;
+
+static int compare_sparse_grid_edge_pair(const void* lhs, const void* rhs) {
+    const sparse_grid_edge_t* a = lhs;
+    const sparse_grid_edge_t* b = rhs;
+    if (a->identity_lo != b->identity_lo)
+        return a->identity_lo < b->identity_lo ? -1 : 1;
+    if (a->identity_hi != b->identity_hi)
+        return a->identity_hi < b->identity_hi ? -1 : 1;
+    if (a->centre_distance != b->centre_distance)
+        return a->centre_distance < b->centre_distance ? -1 : 1;
+    if (a->y != b->y) return a->y < b->y ? -1 : 1;
+    if (a->x != b->x) return a->x < b->x ? -1 : 1;
+    return a->orientation - b->orientation;
+}
+
+static int sparse_grid_edge_better(const sparse_grid_edge_t* a,
+                                   const sparse_grid_edge_t* b) {
+    if (a->support != b->support) return a->support > b->support;
+    if (a->centre_distance != b->centre_distance)
+        return a->centre_distance < b->centre_distance;
+    if (a->identity_lo != b->identity_lo)
+        return a->identity_lo < b->identity_lo;
+    return a->identity_hi < b->identity_hi;
+}
+
+static int compare_sparse_grid_observation(const void* lhs, const void* rhs) {
+    const sparse_grid_observation_t* a = lhs;
+    const sparse_grid_observation_t* b = rhs;
+    if (a->label.id != b->label.id)
+        return a->label.id < b->label.id ? -1 : 1;
+    if (a->label.py != b->label.py)
+        return a->label.py < b->label.py ? -1 : 1;
+    if (a->label.px != b->label.px)
+        return a->label.px < b->label.px ? -1 : 1;
+    if (a->label.provenance_orientation != b->label.provenance_orientation)
+        return a->label.provenance_orientation - b->label.provenance_orientation;
+    return a->label.provenance_group - b->label.provenance_group;
+}
+
+static int compare_sparse_grid_ranked_label(const void* lhs, const void* rhs) {
+    const sparse_grid_ranked_label_t* a = lhs;
+    const sparse_grid_ranked_label_t* b = rhs;
+    if (a->observations != b->observations)
+        return a->observations > b->observations ? -1 : 1;
+    if (a->support != b->support)
+        return a->support > b->support ? -1 : 1;
+    if (a->centre_distance != b->centre_distance)
+        return a->centre_distance < b->centre_distance ? -1 : 1;
+    if (a->label.id == b->label.id) return 0;
+    return a->label.id < b->label.id ? -1 : 1;
+}
+
+static int sparse_grid_append_observation(
+    sparse_grid_observation_t** observations, size_t* count, size_t* capacity,
+    int surface_id, const sparse_grid_edge_t* edge, int group) {
+    if (*count == *capacity) {
+        size_t next = *capacity ? *capacity * 2 : 256;
+        sparse_grid_observation_t* grown = realloc(
+            *observations, next * sizeof(**observations));
+        if (!grown) return -1;
+        *observations = grown;
+        *capacity = next;
+    }
+    (*observations)[(*count)++] = (sparse_grid_observation_t){
+        .label = {
+            .id = surface_id,
+            .px = edge->x,
+            .py = edge->y,
+            .pixel_count = edge->support > INT_MAX ? INT_MAX : (int)edge->support,
+            .provenance_edge_x = edge->x,
+            .provenance_edge_y = edge->y,
+            .provenance_orientation = edge->orientation,
+            .provenance_group = group
+        },
+        .support = edge->support
+    };
+    return 0;
+}
+
+int alea_find_surface_labels_sparse_on_grid(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    int margin, size_t max_queries, size_t max_labels,
+    alea_label_position_t** out_labels, int* out_count) {
+    if (!sys || !view || !grid_ids || !classify || !out_labels || !out_count ||
+        width <= 0 || height <= 0 || margin < 0 ||
+        max_queries == 0 || max_labels == 0)
+        return -1;
+    *out_labels = NULL;
+    *out_count = 0;
+    /* Build mutable query caches before independent edge traces enter the
+     * parallel region; lazy first-use preparation from several workers would
+     * violate the public query-cache lifecycle. */
+    if (alea_prepare_query_acceleration(sys) != 0) return -1;
+
+    /* Use up to two dominant displayed-identity pairs per tile.  The tile size
+     * is increased until the number of canonical edge queries is bounded by
+     * max_queries, independent of grid resolution and model surface count. */
+    const size_t slots_per_tile = max_queries >= 2 ? 2 : 1;
+    const size_t target_tiles = max_queries / slots_per_tile;
+    int tile_size = 1;
+    for (;;) {
+        size_t tile_cols = ((size_t)width + tile_size - 1) / tile_size;
+        size_t tile_rows = ((size_t)height + tile_size - 1) / tile_size;
+        if (tile_cols <= target_tiles / tile_rows) break;
+        tile_size++;
+    }
+    size_t tile_cols = ((size_t)width + tile_size - 1) / tile_size;
+    size_t tile_rows = ((size_t)height + tile_size - 1) / tile_size;
+    size_t candidate_capacity = tile_cols * tile_rows * slots_per_tile;
+    if (candidate_capacity > max_queries) candidate_capacity = max_queries;
+    sparse_grid_edge_t* candidates = malloc(
+        candidate_capacity * sizeof(*candidates));
+    size_t local_capacity = (size_t)tile_size * tile_size * 2;
+    sparse_grid_edge_t* local = malloc(local_capacity * sizeof(*local));
+    if (!candidates || !local) {
+        free(candidates); free(local);
+        return -1;
+    }
+
+    size_t candidate_count = 0;
+    for (size_t tile_y = 0; tile_y < tile_rows; tile_y++) {
+        int y0 = (int)(tile_y * tile_size);
+        int y1 = y0 + tile_size;
+        if (y1 > height) y1 = height;
+        for (size_t tile_x = 0; tile_x < tile_cols; tile_x++) {
+            int x0 = (int)(tile_x * tile_size);
+            int x1 = x0 + tile_size;
+            if (x1 > width) x1 = width;
+            double centre_x = 0.5 * (x0 + x1 - 1);
+            double centre_y = 0.5 * (y0 + y1 - 1);
+            size_t local_count = 0;
+            for (int y = y0; y < y1; y++) {
+                for (int x = x0; x < x1; x++) {
+                    if (x < margin || x >= width - margin ||
+                        y < margin || y >= height - margin)
+                        continue;
+                    for (int orient = ALEA_SLICE_EDGE_RIGHT;
+                         orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
+                        int nx = x + (orient == ALEA_SLICE_EDGE_RIGHT);
+                        int ny = y - (orient == ALEA_SLICE_EDGE_DOWN);
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height)
+                            continue;
+                        int a = grid_ids[(size_t)y * width + x];
+                        int b = grid_ids[(size_t)ny * width + nx];
+                        if (a == b) continue;
+                        if (local_count == local_capacity) {
+                            free(local); free(candidates);
+                            return -1;
+                        }
+                        double dx = x - centre_x, dy = y - centre_y;
+                        local[local_count++] = (sparse_grid_edge_t){
+                            .x = x, .y = y, .orientation = orient,
+                            .identity_lo = a < b ? a : b,
+                            .identity_hi = a < b ? b : a,
+                            .centre_distance = dx * dx + dy * dy
+                        };
+                    }
+                }
+            }
+            if (local_count == 0) continue;
+            qsort(local, local_count, sizeof(*local),
+                  compare_sparse_grid_edge_pair);
+
+            sparse_grid_edge_t best[2];
+            size_t best_count = 0;
+            for (size_t first = 0; first < local_count;) {
+                size_t last = first + 1;
+                while (last < local_count &&
+                       local[last].identity_lo == local[first].identity_lo &&
+                       local[last].identity_hi == local[first].identity_hi)
+                    last++;
+                sparse_grid_edge_t group = local[first];
+                group.support = last - first;
+                size_t pos = best_count;
+                if (pos < slots_per_tile) {
+                    best[best_count++] = group;
+                } else {
+                    pos = slots_per_tile - 1;
+                    if (sparse_grid_edge_better(&group, &best[pos]))
+                        best[pos] = group;
+                    else {
+                        first = last;
+                        continue;
+                    }
+                }
+                while (pos > 0 && sparse_grid_edge_better(&best[pos], &best[pos - 1])) {
+                    sparse_grid_edge_t swap = best[pos - 1];
+                    best[pos - 1] = best[pos];
+                    best[pos] = swap;
+                    pos--;
+                }
+                first = last;
+            }
+            for (size_t i = 0;
+                 i < best_count && candidate_count < candidate_capacity; i++)
+                candidates[candidate_count++] = best[i];
+        }
+    }
+    free(local);
+
+    sparse_grid_observation_t* observations = NULL;
+    size_t observation_count = 0, observation_capacity = 0;
+    int observation_failed = 0;
+    double du = (view->u_max - view->u_min) / width;
+    double dv = (view->v_max - view->v_min) / height;
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (long long candidate_index = 0;
+         candidate_index < (long long)candidate_count; candidate_index++) {
+        size_t i = (size_t)candidate_index;
+        const sparse_grid_edge_t* edge = &candidates[i];
+        int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
+        int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
+        double u0 = view->u_min + (edge->x + 0.5) * du;
+        double v0 = view->v_min + (edge->y + 0.5) * dv;
+        double u1 = view->u_min + (nx + 0.5) * du;
+        double v1 = view->v_min + (ny + 0.5) * dv;
+        double start[3], end[3];
+        slice_world_point(view, u0, v0, start);
+        slice_world_point(view, u1, v1, end);
+        boundary_trace_t forward = {0}, reverse = {0};
+        int valid = trace_boundary_short_canonical(
+                sys, start, end, classify, classify_userdata, &forward) == 0 &&
+            trace_boundary_short_canonical(
+                sys, end, start, classify, classify_userdata, &reverse) == 0 &&
+            !forward.saw_synthetic && !reverse.saw_synthetic &&
+            !forward.saw_gap && !reverse.saw_gap &&
+            !forward.saw_overlap && !reverse.saw_overlap &&
+            !forward.saw_unresolved && !reverse.saw_unresolved &&
+            forward.group_count != 0 &&
+            boundary_trace_same_ids(&forward, &reverse);
+        if (!valid) continue;
+        /* Ray attribution is independent per edge.  Only the compact accepted
+         * observations share storage, so keep that append in a short critical
+         * section while the expensive canonical traces run in parallel. */
+        #pragma omp critical(sparse_surface_label_observations)
+        {
+            if (!observation_failed) {
+                for (size_t group = 0; group < forward.group_count; group++) {
+                    for (size_t participant = 0;
+                         participant < forward.groups[group].count; participant++) {
+                        if (sparse_grid_append_observation(
+                                &observations, &observation_count,
+                                &observation_capacity,
+                                forward.groups[group].ids[participant], edge,
+                                (int)group) != 0) {
+                            observation_failed = 1;
+                            break;
+                        }
+                    }
+                    if (observation_failed) break;
+                }
+            }
+        }
+    }
+    free(candidates);
+    if (observation_failed) {
+        free(observations);
+        return -1;
+    }
+    if (observation_count == 0) {
+        free(observations);
+        return 0;
+    }
+
+    qsort(observations, observation_count, sizeof(*observations),
+          compare_sparse_grid_observation);
+    sparse_grid_ranked_label_t* ranked = malloc(
+        observation_count * sizeof(*ranked));
+    if (!ranked) { free(observations); return -1; }
+    size_t ranked_count = 0;
+    double grid_cx = 0.5 * (width - 1), grid_cy = 0.5 * (height - 1);
+    for (size_t first = 0; first < observation_count;) {
+        size_t last = first + 1;
+        while (last < observation_count &&
+               observations[last].label.id == observations[first].label.id)
+            last++;
+        size_t best = first, total_support = 0;
+        double best_distance = DBL_MAX;
+        for (size_t i = first; i < last; i++) {
+            double dx = observations[i].label.px - grid_cx;
+            double dy = observations[i].label.py - grid_cy;
+            double distance = dx * dx + dy * dy;
+            if (observations[i].support > observations[best].support ||
+                (observations[i].support == observations[best].support &&
+                 distance < best_distance)) {
+                best = i;
+                best_distance = distance;
+            }
+            if (SIZE_MAX - total_support < observations[i].support)
+                total_support = SIZE_MAX;
+            else
+                total_support += observations[i].support;
+        }
+        ranked[ranked_count++] = (sparse_grid_ranked_label_t){
+            .label = observations[best].label,
+            .observations = last - first,
+            .support = total_support,
+            .centre_distance = best_distance
+        };
+        first = last;
+    }
+    free(observations);
+    qsort(ranked, ranked_count, sizeof(*ranked),
+          compare_sparse_grid_ranked_label);
+    if (ranked_count > max_labels) ranked_count = max_labels;
+    alea_label_position_t* labels = malloc(ranked_count * sizeof(*labels));
+    if (!labels) { free(ranked); return -1; }
+    for (size_t i = 0; i < ranked_count; i++) {
+        labels[i] = ranked[i].label;
+        labels[i].pixel_count = ranked[i].support > INT_MAX
+            ? INT_MAX : (int)ranked[i].support;
+    }
+    free(ranked);
+    *out_labels = labels;
+    *out_count = (int)ranked_count;
+    return 0;
 }
 
 static int boundary_map_append_ids(alea_slice_surface_boundary_map_t* map,

@@ -84,6 +84,38 @@ TEST(surface_boundary_map_attributes_sphere_graveyard_edge) {
     alea_destroy(sys);
 }
 
+TEST(sparse_surface_labels_attribute_bounded_changed_edges) {
+    alea_system_t* sys = build_sphere_graveyard();
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int width = 96, height = 96;
+    int ids[width * height];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -2.0, 2.0, -2.0, 2.0);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, width, height, -1,
+                                   ids, NULL, NULL), 0);
+
+    alea_label_position_t* labels = NULL;
+    int label_count = 0;
+    ASSERT_EQ(alea_find_surface_labels_sparse_on_grid(
+                  sys, &view, width, height, ids,
+                  alea_slice_classify_cell, NULL, 2, 16, 8,
+                  &labels, &label_count), 0);
+    ASSERT_EQ(label_count, 1);
+    ASSERT_EQ(labels[0].id, 1);
+    ASSERT(labels[0].px >= 2 && labels[0].px < width - 2);
+    ASSERT(labels[0].py >= 2 && labels[0].py < height - 2);
+    ASSERT(labels[0].pixel_count > 0);
+    ASSERT(labels[0].provenance_edge_x >= 0);
+    ASSERT(labels[0].provenance_edge_y >= 0);
+    ASSERT(labels[0].provenance_orientation == ALEA_SLICE_EDGE_RIGHT ||
+           labels[0].provenance_orientation == ALEA_SLICE_EDGE_DOWN);
+    ASSERT(labels[0].provenance_group >= 0);
+    free(labels);
+    alea_destroy(sys);
+}
+
 TEST(surface_boundary_map_ignores_cell_only_event_for_material_grid) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -303,6 +335,22 @@ TEST(surface_boundary_map_keeps_coincident_ids_in_one_crossing_group) {
     ASSERT_EQ(labels[0].py, labels[1].py);
     free(labels);
     alea_slice_surface_boundary_map_free(map);
+
+    /* The bounded interactive path must retain the same coincident physical
+     * participant group without constructing the exhaustive map. */
+    labels = NULL;
+    label_count = 0;
+    ASSERT_EQ(alea_find_surface_labels_sparse_on_grid(
+                  sys, &view, label_width, label_height, label_ids,
+                  alea_slice_classify_cell, NULL, 2, 16, 8,
+                  &labels, &label_count), 0);
+    ASSERT_EQ(label_count, 2);
+    ASSERT_EQ(labels[0].px, labels[1].px);
+    ASSERT_EQ(labels[0].py, labels[1].py);
+    ASSERT_EQ(labels[0].provenance_orientation,
+              labels[1].provenance_orientation);
+    ASSERT_EQ(labels[0].provenance_group, labels[1].provenance_group);
+    free(labels);
     alea_destroy(sys);
 }
 

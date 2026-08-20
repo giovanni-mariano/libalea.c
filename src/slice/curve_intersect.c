@@ -2254,20 +2254,44 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
         query_bbox.max_z += SLICE_SPATIAL_TOL;
     }
 
-    /* Query instances that intersect the slice */
-    size_t max_hits = MAX_SPATIAL_HITS;
+    /* Query instances that intersect the slice.  A spatial hit contains a
+     * full transform matrix, so reserving MAX_SPATIAL_HITS up front creates a
+     * roughly 40 MiB transient allocation even for an empty viewport.  Start
+     * small and retry only when the query actually fills the buffer. */
+    size_t hit_capacity = 1024;
+    if (hit_capacity > MAX_SPATIAL_HITS) hit_capacity = MAX_SPATIAL_HITS;
 
-    alea_spatial_hit_t* hits = malloc(max_hits * sizeof(alea_spatial_hit_t));
+    alea_spatial_hit_t* hits = malloc(hit_capacity * sizeof(*hits));
     if (!hits) {
         alea_vec_free(&result->curves);
         return -1;
     }
 
-    int hit_count = alea_hier_spatial_query_region(sys, &query_bbox, hits, max_hits);
-    if (hit_count < 0) {
-        free(hits);
-        alea_vec_free(&result->curves);
-        return -1;
+    int hit_count;
+    for (;;) {
+        hit_count = alea_hier_spatial_query_region(
+            sys, &query_bbox, hits, hit_capacity);
+        if (hit_count < 0) {
+            free(hits);
+            alea_vec_free(&result->curves);
+            return -1;
+        }
+        if ((size_t)hit_count < hit_capacity ||
+            hit_capacity == MAX_SPATIAL_HITS)
+            break;
+
+        size_t next_capacity = hit_capacity * 2;
+        if (next_capacity > MAX_SPATIAL_HITS)
+            next_capacity = MAX_SPATIAL_HITS;
+        alea_spatial_hit_t* grown = realloc(
+            hits, next_capacity * sizeof(*hits));
+        if (!grown) {
+            free(hits);
+            alea_vec_free(&result->curves);
+            return -1;
+        }
+        hits = grown;
+        hit_capacity = next_capacity;
     }
 
     /* Deduplicate hits - remove duplicate (cell_index, transform) pairs */
