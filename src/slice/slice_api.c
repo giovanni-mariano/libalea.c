@@ -4451,21 +4451,21 @@ static int scanline_surface_label_candidate(const alea_curve_2d_t* curve,
                                             int existing_count,
                                             double min_label_spacing,
                                             double* out_length,
-                                            surface_label_candidate_t* out_candidate) {
-    double best_score = DBL_MAX;
-    int found = 0;
+    surface_label_candidate_t* out_candidate) {
     int visible_samples = 0;
-    double bbox_u_min, bbox_u_max, bbox_v_min, bbox_v_max;
-    alea_curve_bbox(curve, &bbox_u_min, &bbox_u_max, &bbox_v_min, &bbox_v_max);
-    (void)bbox_u_min;
-    (void)bbox_u_max;
-    double preferred_v = 0.5 * (fmax(y_min, bbox_v_min) +
-                                fmin(y_max, bbox_v_max));
-    if (!isfinite(preferred_v) || preferred_v < y_min || preferred_v > y_max)
-        preferred_v = 0.5 * (y_min + y_max);
-    const double preferred_y = (preferred_v - y_min) / dy - 0.5;
+    (void)y_max;
+    int run_start[8], run_length[8], last_row[8];
+    for (int r = 0; r < 8; r++) {
+        run_start[r] = -1;
+        run_length[r] = 0;
+        last_row[r] = -2;
+    }
+    int best_branch = -1, best_start = -1, best_length = 0;
 
-    (void)x_max;
+    /* First pass identifies visible connected runs. Root ordinal is stable
+     * between adjacent scanlines except at a genuine branch merge/split,
+     * which intentionally terminates a run rather than joining unrelated
+     * pieces of a quartic or hyperbola. */
     for (int iy = margin; iy < height - margin; iy++) {
         double v = y_min + (iy + 0.5) * dy;
         double roots[8];
@@ -4482,60 +4482,77 @@ static int scanline_surface_label_candidate(const alea_curve_2d_t* curve,
                                                 ix, iy)) {
                 continue;
             }
-
             visible_samples++;
-            /* Use the clipped curve's own vertical midpoint, not the
-             * viewport midpoint. Translated conics with the same quadratic
-             * coefficients therefore prefer their own visible geometry rather
-             * than collapsing onto one centre-seeking scanline. */
-            double score = fabs(iy - preferred_y);
-
-            /* Unlike the historical scanline path, different surfaces do
-             * participate in anchor clearance. This is still native-anchor
-             * spacing (not text-box layout), but it gives a colliding conic a
-             * deterministic alternative root/row before presentation-level
-             * decluttering takes over. */
-            for (int i = 0; i < existing_count; i++) {
-                double ddx = ix - existing_labels[i].px;
-                double ddy = iy - existing_labels[i].py;
-                double distance_sq = ddx * ddx + ddy * ddy;
-                double spacing_sq = min_label_spacing * min_label_spacing;
-                if (distance_sq < spacing_sq)
-                    score += 10000.0 + spacing_sq - distance_sq;
+            if (last_row[r] == iy - 1) {
+                run_length[r]++;
+            } else {
+                run_start[r] = iy;
+                run_length[r] = 1;
             }
+            last_row[r] = iy;
+            if (run_length[r] > best_length) {
+                best_branch = r;
+                best_start = run_start[r];
+                best_length = run_length[r];
+            }
+        }
+    }
 
-            /* Coincident roots indicate a tangent/branch tip. Prefer a stable
-             * interior portion when another candidate exists. */
-            double nearest = DBL_MAX;
-            if (r > 0) nearest = fmin(nearest, fabs(roots[r] - roots[r - 1]) / dx);
-            if (r + 1 < count)
-                nearest = fmin(nearest, fabs(roots[r + 1] - roots[r]) / dx);
-            if (nearest < 2.0) score += (double)width * height * 4.0;
-
-            if (!found || score < best_score) {
-                found = 1;
-                best_score = score;
-                out_candidate->px = ix;
-                out_candidate->py = iy;
-                out_candidate->u = u;
-                out_candidate->v = v;
-                /* A scanline root lies exactly on this finite horizontal
-                 * pixel-centre edge when the visible grid transition is the
-                 * right edge below. Retain it for the exact-edge verifier. */
-                double pixel_u = (u - x_min) / dx - 0.5;
-                int edge_x = (int)floor(pixel_u);
-                if (boundary_ids && edge_x >= 0 && edge_x + 1 < width &&
-                    boundary_ids[iy * width + edge_x] !=
-                        boundary_ids[iy * width + edge_x + 1]) {
-                    out_candidate->edge_x = edge_x;
-                    out_candidate->edge_y = iy;
-                    out_candidate->edge_orientation = ALEA_SLICE_EDGE_RIGHT;
-                    out_candidate->edge_fraction =
-                        pixel_u - edge_x;
-                } else {
-                    out_candidate->edge_x = -1;
-                    out_candidate->edge_y = -1;
-                }
+    double best_score = DBL_MAX;
+    int found = 0;
+    double preferred_y = best_start + 0.5 * (best_length - 1);
+    for (int iy = best_start; best_branch >= 0 && iy < best_start + best_length;
+         iy++) {
+        double v = y_min + (iy + 0.5) * dy;
+        double roots[8];
+        int count = alea_curve_scanline_intersect(curve, v, roots, 8);
+        if (count <= best_branch) continue;
+        sort_surface_label_roots(roots, count);
+        double u = roots[best_branch];
+        if (!isfinite(u) || u < x_min || u >= x_max) continue;
+        int ix = (int)((u - x_min) / dx);
+        if (ix < margin || ix >= width - margin ||
+            !point_has_drawn_contour_nearby(boundary_ids, width, height, ix, iy))
+            continue;
+        double score = fabs(iy - preferred_y);
+        for (int i = 0; i < existing_count; i++) {
+            double ddx = ix - existing_labels[i].px;
+            double ddy = iy - existing_labels[i].py;
+            double distance_sq = ddx * ddx + ddy * ddy;
+            double spacing_sq = min_label_spacing * min_label_spacing;
+            if (distance_sq < spacing_sq)
+                score += 10000.0 + spacing_sq - distance_sq;
+        }
+        double nearest = DBL_MAX;
+        if (best_branch > 0)
+            nearest = fmin(nearest,
+                           fabs(roots[best_branch] - roots[best_branch - 1]) / dx);
+        if (best_branch + 1 < count)
+            nearest = fmin(nearest,
+                           fabs(roots[best_branch + 1] - roots[best_branch]) / dx);
+        if (nearest < 2.0) score += (double)width * height * 4.0;
+        if (!found || score < best_score) {
+            found = 1;
+            best_score = score;
+            out_candidate->px = ix;
+            out_candidate->py = iy;
+            out_candidate->u = u;
+            out_candidate->v = v;
+            /* A scanline root lies exactly on this finite horizontal
+             * pixel-centre edge when the visible grid transition is the
+             * right edge below. Retain it for the exact-edge verifier. */
+            double pixel_u = (u - x_min) / dx - 0.5;
+            int edge_x = (int)floor(pixel_u);
+            if (boundary_ids && edge_x >= 0 && edge_x + 1 < width &&
+                boundary_ids[iy * width + edge_x] !=
+                    boundary_ids[iy * width + edge_x + 1]) {
+                out_candidate->edge_x = edge_x;
+                out_candidate->edge_y = iy;
+                out_candidate->edge_orientation = ALEA_SLICE_EDGE_RIGHT;
+                out_candidate->edge_fraction = pixel_u - edge_x;
+            } else {
+                out_candidate->edge_x = -1;
+                out_candidate->edge_y = -1;
             }
         }
     }
