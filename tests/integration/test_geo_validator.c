@@ -331,6 +331,37 @@ TEST(geo_validator_fill_selected_trace_matches_unique_coverage) {
     mcnp_model_destroy(model);
 }
 
+TEST(geo_validator_slice_fill_parent_neighbor_accepts_terminal_child) {
+    /* Crossing root cell 99's boundary enters root fill cell 1, whose
+     * terminal owner is universe-1 child 2 or 3. The validator must recognize
+     * that child as belonging to expected parent 1 rather than emitting one
+     * false non-adjacent transition per sampled curve point. */
+    mcnp_model_t* model = mcnp_load("tests/data/nested_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -110.0, 110.0, -110.0, 110.0);
+    alea_slice_curves_t* curves = alea_get_slice_curves(model->sys, &view);
+    ASSERT_NOT_NULL(curves);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.max_errors = 128;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(model->sys, &view, curves,
+                                           &opts, &result), 0);
+    ASSERT_EQ(count_error_type(&result,
+                               ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION), 0);
+    ASSERT_EQ(result.error_count, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_slice_curves_free(curves);
+    mcnp_model_destroy(model);
+}
+
 TEST(geo_validator_transformed_lattice_trace_matches_coverage) {
     mcnp_model_t* model =
         mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");

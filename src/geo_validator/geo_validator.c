@@ -35,6 +35,11 @@ typedef struct {
     int primary_cell_id;
     int primary_cell_idx;
     uint64_t primary_occurrence_key;
+    /* Root-to-primary chain for the selected concrete occurrence. Adjacency is
+     * defined on the crossed primitive's owning cell, which may be an
+     * enclosing fill container while point coverage projects to a child. */
+    int primary_ancestor_cell_indices[VALIDATOR_HIT_CAP];
+    size_t primary_ancestor_count;
     int secondary_cell_id;
     uint64_t secondary_occurrence_key;
     int universe_id;
@@ -43,6 +48,33 @@ typedef struct {
     int target_depth;
     int truncated;
 } point_coverage_t;
+
+static int point_coverage_primary_has_cell_index(const point_coverage_t* cov,
+                                                  int cell_index) {
+    if (!cov || cell_index < 0) return 0;
+    for (size_t index = 0; index < cov->primary_ancestor_count; index++)
+        if (cov->primary_ancestor_cell_indices[index] == cell_index)
+            return 1;
+    return 0;
+}
+
+static void point_coverage_set_primary_ancestors(
+    point_coverage_t* out, const alea_cell_hit_t* hits,
+    const uint64_t* occurrence_keys, const uint64_t* parent_occurrence_keys,
+    size_t hit_count) {
+    if (!out || !hits || !occurrence_keys || !parent_occurrence_keys) return;
+    out->primary_ancestor_count = 0;
+    uint64_t key = out->primary_occurrence_key;
+    while (key != 0 && out->primary_ancestor_count < VALIDATOR_HIT_CAP) {
+        size_t index = 0;
+        while (index < hit_count && occurrence_keys[index] != key)
+            index++;
+        if (index == hit_count) break;
+        out->primary_ancestor_cell_indices[out->primary_ancestor_count++] =
+            hits[index].cell_index;
+        key = parent_occurrence_keys[index];
+    }
+}
 
 static void copy3(double dst[3], const double src[3]) {
     dst[0] = src[0];
@@ -333,8 +365,10 @@ static int find_point_coverage(alea_system_t* sys,
 
     alea_cell_hit_t hits[VALIDATOR_HIT_CAP];
     uint64_t occurrence_keys[VALIDATOR_HIT_CAP];
-    int n = alea_find_all_cells_at_point_coverage_recursive(
-        sys, x, y, z, hits, occurrence_keys, VALIDATOR_HIT_CAP);
+    uint64_t parent_occurrence_keys[VALIDATOR_HIT_CAP];
+    int n = alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, x, y, z, hits, occurrence_keys, parent_occurrence_keys,
+        VALIDATOR_HIT_CAP);
     if (n < 0) return -1;
     if (n >= VALIDATOR_HIT_CAP) out->truncated = 1;
     if (n == 0) return 0;
@@ -367,6 +401,9 @@ static int find_point_coverage(alea_system_t* sys,
     out->count_at_depth = count;
     if (count == 1) out->klass = COVERAGE_ONE;
     else if (count > 1) out->klass = COVERAGE_MULTI;
+    if (out->primary_cell_idx >= 0)
+        point_coverage_set_primary_ancestors(
+            out, hits, occurrence_keys, parent_occurrence_keys, (size_t)n);
     return 0;
 }
 
@@ -422,6 +459,19 @@ static int coverage_interval_to_point(
     out->count_at_depth = count;
     if (count == 1) out->klass = COVERAGE_ONE;
     else if (count > 1) out->klass = COVERAGE_MULTI;
+    if (out->primary_cell_idx >= 0) {
+        uint64_t key = out->primary_occurrence_key;
+        while (key != 0 && out->primary_ancestor_count < interval->owner_count) {
+            size_t index = 0;
+            while (index < interval->owner_count &&
+                   interval->owners[index].occurrence_key != key)
+                index++;
+            if (index == interval->owner_count) break;
+            out->primary_ancestor_cell_indices[out->primary_ancestor_count++] =
+                interval->owners[index].cell_index;
+            key = interval->owners[index].parent_occurrence_key;
+        }
+    }
     return 1;
 }
 
@@ -601,6 +651,8 @@ static void coverage_from_cell(const alea_system_t* sys, int cell_idx,
     out->klass = COVERAGE_ONE;
     out->primary_cell_id = cell->mc_cell_id;
     out->primary_cell_idx = cell_idx;
+    out->primary_ancestor_cell_indices[0] = cell_idx;
+    out->primary_ancestor_count = 1;
     out->universe_id = cell->universe_id;
     out->count_at_depth = 1;
 }
@@ -709,6 +761,28 @@ static int classify_transition(alea_system_t* sys,
 
     if (expected_neighbor_idx >= 0) {
         if (cov->primary_cell_idx != expected_neighbor_idx) {
+            /* A boundary on a parent fill cell legitimately enters one of
+             * that fill's terminal descendants. ``primary_cell_idx`` is the
+             * projected/deepest owner, so compare its concrete ancestor chain
+             * before claiming a non-adjacent transition. */
+            if (cov->klass == COVERAGE_ONE &&
+                point_coverage_primary_has_cell_index(cov,
+                                                      expected_neighbor_idx)) {
+                return 0;
+            }
+            /* Some legacy recursive point paths publish only the terminal
+             * entry despite resolving through a root-level fill. Retain a
+             * conservative fallback for that representation: the expected
+             * neighbor must itself be a fill/lattice container and must
+             * contain the sampled point. Ordinary sibling cells still use the
+             * exact occurrence-chain comparison above. */
+            if (cov->klass == COVERAGE_ONE &&
+                (size_t)expected_neighbor_idx < alea_vec_count(&sys->cells) &&
+                alea_cell_entry_is_container(
+                    &sys->cells.data[expected_neighbor_idx]) &&
+                point_inside_cell(sys, expected_neighbor_idx, sample_point)) {
+                return 0;
+            }
             if (cov->klass == COVERAGE_ONE &&
                 cov->primary_cell_idx >= 0 &&
                 (size_t)cov->primary_cell_idx < alea_vec_count(&sys->cells) &&
