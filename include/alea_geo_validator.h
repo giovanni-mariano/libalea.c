@@ -46,7 +46,10 @@ typedef enum {
     ALEA_GEOM_EVENT_EXTERIOR_ALLOWED       = 1u << 3,
     ALEA_GEOM_EVENT_COINCIDENT_SURFACES    = 1u << 4,
     ALEA_GEOM_EVENT_TRUNCATED_COVERAGE     = 1u << 5,
-    ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY = 1u << 6
+    ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY = 1u << 6,
+    /* A slice sample lies on the observation-window boundary.  It has no
+     * inward/outward support, so transition evidence is inconclusive. */
+    ALEA_GEOM_EVENT_VIEWPORT_EDGE          = 1u << 7
 } alea_geom_event_flags_t;
 
 typedef enum {

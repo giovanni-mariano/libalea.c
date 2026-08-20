@@ -815,6 +815,10 @@ static int classify_transition(alea_system_t* sys,
             return 0;
         }
         err.type = ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
+        if (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE) {
+            err.type = ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY;
+            result->ambiguous_crossings++;
+        }
         return append_error(result, options, &err);
     }
 
@@ -825,7 +829,11 @@ static int classify_transition(alea_system_t* sys,
          * ray-wide coverage interval exists. */
         if (source == ALEA_GEOM_EVENT_SOURCE_RAY)
             return 0;
-        err.type = ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
+        err.type = (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE)
+            ? ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+            : ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
+        if (err.type == ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY)
+            result->ambiguous_crossings++;
         return append_error(result, options, &err);
     }
 
@@ -866,7 +874,11 @@ static int classify_transition(alea_system_t* sys,
                     primitive_id)) {
                 return 0;
             }
-            err.type = ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION;
+            err.type = (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE)
+                ? ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+                : ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION;
+            if (err.type == ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY)
+                result->ambiguous_crossings++;
             return append_error(result, options, &err);
         }
         return 0;
@@ -892,7 +904,11 @@ static int classify_transition(alea_system_t* sys,
         }
         if (cov->klass == COVERAGE_ONE)
             err.flags |= ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY;
-        err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
+        err.type = (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE)
+            ? ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+            : ALEA_GEOM_ERR_MISSING_NEIGHBOR;
+        if (err.type == ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY)
+            result->ambiguous_crossings++;
         return append_error(result, options, &err);
     }
 
@@ -1456,6 +1472,7 @@ static int validate_surface_sample(alea_system_t* sys,
                                    uint32_t component_index,
                                    double curve_t,
                                    const double uv[2],
+                                   uint32_t event_flags,
                                    const alea_geom_validator_options_t* options,
                                    alea_geom_validator_result_t* result) {
     double neg_dir[3] = { -dir[0], -dir[1], -dir[2] };
@@ -1474,7 +1491,7 @@ static int validate_surface_sample(alea_system_t* sys,
         return -1;
 
     int ambiguous = amb_plus || amb_minus;
-    uint32_t flags = flags_plus | flags_minus;
+    uint32_t flags = flags_plus | flags_minus | event_flags;
 
     if (!ambiguous &&
         cov_plus.klass == COVERAGE_ONE &&
@@ -1512,6 +1529,21 @@ static int validate_surface_sample(alea_system_t* sys,
                                ALEA_GEOM_EVENT_SOURCE_SLICE_CURVE,
                                curve_index, component_index, uv,
                                options, result);
+}
+
+static int slice_sample_is_on_viewport_edge(const alea_slice_view_t* view,
+                                            double u, double v) {
+    double u_span = fabs(view->u_max - view->u_min);
+    double v_span = fabs(view->v_max - view->v_min);
+    double scale = fmax(1.0, fmax(u_span, v_span));
+    /* Curve clipping and plane transforms accumulate more than a few ulps on
+     * kilometre-scale views. This remains a sub-pixel geometric tolerance,
+     * not a probe distance. */
+    double tolerance = fmax(64.0 * DBL_EPSILON * scale, 1.0e-9 * scale);
+    return fabs(u - view->u_min) <= tolerance ||
+           fabs(u - view->u_max) <= tolerance ||
+           fabs(v - view->v_min) <= tolerance ||
+           fabs(v - view->v_max) <= tolerance;
 }
 
 int alea_validate_geometry_slice(alea_system_t* sys,
@@ -1614,8 +1646,10 @@ int alea_validate_geometry_slice(alea_system_t* sys,
             };
 
             double uv[2] = { u, v };
+            uint32_t event_flags = slice_sample_is_on_viewport_edge(
+                view, u, v) ? ALEA_GEOM_EVENT_VIEWPORT_EDGE : 0;
             if (validate_surface_sample(sys, pw, dirw, c.surface_id,
-                                        c.primitive_id, ci, 0, t, uv,
+                                        c.primitive_id, ci, 0, t, uv, event_flags,
                                         &local, result) != 0) {
                 rc = -1;
                 break;
