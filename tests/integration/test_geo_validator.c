@@ -1217,6 +1217,12 @@ TEST(geo_validator_slice_detects_nested_overlap) {
     ASSERT(result.suppressed_samples > 0);
     ASSERT_EQ(result.truncated, 0);
     alea_geom_validator_result_free(&result);
+    opts.max_samples_per_signature = 0;
+    opts.max_samples_per_curve = 2;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
+    ASSERT(result.sample_limited_curves > 0);
+    alea_geom_validator_result_free(&result);
     alea_slice_curves_free(curves);
     alea_destroy(sys);
 }

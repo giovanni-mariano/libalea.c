@@ -110,6 +110,7 @@ typedef struct {
     size_t exact_queries;
     size_t ambiguous_crossings;
     size_t suppressed_samples;
+    size_t sample_limited_curves;
     /* Private validator bookkeeping for bounded signature sampling. */
     void* signature_table;
     int truncated;

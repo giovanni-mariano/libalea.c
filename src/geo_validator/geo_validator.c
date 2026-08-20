@@ -1726,7 +1726,10 @@ int alea_validate_geometry_slice(alea_system_t* sys,
         size_t sample_cap = local.max_samples_per_curve;
         if (sample_cap == 0) sample_cap = 2000;
         if (sample_cap < 2) sample_cap = 2;
-        if ((size_t)n_samples > sample_cap) n_samples = (int)sample_cap;
+        if ((size_t)n_samples > sample_cap) {
+            n_samples = (int)sample_cap;
+            result->sample_limited_curves++;
+        }
 
         double dt_finite = (t_hi - t_lo) * 1e-6;
         if (dt_finite < 1e-15) dt_finite = 1e-15;
