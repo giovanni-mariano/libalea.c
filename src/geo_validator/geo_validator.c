@@ -324,6 +324,9 @@ static int cell_can_be_implicit_neighbor_by_primitive(
     return cell_references_primitive(sys, cell, primitive_id);
 }
 
+static int point_inside_cell(const alea_system_t* sys, int cell_idx,
+                             const double p[3]);
+
 /* Neighbor lookup keyed on canonical primitive identity instead of
  * mc_surface_id.  alea_find_neighbor_cell() matches on mc_surface_id, which
  * would miss deduplicated equivalent surfaces. */
@@ -343,6 +346,54 @@ static int find_neighbor_by_primitive(const alea_system_t* sys,
             sys->surfaces.data[surf_idx].primitive_id == primitive_id) {
             return (int)cell->neighbors[i].neighbor_index;
         }
+    }
+    return -1;
+}
+
+/* A primitive can bound more than two cells: for example, a cylindrical
+ * boundary may be partitioned into angular sectors on its outside.  The
+ * adjacency table retains all candidates, so resolve the sampled side rather
+ * than treating insertion order as geometry. */
+static int find_neighbor_by_primitive_at_point(const alea_system_t* sys,
+                                               uint32_t cell_index,
+                                               uint32_t primitive_id,
+                                               const double point[3]) {
+    if (!sys || !point || primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
+        cell_index >= alea_vec_count(&sys->cells) ||
+        !sys->cell_adjacency_built) return -1;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    for (size_t i = 0; i < cell->neighbor_count; i++) {
+        uint32_t surf_idx = cell->neighbors[i].surface_index;
+        uint32_t neighbor_idx = cell->neighbors[i].neighbor_index;
+        if (surf_idx >= alea_vec_count(&sys->surfaces) ||
+            sys->surfaces.data[surf_idx].primitive_id != primitive_id ||
+            neighbor_idx >= alea_vec_count(&sys->cells)) continue;
+        if (point_inside_cell(sys, (int)neighbor_idx, point))
+            return (int)neighbor_idx;
+    }
+    return -1;
+}
+
+static int find_neighbor_by_primitive_in_coverage(
+    const alea_system_t* sys, uint32_t cell_index, uint32_t primitive_id,
+    const point_coverage_t* cov, const double point[3]) {
+    if (!sys || !cov || primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
+        cell_index >= alea_vec_count(&sys->cells) ||
+        !sys->cell_adjacency_built) return -1;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    for (size_t i = 0; i < cell->neighbor_count; i++) {
+        uint32_t surf_idx = cell->neighbors[i].surface_index;
+        uint32_t neighbor_idx = cell->neighbors[i].neighbor_index;
+        if (surf_idx >= alea_vec_count(&sys->surfaces) ||
+            sys->surfaces.data[surf_idx].primitive_id != primitive_id ||
+            neighbor_idx >= alea_vec_count(&sys->cells)) continue;
+        if (cov->primary_cell_idx == (int)neighbor_idx ||
+            point_coverage_primary_has_cell_index(cov, (int)neighbor_idx) ||
+            (alea_cell_entry_is_container(&sys->cells.data[neighbor_idx]) &&
+             point_inside_cell(sys, (int)neighbor_idx, point)))
+            return (int)neighbor_idx;
     }
     return -1;
 }
@@ -617,7 +668,7 @@ static int validate_initial_point(alea_system_t* sys,
     return append_error(result, options, &err);
 }
 
-static int point_inside_cell(alea_system_t* sys, int cell_idx,
+static int point_inside_cell(const alea_system_t* sys, int cell_idx,
                              const double p[3]) {
     if (!sys || cell_idx < 0 ||
         (size_t)cell_idx >= alea_vec_count(&sys->cells)) {
@@ -761,6 +812,11 @@ static int classify_transition(alea_system_t* sys,
 
     if (expected_neighbor_idx >= 0) {
         if (cov->primary_cell_idx != expected_neighbor_idx) {
+            if (find_neighbor_by_primitive_in_coverage(
+                    sys, (uint32_t)previous_cell_idx, primitive_id, cov,
+                    sample_point) >= 0) {
+                return 0;
+            }
             /* A boundary on a parent fill cell legitimately enters one of
              * that fill's terminal descendants. ``primary_cell_idx`` is the
              * projected/deepest owner, so compare its concrete ancestor chain
@@ -892,6 +948,12 @@ static int validate_crossing_fast(alea_system_t* sys,
             expected_neighbor_idx =
                 find_neighbor_by_primitive(sys, (uint32_t)previous_cell_idx,
                                            primitive_id);
+            int sampled_neighbor_idx =
+                find_neighbor_by_primitive_at_point(
+                    sys, (uint32_t)previous_cell_idx, primitive_id,
+                    sample_point);
+            if (sampled_neighbor_idx >= 0)
+                expected_neighbor_idx = sampled_neighbor_idx;
             if (expected_neighbor_idx >= 0 &&
                 (size_t)expected_neighbor_idx < alea_vec_count(&sys->cells)) {
                 expected_neighbor_id =

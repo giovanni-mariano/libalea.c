@@ -127,6 +127,43 @@ fail:
     return NULL;
 }
 
+static alea_system_t* build_sectorized_neighbor_box_system(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    int x_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int y_si = alea_plane_surface(sys, 11, 0, 1, 0, 0);
+    int box_si = alea_box_surface(sys, 20, -3, 3, -3, 3, -3, 3);
+    if (x_si < 0 || y_si < 0 || box_si < 0) goto fail;
+
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t x_negative = alea_halfspace(sys, x_si, -1);
+    alea_node_id_t x_positive = alea_halfspace(sys, x_si, 1);
+    alea_node_id_t y_negative = alea_halfspace(sys, y_si, -1);
+    alea_node_id_t y_positive = alea_halfspace(sys, y_si, 1);
+    alea_node_id_t left = alea_intersection(sys, box, x_negative);
+    alea_node_id_t right_lower = alea_intersection(
+        sys, alea_intersection(sys, box, x_positive), y_negative);
+    alea_node_id_t right_upper = alea_intersection(
+        sys, alea_intersection(sys, box, x_positive), y_positive);
+    if (box == ALEA_NODE_ID_INVALID || x_negative == ALEA_NODE_ID_INVALID ||
+        x_positive == ALEA_NODE_ID_INVALID || y_negative == ALEA_NODE_ID_INVALID ||
+        y_positive == ALEA_NODE_ID_INVALID || left == ALEA_NODE_ID_INVALID ||
+        right_lower == ALEA_NODE_ID_INVALID || right_upper == ALEA_NODE_ID_INVALID)
+        goto fail;
+
+    int material = alea_add_material(sys, 1);
+    if (alea_add_cell(sys, 1, left, material, 1.0, 0) < 0 ||
+        alea_add_cell(sys, 2, right_lower, material, 1.0, 0) < 0 ||
+        alea_add_cell(sys, 3, right_upper, material, 1.0, 0) < 0)
+        goto fail;
+    return sys;
+
+fail:
+    alea_destroy(sys);
+    return NULL;
+}
+
 static alea_system_t* build_finite_cylinder_complement_system(void) {
     alea_system_t* sys = alea_create();
     if (!sys) return NULL;
@@ -210,6 +247,49 @@ TEST(geo_validator_clean_adjacent_flat) {
     ASSERT(result.crossings_checked > 0);
 
     alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_resolves_sectorized_shared_surface_neighbor) {
+    alea_system_t* sys = build_sectorized_neighbor_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t strict_opts;
+    alea_geom_validator_options_init(&strict_opts);
+    strict_opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    strict_opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t strict_result;
+    alea_geom_validator_result_init(&strict_result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &strict_opts,
+                                         -2, 1, 0, 1, 0, 0, 4,
+                                         &strict_result), 0);
+    ASSERT_EQ(strict_result.error_count, 0);
+
+    alea_geom_validator_options_t fast_opts = strict_opts;
+    fast_opts.flags &= ~ALEA_GEOM_VALIDATE_STRICT_ADJACENCY;
+    alea_geom_validator_result_t fast_result;
+    alea_geom_validator_result_init(&fast_result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &fast_opts,
+                                         -2, 1, 0, 1, 0, 0, 4,
+                                         &fast_result), 0);
+    ASSERT_EQ(fast_result.error_count, 0);
+    ASSERT(fast_result.adjacency_hits > 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -4, 4, -4, 4);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
+    alea_geom_validator_result_t slice_result;
+    alea_geom_validator_result_init(&slice_result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &strict_opts,
+                                           &slice_result), 0);
+    ASSERT_EQ(slice_result.error_count, 0);
+
+    alea_geom_validator_result_free(&strict_result);
+    alea_geom_validator_result_free(&fast_result);
+    alea_geom_validator_result_free(&slice_result);
+    alea_slice_curves_free(curves);
     alea_destroy(sys);
 }
 
