@@ -59,6 +59,7 @@ static void grid_query_stats_merge(grid_query_stats_t* dst,
 
 static alea_tile_coverage_stats_t g_tile_coverage_stats;
 static alea_point_coverage_stats_t g_point_coverage_stats;
+static alea_sparse_surface_label_stats_t g_sparse_surface_label_stats;
 
 void alea_tile_coverage_stats_reset(void) {
     memset(&g_tile_coverage_stats, 0, sizeof(g_tile_coverage_stats));
@@ -74,6 +75,10 @@ void alea_point_coverage_stats_reset(void) {
 
 alea_point_coverage_stats_t alea_point_coverage_stats_get(void) {
     return g_point_coverage_stats;
+}
+
+alea_sparse_surface_label_stats_t alea_sparse_surface_label_stats_get(void) {
+    return g_sparse_surface_label_stats;
 }
 
 /* ============================================================================
@@ -317,6 +322,11 @@ static int find_point_coverage_exact(alea_system_t* sys,
                                      double gx, double gy, double gz,
                                      int universe_depth,
                                      point_coverage_t* out);
+static int find_point_coverage_exact_uv(alea_system_t* sys,
+                                        const alea_slice_plane_t* plane,
+                                        double u, double v,
+                                        int universe_depth,
+                                        point_coverage_t* out);
 static bool point_coverage_matches_pair(const point_coverage_t* pc,
                                         int cell_a,
                                         int cell_b);
@@ -517,6 +527,7 @@ int alea_find_cells_grid(alea_system_t* sys,
     if (!sys || !view || !out_cell_ids || nu <= 0 || nv <= 0) {
         return -1;
     }
+    if (alea_interrupted()) return -1;
 
     const alea_slice_plane_t* plane = &view->plane;
     double u_min = view->u_min;
@@ -560,6 +571,7 @@ int alea_find_cells_grid(alea_system_t* sys,
         if (stats_en) alea_perf_reset();
         #pragma omp for schedule(dynamic, 4)
         for (int j = 0; j < nv; j++) {
+            if (alea_interrupted()) continue;
             double v = v_min + (j + 0.5) * dv;
             alea_hier_coherence_state_t state_a;
             alea_hier_coherence_state_t state_b;
@@ -569,6 +581,7 @@ int alea_find_cells_grid(alea_system_t* sys,
             alea_hier_coherence_state_clear(current_state);
 
             for (int i = 0; i < nu; i++) {
+                if (alea_interrupted()) break;
                 double u = u_min + (i + 0.5) * du;
                 int idx = j * nu + i;
 
@@ -627,6 +640,7 @@ int alea_find_cells_grid(alea_system_t* sys,
     if (stats_en) alea_perf_reset();
 
     for (int j = 0; j < nv; j++) {
+        if (alea_interrupted()) break;
         double v = v_min + (j + 0.5) * dv;
         alea_hier_coherence_state_t state_a;
         alea_hier_coherence_state_t state_b;
@@ -636,6 +650,7 @@ int alea_find_cells_grid(alea_system_t* sys,
         alea_hier_coherence_state_clear(current_state);
 
         for (int i = 0; i < nu; i++) {
+            if (alea_interrupted()) break;
             double u = u_min + (i + 0.5) * du;
             int idx = j * nu + i;
 
@@ -676,6 +691,8 @@ int alea_find_cells_grid(alea_system_t* sys,
 
 #endif
 
+    if (alea_interrupted()) return -1;
+
     /* Second pass: recheck boundary pixels for overlap detection.
      * The first-owner coherent resolver finds one cell per pixel without checking
      * for overlaps. Re-query boundary pixels (where a 4-connected neighbor
@@ -689,8 +706,10 @@ int alea_find_cells_grid(alea_system_t* sys,
         #pragma omp parallel for schedule(dynamic, 4)
 #endif
         for (int j = 0; j < nv; j++) {
+            if (alea_interrupted()) continue;
             double v = v_min + (j + 0.5) * dv;
             for (int i = 0; i < nu; i++) {
+                if (alea_interrupted()) break;
                 int idx = j * nu + i;
                 if (out_errors[idx] != GRID_ERR_NONE) continue;
 
@@ -719,6 +738,7 @@ int alea_find_cells_grid(alea_system_t* sys,
                 if (count > 1) out_errors[idx] = GRID_ERR_OVERLAP;
             }
         }
+        if (alea_interrupted()) return -1;
         filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
                                         out_cell_ids, NULL, NULL, out_errors,
                                         NULL);
@@ -990,8 +1010,10 @@ int alea_find_cells_grid_coverage(alea_system_t* sys,
         #pragma omp parallel for schedule(dynamic, 4)
 #endif
         for (int j = 0; j < nv; j++) {
+            if (alea_interrupted()) continue;
             double v = view->v_min + (j + 0.5) * dv;
             for (int i = 0; i < nu; i++) {
+                if (alea_interrupted()) break;
                 size_t idx = (size_t)j * (size_t)nu + (size_t)i;
                 double u = view->u_min + (i + 0.5) * du;
                 double gx = origin[0] + u * u_axis[0] + v * v_axis[0];
@@ -1024,6 +1046,7 @@ int alea_find_cells_grid_coverage(alea_system_t* sys,
                 }
             }
         }
+        if (alea_interrupted()) return -1;
     }
 
     return 0;
@@ -1089,8 +1112,10 @@ int alea_find_cells_grid_coverage_paths(alea_system_t* sys,
         #pragma omp parallel for schedule(dynamic, 4)
 #endif
         for (int j = 0; j < nv; j++) {
+            if (alea_interrupted()) continue;
             double v = view->v_min + (j + 0.5) * dv;
             for (int i = 0; i < nu; i++) {
+                if (alea_interrupted()) break;
                 size_t idx = (size_t)j * (size_t)nu + (size_t)i;
                 double u = view->u_min + (i + 0.5) * du;
                 double gx = origin[0] + u * u_axis[0] + v * v_axis[0];
@@ -1123,8 +1148,99 @@ int alea_find_cells_grid_coverage_paths(alea_system_t* sys,
                 }
             }
         }
+        if (alea_interrupted()) return -1;
     }
 
+    return 0;
+}
+
+int alea_find_cells_grid_paths_selected(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int nu, int nv, int universe_depth, int tile_w, int tile_h,
+    const uint8_t* tile_mask, size_t tile_mask_count,
+    int* inout_cell_ids, uint32_t* out_path_ids,
+    alea_slice_path_table_t* out_paths) {
+    if (!sys || !view || !inout_cell_ids || !out_path_ids || !out_paths ||
+        nu <= 0 || nv <= 0 || tile_w <= 0 || tile_h <= 0)
+        return -1;
+
+    const size_t tile_cols =
+        ((size_t)nu + (size_t)tile_w - 1) / (size_t)tile_w;
+    const size_t tile_rows =
+        ((size_t)nv + (size_t)tile_h - 1) / (size_t)tile_h;
+    if (tile_mask &&
+        (tile_cols > SIZE_MAX / tile_rows ||
+         tile_mask_count != tile_cols * tile_rows))
+        return -1;
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+        return -1;
+
+    const size_t pixel_count = (size_t)nu * (size_t)nv;
+    for (size_t i = 0; i < pixel_count; i++)
+        out_path_ids[i] = UINT32_MAX;
+    alea_slice_path_table_free(out_paths);
+
+    const alea_slice_plane_t* plane = &view->plane;
+    const double du = (view->u_max - view->u_min) / (double)nu;
+    const double dv = (view->v_max - view->v_min) / (double)nv;
+    for (int j = 0; j < nv; j++) {
+        alea_hier_coherence_state_t state_a;
+        alea_hier_coherence_state_t state_b;
+        alea_hier_coherence_state_t* previous = &state_a;
+        alea_hier_coherence_state_t* current = &state_b;
+        alea_hier_coherence_state_clear(previous);
+        alea_hier_coherence_state_clear(current);
+        bool have_previous = false;
+        const double v = view->v_min + (j + 0.5) * dv;
+
+        for (int i = 0; i < nu; i++) {
+            const size_t tile_index = (size_t)(j / tile_h) * tile_cols +
+                                      (size_t)(i / tile_w);
+            if (tile_mask && !tile_mask[tile_index]) {
+                have_previous = false;
+                continue;
+            }
+            if (!have_previous)
+                alea_hier_coherence_state_clear(previous);
+
+            const double u = view->u_min + (i + 0.5) * du;
+            const double x = plane->origin[0] + u * plane->u_axis[0] +
+                             v * plane->v_axis[0];
+            const double y = plane->origin[1] + u * plane->u_axis[1] +
+                             v * plane->v_axis[1];
+            const double z = plane->origin[2] + u * plane->u_axis[2] +
+                             v * plane->v_axis[2];
+            int cell_id = -1;
+            int material_id = 0;
+            uint8_t error = GRID_ERR_NONE;
+            int rc = slice_resolve_grid_rich(
+                sys, have_previous ? previous : NULL, x, y, z,
+                universe_depth, current, &cell_id, &material_id, &error, NULL);
+            if (rc < 0) {
+                alea_slice_path_table_free(out_paths);
+                return -1;
+            }
+            const size_t pixel_index = (size_t)j * (size_t)nu + (size_t)i;
+            inout_cell_ids[pixel_index] = cell_id;
+            if (rc > 0) {
+                const alea_hier_ray_path_entry_t* target = NULL;
+                uint32_t path_id = UINT32_MAX;
+                if (slice_project_hier_path(&current->path, universe_depth,
+                                            &target) != 0 ||
+                    slice_path_table_intern(out_paths, target->universe_id,
+                                            target->depth, &target->transform,
+                                            &path_id) != 0) {
+                    alea_slice_path_table_free(out_paths);
+                    return -1;
+                }
+                out_path_ids[pixel_index] = path_id;
+            }
+            alea_hier_coherence_state_t* tmp = previous;
+            previous = current;
+            current = tmp;
+            have_previous = true;
+        }
+    }
     return 0;
 }
 
@@ -1304,12 +1420,6 @@ static int find_point_coverage_spatial(alea_system_t* sys,
     /* Stats counters below are mutated from inside the omp parallel for in
      * alea_find_cells_grid_coverage. Every mutation must be guarded; plain
      * `++` and `+=` race and lose increments under threading. */
-    if (sys->has_lattice) {
-        #pragma omp atomic
-        g_point_coverage_stats.lattice_fallbacks++;
-        return -2;
-    }
-
     alea_cell_hit_t hits[32];
     int n = alea_hier_spatial_find_cells_at_point_uncached(sys, gx, gy, gz,
                                                            hits, 32);
@@ -1339,10 +1449,14 @@ static int find_point_coverage_exact(alea_system_t* sys,
     g_point_coverage_stats.queries++;
     int rc = find_point_coverage_spatial(sys, gx, gy, gz, universe_depth, out);
     if (rc == 0) return 0;
+    /* A hierarchy candidate query can be unavailable for a freshly-built
+     * programmatic model even though the recursive ownership query is valid.
+     * Exact local diagnostics must retain correctness in that case; record
+     * the spatial failure but use the same conservative fallback as a capped
+     * candidate list. */
     if (rc != -2) {
         #pragma omp atomic
         g_point_coverage_stats.query_errors++;
-        return rc;
     }
 
     #pragma omp atomic
@@ -1958,9 +2072,11 @@ static void tile_coverage_stats_add(alea_tile_coverage_stats_t* dst,
     if (!dst || !src) return;
     dst->tiles += src->tiles;
     dst->fallback_tiles += src->fallback_tiles;
+    dst->skipped_tiles += src->skipped_tiles;
     dst->query_errors += src->query_errors;
     dst->pixels += src->pixels;
     dst->exact_fallback_pixels += src->exact_fallback_pixels;
+    dst->skipped_pixels += src->skipped_pixels;
     dst->candidate_total += src->candidate_total;
     if (src->candidate_max > dst->candidate_max)
         dst->candidate_max = src->candidate_max;
@@ -1981,6 +2097,7 @@ static void tile_coverage_stats_add(alea_tile_coverage_stats_t* dst,
     dst->path_2d_verify_queries += src->path_2d_verify_queries;
     dst->path_2d_missing_candidates += src->path_2d_missing_candidates;
     dst->path_2d_missing_tiles += src->path_2d_missing_tiles;
+    dst->incomplete = dst->incomplete || src->incomplete;
 }
 #endif
 
@@ -2174,21 +2291,35 @@ static int refine_path_tile_3d_exact(
     if (j_end > nv) j_end = nv;
     double eps = 1e-9;
     int updated = 0;
+    bool tile_used_fallback = false;
     stats->tiles++;
+
+    size_t missing_path_pixels = 0;
+    for (int pj = tj; pj < j_end; pj++) {
+        for (int pi = ti; pi < i_end; pi++) {
+            size_t pidx = (size_t)pj * (size_t)nu + (size_t)pi;
+            if (path_ids[pidx] == UINT32_MAX)
+                group_indices[missing_path_pixels++] = pidx;
+        }
+    }
+    if (missing_path_pixels > 0) {
+        tile_used_fallback = true;
+        stats->exact_fallback_pixels += missing_path_pixels;
+        for (size_t p = 0; p < missing_path_pixels; p++) {
+            int pi = (int)(group_indices[p] % (size_t)nu);
+            int pj = (int)(group_indices[p] / (size_t)nu);
+            updated += update_pixel_coverage_exact(
+                sys, &view->plane, view->u_min, view->v_min,
+                du, dv, nu, nv, universe_depth,
+                out_secondary_cell_ids, coverage, errors, pi, pj);
+        }
+    }
 
     for (int sj = tj; sj < j_end; sj++) {
         for (int si = ti; si < i_end; si++) {
             size_t seed_idx = (size_t)sj * (size_t)nu + (size_t)si;
             uint32_t path_id = path_ids[seed_idx];
-            if (path_id == UINT32_MAX) {
-                stats->fallback_tiles++;
-                stats->exact_fallback_pixels++;
-                updated += update_pixel_coverage_exact(
-                    sys, &view->plane, view->u_min, view->v_min,
-                    du, dv, nu, nv, universe_depth,
-                    out_secondary_cell_ids, coverage, errors, si, sj);
-                continue;
-            }
+            if (path_id == UINT32_MAX) continue;
             if ((size_t)path_id >= paths->count)
                 return -1;
 
@@ -2206,14 +2337,6 @@ static int refine_path_tile_3d_exact(
             if (already_done) continue;
 
             const alea_slice_path_record_t* path = &paths->records[path_id];
-            if (universe_depth >= 0 && path->depth != universe_depth) {
-                stats->fallback_tiles++;
-                updated += update_pixel_coverage_exact(
-                    sys, &view->plane, view->u_min, view->v_min,
-                    du, dv, nu, nv, universe_depth,
-                    out_secondary_cell_ids, coverage, errors, si, sj);
-                continue;
-            }
 
             alea_bbox_t local_bbox = {
                 .min_x = DBL_MAX, .max_x = -DBL_MAX,
@@ -2248,6 +2371,19 @@ static int refine_path_tile_3d_exact(
                 }
             }
             if (group_pixels == 0) continue;
+            if (universe_depth >= 0 && path->depth != universe_depth) {
+                tile_used_fallback = true;
+                stats->exact_fallback_pixels += group_pixels;
+                for (size_t p = 0; p < group_pixels; p++) {
+                    int pi = (int)(group_indices[p] % (size_t)nu);
+                    int pj = (int)(group_indices[p] / (size_t)nu);
+                    updated += update_pixel_coverage_exact(
+                        sys, &view->plane, view->u_min, view->v_min,
+                        du, dv, nu, nv, universe_depth,
+                        out_secondary_cell_ids, coverage, errors, pi, pj);
+                }
+                continue;
+            }
             local_bbox.min_x -= eps; local_bbox.max_x += eps;
             local_bbox.min_y -= eps; local_bbox.max_y += eps;
             local_bbox.min_z -= eps; local_bbox.max_z += eps;
@@ -2264,7 +2400,7 @@ static int refine_path_tile_3d_exact(
                 stats->candidate_max = (size_t)hit_count;
 
             if ((size_t)hit_count >= max_hits) {
-                stats->fallback_tiles++;
+                tile_used_fallback = true;
                 stats->exact_fallback_pixels += group_pixels;
                 for (int pj = tj; pj < j_end; pj++) {
                     for (int pi = ti; pi < i_end; pi++) {
@@ -2315,6 +2451,9 @@ static int refine_path_tile_3d_exact(
         }
     }
 
+    if (tile_used_fallback)
+        stats->fallback_tiles++;
+
     return updated;
 }
 #endif
@@ -2331,6 +2470,22 @@ static int chain_hit_contains_point(alea_system_t* sys,
         double lx = gx, ly = gy, lz = gz;
         alea_matrix_transform_point_inverse(&hit->ancestor_transforms[a],
                                             &lx, &ly, &lz);
+        if (hit->ancestor_is_lattice[a]) {
+            alea_lattice_location_t location;
+            if (alea_lattice_locate_point(sys, cell, lx, ly, lz,
+                                          &location) != 1 ||
+                location.fill_universe !=
+                    hit->ancestor_lattice_fill_universes[a] ||
+                location.i != hit->ancestor_lattice_i[a] ||
+                location.j != hit->ancestor_lattice_j[a] ||
+                location.k != hit->ancestor_lattice_k[a] ||
+                location.ox != hit->ancestor_lattice_ox[a] ||
+                location.oy != hit->ancestor_lattice_oy[a] ||
+                location.oz != hit->ancestor_lattice_oz[a]) {
+                return 0;
+            }
+            continue;
+        }
         if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz))
             return 0;
     }
@@ -3006,12 +3161,103 @@ int alea_refine_grid_coverage_curves_exact(
     return updated;
 }
 
-int alea_refine_grid_coverage_tiles_exact(
+void alea_tile_refinement_options_init(
+    alea_tile_refinement_options_t* options) {
+    if (!options) return;
+    memset(options, 0, sizeof(*options));
+    options->max_candidates = 4096;
+    options->max_evaluated_candidates = 4096;
+    options->cap_storm_threshold = 16;
+    options->path_2d_verify_limit = 20;
+    options->path_2d_tile_pad = 1;
+    options->parallel = true;
+}
+
+/* Exact fallback is an oracle, not an entitlement to silently turn a bounded
+ * diagnostic pass into a full raster scan.  Leave over-budget tiles
+ * provisional and make that fact observable through tile coverage stats. */
+static int refine_tile_exact_with_budget(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int nu, int nv, int universe_depth,
+    double du, double dv, int ti, int tj, int i_end, int j_end,
+    size_t max_exact_fallback_pixels, int* out_secondary_cell_ids,
+    uint8_t* coverage, uint8_t* errors, uint8_t* provisional_mask) {
+    size_t tile_pixels = (size_t)(i_end - ti) * (size_t)(j_end - tj);
+    g_tile_coverage_stats.fallback_tiles++;
+    if (max_exact_fallback_pixels > 0 &&
+        (g_tile_coverage_stats.exact_fallback_pixels >
+             max_exact_fallback_pixels ||
+         tile_pixels > max_exact_fallback_pixels -
+             g_tile_coverage_stats.exact_fallback_pixels)) {
+        g_tile_coverage_stats.skipped_tiles++;
+        g_tile_coverage_stats.skipped_pixels += tile_pixels;
+        g_tile_coverage_stats.incomplete = true;
+        if (provisional_mask) {
+            for (int j = tj; j < j_end; j++)
+                for (int i = ti; i < i_end; i++)
+                    provisional_mask[(size_t)j * (size_t)nu + (size_t)i] = 1;
+        }
+        return 0;
+    }
+    g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
+    int updated = 0;
+    for (int j = tj; j < j_end; j++) {
+        for (int i = ti; i < i_end; i++) {
+            updated += update_pixel_coverage_exact(
+                sys, &view->plane, view->u_min, view->v_min, du, dv,
+                nu, nv, universe_depth, out_secondary_cell_ids, coverage,
+                errors, i, j);
+        }
+    }
+    return updated;
+}
+
+static int refine_grid_indices_exact_with_budget(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int nu, int nv, int universe_depth, double du, double dv,
+    const size_t* indices, size_t count, size_t max_exact_fallback_pixels,
+    int* out_secondary_cell_ids, uint8_t* coverage, uint8_t* errors,
+    uint8_t* provisional_mask, bool* out_skipped) {
+    if (out_skipped) *out_skipped = false;
+    size_t exact_count = count;
+    if (max_exact_fallback_pixels > 0) {
+        size_t available =
+            g_tile_coverage_stats.exact_fallback_pixels <
+                    max_exact_fallback_pixels
+                ? max_exact_fallback_pixels -
+                      g_tile_coverage_stats.exact_fallback_pixels
+                : 0;
+        if (exact_count > available)
+            exact_count = available;
+    }
+    if (exact_count < count) {
+        size_t skipped_count = count - exact_count;
+        g_tile_coverage_stats.skipped_pixels += skipped_count;
+        g_tile_coverage_stats.incomplete = true;
+        if (out_skipped) *out_skipped = true;
+        if (provisional_mask)
+            for (size_t i = exact_count; i < count; i++)
+                provisional_mask[indices[i]] = 1;
+    }
+    g_tile_coverage_stats.exact_fallback_pixels += exact_count;
+    int updated = 0;
+    for (size_t i = 0; i < exact_count; i++) {
+        int px = (int)(indices[i] % (size_t)nu);
+        int py = (int)(indices[i] / (size_t)nu);
+        updated += update_pixel_coverage_exact(
+            sys, &view->plane, view->u_min, view->v_min, du, dv, nu, nv,
+            universe_depth, out_secondary_cell_ids, coverage, errors, px, py);
+    }
+    return updated;
+}
+
+int alea_refine_grid_coverage_tiles_exact_ex(
     alea_system_t* sys,
     const alea_slice_view_t* view,
     int nu, int nv,
     int universe_depth,
     int tile_w, int tile_h,
+    const alea_tile_refinement_options_t* options,
     int* out_secondary_cell_ids,
     uint8_t* coverage,
     uint8_t* errors) {
@@ -3025,12 +3271,12 @@ int alea_refine_grid_coverage_tiles_exact(
     if (alea_prepare_query_acceleration(sys) != 0)
         return -1;
 
-    size_t max_hits = 4096;
-    const char* max_hits_env = getenv("ALEA_TILE_MAX_CANDIDATES");
-    if (max_hits_env && max_hits_env[0]) {
-        unsigned long value = strtoul(max_hits_env, NULL, 10);
-        if (value > 0) max_hits = (size_t)value;
+    alea_tile_refinement_options_t default_options;
+    if (!options) {
+        alea_tile_refinement_options_init(&default_options);
+        options = &default_options;
     }
+    size_t max_hits = options->max_candidates ? options->max_candidates : 4096;
     if (max_hits < 4096) max_hits = 4096;
     alea_spatial_hit_t* hits = malloc(max_hits * sizeof(*hits));
     if (!hits) return -1;
@@ -3041,12 +3287,9 @@ int alea_refine_grid_coverage_tiles_exact(
     double du = u_range / nu;
     double dv = v_range / nv;
     double eps = fmax(fabs(du), fabs(dv)) * 2.0 + 1e-10;
-    bool use_hier_direct_region =
-        getenv("ALEA_TILE_DIRECT_REGION") != NULL;
-    bool use_hier_chain_candidates =
-        getenv("ALEA_TILE_CHAIN_CANDIDATES") != NULL;
-    bool use_chain_bitset =
-        use_hier_chain_candidates && getenv("ALEA_TILE_CHAIN_BITSET") != NULL;
+    bool use_hier_direct_region = options->use_hier_direct_region;
+    bool use_hier_chain_candidates = options->use_hier_chain_candidates;
+    bool use_chain_bitset = use_hier_chain_candidates && options->use_chain_bitset;
     if (use_hier_chain_candidates) {
         chain_hits = malloc(max_hits * sizeof(*chain_hits));
         if (!chain_hits) {
@@ -3054,29 +3297,44 @@ int alea_refine_grid_coverage_tiles_exact(
             return -1;
         }
     }
-    size_t cap_storm_threshold = 16;
-    const char* cap_storm_env = getenv("ALEA_TILE_CAP_STORM_THRESHOLD");
-    if (cap_storm_env && cap_storm_env[0]) {
-        cap_storm_threshold = (size_t)strtoul(cap_storm_env, NULL, 10);
-    }
-    size_t eval_candidate_limit = 4096;
-    const char* eval_limit_env = getenv("ALEA_TILE_EVAL_MAX_CANDIDATES");
-    if (eval_limit_env && eval_limit_env[0]) {
-        unsigned long value = strtoul(eval_limit_env, NULL, 10);
-        if (value > 0) eval_candidate_limit = (size_t)value;
-    }
+    size_t cap_storm_threshold = options->cap_storm_threshold;
+    size_t eval_candidate_limit = options->max_evaluated_candidates;
+    size_t max_exact_fallback_pixels = options->max_exact_fallback_pixels;
     size_t capped_tile_queries = 0;
     size_t evaluable_tile_queries = 0;
     bool exact_remaining_tiles = false;
+    size_t tile_cols = ((size_t)nu + (size_t)tile_w - 1) / (size_t)tile_w;
+    size_t tile_rows = ((size_t)nv + (size_t)tile_h - 1) / (size_t)tile_h;
+    if (options->tile_mask &&
+        (tile_cols > SIZE_MAX / tile_rows ||
+         options->tile_mask_count != tile_cols * tile_rows)) {
+        free(chain_hits);
+        free(hits);
+        return -1;
+    }
+    size_t pixel_count = (size_t)nu * (size_t)nv;
+    if (options->provisional_mask &&
+        options->provisional_mask_count != pixel_count) {
+        free(chain_hits);
+        free(hits);
+        return -1;
+    }
+    if (options->provisional_mask)
+        memset(options->provisional_mask, 0, pixel_count);
+    uint8_t* provisional_mask = options->provisional_mask;
     int updated = 0;
 
-    for (int tj = 0; tj < nv; tj += tile_h) {
+    for (int tj = 0; tj < nv && !alea_interrupted(); tj += tile_h) {
         int j_end = tj + tile_h;
         if (j_end > nv) j_end = nv;
         double v0 = view->v_min + tj * dv;
         double v1 = view->v_min + j_end * dv;
 
-        for (int ti = 0; ti < nu; ti += tile_w) {
+        for (int ti = 0; ti < nu && !alea_interrupted(); ti += tile_w) {
+            size_t tile_index = (size_t)(tj / tile_h) * tile_cols +
+                                (size_t)(ti / tile_w);
+            if (options->tile_mask && !options->tile_mask[tile_index])
+                continue;
             int i_end = ti + tile_w;
             if (i_end > nu) i_end = nu;
             double u0 = view->u_min + ti * du;
@@ -3085,16 +3343,10 @@ int alea_refine_grid_coverage_tiles_exact(
             g_tile_coverage_stats.tiles++;
 
             if (exact_remaining_tiles) {
-                g_tile_coverage_stats.fallback_tiles++;
-                g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
-                for (int j = tj; j < j_end; j++) {
-                    for (int i = ti; i < i_end; i++) {
-                        updated += update_pixel_coverage_exact(
-                            sys, &view->plane, view->u_min, view->v_min,
-                            du, dv, nu, nv, universe_depth,
-                            out_secondary_cell_ids, coverage, errors, i, j);
-                    }
-                }
+                updated += refine_tile_exact_with_budget(
+                    sys, view, nu, nv, universe_depth, du, dv, ti, tj,
+                    i_end, j_end, max_exact_fallback_pixels,
+                    out_secondary_cell_ids, coverage, errors, provisional_mask);
                 continue;
             }
 
@@ -3123,16 +3375,10 @@ int alea_refine_grid_coverage_tiles_exact(
 
             if ((size_t)hit_count >= max_hits) {
                 capped_tile_queries++;
-                g_tile_coverage_stats.fallback_tiles++;
-                g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
-                for (int j = tj; j < j_end; j++) {
-                    for (int i = ti; i < i_end; i++) {
-                        updated += update_pixel_coverage_exact(
-                            sys, &view->plane, view->u_min, view->v_min,
-                            du, dv, nu, nv, universe_depth,
-                            out_secondary_cell_ids, coverage, errors, i, j);
-                    }
-                }
+                updated += refine_tile_exact_with_budget(
+                    sys, view, nu, nv, universe_depth, du, dv, ti, tj,
+                    i_end, j_end, max_exact_fallback_pixels,
+                    out_secondary_cell_ids, coverage, errors, provisional_mask);
                 if (cap_storm_threshold > 0 &&
                     evaluable_tile_queries == 0 &&
                     capped_tile_queries >= cap_storm_threshold) {
@@ -3144,16 +3390,10 @@ int alea_refine_grid_coverage_tiles_exact(
             if (use_hier_chain_candidates &&
                 eval_candidate_limit > 0 &&
                 (size_t)hit_count > eval_candidate_limit) {
-                g_tile_coverage_stats.fallback_tiles++;
-                g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
-                for (int j = tj; j < j_end; j++) {
-                    for (int i = ti; i < i_end; i++) {
-                        updated += update_pixel_coverage_exact(
-                            sys, &view->plane, view->u_min, view->v_min,
-                            du, dv, nu, nv, universe_depth,
-                            out_secondary_cell_ids, coverage, errors, i, j);
-                    }
-                }
+                updated += refine_tile_exact_with_budget(
+                    sys, view, nu, nv, universe_depth, du, dv, ti, tj,
+                    i_end, j_end, max_exact_fallback_pixels,
+                    out_secondary_cell_ids, coverage, errors, provisional_mask);
                 continue;
             }
 
@@ -3177,21 +3417,15 @@ int alea_refine_grid_coverage_tiles_exact(
                     updated += rc;
                     continue;
                 }
-                g_tile_coverage_stats.fallback_tiles++;
-                g_tile_coverage_stats.exact_fallback_pixels += tile_pixels;
-                for (int j = tj; j < j_end; j++) {
-                    for (int i = ti; i < i_end; i++) {
-                        updated += update_pixel_coverage_exact(
-                            sys, &view->plane, view->u_min, view->v_min,
-                            du, dv, nu, nv, universe_depth,
-                            out_secondary_cell_ids, coverage, errors, i, j);
-                    }
-                }
+                updated += refine_tile_exact_with_budget(
+                    sys, view, nu, nv, universe_depth, du, dv, ti, tj,
+                    i_end, j_end, max_exact_fallback_pixels,
+                    out_secondary_cell_ids, coverage, errors, provisional_mask);
                 continue;
             }
 
-            for (int j = tj; j < j_end; j++) {
-                for (int i = ti; i < i_end; i++) {
+            for (int j = tj; j < j_end && !alea_interrupted(); j++) {
+                for (int i = ti; i < i_end && !alea_interrupted(); i++) {
                     if (use_hier_chain_candidates) {
                         int rc = update_pixel_coverage_from_chain_candidates(
                             sys, &view->plane, chain_hits, hit_count,
@@ -3200,11 +3434,23 @@ int alea_refine_grid_coverage_tiles_exact(
                             coverage, errors, i, j);
                         if (rc < 0) {
                             g_tile_coverage_stats.fallback_tiles++;
-                            g_tile_coverage_stats.exact_fallback_pixels++;
-                            rc = update_pixel_coverage_exact(
-                                sys, &view->plane, view->u_min, view->v_min,
-                                du, dv, nu, nv, universe_depth,
-                                out_secondary_cell_ids, coverage, errors, i, j);
+                            if (max_exact_fallback_pixels > 0 &&
+                                g_tile_coverage_stats.exact_fallback_pixels >=
+                                    max_exact_fallback_pixels) {
+                                g_tile_coverage_stats.skipped_pixels++;
+                                g_tile_coverage_stats.incomplete = true;
+                                if (provisional_mask)
+                                    provisional_mask[(size_t)j * (size_t)nu +
+                                                     (size_t)i] = 1;
+                                rc = 0;
+                            } else {
+                                g_tile_coverage_stats.exact_fallback_pixels++;
+                                rc = update_pixel_coverage_exact(
+                                    sys, &view->plane, view->u_min,
+                                    view->v_min, du, dv, nu, nv,
+                                    universe_depth, out_secondary_cell_ids,
+                                    coverage, errors, i, j);
+                            }
                         }
                         updated += rc;
                     } else {
@@ -3221,11 +3467,29 @@ int alea_refine_grid_coverage_tiles_exact(
 
     free(chain_hits);
     free(hits);
+    if (alea_interrupted())
+        return -1;
     g_tile_coverage_stats.refined_pixels = (size_t)updated;
     return updated;
 }
 
-int alea_refine_grid_coverage_paths_exact(
+int alea_refine_grid_coverage_tiles_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors) {
+    alea_tile_refinement_options_t options;
+    alea_tile_refinement_options_init(&options);
+    return alea_refine_grid_coverage_tiles_exact_ex(
+        sys, view, nu, nv, universe_depth, tile_w, tile_h, &options,
+        out_secondary_cell_ids, coverage, errors);
+}
+
+int alea_refine_grid_coverage_paths_exact_ex(
     alea_system_t* sys,
     const alea_slice_view_t* view,
     int nu, int nv,
@@ -3234,6 +3498,7 @@ int alea_refine_grid_coverage_paths_exact(
     const int* primary_cell_ids,
     const uint32_t* path_ids,
     const alea_slice_path_table_t* paths,
+    const alea_tile_refinement_options_t* options,
     int* out_secondary_cell_ids,
     uint8_t* coverage,
     uint8_t* errors) {
@@ -3249,14 +3514,12 @@ int alea_refine_grid_coverage_paths_exact(
     if (alea_prepare_query_acceleration(sys) != 0)
         return -1;
 
-    size_t max_hits = 4096;
-    const char* max_hits_env = getenv("ALEA_PATH_MAX_CANDIDATES");
-    if (!max_hits_env || !max_hits_env[0])
-        max_hits_env = getenv("ALEA_TILE_MAX_CANDIDATES");
-    if (max_hits_env && max_hits_env[0]) {
-        unsigned long value = strtoul(max_hits_env, NULL, 10);
-        if (value > 0) max_hits = (size_t)value;
+    alea_tile_refinement_options_t default_options;
+    if (!options) {
+        alea_tile_refinement_options_init(&default_options);
+        options = &default_options;
     }
+    size_t max_hits = options->max_candidates ? options->max_candidates : 4096;
     if (max_hits < 128) max_hits = 128;
 
     alea_spatial_hit_t* hits = malloc(max_hits * sizeof(*hits));
@@ -3279,32 +3542,19 @@ int alea_refine_grid_coverage_paths_exact(
         free(hits);
         return -1;
     }
-    bool use_path_2d_index = getenv("ALEA_PATH_2D_INDEX") != NULL;
+    bool use_path_2d_index = options->use_path_2d_index;
     bool verify_path_2d_index =
-        use_path_2d_index && getenv("ALEA_PATH_2D_VERIFY") != NULL;
-    size_t verify_2d_log_limit = 20;
-    const char* verify_limit_env = getenv("ALEA_PATH_2D_VERIFY_LIMIT");
-    if (verify_limit_env && verify_limit_env[0]) {
-        unsigned long value = strtoul(verify_limit_env, NULL, 10);
-        verify_2d_log_limit = (size_t)value;
-    }
+        use_path_2d_index && options->verify_path_2d_index;
+    size_t verify_2d_log_limit = options->path_2d_verify_limit;
     size_t verify_2d_log_count = 0;
     path_tile_bucket_t verify_bucket = {0};
     path_slice_index_t* path_indexes = NULL;
     bool* path_index_ready = NULL;
     bool* path_index_disabled = NULL;
-    size_t path_bucket_limit = max_hits;
-    const char* bucket_limit_env = getenv("ALEA_PATH_2D_BUCKET_LIMIT");
-    if (bucket_limit_env && bucket_limit_env[0]) {
-        unsigned long value = strtoul(bucket_limit_env, NULL, 10);
-        if (value > 0) path_bucket_limit = (size_t)value;
-    }
-    int path_tile_pad = 1;
-    const char* tile_pad_env = getenv("ALEA_PATH_2D_TILE_PAD");
-    if (tile_pad_env && tile_pad_env[0]) {
-        int value = atoi(tile_pad_env);
-        if (value >= 0) path_tile_pad = value;
-    }
+    size_t path_bucket_limit = options->path_2d_bucket_limit
+        ? options->path_2d_bucket_limit : max_hits;
+    int path_tile_pad = options->path_2d_tile_pad;
+    if (path_tile_pad < 0) path_tile_pad = 0;
     if (use_path_2d_index && paths->count > 0) {
         path_indexes = calloc(paths->count, sizeof(*path_indexes));
         path_index_ready = calloc(paths->count, sizeof(*path_index_ready));
@@ -3329,10 +3579,33 @@ int alea_refine_grid_coverage_paths_exact(
     double du = u_range / nu;
     double dv = v_range / nv;
     double eps = 1e-9;
+    size_t max_exact_fallback_pixels = options->max_exact_fallback_pixels;
+    size_t pixel_count = (size_t)nu * (size_t)nv;
+    size_t tile_cols = ((size_t)nu + (size_t)tile_w - 1) / (size_t)tile_w;
+    size_t tile_rows = ((size_t)nv + (size_t)tile_h - 1) / (size_t)tile_h;
+    if (options->tile_mask &&
+        (tile_cols > SIZE_MAX / tile_rows ||
+         options->tile_mask_count != tile_cols * tile_rows)) {
+        free(path_index_disabled); free(path_index_ready); free(path_indexes);
+        free(group_second); free(group_count); free(group_z); free(group_y);
+        free(group_x); free(group_indices); free(hits);
+        return -1;
+    }
+    if (options->provisional_mask &&
+        options->provisional_mask_count != pixel_count) {
+        free(path_index_disabled); free(path_index_ready); free(path_indexes);
+        free(group_second); free(group_count); free(group_z); free(group_y);
+        free(group_x); free(group_indices); free(hits);
+        return -1;
+    }
+    if (options->provisional_mask)
+        memset(options->provisional_mask, 0, pixel_count);
+    uint8_t* provisional_mask = options->provisional_mask;
     int updated = 0;
 
 #ifdef _OPENMP
-    if (!use_path_2d_index && getenv("ALEA_PATH_SERIAL") == NULL) {
+    if (!use_path_2d_index && options->parallel &&
+        max_exact_fallback_pixels == 0) {
         _Atomic int abort_flag = 0;
         int parallel_updated = 0;
         alea_tile_coverage_stats_t parallel_stats;
@@ -3361,7 +3634,14 @@ int alea_refine_grid_coverage_paths_exact(
             #pragma omp for collapse(2) schedule(dynamic, 1)
             for (int tj = 0; tj < nv; tj += tile_h) {
                 for (int ti = 0; ti < nu; ti += tile_w) {
-                    if (atomic_load(&abort_flag))
+                    if (atomic_load(&abort_flag) || alea_interrupted()) {
+                        atomic_store(&abort_flag, 1);
+                        continue;
+                    }
+                    size_t tile_index = (size_t)(tj / tile_h) * tile_cols +
+                                        (size_t)(ti / tile_w);
+                    if (options->tile_mask &&
+                        !options->tile_mask[tile_index])
                         continue;
                     int rc = refine_path_tile_3d_exact(
                         sys, view, nu, nv, universe_depth,
@@ -3406,7 +3686,7 @@ int alea_refine_grid_coverage_paths_exact(
         path_tile_bucket_free(&verify_bucket);
         free(hits);
 
-        if (atomic_load(&abort_flag))
+        if (atomic_load(&abort_flag) || alea_interrupted())
             return -1;
 
         g_tile_coverage_stats = parallel_stats;
@@ -3415,28 +3695,45 @@ int alea_refine_grid_coverage_paths_exact(
     }
 #endif
 
-    for (int tj = 0; tj < nv; tj += tile_h) {
+    for (int tj = 0; tj < nv && !alea_interrupted(); tj += tile_h) {
         int j_end = tj + tile_h;
         if (j_end > nv) j_end = nv;
 
-        for (int ti = 0; ti < nu; ti += tile_w) {
+        for (int ti = 0; ti < nu && !alea_interrupted(); ti += tile_w) {
+            size_t tile_index = (size_t)(tj / tile_h) * tile_cols +
+                                (size_t)(ti / tile_w);
+            if (options->tile_mask && !options->tile_mask[tile_index])
+                continue;
             int i_end = ti + tile_w;
             if (i_end > nu) i_end = nu;
             g_tile_coverage_stats.tiles++;
+            bool tile_used_fallback = false;
+            bool tile_skipped_fallback = false;
+
+            size_t missing_path_pixels = 0;
+            for (int pj = tj; pj < j_end; pj++) {
+                for (int pi = ti; pi < i_end; pi++) {
+                    size_t pidx = (size_t)pj * (size_t)nu + (size_t)pi;
+                    if (path_ids[pidx] == UINT32_MAX)
+                        group_indices[missing_path_pixels++] = pidx;
+                }
+            }
+            if (missing_path_pixels > 0) {
+                bool skipped = false;
+                tile_used_fallback = true;
+                updated += refine_grid_indices_exact_with_budget(
+                    sys, view, nu, nv, universe_depth, du, dv,
+                    group_indices, missing_path_pixels,
+                    max_exact_fallback_pixels, out_secondary_cell_ids,
+                    coverage, errors, provisional_mask, &skipped);
+                tile_skipped_fallback = tile_skipped_fallback || skipped;
+            }
 
             for (int sj = tj; sj < j_end; sj++) {
                 for (int si = ti; si < i_end; si++) {
                     size_t seed_idx = (size_t)sj * (size_t)nu + (size_t)si;
                     uint32_t path_id = path_ids[seed_idx];
-                    if (path_id == UINT32_MAX) {
-                        g_tile_coverage_stats.fallback_tiles++;
-                        g_tile_coverage_stats.exact_fallback_pixels++;
-                        updated += update_pixel_coverage_exact(
-                            sys, &view->plane, view->u_min, view->v_min,
-                            du, dv, nu, nv, universe_depth,
-                            out_secondary_cell_ids, coverage, errors, si, sj);
-                        continue;
-                    }
+                    if (path_id == UINT32_MAX) continue;
                     if ((size_t)path_id >= paths->count) {
                         path_tile_bucket_free(&verify_bucket);
                         free(hits);
@@ -3458,14 +3755,6 @@ int alea_refine_grid_coverage_paths_exact(
 
                     const alea_slice_path_record_t* path =
                         &paths->records[path_id];
-                    if (universe_depth >= 0 && path->depth != universe_depth) {
-                        g_tile_coverage_stats.fallback_tiles++;
-                        updated += update_pixel_coverage_exact(
-                            sys, &view->plane, view->u_min, view->v_min,
-                            du, dv, nu, nv, universe_depth,
-                            out_secondary_cell_ids, coverage, errors, si, sj);
-                        continue;
-                    }
 
                     alea_bbox_t local_bbox = {
                         .min_x = DBL_MAX, .max_x = -DBL_MAX,
@@ -3509,6 +3798,20 @@ int alea_refine_grid_coverage_paths_exact(
                         }
                     }
                     if (group_pixels == 0) continue;
+                    if (universe_depth >= 0 &&
+                        path->depth != universe_depth) {
+                        bool skipped = false;
+                        tile_used_fallback = true;
+                        updated += refine_grid_indices_exact_with_budget(
+                            sys, view, nu, nv, universe_depth, du, dv,
+                            group_indices, group_pixels,
+                            max_exact_fallback_pixels,
+                            out_secondary_cell_ids, coverage, errors,
+                            provisional_mask, &skipped);
+                        tile_skipped_fallback =
+                            tile_skipped_fallback || skipped;
+                        continue;
+                    }
                     local_bbox.min_x -= eps; local_bbox.max_x += eps;
                     local_bbox.min_y -= eps; local_bbox.max_y += eps;
                     local_bbox.min_z -= eps; local_bbox.max_z += eps;
@@ -3676,19 +3979,15 @@ int alea_refine_grid_coverage_paths_exact(
                         g_tile_coverage_stats.candidate_max = (size_t)hit_count;
 
                     if (candidate_query_saturated) {
-                        g_tile_coverage_stats.fallback_tiles++;
-                        g_tile_coverage_stats.exact_fallback_pixels += group_pixels;
-                        for (int pj = tj; pj < j_end; pj++) {
-                            for (int pi = ti; pi < i_end; pi++) {
-                                size_t pidx = (size_t)pj * (size_t)nu + (size_t)pi;
-                                if (path_ids[pidx] != path_id) continue;
-                                updated += update_pixel_coverage_exact(
-                                    sys, &view->plane, view->u_min,
-                                    view->v_min, du, dv, nu, nv,
-                                    universe_depth, out_secondary_cell_ids,
-                                    coverage, errors, pi, pj);
-                            }
-                        }
+                        bool skipped = false;
+                        tile_used_fallback = true;
+                        updated += refine_grid_indices_exact_with_budget(
+                            sys, view, nu, nv, universe_depth, du, dv,
+                            group_indices, group_pixels,
+                            max_exact_fallback_pixels, out_secondary_cell_ids,
+                            coverage, errors, provisional_mask, &skipped);
+                        tile_skipped_fallback =
+                            tile_skipped_fallback || skipped;
                         continue;
                     }
 
@@ -3752,6 +4051,10 @@ int alea_refine_grid_coverage_paths_exact(
                     updated += rc;
                 }
             }
+            if (tile_used_fallback)
+                g_tile_coverage_stats.fallback_tiles++;
+            if (tile_skipped_fallback)
+                g_tile_coverage_stats.skipped_tiles++;
         }
     }
 
@@ -3770,8 +4073,30 @@ int alea_refine_grid_coverage_paths_exact(
     free(group_indices);
     path_tile_bucket_free(&verify_bucket);
     free(hits);
+    if (alea_interrupted())
+        return -1;
     g_tile_coverage_stats.refined_pixels = (size_t)updated;
     return updated;
+}
+
+int alea_refine_grid_coverage_paths_exact(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    const int* primary_cell_ids,
+    const uint32_t* path_ids,
+    const alea_slice_path_table_t* paths,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors) {
+    alea_tile_refinement_options_t options;
+    alea_tile_refinement_options_init(&options);
+    return alea_refine_grid_coverage_paths_exact_ex(
+        sys, view, nu, nv, universe_depth, tile_w, tile_h,
+        primary_cell_ids, path_ids, paths, &options, out_secondary_cell_ids,
+        coverage, errors);
 }
 
 /* ============================================================================
@@ -5980,6 +6305,8 @@ alea_plot_error_component_result_t* alea_classify_plot_error_components(
             comp.secondary_cell_id = -1;
             comp.min_i = comp.max_i = i0;
             comp.min_j = comp.max_j = j0;
+            comp.representative_i = i0;
+            comp.representative_j = j0;
 
             bool primary_visible = false;
             bool secondary_visible = false;
@@ -6098,6 +6425,111 @@ void alea_plot_error_components_free(
     if (!result) return;
     free(result->components);
     free(result);
+}
+
+int alea_find_local_coverage_components(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int nu, int nv, int universe_depth,
+    size_t max_pixels, size_t max_scratch_bytes, int max_workers,
+    alea_plot_error_component_result_t** out_components,
+    alea_local_coverage_stats_t* out_stats) {
+    if (out_components) *out_components = NULL;
+    if (out_stats) memset(out_stats, 0, sizeof(*out_stats));
+    if (!sys || !view || !out_components || nu <= 0 || nv <= 0 || max_workers < 0)
+        return -1;
+
+    const size_t width = (size_t)nu;
+    const size_t height = (size_t)nv;
+    if (height > SIZE_MAX / width) return -1;
+    const size_t pixels = width * height;
+    /* primary + secondary IDs, coverage + error bytes, then classifier's
+     * visited bitmap + int queue. Keep this exact so a caller can enforce a
+     * predictable hard cap before any allocation. */
+    if (pixels > SIZE_MAX / (3u * sizeof(int) + 3u)) return -1;
+    const size_t scratch_bytes = pixels * (3u * sizeof(int) + 3u);
+    if ((max_pixels && pixels > max_pixels) ||
+        (max_scratch_bytes && scratch_bytes > max_scratch_bytes))
+        return ALEA_LOCAL_COVERAGE_BUDGET_EXCEEDED;
+    if (out_stats) {
+        out_stats->pixels = pixels;
+        out_stats->scratch_bytes = scratch_bytes;
+        out_stats->worker_limit = max_workers > 0 ? max_workers : 1;
+    }
+
+    int* cell_ids = malloc(pixels * sizeof(*cell_ids));
+    int* secondary_ids = malloc(pixels * sizeof(*secondary_ids));
+    uint8_t* coverage = malloc(pixels * sizeof(*coverage));
+    uint8_t* errors = malloc(pixels * sizeof(*errors));
+    if (!cell_ids || !secondary_ids || !coverage || !errors) {
+        free(cell_ids); free(secondary_ids); free(coverage); free(errors);
+        return -1;
+    }
+
+    /* Do not first construct a coherent fast grid and then replace every
+     * pixel with exact coverage: an exact local scan has no use for that
+     * intermediate raster. Each point uses the hierarchical spatial candidate
+     * path directly, with recursive traversal reserved for explicit fallback
+     * cases (lattices or saturated candidate sets). */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0) {
+        free(cell_ids); free(secondary_ids); free(coverage); free(errors);
+        return -1;
+    }
+    alea_point_coverage_stats_reset();
+    const alea_slice_plane_t* plane = &view->plane;
+    const double du = (view->u_max - view->u_min) / (double)nu;
+    const double dv = (view->v_max - view->v_min) / (double)nv;
+    int query_failed = 0;
+#ifdef _OPENMP
+    const int worker_limit = max_workers > 0 ? max_workers : 1;
+    #pragma omp parallel for schedule(dynamic, 4) num_threads(worker_limit)
+#endif
+    for (int j = 0; j < nv; j++) {
+        if (alea_interrupted()) continue;
+        const double v = view->v_min + (j + 0.5) * dv;
+        for (int i = 0; i < nu; i++) {
+            if (alea_interrupted()) break;
+            const size_t idx = (size_t)j * width + (size_t)i;
+            const double u = view->u_min + (i + 0.5) * du;
+            point_coverage_t pc;
+            if (find_point_coverage_exact_uv(
+                    sys, plane, u, v, universe_depth, &pc) != 0) {
+                #pragma omp atomic write
+                query_failed = 1;
+                break;
+            }
+            cell_ids[idx] = pc.primary_cell_id;
+            secondary_ids[idx] = pc.secondary_cell_id;
+            coverage[idx] = pc.coverage;
+            errors[idx] = (pc.coverage == ALEA_COVERAGE_MULTI)
+                ? GRID_ERR_OVERLAP
+                : (pc.coverage == ALEA_COVERAGE_NONE)
+                    ? GRID_ERR_UNDEFINED : GRID_ERR_NONE;
+        }
+    }
+    if (query_failed || alea_interrupted()) {
+        free(cell_ids); free(secondary_ids); free(coverage); free(errors);
+        return -1;
+    }
+    /* The filter is conservative: an individual ambiguous probe can decline
+     * refinement while leaving the original exact classification intact.
+     * Match the full-grid contract and reserve failure for cancellation. */
+    (void)alea_filter_grid_boundary_ambiguities(
+        sys, view, nu, nv, universe_depth,
+        cell_ids, secondary_ids, coverage, errors, NULL);
+    if (alea_interrupted()) {
+        free(cell_ids); free(secondary_ids); free(coverage); free(errors);
+        return -1;
+    }
+
+    alea_plot_error_component_result_t* components =
+        alea_classify_plot_error_components(
+            cell_ids, secondary_ids, coverage, nu, nv);
+    free(cell_ids); free(secondary_ids); free(coverage); free(errors);
+    if (!components) return -1;
+    if (out_stats)
+        out_stats->point_coverage = alea_point_coverage_stats_get();
+    *out_components = components;
+    return 0;
 }
 
 /* ============================================================================
@@ -6385,8 +6817,137 @@ static int trace_boundary_short_canonical(
     return rc;
 }
 
+/* Convert one compact boundary-event batch row back to the canonical event
+ * representation consumed by the shared ownership-group reducer. The sparse
+ * caller bounds the batch event count before this allocation is reachable. */
+static int trace_boundary_from_batch_row(
+    alea_system_t* sys, const alea_ray_boundary_event_batch_result_t* batch,
+    size_t row, const double start[3], const double end[3],
+    alea_slice_classify_point_fn classify, void* userdata,
+    boundary_trace_t* out) {
+    if (!batch || row >= batch->ray_count || !batch->ray_offsets) return -1;
+    uint64_t begin64 = batch->ray_offsets[row];
+    uint64_t end64 = batch->ray_offsets[row + 1];
+    if (end64 < begin64 || end64 > SIZE_MAX) return -1;
+    size_t count = (size_t)(end64 - begin64);
+    alea_ray_boundary_event_t* events = NULL;
+    if (count) {
+        events = malloc(count * sizeof(*events));
+        if (!events) return -1;
+        size_t begin = (size_t)begin64;
+        for (size_t i = 0; i < count; i++) {
+            const size_t source = begin + i;
+            events[i] = (alea_ray_boundary_event_t){
+                .t = batch->t[source],
+                .kind = (alea_ray_boundary_event_kind_t)batch->kinds[source],
+                .surface_id = batch->surface_ids[source],
+                .primitive_id = batch->primitive_ids
+                    ? batch->primitive_ids[source] : UINT32_MAX,
+                .cell_before = batch->cell_before[source],
+                .cell_after = batch->cell_after[source],
+                .material_before = batch->material_before[source],
+                .material_after = batch->material_after[source],
+                .resolution_flags = batch->resolution_flags[source]
+            };
+        }
+    }
+    int rc = trace_boundary_event_groups(sys, events, count, 0.0, start, end,
+                                         classify, userdata, out);
+    free(events);
+    return rc;
+}
+
 static int boundary_trace_same_ids(const boundary_trace_t* a,
                                    const boundary_trace_t* b);
+
+static int trace_boundary_shared_root_surface(
+    alea_system_t* sys, int cell_a, int cell_b,
+    const double start[3], const double end[3], boundary_trace_t* forward,
+    boundary_trace_t* reverse) {
+    alea_hier_cell_hit_t hit_a, hit_b;
+    alea_hier_ray_path_t path_a, path_b;
+    alea_ray_t ray;
+    double dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
+    const double length = sqrt(dx * dx + dy * dy + dz * dz);
+    int surface_id = -1;
+    double fraction = 0.0;
+    if (!(length > 0.0) ||
+        alea_hier_spatial_find_path_at_point(
+            sys, start[0], start[1], start[2], &hit_a, &path_a) <= 0 ||
+        alea_hier_spatial_find_path_at_point(
+            sys, end[0], end[1], end[2], &hit_b, &path_b) <= 0 ||
+        path_a.count <= 0 || path_b.count <= 0)
+        return 0;
+    g_sparse_surface_label_stats.local_path_pairs_resolved++;
+    const alea_hier_ray_path_entry_t* terminal_a = &path_a.entries[path_a.count - 1];
+    const alea_hier_ray_path_entry_t* terminal_b = &path_b.entries[path_b.count - 1];
+    if (terminal_a->cell_id != cell_a || terminal_b->cell_id != cell_b ||
+        terminal_a->universe_id != terminal_b->universe_id)
+        return 0;
+    g_sparse_surface_label_stats.local_path_pairs_same_universe++;
+    if (terminal_a->depth != terminal_b->depth ||
+        memcmp(terminal_a->transform.inv, terminal_b->transform.inv,
+               sizeof(terminal_a->transform.inv)) != 0)
+        return 0;
+    g_sparse_surface_label_stats.local_path_pairs_same_transform++;
+    double local_start[3] = {start[0], start[1], start[2]};
+    alea_matrix_transform_point_inverse(&terminal_a->transform,
+                                        &local_start[0], &local_start[1],
+                                        &local_start[2]);
+    const double local_dx = terminal_a->transform.inv[0] * dx +
+        terminal_a->transform.inv[1] * dy + terminal_a->transform.inv[2] * dz;
+    const double local_dy = terminal_a->transform.inv[4] * dx +
+        terminal_a->transform.inv[5] * dy + terminal_a->transform.inv[6] * dz;
+    const double local_dz = terminal_a->transform.inv[8] * dx +
+        terminal_a->transform.inv[9] * dy + terminal_a->transform.inv[10] * dz;
+    const double local_length = sqrt(local_dx * local_dx + local_dy * local_dy +
+                                     local_dz * local_dz);
+    if (!(local_length > 0.0)) return 0;
+    if (alea_ray_init(&ray, local_start[0], local_start[1], local_start[2],
+                      local_dx, local_dy, local_dz) != 0 ||
+        alea_raycast_shared_terminal_surface_nocache(
+            sys, cell_a, cell_b, &ray, local_length, &surface_id, &fraction) != 1)
+        return 0;
+    *forward = (boundary_trace_t){ .ids = {surface_id}, .count = 1,
+        .group_count = 1, .groups = {{.fraction = fraction,
+                                      .ids = {surface_id}, .count = 1}} };
+    *reverse = (boundary_trace_t){ .ids = {surface_id}, .count = 1,
+        .group_count = 1, .groups = {{.fraction = 1.0 - fraction,
+                                      .ids = {surface_id}, .count = 1}} };
+    return 1;
+}
+
+static int trace_boundary_one_sided_surface(
+    alea_system_t* sys, int cell_a, int cell_b, const double start[3],
+    const double end[3], boundary_trace_t* forward, boundary_trace_t* reverse) {
+    alea_hier_cell_hit_t hit;
+    alea_hier_ray_path_t path_a, path_b;
+    const double dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
+    const double world_length = sqrt(dx * dx + dy * dy + dz * dz);
+    int selected_cell = -1; const double* selected_point = NULL;
+    int first = alea_hier_spatial_find_path_at_point(sys, start[0], start[1], start[2], &hit, &path_a);
+    if (first > 0 && path_a.count > 0) { selected_cell = cell_a; selected_point = start; }
+    int second = alea_hier_spatial_find_path_at_point(sys, end[0], end[1], end[2], &hit, &path_b);
+    if ((first > 0) == (second > 0) || !(world_length > 0.0) || selected_cell < 0)
+        return 0;
+    const alea_hier_ray_path_t* path = &path_a;
+    if (second > 0) { selected_cell = cell_b; selected_point = end; path = &path_b; }
+    if (path->count <= 0 || path->entries[path->count - 1].cell_id != selected_cell) return 0;
+    const alea_hier_ray_path_entry_t* terminal = &path->entries[path->count - 1];
+    double local[3] = {selected_point[0], selected_point[1], selected_point[2]};
+    alea_matrix_transform_point_inverse(&terminal->transform, &local[0], &local[1], &local[2]);
+    double ldx = terminal->transform.inv[0]*dx + terminal->transform.inv[1]*dy + terminal->transform.inv[2]*dz;
+    double ldy = terminal->transform.inv[4]*dx + terminal->transform.inv[5]*dy + terminal->transform.inv[6]*dz;
+    double ldz = terminal->transform.inv[8]*dx + terminal->transform.inv[9]*dy + terminal->transform.inv[10]*dz;
+    double local_length = sqrt(ldx*ldx + ldy*ldy + ldz*ldz), fraction; int surface; alea_ray_t ray;
+    if (!(local_length > 0.0) || alea_ray_init(&ray, local[0], local[1], local[2], ldx, ldy, ldz) != 0 ||
+        alea_raycast_terminal_surface_nocache(sys, selected_cell, &ray, local_length, &surface, &fraction) != 1)
+        return 0;
+    if (selected_point == end) fraction = 1.0 - fraction;
+    *forward = (boundary_trace_t){.ids={surface},.count=1,.group_count=1,.groups={{.fraction=fraction,.ids={surface},.count=1}}};
+    *reverse = (boundary_trace_t){.ids={surface},.count=1,.group_count=1,.groups={{.fraction=1.0-fraction,.ids={surface},.count=1}}};
+    return 1;
+}
 
 /* The sparse curve path uses this exact-edge check after it has selected a
  * candidate.  It deliberately shares the full boundary map's physical-group
@@ -6579,6 +7140,8 @@ int alea_find_surface_labels_sparse_on_grid(
         width <= 0 || height <= 0 || margin < 0 ||
         max_queries == 0 || max_labels == 0)
         return -1;
+    memset(&g_sparse_surface_label_stats, 0,
+           sizeof(g_sparse_surface_label_stats));
     *out_labels = NULL;
     *out_count = 0;
     /* Build mutable query caches before independent edge traces enter the
@@ -6617,6 +7180,7 @@ int alea_find_surface_labels_sparse_on_grid(
         int y1 = y0 + tile_size;
         if (y1 > height) y1 = height;
         for (size_t tile_x = 0; tile_x < tile_cols; tile_x++) {
+            g_sparse_surface_label_stats.tiles_examined++;
             int x0 = (int)(tile_x * tile_size);
             int x1 = x0 + tile_size;
             if (x1 > width) x1 = width;
@@ -6637,6 +7201,7 @@ int alea_find_surface_labels_sparse_on_grid(
                         int a = grid_ids[(size_t)y * width + x];
                         int b = grid_ids[(size_t)ny * width + nx];
                         if (a == b) continue;
+                        g_sparse_surface_label_stats.changed_edges++;
                         if (local_count == local_capacity) {
                             free(local); free(candidates);
                             return -1;
@@ -6691,13 +7256,101 @@ int alea_find_surface_labels_sparse_on_grid(
         }
     }
     free(local);
+    g_sparse_surface_label_stats.candidate_edges = candidate_count;
 
     sparse_grid_observation_t* observations = NULL;
     size_t observation_count = 0, observation_capacity = 0;
     int observation_failed = 0;
     double du = (view->u_max - view->u_min) / width;
     double dv = (view->v_max - view->v_min) / height;
-    #pragma omp parallel for schedule(dynamic, 1)
+    /* Batch both directions for each selected edge. The batch owns one
+     * reusable trace/event pair per capped worker, avoiding per-edge rich
+     * result churn while retaining the exact scalar event contract. Its fixed
+     * event cap falls back to the scalar path rather than publishing a partial
+     * provenance answer. */
+    boundary_trace_t* batch_forward = NULL;
+    boundary_trace_t* batch_reverse = NULL;
+    int batch_ready = 0;
+    if (candidate_count && candidate_count <= SIZE_MAX / 6 &&
+        candidate_count <= SIZE_MAX / (2 * sizeof(*batch_forward))) {
+        g_sparse_surface_label_stats.batch_attempts++;
+        const size_t ray_count = candidate_count * 2;
+        double* origins = calloc(ray_count * 3, sizeof(*origins));
+        double* directions = calloc(ray_count * 3, sizeof(*directions));
+        double* t_maxs = calloc(ray_count, sizeof(*t_maxs));
+        batch_forward = calloc(candidate_count, sizeof(*batch_forward));
+        batch_reverse = calloc(candidate_count, sizeof(*batch_reverse));
+        if (origins && directions && t_maxs && batch_forward && batch_reverse) {
+            for (size_t i = 0; i < candidate_count; i++) {
+                const sparse_grid_edge_t* edge = &candidates[i];
+                int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
+                int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
+                double start[3], end[3];
+                slice_world_point(view, view->u_min + (edge->x + 0.5) * du,
+                                  view->v_min + (edge->y + 0.5) * dv, start);
+                slice_world_point(view, view->u_min + (nx + 0.5) * du,
+                                  view->v_min + (ny + 0.5) * dv, end);
+                double dx = end[0] - start[0], dy = end[1] - start[1];
+                double dz = end[2] - start[2];
+                double length = sqrt(dx * dx + dy * dy + dz * dz);
+                if (!(length > 0.0)) continue;
+                const size_t forward_row = i * 2, reverse_row = forward_row + 1;
+                for (int c = 0; c < 3; c++) {
+                    const double direction = (end[c] - start[c]) / length;
+                    origins[forward_row * 3 + c] = start[c];
+                    directions[forward_row * 3 + c] = direction;
+                    origins[reverse_row * 3 + c] = end[c];
+                    directions[reverse_row * 3 + c] = -direction;
+                }
+                t_maxs[forward_row] = length;
+                t_maxs[reverse_row] = length;
+            }
+            const alea_ray_batch_query_t query = {
+                .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+                .material_filter = -1,
+                .t_maxs = t_maxs,
+                .max_events = ray_count <= UINT64_MAX / 256 ? ray_count * 256 : 0,
+                .max_output_bytes = 8u * 1024u * 1024u,
+                .max_workers = 1,
+                .include_all_coincident_physical = true
+            };
+            alea_ray_boundary_event_batch_result_t batch;
+            alea_ray_boundary_event_batch_result_init(&batch);
+            if (alea_raycast_boundary_events_batch_nocache(
+                    sys, origins, directions, ray_count, &query, &batch) == 0) {
+                batch_ready = 1;
+                g_sparse_surface_label_stats.breakpoint_hits =
+                    batch.breakpoint_hits;
+                g_sparse_surface_label_stats.selected_segments =
+                    batch.selected_segments;
+                for (size_t i = 0; i < candidate_count && batch_ready; i++) {
+                    const sparse_grid_edge_t* edge = &candidates[i];
+                    int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
+                    int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
+                    double start[3], end[3];
+                    slice_world_point(view, view->u_min + (edge->x + 0.5) * du,
+                                      view->v_min + (edge->y + 0.5) * dv, start);
+                    slice_world_point(view, view->u_min + (nx + 0.5) * du,
+                                      view->v_min + (ny + 0.5) * dv, end);
+                    if (trace_boundary_from_batch_row(
+                            sys, &batch, i * 2, start, end, classify,
+                            classify_userdata, &batch_forward[i]) != 0 ||
+                        trace_boundary_from_batch_row(
+                            sys, &batch, i * 2 + 1, end, start, classify,
+                            classify_userdata, &batch_reverse[i]) != 0)
+                        batch_ready = 0;
+                }
+            }
+            alea_ray_boundary_event_batch_result_free(&batch);
+        }
+        free(origins); free(directions); free(t_maxs);
+        if (!batch_ready) {
+            free(batch_forward); free(batch_reverse);
+            batch_forward = NULL; batch_reverse = NULL;
+        } else {
+            g_sparse_surface_label_stats.batch_traces_used = ray_count;
+        }
+    }
     for (long long candidate_index = 0;
          candidate_index < (long long)candidate_count; candidate_index++) {
         size_t i = (size_t)candidate_index;
@@ -6712,10 +7365,32 @@ int alea_find_surface_labels_sparse_on_grid(
         slice_world_point(view, u0, v0, start);
         slice_world_point(view, u1, v1, end);
         boundary_trace_t forward = {0}, reverse = {0};
-        int valid = trace_boundary_short_canonical(
-                sys, start, end, classify, classify_userdata, &forward) == 0 &&
-            trace_boundary_short_canonical(
-                sys, end, start, classify, classify_userdata, &reverse) == 0 &&
+        int forward_rc = 0, reverse_rc = 0;
+        const int cell_a = grid_ids[(size_t)edge->y * (size_t)width + edge->x];
+        const int cell_b = grid_ids[(size_t)ny * (size_t)width + nx];
+        /* Endpoint identities may bracket several selected intervals.  They
+         * are therefore never sufficient provenance for a coarse grid edge;
+         * attribution begins with the complete canonical trace until the
+         * selected-walker group certificate is available. */
+        (void)cell_a;
+        (void)cell_b;
+        if (batch_ready) {
+            forward = batch_forward[i];
+            reverse = batch_reverse[i];
+            g_sparse_surface_label_stats.forward_trace_calls++;
+            g_sparse_surface_label_stats.reverse_trace_calls++;
+        } else {
+            g_sparse_surface_label_stats.forward_trace_calls++;
+            forward_rc = trace_boundary_short_canonical(
+                sys, start, end, classify, classify_userdata, &forward);
+            reverse_rc = -1;
+            if (forward_rc == 0) {
+                g_sparse_surface_label_stats.reverse_trace_calls++;
+                reverse_rc = trace_boundary_short_canonical(
+                    sys, end, start, classify, classify_userdata, &reverse);
+            }
+        }
+        int valid = forward_rc == 0 && reverse_rc == 0 &&
             !forward.saw_synthetic && !reverse.saw_synthetic &&
             !forward.saw_gap && !reverse.saw_gap &&
             !forward.saw_overlap && !reverse.saw_overlap &&
@@ -6723,6 +7398,7 @@ int alea_find_surface_labels_sparse_on_grid(
             forward.group_count != 0 &&
             boundary_trace_same_ids(&forward, &reverse);
         if (!valid) continue;
+        g_sparse_surface_label_stats.accepted_edges++;
         /* Ray attribution is independent per edge.  Only the compact accepted
          * observations share storage, so keep that append in a short critical
          * section while the expensive canonical traces run in parallel. */
@@ -6747,6 +7423,8 @@ int alea_find_surface_labels_sparse_on_grid(
         }
     }
     free(candidates);
+    free(batch_forward);
+    free(batch_reverse);
     if (observation_failed) {
         free(observations);
         return -1;
@@ -6755,6 +7433,7 @@ int alea_find_surface_labels_sparse_on_grid(
         free(observations);
         return 0;
     }
+    g_sparse_surface_label_stats.observations = observation_count;
 
     qsort(observations, observation_count, sizeof(*observations),
           compare_sparse_grid_observation);
@@ -6807,6 +7486,7 @@ int alea_find_surface_labels_sparse_on_grid(
     free(ranked);
     *out_labels = labels;
     *out_count = (int)ranked_count;
+    g_sparse_surface_label_stats.labels = ranked_count;
     return 0;
 }
 

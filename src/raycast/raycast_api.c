@@ -1607,6 +1607,8 @@ typedef struct {
     alea_ray_boundary_event_vec_t arena;
     uint64_t* row_offsets;
     size_t row_count;
+    uint64_t breakpoint_hits;
+    uint64_t selected_segments;
 } alea_batch_event_worker_t;
 
 static void batch_event_worker_free(alea_batch_event_worker_t* worker) {
@@ -1646,10 +1648,17 @@ static int batch_event_worker_build(
         const double* d = &directions_xyz[row * 3];
         const double t_min = query->t_mins ? query->t_mins[row] : 0.0;
         const double t_max = query->t_maxs ? query->t_maxs[row] : 0.0;
+        const alea_ray_boundary_event_options_internal_t event_options = {
+            .include_all_coincident_physical =
+                query->include_all_coincident_physical
+        };
         if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
-            alea_raycast_boundary_events_reuse_nocache(
-                sys, &ray, t_max, &worker->trace, &worker->events) != 0)
+            alea_raycast_boundary_events_with_options(
+                sys, &ray, t_max, &event_options,
+                &worker->trace, &worker->events) != 0)
             return -1;
+        worker->breakpoint_hits += worker->events.breakpoint_hits;
+        worker->selected_segments += worker->events.selected_segments;
         worker->row_offsets[local_row] = worker->arena.count;
         for (size_t event = 0; event < worker->events.events.count; event++) {
             const alea_ray_boundary_event_t value =
@@ -1735,9 +1744,11 @@ int alea_raycast_boundary_events_batch_nocache(
     }
     if (alea_raycast_ensure_caches(sys) != 0) return -1;
     atomic_init(&live_event_count, 0);
- #ifdef _OPENMP
+#ifdef _OPENMP
     worker_count = (size_t)omp_get_max_threads();
- #endif
+#endif
+    if (query->max_workers && worker_count > query->max_workers)
+        worker_count = query->max_workers;
     if (worker_count > ray_count && ray_count != 0) worker_count = ray_count;
     if (worker_count == 0 || worker_count > SIZE_MAX / sizeof(*workers)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW,
@@ -1770,6 +1781,8 @@ int alea_raycast_boundary_events_batch_nocache(
                                   "boundary-event batch raycast failed");
             goto fail;
         }
+        next.breakpoint_hits += workers[worker].breakpoint_hits;
+        next.selected_segments += workers[worker].selected_segments;
     }
 
     next.ray_count = ray_count;

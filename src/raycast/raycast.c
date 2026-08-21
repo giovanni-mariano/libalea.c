@@ -1684,6 +1684,8 @@ void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* resul
 void alea_ray_boundary_event_result_clear(alea_ray_boundary_event_result_t* result) {
     if (!result) return;
     alea_vec_clear(&result->events);
+    result->breakpoint_hits = 0;
+    result->selected_segments = 0;
 }
 
 void alea_ray_boundary_event_result_free(alea_ray_boundary_event_result_t* result) {
@@ -1888,6 +1890,8 @@ int alea_raycast_boundary_events_with_options(
     }
     const int rc = boundary_events_from_segments_and_crossings(
         trace, &crossings, options, events);
+    events->breakpoint_hits = crossings.hits.count;
+    events->selected_segments = trace->segments.count;
     alea_raycast_result_free(&crossings);
     return rc;
 }
@@ -2811,6 +2815,86 @@ static double raycast_cell_surfaces(alea_system_t* sys,
     }
 
     return closest_t;
+}
+
+int alea_raycast_shared_terminal_surface_nocache(
+    alea_system_t* sys, int cell_a_id, int cell_b_id,
+    const alea_ray_t* ray, double t_max, int* out_surface_id,
+    double* out_fraction) {
+    if (!sys || !ray || !out_surface_id || !out_fraction || t_max <= 0.0)
+        return 0;
+    const int a_index = alea_find_cell_by_id(sys, cell_a_id);
+    const int b_index = alea_find_cell_by_id(sys, cell_b_id);
+    if (a_index < 0 || b_index < 0 || a_index == b_index) return 0;
+    const alea_cell_entry_t* a = &sys->cells.data[a_index];
+    const alea_cell_entry_t* b = &sys->cells.data[b_index];
+    /* Occurrence-specific placement is deliberately left to canonical rays. */
+    if (a->universe_id != b->universe_id ||
+        alea_cell_entry_is_container(a) || alea_cell_entry_is_container(b) ||
+        !a->surface_indices || !b->surface_indices)
+        return 0;
+    int found_id = -1;
+    double found_t = 0.0;
+    for (size_t i = 0; i < a->surface_index_count; i++) {
+        const uint32_t index = a->surface_indices[i];
+        bool shared = false;
+        for (size_t j = 0; j < b->surface_index_count; j++)
+            if (b->surface_indices[j] == index) { shared = true; break; }
+        if (!shared || index >= alea_vec_count(&sys->surfaces)) continue;
+        const alea_surface_entry_t* surface = &sys->surfaces.data[index];
+        if (surface->transform_applied ||
+            surface->primitive_id >= alea_vec_count(&sys->primitives))
+            return 0;
+        const alea_primitive_entry_t* primitive =
+            &sys->primitives.data[surface->primitive_id];
+        alea_primitive_data_t data;
+        if (!raycast_primitive_copy_payload(sys, surface->primitive_id,
+                                            primitive->type, &data))
+            return 0;
+        double ts[4];
+        const int count = ray_intersect_primitive(ray, primitive->type, &data, ts);
+        for (int hit = 0; hit < count; hit++) {
+            if (ts[hit] <= RAY_EPSILON || ts[hit] >= t_max - RAY_EPSILON)
+                continue;
+            if (found_id >= 0 && (found_id != surface->mc_surface_id ||
+                                  fabs(found_t - ts[hit]) > RAY_EPSILON))
+                return 0;
+            found_id = surface->mc_surface_id;
+            found_t = ts[hit];
+        }
+    }
+    if (found_id <= 0) return 0;
+    *out_surface_id = found_id;
+    *out_fraction = found_t / t_max;
+    return 1;
+}
+
+int alea_raycast_terminal_surface_nocache(
+    alea_system_t* sys, int cell_id, const alea_ray_t* ray, double t_max,
+    int* out_surface_id, double* out_fraction) {
+    if (!sys || !ray || !out_surface_id || !out_fraction || t_max <= 0.0)
+        return 0;
+    const int index = alea_find_cell_by_id(sys, cell_id);
+    if (index < 0) return 0;
+    const alea_cell_entry_t* cell = &sys->cells.data[index];
+    if (alea_cell_entry_is_container(cell) || !cell->surface_indices) return 0;
+    int found = -1; double found_t = 0.0;
+    for (size_t i = 0; i < cell->surface_index_count; i++) {
+        uint32_t si = cell->surface_indices[i];
+        if (si >= alea_vec_count(&sys->surfaces)) return 0;
+        const alea_surface_entry_t* s = &sys->surfaces.data[si];
+        if (s->transform_applied || s->primitive_id >= alea_vec_count(&sys->primitives)) return 0;
+        const alea_primitive_entry_t* p = &sys->primitives.data[s->primitive_id];
+        alea_primitive_data_t data;
+        if (!raycast_primitive_copy_payload(sys, s->primitive_id, p->type, &data)) return 0;
+        double ts[4]; int n = ray_intersect_primitive(ray, p->type, &data, ts);
+        for (int h = 0; h < n; h++) if (ts[h] > RAY_EPSILON && ts[h] < t_max - RAY_EPSILON) {
+            if (found >= 0 && (found != s->mc_surface_id || fabs(found_t - ts[h]) > RAY_EPSILON)) return 0;
+            found = s->mc_surface_id; found_t = ts[h];
+        }
+    }
+    if (found < 0) return 0;
+    *out_surface_id = found; *out_fraction = found_t / t_max; return 1;
 }
 
 static alea_raycast_ancestor_cell_stat_t*

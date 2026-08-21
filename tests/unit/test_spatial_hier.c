@@ -1096,6 +1096,45 @@ TEST(hier_spatial_chain_region_query_carries_fill_ancestor) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_spatial_chain_region_query_carries_lattice_occurrence) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+    alea_bbox_t query = {-5.0 / 3.0, 5.0 / 3.0,
+                         -5.0 / 3.0, 5.0 / 3.0, -0.1, 0.1};
+    alea_hier_spatial_chain_hit_t hits[64];
+    int n = alea_hier_spatial_query_region_chain(sys, &query, hits, 64);
+    ASSERT(n > 0);
+
+    int first_i = 0;
+    int distinct_i = 0;
+    int terminals = 0;
+    int found_bounded_cylinder = 0;
+    for (int h = 0; h < n; h++) {
+        if (hits[h].hit.depth != 1) continue;
+        ASSERT_EQ(hits[h].ancestor_count, 1);
+        ASSERT_EQ(hits[h].ancestor_is_lattice[0], 1);
+        ASSERT(hits[h].ancestor_lattice_fill_universes[0] > 0);
+        if (hits[h].hit.cell_id == 1)
+            found_bounded_cylinder = 1;
+        if (terminals == 0) {
+            first_i = hits[h].ancestor_lattice_i[0];
+        } else if (hits[h].ancestor_lattice_i[0] != first_i) {
+            distinct_i = 1;
+        }
+        terminals++;
+    }
+    ASSERT(terminals > 0);
+    ASSERT_MSG(found_bounded_cylinder,
+               "an infinite-axis cylinder must retain its finite XY bounds");
+    ASSERT_MSG(distinct_i,
+               "region chain should distinguish repeated lattice elements");
+
+    mcnp_model_destroy(model);
+}
+
 TEST(hier_spatial_universe_region_query_filters_to_one_universe) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 

@@ -1127,6 +1127,60 @@ TEST(compact_batch_internal_boundary_events_preserve_canonical_contract) {
     alea_destroy(sys);
 }
 
+TEST(compact_batch_boundary_events_preserve_coincident_physical_surfaces) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int first = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int second = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 2.0);
+    int first_material = alea_add_material(sys, 1);
+    int second_material = alea_add_material(sys, 2);
+    ASSERT(first >= 0 && second >= 0);
+    ASSERT(first_material >= 0 && second_material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, first)->neg_node,
+                         first_material, -1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 20, alea_surface_at(sys, second)->neg_node,
+                         second_material, -1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+    alea_raycast_result_t scalar_trace;
+    alea_ray_boundary_event_result_t scalar_events;
+    alea_raycast_result_init(&scalar_trace);
+    alea_ray_boundary_event_result_init(&scalar_events);
+    const alea_ray_boundary_event_options_internal_t options = {
+        .include_all_coincident_physical = true
+    };
+    ASSERT_EQ(alea_raycast_boundary_events_with_options(
+                  sys, &ray, 8.0, &options, &scalar_trace, &scalar_events), 0);
+    ASSERT(scalar_events.events.count >= 4);
+
+    const double origins[] = {-5.0, 0.0, 0.0};
+    const double directions[] = {1.0, 0.0, 0.0};
+    const double t_maxs[] = {8.0};
+    const alea_ray_batch_query_t query = {
+        .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+        .material_filter = -1,
+        .t_maxs = t_maxs,
+        .include_all_coincident_physical = true
+    };
+    alea_ray_boundary_event_batch_result_t batch;
+    alea_ray_boundary_event_batch_result_init(&batch);
+    ASSERT_EQ(alea_raycast_boundary_events_batch_nocache(
+                  sys, origins, directions, 1, &query, &batch), 0);
+    ASSERT_EQ(batch.event_count, scalar_events.events.count);
+    for (size_t i = 0; i < scalar_events.events.count; i++) {
+        ASSERT_NEAR(batch.t[i], scalar_events.events.data[i].t, EPS);
+        ASSERT_EQ(batch.kinds[i], scalar_events.events.data[i].kind);
+        ASSERT_EQ(batch.surface_ids[i], scalar_events.events.data[i].surface_id);
+    }
+
+    alea_ray_boundary_event_batch_result_free(&batch);
+    alea_ray_boundary_event_result_free(&scalar_events);
+    alea_raycast_result_free(&scalar_trace);
+    alea_destroy(sys);
+}
+
 TEST(compact_ray_slice_fast_bidirectional_reuses_plot_cache) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

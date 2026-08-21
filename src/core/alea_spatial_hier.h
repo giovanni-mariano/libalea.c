@@ -45,6 +45,17 @@ typedef struct {
     uint8_t chain_truncated;
     uint32_t ancestor_cell_indices[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
     alea_matrix_t ancestor_transforms[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    /* A lattice ancestor constrains a terminal occurrence to one concrete
+     * element.  Its transform alone is insufficient because identical child
+     * universes may be instantiated in adjacent elements. */
+    uint8_t ancestor_is_lattice[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int ancestor_lattice_fill_universes[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int ancestor_lattice_i[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int ancestor_lattice_j[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int ancestor_lattice_k[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    double ancestor_lattice_ox[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    double ancestor_lattice_oy[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    double ancestor_lattice_oz[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
 } alea_hier_spatial_chain_hit_t;
 
 typedef struct {

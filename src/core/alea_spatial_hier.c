@@ -148,14 +148,22 @@ static inline hier_fbbox_t hier_fbbox_empty(void) {
 }
 
 static inline hier_fbbox_t hier_fbbox_from_double(const alea_bbox_t* d) {
-    if (!alea_bbox_is_valid(d)) return hier_fbbox_empty();
+    const double mins[3] = {d->min_x, d->min_y, d->min_z};
+    const double maxs[3] = {d->max_x, d->max_y, d->max_z};
     hier_fbbox_t b;
-    b.min[0] = nextafterf((float)d->min_x, -INFINITY);
-    b.min[1] = nextafterf((float)d->min_y, -INFINITY);
-    b.min[2] = nextafterf((float)d->min_z, -INFINITY);
-    b.max[0] = nextafterf((float)d->max_x,  INFINITY);
-    b.max[1] = nextafterf((float)d->max_y,  INFINITY);
-    b.max[2] = nextafterf((float)d->max_z,  INFINITY);
+    for (int axis = 0; axis < 3; axis++) {
+        if (isnan(mins[axis]) || isnan(maxs[axis]) ||
+            mins[axis] > maxs[axis] || mins[axis] == INFINITY ||
+            maxs[axis] == -INFINITY) {
+            return hier_fbbox_empty();
+        }
+        b.min[axis] = mins[axis] <= -(double)FLT_MAX
+            ? -FLT_MAX
+            : nextafterf((float)mins[axis], -INFINITY);
+        b.max[axis] = maxs[axis] >= (double)FLT_MAX
+            ? FLT_MAX
+            : nextafterf((float)maxs[axis], INFINITY);
+    }
     return b;
 }
 
@@ -4099,6 +4107,14 @@ static int query_region_universe_direct(alea_system_t* sys,
 typedef struct {
     uint32_t cell_indices[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
     alea_matrix_t transforms[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    uint8_t is_lattice[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int lattice_fill_universes[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int lattice_i[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int lattice_j[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    int lattice_k[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    double lattice_ox[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    double lattice_oy[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    double lattice_oz[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
     uint8_t count;
     uint8_t truncated;
 } hier_region_chain_t;
@@ -4112,6 +4128,30 @@ static void hier_region_chain_push(hier_region_chain_t* chain,
     }
     chain->cell_indices[chain->count] = cell_index;
     chain->transforms[chain->count] = *transform;
+    chain->is_lattice[chain->count] = 0;
+    chain->count++;
+}
+
+static void hier_region_chain_push_lattice(
+    hier_region_chain_t* chain,
+    uint32_t cell_index,
+    const alea_matrix_t* transform,
+    const alea_lattice_location_t* location) {
+    if (chain->count >= ALEA_HIER_SPATIAL_HIT_CHAIN_MAX) {
+        chain->truncated = 1;
+        return;
+    }
+    const uint8_t n = chain->count;
+    chain->cell_indices[n] = cell_index;
+    chain->transforms[n] = *transform;
+    chain->is_lattice[n] = 1;
+    chain->lattice_fill_universes[n] = location->fill_universe;
+    chain->lattice_i[n] = location->i;
+    chain->lattice_j[n] = location->j;
+    chain->lattice_k[n] = location->k;
+    chain->lattice_ox[n] = location->ox;
+    chain->lattice_oy[n] = location->oy;
+    chain->lattice_oz[n] = location->oz;
     chain->count++;
 }
 
@@ -4143,6 +4183,15 @@ static int append_region_chain_hit(alea_system_t* sys,
     for (uint8_t i = 0; i < chain->count; i++) {
         out->ancestor_cell_indices[i] = chain->cell_indices[i];
         out->ancestor_transforms[i] = chain->transforms[i];
+        out->ancestor_is_lattice[i] = chain->is_lattice[i];
+        out->ancestor_lattice_fill_universes[i] =
+            chain->lattice_fill_universes[i];
+        out->ancestor_lattice_i[i] = chain->lattice_i[i];
+        out->ancestor_lattice_j[i] = chain->lattice_j[i];
+        out->ancestor_lattice_k[i] = chain->lattice_k[i];
+        out->ancestor_lattice_ox[i] = chain->lattice_ox[i];
+        out->ancestor_lattice_oy[i] = chain->lattice_oy[i];
+        out->ancestor_lattice_oz[i] = chain->lattice_oz[i];
     }
     (*hit_count)++;
     return 0;
@@ -4209,34 +4258,18 @@ static int query_lattice_cell_chain(alea_system_t* sys,
     for (int i = i0; i <= i1; i++) {
         for (int j = j0; j <= j1; j++) {
             for (int k = k0; k <= k1; k++) {
-                size_t fill_index = cell->lat_fill_repeating
-                    ? 0 : (size_t)(i * nj * nk + j * nk + k);
-                if (fill_index >= cell->lat_fill_count) continue;
+                alea_lattice_location_t location;
+                int location_rc = alea_lattice_location_from_indices(
+                    cell, i + cell->lat_fill_dims[0],
+                    j + cell->lat_fill_dims[2],
+                    k + cell->lat_fill_dims[4], &location);
+                if (location_rc < 0) return -1;
+                if (location_rc == 0 || location.fill_universe < 0) continue;
 
-                int fill_universe = cell->lat_fill[fill_index];
-                if (fill_universe < 0) continue;
-
-                double ox, oy, oz;
-                if (cell->lat_type == 2) {
-                    int ri = i + cell->lat_fill_dims[0];
-                    int rk = j + cell->lat_fill_dims[2];
-                    double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
-                    ox = ri * p + rk * p * 0.5;
-                    oy = rk * p * M_SQRT3 * 0.5;
-                    oz = cell->lat_fill_zero_element_coords
-                       ? (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2]
-                       : ((nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2]);
-                } else {
-                    if (cell->lat_fill_zero_element_coords) {
-                        ox = (i + cell->lat_fill_dims[0]) * cell->lat_pitch[0];
-                        oy = (j + cell->lat_fill_dims[2]) * cell->lat_pitch[1];
-                        oz = (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2];
-                    } else {
-                        ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-                        oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-                        oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
-                    }
-                }
+                const int fill_universe = location.fill_universe;
+                const double ox = location.ox;
+                const double oy = location.oy;
+                const double oz = location.oz;
 
                 alea_matrix_t element_translation;
                 translation_matrix(&element_translation, ox, oy, oz);
@@ -4252,10 +4285,14 @@ static int query_lattice_cell_chain(alea_system_t* sys,
                 element_query.min_z -= oz;
                 element_query.max_z -= oz;
 
+                hier_region_chain_t element_chain = *chain;
+                hier_region_chain_push_lattice(&element_chain,
+                                               (uint32_t)(cell - sys->cells.data),
+                                               parent_transform, &location);
                 if (query_region_universe_chain(sys, idx, fill_universe,
                                                 &element_transform, depth + 1,
                                                 &element_query, world_query,
-                                                chain, out_hits, max_hits,
+                                                &element_chain, out_hits, max_hits,
                                                 hit_count) != 0) {
                     return -1;
                 }
@@ -4284,11 +4321,9 @@ static int query_region_cell_chain(alea_system_t* sys,
 
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     if (cell->lat_type != 0 && cell->lat_fill) {
-        hier_region_chain_t child_chain = *chain;
-        hier_region_chain_push(&child_chain, cell_index, transform);
         return query_lattice_cell_chain(sys, idx, cell, transform, depth,
                                         local_query, world_query,
-                                        &child_chain, out_hits, max_hits,
+                                        chain, out_hits, max_hits,
                                         hit_count);
     }
 

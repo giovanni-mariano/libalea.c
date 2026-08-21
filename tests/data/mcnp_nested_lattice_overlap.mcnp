@@ -1,0 +1,30 @@
+Nested lattice local-overlap diagnostic
+c --- universe 1: intentionally nested, competing terminal cells ---
+1 1 -1.0  -30      u=1 imp:n=1
+2 2 -1.0  -31      u=1 imp:n=1
+c --- universe 10: inner lattice whose element contains universe 1 ---
+200 0  11 -12 13 -14 15 -16 lat=1 u=10 fill=0:0 0:0 0:0
+     1 imp:n=1
+c --- root: outer lattice whose element contains universe 10 ---
+100 0  1 -2 3 -4 5 -6 lat=1 fill=0:0 0:0 0:0
+     10 imp:n=1
+
+c Outer element bounds
+1  px -1
+2  px  1
+3  py -1
+4  py  1
+5  pz -1
+6  pz  1
+c Inner element bounds
+11 px -1
+12 px  1
+13 py -1
+14 py  1
+15 pz -1
+16 pz  1
+30 cz 0.70
+31 cz 0.40
+
+m1 92235.80c 1.0
+m2 1001.80c 2.0 8016.80c 1.0

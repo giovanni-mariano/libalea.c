@@ -515,6 +515,10 @@ typedef struct {
     const double* t_maxs;
     uint64_t max_events;
     uint64_t max_output_bytes;
+    size_t max_workers;  /* 0 = executor default */
+    /* Boundary-event batches must be able to preserve every physical surface
+     * in a coincident crossing, matching the scalar canonical API. */
+    bool include_all_coincident_physical;
 } alea_ray_batch_query_t;
 
 int alea_raycast_hier_batch_query_nocache(
@@ -588,6 +592,8 @@ typedef struct {
     uint8_t* resolution_flags;
     uint32_t* primitive_ids;
     double* normals_xyz;
+    uint64_t breakpoint_hits;
+    uint64_t selected_segments;
 } alea_ray_boundary_event_batch_result_t;
 
 void alea_ray_boundary_event_batch_result_init(
@@ -1084,6 +1090,11 @@ int alea_ray_coverage_slice_build_adaptive_policy_executor_nocache(
 /** Reusable ordered boundary-event storage for internal query consumers. */
 typedef struct {
     alea_ray_boundary_event_vec_t events;
+    /* Resolver work for this canonical trace.  Kept with the private event
+     * result so bounded diagnostic callers can account for cost without
+     * retaining a rich crossing trace. */
+    uint64_t breakpoint_hits;
+    uint64_t selected_segments;
 } alea_ray_boundary_event_result_t;
 
 typedef struct {
@@ -1206,6 +1217,18 @@ int alea_raycast_cell_aware(alea_system_t* sys,
                            double dx, double dy, double dz,
                            double t_max,
                            alea_raycast_result_t* result);
+
+/* Conservative local provenance for a displayed terminal-cell transition.
+ * It succeeds only for two untransformed root terminal cards sharing exactly
+ * one physical surface intersected by the supplied short ray.  Zero means
+ * "not certified" and callers must use the canonical boundary path. */
+int alea_raycast_shared_terminal_surface_nocache(
+    alea_system_t* sys, int cell_a_id, int cell_b_id,
+    const alea_ray_t* ray, double t_max, int* out_surface_id,
+    double* out_fraction);
+int alea_raycast_terminal_surface_nocache(
+    alea_system_t* sys, int cell_id, const alea_ray_t* ray, double t_max,
+    int* out_surface_id, double* out_fraction);
 
 
 #endif /* ALEA_RAYCAST_INTERNAL_H */
