@@ -32,7 +32,7 @@ TEST(surface_boundary_map_attributes_sphere_graveyard_edge) {
     ASSERT_NOT_NULL(sys);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    const int width = 64, height = 64;
+    enum { width = 64, height = 64 };
     int ids[width * height];
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -2.0, 2.0, -2.0, 2.0);
@@ -89,7 +89,7 @@ TEST(sparse_surface_labels_attribute_bounded_changed_edges) {
     ASSERT_NOT_NULL(sys);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    const int width = 96, height = 96;
+    enum { width = 96, height = 96 };
     int ids[width * height];
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -2.0, 2.0, -2.0, 2.0);
@@ -147,7 +147,7 @@ TEST(surface_boundary_map_ignores_cell_only_event_for_material_grid) {
                          material_two, 1.0, 0) >= 0);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    const int width = 2, height = 1;
+    enum { width = 2, height = 1 };
     int cell_ids[width * height], material_ids[width * height];
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -0.5, 0.5);
@@ -182,7 +182,7 @@ TEST(surface_boundary_map_ignores_cell_only_event_for_material_grid) {
     /* The same causal filtering must survive connected-arc label extraction:
      * the long material contour has enough edges to earn a label, but its
      * same-material cell transition must not leak surface 1 into the result. */
-    const int label_width = 64, label_height = 64;
+    enum { label_width = 64, label_height = 64 };
     int* label_cell_ids = malloc(
         (size_t)label_width * label_height * sizeof(*label_cell_ids));
     int* label_material_ids = malloc(
@@ -228,7 +228,7 @@ TEST(surface_boundary_map_keeps_distinct_crossings_in_distinct_groups) {
     ASSERT(alea_add_cell(sys, 3, second_pos, material, 1.0, 0) >= 0);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    const int width = 2, height = 1;
+    enum { width = 2, height = 1 };
     int ids[width * height];
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -0.5, 0.5);
@@ -275,7 +275,7 @@ TEST(surface_boundary_map_keeps_coincident_ids_in_one_crossing_group) {
     ASSERT(alea_add_cell(sys, 2, owner_pos, material, 1.0, 0) >= 0);
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    const int width = 2, height = 1;
+    enum { width = 2, height = 1 };
     int cell_ids[width * height];
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -0.5, 0.5);
@@ -317,7 +317,7 @@ TEST(surface_boundary_map_keeps_coincident_ids_in_one_crossing_group) {
      * label. Their representative pixel must be shared so higher layers can
      * recover this exact causal group rather than infer coincidence from a
      * random nearby anchor. */
-    const int label_width = 64, label_height = 64;
+    enum { label_width = 64, label_height = 64 };
     int label_ids[label_width * label_height];
     alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
     ASSERT_EQ(alea_find_cells_grid(sys, &view, label_width, label_height, -1,

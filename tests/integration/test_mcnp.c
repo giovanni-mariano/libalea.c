@@ -1031,7 +1031,7 @@ TEST(surface_boundary_map_keeps_coincident_surface_labels) {
     alea_system_t* sys = model->sys;
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
 
-    const int width = 8, height = 1;
+    enum { width = 8, height = 1 };
     int ids[width * height];
     alea_slice_view_t view;
     alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -0.1, 0.1);
