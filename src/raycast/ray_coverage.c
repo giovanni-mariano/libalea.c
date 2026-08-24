@@ -453,23 +453,23 @@ typedef struct {
 } coverage_slice_builder_t;
 
 typedef struct coverage_executor_counters {
-    atomic_size_t intervals;
-    atomic_size_t owners;
-    atomic_size_t bytes;
+    _Atomic size_t intervals;
+    _Atomic size_t owners;
+    _Atomic size_t bytes;
 } coverage_executor_counters_t;
 
 /* Atomically reserve a portion of an operation-wide budget.  Reservations are
  * deliberately not rolled back on a later allocation failure: that operation
  * is discarded transactionally, and retaining the reservation prevents other
  * workers from growing staging while failure is propagating. */
-static int coverage_executor_reserve(atomic_size_t* counter, size_t amount,
+static int coverage_executor_reserve(_Atomic size_t* counter, size_t amount,
                                      size_t limit) {
     size_t current = atomic_load(counter);
     for (;;) {
         if (amount > SIZE_MAX - current ||
             (limit != 0 && amount > limit - current))
             return -1;
-        if (atomic_compare_exchange_weak(counter, &current, current + amount))
+        if (atomic_compare_exchange_strong(counter, &current, current + amount))
             return 0;
     }
 }
