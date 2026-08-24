@@ -215,6 +215,11 @@ fail:
 alea_slice_directional_event_cache_t* alea_slice_directional_event_cache_create(
     alea_system_t* sys, const alea_slice_view_t* view, int width, int height) {
     if (!sys || !view || width <= 0 || height <= 0) return NULL;
+    /* Event streams are built in parallel and call the nocache ray helpers.
+     * Materialize every shared raycast cache on the caller thread first so a
+     * stale hierarchy cannot be rebuilt concurrently by multiple workers. */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
+        return NULL;
     alea_slice_directional_event_cache_t* cache = calloc(1, sizeof(*cache));
     if (!cache) return NULL;
     cache->sys = sys;
