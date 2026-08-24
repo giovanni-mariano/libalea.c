@@ -5,6 +5,94 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_geo_validator.h"
+#include "alea_mcnp.h"
+#include "core/alea_cell.h"
+#include "raycast/raycast.h"
+
+#include <math.h>
+
+typedef struct {
+    const alea_raycast_result_t* selected;
+    size_t next_segment;
+    size_t interval_count;
+    int mismatch;
+} selected_coverage_parity_t;
+
+static int coverage_interval_has_single_owner_chain(
+    const alea_ray_coverage_interval_t* interval) {
+    size_t roots = 0;
+    size_t child_count[33] = {0};
+    if (interval->owner_count > 32) return 0;
+    for (size_t i = 0; i < interval->owner_count; i++) {
+        const alea_ray_coverage_owner_t* owner = &interval->owners[i];
+        if (owner->parent_occurrence_key == 0) {
+            roots++;
+            continue;
+        }
+        size_t parent = 0;
+        while (parent < interval->owner_count &&
+               interval->owners[parent].occurrence_key !=
+                   owner->parent_occurrence_key)
+            parent++;
+        if (parent == interval->owner_count ||
+            owner->depth != interval->owners[parent].depth + 1 ||
+            ++child_count[parent] > 1)
+            return 0;
+    }
+    return roots == 1;
+}
+
+static int check_selected_coverage_parity(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    selected_coverage_parity_t* parity = context;
+    if (parity->next_segment >= parity->selected->segments.count) {
+        parity->mismatch = 1;
+        return 0;
+    }
+
+    int expected_cell_id = -1;
+    if (interval->kind == ALEA_RAY_COVERAGE_UNIQUE ||
+        interval->kind == ALEA_RAY_COVERAGE_UNDEFINED_FILL) {
+        if (interval->owner_count == 0) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        if (!coverage_interval_has_single_owner_chain(interval)) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        size_t deepest = 0;
+        for (size_t i = 1; i < interval->owner_count; i++) {
+            if (interval->owners[i].depth > interval->owners[deepest].depth)
+                deepest = i;
+        }
+        expected_cell_id = interval->owners[deepest].cell_id;
+    } else if (interval->kind != ALEA_RAY_COVERAGE_GAP) {
+        parity->mismatch = 1;
+        return 0;
+    }
+
+    parity->interval_count++;
+    double covered_until = interval->t_enter;
+    while (covered_until < interval->t_exit - 2e-6) {
+        if (parity->next_segment >= parity->selected->segments.count) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        const alea_ray_segment_t* selected =
+            &parity->selected->segments.data[parity->next_segment++];
+        if (selected->cell_id != expected_cell_id ||
+            fabs(selected->t_enter - covered_until) > 2e-6 ||
+            selected->t_exit > interval->t_exit + 2e-6) {
+            parity->mismatch = 1;
+            return 0;
+        }
+        covered_until = selected->t_exit;
+    }
+    if (fabs(covered_until - interval->t_exit) > 2e-6)
+        parity->mismatch = 1;
+    return 0;
+}
 
 static alea_system_t* build_split_box_system(void) {
     alea_system_t* sys = alea_create();
@@ -32,6 +120,84 @@ static alea_system_t* build_split_box_system(void) {
     if (alea_add_cell(sys, 1, left, m1, 1.0, 0) < 0 ||
         alea_add_cell(sys, 2, right, m2, 1.0, 0) < 0) {
         goto fail;
+    }
+    return sys;
+
+fail:
+    alea_destroy(sys);
+    return NULL;
+}
+
+static alea_system_t* build_sectorized_neighbor_box_system(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    int x_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int y_si = alea_plane_surface(sys, 11, 0, 1, 0, 0);
+    int box_si = alea_box_surface(sys, 20, -3, 3, -3, 3, -3, 3);
+    if (x_si < 0 || y_si < 0 || box_si < 0) goto fail;
+
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t x_negative = alea_halfspace(sys, x_si, -1);
+    alea_node_id_t x_positive = alea_halfspace(sys, x_si, 1);
+    alea_node_id_t y_negative = alea_halfspace(sys, y_si, -1);
+    alea_node_id_t y_positive = alea_halfspace(sys, y_si, 1);
+    alea_node_id_t left = alea_intersection(sys, box, x_negative);
+    alea_node_id_t right_lower = alea_intersection(
+        sys, alea_intersection(sys, box, x_positive), y_negative);
+    alea_node_id_t right_upper = alea_intersection(
+        sys, alea_intersection(sys, box, x_positive), y_positive);
+    if (box == ALEA_NODE_ID_INVALID || x_negative == ALEA_NODE_ID_INVALID ||
+        x_positive == ALEA_NODE_ID_INVALID || y_negative == ALEA_NODE_ID_INVALID ||
+        y_positive == ALEA_NODE_ID_INVALID || left == ALEA_NODE_ID_INVALID ||
+        right_lower == ALEA_NODE_ID_INVALID || right_upper == ALEA_NODE_ID_INVALID)
+        goto fail;
+
+    int material = alea_add_material(sys, 1);
+    if (alea_add_cell(sys, 1, left, material, 1.0, 0) < 0 ||
+        alea_add_cell(sys, 2, right_lower, material, 1.0, 0) < 0 ||
+        alea_add_cell(sys, 3, right_upper, material, 1.0, 0) < 0)
+        goto fail;
+    return sys;
+
+fail:
+    alea_destroy(sys);
+    return NULL;
+}
+
+static alea_system_t* build_dense_shared_fill_boundary_system(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+
+    int x_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
+    int y_si = alea_plane_surface(sys, 11, 0, 1, 0, 10);
+    int box_si = alea_box_surface(sys, 20, -3, 3, -3, 3, -3, 3);
+    if (x_si < 0 || y_si < 0 || box_si < 0) goto fail;
+
+    alea_node_id_t box = alea_halfspace(sys, box_si, -1);
+    alea_node_id_t x_negative = alea_halfspace(sys, x_si, -1);
+    alea_node_id_t x_positive = alea_halfspace(sys, x_si, 1);
+    alea_node_id_t y_above_box = alea_halfspace(sys, y_si, 1);
+    alea_node_id_t left = alea_intersection(sys, box, x_negative);
+    alea_node_id_t right = alea_intersection(sys, box, x_positive);
+    alea_node_id_t empty_shared = alea_intersection(sys, right, y_above_box);
+    if (box == ALEA_NODE_ID_INVALID || x_negative == ALEA_NODE_ID_INVALID ||
+        x_positive == ALEA_NODE_ID_INVALID || y_above_box == ALEA_NODE_ID_INVALID ||
+        left == ALEA_NODE_ID_INVALID || right == ALEA_NODE_ID_INVALID ||
+        empty_shared == ALEA_NODE_ID_INVALID) goto fail;
+
+    int material = alea_add_material(sys, 1);
+    int left_idx = alea_add_cell(sys, 1, left, material, 1.0, 0);
+    int parent_idx = alea_add_cell(sys, 2, right, material, 1.0, 0);
+    if (left_idx < 0 || parent_idx < 0 ||
+        alea_set_cell_fill(sys, parent_idx, 7, 0) != 0 ||
+        alea_add_cell(sys, 3, right, material, 1.0, 7) < 0) goto fail;
+
+    /* 129 references make the x-plane intentionally exceed the adjacency
+     * clique limit. These cells are empty at the witness point. */
+    for (int id = 4; id < 131; id++) {
+        if (alea_add_cell(sys, id, empty_shared, material, 1.0, 0) < 0)
+            goto fail;
     }
     return sys;
 
@@ -126,6 +292,266 @@ TEST(geo_validator_clean_adjacent_flat) {
     alea_destroy(sys);
 }
 
+TEST(geo_validator_resolves_sectorized_shared_surface_neighbor) {
+    alea_system_t* sys = build_sectorized_neighbor_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t strict_opts;
+    alea_geom_validator_options_init(&strict_opts);
+    strict_opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    strict_opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t strict_result;
+    alea_geom_validator_result_init(&strict_result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &strict_opts,
+                                         -2, 1, 0, 1, 0, 0, 4,
+                                         &strict_result), 0);
+    ASSERT_EQ(strict_result.error_count, 0);
+
+    alea_geom_validator_options_t fast_opts = strict_opts;
+    fast_opts.flags &= ~ALEA_GEOM_VALIDATE_STRICT_ADJACENCY;
+    alea_geom_validator_result_t fast_result;
+    alea_geom_validator_result_init(&fast_result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &fast_opts,
+                                         -2, 1, 0, 1, 0, 0, 4,
+                                         &fast_result), 0);
+    ASSERT_EQ(fast_result.error_count, 0);
+    ASSERT(fast_result.adjacency_hits > 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -4, 4, -4, 4);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    ASSERT_NOT_NULL(curves);
+    alea_geom_validator_result_t slice_result;
+    alea_geom_validator_result_init(&slice_result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &strict_opts,
+                                           &slice_result), 0);
+    ASSERT_EQ(slice_result.error_count, 0);
+
+    alea_geom_validator_result_free(&strict_result);
+    alea_geom_validator_result_free(&fast_result);
+    alea_geom_validator_result_free(&slice_result);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_accepts_dense_shared_fill_parent_transition) {
+    alea_system_t* sys = build_dense_shared_fill_boundary_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_domain_bounds_report_interior_gaps) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int sphere_si = alea_sphere_surface(sys, 10, 0, 0, 0, 1.0);
+    ASSERT(sphere_si >= 0);
+    alea_node_id_t sphere = alea_halfspace(sys, sphere_si, -1);
+    ASSERT_NE(sphere, ALEA_NODE_ID_INVALID);
+    int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, sphere, material, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID |
+                  ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS;
+    opts.validation_bounds[0] = -1.5;
+    opts.validation_bounds[1] = 1.5;
+    opts.validation_bounds[2] = -0.5;
+    opts.validation_bounds[3] = 0.5;
+    opts.validation_bounds[4] = -0.5;
+    opts.validation_bounds[5] = 0.5;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4.0,
+                                         &result), 0);
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_INTERIOR_GAP), 2);
+    ASSERT_EQ(result.error_count, (size_t)2);
+    ASSERT_NEAR(result.errors[0].t, 0.5, 1e-9);
+    ASSERT_NEAR(result.errors[0].offset, 0.5, 1e-9);
+    ASSERT_NEAR(result.errors[1].t, 3.0, 1e-9);
+    ASSERT_NEAR(result.errors[1].offset, 0.5, 1e-9);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_selected_trace_matches_unique_coverage) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_raycast_result_t selected, coverage_scratch;
+    alea_raycast_result_init(&selected);
+    alea_raycast_result_init(&coverage_scratch);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(sys,
+                                               -4, 0, 0, 1, 0, 0, 8,
+                                               &selected), 0);
+    ASSERT_EQ(selected.segments.count, 4);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -4, 0, 0, 1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT_EQ(alea_ray_coverage_sweep_reuse_nocache(
+                  sys, &ray, 8, &coverage_scratch,
+                  check_selected_coverage_parity, &parity), 4);
+    ASSERT_EQ(parity.interval_count, 4);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+
+    alea_raycast_result_free(&coverage_scratch);
+    alea_raycast_result_free(&selected);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_lattice_selected_trace_matches_unique_coverage) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+
+    alea_raycast_result_t selected, coverage_scratch;
+    alea_raycast_result_init(&selected);
+    alea_raycast_result_init(&coverage_scratch);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(model->sys,
+                                               -1.5, 0, 0, 1, 0, 0, 7,
+                                               &selected), 0);
+    ASSERT(selected.segments.count > 8);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -1.5, 0, 0, 1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT(alea_ray_coverage_sweep_reuse_nocache(
+               model->sys, &ray, 7, &coverage_scratch,
+               check_selected_coverage_parity, &parity) > 0);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+
+    alea_raycast_result_free(&coverage_scratch);
+    alea_raycast_result_free(&selected);
+    mcnp_model_destroy(model);
+}
+
+TEST(geo_validator_fill_selected_trace_matches_unique_coverage) {
+    mcnp_model_t* model = mcnp_load("tests/data/nested_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+
+    alea_raycast_result_t selected, coverage_scratch;
+    alea_raycast_result_init(&selected);
+    alea_raycast_result_init(&coverage_scratch);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(model->sys,
+                                               -110, 0, 0, 1, 0, 0, 220,
+                                               &selected), 0);
+    ASSERT(selected.segments.count > 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -110, 0, 0, 1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT(alea_ray_coverage_sweep_reuse_nocache(
+               model->sys, &ray, 220, &coverage_scratch,
+               check_selected_coverage_parity, &parity) > 0);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+
+    alea_raycast_result_free(&coverage_scratch);
+    alea_raycast_result_free(&selected);
+    mcnp_model_destroy(model);
+}
+
+TEST(geo_validator_slice_fill_parent_neighbor_accepts_terminal_child) {
+    /* Crossing root cell 99's boundary enters root fill cell 1, whose
+     * terminal owner is universe-1 child 2 or 3. The validator must recognize
+     * that child as belonging to expected parent 1 rather than emitting one
+     * false non-adjacent transition per sampled curve point. */
+    mcnp_model_t* model = mcnp_load("tests/data/nested_fill.mcnp");
+    if (!model) SKIP("Test data file not found");
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -110.0, 110.0, -110.0, 110.0);
+    alea_slice_curves_t* curves = alea_get_slice_curves(model->sys, &view);
+    ASSERT_NOT_NULL(curves);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.max_errors = 128;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(model->sys, &view, curves,
+                                           &opts, &result), 0);
+    ASSERT_EQ(count_error_type(&result,
+                               ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION), 0);
+    ASSERT_EQ(result.error_count, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_slice_curves_free(curves);
+    mcnp_model_destroy(model);
+}
+
+TEST(geo_validator_transformed_lattice_trace_matches_coverage) {
+    mcnp_model_t* model =
+        mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_raycast_result_t selected;
+    alea_raycast_result_init(&selected);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(model->sys,
+                                               3, -0.5, 0, 1, 0, 0, 8,
+                                               &selected), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 3, -0.5, 0, 1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT(alea_ray_coverage_sweep_reuse_nocache(
+               model->sys, &ray, 8, &scratch,
+               check_selected_coverage_parity, &parity) > 0);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+    alea_raycast_result_free(&scratch);
+    alea_raycast_result_free(&selected);
+    mcnp_model_destroy(model);
+}
+
+TEST(geo_validator_transformed_lattice_reverse_trace_matches_coverage) {
+    mcnp_model_t* model =
+        mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_raycast_result_t selected;
+    alea_raycast_result_init(&selected);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(model->sys,
+                                               9, -0.5, 0, -1, 0, 0, 8,
+                                               &selected), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 9, -0.5, 0, -1, 0, 0), 0);
+    selected_coverage_parity_t parity = { .selected = &selected };
+    ASSERT(alea_ray_coverage_sweep_reuse_nocache(
+               model->sys, &ray, 8, &scratch,
+               check_selected_coverage_parity, &parity) > 0);
+    ASSERT_EQ(parity.next_segment, selected.segments.count);
+    ASSERT_EQ(parity.mismatch, 0);
+    alea_raycast_result_free(&scratch);
+    alea_raycast_result_free(&selected);
+    mcnp_model_destroy(model);
+}
+
 TEST(geo_validator_detects_nested_overlap_flat) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -155,6 +581,16 @@ TEST(geo_validator_detects_nested_overlap_flat) {
     alea_geom_validator_result_init(&result);
     ASSERT_EQ(alea_validate_geometry(sys, &opts, &result), 0);
     ASSERT(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) > 0);
+    int saw_coverage_interval = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        const alea_geom_error_t* error = &result.errors[i];
+        if (error->type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING &&
+            error->source == ALEA_GEOM_EVENT_SOURCE_RAY && error->offset > 0.0) {
+            saw_coverage_interval = 1;
+            break;
+        }
+    }
+    ASSERT(saw_coverage_interval);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
@@ -370,7 +806,9 @@ TEST(geo_validator_reports_ambiguous_boundary) {
     ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
                                          -2, 0, 0, 1, 0, 0, 4,
                                          &result), 0);
-    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY) > 0);
+    /* The coincident plane/sphere pair is one crossing group, so it must
+     * produce one ambiguity finding rather than one per raw surface hit. */
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY), 1);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
@@ -454,6 +892,55 @@ TEST(geo_validator_truncates_at_max_errors) {
     alea_destroy(sys);
 }
 
+TEST(geo_validator_marks_crossing_budget_truncation) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+    opts.max_crossings = 1;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -4, 0, 0, 1, 0, 0, 8,
+                                         &result), 0);
+    ASSERT_EQ(result.truncated, 1);
+    ASSERT_EQ(result.crossings_checked, 1);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_marks_coverage_owner_budget_truncation) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    ASSERT_NE(inside, ALEA_NODE_ID_INVALID);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    for (int i = 0; i < 33; i++)
+        ASSERT(alea_add_cell(sys, i + 1, inside, material, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
+                                         -2, 0, 0, 1, 0, 0, 4,
+                                         &result), 0);
+    ASSERT_EQ(result.truncated, 1);
+    ASSERT_EQ(result.crossings_checked, 0);
+
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
 TEST(geo_validator_clean_adjacent_hier) {
     alea_system_t* sys = build_split_box_system();
     ASSERT_NOT_NULL(sys);
@@ -462,8 +949,7 @@ TEST(geo_validator_clean_adjacent_hier) {
 
     alea_geom_validator_options_t opts;
     alea_geom_validator_options_init(&opts);
-    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID |
-                  ALEA_GEOM_VALIDATE_HIERARCHICAL;
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
     opts.ray_count = 24;
     opts.seed = 7;
 
@@ -475,6 +961,33 @@ TEST(geo_validator_clean_adjacent_hier) {
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
+}
+
+/* Lattice DDA boundaries are synthetic (surface ID zero), but they still
+ * change the concrete occurrence used by the following physical transition.
+ * This deck crosses two internal lattice boundaries between its cylinder
+ * surfaces. */
+TEST(geo_validator_tracks_synthetic_lattice_boundaries) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+
+    alea_geom_validator_options_t opts;
+    alea_geom_validator_options_init(&opts);
+    opts.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    opts.sample_offset = 0.01;
+
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(model->sys, &opts,
+                                         -1.5, 0, 0, 1, 0, 0, 7.0,
+                                         &result), 0);
+    ASSERT_EQ(result.error_count, 0);
+    /* Six cylinder crossings plus lattice entry/exit are physical.  The
+     * validator must also account for at least one internal DDA transition. */
+    ASSERT(result.crossings_checked > 8);
+
+    alea_geom_validator_result_free(&result);
+    mcnp_model_destroy(model);
 }
 
 TEST(geo_validator_non_strict_uses_fast_adjacency_path) {
@@ -603,14 +1116,20 @@ TEST(geo_validator_reports_overlap_count) {
                                          -4, 0, 0, 1, 0, 0, 8,
                                          &result), 0);
 
+    int overlap_count = 0;
     int saw_three_way = 0;
     for (size_t i = 0; i < result.error_count; i++) {
         if (result.errors[i].type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING &&
             result.errors[i].found_cell_count >= 3) {
             saw_three_way = 1;
         }
+        if (result.errors[i].type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING)
+            overlap_count++;
     }
     ASSERT(saw_three_way);
+    /* Nested spheres produce three distinct complete coverage sets along
+     * this ray: two-owner, three-owner, then two-owner again. */
+    ASSERT_EQ(overlap_count, 3);
 
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
@@ -690,6 +1209,19 @@ TEST(geo_validator_slice_detects_nested_overlap) {
     }
     ASSERT(saw_slice_location);
 
+    alea_geom_validator_result_free(&result);
+    opts.max_samples_per_signature = 1;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING), 1);
+    ASSERT(result.suppressed_samples > 0);
+    ASSERT_EQ(result.truncated, 0);
+    alea_geom_validator_result_free(&result);
+    opts.max_samples_per_signature = 0;
+    opts.max_samples_per_curve = 2;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
+    ASSERT(result.sample_limited_curves > 0);
     alea_geom_validator_result_free(&result);
     alea_slice_curves_free(curves);
     alea_destroy(sys);

@@ -31,6 +31,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "alea_types.h"
+#include "alea_log.h"
 
 /* alea_cell_hit_t is defined in core/alea_universe.h (included via alea_system.h) */
 /* void_result_t is forward-declared in alea_types.h */
@@ -181,7 +182,6 @@ typedef struct {
     int hier_max_universe_cells;
     int hier_largest_universe_id;
     size_t memory_bytes;
-    size_t point_queries;
 } alea_query_acceleration_stats_t;
 
 /**
@@ -204,6 +204,15 @@ int alea_query_acceleration_stats(const alea_system_t* sys,
 int alea_find_cell(alea_system_t* sys, double x, double y, double z);
 int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
                             alea_cell_hit_t* hits, size_t max_hits);
+/** Complete diagnostic ownership query with concrete occurrence ancestry.
+ * Returns the retained hit count, which equals max_hits when the caller must
+ * treat the owner set as potentially truncated. */
+int alea_find_all_cells_coverage_chain(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       alea_cell_hit_t* hits,
+                                       uint64_t* occurrence_keys,
+                                       uint64_t* parent_occurrence_keys,
+                                       size_t max_hits);
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z);
 /* Legacy convenience wrapper.
@@ -224,11 +233,6 @@ int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
  *   int idx = alea_sphere_surface(sys, 0, 0, 0, 0, 5.0);
  *   alea_node_id_t interior = alea_halfspace(sys, idx, -1);
  * ============================================================================ */
-
-/**
- * @brief Access surface entry by index (stable after vector growth)
- */
-#define alea_surface_at(sys, idx) (&(sys)->surfaces.data[idx])
 
 /**
  * @brief Create a plane surface with automatic registration
@@ -543,6 +547,36 @@ typedef struct {
 void alea_flatten_all_cells(alea_system_t* sys, alea_simplify_stats_t* stats);
 
 /**
+ * @brief Carve a region out of every ordinary cell in one universe.
+ *
+ * Each affected cell is replaced by ``cell_region - carve_root``.  The
+ * carve tree must belong to @p sys.  When @p simplify is non-zero, each new
+ * tree is simplified before it is installed and cells proved empty are
+ * removed.  Lattice cells are rejected: their containment is defined by
+ * lattice-specific lookup rules, so attaching a generic CSG mask to their
+ * root would not be reliable.
+ *
+ * This is intended for same-universe component insertion: construct the
+ * union of the incoming component regions and carve the pre-existing cells.
+ * Callers that register incoming cells first should pass their original cell
+ * count as @p cell_limit so those cells are excluded from the rewrite.
+ *
+ * @param sys System to modify
+ * @param universe_id Target universe
+ * @param carve_root Root of the region to remove
+ * @param simplify Whether to simplify each rewritten cell
+ * @param cell_limit Only cells with an index below this value are rewritten;
+ *        pass -1 to rewrite every cell in the universe.
+ * @param out_modified Optional number of rewritten cells
+ * @param out_removed Optional number of cells removed as empty
+ * @return 0 on success, -1 on error (the target cells are unchanged on
+ *         validation or construction failure)
+ */
+int alea_carve_universe(alea_system_t* sys, int universe_id,
+                        alea_node_id_t carve_root, int simplify, int cell_limit,
+                        int* out_modified, int* out_removed);
+
+/**
  * @brief Split cells with top-level unions into multiple simpler cells.
  *
  * For each cell whose root is a union (T1 ∪ T2 ∪ ... ∪ Tk),
@@ -788,21 +822,6 @@ int alea_void_merge(alea_system_t* sys, void_result_t* result);
 /* ============================================================================
  * LOGGING
  * ============================================================================ */
-
-/* Log level: 0=none, 1=error, 2=warn, 3=info, 4=debug, 5=trace */
-#ifndef ALEA_LOG_LEVEL_DEFINED
-#define ALEA_LOG_LEVEL_DEFINED
-typedef enum {
-    ALEA_LOG_LEVEL_NONE  = 0,
-    ALEA_LOG_LEVEL_ERROR = 1,
-    ALEA_LOG_LEVEL_WARN  = 2,
-    ALEA_LOG_LEVEL_INFO  = 3,
-    ALEA_LOG_LEVEL_DEBUG = 4,
-    ALEA_LOG_LEVEL_TRACE = 5
-} alea_log_level_t;
-#endif
-void alea_log_set_level(alea_log_level_t level);
-alea_log_level_t alea_log_get_level(void);
 
 /* ============================================================================
  * MATERIAL OPERATIONS

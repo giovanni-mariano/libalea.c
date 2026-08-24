@@ -154,9 +154,11 @@ typedef struct {
 typedef struct {
     size_t tiles;                    /**< Number of tiles visited */
     size_t fallback_tiles;           /**< Tiles refined with exact per-pixel fallback */
+    size_t skipped_tiles;            /**< Tiles left provisional after a work budget */
     size_t query_errors;             /**< Spatial candidate query failures */
     size_t pixels;                   /**< Pixels evaluated by tile candidates */
     size_t exact_fallback_pixels;    /**< Pixels evaluated by exact fallback */
+    size_t skipped_pixels;           /**< Pixels not refined because a budget was exhausted */
     size_t candidate_total;          /**< Raw spatial candidates across tiles */
     size_t candidate_max;            /**< Maximum raw candidates in one tile */
     size_t dedup_candidate_total;    /**< Deduplicated candidates across tiles */
@@ -173,7 +175,37 @@ typedef struct {
     size_t path_2d_verify_queries;   /**< 2D buckets checked against 3D query */
     size_t path_2d_missing_candidates; /**< 3D candidates absent from 2D buckets */
     size_t path_2d_missing_tiles;     /**< Path/tile groups with missing candidates */
+    bool incomplete;                  /**< A budget left provisional pixels unrefined */
 } alea_tile_coverage_stats_t;
+
+/** Controls bounded tile/path coverage refinement without process-global
+ * environment switches.  Initialize with
+ * alea_tile_refinement_options_init() before overriding individual fields.
+ * Passing NULL to an `_ex` entry point also selects these defaults.
+ */
+typedef struct {
+    size_t max_candidates;          /**< Candidate buffer/query cap (default 4096) */
+    size_t max_evaluated_candidates;/**< Tile chain-candidate evaluation cap */
+    size_t max_exact_fallback_pixels;/**< Exact fallback budget; 0 is unlimited */
+    size_t cap_storm_threshold;     /**< Capped tiles before exact fallback mode */
+    size_t path_2d_verify_limit;    /**< Maximum logged 2D-index comparisons */
+    size_t path_2d_bucket_limit;    /**< Candidate cap per path/2D tile */
+    const uint8_t* tile_mask;       /**< Optional row-major selected-tile mask */
+    size_t tile_mask_count;         /**< Entries in tile_mask (0 when absent) */
+    uint8_t* provisional_mask;      /**< Optional per-pixel inconclusive output */
+    size_t provisional_mask_count;  /**< Entries in provisional_mask */
+    int path_2d_tile_pad;           /**< Extra path-index tiles around a query */
+    bool use_hier_direct_region;    /**< Use direct hierarchical tile candidates */
+    bool use_hier_chain_candidates; /**< Preserve hierarchy chains in tile candidates */
+    bool use_chain_bitset;          /**< Use chain bitset evaluation where available */
+    bool use_path_2d_index;         /**< Build path-local 2D candidate indexes */
+    bool verify_path_2d_index;      /**< Cross-check path-local 2D candidates */
+    bool parallel;                  /**< Allow path refinement OpenMP workers */
+} alea_tile_refinement_options_t;
+
+/** Initialize tile/path refinement options to stable bounded defaults. */
+void alea_tile_refinement_options_init(
+    alea_tile_refinement_options_t* options);
 
 /** Diagnostic counters from boundary-ambiguity filtering */
 typedef struct {
@@ -202,6 +234,11 @@ typedef struct {
     int id;             /**< Cell/material/surface ID */
     int px, py;         /**< Pixel coordinates for label placement */
     int pixel_count;    /**< Region size (for cells/materials) or 0 (for surfaces) */
+    /* Exact causal crossing that certified a sparse surface label, or -1
+     * when the label has no provenance edge (ordinary region labels). */
+    int provenance_edge_x, provenance_edge_y;
+    int provenance_orientation;
+    int provenance_group;
 } alea_label_position_t;
 
 /* ==========================================================================
@@ -214,6 +251,8 @@ typedef struct {
  * or labels. */
 
 typedef struct alea_slice_surface_boundary_map alea_slice_surface_boundary_map_t;
+typedef struct alea_slice_directional_event_cache
+    alea_slice_directional_trace_cache_t;
 
 typedef enum {
     ALEA_SLICE_EDGE_RIGHT = 0, /**< Edge from (x,y) to (x+1,y) */
@@ -249,11 +288,22 @@ typedef int (*alea_slice_classify_point_fn)(
     alea_slice_classification_t* out);
 
 /** Built-in full-coverage classifiers for cell and material contour grids.
- * They ignore userdata and may be passed directly to the map builder. */
+ * They select innermost ownership and ignore userdata. */
 int alea_slice_classify_cell(alea_system_t* sys, double x, double y, double z,
                              void* userdata, alea_slice_classification_t* out);
 int alea_slice_classify_material(alea_system_t* sys, double x, double y, double z,
                                  void* userdata, alea_slice_classification_t* out);
+
+/** Depth-aware variants of the built-in classifiers. `userdata` may point to
+ * an int universe depth using the same convention as alea_find_cells_grid:
+ * -1 selects innermost ownership; non-negative values select that depth with
+ * the renderer's deepest-not-deeper fallback. A NULL userdata uses -1. */
+int alea_slice_classify_cell_at_depth(
+    alea_system_t* sys, double x, double y, double z, void* userdata,
+    alea_slice_classification_t* out);
+int alea_slice_classify_material_at_depth(
+    alea_system_t* sys, double x, double y, double z, void* userdata,
+    alea_slice_classification_t* out);
 
 /** Build physical-surface provenance for transitions in a caller-owned grid.
  * `classify` must apply the same displayed-identity semantics used to create
@@ -262,6 +312,15 @@ int alea_slice_surface_boundary_map_create(
     alea_system_t* sys, const alea_slice_view_t* view,
     int width, int height, const int* grid_ids,
     alea_slice_classify_point_fn classify, void* classify_userdata,
+    alea_slice_surface_boundary_map_t** out_map);
+
+/** Build a boundary map using a matching reusable directional trace cache.
+ * The cache remains owned by the caller and must outlive this call. */
+int alea_slice_surface_boundary_map_create_with_directional_cache(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    const alea_slice_directional_trace_cache_t* cache,
     alea_slice_surface_boundary_map_t** out_map);
 
 void alea_slice_surface_boundary_map_free(
@@ -279,12 +338,64 @@ int alea_slice_surface_boundary_surface_id(
     const alea_slice_surface_boundary_map_t* map, int x, int y,
     alea_slice_edge_orientation_t orientation, size_t index);
 
+/** Ordered causal crossing groups on one rendered grid edge. Fractions are
+ * measured from the edge's documented right/down start pixel centre. */
+size_t alea_slice_surface_boundary_group_count(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation);
+double alea_slice_surface_boundary_group_fraction(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t group_index);
+size_t alea_slice_surface_boundary_group_surface_count(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t group_index);
+int alea_slice_surface_boundary_group_surface_id(
+    const alea_slice_surface_boundary_map_t* map, int x, int y,
+    alea_slice_edge_orientation_t orientation, size_t group_index,
+    size_t surface_index);
+
 /** Find one visible label position for each sufficiently long attributed
- * physical surface.  Valid and diagnostic (overlap/ambiguous/multi-hit)
- * edges participate; synthetic, gap, and unresolved edges do not. */
+ * physical surface. Only directionally agreed valid crossings (including
+ * agreed multi-hit edges) participate; diagnostic, synthetic, gap, and
+ * unresolved edges do not certify a normal surface label. */
 int alea_find_surface_labels_on_boundary_map(
     const alea_slice_surface_boundary_map_t* map, int margin,
     alea_label_position_t** out_labels, int* out_count);
+
+/** Find surface labels from a bounded sample of transitions in a rendered
+ * identity grid.  At most `max_queries` changed pixel edges are attributed
+ * with canonical bidirectional short-edge traces; no analytical curve list or
+ * viewport-wide directional event cache is built.  This is the interactive
+ * large-model path.  `max_labels` bounds the returned ranked surface labels.
+ * Both limits must be positive. */
+typedef struct {
+    size_t tiles_examined;
+    size_t changed_edges;
+    size_t candidate_edges;
+    size_t forward_trace_calls;
+    size_t reverse_trace_calls;
+    size_t accepted_edges;
+    size_t observations;
+    size_t labels;
+    size_t batch_attempts;
+    size_t batch_traces_used;
+    size_t local_provenance_traces_used;
+    size_t local_path_pairs_resolved;
+    size_t local_path_pairs_same_universe;
+    size_t local_path_pairs_same_transform;
+    uint64_t breakpoint_hits;
+    uint64_t selected_segments;
+} alea_sparse_surface_label_stats_t;
+
+int alea_find_surface_labels_sparse_on_grid(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height, const int* grid_ids,
+    alea_slice_classify_point_fn classify, void* classify_userdata,
+    int margin, size_t max_queries, size_t max_labels,
+    alea_label_position_t** out_labels, int* out_count);
+
+/** Return counters from the most recent sparse surface-label query. */
+alea_sparse_surface_label_stats_t alea_sparse_surface_label_stats_get(void);
 
 /* ============================================================================
  * SLICE VIEW SETUP
@@ -323,6 +434,19 @@ void alea_slice_view_init(alea_slice_view_t* view,
  * COMPACT RAY-SLICE TRACING
  * ============================================================================ */
 
+/** Opaque reusable U+/U-/V+/V- directional trace cache.  It captures the
+ * system generation, view, sampling dimensions, complete canonical boundary
+ * events, and ownership traces.  Destroy it before destroying its system. */
+alea_slice_directional_trace_cache_t*
+alea_slice_directional_trace_cache_create(
+    alea_system_t* sys, const alea_slice_view_t* view, int width, int height);
+void alea_slice_directional_trace_cache_destroy(
+    alea_slice_directional_trace_cache_t* cache);
+int alea_slice_directional_trace_cache_matches(
+    const alea_slice_directional_trace_cache_t* cache,
+    const alea_system_t* sys, const alea_slice_view_t* view,
+    int width, int height);
+
 /**
  * Trace one U-directed ray through each centered V row of a slice view.
  *
@@ -337,6 +461,63 @@ int alea_trace_ray_slice_compact(
     size_t row_count,
     const alea_raycast_batch_options_t* options,
     alea_raycast_batch_result_t* result);
+
+/* ============================================================================
+ * RAY-SLICE RASTERIZATION
+ * ============================================================================ */
+
+typedef uint32_t alea_slice_raster_fields_t;
+
+#define ALEA_SLICE_RASTER_CELL_ID          (1u << 0)
+#define ALEA_SLICE_RASTER_MATERIAL_ID      (1u << 1)
+#define ALEA_SLICE_RASTER_UNIVERSE_ID      (1u << 2)
+#define ALEA_SLICE_RASTER_FILL_UNIVERSE    (1u << 3)
+#define ALEA_SLICE_RASTER_DENSITY          (1u << 4)
+#define ALEA_SLICE_RASTER_RESOLUTION_FLAGS (1u << 5)
+
+/** Caller-owned, tightly packed row-major ray-slice raster buffers.
+ * Every requested field requires a non-NULL, non-overlapping buffer with
+ * nu * nv elements. Unrequested pointers are ignored. */
+typedef struct {
+    size_t struct_size;
+    size_t nu;
+    size_t nv;
+    alea_slice_raster_fields_t fields;
+    int32_t* cell_ids;
+    int32_t* material_ids;
+    int32_t* universe_ids;
+    int32_t* fill_universe_ids;
+    double* densities;
+    uint8_t* resolution_flags;
+} alea_slice_raster_t;
+
+/** Options for fused ray-slice tracing and rasterization. */
+typedef struct {
+    size_t struct_size;
+    int projected_depth;             /**< -1 = leaf; >= 0 = hierarchy depth */
+    uint64_t max_segments;           /**< 0 = unbounded */
+    uint64_t max_trace_output_bytes; /**< 0 = unbounded compact temporary */
+} alea_slice_raster_options_t;
+
+void alea_slice_raster_init(alea_slice_raster_t* raster);
+void alea_slice_raster_options_init(alea_slice_raster_options_t* options);
+
+/** Rasterize a compact result produced by alea_trace_ray_slice_compact().
+ * The result must match view and output->nv. On validation failure, requested
+ * output buffers are left unchanged. Cell/material/universe/fill values follow
+ * the result's projected depth; density is always resolved leaf density. */
+int alea_rasterize_ray_slice_compact(
+    const alea_slice_view_t* view,
+    const alea_raycast_batch_result_t* segments,
+    alea_slice_raster_t* output);
+
+/** Trace centered U-directed slice rows and rasterize them into caller buffers.
+ * The compact temporary is internal and never retained after return. */
+int alea_trace_ray_slice_raster(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    const alea_slice_raster_options_t* options,
+    alea_slice_raster_t* output);
 
 /* ============================================================================
  * GRID-BASED CELL QUERIES
@@ -422,6 +603,20 @@ int alea_find_cells_grid_coverage_paths(alea_system_t* sys,
 
 /** Free records owned by a slice path table */
 void alea_slice_path_table_free(alea_slice_path_table_t* table);
+
+/** Resolve concrete path IDs only for selected diagnostic tiles.
+ * Unselected pixels receive UINT32_MAX. */
+int alea_find_cells_grid_paths_selected(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    const uint8_t* tile_mask,
+    size_t tile_mask_count,
+    int* inout_cell_ids,
+    uint32_t* out_path_ids,
+    alea_slice_path_table_t* out_paths);
 
 /**
  * @brief Check grid for overlapping cells (comprehensive)
@@ -539,6 +734,18 @@ int alea_refine_grid_coverage_tiles_exact(
     uint8_t* coverage,
     uint8_t* errors);
 
+/** Options-controlled variant of alea_refine_grid_coverage_tiles_exact(). */
+int alea_refine_grid_coverage_tiles_exact_ex(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    const alea_tile_refinement_options_t* options,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors);
+
 /**
  * @brief Refine coverage by querying spatial candidates per concrete path
  *
@@ -560,6 +767,21 @@ int alea_refine_grid_coverage_paths_exact(
     const int* primary_cell_ids,
     const uint32_t* path_ids,
     const alea_slice_path_table_t* paths,
+    int* out_secondary_cell_ids,
+    uint8_t* coverage,
+    uint8_t* errors);
+
+/** Options-controlled variant of alea_refine_grid_coverage_paths_exact(). */
+int alea_refine_grid_coverage_paths_exact_ex(
+    alea_system_t* sys,
+    const alea_slice_view_t* view,
+    int nu, int nv,
+    int universe_depth,
+    int tile_w, int tile_h,
+    const int* primary_cell_ids,
+    const uint32_t* path_ids,
+    const alea_slice_path_table_t* paths,
+    const alea_tile_refinement_options_t* options,
     int* out_secondary_cell_ids,
     uint8_t* coverage,
     uint8_t* errors);
@@ -681,6 +903,15 @@ int alea_find_surface_label_positions_on_boundaries(
     int* out_count
 );
 
+/* Fast analytical labels with sparse physical-surface verification. */
+int alea_find_surface_label_positions_with_provenance(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    const alea_slice_curves_t* curves, const int* boundary_ids,
+    double x_min, double x_max, double y_min, double y_max,
+    int width, int height, int margin, int material_boundary,
+    alea_label_position_t** out_labels, int* out_count
+);
+
 /* ============================================================================
  * ANALYTICAL CURVE API
  * ============================================================================ */
@@ -784,6 +1015,7 @@ typedef struct {
     int secondary_cell_id;
     int pixel_count;
     int min_i, min_j, max_i, max_j;
+    int representative_i, representative_j; /**< A pixel known to belong to this component */
 } alea_plot_error_component_t;
 
 /** Result of plot-level component classification */
@@ -791,6 +1023,19 @@ typedef struct {
     alea_plot_error_component_t* components;
     size_t component_count;
 } alea_plot_error_component_result_t;
+
+/** Accounting for one bounded exact-local coverage query.  The scratch
+ * allocation is owned entirely by libalea and is released before the compact
+ * component result is returned. */
+typedef struct {
+    size_t pixels;
+    size_t scratch_bytes;
+    int worker_limit;
+    alea_point_coverage_stats_t point_coverage;
+} alea_local_coverage_stats_t;
+
+/** Return code used when an explicit local-coverage resource budget is hit. */
+#define ALEA_LOCAL_COVERAGE_BUDGET_EXCEEDED (-2)
 
 /**
  * @brief Check surface curves for geometry errors (overlaps/gaps)
@@ -898,6 +1143,27 @@ alea_plot_error_component_result_t* alea_classify_plot_error_components(
     const int* secondary_cell_ids,
     const uint8_t* coverage,
     int nu, int nv);
+
+/**
+ * Run an exact, bounded local coverage scan and retain only connected error
+ * components. Unlike alea_find_cells_grid_coverage(), no raster arrays or
+ * analytical error lines escape this call. `max_pixels` and
+ * `max_scratch_bytes` is a hard pre-allocation limit. `max_workers` limits
+ * this query only (without changing process-wide OpenMP settings); zero
+ * selects the safe single-worker default.
+ *
+ * On success ownership of `*out_components` transfers to the caller, which
+ * frees it with alea_plot_error_components_free(). Returns
+ * ALEA_LOCAL_COVERAGE_BUDGET_EXCEEDED before allocating when a limit would be
+ * exceeded, or -1 for invalid input, interruption, or allocation/query
+ * failure.
+ */
+int alea_find_local_coverage_components(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    int nu, int nv, int universe_depth,
+    size_t max_pixels, size_t max_scratch_bytes, int max_workers,
+    alea_plot_error_component_result_t** out_components,
+    alea_local_coverage_stats_t* out_stats);
 
 /** Free plot error component result */
 void alea_plot_error_components_free(alea_plot_error_component_result_t* result);

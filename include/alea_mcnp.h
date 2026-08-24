@@ -24,7 +24,6 @@
 #define ALEA_MCNP_H
 
 #include "alea.h"
-#include "util/alea_vec.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,8 +66,6 @@ typedef struct {
     uint8_t reserved[6];
     double values[13];
 } mcnp_inline_transform_t;
-
-ALEA_VEC_DEFINE(mcnp_inline_transform_vec, mcnp_inline_transform_t);
 
 typedef struct {
     double imp_n, imp_p, imp_e;
@@ -126,7 +123,9 @@ typedef struct {
     mcnp_cell_params_t* cell_params;        /* parallel array, indexed like sys->cells */
     size_t cell_params_count;
     size_t cell_params_capacity;
-    mcnp_inline_transform_vec_t inline_transforms;
+    mcnp_inline_transform_t* inline_transforms;
+    size_t inline_transform_count;
+    size_t inline_transform_capacity;
     mcnp_export_config_t export_config;
 } mcnp_model_t;
 
@@ -192,6 +191,25 @@ int mcnp_export_system_stream(alea_system_t* sys, FILE* out);
 void mcnp_model_destroy(mcnp_model_t* model);
 
 /**
+ * @brief Return the model's system as a borrowed pointer, or NULL if detached.
+ *
+ * The pointer remains valid until the model is destroyed or detached with
+ * mcnp_model_take_system().
+ */
+alea_system_t* mcnp_model_system(mcnp_model_t* model);
+
+/**
+ * @brief Detach the model's system and return it.
+ *
+ * The returned system remains valid after mcnp_model_destroy(). Calling this
+ * more than once returns NULL after the first successful transfer. For a model
+ * created by mcnp_load(), the caller becomes responsible for alea_destroy().
+ * A wrapper created by mcnp_model_wrap() remains non-owning; its original
+ * caller retains that responsibility.
+ */
+alea_system_t* mcnp_model_take_system(mcnp_model_t* model);
+
+/**
  * @brief Get cell params by index (bounds-checked)
  * @return Pointer to params, or NULL if out of range
  */
@@ -202,33 +220,13 @@ mcnp_cell_params_t* mcnp_cell_params(mcnp_model_t* m, size_t idx);
  */
 const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t idx);
 
-uint32_t mcnp_model_add_inline_transform(mcnp_model_t* model,
-                                         const double* values,
-                                         int count,
-                                         int degrees);
+/**
+ * @brief Get an inline transform by index (bounds-checked)
+ * @return Borrowed transform pointer, or NULL if the index is invalid
+ */
 const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
     const mcnp_model_t* model,
     uint32_t index);
-
-/**
- * @brief Ensure cell_params array has room for at least `cap` entries
- * @return 0 on success, -1 on allocation failure
- */
-int mcnp_model_reserve_params(mcnp_model_t* model, size_t cap);
-
-/**
- * @brief Append a new cell params entry with defaults (imp=1.0)
- * @return Index of new entry, or -1 on failure
- */
-int mcnp_model_add_params(mcnp_model_t* model);
-
-/**
- * @brief Register cell callbacks on the system for this model
- *
- * After calling this, any alea_add_cell() / split / merge / etc.
- * will automatically grow/copy the parallel params array.
- */
-void mcnp_model_register_hooks(mcnp_model_t* model);
 
 /**
  * @brief Create a non-owning model wrapper around an existing system

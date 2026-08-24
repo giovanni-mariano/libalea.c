@@ -10,3 +10,4 @@ tools/mc_plotter
 
 # Test temp files
 *_tmp.*
+plans/*

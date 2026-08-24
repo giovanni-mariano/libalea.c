@@ -573,6 +573,15 @@ int alea_identify_cell_at_point(alea_system_t* sys, double x, double y, double z
  */
 int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs);
 
+/* Internal surface storage access. Public users must use alea_halfspace(). */
+static inline alea_surface_entry_t* alea_surface_entry_at(alea_system_t* sys,
+                                                          size_t index) {
+    return &sys->surfaces.data[index];
+}
+
+/* Transitional private spelling for white-box tests and internal modules. */
+#define alea_surface_at(sys, idx) alea_surface_entry_at((sys), (idx))
+
 // ============================================================================
 // API - NODE OPERATIONS
 // ============================================================================
@@ -604,8 +613,8 @@ alea_node_t* alea_get_node(alea_system_t* sys, uint32_t id);
  *
  * Example:
  *   int idx = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
- *   alea_node_id_t sphere_in = alea_surface_at(sys, idx)->neg_node;   // interior
- *   alea_node_id_t sphere_out = alea_surface_at(sys, idx)->pos_node;  // exterior
+ *   alea_node_id_t sphere_in = alea_halfspace(sys, idx, -1);  // interior
+ *   alea_node_id_t sphere_out = alea_halfspace(sys, idx, +1); // exterior
  *
  * @param sys CSG system
  * @param node_id Source primitive node ID

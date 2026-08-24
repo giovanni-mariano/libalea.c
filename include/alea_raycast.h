@@ -28,6 +28,44 @@ typedef struct alea_raycast_result alea_raycast_result_t;
 /** Opaque compact result for a batch of hierarchical ray traces. */
 typedef struct alea_raycast_batch_result alea_raycast_batch_result_t;
 
+/** Opaque reusable answer for a first-visible ray query. */
+typedef struct alea_ray_first_visible_query_result
+    alea_ray_first_visible_query_result_t;
+typedef struct alea_ray_boundary_event_query_result
+    alea_ray_boundary_event_query_result_t;
+typedef struct alea_ray_coverage_slice_result
+    alea_ray_coverage_slice_result_t;
+
+#define ALEA_RAY_FIRST_VISIBLE_SURFACE_ID      (1u << 0)
+#define ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL  (1u << 1)
+
+/** Public first-visible query options.  Set struct_size to sizeof(*options).
+ * A zero t_max is unbounded; material_filter < 0 accepts every non-void
+ * material.  Older struct prefixes are accepted safely. */
+typedef struct {
+    size_t struct_size;
+    uint32_t fields;
+    double t_min;
+    double t_max;
+    int material_filter;
+} alea_ray_first_visible_options_t;
+
+#define ALEA_RAY_EVENT_PHYSICAL          0
+#define ALEA_RAY_EVENT_SYNTHETIC_LATTICE 1
+#define ALEA_RAY_EVENT_UNRESOLVED        2
+#define ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID (1u << 0)
+#define ALEA_RAY_BOUNDARY_EVENT_NORMAL       (1u << 1)
+
+typedef struct {
+    size_t struct_size;
+    uint32_t fields;
+    double t_min;
+    double t_max;
+    uint64_t max_events;
+    uint64_t max_output_bytes;
+    int include_all_coincident_physical;
+} alea_ray_boundary_event_options_t;
+
 /* Optional fields in alea_raycast_batch_result_t. Distances and cell IDs are
  * always present; an accessor for an unrequested optional field returns NULL. */
 #define ALEA_RAY_BATCH_MATERIAL          (1u << 0)
@@ -48,6 +86,59 @@ typedef struct {
     uint64_t max_path_entries; /**< Applies to flattened full-path CSR output */
     uint64_t max_output_bytes; /**< 0 = unbounded compact-array allocation */
 } alea_raycast_batch_options_t;
+
+/* Complete-ownership diagnostic coverage is published as input-order CSR:
+ * rows -> intervals -> concrete owner occurrences.  Returned arrays are
+ * borrowed and remain valid until the next successful query on the result or
+ * until its destruction. */
+typedef enum {
+    ALEA_RAY_COVERAGE_UNIQUE,
+    ALEA_RAY_COVERAGE_GAP,
+    ALEA_RAY_COVERAGE_ALLOWED_EXTERIOR,
+    ALEA_RAY_COVERAGE_OVERLAP,
+    ALEA_RAY_COVERAGE_UNDEFINED_FILL,
+    ALEA_RAY_COVERAGE_UNRESOLVED,
+    ALEA_RAY_COVERAGE_TRUNCATED
+} alea_ray_coverage_kind_t;
+
+typedef enum {
+    ALEA_RAY_COVERAGE_REFINEMENT_COMPLETE = 0,
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH,
+    ALEA_RAY_COVERAGE_REFINEMENT_MAX_ROWS,
+    ALEA_RAY_COVERAGE_REFINEMENT_MIN_SPACING
+} alea_ray_coverage_refinement_status_t;
+
+#define ALEA_RAY_COVERAGE_DOMAIN             (1u << 0)
+#define ALEA_RAY_COVERAGE_REPORT_EXTERIOR    (1u << 1)
+#define ALEA_RAY_COVERAGE_REFINE_SIGNATURE    (1u << 0)
+#define ALEA_RAY_COVERAGE_REFINE_DISPLACEMENT (1u << 1)
+#define ALEA_RAY_COVERAGE_REFINE_DENSITY      (1u << 2)
+#define ALEA_RAY_COVERAGE_REFINE_FINDING      (1u << 3)
+
+/** Options for compact complete-coverage rows. Set struct_size to
+ * sizeof(*options). t_max must be finite and positive. When DOMAIN is set,
+ * [domain_t_min, domain_t_max] is the ownership-validation domain; otherwise
+ * unowned intervals are reported as gaps. REPORT_EXTERIOR requires DOMAIN.
+ * Zero resource limits are unlimited. A nonzero max_refinement_depth enables
+ * deterministic midpoint refinement; a zero refinement_signals field uses
+ * signature-only selection.
+ */
+typedef struct {
+    size_t struct_size;
+    uint32_t flags;
+    double t_max;
+    double domain_t_min;
+    double domain_t_max;
+    uint64_t max_rows;
+    uint64_t max_intervals;
+    uint64_t max_owners;
+    uint64_t max_output_bytes;
+    size_t max_refinement_depth;
+    uint32_t refinement_signals;
+    double min_transverse_spacing;
+    double endpoint_displacement;
+    size_t crossing_density;
+} alea_ray_coverage_slice_options_t;
 
 /** One resolved hierarchy entry attached to an opt-in ray segment path.
  *
@@ -227,6 +318,74 @@ const double* alea_raycast_batch_path_lattice_origins_xyz(
 const uint64_t* alea_raycast_batch_path_occurrence_keys(
     const alea_raycast_batch_result_t* result);
 
+/* ==========================================================================
+ * COMPACT COMPLETE-COVERAGE DIAGNOSTICS
+ * ========================================================================== */
+
+void alea_ray_coverage_slice_options_init(
+    alea_ray_coverage_slice_options_t* options);
+alea_ray_coverage_slice_result_t* alea_ray_coverage_slice_result_create(void);
+void alea_ray_coverage_slice_result_destroy(
+    alea_ray_coverage_slice_result_t* result);
+
+/** Scalar adapter over alea_ray_coverage_slice_query(). It publishes one row
+ * of compact CSR data using the same ownership and resource-limit contract. */
+int alea_ray_coverage_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_coverage_slice_options_t* options,
+    alea_ray_coverage_slice_result_t* result);
+
+/** Build complete ownership coverage for packed XYZ rays. direction_tags and
+ * transverse_coordinates are optional row provenance arrays; NULL supplies
+ * zeros. Output row order always matches the input. On failure, result keeps
+ * its prior successful publication. */
+int alea_ray_coverage_slice_query(alea_system_t* sys,
+    const double* origins_xyz, const double* directions_xyz, size_t row_count,
+    const uint8_t* direction_tags, const double* transverse_coordinates,
+    const alea_ray_coverage_slice_options_t* options,
+    alea_ray_coverage_slice_result_t* result);
+
+size_t alea_ray_coverage_slice_row_count(
+    const alea_ray_coverage_slice_result_t* result);
+size_t alea_ray_coverage_slice_interval_count(
+    const alea_ray_coverage_slice_result_t* result);
+size_t alea_ray_coverage_slice_owner_count(
+    const alea_ray_coverage_slice_result_t* result);
+int alea_ray_coverage_slice_refinement_status(
+    const alea_ray_coverage_slice_result_t* result);
+const size_t* alea_ray_coverage_slice_row_offsets(
+    const alea_ray_coverage_slice_result_t* result);
+const uint8_t* alea_ray_coverage_slice_row_direction_tags(
+    const alea_ray_coverage_slice_result_t* result);
+const double* alea_ray_coverage_slice_row_transverse_coordinates(
+    const alea_ray_coverage_slice_result_t* result);
+const double* alea_ray_coverage_slice_t_enter(
+    const alea_ray_coverage_slice_result_t* result);
+const double* alea_ray_coverage_slice_t_exit(
+    const alea_ray_coverage_slice_result_t* result);
+const uint8_t* alea_ray_coverage_slice_kinds(
+    const alea_ray_coverage_slice_result_t* result);
+const size_t* alea_ray_coverage_slice_owner_offsets(
+    const alea_ray_coverage_slice_result_t* result);
+const size_t* alea_ray_coverage_slice_owner_count_lower_bounds(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_cell_ids(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_material_ids(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_universe_ids(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_fill_universes(
+    const alea_ray_coverage_slice_result_t* result);
+const int* alea_ray_coverage_slice_owner_depths(
+    const alea_ray_coverage_slice_result_t* result);
+const uint64_t* alea_ray_coverage_slice_owner_occurrence_keys(
+    const alea_ray_coverage_slice_result_t* result);
+const uint64_t* alea_ray_coverage_slice_owner_parent_occurrence_keys(
+    const alea_ray_coverage_slice_result_t* result);
+const uint8_t* alea_ray_coverage_slice_owner_resolution_flags(
+    const alea_ray_coverage_slice_result_t* result);
+
 /**
  * @brief Find first cell along ray
  *
@@ -241,6 +400,61 @@ int alea_ray_first_cell(alea_system_t* sys,
                             double ox, double oy, double oz,
                             double dx, double dy, double dz,
                             double t_max, double* out_t);
+
+/* ==========================================================================
+ * FIRST-VISIBLE QUERY
+ * ========================================================================== */
+
+void alea_ray_first_visible_options_init(
+    alea_ray_first_visible_options_t* options);
+alea_ray_first_visible_query_result_t* alea_ray_first_visible_query_result_create(void);
+void alea_ray_first_visible_query_result_destroy(
+    alea_ray_first_visible_query_result_t* result);
+
+/** Execute a reusable first-visible query.  On failure, `result` is cleared.
+ * Returned pointers remain valid until the next query on `result` or its
+ * destruction. */
+int alea_ray_first_visible_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_first_visible_options_t* options,
+    alea_ray_first_visible_query_result_t* result);
+
+int alea_ray_first_visible_found(
+    const alea_ray_first_visible_query_result_t* result);
+double alea_ray_first_visible_t(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_cell_id(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_material_id(
+    const alea_ray_first_visible_query_result_t* result);
+double alea_ray_first_visible_density(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_surface_id(
+    const alea_ray_first_visible_query_result_t* result);
+int alea_ray_first_visible_normal(
+    const alea_ray_first_visible_query_result_t* result,
+    double* nx, double* ny, double* nz);
+
+/* ==========================================================================
+ * BOUNDARY-EVENT QUERY
+ * ========================================================================== */
+
+void alea_ray_boundary_event_options_init(
+    alea_ray_boundary_event_options_t* options);
+alea_ray_boundary_event_query_result_t* alea_ray_boundary_event_query_result_create(void);
+void alea_ray_boundary_event_query_result_destroy(
+    alea_ray_boundary_event_query_result_t* result);
+int alea_ray_boundary_event_query(alea_system_t* sys,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    const alea_ray_boundary_event_options_t* options,
+    alea_ray_boundary_event_query_result_t* result);
+size_t alea_ray_boundary_event_count(
+    const alea_ray_boundary_event_query_result_t* result);
+int alea_ray_boundary_event_get(
+    const alea_ray_boundary_event_query_result_t* result, size_t index,
+    double* t, int* kind, int* surface_id, int* cell_before, int* cell_after,
+    int* material_before, int* material_after, uint32_t* resolution_flags,
+    uint32_t* primitive_id, double* nx, double* ny, double* nz);
 
 /**
  * @brief Get number of segments in raycast result
@@ -265,6 +479,24 @@ int alea_raycast_segment_get(const alea_raycast_result_t* result, size_t index,
                                  int* cell_id, int* material_id, double* density,
                                  int* enter_surface_id, int* exit_surface_id);
 
+/** Get per-segment resolution flags. Returns 0 on success, -1 on error. */
+int alea_raycast_segment_resolution_flags(const alea_raycast_result_t* result,
+                                          size_t index,
+                                          uint8_t* out_flags);
+
+/** Return the number of physical boundary hits retained by a raycast result. */
+size_t alea_raycast_hit_count(const alea_raycast_result_t* result);
+
+/**
+ * @brief Get one retained physical boundary hit.
+ *
+ * @return 0 on success, -1 for a null result, invalid index, or null output.
+ */
+int alea_raycast_hit_get(const alea_raycast_result_t* result,
+                         size_t index,
+                         double* out_t,
+                         int* out_surface_id);
+
 /** Enable or disable hierarchy-path capture for subsequent hierarchical traces.
  * Disabled by default.  The setting survives result-buffer reuse. */
 void alea_raycast_result_set_path_capture(alea_raycast_result_t* result,
@@ -287,8 +519,10 @@ int alea_raycast_segment_path_get(const alea_raycast_result_t* result,
 /** Kinds for alea_ray_interval_finding_t. */
 #define ALEA_INTERVAL_OK             0  /**< exactly one containing chain */
 #define ALEA_INTERVAL_GAP            1  /**< no cell contains the interval */
-#define ALEA_INTERVAL_OVERLAP        2  /**< >=2 cells at the same depth */
+#define ALEA_INTERVAL_OVERLAP        2  /**< claimants cannot form one ownership chain */
 #define ALEA_INTERVAL_UNDEFINED_FILL 3  /**< container with no fill content */
+#define ALEA_INTERVAL_UNRESOLVED     4  /**< coverage ancestry/numerics indeterminate */
+#define ALEA_INTERVAL_TRUNCATED      5  /**< owner budget prevented complete coverage */
 
 typedef struct {
     double t_enter;

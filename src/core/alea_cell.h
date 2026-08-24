@@ -62,6 +62,8 @@ typedef struct alea_cell_entry {
     int lat_fill_dims[6];       // imin, imax, jmin, jmax, kmin, kmax
     int* lat_fill;              // Array of universe IDs for lattice
     size_t lat_fill_count;      // Total count of universes in array
+    unsigned int lat_fill_repeating : 1; // Simple FILL=N repeats in every element
+    unsigned int lat_fill_zero_element_coords : 1; // Fill U uses MCNP element-(0,0,0) coordinates
     double lat_pitch[3];        // Element pitch in each dimension
     double lat_lower_left[3];   // Lower-left corner of the lattice
 

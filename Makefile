@@ -221,6 +221,9 @@ OPENMC_PARSE_SRCS = \
 # Raycast module
 RAYCAST_SRCS = \
 	$(RAYCAST_DIR)/raycast.c \
+	$(RAYCAST_DIR)/ray_request.c \
+	$(RAYCAST_DIR)/ray_coverage.c \
+	$(RAYCAST_DIR)/ray_coverage_api.c \
 	$(RAYCAST_DIR)/ray_intersect.c \
 	$(RAYCAST_DIR)/bvh.c \
 	$(RAYCAST_DIR)/raycast_api.c
@@ -228,7 +231,9 @@ RAYCAST_SRCS = \
 # Slice module (analytical intersection + vector export)
 SLICE_SRCS = \
 	$(SLICE_DIR)/curve_intersect.c \
-	$(SLICE_DIR)/slice_api.c
+	$(SLICE_DIR)/slice_directional_trace.c \
+	$(SLICE_DIR)/slice_api.c \
+	$(SLICE_DIR)/slice_ray_raster.c
 
 # Render module (3D batch renderer)
 RENDER_SRCS = \
@@ -350,7 +355,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools install install-libs install-cli install-tools install-doc uninstall
+.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools install install-libs install-cli install-tools install-doc uninstall check-public-headers
 
 # Default target: core library only
 all: lib-core
@@ -373,7 +378,14 @@ tools: lib-core modules
 	$(MAKE) -C tools WINDOWS_GNU=$(WINDOWS_GNU) EXEEXT=$(EXEEXT)
 
 # Build all tests (requires core + modules)
-tests: lib-core modules $(ALL_TEST_BINS)
+tests: check-public-headers lib-core modules $(ALL_TEST_BINS)
+
+# Public headers must be usable from an installed include directory alone.
+# This catches accidental dependencies on headers below src/.
+check-public-headers:
+	@echo "CHECK public headers"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -I$(INCLUDE_DIR) \
+		-fsyntax-only $(TEST_DIR)/public_headers.c
 
 # ============================================================================
 # Directory Structure Creation
@@ -639,7 +651,7 @@ test: tests
 
 # Run only unit tests
 .PHONY: test-unit
-test-unit: $(UNIT_TEST_BINS)
+test-unit: check-public-headers $(UNIT_TEST_BINS)
 	@echo ""
 	@echo "=== Running Unit Tests ==="
 	@for test in $(UNIT_TEST_BINS); do \
@@ -654,7 +666,7 @@ test-unit: $(UNIT_TEST_BINS)
 
 # Run only integration tests
 .PHONY: test-integration
-test-integration: $(INTEGRATION_TEST_BINS)
+test-integration: check-public-headers $(INTEGRATION_TEST_BINS)
 	@echo ""
 	@echo "=== Running Integration Tests ==="
 	@for test in $(INTEGRATION_TEST_BINS); do \

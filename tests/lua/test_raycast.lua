@@ -56,6 +56,24 @@ local fc, ft = sys:ray_first_cell(-10, 0, 0, 1, 0, 0, 100)
 assert(fc ~= nil, "should find a first cell")
 assert(ft ~= nil, "should have a distance")
 
+local visible = sys:first_visible(-10, 0, 0, 1, 0, 0, 100)
+assert(visible ~= nil, "first_visible should hit the sphere")
+assert(visible.cell_id == 1, "first_visible should select the material cell")
+assert(math.abs(visible.t - 5.0) < 0.1, "first_visible distance should be sphere entry")
+assert(visible.normal ~= nil, "first_visible should include a normal")
+local clipped = sys:first_visible(-10, 0, 0, 1, 0, 0,
+    {t_min = 6, t_max = 100, surface_id = false, normal = false})
+assert(clipped ~= nil and math.abs(clipped.t - 6.0) < 0.1,
+    "first_visible options table should apply t_min")
+
+local events = sys:boundary_events(-10, 0, 0, 1, 0, 0, 100)
+assert(#events >= 2, "boundary_events should include sphere entry and exit")
+assert(events[1].surface_id == 1, "first boundary event should report the sphere")
+assert(events[1].cell_after == 1, "first boundary event should enter the sphere")
+local clipped_events = sys:boundary_events(-10, 0, 0, 1, 0, 0,
+    {t_min = 6, t_max = 100, primitive_id = false, normal = false})
+assert(#clipped_events == 1, "boundary_events options table should apply range")
+
 -- Ray that misses everything meaningful
 local fc2 = sys:ray_first_cell(100, 100, 100, 0, 0, 1, 1)
 -- may or may not find void cell

@@ -532,22 +532,42 @@ static void render_pixel_solid(alea_system_t* sys,
     /* Full raycast from origin */
     alea_raycast_result_clear(result);
 
-    if (sys->has_lattice) {
-        /* Lattice models need full traversal (surface + DDA + segments).
-         * Call alea_raycast directly to avoid a wasted surfaces-only pass. */
-        if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, t_max, result) != 0)
-            return;
-    } else {
-        /* Non-lattice: hierarchical segment+hit trace. Steps cell-to-cell via
-         * the spatial index instead of intersecting every surface along the
-         * ray (the old global surface-BVH path). Buffer-reuse nocache variant;
-         * caches are pre-built and the result was cleared above. */
-        alea_ray_t ray;
-        alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+    /* Solid rendering needs exactly one visible interval.  The hierarchical
+     * stepper handles lattice DDA and fill expansion, so it can stop as soon
+     * as that interval is found instead of materializing a full global trace. */
+    alea_ray_t ray;
+    alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+    alea_ray_first_visible_result_t visible;
+    if (alea_raycast_hier_first_visible_nocache(
+            sys, &ray, t_min, t_max, -1, 1, result, &visible) != 0 ||
+        !visible.found)
+        return;
 
-        if (alea_raycast_hier_with_hits_nocache(sys, &ray, t_max, result) != 0)
+    alea_ray_segment_t seg = {
+        .t_enter = visible.t,
+        .t_exit = t_max,
+        .cell_id = visible.cell_id,
+        .material_id = visible.material_id,
+        .density = visible.density,
+        .enter_surface_id = visible.surface_id,
+        .exit_surface_id = -1,
+        .enter_hit_index = -1,
+        .resolution_flags = visible.resolution_flags,
+        .path_index = UINT32_MAX
+    };
+    if (visible.surface_id > 0) {
+        const alea_ray_hit_t hit = {
+            .t = visible.t,
+            .surface_id = visible.surface_id,
+            .primitive_id = visible.primitive_id,
+            .nx = visible.nx, .ny = visible.ny, .nz = visible.nz
+        };
+        if (alea_vec_push(&result->hits, hit, alea_ray_hit_t) != 0)
             return;
+        seg.enter_hit_index = 0;
     }
+    if (alea_vec_push(&result->segments, seg, alea_ray_segment_t) != 0)
+        return;
     /* Find first non-void segment in visible region (past clips) */
     for (size_t i = 0; i < result->segments.count; i++) {
         const alea_ray_segment_t* seg = &result->segments.data[i];
@@ -672,6 +692,41 @@ static void render_pixel_solid(alea_system_t* sys,
  * PER-PIXEL RENDERING (X-RAY MODE)
  * ============================================================================ */
 
+typedef struct {
+    const render_config_t* cfg;
+    float accum_r;
+    float accum_g;
+    float accum_b;
+    float accum_alpha;
+    int cell_id;
+} render_xray_accumulator_t;
+
+static int render_xray_accumulate_segment(
+    void* context, const alea_ray_segment_t* seg) {
+    render_xray_accumulator_t* accum = context;
+    if (seg->cell_id < 0 || seg->material_id == 0) return 0;
+    const double len = seg->t_exit - seg->t_enter;
+    if (len <= 0 || len > 1e10) return 0;
+
+    float alpha = (float)(fabs(seg->density) * len *
+                          accum->cfg->xray_density_scale);
+    if (alpha > 1.0f) alpha = 1.0f;
+
+    float cr, cg, cb;
+    const int color_id = accum->cfg->color_mode == RENDER_COLOR_CELL
+        ? seg->cell_id : seg->material_id;
+    render_get_color(color_id, accum->cfg->color_mode, accum->cfg,
+                     &cr, &cg, &cb);
+    const float factor = alpha * (1.0f - accum->accum_alpha);
+    accum->accum_r += cr * factor;
+    accum->accum_g += cg * factor;
+    accum->accum_b += cb * factor;
+    accum->accum_alpha += factor;
+    if (accum->accum_alpha > 0.99f) return 1;
+    if (accum->cell_id < 0) accum->cell_id = seg->cell_id;
+    return 0;
+}
+
 static void render_pixel_xray(alea_system_t* sys,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
@@ -689,55 +744,73 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = cfg->background[2];
     *out_cell_id = -1;
 
-    /* Full raycast. Non-lattice uses the hierarchical segment tracer (segments
-     * only — x-ray needs no surface normals); lattice keeps the full global
-     * traversal which handles lattice DDA + fill expansion. */
-    alea_raycast_result_clear(result);
-    if (sys->has_lattice) {
-        if (alea_raycast(sys, ox, oy, oz, dx, dy, dz, 0, result) != 0)
-            return;
-    } else {
-        alea_ray_t ray;
-        alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
-        if (alea_raycast_hier_segments_nocache(sys, &ray, 0, result) != 0)
-            return;
-    }
-
-    /* Accumulate density-weighted color */
-    float accum_r = 0, accum_g = 0, accum_b = 0;
-    float accum_alpha = 0;
-    float scale = cfg->xray_density_scale;
-
-    for (size_t i = 0; i < result->segments.count; i++) {
-        const alea_ray_segment_t* seg = &result->segments.data[i];
-        if (seg->cell_id < 0 || seg->material_id == 0) continue;
-        double len = seg->t_exit - seg->t_enter;
-        if (len <= 0 || len > 1e10) continue;
-
-        float alpha = (float)(fabs(seg->density) * len * scale);
-        if (alpha > 1.0f) alpha = 1.0f;
-
-        float cr, cg, cb;
-        int color_id = (cfg->color_mode == RENDER_COLOR_CELL) ? seg->cell_id : seg->material_id;
-        render_get_color(color_id, cfg->color_mode, cfg, &cr, &cg, &cb);
-
-        /* Front-to-back compositing */
-        float factor = alpha * (1.0f - accum_alpha);
-        accum_r += cr * factor;
-        accum_g += cg * factor;
-        accum_b += cb * factor;
-        accum_alpha += factor;
-
-        if (accum_alpha > 0.99f) break;
-
-        if (*out_cell_id < 0) *out_cell_id = seg->cell_id;
-    }
+    /* X-ray consumes selected material intervals directly.  The callback
+     * adapter handles fills and lattice DDA without publishing a per-pixel
+     * segment vector. */
+    render_xray_accumulator_t accum = { .cfg = cfg, .cell_id = -1 };
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
+        alea_raycast_hier_visit_segments_nocache(
+            sys, &ray, 0, result, render_xray_accumulate_segment, &accum) != 0)
+        return;
 
     /* Composite over background */
-    float bg_factor = 1.0f - accum_alpha;
-    out_color[0] = accum_r + cfg->background[0] * bg_factor;
-    out_color[1] = accum_g + cfg->background[1] * bg_factor;
-    out_color[2] = accum_b + cfg->background[2] * bg_factor;
+    const float bg_factor = 1.0f - accum.accum_alpha;
+    out_color[0] = accum.accum_r + cfg->background[0] * bg_factor;
+    out_color[1] = accum.accum_g + cfg->background[1] * bg_factor;
+    out_color[2] = accum.accum_b + cfg->background[2] * bg_factor;
+    *out_cell_id = accum.cell_id;
+}
+
+/* X-ray owns one frame-level tile region.  Each tile uses a serial selected
+ * interval consumer with worker-local scratch, avoiding a nested OpenMP batch
+ * region per tile as well as any public batch-result publication. */
+static int render_scene_xray_batched(alea_system_t* sys,
+                                     const render_config_t* cfg,
+                                     const render_camera_t* cam,
+                                     render_framebuffer_t* fb,
+                                     int tile) {
+    const int w = fb->width, h = fb->height;
+    const int tiles_x = (w + tile - 1) / tile;
+    const int tiles_y = (h + tile - 1) / tile;
+    const int n_tiles = tiles_x * tiles_y;
+
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic, 1)
+#endif
+    for (int tile_index = 0; tile_index < n_tiles; tile_index++) {
+        const int tx = tile_index % tiles_x, ty = tile_index / tiles_x;
+        const int x0 = tx * tile, y0 = ty * tile;
+        const int x1 = (x0 + tile < w) ? x0 + tile : w;
+        const int y1 = (y0 + tile < h) ? y0 + tile : h;
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            const size_t pixel = (size_t)y * w + x;
+            float color[3];
+            int cell_id;
+            render_pixel_xray(sys, cfg, cam, x + 0.5, y + 0.5, w, h,
+                              &scratch, color, &cell_id);
+            fb->color[pixel * 3] = color[0];
+            fb->color[pixel * 3 + 1] = color[1];
+            fb->color[pixel * 3 + 2] = color[2];
+            fb->cell_id[pixel] = cell_id;
+            if (fb->material_id) fb->material_id[pixel] = 0;
+            if (fb->depth) fb->depth[pixel] = 1e30f;
+            if (fb->normal) {
+                fb->normal[pixel * 3] = 0;
+                fb->normal[pixel * 3 + 1] = 0;
+                fb->normal[pixel * 3 + 2] = 0;
+            }
+        }
+#ifndef _OPENMP
+        fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)", tile_index + 1, n_tiles,
+                100.0 * (tile_index + 1) / n_tiles);
+#endif
+        alea_raycast_result_free(&scratch);
+    }
+    fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
+    return 0;
 }
 
 /* ============================================================================
@@ -772,6 +845,9 @@ int render_scene(alea_system_t* sys,
     fprintf(stderr, "render: %dx%d, %d tiles (%dx%d), %d thread%s, aa=%dx%d\n",
             w, h, n_tiles, tile, tile, num_threads,
             num_threads > 1 ? "s" : "", aa, aa);
+
+    if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1)
+        return render_scene_xray_batched(sys, cfg, cam, fb, tile);
 
     int progress_done = 0;
 

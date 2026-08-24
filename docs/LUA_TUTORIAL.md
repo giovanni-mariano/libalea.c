@@ -823,6 +823,8 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Cast ray | `sys:raycast(ox,oy,oz,dx,dy,dz,t_max)` |
 | Cell-aware raycast | `sys:raycast_cell_aware(...)` |
 | First cell on ray | `sys:ray_first_cell(...)` |
+| First visible material | `sys:first_visible(...[, options])` |
+| Ownership boundary events | `sys:boundary_events(...[, options])` |
 | Segment count | `result:segment_count()` |
 | Get segment | `result:segment(i)` |
 | All segments | `result:segments()` |

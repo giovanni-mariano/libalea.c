@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "geo_validator.h"
+#include "raycast/ray_bbox.h"
 
 #include "alea_slice.h"
 #include "core/alea_cell.h"
@@ -33,13 +34,66 @@ typedef struct {
     coverage_class_t klass;
     int primary_cell_id;
     int primary_cell_idx;
+    uint64_t primary_occurrence_key;
+    /* Root-to-primary chain for the selected concrete occurrence. Adjacency is
+     * defined on the crossed primitive's owning cell, which may be an
+     * enclosing fill container while point coverage projects to a child. */
+    int primary_ancestor_cell_indices[VALIDATOR_HIT_CAP];
+    size_t primary_ancestor_count;
     int secondary_cell_id;
+    uint64_t secondary_occurrence_key;
     int universe_id;
     int depth;
     int count_at_depth;
     int target_depth;
     int truncated;
 } point_coverage_t;
+
+static int cell_references_primitive(const alea_system_t* sys,
+                                     const alea_cell_entry_t* cell,
+                                     uint32_t primitive_id);
+
+static int point_coverage_primary_has_cell_index(const point_coverage_t* cov,
+                                                  int cell_index) {
+    if (!cov || cell_index < 0) return 0;
+    for (size_t index = 0; index < cov->primary_ancestor_count; index++)
+        if (cov->primary_ancestor_cell_indices[index] == cell_index)
+            return 1;
+    return 0;
+}
+
+static int point_coverage_primary_ancestor_references_primitive(
+    const alea_system_t* sys, const point_coverage_t* cov,
+    uint32_t primitive_id) {
+    if (!sys || !cov || primitive_id == ALEA_PRIMITIVE_ID_INVALID) return 0;
+    for (size_t index = 0; index < cov->primary_ancestor_count; index++) {
+        int cell_index = cov->primary_ancestor_cell_indices[index];
+        if (cell_index < 0 ||
+            (size_t)cell_index >= alea_vec_count(&sys->cells)) continue;
+        if (cell_references_primitive(sys, &sys->cells.data[cell_index],
+                                      primitive_id))
+            return 1;
+    }
+    return 0;
+}
+
+static void point_coverage_set_primary_ancestors(
+    point_coverage_t* out, const alea_cell_hit_t* hits,
+    const uint64_t* occurrence_keys, const uint64_t* parent_occurrence_keys,
+    size_t hit_count) {
+    if (!out || !hits || !occurrence_keys || !parent_occurrence_keys) return;
+    out->primary_ancestor_count = 0;
+    uint64_t key = out->primary_occurrence_key;
+    while (key != 0 && out->primary_ancestor_count < VALIDATOR_HIT_CAP) {
+        size_t index = 0;
+        while (index < hit_count && occurrence_keys[index] != key)
+            index++;
+        if (index == hit_count) break;
+        out->primary_ancestor_cell_indices[out->primary_ancestor_count++] =
+            hits[index].cell_index;
+        key = parent_occurrence_keys[index];
+    }
+}
 
 static void copy3(double dst[3], const double src[3]) {
     dst[0] = src[0];
@@ -54,6 +108,104 @@ static void init_geom_error(alea_geom_error_t* err) {
     err->primitive_id = ALEA_PRIMITIVE_ID_INVALID;
 }
 
+typedef struct {
+    int type, source, previous_cell_id, found_cell_id, secondary_cell_id;
+    int expected_neighbor_cell_id, universe_depth;
+    uint32_t primitive_id;
+} error_signature_t;
+
+typedef struct {
+    error_signature_t key;
+    size_t count;
+    int used;
+} error_signature_entry_t;
+
+typedef struct {
+    error_signature_entry_t* entries;
+    size_t capacity, count;
+} error_signature_table_t;
+
+static uint64_t signature_hash_mix(uint64_t hash, uint64_t value) {
+    hash ^= value;
+    return hash * UINT64_C(1099511628211);
+}
+
+static error_signature_t error_signature(const alea_geom_error_t* error) {
+    return (error_signature_t){
+        .type = (int)error->type, .source = (int)error->source,
+        .previous_cell_id = error->previous_cell_id,
+        .found_cell_id = error->found_cell_id,
+        .secondary_cell_id = error->secondary_cell_id,
+        .expected_neighbor_cell_id = error->expected_neighbor_cell_id,
+        .universe_depth = error->universe_depth,
+        .primitive_id = error->primitive_id,
+    };
+}
+
+static int signatures_equal(error_signature_t a, error_signature_t b) {
+    return a.type == b.type && a.source == b.source &&
+        a.previous_cell_id == b.previous_cell_id &&
+        a.found_cell_id == b.found_cell_id &&
+        a.secondary_cell_id == b.secondary_cell_id &&
+        a.expected_neighbor_cell_id == b.expected_neighbor_cell_id &&
+        a.universe_depth == b.universe_depth && a.primitive_id == b.primitive_id;
+}
+
+static uint64_t signature_hash(error_signature_t key) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    hash = signature_hash_mix(hash, (uint32_t)key.type);
+    hash = signature_hash_mix(hash, (uint32_t)key.source);
+    hash = signature_hash_mix(hash, (uint32_t)key.previous_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.found_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.secondary_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.expected_neighbor_cell_id);
+    hash = signature_hash_mix(hash, (uint32_t)key.universe_depth);
+    return signature_hash_mix(hash, key.primitive_id);
+}
+
+static int signature_table_grow(error_signature_table_t* table) {
+    size_t capacity = table->capacity ? table->capacity * 2 : 16;
+    if (capacity < table->capacity ||
+        capacity > SIZE_MAX / sizeof(*table->entries)) return -1;
+    error_signature_entry_t* entries = calloc(capacity, sizeof(*entries));
+    if (!entries) return -1;
+    for (size_t i = 0; i < table->capacity; i++) {
+        error_signature_entry_t entry = table->entries[i];
+        if (!entry.used) continue;
+        size_t index = (size_t)signature_hash(entry.key) & (capacity - 1);
+        while (entries[index].used) index = (index + 1) & (capacity - 1);
+        entries[index] = entry;
+    }
+    free(table->entries);
+    table->entries = entries;
+    table->capacity = capacity;
+    return 0;
+}
+
+static error_signature_entry_t* signature_table_entry(
+    alea_geom_validator_result_t* result, const alea_geom_error_t* error) {
+    error_signature_table_t* table = result->signature_table;
+    if (!table) {
+        table = calloc(1, sizeof(*table));
+        if (!table) return NULL;
+        result->signature_table = table;
+    }
+    if (table->capacity == 0 || table->count * 10 >= table->capacity * 7) {
+        if (signature_table_grow(table) != 0) return NULL;
+    }
+    error_signature_t key = error_signature(error);
+    size_t index = (size_t)signature_hash(key) & (table->capacity - 1);
+    while (table->entries[index].used &&
+           !signatures_equal(table->entries[index].key, key))
+        index = (index + 1) & (table->capacity - 1);
+    if (!table->entries[index].used) {
+        table->entries[index].used = 1;
+        table->entries[index].key = key;
+        table->count++;
+    }
+    return &table->entries[index];
+}
+
 void alea_geom_validator_options_init(alea_geom_validator_options_t* options) {
     if (!options) return;
     memset(options, 0, sizeof(*options));
@@ -61,6 +213,8 @@ void alea_geom_validator_options_init(alea_geom_validator_options_t* options) {
                      ALEA_GEOM_VALIDATE_STRICT_ADJACENCY;
     options->universe_depth = -1;
     options->max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
+    options->max_samples_per_signature = 4;
+    options->max_samples_per_curve = 512;
     options->max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
     options->sample_offset = SURFACE_SAMPLE_OFFSET;
     options->t_max = 0.0;
@@ -76,6 +230,11 @@ void alea_geom_validator_result_init(alea_geom_validator_result_t* result) {
 void alea_geom_validator_result_free(alea_geom_validator_result_t* result) {
     if (!result) return;
     free(result->errors);
+    if (result->signature_table) {
+        error_signature_table_t* table = result->signature_table;
+        free(table->entries);
+        free(table);
+    }
     memset(result, 0, sizeof(*result));
 }
 
@@ -91,6 +250,8 @@ const char* alea_geom_error_type_name(alea_geom_error_type_t type) {
             return "missing_neighbor";
         case ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY:
             return "ambiguous_boundary";
+        case ALEA_GEOM_ERR_INTERIOR_GAP:
+            return "interior_gap";
         default:
             return "unknown";
     }
@@ -112,6 +273,19 @@ int alea_geom_validator_error_get(const alea_geom_validator_result_t* result,
 static int append_error(alea_geom_validator_result_t* result,
                         const alea_geom_validator_options_t* options,
                         const alea_geom_error_t* error) {
+    error_signature_entry_t* signature_entry = NULL;
+    if (options->max_samples_per_signature > 0) {
+        signature_entry = signature_table_entry(result, error);
+        if (!signature_entry) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "geometry validator: out of memory tracking signatures");
+            return -1;
+        }
+        if (signature_entry->count >= options->max_samples_per_signature) {
+            result->suppressed_samples++;
+            return 0;
+        }
+    }
     size_t max_errors = options->max_errors;
     if (max_errors == 0) max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
     if (result->error_count >= max_errors) {
@@ -134,6 +308,129 @@ static int append_error(alea_geom_validator_result_t* result,
     }
 
     result->errors[result->error_count++] = *error;
+    if (signature_entry) signature_entry->count++;
+    return 0;
+}
+
+typedef struct {
+    const alea_ray_t* ray;
+    const alea_geom_validator_options_t* options;
+    alea_geom_validator_result_t* result;
+    int report_gaps;
+} ray_coverage_finding_context_t;
+
+typedef struct {
+    double t_enter;
+    double t_exit;
+    alea_ray_coverage_kind_t kind;
+    size_t owner_count;
+    alea_ray_coverage_owner_t owners[VALIDATOR_HIT_CAP];
+} ray_coverage_trace_interval_t;
+
+typedef struct {
+    ray_coverage_finding_context_t findings;
+    ray_coverage_trace_interval_t* intervals;
+    size_t count;
+    size_t capacity;
+    int failed;
+} ray_coverage_trace_t;
+
+/* Coverage is the diagnostic oracle for conditions a selected owner trace can
+ * hide. Gaps are emitted only by an explicit domain-aware sweep: a legacy
+ * validator ray may legitimately start or end outside the model. */
+static int append_ray_coverage_finding(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    ray_coverage_finding_context_t* ctx = context;
+    if (interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
+        interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED) {
+        /* Complete coverage is no longer knowable after owner saturation or
+         * an unresolved ownership chain. Preserve earlier findings, but do
+         * not continue and present a partial diagnostic as exhaustive. */
+        ctx->result->truncated = 1;
+        return 1;
+    }
+    const int is_gap = interval->kind == ALEA_RAY_COVERAGE_GAP &&
+        ctx->report_gaps;
+    if (interval->kind != ALEA_RAY_COVERAGE_OVERLAP &&
+        interval->kind != ALEA_RAY_COVERAGE_UNDEFINED_FILL && !is_gap)
+        return 0;
+
+    alea_geom_error_t error;
+    init_geom_error(&error);
+    error.type = is_gap ? ALEA_GEOM_ERR_INTERIOR_GAP
+        : interval->kind == ALEA_RAY_COVERAGE_OVERLAP
+            ? ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING
+            : ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
+    error.source = ALEA_GEOM_EVENT_SOURCE_RAY;
+    error.t = interval->t_enter;
+    error.offset = interval->t_exit - interval->t_enter;
+    error.found_cell_count = (int)interval->owner_count;
+    if (interval->owner_count > 0) {
+        error.found_cell_id = interval->owners[0].cell_id;
+        error.universe_id = interval->owners[0].universe_id;
+        error.universe_depth = interval->owners[0].depth;
+    }
+    if (interval->owner_count > 1)
+        error.secondary_cell_id = interval->owners[1].cell_id;
+    alea_ray_point_at(ctx->ray, interval->t_enter,
+                      &error.crossing_point[0], &error.crossing_point[1],
+                      &error.crossing_point[2]);
+    const double sample_t = interval->t_enter +
+        0.381966011250105 * (interval->t_exit - interval->t_enter);
+    alea_ray_point_at(ctx->ray, sample_t,
+                      &error.sample_point[0], &error.sample_point[1],
+                      &error.sample_point[2]);
+    error.direction[0] = ctx->ray->dx;
+    error.direction[1] = ctx->ray->dy;
+    error.direction[2] = ctx->ray->dz;
+    if (append_error(ctx->result, ctx->options, &error) != 0)
+        return -1;
+    return ctx->result->truncated ? 1 : 0;
+}
+
+static int append_ray_coverage_gap_finding(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    if (interval->kind != ALEA_RAY_COVERAGE_GAP) return 0;
+    return append_ray_coverage_finding(context, interval);
+}
+
+static void ray_coverage_trace_free(ray_coverage_trace_t* trace) {
+    if (!trace) return;
+    free(trace->intervals);
+    memset(trace, 0, sizeof(*trace));
+}
+
+/* Retain the complete, occurrence-sensitive interval result for transition
+ * classification as well as emitting its ray-wide findings.  Callback owners
+ * are scratch-backed, so the validator must materialize this small trace. */
+static int append_ray_coverage_trace(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    ray_coverage_trace_t* trace = context;
+    const int finding_rc = append_ray_coverage_finding(
+        &trace->findings, interval);
+    if (finding_rc != 0) return finding_rc;
+    if (interval->owner_count > VALIDATOR_HIT_CAP) {
+        trace->failed = 1;
+        return 1;
+    }
+    if (trace->count == trace->capacity) {
+        const size_t next = trace->capacity ? trace->capacity * 2 : 16;
+        ray_coverage_trace_interval_t* grown = realloc(
+            trace->intervals, next * sizeof(*grown));
+        if (!grown) {
+            trace->failed = 1;
+            return 1;
+        }
+        trace->intervals = grown;
+        trace->capacity = next;
+    }
+    ray_coverage_trace_interval_t* saved = &trace->intervals[trace->count++];
+    saved->t_enter = interval->t_enter;
+    saved->t_exit = interval->t_exit;
+    saved->kind = interval->kind;
+    saved->owner_count = interval->owner_count;
+    memcpy(saved->owners, interval->owners,
+           interval->owner_count * sizeof(*interval->owners));
     return 0;
 }
 
@@ -165,6 +462,9 @@ static int cell_can_be_implicit_neighbor_by_primitive(
     return cell_references_primitive(sys, cell, primitive_id);
 }
 
+static int point_inside_cell(const alea_system_t* sys, int cell_idx,
+                             const double p[3]);
+
 /* Neighbor lookup keyed on canonical primitive identity instead of
  * mc_surface_id.  alea_find_neighbor_cell() matches on mc_surface_id, which
  * would miss deduplicated equivalent surfaces. */
@@ -188,6 +488,54 @@ static int find_neighbor_by_primitive(const alea_system_t* sys,
     return -1;
 }
 
+/* A primitive can bound more than two cells: for example, a cylindrical
+ * boundary may be partitioned into angular sectors on its outside.  The
+ * adjacency table retains all candidates, so resolve the sampled side rather
+ * than treating insertion order as geometry. */
+static int find_neighbor_by_primitive_at_point(const alea_system_t* sys,
+                                               uint32_t cell_index,
+                                               uint32_t primitive_id,
+                                               const double point[3]) {
+    if (!sys || !point || primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
+        cell_index >= alea_vec_count(&sys->cells) ||
+        !sys->cell_adjacency_built) return -1;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    for (size_t i = 0; i < cell->neighbor_count; i++) {
+        uint32_t surf_idx = cell->neighbors[i].surface_index;
+        uint32_t neighbor_idx = cell->neighbors[i].neighbor_index;
+        if (surf_idx >= alea_vec_count(&sys->surfaces) ||
+            sys->surfaces.data[surf_idx].primitive_id != primitive_id ||
+            neighbor_idx >= alea_vec_count(&sys->cells)) continue;
+        if (point_inside_cell(sys, (int)neighbor_idx, point))
+            return (int)neighbor_idx;
+    }
+    return -1;
+}
+
+static int find_neighbor_by_primitive_in_coverage(
+    const alea_system_t* sys, uint32_t cell_index, uint32_t primitive_id,
+    const point_coverage_t* cov, const double point[3]) {
+    if (!sys || !cov || primitive_id == ALEA_PRIMITIVE_ID_INVALID ||
+        cell_index >= alea_vec_count(&sys->cells) ||
+        !sys->cell_adjacency_built) return -1;
+
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    for (size_t i = 0; i < cell->neighbor_count; i++) {
+        uint32_t surf_idx = cell->neighbors[i].surface_index;
+        uint32_t neighbor_idx = cell->neighbors[i].neighbor_index;
+        if (surf_idx >= alea_vec_count(&sys->surfaces) ||
+            sys->surfaces.data[surf_idx].primitive_id != primitive_id ||
+            neighbor_idx >= alea_vec_count(&sys->cells)) continue;
+        if (cov->primary_cell_idx == (int)neighbor_idx ||
+            point_coverage_primary_has_cell_index(cov, (int)neighbor_idx) ||
+            (alea_cell_entry_is_container(&sys->cells.data[neighbor_idx]) &&
+             point_inside_cell(sys, (int)neighbor_idx, point)))
+            return (int)neighbor_idx;
+    }
+    return -1;
+}
+
 static int find_point_coverage(alea_system_t* sys,
                                double x, double y, double z,
                                int universe_depth,
@@ -197,14 +545,19 @@ static int find_point_coverage(alea_system_t* sys,
     out->klass = COVERAGE_NONE;
     out->primary_cell_id = -1;
     out->primary_cell_idx = -1;
+    out->primary_occurrence_key = 0;
     out->secondary_cell_id = -1;
+    out->secondary_occurrence_key = 0;
     out->universe_id = 0;
     out->depth = universe_depth;
     out->target_depth = universe_depth;
 
     alea_cell_hit_t hits[VALIDATOR_HIT_CAP];
-    int n = alea_find_all_cells_at_point_recursive(sys, x, y, z,
-                                                   hits, VALIDATOR_HIT_CAP);
+    uint64_t occurrence_keys[VALIDATOR_HIT_CAP];
+    uint64_t parent_occurrence_keys[VALIDATOR_HIT_CAP];
+    int n = alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, x, y, z, hits, occurrence_keys, parent_occurrence_keys,
+        VALIDATOR_HIT_CAP);
     if (n < 0) return -1;
     if (n >= VALIDATOR_HIT_CAP) out->truncated = 1;
     if (n == 0) return 0;
@@ -224,10 +577,12 @@ static int find_point_coverage(alea_system_t* sys,
         if (count == 0) {
             out->primary_cell_id = hits[i].cell_id;
             out->primary_cell_idx = hits[i].cell_index;
+            out->primary_occurrence_key = occurrence_keys[i];
             out->universe_id = hits[i].universe_id;
             out->depth = hits[i].depth;
         } else if (count == 1) {
             out->secondary_cell_id = hits[i].cell_id;
+            out->secondary_occurrence_key = occurrence_keys[i];
         }
         count++;
     }
@@ -235,18 +590,110 @@ static int find_point_coverage(alea_system_t* sys,
     out->count_at_depth = count;
     if (count == 1) out->klass = COVERAGE_ONE;
     else if (count > 1) out->klass = COVERAGE_MULTI;
+    if (out->primary_cell_idx >= 0)
+        point_coverage_set_primary_ancestors(
+            out, hits, occurrence_keys, parent_occurrence_keys, (size_t)n);
+    return 0;
+}
+
+/* Convert a complete coverage interval into the same target-depth view used
+ * by sampled transition validation.  This avoids treating an enclosing
+ * container and its filled child as a false overlap. */
+static int coverage_interval_to_point(
+    const ray_coverage_trace_interval_t* interval, int universe_depth,
+    point_coverage_t* out) {
+    if (!interval || !out) return 0;
+    memset(out, 0, sizeof(*out));
+    out->klass = COVERAGE_NONE;
+    out->primary_cell_id = -1;
+    out->primary_cell_idx = -1;
+    out->secondary_cell_id = -1;
+    out->universe_id = 0;
+    out->depth = universe_depth;
+    out->target_depth = universe_depth;
+    out->truncated = interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
+        interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED;
+    if (interval->kind == ALEA_RAY_COVERAGE_GAP ||
+        interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED ||
+        interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
+        interval->owner_count == 0) {
+        return interval->kind != ALEA_RAY_COVERAGE_TRUNCATED &&
+            interval->kind != ALEA_RAY_COVERAGE_UNRESOLVED;
+    }
+
+    int target_depth = universe_depth;
+    if (target_depth < 0) {
+        target_depth = interval->owners[0].depth;
+        for (size_t i = 1; i < interval->owner_count; i++)
+            if (interval->owners[i].depth > target_depth)
+                target_depth = interval->owners[i].depth;
+    }
+    out->target_depth = target_depth;
+    int count = 0;
+    for (size_t i = 0; i < interval->owner_count; i++) {
+        const alea_ray_coverage_owner_t* owner = &interval->owners[i];
+        if (owner->depth != target_depth) continue;
+        if (count == 0) {
+            out->primary_cell_id = owner->cell_id;
+            out->primary_cell_idx = owner->cell_index;
+            out->primary_occurrence_key = owner->occurrence_key;
+            out->universe_id = owner->universe_id;
+            out->depth = owner->depth;
+        } else if (count == 1) {
+            out->secondary_cell_id = owner->cell_id;
+            out->secondary_occurrence_key = owner->occurrence_key;
+        }
+        count++;
+    }
+    out->count_at_depth = count;
+    if (count == 1) out->klass = COVERAGE_ONE;
+    else if (count > 1) out->klass = COVERAGE_MULTI;
+    if (out->primary_cell_idx >= 0) {
+        uint64_t key = out->primary_occurrence_key;
+        while (key != 0 && out->primary_ancestor_count < interval->owner_count) {
+            size_t index = 0;
+            while (index < interval->owner_count &&
+                   interval->owners[index].occurrence_key != key)
+                index++;
+            if (index == interval->owner_count) break;
+            out->primary_ancestor_cell_indices[out->primary_ancestor_count++] =
+                interval->owners[index].cell_index;
+            key = interval->owners[index].parent_occurrence_key;
+        }
+    }
+    return 1;
+}
+
+/* Return the interval immediately before or after t.  A merged interval may
+ * straddle an irrelevant/tangent primitive hit, which correctly makes both
+ * sides resolve to the same complete owner set. */
+static int ray_coverage_trace_at(const ray_coverage_trace_t* trace,
+                                 double t, int after, int universe_depth,
+                                 point_coverage_t* out) {
+    if (!trace || !out) return 0;
+    for (size_t i = 0; i < trace->count; i++) {
+        const ray_coverage_trace_interval_t* interval = &trace->intervals[i];
+        if (after) {
+            if (interval->t_enter <= t + DEDUP_EPSILON &&
+                interval->t_exit > t + DEDUP_EPSILON)
+                return coverage_interval_to_point(interval, universe_depth, out);
+        } else if (interval->t_enter < t - DEDUP_EPSILON &&
+                   interval->t_exit >= t - DEDUP_EPSILON) {
+            return coverage_interval_to_point(interval, universe_depth, out);
+        }
+    }
     return 0;
 }
 
 static int same_coverage(const point_coverage_t* a, const point_coverage_t* b) {
     if (a->klass != b->klass) return 0;
     if (a->klass == COVERAGE_ONE &&
-        a->primary_cell_idx != b->primary_cell_idx) {
+        a->primary_occurrence_key != b->primary_occurrence_key) {
         return 0;
     }
     if (a->klass == COVERAGE_MULTI &&
-        (a->primary_cell_id != b->primary_cell_id ||
-         a->secondary_cell_id != b->secondary_cell_id)) {
+        (a->primary_occurrence_key != b->primary_occurrence_key ||
+         a->secondary_occurrence_key != b->secondary_occurrence_key)) {
         return 0;
     }
     return 1;
@@ -359,7 +806,7 @@ static int validate_initial_point(alea_system_t* sys,
     return append_error(result, options, &err);
 }
 
-static int point_inside_cell(alea_system_t* sys, int cell_idx,
+static int point_inside_cell(const alea_system_t* sys, int cell_idx,
                              const double p[3]) {
     if (!sys || cell_idx < 0 ||
         (size_t)cell_idx >= alea_vec_count(&sys->cells)) {
@@ -379,7 +826,9 @@ static void coverage_from_cell(const alea_system_t* sys, int cell_idx,
     out->klass = COVERAGE_NONE;
     out->primary_cell_id = -1;
     out->primary_cell_idx = -1;
+    out->primary_occurrence_key = 0;
     out->secondary_cell_id = -1;
+    out->secondary_occurrence_key = 0;
     out->universe_id = 0;
     out->depth = 0;
     out->target_depth = 0;
@@ -391,6 +840,8 @@ static void coverage_from_cell(const alea_system_t* sys, int cell_idx,
     out->klass = COVERAGE_ONE;
     out->primary_cell_id = cell->mc_cell_id;
     out->primary_cell_idx = cell_idx;
+    out->primary_ancestor_cell_indices[0] = cell_idx;
+    out->primary_ancestor_count = 1;
     out->universe_id = cell->universe_id;
     out->count_at_depth = 1;
 }
@@ -483,16 +934,57 @@ static int classify_transition(alea_system_t* sys,
             return 0;
         }
         err.type = ALEA_GEOM_ERR_UNDEFINED_AFTER_CROSSING;
+        if (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE) {
+            err.type = ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY;
+            result->ambiguous_crossings++;
+        }
         return append_error(result, options, &err);
     }
 
     if (cov->klass == COVERAGE_MULTI) {
-        err.type = ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
+        /* Ray validation has already emitted the complete extent of this
+         * overlap from the coverage sweep.  A sampled boundary can only add a
+         * duplicate point finding; keep it for slice validation, where no
+         * ray-wide coverage interval exists. */
+        if (source == ALEA_GEOM_EVENT_SOURCE_RAY)
+            return 0;
+        err.type = (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE)
+            ? ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+            : ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING;
+        if (err.type == ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY)
+            result->ambiguous_crossings++;
         return append_error(result, options, &err);
     }
 
     if (expected_neighbor_idx >= 0) {
         if (cov->primary_cell_idx != expected_neighbor_idx) {
+            if (find_neighbor_by_primitive_in_coverage(
+                    sys, (uint32_t)previous_cell_idx, primitive_id, cov,
+                    sample_point) >= 0) {
+                return 0;
+            }
+            /* A boundary on a parent fill cell legitimately enters one of
+             * that fill's terminal descendants. ``primary_cell_idx`` is the
+             * projected/deepest owner, so compare its concrete ancestor chain
+             * before claiming a non-adjacent transition. */
+            if (cov->klass == COVERAGE_ONE &&
+                point_coverage_primary_has_cell_index(cov,
+                                                      expected_neighbor_idx)) {
+                return 0;
+            }
+            /* Some legacy recursive point paths publish only the terminal
+             * entry despite resolving through a root-level fill. Retain a
+             * conservative fallback for that representation: the expected
+             * neighbor must itself be a fill/lattice container and must
+             * contain the sampled point. Ordinary sibling cells still use the
+             * exact occurrence-chain comparison above. */
+            if (cov->klass == COVERAGE_ONE &&
+                (size_t)expected_neighbor_idx < alea_vec_count(&sys->cells) &&
+                alea_cell_entry_is_container(
+                    &sys->cells.data[expected_neighbor_idx]) &&
+                point_inside_cell(sys, expected_neighbor_idx, sample_point)) {
+                return 0;
+            }
             if (cov->klass == COVERAGE_ONE &&
                 cov->primary_cell_idx >= 0 &&
                 (size_t)cov->primary_cell_idx < alea_vec_count(&sys->cells) &&
@@ -501,13 +993,26 @@ static int classify_transition(alea_system_t* sys,
                     primitive_id)) {
                 return 0;
             }
-            err.type = ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION;
+            err.type = (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE)
+                ? ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+                : ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION;
+            if (err.type == ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY)
+                result->ambiguous_crossings++;
             return append_error(result, options, &err);
         }
         return 0;
     }
 
     if (previous_references_surface) {
+        /* Dense shared surfaces are deliberately omitted from the adjacency
+         * clique to keep memory bounded.  The resolved occurrence chain still
+         * proves a valid transition when one of its enclosing fill/lattice
+         * owners references the crossed primitive. */
+        if (cov->klass == COVERAGE_ONE &&
+            point_coverage_primary_ancestor_references_primitive(
+                sys, cov, primitive_id)) {
+            return 0;
+        }
         if (cov->klass == COVERAGE_ONE &&
             cov->primary_cell_idx >= 0 &&
             (size_t)cov->primary_cell_idx < alea_vec_count(&sys->cells) &&
@@ -518,7 +1023,11 @@ static int classify_transition(alea_system_t* sys,
         }
         if (cov->klass == COVERAGE_ONE)
             err.flags |= ALEA_GEOM_EVENT_FOUND_WITHOUT_ADJACENCY;
-        err.type = ALEA_GEOM_ERR_MISSING_NEIGHBOR;
+        err.type = (event_flags & ALEA_GEOM_EVENT_VIEWPORT_EDGE)
+            ? ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY
+            : ALEA_GEOM_ERR_MISSING_NEIGHBOR;
+        if (err.type == ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY)
+            result->ambiguous_crossings++;
         return append_error(result, options, &err);
     }
 
@@ -535,6 +1044,7 @@ static int validate_crossing(alea_system_t* sys,
                              uint32_t event_flags,
                              const alea_geom_validator_options_t* options,
                              alea_geom_validator_result_t* result,
+                             const point_coverage_t* exact_after,
                              point_coverage_t* out_after) {
     if (surface_id <= 0) return 0;
 
@@ -548,6 +1058,7 @@ static int validate_crossing(alea_system_t* sys,
                                &flags, result) != 0) {
         return -1;
     }
+    if (exact_after) cov = *exact_after;
     if (out_after) *out_after = cov;
 
     /* The ladder resets flags; restore caller flags (e.g. COINCIDENT_SURFACES,
@@ -571,6 +1082,7 @@ static int validate_crossing_fast(alea_system_t* sys,
                                   uint32_t event_flags,
                                   const alea_geom_validator_options_t* options,
                                   alea_geom_validator_result_t* result,
+                                  const point_coverage_t* exact_after,
                                   point_coverage_t* out_after) {
     if (surface_id <= 0) return 0;
 
@@ -599,6 +1111,12 @@ static int validate_crossing_fast(alea_system_t* sys,
             expected_neighbor_idx =
                 find_neighbor_by_primitive(sys, (uint32_t)previous_cell_idx,
                                            primitive_id);
+            int sampled_neighbor_idx =
+                find_neighbor_by_primitive_at_point(
+                    sys, (uint32_t)previous_cell_idx, primitive_id,
+                    sample_point);
+            if (sampled_neighbor_idx >= 0)
+                expected_neighbor_idx = sampled_neighbor_idx;
             if (expected_neighbor_idx >= 0 &&
                 (size_t)expected_neighbor_idx < alea_vec_count(&sys->cells)) {
                 expected_neighbor_id =
@@ -653,7 +1171,7 @@ static int validate_crossing_fast(alea_system_t* sys,
 
     return validate_crossing(sys, previous_cell_idx, surface_id, primitive_id,
                              crossing_point, direction, t, event_flags,
-                             options, result, out_after);
+                             options, result, exact_after, out_after);
 }
 
 static uint64_t lcg_next(uint64_t* state) {
@@ -719,8 +1237,45 @@ static int prepare_validator(alea_system_t* sys,
         local_options->ray_count = VALIDATOR_DEFAULT_RAYS;
     if (local_options->sample_offset <= 0.0)
         local_options->sample_offset = SURFACE_SAMPLE_OFFSET;
+    if (local_options->flags & ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS) {
+        const double* b = local_options->validation_bounds;
+        if (!isfinite(b[0]) || !isfinite(b[1]) || !isfinite(b[2]) ||
+            !isfinite(b[3]) || !isfinite(b[4]) || !isfinite(b[5]) ||
+            b[0] > b[1] || b[2] > b[3] || b[4] > b[5]) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "geometry validator: invalid validation_bounds");
+            return -1;
+        }
+    }
 
     return alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST);
+}
+
+/* Convert the optional closed world-space validation AABB into the scalar
+ * coverage sweep's ray-parameter domain.  A ray that misses the domain has no
+ * coverage obligation and therefore produces no domain-gap findings. */
+static int validator_coverage_domain_for_ray(
+    const alea_geom_validator_options_t* options, const alea_ray_t* ray,
+    double t_max, alea_ray_coverage_domain_t* out_domain) {
+    if (!(options->flags & ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS))
+        return 0;
+    const double* b = options->validation_bounds;
+    const alea_bbox_t bounds = {
+        .min_x = b[0], .max_x = b[1],
+        .min_y = b[2], .max_y = b[3],
+        .min_z = b[4], .max_z = b[5]
+    };
+    double t_enter = 0.0, t_exit = 0.0;
+    if (!ray_bbox_slab_enter_exit(ray, &bounds, 0.0, t_max,
+                                  &t_enter, &t_exit))
+        return 1;
+    *out_domain = (alea_ray_coverage_domain_t){
+        .t_min = t_enter,
+        .t_max = t_exit,
+        .has_domain = 1,
+        .report_allowed_exterior = 0
+    };
+    return 2;
 }
 
 static int validate_one_ray(alea_system_t* sys,
@@ -728,67 +1283,171 @@ static int validate_one_ray(alea_system_t* sys,
                             double t_max,
                             const alea_geom_validator_options_t* options,
                             alea_geom_validator_result_t* result) {
-    point_coverage_t previous_cov;
-    if (validate_initial_point(sys, ray, options, result, &previous_cov) != 0)
+    alea_raycast_result_t coverage_scratch;
+    alea_raycast_result_init(&coverage_scratch);
+    ray_coverage_trace_t coverage_trace = {
+        .findings = { .ray = ray, .options = options, .result = result }
+    };
+    const int coverage_rc = alea_ray_coverage_sweep_reuse_nocache(
+        sys, ray, t_max, &coverage_scratch,
+        append_ray_coverage_trace, &coverage_trace);
+    alea_raycast_result_free(&coverage_scratch);
+    if (coverage_rc < 0 || coverage_trace.failed) {
+        ray_coverage_trace_free(&coverage_trace);
         return -1;
+    }
+    if (result->truncated) {
+        ray_coverage_trace_free(&coverage_trace);
+        return 0;
+    }
+
+    alea_ray_coverage_domain_t domain;
+    const int domain_rc = validator_coverage_domain_for_ray(
+        options, ray, t_max, &domain);
+    if (domain_rc == 1) {
+        ray_coverage_trace_free(&coverage_trace);
+        return 0;
+    }
+    if (domain_rc == 2) {
+        ray_coverage_finding_context_t gap_findings = {
+            .ray = ray, .options = options, .result = result, .report_gaps = 1
+        };
+        alea_raycast_result_t domain_scratch;
+        alea_raycast_result_init(&domain_scratch);
+        const int gap_rc = alea_ray_coverage_sweep_domain_reuse_nocache(
+            sys, ray, t_max, &domain, &domain_scratch,
+            append_ray_coverage_gap_finding, &gap_findings);
+        alea_raycast_result_free(&domain_scratch);
+        if (gap_rc < 0) {
+            ray_coverage_trace_free(&coverage_trace);
+            return -1;
+        }
+        if (result->truncated) {
+            ray_coverage_trace_free(&coverage_trace);
+            return 0;
+        }
+    }
+
+    point_coverage_t previous_cov;
+    if (validate_initial_point(sys, ray, options, result, &previous_cov) != 0) {
+        ray_coverage_trace_free(&coverage_trace);
+        return -1;
+    }
 
     alea_raycast_result_t ray_result;
     alea_raycast_result_init(&ray_result);
-    int rc = alea_raycast_surfaces_nocache(sys, ray, 0.0, t_max, &ray_result);
+    /* Use the diagnostic breakpoint engine rather than bare root surfaces:
+     * fills and lattice transitions must participate in the same crossing
+     * vocabulary as boundary provenance and coverage validation. */
+    int rc = alea_raycast_global_breakpoints_reuse_nocache(
+        sys, ray, t_max, &ray_result);
     if (rc != 0) {
         alea_raycast_result_free(&ray_result);
+        ray_coverage_trace_free(&coverage_trace);
         return -1;
     }
 
     size_t max_crossings = options->max_crossings;
     if (max_crossings == 0) max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
 
-    for (size_t i = 0; i < ray_result.hits.count; i++) {
+    for (size_t i = 0; i < ray_result.hits.count;) {
         if (result->crossings_checked >= max_crossings) {
             result->truncated = 1;
             break;
         }
         if (result->truncated) break;
 
-        alea_ray_hit_t* hit = &ray_result.hits.data[i];
-        if (hit->surface_id <= 0) continue;
+        /* One diagnostic crossing is one coincident distance group, not one
+         * raw mathematical hit.  Surface cards folded onto a primitive and
+         * genuinely coincident primitives must therefore share the same
+         * before/after coverage sample and yield at most one finding. */
+        const double t = ray_result.hits.data[i].t;
+        size_t group_end = i + 1;
+        while (group_end < ray_result.hits.count &&
+               fabs(ray_result.hits.data[group_end].t - t) <= DEDUP_EPSILON) {
+            group_end++;
+        }
 
-        /* Collapse duplicate hits from deduplicated surface cards: the same
-         * physical primitive can appear once per mc_surface_id at the same t.
-         * Treat them as a single crossing so we neither double-classify nor
-         * report a spurious coincident-surface ambiguity. */
-        if (i > 0 &&
-            fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON &&
-            ray_result.hits.data[i - 1].primitive_id == hit->primitive_id) {
+        size_t physical_index = SIZE_MAX;
+        uint32_t physical_primitive = ALEA_PRIMITIVE_ID_INVALID;
+        int has_synthetic = 0;
+        uint32_t event_flags = previous_cov.truncated
+            ? ALEA_GEOM_EVENT_TRUNCATED_COVERAGE : 0;
+        for (size_t j = i; j < group_end; j++) {
+            const alea_ray_hit_t* candidate = &ray_result.hits.data[j];
+            if (candidate->surface_id == 0) {
+                has_synthetic = 1;
+            } else if (candidate->surface_id > 0) {
+                if (physical_index == SIZE_MAX) {
+                    physical_index = j;
+                    physical_primitive = candidate->primitive_id;
+                } else if (candidate->primitive_id != physical_primitive) {
+                    event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
+                }
+            }
+        }
+
+        /* A pure lattice DDA boundary has no physical surface to validate,
+         * but it still changes the concrete occurrence that later physical
+         * crossings must use as their predecessor.  A synthetic event that
+         * coincides with a physical one is covered by the physical crossing;
+         * otherwise it refreshes coverage without an adjacency verdict. */
+        if (physical_index == SIZE_MAX) {
+            if (!has_synthetic) {
+                i = group_end;
+                continue;
+            }
+            double crossing[3];
+            alea_ray_point_at(ray, t, &crossing[0], &crossing[1],
+                              &crossing[2]);
+            double direction[3] = { ray->dx, ray->dy, ray->dz };
+            alea_geom_validator_options_t depth_options;
+            const alea_geom_validator_options_t* sampling_options = options;
+            if (options->universe_depth < 0 &&
+                previous_cov.klass == COVERAGE_ONE) {
+                depth_options = *options;
+                depth_options.universe_depth = previous_cov.depth;
+                sampling_options = &depth_options;
+            }
+            point_coverage_t after_cov;
+            double sample_point[3];
+            double offset = 0.0;
+            int ambiguous = 0;
+            uint32_t flags = 0;
+            if (sample_coverage_ladder(sys, crossing, direction,
+                                       sampling_options, &after_cov,
+                                       sample_point, &offset, &ambiguous,
+                                       &flags, result) != 0) {
+                alea_raycast_result_free(&ray_result);
+                ray_coverage_trace_free(&coverage_trace);
+                return -1;
+            }
+            point_coverage_t exact_after;
+            if (ray_coverage_trace_at(&coverage_trace, t, 1,
+                                      sampling_options->universe_depth,
+                                      &exact_after) &&
+                exact_after.klass != COVERAGE_NONE) {
+                after_cov = exact_after;
+            }
+            previous_cov = after_cov;
+            result->crossings_checked++;
+            i = group_end;
             continue;
         }
 
+        const alea_ray_hit_t* hit = &ray_result.hits.data[physical_index];
+
+        point_coverage_t exact_before;
+        if (ray_coverage_trace_at(&coverage_trace, t, 0,
+                                  options->universe_depth, &exact_before)) {
+            previous_cov = exact_before;
+        }
         int previous_cell_idx = (previous_cov.klass == COVERAGE_ONE)
             ? previous_cov.primary_cell_idx
             : -1;
 
-        uint32_t event_flags = 0;
-        if (previous_cov.truncated) event_flags |= ALEA_GEOM_EVENT_TRUNCATED_COVERAGE;
-
-        /* Coincident-surface ambiguity is keyed on canonical primitive identity:
-         * two hits at the same t are only genuinely coincident if they are
-         * distinct primitives, not duplicate cards of one primitive. */
-        for (size_t j = i + 1; j < ray_result.hits.count; j++) {
-            if (fabs(ray_result.hits.data[j].t - hit->t) > DEDUP_EPSILON)
-                break;
-            if (ray_result.hits.data[j].primitive_id != hit->primitive_id) {
-                event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
-                break;
-            }
-        }
-        if (i > 0 &&
-            fabs(ray_result.hits.data[i - 1].t - hit->t) <= DEDUP_EPSILON &&
-            ray_result.hits.data[i - 1].primitive_id != hit->primitive_id) {
-            event_flags |= ALEA_GEOM_EVENT_COINCIDENT_SURFACES;
-        }
-
         double crossing[3];
-        alea_ray_point_at(ray, hit->t, &crossing[0], &crossing[1], &crossing[2]);
+        alea_ray_point_at(ray, t, &crossing[0], &crossing[1], &crossing[2]);
         double direction[3] = { ray->dx, ray->dy, ray->dz };
         point_coverage_t after_cov;
         alea_geom_validator_options_t depth_options;
@@ -798,27 +1457,40 @@ static int validate_one_ray(alea_system_t* sys,
             depth_options.universe_depth = previous_cov.depth;
             crossing_options = &depth_options;
         }
+        point_coverage_t exact_after;
+        const point_coverage_t* exact_after_ptr = NULL;
+        if (ray_coverage_trace_at(&coverage_trace, t, 1,
+                                  crossing_options->universe_depth,
+                                  &exact_after) &&
+            exact_after.klass != COVERAGE_NONE) {
+            exact_after_ptr = &exact_after;
+        }
 
         if (crossing_options->flags & ALEA_GEOM_VALIDATE_STRICT_ADJACENCY) {
             rc = validate_crossing(sys, previous_cell_idx, hit->surface_id,
                                    hit->primitive_id, crossing, direction,
                                    hit->t, event_flags,
-                                   crossing_options, result, &after_cov);
+                                   crossing_options, result, exact_after_ptr,
+                                   &after_cov);
         } else {
             rc = validate_crossing_fast(sys, previous_cell_idx, hit->surface_id,
                                         hit->primitive_id, crossing, direction,
                                         hit->t, event_flags,
-                                        crossing_options, result, &after_cov);
+                                        crossing_options, result, exact_after_ptr,
+                                        &after_cov);
         }
         if (rc != 0) {
             alea_raycast_result_free(&ray_result);
+            ray_coverage_trace_free(&coverage_trace);
             return -1;
         }
         previous_cov = after_cov;
         result->crossings_checked++;
+        i = group_end;
     }
 
     alea_raycast_result_free(&ray_result);
+    ray_coverage_trace_free(&coverage_trace);
     return 0;
 }
 
@@ -919,6 +1591,7 @@ static int validate_surface_sample(alea_system_t* sys,
                                    uint32_t component_index,
                                    double curve_t,
                                    const double uv[2],
+                                   uint32_t event_flags,
                                    const alea_geom_validator_options_t* options,
                                    alea_geom_validator_result_t* result) {
     double neg_dir[3] = { -dir[0], -dir[1], -dir[2] };
@@ -937,12 +1610,12 @@ static int validate_surface_sample(alea_system_t* sys,
         return -1;
 
     int ambiguous = amb_plus || amb_minus;
-    uint32_t flags = flags_plus | flags_minus;
+    uint32_t flags = flags_plus | flags_minus | event_flags;
 
     if (!ambiguous &&
         cov_plus.klass == COVERAGE_ONE &&
         cov_minus.klass == COVERAGE_ONE &&
-        cov_plus.primary_cell_idx == cov_minus.primary_cell_idx) {
+        cov_plus.primary_occurrence_key == cov_minus.primary_occurrence_key) {
         return 0;
     }
 
@@ -975,6 +1648,21 @@ static int validate_surface_sample(alea_system_t* sys,
                                ALEA_GEOM_EVENT_SOURCE_SLICE_CURVE,
                                curve_index, component_index, uv,
                                options, result);
+}
+
+static int slice_sample_is_on_viewport_edge(const alea_slice_view_t* view,
+                                            double u, double v) {
+    double u_span = fabs(view->u_max - view->u_min);
+    double v_span = fabs(view->v_max - view->v_min);
+    double scale = fmax(1.0, fmax(u_span, v_span));
+    /* Curve clipping and plane transforms accumulate more than a few ulps on
+     * kilometre-scale views. This remains a sub-pixel geometric tolerance,
+     * not a probe distance. */
+    double tolerance = fmax(64.0 * DBL_EPSILON * scale, 1.0e-9 * scale);
+    return fabs(u - view->u_min) <= tolerance ||
+           fabs(u - view->u_max) <= tolerance ||
+           fabs(v - view->v_min) <= tolerance ||
+           fabs(v - view->v_max) <= tolerance;
 }
 
 int alea_validate_geometry_slice(alea_system_t* sys,
@@ -1035,7 +1723,13 @@ int alea_validate_geometry_slice(alea_system_t* sys,
         }
         int n_samples = (int)(arc / sample_spacing);
         if (n_samples < 2) n_samples = 2;
-        if (n_samples > 2000) n_samples = 2000;
+        size_t sample_cap = local.max_samples_per_curve;
+        if (sample_cap == 0) sample_cap = 2000;
+        if (sample_cap < 2) sample_cap = 2;
+        if ((size_t)n_samples > sample_cap) {
+            n_samples = (int)sample_cap;
+            result->sample_limited_curves++;
+        }
 
         double dt_finite = (t_hi - t_lo) * 1e-6;
         if (dt_finite < 1e-15) dt_finite = 1e-15;
@@ -1077,8 +1771,10 @@ int alea_validate_geometry_slice(alea_system_t* sys,
             };
 
             double uv[2] = { u, v };
+            uint32_t event_flags = slice_sample_is_on_viewport_edge(
+                view, u, v) ? ALEA_GEOM_EVENT_VIEWPORT_EDGE : 0;
             if (validate_surface_sample(sys, pw, dirw, c.surface_id,
-                                        c.primitive_id, ci, 0, t, uv,
+                                        c.primitive_id, ci, 0, t, uv, event_flags,
                                         &local, result) != 0) {
                 rc = -1;
                 break;

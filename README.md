@@ -430,6 +430,23 @@ The `examples/lua/` directory contains scripts for use with the `alea` CLI:
 | `19_nucdata.lua` | Nuclear data: load ACE cross sections, query, build materials |
 | `20_nucdata_plots.lua` | Nuclear data SVG plotting |
 
+### First-visible and boundary-event queries
+
+Use `sys:first_visible()` when only the frontmost material interval is needed;
+it avoids building a full Lua raycast result. `sys:boundary_events()` returns
+ordered ownership transitions for diagnostics and surface provenance.
+
+```lua
+local hit = sys:first_visible(-10, 0, 0, 1, 0, 0,
+    {t_max = 100, normal = true})
+if hit then print(hit.cell_id, hit.t, hit.surface_id) end
+
+for _, event in ipairs(sys:boundary_events(-10, 0, 0, 1, 0, 0,
+                                           {t_max = 100})) do
+    print(event.t, event.surface_id, event.cell_before, event.cell_after)
+end
+```
+
 ## Documentation
 
 | Document | Audience | Purpose |

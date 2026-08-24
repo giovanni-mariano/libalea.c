@@ -1207,9 +1207,10 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
                } \
                _r; })
 
-        /* Determine outer universe (for infinite / simple-fill lattices) */
+        /* A simple MCNP FILL=N repeats outside the stored fundamental
+         * element; OpenMC represents that behavior with an outer universe. */
         int outer_universe = -1;
-        if (cell->lat_fill_count == 1) {
+        if (cell->lat_fill_repeating && cell->lat_fill_count == 1) {
             outer_universe = MAP_UNIV(cell->lat_fill[0]);
         }
 

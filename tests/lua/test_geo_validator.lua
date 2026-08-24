@@ -50,6 +50,16 @@ assert(summary.total == bad:error_count(), "summary total should match error_cou
 assert((summary.undefined_after_crossing or 0) > 0,
        "summary should include undefined-region diagnostics")
 
+local gaps = undefined:validate_geometry_ray(
+    -2, 0, 0, 1, 0, 0, 4,
+    {allow_exterior_void = true,
+     validation_bounds = {-1.5, 1.5, -0.5, 0.5, -0.5, 0.5}}
+)
+assert(gaps:error_count() == 2,
+       "an explicit validation domain should report both interior gaps")
+assert((gaps:summary().interior_gap or 0) == 2,
+       "domain gaps should use the interior_gap finding kind")
+
 undefined:destroy()
 
 -- Surface/slice-driven validation (Phase 5)
@@ -62,6 +72,18 @@ nested:cell{id = 1, region = nested:inside(big), material = mb, density = 1.0}
 nested:cell{id = 2, region = nested:inside(small), material = ms, density = 1.0}
 
 local sview = alea.slice_view_axis(2, 0.0, -4, 4, -4, 4)
+local directional_cache = nested:directional_trace_cache(sview, 16, 16)
+local directional = nested:validate_ray_slice(
+    sview, 16, {include_agreements = true}, directional_cache)
+assert(directional.reused_trace_mask == 3,
+       "directional cache should reuse U forward/reverse traces")
+assert(directional.executed_trace_mask == 0,
+       "matching directional cache should avoid fresh ownership traces")
+local mismatched_view = alea.slice_view_axis(2, 0.0, -3, 4, -4, 4)
+local ok = pcall(function()
+    nested:validate_ray_slice(mismatched_view, 16, nil, directional_cache)
+end)
+assert(not ok, "a cache must reject a different slice view")
 local scurves = nested:get_slice_curves(sview)
 local sres = nested:validate_geometry_slice(sview, scurves, {allow_exterior_void = true})
 local ssum = sres:summary()
@@ -71,6 +93,11 @@ local sstats = sres:stats()
 assert(sstats.crossings_checked > 0, "slice validation should sample boundaries")
 local serr = sres:error(1)
 assert(serr.curve_index ~= nil, "slice events should expose curve index")
+nested:sphere(99, 10, 0, 0, 1)
+ok = pcall(function()
+    nested:validate_ray_slice(sview, 16, nil, directional_cache)
+end)
+assert(not ok, "a cache must reject geometry changed after construction")
 nested:destroy()
 
 print("test_geo_validator: OK")

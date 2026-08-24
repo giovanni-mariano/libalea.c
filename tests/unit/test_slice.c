@@ -296,6 +296,10 @@ static void test_slice_nested_overlap(void) {
         if (errors[i] == 1) boundary_overlaps++;
     }
 
+    /* Invalidate query caches after producing the input grid.  The standalone
+     * overlap API must rebuild what its parallel recursive queries need. */
+    assert(alea_sphere_surface(sys, 99, 100, 100, 100, 1.0) >= 0);
+
     /* Full overlap check should detect them */
     rc = alea_check_grid_overlaps(sys, &view, width, height, -1,
                                        cell_ids, errors);
@@ -685,11 +689,121 @@ static void test_surface_labels_filter_hidden_csg_boundary(void) {
 
     alea_label_position_t* labels = NULL;
     int count = 0;
+    assert(alea_find_surface_label_positions_with_provenance(
+        sys, &view, curves, cell_ids, -10, 10, -10, 10, width, height, 2,
+        0, &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, 32));
+    assert(!labels_have_surface(labels, count, 31));
+
+    free(labels);
+    free(cell_ids);
+    alea_slice_curves_free(curves);
+    alea_destroy(sys);
+    printf("OK\n");
+}
+
+/* A plane split exercises a sparse label candidate that crosses the exact
+ * finite RIGHT edge at its midpoint.  It must survive canonical provenance,
+ * not only the geometry-only boundary-grid placement path. */
+static void test_surface_labels_verify_plane_interface(void) {
+    printf("  test_surface_labels_verify_plane_interface... ");
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+    int plane = alea_plane_surface(sys, 71, 1, 0, 0, 0);
+    int box = alea_box_surface(sys, 72, -8, 8, -8, 8, -2, 2);
+    assert(plane >= 0 && box >= 0);
+    alea_node_id_t left = alea_intersection(
+        sys, alea_surface_at(sys, plane)->neg_node,
+        alea_surface_at(sys, box)->neg_node);
+    alea_node_id_t right = alea_intersection(
+        sys, alea_surface_at(sys, plane)->pos_node,
+        alea_surface_at(sys, box)->neg_node);
+    int material = alea_add_material(sys, 1);
+    assert(material >= 0);
+    assert(alea_add_cell(sys, 1, left, material, -1.0, 0) >= 0);
+    assert(alea_add_cell(sys, 2, right, material, -2.0, 0) >= 0);
+    assert(alea_prepare_query_acceleration(sys) == 0);
+
+    const int width = 160, height = 160;
+    int* ids = malloc((size_t)width * height * sizeof(*ids));
+    assert(ids != NULL);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    assert(alea_find_cells_grid(sys, &view, width, height, -1,
+                                ids, NULL, NULL) == 0);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    assert(alea_find_surface_label_positions_on_boundaries(
+        curves, ids, -10, 10, -10, 10, width, height, 2,
+        &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, 71));
+    free(labels);
+    labels = NULL;
+    count = 0;
+    assert(alea_find_surface_label_positions_with_provenance(
+        sys, &view, curves, ids, -10, 10, -10, 10, width, height, 2,
+        0, &labels, &count) == 0);
+    assert(labels_have_surface(labels, count, 71));
+    const alea_label_position_t* plane_label = NULL;
+    for (int i = 0; i < count; i++)
+        if (labels[i].id == 71) { plane_label = &labels[i]; break; }
+    assert(plane_label != NULL);
+    assert(plane_label->provenance_edge_x >= 0);
+    assert(plane_label->provenance_edge_y >= 0);
+    assert(plane_label->provenance_orientation == ALEA_SLICE_EDGE_RIGHT ||
+           plane_label->provenance_orientation == ALEA_SLICE_EDGE_DOWN);
+    assert(plane_label->provenance_group >= 0);
+    free(labels);
+    alea_slice_curves_free(curves);
+    free(ids);
+    alea_destroy(sys);
+    printf("OK\n");
+}
+
+/* Full circles use a fixed geometric anchor.  With a rendered boundary grid,
+ * the analytical candidate search must move only a colliding label so two
+ * concentric boundaries remain readable. */
+static void test_concentric_surface_labels_do_not_stack(void) {
+    printf("  test_concentric_surface_labels_do_not_stack... ");
+
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+    int inner_idx = alea_sphere_surface(sys, 61, 0, 0, 0, 2.0);
+    int outer_idx = alea_sphere_surface(sys, 62, 0, 0, 0, 5.0);
+    int material = alea_add_material(sys, 1);
+    alea_node_id_t inside_inner = alea_surface_at(sys, inner_idx)->neg_node;
+    alea_node_id_t shell = alea_intersection(
+        sys, alea_surface_at(sys, inner_idx)->pos_node,
+        alea_surface_at(sys, outer_idx)->neg_node);
+    alea_add_cell(sys, 1, inside_inner, material, -1.0, 0);
+    alea_add_cell(sys, 2, shell, material, -1.0, 0);
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    assert(curves != NULL);
+
+    const int width = 200, height = 200;
+    int* cell_ids = malloc((size_t)width * height * sizeof(*cell_ids));
+    assert(cell_ids != NULL);
+    assert(alea_find_cells_grid(sys, &view, width, height, -1,
+                                cell_ids, NULL, NULL) == 0);
+    alea_label_position_t* labels = NULL;
+    int count = 0;
     assert(alea_find_surface_label_positions_on_boundaries(
         curves, cell_ids, -10, 10, -10, 10, width, height, 2,
         &labels, &count) == 0);
-    assert(labels_have_surface(labels, count, 32));
-    assert(!labels_have_surface(labels, count, 31));
+
+    const alea_label_position_t *inner = NULL, *outer = NULL;
+    for (int i = 0; i < count; i++) {
+        if (labels[i].id == 61) inner = &labels[i];
+        if (labels[i].id == 62) outer = &labels[i];
+    }
+    assert(inner != NULL && outer != NULL);
+    double dx = inner->px - outer->px;
+    double dy = inner->py - outer->py;
+    assert(dx * dx + dy * dy >= 50.0 * 50.0);
 
     free(labels);
     free(cell_ids);
@@ -710,9 +824,9 @@ static void assert_surface_labelled_on_grid(alea_system_t* sys,
     assert(curves != NULL);
     alea_label_position_t* labels = NULL;
     int count = 0;
-    assert(alea_find_surface_label_positions_on_boundaries(
-        curves, cell_ids, -10, 10, -10, 10, width, height, 2,
-        &labels, &count) == 0);
+    assert(alea_find_surface_label_positions_with_provenance(
+        sys, view, curves, cell_ids, -10, 10, -10, 10, width, height, 2,
+        0, &labels, &count) == 0);
     assert(labels_have_surface(labels, count, surface_id));
     free(labels);
     alea_slice_curves_free(curves);
@@ -750,6 +864,71 @@ static void test_noncanonical_surface_labels_on_boundaries(void) {
     printf("OK\n");
 }
 
+/* A surface that CSG splits into several separated pieces must be labelled on
+ * each piece: one label averaged over all of them would land between them, on
+ * no boundary at all. */
+static void test_boundary_map_labels_each_disconnected_arc(void) {
+    printf("  test_boundary_map_labels_each_disconnected_arc... ");
+
+    alea_system_t* sys = alea_create();
+    assert(sys != NULL);
+    int world_idx = alea_sphere_surface(sys, 50, 0, 0, 0, 9.5);
+    int sphere_idx = alea_sphere_surface(sys, 51, 0, 0, 0, 8.0);
+    int upper_idx = alea_plane_surface(sys, 52, 0, 1, 0, -2.0);
+    int lower_idx = alea_plane_surface(sys, 53, 0, 1, 0, 2.0);
+    alea_node_id_t inside = alea_surface_at(sys, sphere_idx)->neg_node;
+    int material = alea_add_material(sys, 1);
+    /* Two polar caps of one sphere: surface 51 bounds both, as two arcs. */
+    alea_node_id_t upper_cap =
+        alea_intersection(sys, inside, alea_surface_at(sys, upper_idx)->pos_node);
+    alea_node_id_t lower_cap =
+        alea_intersection(sys, inside, alea_surface_at(sys, lower_idx)->neg_node);
+    alea_add_cell(sys, 1, upper_cap, material, -1.0, 0);
+    alea_add_cell(sys, 2, lower_cap, material, -1.0, 0);
+    /* The caps sit in a filled world, so their arcs are real transitions
+     * between two defined cells rather than coverage gaps. */
+    alea_add_cell(sys, 3,
+                  alea_intersection(
+                      sys, alea_surface_at(sys, world_idx)->neg_node,
+                      alea_complement(sys, alea_union(sys, upper_cap, lower_cap))),
+                  material, -1.0, 0);
+    assert(alea_prepare_query_acceleration(sys) == 0);
+
+    const int width = 200, height = 200;
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0, -10, 10, -10, 10);
+    int* cell_ids = malloc((size_t)width * height * sizeof(int));
+    assert(cell_ids != NULL);
+    assert(alea_find_cells_grid(sys, &view, width, height, -1,
+                                cell_ids, NULL, NULL) == 0);
+
+    alea_slice_surface_boundary_map_t* map = NULL;
+    assert(alea_slice_surface_boundary_map_create(
+        sys, &view, width, height, cell_ids,
+        alea_slice_classify_cell, NULL, &map) == 0);
+    assert(map != NULL);
+
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    assert(alea_find_surface_labels_on_boundary_map(map, 2, &labels, &count) == 0);
+
+    int arcs = 0, above = 0, below = 0;
+    for (int i = 0; i < count; i++) {
+        if (labels[i].id != 51) continue;
+        arcs++;
+        if (labels[i].py > height / 2) above++;
+        if (labels[i].py < height / 2) below++;
+    }
+    assert(arcs == 2);
+    assert(above == 1 && below == 1);
+
+    free(labels);
+    alea_slice_surface_boundary_map_free(map);
+    free(cell_ids);
+    alea_destroy(sys);
+    printf("OK\n");
+}
+
 /* ============================================================================
  * MAIN
  * ============================================================================ */
@@ -775,7 +954,10 @@ int main(void) {
     test_curve_two_cells();
     test_curve_noncanonical_type_identity();
     test_surface_labels_filter_hidden_csg_boundary();
+    test_surface_labels_verify_plane_interface();
+    test_concentric_surface_labels_do_not_stack();
     test_noncanonical_surface_labels_on_boundaries();
+    test_boundary_map_labels_each_disconnected_arc();
 
     printf("\n=== All slice tests passed! ===\n\n");
     return 0;

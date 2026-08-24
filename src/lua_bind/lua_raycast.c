@@ -135,6 +135,90 @@ static int l_rayresult_segment(lua_State* L) {
     return 1;
 }
 
+/* sys:first_visible(ox, oy, oz, dx, dy, dz [, t_max]) -> table or nil */
+static int l_first_visible(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_ray_first_visible_options_t options;
+    alea_ray_first_visible_options_init(&options);
+    options.fields = ALEA_RAY_FIRST_VISIBLE_SURFACE_ID |
+                     ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL;
+    if (lua_istable(L, 8)) {
+        lua_getfield(L, 8, "t_min"); if (!lua_isnil(L, -1)) options.t_min = lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "t_max"); if (!lua_isnil(L, -1)) options.t_max = lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "material_filter"); if (!lua_isnil(L, -1)) options.material_filter = (int)lua_tointeger(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "surface_id"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_FIRST_VISIBLE_SURFACE_ID; lua_pop(L, 1);
+        lua_getfield(L, 8, "normal"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL; lua_pop(L, 1);
+    } else options.t_max = luaL_optnumber(L, 8, 0.0);
+    alea_ray_first_visible_query_result_t* result =
+        alea_ray_first_visible_query_result_create();
+    if (!result) return luaL_error(L, "first_visible: out of memory");
+    int rc = alea_ray_first_visible_query(sys,
+        luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4),
+        luaL_checknumber(L, 5), luaL_checknumber(L, 6), luaL_checknumber(L, 7),
+        &options, result);
+    if (rc != 0) { alea_ray_first_visible_query_result_destroy(result); return luaL_error(L, "first_visible failed: %s", alea_error()); }
+    if (!alea_ray_first_visible_found(result)) { alea_ray_first_visible_query_result_destroy(result); lua_pushnil(L); return 1; }
+    double nx, ny, nz;
+    lua_createtable(L, 0, 7);
+    lua_pushnumber(L, alea_ray_first_visible_t(result)); lua_setfield(L, -2, "t");
+    lua_pushinteger(L, alea_ray_first_visible_cell_id(result)); lua_setfield(L, -2, "cell_id");
+    lua_pushinteger(L, alea_ray_first_visible_material_id(result)); lua_setfield(L, -2, "material_id");
+    lua_pushnumber(L, alea_ray_first_visible_density(result)); lua_setfield(L, -2, "density");
+    lua_pushinteger(L, alea_ray_first_visible_surface_id(result)); lua_setfield(L, -2, "surface_id");
+    if (alea_ray_first_visible_normal(result, &nx, &ny, &nz) == 0) { lua_createtable(L, 3, 0); lua_pushnumber(L,nx); lua_rawseti(L,-2,1); lua_pushnumber(L,ny); lua_rawseti(L,-2,2); lua_pushnumber(L,nz); lua_rawseti(L,-2,3); lua_setfield(L,-2,"normal"); }
+    alea_ray_first_visible_query_result_destroy(result);
+    return 1;
+}
+
+/* sys:boundary_events(ox, oy, oz, dx, dy, dz [, t_max]) -> {events...} */
+static int l_boundary_events(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_ray_boundary_event_options_t options;
+    alea_ray_boundary_event_options_init(&options);
+    options.fields = ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID |
+                     ALEA_RAY_BOUNDARY_EVENT_NORMAL;
+    if (lua_istable(L, 8)) {
+        lua_getfield(L, 8, "t_min"); if (!lua_isnil(L, -1)) options.t_min = lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "t_max"); if (!lua_isnil(L, -1)) options.t_max = lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "include_all_coincident_physical"); options.include_all_coincident_physical = lua_toboolean(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "max_events"); if (!lua_isnil(L, -1)) options.max_events = (uint64_t)lua_tointeger(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "max_output_bytes"); if (!lua_isnil(L, -1)) options.max_output_bytes = (uint64_t)lua_tointeger(L, -1); lua_pop(L, 1);
+        lua_getfield(L, 8, "primitive_id"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID; lua_pop(L, 1);
+        lua_getfield(L, 8, "normal"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_BOUNDARY_EVENT_NORMAL; lua_pop(L, 1);
+    } else options.t_max = luaL_optnumber(L, 8, 0.0);
+    alea_ray_boundary_event_query_result_t* result =
+        alea_ray_boundary_event_query_result_create();
+    if (!result) return luaL_error(L, "boundary_events: out of memory");
+    int rc = alea_ray_boundary_event_query(sys,
+        luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4),
+        luaL_checknumber(L, 5), luaL_checknumber(L, 6), luaL_checknumber(L, 7),
+        &options, result);
+    if (rc != 0) { alea_ray_boundary_event_query_result_destroy(result); return luaL_error(L, "boundary_events failed: %s", alea_error()); }
+    size_t count = alea_ray_boundary_event_count(result);
+    lua_createtable(L, (int)count, 0);
+    for (size_t i = 0; i < count; i++) {
+        double t, nx, ny, nz; int kind, surface_id, before, after, mat_before, mat_after;
+        uint32_t flags, primitive_id;
+        alea_ray_boundary_event_get(result, i, &t, &kind, &surface_id, &before, &after,
+                                    &mat_before, &mat_after, &flags, &primitive_id,
+                                    &nx, &ny, &nz);
+        lua_createtable(L, 0, 11);
+        lua_pushnumber(L, t); lua_setfield(L, -2, "t");
+        lua_pushinteger(L, kind); lua_setfield(L, -2, "kind");
+        lua_pushinteger(L, surface_id); lua_setfield(L, -2, "surface_id");
+        lua_pushinteger(L, before); lua_setfield(L, -2, "cell_before");
+        lua_pushinteger(L, after); lua_setfield(L, -2, "cell_after");
+        lua_pushinteger(L, mat_before); lua_setfield(L, -2, "material_before");
+        lua_pushinteger(L, mat_after); lua_setfield(L, -2, "material_after");
+        lua_pushinteger(L, primitive_id); lua_setfield(L, -2, "primitive_id");
+        lua_pushinteger(L, flags); lua_setfield(L, -2, "resolution_flags");
+        lua_createtable(L, 3, 0); lua_pushnumber(L,nx); lua_rawseti(L,-2,1); lua_pushnumber(L,ny); lua_rawseti(L,-2,2); lua_pushnumber(L,nz); lua_rawseti(L,-2,3); lua_setfield(L,-2,"normal");
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    alea_ray_boundary_event_query_result_destroy(result);
+    return 1;
+}
+
 /* result:segments() -> table of all segments */
 static int l_rayresult_segments(lua_State* L) {
     alea_lua_raycast_result_t* ud = check_rayresult(L, 1);
@@ -189,6 +273,8 @@ static const luaL_Reg raycast_system_methods[] = {
     {"raycast",            l_raycast},
     {"raycast_cell_aware", l_raycast_cell_aware},
     {"ray_first_cell",     l_ray_first_cell},
+    {"first_visible",      l_first_visible},
+    {"boundary_events",    l_boundary_events},
     {NULL, NULL}
 };
 

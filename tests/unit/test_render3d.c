@@ -8,6 +8,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
 #include "render/render3d.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
@@ -304,6 +305,78 @@ TEST(render_xray_mode) {
     render_framebuffer_free(fb);
     render_config_free(&cfg);
     alea_destroy(sys);
+}
+
+TEST(render_xray_compact_tiles_are_deterministic) {
+    alea_system_t* sys = create_test_scene();
+    ASSERT_NOT_NULL(sys);
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.width = 32;
+    cfg.height = 24;
+    cfg.render_mode = RENDER_MODE_XRAY;
+    cfg.tile_size = 32;
+    render_camera_t cam;
+    ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+    render_framebuffer_t* whole_tile =
+        render_framebuffer_create(cfg.width, cfg.height, 0);
+    render_framebuffer_t* small_tiles =
+        render_framebuffer_create(cfg.width, cfg.height, 0);
+    ASSERT_NOT_NULL(whole_tile);
+    ASSERT_NOT_NULL(small_tiles);
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, whole_tile), 0);
+    cfg.tile_size = 7;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, small_tiles), 0);
+    ASSERT_EQ(memcmp(whole_tile->color, small_tiles->color,
+                     (size_t)cfg.width * cfg.height * 3 * sizeof(*whole_tile->color)), 0);
+    ASSERT_EQ(memcmp(whole_tile->cell_id, small_tiles->cell_id,
+                     (size_t)cfg.width * cfg.height * sizeof(*whole_tile->cell_id)), 0);
+    render_framebuffer_free(whole_tile);
+    render_framebuffer_free(small_tiles);
+    render_config_free(&cfg);
+    alea_destroy(sys);
+}
+
+TEST(render_lattice_solid_and_xray) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("lattice fixture not found");
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.width = 48;
+    cfg.height = 48;
+    cfg.tile_size = 16;
+    render_camera_t cam;
+    ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+    render_framebuffer_t* solid = render_framebuffer_create(cfg.width, cfg.height, 0);
+    render_framebuffer_t* xray = render_framebuffer_create(cfg.width, cfg.height, 0);
+    ASSERT_NOT_NULL(solid);
+    ASSERT_NOT_NULL(xray);
+
+    cfg.render_mode = RENDER_MODE_SOLID;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, solid), 0);
+    int solid_hits = 0;
+    for (int i = 0; i < cfg.width * cfg.height; i++)
+        if (solid->cell_id[i] > 0) solid_hits++;
+    ASSERT(solid_hits > 0);
+
+    cfg.render_mode = RENDER_MODE_XRAY;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, xray), 0);
+    int xray_changed = 0;
+    for (int i = 0; i < cfg.width * cfg.height; i++) {
+        if (fabs(xray->color[i * 3] - cfg.background[0]) > 0.01f ||
+            fabs(xray->color[i * 3 + 1] - cfg.background[1]) > 0.01f ||
+            fabs(xray->color[i * 3 + 2] - cfg.background[2]) > 0.01f)
+            xray_changed++;
+    }
+    ASSERT(xray_changed > 0);
+
+    render_framebuffer_free(xray);
+    render_framebuffer_free(solid);
+    render_config_free(&cfg);
+    mcnp_model_destroy(model);
 }
 
 TEST(render_depth_mode) {

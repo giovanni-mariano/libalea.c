@@ -22,7 +22,8 @@ static int l_system_create(lua_State* L) {
 }
 
 void alea_lua_system_release_if_pending(alea_lua_system_t* ud) {
-    if (!ud || !ud->destroy_pending || ud->active_void_results > 0)
+    if (!ud || !ud->destroy_pending || ud->active_void_results > 0 ||
+        ud->active_directional_trace_caches > 0)
         return;
 
     if (ud->owned && ud->sys) {

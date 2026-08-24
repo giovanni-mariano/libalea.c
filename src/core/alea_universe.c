@@ -50,6 +50,10 @@ typedef struct {
     double lx, ly, lz;
     const alea_matrix_t* accumulated_transform;
     int depth;
+    uint64_t occurrence_seed;
+    uint64_t* occurrence_keys;
+    uint64_t parent_occurrence_key;
+    uint64_t* parent_occurrence_keys;
     alea_size_vec_t* candidate_positions;
     int error;
 } universe_point_query_ctx_t;
@@ -84,11 +88,19 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                     const alea_matrix_t* accumulated_transform,
                                     int depth,
                                     alea_cell_hit_t* out_hits,
+                                    uint64_t* occurrence_keys,
+                                    uint64_t parent_occurrence_key,
+                                    uint64_t* parent_occurrence_keys,
                                     size_t max_hits,
-                                    size_t* hit_count);
-static int lattice_rect_lookup(const alea_cell_entry_t* cell,
-                               double px, double py, double pz,
-                               double* ox, double* oy, double* oz);
+                                    size_t* hit_count,
+                                    uint64_t occurrence_seed);
+
+static uint64_t occurrence_key_mix(uint64_t key, uint64_t value) {
+    /* FNV-1a gives a deterministic compact identity for a concrete hierarchy
+     * path.  It is only compared within one diagnostic query. */
+    key ^= value;
+    return key * UINT64_C(1099511628211);
+}
 int lattice_hex_lookup(const alea_cell_entry_t* cell,
                        double px, double py, double pz,
                        double* ox, double* oy, double* oz);
@@ -326,39 +338,54 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                             const alea_matrix_t* accumulated_transform,
                                             int depth,
                                             alea_cell_hit_t* out_hits,
+                                            uint64_t* occurrence_keys,
+                                            uint64_t parent_occurrence_key,
+                                            uint64_t* parent_occurrence_keys,
                                             size_t max_hits,
-                                            size_t* hit_count) {
+                                            size_t* hit_count,
+                                            uint64_t occurrence_seed) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
+    const uint64_t cell_key = occurrence_key_mix(
+        occurrence_seed, ((uint64_t)cell_idx << 1) | UINT64_C(1));
 
     if (cell->lat_type != 0 && cell->lat_fill) {
-        double ox, oy, oz;
-        int fill_univ = (cell->lat_type == 2)
-            ? lattice_hex_lookup(cell, lx, ly, lz, &ox, &oy, &oz)
-            : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
-        if (fill_univ < 0) return 0;
-        if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return 0;
+        alea_lattice_location_t location;
+        if (alea_lattice_locate_point(sys, cell, lx, ly, lz, &location) != 1)
+            return 0;
 
         if (*hit_count < max_hits) {
+            const size_t hit_index = *hit_count;
             alea_cell_hit_t* hit = &out_hits[*hit_count];
             hit->cell_id = cell->mc_cell_id;
             hit->cell_index = (int)cell_idx;
             hit->material_id = cell->material_id;
             hit->universe_id = cell->universe_id;
-            hit->fill_universe = fill_univ;
+            hit->fill_universe = location.fill_universe;
             hit->depth = depth;
             hit->local_x = lx;
             hit->local_y = ly;
             hit->local_z = lz;
             hit->resolution_flags = ALEA_RESOLVE_UNDEFINED_FILL;
+            if (occurrence_keys) occurrence_keys[hit_index] = cell_key;
+            if (parent_occurrence_keys)
+                parent_occurrence_keys[hit_index] = parent_occurrence_key;
             (*hit_count)++;
         }
 
-        double elx = lx - ox, ely = ly - oy, elz = lz - oz;
+        double elx = lx - location.ox;
+        double ely = ly - location.oy;
+        double elz = lz - location.oz;
         return find_all_cells_recursive(sys, gx, gy, gz,
                                         elx, ely, elz,
-                                        fill_univ, NULL,
+                                        location.fill_universe, NULL,
                                         depth + 1,
-                                        out_hits, max_hits, hit_count);
+                                        out_hits, occurrence_keys, cell_key,
+                                        parent_occurrence_keys, max_hits, hit_count,
+                                        occurrence_key_mix(
+                                            occurrence_key_mix(cell_key,
+                                                (uint32_t)location.i),
+                                            ((uint64_t)(uint32_t)location.j << 32) |
+                                            (uint32_t)location.k));
     }
 
     g_point_bvh_stats.exact_cell_tests++;
@@ -367,6 +394,7 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
     }
 
     if (*hit_count < max_hits) {
+        const size_t hit_index = *hit_count;
         alea_cell_hit_t* hit = &out_hits[*hit_count];
         hit->cell_id = cell->mc_cell_id;
         hit->cell_index = (int)cell_idx;
@@ -379,6 +407,9 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
         hit->local_z = lz;
         hit->resolution_flags = alea_cell_entry_is_container(cell)
             ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
+        if (occurrence_keys) occurrence_keys[hit_index] = cell_key;
+        if (parent_occurrence_keys)
+            parent_occurrence_keys[hit_index] = parent_occurrence_key;
         (*hit_count)++;
 
         if (g_debug_point_trace) {
@@ -424,7 +455,9 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                         cell->fill_universe,
                                         &new_accumulated,
                                         depth + 1,
-                                        out_hits, max_hits, hit_count);
+                                        out_hits, occurrence_keys, cell_key,
+                                        parent_occurrence_keys, max_hits, hit_count,
+                                        cell_key);
     }
 
     return 0;
@@ -1758,94 +1791,101 @@ alea_node_id_t alea_clone_tree_transformed(alea_system_t* sys,
  * Returns the universe ID, or -1 if the point is outside the lattice bounds.
  * Writes the element origin into ox, oy, oz for coordinate translation.
  */
-static int lattice_rect_lookup(const alea_cell_entry_t* cell,
-                               double px, double py, double pz,
-                               double* ox, double* oy, double* oz) {
+int alea_lattice_location_from_indices(const alea_cell_entry_t* cell,
+                                       int i, int j, int k,
+                                       alea_lattice_location_t* out) {
+    if (!cell || !out || !cell->lat_fill ||
+        (cell->lat_type != 1 && cell->lat_type != 2)) return -1;
     int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
     int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
-
-    int i = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-    int j = (nj == 1) ? 0 : (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-    int k = (nk == 1) ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
-
-    /* Clamp to bounds */
-    if (i < 0 || i >= ni || j < 0 || j >= nj || k < 0 || k >= nk)
-        return -1;
-
-    /* Element origin = lower_left + (i+0.5, j+0.5, k+0.5) * pitch */
-    *ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-    *oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-    *oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
-
-    size_t idx = (size_t)(i * nj * nk + j * nk + k);
+    if (ni <= 0 || nj <= 0 || nk <= 0) return -1;
+    int oi = i - cell->lat_fill_dims[0];
+    int oj = j - cell->lat_fill_dims[2];
+    int ok = k - cell->lat_fill_dims[4];
+    if (!cell->lat_fill_repeating &&
+        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)) return 0;
+    size_t idx = cell->lat_fill_repeating ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
     if (idx >= cell->lat_fill_count) return -1;
 
-    return cell->lat_fill[idx];
+    out->fill_universe = cell->lat_fill[idx];
+    out->i = i; out->j = j; out->k = k; out->linear_index = idx;
+    if (cell->lat_type == 1) {
+        if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 ||
+            cell->lat_pitch[2] <= 0.0) return -1;
+        if (cell->lat_fill_zero_element_coords) {
+            out->ox = i * cell->lat_pitch[0];
+            out->oy = j * cell->lat_pitch[1];
+            out->oz = k * cell->lat_pitch[2];
+        } else {
+            out->ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+            out->oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+            out->oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        }
+    } else {
+        double p = cell->lat_pitch[0];
+        if (p <= 0.0 || ((cell->lat_fill_repeating || nk > 1) && cell->lat_pitch[2] <= 0.0)) return -1;
+        out->ox = i * p + j * p * 0.5;
+        out->oy = j * p * M_SQRT3 * 0.5;
+        out->oz = cell->lat_fill_zero_element_coords ? k * cell->lat_pitch[2]
+            : ((nk == 1 && !cell->lat_fill_repeating) ? 0.0
+               : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
+    }
+    return 1;
 }
 
-/**
- * Look up which universe a point maps to in a hexagonal lattice.
- * Flat-top hex orientation, pitch = center-to-center distance.
- * Basis: e1 = (p, 0), e2 = (p/2, p*sqrt(3)/2).
- */
-int lattice_hex_lookup(const alea_cell_entry_t* cell,
-                              double px, double py, double pz,
-                              double* ox, double* oy, double* oz) {
-    double p = cell->lat_pitch[0];
-    if (p <= 0.0) return -1;
-
-    /* Fractional axial coordinates from inverse of basis matrix.
-     * Note: hex lattices use 'center' (not lower_left) as the origin in
-     * OpenMC; lat_lower_left stores the bounding box corner and should
-     * NOT be subtracted here (unlike rectangular lattices). If a hex
-     * center offset is needed, add a lat_center field. */
-    double fj = py / (p * M_SQRT3 * 0.5);
-    double fi = px / p - fj * 0.5;
-
-    /* Convert to cube coordinates (x + y + z = 0) */
-    double cx = fi, cz = fj, cy = -fi - fj;
-
-    /* Round to nearest hex */
-    int ri = (int)round(cx);
-    int rj = (int)round(cy);
-    int rk = (int)round(cz);
-
-    double dx = fabs(ri - cx);
-    double dy = fabs(rj - cy);
-    double dz = fabs(rk - cz);
-
-    if (dx > dy && dx > dz)
-        ri = -rj - rk;
-    else if (dy > dz)
-        rj = -ri - rk;
-    else
-        rk = -ri - rj;
-
-    /* Axial result: (i, j) = (ri, rk) */
+static int lattice_location_from_point_unchecked(const alea_cell_entry_t* cell,
+                                                  double px, double py, double pz,
+                                                  alea_lattice_location_t* out) {
+    if (!cell || !out) return -1;
     int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
     int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+    if (ni <= 0 || nj <= 0 || nk <= 0) return -1;
+    if (cell->lat_type == 1) {
+        if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 || cell->lat_pitch[2] <= 0.0) return -1;
+        int i = cell->lat_fill_dims[0] + (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
+        int j = cell->lat_fill_dims[2] + ((cell->lat_fill_repeating || nj > 1)
+            ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0);
+        int k = cell->lat_fill_dims[4] + ((cell->lat_fill_repeating || nk > 1)
+            ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0);
+        return alea_lattice_location_from_indices(cell, i, j, k, out);
+    }
+    if (cell->lat_type != 2 || cell->lat_pitch[0] <= 0.0 ||
+        ((cell->lat_fill_repeating || nk > 1) && cell->lat_pitch[2] <= 0.0)) return -1;
 
-    int oi = ri - cell->lat_fill_dims[0];
-    int oj = rk - cell->lat_fill_dims[2];
+    double p = cell->lat_pitch[0];
+    double fj = py / (p * M_SQRT3 * 0.5);
+    double fi = px / p - fj * 0.5;
+    double cx = fi, cy = -fi - fj, cz = fj;
+    int ri = (int)round(cx), rj = (int)round(cy), rk = (int)round(cz);
+    double dx = fabs(ri - cx), dy = fabs(rj - cy), dz = fabs(rk - cz);
+    if (dx > dy && dx > dz) ri = -rj - rk;
+    else if (dy > dz) rj = -ri - rk;
+    else rk = -ri - rj;
+    int k = cell->lat_fill_dims[4] + ((nk == 1 && !cell->lat_fill_repeating)
+        ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]));
+    return alea_lattice_location_from_indices(cell, ri, rk, k, out);
+}
 
-    /* Z index (linear, same as rectangular) */
-    int ok = (nk == 1) ? 0
-           : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+int alea_lattice_locate_point(const alea_system_t* sys,
+                              const alea_cell_entry_t* cell,
+                              double lx, double ly, double lz,
+                              alea_lattice_location_t* out) {
+    int rc = lattice_location_from_point_unchecked(cell, lx, ly, lz, out);
+    if (rc != 1 || !alea_lattice_cell_contains(sys, cell, lx, ly, lz)) return rc < 0 ? -1 : 0;
+    return 1;
+}
 
-    if (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)
-        return -1;
-
-    /* Element center in Cartesian */
-    *ox = ri * p + rk * p * 0.5;
-    *oy = rk * p * M_SQRT3 * 0.5;
-    *oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
-
-    size_t idx = (size_t)(oi * nj * nk + oj * nk + ok);
-    if (idx >= cell->lat_fill_count) return -1;
-
-    return cell->lat_fill[idx];
+int lattice_hex_lookup(const alea_cell_entry_t* cell,
+                       double px, double py, double pz,
+                       double* ox, double* oy, double* oz) {
+    alea_lattice_location_t location;
+    if (lattice_location_from_point_unchecked(cell, px, py, pz, &location) != 1) return -1;
+    if (ox) *ox = location.ox;
+    if (oy) *oy = location.oy;
+    if (oz) *oz = location.oz;
+    return location.fill_universe;
 }
 
 /* A lattice element lookup alone is not containment: axes with a single
@@ -1863,6 +1903,7 @@ int alea_lattice_cell_contains(const alea_system_t* sys,
                                const alea_cell_entry_t* cell,
                                double lx, double ly, double lz) {
     if (!sys || !cell) return 0;
+    if (cell->lat_fill_repeating) return 1;
 
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (nk == 1 && cell->lat_pitch[2] > 0.0) {
@@ -1922,17 +1963,16 @@ static int find_cell_recursive(const alea_system_t* sys,
         
         /* Lattice cell: element lookup + window containment */
         if (cell->lat_type != 0 && cell->lat_fill) {
-            double ox, oy, oz;
-            int fill_univ = (cell->lat_type == 2)
-                ? lattice_hex_lookup(cell, lx, ly, lz, &ox, &oy, &oz)
-                : lattice_rect_lookup(cell, lx, ly, lz, &ox, &oy, &oz);
-            if (fill_univ < 0) continue;
-            if (!alea_lattice_cell_contains(sys, cell, lx, ly, lz)) continue;
+            alea_lattice_location_t location;
+            if (alea_lattice_locate_point(sys, cell, lx, ly, lz, &location) != 1)
+                continue;
 
-            double elx = lx - ox, ely = ly - oy, elz = lz - oz;
+            double elx = lx - location.ox;
+            double ely = ly - location.oy;
+            double elz = lz - location.oz;
 
             int result = find_cell_recursive(
-                sys, elx, ely, elz, fill_univ,
+                sys, elx, ely, elz, location.fill_universe,
                 NULL, depth + 1, max_depth,
                 out_cell_index, out_cell_id, out_material, out_depth);
             if (result == 0) return 0;
@@ -2016,7 +2056,7 @@ int alea_find_cell_lazy(const alea_system_t* sys,
     if (!sys) return -1;
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+                              "alea_find_cell_lazy: universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
     
@@ -2045,8 +2085,12 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                     const alea_matrix_t* accumulated_transform,
                                     int depth,
                                     alea_cell_hit_t* out_hits,
+                                    uint64_t* occurrence_keys,
+                                    uint64_t parent_occurrence_key,
+                                    uint64_t* parent_occurrence_keys,
                                     size_t max_hits,
-                                    size_t* hit_count) {
+                                    size_t* hit_count,
+                                    uint64_t occurrence_seed) {
     if (*hit_count >= max_hits) return 0;
     if (depth >= MAX_FLATTEN_DEPTH) return 0;
 
@@ -2069,6 +2113,10 @@ static int find_all_cells_recursive(const alea_system_t* sys,
             .lx = lx, .ly = ly, .lz = lz,
             .accumulated_transform = accumulated_transform,
             .depth = depth,
+            .occurrence_seed = occurrence_seed,
+            .occurrence_keys = occurrence_keys,
+            .parent_occurrence_key = parent_occurrence_key,
+            .parent_occurrence_keys = parent_occurrence_keys,
             .candidate_positions = &candidates,
             .error = 0
         };
@@ -2087,8 +2135,12 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                                       accumulated_transform,
                                                       depth,
                                                       out_hits,
+                                                      occurrence_keys,
+                                                      parent_occurrence_key,
+                                                      parent_occurrence_keys,
                                                       max_hits,
-                                                      hit_count);
+                                                      hit_count,
+                                                      occurrence_seed);
             if (rc < 0) ctx.error = -1;
         }
         alea_vec_free(&candidates);
@@ -2107,8 +2159,12 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                                   accumulated_transform,
                                                   depth,
                                                   out_hits,
+                                                  occurrence_keys,
+                                                  parent_occurrence_key,
+                                                  parent_occurrence_keys,
                                                   max_hits,
-                                                  hit_count);
+                                                  hit_count,
+                                                  occurrence_seed);
         if (rc < 0) return -1;
     }
 
@@ -2118,6 +2174,8 @@ static int find_all_cells_recursive(const alea_system_t* sys,
 static int find_all_cells_at_point_impl(alea_system_t* sys,
                                         double x, double y, double z,
                                         alea_cell_hit_t* out_hits,
+                                        uint64_t* occurrence_keys,
+                                        uint64_t* parent_occurrence_keys,
                                         size_t max_hits,
                                         bool force_recursive) {
     if (!sys || !out_hits || max_hits == 0) return -1;
@@ -2125,7 +2183,8 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
     /* Default fast path: the hierarchical spatial index. The recursive walker
      * is reserved for callers that need exact multi-cell coverage (overlap
      * detection, force_recursive) and for the debug-trace path. */
-    if (!g_debug_point_trace && !force_recursive) {
+    if (!occurrence_keys && !parent_occurrence_keys &&
+        !g_debug_point_trace && !force_recursive) {
         int n = alea_hier_spatial_find_cells_at_point(sys, x, y, z,
                                                       out_hits, max_hits);
         if (n >= 0) return n;
@@ -2134,14 +2193,16 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
 
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+                              "alea_find_all_cells_at_point: universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
 
     size_t hit_count = 0;
     int result = find_all_cells_recursive(sys, x, y, z, x, y, z,
                                           0, NULL, 0,
-                                          out_hits, max_hits, &hit_count);
+                                          out_hits, occurrence_keys, 0,
+                                          parent_occurrence_keys, max_hits, &hit_count,
+                                          UINT64_C(1469598103934665603));
     if (result < 0) return -1;
     return (int)hit_count;
 }
@@ -2150,7 +2211,8 @@ int alea_find_all_cells_at_point(alea_system_t* sys,
                                 double x, double y, double z,
                                 alea_cell_hit_t* out_hits,
                                 size_t max_hits) {
-    return find_all_cells_at_point_impl(sys, x, y, z, out_hits, max_hits, false);
+    return find_all_cells_at_point_impl(sys, x, y, z, out_hits, NULL, NULL,
+                                        max_hits, false);
 }
 
 int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
@@ -2194,7 +2256,7 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
 
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "universe index is not prepared; call alea_prepare_query_acceleration()");
+                              "alea_find_deepest_cell_hit_at_point: universe index is not prepared; call alea_prepare_query_acceleration()");
         return -1;
     }
 
@@ -2228,7 +2290,26 @@ int alea_find_all_cells_at_point_recursive(const alea_system_t* sys,
                                           double x, double y, double z,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits) {
-    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits, max_hits, true);
+    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits,
+                                        NULL, NULL, max_hits, true);
+}
+
+int alea_find_all_cells_at_point_coverage_recursive(
+    const alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys, size_t max_hits) {
+    if (!occurrence_keys) return -1;
+    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits,
+                                        occurrence_keys, NULL, max_hits, true);
+}
+
+int alea_find_all_cells_at_point_coverage_chain_recursive(
+    const alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys, size_t max_hits) {
+    if (!occurrence_keys || !parent_occurrence_keys) return -1;
+    return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits,
+                                        occurrence_keys, parent_occurrence_keys,
+                                        max_hits, true);
 }
 
 /* ============================================================================
@@ -2335,8 +2416,9 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
  * clip region, recursing into each element's fill universe.
  *
  * Conventions:
- *   - Element local coords are translated by the element origin so that
- *     each element's fill universe sees coordinates centered on the element.
+ *   - Element local coords use either the element center (OpenMC-style) or
+ *     the displacement from MCNP lattice element (0,0,0), as recorded on
+ *     the imported lattice cell.
  *   - The lattice cell's CSG (root_node_id) is pushed onto the parent_stack
  *     so each emitted leaf gets intersected with the lattice shell — same
  *     model as fill cells.
@@ -2495,19 +2577,27 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
                 int fill_univ = cell->lat_fill[idx];
                 if (fill_univ <= 0) continue;
 
-                /* Element center in lattice-local frame. */
+                /* Lattice-local translation into the filling universe. */
                 double ox, oy, oz;
                 if (cell->lat_type == 1) {
-                    ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-                    oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-                    oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        ox = (cell->lat_fill_dims[0] + oi) * cell->lat_pitch[0];
+                        oy = (cell->lat_fill_dims[2] + oj) * cell->lat_pitch[1];
+                        oz = (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2];
+                    } else {
+                        ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+                        oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+                        oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    }
                 } else {
                     int ri = oi + cell->lat_fill_dims[0];
                     int rk = oj + cell->lat_fill_dims[2];
                     ox = ri * p + rk * p * 0.5;
                     oy = rk * p * M_SQRT3 * 0.5;
-                    oz = (nk == 1) ? 0.0
-                       : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    oz = cell->lat_fill_zero_element_coords
+                       ? (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2]
+                       : ((nk == 1) ? 0.0
+                          : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
                 }
 
                 /* Element translation: element-local -> lattice-local.

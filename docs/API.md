@@ -2280,3 +2280,192 @@ Human-readable error message for an error code.
 | `ALEA_ERR_NOT_FOUND` | ZAID not found in xsdir |
 | `ALEA_ERR_INVALID_ARG` | Invalid data format |
 | `ALEA_ERR_UNSUPPORTED` | Unsupported operation (e.g. broadening to lower T) |
+
+## Ray-query convenience APIs
+
+`alea_ray_first_visible_query()` and `alea_ray_boundary_event_query()` use
+caller-owned opaque reusable results. Create a result once, reuse it for
+successive rays, then destroy it. A failed query clears its result.
+
+Both option structures accept an older prefix when `struct_size` is set to
+that prefix's size. Zero `t_max` means an unbounded ray.
+
+### First visible
+
+`alea_ray_first_visible_query()` returns the first non-void interval in the
+requested range. Request `ALEA_RAY_FIRST_VISIBLE_SURFACE_ID` and/or
+`ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL` when those fields are needed.
+If `t_min` cuts through an existing interval, the result is a cross-section
+and has no reportable surface ID or normal.
+
+### Boundary events
+
+`alea_ray_boundary_event_query()` returns ordered ownership boundaries.
+Kinds are physical, synthetic lattice, or unresolved. By default coincident
+physical surfaces use the lowest positive surface ID; set
+`include_all_coincident_physical` for every participant. Event order and
+ownership fields are deterministic. `max_events` and `max_output_bytes` reject
+oversized results rather than truncating them.
+
+### Complete coverage slices
+
+`alea_ray_coverage_query()` and `alea_ray_coverage_slice_query()` answer the
+diagnostic question that selected-owner tracing cannot: which concrete owner
+occurrences claim each elementary ray interval. They use the global
+breakpoint/complete-owner engine and publish input-order CSR data:
+
+```text
+row_offsets:   rows      -> intervals
+owner_offsets: intervals -> concrete owner occurrences
+```
+
+Create one `alea_ray_coverage_slice_result_t`, reuse it for many queries, and
+destroy it when finished. Every accessor returns a borrowed read-only array;
+it remains valid until the next successful query using that result or until
+the result is destroyed. A failed query leaves the previous publication
+unchanged.
+
+```c
+const double origins[] = {-2, 0, 0, -2, 2, 0};
+const double directions[] = {1, 0, 0, 1, 0, 0};
+const uint8_t direction_tags[] = {0, 0};
+const double row_coordinates[] = {0, 2};
+
+alea_ray_coverage_slice_options_t options;
+alea_ray_coverage_slice_options_init(&options);
+options.t_max = 4.0;
+options.flags = ALEA_RAY_COVERAGE_DOMAIN;
+options.domain_t_min = 0.5;
+options.domain_t_max = 3.5;
+
+alea_ray_coverage_slice_result_t* coverage =
+    alea_ray_coverage_slice_result_create();
+if (alea_ray_coverage_slice_query(sys, origins, directions, 2,
+                                  direction_tags, row_coordinates,
+                                  &options, coverage) != 0) {
+    /* coverage still contains its previous successful result, if any */
+}
+
+const size_t* rows = alea_ray_coverage_slice_row_offsets(coverage);
+const double* t0 = alea_ray_coverage_slice_t_enter(coverage);
+const double* t1 = alea_ray_coverage_slice_t_exit(coverage);
+const uint8_t* kinds = alea_ray_coverage_slice_kinds(coverage);
+const size_t* owners = alea_ray_coverage_slice_owner_offsets(coverage);
+const int* owner_cells = alea_ray_coverage_slice_owner_cell_ids(coverage);
+
+for (size_t row = 0; row < alea_ray_coverage_slice_row_count(coverage); row++)
+    for (size_t interval = rows[row]; interval < rows[row + 1]; interval++)
+        for (size_t owner = owners[interval]; owner < owners[interval + 1]; owner++)
+            /* [t0[interval], t1[interval]] has kind kinds[interval],
+               claimed by owner_cells[owner] */;
+
+alea_ray_coverage_slice_result_destroy(coverage);
+```
+
+`ALEA_RAY_COVERAGE_UNIQUE` means one complete owner chain; `GAP`, `OVERLAP`,
+`UNDEFINED_FILL`, and `UNRESOLVED` are geometry findings or indeterminate
+coverage. `TRUNCATED` means the owner budget retained only a prefix, so its
+owners must not be treated as complete; use `owner_count_lower_bounds` to see
+the minimum known count. `ALLOWED_EXTERIOR` is reported only with both
+`ALEA_RAY_COVERAGE_DOMAIN` and `ALEA_RAY_COVERAGE_REPORT_EXTERIOR`.
+
+The owner arrays expose cell, material, universe, fill-universe, depth,
+occurrence key, immediate parent occurrence key, and resolution flags. The
+occurrence-key arrays distinguish concrete placements such as repeated lattice
+elements; cell ID alone is not owner identity.
+
+`max_rows`, `max_intervals`, `max_owners`, and `max_output_bytes` bound the
+published CSR output; zero means unlimited. Set `max_refinement_depth` to
+enable deterministic midpoint refinement. The optional signature,
+displacement, density, and finding signals select adjacent rows to split;
+`alea_ray_coverage_slice_refinement_status()` reports whether the published
+sample completed or stopped at a depth, row, or spacing limit.
+`alea_ray_coverage_query()` is the scalar one-row adapter over the same
+contract.
+
+## Ray-slice rasterization
+
+`alea_rasterize_ray_slice_compact()` fills caller-owned, tightly packed
+row-major raster arrays from a result created by
+`alea_trace_ray_slice_compact()`. The compact result must match the exact view
+and row count; generic ray batches are rejected because their intervals are ray
+distances rather than slice-U coordinates. Validation failures leave requested
+output buffers unchanged.
+
+`alea_trace_ray_slice_raster()` is the fused alternative. It derives the
+compact fields required by the requested raster fields, creates a temporary
+compact result, rasterizes it, and releases it before returning. Its
+`max_trace_output_bytes` limit applies only to that temporary compact result;
+callers own and budget the raster buffers themselves.
+
+Raster ownership uses horizontal pixel centers. For an interval
+`[u_enter, u_exit)`, a row with width `nu`, and pixel pitch
+`du = (u_max-u_min)/nu`, the filled range is `[ceil((u_enter-u_min)/du-0.5),
+ceil((u_exit-u_min)/du-0.5))`, clamped to `[0, nu]`. Void defaults are cell
+`-1`, material `0`, universe `-1`, fill universe `-1`, density `0.0`, and
+resolution flags `0`. Density is always the resolved leaf density; projected
+owner depth applies to cell, material, universe, and fill-universe fields.
+
+```c
+size_t pixels = nu * nv;
+int32_t* cells = malloc(pixels * sizeof(*cells));
+int32_t* materials = malloc(pixels * sizeof(*materials));
+alea_slice_raster_t raster;
+alea_slice_raster_init(&raster);
+raster.nu = nu;
+raster.nv = nv;
+raster.fields = ALEA_SLICE_RASTER_CELL_ID |
+                ALEA_SLICE_RASTER_MATERIAL_ID;
+raster.cell_ids = cells;
+raster.material_ids = materials;
+
+alea_slice_raster_options_t options;
+alea_slice_raster_options_init(&options);  /* leaf ownership, no trace limit */
+if (alea_trace_ray_slice_raster(sys, &view, &options, &raster) != 0) {
+    /* cells and materials are unchanged on validation/trace failure */
+}
+free(materials);
+free(cells);
+```
+
+Requested output buffers must not overlap. The rasterizer may fill independent
+rows in parallel for large rasters, but produces the same bytes at every OpenMP
+thread count. See `examples/c/ray_slice_raster_bench.c` for compact-trace,
+standalone-raster, and fused timings.
+
+## Directional slice trace caches
+
+`alea_slice_directional_trace_cache_create()` creates an opaque reusable cache
+for a slice view and sampling dimensions. It contains canonical U+/U-/V+/V-
+boundary events plus ownership traces, and is invalid after a geometry change.
+Pass it to `alea_validate_ray_slice_compact_with_directional_cache()` to reuse
+the U ownership traces and obtain endpoint provenance arrays through the
+`alea_ray_slice_validation_u_*_surface_ids()` and provenance-flag accessors.
+The cache must be destroyed before its system.
+It is valid only for the exact system generation, slice basis and bounds, and
+sampling dimensions used at construction. Cache-aware calls reject a mismatch
+without modifying an already published validation result. The cache is
+read-only after construction and may be shared by independent consumers that
+only read it; do not mutate the system while it is in use.
+
+`alea_slice_surface_boundary_map_create_with_directional_cache()` is the
+public provenance-map consumer for the same cache. It retains the canonical
+short-edge fallback when directional stream evidence is incomplete or
+contradictory.
+
+Lua exposes the same workflow as
+`sys:directional_trace_cache(view, width, height)` and
+`sys:validate_ray_slice(view, rows [, options [, cache]])`. The returned table
+contains intervals, trace reuse/execution masks, and (when a cache is supplied)
+canonical forward endpoint surface IDs.
+Lua cache userdata defers `sys:destroy()` until the cache is collected, so Lua
+callers cannot free the system before a live cache; C callers must still destroy
+their cache before destroying the system.
+
+The currently published cache owns leaf-level ownership traces
+(`projected_depth = -1`) with occurrence keys. A validation request for another
+projected depth still receives canonical provenance from a matching cache, but
+executes fresh ownership traces for that depth. Lua options accept
+`projected_depth`, `include_agreements`, `absolute_tolerance`, and
+`relative_tolerance`; C callers use `alea_ray_slice_validation_options_t` and
+its documented interval/path/output budgets.

@@ -1,0 +1,20 @@
+Lattice local-overlap diagnostic
+c --- universe 1: intentionally nested, competing terminal cells ---
+1 1 -1.0  -10      u=1 imp:n=1
+2 2 -1.0  -11      u=1 imp:n=1
+c --- root lattice containing one concrete universe-1 element ---
+100 0  1 -2 3 -4 5 -6 lat=1 fill=0:0 0:0 0:0
+     1 imp:n=1
+
+c Surfaces
+1  px -1
+2  px  1
+3  py -1
+4  py  1
+5  pz -1
+6  pz  1
+10 cz 0.70
+11 cz 0.40
+
+m1 92235.80c 1.0
+m2 1001.80c 2.0 8016.80c 1.0

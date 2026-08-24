@@ -21,6 +21,7 @@
 #include "alea.h"
 #include "alea_slice.h"
 #include "alea_mcnp.h"
+#include "core/alea_universe.h"
 
 /* =========================================================================
  * Helpers
@@ -298,6 +299,50 @@ TEST(grid_overlap_detected) {
     alea_destroy(sys);
 }
 
+TEST(grid_coherence_reports_swept_owner_and_flags_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int first_sphere = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int later_sphere = alea_sphere_surface(sys, 2, -3.0, 0.0, 0.0, 2.0);
+    ASSERT(first_sphere >= 0 && later_sphere >= 0);
+    int first_mat = alea_add_material(sys, 1);
+    int later_mat = alea_add_material(sys, 2);
+    ASSERT(first_mat >= 0 && later_mat >= 0);
+    /* Cell 1 is first in deck order, but a left-to-right row starts in cell 2
+     * alone and then enters their overlap, so the sweep carries cell 2 in.
+     * The grid resolves ownership coherently rather than re-deriving deck order
+     * per pixel; what it owes the caller in an overlap is the error flag, not a
+     * particular one of the two claimants. */
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, first_sphere, -1),
+                         first_mat, -1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, alea_halfspace(sys, later_sphere, -1),
+                         later_mat, -1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[6];
+    int material_ids[6];
+    uint8_t errors[6];
+    alea_slice_view_t view;
+    /* Centres: -4.5, -3.5, -2.5, -1.5, -0.5, 0.5. */
+    alea_slice_view_axis(&view, 2, 0.0, -5.0, 1.0, -1.0, 1.0);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, 6, 1, -1,
+                                   cell_ids, material_ids, errors), 0);
+    /* x = -4.5: cell 2 alone, before the overlap. */
+    ASSERT_EQ(material_ids[0], 2);
+    ASSERT_EQ(errors[0], ALEA_GRID_OK);
+    /* x = -1.5: claimed by both. The swept cell is kept... */
+    ASSERT_EQ(cell_ids[3], 2);
+    ASSERT_EQ(material_ids[3], 2);
+    /* ...and the pixel is reported as an overlap regardless of which won. */
+    ASSERT_EQ(errors[3], ALEA_GRID_OVERLAP);
+    /* x = -0.5: cell 1 alone, past the overlap. */
+    ASSERT_EQ(cell_ids[4], 1);
+    ASSERT_EQ(errors[4], ALEA_GRID_OK);
+
+    alea_destroy(sys);
+}
+
 /* =========================================================================
  * Test 4b: coverage grid classifies undefined/one/multi pixels
  * ========================================================================= */
@@ -442,8 +487,17 @@ TEST(grid_tile_coverage_nested_overlap) {
                   cell_ids, NULL, secondary, coverage, errors), 0);
     int before = count_coverage(coverage, nu * nv, ALEA_COVERAGE_MULTI);
 
-    int refined = alea_refine_grid_coverage_tiles_exact(
-        sys, &view, nu, nv, -1, 16, 16, secondary, coverage, errors);
+    alea_tile_refinement_options_t options;
+    alea_tile_refinement_options_init(&options);
+    ASSERT_EQ(options.max_candidates, 4096);
+    ASSERT_EQ(options.max_evaluated_candidates, 4096);
+    ASSERT_EQ(options.cap_storm_threshold, 16);
+    /* Exercise the explicit contract rather than hidden process environment. */
+    options.use_hier_chain_candidates = true;
+    options.use_chain_bitset = true;
+    int refined = alea_refine_grid_coverage_tiles_exact_ex(
+        sys, &view, nu, nv, -1, 16, 16, &options,
+        secondary, coverage, errors);
     ASSERT(refined > 0);
     alea_tile_coverage_stats_t stats = alea_tile_coverage_stats_get();
     ASSERT(stats.tiles > 0);
@@ -463,10 +517,53 @@ TEST(grid_tile_coverage_nested_overlap) {
     ASSERT(count_components_of_kind(comps, ALEA_PLOT_ERR_TOTAL_OVERLAP) > 0);
     alea_plot_error_components_free(comps);
 
+    /* A bounded fallback must retain its uncertainty instead of completing an
+     * unplanned exact raster pass.  Two sphere candidates exceed this tiny
+     * chain-evaluation cap, while one 16x16 tile exceeds the fallback budget. */
+    memset(secondary, 0, (size_t)nu * nv * sizeof(*secondary));
+    memset(errors, 0, (size_t)nu * nv * sizeof(*errors));
+    memset(coverage, 0, (size_t)nu * nv * sizeof(*coverage));
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+                  sys, &view, nu, nv, -1, ALEA_GRID_COVERAGE_FAST,
+                  cell_ids, NULL, secondary, coverage, errors), 0);
+    alea_tile_refinement_options_init(&options);
+    options.use_hier_chain_candidates = true;
+    options.max_evaluated_candidates = 1;
+    options.max_exact_fallback_pixels = 10;
+    ASSERT_EQ(alea_refine_grid_coverage_tiles_exact_ex(
+                  sys, &view, nu, nv, -1, 16, 16, &options,
+                  secondary, coverage, errors), 0);
+    stats = alea_tile_coverage_stats_get();
+    ASSERT(stats.incomplete);
+    ASSERT(stats.skipped_tiles > 0);
+    ASSERT(stats.skipped_pixels > 0);
+    ASSERT_EQ(stats.exact_fallback_pixels, 0);
+
     free(coverage);
     free(errors);
     free(secondary);
     free(cell_ids);
+    alea_destroy(sys);
+}
+
+TEST(grid_tile_coverage_honors_cooperative_interrupt) {
+    alea_system_t* sys = make_x_split(0.0, 10.0);
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int secondary[1] = {-1};
+    uint8_t coverage[1] = {ALEA_COVERAGE_ONE};
+    uint8_t errors[1] = {0};
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+    alea_tile_refinement_options_t options;
+    alea_tile_refinement_options_init(&options);
+
+    alea_interrupt();
+    ASSERT_EQ(alea_refine_grid_coverage_tiles_exact_ex(
+                  sys, &view, 1, 1, -1, 1, 1, &options,
+                  secondary, coverage, errors), -1);
+    alea_clear_interrupt();
     alea_destroy(sys);
 }
 
@@ -528,6 +625,79 @@ TEST(grid_path_coverage_nested_overlap) {
     int center = (nv / 2) * nu + (nu / 2);
     ASSERT_EQ(coverage[center], ALEA_COVERAGE_MULTI);
     ASSERT(secondary[center] > 0);
+
+    /* The path engine must honor the same selected-tile mask as the global
+     * tile engine; interactive diagnostics must not scan the full raster. */
+    uint8_t selected_tiles[16] = {0};
+    selected_tiles[0] = 1;
+    alea_tile_refinement_options_t selected_options;
+    alea_tile_refinement_options_init(&selected_options);
+    selected_options.tile_mask = selected_tiles;
+    selected_options.tile_mask_count = 16;
+    ASSERT(alea_refine_grid_coverage_paths_exact_ex(
+               sys, &view, nu, nv, -1, 16, 16, cell_ids, path_ids, &paths,
+               &selected_options, secondary, coverage, errors) >= 0);
+    stats = alea_tile_coverage_stats_get();
+    ASSERT_EQ(stats.tiles, 1);
+
+    /* The interactive producer must resolve paths only inside the requested
+     * tiles.  Outside entries remain explicit missing paths and are never
+     * mistaken for clean ownership evidence. */
+    uint32_t* selected_path_ids =
+        calloc((size_t)nu * nv, sizeof(*selected_path_ids));
+    alea_slice_path_table_t selected_paths = {0};
+    ASSERT_NOT_NULL(selected_path_ids);
+    ASSERT_EQ(alea_find_cells_grid_paths_selected(
+                  sys, &view, nu, nv, -1, 16, 16,
+                  selected_tiles, 16, cell_ids,
+                  selected_path_ids, &selected_paths), 0);
+    ASSERT(selected_paths.count > 0);
+    int selected_valid_paths = 0;
+    for (int j = 0; j < nv; j++) {
+        for (int i = 0; i < nu; i++) {
+            size_t pidx = (size_t)j * (size_t)nu + (size_t)i;
+            if (i < 16 && j < 16) {
+                if (selected_path_ids[pidx] != UINT32_MAX)
+                    selected_valid_paths++;
+            } else {
+                ASSERT_EQ(selected_path_ids[pidx], UINT32_MAX);
+            }
+        }
+    }
+    ASSERT(selected_valid_paths > 0);
+
+    memset(secondary, 0, (size_t)nu * nv * sizeof(*secondary));
+    memset(errors, 0, (size_t)nu * nv * sizeof(*errors));
+    memset(coverage, 0, (size_t)nu * nv * sizeof(*coverage));
+    ASSERT(alea_refine_grid_coverage_paths_exact_ex(
+               sys, &view, nu, nv, -1, 16, 16,
+               cell_ids, selected_path_ids, &selected_paths,
+               &selected_options, secondary, coverage, errors) >= 0);
+    stats = alea_tile_coverage_stats_get();
+    ASSERT_EQ(stats.tiles, 1);
+    ASSERT(stats.fallback_tiles <= stats.tiles);
+    ASSERT(stats.exact_fallback_pixels > 0);
+    alea_slice_path_table_free(&selected_paths);
+    free(selected_path_ids);
+
+    /* Missing concrete paths normally use recursive exact fallback.  Under a
+     * finite budget, retain the second missing-path pixel as incomplete rather
+     * than silently growing the diagnostic pass. */
+    memset(secondary, 0, (size_t)nu * nv * sizeof(*secondary));
+    memset(errors, 0, (size_t)nu * nv * sizeof(*errors));
+    memset(coverage, 0, (size_t)nu * nv * sizeof(*coverage));
+    path_ids[0] = UINT32_MAX;
+    path_ids[1] = UINT32_MAX;
+    alea_tile_refinement_options_t options;
+    alea_tile_refinement_options_init(&options);
+    options.max_exact_fallback_pixels = 1;
+    ASSERT(alea_refine_grid_coverage_paths_exact_ex(
+               sys, &view, nu, nv, -1, 16, 16, cell_ids, path_ids, &paths,
+               &options, secondary, coverage, errors) >= 0);
+    stats = alea_tile_coverage_stats_get();
+    ASSERT(stats.incomplete);
+    ASSERT(stats.skipped_pixels > 0);
+    ASSERT_EQ(stats.exact_fallback_pixels, 1);
 
     alea_slice_path_table_free(&paths);
     free(path_ids);
@@ -800,6 +970,385 @@ TEST(grid_path_ids_filled_universe) {
     mcnp_model_destroy(model);
 }
 
+TEST(grid_path_ids_distinguish_lattice_element_placements) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[3];
+    uint8_t coverage[3];
+    uint8_t errors[3];
+    uint32_t path_ids[3];
+    alea_slice_path_table_t paths = {0};
+    alea_slice_view_t view;
+    /* Pixel centers are x = 0, 2, 4. The first and third select the same
+     * child universe but different lattice elements. */
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 5.0, -1.0, 1.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage_paths(
+                  sys, &view, 3, 1, -1,
+                  ALEA_GRID_COVERAGE_FAST | ALEA_GRID_PATH_IDS,
+                  cell_ids, NULL, NULL, coverage, errors, path_ids, &paths), 0);
+    ASSERT_EQ(cell_ids[0], 1);
+    ASSERT_EQ(cell_ids[2], 1);
+    ASSERT(path_ids[0] != UINT32_MAX);
+    ASSERT(path_ids[2] != UINT32_MAX);
+    ASSERT(path_ids[0] != path_ids[2]);
+
+    const alea_slice_path_record_t* left = &paths.records[path_ids[0]];
+    const alea_slice_path_record_t* right = &paths.records[path_ids[2]];
+    ASSERT_EQ(left->universe_id, 1);
+    ASSERT_EQ(right->universe_id, 1);
+    ASSERT_EQ(left->depth, 1);
+    ASSERT_EQ(right->depth, 1);
+    ASSERT(left->world_to_local[3] != right->world_to_local[3]);
+
+    alea_slice_path_table_free(&paths);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_path_coverage_matches_recursive_lattice) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int nu = 18, nv = 18;
+    const size_t count = (size_t)nu * (size_t)nv;
+    int* exact_cells = calloc(count, sizeof(*exact_cells));
+    int* exact_secondary = calloc(count, sizeof(*exact_secondary));
+    uint8_t* exact_coverage = calloc(count, sizeof(*exact_coverage));
+    uint8_t* exact_errors = calloc(count, sizeof(*exact_errors));
+    int* tile_cells = calloc(count, sizeof(*tile_cells));
+    int* tile_secondary = calloc(count, sizeof(*tile_secondary));
+    uint8_t* tile_coverage = calloc(count, sizeof(*tile_coverage));
+    uint8_t* tile_errors = calloc(count, sizeof(*tile_errors));
+    uint32_t* path_ids = calloc(count, sizeof(*path_ids));
+    alea_slice_path_table_t paths = {0};
+    ASSERT_NOT_NULL(exact_cells);
+    ASSERT_NOT_NULL(exact_secondary);
+    ASSERT_NOT_NULL(exact_coverage);
+    ASSERT_NOT_NULL(exact_errors);
+    ASSERT_NOT_NULL(tile_cells);
+    ASSERT_NOT_NULL(tile_secondary);
+    ASSERT_NOT_NULL(tile_coverage);
+    ASSERT_NOT_NULL(tile_errors);
+    ASSERT_NOT_NULL(path_ids);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 5.0, -1.0, 5.0);
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+                  sys, &view, nu, nv, -1, ALEA_GRID_COVERAGE_EXACT,
+                  exact_cells, NULL, exact_secondary,
+                  exact_coverage, exact_errors), 0);
+    ASSERT_EQ(alea_find_cells_grid_coverage_paths(
+                  sys, &view, nu, nv, -1,
+                  ALEA_GRID_COVERAGE_FAST | ALEA_GRID_PATH_IDS,
+                  tile_cells, NULL, tile_secondary,
+                  tile_coverage, tile_errors, path_ids, &paths), 0);
+
+    alea_tile_refinement_options_t options;
+    alea_tile_refinement_options_init(&options);
+    ASSERT(alea_refine_grid_coverage_paths_exact_ex(
+               sys, &view, nu, nv, -1, 6, 6, tile_cells, path_ids, &paths,
+               &options,
+               tile_secondary, tile_coverage, tile_errors) >= 0);
+
+    for (size_t i = 0; i < count; i++) {
+        if (tile_coverage[i] != exact_coverage[i] ||
+            tile_errors[i] != exact_errors[i] ||
+            tile_secondary[i] != exact_secondary[i]) {
+            fprintf(stderr,
+                    "lattice tile mismatch i=%zu px=%zu py=%zu exact=(%u,%u,%d) tile=(%u,%u,%d)\n",
+                    i, i % (size_t)nu, i / (size_t)nu,
+                    (unsigned)exact_coverage[i], (unsigned)exact_errors[i],
+                    exact_secondary[i], (unsigned)tile_coverage[i],
+                    (unsigned)tile_errors[i], tile_secondary[i]);
+        }
+        ASSERT_EQ(tile_coverage[i], exact_coverage[i]);
+        ASSERT_EQ(tile_errors[i], exact_errors[i]);
+        ASSERT_EQ(tile_secondary[i], exact_secondary[i]);
+    }
+
+    alea_slice_path_table_free(&paths);
+    free(path_ids);
+    free(tile_errors);
+    free(tile_coverage);
+    free(tile_secondary);
+    free(tile_cells);
+    free(exact_errors);
+    free(exact_coverage);
+    free(exact_secondary);
+    free(exact_cells);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_local_coverage_matches_exact_lattice_oracle) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const int nu = 18, nv = 18;
+    const size_t count = (size_t)nu * (size_t)nv;
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 5.0, -1.0, 5.0);
+    int* primary = calloc(count, sizeof(*primary));
+    int* secondary = calloc(count, sizeof(*secondary));
+    uint8_t* coverage = calloc(count, sizeof(*coverage));
+    uint8_t* errors = calloc(count, sizeof(*errors));
+    ASSERT_NOT_NULL(primary); ASSERT_NOT_NULL(secondary);
+    ASSERT_NOT_NULL(coverage); ASSERT_NOT_NULL(errors);
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        primary, NULL, secondary, coverage, errors), 0);
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, nu, nv, -1, primary, secondary, coverage, errors, NULL), 0);
+    alea_plot_error_component_result_t* oracle =
+        alea_classify_plot_error_components(primary, secondary, coverage, nu, nv);
+    ASSERT_NOT_NULL(oracle);
+
+    alea_plot_error_component_result_t* compact = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, nu, nv, -1, count, 16 * 1024 * 1024, 1,
+        &compact, &stats), 0);
+    ASSERT_NOT_NULL(compact);
+    ASSERT_EQ((int)compact->component_count, (int)oracle->component_count);
+    ASSERT_EQ(count_components_of_kind(compact, ALEA_PLOT_ERR_UNDEFINED_REGION),
+              count_components_of_kind(oracle, ALEA_PLOT_ERR_UNDEFINED_REGION));
+    ASSERT_EQ(stats.point_coverage.lattice_fallbacks, 0);
+    ASSERT_EQ(stats.point_coverage.recursive_fallbacks, 0);
+    ASSERT_EQ(stats.point_coverage.spatial_queries, count);
+
+    alea_plot_error_components_free(compact);
+    alea_plot_error_components_free(oracle);
+    free(errors); free(coverage); free(secondary); free(primary);
+    mcnp_model_destroy(model);
+}
+
+/* The compact local query must retain multiple terminal claimants that occur
+ * within one concrete lattice element.  This is specifically different from
+ * merely seeing the same universe definition elsewhere in a lattice. */
+TEST(grid_local_coverage_detects_lattice_terminal_overlap) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_overlap.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    /* The recursive reference path establishes the intended ownership at the
+     * centre of the concrete lattice element: both child terminals claim it. */
+    alea_cell_hit_t recursive_hits[16];
+    int recursive_count = alea_find_all_cells_at_point_recursive(
+        sys, 0.0, 0.0, 0.0, recursive_hits, 16);
+    ASSERT(recursive_count >= 2);
+    bool has_cell_1 = false, has_cell_2 = false;
+    for (int i = 0; i < recursive_count; i++) {
+        has_cell_1 |= recursive_hits[i].cell_id == 1;
+        has_cell_2 |= recursive_hits[i].cell_id == 2;
+    }
+    ASSERT(has_cell_1);
+    ASSERT(has_cell_2);
+
+    const int nu = 32, nv = 32;
+    const size_t count = (size_t)nu * (size_t)nv;
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+
+    int* primary = calloc(count, sizeof(*primary));
+    int* secondary = calloc(count, sizeof(*secondary));
+    uint8_t* coverage = calloc(count, sizeof(*coverage));
+    uint8_t* errors = calloc(count, sizeof(*errors));
+    ASSERT_NOT_NULL(primary); ASSERT_NOT_NULL(secondary);
+    ASSERT_NOT_NULL(coverage); ASSERT_NOT_NULL(errors);
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        primary, NULL, secondary, coverage, errors), 0);
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, nu, nv, -1, primary, secondary, coverage, errors, NULL), 0);
+    alea_plot_error_component_result_t* global =
+        alea_classify_plot_error_components(primary, secondary, coverage, nu, nv);
+    ASSERT_NOT_NULL(global);
+    ASSERT(count_components_of_kind(global, ALEA_PLOT_ERR_TOTAL_OVERLAP) > 0);
+
+    alea_plot_error_component_result_t* compact = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, nu, nv, -1, count, 16 * 1024 * 1024, 1,
+        &compact, &stats), 0);
+    ASSERT_NOT_NULL(compact);
+    ASSERT_EQ((int)compact->component_count, (int)global->component_count);
+    ASSERT_EQ(count_components_of_kind(compact, ALEA_PLOT_ERR_TOTAL_OVERLAP),
+              count_components_of_kind(global, ALEA_PLOT_ERR_TOTAL_OVERLAP));
+    ASSERT_EQ(stats.point_coverage.lattice_fallbacks, 0);
+    ASSERT_EQ(stats.point_coverage.recursive_fallbacks, 0);
+    /* Boundary classification probes selected pixels around the component, so
+     * this can exceed the raster size; all probes must remain spatial. */
+    ASSERT(stats.point_coverage.spatial_queries >= count);
+
+    alea_plot_error_components_free(compact);
+    alea_plot_error_components_free(global);
+    free(errors); free(coverage); free(secondary); free(primary);
+    mcnp_model_destroy(model);
+}
+
+/* Repeated transforms of the same lattice universe must remain distinct
+ * occurrences.  Each placement contains the same two conflicting child
+ * definitions, but the local diagnostic must retain two separate overlaps. */
+TEST(grid_local_coverage_distinguishes_transformed_lattice_overlaps) {
+    mcnp_model_t* model = mcnp_load(
+        "tests/data/mcnp_transformed_lattice_overlap.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_cell_hit_t left_hits[16], right_hits[16];
+    uint64_t left_keys[16], right_keys[16];
+    uint64_t left_parents[16], right_parents[16];
+    int left_count = alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, -5.0, 0.0, 0.0, left_hits, left_keys, left_parents, 16);
+    int right_count = alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, 5.0, 0.0, 0.0, right_hits, right_keys, right_parents, 16);
+    ASSERT(left_count >= 2);
+    ASSERT(right_count >= 2);
+    uint64_t left_cell_1_key = 0, right_cell_1_key = 0;
+    bool left_has_cell_2 = false, right_has_cell_2 = false;
+    for (int i = 0; i < left_count; i++) {
+        if (left_hits[i].cell_id == 1) left_cell_1_key = left_keys[i];
+        if (left_hits[i].cell_id == 2) left_has_cell_2 = true;
+    }
+    for (int i = 0; i < right_count; i++) {
+        if (right_hits[i].cell_id == 1) right_cell_1_key = right_keys[i];
+        if (right_hits[i].cell_id == 2) right_has_cell_2 = true;
+    }
+    ASSERT(left_cell_1_key != 0);
+    ASSERT(right_cell_1_key != 0);
+    ASSERT(left_cell_1_key != right_cell_1_key);
+    ASSERT(left_has_cell_2);
+    ASSERT(right_has_cell_2);
+
+    const int nu = 112, nv = 32;
+    const size_t count = (size_t)nu * (size_t)nv;
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -7.0, 7.0, -1.0, 1.0);
+    int* primary = calloc(count, sizeof(*primary));
+    int* secondary = calloc(count, sizeof(*secondary));
+    uint8_t* coverage = calloc(count, sizeof(*coverage));
+    uint8_t* errors = calloc(count, sizeof(*errors));
+    ASSERT_NOT_NULL(primary); ASSERT_NOT_NULL(secondary);
+    ASSERT_NOT_NULL(coverage); ASSERT_NOT_NULL(errors);
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        primary, NULL, secondary, coverage, errors), 0);
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, nu, nv, -1, primary, secondary, coverage, errors, NULL), 0);
+    alea_plot_error_component_result_t* global =
+        alea_classify_plot_error_components(primary, secondary, coverage, nu, nv);
+    ASSERT_NOT_NULL(global);
+    ASSERT_EQ(count_components_of_kind(global, ALEA_PLOT_ERR_TOTAL_OVERLAP), 2);
+
+    alea_plot_error_component_result_t* compact = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, nu, nv, -1, count, 16 * 1024 * 1024, 1,
+        &compact, &stats), 0);
+    ASSERT_NOT_NULL(compact);
+    ASSERT_EQ((int)compact->component_count, (int)global->component_count);
+    ASSERT_EQ(count_components_of_kind(compact, ALEA_PLOT_ERR_TOTAL_OVERLAP), 2);
+    ASSERT_EQ(stats.point_coverage.lattice_fallbacks, 0);
+    ASSERT_EQ(stats.point_coverage.recursive_fallbacks, 0);
+
+    alea_plot_error_components_free(compact);
+    alea_plot_error_components_free(global);
+    free(errors); free(coverage); free(secondary); free(primary);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_local_coverage_detects_nested_lattice_terminal_overlap) {
+    mcnp_model_t* model = mcnp_load(
+        "tests/data/mcnp_nested_lattice_overlap.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_cell_hit_t recursive_hits[16];
+    int recursive_count = alea_find_all_cells_at_point_recursive(
+        sys, 0.0, 0.0, 0.0, recursive_hits, 16);
+    ASSERT(recursive_count >= 2);
+    bool has_cell_1 = false, has_cell_2 = false;
+    for (int i = 0; i < recursive_count; i++) {
+        has_cell_1 |= recursive_hits[i].cell_id == 1;
+        has_cell_2 |= recursive_hits[i].cell_id == 2;
+    }
+    ASSERT(has_cell_1);
+    ASSERT(has_cell_2);
+
+    const int nu = 32, nv = 32;
+    const size_t count = (size_t)nu * (size_t)nv;
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+    int* primary = calloc(count, sizeof(*primary));
+    int* secondary = calloc(count, sizeof(*secondary));
+    uint8_t* coverage = calloc(count, sizeof(*coverage));
+    uint8_t* errors = calloc(count, sizeof(*errors));
+    ASSERT_NOT_NULL(primary); ASSERT_NOT_NULL(secondary);
+    ASSERT_NOT_NULL(coverage); ASSERT_NOT_NULL(errors);
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, nu, nv, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        primary, NULL, secondary, coverage, errors), 0);
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, nu, nv, -1, primary, secondary, coverage, errors, NULL), 0);
+    alea_plot_error_component_result_t* global =
+        alea_classify_plot_error_components(primary, secondary, coverage, nu, nv);
+    ASSERT_NOT_NULL(global);
+    ASSERT(count_components_of_kind(global, ALEA_PLOT_ERR_TOTAL_OVERLAP) > 0);
+
+    alea_plot_error_component_result_t* compact = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, nu, nv, -1, count, 16 * 1024 * 1024, 1,
+        &compact, &stats), 0);
+    ASSERT_NOT_NULL(compact);
+    ASSERT_EQ((int)compact->component_count, (int)global->component_count);
+    ASSERT_EQ(count_components_of_kind(compact, ALEA_PLOT_ERR_TOTAL_OVERLAP),
+              count_components_of_kind(global, ALEA_PLOT_ERR_TOTAL_OVERLAP));
+    ASSERT_EQ(stats.point_coverage.lattice_fallbacks, 0);
+    ASSERT_EQ(stats.point_coverage.recursive_fallbacks, 0);
+
+    alea_plot_error_components_free(compact);
+    alea_plot_error_components_free(global);
+    free(errors); free(coverage); free(secondary); free(primary);
+    mcnp_model_destroy(model);
+}
+
+TEST(grid_hex_lattice_coherent_walk_resolves_child_cells) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_hex_lattice.mcnp");
+    if (!model) return;
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    int cell_ids[3];
+    uint8_t errors[3];
+    alea_slice_view_t view;
+    /* Pixel centers are x = -2, 0, 2 at y = z = 0. The latter two cover
+     * the canonical hex-lattice regression points in one coherent row. */
+    alea_slice_view_axis(&view, 2, 0.0, -3.0, 3.0, -1.0, 1.0);
+    ASSERT_EQ(alea_find_cells_grid(sys, &view, 3, 1, -1,
+                                   cell_ids, NULL, errors), 0);
+    ASSERT_EQ(cell_ids[1], 1);
+    ASSERT_EQ(cell_ids[2], 3);
+    ASSERT_EQ(errors[0], 0);
+    ASSERT_EQ(errors[1], 0);
+    ASSERT_EQ(errors[2], 0);
+
+    mcnp_model_destroy(model);
+}
+
 TEST(grid_boundary_filter_suppresses_shared_surface) {
     alea_system_t* sys = make_x_split(0.0, 10.0);
     ASSERT_NOT_NULL(sys);
@@ -951,6 +1500,69 @@ TEST(grid_boundary_filter_keeps_nested_overlap) {
     ASSERT_EQ(errors[0], ALEA_GRID_OVERLAP);
     ASSERT(secondary_ids[0] > 0);
 
+    alea_destroy(sys);
+}
+
+TEST(grid_local_coverage_returns_compact_components_with_budget) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 10.0);
+    int inner = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 3.0);
+    ASSERT(outer >= 0 && inner >= 0);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    alea_add_cell(sys, 1, alea_halfspace(sys, outer, -1), m1, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, inner, -1), m2, -2.0, 0);
+    alea_build_universe_index(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -12.0, 12.0, -12.0, 12.0);
+    alea_plot_error_component_result_t* components = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, 32, 32, -1, 1024, 16 * 1024 * 1024, 1,
+        &components, &stats), 0);
+    ASSERT_NOT_NULL(components);
+    ASSERT(count_components_of_kind(components, ALEA_PLOT_ERR_TOTAL_OVERLAP) > 0);
+    ASSERT_EQ((int)stats.pixels, 1024);
+    ASSERT_EQ((int)stats.scratch_bytes, 15 * 1024);
+    ASSERT_EQ(stats.worker_limit, 1);
+    ASSERT(stats.point_coverage.queries > 0);
+    ASSERT(components->components[0].representative_i >= 0);
+    ASSERT(components->components[0].representative_j >= 0);
+    /* The compact query must preserve the exact global-grid verdict inside
+     * the same local domain; only its raster publication is omitted. */
+    int cell_ids[1024], secondary_ids[1024];
+    uint8_t coverage[1024], errors[1024];
+    ASSERT_EQ(alea_find_cells_grid_coverage(
+        sys, &view, 32, 32, -1,
+        ALEA_GRID_COVERAGE_EXACT | ALEA_GRID_SECONDARY_CELL_IDS,
+        cell_ids, NULL, secondary_ids, coverage, errors), 0);
+    ASSERT_EQ(alea_filter_grid_boundary_ambiguities(
+        sys, &view, 32, 32, -1, cell_ids, secondary_ids, coverage, errors,
+        NULL), 0);
+    alea_plot_error_component_result_t* global_components =
+        alea_classify_plot_error_components(cell_ids, secondary_ids, coverage, 32, 32);
+    ASSERT_NOT_NULL(global_components);
+    ASSERT_EQ((int)components->component_count, (int)global_components->component_count);
+    ASSERT_EQ(count_components_of_kind(components, ALEA_PLOT_ERR_TOTAL_OVERLAP),
+              count_components_of_kind(global_components, ALEA_PLOT_ERR_TOTAL_OVERLAP));
+    alea_plot_error_components_free(global_components);
+    alea_plot_error_components_free(components);
+
+    components = NULL;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, 32, 32, -1, 1023, 16 * 1024 * 1024, 1,
+        &components, &stats), ALEA_LOCAL_COVERAGE_BUDGET_EXCEEDED);
+    ASSERT_NULL(components);
+
+    alea_interrupt();
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, 32, 32, -1, 1024, 16 * 1024 * 1024, 1,
+        &components, &stats), -1);
+    ASSERT_NULL(components);
+    alea_clear_interrupt();
     alea_destroy(sys);
 }
 

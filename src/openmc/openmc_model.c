@@ -104,6 +104,21 @@ void openmc_model_destroy(openmc_model_t* model) {
     free(model);
 }
 
+alea_system_t* openmc_model_system(openmc_model_t* model) {
+    return model ? model->sys : NULL;
+}
+
+alea_system_t* openmc_model_take_system(openmc_model_t* model) {
+    if (!model) return NULL;
+
+    alea_system_t* sys = model->sys;
+    if (!sys) return NULL;
+
+    model->sys = NULL;
+    model->owns_sys = 0;
+    return sys;
+}
+
 openmc_model_t* openmc_model_wrap(alea_system_t* sys) {
     if (!sys) return NULL;
 

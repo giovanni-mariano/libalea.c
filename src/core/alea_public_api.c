@@ -372,7 +372,6 @@ int alea_query_acceleration_stats(const alea_system_t* sys,
     out_stats->hier_max_universe_cells = stats->max_universe_cells;
     out_stats->hier_largest_universe_id = stats->largest_universe_id;
     out_stats->memory_bytes = stats->memory_bytes;
-    out_stats->point_queries = stats->point_queries;
     return 0;
 }
 
@@ -395,6 +394,18 @@ int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
     if (!sys || !hits || max_hits == 0) return -1;
     /* Internal alea_cell_hit_t has same layout as public alea_cell_hit_t */
     return alea_find_all_cells_at_point(sys, x, y, z, (alea_cell_hit_t*)hits, max_hits);
+}
+
+int alea_find_all_cells_coverage_chain(alea_system_t* sys,
+                                       double x, double y, double z,
+                                       alea_cell_hit_t* hits,
+                                       uint64_t* occurrence_keys,
+                                       uint64_t* parent_occurrence_keys,
+                                       size_t max_hits) {
+    if (!sys || !hits || !occurrence_keys || !parent_occurrence_keys ||
+        max_hits == 0) return -1;
+    return alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, x, y, z, hits, occurrence_keys, parent_occurrence_keys, max_hits);
 }
 
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
@@ -1476,13 +1487,20 @@ static int volume_paths_enumerate_lattice(alea_system_t* sys,
                     double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
                     translation.m[3] = step.i * p + step.j * p * 0.5;
                     translation.m[7] = step.j * p * sqrt(3.0) * 0.5;
-                    translation.m[11] = (nk == 1)
-                        ? 0.0
-                        : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    translation.m[11] = cell->lat_fill_zero_element_coords
+                        ? step.k * cell->lat_pitch[2]
+                        : ((nk == 1) ? 0.0
+                           : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
                 } else {
-                    translation.m[3] = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-                    translation.m[7] = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-                    translation.m[11] = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    if (cell->lat_fill_zero_element_coords) {
+                        translation.m[3] = step.i * cell->lat_pitch[0];
+                        translation.m[7] = step.j * cell->lat_pitch[1];
+                        translation.m[11] = step.k * cell->lat_pitch[2];
+                    } else {
+                        translation.m[3] = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+                        translation.m[7] = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+                        translation.m[11] = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+                    }
                 }
                 translation.has_inverse = false;
 
@@ -1618,7 +1636,7 @@ static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
 
         i = ri;
         j = rk;
-        k = (nk == 1) ? cell->lat_fill_dims[4]
+        k = (nk == 1 && !cell->lat_fill_repeating) ? cell->lat_fill_dims[4]
                       : cell->lat_fill_dims[4] +
                         (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
         oi = i - cell->lat_fill_dims[0];
@@ -1626,21 +1644,34 @@ static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
         ok = k - cell->lat_fill_dims[4];
         *ox = ri * p + rk * p * 0.5;
         *oy = rk * p * sqrt(3.0) * 0.5;
-        *oz = (nk == 1) ? 0.0 : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        *oz = cell->lat_fill_zero_element_coords
+            ? k * cell->lat_pitch[2]
+            : ((nk == 1 && !cell->lat_fill_repeating) ? 0.0
+               : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
     } else {
         oi = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-        oj = (nj == 1) ? 0 : (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]);
-        ok = (nk == 1) ? 0 : (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
+        oj = (cell->lat_fill_repeating || nj > 1)
+            ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
+        ok = (cell->lat_fill_repeating || nk > 1)
+            ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
         i = cell->lat_fill_dims[0] + oi;
         j = cell->lat_fill_dims[2] + oj;
         k = cell->lat_fill_dims[4] + ok;
-        *ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-        *oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-        *oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        if (cell->lat_fill_zero_element_coords) {
+            *ox = i * cell->lat_pitch[0];
+            *oy = j * cell->lat_pitch[1];
+            *oz = k * cell->lat_pitch[2];
+        } else {
+            *ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
+            *oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
+            *oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+        }
     }
 
-    if (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk) return -1;
-    size_t linear = (size_t)(oi * nj * nk + oj * nk + ok);
+    if (!cell->lat_fill_repeating &&
+        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)) return -1;
+    size_t linear = cell->lat_fill_repeating
+        ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
     if (linear >= cell->lat_fill_count) return -1;
 
     step->lattice_cell_index = -1;
@@ -2298,6 +2329,117 @@ int alea_mixture_component_get(const alea_system_t* sys, int mix_index,
  * EXTRACT / FILTER
  * ============================================================================ */
 
+int alea_carve_universe(alea_system_t* sys, int universe_id,
+                        alea_node_id_t carve_root, int simplify, int cell_limit,
+                        int* out_modified, int* out_removed) {
+    if (out_modified) *out_modified = 0;
+    if (out_removed) *out_removed = 0;
+    if (!sys || carve_root == ALEA_NODE_ID_INVALID ||
+        carve_root >= alea_vec_count(&sys->nodes)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+            "alea_carve_universe: invalid system or carve region");
+        return -1;
+    }
+
+    size_t scan_count = alea_vec_count(&sys->cells);
+    if (cell_limit >= 0 && (size_t)cell_limit < scan_count)
+        scan_count = (size_t)cell_limit;
+
+    size_t candidate_count = 0;
+    for (size_t i = 0; i < scan_count; i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->universe_id != universe_id ||
+            cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+        if (cell->lat_type != 0 && cell->lat_fill) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "alea_carve_universe: universe %d contains lattice cell %d; "
+                "lattice masking is not supported", universe_id,
+                cell->mc_cell_id);
+            return -1;
+        }
+        candidate_count++;
+    }
+
+    if (candidate_count == 0) return 0;
+
+    const alea_node_t* carve_node = &sys->nodes.data[carve_root];
+    const alea_bbox_t carve_bbox = alea_node_bbox_get(&carve_node->bbox);
+
+    size_t* indices = malloc(candidate_count * sizeof(*indices));
+    alea_node_id_t* roots = malloc(candidate_count * sizeof(*roots));
+    if (!indices || !roots) {
+        free(indices);
+        free(roots);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+            "alea_carve_universe: failed to allocate rewrite table");
+        return -1;
+    }
+
+    size_t n = 0;
+    for (size_t i = 0; i < scan_count; i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->universe_id != universe_id ||
+            cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+
+        const alea_node_t* cell_node = &sys->nodes.data[cell->root_node_id];
+        const alea_bbox_t cell_bbox = alea_node_bbox_get(&cell_node->bbox);
+        if (!alea_bbox_intersects(&cell_bbox, &carve_bbox)) continue;
+
+        alea_node_id_t root = alea_create_difference(sys, cell->root_node_id,
+                                                      carve_root);
+        if (root == ALEA_NODE_ID_INVALID) {
+            free(indices);
+            free(roots);
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                "alea_carve_universe: failed to build difference for cell %d",
+                cell->mc_cell_id);
+            return -1;
+        }
+        if (simplify) {
+            alea_error_clear();
+            root = alea_tree_simplify(sys, root, NULL);
+            if (root == ALEA_NODE_ID_INVALID && alea_error_code() != ALEA_OK) {
+                free(indices);
+                free(roots);
+                return -1;
+            }
+        }
+        indices[n] = i;
+        roots[n] = root;
+        n++;
+    }
+
+    int modified = 0;
+    for (size_t i = 0; i < n; i++) {
+        alea_cell_entry_t* cell = &sys->cells.data[indices[i]];
+        cell->root_node_id = roots[i];
+        /* A modified region must never export an old pre-TRCL expression. */
+        cell->original_root_node_id = ALEA_NODE_ID_INVALID;
+        modified++;
+    }
+
+    int removed = 0;
+    /* Remove from highest index so earlier recorded indices stay valid. */
+    for (size_t i = n; i > 0; i--) {
+        if (roots[i - 1] == ALEA_NODE_ID_INVALID) {
+            if (alea_cell_remove(sys, (int)indices[i - 1]) < 0) {
+                free(indices);
+                free(roots);
+                return -1;
+            }
+            removed++;
+        }
+    }
+
+    free(indices);
+    free(roots);
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
+
+    if (out_modified) *out_modified = modified;
+    if (out_removed) *out_removed = removed;
+    return 0;
+}
+
 alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* bbox) {
     if (!sys || !bbox) return NULL;
 
@@ -2398,6 +2540,8 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     memcpy(info->lat_fill_dims, c->lat_fill_dims, sizeof(info->lat_fill_dims));
     info->lat_fill = c->lat_fill;
     info->lat_fill_count = c->lat_fill_count;
+    info->lat_fill_repeating = (int)c->lat_fill_repeating;
+    info->lat_fill_zero_element_coords = (int)c->lat_fill_zero_element_coords;
     memcpy(info->lat_pitch, c->lat_pitch, sizeof(info->lat_pitch));
     memcpy(info->lat_lower_left, c->lat_lower_left, sizeof(info->lat_lower_left));
 
