@@ -158,6 +158,9 @@ PRIMITIVES_OBJS = \
 
 RAYCAST_OBJS = \
 	$(BUILD)\raycast\raycast.obj \
+	$(BUILD)\raycast\ray_request.obj \
+	$(BUILD)\raycast\ray_coverage.obj \
+	$(BUILD)\raycast\ray_coverage_api.obj \
 	$(BUILD)\raycast\ray_intersect.obj \
 	$(BUILD)\raycast\bvh.obj \
 	$(BUILD)\raycast\raycast_api.obj
@@ -165,7 +168,8 @@ RAYCAST_OBJS = \
 SLICE_OBJS = \
 	$(BUILD)\slice\curve_intersect.obj \
 	$(BUILD)\slice\slice_directional_trace.obj \
-	$(BUILD)\slice\slice_api.obj
+	$(BUILD)\slice\slice_api.obj \
+	$(BUILD)\slice\slice_ray_raster.obj
 
 RENDER_OBJS = \
 	$(BUILD)\render\render3d.obj
@@ -505,6 +509,15 @@ $(BUILD)\primitives\bbox.obj: $(SRC)\primitives\bbox.c dirs
 $(BUILD)\raycast\raycast.obj: $(SRC)\raycast\raycast.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\raycast.c
 
+$(BUILD)\raycast\ray_request.obj: $(SRC)\raycast\ray_request.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_request.c
+
+$(BUILD)\raycast\ray_coverage.obj: $(SRC)\raycast\ray_coverage.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_coverage.c
+
+$(BUILD)\raycast\ray_coverage_api.obj: $(SRC)\raycast\ray_coverage_api.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_coverage_api.c
+
 $(BUILD)\raycast\ray_intersect.obj: $(SRC)\raycast\ray_intersect.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_intersect.c
 
@@ -522,6 +535,9 @@ $(BUILD)\slice\slice_directional_trace.obj: $(SRC)\slice\slice_directional_trace
 
 $(BUILD)\slice\slice_api.obj: $(SRC)\slice\slice_api.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $(SRC)\slice\slice_api.c
+
+$(BUILD)\slice\slice_ray_raster.obj: $(SRC)\slice\slice_ray_raster.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\slice\ $(SRC)\slice\slice_ray_raster.c
 
 $(BUILD)\render\render3d.obj: $(SRC)\render\render3d.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\render\ $(SRC)\render\render3d.c
