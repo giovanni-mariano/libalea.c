@@ -69,6 +69,11 @@ typedef struct {
     int material_after;
     uint8_t resolution_flags;
     double nx, ny, nz;       /* zero for synthetic/unresolved events */
+    /* Selected-walker local provenance.  A zero complete flag means this
+     * compact group cannot certify all coincident physical participants. */
+    uint8_t local_surface_count;
+    uint8_t local_surface_complete;
+    int local_surface_ids[16];
 } alea_ray_boundary_event_t;
 
 /* Internal query contract.  This deliberately lives below the public API
@@ -519,6 +524,9 @@ typedef struct {
     /* Boundary-event batches must be able to preserve every physical surface
      * in a coincident crossing, matching the scalar canonical API. */
     bool include_all_coincident_physical;
+    /* Internal local-receipt acceleration: enumerate placements/cells through
+     * the hierarchical BLAS while preserving canonical event reduction. */
+    bool use_hier_blas;
 } alea_ray_batch_query_t;
 
 int alea_raycast_hier_batch_query_nocache(
@@ -1102,6 +1110,7 @@ typedef struct {
      * The default reports the lowest positive surface ID as the deterministic
      * canonical representative. Synthetic lattice events are always emitted. */
     bool include_all_coincident_physical;
+    bool use_hier_blas;
     /* Zero means unlimited. These are enforced while materializing events. */
     uint64_t max_events;
     uint64_t max_output_bytes;
@@ -1125,6 +1134,21 @@ int alea_raycast_boundary_events_with_options(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     const alea_ray_boundary_event_options_internal_t* options,
     alea_raycast_result_t* trace,
+    alea_ray_boundary_event_result_t* events);
+
+/* Selected-walker provenance candidate. Its local groups require complete
+ * bidirectional agreement before a consumer may bypass canonical events. */
+int alea_raycast_selected_boundary_events_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch,
+    alea_ray_boundary_event_result_t* events);
+
+/* Returns 0 with certified local groups, 1 when canonical provenance is
+ * required, and -1 on an execution failure. */
+int alea_raycast_selected_boundary_events_bidirectional_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* forward_scratch,
+    alea_raycast_result_t* reverse_scratch,
     alea_ray_boundary_event_result_t* events);
 
 /**

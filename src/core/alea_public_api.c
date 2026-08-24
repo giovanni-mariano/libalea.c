@@ -2329,6 +2329,117 @@ int alea_mixture_component_get(const alea_system_t* sys, int mix_index,
  * EXTRACT / FILTER
  * ============================================================================ */
 
+int alea_carve_universe(alea_system_t* sys, int universe_id,
+                        alea_node_id_t carve_root, int simplify, int cell_limit,
+                        int* out_modified, int* out_removed) {
+    if (out_modified) *out_modified = 0;
+    if (out_removed) *out_removed = 0;
+    if (!sys || carve_root == ALEA_NODE_ID_INVALID ||
+        carve_root >= alea_vec_count(&sys->nodes)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+            "alea_carve_universe: invalid system or carve region");
+        return -1;
+    }
+
+    size_t scan_count = alea_vec_count(&sys->cells);
+    if (cell_limit >= 0 && (size_t)cell_limit < scan_count)
+        scan_count = (size_t)cell_limit;
+
+    size_t candidate_count = 0;
+    for (size_t i = 0; i < scan_count; i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->universe_id != universe_id ||
+            cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+        if (cell->lat_type != 0 && cell->lat_fill) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                "alea_carve_universe: universe %d contains lattice cell %d; "
+                "lattice masking is not supported", universe_id,
+                cell->mc_cell_id);
+            return -1;
+        }
+        candidate_count++;
+    }
+
+    if (candidate_count == 0) return 0;
+
+    const alea_node_t* carve_node = &sys->nodes.data[carve_root];
+    const alea_bbox_t carve_bbox = alea_node_bbox_get(&carve_node->bbox);
+
+    size_t* indices = malloc(candidate_count * sizeof(*indices));
+    alea_node_id_t* roots = malloc(candidate_count * sizeof(*roots));
+    if (!indices || !roots) {
+        free(indices);
+        free(roots);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+            "alea_carve_universe: failed to allocate rewrite table");
+        return -1;
+    }
+
+    size_t n = 0;
+    for (size_t i = 0; i < scan_count; i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->universe_id != universe_id ||
+            cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
+
+        const alea_node_t* cell_node = &sys->nodes.data[cell->root_node_id];
+        const alea_bbox_t cell_bbox = alea_node_bbox_get(&cell_node->bbox);
+        if (!alea_bbox_intersects(&cell_bbox, &carve_bbox)) continue;
+
+        alea_node_id_t root = alea_create_difference(sys, cell->root_node_id,
+                                                      carve_root);
+        if (root == ALEA_NODE_ID_INVALID) {
+            free(indices);
+            free(roots);
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                "alea_carve_universe: failed to build difference for cell %d",
+                cell->mc_cell_id);
+            return -1;
+        }
+        if (simplify) {
+            alea_error_clear();
+            root = alea_tree_simplify(sys, root, NULL);
+            if (root == ALEA_NODE_ID_INVALID && alea_error_code() != ALEA_OK) {
+                free(indices);
+                free(roots);
+                return -1;
+            }
+        }
+        indices[n] = i;
+        roots[n] = root;
+        n++;
+    }
+
+    int modified = 0;
+    for (size_t i = 0; i < n; i++) {
+        alea_cell_entry_t* cell = &sys->cells.data[indices[i]];
+        cell->root_node_id = roots[i];
+        /* A modified region must never export an old pre-TRCL expression. */
+        cell->original_root_node_id = ALEA_NODE_ID_INVALID;
+        modified++;
+    }
+
+    int removed = 0;
+    /* Remove from highest index so earlier recorded indices stay valid. */
+    for (size_t i = n; i > 0; i--) {
+        if (roots[i - 1] == ALEA_NODE_ID_INVALID) {
+            if (alea_cell_remove(sys, (int)indices[i - 1]) < 0) {
+                free(indices);
+                free(roots);
+                return -1;
+            }
+            removed++;
+        }
+    }
+
+    free(indices);
+    free(roots);
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
+
+    if (out_modified) *out_modified = modified;
+    if (out_removed) *out_removed = removed;
+    return 0;
+}
+
 alea_system_t* alea_extract_region(const alea_system_t* sys, const alea_bbox_t* bbox) {
     if (!sys || !bbox) return NULL;
 

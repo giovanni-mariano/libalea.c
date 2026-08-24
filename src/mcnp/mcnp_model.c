@@ -65,10 +65,14 @@ static void on_cell_copied_cb(void* ud, size_t dst_index, size_t src_index) {
 }
 
 static void on_cell_removed_cb(void* ud, size_t index) {
-    (void)ud;
-    (void)index;
-    /* Cell removal is handled by compaction — the caller rebuilds the parallel
-       array or we rely on count tracking.  For now, no-op. */
+    mcnp_model_t* model = (mcnp_model_t*)ud;
+    if (!model || index >= model->cell_params_count) return;
+    const size_t trailing = model->cell_params_count - index - 1;
+    if (trailing > 0) {
+        memmove(&model->cell_params[index], &model->cell_params[index + 1],
+                trailing * sizeof(*model->cell_params));
+    }
+    model->cell_params_count--;
 }
 
 /* ============================================================================
@@ -241,6 +245,13 @@ alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
 
     alea_system_t* sys = model->sys;
     if (!sys) return NULL;
+
+    /* The caller takes only the generic system, not this MCNP sidecar.  Do
+     * not leave mutation hooks pointing at the model after it is destroyed. */
+    sys->cell_hook_userdata = NULL;
+    sys->on_cell_added = NULL;
+    sys->on_cell_copied = NULL;
+    sys->on_cell_removed = NULL;
 
     model->sys = NULL;
     model->owns_sys = 0;

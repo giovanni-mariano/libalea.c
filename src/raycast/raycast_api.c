@@ -1650,7 +1650,8 @@ static int batch_event_worker_build(
         const double t_max = query->t_maxs ? query->t_maxs[row] : 0.0;
         const alea_ray_boundary_event_options_internal_t event_options = {
             .include_all_coincident_physical =
-                query->include_all_coincident_physical
+                query->include_all_coincident_physical,
+            .use_hier_blas = query->use_hier_blas
         };
         if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
             alea_raycast_boundary_events_with_options(
@@ -1742,7 +1743,10 @@ int alea_raycast_boundary_events_batch_nocache(
         alea_set_error_detail(ALEA_ERR_INTERRUPTED, "batch raycast interrupted");
         return -1;
     }
-    if (alea_raycast_ensure_caches(sys) != 0) return -1;
+    if ((query->use_hier_blas
+            ? alea_raycast_ensure_hier_caches(sys)
+            : alea_raycast_ensure_caches(sys)) != 0)
+        return -1;
     atomic_init(&live_event_count, 0);
 #ifdef _OPENMP
     worker_count = (size_t)omp_get_max_threads();

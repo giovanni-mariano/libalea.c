@@ -6860,6 +6860,120 @@ static int trace_boundary_from_batch_row(
 static int boundary_trace_same_ids(const boundary_trace_t* a,
                                    const boundary_trace_t* b);
 
+/* Convert a bidirectionally certified selected-walker stream to the same
+ * display-aware boundary groups used by canonical traces.  Unlike the
+ * canonical event stream, each selected event already carries its complete
+ * tied physical-surface group.  The caller only reaches this adapter after
+ * alea_raycast_selected_boundary_events_bidirectional_nocache has certified
+ * the stream, so any synthetic, unresolved, overlap, or truncated case is
+ * deliberately routed to the canonical fallback instead. */
+static int trace_boundary_from_selected_events(
+    alea_system_t* sys, const alea_ray_boundary_event_t* events,
+    size_t event_count, const double start[3], const double end[3],
+    alea_slice_classify_point_fn classify, void* userdata,
+    boundary_trace_t* out) {
+    double dx = end[0] - start[0], dy = end[1] - start[1], dz = end[2] - start[2];
+    const double length = sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(length > 0.0)) return -1;
+    dx /= length; dy /= length; dz /= length;
+    const double endpoint_eps = length * 1e-8;
+    for (size_t i = 0; i < event_count;) {
+        const double t = events[i].t;
+        size_t group_end = i + 1;
+        while (group_end < event_count &&
+               fabs(events[group_end].t - t) <= RAY_EPSILON)
+            group_end++;
+        /* Multiple selected ownership changes at one point still lack a
+         * causality receipt for every participant.  The canonical event
+         * reducer remains authoritative for coincident groups. */
+        if (group_end != i + 1) return -1;
+        for (size_t k = i; k < group_end; k++)
+            if (events[k].kind != ALEA_RAY_BOUNDARY_EVENT_PHYSICAL ||
+                !events[k].local_surface_complete ||
+                events[k].local_surface_count == 0)
+                return -1;
+        if (t <= endpoint_eps || t >= length - endpoint_eps) {
+            i = group_end;
+            continue;
+        }
+        const double previous = i ? events[i - 1].t : 0.0;
+        const double following = group_end < event_count
+            ? events[group_end].t : length;
+        double coordinate_scale = fmax(length, 1.0);
+        for (int c = 0; c < 3; c++)
+            coordinate_scale = fmax(coordinate_scale,
+                                    fmax(fabs(start[c]), fabs(end[c])));
+        const double eps_floor = fmax(32.0 * RAY_EPSILON,
+            128.0 * DBL_EPSILON * coordinate_scale);
+        double eps = fmin(SURFACE_SAMPLE_OFFSET,
+                          fmin(t - previous, following - t) * 0.25);
+        alea_slice_classification_t a = {0}, b = {0};
+        alea_slice_classification_t prior_a = {0}, prior_b = {0};
+        int have_prior = 0, stable = 0;
+        for (int attempt = 0; attempt < 16 && eps >= eps_floor; attempt++) {
+            double before[3], after[3];
+            for (int c = 0; c < 3; c++) {
+                const double direction = c == 0 ? dx : c == 1 ? dy : dz;
+                before[c] = start[c] + direction * (t - eps);
+                after[c] = start[c] + direction * (t + eps);
+            }
+            a = (alea_slice_classification_t){0};
+            b = (alea_slice_classification_t){0};
+            if (classify(sys, before[0], before[1], before[2], userdata, &a) != 0 ||
+                classify(sys, after[0], after[1], after[2], userdata, &b) != 0 ||
+                a.status == ALEA_SLICE_SAMPLE_UNRESOLVED ||
+                b.status == ALEA_SLICE_SAMPLE_UNRESOLVED ||
+                a.status == ALEA_SLICE_SAMPLE_OVERLAP ||
+                b.status == ALEA_SLICE_SAMPLE_OVERLAP)
+                return -1;
+            if (have_prior && a.status == prior_a.status &&
+                b.status == prior_b.status && a.identity == prior_a.identity &&
+                b.identity == prior_b.identity) {
+                stable = 1;
+                break;
+            }
+            prior_a = a;
+            prior_b = b;
+            have_prior = 1;
+            eps *= 0.25;
+        }
+        if (!stable) return -1;
+        const int a_identity = a.status == ALEA_SLICE_SAMPLE_GAP ? 0 : a.identity;
+        const int b_identity = b.status == ALEA_SLICE_SAMPLE_GAP ? 0 : b.identity;
+        if ((a.status == ALEA_SLICE_SAMPLE_SINGLE ||
+             a.status == ALEA_SLICE_SAMPLE_GAP) &&
+            (b.status == ALEA_SLICE_SAMPLE_SINGLE ||
+             b.status == ALEA_SLICE_SAMPLE_GAP) && a_identity == b_identity) {
+            i = group_end;
+            continue;
+        }
+        if (out->group_count == sizeof(out->groups) / sizeof(out->groups[0]))
+            return -1;
+        boundary_trace_group_t* group = &out->groups[out->group_count++];
+        group->fraction = t / length;
+        for (size_t k = i; k < group_end; k++)
+            for (size_t s = 0; s < events[k].local_surface_count; s++) {
+                boundary_trace_add_id(out, events[k].local_surface_ids[s]);
+                boundary_trace_group_add_id(group, events[k].local_surface_ids[s]);
+            }
+        if (group->count == 0 || out->saw_unresolved) return -1;
+        i = group_end;
+    }
+    return 0;
+}
+
+static int boundary_trace_group_same_ids(const boundary_trace_group_t* a,
+                                         const boundary_trace_group_t* b) {
+    if (a->count != b->count) return 0;
+    for (size_t i = 0; i < a->count; i++) {
+        int found = 0;
+        for (size_t j = 0; j < b->count; j++)
+            if (a->ids[i] == b->ids[j]) { found = 1; break; }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
 static int trace_boundary_shared_root_surface(
     alea_system_t* sys, int cell_a, int cell_b,
     const double start[3], const double end[3], boundary_trace_t* forward,
@@ -7263,25 +7377,209 @@ int alea_find_surface_labels_sparse_on_grid(
     int observation_failed = 0;
     double du = (view->u_max - view->u_min) / width;
     double dv = (view->v_max - view->v_min) / height;
-    /* Batch both directions for each selected edge. The batch owns one
+    /* First ask the selected walker for a bidirectional local provenance
+     * certificate.  This visits ownership transitions rather than every
+     * mathematical breakpoint.  Any uncertainty remains intentionally cheap
+     * to detect and is collected below for the canonical batch fallback. */
+    boundary_trace_t* selected_forward = calloc(candidate_count,
+                                                sizeof(*selected_forward));
+    uint8_t* selected_ready = calloc(candidate_count, sizeof(*selected_ready));
+    size_t* fallback_indices = malloc(candidate_count * sizeof(*fallback_indices));
+    size_t fallback_count = 0;
+    /* Certification samples both open sides at successively smaller offsets.
+     * Stable adjacent classifications remove the selected stream's dependence
+     * on omitted, non-ownership-changing physical breakpoints. */
+    const int selected_provenance_certificate_available = 1;
+    if (!selected_forward || !selected_ready || !fallback_indices) {
+        free(selected_forward); free(selected_ready); free(fallback_indices);
+        free(candidates);
+        return -1;
+    }
+    for (size_t i = 0; i < candidate_count; i++) {
+        const sparse_grid_edge_t* edge = &candidates[i];
+        const int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
+        const int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
+        double start[3], end[3], dx, dy, dz;
+        slice_world_point(view, view->u_min + (edge->x + 0.5) * du,
+                          view->v_min + (edge->y + 0.5) * dv, start);
+        slice_world_point(view, view->u_min + (nx + 0.5) * du,
+                          view->v_min + (ny + 0.5) * dv, end);
+        dx = end[0] - start[0]; dy = end[1] - start[1]; dz = end[2] - start[2];
+        const double length = sqrt(dx * dx + dy * dy + dz * dz);
+        int certified = 0;
+        if (selected_provenance_certificate_available && length > 0.0) {
+            alea_ray_t ray;
+            alea_raycast_result_t forward_scratch, reverse_scratch;
+            alea_ray_boundary_event_result_t events;
+            alea_raycast_result_init(&forward_scratch);
+            alea_raycast_result_init(&reverse_scratch);
+            alea_ray_boundary_event_result_init(&events);
+            if (alea_ray_init(&ray, start[0], start[1], start[2], dx, dy, dz) == 0 &&
+                alea_raycast_selected_boundary_events_bidirectional_nocache(
+                    sys, &ray, length, &forward_scratch, &reverse_scratch,
+                    &events) == 0 &&
+                trace_boundary_from_selected_events(
+                    sys, events.events.data, events.events.count, start, end,
+                    classify, classify_userdata, &selected_forward[i]) == 0)
+                certified = 1;
+            alea_ray_boundary_event_result_free(&events);
+            alea_raycast_result_free(&forward_scratch);
+            alea_raycast_result_free(&reverse_scratch);
+        }
+        if (certified) {
+            selected_ready[i] = 1;
+            g_sparse_surface_label_stats.local_provenance_traces_used++;
+        }
+    }
+
+    /* Certify all selected groups with one compact batch of tiny local rays.
+     * This amortizes canonical setup while retaining its bidirectional causal
+     * surface contract at each proposed transition. */
+    size_t receipt_count = 0;
+    for (size_t i = 0; i < candidate_count; i++)
+        if (selected_ready[i]) receipt_count += selected_forward[i].group_count;
+    if (receipt_count && receipt_count <= SIZE_MAX / 2) {
+        const size_t ray_count = receipt_count * 2;
+        double* origins = calloc(ray_count * 3, sizeof(*origins));
+        double* directions = calloc(ray_count * 3, sizeof(*directions));
+        double* t_maxs = calloc(ray_count, sizeof(*t_maxs));
+        double* local_starts = calloc(receipt_count * 3, sizeof(*local_starts));
+        double* local_ends = calloc(receipt_count * 3, sizeof(*local_ends));
+        size_t* receipt_candidates = malloc(receipt_count * sizeof(*receipt_candidates));
+        size_t* receipt_groups = malloc(receipt_count * sizeof(*receipt_groups));
+        int receipt_setup_ok = origins && directions && t_maxs && local_starts &&
+            local_ends && receipt_candidates && receipt_groups;
+        size_t receipt = 0;
+        for (size_t i = 0; i < candidate_count && receipt_setup_ok; i++) {
+            if (!selected_ready[i]) continue;
+            const sparse_grid_edge_t* edge = &candidates[i];
+            const int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
+            const int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
+            double edge_start[3], edge_end[3], direction[3];
+            slice_world_point(view, view->u_min + (edge->x + 0.5) * du,
+                              view->v_min + (edge->y + 0.5) * dv, edge_start);
+            slice_world_point(view, view->u_min + (nx + 0.5) * du,
+                              view->v_min + (ny + 0.5) * dv, edge_end);
+            for (int c = 0; c < 3; c++) direction[c] = edge_end[c] - edge_start[c];
+            const double length = sqrt(direction[0] * direction[0] +
+                                       direction[1] * direction[1] +
+                                       direction[2] * direction[2]);
+            if (!(length > 0.0)) { selected_ready[i] = 0; continue; }
+            for (int c = 0; c < 3; c++) direction[c] /= length;
+            for (size_t group = 0; group < selected_forward[i].group_count; group++) {
+                const double t = selected_forward[i].groups[group].fraction * length;
+                const double previous = group ?
+                    selected_forward[i].groups[group - 1].fraction * length : 0.0;
+                const double following = group + 1 < selected_forward[i].group_count ?
+                    selected_forward[i].groups[group + 1].fraction * length : length;
+                const double half_window = fmin(SURFACE_SAMPLE_OFFSET,
+                    0.25 * fmin(t - previous, following - t));
+                if (half_window <= 64.0 * RAY_EPSILON) {
+                    selected_ready[i] = 0;
+                    continue;
+                }
+                receipt_candidates[receipt] = i;
+                receipt_groups[receipt] = group;
+                for (int c = 0; c < 3; c++) {
+                    const double centre = edge_start[c] + direction[c] * t;
+                    const double a = centre - direction[c] * half_window;
+                    const double b = centre + direction[c] * half_window;
+                    local_starts[receipt * 3 + c] = a;
+                    local_ends[receipt * 3 + c] = b;
+                    origins[receipt * 6 + c] = a;
+                    directions[receipt * 6 + c] = direction[c];
+                    origins[receipt * 6 + 3 + c] = b;
+                    directions[receipt * 6 + 3 + c] = -direction[c];
+                }
+                t_maxs[receipt * 2] = 2.0 * half_window;
+                t_maxs[receipt * 2 + 1] = 2.0 * half_window;
+                receipt++;
+            }
+        }
+        if (receipt_setup_ok && receipt == receipt_count) {
+            const alea_ray_batch_query_t query = {
+                .kind = ALEA_RAY_QUERY_BOUNDARY_EVENTS,
+                .material_filter = -1,
+                .t_maxs = t_maxs,
+                .max_events = ray_count <= UINT64_MAX / 256 ? ray_count * 256 : 0,
+                .max_output_bytes = 8u * 1024u * 1024u,
+                .max_workers = 1,
+                .include_all_coincident_physical = true,
+                .use_hier_blas = true
+            };
+            alea_ray_boundary_event_batch_result_t batch;
+            alea_ray_boundary_event_batch_result_init(&batch);
+            g_sparse_surface_label_stats.batch_attempts++;
+            if (alea_raycast_boundary_events_batch_nocache(
+                    sys, origins, directions, ray_count, &query, &batch) == 0) {
+                g_sparse_surface_label_stats.breakpoint_hits += batch.breakpoint_hits;
+                g_sparse_surface_label_stats.selected_segments += batch.selected_segments;
+                g_sparse_surface_label_stats.batch_traces_used += ray_count;
+                for (size_t r = 0; r < receipt_count; r++) {
+                    boundary_trace_t forward = {0}, reverse = {0};
+                    const size_t candidate = receipt_candidates[r];
+                    if (trace_boundary_from_batch_row(
+                            sys, &batch, r * 2, &local_starts[r * 3],
+                            &local_ends[r * 3], classify, classify_userdata,
+                            &forward) != 0 ||
+                        trace_boundary_from_batch_row(
+                            sys, &batch, r * 2 + 1, &local_ends[r * 3],
+                            &local_starts[r * 3], classify, classify_userdata,
+                            &reverse) != 0 ||
+                        forward.saw_synthetic || reverse.saw_synthetic ||
+                        forward.saw_gap || reverse.saw_gap ||
+                        forward.saw_overlap || reverse.saw_overlap ||
+                        forward.saw_unresolved || reverse.saw_unresolved ||
+                        forward.group_count != 1 || reverse.group_count != 1 ||
+                        !boundary_trace_same_ids(&forward, &reverse) ||
+                        !boundary_trace_group_same_ids(
+                            &selected_forward[candidate].groups[receipt_groups[r]],
+                            &forward.groups[0]))
+                        selected_ready[candidate] = 0;
+                }
+            } else {
+                for (size_t i = 0; i < candidate_count; i++) selected_ready[i] = 0;
+            }
+            alea_ray_boundary_event_batch_result_free(&batch);
+        } else {
+            for (size_t i = 0; i < candidate_count; i++) selected_ready[i] = 0;
+        }
+        free(origins); free(directions); free(t_maxs);
+        free(local_starts); free(local_ends);
+        free(receipt_candidates); free(receipt_groups);
+    }
+    g_sparse_surface_label_stats.local_provenance_traces_used = 0;
+    for (size_t i = 0; i < candidate_count; i++)
+        if (selected_ready[i])
+            g_sparse_surface_label_stats.local_provenance_traces_used++;
+    for (size_t i = 0; i < candidate_count; i++)
+        if (!selected_ready[i]) fallback_indices[fallback_count++] = i;
+
+    /* Batch both directions for every selected edge which could not be
+     * locally certified. The batch owns one
      * reusable trace/event pair per capped worker, avoiding per-edge rich
      * result churn while retaining the exact scalar event contract. Its fixed
      * event cap falls back to the scalar path rather than publishing a partial
      * provenance answer. */
     boundary_trace_t* batch_forward = NULL;
     boundary_trace_t* batch_reverse = NULL;
+    size_t* batch_rows = NULL;
     int batch_ready = 0;
-    if (candidate_count && candidate_count <= SIZE_MAX / 6 &&
-        candidate_count <= SIZE_MAX / (2 * sizeof(*batch_forward))) {
+    if (fallback_count && fallback_count <= SIZE_MAX / 6 &&
+        fallback_count <= SIZE_MAX / (2 * sizeof(*batch_forward))) {
         g_sparse_surface_label_stats.batch_attempts++;
-        const size_t ray_count = candidate_count * 2;
+        const size_t ray_count = fallback_count * 2;
         double* origins = calloc(ray_count * 3, sizeof(*origins));
         double* directions = calloc(ray_count * 3, sizeof(*directions));
         double* t_maxs = calloc(ray_count, sizeof(*t_maxs));
         batch_forward = calloc(candidate_count, sizeof(*batch_forward));
         batch_reverse = calloc(candidate_count, sizeof(*batch_reverse));
-        if (origins && directions && t_maxs && batch_forward && batch_reverse) {
-            for (size_t i = 0; i < candidate_count; i++) {
+        batch_rows = malloc(candidate_count * sizeof(*batch_rows));
+        if (origins && directions && t_maxs && batch_forward && batch_reverse &&
+            batch_rows) {
+            for (size_t i = 0; i < candidate_count; i++) batch_rows[i] = SIZE_MAX;
+            for (size_t j = 0; j < fallback_count; j++) {
+                const size_t i = fallback_indices[j];
                 const sparse_grid_edge_t* edge = &candidates[i];
                 int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
                 int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
@@ -7294,7 +7592,8 @@ int alea_find_surface_labels_sparse_on_grid(
                 double dz = end[2] - start[2];
                 double length = sqrt(dx * dx + dy * dy + dz * dz);
                 if (!(length > 0.0)) continue;
-                const size_t forward_row = i * 2, reverse_row = forward_row + 1;
+                const size_t forward_row = j * 2, reverse_row = forward_row + 1;
+                batch_rows[i] = forward_row;
                 for (int c = 0; c < 3; c++) {
                     const double direction = (end[c] - start[c]) / length;
                     origins[forward_row * 3 + c] = start[c];
@@ -7319,11 +7618,12 @@ int alea_find_surface_labels_sparse_on_grid(
             if (alea_raycast_boundary_events_batch_nocache(
                     sys, origins, directions, ray_count, &query, &batch) == 0) {
                 batch_ready = 1;
-                g_sparse_surface_label_stats.breakpoint_hits =
+                g_sparse_surface_label_stats.breakpoint_hits +=
                     batch.breakpoint_hits;
-                g_sparse_surface_label_stats.selected_segments =
+                g_sparse_surface_label_stats.selected_segments +=
                     batch.selected_segments;
-                for (size_t i = 0; i < candidate_count && batch_ready; i++) {
+                for (size_t j = 0; j < fallback_count && batch_ready; j++) {
+                    const size_t i = fallback_indices[j];
                     const sparse_grid_edge_t* edge = &candidates[i];
                     int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
                     int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
@@ -7333,10 +7633,10 @@ int alea_find_surface_labels_sparse_on_grid(
                     slice_world_point(view, view->u_min + (nx + 0.5) * du,
                                       view->v_min + (ny + 0.5) * dv, end);
                     if (trace_boundary_from_batch_row(
-                            sys, &batch, i * 2, start, end, classify,
+                            sys, &batch, j * 2, start, end, classify,
                             classify_userdata, &batch_forward[i]) != 0 ||
                         trace_boundary_from_batch_row(
-                            sys, &batch, i * 2 + 1, end, start, classify,
+                            sys, &batch, j * 2 + 1, end, start, classify,
                             classify_userdata, &batch_reverse[i]) != 0)
                         batch_ready = 0;
                 }
@@ -7347,8 +7647,9 @@ int alea_find_surface_labels_sparse_on_grid(
         if (!batch_ready) {
             free(batch_forward); free(batch_reverse);
             batch_forward = NULL; batch_reverse = NULL;
+            free(batch_rows); batch_rows = NULL;
         } else {
-            g_sparse_surface_label_stats.batch_traces_used = ray_count;
+            g_sparse_surface_label_stats.batch_traces_used += ray_count;
         }
     }
     for (long long candidate_index = 0;
@@ -7366,15 +7667,18 @@ int alea_find_surface_labels_sparse_on_grid(
         slice_world_point(view, u1, v1, end);
         boundary_trace_t forward = {0}, reverse = {0};
         int forward_rc = 0, reverse_rc = 0;
-        const int cell_a = grid_ids[(size_t)edge->y * (size_t)width + edge->x];
-        const int cell_b = grid_ids[(size_t)ny * (size_t)width + nx];
-        /* Endpoint identities may bracket several selected intervals.  They
-         * are therefore never sufficient provenance for a coarse grid edge;
-         * attribution begins with the complete canonical trace until the
-         * selected-walker group certificate is available. */
-        (void)cell_a;
-        (void)cell_b;
-        if (batch_ready) {
+        if (selected_ready[i]) {
+            forward = selected_forward[i];
+            reverse = selected_forward[i];
+            for (size_t group = 0; group < forward.group_count; group++) {
+                reverse.groups[group] =
+                    forward.groups[forward.group_count - 1 - group];
+                reverse.groups[group].fraction =
+                    1.0 - reverse.groups[group].fraction;
+            }
+            g_sparse_surface_label_stats.forward_trace_calls++;
+            g_sparse_surface_label_stats.reverse_trace_calls++;
+        } else if (batch_ready && batch_rows && batch_rows[i] != SIZE_MAX) {
             forward = batch_forward[i];
             reverse = batch_reverse[i];
             g_sparse_surface_label_stats.forward_trace_calls++;
@@ -7422,9 +7726,13 @@ int alea_find_surface_labels_sparse_on_grid(
             }
         }
     }
-    free(candidates);
     free(batch_forward);
     free(batch_reverse);
+    free(batch_rows);
+    free(selected_forward);
+    free(selected_ready);
+    free(fallback_indices);
+    free(candidates);
     if (observation_failed) {
         free(observations);
         return -1;

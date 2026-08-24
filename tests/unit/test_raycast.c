@@ -1127,6 +1127,43 @@ TEST(compact_batch_internal_boundary_events_preserve_canonical_contract) {
     alea_destroy(sys);
 }
 
+TEST(selected_boundary_events_collect_complete_local_surface_group) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+    alea_raycast_result_t scratch;
+    alea_ray_boundary_event_result_t events;
+    alea_raycast_result_init(&scratch);
+    alea_ray_boundary_event_result_init(&events);
+    ASSERT_EQ(alea_raycast_selected_boundary_events_nocache(
+                  sys, &ray, 8.0, &scratch, &events), 0);
+    ASSERT_EQ(events.events.count, 2);
+    ASSERT_EQ(events.events.data[0].kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+    ASSERT_EQ(events.events.data[0].local_surface_complete, 0);
+    ASSERT_EQ(events.events.data[1].kind, ALEA_RAY_BOUNDARY_EVENT_PHYSICAL);
+    ASSERT_EQ(events.events.data[1].local_surface_complete, 1);
+    ASSERT_EQ(events.events.data[1].local_surface_count, 1);
+    ASSERT_EQ(events.events.data[1].local_surface_ids[0], 1);
+    ASSERT_EQ(alea_raycast_selected_boundary_events_bidirectional_nocache(
+                  sys, &ray, 8.0, &scratch, &scratch, &events), 0);
+    ASSERT_EQ(events.events.count, 2);
+    for (size_t i = 0; i < events.events.count; i++) {
+        ASSERT_EQ(events.events.data[i].local_surface_complete, 1);
+        ASSERT_EQ(events.events.data[i].local_surface_count, 1);
+        ASSERT_EQ(events.events.data[i].local_surface_ids[0], 1);
+    }
+    alea_ray_boundary_event_result_free(&events);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
 TEST(compact_batch_boundary_events_preserve_coincident_physical_surfaces) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -1174,6 +1211,30 @@ TEST(compact_batch_boundary_events_preserve_coincident_physical_surfaces) {
         ASSERT_EQ(batch.kinds[i], scalar_events.events.data[i].kind);
         ASSERT_EQ(batch.surface_ids[i], scalar_events.events.data[i].surface_id);
     }
+    alea_ray_boundary_event_batch_result_free(&batch);
+    alea_ray_boundary_event_batch_result_init(&batch);
+    alea_ray_batch_query_t blas_query = query;
+    blas_query.use_hier_blas = true;
+    ASSERT_EQ(alea_raycast_boundary_events_batch_nocache(
+                  sys, origins, directions, 1, &blas_query, &batch), 0);
+    ASSERT_EQ(batch.event_count, scalar_events.events.count);
+    for (size_t i = 0; i < scalar_events.events.count; i++) {
+        ASSERT_NEAR(batch.t[i], scalar_events.events.data[i].t, EPS);
+        ASSERT_EQ(batch.kinds[i], scalar_events.events.data[i].kind);
+        ASSERT_EQ(batch.surface_ids[i], scalar_events.events.data[i].surface_id);
+    }
+
+    alea_ray_t selected_ray;
+    ASSERT_EQ(alea_ray_init(&selected_ray, -5.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+    alea_raycast_result_t selected_scratch;
+    alea_ray_boundary_event_result_t selected_events;
+    alea_raycast_result_init(&selected_scratch);
+    alea_ray_boundary_event_result_init(&selected_events);
+    ASSERT_EQ(alea_raycast_selected_boundary_events_bidirectional_nocache(
+                  sys, &selected_ray, 8.0, &selected_scratch,
+                  &selected_scratch, &selected_events), 1);
+    alea_ray_boundary_event_result_free(&selected_events);
+    alea_raycast_result_free(&selected_scratch);
 
     alea_ray_boundary_event_batch_result_free(&batch);
     alea_ray_boundary_event_result_free(&scalar_events);

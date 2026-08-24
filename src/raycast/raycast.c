@@ -1873,16 +1873,30 @@ int alea_raycast_boundary_events_with_options(
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     alea_raycast_result_t crossings;
     alea_raycast_result_init(&crossings);
-    if (alea_raycast_global_breakpoints_reuse_nocache(
-            sys, ray, effective_t_max, &crossings) != 0) {
+    const bool use_hier_blas = options && options->use_hier_blas;
+    if ((use_hier_blas
+            ? raycast_root_blas_surfaces(
+                sys, ray, 0.0, effective_t_max, &crossings)
+            : alea_raycast_global_breakpoints_reuse_nocache(
+                sys, ray, effective_t_max, &crossings)) != 0) {
         alea_raycast_result_free(&crossings);
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "boundary-event breakpoint enumeration failed");
         return -1;
     }
-    if (raycast_global_pipeline(sys, ray, 0, effective_t_max,
-                                system_has_lattice_cells(sys), true,
-                                trace) != 0) {
+    int trace_rc;
+    if (use_hier_blas) {
+        trace_rc = raycast_root_blas_surfaces(
+            sys, ray, 0.0, effective_t_max, trace);
+        if (trace_rc == 0)
+            trace_rc = raycast_to_segments_impl(
+                sys, effective_t_max, trace, true);
+    } else {
+        trace_rc = raycast_global_pipeline(
+            sys, ray, 0, effective_t_max,
+            system_has_lattice_cells(sys), true, trace);
+    }
+    if (trace_rc != 0) {
         alea_raycast_result_free(&crossings);
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "boundary-event trace failed while resolving ray intervals");
@@ -2472,6 +2486,9 @@ typedef struct {
     alea_matrix_t transform; /* primitive-local -> world frame of the winning surface */
     bool has_physical_surface;
     bool is_synthetic_lattice_boundary;
+    uint8_t local_surface_count;
+    uint8_t local_surface_complete;
+    int local_surface_ids[16];
 } alea_raycast_boundary_event_t;
 
 /* Persistent portion of one hierarchical ray walk.  Keeping this explicit
@@ -2815,6 +2832,124 @@ static double raycast_cell_surfaces(alea_system_t* sys,
     }
 
     return closest_t;
+}
+
+static void boundary_event_add_local_surface(alea_raycast_boundary_event_t* event,
+                                             int surface_id) {
+    if (!event || surface_id <= 0) return;
+    for (size_t i = 0; i < event->local_surface_count; i++)
+        if (event->local_surface_ids[i] == surface_id) return;
+    if (event->local_surface_count >=
+        sizeof(event->local_surface_ids) / sizeof(event->local_surface_ids[0])) {
+        event->local_surface_complete = 0;
+        return;
+    }
+    event->local_surface_ids[event->local_surface_count++] = surface_id;
+}
+
+static void boundary_event_collect_cell_surfaces_at(
+    alea_system_t* sys, const alea_ray_t* local_ray,
+    const alea_cell_entry_t* cell, double t, alea_raycast_boundary_event_t* event) {
+    if (!cell || !cell->surface_indices) return;
+    for (size_t i = 0; i < cell->surface_index_count; i++) {
+        const uint32_t surface_index = cell->surface_indices[i];
+        if (surface_index >= alea_vec_count(&sys->surfaces)) continue;
+        const alea_surface_entry_t* surface = &sys->surfaces.data[surface_index];
+        if (surface->primitive_id >= alea_vec_count(&sys->primitives)) continue;
+        const alea_primitive_entry_t* primitive =
+            &sys->primitives.data[surface->primitive_id];
+        alea_primitive_data_t data;
+        if (!raycast_primitive_copy_payload(sys, surface->primitive_id,
+                                            primitive->type, &data)) {
+            event->local_surface_complete = 0;
+            continue;
+        }
+        double hits[4];
+        const int count = ray_intersect_primitive(local_ray, primitive->type,
+                                                  &data, hits);
+        for (int hit = 0; hit < count; hit++)
+            if (fabs(hits[hit] - t) <= RAY_EPSILON)
+                boundary_event_add_local_surface(event, surface->mc_surface_id);
+    }
+}
+
+static void boundary_event_collect_local_group(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_hier_ray_path_t* path, alea_raycast_boundary_event_t* event) {
+    if (!event || !event->has_physical_surface ||
+        event->is_synthetic_lattice_boundary || !path) return;
+    event->local_surface_count = 0;
+    event->local_surface_complete = 1;
+    for (int i = 0; i < path->count; i++) {
+        const alea_hier_ray_path_entry_t* entry = &path->entries[i];
+        if ((size_t)entry->cell_index >= alea_vec_count(&sys->cells)) {
+            event->local_surface_complete = 0;
+            continue;
+        }
+        alea_ray_t local_ray;
+        transform_ray_inverse(&entry->transform, ray, &local_ray);
+        boundary_event_collect_cell_surfaces_at(
+            sys, &local_ray, &sys->cells.data[entry->cell_index], event->t, event);
+    }
+    if (event->local_surface_count == 0) event->local_surface_complete = 0;
+}
+
+/* A selected ownership transition is only a useful shortcut when both open
+ * sides have unambiguous coverage.  The selected walker deliberately picks
+ * one deck-precedence owner; it therefore cannot, by itself, expose a second
+ * coincident or overlapping claimant hidden behind that choice.  Use the
+ * diagnostic recursive coverage query at one interior point on each side.
+ *
+ * The hit list contains ancestry as well as terminal occurrences.  Counting
+ * only occurrence keys that are not a parent of another returned occurrence
+ * distinguishes a normal fill chain from genuinely competing terminals.
+ */
+#define SELECTED_BOUNDARY_COVERAGE_HIT_CAP 64
+static int boundary_event_side_has_unique_terminal_owner(
+    const alea_system_t* sys, const alea_ray_t* ray, double t_sample) {
+    alea_cell_hit_t hits[SELECTED_BOUNDARY_COVERAGE_HIT_CAP];
+    uint64_t occurrence_keys[SELECTED_BOUNDARY_COVERAGE_HIT_CAP];
+    uint64_t parent_keys[SELECTED_BOUNDARY_COVERAGE_HIT_CAP];
+    double x, y, z;
+    alea_ray_point_at(ray, t_sample, &x, &y, &z);
+    const int count = alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, x, y, z, hits, occurrence_keys, parent_keys,
+        SELECTED_BOUNDARY_COVERAGE_HIT_CAP);
+    if (count < 0 || count >= SELECTED_BOUNDARY_COVERAGE_HIT_CAP) return 0;
+    int terminal_count = 0;
+    for (int i = 0; i < count; i++) {
+        int is_parent = 0;
+        for (int j = 0; j < count; j++) {
+            if (parent_keys[j] == occurrence_keys[i] &&
+                occurrence_keys[i] != 0) {
+                is_parent = 1;
+                break;
+            }
+        }
+        if (!is_parent && ++terminal_count > 1) return 0;
+    }
+    return 1;
+}
+
+static void boundary_event_require_unambiguous_open_sides(
+    const alea_system_t* sys, const alea_ray_t* ray,
+    const alea_ray_selected_interval_t* before,
+    const alea_ray_selected_interval_t* after,
+    alea_ray_boundary_event_t* event) {
+    if (!event || !event->local_surface_complete) return;
+    const double left_span = before->t_exit - before->t_enter;
+    const double right_span = after->t_exit - after->t_enter;
+    /* The walker can identify all locally tied primitive intersections, but
+     * not yet prove that every one is causally active in the cell's CSG
+     * expression.  A multi-surface group therefore remains canonical-only;
+     * publishing it would turn incidental tangencies into labels. */
+    if (event->local_surface_count != 1 ||
+        left_span <= RAY_EPSILON || right_span <= RAY_EPSILON ||
+        !boundary_event_side_has_unique_terminal_owner(
+            sys, ray, before->t_enter + 0.5 * left_span) ||
+        !boundary_event_side_has_unique_terminal_owner(
+            sys, ray, after->t_enter + 0.5 * right_span))
+        event->local_surface_complete = 0;
 }
 
 int alea_raycast_shared_terminal_surface_nocache(
@@ -4243,6 +4378,8 @@ resolve_cell:;
         }
 
         bevent.t = t_next;
+        if (need_boundary_event)
+            boundary_event_collect_local_group(sys, ray, current_path, &bevent);
         const alea_ray_selected_interval_t selected = {
             .t_enter = t_current,
             .t_exit = t_next,
@@ -4370,6 +4507,142 @@ static int ray_selected_interval_trace(
         walk.pending_enter_hit_index = pending_enter_hit_index;
         if (rc == 0) return 0;
     }
+}
+
+int alea_raycast_selected_boundary_events_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch, alea_ray_boundary_event_result_t* events) {
+    if (!sys || !ray || !scratch || !events || !(t_max > 0.0)) return -1;
+    alea_ray_boundary_event_result_clear(events);
+    alea_raycast_result_clear(scratch);
+    alea_ray_walk_t walk;
+    alea_ray_walk_init(&walk);
+    alea_ray_selected_interval_t previous = {0};
+    int have_previous = 0;
+    for (;;) {
+        alea_ray_selected_interval_t current;
+        const int rc = alea_ray_walk_next_selected(
+            sys, ray, t_max, scratch, &walk, &current);
+        if (rc < 0) return -1;
+        if (rc == 2) return 0;
+        if (have_previous &&
+            fabs(previous.t_exit - current.t_enter) <= RAY_EPSILON &&
+            (previous.cell_id != current.cell_id ||
+             previous.material_id != current.material_id)) {
+            const alea_raycast_boundary_event_t* source = &previous.exit_event;
+            alea_ray_boundary_event_t event = {
+                .t = previous.t_exit,
+                .kind = source->has_physical_surface
+                    ? ALEA_RAY_BOUNDARY_EVENT_PHYSICAL
+                    : (source->is_synthetic_lattice_boundary
+                        ? ALEA_RAY_BOUNDARY_EVENT_SYNTHETIC_LATTICE
+                        : ALEA_RAY_BOUNDARY_EVENT_UNRESOLVED),
+                .surface_id = source->surface_id,
+                .primitive_id = source->primitive_id,
+                .cell_before = previous.cell_id,
+                .cell_after = current.cell_id,
+                .material_before = previous.material_id,
+                .material_after = current.material_id,
+                .resolution_flags = previous.resolution_flags |
+                                    current.resolution_flags,
+                .local_surface_count = source->local_surface_count,
+                .local_surface_complete = source->local_surface_complete
+            };
+            memcpy(event.local_surface_ids, source->local_surface_ids,
+                   sizeof(event.local_surface_ids));
+            boundary_event_require_unambiguous_open_sides(
+                sys, ray, &previous, &current, &event);
+            if (alea_vec_push(&events->events, event,
+                              alea_ray_boundary_event_t) != 0)
+                return -1;
+        }
+        previous = current;
+        have_previous = 1;
+        if (rc == 0) return 0;
+    }
+}
+
+static int selected_boundary_groups_equal(
+    const alea_ray_boundary_event_t* a,
+    const alea_ray_boundary_event_t* b) {
+    if (a->local_surface_count != b->local_surface_count) return 0;
+    for (size_t i = 0; i < a->local_surface_count; i++) {
+        int found = 0;
+        for (size_t j = 0; j < b->local_surface_count; j++)
+            if (a->local_surface_ids[i] == b->local_surface_ids[j]) {
+                found = 1;
+                break;
+            }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+int alea_raycast_selected_boundary_events_bidirectional_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* forward_scratch,
+    alea_raycast_result_t* reverse_scratch,
+    alea_ray_boundary_event_result_t* events) {
+    if (!sys || !ray || !forward_scratch || !reverse_scratch || !events ||
+        !(t_max > 0.0)) return -1;
+    alea_ray_boundary_event_result_t forward, reverse;
+    alea_ray_boundary_event_result_init(&forward);
+    alea_ray_boundary_event_result_init(&reverse);
+    double ex, ey, ez;
+    alea_ray_point_at(ray, t_max, &ex, &ey, &ez);
+    alea_ray_t reverse_ray;
+    if (alea_ray_init(&reverse_ray, ex, ey, ez,
+                      -ray->dx, -ray->dy, -ray->dz) != 0 ||
+        alea_raycast_selected_boundary_events_nocache(
+            sys, ray, t_max, forward_scratch, &forward) != 0 ||
+        alea_raycast_selected_boundary_events_nocache(
+            sys, &reverse_ray, t_max, reverse_scratch, &reverse) != 0)
+        goto fail;
+    if (forward.events.count != reverse.events.count) goto incomplete;
+    alea_ray_boundary_event_result_clear(events);
+    for (size_t i = 0; i < forward.events.count; i++) {
+        const alea_ray_boundary_event_t* a = &forward.events.data[i];
+        const alea_ray_boundary_event_t* b =
+            &reverse.events.data[reverse.events.count - 1 - i];
+        if (a->kind != ALEA_RAY_BOUNDARY_EVENT_PHYSICAL ||
+            b->kind != ALEA_RAY_BOUNDARY_EVENT_PHYSICAL ||
+            fabs(a->t - (t_max - b->t)) > RAY_EPSILON ||
+            a->cell_before != b->cell_after || a->cell_after != b->cell_before ||
+            a->material_before != b->material_after ||
+            a->material_after != b->material_before)
+            goto incomplete;
+        alea_ray_boundary_event_t merged = *a;
+        const int terminal_to_void = merged.cell_before < 0 || merged.cell_after < 0;
+        if (a->local_surface_complete && b->local_surface_complete &&
+            !selected_boundary_groups_equal(a, b))
+            goto incomplete;
+        if (!a->local_surface_complete && b->local_surface_complete) {
+            merged.local_surface_count = b->local_surface_count;
+            memcpy(merged.local_surface_ids, b->local_surface_ids,
+                   sizeof(merged.local_surface_ids));
+        }
+        merged.local_surface_complete = terminal_to_void
+            ? (a->local_surface_complete || b->local_surface_complete)
+            : (a->local_surface_complete && b->local_surface_complete);
+        if (!merged.local_surface_complete || merged.local_surface_count == 0)
+            goto incomplete;
+        if (alea_vec_push(&events->events, merged,
+                          alea_ray_boundary_event_t) != 0)
+            goto fail;
+    }
+    alea_ray_boundary_event_result_free(&forward);
+    alea_ray_boundary_event_result_free(&reverse);
+    return 0;
+incomplete:
+    alea_ray_boundary_event_result_clear(events);
+    alea_ray_boundary_event_result_free(&forward);
+    alea_ray_boundary_event_result_free(&reverse);
+    return 1;
+fail:
+    alea_ray_boundary_event_result_clear(events);
+    alea_ray_boundary_event_result_free(&forward);
+    alea_ray_boundary_event_result_free(&reverse);
+    return -1;
 }
 
 static int alea_ray_walk_next_first_visible(

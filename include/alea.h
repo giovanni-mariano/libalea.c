@@ -547,6 +547,36 @@ typedef struct {
 void alea_flatten_all_cells(alea_system_t* sys, alea_simplify_stats_t* stats);
 
 /**
+ * @brief Carve a region out of every ordinary cell in one universe.
+ *
+ * Each affected cell is replaced by ``cell_region - carve_root``.  The
+ * carve tree must belong to @p sys.  When @p simplify is non-zero, each new
+ * tree is simplified before it is installed and cells proved empty are
+ * removed.  Lattice cells are rejected: their containment is defined by
+ * lattice-specific lookup rules, so attaching a generic CSG mask to their
+ * root would not be reliable.
+ *
+ * This is intended for same-universe component insertion: construct the
+ * union of the incoming component regions and carve the pre-existing cells.
+ * Callers that register incoming cells first should pass their original cell
+ * count as @p cell_limit so those cells are excluded from the rewrite.
+ *
+ * @param sys System to modify
+ * @param universe_id Target universe
+ * @param carve_root Root of the region to remove
+ * @param simplify Whether to simplify each rewritten cell
+ * @param cell_limit Only cells with an index below this value are rewritten;
+ *        pass -1 to rewrite every cell in the universe.
+ * @param out_modified Optional number of rewritten cells
+ * @param out_removed Optional number of cells removed as empty
+ * @return 0 on success, -1 on error (the target cells are unchanged on
+ *         validation or construction failure)
+ */
+int alea_carve_universe(alea_system_t* sys, int universe_id,
+                        alea_node_id_t carve_root, int simplify, int cell_limit,
+                        int* out_modified, int* out_removed);
+
+/**
  * @brief Split cells with top-level unions into multiple simpler cells.
  *
  * For each cell whose root is a union (T1 ∪ T2 ∪ ... ∪ Tk),
