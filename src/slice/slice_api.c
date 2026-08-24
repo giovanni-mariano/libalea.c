@@ -7504,8 +7504,11 @@ int alea_find_surface_labels_sparse_on_grid(
                 .max_events = ray_count <= UINT64_MAX / 256 ? ray_count * 256 : 0,
                 .max_output_bytes = 8u * 1024u * 1024u,
                 .max_workers = 1,
-                .include_all_coincident_physical = true,
-                .use_hier_blas = true
+                /* This receipt must certify the complete coincident group,
+                 * including registered surfaces outside the selected cells'
+                 * local BLAS. A mismatch rejects the shortcut and routes the
+                 * edge through the bounded canonical fallback below. */
+                .include_all_coincident_physical = true
             };
             alea_ray_boundary_event_batch_result_t batch;
             alea_ray_boundary_event_batch_result_init(&batch);
