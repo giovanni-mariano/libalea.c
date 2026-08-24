@@ -296,6 +296,10 @@ static void test_slice_nested_overlap(void) {
         if (errors[i] == 1) boundary_overlaps++;
     }
 
+    /* Invalidate query caches after producing the input grid.  The standalone
+     * overlap API must rebuild what its parallel recursive queries need. */
+    assert(alea_sphere_surface(sys, 99, 100, 100, 100, 1.0) >= 0);
+
     /* Full overlap check should detect them */
     rc = alea_check_grid_overlaps(sys, &view, width, height, -1,
                                        cell_ids, errors);

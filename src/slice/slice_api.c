@@ -915,6 +915,12 @@ int alea_check_grid_overlaps(alea_system_t* sys,
         return -1;
     }
 
+    /* The recursive overlap resolver reads the shared universe index.  Keep
+     * this public entry point independent of a preceding grid query and build
+     * that index on the caller thread before entering the OpenMP region. */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_UNIVERSE) != 0)
+        return -1;
+
     const alea_slice_plane_t* plane = &view->plane;
     double u_min = view->u_min;
     double u_max = view->u_max;
