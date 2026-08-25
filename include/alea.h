@@ -194,6 +194,38 @@ typedef struct {
 int alea_query_acceleration_stats(const alea_system_t* sys,
                                   alea_query_acceleration_stats_t* out_stats);
 
+/** One exact MCNP surface-card reference in the retained reverse index. */
+typedef struct {
+    uint32_t cell_index;
+    int cell_id;
+    int universe_id;
+    int8_t sense;
+} alea_surface_cell_reference_t;
+
+typedef struct {
+    bool built;
+    size_t surface_count;
+    size_t reference_count;
+    size_t max_references_per_surface;
+    size_t memory_bytes;
+} alea_surface_reference_stats_t;
+
+/** Inspect the exact surface-to-cell reverse index without building it. */
+int alea_surface_reference_stats(const alea_system_t* sys,
+                                 alea_surface_reference_stats_t* out_stats);
+
+/** Copy references to an exact MCNP surface card.
+ *
+ * ``out_count`` receives the full number of references even when ``capacity``
+ * is smaller. ``out_refs`` may be NULL when capacity is zero, allowing a
+ * count-only query. The adjacency query cache must already be prepared.
+ */
+int alea_surface_cell_references(const alea_system_t* sys,
+                                 int surface_id,
+                                 alea_surface_cell_reference_t* out_refs,
+                                 size_t capacity,
+                                 size_t* out_count);
+
 /* ============================================================================
  * GEOMETRY QUERIES
  * ============================================================================ */
@@ -213,6 +245,45 @@ int alea_find_all_cells_coverage_chain(alea_system_t* sys,
                                        uint64_t* occurrence_keys,
                                        uint64_t* parent_occurrence_keys,
                                        size_t max_hits);
+
+/** Complete diagnostic ownership query starting in a universe-local frame. */
+int alea_find_all_cells_in_universe_coverage_chain(
+    alea_system_t* sys, int universe_id,
+    double x, double y, double z,
+    alea_cell_hit_t* hits,
+    uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys,
+    size_t max_hits);
+
+typedef enum {
+    ALEA_POINT_COVERAGE_UNIQUE = 0,
+    ALEA_POINT_COVERAGE_GAP,
+    ALEA_POINT_COVERAGE_OVERLAP,
+    ALEA_POINT_COVERAGE_UNDEFINED_FILL,
+    ALEA_POINT_COVERAGE_UNRESOLVED
+} alea_point_coverage_kind_t;
+
+typedef struct {
+    alea_point_coverage_kind_t kind;
+    int target_depth; /**< -1 for a resolved leaf set spanning depths. */
+    size_t owner_count;
+} alea_point_coverage_classification_t;
+
+/** Classify an occurrence tree returned by a complete point query.
+ *
+ * ``universe_depth < 0`` selects every terminal leaf, so competing branches
+ * remain overlaps even when their leaves occur at different depths. At an
+ * explicit depth, only claimants projected to that depth are selected.
+ * ``out_owner_mask`` is parallel to ``hits`` and may be NULL.
+ */
+int alea_classify_point_coverage_chain(
+    const alea_cell_hit_t* hits,
+    const uint64_t* occurrence_keys,
+    const uint64_t* parent_occurrence_keys,
+    size_t hit_count,
+    int universe_depth,
+    uint8_t* out_owner_mask,
+    alea_point_coverage_classification_t* out_classification);
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z);
 /* Legacy convenience wrapper.
@@ -536,15 +607,16 @@ typedef struct {
 #endif
 
 /**
- * @brief Flatten and simplify all cells (full optimization)
+ * @brief Simplify all cells and remove cells proven empty
  *
- * Applies NNF conversion, flattening, balancing, contradiction detection,
- * and empty cell removal. Cells that simplify to empty are removed.
+ * Applies NNF conversion, associative Boolean normalization, balancing,
+ * contradiction detection, and empty-cell removal.
  *
  * @param sys CSG system
  * @param stats Optional accumulated stats output (can be NULL)
  */
-void alea_flatten_all_cells(alea_system_t* sys, alea_simplify_stats_t* stats);
+void alea_simplify_and_prune_cells(alea_system_t* sys,
+                                   alea_simplify_stats_t* stats);
 
 /**
  * @brief Carve a region out of every ordinary cell in one universe.

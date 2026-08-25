@@ -9,11 +9,14 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_geo_validator.h"
+#include "alea_mcnp.h"
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
 #include "core/alea_system.h"
+#include "core/alea_spatial_hier.h"
+#include "geo_validator/transition_slice_critical.h"
 
 #define EPS 1e-6
 
@@ -407,6 +410,8 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     ASSERT(sys->cells.data[0].surface_index_count > 0);
     ASSERT(sys->cells.data[1].surface_index_count > 0);
     ASSERT(sys->cell_adjacency_built);
+    ASSERT_NOT_NULL(sys->surface_cell_offsets);
+    ASSERT_NOT_NULL(sys->surface_cell_refs);
 
     double volumes[2] = {0.0, 1.0};
     int removed = alea_remove_cells_by_volume(sys, volumes, 0.1);
@@ -421,6 +426,9 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     ASSERT(!sys->universe_index_built);
     ASSERT_NULL(sys->hier_spatial_index);
     ASSERT(!sys->cell_adjacency_built);
+    ASSERT_NULL(sys->surface_cell_offsets);
+    ASSERT_NULL(sys->surface_cell_refs);
+    ASSERT_EQ((int)sys->surface_cell_ref_count, 0);
     ASSERT_EQ((int)sys->cells.data[0].surface_index_count, 0);
 
     ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
@@ -432,6 +440,946 @@ TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
     ASSERT_EQ(cell_id, 20);
     ASSERT_EQ(material_id, 2);
 
+    alea_destroy(sys);
+}
+
+TEST(surface_reference_csr_preserves_exact_cards_and_all_references) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    /* Geometrically identical planes deduplicate to one primitive, but their
+     * MCNP card identities must remain separate in the reverse index. */
+    int exact_a = alea_plane_surface(sys, 101, 1.0, 0.0, 0.0, 0.0);
+    int exact_b = alea_plane_surface(sys, 102, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(exact_a >= 0);
+    ASSERT(exact_b >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 11, alea_surface_at(sys, exact_a)->neg_node,
+                            ALEA_MATERIAL_VOID, 0.0, 7), 0);
+    ASSERT_EQ(alea_add_cell(sys, 22, alea_surface_at(sys, exact_b)->pos_node,
+                            ALEA_MATERIAL_VOID, 0.0, 7), 1);
+    ASSERT_EQ(alea_build_cell_adjacency(sys), 0);
+
+    alea_surface_reference_stats_t stats;
+    ASSERT_EQ(alea_surface_reference_stats(sys, &stats), 0);
+    ASSERT(stats.built);
+    ASSERT_EQ(stats.surface_count, (size_t)2);
+    ASSERT_EQ(stats.reference_count, (size_t)2);
+    ASSERT_EQ(stats.max_references_per_surface, (size_t)1);
+    ASSERT(stats.memory_bytes >= 2 * sizeof(alea_surface_cell_reference_t));
+
+    alea_surface_cell_reference_t refs[2];
+    size_t count = 0;
+    ASSERT_EQ(alea_surface_cell_references(sys, 101, refs, 2, &count), 0);
+    ASSERT_EQ(count, (size_t)1);
+    ASSERT_EQ(refs[0].cell_id, 11);
+    ASSERT_EQ(refs[0].universe_id, 7);
+    ASSERT_EQ(refs[0].sense, -1);
+
+    ASSERT_EQ(alea_surface_cell_references(sys, 102, refs, 2, &count), 0);
+    ASSERT_EQ(count, (size_t)1);
+    ASSERT_EQ(refs[0].cell_id, 22);
+    ASSERT_EQ(refs[0].sense, 1);
+    alea_destroy(sys);
+
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int shared = alea_plane_surface(sys, 201, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(shared >= 0);
+    for (int i = 0; i < 129; i++) {
+        ASSERT_EQ(alea_add_cell(sys, 1000 + i,
+                               alea_surface_at(sys, shared)->neg_node,
+                               ALEA_MATERIAL_VOID, 0.0, 9), i);
+    }
+    ASSERT_EQ(alea_build_cell_adjacency(sys), 0);
+
+    /* The pairwise neighbor pool intentionally skips surfaces above 128
+     * references. The authoritative CSR must retain every reference. */
+    ASSERT_EQ(alea_surface_cell_references(sys, 201, NULL, 0, &count), 0);
+    ASSERT_EQ(count, (size_t)129);
+    ASSERT_EQ(alea_surface_reference_stats(sys, &stats), 0);
+    ASSERT_EQ(stats.reference_count, (size_t)129);
+    ASSERT_EQ(stats.max_references_per_surface, (size_t)129);
+    alea_destroy(sys);
+
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sx = alea_plane_surface(sys, 301, 1.0, 0.0, 0.0, 0.0);
+    int sy = alea_plane_surface(sys, 302, 0.0, 1.0, 0.0, 0.0);
+    ASSERT(sx >= 0);
+    ASSERT(sy >= 0);
+    alea_node_id_t both_neg = alea_intersection(
+        sys, alea_surface_at(sys, sx)->neg_node,
+        alea_surface_at(sys, sy)->neg_node);
+    alea_node_id_t both_pos = alea_intersection(
+        sys, alea_surface_at(sys, sx)->pos_node,
+        alea_surface_at(sys, sy)->pos_node);
+    ASSERT_EQ(alea_add_cell(sys, 31, both_neg, ALEA_MATERIAL_VOID, 0.0, 4), 0);
+    ASSERT_EQ(alea_add_cell(sys, 32, both_pos, ALEA_MATERIAL_VOID, 0.0, 4), 1);
+    ASSERT_EQ(alea_build_cell_adjacency(sys), 0);
+    ASSERT_EQ(alea_surface_cell_references(sys, 301, refs, 2, &count), 0);
+    ASSERT_EQ(count, (size_t)2);
+    ASSERT_EQ(alea_surface_cell_references(sys, 302, refs, 2, &count), 0);
+    ASSERT_EQ(count, (size_t)2);
+    alea_destroy(sys);
+}
+
+TEST(point_coverage_classifies_competing_unequal_depth_leaves) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 401, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(sphere >= 0);
+    alea_node_id_t inside = alea_surface_at(sys, sphere)->neg_node;
+
+    int terminal_root = alea_add_cell(
+        sys, 41, inside, ALEA_MATERIAL_VOID, 0.0, 0);
+    int fill_root = alea_add_cell(
+        sys, 42, inside, ALEA_MATERIAL_VOID, 0.0, 0);
+    int terminal_child = alea_add_cell(
+        sys, 43, inside, ALEA_MATERIAL_VOID, 0.0, 8);
+    ASSERT(terminal_root >= 0);
+    ASSERT(fill_root >= 0);
+    ASSERT(terminal_child >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, fill_root, 8, 0), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_cell_hit_t hits[8];
+    uint64_t keys[8], parents[8];
+    uint8_t owners[8];
+    int count = alea_find_all_cells_coverage_chain(
+        sys, 0.0, 0.0, 0.0, hits, keys, parents, 8);
+    ASSERT_EQ(count, 3);
+
+    alea_point_coverage_classification_t classification;
+    ASSERT_EQ(alea_classify_point_coverage_chain(
+                  hits, keys, parents, (size_t)count, -1,
+                  owners, &classification), 0);
+    ASSERT_EQ(classification.kind, ALEA_POINT_COVERAGE_OVERLAP);
+    ASSERT_EQ(classification.owner_count, (size_t)2);
+    ASSERT_EQ(owners[terminal_root], 1);
+    ASSERT_EQ(owners[fill_root], 0);
+    ASSERT_EQ(owners[terminal_child], 1);
+
+    /* Entering universe 8 directly treats its coordinates as local and
+     * starts a fresh occurrence tree at depth zero. */
+    count = alea_find_all_cells_in_universe_coverage_chain(
+        sys, 8, 0.0, 0.0, 0.0, hits, keys, parents, 8);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(hits[0].cell_id, 43);
+    ASSERT_EQ(hits[0].depth, 0);
+    ASSERT_EQ(parents[0], UINT64_C(0));
+    ASSERT_EQ(alea_classify_point_coverage_chain(
+                  hits, keys, parents, (size_t)count, -1,
+                  owners, &classification), 0);
+    ASSERT_EQ(classification.kind, ALEA_POINT_COVERAGE_UNIQUE);
+    ASSERT_EQ(classification.owner_count, (size_t)1);
+
+    alea_destroy(sys);
+}
+
+static int check_x_plane_transition(
+    alea_system_t* sys, int current_cell_id, int primary_surface_id,
+    const int* tied_surface_ids, size_t tied_surface_count,
+    alea_transition_result_t* result) {
+    const double point[3] = {0.0, 0.0, 0.0};
+    const double direction[3] = {1.0, 0.0, 0.0};
+    if (alea_prepare_query_acceleration(sys) != 0) return -1;
+    return alea_check_transition_local(
+        sys, 0, current_cell_id, primary_surface_id,
+        tied_surface_ids, tied_surface_count,
+        point, direction, NULL, result);
+}
+
+TEST(supplied_transition_kernel_classifies_adjacency_and_anomalies) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_plane_surface(sys, 501, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(surface >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 51, alea_surface_at(sys, surface)->neg_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(alea_add_cell(sys, 52, alea_surface_at(sys, surface)->pos_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 1);
+    alea_transition_result_t result;
+    ASSERT_EQ(check_x_plane_transition(sys, 51, 501, NULL, 0, &result), 0);
+    ASSERT_EQ(result.kind, ALEA_TRANSITION_VALID);
+    ASSERT_EQ(result.after_cell_id, 52);
+    ASSERT_EQ(result.primary_candidate_count, (size_t)1);
+    ASSERT_EQ(result.primary_containing_count, (size_t)1);
+    ASSERT_EQ(result.coverage_fallbacks, (size_t)0);
+    ASSERT(result.flags & ALEA_TRANSITION_FLAG_OFFSET_STABLE);
+    alea_destroy(sys);
+
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    surface = alea_plane_surface(sys, 511, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(surface >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 61, alea_surface_at(sys, surface)->neg_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(check_x_plane_transition(sys, 61, 511, NULL, 0, &result), 0);
+    ASSERT_EQ(result.kind, ALEA_TRANSITION_GAP);
+    ASSERT(result.flags & ALEA_TRANSITION_FLAG_PRIMARY_MISSING);
+    ASSERT(result.flags & ALEA_TRANSITION_FLAG_COVERAGE_FALLBACK);
+    ASSERT(result.coverage_fallbacks > 0);
+    alea_destroy(sys);
+
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    surface = alea_plane_surface(sys, 521, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(surface >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 71, alea_surface_at(sys, surface)->neg_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(alea_add_cell(sys, 72, alea_surface_at(sys, surface)->pos_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 1);
+    ASSERT_EQ(alea_add_cell(sys, 73, alea_surface_at(sys, surface)->pos_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 2);
+    ASSERT_EQ(check_x_plane_transition(sys, 71, 521, NULL, 0, &result), 0);
+    ASSERT_EQ(result.kind, ALEA_TRANSITION_OVERLAP);
+    ASSERT_EQ(result.primary_containing_count, (size_t)2);
+    ASSERT_EQ(result.after_owner_count, (size_t)2);
+    alea_destroy(sys);
+
+    /* Exact-card mismatch: geometrically coincident cards remain distinct.
+     * Without tied evidence the unique after owner is non-adjacent. */
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int primary = alea_plane_surface(sys, 531, 1.0, 0.0, 0.0, 0.0);
+    int secondary = alea_plane_surface(sys, 532, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(primary >= 0);
+    ASSERT(secondary >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 81, alea_surface_at(sys, primary)->neg_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(alea_add_cell(sys, 82, alea_surface_at(sys, secondary)->pos_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 1);
+    ASSERT_EQ(check_x_plane_transition(sys, 81, 531, NULL, 0, &result), 0);
+    ASSERT_EQ(result.kind, ALEA_TRANSITION_NON_ADJACENT);
+    ASSERT_EQ(result.after_cell_id, 82);
+    alea_destroy(sys);
+
+    /* A cell may use the primary card in both orientations in disjoint
+     * Boolean branches.  Concrete before/after containment still proves an
+     * exit, so the checker must continue to coverage rather than stop at the
+     * card-level sense ambiguity. */
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    primary = alea_plane_surface(sys, 536, 1.0, 0.0, 0.0, 0.0);
+    secondary = alea_plane_surface(sys, 537, 1.0, 0.0, 0.0, 0.0);
+    int gate = alea_plane_surface(sys, 538, 0.0, 1.0, 0.0, 0.0);
+    ASSERT(primary >= 0);
+    ASSERT(secondary >= 0);
+    ASSERT(gate >= 0);
+    alea_node_id_t negative_branch = alea_intersection(
+        sys, alea_surface_at(sys, primary)->neg_node,
+        alea_surface_at(sys, gate)->neg_node);
+    alea_node_id_t positive_branch = alea_intersection(
+        sys, alea_surface_at(sys, primary)->pos_node,
+        alea_surface_at(sys, gate)->pos_node);
+    alea_node_id_t both_senses = alea_union(
+        sys, negative_branch, positive_branch);
+    alea_node_id_t after_region = alea_intersection(
+        sys, alea_surface_at(sys, secondary)->pos_node,
+        alea_surface_at(sys, gate)->neg_node);
+    ASSERT_EQ(alea_add_cell(sys, 86, both_senses,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(alea_add_cell(sys, 87, after_region,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 1);
+    const double gated_point[3] = {0.0, -1.0, 0.0};
+    const double positive_x[3] = {1.0, 0.0, 0.0};
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_check_transition_local(
+        sys, 0, 86, 536, NULL, 0, gated_point, positive_x, NULL, &result), 0);
+    ASSERT_EQ(result.current_sense, 2);
+    ASSERT(result.flags & ALEA_TRANSITION_FLAG_CURRENT_BEFORE_CONTAINS);
+    ASSERT(!(result.flags & ALEA_TRANSITION_FLAG_CURRENT_AFTER_CONTAINS));
+    ASSERT(result.flags & ALEA_TRANSITION_FLAG_COVERAGE_FALLBACK);
+    ASSERT_EQ(result.kind, ALEA_TRANSITION_NON_ADJACENT);
+    ASSERT_EQ(result.after_cell_id, 87);
+    alea_destroy(sys);
+
+    /* If the current cell also carries the coincident card and the event
+     * supplies it as tied evidence, retain the surface-chain/corner cause. */
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    primary = alea_plane_surface(sys, 541, 1.0, 0.0, 0.0, 0.0);
+    secondary = alea_plane_surface(sys, 542, 1.0, 0.0, 0.0, 0.0);
+    alea_node_id_t current = alea_intersection(
+        sys, alea_surface_at(sys, primary)->neg_node,
+        alea_surface_at(sys, secondary)->neg_node);
+    ASSERT_EQ(alea_add_cell(sys, 91, current,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(alea_add_cell(sys, 92, alea_surface_at(sys, secondary)->pos_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 1);
+    ASSERT_EQ(check_x_plane_transition(sys, 91, 541, NULL, 0, &result), 0);
+    ASSERT_EQ(result.kind, ALEA_TRANSITION_SURFACE_CHAIN_CORNER);
+    ASSERT_EQ(result.after_cell_id, 92);
+    ASSERT_EQ(result.connecting_surface_id, 542);
+    ASSERT(result.flags & ALEA_TRANSITION_FLAG_TIED_SURFACE_CONNECTS);
+    alea_destroy(sys);
+}
+
+TEST(transition_slice_screen_streams_only_bounded_findings) {
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0,
+                         0.0, 1.0, 0.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 4;
+    options.vertical_rays = 3;
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int shared = alea_plane_surface(sys, 551, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(shared >= 0);
+    ASSERT(alea_add_cell(sys, 101, alea_surface_at(sys, shared)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 102, alea_surface_at(sys, shared)->pos_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_transition_slice_result_t* result =
+        alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    alea_transition_slice_stats_t stats;
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT_EQ(stats.requested_rays, (size_t)7);
+    ASSERT_EQ(stats.executed_rays, (size_t)7);
+    ASSERT_EQ(stats.valid_transitions, (size_t)4);
+    ASSERT_EQ(stats.coverage_fallbacks, (size_t)0);
+    ASSERT_EQ(alea_transition_slice_finding_count(result), (size_t)0);
+    ASSERT(stats.peak_live_event_bytes <= options.max_scratch_bytes);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+
+    /* Geometrically coincident but card-distinct ownership is retained as a
+     * finding on each horizontal row; vertical rows have no crossing. */
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int primary = alea_plane_surface(sys, 561, 1.0, 0.0, 0.0, 0.0);
+    int other = alea_plane_surface(sys, 562, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(primary >= 0 && other >= 0);
+    ASSERT(alea_add_cell(sys, 111, alea_surface_at(sys, primary)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 112, alea_surface_at(sys, other)->pos_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    result = alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT_EQ(alea_transition_slice_finding_count(result), (size_t)4);
+    ASSERT_EQ(alea_transition_slice_component_count(result), (size_t)1);
+    alea_transition_slice_component_t component;
+    ASSERT_EQ(alea_transition_slice_component_get(result, 0, &component), 0);
+    ASSERT_EQ(component.kind, ALEA_TRANSITION_NON_ADJACENT);
+    ASSERT_EQ(component.orientation, ALEA_TRANSITION_SLICE_HORIZONTAL);
+    ASSERT_EQ(component.finding_count, (size_t)4);
+    ASSERT_NEAR(component.uv_min[0], 0.0, EPS);
+    ASSERT_NEAR(component.uv_max[0], 0.0, EPS);
+    ASSERT_NEAR(component.uv_min[1], -0.75, EPS);
+    ASSERT_NEAR(component.uv_max[1], 0.75, EPS);
+    ASSERT_EQ(stats.valid_transitions, (size_t)0);
+    ASSERT(stats.coverage_fallbacks > 0);
+    for (size_t i = 0; i < alea_transition_slice_finding_count(result); i++) {
+        alea_transition_slice_finding_t finding;
+        ASSERT_EQ(alea_transition_slice_finding_get(result, i, &finding), 0);
+        ASSERT_EQ(finding.transition.kind, ALEA_TRANSITION_NON_ADJACENT);
+        ASSERT_EQ(finding.orientation, ALEA_TRANSITION_SLICE_HORIZONTAL);
+        ASSERT_EQ(finding.transition.current_cell_id, 111);
+        ASSERT_EQ(finding.transition.after_cell_id, 112);
+        ASSERT_EQ(finding.base_ray_index, i);
+        ASSERT_EQ(finding.refinement_depth, (uint32_t)0);
+        ASSERT_NEAR(finding.transverse_coordinate,
+                    -0.75 + 0.5 * (double)i, EPS);
+        ASSERT_NEAR(finding.uv[0], 0.0, EPS);
+        ASSERT_NEAR(finding.world_point[0], 0.0, EPS);
+    }
+
+    options.vertical_rays = 0;
+    options.max_refinement_depth = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT(stats.converged);
+    ASSERT_EQ(stats.refinement_status,
+              ALEA_TRANSITION_SLICE_REFINEMENT_CONVERGED);
+    ASSERT_EQ(stats.executed_rays, (size_t)4);
+    ASSERT_EQ(stats.refined_rays_executed, (size_t)0);
+    options.vertical_rays = 3;
+    options.max_refinement_depth = 0;
+
+    options.max_findings = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT_EQ(stats.stop_reason, ALEA_TRANSITION_SLICE_STOP_MAX_FINDINGS);
+    ASSERT_EQ(alea_transition_slice_finding_count(result), (size_t)1);
+
+    options.max_findings = 10;
+    options.max_coverage_fallbacks = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT_EQ(stats.stop_reason,
+              ALEA_TRANSITION_SLICE_STOP_MAX_COVERAGE_FALLBACKS);
+    ASSERT_EQ(stats.coverage_fallbacks, (size_t)1);
+    ASSERT_EQ(alea_transition_slice_finding_count(result), (size_t)1);
+    alea_transition_slice_finding_t truncated;
+    ASSERT_EQ(alea_transition_slice_finding_get(result, 0, &truncated), 0);
+    ASSERT_EQ(truncated.transition.kind, ALEA_TRANSITION_TRUNCATED);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+}
+
+TEST(transition_slice_screen_refines_changed_event_signatures) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int split = alea_plane_surface(sys, 571, 0.0, 1.0, 0.0, -0.25);
+    int shared = alea_plane_surface(sys, 572, 1.0, 0.0, 0.0, 0.0);
+    int top_left = alea_plane_surface(sys, 573, 1.0, 0.0, 0.0, 0.0);
+    int top_right = alea_plane_surface(sys, 574, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(split >= 0 && shared >= 0 && top_left >= 0 && top_right >= 0);
+    alea_node_id_t bottom_left = alea_intersection(
+        sys, alea_surface_at(sys, split)->neg_node,
+        alea_surface_at(sys, shared)->neg_node);
+    alea_node_id_t bottom_right = alea_intersection(
+        sys, alea_surface_at(sys, split)->neg_node,
+        alea_surface_at(sys, shared)->pos_node);
+    alea_node_id_t upper_left = alea_intersection(
+        sys, alea_surface_at(sys, split)->pos_node,
+        alea_surface_at(sys, top_left)->neg_node);
+    alea_node_id_t upper_right = alea_intersection(
+        sys, alea_surface_at(sys, split)->pos_node,
+        alea_surface_at(sys, top_right)->pos_node);
+    ASSERT(alea_add_cell(sys, 121, bottom_left,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 122, bottom_right,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 123, upper_left,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 124, upper_right,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 2;
+    options.vertical_rays = 0;
+    options.max_refinement_depth = 1;
+    options.max_rays = 8;
+    alea_transition_slice_result_t* result =
+        alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    alea_transition_slice_stats_t stats;
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT(!stats.converged);
+    ASSERT_EQ(stats.refinement_status,
+              ALEA_TRANSITION_SLICE_REFINEMENT_MAX_DEPTH);
+    ASSERT_EQ(stats.requested_rays, (size_t)2);
+    ASSERT_EQ(stats.executed_rays, (size_t)3);
+    ASSERT_EQ(stats.refined_rays_executed, (size_t)1);
+    ASSERT_EQ(stats.max_refinement_depth_reached, (uint32_t)1);
+    ASSERT(stats.peak_row_scratch_bytes <= options.max_row_scratch_bytes);
+    options.enable_critical_refinement = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT(stats.critical_enabled);
+    ASSERT(stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_NONE);
+    ASSERT(stats.critical_tiles_processed > 0);
+    ASSERT(stats.critical_region_hits > 0);
+    ASSERT(stats.critical_occurrence_seed_points >= (size_t)9);
+    ASSERT(stats.critical_occurrence_paths > 0);
+    ASSERT(stats.critical_occurrence_universe_queries > 0);
+    ASSERT_EQ(stats.critical_root_region_fallbacks, (size_t)0);
+    /* Surface cards 572, 573, and 574 share primitive geometry.  Critical
+     * enumeration must retain their exact card identities while deduplicating
+     * repeated references to card 572 in the same root occurrence. */
+    ASSERT(stats.critical_curves >= (size_t)4);
+    ASSERT(stats.critical_duplicate_surface_occurrences > 0);
+    ASSERT(stats.peak_critical_curves <= options.max_curves_per_tile);
+    ASSERT(stats.critical_points > 0);
+    ASSERT(stats.critical_probes > 0);
+    ASSERT_EQ(alea_transition_slice_critical_finding_count(result),
+              stats.critical_findings);
+    ASSERT_EQ(stats.critical_findings, stats.critical_probe_findings);
+    if (stats.critical_findings > 0) {
+        alea_transition_slice_critical_finding_t critical_finding;
+        ASSERT_EQ(alea_transition_slice_critical_finding_get(
+                      result, 0, &critical_finding), 0);
+        ASSERT(critical_finding.source_cell_id > 0);
+        ASSERT(critical_finding.source_surface_id > 0);
+        ASSERT(critical_finding.radius > 0.0);
+        ASSERT(critical_finding.transition.kind != ALEA_TRANSITION_VALID);
+    }
+    ASSERT(stats.critical_curve_pair_candidates > 0);
+    ASSERT(stats.critical_curve_pairs_tested > 0);
+    ASSERT(stats.critical_active_segments > 0);
+    ASSERT(stats.critical_sector_witnesses > 0);
+    ASSERT(stats.peak_critical_scratch_bytes <=
+           options.max_critical_scratch_bytes);
+    ASSERT(alea_transition_slice_refinement_frontier_count(result) > 0);
+    ASSERT(alea_transition_slice_critical_tile_count(result) > 0);
+    alea_transition_slice_refinement_frontier_t frontier;
+    ASSERT_EQ(alea_transition_slice_refinement_frontier_get(
+                  result, 0, &frontier), 0);
+    ASSERT_EQ(frontier.orientation, ALEA_TRANSITION_SLICE_HORIZONTAL);
+    ASSERT(frontier.uv_max[0] > frontier.uv_min[0]);
+    alea_transition_slice_critical_tile_t tile;
+    ASSERT_EQ(alea_transition_slice_critical_tile_get(result, 0, &tile), 0);
+    ASSERT(tile.source_flags &
+           (1u << ALEA_TRANSITION_SLICE_TILE_SOURCE_REFINEMENT_FRONTIER));
+    options.max_critical_points = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_POINTS);
+    options.max_critical_points = 2048;
+    options.max_critical_probes = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_PROBES);
+    ASSERT_EQ(stats.critical_probes, (size_t)1);
+    options.max_critical_probes = 4096;
+    options.max_curve_pairs = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVE_PAIRS);
+    ASSERT_EQ(stats.critical_curve_pairs_tested, (size_t)1);
+    options.max_curve_pairs = 100000;
+    options.max_critical_sector_witnesses = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_SECTOR_WITNESSES);
+    ASSERT_EQ(stats.critical_sector_witnesses, (size_t)1);
+    options.max_critical_sector_witnesses = 8192;
+    options.max_curves_per_tile = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVES);
+    ASSERT(stats.peak_critical_curves <= (size_t)1);
+    options.max_curves_per_tile = 1024;
+    options.enable_critical_refinement = 0;
+    options.max_rays = 2;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT_EQ(stats.stop_reason, ALEA_TRANSITION_SLICE_STOP_MAX_RAYS);
+    ASSERT_EQ(stats.executed_rays, (size_t)2);
+    ASSERT_EQ(stats.refinement_status,
+              ALEA_TRANSITION_SLICE_REFINEMENT_STOPPED);
+
+    options.max_rays = 8;
+    options.min_transverse_spacing = 0.6;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT(!stats.converged);
+    ASSERT_EQ(stats.refinement_status,
+              ALEA_TRANSITION_SLICE_REFINEMENT_MIN_SPACING);
+    ASSERT_EQ(stats.executed_rays, (size_t)2);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+}
+
+TEST(transition_slice_critical_enumeration_preserves_transformed_occurrences) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int parent_material = alea_add_material(sys, 1);
+    int child_material = alea_add_material(sys, 2);
+    int left_boundary = alea_sphere_surface(sys, 701, -5.0, 0.0, 0.0, 3.0);
+    int right_boundary = alea_sphere_surface(sys, 702, 5.0, 0.0, 0.0, 3.0);
+    int child_left = alea_plane_surface(sys, 703, 1.0, 0.0, 0.0, 0.0);
+    int child_right = alea_plane_surface(sys, 704, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(parent_material >= 0 && child_material >= 0);
+    ASSERT(left_boundary >= 0 && right_boundary >= 0);
+    ASSERT(child_left >= 0 && child_right >= 0);
+    int left = alea_add_cell(
+        sys, 201, alea_surface_at(sys, left_boundary)->neg_node,
+        parent_material, -1.0, 0);
+    int right = alea_add_cell(
+        sys, 202, alea_surface_at(sys, right_boundary)->neg_node,
+        parent_material, -1.0, 0);
+    ASSERT(left >= 0 && right >= 0);
+    ASSERT(alea_add_cell(
+        sys, 203, alea_surface_at(sys, child_left)->neg_node,
+        child_material, -2.0, 10) >= 0);
+    ASSERT(alea_add_cell(
+        sys, 204, alea_surface_at(sys, child_right)->pos_node,
+        child_material, -2.0, 10) >= 0);
+    const double left_translation[3] = {-5.0, 0.0, 0.0};
+    const double right_translation[3] = {5.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 201, left_translation, 3, 0), 0);
+    ASSERT_EQ(alea_add_transform(sys, 202, right_translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, left, 10, 201), 0);
+    ASSERT_EQ(alea_set_fill(sys, right, 10, 202), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -9.0, 9.0, -1.0, 1.0);
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 3;
+    options.vertical_rays = 0;
+    options.enable_critical_refinement = 1;
+    options.critical_tile_padding = 0.1;
+    alea_transition_slice_result_t* result =
+        alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    alea_transition_slice_stats_t stats;
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.critical_complete);
+    ASSERT_EQ(stats.critical_root_region_fallbacks, (size_t)0);
+    ASSERT(stats.critical_occurrence_paths > 0);
+    /* Both distinct placements of universe 10 must be queried.  The root is
+     * represented by seed-path neighborhoods rather than a broad BLAS query,
+     * and cards 703/704 must survive independently in both occurrences. */
+    ASSERT(stats.critical_occurrence_universe_queries >= (size_t)2);
+    ASSERT(stats.critical_curves >= (size_t)4);
+    ASSERT(alea_transition_slice_component_count(result) >= (size_t)2);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+}
+
+TEST(transition_slice_critical_enumeration_preserves_lattice_occurrences) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+    int duplicate = alea_cylinder_z_surface(sys, 705, 0.0, 0.0, 0.3);
+    ASSERT(duplicate >= 0);
+    int duplicate_cell = alea_add_cell(
+        sys, 205, alea_surface_at(sys, duplicate)->neg_node,
+        ALEA_MATERIAL_VOID, 0.0, 1);
+    ASSERT(duplicate_cell >= 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -1.6, 1.6, -1.6, 1.6);
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 8;
+    options.vertical_rays = 8;
+    options.coverage_uniform_probes_per_ray = 16;
+    options.coverage_probe_selected_intervals = 1;
+    options.enable_critical_refinement = 1;
+    options.critical_tile_padding = 0.05;
+    alea_transition_slice_result_t* result =
+        alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    alea_transition_slice_stats_t stats;
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(alea_transition_slice_coverage_component_count(result) > 0);
+    ASSERT(stats.critical_tiles > 0);
+    ASSERT(stats.critical_occurrence_paths > 0);
+    ASSERT(stats.critical_occurrence_universe_queries > (size_t)2);
+    ASSERT_EQ(stats.critical_root_region_fallbacks, (size_t)0);
+    /* Surface 10 and its duplicate card 705 occur in more than one concrete
+     * lattice element and must not collapse to one universe-definition key. */
+    ASSERT(stats.critical_curves >= (size_t)4);
+    alea_transition_slice_result_destroy(result);
+    mcnp_model_destroy(model);
+}
+
+TEST(transition_slice_screen_bounds_component_publication) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int split = alea_plane_surface(sys, 581, 0.0, 1.0, 0.0, 0.0);
+    int bottom_left = alea_plane_surface(sys, 582, 1.0, 0.0, 0.0, 0.0);
+    int bottom_right = alea_plane_surface(sys, 583, 1.0, 0.0, 0.0, 0.0);
+    int top_left = alea_plane_surface(sys, 584, 1.0, 0.0, 0.0, 0.0);
+    int top_right = alea_plane_surface(sys, 585, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(split >= 0 && bottom_left >= 0 && bottom_right >= 0 &&
+           top_left >= 0 && top_right >= 0);
+    alea_node_id_t bottom_left_region = alea_intersection(
+        sys, alea_surface_at(sys, split)->neg_node,
+        alea_surface_at(sys, bottom_left)->neg_node);
+    alea_node_id_t bottom_right_region = alea_intersection(
+        sys, alea_surface_at(sys, split)->neg_node,
+        alea_surface_at(sys, bottom_right)->pos_node);
+    alea_node_id_t top_left_region = alea_intersection(
+        sys, alea_surface_at(sys, split)->pos_node,
+        alea_surface_at(sys, top_left)->neg_node);
+    alea_node_id_t top_right_region = alea_intersection(
+        sys, alea_surface_at(sys, split)->pos_node,
+        alea_surface_at(sys, top_right)->pos_node);
+    ASSERT(alea_add_cell(sys, 131, bottom_left_region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 132, bottom_right_region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 133, top_left_region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 134, top_right_region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 2;
+    options.vertical_rays = 0;
+    alea_transition_slice_result_t* result =
+        alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    alea_transition_slice_stats_t stats;
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT_EQ(alea_transition_slice_finding_count(result), (size_t)2);
+    ASSERT_EQ(alea_transition_slice_component_count(result), (size_t)2);
+
+    options.enable_critical_refinement = 1;
+    options.horizontal_rays = 3;
+    options.refine_signals = ALEA_TRANSITION_SLICE_REFINE_FINDING;
+    options.max_refinement_frontiers = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_FRONTIERS);
+    ASSERT_EQ(alea_transition_slice_refinement_frontier_count(result),
+              (size_t)1);
+    ASSERT(stats.omitted_refinement_frontiers > 0);
+    options.horizontal_rays = 2;
+    options.refine_signals = 0;
+    options.max_refinement_frontiers = 1024;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.critical_complete);
+    ASSERT_EQ(alea_transition_slice_critical_tile_count(result), (size_t)2);
+    ASSERT_EQ(alea_transition_slice_critical_tile_source_count(result),
+              (size_t)2);
+    options.max_critical_tiles = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_TILES);
+    ASSERT_EQ(alea_transition_slice_critical_tile_count(result), (size_t)1);
+    options.max_critical_tiles = 256;
+    options.max_critical_tile_sources = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.critical_complete);
+    ASSERT_EQ(stats.critical_stop_reason,
+              ALEA_TRANSITION_SLICE_CRITICAL_MAX_TILE_SOURCES);
+    ASSERT_EQ(alea_transition_slice_critical_tile_source_count(result),
+              (size_t)1);
+
+    options.max_components = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT_EQ(stats.stop_reason, ALEA_TRANSITION_SLICE_STOP_MAX_COMPONENTS);
+    ASSERT_EQ(alea_transition_slice_finding_count(result), (size_t)2);
+    ASSERT_EQ(alea_transition_slice_component_count(result), (size_t)1);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+}
+
+TEST(transition_slice_screen_streams_bounded_point_coverage_findings) {
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -4.0, 4.0, -1.0, 1.0);
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 1;
+    options.vertical_rays = 0;
+    options.coverage_uniform_probes_per_ray = 17;
+    options.max_coverage_probes = 100;
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 591, 0.0, 0.0, 0.0, 3.0);
+    int inner = alea_sphere_surface(sys, 592, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(outer >= 0 && inner >= 0);
+    ASSERT(alea_add_cell(sys, 141, alea_surface_at(sys, outer)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 142, alea_surface_at(sys, inner)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_transition_slice_result_t* result =
+        alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    alea_transition_slice_stats_t stats;
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT_EQ(stats.coverage_probes, (size_t)17);
+    ASSERT(stats.unique_coverage_probes > 0);
+    ASSERT(stats.skipped_unowned_coverage_probes > 0);
+    ASSERT(alea_transition_slice_coverage_finding_count(result) > 0);
+    ASSERT_EQ(alea_transition_slice_coverage_component_count(result), (size_t)1);
+    alea_transition_slice_coverage_component_t component;
+    ASSERT_EQ(alea_transition_slice_coverage_component_get(
+                  result, 0, &component), 0);
+    ASSERT_EQ(component.kind, ALEA_POINT_COVERAGE_OVERLAP);
+    ASSERT(component.finding_count > 0);
+    for (size_t i = 0;
+         i < alea_transition_slice_coverage_finding_count(result); i++) {
+        alea_transition_slice_coverage_finding_t finding;
+        ASSERT_EQ(alea_transition_slice_coverage_finding_get(
+                      result, i, &finding), 0);
+        ASSERT_EQ(finding.kind, ALEA_POINT_COVERAGE_OVERLAP);
+        ASSERT_EQ(finding.owner_count, (size_t)2);
+        ASSERT_EQ(finding.owner_count_lower_bound, (size_t)2);
+        ASSERT(finding.bracket_t_exit > finding.bracket_t_enter);
+    }
+
+    options.coverage_uniform_probes_per_ray = 0;
+    options.coverage_probe_selected_intervals = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT(stats.coverage_probes > 0);
+    ASSERT(alea_transition_slice_coverage_finding_count(result) > 0);
+
+    options.coverage_uniform_probes_per_ray = 17;
+    options.coverage_probe_selected_intervals = 0;
+    options.max_coverage_probes = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT_EQ(stats.stop_reason,
+              ALEA_TRANSITION_SLICE_STOP_MAX_COVERAGE_PROBES);
+    ASSERT_EQ(stats.coverage_probes, (size_t)1);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+
+    /* Unowned samples are opt-in because an arbitrary viewport normally also
+     * contains legitimate exterior void.  With the policy enabled, a strip
+     * between two halfspaces is retained as sampled gap evidence. */
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int left = alea_plane_surface(sys, 593, 1.0, 0.0, 0.0, 0.5);
+    int right = alea_plane_surface(sys, 594, 1.0, 0.0, 0.0, -0.5);
+    ASSERT(left >= 0 && right >= 0);
+    ASSERT(alea_add_cell(sys, 143, alea_surface_at(sys, left)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 144, alea_surface_at(sys, right)->pos_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 1;
+    options.vertical_rays = 0;
+    options.coverage_uniform_probes_per_ray = 17;
+    options.report_unowned_coverage = 1;
+    result = alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT(alea_transition_slice_coverage_finding_count(result) > 0);
+    int saw_gap = 0;
+    for (size_t i = 0;
+         i < alea_transition_slice_coverage_finding_count(result); i++) {
+        alea_transition_slice_coverage_finding_t finding;
+        ASSERT_EQ(alea_transition_slice_coverage_finding_get(
+                      result, i, &finding), 0);
+        if (finding.kind == ALEA_POINT_COVERAGE_GAP &&
+            finding.world_point[0] > -0.5 && finding.world_point[0] < 0.5)
+            saw_gap = 1;
+    }
+    ASSERT(saw_gap);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+
+    /* A card-distinct transition into an overlapped interval produces both
+     * verdicts.  The link identifies the shared selected-event boundary
+     * without a geometric nearest-neighbor search. */
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int primary = alea_plane_surface(sys, 595, 1.0, 0.0, 0.0, 0.0);
+    int after_a = alea_plane_surface(sys, 596, 1.0, 0.0, 0.0, 0.0);
+    int after_b = alea_plane_surface(sys, 597, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(primary >= 0 && after_a >= 0 && after_b >= 0);
+    ASSERT(alea_add_cell(sys, 145, alea_surface_at(sys, primary)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 146, alea_surface_at(sys, after_a)->pos_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 147, alea_surface_at(sys, after_b)->pos_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 1;
+    options.vertical_rays = 0;
+    options.coverage_probe_selected_intervals = 1;
+    result = alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT_EQ(alea_transition_slice_component_count(result), (size_t)1);
+    ASSERT_EQ(alea_transition_slice_coverage_component_count(result),
+              (size_t)1);
+    ASSERT_EQ(alea_transition_slice_component_link_count(result), (size_t)1);
+    ASSERT_EQ(stats.component_links, (size_t)1);
+    alea_transition_slice_component_link_t link;
+    ASSERT_EQ(alea_transition_slice_component_link_get(result, 0, &link), 0);
+    ASSERT_EQ(link.transition_component_index, (size_t)0);
+    ASSERT_EQ(link.coverage_component_index, (size_t)0);
+    ASSERT(link.boundary_sides & ALEA_TRANSITION_SLICE_LINK_ENTER);
+    ASSERT_EQ(link.witness_pair_count, (size_t)1);
+    alea_transition_slice_result_destroy(result);
+    alea_destroy(sys);
+
+    sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int split = alea_plane_surface(sys, 598, 0.0, 1.0, 0.0, 0.0);
+    int x_planes[6];
+    for (int i = 0; i < 6; i++)
+        x_planes[i] = alea_plane_surface(
+            sys, 599 + i, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(split >= 0);
+    for (int i = 0; i < 6; i++) ASSERT(x_planes[i] >= 0);
+    for (int half = 0; half < 2; half++) {
+        alea_node_id_t split_node = half == 0
+            ? alea_surface_at(sys, split)->neg_node
+            : alea_surface_at(sys, split)->pos_node;
+        for (int region = 0; region < 3; region++) {
+            int plane = x_planes[half * 3 + region];
+            alea_node_id_t x_node = region == 0
+                ? alea_surface_at(sys, plane)->neg_node
+                : alea_surface_at(sys, plane)->pos_node;
+            ASSERT(alea_add_cell(
+                sys, 148 + half * 3 + region,
+                alea_intersection(sys, split_node, x_node),
+                ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+        }
+    }
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 2;
+    options.vertical_rays = 0;
+    options.coverage_probe_selected_intervals = 1;
+    result = alea_transition_slice_result_create();
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_component_link_count(result), (size_t)2);
+    options.max_component_links = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(!stats.complete);
+    ASSERT_EQ(stats.stop_reason,
+              ALEA_TRANSITION_SLICE_STOP_MAX_COMPONENT_LINKS);
+    ASSERT_EQ(alea_transition_slice_component_link_count(result), (size_t)1);
+    alea_transition_slice_result_destroy(result);
     alea_destroy(sys);
 }
 
@@ -833,6 +1781,133 @@ TEST(compact_hierarchical_batch_matches_transformed_fill_paths) {
     ASSERT(right_child_key != 0);
     ASSERT_NE(left_child_key, right_child_key);
     alea_raycast_batch_result_destroy(batch);
+    alea_destroy(sys);
+}
+
+TEST(selected_boundary_events_retain_transformed_occurrence_receipts) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int container_material = alea_add_material(sys, 1);
+    int child_material = alea_add_material(sys, 2);
+    int left_surface = alea_sphere_surface(sys, 11, -5.0, 0.0, 0.0, 3.0);
+    int right_surface = alea_sphere_surface(sys, 12, 5.0, 0.0, 0.0, 3.0);
+    int child_surface = alea_sphere_surface(sys, 13, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(left_surface >= 0 && right_surface >= 0 && child_surface >= 0);
+    int left = alea_add_cell(sys, 110,
+                             alea_surface_at(sys, left_surface)->neg_node,
+                             container_material, -1.0, 0);
+    int right = alea_add_cell(sys, 120,
+                              alea_surface_at(sys, right_surface)->neg_node,
+                              container_material, -1.0, 0);
+    ASSERT(left >= 0 && right >= 0);
+    ASSERT(alea_add_cell(sys, 130,
+                         alea_surface_at(sys, child_surface)->neg_node,
+                         child_material, -2.0, 10) >= 0);
+    ASSERT(alea_add_cell(sys, 131,
+                         alea_surface_at(sys, child_surface)->pos_node,
+                         ALEA_MATERIAL_VOID, 0.0, 10) >= 0);
+    const double left_translation[3] = {-5.0, 0.0, 0.0};
+    const double right_translation[3] = {5.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 111, left_translation, 3, 0), 0);
+    ASSERT_EQ(alea_add_transform(sys, 112, right_translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, left, 10, 111), 0);
+    ASSERT_EQ(alea_set_fill(sys, right, 10, 112), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+    alea_raycast_result_t scratch;
+    alea_ray_boundary_event_result_t events;
+    alea_raycast_result_init(&scratch);
+    alea_ray_boundary_event_result_init(&events);
+    ASSERT_EQ(alea_raycast_selected_boundary_events_nocache(
+                  sys, &ray, 20.0, &scratch, &events), 0);
+
+    uint64_t child_occurrences[2] = {0, 0};
+    size_t child_occurrence_count = 0;
+    size_t child_event_count = 0;
+    for (size_t i = 0; i < events.events.count; i++) {
+        const alea_ray_boundary_event_t* event = &events.events.data[i];
+        if (event->surface_id != 13 || event->active_universe_id != 10)
+            continue;
+        child_event_count++;
+        ASSERT(event->provenance_flags & ALEA_BOUNDARY_PROVENANCE_ACTIVE_FRAME);
+        ASSERT(event->provenance_flags & ALEA_BOUNDARY_PROVENANCE_BEFORE_OWNER);
+        ASSERT(event->provenance_flags & ALEA_BOUNDARY_PROVENANCE_AFTER_OWNER);
+        ASSERT(event->active_cell_id == 130 || event->active_cell_id == 131);
+        ASSERT_EQ(event->active_depth, 1);
+        ASSERT(event->active_occurrence_key != 0);
+        ASSERT(event->active_parent_occurrence_key != 0);
+        ASSERT(event->before_occurrence_key != 0);
+        ASSERT(event->after_occurrence_key != 0);
+        ASSERT_NE(event->before_occurrence_key, event->after_occurrence_key);
+        ASSERT_NEAR(fabs(event->local_point[0]), 1.0, 1e-7);
+        ASSERT_NEAR(event->local_point[1], 0.0, EPS);
+        ASSERT_NEAR(event->local_point[2], 0.0, EPS);
+        ASSERT_NEAR(event->local_direction[0], 1.0, EPS);
+
+        alea_transition_result_t transition;
+        ASSERT_EQ(alea_check_selected_boundary_event_transition_nocache(
+                      sys, event, NULL, &transition), 0);
+        ASSERT_EQ(transition.kind, ALEA_TRANSITION_VALID);
+        ASSERT_EQ(transition.universe_id, 10);
+        ASSERT_EQ(transition.current_cell_id, event->active_cell_id);
+        ASSERT_EQ(transition.occurrence_depth, 1);
+        ASSERT_EQ(transition.current_occurrence_key,
+                  event->active_occurrence_key);
+        ASSERT_EQ(transition.before_occurrence_key,
+                  event->before_occurrence_key);
+        ASSERT_EQ(transition.selected_after_occurrence_key,
+                  event->after_occurrence_key);
+        ASSERT_EQ(transition.coverage_fallbacks, (size_t)0);
+
+        if (event->active_cell_id == 130) {
+            int seen = 0;
+            for (size_t j = 0; j < child_occurrence_count; j++)
+                if (child_occurrences[j] == event->active_occurrence_key)
+                    seen = 1;
+            if (!seen && child_occurrence_count < 2)
+                child_occurrences[child_occurrence_count++] =
+                    event->active_occurrence_key;
+        }
+    }
+    ASSERT_EQ(child_event_count, (size_t)4);
+    ASSERT_EQ(child_occurrence_count, (size_t)2);
+    ASSERT_NE(child_occurrences[0], child_occurrences[1]);
+
+    alea_ray_boundary_event_query_result_t* public_events =
+        alea_ray_boundary_event_query_result_create();
+    ASSERT_NOT_NULL(public_events);
+    alea_ray_boundary_event_options_t public_options;
+    alea_ray_boundary_event_options_init(&public_options);
+    public_options.t_max = 20.0;
+    public_options.include_occurrence_provenance = 1;
+    ASSERT_EQ(alea_ray_boundary_event_query(
+                  sys, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                  &public_options, public_events), 0);
+    size_t public_child_events = 0;
+    for (size_t i = 0; i < alea_ray_boundary_event_count(public_events); i++) {
+        double t = 0.0;
+        int kind = -1, surface_id = -1;
+        ASSERT_EQ(alea_ray_boundary_event_get(
+                      public_events, i, &t, &kind, &surface_id,
+                      NULL, NULL, NULL, NULL, NULL, NULL,
+                      NULL, NULL, NULL), 0);
+        if (kind != ALEA_RAY_EVENT_PHYSICAL || surface_id != 13) continue;
+        alea_ray_boundary_event_provenance_t provenance;
+        ASSERT_EQ(alea_ray_boundary_event_provenance_get(
+                      public_events, i, &provenance), 0);
+        ASSERT(provenance.flags &
+               ALEA_RAY_BOUNDARY_PROVENANCE_ACTIVE_FRAME);
+        ASSERT_EQ(provenance.active_universe_id, 10);
+        ASSERT_NEAR(fabs(provenance.local_point[0]), 1.0, 1e-7);
+        public_child_events++;
+    }
+    ASSERT_EQ(public_child_events, (size_t)4);
+    alea_ray_boundary_event_query_result_destroy(public_events);
+
+    alea_ray_boundary_event_result_free(&events);
+    alea_raycast_result_free(&scratch);
     alea_destroy(sys);
 }
 
@@ -1666,6 +2741,1026 @@ TEST(compact_ray_slice_coverage_refines_rows_adaptively) {
 
     alea_ray_slice_validation_result_destroy(validation);
     alea_destroy(sys);
+}
+
+TEST(transition_slice_active_boundary_filter_partitions_narrow_regions) {
+    alea_slice_view_t view;
+    alea_slice_view_init(&view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    alea_transition_slice_critical_tile_t tile;
+    memset(&tile, 0, sizeof(tile));
+    tile.uv_min[0] = -2.0; tile.uv_max[0] = 2.0;
+    tile.uv_min[1] = -1.0; tile.uv_max[1] = 1.0;
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+
+    /* The first branch is wholly contained by x < 1.  All three of its card
+     * curves cross the tile but none is part of the cell boundary. */
+    alea_system_t* redundant = alea_create();
+    ASSERT_NOT_NULL(redundant);
+    const int x0 = alea_plane_surface(redundant, 801, 1, 0, 0, 0);
+    const int y0 = alea_plane_surface(redundant, 802, 0, 1, 0, 0);
+    const int yd = alea_plane_surface(redundant, 803, 0, 1, 0, -1e-5);
+    const int x1 = alea_plane_surface(redundant, 804, 1, 0, 0, -1);
+    const int rxlo = alea_plane_surface(redundant, 805, 1, 0, 0, 3);
+    const int rylo = alea_plane_surface(redundant, 806, 0, 1, 0, 2);
+    const int ryhi = alea_plane_surface(redundant, 807, 0, 1, 0, -2);
+    const int rzlo = alea_plane_surface(redundant, 808, 0, 0, 1, 1);
+    const int rzhi = alea_plane_surface(redundant, 809, 0, 0, 1, -1);
+    ASSERT(x0 >= 0 && y0 >= 0 && yd >= 0 && x1 >= 0 && rxlo >= 0 &&
+           rylo >= 0 && ryhi >= 0 && rzlo >= 0 && rzhi >= 0);
+    alea_node_id_t narrow = alea_intersection(
+        redundant, alea_halfspace(redundant, x0, -1),
+        alea_intersection(redundant,
+            alea_halfspace(redundant, y0, 1),
+            alea_halfspace(redundant, yd, -1)));
+    alea_node_id_t redundant_union = alea_union(
+        redundant, narrow, alea_halfspace(redundant, x1, -1));
+    const alea_node_id_t redundant_nodes[] = {
+        redundant_union,
+        alea_halfspace(redundant, rxlo, 1),
+        alea_halfspace(redundant, rylo, 1),
+        alea_halfspace(redundant, ryhi, -1),
+        alea_halfspace(redundant, rzlo, 1),
+        alea_halfspace(redundant, rzhi, -1)
+    };
+    alea_node_id_t region = alea_intersection_n(
+        redundant, redundant_nodes,
+        sizeof(redundant_nodes) / sizeof(redundant_nodes[0]));
+    ASSERT(alea_add_cell(redundant, 801, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(redundant), 0);
+    alea_transition_slice_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  redundant, &view, &options, &tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_curves, (size_t)1);
+    ASSERT(stats.critical_curves_culled >= (size_t)3);
+    ASSERT(stats.critical_active_boundary_tests > 0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)1);
+    alea_destroy(redundant);
+
+    /* Exact arrangement side tests also prove inactivity when a card occurs
+     * with both senses.  Here the union of its two halfspaces is a Boolean
+     * tautology inside a finite box: retaining the whole x=0 line would add
+     * conservative work without representing a cell boundary. */
+    alea_system_t* both_sense_redundant = alea_create();
+    ASSERT_NOT_NULL(both_sense_redundant);
+    const int bsx = alea_plane_surface(
+        both_sense_redundant, 8101, 1, 0, 0, 0);
+    const int bsxlo = alea_plane_surface(
+        both_sense_redundant, 8102, 1, 0, 0, 3);
+    const int bsxhi = alea_plane_surface(
+        both_sense_redundant, 8103, 1, 0, 0, -3);
+    const int bsylo = alea_plane_surface(
+        both_sense_redundant, 8104, 0, 1, 0, 2);
+    const int bsyhi = alea_plane_surface(
+        both_sense_redundant, 8105, 0, 1, 0, -2);
+    const int bszlo = alea_plane_surface(
+        both_sense_redundant, 8106, 0, 0, 1, 1);
+    const int bszhi = alea_plane_surface(
+        both_sense_redundant, 8107, 0, 0, 1, -1);
+    ASSERT(bsx >= 0 && bsxlo >= 0 && bsxhi >= 0 && bsylo >= 0 &&
+           bsyhi >= 0 && bszlo >= 0 && bszhi >= 0);
+    const alea_node_id_t both_sense_tautology = alea_union(
+        both_sense_redundant,
+        alea_halfspace(both_sense_redundant, bsx, -1),
+        alea_halfspace(both_sense_redundant, bsx, 1));
+    const alea_node_id_t both_sense_nodes[] = {
+        both_sense_tautology,
+        alea_halfspace(both_sense_redundant, bsxlo, 1),
+        alea_halfspace(both_sense_redundant, bsxhi, -1),
+        alea_halfspace(both_sense_redundant, bsylo, 1),
+        alea_halfspace(both_sense_redundant, bsyhi, -1),
+        alea_halfspace(both_sense_redundant, bszlo, 1),
+        alea_halfspace(both_sense_redundant, bszhi, -1)
+    };
+    region = alea_intersection_n(
+        both_sense_redundant, both_sense_nodes,
+        sizeof(both_sense_nodes) / sizeof(both_sense_nodes[0]));
+    ASSERT(alea_add_cell(both_sense_redundant, 8101, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(both_sense_redundant), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  both_sense_redundant, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT(stats.critical_curves_culled >= (size_t)1);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    alea_destroy(both_sense_redundant);
+
+    /* The same 1e-5 interval is much narrower than any fixed 3x3 seed grid,
+     * but curve intersections partition x=0 at both endpoints. */
+    alea_system_t* active = alea_create();
+    ASSERT_NOT_NULL(active);
+    const int ax = alea_plane_surface(active, 811, 1, 0, 0, 0);
+    const int ay0 = alea_plane_surface(active, 812, 0, 1, 0, 0);
+    const int ayd = alea_plane_surface(active, 813, 0, 1, 0, -1e-5);
+    const int axlo = alea_plane_surface(active, 814, 1, 0, 0, 3);
+    const int azlo = alea_plane_surface(active, 815, 0, 0, 1, 1);
+    const int azhi = alea_plane_surface(active, 816, 0, 0, 1, -1);
+    ASSERT(ax >= 0 && ay0 >= 0 && ayd >= 0 &&
+           axlo >= 0 && azlo >= 0 && azhi >= 0);
+    alea_node_id_t active_narrow = alea_intersection(
+        active, alea_halfspace(active, ax, -1),
+        alea_intersection(active,
+            alea_halfspace(active, ay0, 1),
+            alea_halfspace(active, ayd, -1)));
+    const alea_node_id_t active_nodes[] = {
+        active_narrow,
+        alea_halfspace(active, axlo, 1),
+        alea_halfspace(active, azlo, 1),
+        alea_halfspace(active, azhi, -1)
+    };
+    region = alea_intersection_n(
+        active, active_nodes,
+        sizeof(active_nodes) / sizeof(active_nodes[0]));
+    ASSERT(alea_add_cell(active, 811, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(active), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  active, &view, &options, &tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_curves, (size_t)3);
+    ASSERT_EQ(stats.critical_curves_culled, (size_t)0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)3);
+
+    /* One exact card can contribute multiple disconnected active patches.  It
+     * must be charged as two segments, not collapsed back to one whole line. */
+    alea_system_t* disjoint = alea_create();
+    ASSERT_NOT_NULL(disjoint);
+    const int dx = alea_plane_surface(disjoint, 821, 1, 0, 0, 0);
+    const int dy0 = alea_plane_surface(disjoint, 822, 0, 1, 0, 0);
+    const int dy1 = alea_plane_surface(disjoint, 823, 0, 1, 0, -1e-5);
+    const int dy2 = alea_plane_surface(disjoint, 824, 0, 1, 0, -0.5);
+    const int dy3 = alea_plane_surface(disjoint, 825, 0, 1, 0, -0.50001);
+    const int dxlo = alea_plane_surface(disjoint, 826, 1, 0, 0, 3);
+    const int dzlo = alea_plane_surface(disjoint, 827, 0, 0, 1, 1);
+    const int dzhi = alea_plane_surface(disjoint, 828, 0, 0, 1, -1);
+    ASSERT(dx >= 0 && dy0 >= 0 && dy1 >= 0 && dy2 >= 0 && dy3 >= 0 &&
+           dxlo >= 0 && dzlo >= 0 && dzhi >= 0);
+    const alea_node_id_t strip0 = alea_intersection(
+        disjoint, alea_halfspace(disjoint, dx, -1),
+        alea_intersection(disjoint,
+            alea_halfspace(disjoint, dy0, 1),
+            alea_halfspace(disjoint, dy1, -1)));
+    const alea_node_id_t strip1 = alea_intersection(
+        disjoint, alea_halfspace(disjoint, dx, -1),
+        alea_intersection(disjoint,
+            alea_halfspace(disjoint, dy2, 1),
+            alea_halfspace(disjoint, dy3, -1)));
+    const alea_node_id_t disjoint_nodes[] = {
+        alea_union(disjoint, strip0, strip1),
+        alea_halfspace(disjoint, dxlo, 1),
+        alea_halfspace(disjoint, dzlo, 1),
+        alea_halfspace(disjoint, dzhi, -1)
+    };
+    region = alea_intersection_n(
+        disjoint, disjoint_nodes,
+        sizeof(disjoint_nodes) / sizeof(disjoint_nodes[0]));
+    ASSERT(alea_add_cell(disjoint, 821, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(disjoint), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  disjoint, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)6);
+    ASSERT_EQ(stats.critical_curves, (size_t)6);
+    alea_destroy(disjoint);
+
+    /* A cylinder sliced parallel to its axis yields one analytical
+     * PARALLEL_LINES curve.  It must become two independently clipped and
+     * CSG-tested active segments. */
+    alea_system_t* parallel = alea_create();
+    ASSERT_NOT_NULL(parallel);
+    const int cyl = alea_cylinder_z_surface(parallel, 831, 0, 0, 1);
+    const int pzlo = alea_plane_surface(parallel, 832, 0, 0, 1, 2);
+    const int pzhi = alea_plane_surface(parallel, 833, 0, 0, 1, -2);
+    ASSERT(cyl >= 0 && pzlo >= 0 && pzhi >= 0);
+    const alea_node_id_t cylinder_nodes[] = {
+        alea_halfspace(parallel, cyl, -1),
+        alea_halfspace(parallel, pzlo, 1),
+        alea_halfspace(parallel, pzhi, -1)
+    };
+    region = alea_intersection_n(
+        parallel, cylinder_nodes,
+        sizeof(cylinder_nodes) / sizeof(cylinder_nodes[0]));
+    ASSERT(alea_add_cell(parallel, 831, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(parallel), 0);
+    alea_slice_view_t parallel_view;
+    alea_slice_view_init(&parallel_view, 0.0, 0.0, 0.0,
+                         1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  parallel, &parallel_view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)2);
+    ASSERT_EQ(stats.critical_curves, (size_t)2);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    alea_destroy(parallel);
+
+    /* A full circular cell boundary is retained as one proven active arc,
+     * rather than consuming a conservative whole-circle fallback. */
+    alea_system_t* circular = alea_create();
+    ASSERT_NOT_NULL(circular);
+    const int sphere = alea_sphere_surface(circular, 841, 0, 0, 0, 0.75);
+    ASSERT(sphere >= 0);
+    ASSERT(alea_add_cell(circular, 841,
+                         alea_halfspace(circular, sphere, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(circular), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  circular, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)1);
+    ASSERT_EQ(stats.critical_curves, (size_t)1);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    alea_destroy(circular);
+
+    /* A tangent slice produces one exact point, not an unbounded source that
+     * needs conservative active-boundary fallback. */
+    alea_system_t* tangent = alea_create();
+    ASSERT_NOT_NULL(tangent);
+    const int tangent_sphere = alea_sphere_surface(
+        tangent, 843, 0, 0, 0, 0.75);
+    ASSERT(tangent_sphere >= 0);
+    ASSERT(alea_add_cell(
+        tangent, 843, alea_halfspace(tangent, tangent_sphere, -1),
+        ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(tangent), 0);
+    alea_slice_view_t tangent_view;
+    alea_slice_view_init(&tangent_view, 0.0, 0.0, 0.75,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  tangent, &tangent_view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_unsupported_point_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_curves, (size_t)1);
+    ASSERT(stats.critical_points >= (size_t)1);
+    alea_destroy(tangent);
+
+    /* A box slice is a polygon source.  Its four finite edges are filtered
+     * and retained independently instead of falling back to the complete
+     * polygon item. */
+    alea_system_t* polygonal = alea_create();
+    ASSERT_NOT_NULL(polygonal);
+    const int box = alea_box_surface(
+        polygonal, 845, -0.75, 0.75, -0.75, 0.75, -0.5, 0.5);
+    ASSERT(box >= 0);
+    ASSERT(alea_add_cell(
+        polygonal, 845, alea_halfspace(polygonal, box, -1),
+        ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(polygonal), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  polygonal, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_unsupported_polygon_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)4);
+    ASSERT_EQ(stats.critical_curves, (size_t)4);
+    alea_destroy(polygonal);
+
+    /* A same-cell plane partitions the circle into a finite active half-arc;
+     * the retained line/arc pair remains supported by the pair solver. */
+    alea_system_t* half_circle = alea_create();
+    ASSERT_NOT_NULL(half_circle);
+    const int half_sphere = alea_sphere_surface(
+        half_circle, 851, 0, 0, 0, 0.75);
+    const int half_plane = alea_plane_surface(
+        half_circle, 852, 1, 0, 0, 0);
+    ASSERT(half_sphere >= 0 && half_plane >= 0);
+    region = alea_intersection(
+        half_circle, alea_halfspace(half_circle, half_sphere, -1),
+        alea_halfspace(half_circle, half_plane, -1));
+    ASSERT(alea_add_cell(half_circle, 851, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(half_circle), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  half_circle, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)2);
+    ASSERT_EQ(stats.critical_curves, (size_t)2);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT(stats.critical_curve_pairs_tested > 0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    options.max_curves_per_tile = 2;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  half_circle, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_capacity_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)2);
+    options.max_curves_per_tile = 512;
+    alea_destroy(half_circle);
+
+    /* General-quadric ellipse slices use the same bounded active-arc contract. */
+    alea_system_t* half_ellipse = alea_create();
+    ASSERT_NOT_NULL(half_ellipse);
+    const int ellipsoid = alea_quadric_surface(
+        half_ellipse, 861, 0.25, 1.0, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+    const int ellipse_plane = alea_plane_surface(
+        half_ellipse, 862, 1, 0, 0, 0);
+    ASSERT(ellipsoid >= 0 && ellipse_plane >= 0);
+    region = alea_intersection(
+        half_ellipse, alea_halfspace(half_ellipse, ellipsoid, -1),
+        alea_halfspace(half_ellipse, ellipse_plane, -1));
+    ASSERT(alea_add_cell(half_ellipse, 861, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(half_ellipse), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  half_ellipse, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_segments, (size_t)2);
+    ASSERT_EQ(stats.critical_curves, (size_t)2);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    alea_destroy(half_ellipse);
+
+    /* Closed conics are partitioned at their exact quartic intersections;
+     * neither circle/ellipse nor ellipse/ellipse needs whole-curve retention. */
+    alea_system_t* circle_ellipse = alea_create();
+    ASSERT_NOT_NULL(circle_ellipse);
+    const int ce_sphere = alea_sphere_surface(
+        circle_ellipse, 871, 0, 0, 0, 0.9);
+    const int ce_ellipsoid = alea_quadric_surface(
+        circle_ellipse, 872, 0.25, 4.0, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+    ASSERT(ce_sphere >= 0 && ce_ellipsoid >= 0);
+    region = alea_intersection(
+        circle_ellipse, alea_halfspace(circle_ellipse, ce_sphere, -1),
+        alea_halfspace(circle_ellipse, ce_ellipsoid, -1));
+    ASSERT(alea_add_cell(circle_ellipse, 871, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(circle_ellipse), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  circle_ellipse, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    alea_destroy(circle_ellipse);
+
+    alea_system_t* ellipse_ellipse = alea_create();
+    ASSERT_NOT_NULL(ellipse_ellipse);
+    const int ee_horizontal = alea_quadric_surface(
+        ellipse_ellipse, 881, 0.25, 2.7777777777777778, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+    const int ee_vertical = alea_quadric_surface(
+        ellipse_ellipse, 882, 2.7777777777777778, 0.25, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+    ASSERT(ee_horizontal >= 0 && ee_vertical >= 0);
+    region = alea_intersection(
+        ellipse_ellipse,
+        alea_halfspace(ellipse_ellipse, ee_horizontal, -1),
+        alea_halfspace(ellipse_ellipse, ee_vertical, -1));
+    ASSERT(alea_add_cell(ellipse_ellipse, 881, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(ellipse_ellipse), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  ellipse_ellipse, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    alea_destroy(ellipse_ellipse);
+
+    /* General-conic point refinement solves parabola/parabola intersections
+     * analytically through their quartic resultant. */
+    alea_system_t* parabola_pair = alea_create();
+    ASSERT_NOT_NULL(parabola_pair);
+    const int parabola_up = alea_quadric_surface(
+        parabola_pair, 891, -1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    const int parabola_down = alea_quadric_surface(
+        parabola_pair, 892, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0);
+    ASSERT(parabola_up >= 0 && parabola_down >= 0);
+    ASSERT(alea_add_cell(parabola_pair, 891,
+                         alea_halfspace(parabola_pair, parabola_up, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(parabola_pair, 892,
+                         alea_halfspace(parabola_pair, parabola_down, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(parabola_pair), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  parabola_pair, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT_EQ(stats.critical_active_unsupported_quartic_fallbacks, (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)1);
+    ASSERT(stats.critical_curve_pairs_tested > (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)2);
+    ASSERT_EQ(stats.critical_active_unsupported_parabola_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    alea_destroy(parabola_pair);
+
+    /* Canonicalization is orientation-independent. */
+    alea_system_t* rotated_parabola = alea_create();
+    ASSERT_NOT_NULL(rotated_parabola);
+    const double inv_sqrt_two = 0.70710678118654752440;
+    const int rotated_parabola_surface = alea_quadric_surface(
+        rotated_parabola, 911, -0.5, -0.5, 0.0,
+        -1.0, 0.0, 0.0, -inv_sqrt_two, inv_sqrt_two, 0.0, 0.0);
+    ASSERT(rotated_parabola_surface >= 0);
+    ASSERT(alea_add_cell(rotated_parabola, 911,
+                         alea_halfspace(
+                             rotated_parabola, rotated_parabola_surface, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(rotated_parabola), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  rotated_parabola, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_unsupported_parabola_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)1);
+    alea_destroy(rotated_parabola);
+
+    /* Translation can make a conic's linear and constant coefficients many
+     * orders larger than its quadratic coefficients.  Canonical rank tests
+     * remain degree-scaled, so this distant parabola is still extracted. */
+    alea_system_t* distant_parabola = alea_create();
+    ASSERT_NOT_NULL(distant_parabola);
+    const double distant_x = 1.0e6;
+    const int distant_parabola_surface = alea_quadric_surface(
+        distant_parabola, 912, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, -2.0*distant_x, -1.0, 0.0,
+        distant_x*distant_x);
+    const int distant_xlo = alea_plane_surface(
+        distant_parabola, 925, 1, 0, 0, -(distant_x-2.0));
+    const int distant_xhi = alea_plane_surface(
+        distant_parabola, 926, 1, 0, 0, -(distant_x+2.0));
+    const int distant_ylo = alea_plane_surface(
+        distant_parabola, 927, 0, 1, 0, 1.0);
+    const int distant_yhi = alea_plane_surface(
+        distant_parabola, 928, 0, 1, 0, -1.0);
+    const int distant_zlo = alea_plane_surface(
+        distant_parabola, 929, 0, 0, 1, 1.0);
+    const int distant_zhi = alea_plane_surface(
+        distant_parabola, 930, 0, 0, 1, -1.0);
+    ASSERT(distant_parabola_surface >= 0 && distant_xlo >= 0 &&
+           distant_xhi >= 0 && distant_ylo >= 0 && distant_yhi >= 0 &&
+           distant_zlo >= 0 && distant_zhi >= 0);
+    const alea_node_id_t distant_nodes[] = {
+        alea_halfspace(distant_parabola, distant_parabola_surface, -1),
+        alea_halfspace(distant_parabola, distant_xlo, 1),
+        alea_halfspace(distant_parabola, distant_xhi, -1),
+        alea_halfspace(distant_parabola, distant_ylo, 1),
+        alea_halfspace(distant_parabola, distant_yhi, -1),
+        alea_halfspace(distant_parabola, distant_zlo, 1),
+        alea_halfspace(distant_parabola, distant_zhi, -1)
+    };
+    region = alea_intersection_n(
+        distant_parabola, distant_nodes,
+        sizeof(distant_nodes)/sizeof(distant_nodes[0]));
+    ASSERT(alea_add_cell(distant_parabola, 912, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(distant_parabola), 0);
+    alea_slice_view_t distant_view;
+    alea_slice_view_init(&distant_view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         distant_x-2.0, distant_x+2.0, -1.0, 1.0);
+    alea_transition_slice_critical_tile_t distant_tile = tile;
+    distant_tile.uv_min[0] = distant_x-2.0;
+    distant_tile.uv_max[0] = distant_x+2.0;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  distant_parabola, &distant_view, &options,
+                  &distant_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_evaluation_general_conic_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)1);
+    alea_destroy(distant_parabola);
+
+    /* A narrow off-center parabola can fail the canonical parameterization:
+     * its axial linear coefficient is significant at machine precision but
+     * smaller than the canonical relative tolerance.  It is neither empty
+     * nor a degenerate pair of lines, so the implicit scanline path must
+     * partition and retain its active branches without a whole-curve
+     * fallback. */
+    alea_system_t* implicit_parabola = alea_create();
+    ASSERT_NOT_NULL(implicit_parabola);
+    const double implicit_tangential = 200.0;
+    const double implicit_axial = 1.0e-10;
+    const int implicit_parabola_surface = alea_quadric_surface(
+        implicit_parabola, 913, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, implicit_tangential, -implicit_axial, 0.0,
+        0.0);
+    const int implicit_parabola_box = alea_box_surface(
+        implicit_parabola, 914, -2.0, 2.0, -1.0, 1.0, -0.5, 0.5);
+    ASSERT(implicit_parabola_surface >= 0 && implicit_parabola_box >= 0);
+    region = alea_intersection(
+        implicit_parabola,
+        alea_halfspace(
+            implicit_parabola, implicit_parabola_surface, -1),
+        alea_halfspace(implicit_parabola, implicit_parabola_box, -1));
+    ASSERT(alea_add_cell(implicit_parabola, 913, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(implicit_parabola), 0);
+    alea_slice_view_t implicit_view;
+    alea_slice_view_init(&implicit_view, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+                         -2.0, 2.0, -1.0, 1.0);
+    alea_transition_slice_critical_tile_t implicit_tile = tile;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  implicit_parabola, &implicit_view, &options,
+                  &implicit_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_open_conic_canonical_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)1);
+    alea_destroy(implicit_parabola);
+
+    /* The same implicit fallback must partition at intersections with a
+     * general (tilted-slice) torus.  This exercises the quartic/quadratic
+     * Sylvester resultant rather than the special circle-union path. */
+    alea_system_t* implicit_torus = alea_create();
+    ASSERT_NOT_NULL(implicit_torus);
+    const int implicit_torus_surface = alea_torus_z_surface(
+        implicit_torus, 915, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int implicit_torus_parabola = alea_quadric_surface(
+        implicit_torus, 916, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, implicit_tangential, -implicit_axial, 0.0, 0.0);
+    ASSERT(implicit_torus_surface >= 0 && implicit_torus_parabola >= 0);
+    region = alea_intersection(
+        implicit_torus,
+        alea_halfspace(implicit_torus, implicit_torus_surface, -1),
+        alea_halfspace(implicit_torus, implicit_torus_parabola, -1));
+    ASSERT(alea_add_cell(implicit_torus, 915, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(implicit_torus), 0);
+    alea_slice_view_t implicit_torus_view;
+    alea_slice_view_init(&implicit_torus_view, 0.0, 0.0, 0.0,
+                         0.0, 0.2, 1.0, 0.0, 0.0, 1.0,
+                         -3.0, 3.0, -3.0, 3.0);
+    alea_transition_slice_critical_tile_t implicit_torus_tile;
+    memset(&implicit_torus_tile, 0, sizeof(implicit_torus_tile));
+    implicit_torus_tile.uv_min[0] = -3.0;
+    implicit_torus_tile.uv_max[0] = 3.0;
+    implicit_torus_tile.uv_min[1] = -3.0;
+    implicit_torus_tile.uv_max[1] = 3.0;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  implicit_torus, &implicit_torus_view, &options,
+                  &implicit_torus_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_open_conic_canonical_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)1);
+    alea_destroy(implicit_torus);
+
+    /* A degenerate hyperbola is an exact pair of intersecting lines.  It is
+     * factored and filtered as two components instead of failing canonical
+     * positive-scale construction at its zero centered constant. */
+    alea_system_t* degenerate_hyperbola = alea_create();
+    ASSERT_NOT_NULL(degenerate_hyperbola);
+    const int degenerate_hyperbola_surface = alea_quadric_surface(
+        degenerate_hyperbola, 931, 1.0, -1.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    const int degenerate_hyperbola_box = alea_box_surface(
+        degenerate_hyperbola, 932, -1.5, 1.5, -0.75, 0.75, -0.5, 0.5);
+    ASSERT(degenerate_hyperbola_surface >= 0 &&
+           degenerate_hyperbola_box >= 0);
+    region = alea_intersection(
+        degenerate_hyperbola,
+        alea_halfspace(
+            degenerate_hyperbola, degenerate_hyperbola_surface, -1),
+        alea_halfspace(
+            degenerate_hyperbola, degenerate_hyperbola_box, -1));
+    ASSERT(alea_add_cell(
+        degenerate_hyperbola, 931, region,
+        ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(degenerate_hyperbola), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  degenerate_hyperbola, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_open_conic_canonical_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    alea_destroy(degenerate_hyperbola);
+
+    /* Rectangular hyperbolas exercise the linear-in-v resultant path. */
+    alea_system_t* hyperbola_pair = alea_create();
+    ASSERT_NOT_NULL(hyperbola_pair);
+    const int hyperbola_one = alea_quadric_surface(
+        hyperbola_pair, 893, 0.0, 0.0, 0.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+    const int hyperbola_two = alea_quadric_surface(
+        hyperbola_pair, 894, 0.0, 0.0, 0.0,
+        1.0, 0.0, 0.0, 1.0, 1.0, 0.0, -3.25);
+    ASSERT(hyperbola_one >= 0 && hyperbola_two >= 0);
+    ASSERT(alea_add_cell(hyperbola_pair, 893,
+                         alea_halfspace(hyperbola_pair, hyperbola_one, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(hyperbola_pair, 894,
+                         alea_halfspace(hyperbola_pair, hyperbola_two, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(hyperbola_pair), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  hyperbola_pair, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)1);
+    ASSERT_EQ(stats.critical_active_unsupported_hyperbola_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    alea_destroy(hyperbola_pair);
+
+    /* Line/general and closed/general combinations share the same exact
+     * domain-filtered critical-point path. */
+    alea_system_t* mixed_conics = alea_create();
+    ASSERT_NOT_NULL(mixed_conics);
+    const int mixed_parabola = alea_quadric_surface(
+        mixed_conics, 895, -1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    const int mixed_sphere = alea_sphere_surface(
+        mixed_conics, 896, 0.0, 0.0, 0.0, 0.9);
+    const int mixed_plane = alea_plane_surface(
+        mixed_conics, 897, 1.0, 0.0, 0.0, 0.5);
+    ASSERT(mixed_parabola >= 0 && mixed_sphere >= 0 && mixed_plane >= 0);
+    ASSERT(alea_add_cell(mixed_conics, 895,
+                         alea_halfspace(mixed_conics, mixed_parabola, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(mixed_conics, 896,
+                         alea_halfspace(mixed_conics, mixed_sphere, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(mixed_conics, 897,
+                         alea_halfspace(mixed_conics, mixed_plane, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(mixed_conics), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  mixed_conics, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)3);
+    alea_destroy(mixed_conics);
+
+    /* Supported general-conic intersections partition both the open conic
+     * and the other parameterized boundaries into finite active pieces. */
+    alea_system_t* mixed_active = alea_create();
+    ASSERT_NOT_NULL(mixed_active);
+    const int active_parabola = alea_quadric_surface(
+        mixed_active, 902, -1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    const int active_sphere = alea_sphere_surface(
+        mixed_active, 903, 0.0, 0.0, 0.0, 0.9);
+    const int active_plane = alea_plane_surface(
+        mixed_active, 904, 1.0, 0.0, 0.0, 0.5);
+    ASSERT(active_parabola >= 0 && active_sphere >= 0 && active_plane >= 0);
+    region = alea_intersection(
+        mixed_active,
+        alea_intersection(
+            mixed_active, alea_halfspace(mixed_active, active_parabola, -1),
+            alea_halfspace(mixed_active, active_sphere, -1)),
+        alea_halfspace(mixed_active, active_plane, -1));
+    ASSERT(alea_add_cell(mixed_active, 902, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(mixed_active), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  mixed_active, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_unsupported_parabola_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    alea_destroy(mixed_active);
+
+    /* A line crossing a torus slice uses exact quartic substitution.  The
+     * central slice exercises the two-concentric-circle torus mode. */
+    alea_system_t* line_torus = alea_create();
+    ASSERT_NOT_NULL(line_torus);
+    const int torus_surface = alea_torus_z_surface(
+        line_torus, 898, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int torus_plane = alea_plane_surface(
+        line_torus, 899, 1.0, 0.0, 0.0, 0.5);
+    ASSERT(torus_surface >= 0 && torus_plane >= 0);
+    ASSERT(alea_add_cell(line_torus, 898,
+                         alea_halfspace(line_torus, torus_surface, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(line_torus, 899,
+                         alea_halfspace(line_torus, torus_plane, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(line_torus), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  line_torus, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)2);
+    alea_destroy(line_torus);
+
+    alea_system_t* active_line_torus = alea_create();
+    ASSERT_NOT_NULL(active_line_torus);
+    const int active_torus_surface = alea_torus_z_surface(
+        active_line_torus, 905, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int active_torus_plane = alea_plane_surface(
+        active_line_torus, 906, 1.0, 0.0, 0.0, 0.5);
+    ASSERT(active_torus_surface >= 0 && active_torus_plane >= 0);
+    region = alea_intersection(
+        active_line_torus,
+        alea_halfspace(active_line_torus, active_torus_surface, -1),
+        alea_halfspace(active_line_torus, active_torus_plane, -1));
+    ASSERT(alea_add_cell(active_line_torus, 905, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(active_line_torus), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  active_line_torus, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_unsupported_quartic_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    alea_destroy(active_line_torus);
+
+    /* Special torus slices are exact circle unions, so their nonlinear pairs
+     * do not require a higher-degree polynomial solver. */
+    alea_system_t* special_torus_pairs = alea_create();
+    ASSERT_NOT_NULL(special_torus_pairs);
+    const int pair_torus = alea_torus_z_surface(
+        special_torus_pairs, 907, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int pair_ellipse = alea_quadric_surface(
+        special_torus_pairs, 908, 0.6944444444444444, 0.25, 1.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
+    const int pair_parabola = alea_quadric_surface(
+        special_torus_pairs, 909, -1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    const int pair_torus_shifted = alea_torus_z_surface(
+        special_torus_pairs, 910, 0.5, 0.0, 0.0, 1.5, 0.5);
+    ASSERT(pair_torus >= 0 && pair_ellipse >= 0 &&
+           pair_parabola >= 0 && pair_torus_shifted >= 0);
+    ASSERT(alea_add_cell(special_torus_pairs, 907,
+                         alea_halfspace(
+                             special_torus_pairs, pair_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(special_torus_pairs, 908,
+                         alea_halfspace(
+                             special_torus_pairs, pair_ellipse, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(special_torus_pairs, 909,
+                         alea_halfspace(
+                             special_torus_pairs, pair_parabola, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(special_torus_pairs, 910,
+                         alea_halfspace(
+                             special_torus_pairs, pair_torus_shifted, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(special_torus_pairs), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  special_torus_pairs, &view, &options, &tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_quartic_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)4);
+    alea_destroy(special_torus_pairs);
+
+    alea_system_t* tilted_line_torus = alea_create();
+    ASSERT_NOT_NULL(tilted_line_torus);
+    const int tilted_torus_surface = alea_torus_z_surface(
+        tilted_line_torus, 900, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int tilted_torus_plane = alea_plane_surface(
+        tilted_line_torus, 901, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(tilted_torus_surface >= 0 && tilted_torus_plane >= 0);
+    ASSERT(alea_add_cell(tilted_line_torus, 900,
+                         alea_halfspace(
+                             tilted_line_torus, tilted_torus_surface, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(tilted_line_torus, 901,
+                         alea_halfspace(
+                             tilted_line_torus, tilted_torus_plane, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(tilted_line_torus), 0);
+    alea_slice_view_t tilted_view;
+    alea_slice_view_init(&tilted_view, 0.0, 0.0, 0.0,
+                         0.0, 0.2, 1.0, 0.0, 0.0, 1.0,
+                         -3.0, 3.0, -3.0, 3.0);
+    alea_transition_slice_critical_tile_t tilted_tile;
+    memset(&tilted_tile, 0, sizeof(tilted_tile));
+    tilted_tile.uv_min[0] = -3.0; tilted_tile.uv_max[0] = 3.0;
+    tilted_tile.uv_min[1] = -3.0; tilted_tile.uv_max[1] = 3.0;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  tilted_line_torus, &tilted_view, &options, &tilted_tile, 1,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curves, (size_t)0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_curve_pairs_tested > (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)1);
+    alea_destroy(tilted_line_torus);
+
+    alea_slice_view_t degree_eight_view;
+    alea_slice_view_init(&degree_eight_view, 0.0, 0.0, 0.0,
+                         0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
+                         -3.0, 3.0, -3.0, 3.0);
+
+    alea_system_t* tilted_torus_closed = alea_create();
+    ASSERT_NOT_NULL(tilted_torus_closed);
+    const int degree_eight_torus = alea_torus_z_surface(
+        tilted_torus_closed, 913, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int degree_eight_sphere = alea_sphere_surface(
+        tilted_torus_closed, 914, 0.0, 0.0, 0.0, sqrt(2.5));
+    ASSERT(degree_eight_torus >= 0 && degree_eight_sphere >= 0);
+    ASSERT(alea_add_cell(tilted_torus_closed, 913,
+                         alea_halfspace(
+                             tilted_torus_closed, degree_eight_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(tilted_torus_closed, 914,
+                         alea_halfspace(
+                             tilted_torus_closed, degree_eight_sphere, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(tilted_torus_closed), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  tilted_torus_closed, &degree_eight_view, &options,
+                  &tilted_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_curve_pair_candidates > (size_t)0);
+    ASSERT(stats.critical_curve_pairs_tested > (size_t)0);
+    ASSERT(stats.critical_pair_algebraic_points >= (size_t)4);
+    ASSERT(stats.critical_pair_domain_rejections <
+           stats.critical_pair_algebraic_points);
+    ASSERT(stats.critical_points >= (size_t)4);
+    alea_destroy(tilted_torus_closed);
+
+    /* The same torus/sphere pair in one CSG region must be partitioned into
+     * active pieces.  In particular, the general torus quartic must not fall
+     * back to publishing its complete implicit curve. */
+    alea_system_t* active_tilted_torus_closed = alea_create();
+    ASSERT_NOT_NULL(active_tilted_torus_closed);
+    const int active_degree_eight_torus = alea_torus_z_surface(
+        active_tilted_torus_closed, 923, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int active_degree_eight_sphere = alea_sphere_surface(
+        active_tilted_torus_closed, 924, 0.0, 0.0, 0.0, sqrt(2.5));
+    ASSERT(active_degree_eight_torus >= 0 &&
+           active_degree_eight_sphere >= 0);
+    region = alea_intersection(
+        active_tilted_torus_closed,
+        alea_halfspace(active_tilted_torus_closed,
+                       active_degree_eight_torus, -1),
+        alea_halfspace(active_tilted_torus_closed,
+                       active_degree_eight_sphere, -1));
+    ASSERT(alea_add_cell(active_tilted_torus_closed, 923, region,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(active_tilted_torus_closed), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  active_tilted_torus_closed, &degree_eight_view, &options,
+                  &tilted_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_active_unsupported_quartic_fallbacks,
+              (size_t)0);
+    ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
+    ASSERT(stats.critical_active_segments >= (size_t)2);
+    alea_destroy(active_tilted_torus_closed);
+
+    alea_system_t* tilted_torus_open = alea_create();
+    ASSERT_NOT_NULL(tilted_torus_open);
+    const int degree_eight_open_torus = alea_torus_z_surface(
+        tilted_torus_open, 915, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int degree_eight_parabola = alea_quadric_surface(
+        tilted_torus_open, 916, -1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.25);
+    ASSERT(degree_eight_open_torus >= 0 && degree_eight_parabola >= 0);
+    ASSERT(alea_add_cell(tilted_torus_open, 915,
+                         alea_halfspace(
+                             tilted_torus_open, degree_eight_open_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(tilted_torus_open, 916,
+                         alea_halfspace(
+                             tilted_torus_open, degree_eight_parabola, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(tilted_torus_open), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  tilted_torus_open, &degree_eight_view, &options,
+                  &tilted_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)1);
+    alea_destroy(tilted_torus_open);
+
+    alea_system_t* tilted_torus_hyperbola = alea_create();
+    ASSERT_NOT_NULL(tilted_torus_hyperbola);
+    const double known_rho = 1.5 + sqrt(3.0) / 4.0;
+    const double known_x = sqrt(known_rho * known_rho - 0.25 * 0.25);
+    const int degree_eight_hyperbola_torus = alea_torus_z_surface(
+        tilted_torus_hyperbola, 917, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int degree_eight_hyperbola = alea_quadric_surface(
+        tilted_torus_hyperbola, 918, 0.0, 0.0, 0.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25 * known_x);
+    ASSERT(degree_eight_hyperbola_torus >= 0 && degree_eight_hyperbola >= 0);
+    ASSERT(alea_add_cell(tilted_torus_hyperbola, 917,
+                         alea_halfspace(tilted_torus_hyperbola,
+                                        degree_eight_hyperbola_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(tilted_torus_hyperbola, 918,
+                         alea_halfspace(tilted_torus_hyperbola,
+                                        degree_eight_hyperbola, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(tilted_torus_hyperbola), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  tilted_torus_hyperbola, &degree_eight_view, &options,
+                  &tilted_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)2);
+    alea_destroy(tilted_torus_hyperbola);
+
+    alea_system_t* tilted_torus_pair = alea_create();
+    ASSERT_NOT_NULL(tilted_torus_pair);
+    const int first_degree_sixteen_torus = alea_torus_z_surface(
+        tilted_torus_pair, 919, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int second_degree_sixteen_torus = alea_torus_z_surface(
+        tilted_torus_pair, 920, 0.0, 0.0, 0.0, 1.7, 0.5);
+    ASSERT(first_degree_sixteen_torus >= 0 &&
+           second_degree_sixteen_torus >= 0);
+    ASSERT(alea_add_cell(tilted_torus_pair, 919,
+                         alea_halfspace(tilted_torus_pair,
+                                        first_degree_sixteen_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(tilted_torus_pair, 920,
+                         alea_halfspace(tilted_torus_pair,
+                                        second_degree_sixteen_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(tilted_torus_pair), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  tilted_torus_pair, &degree_eight_view, &options,
+                  &tilted_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    ASSERT(stats.critical_pair_intersection_points >= (size_t)4);
+    alea_destroy(tilted_torus_pair);
+
+    alea_system_t* mixed_torus_pair = alea_create();
+    ASSERT_NOT_NULL(mixed_torus_pair);
+    const int mixed_general_torus = alea_torus_z_surface(
+        mixed_torus_pair, 921, 0.0, 0.0, 0.0, 1.5, 0.5);
+    const int mixed_special_torus = alea_torus_x_surface(
+        mixed_torus_pair, 922, 0.0, 0.0, 0.0, 1.5, 1.5);
+    ASSERT(mixed_general_torus >= 0 && mixed_special_torus >= 0);
+    ASSERT(alea_add_cell(mixed_torus_pair, 921,
+                         alea_halfspace(mixed_torus_pair,
+                                        mixed_general_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(mixed_torus_pair, 922,
+                         alea_halfspace(mixed_torus_pair,
+                                        mixed_special_torus, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(mixed_torus_pair), 0);
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  mixed_torus_pair, &degree_eight_view, &options,
+                  &tilted_tile, 1, NULL, NULL, &stats), 0);
+    ASSERT(stats.critical_curve_pairs_tested >= (size_t)1);
+    ASSERT_EQ(stats.critical_unsupported_curve_pairs, (size_t)0);
+    alea_destroy(mixed_torus_pair);
+
+    options.max_active_boundary_tests = 0;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  active, &view, &options, &tile, 1, NULL, NULL, &stats), 0);
+    ASSERT(stats.critical_active_boundary_fallbacks > 0);
+    ASSERT(stats.critical_whole_curve_fallbacks > 0);
+    ASSERT_EQ(stats.critical_curves, (size_t)3);
+    alea_destroy(active);
 }
 
 TEST_MAIN()

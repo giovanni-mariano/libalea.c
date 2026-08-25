@@ -10,6 +10,7 @@
  */
 
 #include "raycast.h"
+#include "core/alea_occurrence.h"
 #include "alea.h"
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
@@ -275,33 +276,12 @@ static int add_segment(alea_raycast_result_t* result, const alea_ray_segment_t* 
     return res != 0 ? -1 : 0;
 }
 
-static uint64_t path_hash_bytes(uint64_t hash, const void* data, size_t size) {
-    const unsigned char* bytes = (const unsigned char*)data;
-    for (size_t i = 0; i < size; ++i) {
-        hash ^= bytes[i];
-        hash *= UINT64_C(1099511628211);
-    }
-    return hash;
-}
-
-static uint64_t path_entry_occurrence_key(uint64_t parent_key,
-                                           const alea_hier_ray_path_entry_t* entry) {
-    uint64_t hash = parent_key ? parent_key : UINT64_C(1469598103934665603);
-    hash = path_hash_bytes(hash, &entry->cell_index, sizeof(entry->cell_index));
-    hash = path_hash_bytes(hash, &entry->cell_id, sizeof(entry->cell_id));
-    hash = path_hash_bytes(hash, &entry->universe_id, sizeof(entry->universe_id));
-    hash = path_hash_bytes(hash, &entry->fill_universe, sizeof(entry->fill_universe));
-    hash = path_hash_bytes(hash, &entry->depth, sizeof(entry->depth));
-    hash = path_hash_bytes(hash, &entry->is_lattice, sizeof(entry->is_lattice));
-    hash = path_hash_bytes(hash, &entry->lat_fill_universe, sizeof(entry->lat_fill_universe));
-    hash = path_hash_bytes(hash, &entry->lat_i, sizeof(entry->lat_i));
-    hash = path_hash_bytes(hash, &entry->lat_j, sizeof(entry->lat_j));
-    hash = path_hash_bytes(hash, &entry->lat_k, sizeof(entry->lat_k));
-    hash = path_hash_bytes(hash, &entry->lat_ox, sizeof(entry->lat_ox));
-    hash = path_hash_bytes(hash, &entry->lat_oy, sizeof(entry->lat_oy));
-    hash = path_hash_bytes(hash, &entry->lat_oz, sizeof(entry->lat_oz));
-    hash = path_hash_bytes(hash, entry->transform.m, sizeof(entry->transform.m));
-    return hash;
+static uint64_t path_entry_occurrence_key(
+    alea_occurrence_state_t* state,
+    const alea_hier_ray_path_entry_t* entry) {
+    return alea_occurrence_state_step(
+        state, entry->cell_index, entry->is_lattice,
+        entry->lat_i, entry->lat_j, entry->lat_k);
 }
 
 static int ray_path_entry_equal(const alea_ray_path_entry_t* a,
@@ -327,7 +307,8 @@ static int capture_hier_path(alea_raycast_result_t* result,
 
     size_t count = (size_t)path->count;
     alea_ray_path_entry_t entries[ALEA_HIER_RAY_PATH_MAX];
-    uint64_t parent_key = 0;
+    alea_occurrence_state_t occurrence_state;
+    alea_occurrence_state_init(&occurrence_state);
     for (size_t i = 0; i < count; ++i) {
         const alea_hier_ray_path_entry_t* src = &path->entries[i];
         alea_ray_path_entry_t* dst = &entries[i];
@@ -341,8 +322,8 @@ static int capture_hier_path(alea_raycast_result_t* result,
         dst->lattice_origin[0] = src->lat_ox;
         dst->lattice_origin[1] = src->lat_oy;
         dst->lattice_origin[2] = src->lat_oz;
-        parent_key = path_entry_occurrence_key(parent_key, src);
-        dst->occurrence_key = parent_key;
+        dst->occurrence_key = path_entry_occurrence_key(
+            &occurrence_state, src);
     }
 
     for (size_t i = 0; i < result->paths.count; ++i) {
@@ -2489,6 +2470,14 @@ typedef struct {
     uint8_t local_surface_count;
     uint8_t local_surface_complete;
     int local_surface_ids[16];
+    uint8_t provenance_flags;
+    int active_cell_id;
+    int active_universe_id;
+    int active_depth;
+    uint64_t active_occurrence_key;
+    uint64_t active_parent_occurrence_key;
+    double local_point[3];
+    double local_direction[3];
 } alea_raycast_boundary_event_t;
 
 /* Persistent portion of one hierarchical ray walk.  Keeping this explicit
@@ -2521,6 +2510,9 @@ typedef struct {
     alea_raycast_boundary_event_t enter_event;
     alea_raycast_boundary_event_t exit_event;
     const alea_hier_ray_path_t* path;
+    uint8_t owner_provenance_complete;
+    uint64_t owner_occurrence_key;
+    uint64_t owner_parent_occurrence_key;
     uint8_t resolution_flags;
 } alea_ray_selected_interval_t;
 
@@ -2531,6 +2523,9 @@ static void alea_ray_walk_init(alea_ray_walk_t* state) {
     state->pending_enter_hit_index = -1;
     state->enter_event.surface_id = -1;
     state->enter_event.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+    state->enter_event.active_cell_id = -1;
+    state->enter_event.active_universe_id = -1;
+    state->enter_event.active_depth = -1;
     alea_matrix_identity(&state->enter_event.transform);
     state->iterations_remaining = 10000;
 }
@@ -2847,6 +2842,52 @@ static void boundary_event_add_local_surface(alea_raycast_boundary_event_t* even
     event->local_surface_ids[event->local_surface_count++] = surface_id;
 }
 
+static int boundary_event_cell_uses_exact_surface(
+    const alea_system_t* sys, uint32_t cell_index, int surface_id) {
+    if (!sys || surface_id <= 0 || !sys->mc_id_to_surface ||
+        (size_t)surface_id >= sys->mc_id_to_surface_size ||
+        !sys->surface_cell_offsets || !sys->surface_cell_refs)
+        return 0;
+    const uint32_t surface_index = sys->mc_id_to_surface[surface_id];
+    if (surface_index == UINT32_MAX ||
+        surface_index >= alea_vec_count(&sys->surfaces)) return 0;
+    const size_t begin = sys->surface_cell_offsets[surface_index];
+    const size_t end = sys->surface_cell_offsets[surface_index + 1];
+    for (size_t i = begin; i < end; i++)
+        if (sys->surface_cell_refs[i].cell_index == cell_index) return 1;
+    return 0;
+}
+
+static void boundary_event_path_keys_at(
+    const alea_hier_ray_path_t* path, int index,
+    uint64_t* out_key, uint64_t* out_parent_key) {
+    uint64_t key = 0, parent = 0;
+    alea_occurrence_state_t occurrence_state;
+    alea_occurrence_state_init(&occurrence_state);
+    if (!path || index < 0 || index >= path->count) {
+        if (out_key) *out_key = 0;
+        if (out_parent_key) *out_parent_key = 0;
+        return;
+    }
+    for (int i = 0; i <= index; i++) {
+        parent = key;
+        key = path_entry_occurrence_key(
+            &occurrence_state, &path->entries[i]);
+    }
+    if (out_key) *out_key = key;
+    if (out_parent_key) *out_parent_key = parent;
+}
+
+static void boundary_interval_capture_owner(
+    const alea_hier_ray_path_t* path, alea_ray_selected_interval_t* interval) {
+    if (!path || path->count <= 0 || !interval) return;
+    boundary_event_path_keys_at(
+        path, path->count - 1, &interval->owner_occurrence_key,
+        &interval->owner_parent_occurrence_key);
+    interval->owner_provenance_complete =
+        interval->owner_occurrence_key != 0;
+}
+
 static void boundary_event_collect_cell_surfaces_at(
     alea_system_t* sys, const alea_ray_t* local_ray,
     const alea_cell_entry_t* cell, double t, alea_raycast_boundary_event_t* event) {
@@ -2890,6 +2931,25 @@ static void boundary_event_collect_local_group(
         transform_ray_inverse(&entry->transform, ray, &local_ray);
         boundary_event_collect_cell_surfaces_at(
             sys, &local_ray, &sys->cells.data[entry->cell_index], event->t, event);
+        if (event->surface_id > 0 &&
+            boundary_event_cell_uses_exact_surface(
+                sys, entry->cell_index, event->surface_id)) {
+            /* Prefer the deepest matching entry if an exact card is present
+             * at more than one hierarchy level. */
+            event->active_cell_id = entry->cell_id;
+            event->active_universe_id = entry->universe_id;
+            event->active_depth = entry->depth;
+            boundary_event_path_keys_at(
+                path, i, &event->active_occurrence_key,
+                &event->active_parent_occurrence_key);
+            alea_ray_point_at(
+                &local_ray, event->t, &event->local_point[0],
+                &event->local_point[1], &event->local_point[2]);
+            event->local_direction[0] = local_ray.dx;
+            event->local_direction[1] = local_ray.dy;
+            event->local_direction[2] = local_ray.dz;
+            event->provenance_flags |= ALEA_BOUNDARY_PROVENANCE_ACTIVE_FRAME;
+        }
     }
     if (event->local_surface_count == 0) event->local_surface_complete = 0;
 }
@@ -4069,9 +4129,13 @@ resolve_cell:;
          * no work to the hot loop. */
         alea_raycast_boundary_event_t bevent;
         if (need_boundary_event) {
+            memset(&bevent, 0, sizeof(bevent));
             bevent.t = 0;
             bevent.surface_id = -1;
             bevent.primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+            bevent.active_cell_id = -1;
+            bevent.active_universe_id = -1;
+            bevent.active_depth = -1;
             bevent.has_physical_surface = false;
             bevent.is_synthetic_lattice_boundary = false;
             alea_matrix_identity(&bevent.transform);
@@ -4380,7 +4444,7 @@ resolve_cell:;
         bevent.t = t_next;
         if (need_boundary_event)
             boundary_event_collect_local_group(sys, ray, current_path, &bevent);
-        const alea_ray_selected_interval_t selected = {
+        alea_ray_selected_interval_t selected = {
             .t_enter = t_current,
             .t_exit = t_next,
             .cell_index = cell_idx,
@@ -4398,6 +4462,7 @@ resolve_cell:;
                  alea_cell_entry_is_container(&sys->cells.data[cell_idx]))
                     ? ALEA_RESOLVE_UNDEFINED_FILL : 0
         };
+        boundary_interval_capture_owner(current_path, &selected);
 
         /* The selected-interval facade consumes the geometric result before
          * any compatibility publication or query-specific stop policy. */
@@ -4509,8 +4574,9 @@ static int ray_selected_interval_trace(
     }
 }
 
-int alea_raycast_selected_boundary_events_nocache(
+int alea_raycast_selected_boundary_events_with_options_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    const alea_ray_boundary_event_options_internal_t* options,
     alea_raycast_result_t* scratch, alea_ray_boundary_event_result_t* events) {
     if (!sys || !ray || !scratch || !events || !(t_max > 0.0)) return -1;
     alea_ray_boundary_event_result_clear(events);
@@ -4546,12 +4612,53 @@ int alea_raycast_selected_boundary_events_nocache(
                 .resolution_flags = previous.resolution_flags |
                                     current.resolution_flags,
                 .local_surface_count = source->local_surface_count,
-                .local_surface_complete = source->local_surface_complete
+                .local_surface_complete = source->local_surface_complete,
+                .provenance_flags = source->provenance_flags,
+                .active_cell_id = source->active_cell_id,
+                .active_universe_id = source->active_universe_id,
+                .active_depth = source->active_depth,
+                .active_occurrence_key = source->active_occurrence_key,
+                .active_parent_occurrence_key =
+                    source->active_parent_occurrence_key
             };
             memcpy(event.local_surface_ids, source->local_surface_ids,
                    sizeof(event.local_surface_ids));
-            boundary_event_require_unambiguous_open_sides(
-                sys, ray, &previous, &current, &event);
+            memcpy(event.local_point, source->local_point,
+                   sizeof(event.local_point));
+            memcpy(event.local_direction, source->local_direction,
+                   sizeof(event.local_direction));
+            alea_ray_first_visible_result_t normal = {0};
+            boundary_event_first_visible_normal(
+                sys, ray, source, true, &normal);
+            event.nx = normal.nx;
+            event.ny = normal.ny;
+            event.nz = normal.nz;
+            if (previous.owner_provenance_complete) {
+                event.before_occurrence_key = previous.owner_occurrence_key;
+                event.before_parent_occurrence_key =
+                    previous.owner_parent_occurrence_key;
+                event.provenance_flags |= ALEA_BOUNDARY_PROVENANCE_BEFORE_OWNER;
+            }
+            if (current.owner_provenance_complete) {
+                event.after_occurrence_key = current.owner_occurrence_key;
+                event.after_parent_occurrence_key =
+                    current.owner_parent_occurrence_key;
+                event.provenance_flags |= ALEA_BOUNDARY_PROVENANCE_AFTER_OWNER;
+            }
+            if (!(options && options->skip_open_side_coverage))
+                boundary_event_require_unambiguous_open_sides(
+                    sys, ray, &previous, &current, &event);
+            if (options &&
+                ((options->max_events &&
+                  events->events.count >= options->max_events) ||
+                 (options->max_output_bytes &&
+                  events->events.count >=
+                    options->max_output_bytes / sizeof(*events->events.data)))) {
+                alea_set_error_detail(
+                    ALEA_ERR_OVERFLOW,
+                    "selected boundary-event query output limit exceeded");
+                return -1;
+            }
             if (alea_vec_push(&events->events, event,
                               alea_ray_boundary_event_t) != 0)
                 return -1;
@@ -4560,6 +4667,13 @@ int alea_raycast_selected_boundary_events_nocache(
         have_previous = 1;
         if (rc == 0) return 0;
     }
+}
+
+int alea_raycast_selected_boundary_events_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch, alea_ray_boundary_event_result_t* events) {
+    return alea_raycast_selected_boundary_events_with_options_nocache(
+        sys, ray, t_max, NULL, scratch, events);
 }
 
 static int selected_boundary_groups_equal(
@@ -4643,6 +4757,69 @@ fail:
     alea_ray_boundary_event_result_free(&forward);
     alea_ray_boundary_event_result_free(&reverse);
     return -1;
+}
+
+static void selected_event_transition_receipt(
+    const alea_ray_boundary_event_t* event,
+    alea_transition_result_t* result) {
+    result->occurrence_depth = event->active_depth;
+    result->current_occurrence_key = event->active_occurrence_key;
+    result->current_parent_occurrence_key =
+        event->active_parent_occurrence_key;
+    result->before_occurrence_key = event->before_occurrence_key;
+    result->before_parent_occurrence_key =
+        event->before_parent_occurrence_key;
+    result->selected_after_occurrence_key = event->after_occurrence_key;
+    result->selected_after_parent_occurrence_key =
+        event->after_parent_occurrence_key;
+}
+
+int alea_check_selected_boundary_event_transition_nocache(
+    alea_system_t* sys, const alea_ray_boundary_event_t* event,
+    const alea_transition_options_t* options,
+    alea_transition_result_t* result) {
+    if (!sys || !event || !result) return -1;
+    if (event->kind != ALEA_RAY_BOUNDARY_EVENT_PHYSICAL ||
+        event->surface_id <= 0) {
+        alea_set_error_detail(
+            ALEA_ERR_INVALID_ARG,
+            "selected boundary transition requires a physical event");
+        return -1;
+    }
+    if (!(event->provenance_flags & ALEA_BOUNDARY_PROVENANCE_ACTIVE_FRAME)) {
+        memset(result, 0, sizeof(*result));
+        result->kind = ALEA_TRANSITION_UNRESOLVED;
+        result->after_coverage_kind = ALEA_POINT_COVERAGE_UNRESOLVED;
+        result->current_cell_id = event->cell_before;
+        result->primary_surface_id = event->surface_id;
+        result->connecting_surface_id = -1;
+        result->after_cell_id = event->cell_after;
+        result->occurrence_depth = -1;
+        return 0;
+    }
+    if (!event->local_surface_complete || event->local_surface_count == 0) {
+        memset(result, 0, sizeof(*result));
+        result->kind = ALEA_TRANSITION_AMBIGUOUS_BOUNDARY;
+        result->after_coverage_kind = ALEA_POINT_COVERAGE_UNRESOLVED;
+        result->universe_id = event->active_universe_id;
+        result->current_cell_id = event->active_cell_id;
+        result->primary_surface_id = event->surface_id;
+        result->connecting_surface_id = -1;
+        result->after_cell_id = event->cell_after;
+        memcpy(result->crossing_point, event->local_point,
+               sizeof(result->crossing_point));
+        memcpy(result->direction, event->local_direction,
+               sizeof(result->direction));
+        selected_event_transition_receipt(event, result);
+        return 0;
+    }
+    int rc = alea_check_transition_local(
+        sys, event->active_universe_id, event->active_cell_id,
+        event->surface_id, event->local_surface_ids,
+        event->local_surface_count, event->local_point,
+        event->local_direction, options, result);
+    if (rc == 0) selected_event_transition_receipt(event, result);
+    return rc;
 }
 
 static int alea_ray_walk_next_first_visible(

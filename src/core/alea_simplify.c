@@ -1947,7 +1947,7 @@ static bool compute_intersection_bbox(
 static alea_node_id_t simplify_recursive(
     alea_system_t* sys, alea_node_id_t node_id, alea_simplify_stats_t* stats);
 
-static alea_node_id_t flatten_and_optimize(
+static alea_node_id_t simplify_boolean_node(
     alea_system_t* sys,
     alea_node_id_t node_id,
     alea_simplify_stats_t* stats
@@ -2128,7 +2128,7 @@ static alea_node_id_t simplify_recursive(
     }
     
     if (op == ALEA_OP_INTERSECTION || op == ALEA_OP_UNION) {
-        return flatten_and_optimize(sys, node_id, stats);
+        return simplify_boolean_node(sys, node_id, stats);
     }
     
     if (op == ALEA_OP_COMPLEMENT) {
@@ -2293,7 +2293,7 @@ static bool cell_is_provably_empty(
            cell_is_provably_empty(sys, root, &b, depth - 1);
 }
 
-void alea_flatten_all_cells(
+void alea_simplify_and_prune_cells(
     alea_system_t* sys,
     alea_simplify_stats_t* stats
 ) {

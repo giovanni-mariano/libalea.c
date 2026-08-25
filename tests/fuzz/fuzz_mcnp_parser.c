@@ -184,7 +184,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
             /* Simplify the flattened geometry */
             alea_simplify_stats_t stats;
-            alea_flatten_all_cells(copy, &stats);
+            alea_simplify_and_prune_cells(copy, &stats);
 
             alea_destroy(copy);
         }

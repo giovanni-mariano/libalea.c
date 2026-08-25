@@ -375,6 +375,75 @@ int alea_query_acceleration_stats(const alea_system_t* sys,
     return 0;
 }
 
+int alea_surface_reference_stats(const alea_system_t* sys,
+                                 alea_surface_reference_stats_t* out_stats) {
+    if (!sys || !out_stats) return -1;
+
+    memset(out_stats, 0, sizeof(*out_stats));
+    out_stats->built = sys->cell_adjacency_built &&
+                       sys->surface_cell_offsets != NULL;
+    if (!out_stats->built) return 0;
+
+    out_stats->surface_count = alea_vec_count(&sys->surfaces);
+    out_stats->reference_count = sys->surface_cell_ref_count;
+    out_stats->memory_bytes =
+        (out_stats->surface_count + 1) * sizeof(size_t) +
+        out_stats->reference_count * sizeof(alea_surface_cell_ref_t);
+    for (size_t i = 0; i < out_stats->surface_count; i++) {
+        size_t count = sys->surface_cell_offsets[i + 1] -
+                       sys->surface_cell_offsets[i];
+        if (count > out_stats->max_references_per_surface)
+            out_stats->max_references_per_surface = count;
+    }
+    return 0;
+}
+
+int alea_surface_cell_references(const alea_system_t* sys,
+                                 int surface_id,
+                                 alea_surface_cell_reference_t* out_refs,
+                                 size_t capacity,
+                                 size_t* out_count) {
+    if (!sys || !out_count || (capacity > 0 && !out_refs)) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "alea_surface_cell_references: invalid output");
+        return -1;
+    }
+    *out_count = 0;
+    if (!sys->cell_adjacency_built || !sys->surface_cell_offsets) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "alea_surface_cell_references: adjacency cache is not prepared");
+        return -1;
+    }
+
+    uint32_t surface_index = UINT32_MAX;
+    if (surface_id > 0 && sys->mc_id_to_surface &&
+        (size_t)surface_id < sys->mc_id_to_surface_size) {
+        surface_index = sys->mc_id_to_surface[surface_id];
+    }
+    if (surface_index == UINT32_MAX) {
+        alea_set_error_detail(ALEA_ERR_NOT_FOUND,
+                              "alea_surface_cell_references: surface %d not found",
+                              surface_id);
+        return -1;
+    }
+
+    size_t begin = sys->surface_cell_offsets[surface_index];
+    size_t end = sys->surface_cell_offsets[surface_index + 1];
+    size_t count = end - begin;
+    *out_count = count;
+    size_t copied = capacity < count ? capacity : count;
+    for (size_t i = 0; i < copied; i++) {
+        const alea_surface_cell_ref_t* ref =
+            &sys->surface_cell_refs[begin + i];
+        const alea_cell_entry_t* cell = &sys->cells.data[ref->cell_index];
+        out_refs[i].cell_index = ref->cell_index;
+        out_refs[i].cell_id = cell->mc_cell_id;
+        out_refs[i].universe_id = cell->universe_id;
+        out_refs[i].sense = ref->sense;
+    }
+    return 0;
+}
+
 /* ============================================================================
  * GEOMETRY QUERIES
  * ============================================================================ */
@@ -406,6 +475,108 @@ int alea_find_all_cells_coverage_chain(alea_system_t* sys,
         max_hits == 0) return -1;
     return alea_find_all_cells_at_point_coverage_chain_recursive(
         sys, x, y, z, hits, occurrence_keys, parent_occurrence_keys, max_hits);
+}
+
+int alea_find_all_cells_in_universe_coverage_chain(
+    alea_system_t* sys, int universe_id,
+    double x, double y, double z,
+    alea_cell_hit_t* hits,
+    uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys,
+    size_t max_hits) {
+    if (!sys || !hits || !occurrence_keys || !parent_occurrence_keys ||
+        max_hits == 0) return -1;
+    return alea_find_all_cells_in_universe_at_point_coverage_chain_recursive(
+        sys, universe_id, x, y, z, hits, occurrence_keys,
+        parent_occurrence_keys, max_hits);
+}
+
+int alea_classify_point_coverage_chain(
+    const alea_cell_hit_t* hits,
+    const uint64_t* occurrence_keys,
+    const uint64_t* parent_occurrence_keys,
+    size_t hit_count,
+    int universe_depth,
+    uint8_t* out_owner_mask,
+    alea_point_coverage_classification_t* out_classification) {
+    if (!out_classification ||
+        (hit_count > 0 && (!hits || !occurrence_keys || !parent_occurrence_keys)))
+        return -1;
+
+    *out_classification = (alea_point_coverage_classification_t){
+        .kind = ALEA_POINT_COVERAGE_GAP,
+        .target_depth = universe_depth,
+        .owner_count = 0
+    };
+    if (out_owner_mask && hit_count > 0)
+        memset(out_owner_mask, 0, hit_count * sizeof(*out_owner_mask));
+    if (hit_count == 0) return 0;
+
+    size_t* child_counts = calloc(hit_count, sizeof(*child_counts));
+    if (!child_counts) return -1;
+    size_t root_count = 0;
+    int malformed = 0;
+    for (size_t i = 0; i < hit_count && !malformed; i++) {
+        if (occurrence_keys[i] == 0) {
+            malformed = 1;
+            break;
+        }
+        for (size_t j = i + 1; j < hit_count; j++) {
+            if (occurrence_keys[i] == occurrence_keys[j]) {
+                malformed = 1;
+                break;
+            }
+        }
+        if (malformed) break;
+        if (parent_occurrence_keys[i] == 0) {
+            root_count++;
+            continue;
+        }
+        size_t parent = 0;
+        while (parent < hit_count &&
+               occurrence_keys[parent] != parent_occurrence_keys[i])
+            parent++;
+        if (parent == hit_count || hits[i].depth != hits[parent].depth + 1) {
+            malformed = 1;
+            break;
+        }
+        child_counts[parent]++;
+    }
+    if (malformed || root_count == 0) {
+        out_classification->kind = ALEA_POINT_COVERAGE_UNRESOLVED;
+        free(child_counts);
+        return 0;
+    }
+
+    size_t owner_count = 0;
+    int one_owner = -1;
+    int common_depth = -1;
+    int mixed_depths = 0;
+    for (size_t i = 0; i < hit_count; i++) {
+        int selected = universe_depth >= 0
+            ? hits[i].depth == universe_depth
+            : child_counts[i] == 0;
+        if (!selected) continue;
+        if (out_owner_mask) out_owner_mask[i] = 1;
+        one_owner = (int)i;
+        owner_count++;
+        if (common_depth < 0) common_depth = hits[i].depth;
+        else if (common_depth != hits[i].depth) mixed_depths = 1;
+    }
+    out_classification->owner_count = owner_count;
+    out_classification->target_depth = universe_depth >= 0
+        ? universe_depth : (mixed_depths ? -1 : common_depth);
+    if (owner_count == 0) {
+        out_classification->kind = ALEA_POINT_COVERAGE_GAP;
+    } else if (owner_count > 1) {
+        out_classification->kind = ALEA_POINT_COVERAGE_OVERLAP;
+    } else if (hits[one_owner].resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL) {
+        out_classification->kind = ALEA_POINT_COVERAGE_UNDEFINED_FILL;
+    } else {
+        out_classification->kind = ALEA_POINT_COVERAGE_UNIQUE;
+    }
+    free(child_counts);
+    return 0;
 }
 
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,

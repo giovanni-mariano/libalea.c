@@ -8,6 +8,7 @@
  */
 
 #include "alea_universe.h"
+#include "core/alea_occurrence.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_system.h"
 #include "core/alea_ops.h"
@@ -95,12 +96,6 @@ static int find_all_cells_recursive(const alea_system_t* sys,
                                     size_t* hit_count,
                                     uint64_t occurrence_seed);
 
-static uint64_t occurrence_key_mix(uint64_t key, uint64_t value) {
-    /* FNV-1a gives a deterministic compact identity for a concrete hierarchy
-     * path.  It is only compared within one diagnostic query. */
-    key ^= value;
-    return key * UINT64_C(1099511628211);
-}
 int lattice_hex_lookup(const alea_cell_entry_t* cell,
                        double px, double py, double pz,
                        double* ox, double* oy, double* oz);
@@ -345,8 +340,8 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                             size_t* hit_count,
                                             uint64_t occurrence_seed) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-    const uint64_t cell_key = occurrence_key_mix(
-        occurrence_seed, ((uint64_t)cell_idx << 1) | UINT64_C(1));
+    const uint64_t cell_key = alea_occurrence_cell(
+        occurrence_seed, (uint32_t)cell_idx);
 
     if (cell->lat_type != 0 && cell->lat_fill) {
         alea_lattice_location_t location;
@@ -381,11 +376,9 @@ static int process_cell_for_all_cells_query(const alea_system_t* sys,
                                         depth + 1,
                                         out_hits, occurrence_keys, cell_key,
                                         parent_occurrence_keys, max_hits, hit_count,
-                                        occurrence_key_mix(
-                                            occurrence_key_mix(cell_key,
-                                                (uint32_t)location.i),
-                                            ((uint64_t)(uint32_t)location.j << 32) |
-                                            (uint32_t)location.k));
+                                        alea_occurrence_lattice(
+                                            cell_key, location.i, location.j,
+                                            location.k));
     }
 
     g_point_bvh_stats.exact_cell_tests++;
@@ -2202,7 +2195,7 @@ static int find_all_cells_at_point_impl(alea_system_t* sys,
                                           0, NULL, 0,
                                           out_hits, occurrence_keys, 0,
                                           parent_occurrence_keys, max_hits, &hit_count,
-                                          UINT64_C(1469598103934665603));
+                                          ALEA_OCCURRENCE_ROOT);
     if (result < 0) return -1;
     return (int)hit_count;
 }
@@ -2310,6 +2303,37 @@ int alea_find_all_cells_at_point_coverage_chain_recursive(
     return find_all_cells_at_point_impl((alea_system_t*)sys, x, y, z, out_hits,
                                         occurrence_keys, parent_occurrence_keys,
                                         max_hits, true);
+}
+
+int alea_find_all_cells_in_universe_at_point_coverage_chain_recursive(
+    const alea_system_t* sys, int universe_id,
+    double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys, size_t max_hits) {
+    if (!sys || !out_hits || !occurrence_keys || !parent_occurrence_keys ||
+        max_hits == 0) return -1;
+    if (!sys->universe_index_built) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "universe-local coverage: universe index is not prepared");
+        return -1;
+    }
+    if (!alea_get_universe(sys, universe_id)) {
+        alea_set_error_detail(ALEA_ERR_NOT_FOUND,
+                              "universe-local coverage: universe %d not found",
+                              universe_id);
+        return -1;
+    }
+
+    size_t hit_count = 0;
+    uint64_t seed = ALEA_OCCURRENCE_ROOT;
+    if (universe_id != 0)
+        seed = alea_occurrence_mix(seed, (uint64_t)(uint32_t)universe_id);
+    int result = find_all_cells_recursive(
+        sys, x, y, z, x, y, z, universe_id, NULL, 0,
+        out_hits, occurrence_keys, 0, parent_occurrence_keys,
+        max_hits, &hit_count, seed);
+    if (result < 0) return -1;
+    return (int)hit_count;
 }
 
 /* ============================================================================

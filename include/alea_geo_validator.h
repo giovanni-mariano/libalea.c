@@ -148,6 +148,498 @@ int alea_validate_geometry_slice(alea_system_t* sys,
                                  alea_geom_validator_result_t* result);
 
 /* ==========================================================================
+ * SUPPLIED UNIVERSE-LOCAL TRANSITION DIAGNOSTIC
+ * ========================================================================== */
+
+typedef enum {
+    ALEA_TRANSITION_VALID = 0,
+    ALEA_TRANSITION_GAP,
+    ALEA_TRANSITION_OVERLAP,
+    ALEA_TRANSITION_UNDEFINED_FILL,
+    ALEA_TRANSITION_MISSING_NEIGHBOR,
+    ALEA_TRANSITION_NON_ADJACENT,
+    ALEA_TRANSITION_AMBIGUOUS_NEIGHBOR,
+    ALEA_TRANSITION_SURFACE_CHAIN_CORNER,
+    ALEA_TRANSITION_AMBIGUOUS_BOUNDARY,
+    ALEA_TRANSITION_UNRESOLVED,
+    ALEA_TRANSITION_TRUNCATED
+} alea_transition_kind_t;
+
+#define ALEA_TRANSITION_EVIDENCE_CAPACITY 16
+
+#define ALEA_TRANSITION_FLAG_CURRENT_BEFORE_CONTAINS (1u << 0)
+#define ALEA_TRANSITION_FLAG_CURRENT_AFTER_CONTAINS  (1u << 1)
+#define ALEA_TRANSITION_FLAG_COVERAGE_FALLBACK       (1u << 2)
+#define ALEA_TRANSITION_FLAG_PRIMARY_MISSING         (1u << 3)
+#define ALEA_TRANSITION_FLAG_TIED_SURFACE_CONNECTS   (1u << 4)
+#define ALEA_TRANSITION_FLAG_OFFSET_STABLE           (1u << 5)
+#define ALEA_TRANSITION_FLAG_CANDIDATES_TRUNCATED    (1u << 6)
+#define ALEA_TRANSITION_FLAG_OWNERS_TRUNCATED        (1u << 7)
+
+typedef struct {
+    size_t struct_size;
+    /** Central offset in model units. Zero uses the validator default. */
+    double probe_distance;
+    /** Upper bound for the offset ladder. Zero uses 8*probe_distance. */
+    double max_probe_distance;
+    /** Complete-coverage hit budget, including ancestry. Zero uses 256. */
+    size_t max_coverage_hits;
+    /** Maximum complete-coverage calls in this transition. Zero is unlimited. */
+    size_t max_coverage_fallbacks;
+} alea_transition_options_t;
+
+typedef struct {
+    alea_transition_kind_t kind;
+    alea_point_coverage_kind_t after_coverage_kind;
+    uint32_t flags;
+    int universe_id;
+    int current_cell_id;
+    int primary_surface_id;
+    int connecting_surface_id;
+    int after_cell_id;
+    int current_sense;
+    int occurrence_depth;
+    uint64_t current_occurrence_key;
+    uint64_t current_parent_occurrence_key;
+    uint64_t before_occurrence_key;
+    uint64_t before_parent_occurrence_key;
+    uint64_t selected_after_occurrence_key;
+    uint64_t selected_after_parent_occurrence_key;
+    double crossing_point[3];
+    double direction[3];
+    double before_point[3];
+    double after_point[3];
+    double probe_distance;
+    size_t offset_attempts;
+    size_t coverage_fallbacks;
+    size_t primary_candidate_count;
+    size_t primary_containing_count;
+    size_t candidate_cell_count;
+    int candidate_cell_ids[ALEA_TRANSITION_EVIDENCE_CAPACITY];
+    size_t after_owner_count;
+    size_t owner_cell_count;
+    int owner_cell_ids[ALEA_TRANSITION_EVIDENCE_CAPACITY];
+} alea_transition_result_t;
+
+void alea_transition_options_init(alea_transition_options_t* options);
+const char* alea_transition_kind_name(alea_transition_kind_t kind);
+
+/** Check a supplied crossing witness in an active universe's local frame.
+ * ``tied_surface_ids`` excludes or may repeat the primary; duplicates are
+ * ignored. Query acceleration must already be prepared.
+ */
+int alea_check_transition_local(
+    alea_system_t* sys,
+    int universe_id,
+    int current_cell_id,
+    int primary_surface_id,
+    const int* tied_surface_ids,
+    size_t tied_surface_count,
+    const double point[3],
+    const double direction[3],
+    const alea_transition_options_t* options,
+    alea_transition_result_t* result);
+
+/* ==========================================================================
+ * MEMORY-BOUNDED 2D TRANSITION SCREEN
+ * ========================================================================== */
+
+typedef enum {
+    ALEA_TRANSITION_SLICE_HORIZONTAL = 0,
+    ALEA_TRANSITION_SLICE_VERTICAL = 1
+} alea_transition_slice_orientation_t;
+
+typedef enum {
+    ALEA_TRANSITION_SLICE_STOP_NONE = 0,
+    ALEA_TRANSITION_SLICE_STOP_MAX_RAYS,
+    ALEA_TRANSITION_SLICE_STOP_MAX_EVENTS,
+    ALEA_TRANSITION_SLICE_STOP_MAX_FINDINGS,
+    ALEA_TRANSITION_SLICE_STOP_MAX_COMPONENTS,
+    ALEA_TRANSITION_SLICE_STOP_MAX_OUTPUT_BYTES,
+    ALEA_TRANSITION_SLICE_STOP_MAX_COVERAGE_FALLBACKS,
+    ALEA_TRANSITION_SLICE_STOP_MAX_COVERAGE_PROBES,
+    ALEA_TRANSITION_SLICE_STOP_MAX_SCRATCH_BYTES,
+    ALEA_TRANSITION_SLICE_STOP_INTERRUPTED,
+    ALEA_TRANSITION_SLICE_STOP_MAX_COMPONENT_LINKS
+} alea_transition_slice_stop_reason_t;
+
+#define ALEA_TRANSITION_SLICE_REFINE_SIGNATURE (1u << 0)
+#define ALEA_TRANSITION_SLICE_REFINE_FINDING   (1u << 1)
+
+typedef enum {
+    ALEA_TRANSITION_SLICE_REFINEMENT_NOT_REQUESTED = 0,
+    ALEA_TRANSITION_SLICE_REFINEMENT_CONVERGED,
+    ALEA_TRANSITION_SLICE_REFINEMENT_MAX_DEPTH,
+    ALEA_TRANSITION_SLICE_REFINEMENT_MIN_SPACING,
+    ALEA_TRANSITION_SLICE_REFINEMENT_STOPPED
+} alea_transition_slice_refinement_status_t;
+
+typedef struct {
+    size_t struct_size;
+    size_t horizontal_rays;
+    size_t vertical_rays;
+    uint64_t max_rays;
+    uint64_t max_events;
+    uint64_t max_events_per_ray;
+    uint64_t max_findings;
+    uint64_t max_components;
+    uint64_t max_output_bytes;
+    uint64_t max_scratch_bytes;
+    uint64_t max_coverage_fallbacks;
+    size_t max_coverage_hits;
+    double probe_distance;
+    double max_probe_distance;
+    int include_void_transitions;
+    uint32_t max_refinement_depth;
+    uint32_t refine_signals;
+    double min_transverse_spacing;
+    uint64_t max_row_scratch_bytes;
+    size_t coverage_uniform_probes_per_ray;
+    int coverage_probe_selected_intervals;
+    int report_unowned_coverage;
+    uint64_t max_coverage_probes;
+    uint64_t max_coverage_findings;
+    uint64_t max_coverage_components;
+    uint64_t max_component_links;
+    int enable_critical_refinement;
+    size_t max_refinement_frontiers;
+    size_t max_critical_tiles;
+    size_t max_critical_tile_sources;
+    uint64_t max_critical_scratch_bytes;
+    double critical_tile_padding;
+    size_t max_curves_per_tile;
+    size_t max_critical_points;
+    uint64_t max_active_boundary_tests;
+    uint64_t max_critical_probes;
+    uint64_t max_critical_findings;
+    uint64_t max_curve_pairs;
+    uint64_t max_critical_sector_witnesses;
+    double critical_probe_radius;
+} alea_transition_slice_options_t;
+
+typedef struct {
+    alea_transition_result_t transition;
+    alea_transition_slice_orientation_t orientation;
+    size_t ray_index;
+    size_t event_index;
+    size_t base_ray_index;
+    uint32_t refinement_depth;
+    double transverse_coordinate;
+    double ray_t;
+    double uv[2];
+    double world_point[3];
+} alea_transition_slice_finding_t;
+
+typedef struct {
+    alea_transition_kind_t kind;
+    alea_transition_slice_orientation_t orientation;
+    int universe_id;
+    int current_cell_id;
+    int after_cell_id;
+    int primary_surface_id;
+    int connecting_surface_id;
+    uint64_t current_occurrence_key;
+    size_t first_finding_index;
+    size_t finding_count;
+    uint32_t max_refinement_depth;
+    double uv_min[2];
+    double uv_max[2];
+    double world_min[3];
+    double world_max[3];
+} alea_transition_slice_component_t;
+
+#define ALEA_TRANSITION_SLICE_COVERAGE_OWNER_CAPACITY 16
+
+typedef struct {
+    alea_point_coverage_kind_t kind;
+    int truncated;
+    int target_depth;
+    size_t owner_count;
+    size_t owner_count_lower_bound;
+    int owner_cell_ids[ALEA_TRANSITION_SLICE_COVERAGE_OWNER_CAPACITY];
+    int owner_universe_ids[ALEA_TRANSITION_SLICE_COVERAGE_OWNER_CAPACITY];
+    int owner_depths[ALEA_TRANSITION_SLICE_COVERAGE_OWNER_CAPACITY];
+    uint64_t owner_occurrence_keys[
+        ALEA_TRANSITION_SLICE_COVERAGE_OWNER_CAPACITY];
+    uint64_t owner_parent_occurrence_keys[
+        ALEA_TRANSITION_SLICE_COVERAGE_OWNER_CAPACITY];
+    alea_transition_slice_orientation_t orientation;
+    size_t ray_index;
+    size_t base_ray_index;
+    uint32_t refinement_depth;
+    double transverse_coordinate;
+    double ray_t;
+    double bracket_t_enter;
+    double bracket_t_exit;
+    double uv[2];
+    double world_point[3];
+} alea_transition_slice_coverage_finding_t;
+
+typedef struct {
+    alea_point_coverage_kind_t kind;
+    int truncated;
+    alea_transition_slice_orientation_t orientation;
+    size_t first_finding_index;
+    size_t finding_count;
+    size_t owner_count_lower_bound;
+    uint32_t max_refinement_depth;
+    double uv_min[2];
+    double uv_max[2];
+    double world_min[3];
+    double world_max[3];
+} alea_transition_slice_coverage_component_t;
+
+#define ALEA_TRANSITION_SLICE_LINK_ENTER (1u << 0)
+#define ALEA_TRANSITION_SLICE_LINK_EXIT  (1u << 1)
+
+typedef struct {
+    size_t transition_component_index;
+    size_t coverage_component_index;
+    uint32_t boundary_sides;
+    size_t witness_pair_count;
+} alea_transition_slice_component_link_t;
+
+typedef enum {
+    ALEA_TRANSITION_SLICE_CRITICAL_DISABLED = 0,
+    ALEA_TRANSITION_SLICE_CRITICAL_NONE,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_FRONTIERS,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_TILE_SOURCES,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_TILES,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_SCRATCH_BYTES,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_OUTPUT_BYTES,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVES,
+    ALEA_TRANSITION_SLICE_CRITICAL_CHAIN_TRUNCATED,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_POINTS,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_PROBES,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_FINDINGS,
+    ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVE_PAIRS,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_SECTOR_WITNESSES
+} alea_transition_slice_critical_stop_reason_t;
+
+typedef enum {
+    ALEA_TRANSITION_SLICE_TILE_SOURCE_TRANSITION_COMPONENT = 0,
+    ALEA_TRANSITION_SLICE_TILE_SOURCE_COVERAGE_COMPONENT,
+    ALEA_TRANSITION_SLICE_TILE_SOURCE_REFINEMENT_FRONTIER
+} alea_transition_slice_tile_source_kind_t;
+
+typedef struct {
+    alea_transition_slice_orientation_t orientation;
+    uint32_t refinement_depth;
+    double transverse_min;
+    double transverse_max;
+    uint64_t signature_a[2];
+    uint64_t signature_b[2];
+    size_t max_event_count;
+    double uv_min[2];
+    double uv_max[2];
+} alea_transition_slice_refinement_frontier_t;
+
+typedef struct {
+    double uv_min[2];
+    double uv_max[2];
+    uint32_t source_flags;
+    size_t first_source_index;
+    size_t source_count;
+} alea_transition_slice_critical_tile_t;
+
+typedef struct {
+    alea_transition_slice_tile_source_kind_t kind;
+    size_t source_index;
+} alea_transition_slice_critical_tile_source_t;
+
+typedef struct {
+    alea_transition_result_t transition;
+    size_t tile_index;
+    size_t point_index;
+    int source_cell_id;
+    int source_surface_id;
+    uint64_t source_occurrence_key;
+    uint64_t source_universe_occurrence_key;
+    double uv[2];
+    double world_point[3];
+    double direction[3];
+    double radius;
+} alea_transition_slice_critical_finding_t;
+
+typedef struct {
+    size_t requested_rays;
+    size_t executed_rays;
+    size_t horizontal_rays_executed;
+    size_t vertical_rays_executed;
+    size_t events_checked;
+    size_t physical_events_seen;
+    size_t valid_transitions;
+    size_t findings;
+    size_t components;
+    size_t coverage_probes;
+    size_t unique_coverage_probes;
+    size_t coverage_findings;
+    size_t coverage_components;
+    size_t truncated_coverage_probes;
+    size_t skipped_unowned_coverage_probes;
+    size_t coverage_fallbacks;
+    size_t skipped_void_transitions;
+    size_t peak_live_events;
+    size_t peak_live_event_bytes;
+    size_t retained_output_bytes;
+    size_t refined_rays_executed;
+    size_t peak_row_scratch_bytes;
+    size_t peak_scratch_bytes;
+    uint32_t max_refinement_depth_reached;
+    int complete;
+    int converged;
+    alea_transition_slice_stop_reason_t stop_reason;
+    alea_transition_slice_refinement_status_t refinement_status;
+    size_t component_links;
+    size_t refinement_frontiers;
+    size_t omitted_refinement_frontiers;
+    size_t critical_tile_seeds;
+    size_t critical_tiles;
+    size_t critical_tile_sources;
+    size_t omitted_critical_tile_sources;
+    size_t peak_critical_scratch_bytes;
+    size_t critical_tiles_processed;
+    size_t critical_tiles_saturated;
+    size_t critical_region_hits;
+    size_t critical_region_candidates_scanned;
+    size_t critical_occurrence_seed_points;
+    size_t critical_occurrence_paths;
+    size_t critical_occurrence_universe_queries;
+    size_t critical_root_region_fallbacks;
+    size_t critical_chain_truncated_hits;
+    size_t critical_surface_references;
+    size_t critical_duplicate_surface_occurrences;
+    size_t critical_curves;
+    size_t critical_curves_culled;
+    size_t critical_ranked_curves_omitted;
+    size_t critical_active_boundary_tests;
+    size_t critical_active_boundary_fallbacks;
+    size_t critical_active_capacity_fallbacks;
+    size_t critical_active_test_budget_fallbacks;
+    size_t critical_active_unsupported_parabola_fallbacks;
+    size_t critical_active_unsupported_hyperbola_fallbacks;
+    size_t critical_active_unsupported_quartic_fallbacks;
+    size_t critical_active_unsupported_polygon_fallbacks;
+    size_t critical_active_unsupported_point_fallbacks;
+    size_t critical_active_unsupported_other_fallbacks;
+    size_t critical_active_evaluation_line_fallbacks;
+    size_t critical_active_evaluation_closed_conic_fallbacks;
+    size_t critical_active_evaluation_general_conic_fallbacks;
+    size_t critical_active_evaluation_quartic_fallbacks;
+    size_t critical_active_evaluation_polygon_fallbacks;
+    size_t critical_active_evaluation_other_fallbacks;
+    size_t critical_active_open_conic_canonical_fallbacks;
+    size_t critical_active_open_conic_breakpoint_fallbacks;
+    size_t critical_active_segments;
+    size_t critical_whole_curve_fallbacks;
+    size_t peak_critical_curves;
+    size_t critical_point_candidates;
+    size_t critical_points;
+    size_t critical_duplicate_points;
+    size_t critical_unsupported_curves;
+    size_t critical_unsupported_parabola_curves;
+    size_t critical_unsupported_hyperbola_curves;
+    size_t critical_unsupported_quartic_curves;
+    size_t critical_unsupported_other_curves;
+    size_t critical_probes;
+    size_t critical_probe_events;
+    size_t critical_probe_findings;
+    size_t critical_findings;
+    size_t omitted_critical_findings;
+    size_t critical_curve_pair_candidates;
+    size_t critical_curve_pairs_tested;
+    size_t critical_unsupported_curve_pairs;
+    size_t critical_unsupported_general_conic_pairs;
+    size_t critical_unsupported_quartic_pairs;
+    size_t critical_unsupported_quartic_line_pairs;
+    size_t critical_unsupported_quartic_closed_conic_pairs;
+    size_t critical_unsupported_quartic_general_conic_pairs;
+    size_t critical_unsupported_quartic_quartic_pairs;
+    size_t critical_unsupported_quartic_other_pairs;
+    size_t critical_unsupported_polygon_pairs;
+    size_t critical_unsupported_other_pairs;
+    size_t critical_pair_algebraic_points;
+    size_t critical_pair_domain_rejections;
+    /* Pair points newly inserted into the unique critical-point set.  A
+     * valid pair point may already have been emitted by single-curve logic. */
+    size_t critical_pair_intersection_points;
+    size_t critical_sector_witnesses;
+    size_t critical_sector_gap_witnesses;
+    size_t critical_sector_overlap_witnesses;
+    size_t critical_sector_unresolved_witnesses;
+    int critical_enabled;
+    int critical_complete;
+    alea_transition_slice_critical_stop_reason_t critical_stop_reason;
+} alea_transition_slice_stats_t;
+
+typedef struct alea_transition_slice_result alea_transition_slice_result_t;
+
+void alea_transition_slice_options_init(
+    alea_transition_slice_options_t* options);
+const char* alea_transition_slice_stop_reason_name(
+    alea_transition_slice_stop_reason_t reason);
+const char* alea_transition_slice_refinement_status_name(
+    alea_transition_slice_refinement_status_t status);
+const char* alea_transition_slice_critical_stop_reason_name(
+    alea_transition_slice_critical_stop_reason_t reason);
+alea_transition_slice_result_t* alea_transition_slice_result_create(void);
+void alea_transition_slice_result_destroy(
+    alea_transition_slice_result_t* result);
+int alea_transition_slice_screen(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    const alea_transition_slice_options_t* options,
+    alea_transition_slice_result_t* result);
+size_t alea_transition_slice_finding_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_finding_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_finding_t* out_finding);
+size_t alea_transition_slice_component_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_component_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_component_t* out_component);
+size_t alea_transition_slice_coverage_finding_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_coverage_finding_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_coverage_finding_t* out_finding);
+size_t alea_transition_slice_coverage_component_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_coverage_component_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_coverage_component_t* out_component);
+size_t alea_transition_slice_component_link_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_component_link_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_component_link_t* out_link);
+size_t alea_transition_slice_refinement_frontier_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_refinement_frontier_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_refinement_frontier_t* out_frontier);
+size_t alea_transition_slice_critical_tile_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_critical_tile_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_critical_tile_t* out_tile);
+size_t alea_transition_slice_critical_tile_source_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_critical_tile_source_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_critical_tile_source_t* out_source);
+size_t alea_transition_slice_critical_finding_count(
+    const alea_transition_slice_result_t* result);
+int alea_transition_slice_critical_finding_get(
+    const alea_transition_slice_result_t* result, size_t index,
+    alea_transition_slice_critical_finding_t* out_finding);
+int alea_transition_slice_stats(
+    const alea_transition_slice_result_t* result,
+    alea_transition_slice_stats_t* out_stats);
+
+/* ==========================================================================
  * COMPACT RAY-SLICE DIRECTIONAL VALIDATION
  * ==========================================================================
  *

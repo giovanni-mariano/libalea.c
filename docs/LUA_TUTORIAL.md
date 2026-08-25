@@ -728,10 +728,10 @@ sys:reset()
 assert(sys:cell_count() == 0)
 ```
 
-### Flatten and simplify
+### Simplify CSG cells
 
 ```lua
-local stats = sys:flatten_all()
+local stats = sys:simplify_all()
 print("Nodes: " .. stats.nodes_before .. " -> " .. stats.nodes_after)
 print("Empty cells removed: " .. stats.empty_cells_removed)
 ```
@@ -795,7 +795,7 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Tree print | `sys:tree_print(node)` |
 | **Transforms** | |
 | Flatten | `sys:flatten(universe)` |
-| Flatten all | `sys:flatten_all()` |
+| Simplify all cells | `sys:simplify_all()` |
 | Split union cells | `sys:split_union_cells()` |
 | Expand macrobodies | `sys:expand_macrobodies()` |
 | Extract universe | `sys:extract_universe(uid)` |

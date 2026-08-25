@@ -224,6 +224,12 @@ int alea_find_all_cells_at_point_coverage_chain_recursive(
     alea_cell_hit_t* out_hits, uint64_t* occurrence_keys,
     uint64_t* parent_occurrence_keys, size_t max_hits);
 
+int alea_find_all_cells_in_universe_at_point_coverage_chain_recursive(
+    const alea_system_t* sys, int universe_id,
+    double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys, size_t max_hits);
+
 /**
  * @brief Enable/disable debug point trace output
  * @param enable Non-zero to enable, 0 to disable

@@ -55,6 +55,12 @@ struct alea_bvh;
 struct alea_hier_spatial_index;
 struct alea_volume_path_index;
 
+/** Exact MCNP surface-card reference retained by the adjacency cache. */
+typedef struct alea_surface_cell_ref {
+    uint32_t cell_index;
+    int8_t sense;
+} alea_surface_cell_ref_t;
+
 /* ============================================================================
  * VECTOR TYPES FOR CSG SYSTEM ARRAYS
  * ============================================================================ */
@@ -395,6 +401,11 @@ typedef struct alea_system {
     /* Cell adjacency (built by alea_build_cell_adjacency) */
     bool cell_adjacency_built;
     struct alea_cell_neighbor* neighbor_pool;  /* Single allocation for all neighbor data */
+    /* Exact surface-index -> cell-reference CSR. Unlike neighbor_pool this is
+     * not pair-deduplicated and has no dense-surface cutoff. */
+    size_t* surface_cell_offsets;               /* surface count + 1 */
+    alea_surface_cell_ref_t* surface_cell_refs;
+    size_t surface_cell_ref_count;
 
     /* Hierarchical spatial index (prepared query cache) */
     struct alea_hier_spatial_index* hier_spatial_index;

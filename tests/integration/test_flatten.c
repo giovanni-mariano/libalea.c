@@ -178,7 +178,7 @@ TEST(point_query_public_api_uses_deepest_fill_hit) {
  *   Cell A: Sphere at (0,0,0), radius 1, material 1  (inside parent)
  *   Cell B: Sphere at (100,0,0), radius 1, material 2 (outside parent → empty)
  *
- * After flatten + alea_flatten_all_cells, Cell B should be removed.
+ * After hierarchy flattening and simplification, Cell B should be removed.
  */
 TEST(flatten_removes_empty_cells) {
     alea_system_t* sys = alea_create();
@@ -218,7 +218,7 @@ TEST(flatten_removes_empty_cells) {
 
     /* Simplify — should detect and remove the empty cell */
     alea_simplify_stats_t stats = {0};
-    alea_flatten_all_cells(sys, &stats);
+    alea_simplify_and_prune_cells(sys, &stats);
 
     size_t after = alea_cell_count(sys);
     ASSERT(stats.empty_cells_removed > 0);

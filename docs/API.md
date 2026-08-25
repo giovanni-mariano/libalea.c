@@ -610,13 +610,14 @@ int alea_flatten(alea_system_t* sys, int universe_id);
 
 Flatten a universe hierarchy: resolve fill references and merge cells into a single level.
 
-### alea_flatten_all_cells
+### alea_simplify_and_prune_cells
 
 ```c
-void alea_flatten_all_cells(alea_system_t* sys, alea_simplify_stats_t* stats);
+void alea_simplify_and_prune_cells(alea_system_t* sys,
+                                   alea_simplify_stats_t* stats);
 ```
 
-Full optimization pass on all cells: NNF conversion, flattening, balancing, contradiction detection, and empty cell removal. `stats` can be NULL.
+Full optimization pass on all cells: NNF conversion, associative Boolean normalization, balancing, contradiction detection, and empty-cell removal. This does not flatten universe hierarchy. `stats` can be NULL.
 
 **`alea_simplify_stats_t` fields**: `nodes_before`, `nodes_after`, `complements_eliminated`, `double_negations`, `idempotent_reductions`, `absorption_reductions`, `subtrees_deduplicated`, `cell_complements_expanded`, `contradictions_found`, `tautologies_found`, `empty_cells_removed`, `union_branches_absorbed`, `union_common_factors`, `union_branches_subsumed`.
 

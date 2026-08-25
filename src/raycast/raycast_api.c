@@ -1998,6 +1998,7 @@ struct alea_ray_boundary_event_query_result {
     alea_raycast_result_t scratch;
     alea_ray_boundary_event_result_t events;
     uint32_t fields;
+    int includes_occurrence_provenance;
 };
 
 void alea_ray_boundary_event_options_init(
@@ -2044,7 +2045,9 @@ int alea_ray_boundary_event_query(alea_system_t* sys,
         options.t_min < 0 || (options.t_max > 0 && options.t_min > options.t_max)) goto invalid;
     alea_ray_t ray;
     if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) goto invalid;
-    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0) {
+    if ((options.include_occurrence_provenance
+            ? alea_raycast_ensure_hier_caches(sys)
+            : alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST)) != 0) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "boundary-event query failed to prepare raycast caches");
         goto fail;
@@ -2054,11 +2057,19 @@ int alea_ray_boundary_event_query(alea_system_t* sys,
         .max_events = options.max_events,
         .max_output_bytes = options.max_output_bytes
     };
-    if (alea_raycast_boundary_events_with_options(
+    int event_rc = options.include_occurrence_provenance
+        ? alea_raycast_selected_boundary_events_with_options_nocache(
+            sys, &ray, options.t_max > 0.0 ? options.t_max : DBL_MAX,
+            &internal_options, &result->scratch, &result->events)
+        : alea_raycast_boundary_events_with_options(
             sys, &ray, options.t_max, &internal_options, &result->scratch,
-            &result->events) != 0) {
-        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                              "boundary-event query failed to materialize events");
+            &result->events);
+    if (event_rc != 0) {
+        const char* detail = alea_error();
+        if (!detail || !detail[0])
+            alea_set_error_detail(
+                ALEA_ERR_INVALID_STATE,
+                "boundary-event query failed to materialize events");
         goto fail;
     }
     size_t write = 0;
@@ -2075,6 +2086,8 @@ int alea_ray_boundary_event_query(alea_system_t* sys,
         goto fail;
     }
     result->fields = options.fields;
+    result->includes_occurrence_provenance =
+        options.include_occurrence_provenance != 0;
     return 0;
 invalid:
     alea_set_error_detail(ALEA_ERR_INVALID_ARG, "invalid boundary-event query options");
@@ -2082,6 +2095,7 @@ fail:
     alea_raycast_result_clear(&result->scratch);
     alea_ray_boundary_event_result_clear(&result->events);
     result->fields = 0;
+    result->includes_occurrence_provenance = 0;
     return -1;
 }
 
@@ -2108,6 +2122,33 @@ int alea_ray_boundary_event_get(const alea_ray_boundary_event_query_result_t* re
     if (nx) *nx = (result->fields & ALEA_RAY_BOUNDARY_EVENT_NORMAL) ? event->nx : 0;
     if (ny) *ny = (result->fields & ALEA_RAY_BOUNDARY_EVENT_NORMAL) ? event->ny : 0;
     if (nz) *nz = (result->fields & ALEA_RAY_BOUNDARY_EVENT_NORMAL) ? event->nz : 0;
+    return 0;
+}
+
+int alea_ray_boundary_event_provenance_get(
+    const alea_ray_boundary_event_query_result_t* result, size_t index,
+    alea_ray_boundary_event_provenance_t* out) {
+    if (!result || !out || !result->includes_occurrence_provenance ||
+        index >= result->events.events.count) return -1;
+    const alea_ray_boundary_event_t* event = &result->events.events.data[index];
+    memset(out, 0, sizeof(*out));
+    out->flags = event->provenance_flags;
+    out->active_cell_id = event->active_cell_id;
+    out->active_universe_id = event->active_universe_id;
+    out->active_depth = event->active_depth;
+    out->active_occurrence_key = event->active_occurrence_key;
+    out->active_parent_occurrence_key = event->active_parent_occurrence_key;
+    out->before_occurrence_key = event->before_occurrence_key;
+    out->before_parent_occurrence_key = event->before_parent_occurrence_key;
+    out->after_occurrence_key = event->after_occurrence_key;
+    out->after_parent_occurrence_key = event->after_parent_occurrence_key;
+    memcpy(out->local_point, event->local_point, sizeof(out->local_point));
+    memcpy(out->local_direction, event->local_direction,
+           sizeof(out->local_direction));
+    out->local_surface_count = event->local_surface_count;
+    out->local_surface_complete = event->local_surface_complete;
+    memcpy(out->local_surface_ids, event->local_surface_ids,
+           sizeof(out->local_surface_ids));
     return 0;
 }
 

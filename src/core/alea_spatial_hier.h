@@ -298,6 +298,14 @@ int alea_hier_spatial_query_universe_region(alea_system_t* sys,
                                             const alea_bbox_t* local_bbox,
                                             alea_spatial_hit_t* out_hits,
                                             size_t max_hits);
+typedef int (*alea_hier_spatial_universe_region_visitor_t)(
+    const alea_spatial_hit_t* hit, void* userdata);
+/* Stream conservative BLAS candidates without materializing them.  A visitor
+ * return of zero continues, positive stops successfully, and negative fails. */
+int alea_hier_spatial_visit_universe_region(
+    alea_system_t* sys, int universe_id, const alea_bbox_t* local_bbox,
+    alea_hier_spatial_universe_region_visitor_t visitor, void* userdata,
+    size_t* out_visited);
 int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
                                          int universe_id,
                                          double ox,

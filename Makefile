@@ -246,6 +246,9 @@ MESH_SRCS = \
 # Geometry validator module
 GEO_VALIDATOR_SRCS = \
 	$(GEO_VALIDATOR_DIR)/geo_validator.c \
+	$(GEO_VALIDATOR_DIR)/transition_validation.c \
+	$(GEO_VALIDATOR_DIR)/transition_slice_screen.c \
+	$(GEO_VALIDATOR_DIR)/transition_slice_critical.c \
 	$(GEO_VALIDATOR_DIR)/ray_slice_validation.c
 
 # Core library sources (geometry engine + raycast/slice/render/mesh)

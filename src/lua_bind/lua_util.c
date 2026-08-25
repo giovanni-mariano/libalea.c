@@ -232,15 +232,15 @@ static int l_offset_material_ids(lua_State* L) {
 }
 
 /* ============================================================================
- * Flatten all cells
+ * Simplify all cells
  * ============================================================================ */
 
-/* sys:flatten_all() -> stats table */
-static int l_flatten_all(lua_State* L) {
+/* sys:simplify_all() -> stats table */
+static int l_simplify_all(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_simplify_stats_t stats;
     memset(&stats, 0, sizeof(stats));
-    alea_flatten_all_cells(sys, &stats);
+    alea_simplify_and_prune_cells(sys, &stats);
 
     lua_createtable(L, 0, 14);
     lua_pushinteger(L, (lua_Integer)stats.nodes_before);            lua_setfield(L, -2, "nodes_before");
@@ -630,7 +630,7 @@ static int l_is_macrobody(lua_State* L) {
 
 static const luaL_Reg util_methods[] = {
     {"flatten",                    l_flatten},
-    {"flatten_all",                l_flatten_all},
+    {"simplify_all",               l_simplify_all},
     {"split_union_cells",          l_split_union_cells},
     {"extract_universe",           l_extract_universe},
     {"merge",                      l_merge},

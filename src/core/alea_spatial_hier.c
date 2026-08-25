@@ -3230,6 +3230,96 @@ int alea_hier_spatial_query_universe_region(alea_system_t* sys,
     return (int)hit_count;
 }
 
+static int visit_universe_region_cell(
+    alea_system_t* sys, int universe_id, uint32_t cell_index,
+    uint32_t instance_index,
+    alea_hier_spatial_universe_region_visitor_t visitor, void* userdata,
+    size_t* visited) {
+    if (cell_index >= alea_vec_count(&sys->cells)) return -1;
+    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    alea_spatial_hit_t hit;
+    memset(&hit, 0, sizeof(hit));
+    hit.instance_index = instance_index;
+    hit.cell_index = cell_index;
+    hit.cell_id = cell->mc_cell_id;
+    hit.material_id = cell->material_id;
+    hit.universe_id = universe_id;
+    hit.is_terminal = !alea_cell_entry_is_container(cell);
+    alea_matrix_identity(&hit.transform);
+    (*visited)++;
+    return visitor(&hit, userdata);
+}
+
+static int visit_universe_region_blas_node(
+    alea_system_t* sys, const hier_universe_blas_t* blas,
+    uint32_t node_index, int universe_id, const alea_bbox_t* local_bbox,
+    alea_hier_spatial_universe_region_visitor_t visitor, void* userdata,
+    size_t* visited) {
+    if (node_index >= blas->node_count) return -1;
+    const hier_bvh_node_t* node = &blas->nodes[node_index];
+    if (!hier_fbbox_intersects_dbbox(&node->bbox, local_bbox)) return 0;
+    if (node->count == 0) {
+        int rc = visit_universe_region_blas_node(
+            sys, blas, node->left_or_first, universe_id, local_bbox,
+            visitor, userdata, visited);
+        if (rc != 0) return rc;
+        return visit_universe_region_blas_node(
+            sys, blas, node->right_child, universe_id, local_bbox,
+            visitor, userdata, visited);
+    }
+    for (uint16_t i = 0; i < node->count; i++) {
+        const uint32_t cell_pos = blas->indices[node->left_or_first + i];
+        if (cell_pos >= blas->cell_count) return -1;
+        const hier_blas_cell_t* blas_cell = &blas->cells[cell_pos];
+        if (!hier_fbbox_intersects_dbbox(&blas_cell->bbox, local_bbox))
+            continue;
+        const int rc = visit_universe_region_cell(
+            sys, universe_id, blas_cell->cell_index, cell_pos,
+            visitor, userdata, visited);
+        if (rc != 0) return rc;
+    }
+    return 0;
+}
+
+int alea_hier_spatial_visit_universe_region(
+    alea_system_t* sys, int universe_id, const alea_bbox_t* local_bbox,
+    alea_hier_spatial_universe_region_visitor_t visitor, void* userdata,
+    size_t* out_visited) {
+    if (!sys || !local_bbox || !visitor) return -1;
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) return -1;
+    }
+    size_t visited = 0;
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    int rc = 0;
+    if (blas && blas->built && blas->node_count > 0) {
+        rc = visit_universe_region_blas_node(
+            sys, blas, 0, universe_id, local_bbox,
+            visitor, userdata, &visited);
+    } else {
+        const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+        if (univ) {
+            for (size_t i = 0; i < univ->cell_indices.count; i++) {
+                const uint32_t cell_index =
+                    (uint32_t)univ->cell_indices.data[i];
+                const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+                const alea_bbox_t bbox =
+                    (cell->lat_type != 0 && cell->lat_fill)
+                    ? lattice_container_bbox(cell)
+                    : local_cell_bbox(sys, cell_index);
+                if (!bbox_intersects_local(&bbox, local_bbox)) continue;
+                rc = visit_universe_region_cell(
+                    sys, universe_id, cell_index, (uint32_t)i,
+                    visitor, userdata, &visited);
+                if (rc != 0) break;
+            }
+        }
+    }
+    if (out_visited) *out_visited = visited;
+    return rc < 0 ? -1 : 0;
+}
+
 static void insert_ray_candidate_sorted(alea_system_t* sys,
                                         uint32_t cell_index,
                                         double t_enter,

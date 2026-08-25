@@ -150,11 +150,11 @@ int alea_split_union_cells(alea_system_t* sys);
 alea_node_id_t alea_apply_demorgan(alea_system_t* sys, alea_node_id_t node_id);
 
 /**
- * @brief Flatten and simplify all cells (full optimization)
+ * @brief Simplify all cells and remove cells proven empty
  * 
  * Applies full optimization to all cells, including:
  * - NNF conversion
- * - Flattening and balancing
+ * - Associative Boolean normalization and balancing
  * - Contradiction detection
  * - Empty cell removal
  * 
@@ -164,7 +164,7 @@ alea_node_id_t alea_apply_demorgan(alea_system_t* sys, alea_node_id_t node_id);
  * @param sys CSG system
  * @param stats Optional accumulated stats output (can be NULL)
  */
-void alea_flatten_all_cells(
+void alea_simplify_and_prune_cells(
     alea_system_t* sys,
     alea_simplify_stats_t* stats
 );

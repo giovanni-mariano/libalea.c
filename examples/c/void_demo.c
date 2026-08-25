@@ -219,7 +219,7 @@ int main(void) {
 
     size_t cells_before_simplify = alea_cell_count(sys);
     alea_simplify_stats_t simp_stats = {0};
-    alea_flatten_all_cells(sys, &simp_stats);
+    alea_simplify_and_prune_cells(sys, &simp_stats);
     alea_build_universe_index(sys);
 
     printf("Cells before: %zu\n", cells_before_simplify);

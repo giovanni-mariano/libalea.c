@@ -11,10 +11,10 @@ sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = m2, densi
 sys:cell{id = 3, region = sys:outside(s2), material = -1, density = 0.0}
 sys:build_universe_index()
 
--- flatten_all
+-- simplify_all
 local sys2 = sys:clone()
-local stats = sys2:flatten_all()
-assert(type(stats) == "table", "flatten_all should return stats")
+local stats = sys2:simplify_all()
+assert(type(stats) == "table", "simplify_all should return stats")
 assert(stats.nodes_before >= 0, "should have nodes_before")
 assert(stats.nodes_after >= 0, "should have nodes_after")
 sys2:destroy()

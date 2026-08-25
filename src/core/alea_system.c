@@ -151,6 +151,11 @@ static void alea_free_cell_dynamic_fields(alea_system_t* sys) {
     }
     free(sys->neighbor_pool);
     sys->neighbor_pool = NULL;
+    free(sys->surface_cell_offsets);
+    sys->surface_cell_offsets = NULL;
+    free(sys->surface_cell_refs);
+    sys->surface_cell_refs = NULL;
+    sys->surface_cell_ref_count = 0;
     sys->cell_adjacency_built = false;
 }
 
@@ -250,6 +255,11 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
     if (flags & ALEA_CACHE_ADJACENCY) {
         free(sys->neighbor_pool);
         sys->neighbor_pool = NULL;
+        free(sys->surface_cell_offsets);
+        sys->surface_cell_offsets = NULL;
+        free(sys->surface_cell_refs);
+        sys->surface_cell_refs = NULL;
+        sys->surface_cell_ref_count = 0;
         for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
             sys->cells.data[i].neighbors = NULL;
             sys->cells.data[i].neighbor_count = 0;
@@ -802,6 +812,15 @@ size_t alea_system_memory_usage(const alea_system_t* sys) {
     }
     if (sys->prim_to_surface) {
         total += sys->prim_to_surface_size * sizeof(uint32_t);
+    }
+    if (sys->mc_id_to_surface) {
+        total += sys->mc_id_to_surface_size * sizeof(uint32_t);
+    }
+    if (sys->surface_cell_offsets) {
+        total += (alea_vec_count(&sys->surfaces) + 1) * sizeof(size_t);
+    }
+    if (sys->surface_cell_refs) {
+        total += sys->surface_cell_ref_count * sizeof(alea_surface_cell_ref_t);
     }
 
     /* Per-material internal arrays */
@@ -2116,7 +2135,7 @@ static int ensure_mc_id_to_surface_map(alea_system_t* sys) {
  * Returns UINT32_MAX if not found
  * Uses O(1) lookup table if available, falls back to O(n) search otherwise.
  */
-static uint32_t find_surface_by_mc_id(alea_system_t* sys, int mc_surface_id) {
+static uint32_t find_surface_by_mc_id(const alea_system_t* sys, int mc_surface_id) {
     if (mc_surface_id <= 0) {
         return UINT32_MAX;
     }
@@ -2268,17 +2287,6 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
 /**
  * @brief Entry in the surface-to-cells map
  */
-typedef struct {
-    uint32_t cell_index;
-    int8_t sense;  /* +1 or -1 */
-} surface_cell_ref_t;
-
-typedef struct {
-    surface_cell_ref_t* refs;
-    size_t count;
-    size_t capacity;
-} surface_cell_list_t;
-
 /**
  * @brief Helper: collect primitive senses from a cell's CSG tree
  */
@@ -2287,14 +2295,14 @@ typedef struct {
     int8_t sense;
 } cell_surface_sense_t;
 
-static void collect_cell_surface_senses(const alea_system_t* sys,
-                                        alea_node_id_t node_id,
-                                        int current_sense,
-                                        cell_surface_sense_t** out_senses,
-                                        size_t* count,
-                                        size_t* capacity) {
+static int collect_cell_surface_senses(const alea_system_t* sys,
+                                       alea_node_id_t node_id,
+                                       int current_sense,
+                                       cell_surface_sense_t** out_senses,
+                                       size_t* count,
+                                       size_t* capacity) {
     if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
-        return;
+        return 0;
 
     const alea_node_t* node = &sys->nodes.data[node_id];
     alea_operation_t op = ALEA_GET_OPERATION(node);
@@ -2306,38 +2314,46 @@ static void collect_cell_surface_senses(const alea_system_t* sys,
         /* Combine: node sense * dedup inversion * complement context */
         int8_t final_sense = (int8_t)(current_sense * node_sense * (inverted ? -1 : 1));
 
-        if (prim_id < sys->prim_to_surface_size) {
-            uint32_t surf_idx = sys->prim_to_surface[prim_id];
-            if (surf_idx != UINT32_MAX) {
-                /* Check if already collected */
-                for (size_t i = 0; i < *count; i++) {
-                    if ((*out_senses)[i].surface_idx == surf_idx) {
-                        return;  /* Already have this surface */
-                    }
+        uint32_t surf_idx = UINT32_MAX;
+        int mc_surface_id = node->primitive.mc_surface_id;
+        if (mc_surface_id > 0)
+            surf_idx = find_surface_by_mc_id(sys, mc_surface_id);
+        if (surf_idx == UINT32_MAX && prim_id < sys->prim_to_surface_size)
+            surf_idx = sys->prim_to_surface[prim_id];
+
+        if (surf_idx != UINT32_MAX) {
+            /* Preserve both senses if a card appears in both branches, while
+             * suppressing repeated uses of the same oriented halfspace. */
+            for (size_t i = 0; i < *count; i++) {
+                if ((*out_senses)[i].surface_idx == surf_idx &&
+                    (*out_senses)[i].sense == final_sense) {
+                    return 0;
                 }
-                /* Add to collection */
-                if (*count >= *capacity) {
-                    size_t new_cap = *capacity ? *capacity * 2 : 16;
-                    cell_surface_sense_t* new_arr = realloc(*out_senses,
-                        new_cap * sizeof(cell_surface_sense_t));
-                    if (!new_arr) return;
-                    *out_senses = new_arr;
-                    *capacity = new_cap;
-                }
-                (*out_senses)[*count].surface_idx = surf_idx;
-                (*out_senses)[*count].sense = final_sense;
-                (*count)++;
             }
+            if (*count >= *capacity) {
+                size_t new_cap = *capacity ? *capacity * 2 : 16;
+                cell_surface_sense_t* new_arr = realloc(*out_senses,
+                    new_cap * sizeof(cell_surface_sense_t));
+                if (!new_arr) return -1;
+                *out_senses = new_arr;
+                *capacity = new_cap;
+            }
+            (*out_senses)[*count].surface_idx = surf_idx;
+            (*out_senses)[*count].sense = final_sense;
+            (*count)++;
         }
     } else if (op == ALEA_OP_COMPLEMENT) {
-        collect_cell_surface_senses(sys, node->operation.left, -current_sense,
-                                   out_senses, count, capacity);
+        if (collect_cell_surface_senses(sys, node->operation.left, -current_sense,
+                                        out_senses, count, capacity) != 0)
+            return -1;
     } else {
-        collect_cell_surface_senses(sys, node->operation.left, current_sense,
-                                   out_senses, count, capacity);
-        collect_cell_surface_senses(sys, node->operation.right, current_sense,
-                                   out_senses, count, capacity);
+        if (collect_cell_surface_senses(sys, node->operation.left, current_sense,
+                                        out_senses, count, capacity) != 0 ||
+            collect_cell_surface_senses(sys, node->operation.right, current_sense,
+                                        out_senses, count, capacity) != 0)
+            return -1;
     }
+    return 0;
 }
 
 int alea_build_cell_adjacency(alea_system_t* sys) {
@@ -2356,6 +2372,11 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         free(sys->neighbor_pool);
         sys->neighbor_pool = NULL;
     }
+    free(sys->surface_cell_offsets);
+    sys->surface_cell_offsets = NULL;
+    free(sys->surface_cell_refs);
+    sys->surface_cell_refs = NULL;
+    sys->surface_cell_ref_count = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         sys->cells.data[i].neighbors = NULL;
         sys->cells.data[i].neighbor_count = 0;
@@ -2383,8 +2404,11 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
         size_t sense_count = 0;
-        collect_cell_surface_senses(sys, cell->root_node_id, 1,
-                                   &senses_buf, &sense_count, &senses_cap);
+        if (collect_cell_surface_senses(sys, cell->root_node_id, 1,
+                                        &senses_buf, &sense_count,
+                                        &senses_cap) != 0) {
+            free(surf_counts); free(senses_buf); return -1;
+        }
 
         for (size_t si = 0; si < sense_count; si++) {
             uint32_t surf_idx = senses_buf[si].surface_idx;
@@ -2394,7 +2418,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     }
 
     /* Compute prefix-sum offsets and single allocation for all refs */
-    size_t* surf_offsets = malloc(num_surfaces * sizeof(size_t));
+    size_t* surf_offsets = malloc((num_surfaces + 1) * sizeof(size_t));
     if (!surf_offsets) { free(surf_counts); free(senses_buf); return -1; }
 
     size_t total_refs = 0;
@@ -2402,10 +2426,11 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         surf_offsets[i] = total_refs;
         total_refs += surf_counts[i];
     }
+    surf_offsets[num_surfaces] = total_refs;
 
-    surface_cell_ref_t* all_refs = NULL;
+    alea_surface_cell_ref_t* all_refs = NULL;
     if (total_refs > 0) {
-        all_refs = malloc(total_refs * sizeof(surface_cell_ref_t));
+        all_refs = malloc(total_refs * sizeof(alea_surface_cell_ref_t));
         if (!all_refs) {
             free(surf_offsets); free(surf_counts); free(senses_buf);
             return -1;
@@ -2421,8 +2446,10 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) continue;
 
         size_t sense_count = 0;
-        collect_cell_surface_senses(sys, cell->root_node_id, 1,
-                                   &senses_buf, &sense_count, &senses_cap);
+        if (collect_cell_surface_senses(sys, cell->root_node_id, 1,
+                                        &senses_buf, &sense_count,
+                                        &senses_cap) != 0)
+            goto cleanup;
 
         for (size_t si = 0; si < sense_count; si++) {
             uint32_t surf_idx = senses_buf[si].surface_idx;
@@ -2486,7 +2513,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     /* Reset counts for filling */
     memset(cell_surf_counts, 0, num_cells * sizeof(size_t));
     for (size_t si = 0; si < num_surfaces; si++) {
-        surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
+        alea_surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
         size_t count = surf_counts[si];
         for (size_t r = 0; r < count; r++) {
             uint32_t ci = refs[r].cell_index;
@@ -2532,7 +2559,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
             if (ref_cnt > ADJACENCY_MAX_CELLS_PER_SURFACE) continue;
 
             /* Walk cells on this surface with opposite sense */
-            surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
+            alea_surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
             for (size_t r = 0; r < ref_cnt; r++) {
                 if (refs[r].sense == my_sense) continue;
                 uint32_t other = refs[r].cell_index;
@@ -2602,7 +2629,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
             size_t ref_cnt = surf_counts[si];
             if (ref_cnt > ADJACENCY_MAX_CELLS_PER_SURFACE) continue;
 
-            surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
+            alea_surface_cell_ref_t* refs = &all_refs[surf_offsets[si]];
             for (size_t r = 0; r < ref_cnt; r++) {
                 if (refs[r].sense == my_sense) continue;
                 uint32_t other = refs[r].cell_index;
@@ -2632,6 +2659,11 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     }
 
     sys->neighbor_pool = pool;
+    sys->surface_cell_offsets = surf_offsets;
+    sys->surface_cell_refs = all_refs;
+    sys->surface_cell_ref_count = total_refs;
+    surf_offsets = NULL;
+    all_refs = NULL;
 
     free(neighbor_offsets);
     free(dirty_words);
@@ -2640,9 +2672,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     free(cell_surf_offsets);
     free(cell_surf_counts);
 
-    /* Free surf_map */
-    free(all_refs);     all_refs = NULL;
-    free(surf_offsets);  surf_offsets = NULL;
+    /* surf_offsets/all_refs are retained as the exact reverse CSR. */
     free(surf_counts);   surf_counts = NULL;
 
     sys->cell_adjacency_built = true;

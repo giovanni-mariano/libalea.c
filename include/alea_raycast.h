@@ -64,7 +64,34 @@ typedef struct {
     uint64_t max_events;
     uint64_t max_output_bytes;
     int include_all_coincident_physical;
+    /* Opt in to the hierarchical selected-event producer and retain the
+     * active universe-local transition receipt. */
+    int include_occurrence_provenance;
 } alea_ray_boundary_event_options_t;
+
+#define ALEA_RAY_BOUNDARY_LOCAL_SURFACE_CAPACITY 16
+#define ALEA_RAY_BOUNDARY_PROVENANCE_ACTIVE_FRAME   (1u << 0)
+#define ALEA_RAY_BOUNDARY_PROVENANCE_BEFORE_OWNER   (1u << 1)
+#define ALEA_RAY_BOUNDARY_PROVENANCE_AFTER_OWNER    (1u << 2)
+#define ALEA_RAY_BOUNDARY_PROVENANCE_PATH_TRUNCATED (1u << 3)
+
+typedef struct {
+    uint32_t flags;
+    int active_cell_id;
+    int active_universe_id;
+    int active_depth;
+    uint64_t active_occurrence_key;
+    uint64_t active_parent_occurrence_key;
+    uint64_t before_occurrence_key;
+    uint64_t before_parent_occurrence_key;
+    uint64_t after_occurrence_key;
+    uint64_t after_parent_occurrence_key;
+    double local_point[3];
+    double local_direction[3];
+    size_t local_surface_count;
+    int local_surface_complete;
+    int local_surface_ids[ALEA_RAY_BOUNDARY_LOCAL_SURFACE_CAPACITY];
+} alea_ray_boundary_event_provenance_t;
 
 /* Optional fields in alea_raycast_batch_result_t. Distances and cell IDs are
  * always present; an accessor for an unrequested optional field returns NULL. */
@@ -455,6 +482,9 @@ int alea_ray_boundary_event_get(
     double* t, int* kind, int* surface_id, int* cell_before, int* cell_after,
     int* material_before, int* material_after, uint32_t* resolution_flags,
     uint32_t* primitive_id, double* nx, double* ny, double* nz);
+int alea_ray_boundary_event_provenance_get(
+    const alea_ray_boundary_event_query_result_t* result, size_t index,
+    alea_ray_boundary_event_provenance_t* out_provenance);
 
 /**
  * @brief Get number of segments in raycast result

@@ -74,7 +74,26 @@ typedef struct {
     uint8_t local_surface_count;
     uint8_t local_surface_complete;
     int local_surface_ids[16];
+    /* Compact occurrence receipt for selected hierarchical traversal.  The
+     * generic global event producer leaves provenance_flags zero. */
+    uint8_t provenance_flags;
+    int active_cell_id;
+    int active_universe_id;
+    int active_depth;
+    uint64_t active_occurrence_key;
+    uint64_t active_parent_occurrence_key;
+    uint64_t before_occurrence_key;
+    uint64_t before_parent_occurrence_key;
+    uint64_t after_occurrence_key;
+    uint64_t after_parent_occurrence_key;
+    double local_point[3];
+    double local_direction[3];
 } alea_ray_boundary_event_t;
+
+#define ALEA_BOUNDARY_PROVENANCE_ACTIVE_FRAME    (1u << 0)
+#define ALEA_BOUNDARY_PROVENANCE_BEFORE_OWNER    (1u << 1)
+#define ALEA_BOUNDARY_PROVENANCE_AFTER_OWNER     (1u << 2)
+#define ALEA_BOUNDARY_PROVENANCE_PATH_TRUNCATED  (1u << 3)
 
 /* Internal query contract.  This deliberately lives below the public API
  * while consumers converge on its result and budget semantics. */
@@ -1111,6 +1130,10 @@ typedef struct {
      * canonical representative. Synthetic lattice events are always emitted. */
     bool include_all_coincident_physical;
     bool use_hier_blas;
+    /* The legacy selected-event receipt verifies both open sides with complete
+     * coverage. Transition screens skip that eager oracle and let the
+     * transition kernel invoke coverage only after adjacency fails. */
+    bool skip_open_side_coverage;
     /* Zero means unlimited. These are enforced while materializing events. */
     uint64_t max_events;
     uint64_t max_output_bytes;
@@ -1142,6 +1165,11 @@ int alea_raycast_selected_boundary_events_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* scratch,
     alea_ray_boundary_event_result_t* events);
+int alea_raycast_selected_boundary_events_with_options_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    const alea_ray_boundary_event_options_internal_t* options,
+    alea_raycast_result_t* scratch,
+    alea_ray_boundary_event_result_t* events);
 
 /* Returns 0 with certified local groups, 1 when canonical provenance is
  * required, and -1 on an execution failure. */
@@ -1150,6 +1178,14 @@ int alea_raycast_selected_boundary_events_bidirectional_nocache(
     alea_raycast_result_t* forward_scratch,
     alea_raycast_result_t* reverse_scratch,
     alea_ray_boundary_event_result_t* events);
+
+/* Classify one selected-walker event using its retained active local frame.
+ * An incomplete physical group is reported conservatively as an ambiguous
+ * boundary; missing occurrence provenance is unresolved. */
+int alea_check_selected_boundary_event_transition_nocache(
+    alea_system_t* sys, const alea_ray_boundary_event_t* event,
+    const alea_transition_options_t* options,
+    alea_transition_result_t* result);
 
 /**
  * Execute an internal semantic ray query using reusable caller-owned storage.

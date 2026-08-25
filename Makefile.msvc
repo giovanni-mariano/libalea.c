@@ -179,6 +179,9 @@ MESH_OBJS = \
 
 GEO_VALIDATOR_OBJS = \
 	$(BUILD)\geo_validator\geo_validator.obj \
+	$(BUILD)\geo_validator\transition_validation.obj \
+	$(BUILD)\geo_validator\transition_slice_screen.obj \
+	$(BUILD)\geo_validator\transition_slice_critical.obj \
 	$(BUILD)\geo_validator\ray_slice_validation.obj
 
 CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) \
@@ -547,6 +550,15 @@ $(BUILD)\mesh\mesh_export.obj: $(SRC)\mesh\mesh_export.c dirs
 
 $(BUILD)\geo_validator\geo_validator.obj: $(SRC)\geo_validator\geo_validator.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\geo_validator.c
+
+$(BUILD)\geo_validator\transition_validation.obj: $(SRC)\geo_validator\transition_validation.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\transition_validation.c
+
+$(BUILD)\geo_validator\transition_slice_screen.obj: $(SRC)\geo_validator\transition_slice_screen.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\transition_slice_screen.c
+
+$(BUILD)\geo_validator\transition_slice_critical.obj: $(SRC)\geo_validator\transition_slice_critical.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\transition_slice_critical.c
 
 $(BUILD)\geo_validator\ray_slice_validation.obj: $(SRC)\geo_validator\ray_slice_validation.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\ray_slice_validation.c
