@@ -1503,6 +1503,369 @@ TEST(volume_path_index_reuses_and_invalidates) {
     alea_destroy(sys);
 }
 
+TEST(volume_path_structural_resolver_avoids_global_index) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(surface >= 0);
+    alea_node_id_t interior = alea_halfspace(sys, surface, -1);
+    ASSERT(interior != ALEA_NODE_ID_INVALID);
+    int cell = alea_add_cell(sys, 1, interior, mat, 1.0, 0);
+    ASSERT(cell >= 0);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_at_point(
+        sys, 0.0, 0.0, 0.0, &path), 1);
+    ASSERT_EQ(path.terminal_cell_index, cell);
+    ASSERT_EQ(path.path_id, UINT64_MAX);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_target_resolver_finds_ancestor_and_terminal) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    int outer_surface = alea_sphere_surface(sys, 1, 10.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(outer_surface >= 0);
+    ASSERT(child_surface >= 0);
+    alea_node_id_t outer = alea_halfspace(sys, outer_surface, -1);
+    alea_node_id_t child_region = alea_halfspace(sys, child_surface, -1);
+    ASSERT(outer != ALEA_NODE_ID_INVALID);
+    ASSERT(child_region != ALEA_NODE_ID_INVALID);
+
+    int container = alea_add_cell(sys, 10, outer, mat, 1.0, 0);
+    int child = alea_add_cell(sys, 20, child_region, mat, 1.0, 7);
+    ASSERT(container >= 0);
+    ASSERT(child >= 0);
+    const double translation[3] = {10.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 70, translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 7, 70), 0);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 10.0, 0.0, 0.0, 10, 0, &path), 1);
+    ASSERT_EQ(path.terminal_cell_index, container);
+    ASSERT_EQ(path.depth, 0);
+    ASSERT_EQ(path.ancestor_count, 0);
+    ASSERT_EQ(path.world_to_local[3], 0.0);
+
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 10.0, 0.0, 0.0, 20, 7, &path), 1);
+    ASSERT_EQ(path.terminal_cell_index, child);
+    ASSERT_EQ(path.depth, 1);
+    ASSERT_EQ(path.ancestor_count, 1);
+    ASSERT_EQ(path.ancestor_cell_indices[0], container);
+    ASSERT_EQ(path.path_id, UINT64_MAX);
+    ASSERT_EQ(path.world_to_local[3], -10.0);
+    ASSERT_NULL(sys->volume_path_index);
+
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 30.0, 0.0, 0.0, 20, 7, &path), 0);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_target_resolver_reports_repeated_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+    int outer_surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(outer_surface >= 0);
+    ASSERT(child_surface >= 0);
+    alea_node_id_t outer = alea_halfspace(sys, outer_surface, -1);
+    alea_node_id_t child_region = alea_halfspace(sys, child_surface, -1);
+    ASSERT(outer != ALEA_NODE_ID_INVALID);
+    ASSERT(child_region != ALEA_NODE_ID_INVALID);
+
+    int left = alea_add_cell(sys, 10, outer, mat, 1.0, 0);
+    int right = alea_add_cell(sys, 11, outer, mat, 1.0, 0);
+    int child = alea_add_cell(sys, 20, child_region, mat, 1.0, 7);
+    ASSERT(left >= 0);
+    ASSERT(right >= 0);
+    ASSERT(child >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, left, 7, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, right, 7, 0), 0);
+
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 0.0, 0.0, 0.0, 20, 7, &path), 2);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_point_sets_aggregate_structural_occurrences) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    int left_surface = alea_sphere_surface(sys, 1, -10.0, 0.0, 0.0, 4.0);
+    int right_surface = alea_sphere_surface(sys, 2, 10.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 3, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(mat >= 0);
+    ASSERT(left_surface >= 0);
+    ASSERT(right_surface >= 0);
+    ASSERT(child_surface >= 0);
+    int left = alea_add_cell(
+        sys, 10, alea_halfspace(sys, left_surface, -1), mat, 1.0, 0);
+    int right = alea_add_cell(
+        sys, 11, alea_halfspace(sys, right_surface, -1), mat, 1.0, 0);
+    int child = alea_add_cell(
+        sys, 20, alea_halfspace(sys, child_surface, -1), mat, 1.0, 7);
+    ASSERT(left >= 0);
+    ASSERT(right >= 0);
+    ASSERT(child >= 0);
+    const double left_translation[3] = {-10.0, 0.0, 0.0};
+    const double right_translation[3] = {10.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 70, left_translation, 3, 0), 0);
+    ASSERT_EQ(alea_add_transform(sys, 71, right_translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, left, 7, 70), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, right, 7, 71), 0);
+
+    const double points[] = {
+        -10.0, 0.0, 0.0,
+        -10.1, 0.0, 0.0,
+         10.0, 0.0, 0.0,
+         30.0, 0.0, 0.0,
+    };
+    const alea_volume_path_point_set_t sets[] = {
+        {.point_offset = 0, .point_count = 2,
+         .target_cell_id = 20, .target_universe_id = 7},
+        {.point_offset = 0, .point_count = 3,
+         .target_cell_id = 20, .target_universe_id = 7},
+        {.point_offset = 3, .point_count = 1,
+         .target_cell_id = 20, .target_universe_id = 7},
+        {.point_offset = 0, .point_count = 0,
+         .target_cell_id = 20, .target_universe_id = 7},
+    };
+    alea_volume_path_point_set_result_t serial[4];
+    alea_volume_path_point_set_batch_stats_t serial_stats;
+    ASSERT_EQ(alea_volume_path_resolve_cell_point_sets(
+        sys, points, 4, sets, 4, 4, 0, serial, &serial_stats), 0);
+    ASSERT_EQ(serial_stats.point_set_count, 4);
+    ASSERT_EQ(serial_stats.completed_point_set_count, 4);
+    ASSERT_EQ(serial_stats.requested_workers, 4);
+    ASSERT_EQ(serial_stats.actual_workers, 1);
+    ASSERT(serial_stats.reserved_scratch_bytes_per_worker >=
+           3 * sizeof(alea_volume_path_t));
+    ASSERT_EQ(serial_stats.reserved_parallel_scratch_bytes,
+              serial_stats.reserved_scratch_bytes_per_worker);
+
+    ASSERT_EQ(serial[0].status, ALEA_VOLUME_PATH_UNIQUE);
+    ASSERT_EQ(serial[0].tested_point_count, 2);
+    ASSERT_EQ(serial[0].matching_occurrence_count, 1);
+    ASSERT_EQ(serial[0].unique_path.terminal_cell_index, child);
+    ASSERT_EQ(serial[0].unique_path.ancestor_cell_indices[0], left);
+
+    ASSERT_EQ(serial[1].status, ALEA_VOLUME_PATH_MULTIPLE);
+    ASSERT_EQ(serial[1].tested_point_count, 3);
+    ASSERT_EQ(serial[1].matching_occurrence_count, 2);
+    ASSERT_EQ(serial[2].status, ALEA_VOLUME_PATH_NONE);
+    ASSERT_EQ(serial[2].tested_point_count, 1);
+    ASSERT_EQ(serial[2].matching_occurrence_count, 0);
+    ASSERT_EQ(serial[3].status, ALEA_VOLUME_PATH_NONE);
+    ASSERT_EQ(serial[3].tested_point_count, 0);
+
+    alea_volume_path_point_set_result_t parallel[4];
+    alea_volume_path_point_set_batch_stats_t parallel_stats;
+    ASSERT_EQ(alea_volume_path_resolve_cell_point_sets(
+        sys, points, 4, sets, 4, 4, UINT64_MAX,
+        parallel, &parallel_stats), 0);
+    for (size_t set = 0; set < 4; set++) {
+        ASSERT_EQ(parallel[set].status, serial[set].status);
+        ASSERT_EQ(parallel[set].tested_point_count,
+                  serial[set].tested_point_count);
+        ASSERT_EQ(parallel[set].matching_occurrence_count,
+                  serial[set].matching_occurrence_count);
+    }
+    ASSERT(parallel_stats.actual_workers >= 1);
+    ASSERT(parallel_stats.actual_workers <= 4);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_volume_path_point_set_t invalid = {
+        .point_offset = 4, .point_count = 1,
+        .target_cell_id = 20, .target_universe_id = 7};
+    alea_volume_path_point_set_result_t invalid_result;
+    alea_volume_path_point_set_batch_stats_t invalid_stats;
+    ASSERT_EQ(alea_volume_path_resolve_cell_point_sets(
+        sys, points, 4, &invalid, 1, 1, 0,
+        &invalid_result, &invalid_stats), -1);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_point_sets_preserve_individual_ambiguity) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    int outer_surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(mat >= 0);
+    int left = alea_add_cell(
+        sys, 10, alea_halfspace(sys, outer_surface, -1), mat, 1.0, 0);
+    int right = alea_add_cell(
+        sys, 11, alea_halfspace(sys, outer_surface, -1), mat, 1.0, 0);
+    ASSERT(left >= 0);
+    ASSERT(right >= 0);
+    ASSERT(alea_add_cell(
+        sys, 20, alea_halfspace(sys, child_surface, -1), mat, 1.0, 7) >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, left, 7, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, right, 7, 0), 0);
+
+    const double point[] = {0.0, 0.0, 0.0};
+    const alea_volume_path_point_set_t set = {
+        .point_offset = 0, .point_count = 1,
+        .target_cell_id = 20, .target_universe_id = 7};
+    alea_volume_path_point_set_result_t result;
+    alea_volume_path_point_set_batch_stats_t stats;
+    ASSERT_EQ(alea_volume_path_resolve_cell_point_sets(
+        sys, point, 1, &set, 1, 1, 0, &result, &stats), 0);
+    ASSERT_EQ(result.status, ALEA_VOLUME_PATH_MULTIPLE);
+    ASSERT_EQ(result.tested_point_count, 1);
+    ASSERT_EQ(result.matching_occurrence_count, 2);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_target_resolver_enforces_lattice_window) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_system_t* sys = model->sys;
+
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 0.0, 0.0, 0.0, 1, 1, &path), 1);
+    ASSERT_EQ(path.terminal_cell_id, 1);
+    ASSERT_EQ(path.universe_id, 1);
+    ASSERT_EQ(path.lattice_step_count, 1);
+
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 0.0, 0.0, 2.0, 1, 1, &path), 0);
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 0.0, 0.0, 2.0, 100, 0, &path), 0);
+    ASSERT_NULL(sys->volume_path_index);
+
+    mcnp_model_destroy(model);
+}
+
+TEST(volume_path_transform_evidence_resolves_outside_reported_cell) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    int outer_surface = alea_sphere_surface(sys, 1, 10.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(mat >= 0);
+    ASSERT(outer_surface >= 0);
+    ASSERT(child_surface >= 0);
+    int container = alea_add_cell(
+        sys, 10, alea_halfspace(sys, outer_surface, -1), mat, 1.0, 0);
+    int child = alea_add_cell(
+        sys, 20, alea_halfspace(sys, child_surface, -1), mat, 1.0, 7);
+    ASSERT(container >= 0);
+    ASSERT(child >= 0);
+    const double translation[3] = {10.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 70, translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, container, 7, 70), 0);
+
+    const double world_point[3] = {12.0, 0.0, 0.0};
+    const double local_point[3] = {2.0, 0.0, 0.0};
+    const double direction[3] = {1.0, 0.0, 0.0};
+    const double precision[3] = {1e-3, 1e-3, 1e-3};
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_cell_at_point(
+        sys, 12.0, 0.0, 0.0, 20, 7, &path), 0);
+    ASSERT_EQ(alea_volume_path_resolve_cell_from_transform_evidence(
+        sys, 20, 7, world_point, direction, local_point, direction,
+        precision, precision, precision, precision, &path), 1);
+    ASSERT_EQ(path.terminal_cell_index, child);
+    ASSERT_EQ(path.depth, 1);
+    ASSERT_EQ(path.ancestor_count, 1);
+    ASSERT_EQ(path.ancestor_cell_indices[0], container);
+    ASSERT_EQ(path.world_to_local[3], -10.0);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_transform_evidence_reports_ambiguous_placements) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    int outer_surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 2, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(mat >= 0);
+    int left = alea_add_cell(
+        sys, 10, alea_halfspace(sys, outer_surface, -1), mat, 1.0, 0);
+    int right = alea_add_cell(
+        sys, 11, alea_halfspace(sys, outer_surface, -1), mat, 1.0, 0);
+    ASSERT(left >= 0);
+    ASSERT(right >= 0);
+    ASSERT(alea_add_cell(
+        sys, 20, alea_halfspace(sys, child_surface, -1), mat, 1.0, 7) >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, left, 7, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, right, 7, 0), 0);
+
+    const double point[3] = {2.0, 0.0, 0.0};
+    const double direction[3] = {1.0, 0.0, 0.0};
+    const double precision[3] = {1e-3, 1e-3, 1e-3};
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_cell_from_transform_evidence(
+        sys, 20, 7, point, direction, point, direction,
+        precision, precision, precision, precision, &path), 2);
+    ASSERT_NULL(sys->volume_path_index);
+
+    alea_destroy(sys);
+}
+
+TEST(volume_path_transform_evidence_uses_ancestor_to_disambiguate) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int mat = alea_add_material(sys, 1);
+    int left_surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 4.0);
+    int right_surface = alea_sphere_surface(sys, 2, 10.0, 0.0, 0.0, 4.0);
+    int child_surface = alea_sphere_surface(sys, 3, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(mat >= 0);
+    int left = alea_add_cell(
+        sys, 10, alea_halfspace(sys, left_surface, -1), mat, 1.0, 0);
+    int right = alea_add_cell(
+        sys, 11, alea_halfspace(sys, right_surface, -1), mat, 1.0, 0);
+    ASSERT(left >= 0);
+    ASSERT(right >= 0);
+    ASSERT(alea_add_cell(
+        sys, 20, alea_halfspace(sys, child_surface, -1), mat, 1.0, 7) >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, left, 7, 0), 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, right, 7, 0), 0);
+
+    const double point[3] = {2.0, 0.0, 0.0};
+    const double direction[3] = {1.0, 0.0, 0.0};
+    const double precision[3] = {1e-3, 1e-3, 1e-3};
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_cell_from_transform_evidence(
+        sys, 20, 7, point, direction, point, direction,
+        precision, precision, precision, precision, &path), 1);
+    ASSERT_EQ(path.ancestor_count, 1);
+    ASSERT_EQ(path.ancestor_cell_indices[0], left);
+
+    alea_destroy(sys);
+}
+
 TEST(volume_path_index_respects_max_count_guard) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
     alea_setenv("ALEA_VOLUME_PATH_MAX_COUNT", "1", 1);

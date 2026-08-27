@@ -302,6 +302,7 @@ typedef struct {
     uint64_t max_coverage_components;
     uint64_t max_component_links;
     int enable_critical_refinement;
+    int critical_full_view;
     size_t max_refinement_frontiers;
     size_t max_critical_tiles;
     size_t max_critical_tile_sources;
@@ -315,7 +316,22 @@ typedef struct {
     uint64_t max_curve_pairs;
     uint64_t max_critical_sector_witnesses;
     double critical_probe_radius;
+    uint64_t max_critical_boundary_evidence;
 } alea_transition_slice_options_t;
+
+#define ALEA_TRANSITION_SLICE_BOUNDARY_PIECE_CAPACITY 3
+#define ALEA_TRANSITION_SLICE_BOUNDARY_POINT_CAPACITY 17
+
+#define ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_SOURCE     (1u << 0)
+#define ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_PRIMARY    (1u << 1)
+#define ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_CONNECTING (1u << 2)
+
+typedef struct {
+    int surface_id;
+    uint32_t role_flags;
+    size_t point_count;
+    double uv[ALEA_TRANSITION_SLICE_BOUNDARY_POINT_CAPACITY][2];
+} alea_transition_slice_boundary_piece_t;
 
 typedef struct {
     alea_transition_result_t transition;
@@ -420,7 +436,8 @@ typedef enum {
 typedef enum {
     ALEA_TRANSITION_SLICE_TILE_SOURCE_TRANSITION_COMPONENT = 0,
     ALEA_TRANSITION_SLICE_TILE_SOURCE_COVERAGE_COMPONENT,
-    ALEA_TRANSITION_SLICE_TILE_SOURCE_REFINEMENT_FRONTIER
+    ALEA_TRANSITION_SLICE_TILE_SOURCE_REFINEMENT_FRONTIER,
+    ALEA_TRANSITION_SLICE_TILE_SOURCE_FULL_VIEW
 } alea_transition_slice_tile_source_kind_t;
 
 typedef struct {
@@ -460,6 +477,10 @@ typedef struct {
     double world_point[3];
     double direction[3];
     double radius;
+    size_t boundary_piece_count;
+    int boundary_evidence_truncated;
+    alea_transition_slice_boundary_piece_t boundary_pieces[
+        ALEA_TRANSITION_SLICE_BOUNDARY_PIECE_CAPACITY];
 } alea_transition_slice_critical_finding_t;
 
 typedef struct {
@@ -571,9 +592,20 @@ typedef struct {
     int critical_enabled;
     int critical_complete;
     alea_transition_slice_critical_stop_reason_t critical_stop_reason;
+    size_t critical_boundary_evidence;
+    size_t omitted_critical_boundary_evidence;
 } alea_transition_slice_stats_t;
 
 typedef struct alea_transition_slice_result alea_transition_slice_result_t;
+
+typedef struct {
+    size_t page_count;
+    size_t completed_page_count;
+    size_t requested_workers;
+    size_t actual_workers;
+    uint64_t reserved_scratch_bytes_per_worker;
+    uint64_t reserved_parallel_scratch_bytes;
+} alea_transition_slice_batch_stats_t;
 
 void alea_transition_slice_options_init(
     alea_transition_slice_options_t* options);
@@ -590,6 +622,23 @@ int alea_transition_slice_screen(
     alea_system_t* sys, const alea_slice_view_t* view,
     const alea_transition_slice_options_t* options,
     alea_transition_slice_result_t* result);
+/**
+ * Screen independent slice pages with bounded OpenMP workers.
+ *
+ * Results are written by page ordinal and are therefore deterministic with
+ * respect to worker scheduling. Every entry in `results` must be a distinct,
+ * initialized result object. A zero worker request uses the OpenMP runtime
+ * maximum; a zero parallel scratch budget selects the serial path. The actual
+ * worker count never exceeds page count or
+ * `max_parallel_scratch_bytes / reserved_scratch_bytes_per_worker`. Nested
+ * OpenMP execution is disabled by falling back to one worker.
+ */
+int alea_transition_slice_screen_batch(
+    alea_system_t* sys, const alea_slice_view_t* views, size_t page_count,
+    const alea_transition_slice_options_t* options,
+    size_t requested_workers, uint64_t max_parallel_scratch_bytes,
+    alea_transition_slice_result_t* const* results,
+    alea_transition_slice_batch_stats_t* out_stats);
 size_t alea_transition_slice_finding_count(
     const alea_transition_slice_result_t* result);
 int alea_transition_slice_finding_get(

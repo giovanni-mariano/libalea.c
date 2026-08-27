@@ -13,6 +13,21 @@
 typedef struct alea_system alea_system_t;
 typedef struct alea_hier_spatial_index alea_hier_spatial_index_t;
 
+/* Internal filtered point traversal.  The visitor receives only cells whose
+ * universe-local bounding boxes contain the point when a BLAS is available;
+ * small universes preserve the linear fallback.  A positive visitor result
+ * stops traversal, zero continues, and a negative result is an error. */
+typedef int (*alea_hier_point_candidate_visitor_t)(void* context,
+                                                   uint32_t cell_index);
+int alea_hier_spatial_visit_universe_point_candidates(
+    alea_system_t* sys,
+    int universe_id,
+    double x,
+    double y,
+    double z,
+    alea_hier_point_candidate_visitor_t visitor,
+    void* context);
+
 /**
  * @brief Query result for region/slice/point queries.
  *
@@ -57,6 +72,19 @@ typedef struct {
     double ancestor_lattice_oy[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
     double ancestor_lattice_oz[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
 } alea_hier_spatial_chain_hit_t;
+
+/* A universe placement identified from two coordinate frames rather than
+ * cell containment.  This is used for boundary failures where the reported
+ * cell is expected not to contain the rounded event point. */
+typedef struct {
+    uint32_t placement_index;
+    int universe_id;
+    int depth;
+    uint8_t ancestor_count;
+    uint8_t chain_truncated;
+    uint32_t ancestor_cell_indices[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
+    alea_matrix_t transform;  /* target-universe local to world */
+} alea_hier_universe_placement_match_t;
 
 typedef struct {
     uint32_t cell_index;
@@ -142,6 +170,23 @@ int alea_hier_spatial_index_build(alea_system_t* sys);
 void alea_hier_spatial_index_free(alea_hier_spatial_index_t* idx);
 const alea_hier_spatial_stats_t*
 alea_hier_spatial_index_stats(const alea_hier_spatial_index_t* idx);
+
+/* Match an ordinary/root universe placement against corresponding world and
+ * universe-local point/direction values.  Enclosing-cell containment is used
+ * to disambiguate equal transforms, but target-cell containment is not
+ * required. Returns none/unique/multiple/error as 0/1/2/-1. */
+int alea_hier_spatial_resolve_universe_placement_from_transform_evidence(
+    alea_system_t* sys,
+    int target_universe_id,
+    const double world_point[3],
+    const double world_direction[3],
+    const double local_point[3],
+    const double local_direction[3],
+    const double world_point_precision[3],
+    const double world_direction_precision[3],
+    const double local_point_precision[3],
+    const double local_direction_precision[3],
+    alea_hier_universe_placement_match_t* out_match);
 int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           double x,
                                           double y,
@@ -154,6 +199,10 @@ int alea_hier_spatial_find_cells_at_point_uncached(alea_system_t* sys,
                                                    double z,
                                                    alea_cell_hit_t* out_hits,
                                                    size_t max_hits);
+int alea_hier_spatial_find_cells_at_point_chain_uncached(
+    alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys, size_t max_hits);
 int alea_hier_spatial_find_deepest_cell_at_point(alea_system_t* sys,
                                                  double x,
                                                  double y,

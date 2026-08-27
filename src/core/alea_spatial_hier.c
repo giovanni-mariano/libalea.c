@@ -7,6 +7,7 @@
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
 #include "core/alea_surface.h"
+#include "core/alea_occurrence.h"
 #include "primitives/bbox.h"
 #include "alea_types.h"
 #include "util/alea_hashmap.h"
@@ -1297,6 +1298,152 @@ static const alea_matrix_t* placement_transform(const alea_hier_spatial_index_t*
     return &idx->transforms[placement->transform_index];
 }
 
+static int transform_evidence_precision_valid(const double values[3]) {
+    if (!values) return 0;
+    for (int axis = 0; axis < 3; axis++) {
+        if (!isfinite(values[axis]) || values[axis] <= 0.0) return 0;
+    }
+    return 1;
+}
+
+static int placement_matches_transform_evidence(
+        const alea_matrix_t* transform,
+        const double world_point[3],
+        const double world_direction[3],
+        const double local_point[3],
+        const double local_direction[3],
+        const double world_point_precision[3],
+        const double world_direction_precision[3],
+        const double local_point_precision[3],
+        const double local_direction_precision[3]) {
+    if (!transform || !transform->has_inverse) return 0;
+    for (int row = 0; row < 3; row++) {
+        double predicted_point = transform->inv[4 * row + 3];
+        double predicted_direction = 0.0;
+        double point_tolerance = 0.5 * local_point_precision[row];
+        double direction_tolerance = 0.5 * local_direction_precision[row];
+        for (int axis = 0; axis < 3; axis++) {
+            const double coefficient = transform->inv[4 * row + axis];
+            predicted_point += coefficient * world_point[axis];
+            predicted_direction += coefficient * world_direction[axis];
+            point_tolerance += fabs(coefficient) *
+                               0.5 * world_point_precision[axis];
+            direction_tolerance += fabs(coefficient) *
+                                   0.5 * world_direction_precision[axis];
+        }
+        point_tolerance += 1e-12 * fmax(1.0, fabs(local_point[row]));
+        direction_tolerance += 1e-12;
+        if (fabs(predicted_point - local_point[row]) > point_tolerance ||
+            fabs(predicted_direction - local_direction[row]) >
+                direction_tolerance) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void populate_transform_evidence_match(
+        const alea_hier_spatial_index_t* idx,
+        uint32_t placement_index,
+        alea_hier_universe_placement_match_t* out) {
+    memset(out, 0, sizeof(*out));
+    const hier_placement_t* placement = &idx->placements[placement_index];
+    out->placement_index = placement_index;
+    out->universe_id = placement->universe_id;
+    out->depth = placement->depth;
+    out->transform = *placement_transform(idx, placement);
+
+    uint32_t reversed[HIER_MAX_PLACEMENT_DEPTH];
+    int count = 0;
+    uint32_t current = placement_index;
+    while ((size_t)current < idx->placement_count &&
+           count < HIER_MAX_PLACEMENT_DEPTH) {
+        const hier_placement_t* item = &idx->placements[current];
+        if (item->parent_cell_index != UINT32_MAX) {
+            reversed[count++] = item->parent_cell_index;
+        }
+        if (item->parent_id == UINT32_MAX) break;
+        current = item->parent_id;
+    }
+    int kept = count;
+    if (kept > ALEA_HIER_SPATIAL_HIT_CHAIN_MAX) {
+        kept = ALEA_HIER_SPATIAL_HIT_CHAIN_MAX;
+        out->chain_truncated = 1;
+    }
+    out->ancestor_count = (uint8_t)kept;
+    for (int i = 0; i < kept; i++) {
+        out->ancestor_cell_indices[i] = reversed[count - 1 - i];
+    }
+}
+
+int alea_hier_spatial_resolve_universe_placement_from_transform_evidence(
+        alea_system_t* sys,
+        int target_universe_id,
+        const double world_point[3],
+        const double world_direction[3],
+        const double local_point[3],
+        const double local_direction[3],
+        const double world_point_precision[3],
+        const double world_direction_precision[3],
+        const double local_point_precision[3],
+        const double local_direction_precision[3],
+        alea_hier_universe_placement_match_t* out_match) {
+    if (!sys || !sys->hier_spatial_index || !out_match ||
+        !world_point || !world_direction || !local_point || !local_direction ||
+        !transform_evidence_precision_valid(world_point_precision) ||
+        !transform_evidence_precision_valid(world_direction_precision) ||
+        !transform_evidence_precision_valid(local_point_precision) ||
+        !transform_evidence_precision_valid(local_direction_precision)) {
+        return -1;
+    }
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    if (!idx->built) return -1;
+
+    uint32_t first_transform = UINT32_MAX;
+    uint32_t first_containing = UINT32_MAX;
+    int transform_count = 0;
+    int containing_count = 0;
+    for (size_t i = 0; i < idx->placement_count; i++) {
+        const hier_placement_t* placement = &idx->placements[i];
+        /* Lattice placement records describe a lattice container, not one
+         * concrete child-universe coordinate frame. */
+        if (!(placement->flags & (HIER_PLACEMENT_ROOT | HIER_PLACEMENT_FILL)) ||
+            placement->universe_id != target_universe_id) {
+            continue;
+        }
+        const alea_matrix_t* transform = placement_transform(idx, placement);
+        if (!placement_matches_transform_evidence(
+                transform, world_point, world_direction,
+                local_point, local_direction,
+                world_point_precision, world_direction_precision,
+                local_point_precision, local_direction_precision)) {
+            continue;
+        }
+        if (transform_count == 0) first_transform = (uint32_t)i;
+        if (transform_count < 2) transform_count++;
+
+        /* Equal transforms can occur under different fill cells.  Use the
+         * enclosing placement chain to disambiguate them when possible, but
+         * do not require it: failure of that chain may itself be the geometry
+         * defect being diagnosed.  The reported target cell is never tested. */
+        int chain_contains = alea_hier_spatial_check_placement_chain(
+            sys, (uint32_t)i,
+            world_point[0], world_point[1], world_point[2]);
+        if (chain_contains < 0) return -1;
+        if (chain_contains == 0) continue;
+        if (containing_count == 0) first_containing = (uint32_t)i;
+        if (++containing_count >= 2) return 2;
+    }
+    if (containing_count == 1) {
+        populate_transform_evidence_match(idx, first_containing, out_match);
+        return 1;
+    }
+    if (transform_count == 0) return 0;
+    if (transform_count >= 2) return 2;
+    populate_transform_evidence_match(idx, first_transform, out_match);
+    return 1;
+}
+
 int alea_hier_spatial_check_placement_chain(alea_system_t* sys,
                                             uint32_t placement_index,
                                             double x,
@@ -1516,6 +1663,58 @@ static void query_blas_node(hier_point_query_ctx_t* ctx, uint32_t node_idx) {
     query_blas_node(ctx, node->right_child);
 }
 
+int alea_hier_spatial_visit_universe_point_candidates(
+        alea_system_t* sys,
+        int universe_id,
+        double x,
+        double y,
+        double z,
+        alea_hier_point_candidate_visitor_t visitor,
+        void* context) {
+    if (!sys || !visitor || !sys->hier_spatial_index) return -1;
+    alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
+    if (!idx->built) return -1;
+
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return -1;
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
+    if (blas && blas->built && blas->node_count > 0) {
+        hier_cand_buf_t candidates;
+        hier_cand_init(&candidates);
+        hier_point_query_ctx_t query = {
+            .sys = sys,
+            .idx = idx,
+            .blas = blas,
+            .x = x,
+            .y = y,
+            .z = z,
+            .candidates = &candidates,
+            .error = 0,
+        };
+        query_blas_node(&query, 0);
+        if (!query.error && candidates.count > 1) hier_cand_sort(&candidates);
+        int result = query.error ? -1 : 0;
+        for (size_t i = 0; result == 0 && i < candidates.count; i++) {
+            uint32_t cell_pos = candidates.data[i];
+            if (cell_pos >= blas->cell_count) {
+                result = -1;
+                break;
+            }
+            result = visitor(context, blas->cells[cell_pos].cell_index);
+        }
+        hier_cand_free(&candidates);
+        return result;
+    }
+
+    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        size_t cell_index = univ->cell_indices.data[i];
+        if (cell_index > UINT32_MAX) return -1;
+        int result = visitor(context, (uint32_t)cell_index);
+        if (result != 0) return result;
+    }
+    return 0;
+}
+
 static int hier_query_universe(alea_system_t* sys,
                                alea_hier_spatial_index_t* idx,
                                int universe_id,
@@ -1525,6 +1724,10 @@ static int hier_query_universe(alea_system_t* sys,
                                int depth,
                                const alea_matrix_t* parent_transform,
                                alea_cell_hit_t* out_hits,
+                               uint64_t* occurrence_keys,
+                               uint64_t* parent_occurrence_keys,
+                               uint64_t parent_occurrence_key,
+                               uint64_t occurrence_seed,
                                size_t max_hits,
                                size_t* hit_count);
 
@@ -1751,9 +1954,15 @@ static int process_point_cell(alea_system_t* sys,
                               int depth,
                               const alea_matrix_t* parent_transform,
                               alea_cell_hit_t* out_hits,
+                              uint64_t* occurrence_keys,
+                              uint64_t* parent_occurrence_keys,
+                              uint64_t parent_occurrence_key,
+                              uint64_t occurrence_seed,
                               size_t max_hits,
                               size_t* hit_count) {
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    const uint64_t cell_key = alea_occurrence_cell(
+        occurrence_seed, cell_index);
 
     if (cell->lat_type != 0 && cell->lat_fill) {
         alea_lattice_location_t location;
@@ -1761,6 +1970,7 @@ static int process_point_cell(alea_system_t* sys,
             return 0;
 
         if (*hit_count < max_hits) {
+            const size_t hit_index = *hit_count;
             alea_cell_hit_t* hit = &out_hits[*hit_count];
             hit->cell_id = cell->mc_cell_id;
             hit->cell_index = (int)cell_index;
@@ -1772,6 +1982,9 @@ static int process_point_cell(alea_system_t* sys,
             hit->local_y = ly;
             hit->local_z = lz;
             hit->resolution_flags = ALEA_RESOLVE_UNDEFINED_FILL;
+            if (occurrence_keys) occurrence_keys[hit_index] = cell_key;
+            if (parent_occurrence_keys)
+                parent_occurrence_keys[hit_index] = parent_occurrence_key;
             hier_cache_append(cell_index, hit, parent_transform, true,
                               location.fill_universe,
                               location.i, location.j, location.k,
@@ -1792,7 +2005,12 @@ static int process_point_cell(alea_system_t* sys,
                                    lz - location.oz,
                                    depth + 1,
                                    &child_transform,
-                                   out_hits, max_hits, hit_count);
+                                   out_hits, occurrence_keys,
+                                   parent_occurrence_keys, cell_key,
+                                   alea_occurrence_lattice(
+                                       cell_key, location.i, location.j,
+                                       location.k),
+                                   max_hits, hit_count);
     }
 
     if (!alea_contains_point(sys, cell->root_node_id, lx, ly, lz)) {
@@ -1800,6 +2018,7 @@ static int process_point_cell(alea_system_t* sys,
     }
 
     if (*hit_count < max_hits) {
+        const size_t hit_index = *hit_count;
         alea_cell_hit_t* hit = &out_hits[*hit_count];
         hit->cell_id = cell->mc_cell_id;
         hit->cell_index = (int)cell_index;
@@ -1812,6 +2031,9 @@ static int process_point_cell(alea_system_t* sys,
         hit->local_z = lz;
         hit->resolution_flags = alea_cell_entry_is_container(cell)
             ? ALEA_RESOLVE_UNDEFINED_FILL : 0;
+        if (occurrence_keys) occurrence_keys[hit_index] = cell_key;
+        if (parent_occurrence_keys)
+            parent_occurrence_keys[hit_index] = parent_occurrence_key;
         hier_cache_append(cell_index, hit, parent_transform,
                           false, 0, 0, 0, 0, 0.0, 0.0, 0.0);
         (*hit_count)++;
@@ -1836,7 +2058,9 @@ static int process_point_cell(alea_system_t* sys,
                                    child_x, child_y, child_z,
                                    depth + 1,
                                    &child_transform,
-                                   out_hits, max_hits, hit_count);
+                                   out_hits, occurrence_keys,
+                                   parent_occurrence_keys, cell_key, cell_key,
+                                   max_hits, hit_count);
     }
 
     return 0;
@@ -1851,6 +2075,10 @@ static int hier_query_universe(alea_system_t* sys,
                                int depth,
                                const alea_matrix_t* parent_transform,
                                alea_cell_hit_t* out_hits,
+                               uint64_t* occurrence_keys,
+                               uint64_t* parent_occurrence_keys,
+                               uint64_t parent_occurrence_key,
+                               uint64_t occurrence_seed,
                                size_t max_hits,
                                size_t* hit_count) {
     if (*hit_count >= max_hits) return 0;
@@ -1886,7 +2114,10 @@ static int hier_query_universe(alea_system_t* sys,
             uint32_t cell_index = blas->cells[cell_pos].cell_index;
             int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
                                         depth, parent_transform,
-                                        out_hits, max_hits, hit_count);
+                                        out_hits, occurrence_keys,
+                                        parent_occurrence_keys,
+                                        parent_occurrence_key, occurrence_seed,
+                                        max_hits, hit_count);
             if (rc < 0) ctx.error = -1;
         }
         hier_cand_free(&candidates);
@@ -1897,7 +2128,10 @@ static int hier_query_universe(alea_system_t* sys,
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
         int rc = process_point_cell(sys, idx, cell_index, lx, ly, lz,
                                     depth, parent_transform,
-                                    out_hits, max_hits, hit_count);
+                                    out_hits, occurrence_keys,
+                                    parent_occurrence_keys,
+                                    parent_occurrence_key, occurrence_seed,
+                                    max_hits, hit_count);
         if (rc < 0) return -1;
     }
 
@@ -2371,9 +2605,13 @@ static int hier_spatial_find_cells_at_point_impl(alea_system_t* sys,
                                                  double y,
                                                  double z,
                                                  alea_cell_hit_t* out_hits,
+                                                 uint64_t* occurrence_keys,
+                                                 uint64_t* parent_occurrence_keys,
                                                  size_t max_hits,
                                                  int use_cache) {
-    if (!sys || !out_hits || max_hits == 0) return -1;
+    if (!sys || !out_hits || max_hits == 0 ||
+        ((occurrence_keys == NULL) != (parent_occurrence_keys == NULL)))
+        return -1;
 
     if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
         if (alea_hier_spatial_index_build(sys) != 0) {
@@ -2394,7 +2632,7 @@ static int hier_spatial_find_cells_at_point_impl(alea_system_t* sys,
 
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
 
-    if (use_cache) {
+    if (use_cache && !occurrence_keys) {
         int cached = hier_cache_try(sys, x, y, z, out_hits, max_hits);
         if (cached > 0) {
             return cached;
@@ -2410,7 +2648,10 @@ static int hier_spatial_find_cells_at_point_impl(alea_system_t* sys,
     size_t hit_count = 0;
     int rc = hier_query_universe(sys, idx, 0, x, y, z, 0,
                                  &identity,
-                                 out_hits, max_hits, &hit_count);
+                                 out_hits, occurrence_keys,
+                                 parent_occurrence_keys, 0,
+                                 ALEA_OCCURRENCE_ROOT,
+                                 max_hits, &hit_count);
     if (rc < 0) {
         hier_cache_invalidate();
         return -1;
@@ -2430,7 +2671,8 @@ int alea_hier_spatial_find_cells_at_point(alea_system_t* sys,
                                           alea_cell_hit_t* out_hits,
                                           size_t max_hits) {
     return hier_spatial_find_cells_at_point_impl(sys, x, y, z,
-                                                out_hits, max_hits, 1);
+                                                out_hits, NULL, NULL,
+                                                max_hits, 1);
 }
 
 int alea_hier_spatial_find_cells_at_point_uncached(alea_system_t* sys,
@@ -2440,7 +2682,18 @@ int alea_hier_spatial_find_cells_at_point_uncached(alea_system_t* sys,
                                                    alea_cell_hit_t* out_hits,
                                                    size_t max_hits) {
     return hier_spatial_find_cells_at_point_impl(sys, x, y, z,
-                                                out_hits, max_hits, 0);
+                                                out_hits, NULL, NULL,
+                                                max_hits, 0);
+}
+
+int alea_hier_spatial_find_cells_at_point_chain_uncached(
+    alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* out_hits, uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys, size_t max_hits) {
+    if (!occurrence_keys || !parent_occurrence_keys) return -1;
+    return hier_spatial_find_cells_at_point_impl(
+        sys, x, y, z, out_hits, occurrence_keys, parent_occurrence_keys,
+        max_hits, 0);
 }
 
 static int hier_find_path_at_point_hinted(alea_system_t* sys,

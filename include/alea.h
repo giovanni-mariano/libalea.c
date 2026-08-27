@@ -284,6 +284,22 @@ int alea_classify_point_coverage_chain(
     int universe_depth,
     uint8_t* out_owner_mask,
     alea_point_coverage_classification_t* out_classification);
+
+/** Allocation-free form of alea_classify_point_coverage_chain().
+ *
+ * ``child_count_scratch`` must contain at least ``hit_count`` elements. It is
+ * overwritten by the classifier. This form is intended for hot native loops
+ * that already own bounded per-worker scratch storage.
+ */
+int alea_classify_point_coverage_chain_with_scratch(
+    const alea_cell_hit_t* hits,
+    const uint64_t* occurrence_keys,
+    const uint64_t* parent_occurrence_keys,
+    size_t hit_count,
+    int universe_depth,
+    uint8_t* out_owner_mask,
+    size_t* child_count_scratch,
+    alea_point_coverage_classification_t* out_classification);
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
                            double x, double y, double z);
 /* Legacy convenience wrapper.
@@ -754,6 +770,37 @@ typedef struct {
     double world_to_local[12];
 } alea_volume_path_t;
 
+typedef enum {
+    ALEA_VOLUME_PATH_NONE = 0,
+    ALEA_VOLUME_PATH_UNIQUE = 1,
+    ALEA_VOLUME_PATH_MULTIPLE = 2
+} alea_volume_path_status_t;
+
+/** A contiguous point range sharing one target cell occurrence. */
+typedef struct {
+    size_t point_offset;
+    size_t point_count;
+    int target_cell_id;
+    int target_universe_id;
+} alea_volume_path_point_set_t;
+
+/** Aggregate occurrence evidence across one point set. */
+typedef struct {
+    alea_volume_path_status_t status;
+    size_t tested_point_count;
+    size_t matching_occurrence_count;
+    alea_volume_path_t unique_path;
+} alea_volume_path_point_set_result_t;
+
+typedef struct {
+    size_t point_set_count;
+    size_t completed_point_set_count;
+    size_t requested_workers;
+    size_t actual_workers;
+    uint64_t reserved_scratch_bytes_per_worker;
+    uint64_t reserved_parallel_scratch_bytes;
+} alea_volume_path_point_set_batch_stats_t;
+
 /**
  * @brief Return the number of concrete hierarchical volume paths.
  *
@@ -784,6 +831,91 @@ size_t alea_volume_paths_get(alea_system_t* sys,
 int alea_volume_path_at_point(alea_system_t* sys,
                               double x, double y, double z,
                               alea_volume_path_t* out_path);
+
+/** Resolve one world-space point without enumerating all concrete paths.
+ *
+ * This walks only the hierarchy branch containing the point and therefore
+ * does not build the potentially large global volume-path index. The
+ * structural path, ancestors, lattice steps, and world-to-local transform are
+ * populated normally; ``path_id`` is set to ``UINT64_MAX`` because no dense
+ * global identifier is assigned.
+ */
+int alea_volume_path_resolve_at_point(alea_system_t* sys,
+                                      double x, double y, double z,
+                                      alea_volume_path_t* out_path);
+
+/** Resolve a specified cell occurrence at one world-space point.
+ *
+ * Unlike alea_volume_path_resolve_at_point(), this explores every hierarchy
+ * branch that contains the point and can therefore distinguish a unique
+ * occurrence from an overlap.  The target may be a terminal cell or a
+ * fill/lattice container at any hierarchy depth.  @p target_universe_id is
+ * the universe in which the MCNP cell card is defined.
+ *
+ * The traversal stops after finding a second distinct occurrence: callers
+ * only need the zero/unique/multiple classification, so this is a semantic
+ * early exit rather than a model-size cap.  On a unique result, @p out_path
+ * describes the target occurrence itself and its world-to-target-universe
+ * transform; ``path_id`` is ``UINT64_MAX`` because no global path index is
+ * built.
+ *
+ * @return 0 when absent, 1 when unique, 2 when multiple, or -1 on error.
+ */
+int alea_volume_path_resolve_cell_at_point(alea_system_t* sys,
+                                           double x, double y, double z,
+                                           int target_cell_id,
+                                           int target_universe_id,
+                                           alea_volume_path_t* out_path);
+
+/** Resolve target-cell occurrences across independent point sets.
+ *
+ * ``points_xyz`` contains ``3 * point_count`` doubles. Each point-set
+ * descriptor selects a contiguous point range and one target cell/universe.
+ * A result is unique only when every matching point identifies the same
+ * structural occurrence and no individual point is ambiguous. The hierarchy
+ * query cache is prepared once before any parallel work. A zero worker request
+ * uses the OpenMP runtime maximum; a zero parallel scratch budget selects the
+ * serial path. Output order is always point-set input order.
+ */
+int alea_volume_path_resolve_cell_point_sets(
+    alea_system_t* sys,
+    const double* points_xyz,
+    size_t point_count,
+    const alea_volume_path_point_set_t* point_sets,
+    size_t point_set_count,
+    size_t requested_workers,
+    uint64_t max_parallel_scratch_bytes,
+    alea_volume_path_point_set_result_t* results,
+    alea_volume_path_point_set_batch_stats_t* out_stats);
+
+/** Resolve a cell occurrence from corresponding world/local coordinates.
+ *
+ * This identifies the placement of @p target_universe_id by comparing the
+ * supplied world-space point/direction with the same event printed in that
+ * universe's local frame.  It deliberately does not require the target cell
+ * to contain the point, which makes it suitable for diagnosing a reported
+ * boundary loss.  Only ordinary FILL placements and the root universe are
+ * supported; concrete lattice elements require containment-based resolution.
+ *
+ * Each precision is one last-printed-place for the corresponding coordinate.
+ * The comparison allows half a printed unit from each frame plus a small
+ * floating-point allowance.  No global volume-path index is built.
+ *
+ * @return 0 when absent, 1 when unique, 2 when multiple, or -1 on error.
+ */
+int alea_volume_path_resolve_cell_from_transform_evidence(
+    alea_system_t* sys,
+    int target_cell_id,
+    int target_universe_id,
+    const double world_point[3],
+    const double world_direction[3],
+    const double local_point[3],
+    const double local_direction[3],
+    const double world_point_precision[3],
+    const double world_direction_precision[3],
+    const double local_point_precision[3],
+    const double local_direction_precision[3],
+    alea_volume_path_t* out_path);
 
 /**
  * @brief Estimate volumes for concrete hierarchy paths.

@@ -491,16 +491,18 @@ int alea_find_all_cells_in_universe_coverage_chain(
         parent_occurrence_keys, max_hits);
 }
 
-int alea_classify_point_coverage_chain(
+int alea_classify_point_coverage_chain_with_scratch(
     const alea_cell_hit_t* hits,
     const uint64_t* occurrence_keys,
     const uint64_t* parent_occurrence_keys,
     size_t hit_count,
     int universe_depth,
     uint8_t* out_owner_mask,
+    size_t* child_counts,
     alea_point_coverage_classification_t* out_classification) {
     if (!out_classification ||
-        (hit_count > 0 && (!hits || !occurrence_keys || !parent_occurrence_keys)))
+        (hit_count > 0 && (!hits || !occurrence_keys ||
+                           !parent_occurrence_keys || !child_counts)))
         return -1;
 
     *out_classification = (alea_point_coverage_classification_t){
@@ -512,8 +514,7 @@ int alea_classify_point_coverage_chain(
         memset(out_owner_mask, 0, hit_count * sizeof(*out_owner_mask));
     if (hit_count == 0) return 0;
 
-    size_t* child_counts = calloc(hit_count, sizeof(*child_counts));
-    if (!child_counts) return -1;
+    memset(child_counts, 0, hit_count * sizeof(*child_counts));
     size_t root_count = 0;
     int malformed = 0;
     for (size_t i = 0; i < hit_count && !malformed; i++) {
@@ -544,7 +545,6 @@ int alea_classify_point_coverage_chain(
     }
     if (malformed || root_count == 0) {
         out_classification->kind = ALEA_POINT_COVERAGE_UNRESOLVED;
-        free(child_counts);
         return 0;
     }
 
@@ -575,8 +575,31 @@ int alea_classify_point_coverage_chain(
     } else {
         out_classification->kind = ALEA_POINT_COVERAGE_UNIQUE;
     }
-    free(child_counts);
     return 0;
+}
+
+int alea_classify_point_coverage_chain(
+    const alea_cell_hit_t* hits,
+    const uint64_t* occurrence_keys,
+    const uint64_t* parent_occurrence_keys,
+    size_t hit_count,
+    int universe_depth,
+    uint8_t* out_owner_mask,
+    alea_point_coverage_classification_t* out_classification) {
+    if (!out_classification ||
+        (hit_count > 0 && (!hits || !occurrence_keys || !parent_occurrence_keys)))
+        return -1;
+    if (hit_count == 0)
+        return alea_classify_point_coverage_chain_with_scratch(
+            hits, occurrence_keys, parent_occurrence_keys, 0, universe_depth,
+            out_owner_mask, NULL, out_classification);
+    size_t* child_counts = calloc(hit_count, sizeof(*child_counts));
+    if (!child_counts) return -1;
+    const int rc = alea_classify_point_coverage_chain_with_scratch(
+        hits, occurrence_keys, parent_occurrence_keys, hit_count,
+        universe_depth, out_owner_mask, child_counts, out_classification);
+    free(child_counts);
+    return rc;
 }
 
 bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
@@ -1497,14 +1520,19 @@ static size_t volume_path_max_count_from_env(void) {
     return (size_t)value;
 }
 
-static void volume_path_copy_transform(double dst[12], const alea_matrix_t* mat) {
+static void volume_path_copy_world_to_local(double dst[12],
+                                            const alea_matrix_t* local_to_world) {
     if (!dst) return;
-    if (!mat) {
+    if (!local_to_world) {
         memset(dst, 0, 12 * sizeof(double));
         dst[0] = dst[5] = dst[10] = 1.0;
         return;
     }
-    memcpy(dst, mat->m, 12 * sizeof(double));
+    /* Hierarchy builders carry the conventional local-to-world placement.
+     * The public field promises the opposite mapping, which is what point
+     * reconstruction needs.  Every builder matrix is inverted immediately
+     * after composition, so its cached inverse is authoritative here. */
+    memcpy(dst, local_to_world->inv, 12 * sizeof(double));
 }
 
 static int volume_path_fill_matrix(const alea_system_t* sys,
@@ -1605,7 +1633,8 @@ static void volume_path_emit(volume_path_enum_ctx_t* ctx,
     }
 
     path->truncated = (uint8_t)(b && b->truncated);
-    volume_path_copy_transform(path->world_to_local, b ? &b->transform : NULL);
+    volume_path_copy_world_to_local(path->world_to_local,
+                                    b ? &b->transform : NULL);
 
     if (ctx->index && volume_path_index_append(ctx->index, path) != 0) {
         ctx->failed = 1;
@@ -2132,11 +2161,10 @@ static int volume_path_lookup_universe(alea_system_t* sys,
     return 0;
 }
 
-int alea_volume_path_at_point(alea_system_t* sys,
-                              double x, double y, double z,
-                              alea_volume_path_t* out_path) {
+int alea_volume_path_resolve_at_point(alea_system_t* sys,
+                                      double x, double y, double z,
+                                      alea_volume_path_t* out_path) {
     if (!sys || !out_path) return -1;
-    if (alea_volume_path_index_ensure(sys) != 0) return -1;
     if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0) return -1;
 
     volume_path_builder_t builder;
@@ -2149,6 +2177,433 @@ int alea_volume_path_at_point(alea_system_t* sys,
         return -1;
     }
     if (!found) return 0;
+
+    out_path->path_id = UINT64_MAX;
+    return 1;
+}
+
+typedef struct {
+    int target_cell_id;
+    int target_universe_id;
+    int match_count;
+    alea_volume_path_t first;
+} volume_path_target_ctx_t;
+
+static void volume_path_record_target(const alea_system_t* sys,
+                                      int cell_index,
+                                      int depth,
+                                      const volume_path_builder_t* builder,
+                                      volume_path_target_ctx_t* ctx) {
+    if (!sys || !builder || !ctx || ctx->match_count >= 2) return;
+
+    alea_volume_path_t candidate;
+    volume_path_enum_ctx_t emit = {.out = &candidate, .max = 1, .count = 0};
+    volume_path_emit(&emit, sys, cell_index, depth, builder);
+    candidate.path_id = UINT64_MAX;
+
+    if (ctx->match_count == 0) {
+        ctx->first = candidate;
+        ctx->match_count = 1;
+    } else if (!volume_paths_same_identity(&ctx->first, &candidate)) {
+        ctx->match_count = 2;
+    }
+}
+
+static int volume_path_lookup_target_universe(
+        alea_system_t* sys,
+        int universe_id,
+        double x,
+        double y,
+        double z,
+        int depth,
+        const volume_path_builder_t* builder,
+        volume_path_target_ctx_t* ctx);
+
+typedef struct {
+    alea_system_t* sys;
+    double x;
+    double y;
+    double z;
+    int depth;
+    const volume_path_builder_t* builder;
+    volume_path_target_ctx_t* target;
+} volume_path_target_visit_t;
+
+static int volume_path_visit_target_cell(void* opaque, uint32_t raw_cell_index) {
+    volume_path_target_visit_t* visit = opaque;
+    if (!visit || !visit->sys || !visit->builder || !visit->target) return -1;
+    volume_path_target_ctx_t* ctx = visit->target;
+    if (ctx->match_count >= 2) return 1;
+    if ((size_t)raw_cell_index >= alea_vec_count(&visit->sys->cells)) return 0;
+
+    int cell_index = (int)raw_cell_index;
+    const alea_cell_entry_t* cell = &visit->sys->cells.data[cell_index];
+
+    if (cell->lat_type != 0 && cell->lat_fill) {
+        alea_lattice_location_t location;
+        int located = alea_lattice_locate_point(
+            visit->sys, cell, visit->x, visit->y, visit->z, &location);
+        if (located < 0) return -1;
+        if (located == 0) return 0;
+
+        if (cell->mc_cell_id == ctx->target_cell_id &&
+            cell->universe_id == ctx->target_universe_id) {
+            volume_path_record_target(visit->sys, cell_index, visit->depth,
+                                      visit->builder, ctx);
+        }
+        if (ctx->match_count >= 2) return 1;
+        if (location.fill_universe <= 0) return 0;
+
+        alea_volume_lattice_step_t step = {
+            .lattice_cell_index = cell_index,
+            .fill_universe = location.fill_universe,
+            .i = location.i,
+            .j = location.j,
+            .k = location.k,
+            .linear_index = (int)location.linear_index,
+        };
+        volume_path_builder_t child = *visit->builder;
+        volume_path_push_ancestor(&child, cell_index, cell->universe_id);
+        volume_path_push_lattice(&child, &step);
+
+        alea_matrix_t translation;
+        alea_matrix_identity(&translation);
+        translation.m[3] = location.ox;
+        translation.m[7] = location.oy;
+        translation.m[11] = location.oz;
+        translation.has_inverse = false;
+
+        alea_matrix_t composed;
+        alea_matrix_multiply(&composed, &visit->builder->transform,
+                             &translation);
+        if (!alea_matrix_invert(&composed)) return -1;
+        child.transform = composed;
+
+        int rc = volume_path_lookup_target_universe(
+            visit->sys, location.fill_universe,
+            visit->x - location.ox, visit->y - location.oy,
+            visit->z - location.oz, visit->depth + 1, &child, ctx);
+        if (rc != 0) return -1;
+        return ctx->match_count >= 2 ? 1 : 0;
+    }
+
+    if (!alea_contains_point(visit->sys, cell->root_node_id,
+                             visit->x, visit->y, visit->z)) return 0;
+
+    if (cell->mc_cell_id == ctx->target_cell_id &&
+        cell->universe_id == ctx->target_universe_id) {
+        volume_path_record_target(visit->sys, cell_index, visit->depth,
+                                  visit->builder, ctx);
+    }
+    if (ctx->match_count >= 2) return 1;
+    if (cell->fill_universe <= 0) return 0;
+
+    alea_matrix_t fill;
+    if (volume_path_fill_matrix(visit->sys, cell, &fill) != 0) return -1;
+    double child_x = visit->x;
+    double child_y = visit->y;
+    double child_z = visit->z;
+    alea_matrix_transform_point_inverse(&fill, &child_x, &child_y, &child_z);
+
+    volume_path_builder_t child = *visit->builder;
+    volume_path_push_ancestor(&child, cell_index, cell->universe_id);
+    alea_matrix_t composed;
+    alea_matrix_multiply(&composed, &visit->builder->transform, &fill);
+    if (!alea_matrix_invert(&composed)) return -1;
+    child.transform = composed;
+
+    int rc = volume_path_lookup_target_universe(
+        visit->sys, cell->fill_universe, child_x, child_y, child_z,
+        visit->depth + 1, &child, ctx);
+    if (rc != 0) return -1;
+    return ctx->match_count >= 2 ? 1 : 0;
+}
+
+static int volume_path_lookup_target_universe(
+        alea_system_t* sys,
+        int universe_id,
+        double x,
+        double y,
+        double z,
+        int depth,
+        const volume_path_builder_t* builder,
+        volume_path_target_ctx_t* ctx) {
+    if (!sys || !builder || !ctx) return -1;
+    if (ctx->match_count >= 2 || depth >= ALEA_VOLUME_PATH_MAX_DEPTH) return 0;
+
+    volume_path_target_visit_t visit = {
+        .sys = sys,
+        .x = x,
+        .y = y,
+        .z = z,
+        .depth = depth,
+        .builder = builder,
+        .target = ctx,
+    };
+    int rc = alea_hier_spatial_visit_universe_point_candidates(
+        sys, universe_id, x, y, z, volume_path_visit_target_cell, &visit);
+    return rc < 0 ? -1 : 0;
+}
+
+static int volume_path_resolve_cell_at_point_prepared(
+        alea_system_t* sys, double x, double y, double z,
+        int target_cell_id, int target_universe_id,
+        alea_volume_path_t* out_path) {
+    volume_path_builder_t builder;
+    memset(&builder, 0, sizeof(builder));
+    alea_matrix_identity(&builder.transform);
+    volume_path_target_ctx_t ctx = {
+        .target_cell_id = target_cell_id,
+        .target_universe_id = target_universe_id,
+    };
+    if (volume_path_lookup_target_universe(sys, 0, x, y, z, 0,
+                                           &builder, &ctx) != 0) return -1;
+    if (ctx.match_count == 1) *out_path = ctx.first;
+    return ctx.match_count;
+}
+
+int alea_volume_path_resolve_cell_at_point(alea_system_t* sys,
+                                           double x, double y, double z,
+                                           int target_cell_id,
+                                           int target_universe_id,
+                                           alea_volume_path_t* out_path) {
+    if (!sys || !out_path) return -1;
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0)
+        return -1;
+    return volume_path_resolve_cell_at_point_prepared(
+        sys, x, y, z, target_cell_id, target_universe_id, out_path);
+}
+
+static int volume_path_resolve_one_point_set_prepared(
+        alea_system_t* sys, const double* points_xyz,
+        const alea_volume_path_point_set_t* point_set,
+        alea_volume_path_t* distinct_paths,
+        alea_volume_path_point_set_result_t* result) {
+    memset(result, 0, sizeof(*result));
+    int saw_multiple = 0;
+    size_t distinct_count = 0;
+    for (size_t item = 0; item < point_set->point_count; item++) {
+        size_t point_index = point_set->point_offset + item;
+        const double* point = &points_xyz[3 * point_index];
+        alea_volume_path_t path;
+        int rc = volume_path_resolve_cell_at_point_prepared(
+            sys, point[0], point[1], point[2],
+            point_set->target_cell_id, point_set->target_universe_id, &path);
+        if (rc < 0) return -1;
+        result->tested_point_count++;
+        if (rc >= ALEA_VOLUME_PATH_MULTIPLE) {
+            saw_multiple = 1;
+            continue;
+        }
+        if (rc != ALEA_VOLUME_PATH_UNIQUE) continue;
+
+        int known = 0;
+        for (size_t previous = 0; previous < distinct_count; previous++) {
+            if (volume_paths_same_identity(&distinct_paths[previous], &path)) {
+                known = 1;
+                break;
+            }
+        }
+        if (!known) distinct_paths[distinct_count++] = path;
+    }
+
+    result->matching_occurrence_count = distinct_count;
+    if (saw_multiple && result->matching_occurrence_count < 2)
+        result->matching_occurrence_count = 2;
+    if (saw_multiple || distinct_count > 1) {
+        result->status = ALEA_VOLUME_PATH_MULTIPLE;
+    } else if (distinct_count == 1) {
+        result->status = ALEA_VOLUME_PATH_UNIQUE;
+        result->unique_path = distinct_paths[0];
+    } else {
+        result->status = ALEA_VOLUME_PATH_NONE;
+    }
+    return 0;
+}
+
+int alea_volume_path_resolve_cell_point_sets(
+        alea_system_t* sys, const double* points_xyz, size_t point_count,
+        const alea_volume_path_point_set_t* point_sets, size_t point_set_count,
+        size_t requested_workers, uint64_t max_parallel_scratch_bytes,
+        alea_volume_path_point_set_result_t* results,
+        alea_volume_path_point_set_batch_stats_t* out_stats) {
+    if (!sys || !out_stats ||
+        (point_count > 0 && !points_xyz) ||
+        (point_set_count > 0 && (!point_sets || !results))) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "volume path point-set argument is null");
+        return -1;
+    }
+    memset(out_stats, 0, sizeof(*out_stats));
+    out_stats->point_set_count = point_set_count;
+    out_stats->requested_workers = requested_workers;
+    if (point_count > SIZE_MAX / 3) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "volume path point count overflows xyz storage");
+        return -1;
+    }
+    size_t max_set_points = 0;
+    for (size_t set = 0; set < point_set_count; set++) {
+        const alea_volume_path_point_set_t* descriptor = &point_sets[set];
+        if (descriptor->point_offset > point_count ||
+            descriptor->point_count > point_count - descriptor->point_offset) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "volume path point set %zu is out of range", set);
+            return -1;
+        }
+        if (descriptor->point_count > max_set_points)
+            max_set_points = descriptor->point_count;
+    }
+    if (point_set_count == 0) return 0;
+    if (max_set_points > SIZE_MAX / sizeof(alea_volume_path_t)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "volume path point-set scratch overflows");
+        return -1;
+    }
+    size_t scratch_per_worker = max_set_points * sizeof(alea_volume_path_t);
+    if (scratch_per_worker == 0) scratch_per_worker = sizeof(alea_volume_path_t);
+    out_stats->reserved_scratch_bytes_per_worker = scratch_per_worker;
+
+    size_t workers = requested_workers;
+#ifdef _OPENMP
+    if (workers == 0) workers = (size_t)omp_get_max_threads();
+    if (omp_in_parallel()) workers = 1;
+#else
+    workers = 1;
+#endif
+    if (workers == 0) workers = 1;
+    if (workers > point_set_count) workers = point_set_count;
+    if (max_parallel_scratch_bytes == 0) {
+        workers = 1;
+    } else {
+        uint64_t budget_workers =
+            max_parallel_scratch_bytes / (uint64_t)scratch_per_worker;
+        if (budget_workers == 0) budget_workers = 1;
+        if ((uint64_t)workers > budget_workers) workers = (size_t)budget_workers;
+    }
+    if (workers > SIZE_MAX / scratch_per_worker) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "volume path parallel scratch overflows");
+        return -1;
+    }
+    size_t total_scratch = workers * scratch_per_worker;
+    out_stats->reserved_parallel_scratch_bytes = total_scratch;
+
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0)
+        return -1;
+    alea_volume_path_t* scratch = malloc(total_scratch);
+    int* statuses = calloc(point_set_count, sizeof(*statuses));
+    if (!scratch || !statuses) {
+        free(scratch);
+        free(statuses);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "volume path point-set batch allocation failed");
+        return -1;
+    }
+
+    size_t actual_workers = 1;
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(workers) if(workers > 1)
+    {
+        #pragma omp single
+        actual_workers = (size_t)omp_get_num_threads();
+        int worker = omp_get_thread_num();
+        alea_volume_path_t* worker_scratch =
+            (alea_volume_path_t*)((unsigned char*)scratch +
+                                  (size_t)worker * scratch_per_worker);
+        #pragma omp for schedule(static)
+        for (size_t set = 0; set < point_set_count; set++) {
+            statuses[set] = volume_path_resolve_one_point_set_prepared(
+                sys, points_xyz, &point_sets[set], worker_scratch,
+                &results[set]);
+        }
+    }
+#else
+    for (size_t set = 0; set < point_set_count; set++) {
+        statuses[set] = volume_path_resolve_one_point_set_prepared(
+            sys, points_xyz, &point_sets[set], scratch, &results[set]);
+    }
+#endif
+    out_stats->actual_workers = actual_workers;
+
+    int failed = 0;
+    size_t first_failed = 0;
+    for (size_t set = 0; set < point_set_count; set++) {
+        if (statuses[set] == 0) {
+            out_stats->completed_point_set_count++;
+        } else if (!failed) {
+            failed = 1;
+            first_failed = set;
+        }
+    }
+    free(scratch);
+    free(statuses);
+    if (failed) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "volume path point set %zu failed", first_failed);
+        return -1;
+    }
+    return 0;
+}
+
+int alea_volume_path_resolve_cell_from_transform_evidence(
+        alea_system_t* sys,
+        int target_cell_id,
+        int target_universe_id,
+        const double world_point[3],
+        const double world_direction[3],
+        const double local_point[3],
+        const double local_direction[3],
+        const double world_point_precision[3],
+        const double world_direction_precision[3],
+        const double local_point_precision[3],
+        const double local_direction_precision[3],
+        alea_volume_path_t* out_path) {
+    if (!sys || !out_path) return -1;
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) != 0)
+        return -1;
+
+    int cell_index = alea_find_cell_by_id(sys, target_cell_id);
+    if (cell_index < 0 ||
+        sys->cells.data[cell_index].universe_id != target_universe_id) {
+        return 0;
+    }
+
+    alea_hier_universe_placement_match_t match;
+    int rc =
+        alea_hier_spatial_resolve_universe_placement_from_transform_evidence(
+            sys, target_universe_id,
+            world_point, world_direction, local_point, local_direction,
+            world_point_precision, world_direction_precision,
+            local_point_precision, local_direction_precision, &match);
+    if (rc != 1) return rc;
+
+    volume_path_builder_t builder;
+    memset(&builder, 0, sizeof(builder));
+    builder.transform = match.transform;
+    builder.truncated = match.chain_truncated != 0;
+    builder.ancestor_count = match.ancestor_count;
+    for (uint8_t i = 0; i < match.ancestor_count; i++) {
+        uint32_t ancestor = match.ancestor_cell_indices[i];
+        if ((size_t)ancestor >= alea_vec_count(&sys->cells)) return -1;
+        builder.ancestor_cell_indices[i] = (int)ancestor;
+        builder.ancestor_universe_ids[i] =
+            sys->cells.data[ancestor].universe_id;
+    }
+
+    volume_path_enum_ctx_t emit = {.out = out_path, .max = 1, .count = 0};
+    volume_path_emit(&emit, sys, cell_index, match.depth, &builder);
+    out_path->path_id = UINT64_MAX;
+    return 1;
+}
+
+int alea_volume_path_at_point(alea_system_t* sys,
+                              double x, double y, double z,
+                              alea_volume_path_t* out_path) {
+    if (!sys || !out_path) return -1;
+    if (alea_volume_path_index_ensure(sys) != 0) return -1;
+    int rc = alea_volume_path_resolve_at_point(sys, x, y, z, out_path);
+    if (rc <= 0) return rc;
 
     const alea_volume_path_t* canonical =
         alea_volume_path_index_find(sys->volume_path_index, out_path);

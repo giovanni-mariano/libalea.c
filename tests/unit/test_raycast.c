@@ -84,6 +84,38 @@ TEST(ray_plane_intersection) {
     ASSERT_NEAR(t[0], -5.0, EPS);  /* Intersection behind origin */
 }
 
+TEST(surface_project_along_uses_nearest_signed_native_intersection) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    ASSERT(alea_sphere_surface(sys, 101, 0.0, 0.0, 0.0, 1.0) >= 0);
+
+    const double point[3] = {1.00001, 0.0, 0.0};
+    const double direction[3] = {2.0, 0.0, 0.0};
+    double parameter = 0.0;
+    double projected[3] = {0.0, 0.0, 0.0};
+    alea_primitive_type_t type = 0;
+    ASSERT_EQ(alea_surface_project_along(
+                  sys, 101, point, direction, &parameter, projected, &type), 1);
+    ASSERT_EQ(type, ALEA_PRIMITIVE_SPHERE);
+    ASSERT_NEAR(parameter, -1.0e-5, 1.0e-10);
+    ASSERT_NEAR(projected[0], 1.0, 1.0e-10);
+    ASSERT_NEAR(projected[1], 0.0, 1.0e-12);
+    ASSERT_NEAR(projected[2], 0.0, 1.0e-12);
+
+    ASSERT(alea_torus_z_surface(sys, 102, 0.0, 0.0, 0.0, 2.0, 1.0) >= 0);
+    const double torus_point[3] = {3.00001, 0.0, 0.0};
+    ASSERT_EQ(alea_surface_project_along(
+                  sys, 102, torus_point, direction, &parameter, projected,
+                  &type), 1);
+    ASSERT_EQ(type, ALEA_PRIMITIVE_TORUS_Z);
+    ASSERT_NEAR(parameter, -1.0e-5, 1.0e-9);
+    ASSERT_NEAR(projected[0], 3.0, 1.0e-9);
+
+    ASSERT_EQ(alea_surface_project_along(
+                  sys, 999, point, direction, &parameter, projected, NULL), -1);
+    alea_destroy(sys);
+}
+
 TEST(ray_cylinder_z_intersection) {
     alea_ray_t ray;
     alea_cylinder_z_data_t cyl = {0, 0, 3.0};
@@ -830,6 +862,66 @@ TEST(transition_slice_screen_streams_only_bounded_findings) {
     alea_destroy(sys);
 }
 
+TEST(transition_slice_screen_batch_respects_scratch_budget) {
+    enum { PAGE_COUNT = 4 };
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int primary = alea_plane_surface(sys, 563, 1.0, 0.0, 0.0, 0.0);
+    int other = alea_plane_surface(sys, 564, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(primary >= 0 && other >= 0);
+    ASSERT(alea_add_cell(sys, 113, alea_halfspace(sys, primary, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 114, alea_halfspace(sys, other, 1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+
+    alea_slice_view_t views[PAGE_COUNT];
+    alea_transition_slice_result_t* results[PAGE_COUNT];
+    for (size_t page = 0; page < PAGE_COUNT; page++) {
+        double centre = -0.75 + 0.5 * (double)page;
+        alea_slice_view_init(&views[page], 0.0, 0.0, 0.0,
+                             0.0, 0.0, 1.0,
+                             0.0, 1.0, 0.0,
+                             -0.25, 0.25, centre - 0.1, centre + 0.1);
+        results[page] = alea_transition_slice_result_create();
+        ASSERT_NOT_NULL(results[page]);
+    }
+    alea_transition_slice_options_t options;
+    alea_transition_slice_options_init(&options);
+    options.horizontal_rays = 1;
+    options.vertical_rays = 0;
+    options.max_scratch_bytes = 1024;
+    options.max_critical_scratch_bytes = 1024;
+
+    alea_transition_slice_batch_stats_t batch;
+    ASSERT_EQ(alea_transition_slice_screen_batch(
+        sys, views, PAGE_COUNT, &options, 4, 4096, results, &batch), 0);
+    ASSERT_EQ(batch.page_count, (size_t)PAGE_COUNT);
+    ASSERT_EQ(batch.completed_page_count, (size_t)PAGE_COUNT);
+    ASSERT_EQ(batch.requested_workers, (size_t)4);
+    ASSERT(batch.actual_workers >= (size_t)1);
+    ASSERT(batch.actual_workers <= (size_t)2);
+    ASSERT_EQ(batch.reserved_scratch_bytes_per_worker, (uint64_t)2048);
+    ASSERT(batch.reserved_parallel_scratch_bytes >=
+           (uint64_t)batch.actual_workers * 2048);
+    ASSERT(batch.reserved_parallel_scratch_bytes <= (uint64_t)4096);
+    for (size_t page = 0; page < PAGE_COUNT; page++) {
+        alea_transition_slice_stats_t stats;
+        ASSERT_EQ(alea_transition_slice_stats(results[page], &stats), 0);
+        ASSERT(stats.complete);
+        ASSERT_EQ(stats.executed_rays, (size_t)1);
+        ASSERT_EQ(alea_transition_slice_finding_count(results[page]),
+                  (size_t)1);
+    }
+
+    ASSERT_EQ(alea_transition_slice_screen_batch(
+        sys, views, PAGE_COUNT, &options, 4, 0, results, &batch), 0);
+    ASSERT_EQ(batch.actual_workers, (size_t)1);
+    ASSERT_EQ(batch.completed_page_count, (size_t)PAGE_COUNT);
+    for (size_t page = 0; page < PAGE_COUNT; page++)
+        alea_transition_slice_result_destroy(results[page]);
+    alea_destroy(sys);
+}
+
 TEST(transition_slice_screen_refines_changed_event_signatures) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -917,7 +1009,22 @@ TEST(transition_slice_screen_refines_changed_event_signatures) {
         ASSERT(critical_finding.source_surface_id > 0);
         ASSERT(critical_finding.radius > 0.0);
         ASSERT(critical_finding.transition.kind != ALEA_TRANSITION_VALID);
+        ASSERT(critical_finding.boundary_piece_count > 0);
+        const alea_transition_slice_boundary_piece_t* piece =
+            &critical_finding.boundary_pieces[0];
+        ASSERT_EQ(piece->surface_id, critical_finding.source_surface_id);
+        ASSERT(piece->role_flags &
+               ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_SOURCE);
+        ASSERT_EQ(piece->point_count,
+                  (size_t)ALEA_TRANSITION_SLICE_BOUNDARY_POINT_CAPACITY);
+        for (size_t point = 0; point < piece->point_count; point++) {
+            ASSERT(isfinite(piece->uv[point][0]));
+            ASSERT(isfinite(piece->uv[point][1]));
+        }
     }
+    ASSERT(stats.critical_boundary_evidence > 0);
+    ASSERT_EQ(stats.critical_boundary_evidence, stats.critical_findings);
+    ASSERT_EQ(stats.omitted_critical_boundary_evidence, (size_t)0);
     ASSERT(stats.critical_curve_pair_candidates > 0);
     ASSERT(stats.critical_curve_pairs_tested > 0);
     ASSERT(stats.critical_active_segments > 0);
@@ -935,6 +1042,30 @@ TEST(transition_slice_screen_refines_changed_event_signatures) {
     ASSERT_EQ(alea_transition_slice_critical_tile_get(result, 0, &tile), 0);
     ASSERT(tile.source_flags &
            (1u << ALEA_TRANSITION_SLICE_TILE_SOURCE_REFINEMENT_FRONTIER));
+    options.horizontal_rays = 0;
+    options.max_refinement_depth = 0;
+    options.critical_full_view = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.complete);
+    ASSERT(stats.critical_complete);
+    ASSERT_EQ(stats.executed_rays, (size_t)0);
+    ASSERT_EQ(alea_transition_slice_critical_tile_count(result), (size_t)1);
+    ASSERT_EQ(alea_transition_slice_critical_tile_get(result, 0, &tile), 0);
+    ASSERT(tile.source_flags &
+           (1u << ALEA_TRANSITION_SLICE_TILE_SOURCE_FULL_VIEW));
+    ASSERT(stats.critical_findings > 0);
+    options.horizontal_rays = 2;
+    options.max_refinement_depth = 1;
+    options.critical_full_view = 0;
+    options.max_critical_boundary_evidence = 1;
+    ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
+    ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);
+    ASSERT(stats.critical_complete);
+    ASSERT(stats.critical_boundary_evidence <= (size_t)1);
+    if (stats.critical_findings > stats.critical_boundary_evidence)
+        ASSERT(stats.omitted_critical_boundary_evidence > 0);
+    options.max_critical_boundary_evidence = 1024;
     options.max_critical_points = 1;
     ASSERT_EQ(alea_transition_slice_screen(sys, &view, &options, result), 0);
     ASSERT_EQ(alea_transition_slice_stats(result, &stats), 0);

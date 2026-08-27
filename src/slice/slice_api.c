@@ -315,6 +315,7 @@ static void get_clipped_param_range(const alea_curve_2d_t* curve,
 static int dedup_spatial_hits(alea_spatial_hit_t* hits, int hit_count);
 typedef struct {
     uint8_t coverage;
+    uint8_t unresolved;
     int primary_cell_id;
     int secondary_cell_id;
 } point_coverage_t;
@@ -1386,32 +1387,46 @@ static int probe_curve_grid_point_from_coverage(double u_min, double v_min,
     return new_overlaps;
 }
 
-static int find_point_coverage_from_hits(const alea_cell_hit_t* hits,
-                                         int num_hits,
-                                         int universe_depth,
-                                         point_coverage_t* out) {
+#define POINT_COVERAGE_HIT_CAPACITY 32
+
+static int find_point_coverage_from_chain(
+    const alea_cell_hit_t* hits, const uint64_t* occurrence_keys,
+    const uint64_t* parent_occurrence_keys, int num_hits,
+    int universe_depth, point_coverage_t* out) {
     out->coverage = ALEA_COVERAGE_NONE;
+    out->unresolved = 0;
     out->primary_cell_id = -1;
     out->secondary_cell_id = -1;
     if (num_hits <= 0) return 0;
 
-    int target_depth = (universe_depth < 0)
-        ? hits[num_hits - 1].depth : universe_depth;
-    int count = 0;
-    for (int h = 0; h < num_hits; h++) {
-        if (hits[h].depth != target_depth) continue;
-        if (count == 0) out->primary_cell_id = hits[h].cell_id;
-        if (count == 1) out->secondary_cell_id = hits[h].cell_id;
-        count++;
-        if (count > 1) {
-            out->coverage = ALEA_COVERAGE_MULTI;
-            #pragma omp atomic
-            g_point_coverage_stats.spatial_multi_early_exit++;
-            return 0;
-        }
+    uint8_t owner_mask[POINT_COVERAGE_HIT_CAPACITY];
+    size_t child_counts[POINT_COVERAGE_HIT_CAPACITY];
+    alea_point_coverage_classification_t classification;
+    if (alea_classify_point_coverage_chain_with_scratch(
+            hits, occurrence_keys, parent_occurrence_keys, (size_t)num_hits,
+            universe_depth, owner_mask, child_counts, &classification) != 0)
+        return -1;
+    if (classification.kind == ALEA_POINT_COVERAGE_UNRESOLVED) {
+        out->coverage = ALEA_COVERAGE_ONE;
+        out->unresolved = 1;
+        return 0;
     }
-
-    out->coverage = (count == 1) ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_NONE;
+    int owner_count = 0;
+    for (int h = 0; h < num_hits; h++) {
+        if (!owner_mask[h]) continue;
+        if (owner_count == 0) out->primary_cell_id = hits[h].cell_id;
+        if (owner_count == 1) out->secondary_cell_id = hits[h].cell_id;
+        owner_count++;
+    }
+    if (classification.kind == ALEA_POINT_COVERAGE_OVERLAP) {
+        out->coverage = ALEA_COVERAGE_MULTI;
+        #pragma omp atomic
+        g_point_coverage_stats.spatial_multi_early_exit++;
+    } else if (classification.kind == ALEA_POINT_COVERAGE_GAP) {
+        out->coverage = ALEA_COVERAGE_NONE;
+    } else {
+        out->coverage = ALEA_COVERAGE_ONE;
+    }
     return 0;
 }
 
@@ -1426,14 +1441,21 @@ static int find_point_coverage_spatial(alea_system_t* sys,
     /* Stats counters below are mutated from inside the omp parallel for in
      * alea_find_cells_grid_coverage. Every mutation must be guarded; plain
      * `++` and `+=` race and lose increments under threading. */
-    alea_cell_hit_t hits[32];
-    int n = alea_hier_spatial_find_cells_at_point_uncached(sys, gx, gy, gz,
-                                                           hits, 32);
+    alea_cell_hit_t hits[POINT_COVERAGE_HIT_CAPACITY];
+    uint64_t occurrence_keys[POINT_COVERAGE_HIT_CAPACITY];
+    uint64_t parent_occurrence_keys[POINT_COVERAGE_HIT_CAPACITY];
+    int n = alea_hier_spatial_find_cells_at_point_chain_uncached(
+        sys, gx, gy, gz, hits, occurrence_keys, parent_occurrence_keys,
+        POINT_COVERAGE_HIT_CAPACITY);
     if (n < 0) return -1;
-    if (n >= 32) {
+    if (n >= POINT_COVERAGE_HIT_CAPACITY) {
         #pragma omp atomic
         g_point_coverage_stats.truncated_fallbacks++;
-        return -2;
+        out->coverage = ALEA_COVERAGE_ONE;
+        out->unresolved = 1;
+        out->primary_cell_id = -1;
+        out->secondary_cell_id = -1;
+        return 0;
     }
     #pragma omp atomic
     g_point_coverage_stats.spatial_queries++;
@@ -1444,7 +1466,9 @@ static int find_point_coverage_spatial(alea_system_t* sys,
         if ((size_t)n > g_point_coverage_stats.candidate_max)
             g_point_coverage_stats.candidate_max = (size_t)n;
     }
-    return find_point_coverage_from_hits(hits, n, universe_depth, out);
+    return find_point_coverage_from_chain(
+        hits, occurrence_keys, parent_occurrence_keys, n,
+        universe_depth, out);
 }
 
 static int find_point_coverage_exact(alea_system_t* sys,
@@ -1455,27 +1479,37 @@ static int find_point_coverage_exact(alea_system_t* sys,
     g_point_coverage_stats.queries++;
     int rc = find_point_coverage_spatial(sys, gx, gy, gz, universe_depth, out);
     if (rc == 0) return 0;
-    /* A hierarchy candidate query can be unavailable for a freshly-built
-     * programmatic model even though the recursive ownership query is valid.
-     * Exact local diagnostics must retain correctness in that case; record
-     * the spatial failure but use the same conservative fallback as a capped
-     * candidate list. */
-    if (rc != -2) {
-        #pragma omp atomic
-        g_point_coverage_stats.query_errors++;
-    }
+    /* Retain a complete occurrence-chain fallback if hierarchy acceleration is
+     * unavailable. A saturated fallback is unresolved rather than being
+     * misclassified from a partial owner list. */
+    #pragma omp atomic
+    g_point_coverage_stats.query_errors++;
 
     #pragma omp atomic
     g_point_coverage_stats.recursive_fallbacks++;
-    alea_cell_hit_t hits[32];
-    int num_hits = alea_find_all_cells_at_point_recursive(sys, gx, gy, gz,
-                                                           hits, 32);
+    alea_cell_hit_t hits[POINT_COVERAGE_HIT_CAPACITY];
+    uint64_t occurrence_keys[POINT_COVERAGE_HIT_CAPACITY];
+    uint64_t parent_occurrence_keys[POINT_COVERAGE_HIT_CAPACITY];
+    int num_hits = alea_find_all_cells_at_point_coverage_chain_recursive(
+        sys, gx, gy, gz, hits, occurrence_keys, parent_occurrence_keys,
+        POINT_COVERAGE_HIT_CAPACITY);
     if (num_hits < 0) {
         #pragma omp atomic
         g_point_coverage_stats.query_errors++;
         return -1;
     }
-    return find_point_coverage_from_hits(hits, num_hits, universe_depth, out);
+    if (num_hits >= POINT_COVERAGE_HIT_CAPACITY) {
+        #pragma omp atomic
+        g_point_coverage_stats.truncated_fallbacks++;
+        out->coverage = ALEA_COVERAGE_ONE;
+        out->unresolved = 1;
+        out->primary_cell_id = -1;
+        out->secondary_cell_id = -1;
+        return 0;
+    }
+    return find_point_coverage_from_chain(
+        hits, occurrence_keys, parent_occurrence_keys, num_hits,
+        universe_depth, out);
 }
 
 static int find_point_coverage_exact_uv(alea_system_t* sys,
@@ -1493,7 +1527,7 @@ static int find_point_coverage_exact_uv(alea_system_t* sys,
 static bool point_coverage_matches_pair(const point_coverage_t* pc,
                                         int cell_a,
                                         int cell_b) {
-    if (!pc || pc->coverage != ALEA_COVERAGE_MULTI)
+    if (!pc || pc->unresolved || pc->coverage != ALEA_COVERAGE_MULTI)
         return false;
     return (pc->primary_cell_id == cell_a &&
             pc->secondary_cell_id == cell_b) ||
@@ -6532,8 +6566,11 @@ int alea_find_local_coverage_components(
             cell_ids, secondary_ids, coverage, nu, nv);
     free(cell_ids); free(secondary_ids); free(coverage); free(errors);
     if (!components) return -1;
-    if (out_stats)
+    if (out_stats) {
         out_stats->point_coverage = alea_point_coverage_stats_get();
+        out_stats->incomplete_points =
+            out_stats->point_coverage.truncated_fallbacks;
+    }
     *out_components = components;
     return 0;
 }

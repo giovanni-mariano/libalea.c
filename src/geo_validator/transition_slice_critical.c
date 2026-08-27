@@ -4523,6 +4523,142 @@ static int collect_tile_occurrence_curves(
     return CRITICAL_COLLECT_OK;
 }
 
+static int sample_boundary_piece(
+    const critical_curve_t* curve,
+    alea_transition_slice_boundary_piece_t* piece) {
+    const size_t count = ALEA_TRANSITION_SLICE_BOUNDARY_POINT_CAPACITY;
+    if (curve->has_scanline_domain) {
+        double previous_u = curve->scanline_endpoint_u[0];
+        for (size_t i = 0; i < count; i++) {
+            const double fraction = (double)i / (double)(count - 1u);
+            const double v = curve->scanline_v_min + fraction *
+                (curve->scanline_v_max - curve->scanline_v_min);
+            double roots[8];
+            const int root_count = alea_curve_scanline_intersect(
+                &curve->curve, v, roots,
+                (int)(sizeof(roots) / sizeof(roots[0])));
+            if (root_count <= 0) return 0;
+            sort_small_doubles(roots, root_count);
+            int selected = 0;
+            for (int root = 1; root < root_count; root++)
+                if (fabs(roots[root] - previous_u) <
+                    fabs(roots[selected] - previous_u)) selected = root;
+            previous_u = roots[selected];
+            piece->uv[i][0] = previous_u;
+            piece->uv[i][1] = v;
+        }
+    } else {
+        double parameter_min, parameter_max;
+        if (curve->has_parameter_domain) {
+            parameter_min = curve->parameter_min;
+            parameter_max = curve->parameter_max;
+        } else if (curve_is_line(curve->curve.type) ||
+                   curve_is_circle(curve->curve.type) ||
+                   curve_is_ellipse(curve->curve.type)) {
+            parameter_min = curve->curve.bounds.t_min;
+            parameter_max = curve->curve.bounds.t_max;
+        } else {
+            return 0;
+        }
+        if (!isfinite(parameter_min) || !isfinite(parameter_max) ||
+            parameter_max < parameter_min) return 0;
+        for (size_t i = 0; i < count; i++) {
+            const double fraction = (double)i / (double)(count - 1u);
+            const double parameter = parameter_min + fraction *
+                (parameter_max - parameter_min);
+            int evaluated;
+            if (curve->has_parameter_domain)
+                evaluated = open_conic_eval(
+                    curve, parameter, curve->conic_branch,
+                    &piece->uv[i][0], &piece->uv[i][1]);
+            else
+                evaluated = alea_curve_eval(
+                    &curve->curve, parameter,
+                    &piece->uv[i][0], &piece->uv[i][1]);
+            if (!evaluated) return 0;
+        }
+    }
+    piece->point_count = count;
+    return 1;
+}
+
+static const critical_curve_t* find_boundary_curve(
+    const critical_curve_t* curves, size_t curve_count,
+    int surface_id, uint64_t universe_occurrence_key,
+    const double uv[2], double tolerance) {
+    for (size_t i = 0; i < curve_count; i++)
+        if (curves[i].curve.surface_id == surface_id &&
+            curves[i].universe_occurrence_key == universe_occurrence_key &&
+            critical_curve_contains_point(
+                &curves[i], uv[0], uv[1], tolerance))
+            return &curves[i];
+    return NULL;
+}
+
+static void retain_boundary_evidence(
+    alea_transition_slice_critical_finding_t* finding,
+    const critical_curve_t* curves, size_t curve_count,
+    const critical_curve_t* source, const double uv[2], double tolerance,
+    const alea_transition_slice_options_t* options,
+    alea_transition_slice_stats_t* stats) {
+    if (options->max_critical_boundary_evidence &&
+        stats->critical_boundary_evidence >=
+            options->max_critical_boundary_evidence) {
+        finding->boundary_evidence_truncated = 1;
+        stats->omitted_critical_boundary_evidence++;
+        return;
+    }
+    const int surface_ids[3] = {
+        source->curve.surface_id,
+        finding->transition.primary_surface_id,
+        finding->transition.connecting_surface_id};
+    const uint32_t roles[3] = {
+        ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_SOURCE,
+        ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_PRIMARY,
+        ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_CONNECTING};
+    for (size_t role = 0; role < 3; role++) {
+        const int surface_id = surface_ids[role];
+        if (surface_id <= 0) continue;
+        size_t existing = finding->boundary_piece_count;
+        for (size_t i = 0; i < finding->boundary_piece_count; i++)
+            if (finding->boundary_pieces[i].surface_id == surface_id) {
+                existing = i;
+                break;
+            }
+        if (existing < finding->boundary_piece_count) {
+            finding->boundary_pieces[existing].role_flags |= roles[role];
+            continue;
+        }
+        if (finding->boundary_piece_count >=
+            ALEA_TRANSITION_SLICE_BOUNDARY_PIECE_CAPACITY) {
+            finding->boundary_evidence_truncated = 1;
+            continue;
+        }
+        const critical_curve_t* curve = role == 0 ? source :
+            find_boundary_curve(
+                curves, curve_count, surface_id,
+                source->universe_occurrence_key, uv, tolerance);
+        if (!curve) {
+            finding->boundary_evidence_truncated = 1;
+            continue;
+        }
+        alea_transition_slice_boundary_piece_t* piece =
+            &finding->boundary_pieces[finding->boundary_piece_count];
+        piece->surface_id = surface_id;
+        piece->role_flags = roles[role];
+        if (!sample_boundary_piece(curve, piece)) {
+            memset(piece, 0, sizeof(*piece));
+            finding->boundary_evidence_truncated = 1;
+            continue;
+        }
+        finding->boundary_piece_count++;
+    }
+    if (finding->boundary_piece_count > 0)
+        stats->critical_boundary_evidence++;
+    if (finding->boundary_evidence_truncated)
+        stats->omitted_critical_boundary_evidence++;
+}
+
 static void set_saturated(alea_transition_slice_stats_t* stats,
                           alea_transition_slice_critical_stop_reason_t reason) {
     stats->critical_tiles_saturated++;
@@ -4649,13 +4785,23 @@ int alea_transition_slice_enumerate_critical_tiles(
         const double point_tolerance = 1e-10 * tile_scale;
         const size_t single_point_capacity = max_points / 4u > 0
             ? max_points / 4u : max_points;
-        for (size_t ci = 0; ci < curve_count; ci++) {
-            if (point_count >= single_point_capacity) break;
+        size_t single_curve_index = 0;
+        for (; single_curve_index < curve_count; single_curve_index++) {
+            if (point_count >= single_point_capacity) {
+                set_saturated(
+                    stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_POINTS);
+                break;
+            }
             const int point_rc = generate_single_curve_points(
-                &curves[ci], ci, &tiles[ti], points, &point_count,
+                &curves[single_curve_index], single_curve_index, &tiles[ti],
+                points, &point_count,
                 single_point_capacity,
                 point_slots, point_slot_capacity, point_tolerance, stats);
-            if (point_rc < 0) break;
+            if (point_rc < 0) {
+                set_saturated(
+                    stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_POINTS);
+                break;
+            }
             if (point_rc > 0 && stats->critical_stop_reason ==
                     ALEA_TRANSITION_SLICE_CRITICAL_NONE)
                 stats->critical_stop_reason =
@@ -4673,7 +4819,9 @@ int alea_transition_slice_enumerate_critical_tiles(
         const uint64_t local_pair_budget = options->max_curve_pairs
             ? options->max_curve_pairs / 2u : UINT64_MAX;
         uint64_t local_pairs = 0;
-        for (size_t first = 0; first < curve_count && !pair_stopped; first++) {
+        int local_pair_stopped = 0;
+        for (size_t first = 0; first < curve_count && !pair_stopped &&
+             !local_pair_stopped; first++) {
             for (size_t second = first + 1; second < curve_count; second++) {
                 if (curves[first].cell_id != curves[second].cell_id) continue;
                 if (critical_curves_same_source(
@@ -4683,7 +4831,12 @@ int alea_transition_slice_enumerate_critical_tiles(
                     curves[first].bbox[3] < curves[second].bbox[2] ||
                     curves[second].bbox[3] < curves[first].bbox[2]) continue;
                 stats->critical_curve_pair_candidates++;
-                if (local_pairs >= local_pair_budget) break;
+                if (local_pairs >= local_pair_budget) {
+                    set_saturated(
+                        stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVE_PAIRS);
+                    local_pair_stopped = 1;
+                    break;
+                }
                 local_pairs++;
                 stats->critical_curve_pairs_tested++;
                 const int pair_rc = solve_curve_pair(
@@ -4696,10 +4849,15 @@ int alea_transition_slice_enumerate_critical_tiles(
                     pair_stopped = 1;
                     break;
                 }
-                if (pair_rc > 0)
+                if (pair_rc > 0) {
                     record_unsupported_pair(
                         curves[first].curve.type, curves[second].curve.type,
                         stats);
+                    if (stats->critical_stop_reason ==
+                            ALEA_TRANSITION_SLICE_CRITICAL_NONE)
+                        stats->critical_stop_reason =
+                            ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE;
+                }
             }
         }
         for (size_t oi = 0; oi < curve_count && !pair_stopped; oi++) {
@@ -4735,10 +4893,15 @@ int alea_transition_slice_enumerate_critical_tiles(
                     pair_stopped = 1;
                     break;
                 }
-                if (pair_rc > 0)
+                if (pair_rc > 0) {
                     record_unsupported_pair(
                         curves[first].curve.type, curves[second].curve.type,
                         stats);
+                    if (stats->critical_stop_reason ==
+                            ALEA_TRANSITION_SLICE_CRITICAL_NONE)
+                        stats->critical_stop_reason =
+                            ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE;
+                }
             }
         }
         stats->critical_points += point_count;
@@ -4877,6 +5040,9 @@ int alea_transition_slice_enumerate_critical_tiles(
                         memcpy(finding.direction, direction,
                                sizeof(finding.direction));
                         finding.radius = radius;
+                        retain_boundary_evidence(
+                            &finding, curves, curve_count, source,
+                            finding.uv, point_tolerance, options, stats);
                         const int sink_rc = finding_sink(
                             &finding, finding_sink_userdata);
                         if (sink_rc < 0) {
@@ -4890,6 +5056,10 @@ int alea_transition_slice_enumerate_critical_tiles(
                             return -1;
                         }
                         if (sink_rc > 0) {
+                            if (finding.boundary_piece_count > 0)
+                                stats->critical_boundary_evidence--;
+                            if (finding.boundary_evidence_truncated)
+                                stats->omitted_critical_boundary_evidence--;
                             set_saturated(
                                 stats,
                                 ALEA_TRANSITION_SLICE_CRITICAL_MAX_FINDINGS);

@@ -20,10 +20,12 @@
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "raycast.h"
+#include "ray_intersect.h"
 #include "ray_epsilon.h"
 #include "bvh.h"
 #include "core/alea_system.h"
 #include "primitives/bbox.h"
+#include "primitives/primitive_eval.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -34,6 +36,87 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+
+int alea_surface_project_along(const alea_system_t* sys, int surface_id,
+                               const double point[3], const double direction[3],
+                               double* parameter, double projected[3],
+                               alea_primitive_type_t* primitive_type) {
+    if (!sys || !point || !direction || !parameter || !projected) return -1;
+    int surface_index = alea_surface_find(sys, surface_id);
+    if (surface_index < 0) return -1;
+    const alea_surface_entry_t* surface = &sys->surfaces.data[surface_index];
+    if (surface->primitive_id >= alea_vec_count(&sys->primitives)) return -1;
+
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(sys, surface->primitive_id, &data)) return -1;
+    alea_primitive_type_t type = sys->primitives.data[surface->primitive_id].type;
+    if (primitive_type) *primitive_type = type;
+
+    alea_ray_t forward;
+    if (alea_ray_init(&forward, point[0], point[1], point[2],
+                      direction[0], direction[1], direction[2]) != 0) return -1;
+
+    /* MCNP tori can have unequal radial and axial semiwidths.  The general
+     * ray/torus quartic currently models a circular minor section, so use the
+     * canonical primitive evaluator for the small receipt correction here. */
+    if (type == ALEA_PRIMITIVE_TORUS_X ||
+        type == ALEA_PRIMITIVE_TORUS_Y ||
+        type == ALEA_PRIMITIVE_TORUS_Z) {
+        double t = 0.0;
+        for (int iteration = 0; iteration < 12; ++iteration) {
+            double x = point[0] + t * forward.dx;
+            double y = point[1] + t * forward.dy;
+            double z = point[2] + t * forward.dz;
+            double value = alea_primitive_eval(type, &data, x, y, z);
+            if (!isfinite(value)) return 0;
+            if (value == 0.0) break;
+            double scale = fmax(1.0, fmax(fabs(x), fmax(fabs(y), fabs(z))));
+            double h = 1.0e-8 * scale;
+            double plus = alea_primitive_eval(
+                type, &data, x + h*forward.dx, y + h*forward.dy,
+                z + h*forward.dz);
+            double minus = alea_primitive_eval(
+                type, &data, x - h*forward.dx, y - h*forward.dy,
+                z - h*forward.dz);
+            double derivative = (plus - minus) / (2.0 * h);
+            if (!isfinite(derivative) || fabs(derivative) < 1.0e-14) return 0;
+            double step = value / derivative;
+            if (!isfinite(step)) return 0;
+            t -= step;
+            if (fabs(step) <= 1.0e-13 * fmax(1.0, fabs(t))) break;
+        }
+        *parameter = t;
+        projected[0] = point[0] + t * forward.dx;
+        projected[1] = point[1] + t * forward.dy;
+        projected[2] = point[2] + t * forward.dz;
+        double final_value = alea_primitive_eval(
+            type, &data, projected[0], projected[1], projected[2]);
+        if (!isfinite(final_value) || fabs(final_value) > 1.0e-9) return 0;
+        return 1;
+    }
+
+    double best = INFINITY;
+    for (int reverse = 0; reverse < 2; ++reverse) {
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, point[0], point[1], point[2],
+                          reverse ? -forward.dx : forward.dx,
+                          reverse ? -forward.dy : forward.dy,
+                          reverse ? -forward.dz : forward.dz) != 0) return -1;
+        double roots[4];
+        int count = ray_intersect_primitive(&ray, type, &data, roots);
+        for (int index = 0; index < count; ++index) {
+            double candidate = reverse ? -roots[index] : roots[index];
+            if (isfinite(candidate) && fabs(candidate) < fabs(best))
+                best = candidate;
+        }
+    }
+    if (!isfinite(best)) return 0;
+    *parameter = best;
+    projected[0] = point[0] + best * forward.dx;
+    projected[1] = point[1] + best * forward.dy;
+    projected[2] = point[2] + best * forward.dz;
+    return 1;
+}
 
 #if defined(__GNUC__) || defined(__clang__)
 #define ALEA_RAYCAST_DEPRECATED_CALL_BEGIN \
@@ -2500,7 +2583,12 @@ static int compute_path_bounding_sphere(alea_system_t* sys,
 
         alea_matrix_t transform;
         memset(&transform, 0, sizeof(transform));
+        /* Volume paths expose world-to-local.  Bounding the placed local CSG
+         * needs its inverse (local-to-world). */
         memcpy(transform.m, paths[i].world_to_local, sizeof(transform.m));
+        transform.has_inverse = false;
+        if (!alea_matrix_invert(&transform)) continue;
+        memcpy(transform.m, transform.inv, sizeof(transform.m));
         alea_bbox_t world = alea_bbox_transform(local, &transform);
         if (!alea_bbox_is_valid(&world)) continue;
 

@@ -21,6 +21,7 @@
 #include "alea.h"
 #include "alea_slice.h"
 #include "alea_mcnp.h"
+#include "core/alea_system.h"
 #include "core/alea_universe.h"
 
 /* =========================================================================
@@ -1324,6 +1325,72 @@ TEST(grid_local_coverage_detects_nested_lattice_terminal_overlap) {
     alea_plot_error_components_free(global);
     free(errors); free(coverage); free(secondary); free(primary);
     mcnp_model_destroy(model);
+}
+
+/* A terminal root claimant and a terminal claimant below a competing fill are
+ * simultaneous concrete owners even though their leaf depths differ. The
+ * compact local scanner must use occurrence-tree leaves, not one chosen depth. */
+TEST(grid_local_coverage_detects_unequal_depth_terminal_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1401, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(sphere >= 0);
+    alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    int root_terminal = alea_add_cell(
+        sys, 141, inside, ALEA_MATERIAL_VOID, 0.0, 0);
+    int root_fill = alea_add_cell(
+        sys, 142, inside, ALEA_MATERIAL_VOID, 0.0, 0);
+    int child_terminal = alea_add_cell(
+        sys, 143, inside, ALEA_MATERIAL_VOID, 0.0, 8);
+    ASSERT(root_terminal >= 0);
+    ASSERT(root_fill >= 0);
+    ASSERT(child_terminal >= 0);
+    ASSERT_EQ(alea_set_cell_fill(sys, root_fill, 8, 0), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+    alea_plot_error_component_result_t* components = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, 8, 8, -1, 64, 1024 * 1024, 1,
+        &components, &stats), 0);
+    ASSERT_NOT_NULL(components);
+    ASSERT_EQ(stats.incomplete_points, (size_t)0);
+    ASSERT_EQ(components->component_count, (size_t)1);
+    ASSERT_EQ(components->components[0].kind, ALEA_PLOT_ERR_TOTAL_OVERLAP);
+    ASSERT_EQ(components->components[0].primary_cell_id, 141);
+    ASSERT_EQ(components->components[0].secondary_cell_id, 143);
+
+    alea_plot_error_components_free(components);
+    alea_destroy(sys);
+}
+
+TEST(grid_local_coverage_reports_saturated_owner_queries_incomplete) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1501, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(sphere >= 0);
+    alea_node_id_t inside = alea_halfspace(sys, sphere, -1);
+    for (int cell = 0; cell < 33; cell++)
+        ASSERT(alea_add_cell(
+            sys, 150 + cell, inside, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 1.0, -1.0, 1.0);
+    alea_plot_error_component_result_t* components = NULL;
+    alea_local_coverage_stats_t stats;
+    ASSERT_EQ(alea_find_local_coverage_components(
+        sys, &view, 4, 4, -1, 16, 1024 * 1024, 1,
+        &components, &stats), 0);
+    ASSERT_NOT_NULL(components);
+    ASSERT_EQ(stats.incomplete_points, (size_t)16);
+    ASSERT_EQ(stats.point_coverage.truncated_fallbacks, (size_t)16);
+    ASSERT_EQ(components->component_count, (size_t)0);
+
+    alea_plot_error_components_free(components);
+    alea_destroy(sys);
 }
 
 TEST(grid_hex_lattice_coherent_walk_resolves_child_cells) {

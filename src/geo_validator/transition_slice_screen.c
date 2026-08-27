@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 struct alea_transition_slice_result {
     alea_transition_slice_finding_t* findings;
     size_t finding_count;
@@ -90,6 +94,7 @@ void alea_transition_slice_options_init(
     options->max_active_boundary_tests = 100000;
     options->max_critical_probes = 4096;
     options->max_critical_findings = 1024;
+    options->max_critical_boundary_evidence = 1024;
     options->max_curve_pairs = 100000;
     options->max_critical_sector_witnesses = 8192;
 }
@@ -1654,6 +1659,10 @@ static int transition_slice_build_critical_tiles(
         return -1;
     seed_count += result->coverage_component_count +
         result->refinement_frontier_count;
+    if (options->critical_full_view) {
+        if (seed_count == SIZE_MAX) return -1;
+        seed_count++;
+    }
     result->stats.critical_tile_seeds = seed_count;
     if (seed_count == 0) return 0;
     size_t scratch_bytes = 0;
@@ -1678,6 +1687,15 @@ static int transition_slice_build_critical_tiles(
         calloc(seed_count, sizeof(*merged));
     if (!seeds || !merged) { free(seeds); free(merged); return -1; }
     size_t seed = 0;
+    if (options->critical_full_view) {
+        transition_slice_tile_seed_t* item = &seeds[seed++];
+        item->uv_min[0] = view->u_min;
+        item->uv_min[1] = view->v_min;
+        item->uv_max[0] = view->u_max;
+        item->uv_max[1] = view->v_max;
+        item->kind = ALEA_TRANSITION_SLICE_TILE_SOURCE_FULL_VIEW;
+        item->priority = -1;
+    }
     for (size_t i = 0; i < result->component_count; i++) {
         const alea_transition_slice_component_t* source =
             &result->components[i];
@@ -2195,4 +2213,111 @@ int alea_transition_slice_screen(
     free(result->critical_findings);
     *result = candidate;
     return 0;
+}
+
+int alea_transition_slice_screen_batch(
+    alea_system_t* sys, const alea_slice_view_t* views, size_t page_count,
+    const alea_transition_slice_options_t* input,
+    size_t requested_workers, uint64_t max_parallel_scratch_bytes,
+    alea_transition_slice_result_t* const* results,
+    alea_transition_slice_batch_stats_t* out_stats) {
+    if (!sys || (!views && page_count) || (!results && page_count) ||
+            !out_stats) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "transition slice batch argument is null");
+        return -1;
+    }
+    memset(out_stats, 0, sizeof(*out_stats));
+    out_stats->page_count = page_count;
+    out_stats->requested_workers = requested_workers;
+    if (page_count == 0) return 0;
+    for (size_t page = 0; page < page_count; page++) {
+        if (!results[page]) {
+            alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                                  "transition slice batch result is null");
+            return -1;
+        }
+    }
+
+    alea_transition_slice_options_t defaults, options;
+    alea_transition_slice_options_init(&defaults);
+    options = defaults;
+    if (input) {
+        if (input->struct_size < sizeof(input->struct_size)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "transition slice options are too small");
+            return -1;
+        }
+        size_t bytes = input->struct_size < sizeof(options)
+            ? input->struct_size : sizeof(options);
+        memcpy(&options, input, bytes);
+    }
+    uint64_t worker_scratch = options.max_scratch_bytes;
+    if (worker_scratch > UINT64_MAX - options.max_critical_scratch_bytes) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "transition slice worker scratch overflows");
+        return -1;
+    }
+    worker_scratch += options.max_critical_scratch_bytes;
+    if (worker_scratch == 0) worker_scratch = 1;
+    out_stats->reserved_scratch_bytes_per_worker = worker_scratch;
+
+    size_t workers = requested_workers;
+#ifdef _OPENMP
+    if (workers == 0) workers = (size_t)omp_get_max_threads();
+    if (omp_in_parallel()) workers = 1;
+#else
+    workers = 1;
+#endif
+    if (workers == 0) workers = 1;
+    if (workers > page_count) workers = page_count;
+    if (max_parallel_scratch_bytes == 0) {
+        workers = 1;
+    } else {
+        uint64_t budget_workers = max_parallel_scratch_bytes / worker_scratch;
+        if (budget_workers == 0) budget_workers = 1;
+        if ((uint64_t)workers > budget_workers)
+            workers = (size_t)budget_workers;
+    }
+    if (workers > UINT64_MAX / worker_scratch) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "transition slice parallel scratch overflows");
+        return -1;
+    }
+    out_stats->reserved_parallel_scratch_bytes =
+        (uint64_t)workers * worker_scratch;
+
+    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
+    int* statuses = calloc(page_count, sizeof(*statuses));
+    if (!statuses) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "transition slice batch status allocation failed");
+        return -1;
+    }
+    size_t actual_workers = 1;
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(workers) if(workers > 1)
+    {
+        #pragma omp single
+        actual_workers = (size_t)omp_get_num_threads();
+        #pragma omp for schedule(static)
+        for (size_t page = 0; page < page_count; page++) {
+            statuses[page] = alea_transition_slice_screen(
+                sys, &views[page], &options, results[page]);
+        }
+    }
+#else
+    for (size_t page = 0; page < page_count; page++) {
+        statuses[page] = alea_transition_slice_screen(
+            sys, &views[page], &options, results[page]);
+    }
+#endif
+    out_stats->actual_workers = actual_workers;
+    int failed = 0;
+    for (size_t page = 0; page < page_count; page++) {
+        if (statuses[page] == 0) out_stats->completed_page_count++;
+        else failed = 1;
+    }
+    free(statuses);
+    return failed ? -1 : 0;
 }

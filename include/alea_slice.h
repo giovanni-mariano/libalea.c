@@ -1030,6 +1030,7 @@ typedef struct {
 typedef struct {
     size_t pixels;
     size_t scratch_bytes;
+    size_t incomplete_points; /**< Point queries whose ownership hit cap was saturated. */
     int worker_limit;
     alea_point_coverage_stats_t point_coverage;
 } alea_local_coverage_stats_t;

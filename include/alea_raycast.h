@@ -190,6 +190,21 @@ typedef struct {
  * ============================================================================ */
 
 /**
+ * Project a point onto an exact surface card along a signed line direction.
+ *
+ * The returned parameter is signed and minimizes absolute distance among the
+ * native surface intersections. ``projected = point + parameter * unit(direction)``.
+ * This is useful when an external code prints a rounded boundary point.
+ *
+ * @return 1 on success, 0 when the line does not intersect the surface, and
+ *         -1 for invalid input or an unknown surface ID.
+ */
+int alea_surface_project_along(const alea_system_t* sys, int surface_id,
+                               const double point[3], const double direction[3],
+                               double* parameter, double projected[3],
+                               alea_primitive_type_t* primitive_type);
+
+/**
  * @brief Create a new raycast result object
  * @return New result object (caller must destroy with alea_raycast_result_destroy)
  */
