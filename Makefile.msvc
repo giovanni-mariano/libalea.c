@@ -175,7 +175,8 @@ RENDER_OBJS = \
 	$(BUILD)\render\render3d.obj
 
 MESH_OBJS = \
-	$(BUILD)\mesh\mesh_export.obj
+	$(BUILD)\mesh\mesh_export.obj \
+	$(BUILD)\mesh\adaptive_grid.obj
 
 GEO_VALIDATOR_OBJS = \
 	$(BUILD)\geo_validator\geo_validator.obj \
@@ -547,6 +548,9 @@ $(BUILD)\render\render3d.obj: $(SRC)\render\render3d.c dirs
 
 $(BUILD)\mesh\mesh_export.obj: $(SRC)\mesh\mesh_export.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mesh\ $(SRC)\mesh\mesh_export.c
+
+$(BUILD)\mesh\adaptive_grid.obj: $(SRC)\mesh\adaptive_grid.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mesh\ $(SRC)\mesh\adaptive_grid.c
 
 $(BUILD)\geo_validator\geo_validator.obj: $(SRC)\geo_validator\geo_validator.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\geo_validator\ $(SRC)\geo_validator\geo_validator.c
