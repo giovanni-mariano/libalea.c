@@ -66,6 +66,11 @@ static void lua_to_mesh_config(lua_State* L, int idx, alea_mesh_config_t* cfg) {
     if (!lua_isnil(L, -1)) cfg->auto_pad = lua_tonumber(L, -1);
     lua_pop(L, 1);
 
+    lua_getfield(L, idx, "bounds_mode");
+    if (!lua_isnil(L, -1))
+        cfg->bounds_mode = (alea_mesh_bounds_mode_t)(int)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+
     lua_getfield(L, idx, "sampling_mode");
     if (!lua_isnil(L, -1))
         cfg->sampling_mode = (alea_mesh_sampling_mode_t)(int)lua_tointeger(L, -1);
@@ -77,6 +82,10 @@ static void lua_to_mesh_config(lua_State* L, int idx, alea_mesh_config_t* cfg) {
 
     lua_getfield(L, idx, "mixed_threshold");
     if (!lua_isnil(L, -1)) cfg->mixed_threshold = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, idx, "fields");
+    if (!lua_isnil(L, -1)) cfg->fields = (uint32_t)luaL_checkinteger(L, -1);
     lua_pop(L, 1);
 }
 
@@ -260,10 +269,16 @@ static int l_meshresult_sample_counts(lua_State* L) {
     alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
     if (!ud->ptr) return luaL_error(L, "mesh result freed");
     alea_mesh_result_t* m = ud->ptr;
+    if (!m->sample_counts)
+        return luaL_error(L, "sample counts were not retained by the field mask");
+    if (!m->cell_ids)
+        return luaL_error(L, "cell IDs were not retained by the field mask");
+    if (!m->material_ids)
+        return luaL_error(L, "material IDs were not retained by the field mask");
     size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
     lua_createtable(L, (int)total, 0);
     for (size_t i = 0; i < total; i++) {
-        lua_pushinteger(L, m->sample_counts ? m->sample_counts[i] : 0);
+        lua_pushinteger(L, m->sample_counts[i]);
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
     return 1;
@@ -274,10 +289,12 @@ static int l_meshresult_tie_flags(lua_State* L) {
     alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
     if (!ud->ptr) return luaL_error(L, "mesh result freed");
     alea_mesh_result_t* m = ud->ptr;
+    if (!m->tie_flags)
+        return luaL_error(L, "tie flags were not retained by the field mask");
     size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
     lua_createtable(L, (int)total, 0);
     for (size_t i = 0; i < total; i++) {
-        lua_pushinteger(L, m->tie_flags ? m->tie_flags[i] : 0);
+        lua_pushinteger(L, m->tie_flags[i]);
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
     return 1;

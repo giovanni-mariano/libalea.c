@@ -1722,6 +1722,9 @@ Key `alea_mesh_config_t` fields:
 | `sampling_mode` | `ALEA_MESH_SAMPLE_SUBCELL` | Composition sampling: center, near-corners, or subcell lattice |
 | `subsamples_per_axis` | 2 | Per-axis sample count for `ALEA_MESH_SAMPLE_SUBCELL` |
 | `mixed_threshold` | 0 | Tolerance before a voxel is flagged as mixed |
+| `bounds_mode` | `ALEA_MESH_BOUNDS_LEGACY` | Compatibility, explicit, or root-AABB inference |
+| `fields` | all current result fields | Arrays retained in the result |
+| `progress` | NULL | Optional callback after each completed Z slab; nonzero cancels |
 
 ### alea_mesh_sample
 
@@ -1748,6 +1751,17 @@ Material fractions are point-count estimates, not exact volume fractions. A voxe
 | `fraction_spans` | `nx*ny*nz` spans into the packed fraction array |
 | `fractions` | Packed `(material_id, fraction)` entries |
 | `fraction_count` | Number of packed entries |
+| `fields` | Materialized `ALEA_MESH_FIELD_*` arrays |
+| `bounds_source` | Whether coordinates were explicit, custom, or inferred |
+| `bounds_padding` | Fractional automatic padding actually applied |
+
+Automatic bounds now use the union of bounded cells placed directly in the
+root universe. Unplaced universe definitions are ignored, each axis retains its
+own extent, and padding is relative to that axis. Production workflows should
+still prefer explicit bounds.
+
+Set `cfg.fields` to retain only arrays required by the caller. Material
+discovery remains complete even when sparse per-voxel fractions are omitted.
 
 ### alea_mesh_export
 

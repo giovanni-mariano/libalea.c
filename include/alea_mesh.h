@@ -65,12 +65,39 @@ typedef enum {
     ALEA_MESH_SAMPLE_SUBCELL       /**< Probe an NxNxN subcell lattice */
 } alea_mesh_sampling_mode_t;
 
+typedef enum {
+    ALEA_MESH_BOUNDS_LEGACY = 0, /**< All-zero bounds mean auto; otherwise explicit */
+    ALEA_MESH_BOUNDS_AUTO,
+    ALEA_MESH_BOUNDS_EXPLICIT
+} alea_mesh_bounds_mode_t;
+
+typedef enum {
+    ALEA_MESH_BOUNDS_SOURCE_EXPLICIT = 0,
+    ALEA_MESH_BOUNDS_SOURCE_CUSTOM_NODES,
+    ALEA_MESH_BOUNDS_SOURCE_INFERRED_ROOT_AABB
+} alea_mesh_bounds_source_t;
+
 /** Deterministic dominant-selection diagnostics for one voxel. */
 typedef enum {
     ALEA_MESH_TIE_NONE = 0,
     ALEA_MESH_TIE_MATERIAL = 1u << 0, /**< Multiple materials share max count */
     ALEA_MESH_TIE_CELL = 1u << 1      /**< Multiple cells share max count */
 } alea_mesh_tie_flag_t;
+
+/** Optional arrays materialized by alea_mesh_sample(). */
+typedef enum {
+    ALEA_MESH_FIELD_MATERIAL_ID = 1u << 0,
+    ALEA_MESH_FIELD_CELL_ID = 1u << 1,
+    ALEA_MESH_FIELD_MIXED_FLAG = 1u << 2,
+    ALEA_MESH_FIELD_DOMINANT_FRACTION = 1u << 3,
+    ALEA_MESH_FIELD_SAMPLED_FRACTIONS = 1u << 4,
+    ALEA_MESH_FIELD_SAMPLE_COUNT = 1u << 5,
+    ALEA_MESH_FIELD_TIE_FLAG = 1u << 6
+} alea_mesh_result_field_t;
+
+typedef int (*alea_mesh_progress_fn)(size_t completed_voxels,
+                                     size_t total_voxels,
+                                     void *user_data);
 
 /** One sampled material-fraction estimate for a voxel (not exact volume). */
 typedef struct {
@@ -100,11 +127,18 @@ typedef struct {
                                   /**< Composition sampling mode */
     int subsamples_per_axis;     /**< Subsample lattice size for SAMPLE_SUBCELL */
     double mixed_threshold;      /**< Max tolerated non-dominant fraction */
+    alea_mesh_bounds_mode_t bounds_mode;
+    uint32_t fields;             /**< ALEA_MESH_FIELD_* arrays to retain */
+    alea_mesh_progress_fn progress; /**< Optional; nonzero return cancels */
+    void *progress_user_data;
 } alea_mesh_config_t;
 
 /** Mesh sampling result */
 typedef struct {
     int nx, ny, nz;
+    uint32_t fields;                         /**< Materialized ALEA_MESH_FIELD_* */
+    alea_mesh_bounds_source_t bounds_source;
+    double bounds_padding;                   /**< Fractional padding actually used */
     double *x_nodes, *y_nodes, *z_nodes;   /**< (n+1) positions each */
     int *material_ids;                      /**< Dominant sampled material; X fastest */
     int *cell_ids;                          /**< Dominant cell in dominant material */
@@ -131,7 +165,8 @@ typedef struct {
  *
  * Sets nx=ny=nz=10, format=GMSH, void_material_id=0, auto_pad=0.01,
  * sampling_mode=SUBCELL, subsamples_per_axis=2, mixed_threshold=0,
- * bounds and custom nodes to zero/NULL.
+ * all current result fields enabled, bounds_mode=LEGACY, and bounds/custom
+ * nodes/progress callback to zero/NULL.
  */
 void alea_mesh_config_init(alea_mesh_config_t *cfg);
 

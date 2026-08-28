@@ -80,6 +80,28 @@ static alea_system_t *create_tied_cell_scene(void) {
     return sys;
 }
 
+static alea_system_t *create_elongated_box_scene(void) {
+    alea_system_t *sys = alea_create();
+    if (!sys) return NULL;
+    int box = alea_box_surface(sys, 1, -100.0, 100.0, -1.0, 1.0, -2.0, 2.0);
+    int mat = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, alea_halfspace(sys, box, -1), mat, -1.0, 0);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
+static alea_system_t *create_scene_with_unplaced_universe(void) {
+    alea_system_t *sys = alea_create();
+    if (!sys) return NULL;
+    int root = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 5.0);
+    int unplaced = alea_sphere_surface(sys, 2, 1000.0, 0.0, 0.0, 100.0);
+    int mat = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, alea_halfspace(sys, root, -1), mat, -1.0, 0);
+    alea_add_cell(sys, 2, alea_halfspace(sys, unplaced, -1), mat, -1.0, 1);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
 static double mesh_fraction_for_material(const alea_mesh_result_t *mesh,
                                          size_t voxel_index,
                                          int material_id) {
@@ -91,6 +113,21 @@ static double mesh_fraction_for_material(const alea_mesh_result_t *mesh,
             return f->fraction;
     }
     return 0.0;
+}
+
+typedef struct {
+    int calls;
+    size_t completed;
+    size_t total;
+    int cancel;
+} mesh_progress_probe_t;
+
+static int mesh_progress_probe(size_t completed, size_t total, void *user_data) {
+    mesh_progress_probe_t *probe = user_data;
+    probe->calls++;
+    probe->completed = completed;
+    probe->total = total;
+    return probe->cancel;
 }
 
 /* ============================================================================
@@ -110,6 +147,8 @@ TEST(mesh_config_defaults) {
     ASSERT_EQ(cfg.sampling_mode, ALEA_MESH_SAMPLE_SUBCELL);
     ASSERT_EQ(cfg.subsamples_per_axis, 2);
     ASSERT_NEAR(cfg.mixed_threshold, 0.0, 1e-15);
+    ASSERT(cfg.fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS);
+    ASSERT_NULL(cfg.progress);
     ASSERT_NEAR(cfg.x_min, 0.0, 1e-15);
     ASSERT_NEAR(cfg.x_max, 0.0, 1e-15);
     ASSERT_NULL(cfg.x_nodes);
@@ -560,6 +599,59 @@ TEST(mesh_export_system_oneshot) {
     alea_destroy(sys);
 }
 
+TEST(mesh_auto_bounds_preserve_axis_aspect_ratio) {
+    alea_system_t *sys = create_elongated_box_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.bounds_mode = ALEA_MESH_BOUNDS_AUTO;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_NEAR(mesh->x_nodes[0], -102.0, 1e-4);
+    ASSERT_NEAR(mesh->x_nodes[2], 102.0, 1e-4);
+    ASSERT_NEAR(mesh->y_nodes[0], -1.02, 1e-6);
+    ASSERT_NEAR(mesh->y_nodes[2], 1.02, 1e-6);
+    ASSERT_EQ(mesh->bounds_source, ALEA_MESH_BOUNDS_SOURCE_INFERRED_ROOT_AABB);
+    ASSERT_NEAR(mesh->bounds_padding, 0.01, 1e-15);
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_auto_bounds_ignore_unplaced_universes) {
+    alea_system_t *sys = create_scene_with_unplaced_universe();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.bounds_mode = ALEA_MESH_BOUNDS_AUTO;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT(mesh->x_nodes[0] > -6.0);
+    ASSERT(mesh->x_nodes[2] < 6.0);
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_auto_bounds_are_scale_independent) {
+    alea_system_t *sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 1e-6);
+    int mat = alea_add_material(sys, 1);
+    alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1), mat, -1.0, 0);
+    alea_build_universe_index(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.bounds_mode = ALEA_MESH_BOUNDS_AUTO;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_NEAR(mesh->x_nodes[0], -1.02e-6, 2e-12);
+    ASSERT_NEAR(mesh->x_nodes[2], 1.02e-6, 2e-12);
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
 TEST(mesh_sampling_does_not_validate_unused_export_format) {
     alea_system_t *sys = create_sphere_scene();
     ASSERT_NOT_NULL(sys);
@@ -572,6 +664,52 @@ TEST(mesh_sampling_does_not_validate_unused_export_format) {
     alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
     ASSERT_NOT_NULL(mesh);
     alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_result_field_mask_avoids_optional_allocations) {
+    alea_system_t *sys = create_small_inclusion_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = 0.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.fields = ALEA_MESH_FIELD_MATERIAL_ID;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_NOT_NULL(mesh->material_ids);
+    ASSERT_NULL(mesh->cell_ids);
+    ASSERT_NULL(mesh->mixed_flags);
+    ASSERT_NULL(mesh->dominant_fractions);
+    ASSERT_NULL(mesh->sample_counts);
+    ASSERT_NULL(mesh->tie_flags);
+    ASSERT_NULL(mesh->fraction_spans);
+    ASSERT_NULL(mesh->fractions);
+    ASSERT_EQ(mesh->fraction_count, 0);
+    ASSERT_EQ(mesh->num_materials, 2);
+    ASSERT_EQ(mesh->unique_materials[0], 0);
+    ASSERT_EQ(mesh->unique_materials[1], 1);
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_progress_callback_can_cancel) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = 2;
+    cfg.nz = 3;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    mesh_progress_probe_t probe = { .cancel = 1 };
+    cfg.progress = mesh_progress_probe;
+    cfg.progress_user_data = &probe;
+    ASSERT_NULL(alea_mesh_sample(sys, &cfg));
+    ASSERT_EQ(probe.calls, 1);
+    ASSERT_EQ(probe.completed, 4);
+    ASSERT_EQ(probe.total, 12);
     alea_destroy(sys);
 }
 

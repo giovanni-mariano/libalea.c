@@ -671,6 +671,8 @@ local mesh = sys:mesh_sample{
     void_material_id = 0,
     sampling_mode = 2,        -- 0=center, 1=corners, 2=subcell
     subsamples_per_axis = 2,
+    bounds_mode = 0,          -- 0=legacy, 1=auto root AABB, 2=explicit
+    fields = 127,             -- ALEA_MESH_FIELD_* mask; 127=current complete result
 }
 
 -- Inspect results
