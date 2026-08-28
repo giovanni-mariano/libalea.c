@@ -52,6 +52,33 @@ static alea_system_t *create_small_inclusion_scene(void) {
     return sys;
 }
 
+static alea_system_t *create_tied_split_scene(void) {
+    alea_system_t *sys = alea_create();
+    if (!sys) return NULL;
+
+    int plane = alea_plane_surface(sys, 1, 1.0, 0.0, 0.0, 0.0);
+    if (plane < 0) { alea_destroy(sys); return NULL; }
+
+    int mat2 = alea_add_material(sys, 2);
+    int mat1 = alea_add_material(sys, 1);
+    alea_add_cell(sys, 10, alea_halfspace(sys, plane, -1), mat2, -1.0, 0);
+    alea_add_cell(sys, 20, alea_halfspace(sys, plane,  1), mat1, -1.0, 0);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
+static alea_system_t *create_tied_cell_scene(void) {
+    alea_system_t *sys = alea_create();
+    if (!sys) return NULL;
+    int plane = alea_plane_surface(sys, 1, 1.0, 0.0, 0.0, 0.0);
+    if (plane < 0) { alea_destroy(sys); return NULL; }
+    int mat = alea_add_material(sys, 7);
+    alea_add_cell(sys, 30, alea_halfspace(sys, plane, -1), mat, -1.0, 0);
+    alea_add_cell(sys, 10, alea_halfspace(sys, plane,  1), mat, -1.0, 0);
+    alea_build_universe_index(sys);
+    return sys;
+}
+
 static double mesh_fraction_for_material(const alea_mesh_result_t *mesh,
                                          size_t voxel_index,
                                          int material_id) {
@@ -136,11 +163,14 @@ TEST(mesh_fractions_populated_by_default) {
     ASSERT_NOT_NULL(mesh);
     ASSERT_NOT_NULL(mesh->mixed_flags);
     ASSERT_NOT_NULL(mesh->dominant_fractions);
+    ASSERT_NOT_NULL(mesh->sample_counts);
+    ASSERT_NOT_NULL(mesh->tie_flags);
     ASSERT_NOT_NULL(mesh->fraction_spans);
     ASSERT_NOT_NULL(mesh->fractions);
     ASSERT(mesh->fraction_count > 0);
     ASSERT(mesh->dominant_fractions[0] > 0.0);
     ASSERT(mesh->dominant_fractions[0] <= 1.0);
+    ASSERT_EQ(mesh->sample_counts[0], 8);
 
     alea_mesh_result_free(mesh);
     alea_destroy(sys);
@@ -171,6 +201,9 @@ TEST(mesh_subsample_detects_inclusion_missed_by_center) {
     ASSERT_EQ(mesh->mixed_count, 1);
     ASSERT_EQ(mesh->fraction_spans[0].count, 2);
     ASSERT_EQ(mesh->fraction_count, 2);
+    ASSERT_EQ(mesh->num_materials, 2);
+    ASSERT_EQ(mesh->unique_materials[0], 0);
+    ASSERT_EQ(mesh->unique_materials[1], 1);
     ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 1), 0.125, 1e-15);
     ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 0), 0.875, 1e-15);
     ASSERT_NEAR(mesh->dominant_fractions[0], 0.875, 1e-15);
@@ -186,6 +219,51 @@ TEST(mesh_subsample_detects_inclusion_missed_by_center) {
     fclose(f);
     ASSERT(strstr(buf, "SCALARS mixed_flag int") != NULL);
     ASSERT(strstr(buf, "SCALARS dominant_fraction double") != NULL);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_tie_is_explicit_and_stable) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_SUBCELL;
+    cfg.subsamples_per_axis = 2;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_EQ(mesh->sample_counts[0], 8);
+    ASSERT(mesh->tie_flags[0] & ALEA_MESH_TIE_MATERIAL);
+    ASSERT_EQ(mesh->material_ids[0], 1);
+    ASSERT_EQ(mesh->cell_ids[0], 20);
+    ASSERT_NEAR(mesh->dominant_fractions[0], 0.5, 1e-15);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_cell_tie_is_explicit_and_stable) {
+    alea_system_t *sys = create_tied_cell_scene();
+    ASSERT_NOT_NULL(sys);
+
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT(!(mesh->tie_flags[0] & ALEA_MESH_TIE_MATERIAL));
+    ASSERT(mesh->tie_flags[0] & ALEA_MESH_TIE_CELL);
+    ASSERT_EQ(mesh->material_ids[0], 7);
+    ASSERT_EQ(mesh->cell_ids[0], 10);
 
     alea_mesh_result_free(mesh);
     alea_destroy(sys);

@@ -1699,7 +1699,7 @@ Load custom color palette from file.
 
 ## Mesh Export (alea_mesh.h)
 
-Sample CSG geometry onto a structured hexahedral grid and export to Gmsh or VTK format.
+Sample CSG geometry onto a structured rectilinear grid and export to Gmsh or VTK format. This is grid sampling, not boundary-conforming mesh generation.
 
 ### alea_mesh_config_init
 
@@ -1732,7 +1732,9 @@ alea_mesh_result_t* alea_mesh_sample(const alea_system_t* sys,
 
 Sample CSG geometry onto a structured grid. Auto-detects bounds if all zero. Returns result (free with `alea_mesh_result_free`), or NULL on error.
 
-By default, each voxel is sampled with a 2x2x2 subcell lattice. `material_ids` stores the dominant sampled material for each voxel; `cell_ids` stores the cell found at the voxel center.
+By default, each voxel is sampled with a 2x2x2 subcell lattice. `material_ids` stores the dominant sampled material for each voxel; `cell_ids` stores the most frequently observed cell among samples of that material. Exact ties select the lowest material ID and then the lowest cell ID, with `tie_flags` recording the ambiguity. Arrays use X-fastest, then Y, then Z ordering.
+
+Material fractions are point-count estimates, not exact volume fractions. A voxel is mixed when `(1 - dominant_fraction) > mixed_threshold`.
 
 `alea_mesh_result_t` also stores sparse per-voxel material fractions:
 
@@ -1740,6 +1742,8 @@ By default, each voxel is sampled with a 2x2x2 subcell lattice. `material_ids` s
 |-------|-------------|
 | `mixed_flags` | `nx*ny*nz` flags, one for each voxel |
 | `dominant_fractions` | Largest sampled material fraction per voxel |
+| `sample_counts` | Number of point samples used for each voxel |
+| `tie_flags` | `ALEA_MESH_TIE_MATERIAL` / `ALEA_MESH_TIE_CELL` diagnostics |
 | `mixed_count` | Number of voxels flagged as mixed |
 | `fraction_spans` | `nx*ny*nz` spans into the packed fraction array |
 | `fractions` | Packed `(material_id, fraction)` entries |

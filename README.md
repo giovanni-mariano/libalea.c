@@ -49,7 +49,7 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 - **Trace** rays through the model and report every cell crossing
 - **Visualize** 2D cross-sections with exact analytical surface boundaries
 - **Render** 3D images with Phong shading, cutaway views, and shadow rays
-- **Export** structured hex meshes to Gmsh (.msh) and VTK (.vtk) formats (exp.)
+- **Sample and export** CSG onto structured rectilinear grids in Gmsh (.msh) and VTK (.vtk) formats (exp.)
 - **Generate** void regions to fill gaps in the geometry
 - **Convert** between MCNP, OpenMC, and Serpent geometry formats
 - **Build** geometry programmatically with boolean operations

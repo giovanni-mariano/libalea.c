@@ -25,6 +25,12 @@ assert(#mids == 27, "should have 3*3*3=27 material IDs")
 local cids = mesh:cell_ids()
 assert(#cids == 27, "should have 3*3*3=27 cell IDs")
 
+local sample_counts = mesh:sample_counts()
+local tie_flags = mesh:tie_flags()
+assert(#sample_counts == 27, "should have one sample count per voxel")
+assert(#tie_flags == 27, "should have one tie flag per voxel")
+assert(sample_counts[1] == 8, "default mode should take 2^3 samples")
+
 local function join_path(dir, name)
     local sep = package.config and package.config:sub(1, 1) or "/"
     if not dir or dir == "" then
@@ -91,6 +97,8 @@ assert(#fractions == 2, "voxel should have two material fractions")
 local by_mat = {}
 for _, entry in ipairs(fractions) do
     by_mat[entry.material_id] = entry.fraction
+    assert(entry.sampled_fraction == entry.fraction,
+           "sampled_fraction compatibility field should match fraction")
 end
 assert(math.abs(by_mat[1] - 0.125) < 1e-12, "material 1 fraction should be 1/8")
 assert(math.abs(by_mat[0] - 0.875) < 1e-12, "void fraction should be 7/8")

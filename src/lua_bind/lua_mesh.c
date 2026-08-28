@@ -174,6 +174,8 @@ static void push_fraction_entries(lua_State* L, const alea_mesh_result_t* m,
         lua_setfield(L, -2, "material_id");
         lua_pushnumber(L, f->fraction);
         lua_setfield(L, -2, "fraction");
+        lua_pushnumber(L, f->fraction);
+        lua_setfield(L, -2, "sampled_fraction");
         lua_rawseti(L, -2, (lua_Integer)i + 1);
     }
 }
@@ -229,6 +231,34 @@ static int l_meshresult_cell_ids(lua_State* L) {
     return 1;
 }
 
+/* mesh:sample_counts() -> flat table */
+static int l_meshresult_sample_counts(lua_State* L) {
+    alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
+    if (!ud->ptr) return luaL_error(L, "mesh result freed");
+    alea_mesh_result_t* m = ud->ptr;
+    size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
+    lua_createtable(L, (int)total, 0);
+    for (size_t i = 0; i < total; i++) {
+        lua_pushinteger(L, m->sample_counts ? m->sample_counts[i] : 0);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
+
+/* mesh:tie_flags() -> flat table */
+static int l_meshresult_tie_flags(lua_State* L) {
+    alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
+    if (!ud->ptr) return luaL_error(L, "mesh result freed");
+    alea_mesh_result_t* m = ud->ptr;
+    size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
+    lua_createtable(L, (int)total, 0);
+    for (size_t i = 0; i < total; i++) {
+        lua_pushinteger(L, m->tie_flags ? m->tie_flags[i] : 0);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
+
 /* __gc */
 static int l_meshresult_gc(lua_State* L) {
     alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
@@ -259,6 +289,8 @@ static const luaL_Reg meshresult_methods[] = {
     {"info",               l_meshresult_info},
     {"material_ids",       l_meshresult_material_ids},
     {"cell_ids",           l_meshresult_cell_ids},
+    {"sample_counts",      l_meshresult_sample_counts},
+    {"tie_flags",          l_meshresult_tie_flags},
     {"material_fractions", l_meshresult_material_fractions},
     {NULL, NULL}
 };

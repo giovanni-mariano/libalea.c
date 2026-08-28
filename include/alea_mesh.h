@@ -6,7 +6,7 @@
  * @file alea_mesh.h
  * @brief Alea Mesh Export Module API
  *
- * Samples CSG geometry onto a structured hexahedral grid and exports
+ * Samples CSG geometry onto a structured rectilinear grid and exports
  * to Gmsh (.msh v2.2) or VTK (.vtk legacy) format for use with
  * mesh-based transport codes.
  *
@@ -51,10 +51,17 @@ typedef enum {
     ALEA_MESH_SAMPLE_SUBCELL       /**< Probe an NxNxN subcell lattice */
 } alea_mesh_sampling_mode_t;
 
-/** One material fraction entry for a sampled voxel */
+/** Deterministic dominant-selection diagnostics for one voxel. */
+typedef enum {
+    ALEA_MESH_TIE_NONE = 0,
+    ALEA_MESH_TIE_MATERIAL = 1u << 0, /**< Multiple materials share max count */
+    ALEA_MESH_TIE_CELL = 1u << 1      /**< Multiple cells share max count */
+} alea_mesh_tie_flag_t;
+
+/** One sampled material-fraction estimate for a voxel (not exact volume). */
 typedef struct {
     int material_id;
-    double fraction;
+    double fraction;              /**< Point-count fraction in [0,1] */
 } alea_mesh_material_fraction_t;
 
 /** Span into alea_mesh_result_t::fractions for one voxel */
@@ -78,19 +85,21 @@ typedef struct {
     alea_mesh_sampling_mode_t sampling_mode;
                                   /**< Composition sampling mode */
     int subsamples_per_axis;     /**< Subsample lattice size for SAMPLE_SUBCELL */
-    double mixed_threshold;      /**< Tolerance for declaring a voxel mixed */
+    double mixed_threshold;      /**< Max tolerated non-dominant fraction */
 } alea_mesh_config_t;
 
 /** Mesh sampling result */
 typedef struct {
     int nx, ny, nz;
     double *x_nodes, *y_nodes, *z_nodes;   /**< (n+1) positions each */
-    int *material_ids;                      /**< Dominant sampled material per voxel */
-    int *cell_ids;                          /**< Center-sampled cell ID per voxel */
+    int *material_ids;                      /**< Dominant sampled material; X fastest */
+    int *cell_ids;                          /**< Dominant cell in dominant material */
     int num_materials;
     int *unique_materials;                  /**< Sorted array of unique material IDs */
     unsigned char *mixed_flags;             /**< nx*ny*nz flags, 1=mixed */
     double *dominant_fractions;             /**< nx*ny*nz dominant sampled fraction */
+    uint32_t *sample_counts;                 /**< nx*ny*nz point sample counts */
+    uint8_t *tie_flags;                      /**< nx*ny*nz ALEA_MESH_TIE_* bits */
     int mixed_count;                        /**< Number of voxels flagged as mixed */
     alea_mesh_fraction_span_t *fraction_spans;
                                             /**< nx*ny*nz spans into fractions */
@@ -116,7 +125,10 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg);
  * @brief Sample CSG geometry onto a structured grid
  *
  * Samples voxel composition, assigns the dominant material to material_ids,
- * and records center-sampled cell IDs. Auto-detects bounds if all zero.
+ * and records a cell observed with that material. Ties use the lowest material
+ * ID and then the lowest cell ID, and are recorded in tie_flags. Reported
+ * fractions are point-count estimates, not exact material volumes. Auto-detects
+ * bounds if all zero.
  * Builds spatial and universe indices if needed.
  *
  * @param sys CSG system (must have cells loaded)
