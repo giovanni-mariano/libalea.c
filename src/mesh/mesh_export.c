@@ -24,6 +24,9 @@
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /* ============================================================================
  * Config
@@ -43,6 +46,7 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
     cfg->max_refine_depth = 3;
     cfg->max_samples_per_voxel = 32768;
     cfg->sampling_seed = UINT64_C(0x6a09e667f3bcc909);
+    cfg->workers = 1;
     cfg->fields = ALEA_MESH_FIELD_MATERIAL_ID |
                   ALEA_MESH_FIELD_CELL_ID |
                   ALEA_MESH_FIELD_MIXED_FLAG |
@@ -191,6 +195,11 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
     if (cfg->max_samples_per_voxel == 0) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "mesh max_samples_per_voxel must be positive");
+        return -1;
+    }
+    if (cfg->workers < 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh workers must be non-negative");
         return -1;
     }
     if (!isfinite(cfg->mixed_threshold) || cfg->mixed_threshold < 0.0 ||
@@ -762,8 +771,24 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     }
     size_t scratch_count = (size_t)max_sample_axis * (size_t)max_sample_axis *
                            (size_t)max_sample_axis;
+    int worker_count = 1;
+    int parallel_sampling = 0;
+#ifdef _OPENMP
+    if (cfg->workers != 1 && !fraction_spans && !cfg->visit && !cfg->progress &&
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE &&
+        cfg->max_total_samples == 0) {
+        worker_count = cfg->workers > 0 ? cfg->workers : omp_get_max_threads();
+        if ((size_t)worker_count > ncells) worker_count = (int)ncells;
+        if (worker_count > 1 && !omp_in_parallel()) parallel_sampling = 1;
+        else worker_count = 1;
+    }
+#endif
     size_t scratch_bytes = 0;
-    if (checked_mul_size(scratch_count, 7 * sizeof(int), &scratch_bytes) != 0) {
+    size_t worker_scratch_count = 0;
+    if (checked_mul_size(scratch_count, (size_t)worker_count,
+                         &worker_scratch_count) != 0 ||
+        checked_mul_size(worker_scratch_count, 7 * sizeof(int),
+                         &scratch_bytes) != 0) {
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
@@ -781,12 +806,12 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         return NULL;
     }
     int *scratch_materials = scratch;
-    int *scratch_counts = scratch + scratch_count;
-    int *scratch_owner_materials = scratch + 2 * scratch_count;
-    int *scratch_owner_cells = scratch + 3 * scratch_count;
-    int *scratch_owner_counts = scratch + 4 * scratch_count;
-    int *scratch_previous_materials = scratch + 5 * scratch_count;
-    int *scratch_previous_counts = scratch + 6 * scratch_count;
+    int *scratch_counts = scratch + worker_scratch_count;
+    int *scratch_owner_materials = scratch + 2 * worker_scratch_count;
+    int *scratch_owner_cells = scratch + 3 * worker_scratch_count;
+    int *scratch_owner_counts = scratch + 4 * worker_scratch_count;
+    int *scratch_previous_materials = scratch + 5 * worker_scratch_count;
+    int *scratch_previous_counts = scratch + 6 * worker_scratch_count;
     alea_mesh_material_fraction_t *voxel_fractions = cfg->visit ?
         mesh_alloc_array(scratch_count, sizeof(*voxel_fractions), 0) : NULL;
     if (cfg->visit && !voxel_fractions) {
@@ -804,7 +829,70 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     uint64_t total_sample_work = 0;
     mesh_int_set_t material_set = {0};
 
-    for (int k = 0; k < nz; k++) {
+    if (parallel_sampling) {
+#ifdef _OPENMP
+        int parallel_error = 0;
+        #pragma omp parallel for schedule(static) num_threads(worker_count) reduction(+:mixed_count)
+        for (size_t idx = 0; idx < ncells; idx++) {
+            int tid = omp_get_thread_num();
+            size_t offset = (size_t)tid * scratch_count;
+            int *materials = scratch_materials + offset;
+            int *counts = scratch_counts + offset;
+            int *owner_materials = scratch_owner_materials + offset;
+            int *owner_cells = scratch_owner_cells + offset;
+            int *owner_counts = scratch_owner_counts + offset;
+            int i = (int)(idx % (size_t)nx);
+            int j = (int)((idx / (size_t)nx) % (size_t)ny);
+            int k = (int)(idx / nxy);
+            int n_materials = 0, n_owners = 0, nsamples = 0;
+            int dominant_material = cfg->void_material_id, dominant_cell = -1;
+            unsigned char mixed = 0;
+            uint8_t ties = 0;
+            double dominant = 1.0;
+
+            mesh_sample_voxel_materials(sys, cfg, xn, yn, zn, i, j, k,
+                                        sample_axis, materials, counts,
+                                        &n_materials, owner_materials,
+                                        owner_cells, owner_counts,
+                                        &n_owners, &nsamples);
+            mesh_fraction_stats(materials, counts, n_materials, nsamples, cfg,
+                                owner_materials, owner_cells, owner_counts,
+                                n_owners, &dominant_material, &dominant_cell,
+                                &mixed, &dominant, &ties);
+            if (mat_ids) mat_ids[idx] = dominant_material;
+            if (cell_ids) cell_ids[idx] = dominant_cell;
+            if (mixed_flags) mixed_flags[idx] = mixed;
+            if (dominant_fractions) dominant_fractions[idx] = dominant;
+            if (sample_counts) sample_counts[idx] = (uint32_t)nsamples;
+            if (tie_flags) tie_flags[idx] = ties;
+            mixed_count += mixed ? 1 : 0;
+            if (alea_interrupted()) {
+                #pragma omp atomic write
+                parallel_error = 1;
+            }
+            for (int m = 0; m < n_materials; m++) {
+                int rc;
+                #pragma omp critical(alea_mesh_material_set)
+                rc = mesh_int_set_insert(&material_set, materials[m]);
+                if (rc != 0) {
+                    #pragma omp atomic write
+                    parallel_error = 1;
+                }
+            }
+        }
+        if (parallel_error) {
+            if (alea_interrupted())
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                      "parallel mesh sampling interrupted");
+            free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+            free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+            free(sample_counts); free(tie_flags); free(refinement_flags);
+            free(fraction_spans); free(fractions); free(scratch);
+            mesh_int_set_free(&material_set);
+            return NULL;
+        }
+#endif
+    } else for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
             for (int i = 0; i < nx; i++) {
                 size_t idx = (size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i;

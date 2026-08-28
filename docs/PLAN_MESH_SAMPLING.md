@@ -8,6 +8,13 @@ SPDX-License-Identifier: MPL-2.0
 
 ## Status and scope
 
+Implementation status (August 2026): phases 0-6 are implemented. The adaptive
+grid is intentionally nonconforming and unbalanced; balancing remains a
+consumer-driven option rather than a current requirement. OpenMP sampling is
+available for lean fixed-grid results, while ordered callbacks, packed sparse
+fractions, and adaptive global budgets retain serial execution. Geometry
+ownership ambiguity classification remains deferred as agreed.
+
 `alea_mesh` currently samples CSG geometry on a rectilinear hexahedral grid and
 exports the result to legacy Gmsh or VTK. It does not generate a
 boundary-conforming mesh. The implementation is useful as an experimental grid

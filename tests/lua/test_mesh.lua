@@ -128,6 +128,24 @@ assert(adaptive:info().sampling_mode == 4)
 assert(adaptive:sample_counts()[1] == 72)
 assert(adaptive:estimated_errors()[1] >= 0)
 
+local adaptive_grid = sys2:adaptive_grid_sample{
+    nx = 1, ny = 1, nz = 1,
+    x_min = 0, x_max = 1,
+    y_min = 0, y_max = 1,
+    z_min = 0, z_max = 1,
+    bounds_mode = 2,
+    max_grid_depth = 1,
+    max_cells = 32,
+}
+local grid_info = adaptive_grid:info()
+assert(grid_info.root_count == 1)
+assert(grid_info.cell_count >= grid_info.leaf_count)
+local grid_cells = adaptive_grid:cells()
+assert(#grid_cells == grid_info.cell_count)
+local adaptive_vtk = join_path(tmpdir, "alea_test_adaptive.vtk")
+adaptive_grid:export(1, adaptive_vtk)
+os.remove(adaptive_vtk)
+
 sys2:destroy()
 sys:destroy()
 print("test_mesh: OK")

@@ -160,6 +160,7 @@ typedef struct {
     uint32_t max_samples_per_voxel;
     uint64_t max_total_samples;  /**< 0 means unlimited */
     uint64_t sampling_seed;
+    int workers;                 /**< 0=runtime default, 1=serial */
     alea_mesh_bounds_mode_t bounds_mode;
     uint32_t fields;             /**< ALEA_MESH_FIELD_* arrays to retain */
     alea_mesh_progress_fn progress; /**< Optional; nonzero return cancels */
@@ -196,6 +197,45 @@ typedef struct {
     size_t fraction_count;                  /**< Number of packed fraction entries */
 } alea_mesh_result_t;
 
+/** One node in a nonconforming adaptive hexahedral grid. IDs are 1-based. */
+typedef struct {
+    uint64_t id;
+    uint64_t parent_id;                    /**< 0 for a root voxel */
+    uint64_t child_ids[8];                 /**< 0 for a leaf voxel */
+    uint32_t level;
+    unsigned char is_leaf;
+    uint8_t flags;                         /**< ALEA_ADAPTIVE_GRID_* bits */
+    double x_min, x_max, y_min, y_max, z_min, z_max;
+    int material_id;
+    int cell_id;
+    unsigned char mixed;
+    uint8_t tie_flags;
+    uint8_t refinement_flags;
+    double dominant_fraction;
+    double estimated_error;
+    uint32_t sample_count;
+} alea_adaptive_grid_cell_t;
+
+#define ALEA_ADAPTIVE_GRID_DEPTH_LIMIT_REACHED 0x01u
+#define ALEA_ADAPTIVE_GRID_CELL_LIMIT_REACHED  0x02u
+
+typedef struct {
+    alea_mesh_config_t sampling;            /**< Initial grid and estimator */
+    uint32_t max_grid_depth;                /**< Octree levels below roots */
+    size_t max_cells;                       /**< Includes internal nodes */
+    int refine_mixed;
+    int refine_high_error;
+} alea_adaptive_grid_config_t;
+
+typedef struct {
+    alea_adaptive_grid_cell_t *cells;       /**< Stable append-order IDs */
+    size_t cell_count;                      /**< Internal plus leaf cells */
+    size_t leaf_count;
+    size_t root_count;
+    uint32_t max_level;
+    int balanced;                           /**< Currently 0: nonconforming octree */
+} alea_adaptive_grid_result_t;
+
 /* ============================================================================
  * API FUNCTIONS
  * ============================================================================ */
@@ -206,7 +246,7 @@ typedef struct {
  * Sets nx=ny=nz=10, format=GMSH, void_material_id=0, auto_pad=0.01,
  * sampling_mode=SUBCELL, subsamples_per_axis=2, mixed_threshold=0,
  * target_error=0.05, max_refine_depth=3, max_samples_per_voxel=32768,
- * all current result fields enabled, bounds_mode=LEGACY, and bounds/custom
+ * workers=1, all current result fields enabled, bounds_mode=LEGACY, and bounds/custom
  * nodes/callbacks to zero/NULL.
  */
 void alea_mesh_config_init(alea_mesh_config_t *cfg);
@@ -271,6 +311,21 @@ int alea_mesh_export_system(alea_system_t *sys,
  * @brief Free mesh result allocated by alea_mesh_sample
  */
 void alea_mesh_result_free(alea_mesh_result_t *mesh);
+
+/** Initialize adaptive-grid defaults (adaptive composition, depth 4). */
+void alea_adaptive_grid_config_init(alea_adaptive_grid_config_t *cfg);
+
+/** Build a separate, nonconforming octree grid by refining mixed/high-error cells. */
+alea_adaptive_grid_result_t *alea_adaptive_grid_sample(
+    alea_system_t *sys, const alea_adaptive_grid_config_t *cfg);
+
+void alea_adaptive_grid_result_free(alea_adaptive_grid_result_t *grid);
+
+/** Export leaf cells as an unstructured Gmsh 2.2 or VTK legacy hex grid. */
+int alea_adaptive_grid_export_stream(const alea_adaptive_grid_result_t *grid,
+                                     alea_mesh_format_t fmt, FILE *out);
+int alea_adaptive_grid_export(const alea_adaptive_grid_result_t *grid,
+                              alea_mesh_format_t fmt, const char *filename);
 
 #ifdef __cplusplus
 }

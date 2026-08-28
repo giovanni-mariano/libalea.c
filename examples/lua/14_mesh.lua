@@ -89,4 +89,16 @@ local info2 = mesh2:info()
 print(string.format("  Grid: %dx%dx%d", info2.nx, info2.ny, info2.nz))
 print(string.format("  Materials: %d", info2.num_materials))
 
+-- Separate adaptive octree (unstructured export, not boundary conforming)
+print("\n--- Adaptive Grid ---")
+local adaptive = sys:adaptive_grid_sample{
+    nx = 2, ny = 2, nz = 2,
+    max_grid_depth = 2,
+    max_cells = 10000,
+}
+local adaptive_info = adaptive:info()
+print(string.format("  Cells: %d total, %d leaves",
+                    adaptive_info.cell_count, adaptive_info.leaf_count))
+adaptive:export(1, "/tmp/alea_example_mesh_adaptive.vtk")
+
 print("\n14_mesh: OK")

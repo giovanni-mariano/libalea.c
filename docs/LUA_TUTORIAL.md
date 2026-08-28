@@ -675,6 +675,7 @@ local mesh = sys:mesh_sample{
     max_refine_depth = 3,
     max_samples_per_voxel = 32768,
     sampling_seed = 12345,
+    workers = 1,              -- USE_OPENMP build: 0=runtime default
     bounds_mode = 0,          -- 0=legacy, 1=auto root AABB, 2=explicit
     fields = 511,             -- ALEA_MESH_FIELD_* mask; 511=current complete result
 }
@@ -707,6 +708,17 @@ mesh:export(1, "composition.vtk", {
     export_fields = 127,
     max_fraction_materials = 32,
 })
+
+-- A separate, nonconforming adaptive octree.
+local grid = sys:adaptive_grid_sample{
+    nx = 2, ny = 2, nz = 2,
+    max_grid_depth = 3,
+    max_cells = 100000,
+    target_error = 0.05,
+}
+print(grid:info().leaf_count)
+local cells = grid:cells() -- stable id/parent_id/child_ids and sampled metadata
+grid:export(1, "adaptive.vtk")
 ```
 
 ## 16. Error Handling and Logging

@@ -1727,6 +1727,7 @@ Key `alea_mesh_config_t` fields:
 | `max_samples_per_voxel` | 32768 | Hard cumulative query limit per voxel |
 | `max_total_samples` | 0 | Whole-run query budget; zero is unlimited |
 | `sampling_seed` | fixed | Reproducible stratified-sampling seed |
+| `workers` | 1 | Sampling workers; 0 selects the OpenMP runtime default |
 | `bounds_mode` | `ALEA_MESH_BOUNDS_LEGACY` | Compatibility, explicit, or root-AABB inference |
 | `fields` | all current result fields | Arrays retained in the result |
 | `progress` | NULL | Optional callback after each completed Z slab; nonzero cancels |
@@ -1742,7 +1743,7 @@ Sample CSG geometry onto a structured grid. Auto-detects bounds if all zero. Ret
 
 By default, each voxel is sampled with a 2x2x2 subcell lattice. `material_ids` stores the dominant sampled material for each voxel; `cell_ids` stores the most frequently observed cell among samples of that material. Exact ties select the lowest material ID and then the lowest cell ID, with `tie_flags` recording the ambiguity. Arrays use X-fastest, then Y, then Z ordering.
 
-Material fractions are point-count estimates, not exact volume fractions. A voxel is mixed when `(1 - dominant_fraction) > mixed_threshold`.
+Material fractions are point-count estimates, not exact volume fractions. A voxel is mixed when `(1 - dominant_fraction) > mixed_threshold`. In adaptive mode, fractions come from the final refinement level while `sample_counts` records all point queries spent across levels.
 
 `alea_mesh_result_t` also stores sparse per-voxel material fractions:
 
@@ -1819,6 +1820,38 @@ diagnostics as `$ElementData`; VTK writes cell scalar arrays.
 `alea_mesh_visit()` runs the same sampler but invokes a callback for each voxel
 instead of retaining per-voxel result arrays. Fraction pointers passed to the
 callback are valid only for that call.
+
+When built with `USE_OPENMP=1`, `workers > 1` parallelizes fixed, non-adaptive
+sampling when sparse fractions and callbacks are disabled. The implementation
+uses per-worker scratch and a deterministic material-table merge. Requests that
+need ordered callbacks, packed sparse fractions, adaptive whole-run budgets, or
+progress callbacks use the serial path.
+
+### Adaptive grids
+
+`alea_adaptive_grid_sample()` returns a separate octree representation; it does
+not alter `alea_mesh_result_t`. Start with `alea_adaptive_grid_config_init()`,
+then configure its `sampling` member and the spatial limits:
+
+```c
+alea_adaptive_grid_config_t cfg;
+alea_adaptive_grid_config_init(&cfg);
+cfg.sampling.nx = cfg.sampling.ny = cfg.sampling.nz = 4;
+cfg.max_grid_depth = 3;
+cfg.max_cells = 250000;
+
+alea_adaptive_grid_result_t *grid =
+    alea_adaptive_grid_sample(sys, &cfg);
+alea_adaptive_grid_export(grid, ALEA_MESH_VTK, "adaptive.vtk");
+alea_adaptive_grid_result_free(grid);
+```
+
+Mixed or empirically unstable voxels are split into eight children. Cell IDs
+are stable and 1-based; every node records its parent and child IDs. Depth and
+cell-count limits are visible in each leaf's flags. The result is currently an
+unbalanced, nonconforming octree (`balanced == 0`). Export writes leaf voxels as
+unstructured hexahedra in Gmsh 2.2 or VTK legacy format. It improves spatial
+resolution but is not boundary-conforming meshing.
 
 ### alea_mesh_export_system
 

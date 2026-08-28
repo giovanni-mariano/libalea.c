@@ -377,7 +377,13 @@ The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea
 | `alea_nuc_sample_reaction` | Reaction MT on a selected nuclide |
 | `alea_nuc_urr_factors` | Unresolved-resonance probability-table factors |
 | `alea_nuc_mg_sample_scatter` | Outgoing multigroup scatter group |
-| `alea_mesh_sample` | Structured mesh cells from CSG geometry |
+| `alea_mesh_sample` / `alea_mesh_visit` | Fixed structured-grid composition estimates |
+| `alea_adaptive_grid_sample` | Nonconforming adaptive octree voxels |
+
+Build `make mesh-benchmark` (or `make USE_OPENMP=1 mesh-benchmark`) to measure
+uniform, interface, and many-material grids across center, regular subcell, and
+stratified modes. The benchmark also reports retained bytes per voxel for
+material-only, diagnostic, and complete result masks.
 
 Full outgoing collision kinematics are not exposed by the tracked public headers or Makefile.
 

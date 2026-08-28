@@ -287,6 +287,57 @@ TEST(mesh_subsample_detects_inclusion_missed_by_center) {
     alea_destroy(sys);
 }
 
+TEST(mesh_mixed_threshold_uses_strict_comparison) {
+    alea_system_t *sys = create_small_inclusion_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = 0.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.subsamples_per_axis = 2;
+    const double thresholds[] = {0.124, 0.125, 0.126};
+    const int expected[] = {1, 0, 0};
+    for (int i = 0; i < 3; i++) {
+        cfg.mixed_threshold = thresholds[i];
+        alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+        ASSERT_NOT_NULL(mesh);
+        ASSERT_EQ(mesh->mixed_flags[0], expected[i]);
+        alea_mesh_result_free(mesh);
+    }
+    alea_destroy(sys);
+}
+
+TEST(mesh_sampling_modes_report_work_and_normalize) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    const alea_mesh_sampling_mode_t modes[] = {
+        ALEA_MESH_SAMPLE_CENTER, ALEA_MESH_SAMPLE_CORNERS,
+        ALEA_MESH_SAMPLE_SUBCELL, ALEA_MESH_SAMPLE_STRATIFIED,
+        ALEA_MESH_SAMPLE_ADAPTIVE
+    };
+    for (int mode = 0; mode < 5; mode++) {
+        alea_mesh_config_t cfg;
+        alea_mesh_config_init(&cfg);
+        cfg.nx = cfg.ny = cfg.nz = 1;
+        cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+        cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+        cfg.sampling_mode = modes[mode];
+        cfg.subsamples_per_axis = 3;
+        alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+        ASSERT_NOT_NULL(mesh);
+        uint32_t expected = mode == 0 ? 1 : mode == 1 ? 8 : mode == 4 ? 243 : 27;
+        ASSERT_EQ(mesh->sample_counts[0], expected);
+        alea_mesh_fraction_span_t span = mesh->fraction_spans[0];
+        double sum = 0.0;
+        for (uint32_t i = 0; i < span.count; i++)
+            sum += mesh->fractions[(size_t)span.offset + i].fraction;
+        ASSERT_NEAR(sum, 1.0, 1e-12);
+        alea_mesh_result_free(mesh);
+    }
+    alea_destroy(sys);
+}
+
 TEST(mesh_tie_is_explicit_and_stable) {
     alea_system_t *sys = create_tied_split_scene();
     ASSERT_NOT_NULL(sys);
@@ -694,6 +745,76 @@ TEST(mesh_adaptive_sampling_honors_limits) {
     alea_destroy(sys);
 }
 
+TEST(adaptive_grid_builds_stable_octree_and_exports) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_adaptive_grid_config_t cfg;
+    alea_adaptive_grid_config_init(&cfg);
+    cfg.sampling.nx = cfg.sampling.ny = cfg.sampling.nz = 1;
+    cfg.sampling.x_min = cfg.sampling.y_min = cfg.sampling.z_min = -1.0;
+    cfg.sampling.x_max = cfg.sampling.y_max = cfg.sampling.z_max = 1.0;
+    cfg.sampling.bounds_mode = ALEA_MESH_BOUNDS_EXPLICIT;
+    cfg.max_grid_depth = 1;
+
+    alea_adaptive_grid_result_t *grid = alea_adaptive_grid_sample(sys, &cfg);
+    ASSERT_NOT_NULL(grid);
+    ASSERT_EQ(grid->root_count, 1);
+    ASSERT_EQ(grid->cell_count, 9);
+    ASSERT_EQ(grid->leaf_count, 8);
+    ASSERT_EQ(grid->max_level, 1);
+    ASSERT_EQ(grid->balanced, 0);
+    ASSERT_EQ(grid->cells[0].id, 1);
+    ASSERT_EQ(grid->cells[0].is_leaf, 0);
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ(grid->cells[0].child_ids[i], (uint64_t)i + 2);
+        ASSERT_EQ(grid->cells[i + 1].parent_id, 1);
+        ASSERT_EQ(grid->cells[i + 1].level, 1);
+        ASSERT_EQ(grid->cells[i + 1].is_leaf, 1);
+    }
+
+    FILE *f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_adaptive_grid_export_stream(grid, ALEA_MESH_VTK, f), 0);
+    rewind(f);
+    char text[256] = {0};
+    ASSERT(fread(text, 1, sizeof(text) - 1, f) > 0);
+    ASSERT(strstr(text, "UNSTRUCTURED_GRID") != NULL);
+    fclose(f);
+    f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_adaptive_grid_export_stream(grid, ALEA_MESH_GMSH, f), 0);
+    fclose(f);
+
+    alea_adaptive_grid_result_free(grid);
+    alea_destroy(sys);
+}
+
+TEST(adaptive_grid_reports_spatial_limits) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_adaptive_grid_config_t cfg;
+    alea_adaptive_grid_config_init(&cfg);
+    cfg.sampling.nx = cfg.sampling.ny = cfg.sampling.nz = 1;
+    cfg.sampling.x_min = cfg.sampling.y_min = cfg.sampling.z_min = -1.0;
+    cfg.sampling.x_max = cfg.sampling.y_max = cfg.sampling.z_max = 1.0;
+    cfg.sampling.bounds_mode = ALEA_MESH_BOUNDS_EXPLICIT;
+    cfg.max_grid_depth = 0;
+
+    alea_adaptive_grid_result_t *grid = alea_adaptive_grid_sample(sys, &cfg);
+    ASSERT_NOT_NULL(grid);
+    ASSERT_EQ(grid->cell_count, 1);
+    ASSERT(grid->cells[0].flags & ALEA_ADAPTIVE_GRID_DEPTH_LIMIT_REACHED);
+    alea_adaptive_grid_result_free(grid);
+
+    cfg.max_grid_depth = 1;
+    cfg.max_cells = 8;
+    grid = alea_adaptive_grid_sample(sys, &cfg);
+    ASSERT_NOT_NULL(grid);
+    ASSERT(grid->cells[0].flags & ALEA_ADAPTIVE_GRID_CELL_LIMIT_REACHED);
+    alea_adaptive_grid_result_free(grid);
+    alea_destroy(sys);
+}
+
 TEST(mesh_auto_bounds_preserve_axis_aspect_ratio) {
     alea_system_t *sys = create_elongated_box_scene();
     ASSERT_NOT_NULL(sys);
@@ -786,6 +907,36 @@ TEST(mesh_result_field_mask_avoids_optional_allocations) {
     ASSERT_EQ(mesh->unique_materials[0], 0);
     ASSERT_EQ(mesh->unique_materials[1], 1);
     alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_parallel_sampling_matches_serial) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = 7; cfg.ny = 6; cfg.nz = 5;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    cfg.fields &= ~ALEA_MESH_FIELD_SAMPLED_FRACTIONS;
+    cfg.workers = 1;
+    alea_mesh_result_t *serial = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(serial);
+    cfg.workers = 4;
+    alea_mesh_result_t *parallel = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(parallel);
+    size_t count = (size_t)cfg.nx * cfg.ny * cfg.nz;
+    ASSERT(memcmp(serial->material_ids, parallel->material_ids,
+                  count * sizeof(int)) == 0);
+    ASSERT(memcmp(serial->cell_ids, parallel->cell_ids,
+                  count * sizeof(int)) == 0);
+    ASSERT(memcmp(serial->dominant_fractions, parallel->dominant_fractions,
+                  count * sizeof(double)) == 0);
+    ASSERT_EQ(serial->num_materials, parallel->num_materials);
+    ASSERT(memcmp(serial->unique_materials, parallel->unique_materials,
+                  (size_t)serial->num_materials * sizeof(int)) == 0);
+    alea_mesh_result_free(serial);
+    alea_mesh_result_free(parallel);
     alea_destroy(sys);
 }
 

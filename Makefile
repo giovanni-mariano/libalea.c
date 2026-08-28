@@ -241,7 +241,8 @@ RENDER_SRCS = \
 
 # Mesh export module
 MESH_SRCS = \
-	$(MESH_DIR)/mesh_export.c
+	$(MESH_DIR)/mesh_export.c \
+	$(MESH_DIR)/adaptive_grid.c
 
 # Geometry validator module
 GEO_VALIDATOR_SRCS = \
@@ -358,7 +359,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools install install-libs install-cli install-tools install-doc uninstall check-public-headers
+.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools mesh-benchmark install install-libs install-cli install-tools install-doc uninstall check-public-headers
 
 # Default target: core library only
 all: lib-core
@@ -620,6 +621,11 @@ endif
 $(BIN_DIR)/tests/unit/%$(EXEEXT): $(UNIT_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/unit
 	@echo "LD  $@"
 	@$(CC) $(TEST_CFLAGS) $(TEST_INCLUDES) $< $(TEST_LIBS) $(LDFLAGS) -o $@
+
+mesh-benchmark: $(LIB_CORE) | $(BIN_DIR)
+	@echo "LD  $(BIN_DIR)/mesh_sampling_benchmark$(EXEEXT)"
+	@$(CC) $(CFLAGS) $(INCLUDES) benchmarks/mesh_sampling.c $(LIB_CORE) $(LDFLAGS) \
+		-o $(BIN_DIR)/mesh_sampling_benchmark$(EXEEXT)
 
 # Integration tests
 $(BIN_DIR)/tests/integration/%$(EXEEXT): $(INTEGRATION_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/integration

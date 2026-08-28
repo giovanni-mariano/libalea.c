@@ -14,6 +14,11 @@ typedef struct {
     alea_mesh_result_t* ptr;
 } alea_lua_mesh_result_t;
 
+#define ALEA_ADAPTIVE_GRID_MT "alea.AdaptiveGridResult"
+typedef struct {
+    alea_adaptive_grid_result_t* ptr;
+} alea_lua_adaptive_grid_t;
+
 static alea_lua_mesh_result_t* check_meshresult(lua_State* L, int idx) {
     return (alea_lua_mesh_result_t*)luaL_checkudata(L, idx, ALEA_MESHRESULT_MT);
 }
@@ -99,10 +104,18 @@ static void lua_to_mesh_config(lua_State* L, int idx, alea_mesh_config_t* cfg) {
     lua_getfield(L, idx, "sampling_seed");
     if (!lua_isnil(L, -1)) cfg->sampling_seed = (uint64_t)luaL_checkinteger(L, -1);
     lua_pop(L, 1);
+    lua_getfield(L, idx, "workers");
+    if (!lua_isnil(L, -1)) cfg->workers = (int)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
 
     lua_getfield(L, idx, "fields");
     if (!lua_isnil(L, -1)) cfg->fields = (uint32_t)luaL_checkinteger(L, -1);
     lua_pop(L, 1);
+}
+
+static alea_lua_adaptive_grid_t* check_adaptive_grid(lua_State* L, int idx) {
+    return (alea_lua_adaptive_grid_t*)luaL_checkudata(L, idx,
+                                                       ALEA_ADAPTIVE_GRID_MT);
 }
 
 static void lua_to_mesh_export_options(lua_State* L, int idx,
@@ -286,6 +299,33 @@ static int l_meshresult_cell_ids(lua_State* L) {
     return 1;
 }
 
+static int l_adaptive_grid_sample(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_adaptive_grid_config_t cfg;
+    alea_adaptive_grid_config_init(&cfg);
+    if (lua_istable(L, 2)) {
+        lua_to_mesh_config(L, 2, &cfg.sampling);
+        lua_getfield(L, 2, "max_grid_depth");
+        if (!lua_isnil(L, -1)) cfg.max_grid_depth = (uint32_t)luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "max_cells");
+        if (!lua_isnil(L, -1)) cfg.max_cells = (size_t)luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "refine_mixed");
+        if (!lua_isnil(L, -1)) cfg.refine_mixed = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "refine_high_error");
+        if (!lua_isnil(L, -1)) cfg.refine_high_error = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+    }
+    alea_lua_adaptive_grid_t* ud = (alea_lua_adaptive_grid_t*)lua_newuserdata(
+        L, sizeof(*ud));
+    ud->ptr = alea_adaptive_grid_sample(sys, &cfg);
+    if (!ud->ptr) return luaL_error(L, "adaptive_grid_sample failed: %s", alea_error());
+    luaL_setmetatable(L, ALEA_ADAPTIVE_GRID_MT);
+    return 1;
+}
+
 /* mesh:sample_counts() -> flat table */
 static int l_meshresult_sample_counts(lua_State* L) {
     alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
@@ -358,6 +398,70 @@ static int l_meshresult_gc(lua_State* L) {
     return 0;
 }
 
+static int l_adaptive_grid_info(lua_State* L) {
+    alea_lua_adaptive_grid_t* ud = check_adaptive_grid(L, 1);
+    if (!ud->ptr) return luaL_error(L, "adaptive grid result freed");
+    lua_createtable(L, 0, 5);
+    lua_pushinteger(L, (lua_Integer)ud->ptr->cell_count); lua_setfield(L, -2, "cell_count");
+    lua_pushinteger(L, (lua_Integer)ud->ptr->leaf_count); lua_setfield(L, -2, "leaf_count");
+    lua_pushinteger(L, (lua_Integer)ud->ptr->root_count); lua_setfield(L, -2, "root_count");
+    lua_pushinteger(L, ud->ptr->max_level); lua_setfield(L, -2, "max_level");
+    lua_pushboolean(L, ud->ptr->balanced); lua_setfield(L, -2, "balanced");
+    return 1;
+}
+
+static int l_adaptive_grid_cells(lua_State* L) {
+    alea_lua_adaptive_grid_t* ud = check_adaptive_grid(L, 1);
+    if (!ud->ptr) return luaL_error(L, "adaptive grid result freed");
+    lua_createtable(L, (int)ud->ptr->cell_count, 0);
+    for (size_t i = 0; i < ud->ptr->cell_count; i++) {
+        const alea_adaptive_grid_cell_t* c = &ud->ptr->cells[i];
+        lua_createtable(L, 8, 16);
+        lua_pushinteger(L, (lua_Integer)c->id); lua_setfield(L, -2, "id");
+        lua_pushinteger(L, (lua_Integer)c->parent_id); lua_setfield(L, -2, "parent_id");
+        lua_pushinteger(L, c->level); lua_setfield(L, -2, "level");
+        lua_pushboolean(L, c->is_leaf); lua_setfield(L, -2, "is_leaf");
+        lua_pushinteger(L, c->flags); lua_setfield(L, -2, "flags");
+        lua_pushinteger(L, c->material_id); lua_setfield(L, -2, "material_id");
+        lua_pushinteger(L, c->cell_id); lua_setfield(L, -2, "cell_id");
+        lua_pushboolean(L, c->mixed); lua_setfield(L, -2, "mixed");
+        lua_pushnumber(L, c->dominant_fraction); lua_setfield(L, -2, "dominant_fraction");
+        lua_pushnumber(L, c->estimated_error); lua_setfield(L, -2, "estimated_error");
+        lua_pushinteger(L, c->sample_count); lua_setfield(L, -2, "sample_count");
+        lua_pushnumber(L, c->x_min); lua_setfield(L, -2, "x_min");
+        lua_pushnumber(L, c->x_max); lua_setfield(L, -2, "x_max");
+        lua_pushnumber(L, c->y_min); lua_setfield(L, -2, "y_min");
+        lua_pushnumber(L, c->y_max); lua_setfield(L, -2, "y_max");
+        lua_pushnumber(L, c->z_min); lua_setfield(L, -2, "z_min");
+        lua_pushnumber(L, c->z_max); lua_setfield(L, -2, "z_max");
+        lua_createtable(L, 8, 0);
+        for (int child = 0; child < 8; child++) {
+            lua_pushinteger(L, (lua_Integer)c->child_ids[child]);
+            lua_rawseti(L, -2, child + 1);
+        }
+        lua_setfield(L, -2, "child_ids");
+        lua_rawseti(L, -2, (lua_Integer)i + 1);
+    }
+    return 1;
+}
+
+static int l_adaptive_grid_export(lua_State* L) {
+    alea_lua_adaptive_grid_t* ud = check_adaptive_grid(L, 1);
+    if (!ud->ptr) return luaL_error(L, "adaptive grid result freed");
+    int fmt = (int)luaL_checkinteger(L, 2);
+    const char* filename = luaL_checkstring(L, 3);
+    if (alea_adaptive_grid_export(ud->ptr, (alea_mesh_format_t)fmt, filename) != 0)
+        return luaL_error(L, "adaptive grid export failed: %s", alea_error());
+    return 0;
+}
+
+static int l_adaptive_grid_gc(lua_State* L) {
+    alea_lua_adaptive_grid_t* ud = check_adaptive_grid(L, 1);
+    if (ud->ptr) alea_adaptive_grid_result_free(ud->ptr);
+    ud->ptr = NULL;
+    return 0;
+}
+
 /* ============================================================================
  * Registration
  * ============================================================================ */
@@ -365,6 +469,7 @@ static int l_meshresult_gc(lua_State* L) {
 static const luaL_Reg mesh_system_methods[] = {
     {"mesh_sample",  l_mesh_sample},
     {"mesh_export",  l_mesh_export_system},
+    {"adaptive_grid_sample", l_adaptive_grid_sample},
     {NULL, NULL}
 };
 
@@ -398,6 +503,16 @@ int luaopen_alea_mesh(lua_State* L) {
     luaL_setfuncs(L, meshresult_meta, 0);
     lua_newtable(L);
     luaL_setfuncs(L, meshresult_methods, 0);
+    lua_setfield(L, -2, "__index");
+    lua_pop(L, 1);
+
+    luaL_newmetatable(L, ALEA_ADAPTIVE_GRID_MT);
+    lua_pushcfunction(L, l_adaptive_grid_gc);
+    lua_setfield(L, -2, "__gc");
+    lua_newtable(L);
+    lua_pushcfunction(L, l_adaptive_grid_info); lua_setfield(L, -2, "info");
+    lua_pushcfunction(L, l_adaptive_grid_cells); lua_setfield(L, -2, "cells");
+    lua_pushcfunction(L, l_adaptive_grid_export); lua_setfield(L, -2, "export");
     lua_setfield(L, -2, "__index");
     lua_pop(L, 1);
 
