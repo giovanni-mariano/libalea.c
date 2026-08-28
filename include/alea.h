@@ -1000,6 +1000,29 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index);
  * void_probes_per_axis, merge_cell_weight, merge_surface_weight, etc.).
  * ============================================================================ */
 
+/** Options for deterministic, bounded void generation. */
+typedef struct {
+    int max_depth;
+    double min_size;
+    int probes_per_axis;
+    size_t requested_workers;              /**< 0 = OpenMP runtime maximum */
+    uint64_t max_parallel_scratch_bytes;   /**< 0 = force serial execution */
+    size_t parallel_frontier_depth;        /**< 0 = automatic (currently 2) */
+} alea_void_options_t;
+
+/** Parallel-execution facts retained by a void result. */
+typedef struct {
+    size_t requested_workers;
+    size_t actual_workers;
+    size_t frontier_task_count;
+    size_t parallel_batch_count;
+    uint64_t scratch_bytes_per_worker;
+    uint64_t reserved_parallel_scratch_bytes;
+} alea_void_execution_stats_t;
+
+/** Initialize void options to the public defaults. */
+void alea_void_options_init(alea_void_options_t* options);
+
 /* Generate voids inside an existing finite CSG region. The supplied bounds
  * region is preserved and reused during consolidation when possible. */
 void_result_t* alea_void_generate_in_region(alea_system_t* sys, alea_node_id_t bounds_region);
@@ -1007,6 +1030,18 @@ void_result_t* alea_void_generate_in_region(alea_system_t* sys, alea_node_id_t b
 /* Generate voids inside a bbox. If bounds is NULL, universe 0 bbox plus a
  * margin is used. The bbox path creates an internal RPP bounds region. */
 void_result_t* alea_void_generate_in_bbox(alea_system_t* sys, const alea_bbox_t* bounds);
+
+/** Extended void generation entry points with explicit worker policy. */
+void_result_t* alea_void_generate_in_region_ex(
+    alea_system_t* sys, alea_node_id_t bounds_region,
+    const alea_void_options_t* options);
+void_result_t* alea_void_generate_in_bbox_ex(
+    alea_system_t* sys, const alea_bbox_t* bounds,
+    const alea_void_options_t* options);
+
+/** Copy execution statistics from a generated result. */
+int alea_void_get_execution_stats(
+    const void_result_t* result, alea_void_execution_stats_t* out_stats);
 int alea_void_add_cells(alea_system_t* sys, void_result_t* result);
 int alea_void_add_graveyard(alea_system_t* sys, void_result_t* result);
 size_t alea_void_count(const void_result_t* result);

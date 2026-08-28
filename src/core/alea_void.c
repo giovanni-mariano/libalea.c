@@ -33,6 +33,10 @@
 #include "util/alea_bitset.h"
 #include "primitives/bbox.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // ============================================================================
 // INTERNAL HELPERS
 // ============================================================================
@@ -186,10 +190,46 @@ static int probe_node(alea_system_t* sys, const alea_bbox_t* bbox,
  * inside the cell's CSG tree — otherwise a cavity smaller than the probe
  * spacing would be silently discarded.
  */
-static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
-                                  const octree_config_t* config,
-                                  void_result_t* result) {
-    result->total_nodes++;
+typedef struct {
+    size_t total_nodes;
+    size_t void_nodes;
+    size_t solid_nodes;
+    size_t partial_nodes;
+    size_t max_depth_reached;
+} void_subtree_stats_t;
+
+typedef struct {
+    octree_node_t** nodes;
+    size_t count;
+    size_t capacity;
+} void_frontier_t;
+
+static void void_stats_add(void_subtree_stats_t* dst,
+                           const void_subtree_stats_t* src) {
+    dst->total_nodes += src->total_nodes;
+    dst->void_nodes += src->void_nodes;
+    dst->solid_nodes += src->solid_nodes;
+    dst->partial_nodes += src->partial_nodes;
+    dst->max_depth_reached += src->max_depth_reached;
+}
+
+static void void_stats_commit(void_result_t* result,
+                              const void_subtree_stats_t* stats) {
+    result->total_nodes = stats->total_nodes;
+    result->octree_void_count = stats->void_nodes;
+    result->solid_nodes = stats->solid_nodes;
+    result->partial_nodes = stats->partial_nodes;
+    result->max_depth_reached = stats->max_depth_reached;
+}
+
+/* Classify one node using read-only model state.  A true `out_expand` means
+ * the caller owns subdivision and child allocation for this node. */
+static int classify_octree_node(alea_system_t* sys, octree_node_t* node,
+                                const octree_config_t* config,
+                                void_subtree_stats_t* stats,
+                                bool* out_expand) {
+    stats->total_nodes++;
+    *out_expand = false;
 
     // Check minimum size
     double sx = node->bbox.max_x - node->bbox.min_x;
@@ -208,7 +248,7 @@ static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
         // All probes are void - definitely contains void
         node->classification = OCTREE_VOID;
         node->cell_index = -1;
-        result->octree_void_count++;
+        stats->void_nodes++;
         return 0;
     }
 
@@ -229,7 +269,7 @@ static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
             if (rel == ALEA_RELATION_NEGATIVE) {
                 node->classification = OCTREE_SOLID;
                 node->cell_index = cell_result;
-                result->solid_nodes++;
+                stats->solid_nodes++;
                 return 0;
             }
         }
@@ -249,15 +289,25 @@ static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
         // Let the CSG intersection decide if there's actually void here.
         node->classification = OCTREE_PARTIAL_VOID;
         node->cell_index = -1;
-        result->partial_nodes++;
+        stats->partial_nodes++;
         if (node->depth >= config->max_depth) {
-            result->max_depth_reached++;
+            stats->max_depth_reached++;
         }
         return 0;
     }
 
-    // Subdivide for finer resolution
     node->classification = OCTREE_MIXED;
+    *out_expand = true;
+    return 0;
+}
+
+static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
+                                  const octree_config_t* config,
+                                  void_subtree_stats_t* stats) {
+    bool expand = false;
+    if (classify_octree_node(sys, node, config, stats, &expand) < 0)
+        return -1;
+    if (!expand) return 0;
 
     for (int i = 0; i < 8; i++) {
         alea_bbox_t child_bbox = get_child_bbox(&node->bbox, i);
@@ -269,11 +319,175 @@ static int build_octree_recursive(alea_system_t* sys, octree_node_t* node,
             return -1;
         }
 
-        if (build_octree_recursive(sys, node->children[i], config, result) < 0) {
+        if (build_octree_recursive(sys, node->children[i], config, stats) < 0) {
             return -1;
         }
     }
 
+    return 0;
+}
+
+static int frontier_push(void_frontier_t* frontier, octree_node_t* node) {
+    if (frontier->count == frontier->capacity) {
+        size_t capacity = frontier->capacity ? frontier->capacity * 2 : 64;
+        if (capacity < frontier->capacity ||
+            capacity > SIZE_MAX / sizeof(*frontier->nodes)) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "void frontier allocation overflows");
+            return -1;
+        }
+        octree_node_t** nodes = realloc(
+            frontier->nodes, capacity * sizeof(*frontier->nodes));
+        if (!nodes) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "failed to allocate void frontier");
+            return -1;
+        }
+        frontier->nodes = nodes;
+        frontier->capacity = capacity;
+    }
+    frontier->nodes[frontier->count++] = node;
+    return 0;
+}
+
+/* Classify the stable prefix serially. Nodes at frontier_depth are deliberately
+ * left UNKNOWN so each complete subtree is owned by exactly one worker. */
+static int build_octree_frontier(alea_system_t* sys, octree_node_t* node,
+                                 const octree_config_t* config,
+                                 size_t frontier_depth,
+                                 void_subtree_stats_t* prefix_stats,
+                                 void_frontier_t* frontier) {
+    if ((size_t)node->depth >= frontier_depth)
+        return frontier_push(frontier, node);
+
+    bool expand = false;
+    if (classify_octree_node(sys, node, config, prefix_stats, &expand) < 0)
+        return -1;
+    if (!expand) return 0;
+
+    for (int octant = 0; octant < 8; octant++) {
+        alea_bbox_t child_bbox = get_child_bbox(&node->bbox, octant);
+        node->children[octant] = octree_node_create(
+            &child_bbox, node->depth + 1);
+        if (!node->children[octant]) {
+            alea_set_error_detail(
+                ALEA_ERR_OUT_OF_MEMORY,
+                "build_octree_frontier: failed to allocate child at depth %d",
+                node->depth + 1);
+            return -1;
+        }
+        if (build_octree_frontier(sys, node->children[octant], config,
+                                  frontier_depth, prefix_stats, frontier) < 0)
+            return -1;
+    }
+    return 0;
+}
+
+static size_t void_select_workers(size_t requested, size_t task_count,
+                                  uint64_t budget, uint64_t scratch_per_worker) {
+    size_t workers = requested;
+#ifdef _OPENMP
+    if (workers == 0) workers = (size_t)omp_get_max_threads();
+    if (omp_in_parallel()) workers = 1;
+#else
+    workers = 1;
+#endif
+    if (workers == 0) workers = 1;
+    if (task_count > 0 && workers > task_count) workers = task_count;
+    if (budget == 0) return 1;
+    uint64_t budget_workers = budget / scratch_per_worker;
+    if (budget_workers == 0) budget_workers = 1;
+    if ((uint64_t)workers > budget_workers) workers = (size_t)budget_workers;
+    return workers ? workers : 1;
+}
+
+static int build_octree_bounded(alea_system_t* sys, octree_node_t* root,
+                                const octree_config_t* config,
+                                void_result_t* result) {
+    void_frontier_t frontier = {0};
+    void_subtree_stats_t total = {0};
+    size_t frontier_depth = config->parallel_frontier_depth;
+    size_t max_depth = config->max_depth > 0 ? (size_t)config->max_depth : 0;
+    if (frontier_depth == 0) frontier_depth = 2;
+    if (frontier_depth > max_depth) frontier_depth = max_depth;
+
+    if (build_octree_frontier(sys, root, config, frontier_depth,
+                              &total, &frontier) < 0) {
+        free(frontier.nodes);
+        return -1;
+    }
+
+    result->execution_requested_workers = config->requested_workers;
+    result->execution_frontier_task_count = frontier.count;
+    result->execution_scratch_bytes_per_worker = sizeof(void_subtree_stats_t);
+
+    if (frontier.count == 0) {
+        result->execution_actual_workers = 1;
+        void_stats_commit(result, &total);
+        free(frontier.nodes);
+        return 0;
+    }
+    if (frontier.count > SIZE_MAX / sizeof(void_subtree_stats_t) ||
+        frontier.count > SIZE_MAX / sizeof(int)) {
+        free(frontier.nodes);
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "void frontier result allocation overflows");
+        return -1;
+    }
+
+    void_subtree_stats_t* task_stats = calloc(frontier.count, sizeof(*task_stats));
+    int* statuses = calloc(frontier.count, sizeof(*statuses));
+    if (!task_stats || !statuses) {
+        free(task_stats);
+        free(statuses);
+        free(frontier.nodes);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate void frontier results");
+        return -1;
+    }
+
+    size_t workers = void_select_workers(
+        config->requested_workers, frontier.count,
+        config->max_parallel_scratch_bytes, sizeof(void_subtree_stats_t));
+    result->execution_actual_workers = 1;
+    result->execution_reserved_parallel_scratch_bytes =
+        (uint64_t)workers * sizeof(void_subtree_stats_t);
+
+#ifdef _OPENMP
+    #pragma omp parallel num_threads(workers) if(workers > 1)
+    {
+        #pragma omp single
+        result->execution_actual_workers = (size_t)omp_get_num_threads();
+        #pragma omp for schedule(static)
+        for (size_t task = 0; task < frontier.count; task++) {
+            statuses[task] = build_octree_recursive(
+                sys, frontier.nodes[task], config, &task_stats[task]);
+        }
+    }
+#else
+    for (size_t task = 0; task < frontier.count; task++) {
+        statuses[task] = build_octree_recursive(
+            sys, frontier.nodes[task], config, &task_stats[task]);
+    }
+#endif
+
+    if (result->execution_actual_workers > 1)
+        result->execution_parallel_batch_count = 1;
+    for (size_t task = 0; task < frontier.count; task++) {
+        if (statuses[task] < 0) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "void octree frontier task %zu failed", task);
+            free(task_stats);
+            free(statuses);
+            free(frontier.nodes);
+            return -1;
+        }
+        void_stats_add(&total, &task_stats[task]);
+    }
+    void_stats_commit(result, &total);
+    free(task_stats);
+    free(statuses);
+    free(frontier.nodes);
     return 0;
 }
 
@@ -815,11 +1029,11 @@ static void_result_t* run_void_generation_in_bbox(alea_system_t* sys,
     octree_config_t cfg = config ? *config : OCTREE_DEFAULT_CONFIG;
     result->bounds_bbox = *bbox;
 
-    if (!sys->universe_index_built) {
-        if (alea_build_universe_index(sys) < 0) {
-            alea_void_result_destroy(result);
-            return NULL;
-        }
+    /* Point ownership and exact box classification are read-only inside the
+     * parallel phase. Build every lazy hierarchy cache on the caller thread. */
+    if (alea_system_prepare_query_caches(sys, ALEA_CACHE_HIER_SPATIAL) < 0) {
+        alea_void_result_destroy(result);
+        return NULL;
     }
 
     result->root = octree_node_create(bbox, 0);
@@ -829,7 +1043,7 @@ static void_result_t* run_void_generation_in_bbox(alea_system_t* sys,
     }
 
     /* Step 1: Build octree using probing for spatial classification */
-    if (build_octree_recursive(sys, result->root, &cfg, result) < 0) {
+    if (build_octree_bounded(sys, result->root, &cfg, result) < 0) {
         ALEA_LOG_ERROR("void octree build failed");
         alea_void_result_destroy(result);
         return NULL;

@@ -2666,6 +2666,54 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index) {
  * VOID GENERATION
  * ============================================================================ */
 
+void alea_void_options_init(alea_void_options_t* options) {
+    if (!options) return;
+    *options = (alea_void_options_t){
+        .max_depth = 8,
+        .min_size = 0.1,
+        .probes_per_axis = 3,
+        .requested_workers = 1,
+        .max_parallel_scratch_bytes = 0,
+        .parallel_frontier_depth = 2,
+    };
+}
+
+static int void_config_from_options(const alea_void_options_t* options,
+                                    octree_config_t* config) {
+    if (!options || !config || options->max_depth < 0 ||
+        !isfinite(options->min_size) || options->min_size <= 0.0 ||
+        options->probes_per_axis < 2) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "invalid void generation options");
+        return -1;
+    }
+    *config = (octree_config_t){
+        .max_depth = options->max_depth,
+        .min_size = options->min_size,
+        .probes_per_axis = options->probes_per_axis,
+        .requested_workers = options->requested_workers,
+        .max_parallel_scratch_bytes = options->max_parallel_scratch_bytes,
+        .parallel_frontier_depth = options->parallel_frontier_depth,
+    };
+    return 0;
+}
+
+void_result_t* alea_void_generate_in_region_ex(
+        alea_system_t* sys, alea_node_id_t bounds_region,
+        const alea_void_options_t* options) {
+    octree_config_t config;
+    if (!sys || void_config_from_options(options, &config) != 0) return NULL;
+    return alea_generate_void_in_region(sys, bounds_region, &config);
+}
+
+void_result_t* alea_void_generate_in_bbox_ex(
+        alea_system_t* sys, const alea_bbox_t* bounds,
+        const alea_void_options_t* options) {
+    octree_config_t config;
+    if (!sys || void_config_from_options(options, &config) != 0) return NULL;
+    return alea_generate_void_in_bbox(sys, bounds, &config);
+}
+
 void_result_t* alea_void_generate_in_region(alea_system_t* sys,
                                             alea_node_id_t bounds_region) {
     if (!sys) return NULL;
@@ -2675,6 +2723,9 @@ void_result_t* alea_void_generate_in_region(alea_system_t* sys,
         .max_depth = sys->config.void_max_depth,
         .min_size = sys->config.void_min_size,
         .probes_per_axis = sys->config.void_probes_per_axis,
+        .requested_workers = 1,
+        .max_parallel_scratch_bytes = 0,
+        .parallel_frontier_depth = 2,
     };
     return alea_generate_void_in_region(sys, bounds_region, &local_config);
 }
@@ -2688,6 +2739,9 @@ void_result_t* alea_void_generate_in_bbox(alea_system_t* sys,
         .max_depth = sys->config.void_max_depth,
         .min_size = sys->config.void_min_size,
         .probes_per_axis = sys->config.void_probes_per_axis,
+        .requested_workers = 1,
+        .max_parallel_scratch_bytes = 0,
+        .parallel_frontier_depth = 2,
     };
     return alea_generate_void_in_bbox(sys, bounds, &local_config);
 }
@@ -2701,6 +2755,26 @@ int alea_void_get(const void_result_t* result, size_t index, alea_bbox_t* box) {
     if (!result || !box) return -1;
     if (index >= result->void_regions.count) return -1;
     *box = result->void_regions.data[index].bbox;
+    return 0;
+}
+
+int alea_void_get_execution_stats(
+        const void_result_t* result, alea_void_execution_stats_t* out_stats) {
+    if (!result || !out_stats) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "void execution stats require result and output");
+        return -1;
+    }
+    *out_stats = (alea_void_execution_stats_t){
+        .requested_workers = result->execution_requested_workers,
+        .actual_workers = result->execution_actual_workers,
+        .frontier_task_count = result->execution_frontier_task_count,
+        .parallel_batch_count = result->execution_parallel_batch_count,
+        .scratch_bytes_per_worker =
+            result->execution_scratch_bytes_per_worker,
+        .reserved_parallel_scratch_bytes =
+            result->execution_reserved_parallel_scratch_bytes,
+    };
     return 0;
 }
 

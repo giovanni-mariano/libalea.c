@@ -18,6 +18,10 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 /* Reduce octree depth for fast tests (default 8 is too slow for CI) */
 static void set_fast_void_config(alea_system_t* sys) {
     alea_config_t cfg = alea_get_config(sys);
@@ -234,6 +238,96 @@ TEST(void_single_box) {
     alea_void_free(vr);
     alea_destroy(sys);
 }
+
+TEST(void_parallel_classification_matches_serial_exactly) {
+    alea_system_t* sys = make_box_system();
+    ASSERT_NOT_NULL(sys);
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+
+    alea_void_options_t serial_options;
+    alea_void_options_init(&serial_options);
+    serial_options.max_depth = 4;
+    serial_options.min_size = 0.5;
+    serial_options.requested_workers = 1;
+    serial_options.max_parallel_scratch_bytes = 64 * 1024;
+
+    void_result_t* serial = alea_void_generate_in_bbox_ex(
+        sys, &bounds, &serial_options);
+    ASSERT_NOT_NULL(serial);
+    size_t count = alea_void_count(serial);
+    ASSERT(count > 0);
+    alea_bbox_t* expected = malloc(count * sizeof(*expected));
+    ASSERT_NOT_NULL(expected);
+    for (size_t i = 0; i < count; i++)
+        ASSERT_EQ(alea_void_get(serial, i, &expected[i]), 0);
+    alea_void_execution_stats_t serial_stats;
+    ASSERT_EQ(alea_void_get_execution_stats(serial, &serial_stats), 0);
+    ASSERT_EQ(serial_stats.actual_workers, 1);
+    alea_void_free(serial);
+
+    alea_void_options_t parallel_options = serial_options;
+    parallel_options.requested_workers = 4;
+    void_result_t* parallel = alea_void_generate_in_bbox_ex(
+        sys, &bounds, &parallel_options);
+    ASSERT_NOT_NULL(parallel);
+    ASSERT_EQ(alea_void_count(parallel), count);
+    for (size_t i = 0; i < count; i++) {
+        alea_bbox_t actual;
+        ASSERT_EQ(alea_void_get(parallel, i, &actual), 0);
+        ASSERT_EQ(memcmp(&actual, &expected[i], sizeof(actual)), 0);
+    }
+    alea_void_execution_stats_t parallel_stats;
+    ASSERT_EQ(alea_void_get_execution_stats(parallel, &parallel_stats), 0);
+    ASSERT_EQ(parallel_stats.requested_workers, 4);
+    ASSERT(parallel_stats.frontier_task_count > 1);
+    ASSERT(parallel_stats.actual_workers >= 1);
+    ASSERT(parallel_stats.actual_workers <= 4);
+    ASSERT_EQ(parallel_stats.parallel_batch_count,
+              parallel_stats.actual_workers > 1 ? 1 : 0);
+    alea_void_free(parallel);
+
+    parallel_options.max_parallel_scratch_bytes = 0;
+    void_result_t* budget_serial = alea_void_generate_in_bbox_ex(
+        sys, &bounds, &parallel_options);
+    ASSERT_NOT_NULL(budget_serial);
+    ASSERT_EQ(alea_void_count(budget_serial), count);
+    ASSERT_EQ(alea_void_get_execution_stats(budget_serial, &parallel_stats), 0);
+    ASSERT_EQ(parallel_stats.actual_workers, 1);
+    ASSERT_EQ(parallel_stats.parallel_batch_count, 0);
+
+    alea_void_free(budget_serial);
+    free(expected);
+    alea_destroy(sys);
+}
+
+#ifdef _OPENMP
+TEST(void_parallel_generation_falls_back_inside_openmp_region) {
+    alea_system_t* sys = make_box_system();
+    ASSERT_NOT_NULL(sys);
+    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
+    alea_void_options_t options;
+    alea_void_options_init(&options);
+    options.max_depth = 4;
+    options.min_size = 0.5;
+    options.requested_workers = 4;
+    options.max_parallel_scratch_bytes = 64 * 1024;
+
+    void_result_t* result = NULL;
+    #pragma omp parallel num_threads(2) shared(result)
+    {
+        #pragma omp single
+        result = alea_void_generate_in_bbox_ex(sys, &bounds, &options);
+    }
+    ASSERT_NOT_NULL(result);
+    alea_void_execution_stats_t stats;
+    ASSERT_EQ(alea_void_get_execution_stats(result, &stats), 0);
+    ASSERT_EQ(stats.actual_workers, 1);
+    ASSERT_EQ(stats.parallel_batch_count, 0);
+
+    alea_void_free(result);
+    alea_destroy(sys);
+}
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* CSG node creation                                                          */

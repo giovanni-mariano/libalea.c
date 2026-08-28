@@ -62,12 +62,18 @@ typedef struct octree_config {
     int max_depth;          // Maximum subdivision depth (default: 8)
     int probes_per_axis;    // Probe points per axis for classification (default: 3)
     double min_size;        // Minimum node size, stop subdividing (default: 0.1)
+    size_t requested_workers;
+    uint64_t max_parallel_scratch_bytes;
+    size_t parallel_frontier_depth;
 } octree_config_t;
 
 #define OCTREE_DEFAULT_CONFIG ((octree_config_t){ \
     .max_depth = 8, \
     .probes_per_axis = 3, \
-    .min_size = 0.1 \
+    .min_size = 0.1, \
+    .requested_workers = 1, \
+    .max_parallel_scratch_bytes = 0, \
+    .parallel_frontier_depth = 2 \
 })
 
 // ============================================================================
@@ -127,6 +133,14 @@ typedef struct void_result {
     size_t boxes_before_merge;    // Candidate boxes from octree
     size_t boxes_after_merge;     // After any merging
     size_t surfaces_created;      // Plane surfaces created for void boxes
+
+    // Parallel execution statistics (classification phase only).
+    size_t execution_requested_workers;
+    size_t execution_actual_workers;
+    size_t execution_frontier_task_count;
+    size_t execution_parallel_batch_count;
+    uint64_t execution_scratch_bytes_per_worker;
+    uint64_t execution_reserved_parallel_scratch_bytes;
 
     // Snapshot for transactional generation. owner_sys is non-NULL while
     // generation owns un-committed mutations on the system. Once
