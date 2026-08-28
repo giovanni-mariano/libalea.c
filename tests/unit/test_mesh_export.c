@@ -1053,7 +1053,7 @@ TEST(mesh_export_rejects_malformed_result) {
     alea_destroy(sys);
 }
 
-#ifndef _WIN32
+#ifdef __linux__
 TEST(mesh_export_reports_stream_write_failure) {
     alea_system_t *sys = create_sphere_scene();
     ASSERT_NOT_NULL(sys);
@@ -1073,7 +1073,7 @@ TEST(mesh_export_reports_stream_write_failure) {
     alea_mesh_result_free(mesh);
     alea_destroy(sys);
 }
-#endif
+#endif /* __linux__: /dev/full */
 
 TEST(mesh_filename_export_replaces_only_on_success) {
     alea_system_t *sys = create_sphere_scene();
