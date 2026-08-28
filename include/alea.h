@@ -968,6 +968,143 @@ int alea_cell_estimate_volume(
     const alea_cell_volume_options_t* options,
     alea_cell_volume_result_t* out_result);
 
+/** Outcome of an exact, interval/octree-backed set-equivalence proof. */
+typedef enum {
+    ALEA_PROOF_PROVEN = 0,
+    ALEA_PROOF_DISPROVEN = 1,
+    ALEA_PROOF_INCONCLUSIVE = 2
+} alea_proof_status_t;
+
+/** Resource or domain condition that made a proof inconclusive. */
+typedef enum {
+    ALEA_PROOF_LIMIT_NONE = 0,
+    ALEA_PROOF_LIMIT_DEPTH = 1,
+    ALEA_PROOF_LIMIT_NODES = 2,
+    ALEA_PROOF_LIMIT_MEMORY = 3,
+    ALEA_PROOF_LIMIT_DOMAIN = 4,
+    ALEA_PROOF_LIMIT_UNSUPPORTED = 5
+} alea_proof_limit_t;
+
+/** Source of the complete universe-local domain used by a proof. */
+typedef enum {
+    ALEA_PROOF_BOUNDS_STORED = 0,
+    ALEA_PROOF_BOUNDS_PLANE_CONSTRAINTS = 1,
+    ALEA_PROOF_BOUNDS_EXPLICIT = 2
+} alea_proof_bounds_source_t;
+
+/** Options for proof-assisted simplification of one cell definition. */
+typedef struct {
+    bool has_bounds;
+    alea_bbox_t bounds;
+    bool apply;                         /**< False performs an allocation-free dry run. */
+    int max_depth;
+    size_t max_nodes;
+    size_t max_patterns;
+    size_t max_candidates;
+    size_t requested_workers;           /**< 0 = OpenMP runtime maximum. */
+    uint64_t max_parallel_scratch_bytes;
+} alea_cell_simplify_proof_options_t;
+
+/** Proof receipt and proposed/applied complexity change for one cell. */
+typedef struct {
+    bool changed;
+    bool applied;
+    bool proven_empty;
+    bool complete;
+    alea_bbox_t bounds;
+    alea_proof_bounds_source_t bounds_source;
+    bool bounds_verified;
+    alea_node_id_t root_node_id;
+    size_t nodes_before, nodes_after;
+    size_t surfaces_before, surfaces_after;
+    size_t depth_before, depth_after;
+    size_t patterns_collected;
+    size_t candidates_proposed;
+    size_t candidates_proven;
+    size_t candidates_disproven;
+    size_t candidates_inconclusive;
+    alea_proof_limit_t last_limit;
+    bool has_witness;
+    double witness[3];
+    size_t proof_nodes;
+    size_t mixed_leaf_nodes;
+    size_t frontier_task_count;
+    size_t requested_workers;
+    size_t actual_workers;
+    size_t parallel_batch_count;
+    uint64_t reserved_parallel_scratch_bytes;
+} alea_cell_simplify_proof_result_t;
+
+/** Initialize proof-simplification options to conservative defaults. */
+void alea_cell_simplify_proof_options_init(
+    alea_cell_simplify_proof_options_t* options);
+
+/**
+ * Propose and certify a simpler, universe-local definition of one cell.
+ *
+ * Candidate discovery never mutates the node pool. A rewrite is installed
+ * only after the symmetric difference is proven empty over a complete domain.
+ * Explicit bounds are treated as the caller's complete-domain assertion; they
+ * are never interpreted as a clipping operation.
+ */
+int alea_cell_simplify_proven(
+    alea_system_t* sys,
+    size_t cell_index,
+    const alea_cell_simplify_proof_options_t* options,
+    alea_cell_simplify_proof_result_t* out_result);
+
+/** One universe-local cell definition selected for batch simplification. */
+typedef struct {
+    size_t cell_index;
+    bool has_bounds;
+    alea_bbox_t bounds;
+} alea_cell_simplify_request_t;
+
+/** Shared proof and scheduling options for a batch of cell definitions. */
+typedef struct {
+    bool apply;
+    int max_depth;
+    size_t max_nodes_per_cell;
+    size_t max_patterns_per_cell;
+    size_t max_candidates_per_cell;
+    size_t requested_workers;          /**< 0 = OpenMP runtime maximum. */
+    uint64_t max_parallel_scratch_bytes;
+} alea_cells_simplify_proof_options_t;
+
+/** Deterministic aggregate receipt for one native batch operation. */
+typedef struct {
+    size_t selected_cells;
+    size_t changed_cells;
+    size_t applied_cells;
+    size_t proven_empty_cells;
+    size_t complete_cells;
+    size_t inconclusive_cells;
+    size_t requested_workers;
+    size_t actual_workers;
+    size_t parallel_batch_count;
+    uint64_t reserved_parallel_scratch_bytes;
+} alea_cells_simplify_proof_summary_t;
+
+/** Initialize model-wide proof-simplification options. */
+void alea_cells_simplify_proof_options_init(
+    alea_cells_simplify_proof_options_t* options);
+
+/**
+ * Proof-simplify an ordered set of universe-local cell definitions.
+ *
+ * Analysis is read-only and may run across cells in parallel. With apply=true,
+ * every certified expression is materialized before any selected cell root is
+ * published; publication is serial and query caches are invalidated once.
+ * Per-cell results retain request order. Duplicate cell indices are rejected.
+ */
+int alea_cells_simplify_proven(
+    alea_system_t* sys,
+    const alea_cell_simplify_request_t* requests,
+    size_t request_count,
+    const alea_cells_simplify_proof_options_t* options,
+    alea_cell_simplify_proof_result_t* results,
+    alea_cells_simplify_proof_summary_t* summary);
+
 /* ============================================================================
  * BOUNDING BOX TIGHTENING
  * ============================================================================ */

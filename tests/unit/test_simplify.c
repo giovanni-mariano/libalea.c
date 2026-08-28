@@ -810,4 +810,214 @@ TEST(geometric_redundancy_inverted_flag) {
     alea_destroy(sys);
 }
 
+TEST(proof_simplify_dry_run_and_transactional_apply) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t small_pos, small_neg, big_pos, big_neg;
+    create_sphere(sys, 101, 0, 0, 0, 2.0, &small_pos, &small_neg);
+    create_sphere(sys, 102, 0, 0, 0, 5.0, &big_pos, &big_neg);
+    alea_node_id_t root = alea_create_intersection(sys, small_neg, big_neg);
+    ASSERT(alea_add_cell(sys, 1, root, ALEA_MATERIAL_VOID, 0.0, 9) >= 0);
+    size_t node_count = alea_vec_count(&sys->nodes);
+
+    alea_cell_simplify_proof_options_t options;
+    alea_cell_simplify_proof_options_init(&options);
+    options.max_depth = 5;
+    alea_cell_simplify_proof_result_t dry;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, &options, &dry), 0);
+    ASSERT(dry.changed);
+    ASSERT(!dry.applied);
+    ASSERT(dry.complete);
+    ASSERT_EQ(dry.nodes_before, 3);
+    ASSERT_EQ(dry.nodes_after, 1);
+    ASSERT_EQ(alea_vec_count(&sys->nodes), node_count);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, root);
+
+    options.apply = true;
+    alea_cell_simplify_proof_result_t applied;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, &options, &applied), 0);
+    ASSERT(applied.changed);
+    ASSERT(applied.applied);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, small_neg);
+    ASSERT(alea_contains_point(sys, small_neg, 1.0, 0.0, 0.0));
+    ASSERT(!alea_contains_point(sys, small_neg, 3.0, 0.0, 0.0));
+    alea_destroy(sys);
+}
+
+TEST(proof_simplify_reports_witness_for_non_equivalent_candidate) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t a_pos, a_neg, b_pos, b_neg;
+    create_sphere(sys, 111, -1.5, 0, 0, 2.0, &a_pos, &a_neg);
+    create_sphere(sys, 112, 1.5, 0, 0, 2.0, &b_pos, &b_neg);
+    alea_node_id_t root = alea_create_intersection(sys, a_neg, b_neg);
+    ASSERT(alea_add_cell(sys, 2, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_cell_simplify_proof_options_t options;
+    alea_cell_simplify_proof_options_init(&options);
+    alea_cell_simplify_proof_result_t result;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, &options, &result), 0);
+    ASSERT(!result.changed);
+    ASSERT(result.complete);
+    ASSERT_EQ(result.candidates_disproven, 2);
+    ASSERT(result.has_witness);
+    alea_destroy(sys);
+}
+
+TEST(proof_simplify_explicit_bounds_are_a_caller_domain_assertion) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_primitive_data_t p0 = {.plane = {1, 0, 0, 0}};
+    alea_primitive_data_t p10 = {.plane = {1, 0, 0, -10}};
+    int8_t inv0 = 0, inv10 = 0;
+    alea_primitive_id_t id0 = alea_get_or_create_primitive(
+        sys, ALEA_PRIMITIVE_PLANE, &p0, &inv0);
+    alea_primitive_id_t id10 = alea_get_or_create_primitive(
+        sys, ALEA_PRIMITIVE_PLANE, &p10, &inv10);
+    alea_node_id_t n0 = alea_add_primitive_node(sys, id0, -1, inv0, 121);
+    alea_node_id_t n10 = alea_add_primitive_node(sys, id10, -1, inv10, 122);
+    alea_node_id_t root = alea_create_intersection(sys, n0, n10);
+    ASSERT(alea_add_cell(sys, 3, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+
+    alea_cell_simplify_proof_options_t options;
+    alea_cell_simplify_proof_options_init(&options);
+    options.has_bounds = true;
+    options.bounds = (alea_bbox_t){-1, 1, -1, 1, -1, 1};
+    alea_cell_simplify_proof_result_t result;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, &options, &result), 0);
+    ASSERT(result.changed);
+    ASSERT_EQ(result.bounds_source, ALEA_PROOF_BOUNDS_EXPLICIT);
+    ASSERT(!result.bounds_verified);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, root);
+    alea_destroy(sys);
+}
+
+TEST(proof_simplify_reports_certified_empty_without_deleting_cell) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t a_pos, a_neg, b_pos, b_neg;
+    create_sphere(sys, 131, -4, 0, 0, 1.0, &a_pos, &a_neg);
+    create_sphere(sys, 132, 4, 0, 0, 1.0, &b_pos, &b_neg);
+    alea_node_id_t root = alea_create_intersection(sys, a_neg, b_neg);
+    ASSERT(alea_add_cell(sys, 4, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_cell_simplify_proof_result_t result;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, NULL, &result), 0);
+    ASSERT(result.proven_empty);
+    ASSERT(!result.changed);
+    ASSERT(!result.applied);
+    ASSERT_EQ(alea_vec_count(&sys->cells), 1);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, root);
+    alea_destroy(sys);
+}
+
+TEST(proof_simplify_worker_count_preserves_deterministic_receipt) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t a_pos, a_neg, b_pos, b_neg;
+    create_sphere(sys, 141, 0, 0, 0, 2.0, &a_pos, &a_neg);
+    create_sphere(sys, 142, 0, 0, 0, 2.0, &b_pos, &b_neg);
+    alea_node_id_t root = alea_create_intersection(sys, a_neg, b_neg);
+    ASSERT(alea_add_cell(sys, 5, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_cell_simplify_proof_options_t options;
+    alea_cell_simplify_proof_options_init(&options);
+    options.max_depth = 3;
+    options.requested_workers = 1;
+    alea_cell_simplify_proof_result_t serial;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, &options, &serial), 0);
+    options.requested_workers = 2;
+    alea_cell_simplify_proof_result_t parallel;
+    ASSERT_EQ(alea_cell_simplify_proven(sys, 0, &options, &parallel), 0);
+    ASSERT_EQ(serial.changed, parallel.changed);
+    ASSERT_EQ(serial.complete, parallel.complete);
+    ASSERT_EQ(serial.last_limit, parallel.last_limit);
+    ASSERT_EQ(serial.proof_nodes, parallel.proof_nodes);
+    ASSERT_EQ(serial.mixed_leaf_nodes, parallel.mixed_leaf_nodes);
+    ASSERT_EQ(serial.has_witness, parallel.has_witness);
+    alea_destroy(sys);
+}
+
+TEST(proof_simplify_batch_is_ordered_read_only_and_transactional) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t a_small_pos, a_small_neg, a_big_pos, a_big_neg;
+    alea_node_id_t b_small_pos, b_small_neg, b_big_pos, b_big_neg;
+    create_sphere(sys, 151, 0, 0, 0, 2.0,
+                  &a_small_pos, &a_small_neg);
+    create_sphere(sys, 152, 0, 0, 0, 5.0,
+                  &a_big_pos, &a_big_neg);
+    create_sphere(sys, 153, 20, 0, 0, 1.0,
+                  &b_small_pos, &b_small_neg);
+    create_sphere(sys, 154, 20, 0, 0, 4.0,
+                  &b_big_pos, &b_big_neg);
+    alea_node_id_t root_a = alea_create_intersection(
+        sys, a_small_neg, a_big_neg);
+    alea_node_id_t root_b = alea_create_intersection(
+        sys, b_small_neg, b_big_neg);
+    ASSERT(alea_add_cell(sys, 21, root_a, ALEA_MATERIAL_VOID, 0.0, 7) >= 0);
+    ASSERT(alea_add_cell(sys, 22, root_b, ALEA_MATERIAL_VOID, 0.0, 9) >= 0);
+
+    alea_cell_simplify_request_t requests[2] = {
+        {.cell_index = 1, .has_bounds = false},
+        {.cell_index = 0, .has_bounds = false},
+    };
+    alea_cell_simplify_proof_result_t results[2];
+    alea_cells_simplify_proof_summary_t summary;
+    alea_cells_simplify_proof_options_t options;
+    alea_cells_simplify_proof_options_init(&options);
+    options.max_depth = 5;
+    options.requested_workers = 2;
+    size_t node_count = alea_vec_count(&sys->nodes);
+    uint64_t generation = alea_system_geometry_generation(sys);
+
+    ASSERT_EQ(alea_cells_simplify_proven(
+        sys, requests, 2, &options, results, &summary), 0);
+    ASSERT_EQ(summary.selected_cells, 2);
+    ASSERT_EQ(summary.changed_cells, 2);
+    ASSERT_EQ(summary.applied_cells, 0);
+    ASSERT(results[0].changed);
+    ASSERT(results[1].changed);
+    ASSERT_EQ(results[0].root_node_id, root_b);
+    ASSERT_EQ(results[1].root_node_id, root_a);
+    ASSERT(results[0].bounds.min_x > 10.0);
+    ASSERT(results[1].bounds.max_x < 10.0);
+    ASSERT_EQ(alea_vec_count(&sys->nodes), node_count);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, root_a);
+    ASSERT_EQ(sys->cells.data[1].root_node_id, root_b);
+    ASSERT_EQ(alea_system_geometry_generation(sys), generation);
+
+    options.apply = true;
+    ASSERT_EQ(alea_cells_simplify_proven(
+        sys, requests, 2, &options, results, &summary), 0);
+    ASSERT_EQ(summary.applied_cells, 2);
+    ASSERT(results[0].applied);
+    ASSERT(results[1].applied);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, a_small_neg);
+    ASSERT_EQ(sys->cells.data[1].root_node_id, b_small_neg);
+    ASSERT_EQ(alea_system_geometry_generation(sys), generation + 1);
+    alea_destroy(sys);
+}
+
+TEST(proof_simplify_batch_rejects_duplicate_cells_before_work) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t small_pos, small_neg, big_pos, big_neg;
+    create_sphere(sys, 161, 0, 0, 0, 2.0, &small_pos, &small_neg);
+    create_sphere(sys, 162, 0, 0, 0, 5.0, &big_pos, &big_neg);
+    alea_node_id_t root = alea_create_intersection(sys, small_neg, big_neg);
+    ASSERT(alea_add_cell(sys, 31, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_cell_simplify_request_t requests[2] = {
+        {.cell_index = 0, .has_bounds = false},
+        {.cell_index = 0, .has_bounds = false},
+    };
+    alea_cell_simplify_proof_result_t results[2];
+    alea_cells_simplify_proof_summary_t summary;
+    size_t node_count = alea_vec_count(&sys->nodes);
+    uint64_t generation = alea_system_geometry_generation(sys);
+    ASSERT_EQ(alea_cells_simplify_proven(
+        sys, requests, 2, NULL, results, &summary), -1);
+    ASSERT_EQ(alea_vec_count(&sys->nodes), node_count);
+    ASSERT_EQ(sys->cells.data[0].root_node_id, root);
+    ASSERT_EQ(alea_system_geometry_generation(sys), generation);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

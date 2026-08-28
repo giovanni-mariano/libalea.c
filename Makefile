@@ -145,6 +145,7 @@ CORE_SRCS = \
 	$(CORE_DIR)/alea_universe.c \
 	$(CORE_DIR)/alea_cell_complement.c \
 	$(CORE_DIR)/alea_cell_volume.c \
+	$(CORE_DIR)/alea_proof_simplify.c \
 	$(CORE_DIR)/alea_void.c \
 	$(CORE_DIR)/alea_macrobody.c \
 	$(CORE_DIR)/alea_spatial_hier.c

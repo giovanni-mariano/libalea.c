@@ -19,6 +19,7 @@
 #include "core/alea_system.h"
 #include "alea_ops.h"
 #include "alea_cell_complement.h"
+#include "core/alea_proof_simplify.h"
 #include "primitives/bbox.h"
 #include "alea_eval.h"
 #include "primitives/primitive_eval.h"
@@ -1705,8 +1706,9 @@ static alea_node_id_t factor_common_union_literals(
 /**
  * Phase 3: Geometric Branch Subsumption for unions.
  *
- * For each branch Ti, check if it's geometrically subsumed by the union of others.
- * Build difference(Ti, union(others)) and test with cell_is_provably_empty().
+ * For each branch Ti, check if it is geometrically subsumed by the union of
+ * others. The shared proof engine evaluates Ti - union(others) ephemerally;
+ * failed and inconclusive candidates do not append temporary CSG nodes.
  *
  * Returns number of branches removed.
  */
@@ -1740,13 +1742,7 @@ static size_t remove_geometrically_subsumed_branches(
             continue;
         }
 
-        alea_node_id_t others_union = build_balanced_tree(
-            sys, others->vec.data, others->vec.count, ALEA_OP_UNION);
-        node_list_destroy(others);
-
-        /* Build difference: Ti - union(others) = Ti ∩ ¬union(others) */
         alea_node_id_t ti = terms->vec.data[i];
-        alea_node_id_t diff = alea_create_difference(sys, ti, others_union);
 
         /* Get bbox for Ti */
         const alea_node_t* ti_node = &sys->nodes.data[ti];
@@ -1754,9 +1750,15 @@ static size_t remove_geometrically_subsumed_branches(
         const alea_bbox_t* ti_bbox = &ti_bbox_v;
 
         /* Skip if bbox is degenerate */
-        if (ti_bbox->min_x > ti_bbox->max_x) continue;
+        if (ti_bbox->min_x > ti_bbox->max_x) {
+            node_list_destroy(others);
+            continue;
+        }
 
-        if (cell_is_provably_empty(sys, diff, ti_bbox, 3)) {
+        alea_proof_status_t proof = alea_prove_union_branch_redundant(
+            sys, ti, others->vec.data, others->vec.count, ti_bbox, 3, 4096);
+        node_list_destroy(others);
+        if (proof == ALEA_PROOF_PROVEN) {
             alea_bitset_set(&redundant, i);
             removed++;
         }
