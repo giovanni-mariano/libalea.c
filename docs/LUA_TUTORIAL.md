@@ -685,11 +685,20 @@ end
 -- Access raw arrays
 local mids = mesh:material_ids()  -- flat table (nx*ny*nz)
 local cids = mesh:cell_ids()      -- flat table
+local counts = mesh:sample_counts()
+local ties = mesh:tie_flags()
 local fractions = mesh:material_fractions(1) -- fractions for voxel 1
 
 -- Export to different formats
 mesh:export(0, "output.msh")  -- Gmsh
 mesh:export(1, "output.vtk")  -- VTK
+
+-- Opt in to per-material sampled-fraction arrays (bit 16).
+-- The default diagnostic field mask is 15; 31 includes every current field.
+mesh:export(1, "composition.vtk", {
+    export_fields = 31,
+    max_fraction_materials = 32,
+})
 ```
 
 ## 16. Error Handling and Logging

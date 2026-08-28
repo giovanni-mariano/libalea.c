@@ -156,6 +156,51 @@ FILE* alea_tmpfile(char* path_out) {
 #endif
 }
 
+FILE* alea_sibling_tmpfile(const char* target, char* path_out, size_t capacity) {
+    if (!target || !path_out || capacity == 0) return NULL;
+#ifdef _WIN32
+    char directory[MAX_PATH];
+    const char* slash = strrchr(target, '/');
+    const char* backslash = strrchr(target, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+    size_t length = slash ? (size_t)(slash - target) : 1;
+    if (length == 0) length = 1;
+    if (length >= sizeof(directory)) return NULL;
+    if (slash) memcpy(directory, target, length);
+    else directory[0] = '.';
+    directory[length] = '\0';
+    char generated[MAX_PATH];
+    if (GetTempFileNameA(directory, "ale", 0, generated) == 0) return NULL;
+    size_t generated_length = strlen(generated) + 1;
+    if (generated_length > capacity) {
+        DeleteFileA(generated);
+        return NULL;
+    }
+    memcpy(path_out, generated, generated_length);
+    FILE* result = fopen(path_out, "w");
+    if (!result) DeleteFileA(path_out);
+    return result;
+#else
+    int n = snprintf(path_out, capacity, "%s.alea-tmp-XXXXXX", target);
+    if (n < 0 || (size_t)n >= capacity) return NULL;
+    int fd = mkstemp(path_out);
+    if (fd < 0) return NULL;
+    FILE* result = fdopen(fd, "w");
+    if (!result) { close(fd); remove(path_out); }
+    return result;
+#endif
+}
+
+int alea_replace_file(const char* source, const char* target) {
+    if (!source || !target) return -1;
+#ifdef _WIN32
+    return MoveFileExA(source, target,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+#else
+    return rename(source, target);
+#endif
+}
+
 int alea_strcasecmp(const char* s1, const char* s2) {
     if (!s1 || !s2) {
         if (s1 == s2) return 0;

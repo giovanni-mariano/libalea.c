@@ -1767,6 +1767,32 @@ int alea_mesh_export_stream(const alea_mesh_result_t* mesh,
 
 Export a sampled mesh to an open stream.
 
+Both convenience exporters write mixed flag, dominant sampled fraction, tie
+flag, and sample count when those arrays are available. Filename export uses a
+sibling temporary file and replaces the destination only after all writes and
+the close succeed.
+
+For explicit output fields, initialize `alea_mesh_export_options_t` and use the
+`_ex` forms:
+
+```c
+alea_mesh_export_options_t options;
+alea_mesh_export_options_init(&options);
+options.fields |= ALEA_MESH_EXPORT_MATERIAL_FRACTIONS;
+options.max_fraction_materials = 32;
+
+int alea_mesh_export_ex(const alea_mesh_result_t* mesh,
+                        alea_mesh_format_t fmt, const char* filename,
+                        const alea_mesh_export_options_t* options);
+int alea_mesh_export_stream_ex(const alea_mesh_result_t* mesh,
+                               alea_mesh_format_t fmt, FILE* out,
+                               const alea_mesh_export_options_t* options);
+```
+
+Per-material arrays are opt-in because they make sparse in-memory composition
+dense in the output. Gmsh keeps dominant-material physical groups and writes
+diagnostics as `$ElementData`; VTK writes cell scalar arrays.
+
 ### alea_mesh_export_system
 
 ```c

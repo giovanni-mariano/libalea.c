@@ -11,6 +11,7 @@
 #include "alea_mesh.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
+#include "util/compat.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -218,7 +219,9 @@ TEST(mesh_subsample_detects_inclusion_missed_by_center) {
     buf[n] = '\0';
     fclose(f);
     ASSERT(strstr(buf, "SCALARS mixed_flag int") != NULL);
-    ASSERT(strstr(buf, "SCALARS dominant_fraction double") != NULL);
+    ASSERT(strstr(buf, "SCALARS dominant_sampled_fraction double") != NULL);
+    ASSERT(strstr(buf, "SCALARS sample_count int") != NULL);
+    ASSERT(strstr(buf, "SCALARS tie_flag int") != NULL);
 
     alea_mesh_result_free(mesh);
     alea_destroy(sys);
@@ -552,6 +555,158 @@ TEST(mesh_export_system_oneshot) {
     ASSERT_NOT_NULL(fgets(buf, sizeof(buf), f));
     ASSERT(strstr(buf, "$MeshFormat") != NULL);
     fclose(f);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_sampling_does_not_validate_unused_export_format) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.format = (alea_mesh_format_t)99;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_export_material_fractions_opt_in) {
+    alea_system_t *sys = create_small_inclusion_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = 0.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+
+    alea_mesh_export_options_t options;
+    alea_mesh_export_options_init(&options);
+    options.fields |= ALEA_MESH_EXPORT_MATERIAL_FRACTIONS;
+
+    FILE *f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_mesh_export_stream_ex(mesh, ALEA_MESH_VTK, f, &options), 0);
+    rewind(f);
+    char buf[16384];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    ASSERT(strstr(buf, "SCALARS sampled_fraction_material_0 double") != NULL);
+    ASSERT(strstr(buf, "SCALARS sampled_fraction_material_1 double") != NULL);
+
+    f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_mesh_export_stream_ex(mesh, ALEA_MESH_GMSH, f, &options), 0);
+    rewind(f);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    ASSERT(strstr(buf, "$ElementData") != NULL);
+    ASSERT(strstr(buf, "\"sampled_fraction_material_0\"") != NULL);
+    ASSERT(strstr(buf, "\"sampled_fraction_material_1\"") != NULL);
+
+    options.max_fraction_materials = 1;
+    f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_mesh_export_stream_ex(mesh, ALEA_MESH_VTK, f, &options), -1);
+    fclose(f);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_export_rejects_malformed_result) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+
+    alea_mesh_result_t malformed = *mesh;
+    malformed.material_ids = NULL;
+    FILE *f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_mesh_export_stream(&malformed, ALEA_MESH_VTK, f), -1);
+    fclose(f);
+
+    malformed = *mesh;
+    uint32_t original_count = mesh->fraction_spans[0].count;
+    malformed.fraction_spans[0].count = UINT32_MAX;
+    f = tmpfile();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_mesh_export_stream(&malformed, ALEA_MESH_GMSH, f), -1);
+    fclose(f);
+    mesh->fraction_spans[0].count = original_count;
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+#ifndef _WIN32
+TEST(mesh_export_reports_stream_write_failure) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+
+    FILE *f = fopen("/dev/full", "w");
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(alea_mesh_export_stream(mesh, ALEA_MESH_VTK, f), -1);
+    fclose(f);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+#endif
+
+TEST(mesh_filename_export_replaces_only_on_success) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+
+    char path[256];
+    FILE *f = alea_tmpfile(path);
+    ASSERT_NOT_NULL(f);
+    ASSERT(fputs("original", f) >= 0);
+    ASSERT_EQ(fclose(f), 0);
+
+    ASSERT_EQ(alea_mesh_export(mesh, (alea_mesh_format_t)99, path), -1);
+    f = fopen(path, "r");
+    ASSERT_NOT_NULL(f);
+    char buf[32] = {0};
+    ASSERT(fread(buf, 1, 8, f) == 8);
+    fclose(f);
+    ASSERT(strncmp(buf, "original", 8) == 0);
+
+    ASSERT_EQ(alea_mesh_export(mesh, ALEA_MESH_VTK, path), 0);
+    f = fopen(path, "r");
+    ASSERT_NOT_NULL(f);
+    ASSERT_NOT_NULL(fgets(buf, sizeof(buf), f));
+    fclose(f);
+    ASSERT(strstr(buf, "# vtk DataFile") != NULL);
+    remove(path);
 
     alea_mesh_result_free(mesh);
     alea_destroy(sys);

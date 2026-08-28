@@ -44,6 +44,20 @@ typedef enum {
     ALEA_MESH_VTK          /**< VTK legacy .vtk ASCII */
 } alea_mesh_format_t;
 
+/** Optional cell data written by mesh exporters. */
+typedef enum {
+    ALEA_MESH_EXPORT_MIXED_FLAG = 1u << 0,
+    ALEA_MESH_EXPORT_DOMINANT_FRACTION = 1u << 1,
+    ALEA_MESH_EXPORT_TIE_FLAG = 1u << 2,
+    ALEA_MESH_EXPORT_SAMPLE_COUNT = 1u << 3,
+    ALEA_MESH_EXPORT_MATERIAL_FRACTIONS = 1u << 4
+} alea_mesh_export_field_t;
+
+typedef struct {
+    uint32_t fields;              /**< ALEA_MESH_EXPORT_* mask */
+    int max_fraction_materials;   /**< Safety limit for dense exported arrays */
+} alea_mesh_export_options_t;
+
 /** Voxel composition sampling mode */
 typedef enum {
     ALEA_MESH_SAMPLE_CENTER = 0,   /**< Sample only the voxel center */
@@ -121,6 +135,9 @@ typedef struct {
  */
 void alea_mesh_config_init(alea_mesh_config_t *cfg);
 
+/** Initialize exporter options with diagnostic fields and no dense fractions. */
+void alea_mesh_export_options_init(alea_mesh_export_options_t *options);
+
 /**
  * @brief Sample CSG geometry onto a structured grid
  *
@@ -151,6 +168,16 @@ int alea_mesh_export(const alea_mesh_result_t *mesh,
  */
 int alea_mesh_export_stream(const alea_mesh_result_t *mesh,
                                 alea_mesh_format_t fmt, FILE *out);
+
+/** Export to an open stream with explicit cell-data options. */
+int alea_mesh_export_stream_ex(const alea_mesh_result_t *mesh,
+                               alea_mesh_format_t fmt, FILE *out,
+                               const alea_mesh_export_options_t *options);
+
+/** Export to a file with explicit cell-data options. */
+int alea_mesh_export_ex(const alea_mesh_result_t *mesh,
+                        alea_mesh_format_t fmt, const char *filename,
+                        const alea_mesh_export_options_t *options);
 
 /**
  * @brief One-shot: sample CSG geometry and export to file

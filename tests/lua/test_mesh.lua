@@ -53,7 +53,12 @@ local vtk_file2 = join_path(tmpdir, "alea_test_mesh2.vtk")
 mesh:export(0, gmsh_file)
 
 -- Export VTK
-mesh:export(1, vtk_file)
+mesh:export(1, vtk_file, {export_fields = 31, max_fraction_materials = 16})
+local vtk = assert(io.open(vtk_file, "r"))
+local vtk_text = vtk:read("*a")
+vtk:close()
+assert(vtk_text:find("sampled_fraction_material_", 1, true),
+       "opt-in VTK export should contain material fraction arrays")
 
 -- One-shot export
 sys:mesh_export({nx = 3, ny = 3, nz = 3, format = 0}, gmsh_file2)

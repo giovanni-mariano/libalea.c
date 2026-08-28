@@ -80,6 +80,19 @@ static void lua_to_mesh_config(lua_State* L, int idx, alea_mesh_config_t* cfg) {
     lua_pop(L, 1);
 }
 
+static void lua_to_mesh_export_options(lua_State* L, int idx,
+                                       alea_mesh_export_options_t* options) {
+    if (!lua_istable(L, idx)) return;
+    lua_getfield(L, idx, "export_fields");
+    if (!lua_isnil(L, -1))
+        options->fields = (uint32_t)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "max_fraction_materials");
+    if (!lua_isnil(L, -1))
+        options->max_fraction_materials = (int)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+}
+
 /* ============================================================================
  * System methods
  * ============================================================================ */
@@ -111,8 +124,15 @@ static int l_mesh_export_system(lua_State* L) {
     if (lua_istable(L, 2))
         lua_to_mesh_config(L, 2, &cfg);
     const char* filename = luaL_checkstring(L, 3);
-
-    if (alea_mesh_export_system(sys, &cfg, filename) != 0)
+    alea_mesh_export_options_t options;
+    alea_mesh_export_options_init(&options);
+    lua_to_mesh_export_options(L, 2, &options);
+    alea_mesh_result_t* mesh = alea_mesh_sample(sys, &cfg);
+    if (!mesh)
+        return luaL_error(L, "mesh_export sampling failed: %s", alea_error());
+    int rc = alea_mesh_export_ex(mesh, cfg.format, filename, &options);
+    alea_mesh_result_free(mesh);
+    if (rc != 0)
         return luaL_error(L, "mesh_export failed: %s", alea_error());
     return 0;
 }
@@ -127,7 +147,11 @@ static int l_meshresult_export(lua_State* L) {
     if (!ud->ptr) return luaL_error(L, "mesh result freed");
     int fmt = (int)luaL_checkinteger(L, 2);
     const char* filename = luaL_checkstring(L, 3);
-    if (alea_mesh_export(ud->ptr, (alea_mesh_format_t)fmt, filename) != 0)
+    alea_mesh_export_options_t options;
+    alea_mesh_export_options_init(&options);
+    if (lua_istable(L, 4)) lua_to_mesh_export_options(L, 4, &options);
+    if (alea_mesh_export_ex(ud->ptr, (alea_mesh_format_t)fmt, filename,
+                            &options) != 0)
         return luaL_error(L, "mesh:export failed: %s", alea_error());
     return 0;
 }

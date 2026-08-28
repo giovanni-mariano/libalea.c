@@ -15,8 +15,10 @@
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
 #include "primitives/bbox.h"
+#include "util/compat.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -139,11 +141,6 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
                               "mesh dimensions must be positive");
         return -1;
     }
-    if (cfg->format != ALEA_MESH_GMSH && cfg->format != ALEA_MESH_VTK) {
-        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
-                              "mesh format is invalid");
-        return -1;
-    }
     if (cfg->sampling_mode != ALEA_MESH_SAMPLE_CENTER &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_CORNERS &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_SUBCELL) {
@@ -177,6 +174,15 @@ static int compare_ints(const void *lhs, const void *rhs) {
     const int a = *(const int *)lhs;
     const int b = *(const int *)rhs;
     return (a > b) - (a < b);
+}
+
+void alea_mesh_export_options_init(alea_mesh_export_options_t *options) {
+    if (!options) return;
+    options->fields = ALEA_MESH_EXPORT_MIXED_FLAG |
+                      ALEA_MESH_EXPORT_DOMINANT_FRACTION |
+                      ALEA_MESH_EXPORT_TIE_FLAG |
+                      ALEA_MESH_EXPORT_SAMPLE_COUNT;
+    options->max_fraction_materials = 64;
 }
 
 /** Collect every material present in the sampled-fraction entries. */
@@ -658,6 +664,21 @@ void alea_mesh_result_free(alea_mesh_result_t *mesh) {
  * Gmsh .msh v2.2 ASCII Writer
  * ============================================================================ */
 
+static int mesh_writef(FILE *out, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int rc = vfprintf(out, format, args);
+    va_end(args);
+    if (rc < 0) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "mesh stream write failed: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+#define MESH_WRITE(...) do { if (mesh_writef(out, __VA_ARGS__) != 0) return -1; } while (0)
+
 /** Node ID: 1-based, (i,j,k) -> k*(ny+1)*(nx+1) + j*(nx+1) + i + 1 */
 #define GMSH_NODE(i, j, k, nx1, ny1) \
     ((k) * (ny1) * (nx1) + (j) * (nx1) + (i) + 1)
@@ -670,7 +691,30 @@ static int gmsh_material_tag(const alea_mesh_result_t *mesh, int material_id) {
     return 0;
 }
 
-static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out) {
+static double mesh_sampled_fraction_at(const alea_mesh_result_t *mesh,
+                                       size_t voxel, int material_id) {
+    if (!mesh->fraction_spans || !mesh->fractions)
+        return mesh->material_ids[voxel] == material_id ? 1.0 : 0.0;
+    const alea_mesh_fraction_span_t span = mesh->fraction_spans[voxel];
+    for (uint32_t i = 0; i < span.count; i++) {
+        const alea_mesh_material_fraction_t *fraction =
+            &mesh->fractions[(size_t)span.offset + i];
+        if (fraction->material_id == material_id) return fraction->fraction;
+    }
+    return 0.0;
+}
+
+static int write_gmsh_element_data_begin(FILE *out, const char *name,
+                                         int element_count) {
+    MESH_WRITE("$ElementData\n");
+    MESH_WRITE("1\n\"%s\"\n", name);
+    MESH_WRITE("1\n0.0\n");
+    MESH_WRITE("3\n0\n1\n%d\n", element_count);
+    return 0;
+}
+
+static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out,
+                      const alea_mesh_export_options_t *options) {
     int nx = mesh->nx, ny = mesh->ny, nz = mesh->nz;
     int nx1 = nx + 1, ny1 = ny + 1, nz1 = nz + 1;
     size_t nnodes_sz = 0, nelems_sz = 0;
@@ -686,32 +730,32 @@ static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out) {
     size_t nxy = (size_t)nx * (size_t)ny;
 
     /* Header */
-    fprintf(out, "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n");
+    MESH_WRITE("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n");
 
     /* Physical names use positive sequential tags; names keep original IDs. */
-    fprintf(out, "$PhysicalNames\n%d\n", mesh->num_materials);
+    MESH_WRITE("$PhysicalNames\n%d\n", mesh->num_materials);
     for (int m = 0; m < mesh->num_materials; m++) {
-        fprintf(out, "3 %d \"material_%d\"\n",
+        MESH_WRITE("3 %d \"material_%d\"\n",
                 m + 1, mesh->unique_materials[m]);
     }
-    fprintf(out, "$EndPhysicalNames\n");
+    MESH_WRITE("$EndPhysicalNames\n");
 
     /* Nodes */
-    fprintf(out, "$Nodes\n%d\n", nnodes);
+    MESH_WRITE("$Nodes\n%d\n", nnodes);
     for (int k = 0; k < nz1; k++) {
         for (int j = 0; j < ny1; j++) {
             for (int i = 0; i < nx1; i++) {
                 int nid = GMSH_NODE(i, j, k, nx1, ny1);
-                fprintf(out, "%d %.15g %.15g %.15g\n",
+                MESH_WRITE("%d %.15g %.15g %.15g\n",
                         nid, mesh->x_nodes[i], mesh->y_nodes[j], mesh->z_nodes[k]);
             }
         }
     }
-    fprintf(out, "$EndNodes\n");
+    MESH_WRITE("$EndNodes\n");
 
     /* Elements — type 5 = 8-node hex */
     /* Gmsh hex ordering: bottom face CCW (SW,SE,NE,NW) then top face CCW */
-    fprintf(out, "$Elements\n%d\n", nelems);
+    MESH_WRITE("$Elements\n%d\n", nelems);
     int eid = 1;
     for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
@@ -734,13 +778,52 @@ static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out) {
                 int n7 = GMSH_NODE(i,     j + 1, k + 1, nx1, ny1);
 
                 /* 5 = hex8, 2 tags: physical_group, elementary_entity */
-                fprintf(out, "%d 5 2 %d %d %d %d %d %d %d %d %d %d\n",
+                MESH_WRITE("%d 5 2 %d %d %d %d %d %d %d %d %d %d\n",
                         eid++, tag, tag,
                         n0, n1, n2, n3, n4, n5, n6, n7);
             }
         }
     }
-    fprintf(out, "$EndElements\n");
+    MESH_WRITE("$EndElements\n");
+
+    if ((options->fields & ALEA_MESH_EXPORT_MIXED_FLAG) && mesh->mixed_flags) {
+        if (write_gmsh_element_data_begin(out, "mixed_flag", nelems) != 0) return -1;
+        for (int v = 0; v < nelems; v++) MESH_WRITE("%d %d\n", v + 1, mesh->mixed_flags[v]);
+        MESH_WRITE("$EndElementData\n");
+    }
+    if ((options->fields & ALEA_MESH_EXPORT_DOMINANT_FRACTION) &&
+        mesh->dominant_fractions) {
+        if (write_gmsh_element_data_begin(out, "dominant_sampled_fraction", nelems) != 0) return -1;
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%d %.15g\n", v + 1, mesh->dominant_fractions[v]);
+        MESH_WRITE("$EndElementData\n");
+    }
+    if ((options->fields & ALEA_MESH_EXPORT_TIE_FLAG) && mesh->tie_flags) {
+        if (write_gmsh_element_data_begin(out, "tie_flag", nelems) != 0) return -1;
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%d %u\n", v + 1, (unsigned)mesh->tie_flags[v]);
+        MESH_WRITE("$EndElementData\n");
+    }
+    if ((options->fields & ALEA_MESH_EXPORT_SAMPLE_COUNT) && mesh->sample_counts) {
+        if (write_gmsh_element_data_begin(out, "sample_count", nelems) != 0) return -1;
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%d %lu\n", v + 1,
+                       (unsigned long)mesh->sample_counts[v]);
+        MESH_WRITE("$EndElementData\n");
+    }
+    if (options->fields & ALEA_MESH_EXPORT_MATERIAL_FRACTIONS) {
+        char name[96];
+        for (int m = 0; m < mesh->num_materials; m++) {
+            snprintf(name, sizeof(name), "sampled_fraction_material_%d",
+                     mesh->unique_materials[m]);
+            if (write_gmsh_element_data_begin(out, name, nelems) != 0) return -1;
+            for (int v = 0; v < nelems; v++)
+                MESH_WRITE("%d %.15g\n", v + 1,
+                           mesh_sampled_fraction_at(mesh, (size_t)v,
+                                                    mesh->unique_materials[m]));
+            MESH_WRITE("$EndElementData\n");
+        }
+    }
 
     return 0;
 }
@@ -762,7 +845,8 @@ static int is_uniform(const double *nodes, int n, double *out_spacing) {
     return 1;
 }
 
-static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
+static int write_vtk(const alea_mesh_result_t *mesh, FILE *out,
+                     const alea_mesh_export_options_t *options) {
     int nx = mesh->nx, ny = mesh->ny, nz = mesh->nz;
     int nx1 = nx + 1, ny1 = ny + 1, nz1 = nz + 1;
     size_t nelems_sz = 0;
@@ -775,9 +859,9 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
     int nelems = (int)nelems_sz;
     size_t nxy = (size_t)nx * (size_t)ny;
 
-    fprintf(out, "# vtk DataFile Version 3.0\n");
-    fprintf(out, "Alea mesh export\n");
-    fprintf(out, "ASCII\n");
+    MESH_WRITE("# vtk DataFile Version 3.0\n");
+    MESH_WRITE("Alea mesh export\n");
+    MESH_WRITE("ASCII\n");
 
     double dx = 0, dy = 0, dz = 0;
     int ux = is_uniform(mesh->x_nodes, nx, &dx);
@@ -786,62 +870,88 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
 
     if (ux && uy && uz) {
         /* STRUCTURED_POINTS — most compact */
-        fprintf(out, "DATASET STRUCTURED_POINTS\n");
-        fprintf(out, "DIMENSIONS %d %d %d\n", nx1, ny1, nz1);
-        fprintf(out, "ORIGIN %.15g %.15g %.15g\n",
+        MESH_WRITE("DATASET STRUCTURED_POINTS\n");
+        MESH_WRITE("DIMENSIONS %d %d %d\n", nx1, ny1, nz1);
+        MESH_WRITE("ORIGIN %.15g %.15g %.15g\n",
                 mesh->x_nodes[0], mesh->y_nodes[0], mesh->z_nodes[0]);
-        fprintf(out, "SPACING %.15g %.15g %.15g\n", dx, dy, dz);
+        MESH_WRITE("SPACING %.15g %.15g %.15g\n", dx, dy, dz);
     } else {
         /* RECTILINEAR_GRID — non-uniform spacing */
-        fprintf(out, "DATASET RECTILINEAR_GRID\n");
-        fprintf(out, "DIMENSIONS %d %d %d\n", nx1, ny1, nz1);
+        MESH_WRITE("DATASET RECTILINEAR_GRID\n");
+        MESH_WRITE("DIMENSIONS %d %d %d\n", nx1, ny1, nz1);
 
-        fprintf(out, "X_COORDINATES %d double\n", nx1);
-        for (int i = 0; i < nx1; i++) fprintf(out, "%.15g\n", mesh->x_nodes[i]);
+        MESH_WRITE("X_COORDINATES %d double\n", nx1);
+        for (int i = 0; i < nx1; i++) MESH_WRITE("%.15g\n", mesh->x_nodes[i]);
 
-        fprintf(out, "Y_COORDINATES %d double\n", ny1);
-        for (int j = 0; j < ny1; j++) fprintf(out, "%.15g\n", mesh->y_nodes[j]);
+        MESH_WRITE("Y_COORDINATES %d double\n", ny1);
+        for (int j = 0; j < ny1; j++) MESH_WRITE("%.15g\n", mesh->y_nodes[j]);
 
-        fprintf(out, "Z_COORDINATES %d double\n", nz1);
-        for (int k = 0; k < nz1; k++) fprintf(out, "%.15g\n", mesh->z_nodes[k]);
+        MESH_WRITE("Z_COORDINATES %d double\n", nz1);
+        for (int k = 0; k < nz1; k++) MESH_WRITE("%.15g\n", mesh->z_nodes[k]);
     }
 
     /* Cell data */
-    fprintf(out, "CELL_DATA %d\n", nelems);
+    MESH_WRITE("CELL_DATA %d\n", nelems);
 
     /* Material IDs */
-    fprintf(out, "SCALARS material_id int 1\n");
-    fprintf(out, "LOOKUP_TABLE default\n");
+    MESH_WRITE("SCALARS material_id int 1\n");
+    MESH_WRITE("LOOKUP_TABLE default\n");
     /* VTK structured grid cell ordering: x fastest, then y, then z (same as ours) */
     for (int k = 0; k < nz; k++)
         for (int j = 0; j < ny; j++)
             for (int i = 0; i < nx; i++)
-                fprintf(out, "%d\n", mesh->material_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+                MESH_WRITE("%d\n", mesh->material_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
 
     /* Cell IDs */
-    fprintf(out, "SCALARS cell_id int 1\n");
-    fprintf(out, "LOOKUP_TABLE default\n");
+    MESH_WRITE("SCALARS cell_id int 1\n");
+    MESH_WRITE("LOOKUP_TABLE default\n");
     for (int k = 0; k < nz; k++)
         for (int j = 0; j < ny; j++)
             for (int i = 0; i < nx; i++)
-                fprintf(out, "%d\n", mesh->cell_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+                MESH_WRITE("%d\n", mesh->cell_ids[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
 
-    if (mesh->mixed_flags) {
-        fprintf(out, "SCALARS mixed_flag int 1\n");
-        fprintf(out, "LOOKUP_TABLE default\n");
+    if ((options->fields & ALEA_MESH_EXPORT_MIXED_FLAG) && mesh->mixed_flags) {
+        MESH_WRITE("SCALARS mixed_flag int 1\n");
+        MESH_WRITE("LOOKUP_TABLE default\n");
         for (int k = 0; k < nz; k++)
             for (int j = 0; j < ny; j++)
                 for (int i = 0; i < nx; i++)
-                    fprintf(out, "%d\n", (int)mesh->mixed_flags[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+                    MESH_WRITE("%d\n", (int)mesh->mixed_flags[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
     }
 
-    if (mesh->dominant_fractions) {
-        fprintf(out, "SCALARS dominant_fraction double 1\n");
-        fprintf(out, "LOOKUP_TABLE default\n");
+    if ((options->fields & ALEA_MESH_EXPORT_DOMINANT_FRACTION) &&
+        mesh->dominant_fractions) {
+        MESH_WRITE("SCALARS dominant_sampled_fraction double 1\n");
+        MESH_WRITE("LOOKUP_TABLE default\n");
         for (int k = 0; k < nz; k++)
             for (int j = 0; j < ny; j++)
                 for (int i = 0; i < nx; i++)
-                    fprintf(out, "%.15g\n", mesh->dominant_fractions[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+                    MESH_WRITE("%.15g\n", mesh->dominant_fractions[(size_t)k * nxy + (size_t)j * (size_t)nx + (size_t)i]);
+    }
+
+    if ((options->fields & ALEA_MESH_EXPORT_TIE_FLAG) && mesh->tie_flags) {
+        MESH_WRITE("SCALARS tie_flag int 1\n");
+        MESH_WRITE("LOOKUP_TABLE default\n");
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%u\n", (unsigned)mesh->tie_flags[v]);
+    }
+
+    if ((options->fields & ALEA_MESH_EXPORT_SAMPLE_COUNT) && mesh->sample_counts) {
+        MESH_WRITE("SCALARS sample_count int 1\n");
+        MESH_WRITE("LOOKUP_TABLE default\n");
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%lu\n", (unsigned long)mesh->sample_counts[v]);
+    }
+
+    if (options->fields & ALEA_MESH_EXPORT_MATERIAL_FRACTIONS) {
+        for (int m = 0; m < mesh->num_materials; m++) {
+            MESH_WRITE("SCALARS sampled_fraction_material_%d double 1\n",
+                       mesh->unique_materials[m]);
+            MESH_WRITE("LOOKUP_TABLE default\n");
+            for (int v = 0; v < nelems; v++)
+                MESH_WRITE("%.15g\n", mesh_sampled_fraction_at(
+                    mesh, (size_t)v, mesh->unique_materials[m]));
+        }
     }
 
     return 0;
@@ -851,29 +961,234 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out) {
  * Export API
  * ============================================================================ */
 
-int alea_mesh_export_stream(const alea_mesh_result_t *mesh,
-                                alea_mesh_format_t fmt, FILE *out) {
-    if (!mesh || !out) return -1;
-    switch (fmt) {
-        case ALEA_MESH_GMSH: return write_gmsh(mesh, out);
-        case ALEA_MESH_VTK:  return write_vtk(mesh, out);
-        default: return -1;
+static int mesh_result_material_known(const alea_mesh_result_t *mesh,
+                                      int material_id) {
+    for (int i = 0; i < mesh->num_materials; i++)
+        if (mesh->unique_materials[i] == material_id) return 1;
+    return 0;
+}
+
+static int validate_mesh_result(const alea_mesh_result_t *mesh) {
+    if (!mesh) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh result is NULL");
+        return -1;
     }
+
+    if (mesh->nx <= 0 || mesh->ny <= 0 || mesh->nz <= 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh result dimensions must be positive");
+        return -1;
+    }
+    size_t ncells = 0, nnodes = 0;
+    if (checked_mesh_cell_count(mesh->nx, mesh->ny, mesh->nz, &ncells) != 0 ||
+        checked_mesh_node_count(mesh->nx, mesh->ny, mesh->nz, &nnodes) != 0)
+        return -1;
+    if (ncells > (size_t)INT_MAX || nnodes > (size_t)INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh result exceeds legacy exporter limits");
+        return -1;
+    }
+    if (!mesh->x_nodes || !mesh->y_nodes || !mesh->z_nodes ||
+        !mesh->material_ids || !mesh->cell_ids) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh result is missing required arrays");
+        return -1;
+    }
+    if (validate_nodes(mesh->x_nodes, mesh->nx, "X") != 0 ||
+        validate_nodes(mesh->y_nodes, mesh->ny, "Y") != 0 ||
+        validate_nodes(mesh->z_nodes, mesh->nz, "Z") != 0)
+        return -1;
+    if (mesh->num_materials <= 0 || !mesh->unique_materials) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh result has no material table");
+        return -1;
+    }
+    for (int i = 0; i < mesh->num_materials; i++) {
+        if (i > 0 && mesh->unique_materials[i] <= mesh->unique_materials[i - 1]) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh material table is not strictly increasing");
+            return -1;
+        }
+    }
+    for (size_t v = 0; v < ncells; v++) {
+        if (!mesh_result_material_known(mesh, mesh->material_ids[v])) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh voxel material is absent from material table");
+            return -1;
+        }
+        if (mesh->dominant_fractions &&
+            (!isfinite(mesh->dominant_fractions[v]) ||
+             mesh->dominant_fractions[v] < 0.0 ||
+             mesh->dominant_fractions[v] > 1.0)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh dominant sampled fraction is invalid");
+            return -1;
+        }
+        if (mesh->sample_counts && mesh->sample_counts[v] == 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh voxel has zero point samples");
+            return -1;
+        }
+        if (mesh->tie_flags &&
+            (mesh->tie_flags[v] & ~(ALEA_MESH_TIE_MATERIAL | ALEA_MESH_TIE_CELL))) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh voxel has unknown tie flags");
+            return -1;
+        }
+    }
+
+    if (!!mesh->fraction_spans != !!mesh->fractions ||
+        ((mesh->fraction_spans || mesh->fractions) && mesh->fraction_count == 0)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh sampled-fraction storage is inconsistent");
+        return -1;
+    }
+    if (mesh->fraction_spans) {
+        for (size_t v = 0; v < ncells; v++) {
+            const alea_mesh_fraction_span_t span = mesh->fraction_spans[v];
+            const size_t begin = span.offset;
+            const size_t count = span.count;
+            if (count == 0 || begin > mesh->fraction_count ||
+                count > mesh->fraction_count - begin) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                      "mesh sampled-fraction span is invalid");
+                return -1;
+            }
+            double sum = 0.0;
+            for (size_t i = 0; i < count; i++) {
+                const alea_mesh_material_fraction_t *f = &mesh->fractions[begin + i];
+                if (!mesh_result_material_known(mesh, f->material_id) ||
+                    !isfinite(f->fraction) || f->fraction < 0.0 || f->fraction > 1.0) {
+                    alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                          "mesh sampled-fraction entry is invalid");
+                    return -1;
+                }
+                sum += f->fraction;
+            }
+            if (fabs(sum - 1.0) > 1e-12) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                      "mesh sampled fractions do not sum to one");
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int validate_export_options(const alea_mesh_result_t *mesh,
+                                   const alea_mesh_export_options_t *options) {
+    const uint32_t known = ALEA_MESH_EXPORT_MIXED_FLAG |
+                           ALEA_MESH_EXPORT_DOMINANT_FRACTION |
+                           ALEA_MESH_EXPORT_TIE_FLAG |
+                           ALEA_MESH_EXPORT_SAMPLE_COUNT |
+                           ALEA_MESH_EXPORT_MATERIAL_FRACTIONS;
+    if (!options) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "mesh export options are NULL");
+        return -1;
+    }
+    if (options->fields & ~known) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh export options contain unknown fields");
+        return -1;
+    }
+    if (options->max_fraction_materials < 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh export material limit is negative");
+        return -1;
+    }
+    if ((options->fields & ALEA_MESH_EXPORT_MATERIAL_FRACTIONS) &&
+        options->max_fraction_materials > 0 &&
+        mesh->num_materials > options->max_fraction_materials) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh fraction export exceeds material-array limit");
+        return -1;
+    }
+    return 0;
+}
+
+int alea_mesh_export_stream_ex(const alea_mesh_result_t *mesh,
+                               alea_mesh_format_t fmt, FILE *out,
+                               const alea_mesh_export_options_t *options) {
+    if (!out) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh export stream is NULL");
+        return -1;
+    }
+    if (validate_mesh_result(mesh) != 0) return -1;
+    if (validate_export_options(mesh, options) != 0) return -1;
+    int rc = -1;
+    switch (fmt) {
+        case ALEA_MESH_GMSH: rc = write_gmsh(mesh, out, options); break;
+        case ALEA_MESH_VTK:  rc = write_vtk(mesh, out, options); break;
+        default:
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh export format is invalid");
+            return -1;
+    }
+    if (rc != 0) return -1;
+    if (fflush(out) != 0 || ferror(out)) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "mesh stream flush failed: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+int alea_mesh_export_stream(const alea_mesh_result_t *mesh,
+                            alea_mesh_format_t fmt, FILE *out) {
+    alea_mesh_export_options_t options;
+    alea_mesh_export_options_init(&options);
+    return alea_mesh_export_stream_ex(mesh, fmt, out, &options);
+}
+
+int alea_mesh_export_ex(const alea_mesh_result_t *mesh,
+                        alea_mesh_format_t fmt, const char *filename,
+                        const alea_mesh_export_options_t *options) {
+    if (!filename) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh export filename is NULL");
+        return -1;
+    }
+    if (validate_mesh_result(mesh) != 0) return -1;
+    if (validate_export_options(mesh, options) != 0) return -1;
+    size_t temp_path_size = 0;
+    if (checked_add_size(strlen(filename), 32, &temp_path_size) != 0) return -1;
+    char *temp_path = malloc(temp_path_size);
+    if (!temp_path) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate mesh temporary path");
+        return -1;
+    }
+    FILE *f = alea_sibling_tmpfile(filename, temp_path, temp_path_size);
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to create mesh export temporary file for '%s': %s",
+                              filename, strerror(errno));
+        free(temp_path);
+        return -1;
+    }
+    int rc = alea_mesh_export_stream_ex(mesh, fmt, f, options);
+    if (fclose(f) != 0) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to close mesh export file '%s': %s",
+                              filename, strerror(errno));
+        rc = -1;
+    }
+    if (rc == 0 && alea_replace_file(temp_path, filename) != 0) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to replace mesh export file '%s': %s",
+                              filename, strerror(errno));
+        rc = -1;
+    }
+    if (rc != 0) remove(temp_path);
+    free(temp_path);
+    return rc;
 }
 
 int alea_mesh_export(const alea_mesh_result_t *mesh,
-                         alea_mesh_format_t fmt, const char *filename) {
-    if (!mesh || !filename) return -1;
-    FILE *f = fopen(filename, "w");
-    if (!f) {
-        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
-                              "failed to open mesh export file '%s': %s",
-                              filename, strerror(errno));
-        return -1;
-    }
-    int rc = alea_mesh_export_stream(mesh, fmt, f);
-    fclose(f);
-    return rc;
+                     alea_mesh_format_t fmt, const char *filename) {
+    alea_mesh_export_options_t options;
+    alea_mesh_export_options_init(&options);
+    return alea_mesh_export_ex(mesh, fmt, filename, &options);
 }
 
 int alea_mesh_export_system(alea_system_t *sys,

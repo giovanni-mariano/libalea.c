@@ -168,6 +168,12 @@ unsigned long long alea_strtoull(const char* nptr, char** endptr, int base);
  */
 FILE* alea_tmpfile(char* path_out);
 
+/** Create a temporary file in the target file's directory. */
+FILE* alea_sibling_tmpfile(const char* target, char* path_out, size_t capacity);
+
+/** Atomically replace target with a completed sibling temporary file. */
+int alea_replace_file(const char* source, const char* target);
+
 /**
  * @brief Opaque directory handle for portable directory iteration
  */
