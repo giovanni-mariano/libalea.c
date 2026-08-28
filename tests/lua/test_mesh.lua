@@ -27,8 +27,12 @@ assert(#cids == 27, "should have 3*3*3=27 cell IDs")
 
 local sample_counts = mesh:sample_counts()
 local tie_flags = mesh:tie_flags()
+local estimated_errors = mesh:estimated_errors()
+local refinement_flags = mesh:refinement_flags()
 assert(#sample_counts == 27, "should have one sample count per voxel")
 assert(#tie_flags == 27, "should have one tie flag per voxel")
+assert(#estimated_errors == 27, "should have one estimated error per voxel")
+assert(#refinement_flags == 27, "should have one refinement flag per voxel")
 assert(sample_counts[1] == 8, "default mode should take 2^3 samples")
 
 local function join_path(dir, name)
@@ -107,6 +111,22 @@ for _, entry in ipairs(fractions) do
 end
 assert(math.abs(by_mat[1] - 0.125) < 1e-12, "material 1 fraction should be 1/8")
 assert(math.abs(by_mat[0] - 0.875) < 1e-12, "void fraction should be 7/8")
+
+local adaptive = sys2:mesh_sample{
+    nx = 1, ny = 1, nz = 1,
+    x_min = 0, x_max = 1,
+    y_min = 0, y_max = 1,
+    z_min = 0, z_max = 1,
+    sampling_mode = 4,
+    subsamples_per_axis = 2,
+    target_error = 0.1,
+    max_refine_depth = 1,
+    max_samples_per_voxel = 72,
+    sampling_seed = 7,
+}
+assert(adaptive:info().sampling_mode == 4)
+assert(adaptive:sample_counts()[1] == 72)
+assert(adaptive:estimated_errors()[1] >= 0)
 
 sys2:destroy()
 sys:destroy()

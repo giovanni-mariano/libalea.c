@@ -669,10 +669,14 @@ local mesh = sys:mesh_sample{
     y_min = -10, y_max = 10,
     z_min = -10, z_max = 10,
     void_material_id = 0,
-    sampling_mode = 2,        -- 0=center, 1=corners, 2=subcell
+    sampling_mode = 4,        -- 0=center, 1=corners, 2=regular, 3=stratified, 4=adaptive
     subsamples_per_axis = 2,
+    target_error = 0.05,
+    max_refine_depth = 3,
+    max_samples_per_voxel = 32768,
+    sampling_seed = 12345,
     bounds_mode = 0,          -- 0=legacy, 1=auto root AABB, 2=explicit
-    fields = 127,             -- ALEA_MESH_FIELD_* mask; 127=current complete result
+    fields = 511,             -- ALEA_MESH_FIELD_* mask; 511=current complete result
 }
 
 -- Inspect results
@@ -689,6 +693,8 @@ local mids = mesh:material_ids()  -- flat table (nx*ny*nz)
 local cids = mesh:cell_ids()      -- flat table
 local counts = mesh:sample_counts()
 local ties = mesh:tie_flags()
+local errors = mesh:estimated_errors()
+local refinement = mesh:refinement_flags()
 local fractions = mesh:material_fractions(1) -- fractions for voxel 1
 
 -- Export to different formats
@@ -696,9 +702,9 @@ mesh:export(0, "output.msh")  -- Gmsh
 mesh:export(1, "output.vtk")  -- VTK
 
 -- Opt in to per-material sampled-fraction arrays (bit 16).
--- The default diagnostic field mask is 15; 31 includes every current field.
+-- The default diagnostic field mask is 111; 127 includes every current field.
 mesh:export(1, "composition.vtk", {
-    export_fields = 31,
+    export_fields = 127,
     max_fraction_materials = 32,
 })
 ```

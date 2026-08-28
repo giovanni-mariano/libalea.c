@@ -39,13 +39,19 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
     cfg->sampling_mode = ALEA_MESH_SAMPLE_SUBCELL;
     cfg->subsamples_per_axis = 2;
     cfg->mixed_threshold = 0.0;
+    cfg->target_error = 0.05;
+    cfg->max_refine_depth = 3;
+    cfg->max_samples_per_voxel = 32768;
+    cfg->sampling_seed = UINT64_C(0x6a09e667f3bcc909);
     cfg->fields = ALEA_MESH_FIELD_MATERIAL_ID |
                   ALEA_MESH_FIELD_CELL_ID |
                   ALEA_MESH_FIELD_MIXED_FLAG |
                   ALEA_MESH_FIELD_DOMINANT_FRACTION |
                   ALEA_MESH_FIELD_SAMPLED_FRACTIONS |
                   ALEA_MESH_FIELD_SAMPLE_COUNT |
-                  ALEA_MESH_FIELD_TIE_FLAG;
+                  ALEA_MESH_FIELD_TIE_FLAG |
+                  ALEA_MESH_FIELD_ESTIMATED_ERROR |
+                  ALEA_MESH_FIELD_REFINEMENT_FLAG;
 }
 
 /* ============================================================================
@@ -145,7 +151,9 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
                                   ALEA_MESH_FIELD_DOMINANT_FRACTION |
                                   ALEA_MESH_FIELD_SAMPLED_FRACTIONS |
                                   ALEA_MESH_FIELD_SAMPLE_COUNT |
-                                  ALEA_MESH_FIELD_TIE_FLAG;
+                                  ALEA_MESH_FIELD_TIE_FLAG |
+                                  ALEA_MESH_FIELD_ESTIMATED_ERROR |
+                                  ALEA_MESH_FIELD_REFINEMENT_FLAG;
     if (!cfg) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh config is NULL");
         return -1;
@@ -157,14 +165,32 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
     }
     if (cfg->sampling_mode != ALEA_MESH_SAMPLE_CENTER &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_CORNERS &&
-        cfg->sampling_mode != ALEA_MESH_SAMPLE_SUBCELL) {
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_SUBCELL &&
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_STRATIFIED &&
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "mesh sampling_mode is invalid");
         return -1;
     }
-    if (cfg->subsamples_per_axis <= 0 || cfg->subsamples_per_axis > 8) {
+    if (cfg->subsamples_per_axis <= 0) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
-                              "mesh subsamples_per_axis must be in [1,8]");
+                              "mesh subsamples_per_axis must be positive");
+        return -1;
+    }
+    if (!isfinite(cfg->target_error) || cfg->target_error <= 0.0 ||
+        cfg->target_error > 1.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh target_error must be finite and in (0,1]");
+        return -1;
+    }
+    if (cfg->max_refine_depth < 0 || cfg->max_refine_depth > 20) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh max_refine_depth must be in [0,20]");
+        return -1;
+    }
+    if (cfg->max_samples_per_voxel == 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh max_samples_per_voxel must be positive");
         return -1;
     }
     if (!isfinite(cfg->mixed_threshold) || cfg->mixed_threshold < 0.0 ||
@@ -218,7 +244,9 @@ void alea_mesh_export_options_init(alea_mesh_export_options_t *options) {
     options->fields = ALEA_MESH_EXPORT_MIXED_FLAG |
                       ALEA_MESH_EXPORT_DOMINANT_FRACTION |
                       ALEA_MESH_EXPORT_TIE_FLAG |
-                      ALEA_MESH_EXPORT_SAMPLE_COUNT;
+                      ALEA_MESH_EXPORT_SAMPLE_COUNT |
+                      ALEA_MESH_EXPORT_ESTIMATED_ERROR |
+                      ALEA_MESH_EXPORT_REFINEMENT_FLAG;
     options->max_fraction_materials = 64;
 }
 
@@ -346,12 +374,31 @@ static void tally_owner(int material_id, int cell_id,
     (*num_owners)++;
 }
 
+static uint64_t mesh_mix64(uint64_t x) {
+    x ^= x >> 30;
+    x *= UINT64_C(0xbf58476d1ce4e5b9);
+    x ^= x >> 27;
+    x *= UINT64_C(0x94d049bb133111eb);
+    return x ^ (x >> 31);
+}
+
+static double mesh_jitter(const alea_mesh_config_t *cfg, int i, int j, int k,
+                          int ii, int jj, int kk, int axis) {
+    uint64_t x = cfg->sampling_seed;
+    x = mesh_mix64(x ^ (uint32_t)i);
+    x = mesh_mix64(x ^ ((uint64_t)(uint32_t)j << 21));
+    x = mesh_mix64(x ^ ((uint64_t)(uint32_t)k << 42));
+    x = mesh_mix64(x ^ (uint32_t)ii ^ ((uint64_t)(uint32_t)jj << 20) ^
+                   ((uint64_t)(uint32_t)kk << 40) ^ ((uint64_t)(uint32_t)axis << 52));
+    return (double)(x >> 11) * 0x1.0p-53;
+}
+
 static int mesh_sample_voxel_materials(alea_system_t *sys,
                                        const alea_mesh_config_t *cfg,
                                        const double *xn,
                                        const double *yn,
                                        const double *zn,
-                                       int i, int j, int k,
+                                       int i, int j, int k, int n,
                                        int *materials,
                                        int *counts,
                                        int *out_num_materials,
@@ -360,11 +407,6 @@ static int mesh_sample_voxel_materials(alea_system_t *sys,
                                        int *owner_counts,
                                        int *out_num_owners,
                                        int *out_num_samples) {
-    int n = cfg->subsamples_per_axis;
-    if (cfg->sampling_mode == ALEA_MESH_SAMPLE_CENTER)
-        n = 1;
-    else if (cfg->sampling_mode == ALEA_MESH_SAMPLE_CORNERS)
-        n = 2;
     int nsamples = n * n * n;
     int n_materials = 0;
     int n_owners = 0;
@@ -388,6 +430,14 @@ static int mesh_sample_voxel_materials(alea_system_t *sys,
                     fx = (ii == 0) ? eps : 1.0 - eps;
                     fy = (jj == 0) ? eps : 1.0 - eps;
                     fz = (kk == 0) ? eps : 1.0 - eps;
+                } else if (cfg->sampling_mode == ALEA_MESH_SAMPLE_STRATIFIED ||
+                           cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE) {
+                    fx = ((double)ii + mesh_jitter(cfg, i, j, k, ii, jj, kk, n)) /
+                         (double)n;
+                    fy = ((double)jj + mesh_jitter(cfg, i, j, k, jj, kk, ii,
+                                                   n ^ 0x155)) / (double)n;
+                    fz = ((double)kk + mesh_jitter(cfg, i, j, k, kk, ii, jj,
+                                                   n ^ 0x2aa)) / (double)n;
                 } else {
                     fx = ((double)ii + 0.5) / (double)n;
                     fy = ((double)jj + 0.5) / (double)n;
@@ -466,6 +516,40 @@ static void mesh_fraction_stats(const int *materials,
     *out_dominant_fraction = dominant;
     *out_mixed = (dominant < 1.0 - cfg->mixed_threshold) ? 1 : 0;
     *out_tie_flags = ties;
+}
+
+static double mesh_distribution_error(const int *old_materials,
+                                      const int *old_counts, int old_n,
+                                      int old_samples,
+                                      const int *new_materials,
+                                      const int *new_counts, int new_n,
+                                      int new_samples) {
+    double l1 = 0.0;
+    for (int m = 0; m < old_n; m++) {
+        int count = 0;
+        for (int n = 0; n < new_n; n++)
+            if (new_materials[n] == old_materials[m]) { count = new_counts[n]; break; }
+        l1 += fabs((double)old_counts[m] / old_samples - (double)count / new_samples);
+    }
+    for (int n = 0; n < new_n; n++) {
+        int found = 0;
+        for (int m = 0; m < old_n; m++)
+            if (old_materials[m] == new_materials[n]) { found = 1; break; }
+        if (!found) l1 += (double)new_counts[n] / new_samples;
+    }
+    return 0.5 * l1;
+}
+
+static int mesh_cube_samples(int axis, uint32_t *out) {
+    if (axis <= 0) return -1;
+    uint64_t a = (uint64_t)axis;
+    if (a > UINT64_MAX / a) return -1;
+    uint64_t square = a * a;
+    if (a > UINT64_MAX / square) return -1;
+    uint64_t cube = square * a;
+    if (cube > UINT32_MAX) return -1;
+    *out = (uint32_t)cube;
+    return 0;
 }
 
 static int ensure_fraction_capacity(alea_mesh_material_fraction_t **fractions,
@@ -587,8 +671,10 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
 
     unsigned char *mixed_flags = NULL;
     double *dominant_fractions = NULL;
+    double *estimated_errors = NULL;
     uint32_t *sample_counts = NULL;
     uint8_t *tie_flags = NULL;
+    uint8_t *refinement_flags = NULL;
     alea_mesh_fraction_span_t *fraction_spans = NULL;
     alea_mesh_material_fraction_t *fractions = NULL;
     size_t fraction_count = 0;
@@ -597,24 +683,31 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         mixed_flags = mesh_alloc_array(ncells, sizeof(unsigned char), 1);
     if (cfg->fields & ALEA_MESH_FIELD_DOMINANT_FRACTION)
         dominant_fractions = mesh_alloc_array(ncells, sizeof(double), 0);
+    if (cfg->fields & ALEA_MESH_FIELD_ESTIMATED_ERROR)
+        estimated_errors = mesh_alloc_array(ncells, sizeof(double), 1);
     if (cfg->fields & ALEA_MESH_FIELD_SAMPLE_COUNT)
         sample_counts = mesh_alloc_array(ncells, sizeof(uint32_t), 0);
     if (cfg->fields & ALEA_MESH_FIELD_TIE_FLAG)
         tie_flags = mesh_alloc_array(ncells, sizeof(uint8_t), 1);
+    if (cfg->fields & ALEA_MESH_FIELD_REFINEMENT_FLAG)
+        refinement_flags = mesh_alloc_array(ncells, sizeof(uint8_t), 1);
     if (cfg->fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS)
         fraction_spans = mesh_alloc_array(ncells,
                                           sizeof(alea_mesh_fraction_span_t), 1);
     if (((cfg->fields & ALEA_MESH_FIELD_MIXED_FLAG) && !mixed_flags) ||
         ((cfg->fields & ALEA_MESH_FIELD_DOMINANT_FRACTION) && !dominant_fractions) ||
+        ((cfg->fields & ALEA_MESH_FIELD_ESTIMATED_ERROR) && !estimated_errors) ||
         ((cfg->fields & ALEA_MESH_FIELD_SAMPLE_COUNT) && !sample_counts) ||
         ((cfg->fields & ALEA_MESH_FIELD_TIE_FLAG) && !tie_flags) ||
+        ((cfg->fields & ALEA_MESH_FIELD_REFINEMENT_FLAG) && !refinement_flags) ||
         ((cfg->fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS) && !fraction_spans)) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                               "mesh failed to allocate composition arrays");
         free(xn); free(yn); free(zn);
         free(mat_ids); free(cell_ids);
-        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-        free(tie_flags); free(fraction_spans);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
         return NULL;
     }
 
@@ -623,21 +716,58 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     if (alea_system_prepare_query_caches(sys, ALEA_CACHE_UNIVERSE) != 0) {
         free(xn); free(yn); free(zn);
         free(mat_ids); free(cell_ids);
-        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-        free(tie_flags); free(fraction_spans);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
         return NULL;
     }
 
     int sample_axis = cfg->sampling_mode == ALEA_MESH_SAMPLE_CENTER ? 1 :
                       cfg->sampling_mode == ALEA_MESH_SAMPLE_CORNERS ? 2 :
                       cfg->subsamples_per_axis;
-    size_t scratch_count = (size_t)sample_axis * (size_t)sample_axis *
-                           (size_t)sample_axis;
-    size_t scratch_bytes = 0;
-    if (checked_mul_size(scratch_count, 5 * sizeof(int), &scratch_bytes) != 0) {
+    uint32_t base_samples = 0;
+    if (mesh_cube_samples(sample_axis, &base_samples) != 0 ||
+        base_samples > cfg->max_samples_per_voxel) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh base sampling exceeds max_samples_per_voxel");
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
-        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-        free(tie_flags); free(fraction_spans);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
+        return NULL;
+    }
+    if (cfg->max_total_samples != 0 &&
+        ((uint64_t)ncells > UINT64_MAX / base_samples ||
+         (uint64_t)ncells * base_samples > cfg->max_total_samples)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh max_total_samples cannot cover the base grid");
+        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
+        return NULL;
+    }
+    int max_sample_axis = sample_axis;
+    if (cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE) {
+        uint64_t cumulative = base_samples;
+        for (int depth = 0; depth < cfg->max_refine_depth; depth++) {
+            if (max_sample_axis > INT_MAX / 2) break;
+            uint32_t next_samples = 0;
+            int next_axis = max_sample_axis * 2;
+            if (mesh_cube_samples(next_axis, &next_samples) != 0 ||
+                cumulative + next_samples > cfg->max_samples_per_voxel) break;
+            cumulative += next_samples;
+            max_sample_axis = next_axis;
+        }
+    }
+    size_t scratch_count = (size_t)max_sample_axis * (size_t)max_sample_axis *
+                           (size_t)max_sample_axis;
+    size_t scratch_bytes = 0;
+    if (checked_mul_size(scratch_count, 7 * sizeof(int), &scratch_bytes) != 0) {
+        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
         return NULL;
     }
     int *scratch = malloc(scratch_bytes);
@@ -645,8 +775,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                               "mesh failed to allocate sampling scratch");
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
-        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-        free(tie_flags); free(fraction_spans);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
         return NULL;
     }
     int *scratch_materials = scratch;
@@ -654,10 +785,23 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     int *scratch_owner_materials = scratch + 2 * scratch_count;
     int *scratch_owner_cells = scratch + 3 * scratch_count;
     int *scratch_owner_counts = scratch + 4 * scratch_count;
+    int *scratch_previous_materials = scratch + 5 * scratch_count;
+    int *scratch_previous_counts = scratch + 6 * scratch_count;
+    alea_mesh_material_fraction_t *voxel_fractions = cfg->visit ?
+        mesh_alloc_array(scratch_count, sizeof(*voxel_fractions), 0) : NULL;
+    if (cfg->visit && !voxel_fractions) {
+        free(scratch);
+        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
+        free(fraction_spans);
+        return NULL;
+    }
 
     /* Sample voxel composition and coherent dominant cell/material IDs. */
     size_t nxy = (size_t)nx * (size_t)ny;
     int mixed_count = 0;
+    uint64_t total_sample_work = 0;
     mesh_int_set_t material_set = {0};
 
     for (int k = 0; k < nz; k++) {
@@ -676,29 +820,115 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                 int dominant_cell = -1;
                 unsigned char mixed = 0;
                 uint8_t ties = 0;
+                uint8_t refinement = 0;
                 double dominant = 1.0;
+                double estimated_error = 0.0;
+                uint32_t voxel_sample_work = base_samples;
 
                 mesh_sample_voxel_materials(sys, cfg, xn, yn, zn, i, j, k,
+                                            sample_axis,
                                             materials, counts,
                                             &n_materials, owner_materials,
                                             owner_cells, owner_counts,
                                             &n_owners, &nsamples);
+                total_sample_work += (uint32_t)nsamples;
+
+                if (cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE) {
+                    estimated_error = 1.0;
+                    int axis = sample_axis;
+                    for (int depth = 0; depth < cfg->max_refine_depth; depth++) {
+                        memcpy(scratch_previous_materials, materials,
+                               (size_t)n_materials * sizeof(int));
+                        memcpy(scratch_previous_counts, counts,
+                               (size_t)n_materials * sizeof(int));
+                        int previous_n_materials = n_materials;
+                        int previous_samples = nsamples;
+                        uint32_t next_samples = 0;
+                        if (axis > INT_MAX / 2 ||
+                            mesh_cube_samples(axis * 2, &next_samples) != 0 ||
+                            voxel_sample_work + (uint64_t)next_samples >
+                                cfg->max_samples_per_voxel ||
+                            (cfg->max_total_samples != 0 &&
+                             total_sample_work + next_samples >
+                                cfg->max_total_samples)) {
+                            refinement |= ALEA_MESH_REFINEMENT_LIMIT_REACHED;
+                            break;
+                        }
+                        axis *= 2;
+                        mesh_sample_voxel_materials(sys, cfg, xn, yn, zn,
+                                                    i, j, k, axis,
+                                                    materials, counts,
+                                                    &n_materials,
+                                                    owner_materials,
+                                                    owner_cells, owner_counts,
+                                                    &n_owners, &nsamples);
+                        voxel_sample_work += next_samples;
+                        total_sample_work += next_samples;
+                        estimated_error = mesh_distribution_error(
+                            scratch_previous_materials, scratch_previous_counts,
+                            previous_n_materials, previous_samples,
+                            materials, counts, n_materials, nsamples);
+                        if (estimated_error <= cfg->target_error) break;
+                        if (depth + 1 == cfg->max_refine_depth)
+                            refinement |= ALEA_MESH_REFINEMENT_LIMIT_REACHED;
+                    }
+                    if (cfg->max_refine_depth == 0)
+                        refinement |= ALEA_MESH_REFINEMENT_LIMIT_REACHED;
+                }
                 mesh_fraction_stats(materials, counts, n_materials, nsamples, cfg,
                                     owner_materials, owner_cells, owner_counts,
                                     n_owners, &dominant_material, &dominant_cell,
                                     &mixed, &dominant, &ties);
+
+                if (cfg->visit) {
+                    for (int m = 0; m < n_materials; m++) {
+                        voxel_fractions[m].material_id = materials[m];
+                        voxel_fractions[m].fraction =
+                            (double)counts[m] / (double)nsamples;
+                    }
+                    alea_mesh_voxel_sample_t sample = {
+                        .i = i, .j = j, .k = k,
+                        .x_min = xn[i], .x_max = xn[i + 1],
+                        .y_min = yn[j], .y_max = yn[j + 1],
+                        .z_min = zn[k], .z_max = zn[k + 1],
+                        .material_id = dominant_material,
+                        .cell_id = dominant_cell,
+                        .mixed = mixed,
+                        .tie_flags = ties,
+                        .dominant_fraction = dominant,
+                        .estimated_error = estimated_error,
+                        .sample_count = voxel_sample_work,
+                        .refinement_flags = refinement,
+                        .fractions = voxel_fractions,
+                        .fraction_count = (uint32_t)n_materials
+                    };
+                    if (cfg->visit(&sample, cfg->visit_user_data) != 0) {
+                        alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                              "mesh voxel visitor cancelled sampling");
+                        free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+                        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                        free(sample_counts); free(tie_flags); free(refinement_flags);
+                        free(fraction_spans); free(fractions);
+                        free(scratch); free(voxel_fractions);
+                        mesh_int_set_free(&material_set);
+                        return NULL;
+                    }
+                }
                 if (mat_ids) mat_ids[idx] = dominant_material;
                 if (cell_ids) cell_ids[idx] = dominant_cell;
-                if (sample_counts) sample_counts[idx] = (uint32_t)nsamples;
+                if (sample_counts) sample_counts[idx] = voxel_sample_work;
                 if (tie_flags) tie_flags[idx] = ties;
+                if (estimated_errors) estimated_errors[idx] = estimated_error;
+                if (refinement_flags) refinement_flags[idx] = refinement;
 
                 for (int m = 0; m < n_materials; m++) {
                     if (mesh_int_set_insert(&material_set, materials[m]) != 0) {
                         free(xn); free(yn); free(zn);
                         free(mat_ids); free(cell_ids);
-                        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-                        free(tie_flags); free(fraction_spans); free(fractions);
-                        free(scratch);
+                        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                        free(sample_counts); free(tie_flags); free(refinement_flags);
+                        free(fraction_spans); free(fractions);
+                        free(scratch); free(voxel_fractions);
                         mesh_int_set_free(&material_set);
                         return NULL;
                     }
@@ -711,10 +941,10 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                           "mesh fraction span offset exceeds uint32_t");
                     free(xn); free(yn); free(zn);
                     free(mat_ids); free(cell_ids);
-                    free(mixed_flags); free(dominant_fractions); free(sample_counts);
-                    free(tie_flags);
+                    free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                    free(sample_counts); free(tie_flags); free(refinement_flags);
                     free(fraction_spans); free(fractions);
-                    free(scratch);
+                    free(scratch); free(voxel_fractions);
                     mesh_int_set_free(&material_set);
                     return NULL;
                 }
@@ -723,10 +953,10 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                              fraction_count + (size_t)n_materials) != 0) {
                     free(xn); free(yn); free(zn);
                     free(mat_ids); free(cell_ids);
-                    free(mixed_flags); free(dominant_fractions); free(sample_counts);
-                    free(tie_flags);
+                    free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                    free(sample_counts); free(tie_flags); free(refinement_flags);
                     free(fraction_spans); free(fractions);
-                    free(scratch);
+                    free(scratch); free(voxel_fractions);
                     mesh_int_set_free(&material_set);
                     return NULL;
                 }
@@ -758,15 +988,16 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                       "mesh sampling interrupted");
                 free(xn); free(yn); free(zn);
                 free(mat_ids); free(cell_ids);
-                free(mixed_flags); free(dominant_fractions); free(sample_counts);
-                free(tie_flags); free(fraction_spans); free(fractions);
-                free(scratch);
+                free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                free(sample_counts); free(tie_flags); free(refinement_flags);
+                free(fraction_spans); free(fractions);
+                free(scratch); free(voxel_fractions);
                 mesh_int_set_free(&material_set);
                 return NULL;
         }
     }
 
-    free(scratch);
+    free(scratch); free(voxel_fractions);
 
     /* Collect unique materials */
     int num_mats = 0;
@@ -775,8 +1006,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     if (!unique_mats) {
         free(xn); free(yn); free(zn);
         free(mat_ids); free(cell_ids);
-        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-        free(tie_flags);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
         free(fraction_spans); free(fractions);
         return NULL;
     }
@@ -785,8 +1016,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     alea_mesh_result_t *res = calloc(1, sizeof(*res));
     if (!res) {
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids); free(unique_mats);
-        free(mixed_flags); free(dominant_fractions); free(sample_counts);
-        free(tie_flags);
+        free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+        free(sample_counts); free(tie_flags); free(refinement_flags);
         free(fraction_spans); free(fractions);
         return NULL;
     }
@@ -794,6 +1025,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     res->fields = cfg->fields;
     res->bounds_source = bounds_source;
     res->bounds_padding = auto_bounds ? cfg->auto_pad : 0.0;
+    res->sampling_mode = cfg->sampling_mode;
+    res->sampling_seed = cfg->sampling_seed;
+    res->target_error = cfg->target_error;
     res->x_nodes = xn;  res->y_nodes = yn;  res->z_nodes = zn;
     res->material_ids = mat_ids;
     res->cell_ids = cell_ids;
@@ -801,13 +1035,32 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     res->unique_materials = unique_mats;
     res->mixed_flags = mixed_flags;
     res->dominant_fractions = dominant_fractions;
+    res->estimated_errors = estimated_errors;
     res->sample_counts = sample_counts;
     res->tie_flags = tie_flags;
+    res->refinement_flags = refinement_flags;
     res->mixed_count = mixed_count;
     res->fraction_spans = fraction_spans;
     res->fractions = fractions;
     res->fraction_count = fraction_count;
     return res;
+}
+
+int alea_mesh_visit(alea_system_t *sys, const alea_mesh_config_t *cfg,
+                    alea_mesh_voxel_visit_fn visit, void *user_data) {
+    if (!cfg || !visit) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "mesh visit requires config and callback");
+        return -1;
+    }
+    alea_mesh_config_t streaming = *cfg;
+    streaming.fields = 0;
+    streaming.visit = visit;
+    streaming.visit_user_data = user_data;
+    alea_mesh_result_t *result = alea_mesh_sample(sys, &streaming);
+    if (!result) return -1;
+    alea_mesh_result_free(result);
+    return 0;
 }
 
 void alea_mesh_result_free(alea_mesh_result_t *mesh) {
@@ -820,8 +1073,10 @@ void alea_mesh_result_free(alea_mesh_result_t *mesh) {
     free(mesh->unique_materials);
     free(mesh->mixed_flags);
     free(mesh->dominant_fractions);
+    free(mesh->estimated_errors);
     free(mesh->sample_counts);
     free(mesh->tie_flags);
+    free(mesh->refinement_flags);
     free(mesh->fraction_spans);
     free(mesh->fractions);
     free(mesh);
@@ -1013,6 +1268,20 @@ static int write_gmsh(const alea_mesh_result_t *mesh, FILE *out,
                        (unsigned long)mesh->sample_counts[v]);
         MESH_WRITE("$EndElementData\n");
     }
+    if ((options->fields & ALEA_MESH_EXPORT_ESTIMATED_ERROR) &&
+        mesh->estimated_errors) {
+        if (write_gmsh_element_data_begin(out, "estimated_error", nelems) != 0) return -1;
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%d %.15g\n", v + 1, mesh->estimated_errors[v]);
+        MESH_WRITE("$EndElementData\n");
+    }
+    if ((options->fields & ALEA_MESH_EXPORT_REFINEMENT_FLAG) &&
+        mesh->refinement_flags) {
+        if (write_gmsh_element_data_begin(out, "refinement_flag", nelems) != 0) return -1;
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%d %u\n", v + 1, (unsigned)mesh->refinement_flags[v]);
+        MESH_WRITE("$EndElementData\n");
+    }
     if (options->fields & ALEA_MESH_EXPORT_MATERIAL_FRACTIONS) {
         char name[96];
         for (int m = 0; m < mesh->num_materials; m++) {
@@ -1145,6 +1414,22 @@ static int write_vtk(const alea_mesh_result_t *mesh, FILE *out,
             MESH_WRITE("%lu\n", (unsigned long)mesh->sample_counts[v]);
     }
 
+    if ((options->fields & ALEA_MESH_EXPORT_ESTIMATED_ERROR) &&
+        mesh->estimated_errors) {
+        MESH_WRITE("SCALARS estimated_error double 1\n");
+        MESH_WRITE("LOOKUP_TABLE default\n");
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%.15g\n", mesh->estimated_errors[v]);
+    }
+
+    if ((options->fields & ALEA_MESH_EXPORT_REFINEMENT_FLAG) &&
+        mesh->refinement_flags) {
+        MESH_WRITE("SCALARS refinement_flag int 1\n");
+        MESH_WRITE("LOOKUP_TABLE default\n");
+        for (int v = 0; v < nelems; v++)
+            MESH_WRITE("%u\n", (unsigned)mesh->refinement_flags[v]);
+    }
+
     if (options->fields & ALEA_MESH_EXPORT_MATERIAL_FRACTIONS) {
         for (int m = 0; m < mesh->num_materials; m++) {
             MESH_WRITE("SCALARS sampled_fraction_material_%d double 1\n",
@@ -1231,6 +1516,19 @@ static int validate_mesh_result(const alea_mesh_result_t *mesh) {
                                   "mesh voxel has zero point samples");
             return -1;
         }
+        if (mesh->estimated_errors &&
+            (!isfinite(mesh->estimated_errors[v]) ||
+             mesh->estimated_errors[v] < 0.0 || mesh->estimated_errors[v] > 1.0)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh voxel has invalid estimated error");
+            return -1;
+        }
+        if (mesh->refinement_flags &&
+            (mesh->refinement_flags[v] & ~ALEA_MESH_REFINEMENT_LIMIT_REACHED)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh voxel has unknown refinement flags");
+            return -1;
+        }
         if (mesh->tie_flags &&
             (mesh->tie_flags[v] & ~(ALEA_MESH_TIE_MATERIAL | ALEA_MESH_TIE_CELL))) {
             alea_set_error_detail(ALEA_ERR_INVALID_ARG,
@@ -1283,7 +1581,9 @@ static int validate_export_options(const alea_mesh_result_t *mesh,
                            ALEA_MESH_EXPORT_DOMINANT_FRACTION |
                            ALEA_MESH_EXPORT_TIE_FLAG |
                            ALEA_MESH_EXPORT_SAMPLE_COUNT |
-                           ALEA_MESH_EXPORT_MATERIAL_FRACTIONS;
+                           ALEA_MESH_EXPORT_MATERIAL_FRACTIONS |
+                           ALEA_MESH_EXPORT_ESTIMATED_ERROR |
+                           ALEA_MESH_EXPORT_REFINEMENT_FLAG;
     if (!options) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG,
                               "mesh export options are NULL");

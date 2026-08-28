@@ -50,7 +50,9 @@ typedef enum {
     ALEA_MESH_EXPORT_DOMINANT_FRACTION = 1u << 1,
     ALEA_MESH_EXPORT_TIE_FLAG = 1u << 2,
     ALEA_MESH_EXPORT_SAMPLE_COUNT = 1u << 3,
-    ALEA_MESH_EXPORT_MATERIAL_FRACTIONS = 1u << 4
+    ALEA_MESH_EXPORT_MATERIAL_FRACTIONS = 1u << 4,
+    ALEA_MESH_EXPORT_ESTIMATED_ERROR = 1u << 5,
+    ALEA_MESH_EXPORT_REFINEMENT_FLAG = 1u << 6
 } alea_mesh_export_field_t;
 
 typedef struct {
@@ -62,7 +64,9 @@ typedef struct {
 typedef enum {
     ALEA_MESH_SAMPLE_CENTER = 0,   /**< Sample only the voxel center */
     ALEA_MESH_SAMPLE_CORNERS,      /**< Probe near voxel corners */
-    ALEA_MESH_SAMPLE_SUBCELL       /**< Probe an NxNxN subcell lattice */
+    ALEA_MESH_SAMPLE_SUBCELL,      /**< Probe an NxNxN subcell lattice */
+    ALEA_MESH_SAMPLE_STRATIFIED,   /**< Deterministic jitter within subcells */
+    ALEA_MESH_SAMPLE_ADAPTIVE      /**< Refine stratified estimates to tolerance */
 } alea_mesh_sampling_mode_t;
 
 typedef enum {
@@ -92,18 +96,42 @@ typedef enum {
     ALEA_MESH_FIELD_DOMINANT_FRACTION = 1u << 3,
     ALEA_MESH_FIELD_SAMPLED_FRACTIONS = 1u << 4,
     ALEA_MESH_FIELD_SAMPLE_COUNT = 1u << 5,
-    ALEA_MESH_FIELD_TIE_FLAG = 1u << 6
+    ALEA_MESH_FIELD_TIE_FLAG = 1u << 6,
+    ALEA_MESH_FIELD_ESTIMATED_ERROR = 1u << 7,
+    ALEA_MESH_FIELD_REFINEMENT_FLAG = 1u << 8
 } alea_mesh_result_field_t;
+
+#define ALEA_MESH_REFINEMENT_LIMIT_REACHED 0x01u
 
 typedef int (*alea_mesh_progress_fn)(size_t completed_voxels,
                                      size_t total_voxels,
                                      void *user_data);
 
-/** One sampled material-fraction estimate for a voxel (not exact volume). */
+typedef struct alea_mesh_material_fraction alea_mesh_material_fraction_t;
+
 typedef struct {
+    int i, j, k;
+    double x_min, x_max, y_min, y_max, z_min, z_max;
+    int material_id;
+    int cell_id;
+    unsigned char mixed;
+    uint8_t tie_flags;
+    double dominant_fraction;
+    double estimated_error;
+    uint32_t sample_count;
+    uint8_t refinement_flags;
+    const alea_mesh_material_fraction_t *fractions; /**< Valid during callback */
+    uint32_t fraction_count;
+} alea_mesh_voxel_sample_t;
+
+typedef int (*alea_mesh_voxel_visit_fn)(const alea_mesh_voxel_sample_t *sample,
+                                        void *user_data);
+
+/** One sampled material-fraction estimate for a voxel (not exact volume). */
+struct alea_mesh_material_fraction {
     int material_id;
     double fraction;              /**< Point-count fraction in [0,1] */
-} alea_mesh_material_fraction_t;
+};
 
 /** Span into alea_mesh_result_t::fractions for one voxel */
 typedef struct {
@@ -127,10 +155,17 @@ typedef struct {
                                   /**< Composition sampling mode */
     int subsamples_per_axis;     /**< Subsample lattice size for SAMPLE_SUBCELL */
     double mixed_threshold;      /**< Max tolerated non-dominant fraction */
+    double target_error;         /**< Adaptive empirical L1 tolerance */
+    int max_refine_depth;
+    uint32_t max_samples_per_voxel;
+    uint64_t max_total_samples;  /**< 0 means unlimited */
+    uint64_t sampling_seed;
     alea_mesh_bounds_mode_t bounds_mode;
     uint32_t fields;             /**< ALEA_MESH_FIELD_* arrays to retain */
     alea_mesh_progress_fn progress; /**< Optional; nonzero return cancels */
     void *progress_user_data;
+    alea_mesh_voxel_visit_fn visit; /**< Optional streaming voxel callback */
+    void *visit_user_data;
 } alea_mesh_config_t;
 
 /** Mesh sampling result */
@@ -139,6 +174,9 @@ typedef struct {
     uint32_t fields;                         /**< Materialized ALEA_MESH_FIELD_* */
     alea_mesh_bounds_source_t bounds_source;
     double bounds_padding;                   /**< Fractional padding actually used */
+    alea_mesh_sampling_mode_t sampling_mode;
+    uint64_t sampling_seed;
+    double target_error;                     /**< Requested empirical tolerance */
     double *x_nodes, *y_nodes, *z_nodes;   /**< (n+1) positions each */
     int *material_ids;                      /**< Dominant sampled material; X fastest */
     int *cell_ids;                          /**< Dominant cell in dominant material */
@@ -146,8 +184,10 @@ typedef struct {
     int *unique_materials;                  /**< Sorted array of unique material IDs */
     unsigned char *mixed_flags;             /**< nx*ny*nz flags, 1=mixed */
     double *dominant_fractions;             /**< nx*ny*nz dominant sampled fraction */
+    double *estimated_errors;                /**< Empirical refinement differences */
     uint32_t *sample_counts;                 /**< nx*ny*nz point sample counts */
     uint8_t *tie_flags;                      /**< nx*ny*nz ALEA_MESH_TIE_* bits */
+    uint8_t *refinement_flags;               /**< ALEA_MESH_REFINEMENT_* bits */
     int mixed_count;                        /**< Number of voxels flagged as mixed */
     alea_mesh_fraction_span_t *fraction_spans;
                                             /**< nx*ny*nz spans into fractions */
@@ -165,8 +205,9 @@ typedef struct {
  *
  * Sets nx=ny=nz=10, format=GMSH, void_material_id=0, auto_pad=0.01,
  * sampling_mode=SUBCELL, subsamples_per_axis=2, mixed_threshold=0,
+ * target_error=0.05, max_refine_depth=3, max_samples_per_voxel=32768,
  * all current result fields enabled, bounds_mode=LEGACY, and bounds/custom
- * nodes/progress callback to zero/NULL.
+ * nodes/callbacks to zero/NULL.
  */
 void alea_mesh_config_init(alea_mesh_config_t *cfg);
 
@@ -189,6 +230,10 @@ void alea_mesh_export_options_init(alea_mesh_export_options_t *options);
  */
 alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                              const alea_mesh_config_t *cfg);
+
+/** Visit voxels without retaining per-voxel result arrays. */
+int alea_mesh_visit(alea_system_t *sys, const alea_mesh_config_t *cfg,
+                    alea_mesh_voxel_visit_fn visit, void *user_data);
 
 /**
  * @brief Export mesh result to a file

@@ -84,6 +84,22 @@ static void lua_to_mesh_config(lua_State* L, int idx, alea_mesh_config_t* cfg) {
     if (!lua_isnil(L, -1)) cfg->mixed_threshold = lua_tonumber(L, -1);
     lua_pop(L, 1);
 
+    lua_getfield(L, idx, "target_error");
+    if (!lua_isnil(L, -1)) cfg->target_error = luaL_checknumber(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "max_refine_depth");
+    if (!lua_isnil(L, -1)) cfg->max_refine_depth = (int)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "max_samples_per_voxel");
+    if (!lua_isnil(L, -1)) cfg->max_samples_per_voxel = (uint32_t)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "max_total_samples");
+    if (!lua_isnil(L, -1)) cfg->max_total_samples = (uint64_t)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "sampling_seed");
+    if (!lua_isnil(L, -1)) cfg->sampling_seed = (uint64_t)luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+
     lua_getfield(L, idx, "fields");
     if (!lua_isnil(L, -1)) cfg->fields = (uint32_t)luaL_checkinteger(L, -1);
     lua_pop(L, 1);
@@ -171,7 +187,7 @@ static int l_meshresult_info(lua_State* L) {
     if (!ud->ptr) return luaL_error(L, "mesh result freed");
     alea_mesh_result_t* m = ud->ptr;
 
-    lua_createtable(L, 0, 8);
+    lua_createtable(L, 0, 13);
     lua_pushinteger(L, m->nx);            lua_setfield(L, -2, "nx");
     lua_pushinteger(L, m->ny);            lua_setfield(L, -2, "ny");
     lua_pushinteger(L, m->nz);            lua_setfield(L, -2, "nz");
@@ -179,6 +195,12 @@ static int l_meshresult_info(lua_State* L) {
     lua_pushinteger(L, m->mixed_count);   lua_setfield(L, -2, "mixed_count");
     lua_pushinteger(L, (lua_Integer)m->fraction_count);
     lua_setfield(L, -2, "fraction_count");
+    lua_pushinteger(L, m->sampling_mode); lua_setfield(L, -2, "sampling_mode");
+    lua_pushinteger(L, (lua_Integer)m->sampling_seed);
+    lua_setfield(L, -2, "sampling_seed");
+    lua_pushnumber(L, m->target_error); lua_setfield(L, -2, "target_error");
+    lua_pushinteger(L, m->bounds_source); lua_setfield(L, -2, "bounds_source");
+    lua_pushnumber(L, m->bounds_padding); lua_setfield(L, -2, "bounds_padding");
 
     /* unique_materials */
     lua_createtable(L, m->num_materials, 0);
@@ -271,14 +293,40 @@ static int l_meshresult_sample_counts(lua_State* L) {
     alea_mesh_result_t* m = ud->ptr;
     if (!m->sample_counts)
         return luaL_error(L, "sample counts were not retained by the field mask");
-    if (!m->cell_ids)
-        return luaL_error(L, "cell IDs were not retained by the field mask");
-    if (!m->material_ids)
-        return luaL_error(L, "material IDs were not retained by the field mask");
     size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
     lua_createtable(L, (int)total, 0);
     for (size_t i = 0; i < total; i++) {
         lua_pushinteger(L, m->sample_counts[i]);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
+
+static int l_meshresult_estimated_errors(lua_State* L) {
+    alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
+    if (!ud->ptr) return luaL_error(L, "mesh result freed");
+    alea_mesh_result_t* m = ud->ptr;
+    if (!m->estimated_errors)
+        return luaL_error(L, "estimated errors were not retained by the field mask");
+    size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
+    lua_createtable(L, (int)total, 0);
+    for (size_t i = 0; i < total; i++) {
+        lua_pushnumber(L, m->estimated_errors[i]);
+        lua_rawseti(L, -2, (lua_Integer)(i + 1));
+    }
+    return 1;
+}
+
+static int l_meshresult_refinement_flags(lua_State* L) {
+    alea_lua_mesh_result_t* ud = check_meshresult(L, 1);
+    if (!ud->ptr) return luaL_error(L, "mesh result freed");
+    alea_mesh_result_t* m = ud->ptr;
+    if (!m->refinement_flags)
+        return luaL_error(L, "refinement flags were not retained by the field mask");
+    size_t total = (size_t)m->nx * (size_t)m->ny * (size_t)m->nz;
+    lua_createtable(L, (int)total, 0);
+    for (size_t i = 0; i < total; i++) {
+        lua_pushinteger(L, m->refinement_flags[i]);
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
     return 1;
@@ -332,6 +380,8 @@ static const luaL_Reg meshresult_methods[] = {
     {"cell_ids",           l_meshresult_cell_ids},
     {"sample_counts",      l_meshresult_sample_counts},
     {"tie_flags",          l_meshresult_tie_flags},
+    {"estimated_errors",   l_meshresult_estimated_errors},
+    {"refinement_flags",   l_meshresult_refinement_flags},
     {"material_fractions", l_meshresult_material_fractions},
     {NULL, NULL}
 };

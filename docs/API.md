@@ -1719,9 +1719,14 @@ Key `alea_mesh_config_t` fields:
 | `format` | `ALEA_MESH_GMSH` | `ALEA_MESH_GMSH` or `ALEA_MESH_VTK` |
 | `void_material_id` | 0 | Material ID for void regions |
 | `auto_pad` | 0.01 | Fractional padding for auto-bounds |
-| `sampling_mode` | `ALEA_MESH_SAMPLE_SUBCELL` | Composition sampling: center, near-corners, or subcell lattice |
-| `subsamples_per_axis` | 2 | Per-axis sample count for `ALEA_MESH_SAMPLE_SUBCELL` |
+| `sampling_mode` | `ALEA_MESH_SAMPLE_SUBCELL` | Center, corners, regular, stratified, or adaptive sampling |
+| `subsamples_per_axis` | 2 | Initial per-axis sample count |
 | `mixed_threshold` | 0 | Tolerance before a voxel is flagged as mixed |
+| `target_error` | 0.05 | Adaptive total-variation convergence target |
+| `max_refine_depth` | 3 | Maximum adaptive refinements |
+| `max_samples_per_voxel` | 32768 | Hard cumulative query limit per voxel |
+| `max_total_samples` | 0 | Whole-run query budget; zero is unlimited |
+| `sampling_seed` | fixed | Reproducible stratified-sampling seed |
 | `bounds_mode` | `ALEA_MESH_BOUNDS_LEGACY` | Compatibility, explicit, or root-AABB inference |
 | `fields` | all current result fields | Arrays retained in the result |
 | `progress` | NULL | Optional callback after each completed Z slab; nonzero cancels |
@@ -1747,6 +1752,8 @@ Material fractions are point-count estimates, not exact volume fractions. A voxe
 | `dominant_fractions` | Largest sampled material fraction per voxel |
 | `sample_counts` | Number of point samples used for each voxel |
 | `tie_flags` | `ALEA_MESH_TIE_MATERIAL` / `ALEA_MESH_TIE_CELL` diagnostics |
+| `estimated_errors` | Empirical difference between the last two adaptive estimates |
+| `refinement_flags` | Indicates that an adaptive work/depth limit was reached |
 | `mixed_count` | Number of voxels flagged as mixed |
 | `fraction_spans` | `nx*ny*nz` spans into the packed fraction array |
 | `fractions` | Packed `(material_id, fraction)` entries |
@@ -1754,6 +1761,7 @@ Material fractions are point-count estimates, not exact volume fractions. A voxe
 | `fields` | Materialized `ALEA_MESH_FIELD_*` arrays |
 | `bounds_source` | Whether coordinates were explicit, custom, or inferred |
 | `bounds_padding` | Fractional automatic padding actually applied |
+| `sampling_mode`, `sampling_seed`, `target_error` | Estimator provenance |
 
 Automatic bounds now use the union of bounded cells placed directly in the
 root universe. Unplaced universe definitions are ignored, each axis retains its
@@ -1782,7 +1790,8 @@ int alea_mesh_export_stream(const alea_mesh_result_t* mesh,
 Export a sampled mesh to an open stream.
 
 Both convenience exporters write mixed flag, dominant sampled fraction, tie
-flag, and sample count when those arrays are available. Filename export uses a
+flag, sample count, estimated error, and refinement status when those arrays
+are available. Filename export uses a
 sibling temporary file and replaces the destination only after all writes and
 the close succeed.
 
@@ -1806,6 +1815,10 @@ int alea_mesh_export_stream_ex(const alea_mesh_result_t* mesh,
 Per-material arrays are opt-in because they make sparse in-memory composition
 dense in the output. Gmsh keeps dominant-material physical groups and writes
 diagnostics as `$ElementData`; VTK writes cell scalar arrays.
+
+`alea_mesh_visit()` runs the same sampler but invokes a callback for each voxel
+instead of retaining per-voxel result arrays. Fraction pointers passed to the
+callback are valid only for that call.
 
 ### alea_mesh_export_system
 

@@ -130,6 +130,27 @@ static int mesh_progress_probe(size_t completed, size_t total, void *user_data) 
     return probe->cancel;
 }
 
+typedef struct {
+    size_t count;
+    int saw_mixed;
+    int invalid;
+} mesh_visit_probe_t;
+
+static int mesh_visit_probe(const alea_mesh_voxel_sample_t *sample,
+                            void *user_data) {
+    mesh_visit_probe_t *probe = user_data;
+    probe->count++;
+    double sum = 0.0;
+    for (uint32_t i = 0; i < sample->fraction_count; i++)
+        sum += sample->fractions[i].fraction;
+    if (fabs(sum - 1.0) > 1e-12 || sample->sample_count == 0 ||
+        !(sample->x_min < sample->x_max) ||
+        !(sample->y_min < sample->y_max) ||
+        !(sample->z_min < sample->z_max)) probe->invalid = 1;
+    if (sample->mixed) probe->saw_mixed = 1;
+    return 0;
+}
+
 /* ============================================================================
  * Tests
  * ============================================================================ */
@@ -326,7 +347,7 @@ TEST(mesh_rejects_invalid_dimensions) {
 
     cfg.nx = 2;
     cfg.sampling_mode = ALEA_MESH_SAMPLE_SUBCELL;
-    cfg.subsamples_per_axis = 9;
+    cfg.subsamples_per_axis = 33;
     mesh = alea_mesh_sample(sys, &cfg);
     ASSERT_NULL(mesh);
 
@@ -599,6 +620,80 @@ TEST(mesh_export_system_oneshot) {
     alea_destroy(sys);
 }
 
+TEST(mesh_stratified_sampling_is_seed_deterministic) {
+    alea_system_t *sys = create_small_inclusion_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = 0.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_STRATIFIED;
+    cfg.subsamples_per_axis = 5;
+
+    alea_mesh_result_t *a = alea_mesh_sample(sys, &cfg);
+    alea_mesh_result_t *b = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(a);
+    ASSERT_NOT_NULL(b);
+    ASSERT_EQ(a->sample_counts[0], 125);
+    ASSERT_EQ(a->fraction_spans[0].count, b->fraction_spans[0].count);
+    ASSERT_NEAR(mesh_fraction_for_material(a, 0, 1),
+                mesh_fraction_for_material(b, 0, 1), 0.0);
+
+    alea_mesh_result_free(a);
+    alea_mesh_result_free(b);
+    alea_destroy(sys);
+}
+
+TEST(mesh_adaptive_sampling_reports_convergence) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_ADAPTIVE;
+    cfg.subsamples_per_axis = 2;
+    cfg.target_error = 0.01;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_EQ(mesh->sample_counts[0], 72);
+    ASSERT_NEAR(mesh->estimated_errors[0], 0.0, 1e-15);
+    ASSERT_EQ(mesh->refinement_flags[0], 0);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 1), 0.5, 1e-15);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 2), 0.5, 1e-15);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_adaptive_sampling_honors_limits) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = 2; cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_ADAPTIVE;
+    cfg.subsamples_per_axis = 2;
+    cfg.max_total_samples = 80;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_EQ(mesh->sample_counts[0], 72);
+    ASSERT_EQ(mesh->sample_counts[1], 8);
+    ASSERT_EQ(mesh->refinement_flags[0], 0);
+    ASSERT(mesh->refinement_flags[1] & ALEA_MESH_REFINEMENT_LIMIT_REACHED);
+    alea_mesh_result_free(mesh);
+
+    cfg.max_total_samples = 15;
+    ASSERT_NULL(alea_mesh_sample(sys, &cfg));
+    alea_destroy(sys);
+}
+
 TEST(mesh_auto_bounds_preserve_axis_aspect_ratio) {
     alea_system_t *sys = create_elongated_box_scene();
     ASSERT_NOT_NULL(sys);
@@ -710,6 +805,22 @@ TEST(mesh_progress_callback_can_cancel) {
     ASSERT_EQ(probe.calls, 1);
     ASSERT_EQ(probe.completed, 4);
     ASSERT_EQ(probe.total, 12);
+    alea_destroy(sys);
+}
+
+TEST(mesh_streaming_visitor_avoids_result_arrays) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 3;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    mesh_visit_probe_t probe = {0};
+    ASSERT_EQ(alea_mesh_visit(sys, &cfg, mesh_visit_probe, &probe), 0);
+    ASSERT_EQ(probe.count, 27);
+    ASSERT_EQ(probe.invalid, 0);
+    ASSERT_EQ(probe.saw_mixed, 1);
     alea_destroy(sys);
 }
 
