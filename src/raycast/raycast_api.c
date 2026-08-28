@@ -10,9 +10,8 @@
  * for raycast functionality. They are only available when linking with
  * the raycast module.
  *
- * Volume estimation functions (alea_estimate_cell_volumes, alea_remove_cells_by_volume,
- * alea_estimate_path_volumes) are strong-symbol overrides of the weak stubs in
- * alea_module_stubs.c. The public alea_* wrappers live in alea_public_api.c.
+ * Physical volume estimation is implemented here because it depends on ray
+ * tracing and hierarchy-path resolution.
  */
 
 #define _USE_MATH_DEFINES
@@ -2610,195 +2609,17 @@ static int compute_path_bounding_sphere(alea_system_t* sys,
     return *radius > 0.0 ? 0 : -1;
 }
 
-int alea_estimate_cell_volumes(alea_system_t* sys,
-                              double ox, double oy, double oz,
-                              double radius, int n_rays,
-                              double* volumes, double* rel_errors) {
-    if (!sys || radius <= 0.0 || n_rays <= 0 || !volumes) return -1;
-
-    /* Ensure all raycast caches are built before parallel section */
-    if (alea_raycast_ensure_caches(sys) != 0) return -1;
-
-    size_t n_cells = alea_vec_count(&sys->cells);
-    if (n_cells == 0) return 0;
-
-    double cx = ox, cy = oy, cz = oz;
-    double R = radius;
-
-    /* Zero output */
-    memset(volumes, 0, n_cells * sizeof(double));
-    if (rel_errors) memset(rel_errors, 0, n_cells * sizeof(double));
-
-    /* Allocate sum-of-squares for error estimation */
-    double* sum_l2 = NULL;
-    if (rel_errors) {
-        sum_l2 = calloc(n_cells, sizeof(double));
-        if (!sum_l2) return -1;
-    }
-
-    int error_flag = 0;
-
-    /* Trace mu-random rays (Cauchy-Crofton):
-     *   Volume formula: V_cell = pi * R^2 * (sum_track_length / n_rays)
-     *   Error:  sigma_V = pi * R^2 / sqrt(N) * sqrt(E[L^2] - E[L]^2)
-     */
-    #pragma omp parallel
-    {
-        /* Thread-local accumulators */
-        double* local_vol = calloc(n_cells, sizeof(double));
-        double* local_l2 = rel_errors ? calloc(n_cells, sizeof(double)) : NULL;
-        double* ray_l = rel_errors ? calloc(n_cells, sizeof(double)) : NULL;
-        alea_raycast_result_t result;
-        alea_raycast_result_init(&result);
-
-        if (!local_vol || (rel_errors && (!local_l2 || !ray_l))) {
-            #pragma omp atomic
-            error_flag |= 1;
-        }
-
-        /* Per-thread deterministic seed */
-        int tid = 0;
-        #ifdef _OPENMP
-        tid = omp_get_thread_num();
-        #endif
-        uint32_t rng = 42 + (uint32_t)tid * 2654435761u;
-
-        #pragma omp for schedule(dynamic, 16)
-        for (int ray = 0; ray < n_rays; ray++) {
-            if (error_flag) continue;
-
-            double rox, roy, roz, ux, uy, uz;
-            generate_cauchy_crofton_ray(&rng, cx, cy, cz, R,
-                                        &rox, &roy, &roz, &ux, &uy, &uz);
-
-            if (ray_l) memset(ray_l, 0, n_cells * sizeof(double));
-
-            alea_raycast_result_clear(&result);
-            int rc = alea_raycast_hier_cell_aware(sys, rox, roy, roz,
-                                                  ux, uy, uz, 4.0 * R,
-                                                  &result);
-            if (rc != 0) continue;
-
-            /* Accumulate track lengths per cell */
-            for (size_t s = 0; s < result.segments.count; s++) {
-                int seg_cell_id = result.segments.data[s].cell_id;
-                if (seg_cell_id < 0) continue;
-                double len = result.segments.data[s].t_exit - result.segments.data[s].t_enter;
-                if (len <= 0) continue;
-
-                int ci = alea_find_cell_by_id(sys, seg_cell_id);
-                if (ci >= 0 && (size_t)ci < n_cells) {
-                    local_vol[ci] += len;
-                    if (ray_l) ray_l[ci] += len;
-                }
-            }
-
-            /* Accumulate L^2 for this ray */
-            if (local_l2) {
-                for (size_t ci = 0; ci < n_cells; ci++) {
-                    local_l2[ci] += ray_l[ci] * ray_l[ci];
-                }
-            }
-        }
-
-        /* Merge thread-local results into global arrays */
-        #pragma omp critical
-        {
-            if (local_vol) {
-                for (size_t i = 0; i < n_cells; i++)
-                    volumes[i] += local_vol[i];
-            }
-            if (local_l2 && sum_l2) {
-                for (size_t i = 0; i < n_cells; i++)
-                    sum_l2[i] += local_l2[i];
-            }
-        }
-
-        alea_raycast_result_free(&result);
-        free(local_vol);
-        free(local_l2);
-        free(ray_l);
-    }
-
-    if (error_flag) {
-        free(sum_l2);
-        return -1;
-    }
-
-    double scale = M_PI * R * R / (double)n_rays;
-    if (rel_errors) {
-        compute_volume_errors(volumes, sum_l2, rel_errors, n_cells, n_rays);
-    }
-    for (size_t i = 0; i < n_cells; i++) {
-        volumes[i] *= scale;
-    }
-
-    free(sum_l2);
-    return 0;
-}
-
-int alea_remove_cells_by_volume(alea_system_t* sys,
-                               const double* volumes,
-                               double threshold) {
-    if (!sys || !volumes) return -1;
-
-    size_t n_cells = alea_vec_count(&sys->cells);
-    if (n_cells == 0) return 0;
-
-    size_t write = 0;
-    int removed = 0;
-    for (size_t i = 0; i < n_cells; i++) {
-        if (volumes[i] <= threshold) {
-            if (sys->on_cell_removed)
-                sys->on_cell_removed(sys->cell_hook_userdata, i);
-            free(sys->cells.data[i].surface_indices);
-            if (!sys->neighbor_pool)
-                free(sys->cells.data[i].neighbors);
-            free(sys->cells.data[i].lat_fill);
-            free(sys->cells.data[i].comments);
-            free(sys->cells.data[i].inline_comment);
-            removed++;
-        } else {
-            if (write != i)
-                sys->cells.data[write] = sys->cells.data[i];
-            write++;
-        }
-    }
-    sys->cells.count = write;
-
-    if (removed > 0) {
-        cell_hashmap_clear(&sys->cell_index);
-        for (size_t i = 0; i < write; i++) {
-            cell_hashmap_put(&sys->cell_index,
-                             sys->cells.data[i].mc_cell_id,
-                             (int)i);
-            free(sys->cells.data[i].surface_indices);
-            sys->cells.data[i].surface_indices = NULL;
-            sys->cells.data[i].surface_index_count = 0;
-            if (!sys->neighbor_pool)
-                free(sys->cells.data[i].neighbors);
-            sys->cells.data[i].neighbors = NULL;
-            sys->cells.data[i].neighbor_count = 0;
-        }
-
-        alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
-    }
-
-    return removed;
-}
-
 /* ============================================================================
- * PER-INSTANCE VOLUME ESTIMATION
+ * PHYSICAL VOLUME ESTIMATION
  *
- * Like alea_estimate_cell_volumes but resolves each ray segment to a specific
- * cell instance via the spatial index.  This distinguishes the same cell
- * appearing in multiple fill contexts.
+ * Each ray segment is attributed to a concrete hierarchy path. This preserves
+ * the physical identity of cells reused through fills and lattices.
  * ============================================================================ */
 
-int alea_estimate_path_volumes(alea_system_t* sys,
-                               int n_rays,
-                               double* volumes,
-                               double* rel_errors) {
+int alea_estimate_volumes(alea_system_t* sys,
+                          int n_rays,
+                          double* volumes,
+                          double* rel_errors) {
     if (!sys || n_rays <= 0 || !volumes) return -1;
 
     alea_error_clear();

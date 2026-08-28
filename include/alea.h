@@ -715,32 +715,6 @@ int alea_compute_bounding_sphere(alea_system_t* sys,
                                       double* cx, double* cy, double* cz,
                                       double* radius);
 
-/**
- * @brief Estimate cell volumes using random ray tracing (Cauchy-Crofton method)
- *
- * Generates @p n_rays uniform random lines through a sphere of the given
- * @p radius centered at (@p ox, @p oy, @p oz). Accumulates track lengths
- * per cell and converts to volume: V_cell = pi * R^2 * (sum_L / N).
- *
- * If @p rel_errors is non-NULL, it receives the 1-sigma relative statistical
- * error for each cell: sigma_V / V.  Set to -1 for zero-volume cells.
- *
- * Requires the raycast module to be linked; returns -1 otherwise.
- *
- * @param sys       CSG system (read-only)
- * @param ox,oy,oz  Center of the bounding sphere
- * @param radius    Bounding sphere radius
- * @param n_rays    Number of random rays (e.g. 10000)
- * @param volumes    Output array of size alea_cell_count(sys)
- * @param rel_errors Output array of size alea_cell_count(sys), or NULL
- * @return 0 on success, -1 on error
- */
-int alea_estimate_cell_volumes(alea_system_t* sys,
-                                   double ox, double oy, double oz,
-                                   double radius, int n_rays,
-                                   double* volumes,
-                                   double* rel_errors);
-
 #define ALEA_VOLUME_PATH_MAX_DEPTH 16
 
 typedef struct {
@@ -806,7 +780,7 @@ typedef struct {
  *
  * Hierarchical mode only in this implementation. The count is stable until
  * geometry/config mutation invalidates query caches. Use this to size arrays
- * for alea_volume_paths_get() and alea_estimate_path_volumes().
+ * for alea_volume_paths_get() and alea_estimate_volumes().
  */
 size_t alea_volume_path_count(alea_system_t* sys);
 
@@ -918,28 +892,81 @@ int alea_volume_path_resolve_cell_from_transform_evidence(
     alea_volume_path_t* out_path);
 
 /**
- * @brief Estimate volumes for concrete hierarchy paths.
+ * @brief Estimate physical volumes for concrete hierarchy paths.
  *
- * Output arrays must be sized to alea_volume_path_count(sys).
+ * Uses random ray tracing (the Cauchy-Crofton method). Output arrays must be
+ * sized to alea_volume_path_count(sys). Each entry represents one physical
+ * placement, including its fill ancestry, transform, and lattice coordinates.
+ * If @p rel_errors is non-NULL, it receives the one-sigma relative statistical
+ * error for each estimate, or -1 for a zero-volume path.
  */
-int alea_estimate_path_volumes(alea_system_t* sys,
-                               int n_rays,
-                               double* volumes,
-                               double* rel_errors);
+int alea_estimate_volumes(alea_system_t* sys,
+                          int n_rays,
+                          double* volumes,
+                          double* rel_errors);
+
+/** Source of the finite integration domain used for a cell-volume estimate. */
+typedef enum {
+    ALEA_CELL_VOLUME_BOUNDS_EXPLICIT = 0,
+    ALEA_CELL_VOLUME_BOUNDS_STORED = 1,
+    ALEA_CELL_VOLUME_BOUNDS_PLANE_CONSTRAINTS = 2,
+    ALEA_CELL_VOLUME_BOUNDS_ADAPTIVE_SEARCH = 3
+} alea_cell_volume_bounds_source_t;
+
+/** Options for deterministic, cell-local octree volume estimation. */
+typedef struct {
+    bool has_bounds;                       /**< Use bounds instead of discovery. */
+    alea_bbox_t bounds;                    /**< Universe-local integration box. */
+    double relative_tolerance;             /**< Target unresolved/estimate ratio. */
+    double absolute_tolerance;             /**< Target absolute unresolved volume. */
+    int max_depth;
+    double min_size;                       /**< 0 disables the size limit. */
+    int samples_per_axis;                  /**< Deterministic mixed-leaf samples. */
+    size_t requested_workers;              /**< 0 = OpenMP runtime maximum. */
+    uint64_t max_parallel_scratch_bytes;   /**< 0 forces serial execution. */
+} alea_cell_volume_options_t;
+
+/** Value-only result from cell-local octree volume estimation. */
+typedef struct {
+    double volume;
+    double lower_bound;
+    double upper_bound;
+    double unresolved_volume;
+    double relative_uncertainty;
+    alea_bbox_t bounds;
+    alea_cell_volume_bounds_source_t bounds_source;
+    bool complete_cell_domain;
+    bool converged;
+    bool resource_limit_reached;
+    size_t bounds_search_expansions;
+    size_t total_nodes;
+    size_t inside_nodes;
+    size_t outside_nodes;
+    size_t unresolved_leaf_nodes;
+    size_t max_depth_reached;
+    size_t requested_workers;
+    size_t actual_workers;
+    size_t frontier_task_count;
+    size_t parallel_batch_count;
+    uint64_t scratch_bytes_per_worker;
+    uint64_t reserved_parallel_scratch_bytes;
+} alea_cell_volume_result_t;
+
+/** Initialize cell-volume options to the public defaults. */
+void alea_cell_volume_options_init(alea_cell_volume_options_t* options);
 
 /**
- * @brief Remove cells whose estimated volume is below a threshold
+ * Estimate one cell definition's universe-local CSG volume.
  *
- * Requires the raycast module to be linked; returns -1 otherwise.
- *
- * @param sys        CSG system (modified in place)
- * @param volumes    Volume array from alea_estimate_cell_volumes
- * @param threshold  Cells with volume <= threshold are removed
- * @return Number of cells removed, or -1 on error
+ * The operation is read-only. Without explicit bounds it uses the stored cell
+ * bbox or attempts finite-bbox discovery. Explicit bounds define a clipped
+ * integration domain and are reported as such in the result.
  */
-int alea_remove_cells_by_volume(alea_system_t* sys,
-                                    const double* volumes,
-                                    double threshold);
+int alea_cell_estimate_volume(
+    const alea_system_t* sys,
+    size_t cell_index,
+    const alea_cell_volume_options_t* options,
+    alea_cell_volume_result_t* out_result);
 
 /* ============================================================================
  * BOUNDING BOX TIGHTENING

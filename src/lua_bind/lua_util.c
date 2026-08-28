@@ -94,75 +94,6 @@ static int l_bounding_sphere(lua_State* L) {
     return 4;
 }
 
-/* sys:estimate_volumes(n_rays, cx, cy, cz, radius) -> table of volumes */
-static int l_estimate_volumes(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    int n_rays = (int)luaL_checkinteger(L, 2);
-    double cx  = luaL_checknumber(L, 3);
-    double cy  = luaL_checknumber(L, 4);
-    double cz  = luaL_checknumber(L, 5);
-    double r   = luaL_checknumber(L, 6);
-
-    size_t nc = alea_cell_count(sys);
-    double* volumes = (double*)calloc(nc, sizeof(double));
-    double* errors  = (double*)calloc(nc, sizeof(double));
-    if (!volumes || !errors) {
-        free(volumes);
-        free(errors);
-        return luaL_error(L, "out of memory");
-    }
-
-    int rc = alea_estimate_cell_volumes(sys, cx, cy, cz, r, n_rays, volumes, errors);
-    if (rc != 0) {
-        free(volumes);
-        free(errors);
-        return luaL_error(L, "estimate_volumes failed: %s", alea_error());
-    }
-
-    lua_createtable(L, (int)nc, 0);
-    for (size_t i = 0; i < nc; i++) {
-        lua_createtable(L, 0, 2);
-        lua_pushnumber(L, volumes[i]); lua_setfield(L, -2, "volume");
-        lua_pushnumber(L, errors[i]);  lua_setfield(L, -2, "rel_error");
-        lua_rawseti(L, -2, (lua_Integer)(i + 1));
-    }
-
-    free(volumes);
-    free(errors);
-    return 1;
-}
-
-/* sys:remove_cells_by_volume(volumes_table, threshold) -> count removed */
-static int l_remove_cells_by_volume(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    luaL_checktype(L, 2, LUA_TTABLE);
-    double threshold = luaL_checknumber(L, 3);
-
-    size_t nc = alea_cell_count(sys);
-    double* volumes = (double*)calloc(nc, sizeof(double));
-    if (!volumes)
-        return luaL_error(L, "out of memory");
-
-    for (size_t i = 0; i < nc; i++) {
-        lua_rawgeti(L, 2, (lua_Integer)(i + 1));
-        if (lua_istable(L, -1)) {
-            lua_getfield(L, -1, "volume");
-            volumes[i] = lua_tonumber(L, -1);
-            lua_pop(L, 1);
-        } else {
-            volumes[i] = lua_tonumber(L, -1);
-        }
-        lua_pop(L, 1);
-    }
-
-    int removed = alea_remove_cells_by_volume(sys, volumes, threshold);
-    free(volumes);
-    if (removed < 0)
-        return luaL_error(L, "remove_cells_by_volume failed: %s", alea_error());
-    lua_pushinteger(L, removed);
-    return 1;
-}
-
 /* ============================================================================
  * Bbox tightening
  * ============================================================================ */
@@ -331,8 +262,8 @@ static int l_volume_paths(lua_State* L) {
     return 1;
 }
 
-/* sys:estimate_path_volumes(n_rays) -> table of path records */
-static int l_estimate_path_volumes(lua_State* L) {
+/* sys:estimate_volumes(n_rays) -> table of physical path records */
+static int l_estimate_volumes(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     int n_rays = (int)luaL_checkinteger(L, 2);
     size_t n = alea_volume_path_count(sys);
@@ -348,9 +279,9 @@ static int l_estimate_path_volumes(lua_State* L) {
     size_t got = alea_volume_paths_get(sys, paths, n);
     if (got > n) got = n;
 
-    if (alea_estimate_path_volumes(sys, n_rays, volumes, errors) != 0) {
+    if (alea_estimate_volumes(sys, n_rays, volumes, errors) != 0) {
         free(paths); free(volumes); free(errors);
-        return luaL_error(L, "estimate_path_volumes failed: %s", alea_error());
+        return luaL_error(L, "estimate_volumes failed: %s", alea_error());
     }
 
     lua_createtable(L, (int)got, 0);
@@ -638,8 +569,6 @@ static const luaL_Reg util_methods[] = {
     {"bounding_sphere",            l_bounding_sphere},
     {"estimate_volumes",           l_estimate_volumes},
     {"volume_paths",               l_volume_paths},
-    {"estimate_path_volumes",      l_estimate_path_volumes},
-    {"remove_cells_by_volume",     l_remove_cells_by_volume},
     {"tighten_all_bboxes",         l_tighten_all_bboxes},
     {"tighten_cell_bbox",          l_tighten_cell_bbox},
     {"tighten_bbox_numerical",     l_tighten_bbox_numerical},

@@ -12,8 +12,6 @@
  *   --rays N        Number of rays (default: auto-compute from bounding sphere)
  *   --density D     Ray density in rays/cm^2 (default: 1.0)
  *   --tol T         Bbox tightening tolerance (default: 1.0)
- *   --origin X Y Z  Sphere center (default: auto from bounding sphere)
- *   --radius R      Sphere radius (default: auto from bounding sphere)
  */
 
 #include <stdio.h>
@@ -37,10 +35,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --rays N        Number of rays (default: auto from bounding sphere)\n");
     fprintf(stderr, "  --density D     Ray density in rays/cm^2 (default: %.1f)\n", DEFAULT_RAY_DENSITY);
     fprintf(stderr, "  --tol T         Bbox tightening tolerance (default: 1.0)\n");
-    fprintf(stderr, "  --origin X Y Z  Sphere center (default: auto from bounding sphere)\n");
-    fprintf(stderr, "  --radius R      Sphere radius (default: auto from bounding sphere)\n");
-    fprintf(stderr, "\nWhen --origin/--radius are not given, they are auto-computed\n");
-    fprintf(stderr, "via alea_compute_bounding_sphere().\n");
+    fprintf(stderr, "\nThe estimator computes its physical-path bounding sphere automatically.\n");
     fprintf(stderr, "Auto rays: n_rays = max(%d, ceil(density * pi * R^2))\n", MIN_RAYS);
 }
 
@@ -61,8 +56,6 @@ int main(int argc, char** argv) {
     int n_rays = 0;             /* 0 = auto-compute */
     double ray_density = DEFAULT_RAY_DENSITY;
     double tol = 1.0;
-    double user_cx = 0, user_cy = 0, user_cz = 0, user_radius = 0;
-    int have_origin = 0, have_radius = 0;
 
     int i = 2;
     while (i < argc) {
@@ -99,28 +92,6 @@ int main(int argc, char** argv) {
                 return 1;
             }
             i += 2;
-        } else if (strcmp(argv[i], "--origin") == 0) {
-            if (i + 3 >= argc) {
-                fprintf(stderr, "Error: --origin requires 3 arguments (X Y Z)\n");
-                return 1;
-            }
-            user_cx = atof(argv[i + 1]);
-            user_cy = atof(argv[i + 2]);
-            user_cz = atof(argv[i + 3]);
-            have_origin = 1;
-            i += 4;
-        } else if (strcmp(argv[i], "--radius") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --radius requires 1 argument\n");
-                return 1;
-            }
-            user_radius = atof(argv[i + 1]);
-            if (user_radius <= 0) {
-                fprintf(stderr, "Error: radius must be positive\n");
-                return 1;
-            }
-            have_radius = 1;
-            i += 2;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -142,30 +113,21 @@ int main(int argc, char** argv) {
     }
     alea_system_t* sys = model->sys;
 
-    size_t nc = alea_cell_count(sys);
-    printf("Cells: %zu\n", nc);
+    size_t n_paths = alea_volume_path_count(sys);
+    printf("Physical volume paths: %zu\n", n_paths);
 
     alea_build_universe_index(sys);
 
-    /* Determine sphere parameters */
+    /* Determine a representative sphere for automatic ray-count selection. */
     double cx, cy, cz, radius;
-    if (have_origin && have_radius) {
-        cx = user_cx;
-        cy = user_cy;
-        cz = user_cz;
-        radius = user_radius;
-        printf("User sphere: center=(%.2f,%.2f,%.2f) R=%.2f\n",
-               cx, cy, cz, radius);
-    } else {
-        printf("Computing bounding sphere (tol=%.2f)...\n", tol);
-        if (alea_compute_bounding_sphere(sys, tol, &cx, &cy, &cz, &radius) != 0) {
-            fprintf(stderr, "Error: could not compute bounding sphere\n");
-            mcnp_model_destroy(model);
-            return 1;
-        }
-        printf("Bounding sphere: center=(%.2f,%.2f,%.2f) R=%.2f\n",
-               cx, cy, cz, radius);
+    printf("Computing bounding sphere (tol=%.2f)...\n", tol);
+    if (alea_compute_bounding_sphere(sys, tol, &cx, &cy, &cz, &radius) != 0) {
+        fprintf(stderr, "Error: could not compute bounding sphere\n");
+        mcnp_model_destroy(model);
+        return 1;
     }
+    printf("Bounding sphere: center=(%.2f,%.2f,%.2f) R=%.2f\n",
+           cx, cy, cz, radius);
 
     /* Compute ray count */
     int rays = (n_rays > 0) ? n_rays : compute_n_rays(radius, ray_density);
@@ -173,35 +135,48 @@ int main(int argc, char** argv) {
            rays, ray_density, M_PI * radius * radius);
 
     /* Estimate volumes */
-    double* volumes = calloc(nc, sizeof(double));
-    double* rel_errors = calloc(nc, sizeof(double));
-    if (!volumes || !rel_errors) {
+    double* volumes = calloc(n_paths, sizeof(double));
+    double* rel_errors = calloc(n_paths, sizeof(double));
+    alea_volume_path_t* paths = calloc(n_paths, sizeof(*paths));
+    if (!volumes || !rel_errors || !paths) {
         fprintf(stderr, "Error: out of memory\n");
         free(volumes);
         free(rel_errors);
+        free(paths);
         mcnp_model_destroy(model);
         return 1;
     }
 
-    alea_estimate_cell_volumes(sys, cx, cy, cz, radius, rays,
-                                   volumes, rel_errors);
+    if (alea_volume_paths_get(sys, paths, n_paths) != n_paths ||
+        alea_estimate_volumes(sys, rays, volumes, rel_errors) != 0) {
+        fprintf(stderr, "Error: %s\n", alea_error());
+        free(volumes);
+        free(rel_errors);
+        free(paths);
+        mcnp_model_destroy(model);
+        return 1;
+    }
 
     /* Print table */
-    printf("%5s  %10s  %14s  %7s\n", "Cell", "Material", "Volume", "R");
-    for (size_t j = 0; j < nc; j++) {
-        int cell_id, material_id;
-        alea_cell_get(sys, j, &cell_id, &material_id, NULL, NULL, NULL, NULL);
+    printf("%5s  %7s  %10s  %14s  %7s\n",
+           "Path", "Cell", "Material", "Volume", "R");
+    for (size_t j = 0; j < n_paths; j++) {
         if (rel_errors[j] >= 0.0) {
-            printf("%5d  %10d  %14.6e  %7.4f\n",
-                   cell_id, material_id, volumes[j], rel_errors[j]);
+            printf("%5llu  %7d  %10d  %14.6e  %7.4f\n",
+                   (unsigned long long)paths[j].path_id,
+                   paths[j].terminal_cell_id, paths[j].material_id,
+                   volumes[j], rel_errors[j]);
         } else {
-            printf("%5d  %10d  %14.6e  %7s\n",
-                   cell_id, material_id, volumes[j], "-");
+            printf("%5llu  %7d  %10d  %14.6e  %7s\n",
+                   (unsigned long long)paths[j].path_id,
+                   paths[j].terminal_cell_id, paths[j].material_id,
+                   volumes[j], "-");
         }
     }
 
     free(volumes);
     free(rel_errors);
+    free(paths);
     mcnp_model_destroy(model);
     return 0;
 }

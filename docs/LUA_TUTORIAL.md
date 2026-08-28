@@ -268,13 +268,12 @@ print(string.format("Bounding sphere: center (%.2f, %.2f, %.2f), radius %.2f",
 
 -- Estimate volumes
 local n_rays = 10000
-local volumes = sys:estimate_volumes(n_rays, cx, cy, cz, r)
+local volumes = sys:estimate_volumes(n_rays)
 
 for i, v in ipairs(volumes) do
     if v.volume > 0 then
-        local info = sys:cell_info(i - 1)
-        print(string.format("Cell %d: volume %.2f (error %.1f%%)",
-            info.cell_id, v.volume, v.rel_error * 100))
+        print(string.format("Cell %d, path %d: volume %.2f (error %.1f%%)",
+            v.cell_id, v.path_id, v.volume, v.rel_error * 100))
     end
 end
 ```
@@ -839,9 +838,8 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Offset material IDs | `sys:offset_material_ids(offset)` |
 | **Volume & BBox** | |
 | Bounding sphere | `sys:bounding_sphere(tol)` |
-| Estimate volumes | `sys:estimate_volumes(n, cx, cy, cz, r)` |
+| Estimate physical volumes | `sys:estimate_volumes(n)` |
 | Volume paths | `sys:volume_paths()` |
-| Path volumes | `sys:estimate_path_volumes(n)` |
 | Tighten bbox | `sys:tighten_cell_bbox(idx, tol)` |
 | Tighten all | `sys:tighten_all_bboxes(tol)` |
 | Cells in bbox | `sys:cells_in_bbox(bbox)` |

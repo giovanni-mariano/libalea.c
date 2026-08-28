@@ -43,7 +43,7 @@ local cells = sys:cells_in_bbox{
 }
 assert(#cells >= 1, "should find cells in large bbox")
 
--- volume_paths / estimate_path_volumes wrap flat instance volumes in flat mode
+-- volume_paths / estimate_volumes preserve physical path identity
 sys:prepare_query_acceleration()
 local paths = sys:volume_paths()
 assert(type(paths) == "table", "volume_paths should return table")
@@ -51,8 +51,8 @@ assert(#paths >= 1, "volume_paths should include flat instances")
 assert(paths[1].path_id == 1, "Lua path_id is 1-based")
 assert(paths[1].cell_id ~= nil, "volume path should include cell_id")
 
-local path_volumes = sys:estimate_path_volumes(8)
-assert(type(path_volumes) == "table", "estimate_path_volumes should return table")
+local path_volumes = sys:estimate_volumes(8)
+assert(type(path_volumes) == "table", "estimate_volumes should return table")
 assert(#path_volumes == #paths, "path volume count should match path count")
 assert(path_volumes[1].volume ~= nil, "path volume record should include volume")
 

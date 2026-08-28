@@ -284,8 +284,9 @@ Each intersection records the cell entered, the material, the distance along the
 Ray tracing is also used internally for Monte Carlo volume estimation:
 
 ```c
-double volumes[ncells], errors[ncells];
-alea_estimate_cell_volumes(sys, ox, oy, oz, radius, n_rays, volumes, errors);
+size_t npaths = alea_volume_path_count(sys);
+double volumes[npaths], errors[npaths];
+alea_estimate_volumes(sys, n_rays, volumes, errors);
 ```
 
 ## 2D Slice Visualization

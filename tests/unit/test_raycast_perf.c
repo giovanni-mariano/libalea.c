@@ -1411,20 +1411,20 @@ TEST(perf_volume_estimation) {
     int N_RAYS = 5000;
     alea_system_t* sys = build_concentric_shells(10);
 
-    size_t n_cells = alea_cell_count(sys);
-    double* volumes = calloc(n_cells, sizeof(double));
-    double* errors = calloc(n_cells, sizeof(double));
+    size_t n_paths = alea_volume_path_count(sys);
+    double* volumes = calloc(n_paths, sizeof(double));
+    double* errors = calloc(n_paths, sizeof(double));
 
     BENCH_START();
-    alea_estimate_cell_volumes(sys, 0, 0, 0, 10.0, N_RAYS, volumes, errors);
+    alea_estimate_volumes(sys, N_RAYS, volumes, errors);
     BENCH_END("volume estimation (10 shells)", N_RAYS);
 
     /* Sanity: at least some cells got volume */
     int nonzero = 0;
-    for (size_t i = 0; i < n_cells; i++) {
+    for (size_t i = 0; i < n_paths; i++) {
         if (volumes[i] > 0) nonzero++;
     }
-    printf("[%d/%zu cells with volume]  ", nonzero, n_cells);
+    printf("[%d/%zu paths with volume]  ", nonzero, n_paths);
 
     free(volumes);
     free(errors);

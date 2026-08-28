@@ -1020,17 +1020,6 @@ int alea_compute_bounding_sphere(const alea_system_t* sys, double tol,
 
 Compute a tight bounding sphere for the entire model using interval arithmetic.
 
-### alea_estimate_cell_volumes
-
-```c
-int alea_estimate_cell_volumes(const alea_system_t* sys,
-                               double ox, double oy, double oz,
-                               double radius, int n_rays,
-                               double* volumes, double* rel_errors);
-```
-
-Estimate cell volumes using Cauchy-Crofton random ray tracing. `volumes` and `rel_errors` must be arrays of size `alea_cell_count(sys)`. `rel_errors` can be NULL.
-
 ### alea_volume_path_count
 
 ```c
@@ -1065,25 +1054,17 @@ Resolve a world-space point to a concrete hierarchical volume path. Returns `1`
 when a path is found, `0` when no terminal path contains the point, and `-1` on
 error.
 
-### alea_estimate_path_volumes
+### alea_estimate_volumes
 
 ```c
-int alea_estimate_path_volumes(alea_system_t* sys, int n_rays,
-                               double* volumes, double* rel_errors);
+int alea_estimate_volumes(alea_system_t* sys, int n_rays,
+                          double* volumes, double* rel_errors);
 ```
 
-Estimate volumes per concrete path. Arrays must be sized to
-`alea_volume_path_count(sys)`. This provides repeated-cell separation using the
-hierarchical spatial index.
-
-### alea_remove_cells_by_volume
-
-```c
-int alea_remove_cells_by_volume(alea_system_t* sys,
-                                const double* volumes, double threshold);
-```
-
-Remove cells with estimated volume at or below `threshold`. Returns number of cells removed.
+Estimate physical volumes using Cauchy-Crofton random ray tracing. Arrays must
+be sized to `alea_volume_path_count(sys)`. Every entry represents one concrete
+placement, preserving fill ancestry, transformations, and lattice coordinates.
+`rel_errors` can be NULL.
 
 ---
 

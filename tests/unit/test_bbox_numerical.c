@@ -413,4 +413,130 @@ TEST(tighten_all_with_lp) {
     alea_destroy(sys);
 }
 
+TEST(cell_volume_box_exact_and_read_only) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_box_surface(sys, 0, -1.0, 1.0, -2.0, 2.0, -3.0, 3.0);
+    ASSERT(surface >= 0);
+    alea_node_id_t root = alea_halfspace(sys, surface, -1);
+    ASSERT(alea_add_cell(sys, 10, root, ALEA_MATERIAL_VOID, 0.0, 7) >= 0);
+    alea_bbox_t before = alea_node_bbox_get(&sys->nodes.data[root].bbox);
+
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.requested_workers = 1;
+    alea_cell_volume_result_t result;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT_NEAR(result.volume, 48.0, 1e-12);
+    ASSERT_NEAR(result.lower_bound, 48.0, 1e-12);
+    ASSERT_NEAR(result.upper_bound, 48.0, 1e-12);
+    ASSERT(result.converged);
+    ASSERT(result.complete_cell_domain);
+    ASSERT_EQ(result.bounds_source, ALEA_CELL_VOLUME_BOUNDS_STORED);
+    alea_bbox_t after = alea_node_bbox_get(&sys->nodes.data[root].bbox);
+    ASSERT_EQ(memcmp(&before, &after, sizeof(before)), 0);
+    alea_destroy(sys);
+}
+
+TEST(cell_volume_sphere_bounds_and_parallel_determinism) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 0, 0.0, 0.0, 0.0, 2.0);
+    ASSERT(surface >= 0);
+    alea_node_id_t root = alea_surface_at(sys, surface)->neg_node;
+    ASSERT(alea_add_cell(sys, 1, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.relative_tolerance = 0.0;
+    options.max_depth = 7;
+    options.requested_workers = 1;
+    alea_cell_volume_result_t serial, parallel;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &serial), 0);
+    options.requested_workers = 4;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &parallel), 0);
+    double exact = 4.0 * 3.14159265358979323846 * 8.0 / 3.0;
+    ASSERT(serial.lower_bound <= exact);
+    ASSERT(serial.upper_bound >= exact);
+    ASSERT(serial.volume >= serial.lower_bound);
+    ASSERT(serial.volume <= serial.upper_bound);
+    ASSERT_NEAR(serial.volume, parallel.volume, 0.0);
+    ASSERT_NEAR(serial.lower_bound, parallel.lower_bound, 0.0);
+    ASSERT_NEAR(serial.upper_bound, parallel.upper_bound, 0.0);
+    ASSERT_EQ(serial.total_nodes, parallel.total_nodes);
+    alea_destroy(sys);
+}
+
+TEST(cell_volume_explicit_bounds_clip_unbounded_cell) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_plane_surface(sys, 0, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(surface >= 0);
+    alea_node_id_t root = alea_halfspace(sys, surface, -1);
+    ASSERT(alea_add_cell(sys, 1, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.has_bounds = true;
+    options.bounds = (alea_bbox_t){-1, 1, -1, 1, -1, 1};
+    options.relative_tolerance = 0.0;
+    options.max_depth = 4;
+    options.requested_workers = 1;
+    alea_cell_volume_result_t result;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT_NEAR(result.volume, 4.0, 1e-12);
+    ASSERT_NEAR(result.lower_bound, 4.0, 1e-12);
+    ASSERT_NEAR(result.upper_bound, 4.0, 1e-12);
+    ASSERT_EQ(result.bounds_source, ALEA_CELL_VOLUME_BOUNDS_EXPLICIT);
+    ASSERT(!result.complete_cell_domain);
+
+    options.has_bounds = false;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), -1);
+    alea_destroy(sys);
+}
+
+TEST(cell_volume_discovers_bounded_plane_constraints) {
+    alea_system_t* sys = create_tetrahedron();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t root = sys->cells.data[0].root_node_id;
+    alea_bbox_t unbounded = {-1e30, 1e30, -1e30, 1e30, -1e30, 1e30};
+    alea_node_bbox_set(&sys->nodes.data[root].bbox, &unbounded);
+
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.relative_tolerance = 0.0;
+    options.max_depth = 7;
+    options.requested_workers = 1;
+    alea_cell_volume_result_t result;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT_EQ(result.bounds_source, ALEA_CELL_VOLUME_BOUNDS_PLANE_CONSTRAINTS);
+    ASSERT(result.complete_cell_domain);
+    ASSERT(result.lower_bound <= 1000.0 / 6.0);
+    ASSERT(result.upper_bound >= 1000.0 / 6.0);
+    alea_destroy(sys);
+}
+
+TEST(cell_volume_adaptive_search_recovers_missing_stored_bbox) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 0, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(surface >= 0);
+    alea_node_id_t root = alea_halfspace(sys, surface, -1);
+    ASSERT(alea_add_cell(sys, 1, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_bbox_t unbounded = {-1e10, 1e10, -1e10, 1e10, -1e10, 1e10};
+    alea_node_bbox_set(&sys->nodes.data[root].bbox, &unbounded);
+
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.max_depth = 5;
+    alea_cell_volume_result_t result;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT_EQ(result.bounds_source, ALEA_CELL_VOLUME_BOUNDS_ADAPTIVE_SEARCH);
+    ASSERT(!result.complete_cell_domain);
+    ASSERT(result.bounds.min_x <= -1.0 && result.bounds.max_x >= 1.0);
+    ASSERT(result.bounds.min_y <= -1.0 && result.bounds.max_y >= 1.0);
+    ASSERT(result.bounds.min_z <= -1.0 && result.bounds.max_z >= 1.0);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

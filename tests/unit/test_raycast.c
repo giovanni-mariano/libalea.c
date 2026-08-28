@@ -417,64 +417,6 @@ TEST(raycast_path_length) {
     alea_raycast_result_free(&result);
 }
 
-TEST(remove_cells_by_volume_rebuilds_structural_indexes) {
-    alea_system_t* sys = alea_create();
-    ASSERT_NOT_NULL(sys);
-
-    int m1 = alea_add_material(sys, 1);
-    int m2 = alea_add_material(sys, 2);
-    ASSERT(m1 >= 0);
-    ASSERT(m2 >= 0);
-
-    int s1 = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
-    int s2 = alea_sphere_surface(sys, 2, 20, 0, 0, 5.0);
-    ASSERT(s1 >= 0);
-    ASSERT(s2 >= 0);
-
-    alea_node_id_t c1_root = alea_surface_at(sys, s1)->neg_node;
-    alea_node_id_t c2_root = alea_surface_at(sys, s2)->neg_node;
-    ASSERT(alea_add_cell(sys, 10, c1_root, m1, -1.0, 0) >= 0);
-    ASSERT(alea_add_cell(sys, 20, c2_root, m2, -1.0, 0) >= 0);
-
-    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NOT_NULL(sys->hier_spatial_index);
-    ASSERT_EQ(alea_build_cell_adjacency(sys), 0);
-    ASSERT(sys->cells.data[0].surface_index_count > 0);
-    ASSERT(sys->cells.data[1].surface_index_count > 0);
-    ASSERT(sys->cell_adjacency_built);
-    ASSERT_NOT_NULL(sys->surface_cell_offsets);
-    ASSERT_NOT_NULL(sys->surface_cell_refs);
-
-    double volumes[2] = {0.0, 1.0};
-    int removed = alea_remove_cells_by_volume(sys, volumes, 0.1);
-    ASSERT_EQ(removed, 1);
-    ASSERT_EQ((int)alea_cell_count(sys), 1);
-
-    alea_cell_info_t info;
-    ASSERT_EQ(alea_cell_find_info(sys, 10, &info), -1);
-    ASSERT_EQ(alea_cell_find_info(sys, 20, &info), 0);
-    ASSERT_EQ(info.cell_id, 20);
-
-    ASSERT(!sys->universe_index_built);
-    ASSERT_NULL(sys->hier_spatial_index);
-    ASSERT(!sys->cell_adjacency_built);
-    ASSERT_NULL(sys->surface_cell_offsets);
-    ASSERT_NULL(sys->surface_cell_refs);
-    ASSERT_EQ((int)sys->surface_cell_ref_count, 0);
-    ASSERT_EQ((int)sys->cells.data[0].surface_index_count, 0);
-
-    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
-    ASSERT_NOT_NULL(sys->hier_spatial_index);
-
-    int cell_id = -1;
-    int material_id = -1;
-    ASSERT_EQ(alea_find_cell_at(sys, 20, 0, 0, &cell_id, &material_id), 0);
-    ASSERT_EQ(cell_id, 20);
-    ASSERT_EQ(material_id, 2);
-
-    alea_destroy(sys);
-}
-
 TEST(surface_reference_csr_preserves_exact_cards_and_all_references) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

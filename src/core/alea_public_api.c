@@ -1463,19 +1463,6 @@ void alea_tree_print(const alea_system_t* sys, alea_node_id_t node_id) {
 /* alea_compute_bounding_sphere, alea_tighten_cell_bbox, alea_tighten_all_bboxes
  * are in primitives/bbox.c (already included via primitives/bbox.h) */
 
-/* Weak stubs in alea_module_stubs.c, strong overrides in raycast_api.c */
-int alea_estimate_cell_volumes(alea_system_t* sys,
-                               double ox, double oy, double oz,
-                               double radius, int n_rays,
-                               double* volumes, double* rel_errors);
-int alea_estimate_path_volumes(alea_system_t* sys,
-                               int n_rays,
-                               double* volumes,
-                               double* rel_errors);
-int alea_remove_cells_by_volume(alea_system_t* sys,
-                                const double* volumes,
-                                double threshold);
-
 typedef struct {
     uint64_t hash;
     uint64_t path_id;

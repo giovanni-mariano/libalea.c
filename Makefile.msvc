@@ -138,6 +138,7 @@ CORE_OBJS = \
 	$(BUILD)\core\alea_simplify.obj \
 	$(BUILD)\core\alea_universe.obj \
 	$(BUILD)\core\alea_cell_complement.obj \
+	$(BUILD)\core\alea_cell_volume.obj \
 	$(BUILD)\core\alea_void.obj \
 	$(BUILD)\core\alea_macrobody.obj \
 	$(BUILD)\core\alea_spatial_hier.obj
@@ -470,6 +471,9 @@ $(BUILD)\core\alea_universe.obj: $(SRC)\core\alea_universe.c dirs
 
 $(BUILD)\core\alea_cell_complement.obj: $(SRC)\core\alea_cell_complement.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_cell_complement.c
+
+$(BUILD)\core\alea_cell_volume.obj: $(SRC)\core\alea_cell_volume.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_cell_volume.c
 
 $(BUILD)\core\alea_void.obj: $(SRC)\core\alea_void.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_void.c

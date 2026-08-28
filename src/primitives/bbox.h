@@ -58,7 +58,7 @@ alea_bbox_t alea_primitive_bbox(
  * @param id   Node ID of the CSG tree root
  * @return Bounding box enclosing the CSG subtree
  */
-alea_bbox_t alea_get_bbox(alea_system_t* sys,  
+alea_bbox_t alea_get_bbox(const alea_system_t* sys,
                         alea_node_id_t id);
 
 /**
@@ -283,6 +283,16 @@ int alea_tighten_bbox_numerical(const alea_system_t* sys,
                                alea_node_id_t root,
                                double tol,
                                alea_bbox_t* out);
+
+/**
+ * Discover a finite bbox for a bounded pure intersection of plane
+ * half-spaces. Unlike the legacy numerical fallback, this rejects constraint
+ * systems with a non-zero recession direction.
+ */
+int alea_tighten_bbox_plane_constraints(const alea_system_t* sys,
+                                         alea_node_id_t root,
+                                         double tol,
+                                         alea_bbox_t* out);
 
 
 #endif // BBOX_H

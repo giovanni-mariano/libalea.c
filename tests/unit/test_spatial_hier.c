@@ -1893,7 +1893,7 @@ TEST(volume_path_index_respects_max_count_guard) {
     ASSERT_NULL(sys->volume_path_index);
 
     double volumes[2] = {0.0, 0.0};
-    ASSERT_EQ(alea_estimate_path_volumes(sys, 8, volumes, NULL), -1);
+    ASSERT_EQ(alea_estimate_volumes(sys, 8, volumes, NULL), -1);
     ASSERT_EQ(alea_error_code(), (int)ALEA_ERR_INVALID_STATE);
 
     alea_destroy(sys);
@@ -2045,7 +2045,7 @@ TEST(hier_volume_paths_distinguish_rect_lattice_elements) {
     ASSERT_EQ(fuel_u3_linear_seen[7], 1);
 
     double volumes[18] = {0.0};
-    ASSERT_EQ(alea_estimate_path_volumes(sys, 4096, volumes, NULL), 0);
+    ASSERT_EQ(alea_estimate_volumes(sys, 4096, volumes, NULL), 0);
 
     int nonzero_u1_moderator = 0;
     int nonzero_u3_moderator = 0;
@@ -2088,7 +2088,7 @@ TEST(hier_path_volume_estimation_no_flat_spatial_index) {
     ASSERT_EQ(alea_volume_path_count(sys), 1);
     double volumes[1] = {0.0};
     double errors[1] = {0.0};
-    ASSERT_EQ(alea_estimate_path_volumes(sys, 16, volumes, errors), 0);
+    ASSERT_EQ(alea_estimate_volumes(sys, 16, volumes, errors), 0);
     ASSERT(volumes[0] >= 0.0);
     ASSERT_NOT_NULL(sys->hier_spatial_index);
 
@@ -2118,7 +2118,7 @@ TEST(hier_path_volume_estimation_sphere_smoke) {
 
     double volumes[1] = {0.0};
     double errors[1] = {0.0};
-    ASSERT_EQ(alea_estimate_path_volumes(sys, 4096, volumes, errors), 0);
+    ASSERT_EQ(alea_estimate_volumes(sys, 4096, volumes, errors), 0);
     double expected = 4.0 * 3.14159265358979323846 / 3.0;
     ASSERT(volumes[0] > expected * 0.65);
     ASSERT(volumes[0] < expected * 1.35);

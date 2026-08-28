@@ -22,7 +22,7 @@ print(string.format("  Radius: %.2f", r))
 -- Estimate volumes with Monte Carlo ray tracing
 local n_rays = 10000
 print(string.format("\n--- Volume Estimation (%d rays) ---", n_rays))
-local volumes = sys:estimate_volumes(n_rays, cx, cy, cz, r)
+local volumes = sys:estimate_volumes(n_rays)
 
 -- Print top 20 cells by volume
 print(string.format("\nTop 20 cells by volume:"))
@@ -32,11 +32,10 @@ print(string.rep("-", 52))
 -- Collect and sort by volume
 local sorted = {}
 for i = 1, #volumes do
-    local info = sys:cell_info(i - 1)
     sorted[i] = {
-        index = i - 1,
-        cell_id = info.cell_id,
-        mat = info.material_id,
+        index = volumes[i].path_id,
+        cell_id = volumes[i].cell_id,
+        mat = volumes[i].material_id,
         vol = volumes[i].volume,
         err = volumes[i].rel_error,
     }

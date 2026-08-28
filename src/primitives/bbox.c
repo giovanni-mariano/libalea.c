@@ -201,15 +201,15 @@ alea_bbox_t alea_bbox_transform(const alea_bbox_t* bbox,
     return (alea_bbox_t){rmin[0], rmax[0], rmin[1], rmax[1], rmin[2], rmax[2]};
 }
 
-alea_bbox_t alea_get_bbox(alea_system_t* sys, alea_node_id_t id) {
+alea_bbox_t alea_get_bbox(const alea_system_t* sys, alea_node_id_t id) {
     if (id == ALEA_NODE_ID_INVALID || !sys) {
         return alea_bbox_empty();
     }
     
-    alea_node_t* node = alea_get_node(sys, id);
-    if (!node) {
+    if (id >= alea_vec_count(&sys->nodes)) {
         return alea_bbox_empty();
     }
+    const alea_node_t* node = &sys->nodes.data[id];
     
     alea_operation_t op = ALEA_GET_OPERATION(node);
     
@@ -722,6 +722,54 @@ static bool point_feasible(const halfspace_t* planes, int n, vec3 pt) {
     return true;
 }
 
+static bool recession_direction_feasible(const halfspace_t* planes, int n,
+                                          double x, double y, double z) {
+    double norm = sqrt(x*x + y*y + z*z);
+    if (norm <= 1e-12) return false;
+    x /= norm; y /= norm; z /= norm;
+    for (int i = 0; i < n; i++) {
+        if (planes[i].a*x + planes[i].b*y + planes[i].c*z > 1e-10)
+            return false;
+    }
+    return true;
+}
+
+/* A non-trivial three-dimensional polyhedral recession cone has either a
+ * lineality direction or an extreme ray at the intersection of two facet
+ * planes. Check those candidates, plus coordinate/tangent directions for
+ * rank-deficient constraint sets. */
+static bool has_nonzero_recession_direction(const halfspace_t* planes, int n) {
+    static const double axes[3][3] = {
+        {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}
+    };
+    for (int a = 0; a < 3; a++) {
+        for (int sign = -1; sign <= 1; sign += 2) {
+            if (recession_direction_feasible(planes, n,
+                    sign*axes[a][0], sign*axes[a][1], sign*axes[a][2]))
+                return true;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        for (int a = 0; a < 3; a++) {
+            double x = planes[i].b*axes[a][2] - planes[i].c*axes[a][1];
+            double y = planes[i].c*axes[a][0] - planes[i].a*axes[a][2];
+            double z = planes[i].a*axes[a][1] - planes[i].b*axes[a][0];
+            if (recession_direction_feasible(planes, n, x, y, z) ||
+                recession_direction_feasible(planes, n, -x, -y, -z))
+                return true;
+        }
+        for (int j = i + 1; j < n; j++) {
+            double x = planes[i].b*planes[j].c - planes[i].c*planes[j].b;
+            double y = planes[i].c*planes[j].a - planes[i].a*planes[j].c;
+            double z = planes[i].a*planes[j].b - planes[i].b*planes[j].a;
+            if (recession_direction_feasible(planes, n, x, y, z) ||
+                recession_direction_feasible(planes, n, -x, -y, -z))
+                return true;
+        }
+    }
+    return false;
+}
+
 /**
  * LP vertex enumeration: enumerate all triple-plane intersection vertices,
  * keep feasible ones, compute their bounding box.
@@ -781,6 +829,20 @@ static int tighten_bbox_vertex_enum(
 
     *out = result;
     return 0;
+}
+
+int alea_tighten_bbox_plane_constraints(const alea_system_t* sys,
+                                         alea_node_id_t root,
+                                         double tol,
+                                         alea_bbox_t* out) {
+    if (!sys || !out || tol <= 0.0) return -1;
+    halfspace_t planes[MAX_LP_PLANES];
+    int n = collect_plane_constraints(sys, root, planes, MAX_LP_PLANES, 0);
+    if (n < 3 || has_nonzero_recession_direction(planes, n)) return -1;
+    alea_bbox_t coarse;
+    if (tighten_bbox_vertex_enum(sys, root, &coarse) != 0) return -1;
+    alea_tighten_tree_bbox(sys, root, &coarse, tol, out);
+    return alea_bbox_is_valid(out) ? 0 : -1;
 }
 
 /**
