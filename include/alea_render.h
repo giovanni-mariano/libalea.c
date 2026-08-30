@@ -138,6 +138,7 @@ typedef struct {
     /* Custom colors */
     render_color_entry_t* custom_colors;
     int num_custom_colors;
+    int custom_colors_sorted; /**< Enables logarithmic lookup when true */
 
     /* X-ray mode */
     float xray_density_scale;

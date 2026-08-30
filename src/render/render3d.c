@@ -107,6 +107,7 @@ void render_config_free(render_config_t* cfg) {
     free(cfg->custom_colors);
     cfg->custom_colors = NULL;
     cfg->num_custom_colors = 0;
+    cfg->custom_colors_sorted = 0;
 }
 
 /* ============================================================================
@@ -294,8 +295,25 @@ void render_get_color(int id, render_color_mode_t mode,
                       float* r, float* g, float* b) {
     /* Check custom colors first */
     if (cfg->custom_colors) {
-        for (int i = 0; i < cfg->num_custom_colors; i++) {
-            if (cfg->custom_colors[i].id == id) {
+        int first = 0;
+        int last = cfg->num_custom_colors;
+        if (cfg->custom_colors_sorted) {
+            while (first < last) {
+                int middle = first + (last - first) / 2;
+                int candidate = cfg->custom_colors[middle].id;
+                if (candidate < id) first = middle + 1;
+                else last = middle;
+            }
+            if (first < cfg->num_custom_colors &&
+                cfg->custom_colors[first].id == id) {
+                *r = cfg->custom_colors[first].r;
+                *g = cfg->custom_colors[first].g;
+                *b = cfg->custom_colors[first].b;
+                return;
+            }
+        } else {
+            for (int i = 0; i < cfg->num_custom_colors; i++) {
+                if (cfg->custom_colors[i].id != id) continue;
                 *r = cfg->custom_colors[i].r;
                 *g = cfg->custom_colors[i].g;
                 *b = cfg->custom_colors[i].b;
@@ -1353,6 +1371,12 @@ int render_write_aux(const char* base_filename, const render_framebuffer_t* fb) 
  * CUSTOM COLOR LOADING
  * ============================================================================ */
 
+static int compare_color_entry_ids(const void* left, const void* right) {
+    const render_color_entry_t* a = left;
+    const render_color_entry_t* b = right;
+    return (a->id > b->id) - (a->id < b->id);
+}
+
 int render_load_colors(const char* filename, render_config_t* cfg) {
     FILE* f = fopen(filename, "r");
     if (!f) return -1;
@@ -1382,5 +1406,9 @@ int render_load_colors(const char* filename, render_config_t* cfg) {
     }
 
     fclose(f);
+    if (cfg->num_custom_colors > 1)
+        qsort(cfg->custom_colors, (size_t)cfg->num_custom_colors,
+              sizeof(render_color_entry_t), compare_color_entry_ids);
+    cfg->custom_colors_sorted = 1;
     return 0;
 }
