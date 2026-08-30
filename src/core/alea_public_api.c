@@ -1185,56 +1185,99 @@ int alea_flatten(alea_system_t* sys, int universe_id) {
 }
 
 
+static int extract_universe_list_contains(const int* ids, size_t count, int id) {
+    for (size_t i = 0; i < count; i++) {
+        if (ids[i] == id) return 1;
+    }
+    return 0;
+}
+
+static int extract_universe_list_add(int** ids, size_t* count,
+                                     size_t* capacity, int id) {
+    if (id < 0 || extract_universe_list_contains(*ids, *count, id)) return 0;
+    if (*count == *capacity) {
+        size_t new_capacity = *capacity ? *capacity * 2 : 8;
+        int* grown = realloc(*ids, new_capacity * sizeof(*grown));
+        if (!grown) return -1;
+        *ids = grown;
+        *capacity = new_capacity;
+    }
+    (*ids)[(*count)++] = id;
+    return 0;
+}
+
 alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) {
-    if (!sys) return NULL;
+    if (!sys || universe_id < 0) return NULL;
 
-    alea_system_t* extracted = alea_system_create();
-    if (!extracted) return NULL;
-
-    primitive_remap_t* remap = alea_create_remap_table(alea_vec_count(&sys->primitives));
-    if (!remap) {
-        alea_system_destroy(extracted);
+    /* Keep the complete fill/lattice closure below the requested universe.
+     * A local universe view still needs its descendants to resolve exactly as
+     * they do when the universe is placed in the source model. */
+    int* reachable = NULL;
+    size_t reachable_count = 0;
+    size_t reachable_capacity = 0;
+    if (extract_universe_list_add(&reachable, &reachable_count,
+                                  &reachable_capacity, universe_id) != 0) {
         return NULL;
     }
 
-    /* Find cells in the target universe */
-    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        const alea_cell_entry_t* cell = &sys->cells.data[i];
-        if (cell->universe_id != universe_id) continue;
+    for (size_t cursor = 0; cursor < reachable_count; cursor++) {
+        int current = reachable[cursor];
+        for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+            const alea_cell_entry_t* cell = &sys->cells.data[i];
+            if (cell->universe_id != current) continue;
 
-        /* Deep copy node tree */
-        alea_node_id_t new_root = ALEA_NODE_ID_INVALID;
-        if (cell->root_node_id != ALEA_NODE_ID_INVALID) {
-            new_root = alea_clone_tree_to_system(extracted, sys, cell->root_node_id, remap);
-        }
-
-        int idx = alea_add_cell(extracted, cell->mc_cell_id, new_root,
-                               ALEA_MATERIAL_VOID, cell->density, cell->universe_id);
-        if (idx >= 0) {
-            /* Copy core cell fields */
-            alea_cell_entry_t* dst_cell = &extracted->cells.data[idx];
-            dst_cell->material_id = cell->material_id;
-            dst_cell->material_index = cell->material_index;
-            dst_cell->is_mass_density = cell->is_mass_density;
-            dst_cell->original_root_node_id = cell->original_root_node_id;
-            dst_cell->temperature = cell->temperature;
-            dst_cell->has_temperature = cell->has_temperature;
-            dst_cell->fill_universe = cell->fill_universe;
-            dst_cell->fill_transform = cell->fill_transform;
-            dst_cell->comments = cell->comments ? alea_strdup(cell->comments) : NULL;
-            dst_cell->inline_comment = cell->inline_comment ? alea_strdup(cell->inline_comment) : NULL;
+            if (cell->fill_universe > 0 &&
+                extract_universe_list_add(&reachable, &reachable_count,
+                                          &reachable_capacity,
+                                          cell->fill_universe) != 0) {
+                free(reachable);
+                return NULL;
+            }
+            if (cell->lat_type != 0 && cell->lat_fill) {
+                for (size_t j = 0; j < cell->lat_fill_count; j++) {
+                    if (cell->lat_fill[j] > 0 &&
+                        extract_universe_list_add(&reachable, &reachable_count,
+                                                  &reachable_capacity,
+                                                  cell->lat_fill[j]) != 0) {
+                        free(reachable);
+                        return NULL;
+                    }
+                }
+            }
         }
     }
 
-    /* Copy referenced auxiliary data */
-    alea_copy_surfaces_with_remap(extracted, sys, remap);
-    alea_destroy_remap_table(remap);
-    alea_copy_referenced_materials(extracted, sys);
-    alea_copy_referenced_mixtures(extracted, sys);
-    alea_copy_referenced_transforms(extracted, sys);
-    alea_copy_referenced_cell_refs(extracted, sys);
+    /* Clone first so every cell property (including lattice metadata,
+     * importance, comments, and future fields) is preserved. Then discard
+     * universes outside the reachable closure. */
+    alea_system_t* extracted = alea_clone(sys);
+    if (!extracted) {
+        free(reachable);
+        return NULL;
+    }
+    for (size_t i = alea_vec_count(&extracted->cells); i-- > 0;) {
+        if (!extract_universe_list_contains(
+                reachable, reachable_count,
+                extracted->cells.data[i].universe_id) &&
+            alea_cell_remove(extracted, (int)i) != 0) {
+            free(reachable);
+            alea_system_destroy(extracted);
+            return NULL;
+        }
+    }
+    free(reachable);
 
-    extracted->source = sys->source;
+    /* All top-level query and plotting APIs enter universe 0. Rebase only the
+     * selected universe; referenced child universe IDs remain unchanged. */
+    if (universe_id != 0) {
+        for (size_t i = 0; i < alea_vec_count(&extracted->cells); i++) {
+            if (extracted->cells.data[i].universe_id == universe_id &&
+                alea_cell_set_universe(extracted, (int)i, 0) != 0) {
+                alea_system_destroy(extracted);
+                return NULL;
+            }
+        }
+    }
     return extracted;
 }
 
