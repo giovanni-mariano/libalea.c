@@ -500,59 +500,34 @@ static void render_pixel_solid(alea_system_t* sys,
     }
     double view_dir[3] = {dx, dy, dz};
 
-    /* Check cross-section at clip entry */
-    if (t_min > 1e-8 && entry_plane >= 0) {
-        double cpx = ox + (t_min + 1e-6) * dx;
-        double cpy = oy + (t_min + 1e-6) * dy;
-        double cpz = oz + (t_min + 1e-6) * dz;
-
-        int cs_cell_id = -1, cs_material_id = 0;
-        alea_find_cell_at(sys, cpx, cpy, cpz, &cs_cell_id, &cs_material_id);
-
-        if (cs_cell_id >= 0 && cs_material_id != 0) {
-            /* Cross-section face: flat shade (skip void material) */
-            float br, bg, bb;
-            if (cfg->color_mode == RENDER_COLOR_DENSITY) {
-                int ci = alea_cell_find(sys, cs_cell_id);
-                double density = 0;
-                if (ci >= 0) alea_cell_get(sys, ci, NULL, NULL, &density, NULL, NULL, NULL);
-                shade_density(density, &br, &bg, &bb);
-            } else {
-                int color_id = (cfg->color_mode == RENDER_COLOR_CELL) ? cs_cell_id : cs_material_id;
-                render_get_color(color_id, cfg->color_mode, cfg, &br, &bg, &bb);
-            }
-            float tint = cfg->cross_section_tint;
-            out_color[0] = br * tint;
-            out_color[1] = bg * tint;
-            out_color[2] = bb * tint;
-            *out_cell_id = cs_cell_id;
-            *out_material_id = cs_material_id;
-            *out_depth = (float)t_min;
-            if (out_normal) {
-                out_normal[0] = (float)-cfg->clips[entry_plane].normal[0];
-                out_normal[1] = (float)-cfg->clips[entry_plane].normal[1];
-                out_normal[2] = (float)-cfg->clips[entry_plane].normal[2];
-            }
-            return;
-        }
-    }
-
-    /* Full raycast from origin */
+    /* Start hierarchy traversal at the retained interval.  Besides avoiding
+     * a separate point-location query for the cross-section, this skips every
+     * excluded surface between the camera and the clip plane. */
+    const double ray_start =
+        (entry_plane >= 0 && t_min > 1e-8) ? t_min + 1e-7 : 0.0;
+    if (ray_start >= t_max) return;
+    const double trace_ox = ox + ray_start * dx;
+    const double trace_oy = oy + ray_start * dy;
+    const double trace_oz = oz + ray_start * dz;
+    const double trace_t_max = t_max - ray_start;
     alea_raycast_result_clear(result);
 
     /* Solid rendering needs exactly one visible interval.  The hierarchical
-     * stepper handles lattice DDA and fill expansion, so it can stop as soon
+    * stepper handles lattice DDA and fill expansion, so it can stop as soon
      * as that interval is found instead of materializing a full global trace. */
     alea_ray_t ray;
-    alea_ray_init_normalized(&ray, ox, oy, oz, dx, dy, dz);
+    alea_ray_init_normalized(
+        &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
     alea_ray_first_visible_result_t visible;
     if (alea_raycast_hier_first_visible_nocache(
-            sys, &ray, t_min, t_max, -1, 1, result, &visible) != 0 ||
+            sys, &ray, 0.0, trace_t_max, -1, 1, result, &visible) != 0 ||
         !visible.found)
         return;
 
+    const double visible_t = ray_start + visible.t;
+
     alea_ray_segment_t seg = {
-        .t_enter = visible.t,
+        .t_enter = visible_t,
         .t_exit = t_max,
         .cell_id = visible.cell_id,
         .material_id = visible.material_id,
@@ -565,7 +540,7 @@ static void render_pixel_solid(alea_system_t* sys,
     };
     if (visible.surface_id > 0) {
         const alea_ray_hit_t hit = {
-            .t = visible.t,
+            .t = visible_t,
             .surface_id = visible.surface_id,
             .primitive_id = visible.primitive_id,
             .nx = visible.nx, .ny = visible.ny, .nz = visible.nz
@@ -590,7 +565,7 @@ static void render_pixel_solid(alea_system_t* sys,
         double t_hit;
         int is_cross_section = 0;
 
-        if (seg->t_enter < t_min + 1e-6) {
+        if (entry_plane >= 0 && ray_start > 0.0 && visible.t < 1e-6) {
             /* Segment straddles clip boundary — cross-section face */
             t_hit = t_min;
             is_cross_section = 1;
@@ -617,6 +592,11 @@ static void render_pixel_solid(alea_system_t* sys,
             out_color[0] = br * tint;
             out_color[1] = bg * tint;
             out_color[2] = bb * tint;
+            if (out_normal && entry_plane >= 0) {
+                out_normal[0] = (float)-cfg->clips[entry_plane].normal[0];
+                out_normal[1] = (float)-cfg->clips[entry_plane].normal[1];
+                out_normal[2] = (float)-cfg->clips[entry_plane].normal[2];
+            }
         } else {
             /* Find surface normal from hit list (O(1) via enter_hit_index) */
             double nx = 0, ny = 0, nz = 1;
@@ -766,14 +746,19 @@ static void render_pixel_xray(alea_system_t* sys,
                        &t_min, &t_max, NULL))
         return;
 
-    /* X-ray consumes selected material intervals directly.  The callback
-     * adapter handles fills and lattice DDA without publishing a per-pixel
-     * segment vector. */
+    /* X-ray starts at the retained interval too, avoiding traversal through
+     * geometry that cannot contribute to the image. */
+    const double ray_start = t_min > 1e-8 ? t_min + 1e-7 : 0.0;
+    if (ray_start >= t_max) return;
+    const double trace_ox = ox + ray_start * dx;
+    const double trace_oy = oy + ray_start * dy;
+    const double trace_oz = oz + ray_start * dz;
+    const double trace_t_max = t_max - ray_start;
     render_xray_accumulator_t accum = {
-        .cfg = cfg, .t_min = t_min, .t_max = t_max, .cell_id = -1
+        .cfg = cfg, .t_min = 0.0, .t_max = trace_t_max, .cell_id = -1
     };
     alea_ray_t ray;
-    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
+    if (alea_ray_init(&ray, trace_ox, trace_oy, trace_oz, dx, dy, dz) != 0 ||
         alea_raycast_hier_visit_segments_nocache(
             sys, &ray, 0, result, render_xray_accumulate_segment, &accum) != 0)
         return;
