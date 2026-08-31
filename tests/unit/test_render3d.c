@@ -609,8 +609,26 @@ TEST(clip_plane_cuts_geometry) {
     /* Aggressive clip should remove all visible geometry */
     ASSERT_EQ(hits_with_clip, 0);
 
+    /* The retained half-space must also stop a ray which begins inside it.
+     * Keep y <= -10: the camera is retained, but the sphere is beyond the
+     * plane and must not leak through after the ray exits the clip region. */
+    cfg.clips[0].normal[0] = 0.0;
+    cfg.clips[0].normal[1] = -1.0;
+    cfg.clips[0].normal[2] = 0.0;
+    cfg.clips[0].d = -10.0;
+    render_framebuffer_t* fb3 = render_framebuffer_create(cfg.width, cfg.height, 0);
+    ASSERT_NOT_NULL(fb3);
+    rc = render_scene(sys, &cfg, &cam, fb3);
+    ASSERT_EQ(rc, 0);
+    int hits_after_exit = 0;
+    for (int i = 0; i < cfg.width * cfg.height; i++) {
+        if (fb3->cell_id[i] > 0) hits_after_exit++;
+    }
+    ASSERT_EQ(hits_after_exit, 0);
+
     render_framebuffer_free(fb1);
     render_framebuffer_free(fb2);
+    render_framebuffer_free(fb3);
     render_config_free(&cfg);
     alea_destroy(sys);
 }

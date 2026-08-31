@@ -237,53 +237,38 @@ void render_camera_ray(const render_camera_t* cam,
  * CLIPPING PLANES
  * ============================================================================ */
 
-/**
- * Compute t_min where the ray enters the visible region (intersection of
- * all clip half-spaces). Returns 0 if no clipping needed.
- * Returns -1 if ray is entirely clipped (never enters visible region).
- */
-static double clip_entry(double ox, double oy, double oz,
+/** Intersect a forward ray with all retained clip half-spaces. */
+static int clip_interval(double ox, double oy, double oz,
                          double dx, double dy, double dz,
-                         const render_clip_plane_t* clips, int num_clips) {
-    double t_min = 0;
-
+                         const render_clip_plane_t* clips, int num_clips,
+                         double ray_t_max, double* out_enter,
+                         double* out_exit, int* out_entry_plane) {
+    double t_enter = 0.0;
+    double t_exit = ray_t_max;
+    int entry_plane = -1;
     for (int c = 0; c < num_clips; c++) {
         const double* n = clips[c].normal;
-        double d = clips[c].d;
-
-        /* Evaluate plane at ray origin: val = n.origin + d */
-        double val_at_origin = n[0]*ox + n[1]*oy + n[2]*oz + d;
-        /* Rate of change along ray: dval/dt = n.dir */
-        double dval_dt = n[0]*dx + n[1]*dy + n[2]*dz;
-
-        if (val_at_origin >= 0) {
-            /* Origin is on visible side */
-            if (dval_dt >= 0) continue;  /* Stays visible */
-            /* Ray exits visible region at some t_exit — not relevant for entry */
+        const double value = n[0]*ox + n[1]*oy + n[2]*oz + clips[c].d;
+        const double rate = n[0]*dx + n[1]*dy + n[2]*dz;
+        if (fabs(rate) <= 1e-15) {
+            if (value < 0.0) return 0;
             continue;
-        } else {
-            /* Origin is on clipped side */
-            if (dval_dt <= 1e-15) return -1;  /* Never enters visible side */
-            /* Ray enters visible side at t = -val/dval */
-            double t_enter = -val_at_origin / dval_dt;
-            if (t_enter > t_min) t_min = t_enter;
         }
+        const double crossing = -value / rate;
+        if (rate > 0.0) {
+            if (crossing > t_enter) {
+                t_enter = crossing;
+                entry_plane = c;
+            }
+        } else if (crossing < t_exit) {
+            t_exit = crossing;
+        }
+        if (t_exit < t_enter || t_exit < 0.0) return 0;
     }
-
-    return t_min;
-}
-
-/**
- * Check if a point is on the visible side of all clip planes.
- */
-static int clip_visible(double px, double py, double pz,
-                        const render_clip_plane_t* clips, int num_clips) {
-    for (int c = 0; c < num_clips; c++) {
-        const double* n = clips[c].normal;
-        double val = n[0]*px + n[1]*py + n[2]*pz + clips[c].d;
-        if (val < -1e-8) return 0;
-    }
-    return 1;
+    *out_enter = t_enter > 0.0 ? t_enter : 0.0;
+    *out_exit = t_exit;
+    if (out_entry_plane) *out_entry_plane = entry_plane;
+    return *out_exit >= *out_enter;
 }
 
 /* ============================================================================
@@ -494,12 +479,12 @@ static void render_pixel_solid(alea_system_t* sys,
     *out_depth = 1e30f;
     if (out_normal) { out_normal[0] = 0; out_normal[1] = 0; out_normal[2] = 0; }
 
-    /* Compute clip entry */
-    double t_min = clip_entry(ox, oy, oz, dx, dy, dz,
-                              cfg->clips, cfg->num_clips);
-    if (t_min < 0) return;  /* Entirely clipped */
-
-    double t_max = 1e15;
+    double t_min, t_max;
+    int entry_plane = -1;
+    if (!clip_interval(ox, oy, oz, dx, dy, dz,
+                       cfg->clips, cfg->num_clips, 1e15,
+                       &t_min, &t_max, &entry_plane))
+        return;
 
     /* Light and view direction */
     double light_dir[3];
@@ -516,7 +501,7 @@ static void render_pixel_solid(alea_system_t* sys,
     double view_dir[3] = {dx, dy, dz};
 
     /* Check cross-section at clip entry */
-    if (t_min > 1e-8) {
+    if (t_min > 1e-8 && entry_plane >= 0) {
         double cpx = ox + (t_min + 1e-6) * dx;
         double cpy = oy + (t_min + 1e-6) * dy;
         double cpz = oz + (t_min + 1e-6) * dz;
@@ -543,6 +528,11 @@ static void render_pixel_solid(alea_system_t* sys,
             *out_cell_id = cs_cell_id;
             *out_material_id = cs_material_id;
             *out_depth = (float)t_min;
+            if (out_normal) {
+                out_normal[0] = (float)-cfg->clips[entry_plane].normal[0];
+                out_normal[1] = (float)-cfg->clips[entry_plane].normal[1];
+                out_normal[2] = (float)-cfg->clips[entry_plane].normal[2];
+            }
             return;
         }
     }
@@ -671,15 +661,17 @@ static void render_pixel_solid(alea_system_t* sys,
                 double sl_dy = -light_dir[1];
                 double sl_dz = -light_dir[2];
 
-                /* Check if shadow point is in visible region (clip planes) */
-                int shadow_visible = clip_visible(sp_ox, sp_oy, sp_oz,
-                                                   cfg->clips, cfg->num_clips);
+                double shadow_enter, shadow_exit;
+                int shadow_visible = clip_interval(
+                    sp_ox, sp_oy, sp_oz, sl_dx, sl_dy, sl_dz,
+                    cfg->clips, cfg->num_clips, 1e6,
+                    &shadow_enter, &shadow_exit, NULL) && shadow_enter <= 1e-8;
 
                 if (shadow_visible) {
                     /* Quick occlusion test (early-out, no segment building) */
                     int occluded = alea_ray_is_occluded(sys,
                         sp_ox, sp_oy, sp_oz, sl_dx, sl_dy, sl_dz,
-                        1e6);
+                        shadow_exit);
 
                     if (occluded) {
                         /* In shadow — darken */
@@ -712,6 +704,8 @@ static void render_pixel_solid(alea_system_t* sys,
 
 typedef struct {
     const render_config_t* cfg;
+    double t_min;
+    double t_max;
     float accum_r;
     float accum_g;
     float accum_b;
@@ -723,7 +717,11 @@ static int render_xray_accumulate_segment(
     void* context, const alea_ray_segment_t* seg) {
     render_xray_accumulator_t* accum = context;
     if (seg->cell_id < 0 || seg->material_id == 0) return 0;
-    const double len = seg->t_exit - seg->t_enter;
+    const double clipped_enter = seg->t_enter > accum->t_min
+        ? seg->t_enter : accum->t_min;
+    const double clipped_exit = seg->t_exit < accum->t_max
+        ? seg->t_exit : accum->t_max;
+    const double len = clipped_exit - clipped_enter;
     if (len <= 0 || len > 1e10) return 0;
 
     float alpha = (float)(fabs(seg->density) * len *
@@ -762,10 +760,18 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = cfg->background[2];
     *out_cell_id = -1;
 
+    double t_min, t_max;
+    if (!clip_interval(ox, oy, oz, dx, dy, dz,
+                       cfg->clips, cfg->num_clips, 1e15,
+                       &t_min, &t_max, NULL))
+        return;
+
     /* X-ray consumes selected material intervals directly.  The callback
      * adapter handles fills and lattice DDA without publishing a per-pixel
      * segment vector. */
-    render_xray_accumulator_t accum = { .cfg = cfg, .cell_id = -1 };
+    render_xray_accumulator_t accum = {
+        .cfg = cfg, .t_min = t_min, .t_max = t_max, .cell_id = -1
+    };
     alea_ray_t ray;
     if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0 ||
         alea_raycast_hier_visit_segments_nocache(
