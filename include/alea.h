@@ -142,6 +142,23 @@ alea_config_t alea_get_config(const alea_system_t* sys);
 void alea_set_config(alea_system_t* sys, const alea_config_t* config);
 
 /* ============================================================================
+ * TRANSFORMS
+ *
+ * Public construction entry points for universe fills and other programmatic
+ * clients. The transform maps auxiliary coordinates to main coordinates and
+ * accepts the same normalized 3- or 12-value representation as MCNP TR/FILL.
+ * ============================================================================ */
+
+/** Add or replace a named transform. Returns 0 on success, -1 on error. */
+int alea_add_transform(alea_system_t* sys, int transform_id,
+                       const double* data, int value_count, int degrees);
+
+/** Add a deduplicated inline transform and return its assigned ID. */
+int alea_add_inline_transform(alea_system_t* sys, const double* data,
+                              int value_count, int degrees,
+                              int cell_id, const char* role);
+
+/* ============================================================================
  * LOADING
  *
  * For MCNP: use mcnp_load() from alea_mcnp.h (link libalea_mcnp.a)
