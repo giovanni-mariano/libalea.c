@@ -9,6 +9,7 @@
 #include "alea_test.h"
 #include "alea.h"
 #include "alea_mcnp.h"
+#include "alea_slice.h"
 #include "core/alea_system.h"
 #include "core/alea_transform.h"
 #include "util/alea_log.h"
@@ -481,6 +482,29 @@ TEST(transform_surface_with_tr) {
     /* Sphere should be centered at (10,0,0) */
     ASSERT_EQ(alea_material_at(model->sys, 10, 0, 0), 1);
     ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 0);
+
+    /* The transform is already baked into the primitive. Sparse attribution
+     * must therefore stay on the two local cells instead of routing through
+     * the global physical-surface batch. */
+    enum { width = 96, height = 96 };
+    int ids[width * height];
+    alea_slice_view_t view;
+    alea_slice_view_axis(&view, 2, 0.0, 4.0, 16.0, -6.0, 6.0);
+    ASSERT_EQ(alea_find_cells_grid(model->sys, &view, width, height, -1,
+                                   ids, NULL, NULL), 0);
+    alea_label_position_t* labels = NULL;
+    int label_count = 0;
+    ASSERT_EQ(alea_find_surface_labels_sparse_on_grid(
+                  model->sys, &view, width, height, ids,
+                  alea_slice_classify_cell, NULL, 2, 16, 8,
+                  &labels, &label_count), 0);
+    ASSERT_EQ(label_count, 1);
+    ASSERT_EQ(labels[0].id, 1);
+    alea_sparse_surface_label_stats_t stats =
+        alea_sparse_surface_label_stats_get();
+    ASSERT_EQ(stats.local_provenance_traces_used, stats.candidate_edges);
+    ASSERT_EQ(stats.batch_attempts, 0);
+    free(labels);
 
     mcnp_model_destroy(model);
 }

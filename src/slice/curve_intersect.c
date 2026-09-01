@@ -13,6 +13,7 @@
  */
 
 #include "curve_intersect.h"
+#include "alea.h"
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
 #include "core/alea_universe.h"
@@ -1422,7 +1423,7 @@ static int ensure_curve_capacity(alea_curve_collection_t* r) {
 int alea_compute_slice_curves(alea_system_t* sys,
                              const alea_slice_plane_t* plane,
                              alea_curve_collection_t* result) {
-    if (!sys || !plane || !result) return -1;
+    if (!sys || !plane || !result || alea_interrupted()) return -1;
 
     memset(result, 0, sizeof(*result));
 
@@ -1436,6 +1437,10 @@ int alea_compute_slice_curves(alea_system_t* sys,
 
     /* Iterate over all surfaces */
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        if (alea_interrupted()) {
+            alea_curve_collection_free(result);
+            return -1;
+        }
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         const alea_primitive_entry_t* prim = &sys->primitives.data[surf->primitive_id];
         alea_primitive_data_t prim_data;
@@ -2177,7 +2182,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
                                      double u_min, double u_max,
                                      double v_min, double v_max,
                                      alea_curve_collection_t* result) {
-    if (!sys || !plane || !result) return -1;
+    if (!sys || !plane || !result || alea_interrupted()) return -1;
 
     /* Use the prepared hierarchical spatial index, fall back to brute-force. */
     if (alea_hier_spatial_index_needs_rebuild(sys)) {
@@ -2294,11 +2299,16 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
         hit_capacity = next_capacity;
     }
 
+    /* Track seen surfaces to avoid duplicates (hash set, O(1) amortized). */
+    seen_set_t seen;
+    seen_set_init(&seen, 256);
+
     /* Deduplicate hits - remove duplicate (cell_index, transform) pairs */
     /* This handles the case where the spatial index contains multiple instances
      * of the same cell with the same transform (e.g., from multiple parent fills) */
     int unique_count = 0;
     for (int h = 0; h < hit_count; h++) {
+        if (alea_interrupted()) goto interrupted;
         bool is_duplicate = false;
         for (int k = 0; k < unique_count; k++) {
             if (hits[k].cell_index == hits[h].cell_index &&
@@ -2320,16 +2330,13 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
     }
     hit_count = unique_count;
 
-    /* Track seen surfaces to avoid duplicates (hash set, O(1) amortized) */
-    seen_set_t seen;
-    seen_set_init(&seen, 256);
-
     if (g_slice_curve_debug) {
         ALEA_LOG_DEBUG("Processing %d cell instances for slice curves", hit_count);
     }
 
     /* For each hit instance, compute curves */
     for (int h = 0; h < hit_count; h++) {
+        if (alea_interrupted()) goto interrupted;
         alea_spatial_hit_t* hit = &hits[h];
         const alea_cell_entry_t* cell = &sys->cells.data[hit->cell_index];
 
@@ -2348,6 +2355,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
         }
 
         for (size_t s = 0; s < cell->surface_index_count; s++) {
+            if (alea_interrupted()) goto interrupted;
             uint32_t surf_idx = cell->surface_indices[s];
             if (surf_idx >= alea_vec_count(&sys->surfaces)) continue;
 
@@ -2454,6 +2462,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
      * visible in the viewport, compute which elements are in range and stamp
      * the fill-universe surfaces at each element's translation offset. */
     for (size_t ci = 0; ci < alea_vec_count(&sys->cells); ci++) {
+        if (alea_interrupted()) goto interrupted;
         const alea_cell_entry_t* cell = &sys->cells.data[ci];
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
 
@@ -2466,8 +2475,10 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
 
 
         for (int ei = imin; ei <= imax; ei++) {
+            if (alea_interrupted()) goto interrupted;
             for (int ej = jmin; ej <= jmax; ej++) {
                 for (int ek = kmin; ek <= kmax; ek++) {
+                    if (alea_interrupted()) goto interrupted;
                     /* Physical element center (for viewport culling) and the
                      * fill-universe translation are not always identical.
                      * MCNP authors child surfaces in element (0,0,0)'s frame. */
@@ -2534,6 +2545,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
 
                     /* Stamp each surface of every cell in the fill universe */
                     for (size_t fi = 0; fi < fill_univ->cell_indices.count; fi++) {
+                        if (alea_interrupted()) goto interrupted;
                         size_t fc = fill_univ->cell_indices.data[fi];
                         const alea_cell_entry_t* fc_cell =
                             &sys->cells.data[fc];
@@ -2541,6 +2553,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
 
                         for (size_t s = 0; s < fc_cell->surface_index_count;
                              s++) {
+                            if (alea_interrupted()) goto interrupted;
                             uint32_t surf_idx = fc_cell->surface_indices[s];
                             if (surf_idx >= alea_vec_count(&sys->surfaces))
                                 continue;
@@ -2599,6 +2612,7 @@ int alea_compute_slice_curves_spatial(alea_system_t* sys,
      * Emit analytical line curves at every lattice element boundary so the
      * grid is visible in the rendered slice. */
     for (size_t ci = 0; ci < alea_vec_count(&sys->cells); ci++) {
+        if (alea_interrupted()) goto interrupted;
         const alea_cell_entry_t* cell = &sys->cells.data[ci];
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
 
@@ -2668,4 +2682,10 @@ lat_done:
     seen_set_free(&seen);
     free(hits);
     return 0;
+
+interrupted:
+    seen_set_free(&seen);
+    free(hits);
+    alea_curve_collection_free(result);
+    return -1;
 }

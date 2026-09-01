@@ -112,6 +112,10 @@ TEST(sparse_surface_labels_attribute_bounded_changed_edges) {
     ASSERT(labels[0].provenance_orientation == ALEA_SLICE_EDGE_RIGHT ||
            labels[0].provenance_orientation == ALEA_SLICE_EDGE_DOWN);
     ASSERT(labels[0].provenance_group >= 0);
+    alea_sparse_surface_label_stats_t stats =
+        alea_sparse_surface_label_stats_get();
+    ASSERT_EQ(stats.local_provenance_traces_used, stats.candidate_edges);
+    ASSERT_EQ(stats.batch_attempts, 0);
     free(labels);
     alea_destroy(sys);
 }
@@ -336,20 +340,21 @@ TEST(surface_boundary_map_keeps_coincident_ids_in_one_crossing_group) {
     free(labels);
     alea_slice_surface_boundary_map_free(map);
 
-    /* The bounded interactive path must retain the same coincident physical
-     * participant group without constructing the exhaustive map. */
+    /* The bounded interactive path follows MCNP export semantics: duplicate
+     * physical cards collapse to the primitive's lowest canonical ID. Users
+     * who need every coincident card can select the exhaustive boundary map. */
     labels = NULL;
     label_count = 0;
     ASSERT_EQ(alea_find_surface_labels_sparse_on_grid(
                   sys, &view, label_width, label_height, label_ids,
                   alea_slice_classify_cell, NULL, 2, 16, 8,
                   &labels, &label_count), 0);
-    ASSERT_EQ(label_count, 2);
-    ASSERT_EQ(labels[0].px, labels[1].px);
-    ASSERT_EQ(labels[0].py, labels[1].py);
-    ASSERT_EQ(labels[0].provenance_orientation,
-              labels[1].provenance_orientation);
-    ASSERT_EQ(labels[0].provenance_group, labels[1].provenance_group);
+    ASSERT_EQ(label_count, 1);
+    ASSERT_EQ(labels[0].id, 1);
+    alea_sparse_surface_label_stats_t stats =
+        alea_sparse_surface_label_stats_get();
+    ASSERT_EQ(stats.local_provenance_traces_used, stats.candidate_edges);
+    ASSERT_EQ(stats.batch_attempts, 0);
     free(labels);
     alea_destroy(sys);
 }

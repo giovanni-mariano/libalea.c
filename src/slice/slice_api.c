@@ -61,6 +61,15 @@ static alea_tile_coverage_stats_t g_tile_coverage_stats;
 static alea_point_coverage_stats_t g_point_coverage_stats;
 static alea_sparse_surface_label_stats_t g_sparse_surface_label_stats;
 
+/* Respect the caller's OpenMP limit and avoid creating more workers than
+ * independent surface-attribution jobs. */
+static size_t sparse_surface_label_worker_count(size_t work_items) {
+    size_t workers = (size_t)alea_openmp_max_threads();
+    if (workers == 0) workers = 1;
+    if (work_items > 0 && workers > work_items) workers = work_items;
+    return workers > 0 ? workers : 1;
+}
+
 void alea_tile_coverage_stats_reset(void) {
     memset(&g_tile_coverage_stats, 0, sizeof(g_tile_coverage_stats));
 }
@@ -156,7 +165,7 @@ void alea_slice_view_init(alea_slice_view_t* view,
 
 alea_slice_curves_t* alea_get_slice_curves(alea_system_t* sys,
                                                     const alea_slice_view_t* view) {
-    if (!sys || !view) return NULL;
+    if (!sys || !view || alea_interrupted()) return NULL;
 
     alea_slice_curves_t* result = calloc(1, sizeof(alea_slice_curves_t));
     if (!result) return NULL;
@@ -7035,17 +7044,20 @@ static int trace_boundary_shared_root_surface(
             sys, end[0], end[1], end[2], &hit_b, &path_b) <= 0 ||
         path_a.count <= 0 || path_b.count <= 0)
         return 0;
+    #pragma omp atomic update
     g_sparse_surface_label_stats.local_path_pairs_resolved++;
     const alea_hier_ray_path_entry_t* terminal_a = &path_a.entries[path_a.count - 1];
     const alea_hier_ray_path_entry_t* terminal_b = &path_b.entries[path_b.count - 1];
     if (terminal_a->cell_id != cell_a || terminal_b->cell_id != cell_b ||
         terminal_a->universe_id != terminal_b->universe_id)
         return 0;
+    #pragma omp atomic update
     g_sparse_surface_label_stats.local_path_pairs_same_universe++;
     if (terminal_a->depth != terminal_b->depth ||
         memcmp(terminal_a->transform.inv, terminal_b->transform.inv,
                sizeof(terminal_a->transform.inv)) != 0)
         return 0;
+    #pragma omp atomic update
     g_sparse_surface_label_stats.local_path_pairs_same_transform++;
     double local_start[3] = {start[0], start[1], start[2]};
     alea_matrix_transform_point_inverse(&terminal_a->transform,
@@ -7103,6 +7115,101 @@ static int trace_boundary_one_sided_surface(
     if (selected_point == end) fraction = 1.0 - fraction;
     *forward = (boundary_trace_t){.ids={surface},.count=1,.group_count=1,.groups={{.fraction=fraction,.ids={surface},.count=1}}};
     *reverse = (boundary_trace_t){.ids={surface},.count=1,.group_count=1,.groups={{.fraction=1.0-fraction,.ids={surface},.count=1}}};
+    return 1;
+}
+
+/* Attribute a short rendered transition using only the cells on its two
+ * already-resolved hierarchy paths.  This covers container boundaries and
+ * transitions between different universe occurrences without touching the
+ * global physical-surface set.  More than one distinct primitive/fraction is
+ * intentionally ambiguous and retains the canonical global fallback. */
+static int trace_boundary_path_local_surface(
+    alea_system_t* sys, const double start[3], const double end[3],
+    boundary_trace_t* forward, boundary_trace_t* reverse) {
+    alea_hier_cell_hit_t hit;
+    alea_hier_ray_path_t paths[2];
+    if (alea_hier_spatial_find_path_at_point(
+            sys, start[0], start[1], start[2], &hit, &paths[0]) <= 0 ||
+        alea_hier_spatial_find_path_at_point(
+            sys, end[0], end[1], end[2], &hit, &paths[1]) <= 0 ||
+        paths[0].count <= 0 || paths[1].count <= 0)
+        return 0;
+
+    const double world_direction[3] = {
+        end[0] - start[0], end[1] - start[1], end[2] - start[2]};
+    const double world_length = sqrt(
+        world_direction[0] * world_direction[0] +
+        world_direction[1] * world_direction[1] +
+        world_direction[2] * world_direction[2]);
+    if (!(world_length > 0.0)) return 0;
+
+    int found_id = -1;
+    uint32_t found_primitive = UINT32_MAX;
+    double found_fraction = 0.0;
+    for (int side = 0; side < 2; side++) {
+        for (int depth = 0; depth < paths[side].count; depth++) {
+            const alea_hier_ray_path_entry_t* entry =
+                &paths[side].entries[depth];
+            double local_start[3] = {start[0], start[1], start[2]};
+            alea_matrix_transform_point_inverse(
+                &entry->transform, &local_start[0], &local_start[1],
+                &local_start[2]);
+            const double local_direction[3] = {
+                entry->transform.inv[0] * world_direction[0] +
+                    entry->transform.inv[1] * world_direction[1] +
+                    entry->transform.inv[2] * world_direction[2],
+                entry->transform.inv[4] * world_direction[0] +
+                    entry->transform.inv[5] * world_direction[1] +
+                    entry->transform.inv[6] * world_direction[2],
+                entry->transform.inv[8] * world_direction[0] +
+                    entry->transform.inv[9] * world_direction[1] +
+                    entry->transform.inv[10] * world_direction[2]
+            };
+            const double local_length = sqrt(
+                local_direction[0] * local_direction[0] +
+                local_direction[1] * local_direction[1] +
+                local_direction[2] * local_direction[2]);
+            alea_ray_t ray;
+            int surface_id = -1;
+            double fraction = 0.0;
+            if (!(local_length > 0.0) ||
+                alea_ray_init(&ray, local_start[0], local_start[1],
+                              local_start[2], local_direction[0],
+                              local_direction[1], local_direction[2]) != 0 ||
+                alea_raycast_terminal_surface_nocache(
+                    sys, entry->cell_id, &ray, local_length, &surface_id,
+                    &fraction) != 1)
+                continue;
+            if (surface_id <= 0 || !sys->mc_id_to_surface ||
+                (size_t)surface_id >= sys->mc_id_to_surface_size)
+                return 0;
+            const uint32_t surface_index = sys->mc_id_to_surface[surface_id];
+            if (surface_index == UINT32_MAX ||
+                surface_index >= alea_vec_count(&sys->surfaces))
+                return 0;
+            const uint32_t primitive =
+                sys->surfaces.data[surface_index].primitive_id;
+            if (found_id < 0) {
+                found_id = surface_id;
+                found_primitive = primitive;
+                found_fraction = fraction;
+            } else if (primitive != found_primitive ||
+                       fabs(fraction - found_fraction) > RAY_EPSILON) {
+                return 0;
+            } else if (surface_id < found_id) {
+                found_id = surface_id;
+            }
+        }
+    }
+    if (found_id <= 0) return 0;
+    *forward = (boundary_trace_t){
+        .ids = {found_id}, .count = 1, .group_count = 1,
+        .groups = {{.fraction = found_fraction,
+                    .ids = {found_id}, .count = 1}}};
+    *reverse = (boundary_trace_t){
+        .ids = {found_id}, .count = 1, .group_count = 1,
+        .groups = {{.fraction = 1.0 - found_fraction,
+                    .ids = {found_id}, .count = 1}}};
     return 1;
 }
 
@@ -7297,6 +7404,7 @@ int alea_find_surface_labels_sparse_on_grid(
         width <= 0 || height <= 0 || margin < 0 ||
         max_queries == 0 || max_labels == 0)
         return -1;
+    if (alea_interrupted()) return -1;
     memset(&g_sparse_surface_label_stats, 0,
            sizeof(g_sparse_surface_label_stats));
     *out_labels = NULL;
@@ -7333,10 +7441,18 @@ int alea_find_surface_labels_sparse_on_grid(
 
     size_t candidate_count = 0;
     for (size_t tile_y = 0; tile_y < tile_rows; tile_y++) {
+        if (alea_interrupted()) {
+            free(local); free(candidates);
+            return -1;
+        }
         int y0 = (int)(tile_y * tile_size);
         int y1 = y0 + tile_size;
         if (y1 > height) y1 = height;
         for (size_t tile_x = 0; tile_x < tile_cols; tile_x++) {
+            if (alea_interrupted()) {
+                free(local); free(candidates);
+                return -1;
+            }
             g_sparse_surface_label_stats.tiles_examined++;
             int x0 = (int)(tile_x * tile_size);
             int x1 = x0 + tile_size;
@@ -7345,6 +7461,10 @@ int alea_find_surface_labels_sparse_on_grid(
             double centre_y = 0.5 * (y0 + y1 - 1);
             size_t local_count = 0;
             for (int y = y0; y < y1; y++) {
+                if (alea_interrupted()) {
+                    free(local); free(candidates);
+                    return -1;
+                }
                 for (int x = x0; x < x1; x++) {
                     if (x < margin || x >= width - margin ||
                         y < margin || y >= height - margin)
@@ -7413,7 +7533,10 @@ int alea_find_surface_labels_sparse_on_grid(
         }
     }
     free(local);
+    if (alea_interrupted()) { free(candidates); return -1; }
     g_sparse_surface_label_stats.candidate_edges = candidate_count;
+    const int surface_label_workers = (int)sparse_surface_label_worker_count(
+        candidate_count);
 
     sparse_grid_observation_t* observations = NULL;
     size_t observation_count = 0, observation_capacity = 0;
@@ -7427,18 +7550,46 @@ int alea_find_surface_labels_sparse_on_grid(
     boundary_trace_t* selected_forward = calloc(candidate_count,
                                                 sizeof(*selected_forward));
     uint8_t* selected_ready = calloc(candidate_count, sizeof(*selected_ready));
+    uint8_t* local_ready = calloc(candidate_count, sizeof(*local_ready));
+    const int leaf_cell_boundary =
+        (classify == alea_slice_classify_cell ||
+         (classify == alea_slice_classify_cell_at_depth &&
+          classify_userdata && *(const int*)classify_userdata < 0));
+    const size_t primitive_count = alea_vec_count(&sys->primitives);
+    int* primitive_canonical_surface_ids = leaf_cell_boundary && primitive_count
+        ? malloc(primitive_count * sizeof(*primitive_canonical_surface_ids)) : NULL;
     size_t* fallback_indices = malloc(candidate_count * sizeof(*fallback_indices));
     size_t fallback_count = 0;
     /* Certification samples both open sides at successively smaller offsets.
      * Stable adjacent classifications remove the selected stream's dependence
      * on omitted, non-ownership-changing physical breakpoints. */
     const int selected_provenance_certificate_available = 1;
-    if (!selected_forward || !selected_ready || !fallback_indices) {
-        free(selected_forward); free(selected_ready); free(fallback_indices);
+    if (!selected_forward || !selected_ready || !local_ready ||
+        (leaf_cell_boundary && primitive_count && !primitive_canonical_surface_ids) ||
+        !fallback_indices) {
+        free(selected_forward); free(selected_ready); free(local_ready);
+        free(primitive_canonical_surface_ids);
+        free(fallback_indices);
         free(candidates);
         return -1;
     }
-    for (size_t i = 0; i < candidate_count; i++) {
+    for (size_t i = 0; primitive_canonical_surface_ids && i < primitive_count; i++)
+        primitive_canonical_surface_ids[i] = INT_MAX;
+    for (size_t i = 0; primitive_canonical_surface_ids &&
+         i < alea_vec_count(&sys->surfaces); i++) {
+        const uint32_t primitive = sys->surfaces.data[i].primitive_id;
+        const int surface_id = sys->surfaces.data[i].mc_surface_id;
+        if (primitive < primitive_count && surface_id > 0 &&
+            surface_id < primitive_canonical_surface_ids[primitive])
+            primitive_canonical_surface_ids[primitive] = surface_id;
+    }
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic, 1) num_threads(surface_label_workers)
+    #endif
+    for (long long candidate_index = 0;
+         candidate_index < (long long)candidate_count; candidate_index++) {
+        if (alea_interrupted()) continue;
+        const size_t i = (size_t)candidate_index;
         const sparse_grid_edge_t* edge = &candidates[i];
         const int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
         const int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
@@ -7450,6 +7601,51 @@ int alea_find_surface_labels_sparse_on_grid(
         dx = end[0] - start[0]; dy = end[1] - start[1]; dz = end[2] - start[2];
         const double length = sqrt(dx * dx + dy * dy + dz * dz);
         int certified = 0;
+        /* The rendered leaf-cell IDs already identify both terminal owners.
+         * When they share one untransformed causal surface, attribute that
+         * short edge directly from the two local CSG expressions.  This is
+         * exact and viewport-local; importantly it avoids an all-physical-
+         * surfaces ray whose cost scales with a huge off-screen model.
+         * Material and projected-depth boundaries retain the canonical path. */
+        if (leaf_cell_boundary && length > 0.0) {
+            boundary_trace_t reverse = {0};
+            certified = trace_boundary_shared_root_surface(
+                sys, grid_ids[(size_t)edge->y * width + edge->x],
+                grid_ids[(size_t)ny * width + nx], start, end,
+                &selected_forward[i], &reverse);
+            if (!certified)
+                certified = trace_boundary_path_local_surface(
+                    sys, start, end, &selected_forward[i], &reverse);
+            if (!certified)
+                certified = trace_boundary_one_sided_surface(
+                    sys, grid_ids[(size_t)edge->y * width + edge->x],
+                    grid_ids[(size_t)ny * width + nx], start, end,
+                    &selected_forward[i], &reverse);
+            if (certified) {
+                const int surface_id = selected_forward[i].ids[0];
+                uint32_t surface_index = UINT32_MAX;
+                if (surface_id > 0 && sys->mc_id_to_surface &&
+                    (size_t)surface_id < sys->mc_id_to_surface_size)
+                    surface_index = sys->mc_id_to_surface[surface_id];
+                certified = surface_index < alea_vec_count(&sys->surfaces) &&
+                    sys->surfaces.data[surface_index].primitive_id < primitive_count;
+                if (certified) {
+                    const uint32_t primitive =
+                        sys->surfaces.data[surface_index].primitive_id;
+                    const int canonical = primitive_canonical_surface_ids[primitive];
+                    certified = canonical > 0 && canonical < INT_MAX;
+                    if (certified) {
+                        selected_forward[i].ids[0] = canonical;
+                        selected_forward[i].groups[0].ids[0] = canonical;
+                    }
+                }
+            }
+            if (certified) {
+                selected_ready[i] = 1;
+                local_ready[i] = 1;
+                continue;
+            }
+        }
         if (selected_provenance_certificate_available && length > 0.0) {
             alea_ray_t ray;
             alea_raycast_result_t forward_scratch, reverse_scratch;
@@ -7471,16 +7667,17 @@ int alea_find_surface_labels_sparse_on_grid(
         }
         if (certified) {
             selected_ready[i] = 1;
-            g_sparse_surface_label_stats.local_provenance_traces_used++;
         }
     }
+    if (alea_interrupted()) observation_failed = 1;
 
     /* Certify all selected groups with one compact batch of tiny local rays.
      * This amortizes canonical setup while retaining its bidirectional causal
      * surface contract at each proposed transition. */
     size_t receipt_count = 0;
     for (size_t i = 0; i < candidate_count; i++)
-        if (selected_ready[i]) receipt_count += selected_forward[i].group_count;
+        if (selected_ready[i] && !local_ready[i])
+            receipt_count += selected_forward[i].group_count;
     if (receipt_count && receipt_count <= SIZE_MAX / 2) {
         const size_t ray_count = receipt_count * 2;
         double* origins = calloc(ray_count * 3, sizeof(*origins));
@@ -7494,7 +7691,11 @@ int alea_find_surface_labels_sparse_on_grid(
             local_ends && receipt_candidates && receipt_groups;
         size_t receipt = 0;
         for (size_t i = 0; i < candidate_count && receipt_setup_ok; i++) {
-            if (!selected_ready[i]) continue;
+            if (alea_interrupted()) {
+                receipt_setup_ok = 0;
+                break;
+            }
+            if (!selected_ready[i] || local_ready[i]) continue;
             const sparse_grid_edge_t* edge = &candidates[i];
             const int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
             const int ny = edge->y - (edge->orientation == ALEA_SLICE_EDGE_DOWN);
@@ -7546,7 +7747,7 @@ int alea_find_surface_labels_sparse_on_grid(
                 .t_maxs = t_maxs,
                 .max_events = ray_count <= UINT64_MAX / 256 ? ray_count * 256 : 0,
                 .max_output_bytes = 8u * 1024u * 1024u,
-                .max_workers = 1,
+                .max_workers = sparse_surface_label_worker_count(ray_count),
                 /* This receipt must certify the complete coincident group,
                  * including registered surfaces outside the selected cells'
                  * local BLAS. A mismatch rejects the shortcut and routes the
@@ -7584,11 +7785,13 @@ int alea_find_surface_labels_sparse_on_grid(
                         selected_ready[candidate] = 0;
                 }
             } else {
-                for (size_t i = 0; i < candidate_count; i++) selected_ready[i] = 0;
+                for (size_t i = 0; i < candidate_count; i++)
+                    if (!local_ready[i]) selected_ready[i] = 0;
             }
             alea_ray_boundary_event_batch_result_free(&batch);
         } else {
-            for (size_t i = 0; i < candidate_count; i++) selected_ready[i] = 0;
+            for (size_t i = 0; i < candidate_count; i++)
+                if (!local_ready[i]) selected_ready[i] = 0;
         }
         free(origins); free(directions); free(t_maxs);
         free(local_starts); free(local_ends);
@@ -7656,7 +7859,7 @@ int alea_find_surface_labels_sparse_on_grid(
                 .t_maxs = t_maxs,
                 .max_events = ray_count <= UINT64_MAX / 256 ? ray_count * 256 : 0,
                 .max_output_bytes = 8u * 1024u * 1024u,
-                .max_workers = 1,
+                .max_workers = sparse_surface_label_worker_count(ray_count),
                 .include_all_coincident_physical = true
             };
             alea_ray_boundary_event_batch_result_t batch;
@@ -7698,8 +7901,12 @@ int alea_find_surface_labels_sparse_on_grid(
             g_sparse_surface_label_stats.batch_traces_used += ray_count;
         }
     }
+    #ifdef _OPENMP
+    #pragma omp parallel for schedule(dynamic, 1) num_threads(surface_label_workers)
+    #endif
     for (long long candidate_index = 0;
          candidate_index < (long long)candidate_count; candidate_index++) {
+        if (alea_interrupted()) continue;
         size_t i = (size_t)candidate_index;
         const sparse_grid_edge_t* edge = &candidates[i];
         int nx = edge->x + (edge->orientation == ALEA_SLICE_EDGE_RIGHT);
@@ -7722,19 +7929,25 @@ int alea_find_surface_labels_sparse_on_grid(
                 reverse.groups[group].fraction =
                     1.0 - reverse.groups[group].fraction;
             }
+            #pragma omp atomic update
             g_sparse_surface_label_stats.forward_trace_calls++;
+            #pragma omp atomic update
             g_sparse_surface_label_stats.reverse_trace_calls++;
         } else if (batch_ready && batch_rows && batch_rows[i] != SIZE_MAX) {
             forward = batch_forward[i];
             reverse = batch_reverse[i];
+            #pragma omp atomic update
             g_sparse_surface_label_stats.forward_trace_calls++;
+            #pragma omp atomic update
             g_sparse_surface_label_stats.reverse_trace_calls++;
         } else {
+            #pragma omp atomic update
             g_sparse_surface_label_stats.forward_trace_calls++;
             forward_rc = trace_boundary_short_canonical(
                 sys, start, end, classify, classify_userdata, &forward);
             reverse_rc = -1;
             if (forward_rc == 0) {
+                #pragma omp atomic update
                 g_sparse_surface_label_stats.reverse_trace_calls++;
                 reverse_rc = trace_boundary_short_canonical(
                     sys, end, start, classify, classify_userdata, &reverse);
@@ -7748,6 +7961,7 @@ int alea_find_surface_labels_sparse_on_grid(
             forward.group_count != 0 &&
             boundary_trace_same_ids(&forward, &reverse);
         if (!valid) continue;
+        #pragma omp atomic update
         g_sparse_surface_label_stats.accepted_edges++;
         /* Ray attribution is independent per edge.  Only the compact accepted
          * observations share storage, so keep that append in a short critical
@@ -7772,11 +7986,14 @@ int alea_find_surface_labels_sparse_on_grid(
             }
         }
     }
+    if (alea_interrupted()) observation_failed = 1;
     free(batch_forward);
     free(batch_reverse);
     free(batch_rows);
     free(selected_forward);
     free(selected_ready);
+    free(local_ready);
+    free(primitive_canonical_surface_ids);
     free(fallback_indices);
     free(candidates);
     if (observation_failed) {
@@ -7994,6 +8211,7 @@ static int slice_surface_boundary_map_create_impl(
     if (!sys || !view || !grid_ids || !classify || !out_map ||
         width <= 0 || height <= 0)
         return -1;
+    if (alea_interrupted()) return -1;
     *out_map = NULL;
     size_t pixels = (size_t)width * (size_t)height;
     if (pixels > (SIZE_MAX / 2) - 1) return -1;
@@ -8026,7 +8244,17 @@ static int slice_surface_boundary_map_create_impl(
     for (int orient = ALEA_SLICE_EDGE_RIGHT;
          orient <= ALEA_SLICE_EDGE_DOWN; orient++) {
         for (int y = 0; y < height; y++) {
+            if (alea_interrupted()) {
+                alea_slice_directional_event_cache_destroy(owned_cache);
+                alea_slice_surface_boundary_map_free(map);
+                return -1;
+            }
             for (int x = 0; x < width; x++) {
+                if (alea_interrupted()) {
+                    alea_slice_directional_event_cache_destroy(owned_cache);
+                    alea_slice_surface_boundary_map_free(map);
+                    return -1;
+                }
                 size_t edge = (size_t)orient * pixels + (size_t)y * width + x;
                 map->surface_offsets[edge] = map->surface_count;
                 map->group_offsets[edge] = map->group_count;

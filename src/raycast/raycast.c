@@ -3032,13 +3032,30 @@ int alea_raycast_shared_terminal_surface_nocache(
     double found_t = 0.0;
     for (size_t i = 0; i < a->surface_index_count; i++) {
         const uint32_t index = a->surface_indices[i];
-        bool shared = false;
-        for (size_t j = 0; j < b->surface_index_count; j++)
-            if (b->surface_indices[j] == index) { shared = true; break; }
-        if (!shared || index >= alea_vec_count(&sys->surfaces)) continue;
+        if (index >= alea_vec_count(&sys->surfaces)) continue;
         const alea_surface_entry_t* surface = &sys->surfaces.data[index];
-        if (surface->transform_applied ||
-            surface->primitive_id >= alea_vec_count(&sys->primitives))
+        bool shared = false;
+        int shared_surface_id = surface->mc_surface_id;
+        for (size_t j = 0; j < b->surface_index_count; j++) {
+            const uint32_t other_index = b->surface_indices[j];
+            if (other_index >= alea_vec_count(&sys->surfaces)) continue;
+            const alea_surface_entry_t* other = &sys->surfaces.data[other_index];
+            /* MCNP conversion deduplicates equal geometry to one primitive
+             * while retaining the original surface-card entries.  Treat the
+             * primitive as the shared boundary and publish its lowest local
+             * card ID; the sparse caller canonicalizes across all aliases. */
+            if (other->primitive_id == surface->primitive_id) {
+                shared = true;
+                if (other->mc_surface_id < shared_surface_id)
+                    shared_surface_id = other->mc_surface_id;
+                break;
+            }
+        }
+        if (!shared) continue;
+        /* MCNP surface transforms are baked into the registered primitive at
+         * conversion time.  transform_applied is retained only for round-trip
+         * export and does not require another ray-coordinate transform. */
+        if (surface->primitive_id >= alea_vec_count(&sys->primitives))
             return 0;
         const alea_primitive_entry_t* primitive =
             &sys->primitives.data[surface->primitive_id];
@@ -3051,10 +3068,10 @@ int alea_raycast_shared_terminal_surface_nocache(
         for (int hit = 0; hit < count; hit++) {
             if (ts[hit] <= RAY_EPSILON || ts[hit] >= t_max - RAY_EPSILON)
                 continue;
-            if (found_id >= 0 && (found_id != surface->mc_surface_id ||
+            if (found_id >= 0 && (found_id != shared_surface_id ||
                                   fabs(found_t - ts[hit]) > RAY_EPSILON))
                 return 0;
-            found_id = surface->mc_surface_id;
+            found_id = shared_surface_id;
             found_t = ts[hit];
         }
     }
@@ -3072,13 +3089,15 @@ int alea_raycast_terminal_surface_nocache(
     const int index = alea_find_cell_by_id(sys, cell_id);
     if (index < 0) return 0;
     const alea_cell_entry_t* cell = &sys->cells.data[index];
-    if (alea_cell_entry_is_container(cell) || !cell->surface_indices) return 0;
+    /* Container-region surfaces are exactly the causal boundary for many
+     * transitions between hierarchy paths, so they are valid local evidence. */
+    if (!cell->surface_indices) return 0;
     int found = -1; double found_t = 0.0;
     for (size_t i = 0; i < cell->surface_index_count; i++) {
         uint32_t si = cell->surface_indices[i];
         if (si >= alea_vec_count(&sys->surfaces)) return 0;
         const alea_surface_entry_t* s = &sys->surfaces.data[si];
-        if (s->transform_applied || s->primitive_id >= alea_vec_count(&sys->primitives)) return 0;
+        if (s->primitive_id >= alea_vec_count(&sys->primitives)) return 0;
         const alea_primitive_entry_t* p = &sys->primitives.data[s->primitive_id];
         alea_primitive_data_t data;
         if (!raycast_primitive_copy_payload(sys, s->primitive_id, p->type, &data)) return 0;
