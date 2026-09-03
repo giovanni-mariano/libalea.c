@@ -66,8 +66,14 @@ typedef enum {
     ALEA_MESH_SAMPLE_CORNERS,      /**< Probe near voxel corners */
     ALEA_MESH_SAMPLE_SUBCELL,      /**< Probe an NxNxN subcell lattice */
     ALEA_MESH_SAMPLE_STRATIFIED,   /**< Deterministic jitter within subcells */
-    ALEA_MESH_SAMPLE_ADAPTIVE      /**< Refine stratified estimates to tolerance */
+    ALEA_MESH_SAMPLE_ADAPTIVE,     /**< Refine stratified estimates to tolerance */
+    ALEA_MESH_SAMPLE_RAY           /**< Axis rays on a tensor grid per face tile */
 } alea_mesh_sampling_mode_t;
+
+#define ALEA_MESH_RAY_X (1u << 0)
+#define ALEA_MESH_RAY_Y (1u << 1)
+#define ALEA_MESH_RAY_Z (1u << 2)
+#define ALEA_MESH_RAY_XYZ (ALEA_MESH_RAY_X | ALEA_MESH_RAY_Y | ALEA_MESH_RAY_Z)
 
 typedef enum {
     ALEA_MESH_BOUNDS_LEGACY = 0, /**< All-zero bounds mean auto; otherwise explicit */
@@ -172,6 +178,9 @@ typedef struct {
     uint64_t max_total_samples;  /**< 0 means unlimited */
     uint64_t sampling_seed;
     int workers;                 /**< 0=runtime default, 1=serial */
+    int ray_grid_u;              /**< Tensor-grid points on first transverse axis */
+    int ray_grid_v;              /**< Tensor-grid points on second transverse axis */
+    uint8_t ray_directions;      /**< ALEA_MESH_RAY_* direction mask */
     alea_mesh_bounds_mode_t bounds_mode;
     uint32_t fields;             /**< ALEA_MESH_FIELD_* arrays to retain */
     alea_mesh_progress_fn progress; /**< Optional; nonzero return cancels */

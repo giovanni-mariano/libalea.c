@@ -15,6 +15,7 @@
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
 #include "primitives/bbox.h"
+#include "raycast/raycast.h"
 #include "util/compat.h"
 
 #include <errno.h>
@@ -47,6 +48,9 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
     cfg->max_samples_per_voxel = 32768;
     cfg->sampling_seed = UINT64_C(0x6a09e667f3bcc909);
     cfg->workers = 1;
+    cfg->ray_grid_u = 4;
+    cfg->ray_grid_v = 4;
+    cfg->ray_directions = ALEA_MESH_RAY_XYZ;
     cfg->fields = ALEA_MESH_FIELD_MATERIAL_ID |
                   ALEA_MESH_FIELD_CELL_ID |
                   ALEA_MESH_FIELD_MIXED_FLAG |
@@ -173,7 +177,8 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
         cfg->sampling_mode != ALEA_MESH_SAMPLE_CORNERS &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_SUBCELL &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_STRATIFIED &&
-        cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE) {
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE &&
+        cfg->sampling_mode != ALEA_MESH_SAMPLE_RAY) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "mesh sampling_mode is invalid");
         return -1;
@@ -202,6 +207,17 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
     if (cfg->workers < 0) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "mesh workers must be non-negative");
+        return -1;
+    }
+    if (cfg->ray_grid_u <= 0 || cfg->ray_grid_v <= 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh ray grid dimensions must be positive");
+        return -1;
+    }
+    if (cfg->ray_directions == 0 ||
+        (cfg->ray_directions & ~ALEA_MESH_RAY_XYZ) != 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh ray direction mask is invalid");
         return -1;
     }
     if (!isfinite(cfg->mixed_threshold) || cfg->mixed_threshold < 0.0 ||
@@ -619,6 +635,407 @@ static int ensure_cell_fraction_capacity(alea_mesh_cell_fraction_t **fractions,
     return 0;
 }
 
+typedef struct {
+    int cell_id;
+    int material_id;
+    double value;
+} mesh_ray_component_t;
+
+typedef struct {
+    mesh_ray_component_t *data;
+    uint32_t count;
+    uint32_t capacity;
+} mesh_ray_voxel_accum_t;
+
+static int mesh_ray_accum_add(mesh_ray_voxel_accum_t *accum, int cell_id,
+                              int material_id, double value) {
+    if (!(value > 0.0)) return 0;
+    for (uint32_t i = 0; i < accum->count; i++) {
+        if (accum->data[i].cell_id == cell_id &&
+            accum->data[i].material_id == material_id) {
+            accum->data[i].value += value;
+            return 0;
+        }
+    }
+    if (accum->count == accum->capacity) {
+        uint32_t capacity = accum->capacity ? accum->capacity * 2u : 4u;
+        if (capacity < accum->capacity) return -1;
+        mesh_ray_component_t *data = realloc(
+            accum->data, (size_t)capacity * sizeof(*data));
+        if (!data) return -1;
+        accum->data = data;
+        accum->capacity = capacity;
+    }
+    accum->data[accum->count++] = (mesh_ray_component_t){
+        .cell_id = cell_id, .material_id = material_id, .value = value};
+    return 0;
+}
+
+static int mesh_ray_component_compare(const void *lhs, const void *rhs) {
+    const mesh_ray_component_t *a = lhs, *b = rhs;
+    if (a->material_id != b->material_id)
+        return (a->material_id > b->material_id) -
+               (a->material_id < b->material_id);
+    return (a->cell_id > b->cell_id) - (a->cell_id < b->cell_id);
+}
+
+static int mesh_ray_find_bin(const double *nodes, int count, double x) {
+    if (x <= nodes[0]) return 0;
+    if (x >= nodes[count]) return count - 1;
+    int lo = 0, hi = count;
+    while (lo + 1 < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (x < nodes[mid]) hi = mid;
+        else lo = mid;
+    }
+    return lo;
+}
+
+static size_t mesh_ray_voxel_index(int axis, int along, int a, int b,
+                                   int nx, int ny) {
+    if (axis == 0) return (size_t)b * (size_t)nx * (size_t)ny +
+                           (size_t)a * (size_t)nx + (size_t)along;
+    if (axis == 1) return (size_t)b * (size_t)nx * (size_t)ny +
+                           (size_t)along * (size_t)nx + (size_t)a;
+    return (size_t)along * (size_t)nx * (size_t)ny +
+           (size_t)b * (size_t)nx + (size_t)a;
+}
+
+static int mesh_ray_accumulate_segment(mesh_ray_voxel_accum_t *accums,
+                                       const double *nodes, int count,
+                                       int axis, int a, int b, int nx, int ny,
+                                       double begin, double end,
+                                       int cell_id, int material_id) {
+    if (begin < nodes[0]) begin = nodes[0];
+    if (end > nodes[count]) end = nodes[count];
+    if (!(end > begin)) return 0;
+    int bin = mesh_ray_find_bin(nodes, count, begin);
+    while (bin < count && nodes[bin] < end) {
+        double lo = begin > nodes[bin] ? begin : nodes[bin];
+        double hi = end < nodes[bin + 1] ? end : nodes[bin + 1];
+        if (hi > lo) {
+            size_t voxel = mesh_ray_voxel_index(axis, bin, a, b, nx, ny);
+            double value = (hi - lo) / (nodes[bin + 1] - nodes[bin]);
+            if (mesh_ray_accum_add(&accums[voxel], cell_id, material_id,
+                                   value) != 0) return -1;
+        }
+        bin++;
+    }
+    return 0;
+}
+
+static int mesh_ray_trace_direction(alea_system_t *sys,
+                                    const alea_mesh_config_t *cfg,
+                                    const double *xn, const double *yn,
+                                    const double *zn, int axis,
+                                    mesh_ray_voxel_accum_t *accums) {
+    const double *along_nodes = axis == 0 ? xn : axis == 1 ? yn : zn;
+    const double *u_nodes = axis == 0 ? yn : xn;
+    const double *v_nodes = axis == 2 ? yn : zn;
+    const int along_count = axis == 0 ? cfg->nx : axis == 1 ? cfg->ny : cfg->nz;
+    const int u_count = axis == 0 ? cfg->ny : cfg->nx;
+    const int v_count = axis == 2 ? cfg->ny : cfg->nz;
+    const size_t column_count = (size_t)u_count * (size_t)v_count;
+#ifdef _OPENMP
+    int workers = cfg->workers > 0 ? cfg->workers : omp_get_max_threads();
+    if ((size_t)workers > column_count) workers = (int)column_count;
+    if (workers < 1 || omp_in_parallel()) workers = 1;
+#endif
+    int failed = 0;
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static) num_threads(workers)
+#endif
+    for (size_t column = 0; column < column_count; column++) {
+        int a = (int)(column % (size_t)u_count);
+        int b = (int)(column / (size_t)u_count);
+        alea_raycast_result_t trace;
+        alea_raycast_result_init(&trace);
+        for (int gv = 0; gv < cfg->ray_grid_v; gv++) {
+            for (int gu = 0; gu < cfg->ray_grid_u; gu++) {
+                const double u = u_nodes[a] +
+                    ((double)gu + 0.5) / (double)cfg->ray_grid_u *
+                    (u_nodes[a + 1] - u_nodes[a]);
+                const double v = v_nodes[b] +
+                    ((double)gv + 0.5) / (double)cfg->ray_grid_v *
+                    (v_nodes[b + 1] - v_nodes[b]);
+                double origin[3] = {0.0, 0.0, 0.0};
+                double direction[3] = {0.0, 0.0, 0.0};
+                origin[axis] = nextafter(along_nodes[0], -INFINITY);
+                if (axis == 0) { origin[1] = u; origin[2] = v; }
+                else if (axis == 1) { origin[0] = u; origin[2] = v; }
+                else { origin[0] = u; origin[1] = v; }
+                direction[axis] = 1.0;
+                alea_ray_t ray;
+                alea_raycast_result_clear(&trace);
+                if (alea_ray_init(&ray, origin[0], origin[1], origin[2],
+                                  direction[0], direction[1], direction[2]) != 0 ||
+                    alea_raycast_hier_segments_nocache(
+                        sys, &ray, along_nodes[along_count] - origin[axis],
+                        &trace) != 0) {
+#ifdef _OPENMP
+                    #pragma omp atomic write
+#endif
+                    failed = 1;
+                    continue;
+                }
+                for (size_t s = 0; s < trace.segments.count; s++) {
+                    const alea_ray_segment_t *segment = &trace.segments.data[s];
+                    if (mesh_ray_accumulate_segment(
+                            accums, along_nodes, along_count, axis, a, b,
+                            cfg->nx, cfg->ny,
+                            origin[axis] + segment->t_enter,
+                            origin[axis] + segment->t_exit,
+                            segment->cell_id, segment->material_id) != 0) {
+#ifdef _OPENMP
+                        #pragma omp atomic write
+#endif
+                        failed = 1;
+                        break;
+                    }
+                }
+                if (alea_interrupted()) {
+#ifdef _OPENMP
+                    #pragma omp atomic write
+#endif
+                    failed = 1;
+                }
+            }
+        }
+        alea_raycast_result_free(&trace);
+    }
+    if (failed) {
+        if (alea_interrupted())
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                  "mesh ray sampling interrupted");
+        else
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "mesh ray sampling failed");
+        return -1;
+    }
+    return 0;
+}
+
+static alea_mesh_result_t *mesh_sample_rays(
+    alea_system_t *sys, const alea_mesh_config_t *cfg,
+    double *xn, double *yn, double *zn, size_t ncells,
+    alea_mesh_bounds_source_t bounds_source, double bounds_padding) {
+    alea_mesh_result_t *res = NULL;
+    mesh_ray_voxel_accum_t *accums = calloc(ncells, sizeof(*accums));
+    int *mat_ids = NULL, *cell_ids = NULL, *unique_mats = NULL;
+    unsigned char *mixed_flags = NULL;
+    double *dominant_fractions = NULL, *estimated_errors = NULL;
+    uint32_t *sample_counts = NULL;
+    uint8_t *tie_flags = NULL, *refinement_flags = NULL;
+    alea_mesh_fraction_span_t *fraction_spans = NULL, *cell_fraction_spans = NULL;
+    alea_mesh_material_fraction_t *fractions = NULL;
+    alea_mesh_cell_fraction_t *cell_fractions = NULL;
+    size_t fraction_count = 0, fraction_capacity = 0;
+    size_t cell_fraction_count = 0, cell_fraction_capacity = 0;
+    int *scratch_mats = NULL;
+    double *scratch_values = NULL;
+    mesh_int_set_t material_set = {0};
+    int mixed_count = 0, num_mats = 0;
+    const uint32_t directions = cfg->ray_directions;
+    const uint32_t direction_count =
+        ((directions & ALEA_MESH_RAY_X) ? 1u : 0u) +
+        ((directions & ALEA_MESH_RAY_Y) ? 1u : 0u) +
+        ((directions & ALEA_MESH_RAY_Z) ? 1u : 0u);
+    const uint64_t rays_per_direction =
+        (uint64_t)cfg->ray_grid_u * (uint64_t)cfg->ray_grid_v;
+    const uint64_t denominator64 = rays_per_direction * direction_count;
+    if (!accums || denominator64 == 0 || denominator64 > UINT32_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "mesh ray samples per voxel overflow uint32_t");
+        goto fail;
+    }
+    if (cfg->visit) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                              "streaming visitors are not yet supported for ray meshes");
+        goto fail;
+    }
+    if (alea_system_prepare_query_caches(
+            sys, ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_CELL_SURFACES) != 0)
+        goto fail;
+    if ((directions & ALEA_MESH_RAY_X) &&
+        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 0, accums) != 0) goto fail;
+    if ((directions & ALEA_MESH_RAY_Y) &&
+        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 1, accums) != 0) goto fail;
+    if ((directions & ALEA_MESH_RAY_Z) &&
+        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 2, accums) != 0) goto fail;
+
+    size_t max_components = 1;
+    for (size_t v = 0; v < ncells; v++) {
+        double sum = 0.0;
+        for (uint32_t i = 0; i < accums[v].count; i++)
+            sum += accums[v].data[i].value;
+        double residual = (double)denominator64 - sum;
+        if (residual > 1e-10 && mesh_ray_accum_add(
+                &accums[v], -1, cfg->void_material_id, residual) != 0) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "mesh ray composition allocation failed");
+            goto fail;
+        }
+        if (sum > (double)denominator64 + 1e-8) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "mesh ray ownership %.17g exceeds voxel measure %llu at voxel %zu",
+                                  sum, (unsigned long long)denominator64, v);
+            goto fail;
+        }
+        if (accums[v].count > max_components) max_components = accums[v].count;
+    }
+    scratch_mats = malloc(max_components * sizeof(*scratch_mats));
+    scratch_values = malloc(max_components * sizeof(*scratch_values));
+    if (!scratch_mats || !scratch_values) goto fail;
+
+#define RAY_ALLOC(FIELD, TARGET, TYPE, CLEAR) do { \
+    if (cfg->fields & (FIELD)) { \
+        TARGET = mesh_alloc_array(ncells, sizeof(TYPE), (CLEAR)); \
+        if (!(TARGET)) goto fail; \
+    } \
+} while (0)
+    RAY_ALLOC(ALEA_MESH_FIELD_MATERIAL_ID, mat_ids, int, 0);
+    RAY_ALLOC(ALEA_MESH_FIELD_CELL_ID, cell_ids, int, 0);
+    RAY_ALLOC(ALEA_MESH_FIELD_MIXED_FLAG, mixed_flags, unsigned char, 1);
+    RAY_ALLOC(ALEA_MESH_FIELD_DOMINANT_FRACTION, dominant_fractions, double, 0);
+    RAY_ALLOC(ALEA_MESH_FIELD_ESTIMATED_ERROR, estimated_errors, double, 1);
+    RAY_ALLOC(ALEA_MESH_FIELD_SAMPLE_COUNT, sample_counts, uint32_t, 0);
+    RAY_ALLOC(ALEA_MESH_FIELD_TIE_FLAG, tie_flags, uint8_t, 1);
+    RAY_ALLOC(ALEA_MESH_FIELD_REFINEMENT_FLAG, refinement_flags, uint8_t, 1);
+    RAY_ALLOC(ALEA_MESH_FIELD_SAMPLED_FRACTIONS, fraction_spans,
+              alea_mesh_fraction_span_t, 1);
+    RAY_ALLOC(ALEA_MESH_FIELD_CELL_FRACTIONS, cell_fraction_spans,
+              alea_mesh_fraction_span_t, 1);
+#undef RAY_ALLOC
+
+    for (size_t v = 0; v < ncells; v++) {
+        mesh_ray_voxel_accum_t *accum = &accums[v];
+        qsort(accum->data, accum->count, sizeof(*accum->data),
+              mesh_ray_component_compare);
+        int material_count = 0;
+        for (uint32_t i = 0; i < accum->count; i++) {
+            int m = 0;
+            while (m < material_count && scratch_mats[m] != accum->data[i].material_id)
+                m++;
+            if (m == material_count) {
+                scratch_mats[m] = accum->data[i].material_id;
+                scratch_values[m] = 0.0;
+                material_count++;
+            }
+            scratch_values[m] += accum->data[i].value;
+        }
+        for (int i = 1; i < material_count; i++) {
+            int id = scratch_mats[i]; double value = scratch_values[i]; int j = i;
+            while (j > 0 && scratch_mats[j - 1] > id) {
+                scratch_mats[j] = scratch_mats[j - 1];
+                scratch_values[j] = scratch_values[j - 1]; j--;
+            }
+            scratch_mats[j] = id; scratch_values[j] = value;
+        }
+        int dominant_material = cfg->void_material_id;
+        double dominant_value = -1.0;
+        int material_ties = 0;
+        for (int m = 0; m < material_count; m++) {
+            if (scratch_values[m] > dominant_value + 1e-12) {
+                dominant_value = scratch_values[m];
+                dominant_material = scratch_mats[m];
+                material_ties = 1;
+            } else if (fabs(scratch_values[m] - dominant_value) <= 1e-12) {
+                material_ties++;
+                if (scratch_mats[m] < dominant_material)
+                    dominant_material = scratch_mats[m];
+            }
+            if (mesh_int_set_insert(&material_set, scratch_mats[m]) != 0) goto fail;
+        }
+        int dominant_cell = -1, cell_ties = 0;
+        double dominant_cell_value = -1.0;
+        for (uint32_t i = 0; i < accum->count; i++) {
+            if (accum->data[i].material_id != dominant_material) continue;
+            if (accum->data[i].value > dominant_cell_value + 1e-12) {
+                dominant_cell_value = accum->data[i].value;
+                dominant_cell = accum->data[i].cell_id;
+                cell_ties = 1;
+            } else if (fabs(accum->data[i].value - dominant_cell_value) <= 1e-12) {
+                cell_ties++;
+                if (accum->data[i].cell_id < dominant_cell)
+                    dominant_cell = accum->data[i].cell_id;
+            }
+        }
+        double dominant_fraction = dominant_value / (double)denominator64;
+        unsigned char mixed = dominant_fraction < 1.0 - cfg->mixed_threshold;
+        uint8_t ties = (material_ties > 1 ? ALEA_MESH_TIE_MATERIAL : 0) |
+                       (cell_ties > 1 ? ALEA_MESH_TIE_CELL : 0);
+        if (mat_ids) mat_ids[v] = dominant_material;
+        if (cell_ids) cell_ids[v] = dominant_cell;
+        if (mixed_flags) mixed_flags[v] = mixed;
+        if (dominant_fractions) dominant_fractions[v] = dominant_fraction;
+        if (sample_counts) sample_counts[v] = (uint32_t)denominator64;
+        if (tie_flags) tie_flags[v] = ties;
+        mixed_count += mixed ? 1 : 0;
+
+        if (fraction_spans) {
+            if (fraction_count > UINT32_MAX ||
+                (size_t)material_count > UINT32_MAX - fraction_count ||
+                ensure_fraction_capacity(&fractions, &fraction_capacity,
+                                         fraction_count + (size_t)material_count) != 0)
+                goto fail;
+            fraction_spans[v] = (alea_mesh_fraction_span_t){
+                (uint32_t)fraction_count, (uint32_t)material_count};
+            for (int m = 0; m < material_count; m++) {
+                fractions[fraction_count++] = (alea_mesh_material_fraction_t){
+                    scratch_mats[m], scratch_values[m] / (double)denominator64};
+            }
+        }
+        if (cell_fraction_spans) {
+            if (cell_fraction_count > UINT32_MAX ||
+                (size_t)accum->count > UINT32_MAX - cell_fraction_count ||
+                ensure_cell_fraction_capacity(
+                    &cell_fractions, &cell_fraction_capacity,
+                    cell_fraction_count + accum->count) != 0) goto fail;
+            cell_fraction_spans[v] = (alea_mesh_fraction_span_t){
+                (uint32_t)cell_fraction_count, accum->count};
+            for (uint32_t i = 0; i < accum->count; i++) {
+                cell_fractions[cell_fraction_count++] = (alea_mesh_cell_fraction_t){
+                    accum->data[i].cell_id, accum->data[i].material_id,
+                    accum->data[i].value / (double)denominator64};
+            }
+        }
+    }
+    unique_mats = mesh_int_set_sorted_array(&material_set, &num_mats);
+    if (!unique_mats) goto fail;
+    res = calloc(1, sizeof(*res));
+    if (!res) goto fail;
+    res->nx = cfg->nx; res->ny = cfg->ny; res->nz = cfg->nz;
+    res->fields = cfg->fields; res->bounds_source = bounds_source;
+    res->bounds_padding = bounds_padding; res->sampling_mode = cfg->sampling_mode;
+    res->sampling_seed = cfg->sampling_seed; res->target_error = cfg->target_error;
+    res->x_nodes = xn; res->y_nodes = yn; res->z_nodes = zn;
+    res->material_ids = mat_ids; res->cell_ids = cell_ids;
+    res->num_materials = num_mats; res->unique_materials = unique_mats;
+    res->mixed_flags = mixed_flags; res->dominant_fractions = dominant_fractions;
+    res->estimated_errors = estimated_errors; res->sample_counts = sample_counts;
+    res->tie_flags = tie_flags; res->refinement_flags = refinement_flags;
+    res->mixed_count = mixed_count; res->fraction_spans = fraction_spans;
+    res->fractions = fractions; res->fraction_count = fraction_count;
+    res->cell_fraction_spans = cell_fraction_spans;
+    res->cell_fractions = cell_fractions;
+    res->cell_fraction_count = cell_fraction_count;
+    for (size_t v = 0; v < ncells; v++) free(accums[v].data);
+    free(accums); free(scratch_mats); free(scratch_values);
+    mesh_int_set_free(&material_set);
+    return res;
+
+fail:
+    if (accums) for (size_t v = 0; v < ncells; v++) free(accums[v].data);
+    free(accums); free(scratch_mats); free(scratch_values);
+    mesh_int_set_free(&material_set);
+    free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids); free(unique_mats);
+    free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+    free(sample_counts); free(tie_flags); free(refinement_flags);
+    free(fraction_spans); free(fractions);
+    free(cell_fraction_spans); free(cell_fractions); free(res);
+    return NULL;
+}
+
 /* ============================================================================
  * Sampling
  * ============================================================================ */
@@ -692,6 +1109,10 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(xn); free(yn); free(zn);
         return NULL;
     }
+
+    if (cfg->sampling_mode == ALEA_MESH_SAMPLE_RAY)
+        return mesh_sample_rays(sys, cfg, xn, yn, zn, ncells, bounds_source,
+                                auto_bounds ? cfg->auto_pad : 0.0);
 
     int *mat_ids = (cfg->fields & ALEA_MESH_FIELD_MATERIAL_ID) ?
         mesh_alloc_array(ncells, sizeof(int), 0) : NULL;

@@ -167,6 +167,9 @@ TEST(mesh_config_defaults) {
     ASSERT_NEAR(cfg.auto_pad, 0.01, 1e-15);
     ASSERT_EQ(cfg.sampling_mode, ALEA_MESH_SAMPLE_SUBCELL);
     ASSERT_EQ(cfg.subsamples_per_axis, 2);
+    ASSERT_EQ(cfg.ray_grid_u, 4);
+    ASSERT_EQ(cfg.ray_grid_v, 4);
+    ASSERT_EQ(cfg.ray_directions, ALEA_MESH_RAY_XYZ);
     ASSERT_NEAR(cfg.mixed_threshold, 0.0, 1e-15);
     ASSERT(cfg.fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS);
     ASSERT_NULL(cfg.progress);
@@ -393,6 +396,79 @@ TEST(mesh_cell_tie_is_explicit_and_stable) {
     ASSERT_NEAR(cell_30, 0.5, 1e-15);
 
     alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_ray_grid_tracks_material_and_cell_fractions) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_RAY;
+    cfg.ray_grid_u = cfg.ray_grid_v = 2;
+    cfg.ray_directions = ALEA_MESH_RAY_XYZ;
+
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    if (!mesh) fprintf(stderr, "ray mesh error: %s\n", alea_error());
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_EQ(mesh->sample_counts[0], 12);
+    ASSERT_EQ(mesh->material_ids[0], 1);
+    ASSERT_EQ(mesh->cell_ids[0], 20);
+    ASSERT_EQ(mesh->mixed_flags[0], 1);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 1), 0.5, 1e-12);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 2), 0.5, 1e-12);
+    ASSERT_EQ(mesh->cell_fraction_spans[0].count, 2);
+    double sum = 0.0;
+    for (uint32_t i = 0; i < mesh->cell_fraction_spans[0].count; i++)
+        sum += mesh->cell_fractions[i].fraction;
+    ASSERT_NEAR(sum, 1.0, 1e-12);
+
+    alea_mesh_result_free(mesh);
+    alea_destroy(sys);
+}
+
+TEST(mesh_ray_grid_is_worker_deterministic) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = 4; cfg.ny = 3; cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_RAY;
+    cfg.ray_grid_u = 3; cfg.ray_grid_v = 2;
+    cfg.workers = 1;
+    alea_mesh_result_t *serial = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(serial);
+    cfg.workers = 4;
+    alea_mesh_result_t *parallel = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(parallel);
+    size_t voxels = (size_t)cfg.nx * (size_t)cfg.ny * (size_t)cfg.nz;
+    ASSERT_EQ(serial->fraction_count, parallel->fraction_count);
+    ASSERT_EQ(serial->cell_fraction_count, parallel->cell_fraction_count);
+    ASSERT(memcmp(serial->material_ids, parallel->material_ids,
+                  voxels * sizeof(*serial->material_ids)) == 0);
+    ASSERT(memcmp(serial->cell_ids, parallel->cell_ids,
+                  voxels * sizeof(*serial->cell_ids)) == 0);
+    for (size_t i = 0; i < serial->fraction_count; i++) {
+        ASSERT_EQ(serial->fractions[i].material_id,
+                  parallel->fractions[i].material_id);
+        ASSERT_NEAR(serial->fractions[i].fraction,
+                    parallel->fractions[i].fraction, 0.0);
+    }
+    for (size_t i = 0; i < serial->cell_fraction_count; i++) {
+        ASSERT_EQ(serial->cell_fractions[i].cell_id,
+                  parallel->cell_fractions[i].cell_id);
+        ASSERT_EQ(serial->cell_fractions[i].material_id,
+                  parallel->cell_fractions[i].material_id);
+        ASSERT_NEAR(serial->cell_fractions[i].fraction,
+                    parallel->cell_fractions[i].fraction, 0.0);
+    }
+    alea_mesh_result_free(serial);
+    alea_mesh_result_free(parallel);
     alea_destroy(sys);
 }
 
