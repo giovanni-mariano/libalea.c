@@ -75,6 +75,13 @@ typedef enum {
 #define ALEA_MESH_RAY_Z (1u << 2)
 #define ALEA_MESH_RAY_XYZ (ALEA_MESH_RAY_X | ALEA_MESH_RAY_Y | ALEA_MESH_RAY_Z)
 
+/** Placement of ray origins within each normalized transverse face tile. */
+typedef enum {
+    ALEA_MESH_RAY_ORIGINS_GRID = 0, /**< Regular ray_grid_u by ray_grid_v grid */
+    ALEA_MESH_RAY_ORIGINS_SOBOL,    /**< Seeded two-dimensional Sobol sequence */
+    ALEA_MESH_RAY_ORIGINS_CUSTOM    /**< User-provided normalized (u,v) pairs */
+} alea_mesh_ray_origin_mode_t;
+
 typedef enum {
     ALEA_MESH_BOUNDS_LEGACY = 0, /**< All-zero bounds mean auto; otherwise explicit */
     ALEA_MESH_BOUNDS_AUTO,
@@ -140,14 +147,14 @@ typedef int (*alea_mesh_voxel_visit_fn)(const alea_mesh_voxel_sample_t *sample,
 /** One sampled material-fraction estimate for a voxel (not exact volume). */
 struct alea_mesh_material_fraction {
     int material_id;
-    double fraction;              /**< Point-count fraction in [0,1] */
+    double fraction;              /**< Estimated point/track fraction in [0,1] */
 };
 
 /** One sampled concrete-cell fraction estimate for a voxel. */
 struct alea_mesh_cell_fraction {
     int cell_id;                  /**< MCNP/OpenMC cell ID; -1 for void */
     int material_id;              /**< Material associated with this owner */
-    double fraction;              /**< Point-count fraction in [0,1] */
+    double fraction;              /**< Estimated point/track fraction in [0,1] */
 };
 
 /** Span into alea_mesh_result_t::fractions for one voxel */
@@ -180,6 +187,10 @@ typedef struct {
     int workers;                 /**< 0=runtime default, 1=serial */
     int ray_grid_u;              /**< Tensor-grid points on first transverse axis */
     int ray_grid_v;              /**< Tensor-grid points on second transverse axis */
+    alea_mesh_ray_origin_mode_t ray_origin_mode; /**< Face-origin placement */
+    uint32_t ray_samples;        /**< Sobol origins per face tile */
+    const double *ray_points;    /**< Custom normalized (u,v) pairs, length 2*count */
+    uint32_t ray_point_count;    /**< Number of custom face-origin pairs */
     uint8_t ray_directions;      /**< ALEA_MESH_RAY_* direction mask */
     alea_mesh_bounds_mode_t bounds_mode;
     uint32_t fields;             /**< ALEA_MESH_FIELD_* arrays to retain */
@@ -239,6 +250,8 @@ typedef struct {
     double dominant_fraction;
     double estimated_error;
     uint32_t sample_count;
+    alea_mesh_fraction_span_t fraction_span;      /**< Into result fractions */
+    alea_mesh_fraction_span_t cell_fraction_span; /**< Into result cell_fractions */
 } alea_adaptive_grid_cell_t;
 
 #define ALEA_ADAPTIVE_GRID_DEPTH_LIMIT_REACHED 0x01u
@@ -259,6 +272,10 @@ typedef struct {
     size_t root_count;
     uint32_t max_level;
     int balanced;                           /**< Currently 0: nonconforming octree */
+    alea_mesh_material_fraction_t *fractions; /**< Packed fractions for every cell */
+    size_t fraction_count;
+    alea_mesh_cell_fraction_t *cell_fractions; /**< Packed concrete-cell fractions */
+    size_t cell_fraction_count;
 } alea_adaptive_grid_result_t;
 
 /* ============================================================================

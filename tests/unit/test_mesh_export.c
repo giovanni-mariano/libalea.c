@@ -169,6 +169,10 @@ TEST(mesh_config_defaults) {
     ASSERT_EQ(cfg.subsamples_per_axis, 2);
     ASSERT_EQ(cfg.ray_grid_u, 4);
     ASSERT_EQ(cfg.ray_grid_v, 4);
+    ASSERT_EQ(cfg.ray_origin_mode, ALEA_MESH_RAY_ORIGINS_GRID);
+    ASSERT_EQ(cfg.ray_samples, 16);
+    ASSERT_NULL(cfg.ray_points);
+    ASSERT_EQ(cfg.ray_point_count, 0);
     ASSERT_EQ(cfg.ray_directions, ALEA_MESH_RAY_XYZ);
     ASSERT_NEAR(cfg.mixed_threshold, 0.0, 1e-15);
     ASSERT(cfg.fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS);
@@ -469,6 +473,61 @@ TEST(mesh_ray_grid_is_worker_deterministic) {
     }
     alea_mesh_result_free(serial);
     alea_mesh_result_free(parallel);
+    alea_destroy(sys);
+}
+
+TEST(mesh_ray_sobol_uses_requested_sample_count_and_seed) {
+    alea_system_t *sys = create_sphere_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = 3; cfg.ny = 2; cfg.nz = 2;
+    cfg.x_min = cfg.y_min = cfg.z_min = -6.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 6.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_RAY;
+    cfg.ray_origin_mode = ALEA_MESH_RAY_ORIGINS_SOBOL;
+    cfg.ray_samples = 7;
+    cfg.sampling_seed = 12345;
+    cfg.workers = 1;
+    alea_mesh_result_t *first = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(first);
+    cfg.workers = 4;
+    alea_mesh_result_t *parallel = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(parallel);
+    size_t voxels = (size_t)cfg.nx * cfg.ny * cfg.nz;
+    for (size_t i = 0; i < voxels; i++) ASSERT_EQ(first->sample_counts[i], 21);
+    ASSERT_EQ(first->fraction_count, parallel->fraction_count);
+    for (size_t i = 0; i < first->fraction_count; i++) {
+        ASSERT_EQ(first->fractions[i].material_id,
+                  parallel->fractions[i].material_id);
+        ASSERT_NEAR(first->fractions[i].fraction,
+                    parallel->fractions[i].fraction, 0.0);
+    }
+    alea_mesh_result_free(first);
+    alea_mesh_result_free(parallel);
+    alea_destroy(sys);
+}
+
+TEST(mesh_ray_custom_points_are_normalized_per_face_tile) {
+    alea_system_t *sys = create_tied_split_scene();
+    ASSERT_NOT_NULL(sys);
+    const double points[] = {0.25, 0.25, 0.75, 0.75};
+    alea_mesh_config_t cfg;
+    alea_mesh_config_init(&cfg);
+    cfg.nx = cfg.ny = cfg.nz = 1;
+    cfg.x_min = cfg.y_min = cfg.z_min = -1.0;
+    cfg.x_max = cfg.y_max = cfg.z_max = 1.0;
+    cfg.sampling_mode = ALEA_MESH_SAMPLE_RAY;
+    cfg.ray_origin_mode = ALEA_MESH_RAY_ORIGINS_CUSTOM;
+    cfg.ray_points = points;
+    cfg.ray_point_count = 2;
+    cfg.ray_directions = ALEA_MESH_RAY_Z;
+    alea_mesh_result_t *mesh = alea_mesh_sample(sys, &cfg);
+    ASSERT_NOT_NULL(mesh);
+    ASSERT_EQ(mesh->sample_counts[0], 2);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 1), 0.5, 1e-12);
+    ASSERT_NEAR(mesh_fraction_for_material(mesh, 0, 2), 0.5, 1e-12);
+    alea_mesh_result_free(mesh);
     alea_destroy(sys);
 }
 
@@ -852,6 +911,10 @@ TEST(adaptive_grid_builds_stable_octree_and_exports) {
     ASSERT_EQ(grid->leaf_count, 8);
     ASSERT_EQ(grid->max_level, 1);
     ASSERT_EQ(grid->balanced, 0);
+    ASSERT_NOT_NULL(grid->fractions);
+    ASSERT_NOT_NULL(grid->cell_fractions);
+    ASSERT(grid->fraction_count >= grid->cell_count);
+    ASSERT(grid->cell_fraction_count >= grid->cell_count);
     ASSERT_EQ(grid->cells[0].id, 1);
     ASSERT_EQ(grid->cells[0].is_leaf, 0);
     for (int i = 0; i < 8; i++) {
@@ -859,6 +922,11 @@ TEST(adaptive_grid_builds_stable_octree_and_exports) {
         ASSERT_EQ(grid->cells[i + 1].parent_id, 1);
         ASSERT_EQ(grid->cells[i + 1].level, 1);
         ASSERT_EQ(grid->cells[i + 1].is_leaf, 1);
+        const alea_mesh_fraction_span_t span = grid->cells[i + 1].fraction_span;
+        double sum = 0.0;
+        for (uint32_t j = 0; j < span.count; j++)
+            sum += grid->fractions[(size_t)span.offset + j].fraction;
+        ASSERT_NEAR(sum, 1.0, 1e-12);
     }
 
     FILE *f = tmpfile();

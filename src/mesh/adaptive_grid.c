@@ -14,6 +14,8 @@
 typedef struct {
     alea_adaptive_grid_result_t result;
     size_t capacity;
+    size_t fraction_capacity;
+    size_t cell_fraction_capacity;
     alea_system_t *sys;
     const alea_adaptive_grid_config_t *config;
 } adaptive_builder_t;
@@ -57,9 +59,54 @@ static int adaptive_reserve(adaptive_builder_t *builder, size_t needed) {
     return 0;
 }
 
-static void adaptive_copy_sample(alea_adaptive_grid_cell_t *cell,
-                                 const alea_mesh_result_t *sample,
-                                 size_t voxel) {
+static int adaptive_reserve_fractions(adaptive_builder_t *builder,
+                                      size_t material_needed,
+                                      size_t cell_needed) {
+    if (material_needed > UINT32_MAX || cell_needed > UINT32_MAX) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "adaptive composition offsets exceed uint32_t");
+        return -1;
+    }
+#define ADAPTIVE_GROW(TARGET, CAPACITY, NEEDED, TYPE, LABEL) do { \
+    if ((NEEDED) > (CAPACITY)) { \
+        size_t next = (CAPACITY) ? (CAPACITY) : 64; \
+        while (next < (NEEDED)) { \
+            if (next > SIZE_MAX / 2) { \
+                alea_set_error_detail(ALEA_ERR_OVERFLOW, \
+                                      "adaptive " LABEL " storage overflows"); \
+                return -1; \
+            } \
+            next *= 2; \
+        } \
+        if (next > SIZE_MAX / sizeof(TYPE)) { \
+            alea_set_error_detail(ALEA_ERR_OVERFLOW, \
+                                  "adaptive " LABEL " allocation overflows"); \
+            return -1; \
+        } \
+        void *grown = realloc((TARGET), next * sizeof(TYPE)); \
+        if (!grown) { \
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, \
+                                  "adaptive " LABEL " allocation failed"); \
+            return -1; \
+        } \
+        (TARGET) = grown; \
+        (CAPACITY) = next; \
+    } \
+} while (0)
+    ADAPTIVE_GROW(builder->result.fractions, builder->fraction_capacity,
+                  material_needed, alea_mesh_material_fraction_t,
+                  "material-fraction");
+    ADAPTIVE_GROW(builder->result.cell_fractions,
+                  builder->cell_fraction_capacity, cell_needed,
+                  alea_mesh_cell_fraction_t, "cell-fraction");
+#undef ADAPTIVE_GROW
+    return 0;
+}
+
+static int adaptive_copy_sample(adaptive_builder_t *builder,
+                                alea_adaptive_grid_cell_t *cell,
+                                const alea_mesh_result_t *sample,
+                                size_t voxel) {
     cell->material_id = sample->material_ids[voxel];
     cell->cell_id = sample->cell_ids[voxel];
     cell->mixed = sample->mixed_flags[voxel];
@@ -68,6 +115,28 @@ static void adaptive_copy_sample(alea_adaptive_grid_cell_t *cell,
     cell->dominant_fraction = sample->dominant_fractions[voxel];
     cell->estimated_error = sample->estimated_errors[voxel];
     cell->sample_count = sample->sample_counts[voxel];
+    const alea_mesh_fraction_span_t materials = sample->fraction_spans[voxel];
+    const alea_mesh_fraction_span_t owners = sample->cell_fraction_spans[voxel];
+    size_t material_needed = builder->result.fraction_count + materials.count;
+    size_t cell_needed = builder->result.cell_fraction_count + owners.count;
+    if (material_needed < builder->result.fraction_count ||
+        cell_needed < builder->result.cell_fraction_count ||
+        adaptive_reserve_fractions(builder, material_needed, cell_needed) != 0)
+        return -1;
+    cell->fraction_span.offset = (uint32_t)builder->result.fraction_count;
+    cell->fraction_span.count = materials.count;
+    memcpy(&builder->result.fractions[builder->result.fraction_count],
+           &sample->fractions[materials.offset],
+           (size_t)materials.count * sizeof(*sample->fractions));
+    builder->result.fraction_count = material_needed;
+    cell->cell_fraction_span.offset =
+        (uint32_t)builder->result.cell_fraction_count;
+    cell->cell_fraction_span.count = owners.count;
+    memcpy(&builder->result.cell_fractions[builder->result.cell_fraction_count],
+           &sample->cell_fractions[owners.offset],
+           (size_t)owners.count * sizeof(*sample->cell_fractions));
+    builder->result.cell_fraction_count = cell_needed;
+    return 0;
 }
 
 static alea_mesh_result_t *adaptive_sample_box(adaptive_builder_t *builder,
@@ -88,7 +157,9 @@ static alea_mesh_result_t *adaptive_sample_box(adaptive_builder_t *builder,
                  ALEA_MESH_FIELD_SAMPLE_COUNT |
                  ALEA_MESH_FIELD_TIE_FLAG |
                  ALEA_MESH_FIELD_ESTIMATED_ERROR |
-                 ALEA_MESH_FIELD_REFINEMENT_FLAG;
+                 ALEA_MESH_FIELD_REFINEMENT_FLAG |
+                 ALEA_MESH_FIELD_SAMPLED_FRACTIONS |
+                 ALEA_MESH_FIELD_CELL_FRACTIONS;
     cfg.max_total_samples = 0;
     cfg.progress = NULL;
     cfg.progress_user_data = NULL;
@@ -147,7 +218,10 @@ static int adaptive_refine(adaptive_builder_t *builder, size_t parent_index) {
         cell->x_min = x0; cell->x_max = x1;
         cell->y_min = y0; cell->y_max = y1;
         cell->z_min = z0; cell->z_max = z1;
-        adaptive_copy_sample(cell, sample, 0);
+        if (adaptive_copy_sample(builder, cell, sample, 0) != 0) {
+            alea_mesh_result_free(sample);
+            return -1;
+        }
         alea_mesh_result_free(sample);
         builder->result.leaf_count++;
         if (cell->level > builder->result.max_level)
@@ -183,7 +257,9 @@ alea_adaptive_grid_result_t *alea_adaptive_grid_sample(
                          ALEA_MESH_FIELD_SAMPLE_COUNT |
                          ALEA_MESH_FIELD_TIE_FLAG |
                          ALEA_MESH_FIELD_ESTIMATED_ERROR |
-                         ALEA_MESH_FIELD_REFINEMENT_FLAG;
+                         ALEA_MESH_FIELD_REFINEMENT_FLAG |
+                         ALEA_MESH_FIELD_SAMPLED_FRACTIONS |
+                         ALEA_MESH_FIELD_CELL_FRACTIONS;
     initial_cfg.visit = NULL;
     initial_cfg.visit_user_data = NULL;
     alea_mesh_result_t *initial = alea_mesh_sample(sys, &initial_cfg);
@@ -222,7 +298,13 @@ alea_adaptive_grid_result_t *alea_adaptive_grid_sample(
                 cell->y_max = initial->y_nodes[j + 1];
                 cell->z_min = initial->z_nodes[k];
                 cell->z_max = initial->z_nodes[k + 1];
-                adaptive_copy_sample(cell, initial, index);
+                if (adaptive_copy_sample(&builder, cell, initial, index) != 0) {
+                    alea_mesh_result_free(initial);
+                    free(builder.result.cells);
+                    free(builder.result.fractions);
+                    free(builder.result.cell_fractions);
+                    return NULL;
+                }
             }
         }
     }
@@ -231,6 +313,8 @@ alea_adaptive_grid_result_t *alea_adaptive_grid_sample(
     for (size_t root = 0; root < root_count; root++) {
         if (adaptive_refine(&builder, root) != 0) {
             free(builder.result.cells);
+            free(builder.result.fractions);
+            free(builder.result.cell_fractions);
             return NULL;
         }
     }
@@ -240,6 +324,8 @@ alea_adaptive_grid_result_t *alea_adaptive_grid_sample(
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                               "adaptive grid result allocation failed");
         free(builder.result.cells);
+        free(builder.result.fractions);
+        free(builder.result.cell_fractions);
         return NULL;
     }
     *result = builder.result;
@@ -249,6 +335,8 @@ alea_adaptive_grid_result_t *alea_adaptive_grid_sample(
 void alea_adaptive_grid_result_free(alea_adaptive_grid_result_t *grid) {
     if (!grid) return;
     free(grid->cells);
+    free(grid->fractions);
+    free(grid->cell_fractions);
     free(grid);
 }
 
@@ -284,6 +372,14 @@ static int adaptive_validate(const alea_adaptive_grid_result_t *grid) {
             return -1;
         }
         if (cell->is_leaf) leaves++;
+        if ((size_t)cell->fraction_span.offset + cell->fraction_span.count >
+                grid->fraction_count ||
+            (size_t)cell->cell_fraction_span.offset +
+                cell->cell_fraction_span.count > grid->cell_fraction_count) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "adaptive composition spans are malformed");
+            return -1;
+        }
     }
     if (leaves != grid->leaf_count) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,

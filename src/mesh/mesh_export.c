@@ -50,6 +50,8 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
     cfg->workers = 1;
     cfg->ray_grid_u = 4;
     cfg->ray_grid_v = 4;
+    cfg->ray_origin_mode = ALEA_MESH_RAY_ORIGINS_GRID;
+    cfg->ray_samples = 16;
     cfg->ray_directions = ALEA_MESH_RAY_XYZ;
     cfg->fields = ALEA_MESH_FIELD_MATERIAL_ID |
                   ALEA_MESH_FIELD_CELL_ID |
@@ -213,6 +215,37 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "mesh ray grid dimensions must be positive");
         return -1;
+    }
+    if (cfg->ray_origin_mode != ALEA_MESH_RAY_ORIGINS_GRID &&
+        cfg->ray_origin_mode != ALEA_MESH_RAY_ORIGINS_SOBOL &&
+        cfg->ray_origin_mode != ALEA_MESH_RAY_ORIGINS_CUSTOM) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh ray origin mode is invalid");
+        return -1;
+    }
+    if (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_SOBOL &&
+        cfg->ray_samples == 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh Sobol ray sample count must be positive");
+        return -1;
+    }
+    if (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_CUSTOM) {
+        if (!cfg->ray_points || cfg->ray_point_count == 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                  "mesh custom ray points must not be empty");
+            return -1;
+        }
+        for (uint32_t i = 0; i < cfg->ray_point_count; i++) {
+            double u = cfg->ray_points[2u * i];
+            double v = cfg->ray_points[2u * i + 1u];
+            if (!isfinite(u) || !isfinite(v) || !(u > 0.0 && u < 1.0) ||
+                !(v > 0.0 && v < 1.0)) {
+                alea_set_error_detail(
+                    ALEA_ERR_INVALID_ARG,
+                    "mesh custom ray point %u must lie inside (0,1)^2", i);
+                return -1;
+            }
+        }
     }
     if (cfg->ray_directions == 0 ||
         (cfg->ray_directions & ~ALEA_MESH_RAY_XYZ) != 0) {
@@ -724,6 +757,62 @@ static int mesh_ray_accumulate_segment(mesh_ray_voxel_accum_t *accums,
     return 0;
 }
 
+static uint32_t mesh_sobol_uint32(uint32_t index, int dimension) {
+    uint32_t directions[32];
+    if (dimension == 0) {
+        for (int bit = 0; bit < 32; bit++)
+            directions[bit] = UINT32_C(1) << (31 - bit);
+    } else {
+        /* Dimension two: primitive polynomial x^2 + x + 1, m=(1,3). */
+        directions[0] = UINT32_C(1) << 31;
+        directions[1] = UINT32_C(3) << 30;
+        for (int bit = 2; bit < 32; bit++)
+            directions[bit] = directions[bit - 2] ^
+                              (directions[bit - 2] >> 2) ^
+                              directions[bit - 1];
+    }
+    uint32_t gray = index ^ (index >> 1);
+    uint32_t value = 0;
+    for (int bit = 0; bit < 32; bit++)
+        if (gray & (UINT32_C(1) << bit)) value ^= directions[bit];
+    return value;
+}
+
+static uint32_t mesh_ray_origin_count(const alea_mesh_config_t *cfg) {
+    if (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_SOBOL)
+        return cfg->ray_samples;
+    if (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_CUSTOM)
+        return cfg->ray_point_count;
+    uint64_t count = (uint64_t)cfg->ray_grid_u * (uint64_t)cfg->ray_grid_v;
+    return count <= UINT32_MAX ? (uint32_t)count : 0;
+}
+
+static void mesh_ray_origin_uv(const alea_mesh_config_t *cfg, int axis,
+                               size_t column, uint32_t sample,
+                               double *u, double *v) {
+    if (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_CUSTOM) {
+        *u = cfg->ray_points[2u * sample];
+        *v = cfg->ray_points[2u * sample + 1u];
+        return;
+    }
+    if (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_SOBOL) {
+        uint64_t stream = mesh_mix64(cfg->sampling_seed ^
+            mesh_mix64((uint64_t)column + UINT64_C(0x9e3779b97f4a7c15)) ^
+            ((uint64_t)(unsigned)axis << 61));
+        uint32_t scramble_u = (uint32_t)stream;
+        uint32_t scramble_v = (uint32_t)(stream >> 32);
+        uint32_t su = mesh_sobol_uint32(sample, 0) ^ scramble_u;
+        uint32_t sv = mesh_sobol_uint32(sample, 1) ^ scramble_v;
+        *u = ((double)su + 0.5) * 0x1.0p-32;
+        *v = ((double)sv + 0.5) * 0x1.0p-32;
+        return;
+    }
+    uint32_t gu = sample % (uint32_t)cfg->ray_grid_u;
+    uint32_t gv = sample / (uint32_t)cfg->ray_grid_u;
+    *u = ((double)gu + 0.5) / (double)cfg->ray_grid_u;
+    *v = ((double)gv + 0.5) / (double)cfg->ray_grid_v;
+}
+
 static int mesh_ray_trace_direction(alea_system_t *sys,
                                     const alea_mesh_config_t *cfg,
                                     const double *xn, const double *yn,
@@ -736,6 +825,7 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
     const int u_count = axis == 0 ? cfg->ny : cfg->nx;
     const int v_count = axis == 2 ? cfg->ny : cfg->nz;
     const size_t column_count = (size_t)u_count * (size_t)v_count;
+    const uint32_t origin_count = mesh_ray_origin_count(cfg);
 #ifdef _OPENMP
     int workers = cfg->workers > 0 ? cfg->workers : omp_get_max_threads();
     if ((size_t)workers > column_count) workers = (int)column_count;
@@ -750,55 +840,53 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
         int b = (int)(column / (size_t)u_count);
         alea_raycast_result_t trace;
         alea_raycast_result_init(&trace);
-        for (int gv = 0; gv < cfg->ray_grid_v; gv++) {
-            for (int gu = 0; gu < cfg->ray_grid_u; gu++) {
-                const double u = u_nodes[a] +
-                    ((double)gu + 0.5) / (double)cfg->ray_grid_u *
-                    (u_nodes[a + 1] - u_nodes[a]);
-                const double v = v_nodes[b] +
-                    ((double)gv + 0.5) / (double)cfg->ray_grid_v *
-                    (v_nodes[b + 1] - v_nodes[b]);
-                double origin[3] = {0.0, 0.0, 0.0};
-                double direction[3] = {0.0, 0.0, 0.0};
-                origin[axis] = nextafter(along_nodes[0], -INFINITY);
-                if (axis == 0) { origin[1] = u; origin[2] = v; }
-                else if (axis == 1) { origin[0] = u; origin[2] = v; }
-                else { origin[0] = u; origin[1] = v; }
-                direction[axis] = 1.0;
-                alea_ray_t ray;
-                alea_raycast_result_clear(&trace);
-                if (alea_ray_init(&ray, origin[0], origin[1], origin[2],
-                                  direction[0], direction[1], direction[2]) != 0 ||
-                    alea_raycast_hier_segments_nocache(
-                        sys, &ray, along_nodes[along_count] - origin[axis],
-                        &trace) != 0) {
+        for (uint32_t sample = 0; sample < origin_count; sample++) {
+            double unit_u, unit_v;
+            mesh_ray_origin_uv(cfg, axis, column, sample, &unit_u, &unit_v);
+            const double u = u_nodes[a] + unit_u *
+                (u_nodes[a + 1] - u_nodes[a]);
+            const double v = v_nodes[b] + unit_v *
+                (v_nodes[b + 1] - v_nodes[b]);
+            double origin[3] = {0.0, 0.0, 0.0};
+            double direction[3] = {0.0, 0.0, 0.0};
+            origin[axis] = nextafter(along_nodes[0], -INFINITY);
+            if (axis == 0) { origin[1] = u; origin[2] = v; }
+            else if (axis == 1) { origin[0] = u; origin[2] = v; }
+            else { origin[0] = u; origin[1] = v; }
+            direction[axis] = 1.0;
+            alea_ray_t ray;
+            alea_raycast_result_clear(&trace);
+            if (alea_ray_init(&ray, origin[0], origin[1], origin[2],
+                              direction[0], direction[1], direction[2]) != 0 ||
+                alea_raycast_hier_segments_nocache(
+                    sys, &ray, along_nodes[along_count] - origin[axis],
+                    &trace) != 0) {
+#ifdef _OPENMP
+                #pragma omp atomic write
+#endif
+                failed = 1;
+                continue;
+            }
+            for (size_t s = 0; s < trace.segments.count; s++) {
+                const alea_ray_segment_t *segment = &trace.segments.data[s];
+                if (mesh_ray_accumulate_segment(
+                        accums, along_nodes, along_count, axis, a, b,
+                        cfg->nx, cfg->ny,
+                        origin[axis] + segment->t_enter,
+                        origin[axis] + segment->t_exit,
+                        segment->cell_id, segment->material_id) != 0) {
 #ifdef _OPENMP
                     #pragma omp atomic write
 #endif
                     failed = 1;
-                    continue;
+                    break;
                 }
-                for (size_t s = 0; s < trace.segments.count; s++) {
-                    const alea_ray_segment_t *segment = &trace.segments.data[s];
-                    if (mesh_ray_accumulate_segment(
-                            accums, along_nodes, along_count, axis, a, b,
-                            cfg->nx, cfg->ny,
-                            origin[axis] + segment->t_enter,
-                            origin[axis] + segment->t_exit,
-                            segment->cell_id, segment->material_id) != 0) {
+            }
+            if (alea_interrupted()) {
 #ifdef _OPENMP
-                        #pragma omp atomic write
+                #pragma omp atomic write
 #endif
-                        failed = 1;
-                        break;
-                    }
-                }
-                if (alea_interrupted()) {
-#ifdef _OPENMP
-                    #pragma omp atomic write
-#endif
-                    failed = 1;
-                }
+                failed = 1;
             }
         }
         alea_raycast_result_free(&trace);
@@ -840,8 +928,7 @@ static alea_mesh_result_t *mesh_sample_rays(
         ((directions & ALEA_MESH_RAY_X) ? 1u : 0u) +
         ((directions & ALEA_MESH_RAY_Y) ? 1u : 0u) +
         ((directions & ALEA_MESH_RAY_Z) ? 1u : 0u);
-    const uint64_t rays_per_direction =
-        (uint64_t)cfg->ray_grid_u * (uint64_t)cfg->ray_grid_v;
+    const uint64_t rays_per_direction = mesh_ray_origin_count(cfg);
     const uint64_t denominator64 = rays_per_direction * direction_count;
     if (!accums || denominator64 == 0 || denominator64 > UINT32_MAX) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW,
