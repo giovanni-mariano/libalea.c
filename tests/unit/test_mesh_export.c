@@ -378,6 +378,19 @@ TEST(mesh_cell_tie_is_explicit_and_stable) {
     ASSERT(mesh->tie_flags[0] & ALEA_MESH_TIE_CELL);
     ASSERT_EQ(mesh->material_ids[0], 7);
     ASSERT_EQ(mesh->cell_ids[0], 10);
+    ASSERT_NOT_NULL(mesh->cell_fraction_spans);
+    ASSERT_NOT_NULL(mesh->cell_fractions);
+    ASSERT_EQ(mesh->cell_fraction_spans[0].count, 2);
+    ASSERT_EQ(mesh->cell_fraction_count, 2);
+    double cell_10 = 0.0, cell_30 = 0.0;
+    for (uint32_t i = 0; i < mesh->cell_fraction_spans[0].count; i++) {
+        const alea_mesh_cell_fraction_t *f = &mesh->cell_fractions[i];
+        ASSERT_EQ(f->material_id, 7);
+        if (f->cell_id == 10) cell_10 = f->fraction;
+        if (f->cell_id == 30) cell_30 = f->fraction;
+    }
+    ASSERT_NEAR(cell_10, 0.5, 1e-15);
+    ASSERT_NEAR(cell_30, 0.5, 1e-15);
 
     alea_mesh_result_free(mesh);
     alea_destroy(sys);

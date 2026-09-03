@@ -98,7 +98,8 @@ typedef enum {
     ALEA_MESH_FIELD_SAMPLE_COUNT = 1u << 5,
     ALEA_MESH_FIELD_TIE_FLAG = 1u << 6,
     ALEA_MESH_FIELD_ESTIMATED_ERROR = 1u << 7,
-    ALEA_MESH_FIELD_REFINEMENT_FLAG = 1u << 8
+    ALEA_MESH_FIELD_REFINEMENT_FLAG = 1u << 8,
+    ALEA_MESH_FIELD_CELL_FRACTIONS = 1u << 9
 } alea_mesh_result_field_t;
 
 #define ALEA_MESH_REFINEMENT_LIMIT_REACHED 0x01u
@@ -108,6 +109,7 @@ typedef int (*alea_mesh_progress_fn)(size_t completed_voxels,
                                      void *user_data);
 
 typedef struct alea_mesh_material_fraction alea_mesh_material_fraction_t;
+typedef struct alea_mesh_cell_fraction alea_mesh_cell_fraction_t;
 
 typedef struct {
     int i, j, k;
@@ -122,6 +124,8 @@ typedef struct {
     uint8_t refinement_flags;
     const alea_mesh_material_fraction_t *fractions; /**< Valid during callback */
     uint32_t fraction_count;
+    const alea_mesh_cell_fraction_t *cell_fractions; /**< Valid during callback */
+    uint32_t cell_fraction_count;
 } alea_mesh_voxel_sample_t;
 
 typedef int (*alea_mesh_voxel_visit_fn)(const alea_mesh_voxel_sample_t *sample,
@@ -130,6 +134,13 @@ typedef int (*alea_mesh_voxel_visit_fn)(const alea_mesh_voxel_sample_t *sample,
 /** One sampled material-fraction estimate for a voxel (not exact volume). */
 struct alea_mesh_material_fraction {
     int material_id;
+    double fraction;              /**< Point-count fraction in [0,1] */
+};
+
+/** One sampled concrete-cell fraction estimate for a voxel. */
+struct alea_mesh_cell_fraction {
+    int cell_id;                  /**< MCNP/OpenMC cell ID; -1 for void */
+    int material_id;              /**< Material associated with this owner */
     double fraction;              /**< Point-count fraction in [0,1] */
 };
 
@@ -195,6 +206,11 @@ typedef struct {
     alea_mesh_material_fraction_t *fractions;
                                             /**< Packed material fractions */
     size_t fraction_count;                  /**< Number of packed fraction entries */
+    alea_mesh_fraction_span_t *cell_fraction_spans;
+                                            /**< nx*ny*nz spans into cell_fractions */
+    alea_mesh_cell_fraction_t *cell_fractions;
+                                            /**< Packed concrete-cell fractions */
+    size_t cell_fraction_count;             /**< Number of packed cell entries */
 } alea_mesh_result_t;
 
 /** One node in a nonconforming adaptive hexahedral grid. IDs are 1-based. */

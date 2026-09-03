@@ -55,7 +55,8 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
                   ALEA_MESH_FIELD_SAMPLE_COUNT |
                   ALEA_MESH_FIELD_TIE_FLAG |
                   ALEA_MESH_FIELD_ESTIMATED_ERROR |
-                  ALEA_MESH_FIELD_REFINEMENT_FLAG;
+                  ALEA_MESH_FIELD_REFINEMENT_FLAG |
+                  ALEA_MESH_FIELD_CELL_FRACTIONS;
 }
 
 /* ============================================================================
@@ -157,7 +158,8 @@ static int validate_config_basic(const alea_mesh_config_t *cfg) {
                                   ALEA_MESH_FIELD_SAMPLE_COUNT |
                                   ALEA_MESH_FIELD_TIE_FLAG |
                                   ALEA_MESH_FIELD_ESTIMATED_ERROR |
-                                  ALEA_MESH_FIELD_REFINEMENT_FLAG;
+                                  ALEA_MESH_FIELD_REFINEMENT_FLAG |
+                                  ALEA_MESH_FIELD_CELL_FRACTIONS;
     if (!cfg) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh config is NULL");
         return -1;
@@ -592,6 +594,31 @@ static int ensure_fraction_capacity(alea_mesh_material_fraction_t **fractions,
     return 0;
 }
 
+static int ensure_cell_fraction_capacity(alea_mesh_cell_fraction_t **fractions,
+                                         size_t *capacity, size_t needed) {
+    if (needed <= *capacity) return 0;
+    size_t new_cap = (*capacity == 0) ? 1024 : *capacity;
+    while (new_cap < needed) {
+        if (new_cap > SIZE_MAX / 2) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "mesh cell-fraction storage overflows size_t");
+            return -1;
+        }
+        new_cap *= 2;
+    }
+    size_t bytes = 0;
+    if (checked_mul_size(new_cap, sizeof(**fractions), &bytes) != 0) return -1;
+    alea_mesh_cell_fraction_t *tmp = realloc(*fractions, bytes);
+    if (!tmp) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "mesh failed to grow cell-fraction storage");
+        return -1;
+    }
+    *fractions = tmp;
+    *capacity = new_cap;
+    return 0;
+}
+
 /* ============================================================================
  * Sampling
  * ============================================================================ */
@@ -688,6 +715,10 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     alea_mesh_material_fraction_t *fractions = NULL;
     size_t fraction_count = 0;
     size_t fraction_capacity = 0;
+    alea_mesh_fraction_span_t *cell_fraction_spans = NULL;
+    alea_mesh_cell_fraction_t *cell_fractions = NULL;
+    size_t cell_fraction_count = 0;
+    size_t cell_fraction_capacity = 0;
     if (cfg->fields & ALEA_MESH_FIELD_MIXED_FLAG)
         mixed_flags = mesh_alloc_array(ncells, sizeof(unsigned char), 1);
     if (cfg->fields & ALEA_MESH_FIELD_DOMINANT_FRACTION)
@@ -703,20 +734,24 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     if (cfg->fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS)
         fraction_spans = mesh_alloc_array(ncells,
                                           sizeof(alea_mesh_fraction_span_t), 1);
+    if (cfg->fields & ALEA_MESH_FIELD_CELL_FRACTIONS)
+        cell_fraction_spans = mesh_alloc_array(
+            ncells, sizeof(alea_mesh_fraction_span_t), 1);
     if (((cfg->fields & ALEA_MESH_FIELD_MIXED_FLAG) && !mixed_flags) ||
         ((cfg->fields & ALEA_MESH_FIELD_DOMINANT_FRACTION) && !dominant_fractions) ||
         ((cfg->fields & ALEA_MESH_FIELD_ESTIMATED_ERROR) && !estimated_errors) ||
         ((cfg->fields & ALEA_MESH_FIELD_SAMPLE_COUNT) && !sample_counts) ||
         ((cfg->fields & ALEA_MESH_FIELD_TIE_FLAG) && !tie_flags) ||
         ((cfg->fields & ALEA_MESH_FIELD_REFINEMENT_FLAG) && !refinement_flags) ||
-        ((cfg->fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS) && !fraction_spans)) {
+        ((cfg->fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS) && !fraction_spans) ||
+        ((cfg->fields & ALEA_MESH_FIELD_CELL_FRACTIONS) && !cell_fraction_spans)) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                               "mesh failed to allocate composition arrays");
         free(xn); free(yn); free(zn);
         free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
         return NULL;
     }
 
@@ -727,7 +762,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
         return NULL;
     }
 
@@ -742,7 +777,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
         return NULL;
     }
     if (cfg->max_total_samples != 0 &&
@@ -753,7 +788,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
         return NULL;
     }
     int max_sample_axis = sample_axis;
@@ -774,7 +809,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     int worker_count = 1;
     int parallel_sampling = 0;
 #ifdef _OPENMP
-    if (cfg->workers != 1 && !fraction_spans && !cfg->visit && !cfg->progress &&
+    if (cfg->workers != 1 && !fraction_spans && !cell_fraction_spans &&
+        !cfg->visit && !cfg->progress &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE &&
         cfg->max_total_samples == 0) {
         worker_count = cfg->workers > 0 ? cfg->workers : omp_get_max_threads();
@@ -792,7 +828,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
         return NULL;
     }
     int *scratch = malloc(scratch_bytes);
@@ -802,7 +838,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
         return NULL;
     }
     int *scratch_materials = scratch;
@@ -814,12 +850,15 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     int *scratch_previous_counts = scratch + 6 * worker_scratch_count;
     alea_mesh_material_fraction_t *voxel_fractions = cfg->visit ?
         mesh_alloc_array(scratch_count, sizeof(*voxel_fractions), 0) : NULL;
-    if (cfg->visit && !voxel_fractions) {
+    alea_mesh_cell_fraction_t *voxel_cell_fractions = cfg->visit ?
+        mesh_alloc_array(scratch_count, sizeof(*voxel_cell_fractions), 0) : NULL;
+    if (cfg->visit && (!voxel_fractions || !voxel_cell_fractions)) {
         free(scratch);
         free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
-        free(fraction_spans);
+        free(fraction_spans); free(cell_fraction_spans);
+        free(voxel_fractions); free(voxel_cell_fractions);
         return NULL;
     }
 
@@ -887,7 +926,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
             free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
             free(mixed_flags); free(dominant_fractions); free(estimated_errors);
             free(sample_counts); free(tie_flags); free(refinement_flags);
-            free(fraction_spans); free(fractions); free(scratch);
+            free(fraction_spans); free(fractions);
+            free(cell_fraction_spans); free(cell_fractions); free(scratch);
+            free(voxel_fractions); free(voxel_cell_fractions);
             mesh_int_set_free(&material_set);
             return NULL;
         }
@@ -974,6 +1015,12 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                         voxel_fractions[m].fraction =
                             (double)counts[m] / (double)nsamples;
                     }
+                    for (int o = 0; o < n_owners; o++) {
+                        voxel_cell_fractions[o].cell_id = owner_cells[o];
+                        voxel_cell_fractions[o].material_id = owner_materials[o];
+                        voxel_cell_fractions[o].fraction =
+                            (double)owner_counts[o] / (double)nsamples;
+                    }
                     alea_mesh_voxel_sample_t sample = {
                         .i = i, .j = j, .k = k,
                         .x_min = xn[i], .x_max = xn[i + 1],
@@ -988,7 +1035,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                         .sample_count = voxel_sample_work,
                         .refinement_flags = refinement,
                         .fractions = voxel_fractions,
-                        .fraction_count = (uint32_t)n_materials
+                        .fraction_count = (uint32_t)n_materials,
+                        .cell_fractions = voxel_cell_fractions,
+                        .cell_fraction_count = (uint32_t)n_owners
                     };
                     if (cfg->visit(&sample, cfg->visit_user_data) != 0) {
                         alea_set_error_detail(ALEA_ERR_INTERRUPTED,
@@ -997,7 +1046,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
                         free(sample_counts); free(tie_flags); free(refinement_flags);
                         free(fraction_spans); free(fractions);
+                        free(cell_fraction_spans); free(cell_fractions);
                         free(scratch); free(voxel_fractions);
+                        free(voxel_cell_fractions);
                         mesh_int_set_free(&material_set);
                         return NULL;
                     }
@@ -1016,7 +1067,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
                         free(sample_counts); free(tie_flags); free(refinement_flags);
                         free(fraction_spans); free(fractions);
+                        free(cell_fraction_spans); free(cell_fractions);
                         free(scratch); free(voxel_fractions);
+                        free(voxel_cell_fractions);
                         mesh_int_set_free(&material_set);
                         return NULL;
                     }
@@ -1032,7 +1085,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                     free(mixed_flags); free(dominant_fractions); free(estimated_errors);
                     free(sample_counts); free(tie_flags); free(refinement_flags);
                     free(fraction_spans); free(fractions);
-                    free(scratch); free(voxel_fractions);
+                    free(cell_fraction_spans); free(cell_fractions);
+                    free(scratch); free(voxel_fractions); free(voxel_cell_fractions);
                     mesh_int_set_free(&material_set);
                     return NULL;
                 }
@@ -1044,7 +1098,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                     free(mixed_flags); free(dominant_fractions); free(estimated_errors);
                     free(sample_counts); free(tie_flags); free(refinement_flags);
                     free(fraction_spans); free(fractions);
-                    free(scratch); free(voxel_fractions);
+                    free(cell_fraction_spans); free(cell_fractions);
+                    free(scratch); free(voxel_fractions); free(voxel_cell_fractions);
                     mesh_int_set_free(&material_set);
                     return NULL;
                 }
@@ -1057,6 +1112,45 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                         fractions[fraction_count].fraction =
                             nsamples > 0 ? (double)counts[m] / (double)nsamples : 0.0;
                         fraction_count++;
+                    }
+                }
+
+                if (cell_fraction_spans &&
+                    (cell_fraction_count > (size_t)UINT32_MAX ||
+                     (size_t)n_owners > (size_t)UINT32_MAX - cell_fraction_count)) {
+                    alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                          "mesh cell-fraction span offset exceeds uint32_t");
+                    free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+                    free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                    free(sample_counts); free(tie_flags); free(refinement_flags);
+                    free(fraction_spans); free(fractions);
+                    free(cell_fraction_spans); free(cell_fractions);
+                    free(scratch); free(voxel_fractions); free(voxel_cell_fractions);
+                    mesh_int_set_free(&material_set);
+                    return NULL;
+                }
+                if (cell_fraction_spans &&
+                    ensure_cell_fraction_capacity(
+                        &cell_fractions, &cell_fraction_capacity,
+                        cell_fraction_count + (size_t)n_owners) != 0) {
+                    free(xn); free(yn); free(zn); free(mat_ids); free(cell_ids);
+                    free(mixed_flags); free(dominant_fractions); free(estimated_errors);
+                    free(sample_counts); free(tie_flags); free(refinement_flags);
+                    free(fraction_spans); free(fractions);
+                    free(cell_fraction_spans); free(cell_fractions);
+                    free(scratch); free(voxel_fractions); free(voxel_cell_fractions);
+                    mesh_int_set_free(&material_set);
+                    return NULL;
+                }
+                if (cell_fraction_spans) {
+                    cell_fraction_spans[idx].offset = (uint32_t)cell_fraction_count;
+                    cell_fraction_spans[idx].count = (uint32_t)n_owners;
+                    for (int o = 0; o < n_owners; o++) {
+                        cell_fractions[cell_fraction_count].cell_id = owner_cells[o];
+                        cell_fractions[cell_fraction_count].material_id = owner_materials[o];
+                        cell_fractions[cell_fraction_count].fraction =
+                            nsamples > 0 ? (double)owner_counts[o] / (double)nsamples : 0.0;
+                        cell_fraction_count++;
                     }
                 }
 
@@ -1079,13 +1173,14 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                 free(mixed_flags); free(dominant_fractions); free(estimated_errors);
                 free(sample_counts); free(tie_flags); free(refinement_flags);
                 free(fraction_spans); free(fractions);
-                free(scratch); free(voxel_fractions);
+                free(cell_fraction_spans); free(cell_fractions);
+                free(scratch); free(voxel_fractions); free(voxel_cell_fractions);
                 mesh_int_set_free(&material_set);
                 return NULL;
         }
     }
 
-    free(scratch); free(voxel_fractions);
+    free(scratch); free(voxel_fractions); free(voxel_cell_fractions);
 
     /* Collect unique materials */
     int num_mats = 0;
@@ -1097,6 +1192,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
         free(fraction_spans); free(fractions);
+        free(cell_fraction_spans); free(cell_fractions);
         return NULL;
     }
 
@@ -1107,6 +1203,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         free(mixed_flags); free(dominant_fractions); free(estimated_errors);
         free(sample_counts); free(tie_flags); free(refinement_flags);
         free(fraction_spans); free(fractions);
+        free(cell_fraction_spans); free(cell_fractions);
         return NULL;
     }
     res->nx = nx;  res->ny = ny;  res->nz = nz;
@@ -1131,6 +1228,9 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     res->fraction_spans = fraction_spans;
     res->fractions = fractions;
     res->fraction_count = fraction_count;
+    res->cell_fraction_spans = cell_fraction_spans;
+    res->cell_fractions = cell_fractions;
+    res->cell_fraction_count = cell_fraction_count;
     return res;
 }
 
@@ -1167,6 +1267,8 @@ void alea_mesh_result_free(alea_mesh_result_t *mesh) {
     free(mesh->refinement_flags);
     free(mesh->fraction_spans);
     free(mesh->fractions);
+    free(mesh->cell_fraction_spans);
+    free(mesh->cell_fractions);
     free(mesh);
 }
 
@@ -1656,6 +1758,44 @@ static int validate_mesh_result(const alea_mesh_result_t *mesh) {
             if (fabs(sum - 1.0) > 1e-12) {
                 alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                                       "mesh sampled fractions do not sum to one");
+                return -1;
+            }
+        }
+    }
+    if (!!mesh->cell_fraction_spans != !!mesh->cell_fractions ||
+        ((mesh->cell_fraction_spans || mesh->cell_fractions) &&
+         mesh->cell_fraction_count == 0)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "mesh cell-fraction storage is inconsistent");
+        return -1;
+    }
+    if (mesh->cell_fraction_spans) {
+        for (size_t v = 0; v < ncells; v++) {
+            const alea_mesh_fraction_span_t span = mesh->cell_fraction_spans[v];
+            const size_t begin = span.offset;
+            const size_t count = span.count;
+            if (count == 0 || begin > mesh->cell_fraction_count ||
+                count > mesh->cell_fraction_count - begin) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                      "mesh cell-fraction span is invalid");
+                return -1;
+            }
+            double sum = 0.0;
+            for (size_t i = 0; i < count; i++) {
+                const alea_mesh_cell_fraction_t *f =
+                    &mesh->cell_fractions[begin + i];
+                if (!mesh_result_material_known(mesh, f->material_id) ||
+                    !isfinite(f->fraction) || f->fraction < 0.0 ||
+                    f->fraction > 1.0) {
+                    alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                          "mesh cell-fraction entry is invalid");
+                    return -1;
+                }
+                sum += f->fraction;
+            }
+            if (fabs(sum - 1.0) > 1e-12) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                                      "mesh cell fractions do not sum to one");
                 return -1;
             }
         }
