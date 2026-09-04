@@ -232,7 +232,8 @@ RAYCAST_SRCS = \
 	$(RAYCAST_DIR)/raycast_api.c
 
 RNG_SRCS = \
-	$(RNG_DIR)/alea_rng.c
+	$(RNG_DIR)/alea_rng.c \
+	$(RNG_DIR)/alea_rng_distribution.c
 
 # Slice module (analytical intersection + vector export)
 SLICE_SRCS = \

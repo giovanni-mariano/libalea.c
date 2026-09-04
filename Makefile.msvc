@@ -159,7 +159,8 @@ PRIMITIVES_OBJS = \
 	$(BUILD)\primitives\bbox.obj
 
 RNG_OBJS = \
-	$(BUILD)\rng\alea_rng.obj
+	$(BUILD)\rng\alea_rng.obj \
+	$(BUILD)\rng\alea_rng_distribution.obj
 
 RAYCAST_OBJS = \
 	$(BUILD)\raycast\raycast.obj \
@@ -526,6 +527,9 @@ $(BUILD)\raycast\raycast.obj: $(SRC)\raycast\raycast.c dirs
 
 $(BUILD)\rng\alea_rng.obj: $(SRC)\rng\alea_rng.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\rng\ $(SRC)\rng\alea_rng.c
+
+$(BUILD)\rng\alea_rng_distribution.obj: $(SRC)\rng\alea_rng_distribution.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\rng\ $(SRC)\rng\alea_rng_distribution.c
 
 $(BUILD)\raycast\ray_request.obj: $(SRC)\raycast\ray_request.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_request.c
