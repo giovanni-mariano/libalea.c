@@ -895,7 +895,7 @@ int alea_find_cells_grid(alea_system_t* sys,
             grid_query_stats_merge(&grid_stats, &thread_stats);
         }
     }
-#else
+#elif 0 /* Old sequential fallback; tinypar dispatch above is authoritative. */
     /* Sequential version with row-local rich-path coherence. */
     if (stats_en) alea_perf_reset();
 
