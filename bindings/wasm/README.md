@@ -11,6 +11,12 @@ libalea, and rendered from a perspective orbit camera. The included viewer has
 an MCNP file picker, coordinate targeting, interactive orbit/zoom, a cutaway
 plane, and WebM capture.
 
+For responsive interaction, camera motion uses a 160x90 preview without edge
+post-processing and is capped at 15 frames per second. Pausing the orbit or
+leaving an interaction idle for 180 ms produces an edge-enhanced 320x180
+frame. Recording keeps the full 320x180 resolution. Both WASM variants are
+built with SIMD enabled and use the renderer's native 32x32 tile size.
+
 `web/models/pin-cluster.mcnp` is a small default model, not geometry hard-coded
 into the binding. Loading another `.mcnp`, `.inp`, `.i`, or text input replaces
 it at runtime without rebuilding the module.

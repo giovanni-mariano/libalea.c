@@ -4,10 +4,10 @@
 
 LIBALEA_ROOT := ../..
 OUT_DIR := dist
-SINGLE_BUILD_DIR := build/wasm-single
-SINGLE_BIN_DIR := bin/wasm-single
-OPENMP_BUILD_DIR := build/wasm-openmp
-OPENMP_BIN_DIR := bin/wasm-openmp
+SINGLE_BUILD_DIR := build/wasm-single-simd
+SINGLE_BIN_DIR := bin/wasm-single-simd
+OPENMP_BUILD_DIR := build/wasm-openmp-simd
+OPENMP_BIN_DIR := bin/wasm-openmp-simd
 
 EMCC ?= emcc
 EMAR ?= emar
@@ -16,9 +16,11 @@ PTHREAD_POOL_SIZE ?= 8
 WASM_INITIAL_MEMORY ?= 268435456
 WASM_MAXIMUM_MEMORY ?= 2147483648
 LARGE_INPUT_MB ?= 64
+WASM_SIMD_FLAGS ?= -msimd128
 
 EXPORTED_FUNCTIONS := [\
 "_alea_wasm_init",\
+"_alea_wasm_resize",\
 "_alea_wasm_load_mcnp",\
 "_alea_wasm_render",\
 "_alea_wasm_pixels",\
@@ -81,12 +83,14 @@ test-openmp-node: openmp
 	node tests/test_wasm.mjs alea-openmp.js openmp
 
 single-lib:
-	$(MAKE) -C $(LIBALEA_ROOT) CC=$(EMCC) AR=$(EMAR) \
+	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
+		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
 		BUILD_DIR=$(SINGLE_BUILD_DIR) BIN_DIR=$(SINGLE_BIN_DIR) \
 		RELEASE=1 PORTABLE=1 lib-core $(SINGLE_BIN_DIR)/libalea_mcnp.a
 
 openmp-lib:
-	$(MAKE) -C $(LIBALEA_ROOT) CC=$(EMCC) AR=$(EMAR) \
+	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
+		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
 		BUILD_DIR=$(OPENMP_BUILD_DIR) BIN_DIR=$(OPENMP_BIN_DIR) \
 		RELEASE=1 PORTABLE=1 USE_OPENMP=1 lib-core $(OPENMP_BIN_DIR)/libalea_mcnp.a
 
@@ -94,13 +98,13 @@ $(OUT_DIR):
 	mkdir -p $@
 
 $(OUT_DIR)/alea.js: Makefile alea_wasm.c alea_wasm.h single-lib | $(OUT_DIR)
-	$(EMCC) $(COMMON_LINK_FLAGS) \
+	$(EMCC) $(WASM_SIMD_FLAGS) $(COMMON_LINK_FLAGS) \
 		-I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \
 		alea_wasm.c $(LIBALEA_ROOT)/$(SINGLE_BIN_DIR)/libalea_mcnp.a \
 		$(LIBALEA_ROOT)/$(SINGLE_BIN_DIR)/libalea.a -lm -o $@
 
 $(OUT_DIR)/alea-openmp.js: Makefile alea_wasm.c alea_wasm.h openmp-lib | $(OUT_DIR)
-	$(EMCC) $(COMMON_LINK_FLAGS) -fopenmp -pthread \
+	$(EMCC) $(WASM_SIMD_FLAGS) $(COMMON_LINK_FLAGS) -fopenmp -pthread \
 		-sPTHREAD_POOL_SIZE=$(PTHREAD_POOL_SIZE) \
 		-sINITIAL_MEMORY=$(WASM_INITIAL_MEMORY) \
 		-I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \

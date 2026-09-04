@@ -1,4 +1,6 @@
 Seven-pin reactor cluster for the libalea WASM viewer
+c SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+c SPDX-License-Identifier: MPL-2.0
 c
 c Fuel pins: seven finite cylinders, material 1.
 1 1 -10.4 -10 5 -6 imp:n=1

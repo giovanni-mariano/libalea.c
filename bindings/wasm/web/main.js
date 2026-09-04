@@ -1,8 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+// SPDX-License-Identifier: MPL-2.0
+
 const WIDTH = 320;
 const HEIGHT = 180;
+const ORBIT_FRAME_INTERVAL = 1000 / 15;
+const SETTLE_DELAY = 180;
 
 const canvas = document.querySelector("#scene");
 const context = canvas.getContext("2d", {alpha: false});
+const previewCanvas = document.createElement("canvas");
+const previewContext = previewCanvas.getContext("2d", {alpha: false});
 const status = document.querySelector("#status");
 const modelInfo = document.querySelector("#model-info");
 const pauseButton = document.querySelector("#pause");
@@ -27,6 +34,17 @@ let dragging = false;
 let previousPointer = null;
 let previousTime = performance.now();
 let modelCenter = [0, 0, 0];
+let interactionUntil = 0;
+let nextOrbitFrame = 0;
+let needsFullFrame = true;
+let recording = false;
+let pausedBeforeRecording = false;
+
+function markInteraction() {
+  interactionUntil = performance.now() + SETTLE_DELAY;
+  needsFullFrame = true;
+  dirty = true;
+}
 
 function setCoordinateInputs(coordinates) {
   coordinates.forEach((value, index) => {
@@ -56,9 +74,20 @@ worker.onmessage = ({data}) => {
     status.textContent = `Target · ${data.target.map((value) => value.toPrecision(6)).join(", ")}`;
     dirty = true;
   } else if (data.type === "frame") {
-    context.putImageData(
-      new ImageData(new Uint8ClampedArray(data.pixels), WIDTH, HEIGHT), 0, 0);
-    document.querySelector("#render-time").textContent = `${data.renderMs.toFixed(1)} ms`;
+    const image = new ImageData(
+      new Uint8ClampedArray(data.pixels), data.width, data.height);
+    if (data.preview) {
+      previewCanvas.width = data.width;
+      previewCanvas.height = data.height;
+      previewContext.putImageData(image, 0, 0);
+      context.imageSmoothingEnabled = true;
+      context.drawImage(previewCanvas, 0, 0, WIDTH, HEIGHT);
+    } else {
+      context.putImageData(image, 0, 0);
+    }
+    const quality = data.preview ? "preview" : "full";
+    document.querySelector("#render-time").textContent =
+      `${data.renderMs.toFixed(1)} ms · ${quality}`;
     renderPending = false;
   } else if (data.type === "error") {
     status.textContent = `Error · ${data.message}`;
@@ -77,13 +106,24 @@ function animate(now) {
     azimuth += delta * 0.22;
     dirty = true;
   }
-  if (ready && dirty && !renderPending) {
+  const moving = dragging || !paused || now < interactionUntil;
+  const preview = moving && !recording;
+  if (!moving && needsFullFrame) dirty = true;
+  const throttleReady = !preview || now >= nextOrbitFrame;
+  if (ready && dirty && !renderPending && throttleReady) {
     dirty = false;
     renderPending = true;
+    if (preview) {
+      needsFullFrame = true;
+      nextOrbitFrame = now + ORBIT_FRAME_INTERVAL;
+    } else {
+      needsFullFrame = false;
+    }
     worker.postMessage({
       type: "render", azimuth, elevation, distance,
       clip: clipInput.checked,
       clipFraction: Number(clipPosition.value),
+      preview,
     });
   }
   requestAnimationFrame(animate);
@@ -93,6 +133,7 @@ canvas.addEventListener("pointerdown", (event) => {
   dragging = true;
   previousPointer = event;
   canvas.setPointerCapture(event.pointerId);
+  markInteraction();
 });
 canvas.addEventListener("pointermove", (event) => {
   if (!dragging) return;
@@ -100,21 +141,26 @@ canvas.addEventListener("pointermove", (event) => {
   elevation = Math.max(-1.35, Math.min(1.35,
     elevation + (event.clientY - previousPointer.clientY) * 0.012));
   previousPointer = event;
-  dirty = true;
+  markInteraction();
 });
-canvas.addEventListener("pointerup", () => { dragging = false; });
+canvas.addEventListener("pointerup", () => {
+  dragging = false;
+  markInteraction();
+});
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
   distance = Math.max(1.5, Math.min(7, distance * Math.exp(event.deltaY * 0.001)));
-  dirty = true;
+  markInteraction();
 }, {passive: false});
 
 pauseButton.addEventListener("click", () => {
   paused = !paused;
   pauseButton.textContent = paused ? "Orbit" : "Pause";
+  needsFullFrame = true;
+  dirty = true;
 });
-clipInput.addEventListener("change", () => { dirty = true; });
-clipPosition.addEventListener("input", () => { dirty = true; });
+clipInput.addEventListener("change", markInteraction);
+clipPosition.addEventListener("input", markInteraction);
 
 function goToCoordinates(coordinates) {
   if (!coordinates.every(Number.isFinite)) {
@@ -152,6 +198,11 @@ recordButton.addEventListener("click", () => {
   const options = MediaRecorder.isTypeSupported(preferred) ? {mimeType: preferred} : {};
   const recorder = new MediaRecorder(stream, options);
   const chunks = [];
+  pausedBeforeRecording = paused;
+  recording = true;
+  paused = false;
+  pauseButton.textContent = "Pause";
+  dirty = true;
   recorder.ondataavailable = ({data}) => { if (data.size) chunks.push(data); };
   recorder.onstop = () => {
     const blob = new Blob(chunks, {type: recorder.mimeType || "video/webm"});
@@ -162,6 +213,11 @@ recordButton.addEventListener("click", () => {
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     recordButton.disabled = false;
     recordButton.textContent = "Record 10s";
+    recording = false;
+    paused = pausedBeforeRecording;
+    pauseButton.textContent = paused ? "Orbit" : "Pause";
+    needsFullFrame = true;
+    dirty = true;
   };
   recordButton.disabled = true;
   recordButton.textContent = "Recording…";

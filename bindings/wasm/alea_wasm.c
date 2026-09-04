@@ -59,7 +59,7 @@ static void configure_renderer(int width, int height) {
     state.config.shadows = 0;
     state.config.edges = 1;
     state.config.aa_samples = 1;
-    state.config.tile_size = 16;
+    state.config.tile_size = 32;
     state.config.ambient = 0.58f;
     state.config.diffuse = 0.42f;
     state.config.specular = 0.08f;
@@ -96,6 +96,42 @@ ALEA_WASM_EXPORT int alea_wasm_init(int width, int height) {
         return -1;
     }
     state.initialized = 1;
+    return 0;
+}
+
+ALEA_WASM_EXPORT int alea_wasm_resize(int width, int height) {
+    if (!state.initialized) {
+        set_error("renderer is not initialized");
+        return -1;
+    }
+    if (width < 16 || height < 16 || width > 2048 || height > 2048) {
+        set_error("frame dimensions must be between 16 and 2048 pixels");
+        return -1;
+    }
+    if (width == state.width && height == state.height) return 0;
+
+    const size_t pixels = (size_t)width * (size_t)height;
+    render_framebuffer_t* framebuffer = render_framebuffer_create(width, height, 0);
+    uint8_t* rgb = malloc(pixels * 3);
+    uint8_t* rgba = malloc(pixels * 4);
+    if (!framebuffer || !rgb || !rgba) {
+        render_framebuffer_free(framebuffer);
+        free(rgb);
+        free(rgba);
+        set_error("failed to resize the WASM framebuffer");
+        return -1;
+    }
+
+    render_framebuffer_free(state.framebuffer);
+    free(state.rgb);
+    free(state.rgba);
+    state.framebuffer = framebuffer;
+    state.rgb = rgb;
+    state.rgba = rgba;
+    state.width = width;
+    state.height = height;
+    state.config.width = width;
+    state.config.height = height;
     return 0;
 }
 
@@ -141,7 +177,7 @@ ALEA_WASM_EXPORT int alea_wasm_load_mcnp(const char* input, int length) {
 
 ALEA_WASM_EXPORT int alea_wasm_render(double azimuth, double elevation,
                                       double distance_scale,
-                                      double clip_fraction) {
+                                      double clip_fraction, int edges) {
     if (!state.initialized || !state.system) {
         set_error("load an MCNP model before rendering");
         return -1;
@@ -156,6 +192,7 @@ ALEA_WASM_EXPORT int alea_wasm_render(double azimuth, double elevation,
     state.config.eye[1] = state.target[1] + sin(azimuth) * horizontal;
     state.config.eye[2] = state.target[2] + sin(elevation) * distance;
     memcpy(state.config.target, state.target, sizeof(state.target));
+    state.config.edges = edges != 0;
     state.config.num_clips = 0;
     if (clip_fraction >= 0.0) {
         if (clip_fraction > 1.0) clip_fraction = 1.0;

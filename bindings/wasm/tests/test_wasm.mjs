@@ -43,7 +43,10 @@ if (module._alea_wasm_init(160, 90) !== 0 || loadMcnp(deck) !== 0) {
   throw new Error(`WASM MCNP load failed: ${errorMessage()}`);
 }
 if (module._alea_wasm_set_target(1.0, 2.0, 3.0) !== 0 ||
-    module._alea_wasm_render(0.7, 0.35, 2.7, 0.5) !== 0) {
+    module._alea_wasm_resize(80, 45) !== 0 ||
+    module._alea_wasm_render(0.7, 0.35, 2.7, 0.5, 0) !== 0 ||
+    module._alea_wasm_resize(160, 90) !== 0 ||
+    module._alea_wasm_render(0.7, 0.35, 2.7, 0.5, 1) !== 0) {
   throw new Error(`WASM render failed: ${errorMessage()}`);
 }
 const pointer = module._alea_wasm_pixels();

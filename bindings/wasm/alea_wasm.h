@@ -11,9 +11,10 @@ extern "C" {
 #endif
 
 int alea_wasm_init(int width, int height);
+int alea_wasm_resize(int width, int height);
 int alea_wasm_load_mcnp(const char* input, int length);
 int alea_wasm_render(double azimuth, double elevation, double distance_scale,
-                     double clip_fraction);
+                     double clip_fraction, int edges);
 const uint8_t* alea_wasm_pixels(void);
 int alea_wasm_pixel_bytes(void);
 int alea_wasm_width(void);

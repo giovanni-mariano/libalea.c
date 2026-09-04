@@ -21,7 +21,10 @@ int main(void) {
         return 1;
     }
     if (alea_wasm_set_target(1.0, 2.0, 3.0) != 0 ||
-        alea_wasm_render(0.7, 0.35, 2.7, 0.5) != 0) {
+        alea_wasm_resize(80, 45) != 0 ||
+        alea_wasm_render(0.7, 0.35, 2.7, 0.5, 0) != 0 ||
+        alea_wasm_resize(160, 90) != 0 ||
+        alea_wasm_render(0.7, 0.35, 2.7, 0.5, 1) != 0) {
         fprintf(stderr, "render failed: %s\n", alea_wasm_last_error());
         alea_wasm_destroy();
         return 1;

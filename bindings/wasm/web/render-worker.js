@@ -1,5 +1,10 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+// SPDX-License-Identifier: MPL-2.0
+
 const WIDTH = 320;
 const HEIGHT = 180;
+const PREVIEW_WIDTH = 160;
+const PREVIEW_HEIGHT = 90;
 
 let module;
 let threaded = false;
@@ -85,8 +90,14 @@ self.onmessage = async ({data}) => {
     }
     if (data.type === "render" && module) {
       const startedAt = performance.now();
+      const width = data.preview ? PREVIEW_WIDTH : WIDTH;
+      const height = data.preview ? PREVIEW_HEIGHT : HEIGHT;
+      if (module._alea_wasm_resize(width, height) !== 0) {
+        throw new Error(readCString(module._alea_wasm_last_error()));
+      }
       const clip = data.clip ? data.clipFraction : -1.0;
-      if (module._alea_wasm_render(data.azimuth, data.elevation, data.distance, clip) !== 0) {
+      if (module._alea_wasm_render(
+        data.azimuth, data.elevation, data.distance, clip, data.preview ? 0 : 1) !== 0) {
         throw new Error(readCString(module._alea_wasm_last_error()));
       }
       const pointer = module._alea_wasm_pixels();
@@ -96,6 +107,9 @@ self.onmessage = async ({data}) => {
         type: "frame",
         pixels: pixels.buffer,
         renderMs: performance.now() - startedAt,
+        width,
+        height,
+        preview: data.preview,
       }, [pixels.buffer]);
     }
   } catch (error) {
