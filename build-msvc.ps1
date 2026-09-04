@@ -17,15 +17,10 @@
          the install's default/latest toolset), then runs
          `nmake /f Makefile.msvc <args>`.
 
-    When USE_OPENMP=1 is among the arguments, it also locates
-    libomp140.x86_64.dll under the VS install and prepends its directory to PATH
-    so the OpenMP-enabled test executables can load it at run time (vcvars does
-    not put the LLVM OpenMP redist on PATH).
-
 .EXAMPLE
     ./build-msvc.ps1 full
     ./build-msvc.ps1 test
-    ./build-msvc.ps1 USE_OPENMP=1 RELEASE=1 full
+    ./build-msvc.ps1 USE_TINYPAR=1 RELEASE=1 full
 #>
 [CmdletBinding()]
 param(
@@ -57,33 +52,8 @@ if (-not (Test-Path $vcvars)) {
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $argStr   = ($NmakeArgs -join ' ')
 
-# --- OpenMP: make libomp140.x86_64.dll loadable by the test exes --------------
-# /openmp:llvm exes load this DLL at startup, but vcvars doesn't put the LLVM
-# OpenMP redist on PATH. Find it under the VS tree and prepend its directory.
-$ompPrep = ''
-if ($NmakeArgs -contains 'USE_OPENMP=1') {
-    $roots = @(
-        (Join-Path $vsPath 'VC\Redist'),
-        (Join-Path $vsPath 'VC\Tools\Llvm')
-    ) | Where-Object { Test-Path $_ }
-
-    $dll = $null
-    foreach ($root in $roots) {
-        $dll = Get-ChildItem -Path $root -Recurse -Filter 'libomp140.x86_64.dll' -ErrorAction SilentlyContinue |
-               Select-Object -First 1
-        if ($dll) { break }
-    }
-
-    if ($dll) {
-        Write-Host "OpenMP runtime: $($dll.FullName)"
-        $ompPrep = "set `"PATH=$($dll.DirectoryName);%PATH%`" && "
-    } else {
-        Write-Warning "libomp140.x86_64.dll not found under '$vsPath'. OpenMP test exes may fail to start; install the VS 'C++ Clang/OpenMP' redist component."
-    }
-}
-
-# --- vcvars + (optional PATH prep) + nmake, all in one cmd session -------------
-$cmd = "call `"$vcvars`" x64 && cd /d `"$repoRoot`" && $ompPrep nmake /nologo /f Makefile.msvc $argStr"
+# --- vcvars + nmake, all in one cmd session -----------------------------------
+$cmd = "call `"$vcvars`" x64 && cd /d `"$repoRoot`" && nmake /nologo /f Makefile.msvc $argStr"
 Write-Host ">> $cmd"
 & cmd.exe /c $cmd
 exit $LASTEXITCODE

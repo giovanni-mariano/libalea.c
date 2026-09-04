@@ -65,28 +65,20 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Platform | Archive |
 |----------|---------|
 | Linux x64 | `alea-linux-x64.tar.gz` |
-| Linux x64 (conda + OpenMP) | `alea-linux-conda-openmp-x64.tar.gz` |
+| Linux x64 (threaded; legacy archive name) | `alea-linux-conda-openmp-x64.tar.gz` |
 | Linux ARM64 | `alea-linux-arm64.tar.gz` |
 | macOS Intel | `alea-macos-x64.tar.gz` |
 | macOS Apple Silicon | `alea-macos-arm64.tar.gz` |
 | Windows x64 (MinGW/UCRT) | `alea-windows-x64.zip` |
 | Windows x64 (MSVC) | `alea-windows-msvc-x64.zip` |
-| Windows x64 (MSVC + OpenMP) | `alea-windows-msvc-openmp-x64.zip` |
+| Windows x64 (MSVC, threaded; legacy archive name) | `alea-windows-msvc-openmp-x64.zip` |
 
 The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
 `mc_convert`, `mc_plotter`, `nuc_plot`, `large_model_probe`, static libraries,
 and headers. The MSVC archives package the `.lib` static libraries and headers.
-Applications linked against the conda OpenMP Linux archive or the OpenMP-enabled
-MSVC archive require the LLVM OpenMP runtime at run time:
-
-```powershell
-conda install -c conda-forge llvm-openmp
-```
-
-This runtime requirement does not require Visual Studio, Windows SDK headers, or
-compiler tools; those are needed only when compiling or linking applications.
-On Linux, run from an activated conda environment or make sure the conda
-environment's `lib` directory is on the runtime library search path.
+The two archives retaining `openmp` in their names are compatibility artifacts;
+current releases use the vendored tinypar backend and have no OpenMP runtime
+dependency.
 
 ### Building from Source
 
@@ -116,9 +108,10 @@ make install      # Install libraries, headers, CLI, tools, and docs
 
 ### Build Options by Platform
 
-The default build does not enable OpenMP. Add `USE_OPENMP=1` to compile the
-same targets with OpenMP parallelization enabled. Add `RELEASE=1` for an
-optimized build.
+The default build uses tinypar's serial backend. Add `USE_TINYPAR=1` to enable
+native worker threads (POSIX threads on Linux/macOS, Win32 threads on Windows).
+`USE_OPENMP=1` remains accepted as a deprecated compatibility alias. Add
+`RELEASE=1` for an optimized build.
 
 Common Makefile variables:
 
@@ -126,7 +119,7 @@ Common Makefile variables:
 make CC=clang full cli tools                  # Select compiler
 make PREFIX=/opt/libalea install             # Install prefix
 make DESTDIR=/tmp/pkg PREFIX=/usr install    # Package/stage install
-make LIBOMP_PREFIX=/path/to/libomp USE_OPENMP=1 full cli tools
+make USE_TINYPAR=1 RELEASE=1 full cli tools   # Enable worker threads
 ```
 
 `make install` builds and installs the static libraries, public headers, `alea`
@@ -135,60 +128,36 @@ CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
 
 #### Linux
 
-Non-OpenMP build:
+Portable serial build:
 
 ```bash
 make full cli tools
 make test
 ```
 
-OpenMP build with gcc:
+Threaded build with GCC or Clang:
 
 ```bash
 make clean
-make USE_OPENMP=1 RELEASE=1 full cli tools
-make USE_OPENMP=1 test
-```
-
-OpenMP build with clang requires an OpenMP runtime such as `libomp`:
-
-```bash
-make clean
-make CC=clang USE_OPENMP=1 RELEASE=1 full cli tools
-make CC=clang USE_OPENMP=1 test
-```
-
-If `libomp` is installed in a non-standard location, pass its prefix:
-
-```bash
-make CC=clang USE_OPENMP=1 LIBOMP_PREFIX=/opt/libomp full cli tools
+make USE_TINYPAR=1 RELEASE=1 full cli tools
+make USE_TINYPAR=1 test
 ```
 
 #### macOS
 
-Non-OpenMP build:
+Portable serial build:
 
 ```bash
 make full cli tools
 make test
 ```
 
-OpenMP builds with Apple Clang require Homebrew `libomp`:
+Threaded build:
 
 ```bash
-brew install libomp
 make clean
-make USE_OPENMP=1 RELEASE=1 full cli tools
-make USE_OPENMP=1 test
-```
-
-The Makefile detects `libomp` with `brew --prefix libomp` and falls back to
-`/usr/local/opt/libomp` if Homebrew is not on `PATH`.
-
-Override the detected path when needed:
-
-```bash
-make USE_OPENMP=1 LIBOMP_PREFIX=/opt/homebrew/opt/libomp full cli tools
+make USE_TINYPAR=1 RELEASE=1 full cli tools
+make USE_TINYPAR=1 test
 ```
 
 #### Windows with MinGW/UCRT
@@ -208,28 +177,27 @@ make full cli tools
 make test-unit test-integration
 ```
 
-OpenMP builds require the MinGW OpenMP runtime:
+Threaded build:
 
 ```bash
-pacman -S --needed mingw-w64-ucrt-x86_64-omp
 make clean
-make USE_OPENMP=1 RELEASE=1 full cli tools
-make USE_OPENMP=1 test-unit test-integration
+make USE_TINYPAR=1 RELEASE=1 full cli tools
+make USE_TINYPAR=1 test-unit test-integration
 ```
 
 #### Windows with conda clang-cl
 
 Use this path when users can install conda packages without admin rights and the
 machine already has Windows SDK/MSVC headers and import libraries available.
-The compiler, archive tool, OpenMP runtime, and `jom` are supplied by conda, but
-`clang-cl` still targets the MSVC ABI.
+The compiler, archive tool, and `jom` are supplied by conda, but `clang-cl`
+still targets the MSVC ABI.
 
 ```powershell
-conda create -n libalea-clang -c conda-forge clang_win-64 llvm-openmp jom
+conda create -n libalea-clang -c conda-forge clang_win-64 jom
 conda activate libalea-clang
 
-jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 full
-jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 test
+jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 full
+jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 test
 ```
 
 If `clang-cl` reports missing headers such as `vcruntime.h` or `windows.h`, the
@@ -252,8 +220,8 @@ conda activate libalea-ucrt
 
 $cc = (Get-Command x86_64-w64-mingw32-gcc).Source
 $ar = & $cc -print-prog-name=ar
-make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_OPENMP=1 full cli tools
-make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_OPENMP=1 test-unit test-integration test-lua
+make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_TINYPAR=1 full cli tools
+make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_TINYPAR=1 test-unit test-integration test-lua
 ```
 
 #### Windows with MSVC
@@ -263,36 +231,35 @@ scripts locate Visual Studio, enter the x64 developer environment, and run
 `nmake /f Makefile.msvc`. The MSVC build currently covers the static libraries
 and tests; the Lua CLI target is built by the GNU Makefile.
 
-Non-OpenMP build from PowerShell:
+Portable serial build from PowerShell:
 
 ```powershell
 .\build-msvc.ps1 full
 .\build-msvc.ps1 test
 ```
 
-OpenMP build from PowerShell:
+Threaded build from PowerShell:
 
 ```powershell
-.\build-msvc.ps1 USE_OPENMP=1 RELEASE=1 full
-.\build-msvc.ps1 USE_OPENMP=1 test
+.\build-msvc.ps1 USE_TINYPAR=1 RELEASE=1 full
+.\build-msvc.ps1 USE_TINYPAR=1 test
 ```
 
 The same commands are available from `cmd.exe`:
 
 ```bat
 build-msvc.bat full
-build-msvc.bat USE_OPENMP=1 RELEASE=1 full
+build-msvc.bat USE_TINYPAR=1 RELEASE=1 full
 ```
 
-MSVC OpenMP uses `/openmp:llvm`, so install the Visual Studio LLVM/OpenMP
-runtime component if OpenMP executables cannot find `libomp140.x86_64.dll`.
+No separate threading runtime is required.
 
 ### Dependencies
 
 - C11 compiler (gcc, clang, or MSVC)
 - `make` on Linux/macOS/MinGW, or Visual Studio `nmake` on Windows
 - Standard math library (`-lm`)
-- Optional: OpenMP for parallel rendering and ray tracing
+- Vendored tinypar backend; native threaded builds use POSIX or Win32 threads
 
 ### Libraries Produced
 
@@ -380,7 +347,7 @@ The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea
 | `alea_mesh_sample` / `alea_mesh_visit` | Fixed structured-grid composition estimates |
 | `alea_adaptive_grid_sample` | Nonconforming adaptive octree voxels |
 
-Build `make mesh-benchmark` (or `make USE_OPENMP=1 mesh-benchmark`) to measure
+Build `make mesh-benchmark` (or `make USE_TINYPAR=1 mesh-benchmark`) to measure
 uniform, interface, and many-material grids across center, regular subcell, and
 stratified modes. The benchmark also reports retained bytes per voxel for
 material-only, diagnostic, and complete result masks.

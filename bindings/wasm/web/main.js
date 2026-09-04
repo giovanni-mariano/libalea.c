@@ -61,7 +61,7 @@ function showModel(name, model) {
 worker.onmessage = ({data}) => {
   if (data.type === "ready") {
     ready = true;
-    const mode = data.threaded ? `OpenMP · ${data.threads} workers` : "single thread";
+    const mode = data.threaded ? `tinypar · ${data.threads} workers` : "single thread";
     status.textContent = `Ready · ${mode}`;
     showModel("pin-cluster.mcnp", data.model);
     dirty = true;

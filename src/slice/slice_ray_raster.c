@@ -5,6 +5,7 @@
 #include "alea.h"
 #include "alea_slice.h"
 #include "raycast/raycast.h"
+#include "util/alea_parallel.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -17,7 +18,7 @@
      ALEA_SLICE_RASTER_DENSITY | ALEA_SLICE_RASTER_RESOLUTION_FLAGS)
 
 /* A parallel region costs more than it saves on small viewports. */
-#define ALEA_SLICE_RASTER_OMP_MIN_PIXELS ((size_t)65536)
+#define ALEA_SLICE_RASTER_PARALLEL_MIN_PIXELS ((size_t)65536)
 
 typedef struct {
     uintptr_t begin;
@@ -151,6 +152,71 @@ static void raster_fill_u8(uint8_t* out, size_t begin, size_t end, uint8_t value
     for (size_t i = begin; i < end; i++) out[i] = value;
 }
 
+typedef struct {
+    const alea_slice_view_t* view;
+    alea_slice_raster_t* output;
+    const uint64_t* offsets;
+    const double* enters;
+    const double* exits;
+    const int32_t* cells;
+    const int32_t* materials;
+    const int32_t* universes;
+    const int32_t* fills;
+    const double* densities;
+    const uint8_t* flags;
+} slice_raster_parallel_context_t;
+
+static int slice_raster_rows(void* opaque, size_t worker,
+                             size_t begin_row, size_t end_row) {
+    (void)worker;
+    slice_raster_parallel_context_t* context = opaque;
+    alea_slice_raster_t* output = context->output;
+    for (size_t row = begin_row; row < end_row; row++) {
+        const size_t row_offset = row * output->nu;
+        const size_t row_end = row_offset + output->nu;
+        if (output->fields & ALEA_SLICE_RASTER_CELL_ID)
+            raster_fill_i32(output->cell_ids, row_offset, row_end, -1);
+        if (output->fields & ALEA_SLICE_RASTER_MATERIAL_ID)
+            raster_fill_i32(output->material_ids, row_offset, row_end, 0);
+        if (output->fields & ALEA_SLICE_RASTER_UNIVERSE_ID)
+            raster_fill_i32(output->universe_ids, row_offset, row_end, -1);
+        if (output->fields & ALEA_SLICE_RASTER_FILL_UNIVERSE)
+            raster_fill_i32(output->fill_universe_ids, row_offset, row_end, -1);
+        if (output->fields & ALEA_SLICE_RASTER_DENSITY)
+            raster_fill_f64(output->densities, row_offset, row_end, 0.0);
+        if (output->fields & ALEA_SLICE_RASTER_RESOLUTION_FLAGS)
+            raster_fill_u8(output->resolution_flags, row_offset, row_end, 0);
+        for (size_t i = (size_t)context->offsets[row];
+             i < (size_t)context->offsets[row + 1]; i++) {
+            const size_t lo = raster_pixel_index(
+                context->enters[i], context->view, output->nu);
+            const size_t hi = raster_pixel_index(
+                context->exits[i], context->view, output->nu);
+            if (lo >= hi) continue;
+            const size_t begin = row_offset + lo;
+            const size_t end = row_offset + hi;
+            if (output->fields & ALEA_SLICE_RASTER_CELL_ID)
+                raster_fill_i32(output->cell_ids, begin, end, context->cells[i]);
+            if (output->fields & ALEA_SLICE_RASTER_MATERIAL_ID)
+                raster_fill_i32(output->material_ids, begin, end,
+                                context->materials[i]);
+            if (output->fields & ALEA_SLICE_RASTER_UNIVERSE_ID)
+                raster_fill_i32(output->universe_ids, begin, end,
+                                context->universes[i]);
+            if (output->fields & ALEA_SLICE_RASTER_FILL_UNIVERSE)
+                raster_fill_i32(output->fill_universe_ids, begin, end,
+                                context->fills[i]);
+            if (output->fields & ALEA_SLICE_RASTER_DENSITY)
+                raster_fill_f64(output->densities, begin, end,
+                                context->densities[i]);
+            if (output->fields & ALEA_SLICE_RASTER_RESOLUTION_FLAGS)
+                raster_fill_u8(output->resolution_flags, begin, end,
+                               context->flags[i]);
+        }
+    }
+    return 0;
+}
+
 void alea_slice_raster_init(alea_slice_raster_t* raster) {
     if (!raster) return;
     memset(raster, 0, sizeof(*raster));
@@ -261,43 +327,20 @@ int alea_rasterize_ray_slice_compact(
         }
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel for if(layout.pixels >= ALEA_SLICE_RASTER_OMP_MIN_PIXELS) schedule(static)
-#endif
-    for (size_t row = 0; row < output->nv; row++) {
-        const size_t row_offset = row * output->nu;
-        const size_t row_end = row_offset + output->nu;
-        if (output->fields & ALEA_SLICE_RASTER_CELL_ID)
-            raster_fill_i32(output->cell_ids, row_offset, row_end, -1);
-        if (output->fields & ALEA_SLICE_RASTER_MATERIAL_ID)
-            raster_fill_i32(output->material_ids, row_offset, row_end, 0);
-        if (output->fields & ALEA_SLICE_RASTER_UNIVERSE_ID)
-            raster_fill_i32(output->universe_ids, row_offset, row_end, -1);
-        if (output->fields & ALEA_SLICE_RASTER_FILL_UNIVERSE)
-            raster_fill_i32(output->fill_universe_ids, row_offset, row_end, -1);
-        if (output->fields & ALEA_SLICE_RASTER_DENSITY)
-            raster_fill_f64(output->densities, row_offset, row_end, 0.0);
-        if (output->fields & ALEA_SLICE_RASTER_RESOLUTION_FLAGS)
-            raster_fill_u8(output->resolution_flags, row_offset, row_end, 0);
-        for (size_t i = (size_t)offsets[row]; i < (size_t)offsets[row + 1]; i++) {
-            const size_t lo = raster_pixel_index(enters[i], view, output->nu);
-            const size_t hi = raster_pixel_index(exits[i], view, output->nu);
-            if (lo >= hi) continue;
-            const size_t begin = row_offset + lo;
-            const size_t end = row_offset + hi;
-            if (output->fields & ALEA_SLICE_RASTER_CELL_ID)
-                raster_fill_i32(output->cell_ids, begin, end, cells[i]);
-            if (output->fields & ALEA_SLICE_RASTER_MATERIAL_ID)
-                raster_fill_i32(output->material_ids, begin, end, materials[i]);
-            if (output->fields & ALEA_SLICE_RASTER_UNIVERSE_ID)
-                raster_fill_i32(output->universe_ids, begin, end, universes[i]);
-            if (output->fields & ALEA_SLICE_RASTER_FILL_UNIVERSE)
-                raster_fill_i32(output->fill_universe_ids, begin, end, fills[i]);
-            if (output->fields & ALEA_SLICE_RASTER_DENSITY)
-                raster_fill_f64(output->densities, begin, end, densities[i]);
-            if (output->fields & ALEA_SLICE_RASTER_RESOLUTION_FLAGS)
-                raster_fill_u8(output->resolution_flags, begin, end, flags[i]);
-        }
+    slice_raster_parallel_context_t parallel_context = {
+        view, output, offsets, enters, exits, cells, materials, universes,
+        fills, densities, flags
+    };
+    size_t max_workers = layout.pixels >= ALEA_SLICE_RASTER_PARALLEL_MIN_PIXELS
+        ? 0 : 1;
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        output->nv, 1, max_workers, ALEA_PARALLEL_STATIC_BLOCK,
+        slice_raster_rows, &parallel_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "ray slice raster parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        return -1;
     }
     return 0;
 }

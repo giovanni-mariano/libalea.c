@@ -674,7 +674,7 @@ local mesh = sys:mesh_sample{
     max_refine_depth = 3,
     max_samples_per_voxel = 32768,
     sampling_seed = 12345,
-    workers = 1,              -- USE_OPENMP build: 0=runtime default
+    workers = 1,              -- USE_TINYPAR build: 0=backend default
     bounds_mode = 0,          -- 0=legacy, 1=auto root AABB, 2=explicit
     fields = 511,             -- ALEA_MESH_FIELD_* mask; 511=current complete result
 }

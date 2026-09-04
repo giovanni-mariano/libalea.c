@@ -384,7 +384,7 @@ The flag is signal-safe: it's a `sig_atomic_t`, written atomically, checked with
 
 The library is split into a core library and optional format modules:
 
-- **Core** (`libalea.a`): The complete geometry engine — CSG evaluation, tree operations, export framework, dedup, primitives, bounding boxes, raycast (BVH, ray-primitive intersection, segment building), slice (grid queries, analytical curve extraction, label positioning), render (3D batch renderer with Phong shading, shadow rays, cutaway views, OpenMP parallelized), and mesh export (structured hexahedral mesh sampling, Gmsh/VTK output).
+- **Core** (`libalea.a`): The complete geometry engine — CSG evaluation, tree operations, export framework, dedup, primitives, bounding boxes, raycast (BVH, ray-primitive intersection, segment building), slice (grid queries, analytical curve extraction, label positioning), render (3D batch renderer with Phong shading, shadow rays, cutaway views, tinypar parallelized), and mesh export (structured hexahedral mesh sampling, Gmsh/VTK output).
 - **MCNP** (`libalea_mcnp.a`): Optional module. MCNP lexer, parser, cell/surface conversion, MCNP export formatting.
 - **OpenMC** (`libalea_openmc.a`): Optional module. OpenMC XML parsing and export.
 - **Nuclear Data** (`libalea_nucdata.a`): Optional module. ACE-format nuclear data reader, cross-section lookup, reaction classification, Doppler broadening, multigroup collapse.

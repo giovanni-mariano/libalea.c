@@ -34,6 +34,8 @@ EXPORTED_FUNCTIONS := [\
 "_alea_wasm_center_z",\
 "_alea_wasm_radius",\
 "_alea_wasm_set_target",\
+"_alea_wasm_parallel_enabled",\
+"_alea_wasm_parallel_max_threads",\
 "_alea_wasm_openmp_enabled",\
 "_alea_wasm_openmp_max_threads",\
 "_alea_wasm_last_error",\
@@ -61,7 +63,7 @@ openmp: check-openmp-toolchain $(OUT_DIR)/alea-openmp.js
 check-openmp-toolchain:
 	@version=`$(EMCC) --version | sed -n '1s/.* \([0-9][0-9.]*\) (.*/\1/p'`; \
 	if [ -z "$$version" ] || ! printf '%s\n%s\n' 6.0.3 "$$version" | sort -V -C; then \
-		echo "OpenMP WASM requires Emscripten 6.0.3 or newer (found $$version)" >&2; \
+		echo "Threaded WASM requires Emscripten 6.0.3 or newer (found $$version)" >&2; \
 		exit 1; \
 	fi
 
@@ -92,7 +94,7 @@ openmp-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
 		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
 		BUILD_DIR=$(OPENMP_BUILD_DIR) BIN_DIR=$(OPENMP_BIN_DIR) \
-		RELEASE=1 PORTABLE=1 USE_OPENMP=1 lib-core $(OPENMP_BIN_DIR)/libalea_mcnp.a
+		RELEASE=1 PORTABLE=1 USE_TINYPAR=1 lib-core $(OPENMP_BIN_DIR)/libalea_mcnp.a
 
 $(OUT_DIR):
 	mkdir -p $@
@@ -104,7 +106,7 @@ $(OUT_DIR)/alea.js: Makefile alea_wasm.c alea_wasm.h single-lib | $(OUT_DIR)
 		$(LIBALEA_ROOT)/$(SINGLE_BIN_DIR)/libalea.a -lm -o $@
 
 $(OUT_DIR)/alea-openmp.js: Makefile alea_wasm.c alea_wasm.h openmp-lib | $(OUT_DIR)
-	$(EMCC) $(WASM_SIMD_FLAGS) $(COMMON_LINK_FLAGS) -fopenmp -pthread \
+	$(EMCC) $(WASM_SIMD_FLAGS) $(COMMON_LINK_FLAGS) -pthread \
 		-sPTHREAD_POOL_SIZE=$(PTHREAD_POOL_SIZE) \
 		-sINITIAL_MEMORY=$(WASM_INITIAL_MEMORY) \
 		-I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \
@@ -113,7 +115,7 @@ $(OUT_DIR)/alea-openmp.js: Makefile alea_wasm.c alea_wasm.h openmp-lib | $(OUT_D
 
 test-native:
 	$(MAKE) -C $(LIBALEA_ROOT) lib-core bin/libalea_mcnp.a
-	$(NATIVE_CC) -O2 -std=c11 -Wall -Wextra -Werror -fopenmp \
+	$(NATIVE_CC) -O2 -std=c11 -Wall -Wextra -Werror \
 		-I. -I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \
 		alea_wasm.c tests/test_wasm_binding.c \
 		$(LIBALEA_ROOT)/bin/libalea_mcnp.a $(LIBALEA_ROOT)/bin/libalea.a \
@@ -128,12 +130,12 @@ clean:
 help:
 	@echo "Targets:"
 	@echo "  single       Build the portable single-threaded WASM module"
-	@echo "  openmp       Build the OpenMP/Web Worker WASM module"
+	@echo "  openmp       Build the tinypar/Web Worker WASM module (legacy name)"
 	@echo "  demo         Build single-threaded WASM and print serving instructions"
 	@echo "  test         Run native-facade and real WASM smoke tests"
-	@echo "  test-openmp  Run native-facade and OpenMP WASM smoke tests"
+	@echo "  test-openmp  Run native-facade and threaded WASM smoke tests"
 	@echo "  test-large-openmp  Parse a large synthetic MCNP input (default: 64 MiB)"
 	@echo "  test-node    Exercise the generated WASM module under Node.js"
-	@echo "  test-openmp-node  Exercise the generated OpenMP module under Node.js"
+	@echo "  test-openmp-node  Exercise the generated threaded module under Node.js"
 	@echo "  test-native  Exercise the binding facade with the native library"
 	@echo "  clean        Remove binding-specific generated files"

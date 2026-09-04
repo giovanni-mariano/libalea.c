@@ -6,6 +6,7 @@
 
 #include "alea.h"
 #include "core/alea_system.h"
+#include "util/alea_parallel.h"
 #include "core/alea_eval.h"
 #include "primitives/bbox.h"
 
@@ -14,10 +15,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #define CELL_VOLUME_UNBOUNDED_EXTENT 9e5
 #define CELL_VOLUME_DISCOVERY_DEPTH 6
@@ -227,13 +224,8 @@ static size_t cell_volume_select_workers(size_t requested, size_t tasks,
                                          uint64_t budget,
                                          uint64_t scratch_per_worker) {
     size_t workers = requested;
-#ifdef _OPENMP
-    if (omp_in_parallel()) return 1;
-    if (workers == 0) workers = (size_t)omp_get_max_threads();
-#else
-    (void)requested;
-    workers = 1;
-#endif
+    if (alea_parallel_in_region()) return 1;
+    if (workers == 0) workers = alea_parallel_max_workers();
     if (budget == 0 || tasks < 2) return 1;
     if (workers < 1) workers = 1;
     if (workers > tasks) workers = tasks;
@@ -243,6 +235,30 @@ static size_t cell_volume_select_workers(size_t requested, size_t tasks,
         if ((uint64_t)workers > by_budget) workers = (size_t)by_budget;
     }
     return workers ? workers : 1;
+}
+
+typedef struct cell_volume_parallel_context {
+    const alea_system_t* sys;
+    alea_node_id_t root;
+    const cell_volume_task_t* frontier;
+    cell_volume_classification_t* classes;
+    int samples_per_axis;
+} cell_volume_parallel_context_t;
+
+static int cell_volume_parallel_range(void* opaque, size_t worker,
+                                      size_t begin, size_t end) {
+    cell_volume_parallel_context_t* context = opaque;
+    (void)worker;
+    for (size_t i = begin; i < end; i++) {
+        context->classes[i].relation = cell_volume_relation(
+            context->sys, context->root, &context->frontier[i].bbox);
+        if (context->classes[i].relation == 2) {
+            context->classes[i].sample_fraction = cell_volume_sample_fraction(
+                context->sys, context->root, &context->frontier[i].bbox,
+                context->samples_per_axis);
+        }
+    }
+    return 0;
 }
 
 void alea_cell_volume_options_init(alea_cell_volume_options_t* options) {
@@ -365,33 +381,21 @@ int alea_cell_estimate_volume(
             options->max_parallel_scratch_bytes,
             sizeof(cell_volume_classification_t));
         size_t actual_workers = 1;
-#ifdef _OPENMP
-        #pragma omp parallel num_threads(workers) if(workers > 1)
-        {
-            #pragma omp single
-            actual_workers = (size_t)omp_get_num_threads();
-            #pragma omp for schedule(static)
-            for (size_t i = 0; i < frontier_count; i++) {
-                classes[i].relation = cell_volume_relation(
-                    sys, cell->root_node_id, &frontier[i].bbox);
-                if (classes[i].relation == 2) {
-                    classes[i].sample_fraction = cell_volume_sample_fraction(
-                        sys, cell->root_node_id, &frontier[i].bbox,
-                        options->samples_per_axis);
-                }
-            }
+        cell_volume_parallel_context_t parallel_context = {
+            sys, cell->root_node_id, frontier, classes,
+            options->samples_per_axis
+        };
+        alea_parallel_status_t parallel_status = alea_parallel_for(
+            frontier_count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+            cell_volume_parallel_range, &parallel_context, &actual_workers);
+        if (parallel_status != ALEA_PARALLEL_OK) {
+            free(classes);
+            free(frontier);
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                   "cell volume parallel execution failed: %s",
+                                   alea_parallel_status_string(parallel_status));
+            return -1;
         }
-#else
-        for (size_t i = 0; i < frontier_count; i++) {
-            classes[i].relation = cell_volume_relation(
-                sys, cell->root_node_id, &frontier[i].bbox);
-            if (classes[i].relation == 2) {
-                classes[i].sample_fraction = cell_volume_sample_fraction(
-                    sys, cell->root_node_id, &frontier[i].bbox,
-                    options->samples_per_axis);
-            }
-        }
-#endif
         if (actual_workers > out->actual_workers) out->actual_workers = actual_workers;
         if (actual_workers > 1) out->parallel_batch_count++;
         uint64_t reserved = (uint64_t)workers * sizeof(*classes);

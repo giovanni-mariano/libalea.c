@@ -9,15 +9,12 @@
 #include "alea_raycast.h"
 #include "raycast.h"
 #include "core/alea_system.h"
+#include "util/alea_parallel.h"
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 static int coverage_validate_ray_inputs(const double* origins_xyz,
                                         const double* directions_xyz,
@@ -156,11 +153,7 @@ int alea_ray_coverage_slice_query(
     if (alea_system_prepare_query_caches(
             sys, ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_CELL_SURFACES) != 0)
         goto cleanup;
-#ifdef _OPENMP
-    worker_count = (size_t)omp_get_max_threads();
-#endif
-    if (worker_count == 0) worker_count = 1;
-    if (row_count != 0 && worker_count > row_count) worker_count = row_count;
+    worker_count = alea_parallel_effective_workers(row_count, 1, 0);
     if (alea_ray_coverage_executor_prepare(&executor, worker_count) != 0) goto cleanup;
     if (options->max_refinement_depth != 0) {
         alea_ray_coverage_refinement_policy_t policy;

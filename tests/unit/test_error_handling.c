@@ -29,6 +29,20 @@ TEST(null_system_destroy) {
     alea_destroy(NULL);
 }
 
+TEST(parallel_backend_capabilities) {
+    const int enabled = alea_parallel_enabled();
+    const int workers = alea_parallel_max_threads();
+    ASSERT(enabled == 0 || enabled == 1);
+    ASSERT(workers >= 1);
+#ifdef ALEA_USE_TINYPAR
+    ASSERT_TRUE(enabled);
+#else
+    ASSERT_FALSE(enabled);
+#endif
+    ASSERT_EQ(alea_openmp_enabled(), enabled);
+    ASSERT_EQ(alea_openmp_max_threads(), workers);
+}
+
 TEST(null_find_cell) {
     int result = alea_find_cell(NULL, 0, 0, 0);
     ASSERT(result < 0);

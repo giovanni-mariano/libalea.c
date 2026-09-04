@@ -22,6 +22,20 @@ const char* alea_version(void);
 
 Returns a static string like `"0.1.0"`.
 
+### Parallel backend capabilities
+
+```c
+int alea_parallel_enabled(void);
+int alea_parallel_max_threads(void);
+```
+
+`alea_parallel_enabled()` reports whether the library was built with tinypar's
+native threaded backend. `alea_parallel_max_threads()` reports the available
+worker count and always returns at least one. The older
+`alea_openmp_enabled()` and `alea_openmp_max_threads()` names remain as
+compatibility aliases and report the same values; they do not imply an OpenMP
+runtime dependency.
+
 ---
 
 ## Error Handling
@@ -1536,7 +1550,8 @@ Enable/disable debug tracing for cell lookup in slices.
 
 ## 3D Rendering (alea_render.h)
 
-Publication-quality 3D rendering with Phong shading, cutaway views, and shadow rays. Pure CPU, OpenMP parallelized.
+Publication-quality 3D rendering with Phong shading, cutaway views, and shadow
+rays. The pure-CPU renderer uses tinypar worker threads in threaded builds.
 
 ### Configuration
 
@@ -1708,7 +1723,7 @@ Key `alea_mesh_config_t` fields:
 | `max_samples_per_voxel` | 32768 | Hard cumulative query limit per voxel |
 | `max_total_samples` | 0 | Whole-run query budget; zero is unlimited |
 | `sampling_seed` | fixed | Reproducible stratified-sampling seed |
-| `workers` | 1 | Sampling workers; 0 selects the OpenMP runtime default |
+| `workers` | 1 | Sampling workers; 0 selects the parallel backend default |
 | `bounds_mode` | `ALEA_MESH_BOUNDS_LEGACY` | Compatibility, explicit, or root-AABB inference |
 | `fields` | all current result fields | Arrays retained in the result |
 | `progress` | NULL | Optional callback after each completed Z slab; nonzero cancels |
@@ -1802,7 +1817,7 @@ diagnostics as `$ElementData`; VTK writes cell scalar arrays.
 instead of retaining per-voxel result arrays. Fraction pointers passed to the
 callback are valid only for that call.
 
-When built with `USE_OPENMP=1`, `workers > 1` parallelizes fixed, non-adaptive
+When built with `USE_TINYPAR=1`, `workers > 1` parallelizes fixed, non-adaptive
 sampling when sparse fractions and callbacks are disabled. The implementation
 uses per-worker scratch and a deterministic material-table merge. Requests that
 need ordered callbacks, packed sparse fractions, adaptive whole-run budgets, or
@@ -2501,8 +2516,8 @@ free(cells);
 ```
 
 Requested output buffers must not overlap. The rasterizer may fill independent
-rows in parallel for large rasters, but produces the same bytes at every OpenMP
-thread count. See `examples/c/ray_slice_raster_bench.c` for compact-trace,
+rows in parallel for large rasters, but produces the same bytes at every worker
+count. See `examples/c/ray_slice_raster_bench.c` for compact-trace,
 standalone-raster, and fused timings.
 
 ## Directional slice trace caches

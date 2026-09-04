@@ -5,16 +5,13 @@
 #include "alea_geo_validator.h"
 
 #include "raycast/raycast.h"
+#include "util/alea_parallel.h"
 
 #include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 struct alea_ray_slice_validation_result {
     size_t row_count;
@@ -863,10 +860,8 @@ int alea_validate_ray_slice_compact_with_event_cache(
             goto cleanup;
         alea_ray_coverage_slice_result_init(&coverage_result);
         alea_ray_coverage_executor_init(&coverage_executor);
-        size_t coverage_workers = 1;
-#ifdef _OPENMP
-        coverage_workers = (size_t)omp_get_max_threads();
-#endif
+        size_t coverage_workers = alea_parallel_effective_workers(
+            row_count, 1, 0);
         /* No worker can own a row beyond the requested slice, so avoid
          * allocating unused breakpoint/arena state on high-core hosts. */
         if (coverage_workers > row_count) coverage_workers = row_count;

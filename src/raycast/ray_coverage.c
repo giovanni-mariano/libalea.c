@@ -13,6 +13,7 @@
 
 #include "raycast.h"
 #include "core/alea_universe.h"
+#include "util/alea_parallel.h"
 
 #include <limits.h>
 #include <math.h>
@@ -1161,6 +1162,30 @@ fail:
     return -1;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const alea_ray_coverage_row_t* rows;
+    size_t row_count;
+    const alea_ray_coverage_slice_limits_t* limits;
+    alea_ray_coverage_executor_t* executor;
+    coverage_executor_counters_t* counters;
+    atomic_int* failed;
+} coverage_executor_parallel_context_t;
+
+static int coverage_executor_parallel_range(void* opaque, size_t worker_index,
+                                            size_t begin, size_t end) {
+    (void)worker_index;
+    coverage_executor_parallel_context_t* context = opaque;
+    for (size_t worker = begin; worker < end; worker++) {
+        if (coverage_executor_build_worker(
+                context->sys, context->rows, context->row_count,
+                context->limits, context->executor, worker,
+                context->counters) != 0)
+            atomic_store(context->failed, 1);
+    }
+    return 0;
+}
+
 int alea_ray_coverage_slice_build_executor_nocache(
     alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,
     const alea_ray_coverage_slice_limits_t* limits,
@@ -1179,36 +1204,26 @@ int alea_ray_coverage_slice_build_executor_nocache(
                               "coverage slice row limit exceeded");
         return -1;
     }
-    int failed = 0;
+    atomic_int failed;
+    atomic_init(&failed, 0);
     coverage_executor_counters_t counters;
     atomic_init(&counters.intervals, 0);
     atomic_init(&counters.owners, 0);
     atomic_init(&counters.bytes, row_bytes);
-#ifdef _OPENMP
-    if (executor->worker_count <= (size_t)INT_MAX) {
-        /* Parallelize worker arenas, not individual rows: a worker index owns
-         * its scratch for the entire operation even if the runtime chooses
-         * fewer threads than requested. */
-        #pragma omp parallel for schedule(static) shared(failed)
-        for (size_t worker = 0; worker < executor->worker_count; worker++) {
-            int rc = coverage_executor_build_worker(
-                sys, rows, row_count, limits, executor, worker, &counters);
-            if (rc != 0) {
-                #pragma omp atomic write
-                failed = 1;
-            }
-        }
-    } else
-#endif
-    {
-        for (size_t worker = 0; worker < executor->worker_count; worker++)
-            if (coverage_executor_build_worker(sys, rows, row_count, limits,
-                                               executor, worker, &counters) != 0) {
-                failed = 1;
-                break;
-            }
+    coverage_executor_parallel_context_t parallel_context = {
+        sys, rows, row_count, limits, executor, &counters, &failed
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        executor->worker_count, 1, executor->worker_count,
+        ALEA_PARALLEL_STATIC_BLOCK, coverage_executor_parallel_range,
+        &parallel_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "coverage parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        return -1;
     }
-    if (failed || alea_interrupted()) {
+    if (atomic_load(&failed) || alea_interrupted()) {
         if (alea_interrupted())
             alea_set_error_detail(ALEA_ERR_INTERRUPTED,
                                   "coverage slice execution interrupted");

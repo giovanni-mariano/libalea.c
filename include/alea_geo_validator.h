@@ -623,15 +623,15 @@ int alea_transition_slice_screen(
     const alea_transition_slice_options_t* options,
     alea_transition_slice_result_t* result);
 /**
- * Screen independent slice pages with bounded OpenMP workers.
+ * Screen independent slice pages with bounded parallel workers.
  *
  * Results are written by page ordinal and are therefore deterministic with
  * respect to worker scheduling. Every entry in `results` must be a distinct,
- * initialized result object. A zero worker request uses the OpenMP runtime
+ * initialized result object. A zero worker request uses the backend
  * maximum; a zero parallel scratch budget selects the serial path. The actual
  * worker count never exceeds page count or
  * `max_parallel_scratch_bytes / reserved_scratch_bytes_per_worker`. Nested
- * OpenMP execution is disabled by falling back to one worker.
+ * Parallel execution is disabled by falling back to one worker.
  */
 int alea_transition_slice_screen_batch(
     alea_system_t* sys, const alea_slice_view_t* views, size_t page_count,

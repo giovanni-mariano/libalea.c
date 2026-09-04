@@ -22,26 +22,26 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y valgrind libomp-dev
+        run: sudo apt-get update && sudo apt-get install -y valgrind
 
       - name: Build (debug)
-        run: make full cli tools CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make full cli tools CC=${{ matrix.compiler }} USE_TINYPAR=1
 
       - name: Run unit tests
-        run: make test-unit CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make test-unit CC=${{ matrix.compiler }} USE_TINYPAR=1
 
       - name: Run integration tests
-        run: make test-integration CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make test-integration CC=${{ matrix.compiler }} USE_TINYPAR=1
 
       - name: Run Lua tests
-        run: make test-lua CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make test-lua CC=${{ matrix.compiler }} USE_TINYPAR=1
 
       - name: Valgrind check (gcc only)
         if: matrix.compiler == 'gcc'
-        run: make test-valgrind CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make test-valgrind CC=${{ matrix.compiler }} USE_TINYPAR=1
 
       - name: Build (release)
-        run: make clean && make full cli tools RELEASE=1 CC=${{ matrix.compiler }} USE_OPENMP=1
+        run: make clean && make full cli tools RELEASE=1 CC=${{ matrix.compiler }} USE_TINYPAR=1
 
   build-macos:
     runs-on: ${{ matrix.os }}
@@ -53,17 +53,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install OpenMP
-        run: brew install libomp
-
       - name: Build
-        run: make full cli tools USE_OPENMP=1
+        run: make full cli tools USE_TINYPAR=1
 
       - name: Run tests
-        run: make test-unit test-integration test-lua USE_OPENMP=1
+        run: make test-unit test-integration test-lua USE_TINYPAR=1
 
       - name: Build (release)
-        run: make clean && make full cli tools RELEASE=1 USE_OPENMP=1
+        run: make clean && make full cli tools RELEASE=1 USE_TINYPAR=1
 
   build-windows:
     runs-on: windows-latest
@@ -82,14 +79,13 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
-            mingw-w64-ucrt-x86_64-omp
             make
 
       - name: Build
-        run: make full cli tools USE_OPENMP=1
+        run: make full cli tools USE_TINYPAR=1
 
       - name: Run tests
-        run: make test-unit test-integration test-lua USE_OPENMP=1
+        run: make test-unit test-integration test-lua USE_TINYPAR=1
 
   build-windows-conda-gnu-ucrt:
     runs-on: windows-latest
@@ -142,7 +138,7 @@ jobs:
           make WINDOWS_GNU=1
           CC="$WINDOWS_GNU_CC"
           AR="$WINDOWS_GNU_AR"
-          USE_OPENMP=1
+          USE_TINYPAR=1
           full cli tools
 
       - name: Run tests (conda MinGW-w64 UCRT)
@@ -150,7 +146,7 @@ jobs:
           make WINDOWS_GNU=1
           CC="$WINDOWS_GNU_CC"
           AR="$WINDOWS_GNU_AR"
-          USE_OPENMP=1
+          USE_TINYPAR=1
           test-unit test-integration test-lua
 
   build-windows-conda-clang-jom:
@@ -172,24 +168,23 @@ jobs:
           channel-priority: strict
           channels: conda-forge
 
-      - name: Install conda clang-cl toolchain + OpenMP + jom
+      - name: Install conda clang-cl toolchain + jom
         shell: pwsh
         run: |
-          conda install -y clang_win-64 llvm-openmp jom
+          conda install -y clang_win-64 jom
           where.exe clang-cl
           where.exe llvm-lib
-          where.exe libomp.dll
           where.exe jom
 
-      - name: Build static libraries (conda clang-cl + jom + OpenMP)
+      - name: Build static libraries (conda clang-cl + jom + tinypar)
         shell: pwsh
         # /J 1 keeps the build serial so the `dirs` target creates the output
         # directories before the inference rules write .obj into them.
-        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 full
+        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 full
 
-      - name: Run tests (conda clang-cl + jom + OpenMP)
+      - name: Run tests (conda clang-cl + jom + tinypar)
         shell: pwsh
-        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 test
+        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 test
 
   build-windows-msvc:
     # Native MSVC (cl.exe) build via the self-contained wrapper, which locates VS

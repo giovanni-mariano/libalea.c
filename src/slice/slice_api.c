@@ -25,6 +25,8 @@
 #include "util/alea_atomic.h"
 #include "util/math.h"
 #include "util/alea_log.h"
+#include "util/alea_parallel.h"
+#include "util/compat.h"
 
 /* Grid query diagnostics are opt-in. Each OpenMP worker updates a private
  * instance and merges it once after the grid loop, avoiding shared cache-line
@@ -43,7 +45,6 @@ typedef struct {
 #define GRID_STAT_INC(stats, field) \
     do { if ((stats) != NULL) (stats)->field++; } while (0)
 
-#ifdef _OPENMP
 static void grid_query_stats_merge(grid_query_stats_t* dst,
                                    const grid_query_stats_t* src) {
     dst->px_total += src->px_total;
@@ -55,16 +56,22 @@ static void grid_query_stats_merge(grid_query_stats_t* dst,
     dst->csg_prim_evals += src->csg_prim_evals;
     dst->csg_bool_ops += src->csg_bool_ops;
 }
-#endif
 
 static alea_tile_coverage_stats_t g_tile_coverage_stats;
 static alea_point_coverage_stats_t g_point_coverage_stats;
 static alea_sparse_surface_label_stats_t g_sparse_surface_label_stats;
+static alea_mutex_t g_slice_stats_mutex = ALEA_MUTEX_INIT;
+
+#define SLICE_STATS_UPDATE(statement) do { \
+    alea_mutex_lock(&g_slice_stats_mutex); \
+    statement; \
+    alea_mutex_unlock(&g_slice_stats_mutex); \
+} while (0)
 
 /* Respect the caller's OpenMP limit and avoid creating more workers than
  * independent surface-attribution jobs. */
 static size_t sparse_surface_label_worker_count(size_t work_items) {
-    size_t workers = (size_t)alea_openmp_max_threads();
+    size_t workers = alea_parallel_max_workers();
     if (workers == 0) workers = 1;
     if (work_items > 0 && workers > work_items) workers = work_items;
     return workers > 0 ? workers : 1;
@@ -79,15 +86,20 @@ alea_tile_coverage_stats_t alea_tile_coverage_stats_get(void) {
 }
 
 void alea_point_coverage_stats_reset(void) {
-    memset(&g_point_coverage_stats, 0, sizeof(g_point_coverage_stats));
+    SLICE_STATS_UPDATE(memset(&g_point_coverage_stats, 0,
+                              sizeof(g_point_coverage_stats)));
 }
 
 alea_point_coverage_stats_t alea_point_coverage_stats_get(void) {
-    return g_point_coverage_stats;
+    alea_point_coverage_stats_t result;
+    SLICE_STATS_UPDATE(result = g_point_coverage_stats);
+    return result;
 }
 
 alea_sparse_surface_label_stats_t alea_sparse_surface_label_stats_get(void) {
-    return g_sparse_surface_label_stats;
+    alea_sparse_surface_label_stats_t result;
+    SLICE_STATS_UPDATE(result = g_sparse_surface_label_stats);
+    return result;
 }
 
 /* ============================================================================
@@ -527,6 +539,221 @@ static int slice_resolve_grid_rich(alea_system_t* sys,
     return 1;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* view;
+    int nu, nv, universe_depth;
+    double du, dv;
+    int overlap_interval;
+    int* cell_ids;
+    int* material_ids;
+    uint8_t* errors;
+    int stats_enabled;
+    grid_query_stats_t* worker_stats;
+} cells_grid_parallel_context_t;
+
+static int cells_grid_rows(void* opaque, size_t worker,
+                           size_t begin_row, size_t end_row) {
+    cells_grid_parallel_context_t* context = opaque;
+    const alea_slice_plane_t* plane = &context->view->plane;
+    grid_query_stats_t* stats = context->stats_enabled
+        ? &context->worker_stats[worker] : NULL;
+    if (stats) alea_perf_reset();
+    for (size_t row = begin_row; row < end_row; row++) {
+        if (alea_interrupted()) continue;
+        const double v = context->view->v_min + (row + 0.5) * context->dv;
+        alea_hier_coherence_state_t state_a, state_b;
+        alea_hier_coherence_state_t* previous = &state_a;
+        alea_hier_coherence_state_t* current = &state_b;
+        alea_hier_coherence_state_clear(previous);
+        alea_hier_coherence_state_clear(current);
+        for (int column = 0; column < context->nu; column++) {
+            if (alea_interrupted()) break;
+            const double u = context->view->u_min +
+                (column + 0.5) * context->du;
+            const size_t index = row * (size_t)context->nu + (size_t)column;
+            const double x = plane->origin[0] + u * plane->u_axis[0] +
+                v * plane->v_axis[0];
+            const double y = plane->origin[1] + u * plane->u_axis[1] +
+                v * plane->v_axis[1];
+            const double z = plane->origin[2] + u * plane->u_axis[2] +
+                v * plane->v_axis[2];
+            int cell_id = -1, material_id = 0;
+            uint8_t error = GRID_ERR_NONE;
+            if (slice_resolve_grid_rich(
+                    context->sys, previous, x, y, z, context->universe_depth,
+                    current, &cell_id, &material_id, &error, stats) < 0) {
+                cell_id = -1;
+                material_id = 0;
+                error = GRID_ERR_UNDEFINED;
+                alea_hier_coherence_state_clear(current);
+            }
+            context->cell_ids[index] = cell_id;
+            if (context->material_ids)
+                context->material_ids[index] = material_id;
+            if (context->errors) context->errors[index] = error;
+            alea_hier_coherence_state_t* swap = previous;
+            previous = current;
+            current = swap;
+            if (context->errors && context->overlap_interval > 0 &&
+                column % context->overlap_interval == 0) {
+                alea_cell_hit_t hits[32];
+                int hit_count = alea_find_all_cells_at_point_recursive(
+                    context->sys, x, y, z, hits, 32);
+                if (hit_count > 1) {
+                    int target_depth = context->universe_depth < 0
+                        ? hits[hit_count - 1].depth : context->universe_depth;
+                    int count = 0;
+                    for (int hit = 0; hit < hit_count; hit++)
+                        if (hits[hit].depth == target_depth) count++;
+                    if (count > 1) context->errors[index] = GRID_ERR_OVERLAP;
+                }
+            }
+        }
+    }
+    if (stats) {
+        alea_perf_counters_t counters = alea_perf_get();
+        stats->csg_prim_evals = counters.primitive_evaluations;
+        stats->csg_bool_ops = counters.boolean_operations;
+    }
+    return 0;
+}
+
+static int cells_grid_overlap_rows(void* opaque, size_t worker,
+                                   size_t begin_row, size_t end_row) {
+    (void)worker;
+    cells_grid_parallel_context_t* context = opaque;
+    const alea_slice_plane_t* plane = &context->view->plane;
+    for (size_t row = begin_row; row < end_row; row++) {
+        if (alea_interrupted()) continue;
+        const double v = context->view->v_min + (row + 0.5) * context->dv;
+        for (int column = 0; column < context->nu; column++) {
+            if (alea_interrupted()) break;
+            const size_t index = row * (size_t)context->nu + (size_t)column;
+            if (context->errors[index] != GRID_ERR_NONE) continue;
+            const int cell = context->cell_ids[index];
+            int boundary = 0;
+            if (column + 1 < context->nu &&
+                context->cell_ids[index + 1] != cell) boundary = 1;
+            if (row + 1 < (size_t)context->nv &&
+                context->cell_ids[index + (size_t)context->nu] != cell)
+                boundary = 1;
+            if (column > 0 && context->cell_ids[index - 1] != cell) boundary = 1;
+            if (row > 0 &&
+                context->cell_ids[index - (size_t)context->nu] != cell)
+                boundary = 1;
+            if (!boundary) continue;
+            const double u = context->view->u_min +
+                (column + 0.5) * context->du;
+            const double x = plane->origin[0] + u * plane->u_axis[0] +
+                v * plane->v_axis[0];
+            const double y = plane->origin[1] + u * plane->u_axis[1] +
+                v * plane->v_axis[1];
+            const double z = plane->origin[2] + u * plane->u_axis[2] +
+                v * plane->v_axis[2];
+            alea_cell_hit_t hits[32];
+            int hit_count = alea_find_all_cells_at_point_recursive(
+                context->sys, x, y, z, hits, 32);
+            if (hit_count <= 1) continue;
+            const int target_depth = context->universe_depth < 0
+                ? hits[hit_count - 1].depth : context->universe_depth;
+            int count = 0;
+            for (int hit = 0; hit < hit_count; hit++)
+                if (hits[hit].depth == target_depth) count++;
+            if (count > 1) context->errors[index] = GRID_ERR_OVERLAP;
+        }
+    }
+    return 0;
+}
+
+static int cells_grid_full_overlap_rows(void* opaque, size_t worker,
+                                        size_t begin_row, size_t end_row) {
+    (void)worker;
+    cells_grid_parallel_context_t* context = opaque;
+    const alea_slice_plane_t* plane = &context->view->plane;
+    for (size_t row = begin_row; row < end_row; row++) {
+        const double v = context->view->v_min + (row + 0.5) * context->dv;
+        for (int column = 0; column < context->nu; column++) {
+            const size_t index = row * (size_t)context->nu + (size_t)column;
+            if (context->cell_ids[index] < 0 || context->errors[index] != 0)
+                continue;
+            const double u = context->view->u_min +
+                (column + 0.5) * context->du;
+            const double x = plane->origin[0] + u * plane->u_axis[0] +
+                v * plane->v_axis[0];
+            const double y = plane->origin[1] + u * plane->u_axis[1] +
+                v * plane->v_axis[1];
+            const double z = plane->origin[2] + u * plane->u_axis[2] +
+                v * plane->v_axis[2];
+            alea_cell_hit_t hits[32];
+            int hit_count = alea_find_all_cells_at_point_recursive(
+                context->sys, x, y, z, hits, 32);
+            if (hit_count <= 1) continue;
+            const int target_depth = context->universe_depth < 0
+                ? hits[hit_count - 1].depth : context->universe_depth;
+            int count = 0;
+            for (int hit = 0; hit < hit_count; hit++)
+                if (hits[hit].depth == target_depth) count++;
+            if (count > 1) context->errors[index] = GRID_ERR_OVERLAP;
+        }
+    }
+    return 0;
+}
+
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* view;
+    int nu, universe_depth;
+    double du, dv;
+    int* secondary_cell_ids;
+    uint8_t* coverage;
+    uint8_t* errors;
+} grid_exact_coverage_context_t;
+
+static int grid_exact_coverage_rows(void* opaque, size_t worker,
+                                    size_t begin_row, size_t end_row) {
+    (void)worker;
+    grid_exact_coverage_context_t* context = opaque;
+    const alea_slice_plane_t* plane = &context->view->plane;
+    for (size_t row = begin_row; row < end_row; row++) {
+        if (alea_interrupted()) continue;
+        const double v = context->view->v_min + (row + 0.5) * context->dv;
+        for (int column = 0; column < context->nu; column++) {
+            if (alea_interrupted()) break;
+            const size_t index = row * (size_t)context->nu + (size_t)column;
+            const double u = context->view->u_min +
+                (column + 0.5) * context->du;
+            point_coverage_t point;
+            if (find_point_coverage_exact_uv(
+                    context->sys, plane, u, v, context->universe_depth,
+                    &point) != 0)
+                continue;
+            if (point.coverage == ALEA_COVERAGE_NONE) {
+                if (context->coverage)
+                    context->coverage[index] = ALEA_COVERAGE_NONE;
+                if (context->secondary_cell_ids)
+                    context->secondary_cell_ids[index] = -1;
+                if (context->errors) context->errors[index] = GRID_ERR_UNDEFINED;
+            } else if (point.coverage == ALEA_COVERAGE_ONE) {
+                if (context->coverage)
+                    context->coverage[index] = ALEA_COVERAGE_ONE;
+                if (context->secondary_cell_ids)
+                    context->secondary_cell_ids[index] = -1;
+                if (context->errors &&
+                    context->errors[index] == GRID_ERR_OVERLAP)
+                    context->errors[index] = GRID_ERR_NONE;
+            } else {
+                if (context->coverage)
+                    context->coverage[index] = ALEA_COVERAGE_MULTI;
+                if (context->secondary_cell_ids)
+                    context->secondary_cell_ids[index] = point.secondary_cell_id;
+                if (context->errors) context->errors[index] = GRID_ERR_OVERLAP;
+            }
+        }
+    }
+    return 0;
+}
+
 int alea_find_cells_grid(alea_system_t* sys,
                               const alea_slice_view_t* view,
                               int nu, int nv,
@@ -545,10 +772,8 @@ int alea_find_cells_grid(alea_system_t* sys,
     double v_min = view->v_min;
     double v_max = view->v_max;
 
-    /* Build query acceleration eagerly before the parallel region so that:
-     * (a) the internal #pragma omp parallel for gets full thread parallelism
-     *     (no nesting penalty)
-     * (b) OpenMP workers only read shared cache state */
+    /* Build query acceleration eagerly before dispatch so workers only read
+     * shared cache state and never race on lazy initialization. */
     if (alea_system_prepare_query_caches(sys, ALEA_CACHE_RAYCAST) != 0)
         return -1;
 
@@ -567,7 +792,32 @@ int alea_find_cells_grid(alea_system_t* sys,
     const bool stats_en = getenv("ALEA_GRID_STATS") != NULL;
     grid_query_stats_t grid_stats = {0};
 
-#ifdef _OPENMP
+    const char* verify_interval = getenv("ALEA_GRID_VERIFY_INTERVAL");
+    int overlap_interval = verify_interval && atoi(verify_interval) > 0
+        ? atoi(verify_interval) : 0;
+    size_t grid_workers = alea_parallel_effective_workers((size_t)nv, 1, 0);
+    grid_query_stats_t* worker_stats = stats_en
+        ? calloc(grid_workers, sizeof(*worker_stats)) : NULL;
+    if (stats_en && !worker_stats) return -1;
+    cells_grid_parallel_context_t parallel_context = {
+        sys, view, nu, nv, universe_depth, du, dv, overlap_interval,
+        out_cell_ids, out_material_ids, out_errors, stats_en, worker_stats
+    };
+    size_t actual_workers = 1;
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        (size_t)nv, 1, grid_workers, ALEA_PARALLEL_STATIC_BLOCK,
+        cells_grid_rows, &parallel_context, &actual_workers);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        free(worker_stats);
+        return -1;
+    }
+    if (worker_stats) {
+        for (size_t worker = 0; worker < actual_workers; worker++)
+            grid_query_stats_merge(&grid_stats, &worker_stats[worker]);
+    }
+    free(worker_stats);
+
+#if 0 /* Replaced by the tinypar dispatch above; retained for diff history. */
     /* ALEA_GRID_VERIFY_INTERVAL=N: every N-th pixel also runs a full recursive
      * search to detect overlapping geometry. 0 or unset = no periodic scan
      * (relies on boundary-pixel second pass only). Useful for finding geometry
@@ -712,6 +962,11 @@ int alea_find_cells_grid(alea_system_t* sys,
      * because the cache only stores one cell path and would mask overlapping
      * cells at the same depth level. */
     if (out_errors) {
+        parallel_status = alea_parallel_for(
+            (size_t)nv, 1, 0, ALEA_PARALLEL_DYNAMIC,
+            cells_grid_overlap_rows, &parallel_context, NULL);
+        if (parallel_status != ALEA_PARALLEL_OK) return -1;
+#if 0 /* Replaced by cells_grid_overlap_rows. */
 #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 4)
 #endif
@@ -748,6 +1003,7 @@ int alea_find_cells_grid(alea_system_t* sys,
                 if (count > 1) out_errors[idx] = GRID_ERR_OVERLAP;
             }
         }
+#endif
         if (alea_interrupted()) return -1;
         filter_grid_overlap_ambiguities(sys, view, nu, nv, universe_depth,
                                         out_cell_ids, NULL, NULL, out_errors,
@@ -931,7 +1187,6 @@ int alea_check_grid_overlaps(alea_system_t* sys,
     if (alea_system_prepare_query_caches(sys, ALEA_CACHE_UNIVERSE) != 0)
         return -1;
 
-    const alea_slice_plane_t* plane = &view->plane;
     double u_min = view->u_min;
     double u_max = view->u_max;
     double v_min = view->v_min;
@@ -940,10 +1195,15 @@ int alea_check_grid_overlaps(alea_system_t* sys,
     double du = (u_max - u_min) / nu;
     double dv = (v_max - v_min) / nv;
 
-    const double* origin = plane->origin;
-    const double* u_axis = plane->u_axis;
-    const double* v_axis = plane->v_axis;
-
+    cells_grid_parallel_context_t parallel_context = {
+        sys, view, nu, nv, universe_depth, du, dv, 0,
+        (int*)cell_ids, NULL, errors, 0, NULL
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        (size_t)nv, 1, 0, ALEA_PARALLEL_DYNAMIC,
+        cells_grid_full_overlap_rows, &parallel_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) return -1;
+#if 0 /* Replaced by cells_grid_full_overlap_rows. */
 #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic, 4)
 #endif
@@ -973,6 +1233,7 @@ int alea_check_grid_overlaps(alea_system_t* sys,
             if (count > 1) errors[idx] = GRID_ERR_OVERLAP;
         }
     }
+#endif
 
     return 0;
 }
@@ -1015,13 +1276,18 @@ int alea_find_cells_grid_coverage(alea_system_t* sys,
 
     if ((flags & ALEA_GRID_COVERAGE_EXACT) && (out_coverage || out_secondary_cell_ids || out_errors)) {
         alea_point_coverage_stats_reset();
-        const alea_slice_plane_t* plane = &view->plane;
         double du = (view->u_max - view->u_min) / nu;
         double dv = (view->v_max - view->v_min) / nv;
-        const double* origin = plane->origin;
-        const double* u_axis = plane->u_axis;
-        const double* v_axis = plane->v_axis;
 
+        grid_exact_coverage_context_t exact_context = {
+            sys, view, nu, universe_depth, du, dv, out_secondary_cell_ids,
+            out_coverage, out_errors
+        };
+        alea_parallel_status_t parallel_status = alea_parallel_for(
+            (size_t)nv, 1, 0, ALEA_PARALLEL_DYNAMIC,
+            grid_exact_coverage_rows, &exact_context, NULL);
+        if (parallel_status != ALEA_PARALLEL_OK) return -1;
+#if 0 /* Replaced by grid_exact_coverage_rows. */
 #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 4)
 #endif
@@ -1062,6 +1328,7 @@ int alea_find_cells_grid_coverage(alea_system_t* sys,
                 }
             }
         }
+#endif
         if (alea_interrupted()) return -1;
     }
 
@@ -1117,13 +1384,18 @@ int alea_find_cells_grid_coverage_paths(alea_system_t* sys,
     if ((flags & ALEA_GRID_COVERAGE_EXACT) &&
         (out_coverage || out_secondary_cell_ids || out_errors)) {
         alea_point_coverage_stats_reset();
-        const alea_slice_plane_t* plane = &view->plane;
         double du = (view->u_max - view->u_min) / nu;
         double dv = (view->v_max - view->v_min) / nv;
-        const double* origin = plane->origin;
-        const double* u_axis = plane->u_axis;
-        const double* v_axis = plane->v_axis;
 
+        grid_exact_coverage_context_t exact_context = {
+            sys, view, nu, universe_depth, du, dv, out_secondary_cell_ids,
+            out_coverage, out_errors
+        };
+        alea_parallel_status_t parallel_status = alea_parallel_for(
+            (size_t)nv, 1, 0, ALEA_PARALLEL_DYNAMIC,
+            grid_exact_coverage_rows, &exact_context, NULL);
+        if (parallel_status != ALEA_PARALLEL_OK) return -1;
+#if 0 /* Replaced by grid_exact_coverage_rows. */
 #ifdef _OPENMP
         #pragma omp parallel for schedule(dynamic, 4)
 #endif
@@ -1164,6 +1436,7 @@ int alea_find_cells_grid_coverage_paths(alea_system_t* sys,
                 }
             }
         }
+#endif
         if (alea_interrupted()) return -1;
     }
 
@@ -1429,8 +1702,7 @@ static int find_point_coverage_from_chain(
     }
     if (classification.kind == ALEA_POINT_COVERAGE_OVERLAP) {
         out->coverage = ALEA_COVERAGE_MULTI;
-        #pragma omp atomic
-        g_point_coverage_stats.spatial_multi_early_exit++;
+        SLICE_STATS_UPDATE(g_point_coverage_stats.spatial_multi_early_exit++);
     } else if (classification.kind == ALEA_POINT_COVERAGE_GAP) {
         out->coverage = ALEA_COVERAGE_NONE;
     } else {
@@ -1458,23 +1730,21 @@ static int find_point_coverage_spatial(alea_system_t* sys,
         POINT_COVERAGE_HIT_CAPACITY);
     if (n < 0) return -1;
     if (n >= POINT_COVERAGE_HIT_CAPACITY) {
-        #pragma omp atomic
-        g_point_coverage_stats.truncated_fallbacks++;
+        SLICE_STATS_UPDATE(g_point_coverage_stats.truncated_fallbacks++);
         out->coverage = ALEA_COVERAGE_ONE;
         out->unresolved = 1;
         out->primary_cell_id = -1;
         out->secondary_cell_id = -1;
         return 0;
     }
-    #pragma omp atomic
-    g_point_coverage_stats.spatial_queries++;
-    #pragma omp atomic
-    g_point_coverage_stats.candidate_total += (size_t)n;
-    #pragma omp critical(pc_stats_candidate_max)
+    SLICE_STATS_UPDATE(g_point_coverage_stats.spatial_queries++);
+    SLICE_STATS_UPDATE(g_point_coverage_stats.candidate_total += (size_t)n);
+    alea_mutex_lock(&g_slice_stats_mutex);
     {
         if ((size_t)n > g_point_coverage_stats.candidate_max)
             g_point_coverage_stats.candidate_max = (size_t)n;
     }
+    alea_mutex_unlock(&g_slice_stats_mutex);
     return find_point_coverage_from_chain(
         hits, occurrence_keys, parent_occurrence_keys, n,
         universe_depth, out);
@@ -1484,18 +1754,15 @@ static int find_point_coverage_exact(alea_system_t* sys,
                                      double gx, double gy, double gz,
                                      int universe_depth,
                                      point_coverage_t* out) {
-    #pragma omp atomic
-    g_point_coverage_stats.queries++;
+    SLICE_STATS_UPDATE(g_point_coverage_stats.queries++);
     int rc = find_point_coverage_spatial(sys, gx, gy, gz, universe_depth, out);
     if (rc == 0) return 0;
     /* Retain a complete occurrence-chain fallback if hierarchy acceleration is
      * unavailable. A saturated fallback is unresolved rather than being
      * misclassified from a partial owner list. */
-    #pragma omp atomic
-    g_point_coverage_stats.query_errors++;
+    SLICE_STATS_UPDATE(g_point_coverage_stats.query_errors++);
 
-    #pragma omp atomic
-    g_point_coverage_stats.recursive_fallbacks++;
+    SLICE_STATS_UPDATE(g_point_coverage_stats.recursive_fallbacks++);
     alea_cell_hit_t hits[POINT_COVERAGE_HIT_CAPACITY];
     uint64_t occurrence_keys[POINT_COVERAGE_HIT_CAPACITY];
     uint64_t parent_occurrence_keys[POINT_COVERAGE_HIT_CAPACITY];
@@ -1503,13 +1770,11 @@ static int find_point_coverage_exact(alea_system_t* sys,
         sys, gx, gy, gz, hits, occurrence_keys, parent_occurrence_keys,
         POINT_COVERAGE_HIT_CAPACITY);
     if (num_hits < 0) {
-        #pragma omp atomic
-        g_point_coverage_stats.query_errors++;
+        SLICE_STATS_UPDATE(g_point_coverage_stats.query_errors++);
         return -1;
     }
     if (num_hits >= POINT_COVERAGE_HIT_CAPACITY) {
-        #pragma omp atomic
-        g_point_coverage_stats.truncated_fallbacks++;
+        SLICE_STATS_UPDATE(g_point_coverage_stats.truncated_fallbacks++);
         out->coverage = ALEA_COVERAGE_ONE;
         out->unresolved = 1;
         out->primary_cell_id = -1;
@@ -2115,7 +2380,6 @@ static bool path_hit_list_contains_cell(const alea_spatial_hit_t* hits,
     return false;
 }
 
-#ifdef _OPENMP
 static void tile_coverage_stats_add(alea_tile_coverage_stats_t* dst,
                                     const alea_tile_coverage_stats_t* src) {
     if (!dst || !src) return;
@@ -2148,7 +2412,6 @@ static void tile_coverage_stats_add(alea_tile_coverage_stats_t* dst,
     dst->path_2d_missing_tiles += src->path_2d_missing_tiles;
     dst->incomplete = dst->incomplete || src->incomplete;
 }
-#endif
 
 static double path_dot3(double ax, double ay, double az,
                         double bx, double by, double bz) {
@@ -2304,7 +2567,6 @@ static int path_slice_index_build(alea_system_t* sys,
     return 0;
 }
 
-#ifdef _OPENMP
 static int refine_path_tile_3d_exact(
     alea_system_t* sys,
     const alea_slice_view_t* view,
@@ -2505,7 +2767,66 @@ static int refine_path_tile_3d_exact(
 
     return updated;
 }
-#endif
+
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* view;
+    int nu, nv, universe_depth, tile_w, tile_h;
+    double du, dv;
+    size_t tile_cols, max_hits, max_group_pixels;
+    const alea_tile_refinement_options_t* options;
+    const int* primary_cell_ids;
+    const uint32_t* path_ids;
+    const alea_slice_path_table_t* paths;
+    int* secondary_cell_ids;
+    uint8_t* coverage;
+    uint8_t* errors;
+    alea_tile_coverage_stats_t* worker_stats;
+    int* worker_updated;
+    atomic_int* abort_flag;
+} path_refine_parallel_context_t;
+
+static int path_refine_tile_range(void* opaque, size_t worker,
+                                  size_t begin, size_t end) {
+    path_refine_parallel_context_t* context = opaque;
+    alea_spatial_hit_t* hits = malloc(context->max_hits * sizeof(*hits));
+    size_t* indices = malloc(context->max_group_pixels * sizeof(*indices));
+    double* x = malloc(context->max_group_pixels * sizeof(*x));
+    double* y = malloc(context->max_group_pixels * sizeof(*y));
+    double* z = malloc(context->max_group_pixels * sizeof(*z));
+    int* count = malloc(context->max_group_pixels * sizeof(*count));
+    int* second = malloc(context->max_group_pixels * sizeof(*second));
+    if (!hits || !indices || !x || !y || !z || !count || !second) {
+        atomic_store(context->abort_flag, 1);
+        goto cleanup;
+    }
+    for (size_t tile_index = begin; tile_index < end; tile_index++) {
+        if (atomic_load(context->abort_flag) || alea_interrupted()) {
+            atomic_store(context->abort_flag, 1);
+            continue;
+        }
+        if (context->options->tile_mask &&
+            !context->options->tile_mask[tile_index])
+            continue;
+        const int tile_column = (int)(tile_index % context->tile_cols);
+        const int tile_row = (int)(tile_index / context->tile_cols);
+        int rc = refine_path_tile_3d_exact(
+            context->sys, context->view, context->nu, context->nv,
+            context->universe_depth, context->tile_w, context->tile_h,
+            tile_column * context->tile_w, tile_row * context->tile_h,
+            context->du, context->dv, context->max_hits, hits,
+            context->max_group_pixels, indices, x, y, z, count, second,
+            context->primary_cell_ids, context->path_ids, context->paths,
+            context->secondary_cell_ids, context->coverage, context->errors,
+            &context->worker_stats[worker]);
+        if (rc < 0) atomic_store(context->abort_flag, 1);
+        else context->worker_updated[worker] += rc;
+    }
+cleanup:
+    free(second); free(count); free(z); free(y); free(x); free(indices);
+    free(hits);
+    return 0;
+}
 
 static int chain_hit_contains_point(alea_system_t* sys,
                                     const alea_hier_spatial_chain_hit_t* hit,
@@ -3652,7 +3973,50 @@ int alea_refine_grid_coverage_paths_exact_ex(
     uint8_t* provisional_mask = options->provisional_mask;
     int updated = 0;
 
-#ifdef _OPENMP
+    if (!use_path_2d_index && options->parallel &&
+        max_exact_fallback_pixels == 0) {
+        atomic_int abort_flag;
+        atomic_init(&abort_flag, 0);
+        const size_t tile_count = tile_cols * tile_rows;
+        const size_t worker_count = alea_parallel_effective_workers(
+            tile_count, 1, 0);
+        alea_tile_coverage_stats_t* worker_stats = calloc(
+            worker_count, sizeof(*worker_stats));
+        int* worker_updated = calloc(worker_count, sizeof(*worker_updated));
+        if (!worker_stats || !worker_updated) atomic_store(&abort_flag, 1);
+        if (!atomic_load(&abort_flag)) {
+            path_refine_parallel_context_t parallel_context = {
+                sys, view, nu, nv, universe_depth, tile_w, tile_h, du, dv,
+                tile_cols, max_hits, max_group_pixels, options,
+                primary_cell_ids, path_ids, paths, out_secondary_cell_ids,
+                coverage, errors, worker_stats, worker_updated, &abort_flag
+            };
+            alea_parallel_status_t parallel_status = alea_parallel_for(
+                tile_count, 1, worker_count, ALEA_PARALLEL_DYNAMIC,
+                path_refine_tile_range, &parallel_context, NULL);
+            if (parallel_status != ALEA_PARALLEL_OK)
+                atomic_store(&abort_flag, 1);
+        }
+        int parallel_updated = 0;
+        alea_tile_coverage_stats_t parallel_stats = {0};
+        for (size_t worker = 0; worker < worker_count; worker++) {
+            parallel_updated += worker_updated ? worker_updated[worker] : 0;
+            if (worker_stats)
+                tile_coverage_stats_add(&parallel_stats, &worker_stats[worker]);
+        }
+        free(worker_updated);
+        free(worker_stats);
+        free(path_index_disabled); free(path_index_ready); free(path_indexes);
+        free(group_second); free(group_count); free(group_z); free(group_y);
+        free(group_x); free(group_indices); path_tile_bucket_free(&verify_bucket);
+        free(hits);
+        if (atomic_load(&abort_flag) || alea_interrupted()) return -1;
+        g_tile_coverage_stats = parallel_stats;
+        g_tile_coverage_stats.refined_pixels = (size_t)parallel_updated;
+        return parallel_updated;
+    }
+
+#if 0 /* Replaced by path_refine_tile_range. */
     if (!use_path_2d_index && options->parallel &&
         max_exact_fallback_pixels == 0) {
         _Atomic int abort_flag = 0;
@@ -6476,6 +6840,49 @@ void alea_plot_error_components_free(
     free(result);
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* view;
+    int nu, universe_depth;
+    double du, dv;
+    int* cell_ids;
+    int* secondary_ids;
+    uint8_t* coverage;
+    uint8_t* errors;
+    atomic_int* failed;
+} local_coverage_parallel_context_t;
+
+static int local_coverage_rows(void* opaque, size_t worker,
+                               size_t begin_row, size_t end_row) {
+    (void)worker;
+    local_coverage_parallel_context_t* context = opaque;
+    const alea_slice_plane_t* plane = &context->view->plane;
+    for (size_t row = begin_row; row < end_row; row++) {
+        if (alea_interrupted()) continue;
+        const double v = context->view->v_min + (row + 0.5) * context->dv;
+        for (int column = 0; column < context->nu; column++) {
+            if (alea_interrupted()) break;
+            const size_t index = row * (size_t)context->nu + (size_t)column;
+            const double u = context->view->u_min +
+                (column + 0.5) * context->du;
+            point_coverage_t point;
+            if (find_point_coverage_exact_uv(
+                    context->sys, plane, u, v, context->universe_depth,
+                    &point) != 0) {
+                atomic_store(context->failed, 1);
+                break;
+            }
+            context->cell_ids[index] = point.primary_cell_id;
+            context->secondary_ids[index] = point.secondary_cell_id;
+            context->coverage[index] = point.coverage;
+            context->errors[index] = point.coverage == ALEA_COVERAGE_MULTI
+                ? GRID_ERR_OVERLAP : point.coverage == ALEA_COVERAGE_NONE
+                    ? GRID_ERR_UNDEFINED : GRID_ERR_NONE;
+        }
+    }
+    return 0;
+}
+
 int alea_find_local_coverage_components(
     alea_system_t* sys, const alea_slice_view_t* view,
     int nu, int nv, int universe_depth,
@@ -6524,10 +6931,20 @@ int alea_find_local_coverage_components(
         return -1;
     }
     alea_point_coverage_stats_reset();
-    const alea_slice_plane_t* plane = &view->plane;
     const double du = (view->u_max - view->u_min) / (double)nu;
     const double dv = (view->v_max - view->v_min) / (double)nv;
-    int query_failed = 0;
+    atomic_int query_failed;
+    atomic_init(&query_failed, 0);
+    local_coverage_parallel_context_t parallel_context = {
+        sys, view, nu, universe_depth, du, dv, cell_ids, secondary_ids,
+        coverage, errors, &query_failed
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        (size_t)nv, 1, max_workers > 0 ? (size_t)max_workers : 1,
+        ALEA_PARALLEL_DYNAMIC, local_coverage_rows, &parallel_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK)
+        atomic_store(&query_failed, 1);
+#if 0 /* Replaced by local_coverage_rows. */
 #ifdef _OPENMP
     const int worker_limit = max_workers > 0 ? max_workers : 1;
     #pragma omp parallel for schedule(dynamic, 4) num_threads(worker_limit)
@@ -6555,7 +6972,8 @@ int alea_find_local_coverage_components(
                     ? GRID_ERR_UNDEFINED : GRID_ERR_NONE;
         }
     }
-    if (query_failed || alea_interrupted()) {
+#endif
+    if (atomic_load(&query_failed) || alea_interrupted()) {
         free(cell_ids); free(secondary_ids); free(coverage); free(errors);
         return -1;
     }
@@ -7044,21 +7462,21 @@ static int trace_boundary_shared_root_surface(
             sys, end[0], end[1], end[2], &hit_b, &path_b) <= 0 ||
         path_a.count <= 0 || path_b.count <= 0)
         return 0;
-    #pragma omp atomic update
-    g_sparse_surface_label_stats.local_path_pairs_resolved++;
+    SLICE_STATS_UPDATE(
+        g_sparse_surface_label_stats.local_path_pairs_resolved++);
     const alea_hier_ray_path_entry_t* terminal_a = &path_a.entries[path_a.count - 1];
     const alea_hier_ray_path_entry_t* terminal_b = &path_b.entries[path_b.count - 1];
     if (terminal_a->cell_id != cell_a || terminal_b->cell_id != cell_b ||
         terminal_a->universe_id != terminal_b->universe_id)
         return 0;
-    #pragma omp atomic update
-    g_sparse_surface_label_stats.local_path_pairs_same_universe++;
+    SLICE_STATS_UPDATE(
+        g_sparse_surface_label_stats.local_path_pairs_same_universe++);
     if (terminal_a->depth != terminal_b->depth ||
         memcmp(terminal_a->transform.inv, terminal_b->transform.inv,
                sizeof(terminal_a->transform.inv)) != 0)
         return 0;
-    #pragma omp atomic update
-    g_sparse_surface_label_stats.local_path_pairs_same_transform++;
+    SLICE_STATS_UPDATE(
+        g_sparse_surface_label_stats.local_path_pairs_same_transform++);
     double local_start[3] = {start[0], start[1], start[2]};
     alea_matrix_transform_point_inverse(&terminal_a->transform,
                                         &local_start[0], &local_start[1],
@@ -7405,8 +7823,8 @@ int alea_find_surface_labels_sparse_on_grid(
         max_queries == 0 || max_labels == 0)
         return -1;
     if (alea_interrupted()) return -1;
-    memset(&g_sparse_surface_label_stats, 0,
-           sizeof(g_sparse_surface_label_stats));
+    SLICE_STATS_UPDATE(memset(&g_sparse_surface_label_stats, 0,
+                              sizeof(g_sparse_surface_label_stats)));
     *out_labels = NULL;
     *out_count = 0;
     /* Build mutable query caches before independent edge traces enter the
@@ -7535,9 +7953,6 @@ int alea_find_surface_labels_sparse_on_grid(
     free(local);
     if (alea_interrupted()) { free(candidates); return -1; }
     g_sparse_surface_label_stats.candidate_edges = candidate_count;
-    const int surface_label_workers = (int)sparse_surface_label_worker_count(
-        candidate_count);
-
     sparse_grid_observation_t* observations = NULL;
     size_t observation_count = 0, observation_capacity = 0;
     int observation_failed = 0;
@@ -7583,9 +7998,6 @@ int alea_find_surface_labels_sparse_on_grid(
             surface_id < primitive_canonical_surface_ids[primitive])
             primitive_canonical_surface_ids[primitive] = surface_id;
     }
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 1) num_threads(surface_label_workers)
-    #endif
     for (long long candidate_index = 0;
          candidate_index < (long long)candidate_count; candidate_index++) {
         if (alea_interrupted()) continue;
@@ -7901,9 +8313,6 @@ int alea_find_surface_labels_sparse_on_grid(
             g_sparse_surface_label_stats.batch_traces_used += ray_count;
         }
     }
-    #ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 1) num_threads(surface_label_workers)
-    #endif
     for (long long candidate_index = 0;
          candidate_index < (long long)candidate_count; candidate_index++) {
         if (alea_interrupted()) continue;
@@ -7929,25 +8338,19 @@ int alea_find_surface_labels_sparse_on_grid(
                 reverse.groups[group].fraction =
                     1.0 - reverse.groups[group].fraction;
             }
-            #pragma omp atomic update
             g_sparse_surface_label_stats.forward_trace_calls++;
-            #pragma omp atomic update
             g_sparse_surface_label_stats.reverse_trace_calls++;
         } else if (batch_ready && batch_rows && batch_rows[i] != SIZE_MAX) {
             forward = batch_forward[i];
             reverse = batch_reverse[i];
-            #pragma omp atomic update
             g_sparse_surface_label_stats.forward_trace_calls++;
-            #pragma omp atomic update
             g_sparse_surface_label_stats.reverse_trace_calls++;
         } else {
-            #pragma omp atomic update
             g_sparse_surface_label_stats.forward_trace_calls++;
             forward_rc = trace_boundary_short_canonical(
                 sys, start, end, classify, classify_userdata, &forward);
             reverse_rc = -1;
             if (forward_rc == 0) {
-                #pragma omp atomic update
                 g_sparse_surface_label_stats.reverse_trace_calls++;
                 reverse_rc = trace_boundary_short_canonical(
                     sys, end, start, classify, classify_userdata, &reverse);
@@ -7961,12 +8364,10 @@ int alea_find_surface_labels_sparse_on_grid(
             forward.group_count != 0 &&
             boundary_trace_same_ids(&forward, &reverse);
         if (!valid) continue;
-        #pragma omp atomic update
         g_sparse_surface_label_stats.accepted_edges++;
         /* Ray attribution is independent per edge.  Only the compact accepted
          * observations share storage, so keep that append in a short critical
          * section while the expensive canonical traces run in parallel. */
-        #pragma omp critical(sparse_surface_label_observations)
         {
             if (!observation_failed) {
                 for (size_t group = 0; group < forward.group_count; group++) {

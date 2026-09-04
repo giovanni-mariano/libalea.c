@@ -7,14 +7,11 @@
 
 #include "raycast/raycast.h"
 #include "raycast/ray_epsilon.h"
+#include "util/alea_parallel.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 struct alea_transition_slice_result {
     alea_transition_slice_finding_t* findings;
@@ -2215,6 +2212,26 @@ int alea_transition_slice_screen(
     return 0;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* views;
+    const alea_transition_slice_options_t* options;
+    alea_transition_slice_result_t* const* results;
+    int* statuses;
+} alea_transition_slice_batch_context_t;
+
+static int alea_transition_slice_batch_run(
+    void* opaque, size_t worker_index, size_t begin, size_t end) {
+    (void)worker_index;
+    alea_transition_slice_batch_context_t* context = opaque;
+    for (size_t page = begin; page < end; page++) {
+        context->statuses[page] = alea_transition_slice_screen(
+            context->sys, &context->views[page], context->options,
+            context->results[page]);
+    }
+    return 0;
+}
+
 int alea_transition_slice_screen_batch(
     alea_system_t* sys, const alea_slice_view_t* views, size_t page_count,
     const alea_transition_slice_options_t* input,
@@ -2262,15 +2279,8 @@ int alea_transition_slice_screen_batch(
     if (worker_scratch == 0) worker_scratch = 1;
     out_stats->reserved_scratch_bytes_per_worker = worker_scratch;
 
-    size_t workers = requested_workers;
-#ifdef _OPENMP
-    if (workers == 0) workers = (size_t)omp_get_max_threads();
-    if (omp_in_parallel()) workers = 1;
-#else
-    workers = 1;
-#endif
-    if (workers == 0) workers = 1;
-    if (workers > page_count) workers = page_count;
+    size_t workers = alea_parallel_effective_workers(page_count, 1,
+                                                     requested_workers);
     if (max_parallel_scratch_bytes == 0) {
         workers = 1;
     } else {
@@ -2295,23 +2305,18 @@ int alea_transition_slice_screen_batch(
         return -1;
     }
     size_t actual_workers = 1;
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(workers) if(workers > 1)
-    {
-        #pragma omp single
-        actual_workers = (size_t)omp_get_num_threads();
-        #pragma omp for schedule(static)
-        for (size_t page = 0; page < page_count; page++) {
-            statuses[page] = alea_transition_slice_screen(
-                sys, &views[page], &options, results[page]);
-        }
+    alea_transition_slice_batch_context_t context = {
+        sys, views, &options, results, statuses
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        page_count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+        alea_transition_slice_batch_run, &context, &actual_workers);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        free(statuses);
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              alea_parallel_status_string(parallel_status));
+        return -1;
     }
-#else
-    for (size_t page = 0; page < page_count; page++) {
-        statuses[page] = alea_transition_slice_screen(
-            sys, &views[page], &options, results[page]);
-    }
-#endif
     out_stats->actual_workers = actual_workers;
     int failed = 0;
     for (size_t page = 0; page < page_count; page++) {

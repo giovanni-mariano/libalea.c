@@ -28,9 +28,9 @@ function loadMcnp(bytes) {
   return result;
 }
 
-const openmp = module._alea_wasm_openmp_enabled() !== 0;
-if (openmp !== expectOpenmp) {
-  throw new Error(`unexpected OpenMP state: expected ${expectOpenmp}, got ${openmp}`);
+const threaded = module._alea_wasm_parallel_enabled() !== 0;
+if (threaded !== expectOpenmp) {
+  throw new Error(`unexpected threaded state: expected ${expectOpenmp}, got ${threaded}`);
 }
 let deck = input;
 if (largeInputMb > 0) {
@@ -60,7 +60,7 @@ if (length !== 160 * 90 * 4 || colors.size < 4 ||
     module._alea_wasm_cell_count() !== 9 || module._alea_wasm_surface_count() !== 13) {
   throw new Error(`invalid MCNP render: ${length} bytes, ${colors.size} colors`);
 }
-const mode = openmp ? `${module._alea_wasm_openmp_max_threads()} OpenMP threads` : "single thread";
+const mode = threaded ? `${module._alea_wasm_parallel_max_threads()} worker threads` : "single thread";
 const inputDescription = largeInputMb > 0 ? `, ${largeInputMb} MiB input` : "";
 console.log(`WASM MCNP smoke test: ${length} bytes, ${colors.size} colors, ${mode}${inputDescription}`);
 module._alea_wasm_destroy();

@@ -16,6 +16,7 @@
 #include "raycast/ray_intersect.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
+#include "util/alea_parallel.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -23,13 +24,10 @@
 #include <math.h>
 #include <float.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include "util/math.h"
 
 #include "util/compat.h"
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 /* ============================================================================
  * COLOR PALETTE (32 qualitative colors)
@@ -712,8 +710,60 @@ static void render_pixel_xray(alea_system_t* sys,
     *out_cell_id = accum.cell_id;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const render_config_t* cfg;
+    const render_camera_t* camera;
+    render_framebuffer_t* framebuffer;
+    int tile;
+    int tiles_x;
+} render_xray_parallel_context_t;
+
+static int render_xray_tile_range(void* opaque, size_t worker,
+                                  size_t begin, size_t end) {
+    (void)worker;
+    render_xray_parallel_context_t* context = opaque;
+    render_framebuffer_t* framebuffer = context->framebuffer;
+    const int width = framebuffer->width;
+    const int height = framebuffer->height;
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    for (size_t index = begin; index < end; index++) {
+        const int tile_index = (int)index;
+        const int tx = tile_index % context->tiles_x;
+        const int ty = tile_index / context->tiles_x;
+        const int x0 = tx * context->tile;
+        const int y0 = ty * context->tile;
+        const int x1 = x0 + context->tile < width
+            ? x0 + context->tile : width;
+        const int y1 = y0 + context->tile < height
+            ? y0 + context->tile : height;
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            const size_t pixel = (size_t)y * width + x;
+            float color[3];
+            int cell_id;
+            render_pixel_xray(context->sys, context->cfg, context->camera,
+                              x + 0.5, y + 0.5, width, height, &scratch,
+                              color, &cell_id);
+            framebuffer->color[pixel * 3] = color[0];
+            framebuffer->color[pixel * 3 + 1] = color[1];
+            framebuffer->color[pixel * 3 + 2] = color[2];
+            framebuffer->cell_id[pixel] = cell_id;
+            if (framebuffer->material_id) framebuffer->material_id[pixel] = 0;
+            if (framebuffer->depth) framebuffer->depth[pixel] = 1e30f;
+            if (framebuffer->normal) {
+                framebuffer->normal[pixel * 3] = 0;
+                framebuffer->normal[pixel * 3 + 1] = 0;
+                framebuffer->normal[pixel * 3 + 2] = 0;
+            }
+        }
+    }
+    alea_raycast_result_free(&scratch);
+    return 0;
+}
+
 /* X-ray owns one frame-level tile region.  Each tile uses a serial selected
- * interval consumer with worker-local scratch, avoiding a nested OpenMP batch
+ * interval consumer with worker-local scratch, avoiding a nested parallel batch
  * region per tile as well as any public batch-result publication. */
 static int render_scene_xray_batched(alea_system_t* sys,
                                      const render_config_t* cfg,
@@ -725,42 +775,13 @@ static int render_scene_xray_batched(alea_system_t* sys,
     const int tiles_y = (h + tile - 1) / tile;
     const int n_tiles = tiles_x * tiles_y;
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 1)
-#endif
-    for (int tile_index = 0; tile_index < n_tiles; tile_index++) {
-        const int tx = tile_index % tiles_x, ty = tile_index / tiles_x;
-        const int x0 = tx * tile, y0 = ty * tile;
-        const int x1 = (x0 + tile < w) ? x0 + tile : w;
-        const int y1 = (y0 + tile < h) ? y0 + tile : h;
-        alea_raycast_result_t scratch;
-        alea_raycast_result_init(&scratch);
-        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
-            const size_t pixel = (size_t)y * w + x;
-            float color[3];
-            int cell_id;
-            render_pixel_xray(sys, cfg, cam, x + 0.5, y + 0.5, w, h,
-                              &scratch, color, &cell_id);
-            fb->color[pixel * 3] = color[0];
-            fb->color[pixel * 3 + 1] = color[1];
-            fb->color[pixel * 3 + 2] = color[2];
-            fb->cell_id[pixel] = cell_id;
-            if (fb->material_id) fb->material_id[pixel] = 0;
-            if (fb->depth) fb->depth[pixel] = 1e30f;
-            if (fb->normal) {
-                fb->normal[pixel * 3] = 0;
-                fb->normal[pixel * 3 + 1] = 0;
-                fb->normal[pixel * 3 + 2] = 0;
-            }
-        }
-#ifndef _OPENMP
-        if (cfg->log_level > 0)
-            fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)",
-                    tile_index + 1, n_tiles,
-                    100.0 * (tile_index + 1) / n_tiles);
-#endif
-        alea_raycast_result_free(&scratch);
-    }
+    render_xray_parallel_context_t context = {
+        sys, cfg, cam, fb, tile, tiles_x
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        (size_t)n_tiles, 1, cfg->threads > 0 ? (size_t)cfg->threads : 0,
+        ALEA_PARALLEL_DYNAMIC, render_xray_tile_range, &context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) return -1;
     if (cfg->log_level > 0)
         fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
     return 0;
@@ -769,6 +790,120 @@ static int render_scene_xray_batched(alea_system_t* sys,
 /* ============================================================================
  * TILE-BASED PARALLEL RENDERING
  * ============================================================================ */
+
+typedef struct {
+    alea_system_t* sys;
+    const render_config_t* cfg;
+    const render_camera_t* camera;
+    render_framebuffer_t* framebuffer;
+    int width, height;
+    int tile, tiles_x;
+    int aa;
+    atomic_int* progress_done;
+} render_scene_parallel_context_t;
+
+static int render_scene_tile_range(void* opaque, size_t worker,
+                                   size_t begin, size_t end) {
+    (void)worker;
+    render_scene_parallel_context_t* context = opaque;
+    const render_config_t* cfg = context->cfg;
+    render_framebuffer_t* fb = context->framebuffer;
+    const int width = context->width, height = context->height;
+    const int aa = context->aa;
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    alea_raycast_result_reserve(&result, 64, 32);
+    for (size_t tile_index = begin; tile_index < end; tile_index++) {
+        const int tx = (int)tile_index % context->tiles_x;
+        const int ty = (int)tile_index / context->tiles_x;
+        const int x0 = tx * context->tile;
+        const int y0 = ty * context->tile;
+        const int x1 = x0 + context->tile < width
+            ? x0 + context->tile : width;
+        const int y1 = y0 + context->tile < height
+            ? y0 + context->tile : height;
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++) {
+                const size_t pixel = (size_t)y * width + x;
+                if (aa <= 1) {
+                    float color[3];
+                    int cell_id = -1, material_id = 0;
+                    float depth = 1e30f;
+                    float normal[3] = {0};
+                    if (cfg->render_mode == RENDER_MODE_XRAY) {
+                        render_pixel_xray(context->sys, cfg, context->camera,
+                            x + 0.5, y + 0.5, width, height, &result, color,
+                            &cell_id);
+                    } else {
+                        render_pixel_solid(context->sys, cfg, context->camera,
+                            x + 0.5, y + 0.5, width, height, &result, color,
+                            &cell_id, &material_id, &depth, normal);
+                    }
+                    fb->color[pixel * 3] = color[0];
+                    fb->color[pixel * 3 + 1] = color[1];
+                    fb->color[pixel * 3 + 2] = color[2];
+                    fb->cell_id[pixel] = cell_id;
+                    if (fb->material_id) fb->material_id[pixel] = material_id;
+                    if (fb->depth) fb->depth[pixel] = depth;
+                    if (fb->normal) {
+                        fb->normal[pixel * 3] = normal[0];
+                        fb->normal[pixel * 3 + 1] = normal[1];
+                        fb->normal[pixel * 3 + 2] = normal[2];
+                    }
+                } else {
+                    float red = 0, green = 0, blue = 0;
+                    int center_cell = -1, center_material = 0;
+                    float center_depth = 1e30f;
+                    float center_normal[3] = {0};
+                    const float inverse_samples = 1.0f / (float)(aa * aa);
+                    for (int sample_y = 0; sample_y < aa; sample_y++) {
+                        for (int sample_x = 0; sample_x < aa; sample_x++) {
+                            const double px = x + (sample_x + 0.5) / aa;
+                            const double py = y + (sample_y + 0.5) / aa;
+                            float color[3];
+                            int cell_id = -1, material_id = 0;
+                            float depth = 1e30f;
+                            float normal[3] = {0};
+                            if (cfg->render_mode == RENDER_MODE_XRAY) {
+                                render_pixel_xray(context->sys, cfg,
+                                    context->camera, px, py, width, height,
+                                    &result, color, &cell_id);
+                            } else {
+                                render_pixel_solid(context->sys, cfg,
+                                    context->camera, px, py, width, height,
+                                    &result, color, &cell_id, &material_id,
+                                    &depth, normal);
+                            }
+                            red += color[0];
+                            green += color[1];
+                            blue += color[2];
+                            if (sample_x == aa / 2 && sample_y == aa / 2) {
+                                center_cell = cell_id;
+                                center_material = material_id;
+                                center_depth = depth;
+                                memcpy(center_normal, normal,
+                                       sizeof(center_normal));
+                            }
+                        }
+                    }
+                    fb->color[pixel * 3] = red * inverse_samples;
+                    fb->color[pixel * 3 + 1] = green * inverse_samples;
+                    fb->color[pixel * 3 + 2] = blue * inverse_samples;
+                    fb->cell_id[pixel] = center_cell;
+                    if (fb->material_id)
+                        fb->material_id[pixel] = center_material;
+                    if (fb->depth) fb->depth[pixel] = center_depth;
+                    if (fb->normal)
+                        memcpy(&fb->normal[pixel * 3], center_normal,
+                               sizeof(center_normal));
+                }
+            }
+        }
+        atomic_fetch_add(context->progress_done, 1);
+    }
+    alea_raycast_result_free(&result);
+    return 0;
+}
 
 int render_scene(alea_system_t* sys,
                  const render_config_t* cfg,
@@ -787,13 +922,9 @@ int render_scene(alea_system_t* sys,
     /* Ensure caches are built before parallel section */
     if (alea_raycast_ensure_caches(sys) != 0) return -1;
 
-    int num_threads = cfg->threads;
-#ifdef _OPENMP
-    if (num_threads <= 0) num_threads = omp_get_max_threads();
-    omp_set_num_threads(num_threads);
-#else
-    num_threads = 1;
-#endif
+    size_t worker_count = alea_parallel_effective_workers(
+        (size_t)n_tiles, 1, cfg->threads > 0 ? (size_t)cfg->threads : 0);
+    int num_threads = (int)worker_count;
 
     if (cfg->log_level > 0)
         fprintf(stderr,
@@ -804,145 +935,15 @@ int render_scene(alea_system_t* sys,
     if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1)
         return render_scene_xray_batched(sys, cfg, cam, fb, tile);
 
-    int progress_done = 0;
-
-    #pragma omp parallel
-    {
-        /* Thread-local raycast result (reused across pixels) */
-        alea_raycast_result_t result;
-        alea_raycast_result_init(&result);
-        alea_raycast_result_reserve(&result, 64, 32);
-
-        #pragma omp for schedule(dynamic, 1)
-        for (int t = 0; t < n_tiles; t++) {
-            int tx = t % tiles_x;
-            int ty = t / tiles_x;
-            int x0 = tx * tile;
-            int y0 = ty * tile;
-            int x1 = x0 + tile; if (x1 > w) x1 = w;
-            int y1 = y0 + tile; if (y1 > h) y1 = h;
-
-            for (int y = y0; y < y1; y++) {
-                for (int x = x0; x < x1; x++) {
-                    size_t pidx = (size_t)y * w + x;
-
-                    if (aa <= 1) {
-                        /* Single sample at pixel center */
-                        float color[3];
-                        int cell_id = -1, mat_id = 0;
-                        float depth = 1e30f;
-                        float normal[3] = {0};
-
-                        switch (cfg->render_mode) {
-                        case RENDER_MODE_XRAY:
-                            render_pixel_xray(sys, cfg, cam,
-                                x + 0.5, y + 0.5, w, h,
-                                &result, color, &cell_id);
-                            break;
-                        case RENDER_MODE_DEPTH:
-                        case RENDER_MODE_CELLID:
-                        case RENDER_MODE_MATID:
-                        case RENDER_MODE_SOLID:
-                        default:
-                            render_pixel_solid(sys, cfg, cam,
-                                x + 0.5, y + 0.5, w, h,
-                                &result, color, &cell_id, &mat_id,
-                                &depth, normal);
-                            break;
-                        }
-
-                        fb->color[pidx * 3 + 0] = color[0];
-                        fb->color[pidx * 3 + 1] = color[1];
-                        fb->color[pidx * 3 + 2] = color[2];
-                        fb->cell_id[pidx] = cell_id;
-                        if (fb->material_id) fb->material_id[pidx] = mat_id;
-                        if (fb->depth) fb->depth[pidx] = depth;
-                        if (fb->normal) {
-                            fb->normal[pidx * 3 + 0] = normal[0];
-                            fb->normal[pidx * 3 + 1] = normal[1];
-                            fb->normal[pidx * 3 + 2] = normal[2];
-                        }
-                    } else {
-                        /* Supersampling NxN */
-                        float acc_r = 0, acc_g = 0, acc_b = 0;
-                        int center_cell = -1, center_mat = 0;
-                        float center_depth = 1e30f;
-                        float center_normal[3] = {0};
-                        float inv_samples = 1.0f / (float)(aa * aa);
-
-                        for (int sy = 0; sy < aa; sy++) {
-                            for (int sx = 0; sx < aa; sx++) {
-                                double spx = x + (sx + 0.5) / aa;
-                                double spy = y + (sy + 0.5) / aa;
-
-                                float color[3];
-                                int cell_id = -1, mat_id = 0;
-                                float depth = 1e30f;
-                                float normal[3] = {0};
-
-                                switch (cfg->render_mode) {
-                                case RENDER_MODE_XRAY:
-                                    render_pixel_xray(sys, cfg, cam,
-                                        spx, spy, w, h,
-                                        &result, color, &cell_id);
-                                    break;
-                                default:
-                                    render_pixel_solid(sys, cfg, cam,
-                                        spx, spy, w, h,
-                                        &result, color, &cell_id, &mat_id,
-                                        &depth, normal);
-                                    break;
-                                }
-
-                                acc_r += color[0];
-                                acc_g += color[1];
-                                acc_b += color[2];
-
-                                /* Use center sample for ID/depth/normal */
-                                if (sx == aa/2 && sy == aa/2) {
-                                    center_cell = cell_id;
-                                    center_mat = mat_id;
-                                    center_depth = depth;
-                                    center_normal[0] = normal[0];
-                                    center_normal[1] = normal[1];
-                                    center_normal[2] = normal[2];
-                                }
-                            }
-                        }
-
-                        fb->color[pidx * 3 + 0] = acc_r * inv_samples;
-                        fb->color[pidx * 3 + 1] = acc_g * inv_samples;
-                        fb->color[pidx * 3 + 2] = acc_b * inv_samples;
-                        fb->cell_id[pidx] = center_cell;
-                        if (fb->material_id) fb->material_id[pidx] = center_mat;
-                        if (fb->depth) fb->depth[pidx] = center_depth;
-                        if (fb->normal) {
-                            fb->normal[pidx * 3 + 0] = center_normal[0];
-                            fb->normal[pidx * 3 + 1] = center_normal[1];
-                            fb->normal[pidx * 3 + 2] = center_normal[2];
-                        }
-                    }
-                }
-            }
-
-            /* Progress reporting */
-            if (cfg->log_level > 0) {
-                #pragma omp atomic
-                progress_done++;
-
-                if (progress_done % (n_tiles / 20 + 1) == 0) {
-                    #pragma omp critical
-                    {
-                        fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)",
-                                progress_done, n_tiles,
-                                100.0 * progress_done / n_tiles);
-                    }
-                }
-            }
-        }
-
-        alea_raycast_result_free(&result);
-    }
+    atomic_int progress_done;
+    atomic_init(&progress_done, 0);
+    render_scene_parallel_context_t parallel_context = {
+        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        (size_t)n_tiles, 1, worker_count, ALEA_PARALLEL_DYNAMIC,
+        render_scene_tile_range, &parallel_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) return -1;
 
     if (cfg->log_level > 0)
         fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);

@@ -11,6 +11,8 @@
 #include "alea_slice.h"
 #include "raycast/raycast.h"
 #include "core/alea_system.h"
+#include "util/alea_parallel.h"
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +58,95 @@ static void slice_directional_event_stream_free(
     memset(cache, 0, sizeof(*cache));
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* view;
+    int width;
+    int height;
+    int orient;
+    int reverse;
+    double step;
+    double length;
+    const alea_ray_boundary_event_options_internal_t* options;
+    alea_ray_boundary_event_t** line_events;
+    size_t* line_counts;
+    atomic_int* failed;
+} slice_directional_trace_context_t;
+
+static int slice_directional_trace_range(void* opaque, size_t worker,
+                                         size_t begin, size_t end) {
+    (void)worker;
+    slice_directional_trace_context_t* context = opaque;
+    for (size_t line_index = begin; line_index < end; line_index++) {
+        int line = (int)line_index;
+        alea_raycast_result_t trace;
+        alea_ray_boundary_event_result_t events;
+        alea_raycast_result_init(&trace);
+        alea_ray_boundary_event_result_init(&events);
+        double u0, v0, u1, v1;
+        if (context->orient == ALEA_SLICE_EDGE_RIGHT) {
+            u0 = context->reverse ? context->view->u_max - 0.5 * context->step
+                                  : context->view->u_min + 0.5 * context->step;
+            u1 = context->reverse ? context->view->u_min + 0.5 * context->step
+                                  : context->view->u_max - 0.5 * context->step;
+            v0 = v1 = context->view->v_min + (line + 0.5) *
+                (context->view->v_max - context->view->v_min) / context->height;
+        } else {
+            v0 = context->reverse ? context->view->v_min + 0.5 * context->step
+                                  : context->view->v_max - 0.5 * context->step;
+            v1 = context->reverse ? context->view->v_max - 0.5 * context->step
+                                  : context->view->v_min + 0.5 * context->step;
+            u0 = u1 = context->view->u_min + (line + 0.5) *
+                (context->view->u_max - context->view->u_min) / context->width;
+        }
+        double start[3], finish[3];
+        slice_world_point(context->view, u0, v0, start);
+        slice_world_point(context->view, u1, v1, finish);
+        alea_ray_t ray;
+        alea_ray_init_normalized(&ray, start[0], start[1], start[2],
+                                 (finish[0] - start[0]) / context->length,
+                                 (finish[1] - start[1]) / context->length,
+                                 (finish[2] - start[2]) / context->length);
+        if (alea_raycast_boundary_events_with_options(
+                context->sys, &ray, context->length, context->options,
+                &trace, &events) != 0) {
+            atomic_store(context->failed, 1);
+        } else if (events.events.count != 0) {
+            context->line_events[line] = malloc(
+                events.events.count * sizeof(*context->line_events[line]));
+            if (!context->line_events[line]) {
+                atomic_store(context->failed, 1);
+            } else {
+                memcpy(context->line_events[line], events.events.data,
+                       events.events.count * sizeof(*context->line_events[line]));
+                context->line_counts[line] = events.events.count;
+            }
+        }
+        alea_ray_boundary_event_result_free(&events);
+        alea_raycast_result_free(&trace);
+    }
+    return 0;
+}
+
+typedef struct {
+    slice_directional_event_stream_t* cache;
+    alea_ray_boundary_event_t* const* line_events;
+    const size_t* line_counts;
+} slice_directional_copy_context_t;
+
+static int slice_directional_copy_range(void* opaque, size_t worker,
+                                        size_t begin, size_t end) {
+    (void)worker;
+    slice_directional_copy_context_t* context = opaque;
+    for (size_t line = begin; line < end; line++) {
+        if (context->line_counts[line] != 0)
+            memcpy(context->cache->events + context->cache->offsets[line],
+                   context->line_events[line], context->line_counts[line] *
+                   sizeof(*context->cache->events));
+    }
+    return 0;
+}
+
 static int slice_directional_event_stream_build(
     alea_system_t* sys, const alea_slice_view_t* view, int width, int height,
     int orient, int reverse, slice_directional_event_stream_t* cache) {
@@ -79,51 +170,16 @@ static int slice_directional_event_stream_build(
     size_t* line_counts = calloc((size_t)line_count, sizeof(*line_counts));
     int failed = !line_events || !line_counts;
     if (failed) goto cleanup;
-
-    #pragma omp parallel for schedule(static)
-    for (int line = 0; line < line_count; line++) {
-        alea_raycast_result_t trace;
-        alea_ray_boundary_event_result_t events;
-        alea_raycast_result_init(&trace);
-        alea_ray_boundary_event_result_init(&events);
-        double u0, v0, u1, v1;
-        if (orient == ALEA_SLICE_EDGE_RIGHT) {
-            u0 = reverse ? view->u_max - 0.5 * step : view->u_min + 0.5 * step;
-            u1 = reverse ? view->u_min + 0.5 * step : view->u_max - 0.5 * step;
-            v0 = v1 = view->v_min + (line + 0.5) *
-                (view->v_max - view->v_min) / height;
-        } else {
-            v0 = reverse ? view->v_min + 0.5 * step : view->v_max - 0.5 * step;
-            v1 = reverse ? view->v_max - 0.5 * step : view->v_min + 0.5 * step;
-            u0 = u1 = view->u_min + (line + 0.5) *
-                (view->u_max - view->u_min) / width;
-        }
-        double start[3], end[3];
-        slice_world_point(view, u0, v0, start);
-        slice_world_point(view, u1, v1, end);
-        alea_ray_t ray;
-        alea_ray_init_normalized(&ray, start[0], start[1], start[2],
-                                 (end[0] - start[0]) / length,
-                                 (end[1] - start[1]) / length,
-                                 (end[2] - start[2]) / length);
-        if (alea_raycast_boundary_events_with_options(
-                sys, &ray, length, &options, &trace, &events) != 0) {
-            #pragma omp atomic write
-            failed = 1;
-        } else if (events.events.count != 0) {
-            line_events[line] = malloc(events.events.count * sizeof(*line_events[line]));
-            if (!line_events[line]) {
-                #pragma omp atomic write
-                failed = 1;
-            } else {
-                memcpy(line_events[line], events.events.data,
-                       events.events.count * sizeof(*line_events[line]));
-                line_counts[line] = events.events.count;
-            }
-        }
-        alea_ray_boundary_event_result_free(&events);
-        alea_raycast_result_free(&trace);
-    }
+    atomic_int parallel_failed;
+    atomic_init(&parallel_failed, 0);
+    slice_directional_trace_context_t trace_context = {
+        sys, view, width, height, orient, reverse, step, length,
+        &options, line_events, line_counts, &parallel_failed
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        (size_t)line_count, 1, 0, ALEA_PARALLEL_STATIC_BLOCK,
+        slice_directional_trace_range, &trace_context, NULL);
+    failed = parallel_status != ALEA_PARALLEL_OK || atomic_load(&parallel_failed);
     if (failed) goto cleanup;
     for (int line = 0; line < line_count; line++) {
         if (line_counts[line] > SIZE_MAX - cache->event_count) {
@@ -137,11 +193,15 @@ static int slice_directional_event_stream_build(
     if (cache->event_count != 0) {
         cache->events = malloc(cache->event_count * sizeof(*cache->events));
         if (!cache->events) { failed = 1; goto cleanup; }
-        #pragma omp parallel for schedule(static)
-        for (int line = 0; line < line_count; line++) {
-            if (line_counts[line] != 0)
-                memcpy(cache->events + cache->offsets[line], line_events[line],
-                       line_counts[line] * sizeof(*cache->events));
+        slice_directional_copy_context_t copy_context = {
+            cache, line_events, line_counts
+        };
+        parallel_status = alea_parallel_for(
+            (size_t)line_count, 1, 0, ALEA_PARALLEL_STATIC_BLOCK,
+            slice_directional_copy_range, &copy_context, NULL);
+        if (parallel_status != ALEA_PARALLEL_OK) {
+            failed = 1;
+            goto cleanup;
         }
     }
 

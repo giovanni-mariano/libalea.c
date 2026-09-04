@@ -1635,7 +1635,7 @@ static void query_blas_node(hier_point_query_ctx_t* ctx, uint32_t node_idx) {
     const hier_bvh_node_t* node = &ctx->blas->nodes[node_idx];
     /* Per-node/per-bbox stats counters are deliberately absent from this hot
      * path: shared writes to idx->stats cause cache-line ping-pong under
-     * OpenMP. Query attribution is collected by worker-local callers. */
+     * the parallel backend. Query attribution is collected by worker-local callers. */
     if (!hier_fbbox_contains_point(&node->bbox, ctx->x, ctx->y, ctx->z)) {
         return;
     }

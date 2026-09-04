@@ -4,7 +4,7 @@
 
 /*
  * Build (from the repository root):
- *   gcc -std=c11 -O3 -fopenmp -Iinclude -Isrc \
+ *   gcc -std=c11 -O3 -pthread -Iinclude -Isrc \
  *       examples/c/ray_slice_raster_bench.c bin/libalea.a -lm \
  *       -o bin/ray_slice_raster_bench
  *

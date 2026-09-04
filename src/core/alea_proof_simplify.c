@@ -9,15 +9,12 @@
 #include "core/alea_ops.h"
 #include "core/alea_system.h"
 #include "primitives/bbox.h"
+#include "util/alea_parallel.h"
 
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #define PROOF_UNBOUNDED_EXTENT 9e5
 
@@ -276,18 +273,30 @@ static proof_classification_t classify_difference_box(
 static size_t proof_select_workers(size_t requested, size_t tasks,
                                    uint64_t budget) {
     size_t workers = requested;
-#ifdef _OPENMP
-    if (omp_in_parallel()) return 1;
-    if (workers == 0) workers = (size_t)omp_get_max_threads();
-#else
-    (void)requested;
-    workers = 1;
-#endif
+    if (alea_parallel_in_region()) return 1;
+    if (workers == 0) workers = alea_parallel_max_workers();
     if (workers == 0) workers = 1;
     if (workers > tasks) workers = tasks;
     size_t budget_workers = budget / sizeof(proof_classification_t);
     if (workers > budget_workers) workers = budget_workers;
     return workers ? workers : 1;
+}
+
+typedef struct proof_classify_parallel_context {
+    const proof_expression_t* expression;
+    const proof_task_t* children;
+    proof_classification_t* classes;
+} proof_classify_parallel_context_t;
+
+static int proof_classify_parallel_range(void* opaque, size_t worker,
+                                         size_t begin, size_t end) {
+    proof_classify_parallel_context_t* context = opaque;
+    (void)worker;
+    for (size_t child = begin; child < end; child++) {
+        context->classes[child] = classify_difference_box(
+            context->expression, &context->children[child].bbox);
+    }
+    return 0;
 }
 
 static int automatic_domain(const proof_expression_t* expr, alea_bbox_t* out,
@@ -407,19 +416,19 @@ static alea_proof_status_t prove_difference_empty(
             ? (uint64_t)workers * sizeof(*classes) : 0;
         if (reserved > result->reserved_parallel_scratch_bytes)
             result->reserved_parallel_scratch_bytes = reserved;
-#ifdef _OPENMP
         if (workers > 1) {
             result->parallel_batch_count++;
-            #pragma omp parallel for num_threads((int)workers) schedule(static)
-            for (int child = 0; child < 8; child++)
-                classes[child] = classify_difference_box(
-                    expr, &children[child].bbox);
-        } else
-#endif
-        {
-            for (int child = 0; child < 8; child++)
-                classes[child] = classify_difference_box(
-                    expr, &children[child].bbox);
+        }
+        proof_classify_parallel_context_t parallel_context = {
+            expr, children, classes
+        };
+        alea_parallel_status_t parallel_status = alea_parallel_for(
+            8, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+            proof_classify_parallel_range, &parallel_context, NULL);
+        if (parallel_status != ALEA_PARALLEL_OK) {
+            free(stack);
+            result->last_limit = ALEA_PROOF_LIMIT_MEMORY;
+            return ALEA_PROOF_INCONCLUSIVE;
         }
         result->proof_nodes += 8;
         /* Stable serial reduction chooses the lowest child ordinal witness. */
@@ -788,13 +797,8 @@ static uint64_t cell_analysis_scratch_estimate(
 static size_t batch_select_workers(size_t requested, size_t tasks,
                                    uint64_t budget, uint64_t per_worker) {
     size_t workers = requested;
-#ifdef _OPENMP
-    if (omp_in_parallel()) return 1;
-    if (workers == 0) workers = (size_t)omp_get_max_threads();
-#else
-    (void)requested;
-    workers = 1;
-#endif
+    if (alea_parallel_in_region()) return 1;
+    if (workers == 0) workers = alea_parallel_max_workers();
     if (workers == 0) workers = 1;
     if (workers > tasks) workers = tasks;
     if (budget == 0 || per_worker == UINT64_MAX) return 1;
@@ -807,6 +811,43 @@ static void batch_free_analyses(cell_proof_analysis_t* analyses, size_t count) {
     if (!analyses) return;
     for (size_t i = 0; i < count; i++) cell_proof_analysis_free(&analyses[i]);
     free(analyses);
+}
+
+typedef struct proof_batch_parallel_context {
+    alea_system_t* sys;
+    const alea_cell_simplify_request_t* requests;
+    size_t request_count;
+    const alea_cells_simplify_proof_options_t* supplied;
+    alea_cell_simplify_proof_result_t* results;
+    cell_proof_analysis_t* analyses;
+    int* errors;
+} proof_batch_parallel_context_t;
+
+static int proof_batch_parallel_range(void* opaque, size_t worker,
+                                      size_t begin, size_t end) {
+    proof_batch_parallel_context_t* context = opaque;
+    (void)worker;
+    for (size_t i = begin; i < end; i++) {
+        alea_cell_simplify_proof_options_t local;
+        alea_cell_simplify_proof_options_init(&local);
+        local.has_bounds = context->requests[i].has_bounds;
+        local.bounds = context->requests[i].bounds;
+        local.apply = false;
+        local.max_depth = context->supplied->max_depth;
+        local.max_nodes = context->supplied->max_nodes_per_cell;
+        local.max_patterns = context->supplied->max_patterns_per_cell;
+        local.max_candidates = context->supplied->max_candidates_per_cell;
+        local.requested_workers = context->request_count == 1
+            ? context->supplied->requested_workers : 1;
+        local.max_parallel_scratch_bytes = context->request_count == 1
+            ? context->supplied->max_parallel_scratch_bytes : 0;
+        context->errors[i] = analyze_cell_proven(
+            context->sys, context->requests[i].cell_index, &local,
+            &context->results[i], &context->analyses[i]);
+        context->results[i].requested_workers =
+            context->supplied->requested_workers;
+    }
+    return 0;
 }
 
 int alea_cells_simplify_proven(
@@ -877,34 +918,20 @@ int alea_cells_simplify_proven(
         supplied->max_parallel_scratch_bytes, max_workspace);
     size_t observed_workers = 1;
 
-#ifdef _OPENMP
-    #pragma omp parallel if(outer_workers > 1) num_threads((int)outer_workers)
-    {
-        #pragma omp single
-        observed_workers = (size_t)omp_get_num_threads();
-        #pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < request_count; i++) {
-            alea_cell_simplify_proof_options_t local;
-            alea_cell_simplify_proof_options_init(&local);
-            local.has_bounds = requests[i].has_bounds;
-            local.bounds = requests[i].bounds;
-            local.apply = false;
-            local.max_depth = supplied->max_depth;
-            local.max_nodes = supplied->max_nodes_per_cell;
-            local.max_patterns = supplied->max_patterns_per_cell;
-            local.max_candidates = supplied->max_candidates_per_cell;
-            local.requested_workers = request_count == 1
-                ? supplied->requested_workers : 1;
-            local.max_parallel_scratch_bytes = request_count == 1
-                ? supplied->max_parallel_scratch_bytes : 0;
-            errors[i] = analyze_cell_proven(sys, requests[i].cell_index, &local,
-                                            &results[i], &analyses[i]);
-            results[i].requested_workers = supplied->requested_workers;
-        }
-#ifdef _OPENMP
+    proof_batch_parallel_context_t parallel_context = {
+        sys, requests, request_count, supplied, results, analyses, errors
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        request_count, 1, outer_workers, ALEA_PARALLEL_STATIC_BLOCK,
+        proof_batch_parallel_range, &parallel_context, &observed_workers);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        batch_free_analyses(analyses, request_count);
+        free(errors);
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "proof batch parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        return -1;
     }
-#endif
     summary->actual_workers = observed_workers;
     summary->reserved_parallel_scratch_bytes = observed_workers > 1
         ? (uint64_t)observed_workers * max_workspace : 0;

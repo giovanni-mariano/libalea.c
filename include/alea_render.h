@@ -10,7 +10,7 @@
  * Phong shading, shadow rays, and material coloring.
  *
  * Uses the existing raycast pipeline (BVH + cell-aware traversal + lattice DDA).
- * Pure CPU, OpenMP parallelized via tile-based rendering.
+ * Pure CPU, tinypar parallelized via tile-based rendering.
  */
 
 #ifndef ALEA_RENDER_H

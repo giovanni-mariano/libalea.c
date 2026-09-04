@@ -61,16 +61,16 @@ jobs:
           channel-priority: strict
           channels: conda-forge
 
-      - name: Install conda clang toolchain + OpenMP
+      - name: Install conda clang toolchain
         run: |
-          conda install -y clang llvm-openmp make
+          conda install -y clang make
           clang --version
 
       - name: Build release
-        run: make full cli tools RELEASE=1 USE_OPENMP=1 CC=clang LIBOMP_PREFIX="$CONDA_PREFIX"
+        run: make full cli tools RELEASE=1 USE_TINYPAR=1 CC=clang
 
       - name: Run tests
-        run: make test-unit test-integration test-lua RELEASE=1 USE_OPENMP=1 CC=clang LIBOMP_PREFIX="$CONDA_PREFIX"
+        run: make test-unit test-integration test-lua RELEASE=1 USE_TINYPAR=1 CC=clang
 
       - name: Package
         run: |
@@ -84,30 +84,10 @@ jobs:
           cp -r include dist/alea-linux-conda-openmp-x64/
           cp README.md LICENSE* dist/alea-linux-conda-openmp-x64/ 2>/dev/null || true
           printf '%s\n' \
-            '# Linux OpenMP Runtime Requirement' \
-            '' \
-            'This package contains static libraries and executables built with' \
-            'conda-forge clang and LLVM OpenMP.' \
-            '' \
-            'Applications linked against these OpenMP-enabled libraries require' \
-            'the LLVM OpenMP runtime at run time:' \
-            '' \
-            '    conda install -c conda-forge llvm-openmp' \
-            '' \
-            'This runtime requirement does not require compiler tools. Those are' \
-            'needed only when compiling or linking applications, not when running' \
-            'an already-built executable.' \
-            '' \
-            'If an executable cannot find libomp.so, run it from an activated conda' \
-            "environment or ensure the conda environment's lib directory is on the" \
-            'runtime library search path.' \
-            > dist/alea-linux-conda-openmp-x64/OPENMP_RUNTIME.md
-          printf '%s\n' \
-            'libalea Linux conda OpenMP build' \
+            'libalea Linux conda threaded build (legacy OpenMP archive name)' \
             'compiler: conda-forge clang' \
-            'OpenMP: LLVM OpenMP' \
-            'runtime dependency: conda install -c conda-forge llvm-openmp' \
-            'runtime libraries bundled: no' \
+            'parallel backend: vendored tinypar with POSIX threads' \
+            'external threading runtime dependency: none' \
             > dist/alea-linux-conda-openmp-x64/BUILD_INFO.txt
           cd dist && tar -czvf alea-linux-conda-openmp-x64.tar.gz alea-linux-conda-openmp-x64
 
@@ -297,21 +277,21 @@ jobs:
           channel-priority: strict
           channels: conda-forge
 
-      - name: Install conda clang-cl toolchain + OpenMP + jom
+      - name: Install conda clang-cl toolchain + jom
         shell: pwsh
         run: |
-          conda install -y clang_win-64 llvm-openmp jom
+          conda install -y clang_win-64 jom
           where.exe clang-cl
           where.exe llvm-lib
           where.exe jom
 
       - name: Build release
         shell: pwsh
-        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 RELEASE=1 full
+        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 RELEASE=1 full
 
       - name: Run tests
         shell: pwsh
-        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_OPENMP=1 RELEASE=1 test
+        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 RELEASE=1 test
 
       - name: Package
         shell: pwsh
@@ -322,32 +302,11 @@ jobs:
           Copy-Item README.md dist/alea-windows-msvc-openmp-x64/
           Copy-Item LICENSES dist/alea-windows-msvc-openmp-x64/LICENSES -Recurse
           @(
-            '# Windows OpenMP Runtime Requirement'
-            ''
-            'This package contains MSVC-ABI static libraries built with conda'
-            'clang-cl and LLVM OpenMP.'
-            ''
-            'Applications linked against these OpenMP-enabled libraries require'
-            'the LLVM OpenMP runtime at run time:'
-            ''
-            '    conda install -c conda-forge llvm-openmp'
-            ''
-            'This runtime requirement does not require Visual Studio, Windows SDK'
-            'headers, or compiler tools. Those are needed only when compiling or'
-            'linking applications, not when running an already-built executable.'
-            ''
-            'When compiling an application against these libraries, use an'
-            'MSVC-ABI-compatible toolchain and link with LLVM OpenMP support, for'
-            'example clang-cl with /openmp:llvm. Windows SDK/MSVC headers and'
-            'import libraries must be visible at build time.'
-          ) | Set-Content -Encoding UTF8 dist/alea-windows-msvc-openmp-x64/OPENMP_RUNTIME.md
-          @(
-            'libalea Windows MSVC OpenMP build'
+            'libalea Windows MSVC threaded build (legacy OpenMP archive name)'
             'compiler: conda-forge clang_win-64 clang-cl'
             'archive tool: llvm-lib'
-            'OpenMP: LLVM OpenMP, enabled with /openmp:llvm'
-            'runtime dependency: conda install -c conda-forge llvm-openmp'
-            'runtime DLLs bundled: no'
+            'parallel backend: vendored tinypar with Win32 threads'
+            'external threading runtime dependency: none'
             'ABI: MSVC x64'
             'CRT: dynamic (/MD)'
           ) | Set-Content -Encoding UTF8 dist/alea-windows-msvc-openmp-x64/BUILD_INFO.txt

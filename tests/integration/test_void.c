@@ -14,13 +14,10 @@
 #include "core/alea_system.h"
 #include "alea_mcnp.h"
 #include "util/compat.h"   /* alea_monotonic_seconds */
+#include "util/alea_parallel.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 /* Reduce octree depth for fast tests (default 8 is too slow for CI) */
 static void set_fast_void_config(alea_system_t* sys) {
@@ -300,31 +297,50 @@ TEST(void_parallel_classification_matches_serial_exactly) {
     alea_destroy(sys);
 }
 
-#ifdef _OPENMP
-TEST(void_parallel_generation_falls_back_inside_openmp_region) {
+#ifdef ALEA_USE_TINYPAR
+typedef struct nested_void_context {
+    alea_system_t* sys;
+    alea_bbox_t bounds;
+    alea_void_options_t options;
+    void_result_t* result;
+} nested_void_context_t;
+
+static int nested_void_generate(void* opaque, size_t worker_index,
+                                size_t begin, size_t end) {
+    (void)begin;
+    (void)end;
+    nested_void_context_t* context = (nested_void_context_t*)opaque;
+    if (worker_index == 0) {
+        context->result = alea_void_generate_in_bbox_ex(
+            context->sys, &context->bounds, &context->options);
+    }
+    return 0;
+}
+
+TEST(void_parallel_generation_falls_back_inside_parallel_region) {
     alea_system_t* sys = make_box_system();
     ASSERT_NOT_NULL(sys);
-    alea_bbox_t bounds = {-5, 5, -5, 5, -5, 5};
-    alea_void_options_t options;
-    alea_void_options_init(&options);
-    options.max_depth = 4;
-    options.min_size = 0.5;
-    options.requested_workers = 4;
-    options.max_parallel_scratch_bytes = 64 * 1024;
+    nested_void_context_t context = {
+        .sys = sys,
+        .bounds = {-5, 5, -5, 5, -5, 5},
+        .result = NULL
+    };
+    alea_void_options_init(&context.options);
+    context.options.max_depth = 4;
+    context.options.min_size = 0.5;
+    context.options.requested_workers = 4;
+    context.options.max_parallel_scratch_bytes = 64 * 1024;
 
-    void_result_t* result = NULL;
-    #pragma omp parallel num_threads(2) shared(result)
-    {
-        #pragma omp single
-        result = alea_void_generate_in_bbox_ex(sys, &bounds, &options);
-    }
-    ASSERT_NOT_NULL(result);
+    ASSERT_EQ(alea_parallel_for(2, 1, 2, ALEA_PARALLEL_STATIC_BLOCK,
+                                nested_void_generate, &context, NULL),
+              ALEA_PARALLEL_OK);
+    ASSERT_NOT_NULL(context.result);
     alea_void_execution_stats_t stats;
-    ASSERT_EQ(alea_void_get_execution_stats(result, &stats), 0);
+    ASSERT_EQ(alea_void_get_execution_stats(context.result, &stats), 0);
     ASSERT_EQ(stats.actual_workers, 1);
     ASSERT_EQ(stats.parallel_batch_count, 0);
 
-    alea_void_free(result);
+    alea_void_free(context.result);
     alea_destroy(sys);
 }
 #endif

@@ -8,15 +8,15 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -std=c11
 INCLUDES = -I../../include
 
-# OpenMP support (pass USE_OPENMP=1 to enable)
-ifdef USE_OPENMP
-  OPENMP_FLAGS = -fopenmp
+# Threaded library support (pass USE_TINYPAR=1 when linking a threaded build)
+ifdef USE_TINYPAR
+  THREAD_FLAGS = -pthread
 else
-  OPENMP_FLAGS =
+  THREAD_FLAGS =
 endif
 
 # Libraries
-LIBS_CORE = ../../bin/libalea.a $(OPENMP_FLAGS) -lm
+LIBS_CORE = ../../bin/libalea.a $(THREAD_FLAGS) -lm
 LIBS_MCNP = -Wl,--whole-archive ../../bin/libalea_mcnp.a -Wl,--no-whole-archive
 LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-archive
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
@@ -33,10 +33,10 @@ mcnp_roundtrip: mcnp_roundtrip.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
 mcnp_volume: mcnp_volume.c
-	$(CC) $(CFLAGS) $(OPENMP_FLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
 render3d: render3d.c
-	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
 void_demo: void_demo.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)

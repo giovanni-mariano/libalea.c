@@ -11,7 +11,7 @@
 #     nmake /f Makefile.msvc                 # build all static libraries
 #     nmake /f Makefile.msvc test            # build + run unit & integration tests
 #     nmake /f Makefile.msvc RELEASE=1       # optimized build (default is /Od /Zi)
-#     nmake /f Makefile.msvc USE_OPENMP=1    # enable OpenMP (/openmp:llvm, VS2019 16.9+)
+#     nmake /f Makefile.msvc USE_TINYPAR=1   # enable native tinypar threads
 #     nmake /f Makefile.msvc CONDA_CLANG=1   # use clang-cl/llvm-lib (needs Windows SDK/MSVC headers)
 #     nmake /f Makefile.msvc clean
 #
@@ -68,8 +68,9 @@ SRC   = src
 BUILD = build_msvc
 BIN   = bin
 LUA   = vendor\lua\src
+TINYPAR = vendor\tinypar
 
-INCLUDES = /I include /I $(SRC)
+INCLUDES = /I include /I $(SRC) /I $(TINYPAR)\include
 LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 
 # ----------------------------------------------------------------------------
@@ -81,32 +82,22 @@ LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 # /utf-8        - source/exec charset (files contain UTF-8 box-drawing in comments)
 # _CRT_SECURE_NO_WARNINGS / _CRT_NONSTDC_NO_WARNINGS - silence strdup/strcpy noise
 
-# OpenMP flag, shared by the library AND the tests. It MUST go on both: the test
-# exes link libalea.lib, whose objects (render3d.c, slice_api.c) carry omp
-# pragmas and reference libomp symbols (__kmpc_*). Building tests without the
-# flag while the library was built with it would leave those unresolved at link.
-# Use /openmp:llvm, not plain /openmp (OpenMP 2.0): slice_api.c uses
-# `omp for collapse(2)` (OpenMP 3.0+), the one construct the 2.0 runtime rejects.
-# Everything else here is even 2.0-compatible (all signed int loop counters,
-# plain `atomic` update, named `critical`, schedule(dynamic,N)). /openmp:llvm is
-# x64-only (matches this build); exes load libomp140.x86_64.dll at runtime, so
-# the wrapper puts that redist on PATH for test runs.
-# clang-cl does NOT accept bare -fopenmp in CL mode (it is silently ignored as
-# an unknown argument and the pragmas compile as no-ops); its supported
-# spelling is /openmp, an alias for -fopenmp with clang's full OpenMP runtime
-# (not the MSVC 2.0 one), which also defines _OPENMP and auto-injects a
-# dependent-lib directive for libomp.lib (conda llvm-openmp provides it).
+# USE_OPENMP remains a source-compatible build alias during migration.
 !IFDEF USE_OPENMP
-!IFDEF CONDA_CLANG
-OMP_FLAGS = /openmp
-!ELSE
-OMP_FLAGS = /openmp:llvm
+!IFNDEF USE_TINYPAR
+USE_TINYPAR = 1
 !ENDIF
-!ELSE
-OMP_FLAGS =
 !ENDIF
 
-CFLAGS = /nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(OMP_FLAGS)
+!IFDEF USE_TINYPAR
+PARALLEL_DEFINES = /DALEA_USE_TINYPAR=1
+TINYPAR_PLATFORM_OBJ = $(BUILD)\vendor\tinypar\tinypar_win32.obj
+!ELSE
+PARALLEL_DEFINES = /DTINYPAR_NO_THREADS
+TINYPAR_PLATFORM_OBJ = $(BUILD)\vendor\tinypar\tinypar_serial.obj
+!ENDIF
+
+CFLAGS = /nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(PARALLEL_DEFINES)
 
 !IFDEF RELEASE
 CFLAGS = $(CFLAGS) /O2 /DNDEBUG
@@ -115,7 +106,7 @@ CFLAGS = $(CFLAGS) /Od /Zi
 !ENDIF
 
 # Tests keep asserts active (strip /DNDEBUG) and are always debuggable.
-TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(OMP_FLAGS)
+TEST_CFLAGS   = /nologo /std:c11 /W3 /utf-8 /Od /Zi /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(PARALLEL_DEFINES)
 TEST_INCLUDES = $(INCLUDES) /I tests
 LUA_CFLAGS    = /nologo /std:c11 /W3 /utf-8 /O2 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
 
@@ -146,11 +137,16 @@ CORE_OBJS = \
 
 UTIL_OBJS = \
 	$(BUILD)\util\arena.obj \
+	$(BUILD)\util\alea_parallel.obj \
 	$(BUILD)\util\str_builder.obj \
 	$(BUILD)\util\alea_log.obj \
 	$(BUILD)\util\poly_solve.obj \
 	$(BUILD)\util\compat.obj \
 	$(BUILD)\util\alea_svg.obj
+
+TINYPAR_OBJS = \
+	$(BUILD)\vendor\tinypar\tinypar.obj \
+	$(TINYPAR_PLATFORM_OBJ)
 
 PRIMITIVES_OBJS = \
 	$(BUILD)\primitives\primitive_eval.obj \
@@ -191,7 +187,7 @@ GEO_VALIDATOR_OBJS = \
 	$(BUILD)\geo_validator\transition_slice_critical.obj \
 	$(BUILD)\geo_validator\ray_slice_validation.obj
 
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) \
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(TINYPAR_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) \
 	$(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
 
 # --- MCNP module -----------------------------------------------------------
@@ -494,6 +490,18 @@ $(BUILD)\core\alea_spatial_hier.obj: $(SRC)\core\alea_spatial_hier.c dirs
 
 $(BUILD)\util\arena.obj: $(SRC)\util\arena.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $(SRC)\util\arena.c
+
+$(BUILD)\util\alea_parallel.obj: $(SRC)\util\alea_parallel.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $(SRC)\util\alea_parallel.c
+
+$(BUILD)\vendor\tinypar\tinypar.obj: $(TINYPAR)\src\tinypar.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\vendor\tinypar\ $(TINYPAR)\src\tinypar.c
+
+$(BUILD)\vendor\tinypar\tinypar_win32.obj: $(TINYPAR)\src\tinypar_win32.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\vendor\tinypar\ $(TINYPAR)\src\tinypar_win32.c
+
+$(BUILD)\vendor\tinypar\tinypar_serial.obj: $(TINYPAR)\src\tinypar_serial.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\vendor\tinypar\ $(TINYPAR)\src\tinypar_serial.c
 
 $(BUILD)\util\str_builder.obj: $(SRC)\util\str_builder.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $(SRC)\util\str_builder.c
@@ -862,6 +870,8 @@ dirs:
 	@if not exist $(BUILD) mkdir $(BUILD)
 	@if not exist $(BUILD)\core mkdir $(BUILD)\core
 	@if not exist $(BUILD)\util mkdir $(BUILD)\util
+	@if not exist $(BUILD)\vendor mkdir $(BUILD)\vendor
+	@if not exist $(BUILD)\vendor\tinypar mkdir $(BUILD)\vendor\tinypar
 	@if not exist $(BUILD)\primitives mkdir $(BUILD)\primitives
 	@if not exist $(BUILD)\rng mkdir $(BUILD)\rng
 	@if not exist $(BUILD)\raycast mkdir $(BUILD)\raycast

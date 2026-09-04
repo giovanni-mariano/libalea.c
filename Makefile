@@ -45,31 +45,28 @@ DOCDIR ?= $(PREFIX)/share/doc/libalea
 # Automatic dependency generation
 DEPFLAGS = -MMD -MP
 
-# Optional OpenMP support (set USE_OPENMP=1 to enable)
+# USE_OPENMP is retained as a compatibility alias for existing build scripts.
 ifdef USE_OPENMP
-  # Detect macOS (Apple clang needs different flags)
-  UNAME_S := $(shell uname -s)
-  ifeq ($(UNAME_S),Darwin)
-    # macOS: use Homebrew libomp with -Xpreprocessor
-    LIBOMP_PREFIX ?= $(shell brew --prefix libomp 2>/dev/null || echo "/usr/local/opt/libomp")
-    CFLAGS += -Xpreprocessor -fopenmp -I$(LIBOMP_PREFIX)/include
-    LDFLAGS += -L$(LIBOMP_PREFIX)/lib -lomp
+  USE_TINYPAR := 1
+endif
+
+# tinypar backend. USE_TINYPAR=1 enables native worker threads; otherwise the
+# same code paths use tinypar's dependency-free serial backend.
+TINYPAR_DIR = vendor/tinypar
+TINYPAR_SRC_DIR = $(TINYPAR_DIR)/src
+TINYPAR_INCLUDE_DIR = $(TINYPAR_DIR)/include
+ifdef USE_TINYPAR
+  CFLAGS += -DALEA_USE_TINYPAR=1
+  ifdef WINDOWS_GNU
+    TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_win32.c
   else
-    # Linux/Windows: check if using clang (needs -lomp) or gcc (uses -fopenmp)
-    IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -qi clang && echo 1)
-    ifeq ($(IS_CLANG),1)
-      CFLAGS += -fopenmp
-      LDFLAGS += -fopenmp
-      ifdef LIBOMP_PREFIX
-        CFLAGS += -I$(LIBOMP_PREFIX)/include
-        LDFLAGS += -L$(LIBOMP_PREFIX)/lib
-      endif
-      LDFLAGS += -lomp
-    else
-      CFLAGS += -fopenmp
-      LDFLAGS += -fopenmp
-    endif
+    TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_posix.c
+    CFLAGS += -pthread
+    LDFLAGS += -pthread
   endif
+else
+  TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_serial.c
+  CFLAGS += -DTINYPAR_NO_THREADS
 endif
 
 # Release build (set RELEASE=1)
@@ -119,7 +116,7 @@ BIN_DIR = bin
 INCLUDE_DIR = include
 
 # Include paths
-INCLUDES = -I$(INCLUDE_DIR) -I$(SRC_DIR)
+INCLUDES = -I$(INCLUDE_DIR) -I$(SRC_DIR) -I$(TINYPAR_INCLUDE_DIR)
 
 # Test directory
 TEST_DIR = tests
@@ -155,6 +152,7 @@ CORE_SRCS = \
 # Memory management and utilities
 UTIL_SRCS = \
 	$(UTIL_DIR)/arena.c \
+	$(UTIL_DIR)/alea_parallel.c \
 	$(UTIL_DIR)/str_builder.c \
 	$(UTIL_DIR)/alea_log.c \
 	$(UTIL_DIR)/poly_solve.c \
@@ -315,9 +313,11 @@ SLICE_OBJS = $(SLICE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 RENDER_OBJS = $(RENDER_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MESH_OBJS = $(MESH_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 GEO_VALIDATOR_OBJS = $(GEO_VALIDATOR_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+TINYPAR_SRCS = $(TINYPAR_SRC_DIR)/tinypar.c $(TINYPAR_PLATFORM_SRC)
+TINYPAR_OBJS = $(TINYPAR_SRCS:$(TINYPAR_SRC_DIR)/%.c=$(BUILD_DIR)/vendor/tinypar/%.o)
 
 # Core library objects (geometry engine + raycast/slice/render/mesh)
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS) $(TINYPAR_OBJS)
 
 # MCNP module objects
 MCNP_MODULE_OBJS = $(MCNP_PARSER_OBJS) $(MCNP_GEOM_OBJS) $(MCNP_CONV_OBJS) $(MCNP_EXPO_OBJS) $(MCNP_MODEL_OBJS)
@@ -429,6 +429,7 @@ BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
 	$(BUILD_DIR)/mcnp/exporter $(BUILD_DIR)/mcnp $(BUILD_DIR)/openmc $(BUILD_DIR)/serpent \
 	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
 	$(BUILD_DIR)/geo_validator \
+	$(BUILD_DIR)/vendor/tinypar \
 	$(BUILD_DIR)/lua $(BUILD_DIR)/lua_bind $(BUILD_DIR)/linenoise \
 	$(BIN_DIR) $(BIN_DIR)/tests/unit $(BIN_DIR)/tests/integration
 
@@ -497,6 +498,11 @@ $(BUILD_DIR)/util/%.o: $(UTIL_DIR)/%.c | $(BUILD_DIR)/util
 $(BUILD_DIR)/primitives/%.o: $(PRIMITIVES_DIR)/%.c | $(BUILD_DIR)/primitives
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Vendored tinypar backend
+$(BUILD_DIR)/vendor/tinypar/%.o: $(TINYPAR_SRC_DIR)/%.c | $(BUILD_DIR)/vendor/tinypar
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -I$(TINYPAR_SRC_DIR) -c $< -o $@
 
 # Counter-based random number generation
 $(BUILD_DIR)/rng/%.o: $(RNG_DIR)/%.c | $(BUILD_DIR)/rng
@@ -918,10 +924,10 @@ help:
 	@echo "  cli              - Build alea CLI"
 	@echo "  tools            - Build mc_convert, mc_plotter, nuc_plot, large_model_probe"
 	@echo "  wasm             - Build single-threaded Emscripten binding"
-	@echo "  wasm-openmp      - Build OpenMP Emscripten binding"
+	@echo "  wasm-openmp      - Build threaded tinypar Emscripten binding (legacy target name)"
 	@echo "  wasm-demo        - Build the browser reference animation"
 	@echo "  test-wasm        - Run native-facade and generated WASM smoke tests"
-	@echo "  test-wasm-openmp - Run native-facade and OpenMP WASM smoke tests"
+	@echo "  test-wasm-openmp - Run native-facade and threaded WASM smoke tests"
 	@echo "  install          - Install libraries, headers, CLI, tools, and docs"
 	@echo "  install-libs     - Install static libraries and public headers"
 	@echo "  install-cli      - Install alea CLI"
@@ -945,8 +951,8 @@ help:
 	@echo "  BINDIR=$(BINDIR)"
 	@echo "  LIBDIR=$(LIBDIR)"
 	@echo "  INCLUDEDIR=$(INCLUDEDIR)"
-	@echo "  USE_OPENMP=1     - Enable OpenMP"
-	@echo "  LIBOMP_PREFIX=   - OpenMP runtime prefix, e.g. /opt/homebrew/opt/libomp"
+	@echo "  USE_TINYPAR=1    - Enable native tinypar worker threads"
+	@echo "  USE_OPENMP=1     - Deprecated alias for USE_TINYPAR=1"
 	@echo "  RELEASE=1        - Optimized build"
 	@echo "  PORTABLE=1       - Avoid -march=native in release builds"
 	@echo "  WINDOWS_GNU=1    - MinGW-w64/UCRT Windows build (.exe, no -fPIC)"

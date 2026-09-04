@@ -26,16 +26,13 @@
 #include "rng/alea_rng.h"
 #include "primitives/bbox.h"
 #include "primitives/primitive_eval.h"
+#include "util/alea_parallel.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
 #include <limits.h>
 #include "util/math.h"
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 int alea_surface_project_along(const alea_system_t* sys, int surface_id,
                                const double point[3], const double direction[3],
@@ -676,18 +673,84 @@ static int batch_segment_worker_build(
     return 0;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const double* origins_xyz;
+    const double* directions_xyz;
+    size_t ray_count;
+    double scalar_t_max;
+    const double* t_mins;
+    const double* t_maxs;
+    uint64_t max_segments;
+    atomic_uint_fast64_t* live_segment_count;
+    alea_batch_segment_worker_t* workers;
+    size_t worker_count;
+} batch_segment_build_context_t;
+
+static int batch_segment_build_range(void* opaque, size_t runtime_worker,
+                                     size_t begin, size_t end) {
+    (void)runtime_worker;
+    batch_segment_build_context_t* context = opaque;
+    for (size_t worker = begin; worker < end; worker++) {
+        context->workers[worker].status = batch_segment_worker_build(
+            context->sys, context->origins_xyz, context->directions_xyz,
+            context->ray_count, context->scalar_t_max, context->t_mins,
+            context->t_maxs, context->max_segments,
+            context->live_segment_count, &context->workers[worker], worker,
+            context->worker_count);
+    }
+    return 0;
+}
+
+typedef struct {
+    const alea_batch_segment_worker_t* workers;
+    size_t worker_count;
+    alea_raycast_batch_result_t* output;
+} batch_segment_compact_context_t;
+
+static int batch_segment_compact_range(void* opaque, size_t runtime_worker,
+                                       size_t begin_row, size_t end_row) {
+    (void)runtime_worker;
+    batch_segment_compact_context_t* context = opaque;
+    alea_raycast_batch_result_t* output = context->output;
+    for (size_t row = begin_row; row < end_row; row++) {
+        const size_t worker_index = row % context->worker_count;
+        const size_t local_row = row / context->worker_count;
+        const alea_batch_segment_worker_t* worker =
+            &context->workers[worker_index];
+        const size_t begin = (size_t)worker->row_offsets[local_row];
+        const size_t end = (size_t)worker->row_offsets[local_row + 1];
+        size_t dst = (size_t)output->ray_offsets[row];
+        for (size_t source = begin; source < end; source++, dst++) {
+            const alea_ray_segment_t* segment = &worker->arena.data[source];
+            output->t_enter[dst] = segment->t_enter;
+            output->t_exit[dst] = segment->t_exit;
+            output->cell_ids[dst] = (int32_t)segment->cell_id;
+            if (output->material_ids)
+                output->material_ids[dst] = (int32_t)segment->material_id;
+            if (output->densities) output->densities[dst] = segment->density;
+            if (output->enter_surface_ids)
+                output->enter_surface_ids[dst] =
+                    (int32_t)segment->enter_surface_id;
+            if (output->exit_surface_ids)
+                output->exit_surface_ids[dst] =
+                    (int32_t)segment->exit_surface_id;
+            if (output->resolution_flags)
+                output->resolution_flags[dst] = segment->resolution_flags;
+        }
+    }
+    return 0;
+}
+
 static int raycast_hier_batch_execute_common_arena(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, double scalar_t_max, const double* t_mins,
     const double* t_maxs, uint32_t fields, uint64_t max_segments,
     uint64_t max_output_bytes, atomic_uint_fast64_t* live_segment_count,
     alea_raycast_batch_result_t* result) {
-    size_t worker_count = 1;
+    size_t worker_count = alea_parallel_effective_workers(ray_count, 1, 0);
     alea_batch_segment_worker_t* workers = NULL;
     alea_raycast_batch_result_t next = {0};
-#ifdef _OPENMP
-    worker_count = (size_t)omp_get_max_threads();
-#endif
     if (worker_count == 0) worker_count = 1;
     if (ray_count != 0 && worker_count > ray_count) worker_count = ray_count;
     if (worker_count > SIZE_MAX / sizeof(*workers)) {
@@ -701,14 +764,19 @@ static int raycast_hier_batch_execute_common_arena(
         return -1;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t worker_index = 0; worker_index < worker_count; worker_index++)
-        workers[worker_index].status = batch_segment_worker_build(
-            sys, origins_xyz, directions_xyz, ray_count, scalar_t_max, t_mins,
-            t_maxs, max_segments, live_segment_count, &workers[worker_index],
-            worker_index, worker_count);
+    batch_segment_build_context_t build_context = {
+        sys, origins_xyz, directions_xyz, ray_count, scalar_t_max, t_mins,
+        t_maxs, max_segments, live_segment_count, workers, worker_count
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        worker_count, 1, worker_count, ALEA_PARALLEL_STATIC_BLOCK,
+        batch_segment_build_range, &build_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "batch raycast parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        goto cleanup;
+    }
 
     for (size_t i = 0; i < worker_count; i++) {
         if (workers[i].status != 0 || alea_interrupted()) {
@@ -814,27 +882,17 @@ static int raycast_hier_batch_execute_common_arena(
         goto cleanup;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t row = 0; row < ray_count; row++) {
-        const size_t worker_index = row % worker_count;
-        const size_t local_row = row / worker_count;
-        const alea_batch_segment_worker_t* worker = &workers[worker_index];
-        const size_t begin = (size_t)worker->row_offsets[local_row];
-        const size_t end = (size_t)worker->row_offsets[local_row + 1];
-        size_t dst = (size_t)next.ray_offsets[row];
-        for (size_t source = begin; source < end; source++, dst++) {
-            const alea_ray_segment_t* seg = &worker->arena.data[source];
-            next.t_enter[dst] = seg->t_enter;
-            next.t_exit[dst] = seg->t_exit;
-            next.cell_ids[dst] = (int32_t)seg->cell_id;
-            if (next.material_ids) next.material_ids[dst] = (int32_t)seg->material_id;
-            if (next.densities) next.densities[dst] = seg->density;
-            if (next.enter_surface_ids) next.enter_surface_ids[dst] = (int32_t)seg->enter_surface_id;
-            if (next.exit_surface_ids) next.exit_surface_ids[dst] = (int32_t)seg->exit_surface_id;
-            if (next.resolution_flags) next.resolution_flags[dst] = seg->resolution_flags;
-        }
+    batch_segment_compact_context_t compact_context = {
+        workers, worker_count, &next
+    };
+    parallel_status = alea_parallel_for(
+        ray_count, 1, worker_count, ALEA_PARALLEL_STATIC_BLOCK,
+        batch_segment_compact_range, &compact_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "batch compaction parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        goto cleanup;
     }
     for (size_t i = 0; i < worker_count; i++) {
         batch_work_stats_merge(&next.work_stats, &workers[i].work_stats);
@@ -935,6 +993,140 @@ const uint64_t* alea_raycast_batch_path_occurrence_keys(const alea_raycast_batch
     return result ? result->path_occurrence_keys : NULL;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const double* origins_xyz;
+    const double* directions_xyz;
+    double scalar_t_max;
+    const double* t_mins;
+    const double* t_maxs;
+    uint32_t fields;
+    uint64_t max_segments;
+    uint64_t max_path_entries;
+    atomic_uint_fast64_t* live_segment_count;
+    atomic_uint_fast64_t* live_path_entry_count;
+    alea_batch_trace_tmp_t* traces;
+} batch_trace_build_context_t;
+
+static int batch_trace_build_range(void* opaque, size_t worker,
+                                   size_t begin, size_t end) {
+    (void)worker;
+    batch_trace_build_context_t* context = opaque;
+    for (size_t i = begin; i < end; i++) {
+        alea_batch_trace_tmp_t* temporary = &context->traces[i];
+        if (alea_interrupted()) {
+            temporary->status = -1;
+            continue;
+        }
+        alea_raycast_result_init(&temporary->trace);
+        if (context->fields & (ALEA_RAY_BATCH_PROJECTED_OWNER |
+                               ALEA_RAY_BATCH_FULL_PATHS))
+            temporary->trace.capture_paths = 1;
+        if (context->max_segments != 0) {
+            temporary->trace.segment_counter = context->live_segment_count;
+            temporary->trace.segment_limit = context->max_segments;
+        }
+        if ((context->fields & ALEA_RAY_BATCH_FULL_PATHS) &&
+            context->max_path_entries != 0) {
+            temporary->trace.path_entry_counter =
+                context->live_path_entry_count;
+            temporary->trace.path_entry_limit = context->max_path_entries;
+        }
+        const double* origin = &context->origins_xyz[i * 3];
+        const double* direction = &context->directions_xyz[i * 3];
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, origin[0], origin[1], origin[2], direction[0],
+                          direction[1], direction[2]) != 0) {
+            temporary->status = -1;
+            continue;
+        }
+        const double ray_t_max = context->t_maxs
+            ? context->t_maxs[i] : context->scalar_t_max;
+        temporary->status = alea_raycast_hier_segments_nocache(
+            context->sys, &ray, ray_t_max, &temporary->trace);
+        if (temporary->status == 0 && context->t_mins &&
+            context->t_mins[i] > 0.0) {
+            const double ray_t_min = context->t_mins[i];
+            size_t write = 0;
+            for (size_t j = 0; j < temporary->trace.segments.count; j++) {
+                alea_ray_segment_t segment = temporary->trace.segments.data[j];
+                if (segment.t_exit <= ray_t_min + RAY_EPSILON) continue;
+                if (segment.t_enter < ray_t_min) {
+                    segment.t_enter = ray_t_min;
+                    segment.enter_surface_id = -1;
+                    segment.enter_hit_index = -1;
+                }
+                temporary->trace.segments.data[write++] = segment;
+            }
+            temporary->trace.segments.count = write;
+        }
+    }
+    return 0;
+}
+
+typedef struct {
+    const alea_batch_trace_tmp_t* traces;
+    alea_raycast_batch_result_t* output;
+    int projected_depth;
+} batch_trace_compact_context_t;
+
+static int batch_trace_compact_range(void* opaque, size_t worker,
+                                     size_t begin, size_t end) {
+    (void)worker;
+    batch_trace_compact_context_t* context = opaque;
+    alea_raycast_batch_result_t* output = context->output;
+    for (size_t i = begin; i < end; i++) {
+        size_t dst = (size_t)output->ray_offsets[i];
+        const alea_raycast_result_t* trace = &context->traces[i].trace;
+        const alea_ray_segment_vec_t* segments = &trace->segments;
+        for (size_t j = 0; j < segments->count; j++) {
+            const alea_ray_segment_t* segment = &segments->data[j];
+            size_t k = dst + j;
+            output->t_enter[k] = segment->t_enter;
+            output->t_exit[k] = segment->t_exit;
+            output->cell_ids[k] = (int32_t)segment->cell_id;
+            if (output->material_ids)
+                output->material_ids[k] = (int32_t)segment->material_id;
+            if (output->densities) output->densities[k] = segment->density;
+            if (output->enter_surface_ids)
+                output->enter_surface_ids[k] =
+                    (int32_t)segment->enter_surface_id;
+            if (output->exit_surface_ids)
+                output->exit_surface_ids[k] =
+                    (int32_t)segment->exit_surface_id;
+            if (output->resolution_flags)
+                output->resolution_flags[k] = segment->resolution_flags;
+            if (output->projected_cell_ids)
+                batch_store_projected_owner(output, k, trace, segment,
+                                            context->projected_depth);
+            if (output->segment_path_offsets) {
+                size_t path_count = 0;
+                const alea_ray_path_entry_t* path =
+                    batch_segment_path(trace, segment, &path_count);
+                size_t path_dst = (size_t)output->segment_path_offsets[k];
+                for (size_t p = 0; p < path_count; p++) {
+                    const alea_ray_path_entry_t* entry = &path[p];
+                    size_t q = path_dst + p;
+                    output->path_cell_ids[q] = entry->cell_id;
+                    output->path_material_ids[q] = entry->material_id;
+                    output->path_universe_ids[q] = entry->universe_id;
+                    output->path_fill_universes[q] = entry->fill_universe;
+                    output->path_depths[q] = entry->depth;
+                    output->path_is_lattice[q] = entry->is_lattice;
+                    output->path_lattice_origins_xyz[q * 3] =
+                        entry->lattice_origin[0];
+                    output->path_lattice_origins_xyz[q * 3 + 1] =
+                        entry->lattice_origin[1];
+                    output->path_lattice_origins_xyz[q * 3 + 2] =
+                        entry->lattice_origin[2];
+                    output->path_occurrence_keys[q] = entry->occurrence_key;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int raycast_hier_batch_execute(
     alea_system_t* sys, const double* origins_xyz,
     const double* directions_xyz, size_t ray_count,
@@ -1022,50 +1214,19 @@ static int raycast_hier_batch_execute(
         return -1;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < ray_count; i++) {
-        if (alea_interrupted()) {
-            traces[i].status = -1;
-            continue;
-        }
-        alea_raycast_result_init(&traces[i].trace);
-        if (fields & (ALEA_RAY_BATCH_PROJECTED_OWNER | ALEA_RAY_BATCH_FULL_PATHS))
-            traces[i].trace.capture_paths = 1;
-        if (max_segments != 0) {
-            traces[i].trace.segment_counter = &live_segment_count;
-            traces[i].trace.segment_limit = max_segments;
-        }
-        if ((fields & ALEA_RAY_BATCH_FULL_PATHS) && max_path_entries != 0) {
-            traces[i].trace.path_entry_counter = &live_path_entry_count;
-            traces[i].trace.path_entry_limit = max_path_entries;
-        }
-        const double* o = &origins_xyz[i * 3];
-        const double* d = &directions_xyz[i * 3];
-        alea_ray_t ray;
-        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0) {
-            traces[i].status = -1;
-            continue;
-        }
-        const double ray_t_max = t_maxs ? t_maxs[i] : scalar_t_max;
-        traces[i].status = alea_raycast_hier_segments_nocache(
-            sys, &ray, ray_t_max, &traces[i].trace);
-        if (traces[i].status == 0 && t_mins && t_mins[i] > 0.0) {
-            const double ray_t_min = t_mins[i];
-            size_t write = 0;
-            for (size_t j = 0; j < traces[i].trace.segments.count; j++) {
-                alea_ray_segment_t segment = traces[i].trace.segments.data[j];
-                if (segment.t_exit <= ray_t_min + RAY_EPSILON) continue;
-                if (segment.t_enter < ray_t_min) {
-                    segment.t_enter = ray_t_min;
-                    segment.enter_surface_id = -1;
-                    segment.enter_hit_index = -1;
-                }
-                traces[i].trace.segments.data[write++] = segment;
-            }
-            traces[i].trace.segments.count = write;
-        }
+    batch_trace_build_context_t trace_context = {
+        sys, origins_xyz, directions_xyz, scalar_t_max, t_mins, t_maxs,
+        fields, max_segments, max_path_entries, &live_segment_count,
+        &live_path_entry_count, traces
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        ray_count, 1, 0, ALEA_PARALLEL_STATIC_BLOCK,
+        batch_trace_build_range, &trace_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "batch trace parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        goto cleanup;
     }
     for (size_t i = 0; i < ray_count; i++) {
         if (traces[i].status != 0 || alea_interrupted()) {
@@ -1295,47 +1456,17 @@ static int raycast_hier_batch_execute(
         goto cleanup;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < ray_count; i++) {
-        size_t dst = (size_t)next.ray_offsets[i];
-        const alea_ray_segment_vec_t* segments = &traces[i].trace.segments;
-        for (size_t j = 0; j < segments->count; j++) {
-            const alea_ray_segment_t* seg = &segments->data[j];
-            size_t k = dst + j;
-            next.t_enter[k] = seg->t_enter;
-            next.t_exit[k] = seg->t_exit;
-            next.cell_ids[k] = (int32_t)seg->cell_id;
-            if (next.material_ids) next.material_ids[k] = (int32_t)seg->material_id;
-            if (next.densities) next.densities[k] = seg->density;
-            if (next.enter_surface_ids) next.enter_surface_ids[k] = (int32_t)seg->enter_surface_id;
-            if (next.exit_surface_ids) next.exit_surface_ids[k] = (int32_t)seg->exit_surface_id;
-            if (next.resolution_flags) next.resolution_flags[k] = seg->resolution_flags;
-            if (next.projected_cell_ids)
-                batch_store_projected_owner(&next, k, &traces[i].trace, seg,
-                                            options ? options->projected_depth : -1);
-            if (next.segment_path_offsets) {
-                size_t path_count = 0;
-                const alea_ray_path_entry_t* path =
-                    batch_segment_path(&traces[i].trace, seg, &path_count);
-                size_t path_dst = (size_t)next.segment_path_offsets[k];
-                for (size_t p = 0; p < path_count; p++) {
-                    const alea_ray_path_entry_t* entry = &path[p];
-                    size_t q = path_dst + p;
-                    next.path_cell_ids[q] = entry->cell_id;
-                    next.path_material_ids[q] = entry->material_id;
-                    next.path_universe_ids[q] = entry->universe_id;
-                    next.path_fill_universes[q] = entry->fill_universe;
-                    next.path_depths[q] = entry->depth;
-                    next.path_is_lattice[q] = entry->is_lattice;
-                    next.path_lattice_origins_xyz[q * 3] = entry->lattice_origin[0];
-                    next.path_lattice_origins_xyz[q * 3 + 1] = entry->lattice_origin[1];
-                    next.path_lattice_origins_xyz[q * 3 + 2] = entry->lattice_origin[2];
-                    next.path_occurrence_keys[q] = entry->occurrence_key;
-                }
-            }
-        }
+    batch_trace_compact_context_t compact_context = {
+        traces, &next, options ? options->projected_depth : -1
+    };
+    parallel_status = alea_parallel_for(
+        ray_count, 1, 0, ALEA_PARALLEL_STATIC_BLOCK,
+        batch_trace_compact_range, &compact_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "batch trace compaction failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        goto cleanup;
     }
     for (size_t i = 0; i < ray_count; i++) alea_raycast_result_free(&traces[i].trace);
     free(traces);
@@ -1410,49 +1541,66 @@ static int first_visible_batch_add_bytes(size_t* total, size_t count,
 /* Fixed-output queries publish directly into preallocated SoA arrays, so the
  * executor boundary only needs to own one operation-wide region and collect
  * per-ray status.  Keep that policy here, rather than letting each semantic
- * query grow its own OpenMP wrapper.  The worker remains a packet traversal
+ * query grow its own parallel wrapper. The worker remains a packet traversal
  * body and is also used unchanged by serial builds. */
 typedef int (*raycast_fixed_batch_worker_t)(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query, void* result,
-    int* statuses);
+    int* statuses, size_t begin, size_t end);
+
+#define ALEA_RAYCAST_FIXED_BATCH_GRAIN ((size_t)4)
+
+typedef struct {
+    raycast_fixed_batch_worker_t worker;
+    alea_system_t* sys;
+    const double* origins_xyz;
+    const double* directions_xyz;
+    size_t ray_count;
+    const alea_ray_batch_query_t* query;
+    void* result;
+    int* statuses;
+} raycast_fixed_batch_context_t;
+
+static int raycast_fixed_batch_range(void* opaque, size_t worker_index,
+                                     size_t begin, size_t end) {
+    (void)worker_index;
+    raycast_fixed_batch_context_t* context = opaque;
+    return context->worker(
+        context->sys, context->origins_xyz, context->directions_xyz,
+        context->ray_count, context->query, context->result,
+        context->statuses, begin, end);
+}
 
 static int raycast_fixed_batch_execute(
     raycast_fixed_batch_worker_t worker, alea_system_t* sys,
     const double* origins_xyz, const double* directions_xyz, size_t ray_count,
     const alea_ray_batch_query_t* query, void* result, int* statuses) {
-    int execute_rc = 0;
-#ifdef _OPENMP
-    #pragma omp parallel shared(execute_rc)
-    {
-        const int local_rc = worker(sys, origins_xyz, directions_xyz, ray_count,
-                                    query, result, statuses);
-        if (local_rc != 0) {
-            #pragma omp atomic write
-            execute_rc = local_rc;
-        }
-    }
-#else
-    execute_rc = worker(sys, origins_xyz, directions_xyz, ray_count, query,
-                        result, statuses);
-#endif
-    return execute_rc;
+    raycast_fixed_batch_context_t context = {
+        worker, sys, origins_xyz, directions_xyz, ray_count, query, result,
+        statuses
+    };
+    alea_parallel_status_t status = alea_parallel_for(
+        ray_count, ALEA_RAYCAST_FIXED_BATCH_GRAIN, 0,
+        ALEA_PARALLEL_STATIC_BLOCK, raycast_fixed_batch_range, &context, NULL);
+    return status == ALEA_PARALLEL_OK ? 0 : -1;
 }
 
 static int raycast_first_visible_batch_worker(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query, void* result,
-    int* statuses) {
+    int* statuses, size_t begin, size_t end) {
     return alea_raycast_hier_first_visible_batch_execute_nocache(
-        sys, origins_xyz, directions_xyz, ray_count, query, result, statuses);
+        sys, origins_xyz, directions_xyz, ray_count, query, result, statuses,
+        begin, end);
 }
 
 static int raycast_any_hit_batch_worker(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query, void* result,
-    int* statuses) {
+    int* statuses, size_t begin, size_t end) {
     return alea_raycast_hier_any_hit_batch_execute_nocache(
-        sys, origins_xyz, directions_xyz, ray_count, query, result, statuses);
+        sys, origins_xyz, directions_xyz, ray_count, query, result, statuses,
+        begin, end);
 }
 
 int alea_raycast_hier_first_visible_batch_nocache(
@@ -1766,6 +1914,74 @@ static int batch_event_worker_build(
     return 0;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const double* origins_xyz;
+    const double* directions_xyz;
+    size_t ray_count;
+    const alea_ray_batch_query_t* query;
+    alea_batch_event_worker_t* workers;
+    size_t worker_count;
+    atomic_uint_fast64_t* live_event_count;
+} batch_event_build_context_t;
+
+static int batch_event_build_range(void* opaque, size_t runtime_worker,
+                                   size_t begin, size_t end) {
+    (void)runtime_worker;
+    batch_event_build_context_t* context = opaque;
+    for (size_t worker = begin; worker < end; worker++) {
+        if (batch_event_worker_build(
+                context->sys, context->origins_xyz, context->directions_xyz,
+                context->ray_count, context->query, &context->workers[worker],
+                worker, context->worker_count,
+                context->live_event_count) != 0)
+            context->workers[worker].row_count = SIZE_MAX;
+    }
+    return 0;
+}
+
+typedef struct {
+    const alea_batch_event_worker_t* workers;
+    size_t worker_count;
+    alea_ray_boundary_event_batch_result_t* output;
+} batch_event_compact_context_t;
+
+static int batch_event_compact_range(void* opaque, size_t runtime_worker,
+                                     size_t begin_row, size_t end_row) {
+    (void)runtime_worker;
+    batch_event_compact_context_t* context = opaque;
+    alea_ray_boundary_event_batch_result_t* output = context->output;
+    for (size_t i = begin_row; i < end_row; i++) {
+        const size_t dst = (size_t)output->ray_offsets[i];
+        const size_t worker_index = i % context->worker_count;
+        const size_t local_row = i / context->worker_count;
+        const alea_batch_event_worker_t* worker =
+            &context->workers[worker_index];
+        const size_t begin = (size_t)worker->row_offsets[local_row];
+        const size_t end = (size_t)worker->row_offsets[local_row + 1];
+        for (size_t j = begin; j < end; j++) {
+            const alea_ray_boundary_event_t* event = &worker->arena.data[j];
+            const size_t k = dst + j - begin;
+            output->t[k] = event->t;
+            output->kinds[k] = (uint8_t)event->kind;
+            output->surface_ids[k] = event->surface_id;
+            output->cell_before[k] = event->cell_before;
+            output->cell_after[k] = event->cell_after;
+            output->material_before[k] = event->material_before;
+            output->material_after[k] = event->material_after;
+            output->resolution_flags[k] = event->resolution_flags;
+            if (output->primitive_ids)
+                output->primitive_ids[k] = event->primitive_id;
+            if (output->normals_xyz) {
+                output->normals_xyz[k * 3] = event->nx;
+                output->normals_xyz[k * 3 + 1] = event->ny;
+                output->normals_xyz[k * 3 + 2] = event->nz;
+            }
+        }
+    }
+    return 0;
+}
+
 void alea_ray_boundary_event_batch_result_init(
     alea_ray_boundary_event_batch_result_t* result) {
     if (result) memset(result, 0, sizeof(*result));
@@ -1796,7 +2012,8 @@ int alea_raycast_boundary_events_batch_nocache(
                                   ALEA_RAY_QUERY_FIELD_PRIMITIVE_ID;
     alea_ray_boundary_event_batch_result_t next = {0};
     alea_batch_event_worker_t* workers = NULL;
-    size_t worker_count = 1;
+    size_t worker_count = alea_parallel_effective_workers(
+        ray_count, 1, query ? query->max_workers : 0);
     atomic_uint_fast64_t live_event_count;
     size_t output_bytes = 0;
     if (!sys || !query || !result) {
@@ -1831,11 +2048,6 @@ int alea_raycast_boundary_events_batch_nocache(
             : alea_raycast_ensure_caches(sys)) != 0)
         return -1;
     atomic_init(&live_event_count, 0);
-#ifdef _OPENMP
-    worker_count = (size_t)omp_get_max_threads();
-#endif
-    if (query->max_workers && worker_count > query->max_workers)
-        worker_count = query->max_workers;
     if (worker_count > ray_count && ray_count != 0) worker_count = ray_count;
     if (worker_count == 0 || worker_count > SIZE_MAX / sizeof(*workers)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW,
@@ -1849,17 +2061,18 @@ int alea_raycast_boundary_events_batch_nocache(
         return -1;
     }
 
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t worker = 0; worker < worker_count; worker++) {
-        if (batch_event_worker_build(sys, origins_xyz, directions_xyz,
-                                     ray_count, query, &workers[worker], worker,
-                                     worker_count, &live_event_count) != 0) {
-            /* The caller checks every worker after the region so no thread
-             * mutates a shared result or error state while traversing. */
-            workers[worker].row_count = SIZE_MAX;
-        }
+    batch_event_build_context_t build_context = {
+        sys, origins_xyz, directions_xyz, ray_count, query, workers,
+        worker_count, &live_event_count
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        worker_count, 1, worker_count, ALEA_PARALLEL_STATIC_BLOCK,
+        batch_event_build_range, &build_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "boundary-event parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        goto fail;
     }
     for (size_t worker = 0; worker < worker_count; worker++) {
         if (workers[worker].row_count == SIZE_MAX || alea_interrupted()) {
@@ -1957,35 +2170,17 @@ int alea_raycast_boundary_events_batch_nocache(
                               "failed to allocate boundary-event batch output");
         goto fail;
     }
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < ray_count; i++) {
-        const size_t dst = (size_t)next.ray_offsets[i];
-        const size_t worker_index = i % worker_count;
-        const size_t local_row = i / worker_count;
-        const alea_batch_event_worker_t* worker = &workers[worker_index];
-        const size_t begin = (size_t)worker->row_offsets[local_row];
-        const size_t end = (size_t)worker->row_offsets[local_row + 1];
-        for (size_t j = begin; j < end; j++) {
-            const alea_ray_boundary_event_t* event =
-                &worker->arena.data[j];
-            const size_t k = dst + j - begin;
-            next.t[k] = event->t;
-            next.kinds[k] = (uint8_t)event->kind;
-            next.surface_ids[k] = event->surface_id;
-            next.cell_before[k] = event->cell_before;
-            next.cell_after[k] = event->cell_after;
-            next.material_before[k] = event->material_before;
-            next.material_after[k] = event->material_after;
-            next.resolution_flags[k] = event->resolution_flags;
-            if (next.primitive_ids) next.primitive_ids[k] = event->primitive_id;
-            if (next.normals_xyz) {
-                next.normals_xyz[k * 3] = event->nx;
-                next.normals_xyz[k * 3 + 1] = event->ny;
-                next.normals_xyz[k * 3 + 2] = event->nz;
-            }
-        }
+    batch_event_compact_context_t compact_context = {
+        workers, worker_count, &next
+    };
+    parallel_status = alea_parallel_for(
+        ray_count, 1, worker_count, ALEA_PARALLEL_STATIC_BLOCK,
+        batch_event_compact_range, &compact_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "boundary-event compaction failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        goto fail;
     }
     for (size_t worker = 0; worker < worker_count; worker++)
         batch_event_worker_free(&workers[worker]);
@@ -2721,110 +2916,118 @@ void alea_volume_estimate_options_init(
     options->batch_size = 10000;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    size_t n_paths;
+    size_t ray_begin;
+    alea_rng_algorithm_t rng_algorithm;
+    uint64_t seed;
+    double cx, cy, cz, radius;
+    double** worker_volumes;
+    double** worker_l2;
+    int collect_l2;
+    atomic_int* error_flag;
+} volume_estimate_parallel_context_t;
+
+static int volume_estimate_parallel_range(void* opaque, size_t worker,
+                                          size_t begin, size_t end) {
+    volume_estimate_parallel_context_t* context = opaque;
+    double* local_vol = calloc(context->n_paths, sizeof(*local_vol));
+    double* local_l2 = context->collect_l2
+        ? calloc(context->n_paths, sizeof(*local_l2)) : NULL;
+    double* ray_l = context->collect_l2
+        ? calloc(context->n_paths, sizeof(*ray_l)) : NULL;
+    size_t* touched_paths = context->collect_l2
+        ? calloc(context->n_paths, sizeof(*touched_paths)) : NULL;
+    context->worker_volumes[worker] = local_vol;
+    if (context->worker_l2) context->worker_l2[worker] = local_l2;
+    if (!local_vol || (context->collect_l2 &&
+        (!local_l2 || !ray_l || !touched_paths))) {
+        atomic_store(context->error_flag, 1);
+        free(ray_l);
+        free(touched_paths);
+        return 0;
+    }
+
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    for (size_t offset = begin; offset < end; offset++) {
+        if (atomic_load(context->error_flag)) continue;
+        const size_t ray_index = context->ray_begin + offset;
+        double rox, roy, roz, ux, uy, uz;
+        if (generate_indexed_cauchy_crofton_ray(
+                context->rng_algorithm, context->seed, (uint64_t)ray_index,
+                context->cx, context->cy, context->cz, context->radius,
+                &rox, &roy, &roz, &ux, &uy, &uz) != 0) {
+            atomic_store(context->error_flag, 1);
+            continue;
+        }
+        alea_ray_t ray_desc;
+        size_t touched_count = 0;
+        volume_interval_accumulator_t accumulator = {
+            .sys = context->sys,
+            .n_paths = context->n_paths,
+            .local_vol = local_vol,
+            .ray_l = ray_l,
+            .touched_paths = touched_paths,
+            .touched_count = &touched_count
+        };
+        int rc = alea_ray_init(&ray_desc, rox, roy, roz, ux, uy, uz);
+        if (rc == 0) {
+            rc = alea_raycast_hier_visit_intervals_nocache(
+                context->sys, &ray_desc, 4.0 * context->radius, &result,
+                accumulate_volume_interval, &accumulator);
+        }
+        if (rc != 0) {
+            atomic_store(context->error_flag, 1);
+            continue;
+        }
+        if (local_l2) {
+            for (size_t i = 0; i < touched_count; i++) {
+                const size_t path_id = touched_paths[i];
+                const double length = ray_l[path_id];
+                local_l2[path_id] += length * length;
+                ray_l[path_id] = 0.0;
+            }
+        }
+    }
+    alea_raycast_result_free(&result);
+    free(ray_l);
+    free(touched_paths);
+    return 0;
+}
+
 static int volume_estimate_ray_batch(
         alea_system_t* sys, size_t n_paths, size_t ray_begin, size_t ray_end,
         alea_rng_algorithm_t rng_algorithm, uint64_t seed,
         size_t requested_workers,
         double cx, double cy, double cz, double radius,
         double* sum_l, double* sum_l2, size_t* out_actual_workers) {
-    int error_flag = 0;
+    atomic_int error_flag;
+    atomic_init(&error_flag, 0);
     size_t actual_workers = 1;
-    int worker_limit = 1;
-    #ifdef _OPENMP
-    worker_limit = requested_workers > 0
-        ? (int)requested_workers : omp_get_max_threads();
-    #endif
+    const size_t ray_count = ray_end - ray_begin;
+    size_t worker_limit = alea_parallel_effective_workers(
+        ray_count, 1, requested_workers);
     double** worker_volumes = calloc(
-        (size_t)worker_limit, sizeof(*worker_volumes));
+        worker_limit, sizeof(*worker_volumes));
     double** worker_l2 = sum_l2
-        ? calloc((size_t)worker_limit, sizeof(*worker_l2)) : NULL;
+        ? calloc(worker_limit, sizeof(*worker_l2)) : NULL;
     if (!worker_volumes || (sum_l2 && !worker_l2)) {
         free(worker_volumes);
         free(worker_l2);
         return -1;
     }
 
-    #pragma omp parallel if(worker_limit > 1) num_threads(worker_limit)
-    {
-        int worker_id = 0;
-        #ifdef _OPENMP
-        worker_id = omp_get_thread_num();
-        #endif
-        double* local_vol = calloc(n_paths, sizeof(*local_vol));
-        double* local_l2 = sum_l2 ? calloc(n_paths, sizeof(*local_l2)) : NULL;
-        double* ray_l = sum_l2 ? calloc(n_paths, sizeof(*ray_l)) : NULL;
-        size_t* touched_paths = sum_l2
-            ? calloc(n_paths, sizeof(*touched_paths)) : NULL;
-        alea_raycast_result_t result;
-        alea_raycast_result_init(&result);
-        worker_volumes[worker_id] = local_vol;
-        if (worker_l2) worker_l2[worker_id] = local_l2;
-
-        #ifdef _OPENMP
-        #pragma omp single
-        actual_workers = (size_t)omp_get_num_threads();
-        #endif
-
-        if (!local_vol ||
-            (sum_l2 && (!local_l2 || !ray_l || !touched_paths))) {
-            #pragma omp atomic update
-            error_flag |= 1;
-        }
-
-        #pragma omp for schedule(static)
-        for (size_t ray_index = ray_begin; ray_index < ray_end; ray_index++) {
-            int failed;
-            #pragma omp atomic read
-            failed = error_flag;
-            if (failed) continue;
-
-            double rox, roy, roz, ux, uy, uz;
-            if (generate_indexed_cauchy_crofton_ray(
-                    rng_algorithm, seed, (uint64_t)ray_index,
-                    cx, cy, cz, radius,
-                    &rox, &roy, &roz, &ux, &uy, &uz) != 0) {
-                #pragma omp atomic update
-                error_flag |= 1;
-                continue;
-            }
-
-            alea_ray_t ray_desc;
-            size_t touched_count = 0;
-            volume_interval_accumulator_t accum = {
-                .sys = sys,
-                .n_paths = n_paths,
-                .local_vol = local_vol,
-                .ray_l = ray_l,
-                .touched_paths = touched_paths,
-                .touched_count = &touched_count
-            };
-            int rc = alea_ray_init(
-                &ray_desc, rox, roy, roz, ux, uy, uz);
-            if (rc == 0) {
-                rc = alea_raycast_hier_visit_intervals_nocache(
-                    sys, &ray_desc, 4.0 * radius, &result,
-                    accumulate_volume_interval, &accum);
-            }
-            if (rc != 0) {
-                #pragma omp atomic update
-                error_flag |= 1;
-                continue;
-            }
-
-            if (local_l2) {
-                for (size_t i = 0; i < touched_count; i++) {
-                    const size_t path_id = touched_paths[i];
-                    const double length = ray_l[path_id];
-                    local_l2[path_id] += length * length;
-                    ray_l[path_id] = 0.0;
-                }
-            }
-        }
-
-        alea_raycast_result_free(&result);
-        free(ray_l);
-        free(touched_paths);
-    }
+    volume_estimate_parallel_context_t parallel_context = {
+        sys, n_paths, ray_begin, rng_algorithm, seed, cx, cy, cz, radius,
+        worker_volumes, worker_l2, sum_l2 != NULL, &error_flag
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        ray_count, 1, worker_limit, ALEA_PARALLEL_STATIC_BLOCK,
+        volume_estimate_parallel_range, &parallel_context, &actual_workers);
+    if (parallel_status != ALEA_PARALLEL_OK)
+        atomic_store(&error_flag, 1);
 
     /* Fixed worker-index order makes a repeated run bit-reproducible for the
      * same seed, batch size, and worker count. */
@@ -2844,7 +3047,7 @@ static int volume_estimate_ray_batch(
     free(worker_l2);
 
     if (out_actual_workers) *out_actual_workers = actual_workers;
-    return error_flag ? -1 : 0;
+    return atomic_load(&error_flag) ? -1 : 0;
 }
 
 static double volume_maximum_relative_error(

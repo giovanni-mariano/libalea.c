@@ -12,10 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
 enum { RASTER_NU = 16, RASTER_NV = 3, RASTER_PIXELS = RASTER_NU * RASTER_NV };
 
 static alea_system_t* raster_test_system(void) {
@@ -196,14 +192,8 @@ TEST(ray_slice_raster_parallel_rows_are_deterministic) {
     output.nv = nv;
     output.fields = ALEA_SLICE_RASTER_CELL_ID;
     output.cell_ids = one_thread;
-#ifdef _OPENMP
-    omp_set_num_threads(1);
-#endif
     ASSERT_EQ(alea_rasterize_ray_slice_compact(&view, compact, &output), 0);
     output.cell_ids = many_threads;
-#ifdef _OPENMP
-    omp_set_num_threads(4);
-#endif
     ASSERT_EQ(alea_rasterize_ray_slice_compact(&view, compact, &output), 0);
     ASSERT_EQ(memcmp(one_thread, many_threads, pixels * sizeof(*one_thread)), 0);
 

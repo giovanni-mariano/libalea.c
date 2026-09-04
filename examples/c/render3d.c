@@ -16,7 +16,7 @@
  *       --aa 2 --threads 8
  *
  * Build:
- *   gcc -O2 -fopenmp -o render3d render3d.c -I../include -I../src \
+ *   gcc -O2 -pthread -o render3d render3d.c -I../include -I../src \
  *       -L../bin -lalea_render -lalea_raycast \
  *       -lalea_mcnp -lalea_openmc -lalea -lm
  */

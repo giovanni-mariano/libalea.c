@@ -60,6 +60,9 @@ extern "C" {
 #define ALEA_VERSION_PATCH 0
 
 const char* alea_version(void);
+int alea_parallel_enabled(void);
+int alea_parallel_max_threads(void);
+/* Legacy compatibility aliases; these now report the active parallel backend. */
 int alea_openmp_enabled(void);
 int alea_openmp_max_threads(void);
 
@@ -865,7 +868,7 @@ int alea_volume_path_resolve_cell_at_point(alea_system_t* sys,
  * A result is unique only when every matching point identifies the same
  * structural occurrence and no individual point is ambiguous. The hierarchy
  * query cache is prepared once before any parallel work. A zero worker request
- * uses the OpenMP runtime maximum; a zero parallel scratch budget selects the
+ * uses the parallel backend maximum; a zero parallel scratch budget selects the
  * serial path. Output order is always point-set input order.
  */
 int alea_volume_path_resolve_cell_point_sets(
@@ -943,7 +946,7 @@ typedef struct {
     size_t max_rays;              /**< Required maximum number of sampled rays. */
     uint64_t seed;                /**< Counter-based sampling seed. */
     alea_rng_algorithm_t rng_algorithm; /**< Random engine selection. */
-    size_t requested_workers;     /**< 0 = OpenMP runtime maximum. */
+    size_t requested_workers;     /**< 0 = parallel backend maximum. */
     size_t batch_size;            /**< 0 = implementation default. */
     double target_rel_error;      /**< 0 disables early convergence. */
     alea_volume_progress_fn progress;
@@ -991,7 +994,7 @@ typedef struct {
     int max_depth;
     double min_size;                       /**< 0 disables the size limit. */
     int samples_per_axis;                  /**< Deterministic mixed-leaf samples. */
-    size_t requested_workers;              /**< 0 = OpenMP runtime maximum. */
+    size_t requested_workers;              /**< 0 = parallel backend maximum. */
     uint64_t max_parallel_scratch_bytes;   /**< 0 forces serial execution. */
 } alea_cell_volume_options_t;
 
@@ -1070,7 +1073,7 @@ typedef struct {
     size_t max_nodes;
     size_t max_patterns;
     size_t max_candidates;
-    size_t requested_workers;           /**< 0 = OpenMP runtime maximum. */
+    size_t requested_workers;           /**< 0 = parallel backend maximum. */
     uint64_t max_parallel_scratch_bytes;
 } alea_cell_simplify_proof_options_t;
 
@@ -1136,7 +1139,7 @@ typedef struct {
     size_t max_nodes_per_cell;
     size_t max_patterns_per_cell;
     size_t max_candidates_per_cell;
-    size_t requested_workers;          /**< 0 = OpenMP runtime maximum. */
+    size_t requested_workers;          /**< 0 = parallel backend maximum. */
     uint64_t max_parallel_scratch_bytes;
 } alea_cells_simplify_proof_options_t;
 
@@ -1238,7 +1241,7 @@ typedef struct {
     int max_depth;
     double min_size;
     int probes_per_axis;
-    size_t requested_workers;              /**< 0 = OpenMP runtime maximum */
+    size_t requested_workers;              /**< 0 = parallel backend maximum */
     uint64_t max_parallel_scratch_bytes;   /**< 0 = force serial execution */
     size_t parallel_frontier_depth;        /**< 0 = automatic (currently 2) */
 } alea_void_options_t;

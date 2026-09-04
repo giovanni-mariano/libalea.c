@@ -200,7 +200,7 @@ typedef struct {
     bool use_chain_bitset;          /**< Use chain bitset evaluation where available */
     bool use_path_2d_index;         /**< Build path-local 2D candidate indexes */
     bool verify_path_2d_index;      /**< Cross-check path-local 2D candidates */
-    bool parallel;                  /**< Allow path refinement OpenMP workers */
+    bool parallel;                  /**< Allow path refinement worker threads */
 } alea_tile_refinement_options_t;
 
 /** Initialize tile/path refinement options to stable bounded defaults. */
@@ -1150,7 +1150,7 @@ alea_plot_error_component_result_t* alea_classify_plot_error_components(
  * components. Unlike alea_find_cells_grid_coverage(), no raster arrays or
  * analytical error lines escape this call. `max_pixels` and
  * `max_scratch_bytes` is a hard pre-allocation limit. `max_workers` limits
- * this query only (without changing process-wide OpenMP settings); zero
+ * this query only (without changing process-wide backend settings); zero
  * selects the safe single-worker default.
  *
  * On success ownership of `*out_components` transfers to the caller, which

@@ -586,7 +586,8 @@ int alea_raycast_hier_first_visible_batch_nocache(
 int alea_raycast_hier_first_visible_batch_execute_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query,
-    alea_ray_first_visible_batch_result_t* result, int* statuses);
+    alea_ray_first_visible_batch_result_t* result, int* statuses,
+    size_t begin, size_t end);
 
 /** Private compact writer for ANY_HIT batch queries. */
 typedef struct {
@@ -603,7 +604,8 @@ int alea_raycast_hier_any_hit_batch_nocache(
 int alea_raycast_hier_any_hit_batch_execute_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query,
-    alea_ray_any_hit_batch_result_t* result, int* statuses);
+    alea_ray_any_hit_batch_result_t* result, int* statuses,
+    size_t begin, size_t end);
 
 /* Private CSR writer for the canonical BOUNDARY_EVENTS contract. */
 typedef struct {
@@ -1115,14 +1117,14 @@ void alea_ray_coverage_executor_init(alea_ray_coverage_executor_t* executor);
 void alea_ray_coverage_executor_free(alea_ray_coverage_executor_t* executor);
 int alea_ray_coverage_executor_prepare(alea_ray_coverage_executor_t* executor,
                                         size_t worker_count);
-/* Stable row ownership for serial and future OpenMP schedulers. */
+/* Stable row ownership for serial and parallel schedulers. */
 alea_ray_coverage_worker_scratch_t*
 alea_ray_coverage_executor_worker_for_row(
     alea_ray_coverage_executor_t* executor, size_t row_index);
 
 /* Execute independent coverage rows into worker-local reusable arenas, then
  * compact them in input row order.  Each row is assigned to
- * row_index % worker_count in both serial and OpenMP builds.  Failure leaves
+ * row_index % worker_count in both serial and threaded builds. Failure leaves
  * result's previous publication intact. */
 int alea_ray_coverage_slice_build_executor_nocache(
     alea_system_t* sys, const alea_ray_coverage_row_t* rows, size_t row_count,

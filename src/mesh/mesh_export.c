@@ -17,6 +17,7 @@
 #include "primitives/bbox.h"
 #include "raycast/raycast.h"
 #include "util/compat.h"
+#include "util/alea_parallel.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -25,9 +26,7 @@
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include <stdatomic.h>
 
 /* ============================================================================
  * Config
@@ -813,6 +812,78 @@ static void mesh_ray_origin_uv(const alea_mesh_config_t *cfg, int axis,
     *v = ((double)gv + 0.5) / (double)cfg->ray_grid_v;
 }
 
+typedef struct {
+    alea_system_t *sys;
+    const alea_mesh_config_t *cfg;
+    const double *along_nodes;
+    const double *u_nodes;
+    const double *v_nodes;
+    int axis;
+    int along_count;
+    int u_count;
+    uint32_t origin_count;
+    mesh_ray_voxel_accum_t *accums;
+    atomic_int *failed;
+} mesh_ray_parallel_context_t;
+
+static int mesh_ray_trace_range(void *opaque, size_t worker,
+                                size_t begin, size_t end) {
+    (void)worker;
+    mesh_ray_parallel_context_t *context = opaque;
+    for (size_t column = begin; column < end; column++) {
+        const int a = (int)(column % (size_t)context->u_count);
+        const int b = (int)(column / (size_t)context->u_count);
+        alea_raycast_result_t trace;
+        alea_raycast_result_init(&trace);
+        for (uint32_t sample = 0; sample < context->origin_count; sample++) {
+            double unit_u, unit_v;
+            mesh_ray_origin_uv(context->cfg, context->axis, column, sample,
+                               &unit_u, &unit_v);
+            const double u = context->u_nodes[a] + unit_u *
+                (context->u_nodes[a + 1] - context->u_nodes[a]);
+            const double v = context->v_nodes[b] + unit_v *
+                (context->v_nodes[b + 1] - context->v_nodes[b]);
+            double origin[3] = {0.0, 0.0, 0.0};
+            double direction[3] = {0.0, 0.0, 0.0};
+            origin[context->axis] = nextafter(context->along_nodes[0],
+                                               -INFINITY);
+            if (context->axis == 0) { origin[1] = u; origin[2] = v; }
+            else if (context->axis == 1) { origin[0] = u; origin[2] = v; }
+            else { origin[0] = u; origin[1] = v; }
+            direction[context->axis] = 1.0;
+            alea_ray_t ray;
+            alea_raycast_result_clear(&trace);
+            if (alea_ray_init(&ray, origin[0], origin[1], origin[2],
+                              direction[0], direction[1], direction[2]) != 0 ||
+                alea_raycast_hier_segments_nocache(
+                    context->sys, &ray,
+                    context->along_nodes[context->along_count] -
+                        origin[context->axis], &trace) != 0) {
+                atomic_store(context->failed, 1);
+                continue;
+            }
+            for (size_t segment_index = 0;
+                 segment_index < trace.segments.count; segment_index++) {
+                const alea_ray_segment_t *segment =
+                    &trace.segments.data[segment_index];
+                if (mesh_ray_accumulate_segment(
+                        context->accums, context->along_nodes,
+                        context->along_count, context->axis, a, b,
+                        context->cfg->nx, context->cfg->ny,
+                        origin[context->axis] + segment->t_enter,
+                        origin[context->axis] + segment->t_exit,
+                        segment->cell_id, segment->material_id) != 0) {
+                    atomic_store(context->failed, 1);
+                    break;
+                }
+            }
+            if (alea_interrupted()) atomic_store(context->failed, 1);
+        }
+        alea_raycast_result_free(&trace);
+    }
+    return 0;
+}
+
 static int mesh_ray_trace_direction(alea_system_t *sys,
                                     const alea_mesh_config_t *cfg,
                                     const double *xn, const double *yn,
@@ -826,72 +897,18 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
     const int v_count = axis == 2 ? cfg->ny : cfg->nz;
     const size_t column_count = (size_t)u_count * (size_t)v_count;
     const uint32_t origin_count = mesh_ray_origin_count(cfg);
-#ifdef _OPENMP
-    int workers = cfg->workers > 0 ? cfg->workers : omp_get_max_threads();
-    if ((size_t)workers > column_count) workers = (int)column_count;
-    if (workers < 1 || omp_in_parallel()) workers = 1;
-#endif
-    int failed = 0;
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static) num_threads(workers)
-#endif
-    for (size_t column = 0; column < column_count; column++) {
-        int a = (int)(column % (size_t)u_count);
-        int b = (int)(column / (size_t)u_count);
-        alea_raycast_result_t trace;
-        alea_raycast_result_init(&trace);
-        for (uint32_t sample = 0; sample < origin_count; sample++) {
-            double unit_u, unit_v;
-            mesh_ray_origin_uv(cfg, axis, column, sample, &unit_u, &unit_v);
-            const double u = u_nodes[a] + unit_u *
-                (u_nodes[a + 1] - u_nodes[a]);
-            const double v = v_nodes[b] + unit_v *
-                (v_nodes[b + 1] - v_nodes[b]);
-            double origin[3] = {0.0, 0.0, 0.0};
-            double direction[3] = {0.0, 0.0, 0.0};
-            origin[axis] = nextafter(along_nodes[0], -INFINITY);
-            if (axis == 0) { origin[1] = u; origin[2] = v; }
-            else if (axis == 1) { origin[0] = u; origin[2] = v; }
-            else { origin[0] = u; origin[1] = v; }
-            direction[axis] = 1.0;
-            alea_ray_t ray;
-            alea_raycast_result_clear(&trace);
-            if (alea_ray_init(&ray, origin[0], origin[1], origin[2],
-                              direction[0], direction[1], direction[2]) != 0 ||
-                alea_raycast_hier_segments_nocache(
-                    sys, &ray, along_nodes[along_count] - origin[axis],
-                    &trace) != 0) {
-#ifdef _OPENMP
-                #pragma omp atomic write
-#endif
-                failed = 1;
-                continue;
-            }
-            for (size_t s = 0; s < trace.segments.count; s++) {
-                const alea_ray_segment_t *segment = &trace.segments.data[s];
-                if (mesh_ray_accumulate_segment(
-                        accums, along_nodes, along_count, axis, a, b,
-                        cfg->nx, cfg->ny,
-                        origin[axis] + segment->t_enter,
-                        origin[axis] + segment->t_exit,
-                        segment->cell_id, segment->material_id) != 0) {
-#ifdef _OPENMP
-                    #pragma omp atomic write
-#endif
-                    failed = 1;
-                    break;
-                }
-            }
-            if (alea_interrupted()) {
-#ifdef _OPENMP
-                #pragma omp atomic write
-#endif
-                failed = 1;
-            }
-        }
-        alea_raycast_result_free(&trace);
-    }
-    if (failed) {
+    atomic_int failed;
+    atomic_init(&failed, 0);
+    mesh_ray_parallel_context_t parallel_context = {
+        sys, cfg, along_nodes, u_nodes, v_nodes, axis, along_count, u_count,
+        origin_count, accums, &failed
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        column_count, 1, cfg->workers > 0 ? (size_t)cfg->workers : 0,
+        ALEA_PARALLEL_STATIC_BLOCK, mesh_ray_trace_range, &parallel_context,
+        NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) atomic_store(&failed, 1);
+    if (atomic_load(&failed)) {
         if (alea_interrupted())
             alea_set_error_detail(ALEA_ERR_INTERRUPTED,
                                   "mesh ray sampling interrupted");
@@ -1129,6 +1146,76 @@ fail:
 
 static int mesh_root_world_aabb(const alea_system_t *sys, alea_bbox_t *out);
 
+typedef struct {
+    alea_system_t *sys;
+    const alea_mesh_config_t *cfg;
+    const double *x_nodes, *y_nodes, *z_nodes;
+    int nx, ny;
+    size_t nxy, scratch_count;
+    int sample_axis;
+    int *scratch_materials, *scratch_counts;
+    int *scratch_owner_materials, *scratch_owner_cells, *scratch_owner_counts;
+    int *material_ids, *cell_ids;
+    unsigned char *mixed_flags;
+    double *dominant_fractions;
+    uint32_t *sample_counts;
+    uint8_t *tie_flags;
+    int *worker_mixed_counts;
+    mesh_int_set_t *worker_material_sets;
+    atomic_int *failed;
+} mesh_sample_parallel_context_t;
+
+static int mesh_sample_parallel_range(void *opaque, size_t worker,
+                                      size_t begin, size_t end) {
+    mesh_sample_parallel_context_t *context = opaque;
+    const size_t offset = worker * context->scratch_count;
+    int *materials = context->scratch_materials + offset;
+    int *counts = context->scratch_counts + offset;
+    int *owner_materials = context->scratch_owner_materials + offset;
+    int *owner_cells = context->scratch_owner_cells + offset;
+    int *owner_counts = context->scratch_owner_counts + offset;
+    int local_mixed_count = 0;
+    for (size_t index = begin; index < end; index++) {
+        const int i = (int)(index % (size_t)context->nx);
+        const int j = (int)((index / (size_t)context->nx) %
+                            (size_t)context->ny);
+        const int k = (int)(index / context->nxy);
+        int n_materials = 0, n_owners = 0, n_samples = 0;
+        int dominant_material = context->cfg->void_material_id;
+        int dominant_cell = -1;
+        unsigned char mixed = 0;
+        uint8_t ties = 0;
+        double dominant = 1.0;
+        mesh_sample_voxel_materials(
+            context->sys, context->cfg, context->x_nodes, context->y_nodes,
+            context->z_nodes, i, j, k, context->sample_axis, materials, counts,
+            &n_materials, owner_materials, owner_cells, owner_counts,
+            &n_owners, &n_samples);
+        mesh_fraction_stats(
+            materials, counts, n_materials, n_samples, context->cfg,
+            owner_materials, owner_cells, owner_counts, n_owners,
+            &dominant_material, &dominant_cell, &mixed, &dominant, &ties);
+        if (context->material_ids)
+            context->material_ids[index] = dominant_material;
+        if (context->cell_ids) context->cell_ids[index] = dominant_cell;
+        if (context->mixed_flags) context->mixed_flags[index] = mixed;
+        if (context->dominant_fractions)
+            context->dominant_fractions[index] = dominant;
+        if (context->sample_counts)
+            context->sample_counts[index] = (uint32_t)n_samples;
+        if (context->tie_flags) context->tie_flags[index] = ties;
+        local_mixed_count += mixed ? 1 : 0;
+        for (int material = 0; material < n_materials; material++) {
+            if (mesh_int_set_insert(&context->worker_material_sets[worker],
+                                    materials[material]) != 0)
+                atomic_store(context->failed, 1);
+        }
+        if (alea_interrupted()) atomic_store(context->failed, 1);
+    }
+    context->worker_mixed_counts[worker] = local_mixed_count;
+    return 0;
+}
+
 alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                              const alea_mesh_config_t *cfg) {
     if (!sys) {
@@ -1316,17 +1403,14 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                            (size_t)max_sample_axis;
     int worker_count = 1;
     int parallel_sampling = 0;
-#ifdef _OPENMP
     if (cfg->workers != 1 && !fraction_spans && !cell_fraction_spans &&
         !cfg->visit && !cfg->progress &&
         cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE &&
         cfg->max_total_samples == 0) {
-        worker_count = cfg->workers > 0 ? cfg->workers : omp_get_max_threads();
-        if ((size_t)worker_count > ncells) worker_count = (int)ncells;
-        if (worker_count > 1 && !omp_in_parallel()) parallel_sampling = 1;
-        else worker_count = 1;
+        worker_count = (int)alea_parallel_effective_workers(
+            ncells, 1, cfg->workers > 0 ? (size_t)cfg->workers : 0);
+        parallel_sampling = worker_count > 1;
     }
-#endif
     size_t scratch_bytes = 0;
     size_t worker_scratch_count = 0;
     if (checked_mul_size(scratch_count, (size_t)worker_count,
@@ -1377,57 +1461,45 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     mesh_int_set_t material_set = {0};
 
     if (parallel_sampling) {
-#ifdef _OPENMP
-        int parallel_error = 0;
-        #pragma omp parallel for schedule(static) num_threads(worker_count) reduction(+:mixed_count)
-        for (size_t idx = 0; idx < ncells; idx++) {
-            int tid = omp_get_thread_num();
-            size_t offset = (size_t)tid * scratch_count;
-            int *materials = scratch_materials + offset;
-            int *counts = scratch_counts + offset;
-            int *owner_materials = scratch_owner_materials + offset;
-            int *owner_cells = scratch_owner_cells + offset;
-            int *owner_counts = scratch_owner_counts + offset;
-            int i = (int)(idx % (size_t)nx);
-            int j = (int)((idx / (size_t)nx) % (size_t)ny);
-            int k = (int)(idx / nxy);
-            int n_materials = 0, n_owners = 0, nsamples = 0;
-            int dominant_material = cfg->void_material_id, dominant_cell = -1;
-            unsigned char mixed = 0;
-            uint8_t ties = 0;
-            double dominant = 1.0;
-
-            mesh_sample_voxel_materials(sys, cfg, xn, yn, zn, i, j, k,
-                                        sample_axis, materials, counts,
-                                        &n_materials, owner_materials,
-                                        owner_cells, owner_counts,
-                                        &n_owners, &nsamples);
-            mesh_fraction_stats(materials, counts, n_materials, nsamples, cfg,
-                                owner_materials, owner_cells, owner_counts,
-                                n_owners, &dominant_material, &dominant_cell,
-                                &mixed, &dominant, &ties);
-            if (mat_ids) mat_ids[idx] = dominant_material;
-            if (cell_ids) cell_ids[idx] = dominant_cell;
-            if (mixed_flags) mixed_flags[idx] = mixed;
-            if (dominant_fractions) dominant_fractions[idx] = dominant;
-            if (sample_counts) sample_counts[idx] = (uint32_t)nsamples;
-            if (tie_flags) tie_flags[idx] = ties;
-            mixed_count += mixed ? 1 : 0;
-            if (alea_interrupted()) {
-                #pragma omp atomic write
-                parallel_error = 1;
-            }
-            for (int m = 0; m < n_materials; m++) {
-                int rc;
-                #pragma omp critical(alea_mesh_material_set)
-                rc = mesh_int_set_insert(&material_set, materials[m]);
-                if (rc != 0) {
-                    #pragma omp atomic write
-                    parallel_error = 1;
+        atomic_int parallel_error;
+        atomic_init(&parallel_error, 0);
+        int *worker_mixed_counts = calloc(
+            (size_t)worker_count, sizeof(*worker_mixed_counts));
+        mesh_int_set_t *worker_material_sets = calloc(
+            (size_t)worker_count, sizeof(*worker_material_sets));
+        if (!worker_mixed_counts || !worker_material_sets) {
+            atomic_store(&parallel_error, 1);
+        } else {
+            mesh_sample_parallel_context_t parallel_context = {
+                sys, cfg, xn, yn, zn, nx, ny, nxy, scratch_count,
+                sample_axis, scratch_materials, scratch_counts,
+                scratch_owner_materials, scratch_owner_cells,
+                scratch_owner_counts, mat_ids, cell_ids, mixed_flags,
+                dominant_fractions, sample_counts, tie_flags,
+                worker_mixed_counts, worker_material_sets, &parallel_error
+            };
+            alea_parallel_status_t parallel_status = alea_parallel_for(
+                ncells, 1, (size_t)worker_count, ALEA_PARALLEL_STATIC_BLOCK,
+                mesh_sample_parallel_range, &parallel_context, NULL);
+            if (parallel_status != ALEA_PARALLEL_OK)
+                atomic_store(&parallel_error, 1);
+            for (int worker = 0; worker < worker_count; worker++) {
+                mixed_count += worker_mixed_counts[worker];
+                for (size_t slot = 0;
+                     slot < worker_material_sets[worker].capacity; slot++) {
+                    if (worker_material_sets[worker].used[slot] &&
+                        mesh_int_set_insert(
+                            &material_set,
+                            worker_material_sets[worker].keys[slot]) != 0)
+                        atomic_store(&parallel_error, 1);
                 }
+                mesh_int_set_free(&worker_material_sets[worker]);
             }
+            total_sample_work = (uint64_t)ncells * base_samples;
         }
-        if (parallel_error) {
+        free(worker_mixed_counts);
+        free(worker_material_sets);
+        if (atomic_load(&parallel_error)) {
             if (alea_interrupted())
                 alea_set_error_detail(ALEA_ERR_INTERRUPTED,
                                       "parallel mesh sampling interrupted");
@@ -1440,7 +1512,6 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
             mesh_int_set_free(&material_set);
             return NULL;
         }
-#endif
     } else for (int k = 0; k < nz; k++) {
         for (int j = 0; j < ny; j++) {
             for (int i = 0; i < nx; i++) {

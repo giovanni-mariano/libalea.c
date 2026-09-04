@@ -31,11 +31,8 @@
 #include <float.h>
 #include "util/alea_log.h"
 #include "util/alea_bitset.h"
+#include "util/alea_parallel.h"
 #include "primitives/bbox.h"
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 // ============================================================================
 // INTERNAL HELPERS
@@ -386,12 +383,8 @@ static int build_octree_frontier(alea_system_t* sys, octree_node_t* node,
 static size_t void_select_workers(size_t requested, size_t task_count,
                                   uint64_t budget, uint64_t scratch_per_worker) {
     size_t workers = requested;
-#ifdef _OPENMP
-    if (workers == 0) workers = (size_t)omp_get_max_threads();
-    if (omp_in_parallel()) workers = 1;
-#else
-    workers = 1;
-#endif
+    if (workers == 0) workers = alea_parallel_max_workers();
+    if (alea_parallel_in_region()) workers = 1;
     if (workers == 0) workers = 1;
     if (task_count > 0 && workers > task_count) workers = task_count;
     if (budget == 0) return 1;
@@ -399,6 +392,26 @@ static size_t void_select_workers(size_t requested, size_t task_count,
     if (budget_workers == 0) budget_workers = 1;
     if ((uint64_t)workers > budget_workers) workers = (size_t)budget_workers;
     return workers ? workers : 1;
+}
+
+typedef struct void_frontier_parallel_context {
+    alea_system_t* sys;
+    const void_frontier_t* frontier;
+    const octree_config_t* config;
+    void_subtree_stats_t* task_stats;
+    int* statuses;
+} void_frontier_parallel_context_t;
+
+static int void_frontier_parallel_range(void* opaque, size_t worker,
+                                        size_t begin, size_t end) {
+    void_frontier_parallel_context_t* context = opaque;
+    (void)worker;
+    for (size_t task = begin; task < end; task++) {
+        context->statuses[task] = build_octree_recursive(
+            context->sys, context->frontier->nodes[task], context->config,
+            &context->task_stats[task]);
+    }
+    return 0;
 }
 
 static int build_octree_bounded(alea_system_t* sys, octree_node_t* root,
@@ -453,23 +466,22 @@ static int build_octree_bounded(alea_system_t* sys, octree_node_t* root,
     result->execution_reserved_parallel_scratch_bytes =
         (uint64_t)workers * sizeof(void_subtree_stats_t);
 
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(workers) if(workers > 1)
-    {
-        #pragma omp single
-        result->execution_actual_workers = (size_t)omp_get_num_threads();
-        #pragma omp for schedule(static)
-        for (size_t task = 0; task < frontier.count; task++) {
-            statuses[task] = build_octree_recursive(
-                sys, frontier.nodes[task], config, &task_stats[task]);
-        }
+    void_frontier_parallel_context_t parallel_context = {
+        sys, &frontier, config, task_stats, statuses
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        frontier.count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+        void_frontier_parallel_range, &parallel_context,
+        &result->execution_actual_workers);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "void parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        free(task_stats);
+        free(statuses);
+        free(frontier.nodes);
+        return -1;
     }
-#else
-    for (size_t task = 0; task < frontier.count; task++) {
-        statuses[task] = build_octree_recursive(
-            sys, frontier.nodes[task], config, &task_stats[task]);
-    }
-#endif
 
     if (result->execution_actual_workers > 1)
         result->execution_parallel_batch_count = 1;

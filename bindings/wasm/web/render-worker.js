@@ -51,7 +51,7 @@ async function createModule(wantThreads) {
     module = await imported.default({
       locateFile: (name) => new URL(`../dist/${name}`, import.meta.url).href,
     });
-    threaded = module._alea_wasm_openmp_enabled() !== 0;
+    threaded = module._alea_wasm_parallel_enabled() !== 0;
   } catch (error) {
     if (!wantThreads) throw error;
     moduleName = "alea.js";
@@ -73,7 +73,7 @@ self.onmessage = async ({data}) => {
       const response = await fetch("models/pin-cluster.mcnp");
       if (!response.ok) throw new Error(`could not load default MCNP model (${response.status})`);
       const model = loadMcnp(await response.arrayBuffer());
-      postMessage({type: "ready", threaded, threads: module._alea_wasm_openmp_max_threads(), model});
+      postMessage({type: "ready", threaded, threads: module._alea_wasm_parallel_max_threads(), model});
       return;
     }
     if (data.type === "load" && module) {

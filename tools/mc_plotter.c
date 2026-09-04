@@ -19,7 +19,7 @@
  * - Batch mode for multiple plots
  *
  * Build:
- *   gcc -O2 -fopenmp -o plotter plotter.c -I../include \
+ *   gcc -O2 -pthread -o plotter plotter.c -I../include \
  *       -L../bin -lalea_slice -lalea -lm
  *
  * Usage (single plot):

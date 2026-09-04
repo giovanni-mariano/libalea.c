@@ -22,6 +22,7 @@
 #include "primitives/primitive_create.h"
 #include "primitives/bbox.h"
 #include "util/alea_log.h"
+#include "util/alea_parallel.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,10 +33,6 @@
 #include "util/arena.h"
 #include "util/str_builder.h"
 #include "util/compat.h"
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
@@ -53,19 +50,15 @@ const char* alea_version(void) {
 }
 
 int alea_openmp_enabled(void) {
-#ifdef _OPENMP
-    return 1;
-#else
-    return 0;
-#endif
+    return alea_parallel_enabled();
 }
 
 int alea_openmp_max_threads(void) {
-#ifdef _OPENMP
-    return omp_get_max_threads();
-#else
-    return 1;
-#endif
+    return (int)alea_parallel_max_workers();
+}
+
+int alea_parallel_max_threads(void) {
+    return (int)alea_parallel_max_workers();
 }
 
 /* ============================================================================
@@ -2537,6 +2530,30 @@ static int volume_path_resolve_one_point_set_prepared(
     return 0;
 }
 
+typedef struct volume_path_point_set_parallel_context {
+    alea_system_t* sys;
+    const double* points_xyz;
+    const alea_volume_path_point_set_t* point_sets;
+    alea_volume_path_point_set_result_t* results;
+    alea_volume_path_t* scratch;
+    size_t scratch_per_worker;
+    int* statuses;
+} volume_path_point_set_parallel_context_t;
+
+static int volume_path_point_set_parallel_range(
+        void* opaque, size_t worker, size_t begin, size_t end) {
+    volume_path_point_set_parallel_context_t* context = opaque;
+    alea_volume_path_t* worker_scratch =
+        (alea_volume_path_t*)((unsigned char*)context->scratch +
+                              worker * context->scratch_per_worker);
+    for (size_t set = begin; set < end; set++) {
+        context->statuses[set] = volume_path_resolve_one_point_set_prepared(
+            context->sys, context->points_xyz, &context->point_sets[set],
+            worker_scratch, &context->results[set]);
+    }
+    return 0;
+}
+
 int alea_volume_path_resolve_cell_point_sets(
         alea_system_t* sys, const double* points_xyz, size_t point_count,
         const alea_volume_path_point_set_t* point_sets, size_t point_set_count,
@@ -2581,12 +2598,8 @@ int alea_volume_path_resolve_cell_point_sets(
     out_stats->reserved_scratch_bytes_per_worker = scratch_per_worker;
 
     size_t workers = requested_workers;
-#ifdef _OPENMP
-    if (workers == 0) workers = (size_t)omp_get_max_threads();
-    if (omp_in_parallel()) workers = 1;
-#else
-    workers = 1;
-#endif
+    if (workers == 0) workers = alea_parallel_max_workers();
+    if (alea_parallel_in_region()) workers = 1;
     if (workers == 0) workers = 1;
     if (workers > point_set_count) workers = point_set_count;
     if (max_parallel_scratch_bytes == 0) {
@@ -2618,28 +2631,22 @@ int alea_volume_path_resolve_cell_point_sets(
     }
 
     size_t actual_workers = 1;
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(workers) if(workers > 1)
-    {
-        #pragma omp single
-        actual_workers = (size_t)omp_get_num_threads();
-        int worker = omp_get_thread_num();
-        alea_volume_path_t* worker_scratch =
-            (alea_volume_path_t*)((unsigned char*)scratch +
-                                  (size_t)worker * scratch_per_worker);
-        #pragma omp for schedule(static)
-        for (size_t set = 0; set < point_set_count; set++) {
-            statuses[set] = volume_path_resolve_one_point_set_prepared(
-                sys, points_xyz, &point_sets[set], worker_scratch,
-                &results[set]);
-        }
+    volume_path_point_set_parallel_context_t parallel_context = {
+        sys, points_xyz, point_sets, results, scratch, scratch_per_worker,
+        statuses
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        point_set_count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+        volume_path_point_set_parallel_range, &parallel_context,
+        &actual_workers);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        free(scratch);
+        free(statuses);
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "volume path parallel execution failed: %s",
+                              alea_parallel_status_string(parallel_status));
+        return -1;
     }
-#else
-    for (size_t set = 0; set < point_set_count; set++) {
-        statuses[set] = volume_path_resolve_one_point_set_prepared(
-            sys, points_xyz, &point_sets[set], scratch, &results[set]);
-    }
-#endif
     out_stats->actual_workers = actual_workers;
 
     int failed = 0;

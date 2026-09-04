@@ -252,6 +252,12 @@ ALEA_WASM_EXPORT int alea_wasm_set_target(double x, double y, double z) {
     state.target[2] = z;
     return 0;
 }
+ALEA_WASM_EXPORT int alea_wasm_parallel_enabled(void) {
+    return alea_parallel_enabled();
+}
+ALEA_WASM_EXPORT int alea_wasm_parallel_max_threads(void) {
+    return alea_parallel_max_threads();
+}
 ALEA_WASM_EXPORT int alea_wasm_openmp_enabled(void) { return alea_openmp_enabled(); }
 ALEA_WASM_EXPORT int alea_wasm_openmp_max_threads(void) {
     return alea_openmp_max_threads();

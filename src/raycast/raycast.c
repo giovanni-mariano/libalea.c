@@ -22,6 +22,7 @@
 #include "core/alea_spatial_hier.h"
 #include "core/alea_eval.h"
 #include "util/alea_log.h"
+#include "util/alea_parallel.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -38,7 +39,7 @@
  *
  * All shared caches (surface BVH, spatial index, cell adjacency) must be
  * built before any concurrent access.  Call once from each public entry
- * point so that OpenMP threads never race on lazy initialisation.
+ * point so that worker threads never race on lazy initialisation.
  * ============================================================================ */
 
 int alea_raycast_ensure_caches(alea_system_t* sys) {
@@ -4917,21 +4918,18 @@ static void raycast_first_visible_lane_store(
 int alea_raycast_hier_first_visible_batch_execute_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query,
-    alea_ray_first_visible_batch_result_t* result, int* statuses) {
+    alea_ray_first_visible_batch_result_t* result, int* statuses,
+    size_t begin, size_t end) {
     if (!sys || !origins_xyz || !directions_xyz || !query || !result ||
         !statuses) {
         return -1;
     }
 
-    /* The API/executor boundary owns the parallel region.  This worker body is
-     * called by every participating thread and distributes packet jobs once. */
-#ifdef _OPENMP
-    #pragma omp for schedule(static)
-#endif
-    for (size_t packet_start = 0; packet_start < ray_count;
+    if (begin > end || end > ray_count) return -1;
+    for (size_t packet_start = begin; packet_start < end;
          packet_start += RAYCAST_FIRST_VISIBLE_PACKET_WIDTH) {
         raycast_first_visible_lane_t lanes[RAYCAST_FIRST_VISIBLE_PACKET_WIDTH];
-        const size_t remaining = ray_count - packet_start;
+        const size_t remaining = end - packet_start;
         const size_t packet_end = packet_start +
             (remaining < RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
                  ? remaining : RAYCAST_FIRST_VISIBLE_PACKET_WIDTH);
@@ -4987,20 +4985,18 @@ int alea_raycast_hier_first_visible_batch_execute_nocache(
 int alea_raycast_hier_any_hit_batch_execute_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, const alea_ray_batch_query_t* query,
-    alea_ray_any_hit_batch_result_t* result, int* statuses) {
+    alea_ray_any_hit_batch_result_t* result, int* statuses,
+    size_t begin, size_t end) {
     if (!sys || !origins_xyz || !directions_xyz || !query || !result ||
         !statuses) {
         return -1;
     }
 
-    /* See first-visible: scheduling ownership is outside geometric traversal. */
-#ifdef _OPENMP
-    #pragma omp for schedule(static)
-#endif
-    for (size_t packet_start = 0; packet_start < ray_count;
+    if (begin > end || end > ray_count) return -1;
+    for (size_t packet_start = begin; packet_start < end;
          packet_start += RAYCAST_FIRST_VISIBLE_PACKET_WIDTH) {
         raycast_first_visible_lane_t lanes[RAYCAST_FIRST_VISIBLE_PACKET_WIDTH];
-        const size_t remaining = ray_count - packet_start;
+        const size_t remaining = end - packet_start;
         const size_t packet_end = packet_start +
             (remaining < RAYCAST_FIRST_VISIBLE_PACKET_WIDTH
                  ? remaining : RAYCAST_FIRST_VISIBLE_PACKET_WIDTH);
@@ -5339,6 +5335,46 @@ static int raycast_batch_segment_bridge(void* context,
     return bridge->callback(bridge->context, bridge->ray_index, segment);
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const double* origins_xyz;
+    const double* directions_xyz;
+    double t_max;
+    alea_raycast_batch_selected_segment_callback_t callback;
+    void* callback_context;
+    atomic_int* failed;
+} raycast_visit_segments_batch_context_t;
+
+static int raycast_visit_segments_batch_range(void* opaque,
+                                              size_t worker_index,
+                                              size_t begin, size_t end) {
+    (void)worker_index;
+    raycast_visit_segments_batch_context_t* context = opaque;
+    for (size_t i = begin; i < end; i++) {
+        if (atomic_load(context->failed) || alea_interrupted()) continue;
+        const double* origin = &context->origins_xyz[i * 3];
+        const double* direction = &context->directions_xyz[i * 3];
+        alea_ray_t ray;
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        raycast_batch_segment_bridge_t bridge = {
+            .callback = context->callback,
+            .context = context->callback_context,
+            .ray_index = i
+        };
+        int rc = alea_ray_init(&ray, origin[0], origin[1], origin[2],
+                               direction[0], direction[1], direction[2]);
+        if (rc == 0) {
+            rc = alea_raycast_hier_visit_segments_nocache(
+                context->sys, &ray, context->t_max, &scratch,
+                raycast_batch_segment_bridge, &bridge);
+        }
+        alea_raycast_result_free(&scratch);
+        if (rc != 0) atomic_store(context->failed, 1);
+    }
+    return 0;
+}
+
 int alea_raycast_hier_visit_segments_batch_nocache(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, double t_max,
@@ -5351,28 +5387,12 @@ int alea_raycast_hier_visit_segments_batch_nocache(
         return -1;
     atomic_int failed;
     atomic_init(&failed, 0);
-#ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < ray_count; i++) {
-        if (atomic_load(&failed) || alea_interrupted()) continue;
-        const double* origin = &origins_xyz[i * 3];
-        const double* direction = &directions_xyz[i * 3];
-        alea_ray_t ray;
-        alea_raycast_result_t scratch;
-        alea_raycast_result_init(&scratch);
-        raycast_batch_segment_bridge_t bridge = {
-            .callback = callback, .context = context, .ray_index = i
-        };
-        int rc = alea_ray_init(&ray, origin[0], origin[1], origin[2],
-                               direction[0], direction[1], direction[2]);
-        if (rc == 0) {
-            rc = alea_raycast_hier_visit_segments_nocache(
-                sys, &ray, t_max, &scratch, raycast_batch_segment_bridge,
-                &bridge);
-        }
-        alea_raycast_result_free(&scratch);
-        if (rc != 0) atomic_store(&failed, 1);
-    }
+    raycast_visit_segments_batch_context_t parallel_context = {
+        sys, origins_xyz, directions_xyz, t_max, callback, context, &failed
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        ray_count, 1, 0, ALEA_PARALLEL_STATIC_BLOCK,
+        raycast_visit_segments_batch_range, &parallel_context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK) return -1;
     return atomic_load(&failed) || alea_interrupted() ? -1 : 0;
 }

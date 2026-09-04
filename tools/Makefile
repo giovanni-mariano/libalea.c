@@ -18,30 +18,14 @@ else
   EXEEXT ?=
 endif
 
-# Detect platform
+# Platform-specific linker spelling below.
 UNAME_S := $(shell uname -s)
 
-# OpenMP support (pass USE_OPENMP=1 to enable)
-ifdef USE_OPENMP
-  ifeq ($(UNAME_S),Darwin)
-    LIBOMP_PREFIX ?= $(shell brew --prefix libomp 2>/dev/null || echo "/usr/local/opt/libomp")
-    OPENMP_FLAGS = -Xpreprocessor -fopenmp -I$(LIBOMP_PREFIX)/include
-    OPENMP_LDFLAGS = -L$(LIBOMP_PREFIX)/lib -lomp
-  else
-    IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -qi clang && echo 1)
-    OPENMP_FLAGS = -fopenmp
-    OPENMP_LDFLAGS = -fopenmp
-    ifdef LIBOMP_PREFIX
-      OPENMP_FLAGS += -I$(LIBOMP_PREFIX)/include
-      OPENMP_LDFLAGS += -L$(LIBOMP_PREFIX)/lib
-    endif
-    ifeq ($(IS_CLANG),1)
-      OPENMP_LDFLAGS += -lomp
-    endif
-  endif
+# Threaded library support (pass USE_TINYPAR=1 when linking a threaded build)
+ifdef USE_TINYPAR
+  THREAD_FLAGS = -pthread
 else
-  OPENMP_FLAGS =
-  OPENMP_LDFLAGS =
+  THREAD_FLAGS =
 endif
 
 # Release build (set RELEASE=1)
@@ -66,7 +50,7 @@ endif
 
 # All libraries
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
-LDFLAGS += $(OPENMP_LDFLAGS)
+LDFLAGS += $(THREAD_FLAGS)
 
 # Windows: link psapi for GetProcessMemoryInfo in large_model_probe
 ifdef WINDOWS_GNU
@@ -85,7 +69,7 @@ $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 $(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c
-	$(CC) $(CFLAGS) $(OPENMP_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 $(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a $(LDFLAGS)

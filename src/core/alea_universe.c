@@ -59,7 +59,7 @@ typedef struct {
     int error;
 } universe_point_query_ctx_t;
 
-/* Per-thread accumulator avoids cache-line ping-ponging under OpenMP grid
+/* Per-thread accumulator avoids cache-line ping-ponging under parallel grid
  * render. The public getter sums across threads (best-effort, no fence). */
 static ALEA_THREAD_LOCAL alea_universe_point_bvh_stats_t g_point_bvh_stats;
 
@@ -246,7 +246,7 @@ static uint32_t universe_bvh_build_recursive(alea_universe_t* univ,
 static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ);
 
 /* Build per-universe point BVHs for every universe sequentially. Called once
- * during query-cache preparation so concurrent point queries (OpenMP grid
+ * during query-cache preparation so concurrent point queries (parallel grid
  * render, etc.) never trip the lazy build path. */
 int alea_prebuild_universe_point_bvhs(alea_system_t* sys) {
     if (!sys) return -1;
@@ -263,10 +263,10 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     if (univ->point_bvh_built) return 0;
     if (univ->point_bvh_disabled) return -1;
 
-    /* Serialize the lazy build across threads (OpenMP grid render in the
+    /* Serialize the lazy build across threads (parallel grid render in the
      * plotter, or any concurrent call). The lock-free fast path above
      * handles the already-built case. Using a plain mutex avoids a
-     * link-time dependency on libgomp in non-OpenMP builds. */
+     * extra link-time dependency in serial builds. */
     static alea_mutex_t build_mutex = ALEA_MUTEX_INIT;
     alea_mutex_lock(&build_mutex);
     {
