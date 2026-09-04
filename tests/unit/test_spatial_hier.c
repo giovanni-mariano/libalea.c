@@ -2269,6 +2269,9 @@ TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
     ASSERT_EQ(first_stats.rays_completed, 200);
     ASSERT(first_stats.cancelled);
     ASSERT(!first_stats.converged);
+    ASSERT_EQ(first_stats.rng_algorithm, ALEA_RNG_PHILOX4X32_10);
+    ASSERT_EQ(first_stats.rng_address_version, ALEA_RNG_ADDRESS_VERSION);
+    ASSERT_EQ(first_stats.seed, options.seed);
 
     progress.calls = 0;
     double second_volume[1], second_error[1];
@@ -2288,6 +2291,16 @@ TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
     ASSERT(converged_stats.converged);
     ASSERT(!converged_stats.cancelled);
     ASSERT_EQ(converged_stats.rays_completed, options.batch_size);
+
+    options.target_rel_error = 0.0;
+    options.rng_algorithm = ALEA_RNG_LEGACY_LCG;
+    alea_volume_estimate_stats_t legacy_stats;
+    ASSERT_EQ(alea_estimate_volumes_ex(
+        sys, &options, second_volume, second_error, &legacy_stats), 0);
+    ASSERT_EQ(legacy_stats.rng_algorithm, ALEA_RNG_LEGACY_LCG);
+    ASSERT_EQ(legacy_stats.rng_address_version, ALEA_RNG_ADDRESS_VERSION);
+    ASSERT_EQ(legacy_stats.seed, options.seed);
+    ASSERT(first_volume[0] != second_volume[0]);
 
     alea_destroy(sys);
 }

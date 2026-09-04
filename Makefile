@@ -101,6 +101,7 @@ OPENMC_DIR = $(SRC_DIR)/openmc
 SERPENT_DIR = $(SRC_DIR)/serpent
 NUCDATA_DIR = $(SRC_DIR)/nucdata
 RAYCAST_DIR = $(SRC_DIR)/raycast
+RNG_DIR = $(SRC_DIR)/rng
 SLICE_DIR = $(SRC_DIR)/slice
 RENDER_DIR = $(SRC_DIR)/render
 MESH_DIR = $(SRC_DIR)/mesh
@@ -230,6 +231,9 @@ RAYCAST_SRCS = \
 	$(RAYCAST_DIR)/bvh.c \
 	$(RAYCAST_DIR)/raycast_api.c
 
+RNG_SRCS = \
+	$(RNG_DIR)/alea_rng.c
+
 # Slice module (analytical intersection + vector export)
 SLICE_SRCS = \
 	$(SLICE_DIR)/curve_intersect.c \
@@ -259,6 +263,7 @@ CORE_LIB_SRCS = \
 	$(CORE_SRCS) \
 	$(UTIL_SRCS) \
 	$(PRIMITIVES_SRCS) \
+	$(RNG_SRCS) \
 	$(RAYCAST_SRCS) \
 	$(SLICE_SRCS) \
 	$(RENDER_SRCS) \
@@ -292,6 +297,7 @@ LUA_BIND_OBJS = $(LUA_BIND_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 CORE_OBJS = $(CORE_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 UTIL_OBJS = $(UTIL_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 PRIMITIVES_OBJS = $(PRIMITIVES_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+RNG_OBJS = $(RNG_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_PARSER_OBJS = $(MCNP_PARSER_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_GEOM_OBJS = $(MCNP_GEOM_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 MCNP_CONV_OBJS = $(MCNP_CONV_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
@@ -309,7 +315,7 @@ MESH_OBJS = $(MESH_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 GEO_VALIDATOR_OBJS = $(GEO_VALIDATOR_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
 # Core library objects (geometry engine + raycast/slice/render/mesh)
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
 
 # MCNP module objects
 MCNP_MODULE_OBJS = $(MCNP_PARSER_OBJS) $(MCNP_GEOM_OBJS) $(MCNP_CONV_OBJS) $(MCNP_EXPO_OBJS) $(MCNP_MODEL_OBJS)
@@ -399,7 +405,7 @@ check-public-headers:
 
 # Directory creation rules (order-only prerequisites for parallel safety)
 BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
-	$(BUILD_DIR)/nucdata \
+	$(BUILD_DIR)/nucdata $(BUILD_DIR)/rng \
 	$(BUILD_DIR)/mcnp/parser $(BUILD_DIR)/mcnp/geometry $(BUILD_DIR)/mcnp/conversion \
 	$(BUILD_DIR)/mcnp/exporter $(BUILD_DIR)/mcnp $(BUILD_DIR)/openmc $(BUILD_DIR)/serpent \
 	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
@@ -470,6 +476,11 @@ $(BUILD_DIR)/util/%.o: $(UTIL_DIR)/%.c | $(BUILD_DIR)/util
 
 # Primitives
 $(BUILD_DIR)/primitives/%.o: $(PRIMITIVES_DIR)/%.c | $(BUILD_DIR)/primitives
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Counter-based random number generation
+$(BUILD_DIR)/rng/%.o: $(RNG_DIR)/%.c | $(BUILD_DIR)/rng
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 

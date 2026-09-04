@@ -928,10 +928,21 @@ typedef int (*alea_volume_progress_fn)(size_t completed_rays,
                                        double maximum_relative_error,
                                        void* user_data);
 
+/** Stable identifiers for production and compatibility RNG engines. */
+typedef enum {
+    ALEA_RNG_PHILOX4X32_10 = 1,
+    ALEA_RNG_LEGACY_LCG = 2
+} alea_rng_algorithm_t;
+
+#define ALEA_RNG_ADDRESS_VERSION 1u
+
+const char* alea_rng_algorithm_name(alea_rng_algorithm_t algorithm);
+
 /** Options for reproducible, convergence-aware Cauchy-Crofton estimation. */
 typedef struct {
     size_t max_rays;              /**< Required maximum number of sampled rays. */
     uint64_t seed;                /**< Counter-based sampling seed. */
+    alea_rng_algorithm_t rng_algorithm; /**< Random engine selection. */
     size_t requested_workers;     /**< 0 = OpenMP runtime maximum. */
     size_t batch_size;            /**< 0 = implementation default. */
     double target_rel_error;      /**< 0 disables early convergence. */
@@ -945,6 +956,9 @@ typedef struct {
     size_t requested_workers;
     size_t actual_workers;
     size_t batch_size;
+    alea_rng_algorithm_t rng_algorithm;
+    uint32_t rng_address_version;
+    uint64_t seed;
     double maximum_relative_error;
     bool converged;
     bool cancelled;

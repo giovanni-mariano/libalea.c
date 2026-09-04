@@ -158,6 +158,9 @@ PRIMITIVES_OBJS = \
 	$(BUILD)\primitives\primitive_desc.obj \
 	$(BUILD)\primitives\bbox.obj
 
+RNG_OBJS = \
+	$(BUILD)\rng\alea_rng.obj
+
 RAYCAST_OBJS = \
 	$(BUILD)\raycast\raycast.obj \
 	$(BUILD)\raycast\ray_request.obj \
@@ -187,7 +190,7 @@ GEO_VALIDATOR_OBJS = \
 	$(BUILD)\geo_validator\transition_slice_critical.obj \
 	$(BUILD)\geo_validator\ray_slice_validation.obj
 
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RAYCAST_OBJS) \
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) \
 	$(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
 
 # --- MCNP module -----------------------------------------------------------
@@ -521,6 +524,9 @@ $(BUILD)\primitives\bbox.obj: $(SRC)\primitives\bbox.c dirs
 $(BUILD)\raycast\raycast.obj: $(SRC)\raycast\raycast.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\raycast.c
 
+$(BUILD)\rng\alea_rng.obj: $(SRC)\rng\alea_rng.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\rng\ $(SRC)\rng\alea_rng.c
+
 $(BUILD)\raycast\ray_request.obj: $(SRC)\raycast\ray_request.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_request.c
 
@@ -853,6 +859,7 @@ dirs:
 	@if not exist $(BUILD)\core mkdir $(BUILD)\core
 	@if not exist $(BUILD)\util mkdir $(BUILD)\util
 	@if not exist $(BUILD)\primitives mkdir $(BUILD)\primitives
+	@if not exist $(BUILD)\rng mkdir $(BUILD)\rng
 	@if not exist $(BUILD)\raycast mkdir $(BUILD)\raycast
 	@if not exist $(BUILD)\slice mkdir $(BUILD)\slice
 	@if not exist $(BUILD)\render mkdir $(BUILD)\render

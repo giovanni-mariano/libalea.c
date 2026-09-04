@@ -23,6 +23,7 @@
 #include "ray_epsilon.h"
 #include "bvh.h"
 #include "core/alea_system.h"
+#include "rng/alea_rng.h"
 #include "primitives/bbox.h"
 #include "primitives/primitive_eval.h"
 #include <stdlib.h>
@@ -2448,32 +2449,21 @@ static double lcg_double(uint32_t* state) {
     return (double)lcg_next(state) / 4294967296.0;
 }
 
-static uint64_t volume_splitmix64(uint64_t value) {
-    value += UINT64_C(0x9e3779b97f4a7c15);
-    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
-    return value ^ (value >> 31);
-}
-
-/* Each ray owns an independent deterministic LCG stream. Scheduling and the
- * requested worker count therefore cannot change which rays are sampled. */
-static uint32_t volume_ray_rng(uint64_t seed, size_t ray_index) {
-    const uint64_t mixed = volume_splitmix64(
-        seed ^ volume_splitmix64((uint64_t)ray_index));
-    return (uint32_t)(mixed ^ (mixed >> 32));
-}
-
 /**
  * Generate a random Cauchy-Crofton ray for volume estimation.
  * Picks a uniform random direction and a random point on a disk of radius R
  * perpendicular to that direction, centered at (cx,cy,cz).
  */
-static void generate_cauchy_crofton_ray(uint32_t* rng,
+static void generate_cauchy_crofton_ray_from_uniforms(
+                                        double direction_phi,
+                                        double direction_cosine,
+                                        double disk_radius,
+                                        double disk_angle,
                                         double cx, double cy, double cz, double R,
                                         double* rox, double* roy, double* roz,
                                         double* ux, double* uy, double* uz) {
-    double phi = 2.0 * M_PI * lcg_double(rng);
-    double cos_theta = 2.0 * lcg_double(rng) - 1.0;
+    double phi = 2.0 * M_PI * direction_phi;
+    double cos_theta = 2.0 * direction_cosine - 1.0;
     double sin_theta = sqrt(1.0 - cos_theta * cos_theta);
     *ux = sin_theta * cos(phi);
     *uy = sin_theta * sin(phi);
@@ -2492,14 +2482,59 @@ static void generate_cauchy_crofton_ray(uint32_t* rng,
     double v2y = *uz * v1x - *ux * v1z;
     double v2z = *ux * v1y - *uy * v1x;
 
-    double r_disk = R * sqrt(lcg_double(rng));
-    double angle = 2.0 * M_PI * lcg_double(rng);
+    double r_disk = R * sqrt(disk_radius);
+    double angle = 2.0 * M_PI * disk_angle;
     double d1 = r_disk * cos(angle);
     double d2 = r_disk * sin(angle);
 
     *rox = cx + v1x * d1 + v2x * d2 - *ux * 2.0 * R;
     *roy = cy + v1y * d1 + v2y * d2 - *uy * 2.0 * R;
     *roz = cz + v1z * d1 + v2z * d2 - *uz * 2.0 * R;
+}
+
+static void generate_cauchy_crofton_ray(uint32_t* rng,
+                                        double cx, double cy, double cz, double R,
+                                        double* rox, double* roy, double* roz,
+                                        double* ux, double* uy, double* uz) {
+    const double u0 = lcg_double(rng);
+    const double u1 = lcg_double(rng);
+    const double u2 = lcg_double(rng);
+    const double u3 = lcg_double(rng);
+    generate_cauchy_crofton_ray_from_uniforms(
+        u0, u1, u2, u3, cx, cy, cz, R,
+        rox, roy, roz, ux, uy, uz);
+}
+
+static int generate_indexed_cauchy_crofton_ray(
+                                        alea_rng_algorithm_t algorithm,
+                                        uint64_t seed, uint64_t ray_index,
+                                        double cx, double cy, double cz, double R,
+                                        double* rox, double* roy, double* roz,
+                                        double* ux, double* uy, double* uz) {
+    double u[4];
+    if (algorithm == ALEA_RNG_LEGACY_LCG) {
+        for (uint64_t draw = 0; draw < 4; draw++) {
+            if (alea_rng_uniform_at(
+                    algorithm, seed, ALEA_RNG_DOMAIN_VOLUME_RAY_DIRECTION,
+                    ray_index, draw, &u[draw]) != 0) return -1;
+        }
+    } else {
+        uint32_t direction[4], disk[4];
+        if (alea_rng_block_at(
+                algorithm, seed, ALEA_RNG_DOMAIN_VOLUME_RAY_DIRECTION,
+                ray_index, 0, direction) != 0 ||
+            alea_rng_block_at(
+                algorithm, seed, ALEA_RNG_DOMAIN_VOLUME_RAY_DISK,
+                ray_index, 0, disk) != 0) return -1;
+        u[0] = alea_rng_uniform32_from_u32(direction[0]);
+        u[1] = alea_rng_uniform32_from_u32(direction[1]);
+        u[2] = alea_rng_uniform32_from_u32(disk[0]);
+        u[3] = alea_rng_uniform32_from_u32(disk[1]);
+    }
+    generate_cauchy_crofton_ray_from_uniforms(
+        u[0], u[1], u[2], u[3], cx, cy, cz, R,
+        rox, roy, roz, ux, uy, uz);
+    return 0;
 }
 
 int alea_generate_cauchy_crofton_rays(double cx, double cy, double cz,
@@ -2682,12 +2717,14 @@ void alea_volume_estimate_options_init(
     memset(options, 0, sizeof(*options));
     options->max_rays = 100000;
     options->seed = 42;
+    options->rng_algorithm = ALEA_RNG_PHILOX4X32_10;
     options->batch_size = 10000;
 }
 
 static int volume_estimate_ray_batch(
         alea_system_t* sys, size_t n_paths, size_t ray_begin, size_t ray_end,
-        uint64_t seed, size_t requested_workers,
+        alea_rng_algorithm_t rng_algorithm, uint64_t seed,
+        size_t requested_workers,
         double cx, double cy, double cz, double radius,
         double* sum_l, double* sum_l2, size_t* out_actual_workers) {
     int error_flag = 0;
@@ -2741,10 +2778,15 @@ static int volume_estimate_ray_batch(
             failed = error_flag;
             if (failed) continue;
 
-            uint32_t rng = volume_ray_rng(seed, ray_index);
             double rox, roy, roz, ux, uy, uz;
-            generate_cauchy_crofton_ray(&rng, cx, cy, cz, radius,
-                                        &rox, &roy, &roz, &ux, &uy, &uz);
+            if (generate_indexed_cauchy_crofton_ray(
+                    rng_algorithm, seed, (uint64_t)ray_index,
+                    cx, cy, cz, radius,
+                    &rox, &roy, &roz, &ux, &uy, &uz) != 0) {
+                #pragma omp atomic update
+                error_flag |= 1;
+                continue;
+            }
 
             alea_ray_t ray_desc;
             size_t touched_count = 0;
@@ -2824,6 +2866,8 @@ int alea_estimate_volumes_ex(
     if (!sys || !supplied || !volumes) return -1;
     if (supplied->max_rays == 0 ||
         supplied->requested_workers > (size_t)INT_MAX ||
+        (supplied->rng_algorithm != ALEA_RNG_PHILOX4X32_10 &&
+         supplied->rng_algorithm != ALEA_RNG_LEGACY_LCG) ||
         !isfinite(supplied->target_rel_error) ||
         supplied->target_rel_error < 0.0 ||
         supplied->target_rel_error > 1.0) {
@@ -2878,7 +2922,8 @@ int alea_estimate_volumes_ex(
         if (batch_end < completed || batch_end > supplied->max_rays)
             batch_end = supplied->max_rays;
         if (volume_estimate_ray_batch(
-                sys, n_paths, completed, batch_end, supplied->seed,
+                sys, n_paths, completed, batch_end, supplied->rng_algorithm,
+                supplied->seed,
                 supplied->requested_workers, cx, cy, cz, radius,
                 volumes, sum_l2, &actual_workers) != 0) {
             free(sum_l2);
@@ -2913,6 +2958,9 @@ int alea_estimate_volumes_ex(
         out_stats->requested_workers = supplied->requested_workers;
         out_stats->actual_workers = actual_workers;
         out_stats->batch_size = batch_size;
+        out_stats->rng_algorithm = supplied->rng_algorithm;
+        out_stats->rng_address_version = ALEA_RNG_ADDRESS_VERSION;
+        out_stats->seed = supplied->seed;
         out_stats->maximum_relative_error = maximum_error;
         out_stats->converged = converged != 0;
         out_stats->cancelled = cancelled != 0;
