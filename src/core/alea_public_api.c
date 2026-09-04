@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <limits.h>
 
 #include "util/arena.h"
 #include "util/str_builder.h"
@@ -2099,6 +2100,91 @@ static int alea_volume_path_index_ensure(alea_system_t* sys) {
     alea_volume_path_index_free(sys->volume_path_index);
     sys->volume_path_index = rebuilt;
     return 0;
+}
+
+int alea_volume_path_id_from_hier_path(
+        alea_system_t* sys,
+        const alea_hier_ray_path_t* path,
+        uint64_t* out_path_id) {
+    if (!sys || !path || !out_path_id || path->count <= 0) return -1;
+    if (alea_volume_path_index_ensure(sys) != 0 || !sys->volume_path_index)
+        return -1;
+
+    const int terminal_level = path->count - 1;
+    if (terminal_level > ALEA_VOLUME_PATH_MAX_DEPTH) return 0;
+
+    const alea_hier_ray_path_entry_t* terminal =
+        &path->entries[terminal_level];
+    if (terminal->cell_index >= alea_vec_count(&sys->cells)) return -1;
+
+    alea_volume_path_t structural;
+    memset(&structural, 0, sizeof(structural));
+    structural.path_id = UINT64_MAX;
+    structural.terminal_cell_index = (int)terminal->cell_index;
+    structural.terminal_cell_id = terminal->cell_id;
+    structural.material_id = terminal->material_id;
+    structural.universe_id = terminal->universe_id;
+    structural.depth = terminal->depth;
+    structural.ancestor_count = (uint8_t)terminal_level;
+
+    for (int i = 0; i < terminal_level; i++) {
+        const alea_hier_ray_path_entry_t* entry = &path->entries[i];
+        if (entry->cell_index >= alea_vec_count(&sys->cells)) return -1;
+        structural.ancestor_cell_indices[i] = (int)entry->cell_index;
+        structural.ancestor_universe_ids[i] = entry->universe_id;
+
+        if (!entry->is_lattice) continue;
+        if (structural.lattice_step_count >= ALEA_VOLUME_PATH_MAX_DEPTH)
+            return 0;
+
+        const alea_cell_entry_t* cell = &sys->cells.data[entry->cell_index];
+        const int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
+        const int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
+        const int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
+        const int oi = entry->lat_i - cell->lat_fill_dims[0];
+        const int oj = entry->lat_j - cell->lat_fill_dims[2];
+        const int ok = entry->lat_k - cell->lat_fill_dims[4];
+        if (ni <= 0 || nj <= 0 || nk <= 0 || oi < 0 || oj < 0 || ok < 0 ||
+            (!cell->lat_fill_repeating &&
+             (oi >= ni || oj >= nj || ok >= nk))) {
+            return 0;
+        }
+
+        size_t linear = 0;
+        if (!cell->lat_fill_repeating) {
+            const size_t s_oi = (size_t)oi;
+            const size_t s_oj = (size_t)oj;
+            const size_t s_ok = (size_t)ok;
+            const size_t s_nj = (size_t)nj;
+            const size_t s_nk = (size_t)nk;
+            if (s_oi > (SIZE_MAX / s_nj) ||
+                s_oi * s_nj > (SIZE_MAX - s_oj) ||
+                s_oi * s_nj + s_oj > (SIZE_MAX / s_nk) ||
+                (s_oi * s_nj + s_oj) * s_nk > (SIZE_MAX - s_ok)) {
+                return 0;
+            }
+            linear = (s_oi * s_nj + s_oj) * s_nk + s_ok;
+        }
+        if (!cell->lat_fill || linear >= cell->lat_fill_count ||
+            linear > (size_t)INT_MAX) {
+            return 0;
+        }
+
+        alea_volume_lattice_step_t* step =
+            &structural.lattice_steps[structural.lattice_step_count++];
+        step->lattice_cell_index = (int)entry->cell_index;
+        step->fill_universe = cell->lat_fill[linear];
+        step->i = entry->lat_i;
+        step->j = entry->lat_j;
+        step->k = entry->lat_k;
+        step->linear_index = (int)linear;
+    }
+
+    const alea_volume_path_t* canonical =
+        alea_volume_path_index_find(sys->volume_path_index, &structural);
+    if (!canonical) return 0;
+    *out_path_id = canonical->path_id;
+    return 1;
 }
 
 static int volume_path_lookup_universe(alea_system_t* sys,

@@ -922,6 +922,44 @@ int alea_estimate_volumes(alea_system_t* sys,
                           double* volumes,
                           double* rel_errors);
 
+/** Return nonzero from a volume progress callback to cancel successfully. */
+typedef int (*alea_volume_progress_fn)(size_t completed_rays,
+                                       size_t maximum_rays,
+                                       double maximum_relative_error,
+                                       void* user_data);
+
+/** Options for reproducible, convergence-aware Cauchy-Crofton estimation. */
+typedef struct {
+    size_t max_rays;              /**< Required maximum number of sampled rays. */
+    uint64_t seed;                /**< Counter-based sampling seed. */
+    size_t requested_workers;     /**< 0 = OpenMP runtime maximum. */
+    size_t batch_size;            /**< 0 = implementation default. */
+    double target_rel_error;      /**< 0 disables early convergence. */
+    alea_volume_progress_fn progress;
+    void* progress_user_data;
+} alea_volume_estimate_options_t;
+
+/** Execution receipt for a volume-estimation run. */
+typedef struct {
+    size_t rays_completed;
+    size_t requested_workers;
+    size_t actual_workers;
+    size_t batch_size;
+    double maximum_relative_error;
+    bool converged;
+    bool cancelled;
+} alea_volume_estimate_stats_t;
+
+void alea_volume_estimate_options_init(alea_volume_estimate_options_t* options);
+
+/** Extended volume estimator. Output arrays use alea_volume_path_count(). */
+int alea_estimate_volumes_ex(
+    alea_system_t* sys,
+    const alea_volume_estimate_options_t* options,
+    double* volumes,
+    double* rel_errors,
+    alea_volume_estimate_stats_t* out_stats);
+
 /** Source of the finite integration domain used for a cell-volume estimate. */
 typedef enum {
     ALEA_CELL_VOLUME_BOUNDS_EXPLICIT = 0,

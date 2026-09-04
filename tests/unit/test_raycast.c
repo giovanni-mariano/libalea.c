@@ -276,6 +276,32 @@ typedef struct {
     double material_length;
 } selected_segment_probe_t;
 
+typedef struct {
+    alea_system_t* sys;
+    size_t count;
+    size_t indexed_count;
+    double material_length;
+    uint64_t path_id;
+} selected_interval_probe_t;
+
+static int probe_selected_interval(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    selected_interval_probe_t* probe = context;
+    probe->count++;
+    if (interval->cell_id < 0 || interval->material_id == 0) return 0;
+    if (!interval->path || interval->cell_index < 0) return -1;
+    uint64_t path_id = UINT64_MAX;
+    if (alea_volume_path_id_from_hier_path(
+            probe->sys, interval->path, &path_id) != 1) {
+        return -1;
+    }
+    probe->indexed_count++;
+    probe->path_id = path_id;
+    probe->material_length += interval->t_exit - interval->t_enter;
+    return 0;
+}
+
 static int probe_selected_segment(void* context,
                                   const alea_ray_segment_t* segment) {
     selected_segment_probe_t* probe = context;
@@ -353,6 +379,36 @@ TEST(raycast_selected_segment_visitor_streams_without_publication) {
                   sys, &ray, 100, &scratch,
                   probe_selected_segment, &probe), 0);
     ASSERT_EQ(probe.count, 3);
+    ASSERT_NEAR(probe.material_length, 10.0, EPS);
+    ASSERT_EQ(scratch.segments.count, 0);
+    ASSERT_EQ(scratch.hits.count, 0);
+
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+TEST(raycast_selected_interval_visitor_retains_path_evidence) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 5.0);
+    ASSERT(surface >= 0);
+    const alea_node_id_t inside = alea_surface_at(sys, surface)->neg_node;
+    const int material = alea_add_material(sys, 1);
+    ASSERT(material >= 0);
+    ASSERT(alea_add_cell(sys, 1, inside, material, -2.7, 0) >= 0);
+    ASSERT_EQ(alea_volume_path_count(sys), 1);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -10, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    selected_interval_probe_t probe = {.sys = sys, .path_id = UINT64_MAX};
+    ASSERT_EQ(alea_raycast_hier_visit_intervals_nocache(
+                  sys, &ray, 100, &scratch,
+                  probe_selected_interval, &probe), 0);
+    ASSERT_EQ(probe.count, 3);
+    ASSERT_EQ(probe.indexed_count, 1);
+    ASSERT_EQ(probe.path_id, 0);
     ASSERT_NEAR(probe.material_length, 10.0, EPS);
     ASSERT_EQ(scratch.segments.count, 0);
     ASSERT_EQ(scratch.hits.count, 0);

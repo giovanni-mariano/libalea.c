@@ -268,6 +268,38 @@ TEST(render_solid_hits_both_cells) {
     alea_destroy(sys);
 }
 
+TEST(render_solid_with_scratch_backed_shadows) {
+    alea_system_t* sys = create_test_scene();
+    ASSERT_NOT_NULL(sys);
+
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.width = 32;
+    cfg.height = 24;
+    cfg.render_mode = RENDER_MODE_SOLID;
+    cfg.shadows = 1;
+
+    render_camera_t cam;
+    ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+    render_framebuffer_t* fb =
+        render_framebuffer_create(cfg.width, cfg.height, 0);
+    ASSERT_NOT_NULL(fb);
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+
+    int hit_count = 0;
+    for (int i = 0; i < cfg.width * cfg.height; i++) {
+        if (fb->cell_id[i] > 0) hit_count++;
+        ASSERT(isfinite(fb->color[i * 3 + 0]));
+        ASSERT(isfinite(fb->color[i * 3 + 1]));
+        ASSERT(isfinite(fb->color[i * 3 + 2]));
+    }
+    ASSERT(hit_count > 0);
+
+    render_framebuffer_free(fb);
+    render_config_free(&cfg);
+    alea_destroy(sys);
+}
+
 TEST(render_xray_mode) {
     alea_system_t* sys = create_test_scene();
     ASSERT_NOT_NULL(sys);

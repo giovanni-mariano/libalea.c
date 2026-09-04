@@ -5254,10 +5254,10 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
     return ray_selected_interval_trace(sys, ray, effective_t_max, false, result);
 }
 
-int alea_raycast_hier_visit_segments_nocache(
+int alea_raycast_hier_visit_intervals_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* scratch,
-    alea_raycast_selected_segment_callback_t callback, void* context) {
+    alea_raycast_selected_interval_callback_t callback, void* context) {
     if (!sys || !ray || !scratch || !callback) return -1;
     alea_raycast_result_clear(scratch);
     scratch->ray = *ray;
@@ -5270,21 +5270,61 @@ int alea_raycast_hier_visit_segments_nocache(
             sys, ray, effective_t_max, scratch, &walk, &interval);
         if (rc < 0) return -1;
         if (rc == 2) return 0;
-        const alea_ray_segment_t segment = {
+        const alea_raycast_selected_interval_view_t view = {
             .t_enter = interval.t_enter,
             .t_exit = interval.t_exit,
+            .cell_index = interval.cell_index,
             .cell_id = interval.cell_id,
             .material_id = interval.material_id,
             .density = interval.density,
-            .enter_surface_id = -1,
-            .exit_surface_id = -1,
-            .enter_hit_index = -1,
-            .resolution_flags = interval.resolution_flags
+            .resolution_flags = interval.resolution_flags,
+            .owner_provenance_complete = interval.owner_provenance_complete,
+            .owner_occurrence_key = interval.owner_occurrence_key,
+            .owner_parent_occurrence_key =
+                interval.owner_parent_occurrence_key,
+            .path = interval.path
         };
-        const int callback_rc = callback(context, &segment);
+        const int callback_rc = callback(context, &view);
         if (callback_rc < 0) return -1;
         if (callback_rc > 0 || rc == 0) return 0;
     }
+}
+
+typedef struct {
+    alea_raycast_selected_segment_callback_t callback;
+    void* context;
+} raycast_segment_adapter_t;
+
+static int raycast_segment_adapter_visit(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    raycast_segment_adapter_t* adapter = context;
+    const alea_ray_segment_t segment = {
+        .t_enter = interval->t_enter,
+        .t_exit = interval->t_exit,
+        .cell_id = interval->cell_id,
+        .material_id = interval->material_id,
+        .density = interval->density,
+        .enter_surface_id = -1,
+        .exit_surface_id = -1,
+        .enter_hit_index = -1,
+        .resolution_flags = interval->resolution_flags,
+        .path_index = UINT32_MAX
+    };
+    return adapter->callback(adapter->context, &segment);
+}
+
+int alea_raycast_hier_visit_segments_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch,
+    alea_raycast_selected_segment_callback_t callback, void* context) {
+    if (!callback) return -1;
+    raycast_segment_adapter_t adapter = {
+        .callback = callback,
+        .context = context
+    };
+    return alea_raycast_hier_visit_intervals_nocache(
+        sys, ray, t_max, scratch, raycast_segment_adapter_visit, &adapter);
 }
 
 typedef struct {

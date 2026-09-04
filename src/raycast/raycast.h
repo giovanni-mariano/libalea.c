@@ -9,6 +9,7 @@
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "alea_geo_validator.h"
+#include "core/alea_spatial_hier.h"
 #include "util/alea_vec.h"
 #include "util/alea_atomic.h"
 #include <stddef.h>
@@ -805,6 +806,32 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
  * abort the walk as an error. */
 typedef int (*alea_raycast_selected_segment_callback_t)(
     void* context, const alea_ray_segment_t* segment);
+
+/* Scratch-backed view of one verified selected interval.  The hierarchy path
+ * remains valid only until the callback returns; consumers that need durable
+ * data must copy it.  This internal contract lets volume and other native
+ * consumers use exact path evidence without publishing general ray results. */
+typedef struct {
+    double t_enter;
+    double t_exit;
+    int cell_index;
+    int cell_id;
+    int material_id;
+    double density;
+    uint8_t resolution_flags;
+    uint8_t owner_provenance_complete;
+    uint64_t owner_occurrence_key;
+    uint64_t owner_parent_occurrence_key;
+    const alea_hier_ray_path_t* path;
+} alea_raycast_selected_interval_view_t;
+
+typedef int (*alea_raycast_selected_interval_callback_t)(
+    void* context, const alea_raycast_selected_interval_view_t* interval);
+
+int alea_raycast_hier_visit_intervals_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    alea_raycast_result_t* scratch,
+    alea_raycast_selected_interval_callback_t callback, void* context);
 
 int alea_raycast_hier_visit_segments_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,

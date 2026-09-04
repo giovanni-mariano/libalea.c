@@ -19,6 +19,41 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
+typedef struct {
+    alea_system_t* sys;
+    double* lengths;
+    size_t path_count;
+} volume_interval_length_probe_t;
+
+typedef struct {
+    size_t calls;
+    size_t cancel_at;
+    int invalid_receipt;
+} volume_progress_probe_t;
+
+static int cancel_volume_progress(size_t completed, size_t maximum,
+                                  double maximum_error, void* context) {
+    volume_progress_probe_t* probe = context;
+    if (completed > maximum || maximum_error < 0.0)
+        probe->invalid_receipt = 1;
+    probe->calls++;
+    return completed >= probe->cancel_at;
+}
+
+static int accumulate_indexed_interval_length(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    volume_interval_length_probe_t* probe = context;
+    if (interval->cell_id < 0) return 0;
+    uint64_t path_id = UINT64_MAX;
+    int found = alea_volume_path_id_from_hier_path(
+        probe->sys, interval->path, &path_id);
+    if (found < 0 || (found > 0 && path_id >= probe->path_count)) return -1;
+    if (found > 0)
+        probe->lengths[path_id] += interval->t_exit - interval->t_enter;
+    return 0;
+}
+
 TEST(hier_spatial_builds_universe_blas_stats) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -338,6 +373,15 @@ TEST(hier_paths_record_logical_lattice_occurrences) {
         ASSERT_EQ(paths[n].entries[0].lat_i, locations[n].i);
         ASSERT_EQ(paths[n].entries[0].lat_j, locations[n].j);
         ASSERT_EQ(paths[n].entries[0].lat_k, locations[n].k);
+
+        uint64_t path_id = UINT64_MAX;
+        ASSERT_EQ(alea_volume_path_id_from_hier_path(
+                      sys, &paths[n], &path_id), 1);
+        alea_volume_path_t canonical;
+        ASSERT_EQ(alea_volume_path_at_point(
+                      sys, points[n][0], points[n][1], points[n][2],
+                      &canonical), 1);
+        ASSERT_EQ(path_id, canonical.path_id);
     }
     ASSERT(locations[0].i != locations[1].i ||
            locations[0].j != locations[1].j ||
@@ -1999,6 +2043,74 @@ TEST(hier_volume_paths_distinguish_repeated_transformed_fills) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_volume_interval_paths_resolve_repeated_fills) {
+    alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int mat = alea_add_material(sys, 1);
+    ASSERT(mat >= 0);
+
+    int left_s = alea_sphere_surface(sys, 1, -5.0, 0.0, 0.0, 3.0);
+    int right_s = alea_sphere_surface(sys, 2, 5.0, 0.0, 0.0, 3.0);
+    int child_s = alea_sphere_surface(sys, 3, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(left_s >= 0 && right_s >= 0 && child_s >= 0);
+
+    int left = alea_add_cell(sys, 10, alea_surface_at(sys, left_s)->neg_node,
+                             ALEA_MATERIAL_VOID, 0.0, 0);
+    int right = alea_add_cell(sys, 20, alea_surface_at(sys, right_s)->neg_node,
+                              ALEA_MATERIAL_VOID, 0.0, 0);
+    ASSERT(left >= 0 && right >= 0);
+    const alea_node_id_t child_region =
+        alea_surface_at(sys, child_s)->neg_node;
+    int child = alea_add_cell(sys, 30, child_region, mat, 1.0, 10);
+    ASSERT(child >= 0);
+    ASSERT(alea_add_cell(sys, 31, alea_complement(sys, child_region),
+                         ALEA_MATERIAL_VOID, 0.0, 10) >= 0);
+
+    const double left_tr[3] = {-5.0, 0.0, 0.0};
+    const double right_tr[3] = {5.0, 0.0, 0.0};
+    ASSERT_EQ(alea_add_transform(sys, 101, left_tr, 3, 0), 0);
+    ASSERT_EQ(alea_add_transform(sys, 102, right_tr, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, left, 10, 101), 0);
+    ASSERT_EQ(alea_set_fill(sys, right, 10, 102), 0);
+
+    const size_t path_count = alea_volume_path_count(sys);
+    ASSERT_EQ(path_count, 4);
+    double* streamed = calloc(path_count, sizeof(*streamed));
+    alea_volume_path_t* paths = calloc(path_count, sizeof(*paths));
+    ASSERT_NOT_NULL(streamed);
+    ASSERT_NOT_NULL(paths);
+    ASSERT_EQ(alea_volume_paths_get(sys, paths, path_count), path_count);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, -10.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    volume_interval_length_probe_t probe = {
+        .sys = sys, .lengths = streamed, .path_count = path_count
+    };
+    ASSERT_EQ(alea_raycast_hier_visit_intervals_nocache(
+                  sys, &ray, 20.0, &scratch,
+                  accumulate_indexed_interval_length, &probe), 0);
+
+    size_t child_occurrences = 0;
+    for (size_t i = 0; i < path_count; i++) {
+        if (paths[i].terminal_cell_index != child) continue;
+        ASSERT_NEAR(streamed[paths[i].path_id], 2.0, 1e-12);
+        child_occurrences++;
+    }
+    ASSERT_EQ(child_occurrences, 2);
+    ASSERT_EQ(scratch.segments.count, 0);
+    ASSERT_EQ(scratch.hits.count, 0);
+
+    alea_raycast_result_free(&scratch);
+    free(paths);
+    free(streamed);
+    alea_destroy(sys);
+    alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
 TEST(hier_volume_paths_distinguish_rect_lattice_elements) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 
@@ -2127,6 +2239,57 @@ TEST(hier_path_volume_estimation_sphere_smoke) {
 
     alea_destroy(sys);
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+}
+
+TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int mat = alea_add_material(sys, 1);
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(mat >= 0 && surface >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         mat, 1.0, 0) >= 0);
+
+    alea_volume_estimate_options_t options;
+    alea_volume_estimate_options_init(&options);
+    options.max_rays = 400;
+    options.batch_size = 100;
+    options.seed = UINT64_C(123456789);
+    options.requested_workers = 1;
+    volume_progress_probe_t progress = {.cancel_at = 200};
+    options.progress = cancel_volume_progress;
+    options.progress_user_data = &progress;
+
+    double first_volume[1], first_error[1];
+    alea_volume_estimate_stats_t first_stats;
+    ASSERT_EQ(alea_estimate_volumes_ex(
+        sys, &options, first_volume, first_error, &first_stats), 0);
+    ASSERT_EQ(progress.calls, 2);
+    ASSERT_EQ(progress.invalid_receipt, 0);
+    ASSERT_EQ(first_stats.rays_completed, 200);
+    ASSERT(first_stats.cancelled);
+    ASSERT(!first_stats.converged);
+
+    progress.calls = 0;
+    double second_volume[1], second_error[1];
+    alea_volume_estimate_stats_t second_stats;
+    ASSERT_EQ(alea_estimate_volumes_ex(
+        sys, &options, second_volume, second_error, &second_stats), 0);
+    ASSERT_EQ(first_volume[0], second_volume[0]);
+    ASSERT_EQ(first_error[0], second_error[0]);
+    ASSERT_EQ(second_stats.rays_completed, first_stats.rays_completed);
+
+    options.progress = NULL;
+    options.progress_user_data = NULL;
+    options.target_rel_error = 1.0;
+    alea_volume_estimate_stats_t converged_stats;
+    ASSERT_EQ(alea_estimate_volumes_ex(
+        sys, &options, second_volume, second_error, &converged_stats), 0);
+    ASSERT(converged_stats.converged);
+    ASSERT(!converged_stats.cancelled);
+    ASSERT_EQ(converged_stats.rays_completed, options.batch_size);
+
+    alea_destroy(sys);
 }
 
 TEST(public_raycast_uses_hier_mode_without_flat_spatial_index) {

@@ -2448,6 +2448,21 @@ static double lcg_double(uint32_t* state) {
     return (double)lcg_next(state) / 4294967296.0;
 }
 
+static uint64_t volume_splitmix64(uint64_t value) {
+    value += UINT64_C(0x9e3779b97f4a7c15);
+    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
+/* Each ray owns an independent deterministic LCG stream. Scheduling and the
+ * requested worker count therefore cannot change which rays are sampled. */
+static uint32_t volume_ray_rng(uint64_t seed, size_t ray_index) {
+    const uint64_t mixed = volume_splitmix64(
+        seed ^ volume_splitmix64((uint64_t)ray_index));
+    return (uint32_t)(mixed ^ (mixed >> 32));
+}
+
 /**
  * Generate a random Cauchy-Crofton ray for volume estimation.
  * Picks a uniform random direction and a random point on a disk of radius R
@@ -2530,7 +2545,8 @@ int alea_generate_cauchy_crofton_rays(double cx, double cy, double cz,
  * Called before volumes[] are multiplied by scale.
  */
 static void compute_volume_errors(const double* volumes, const double* sum_l2,
-                                  double* rel_errors, size_t count, int n_rays) {
+                                  double* rel_errors, size_t count,
+                                  size_t n_rays) {
     for (size_t i = 0; i < count; i++) {
         double mean_l = volumes[i] / (double)n_rays;
         if (mean_l > 0.0) {
@@ -2609,6 +2625,50 @@ static int compute_path_bounding_sphere(alea_system_t* sys,
     return *radius > 0.0 ? 0 : -1;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    size_t n_paths;
+    double* local_vol;
+    double* ray_l;
+    size_t* touched_paths;
+    size_t* touched_count;
+} volume_interval_accumulator_t;
+
+static int accumulate_volume_interval(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    volume_interval_accumulator_t* accum = context;
+    if (!accum || !interval) return -1;
+    if (interval->cell_id < 0) return 0;
+
+    const double length = interval->t_exit - interval->t_enter;
+    if (!(length > 0.0) || !isfinite(length)) return 0;
+    if (!interval->path) return -1;
+
+    uint64_t path_id = UINT64_MAX;
+    const int found = alea_volume_path_id_from_hier_path(
+        accum->sys, interval->path, &path_id);
+    if (found < 0) return -1;
+    /* Undefined fill containers and other non-terminal selected owners are
+     * deliberately absent from the physical volume-path index. */
+    if (found == 0) return 0;
+    if (path_id >= accum->n_paths) return -1;
+
+    accum->local_vol[path_id] += length;
+    if (accum->ray_l) {
+        if (accum->ray_l[path_id] == 0.0) {
+            if (!accum->touched_paths || !accum->touched_count ||
+                *accum->touched_count >= accum->n_paths) {
+                return -1;
+            }
+            accum->touched_paths[(*accum->touched_count)++] =
+                (size_t)path_id;
+        }
+        accum->ray_l[path_id] += length;
+    }
+    return 0;
+}
+
 /* ============================================================================
  * PHYSICAL VOLUME ESTIMATION
  *
@@ -2616,136 +2676,264 @@ static int compute_path_bounding_sphere(alea_system_t* sys,
  * the physical identity of cells reused through fills and lattices.
  * ============================================================================ */
 
-int alea_estimate_volumes(alea_system_t* sys,
-                          int n_rays,
-                          double* volumes,
-                          double* rel_errors) {
-    if (!sys || n_rays <= 0 || !volumes) return -1;
+void alea_volume_estimate_options_init(
+        alea_volume_estimate_options_t* options) {
+    if (!options) return;
+    memset(options, 0, sizeof(*options));
+    options->max_rays = 100000;
+    options->seed = 42;
+    options->batch_size = 10000;
+}
 
-    alea_error_clear();
-    size_t n_paths = alea_volume_path_count(sys);
-    if (n_paths == 0 && alea_error_code() != (int)ALEA_OK) return -1;
-    if (n_paths == 0) return 0;
-
-    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
-
-    double cx, cy, cz, R;
-    if (compute_path_bounding_sphere(sys, n_paths, &cx, &cy, &cz, &R) != 0 ||
-        R <= 0.0) {
-        if (alea_compute_bounding_sphere(sys, 1.0, &cx, &cy, &cz, &R) != 0 ||
-            R <= 0.0) {
-            return -1;
-        }
-    }
-    R *= 1.01;
-
-    memset(volumes, 0, n_paths * sizeof(double));
-    if (rel_errors) memset(rel_errors, 0, n_paths * sizeof(double));
-
-    double* sum_l2 = NULL;
-    if (rel_errors) {
-        sum_l2 = calloc(n_paths, sizeof(double));
-        if (!sum_l2) return -1;
-    }
-
+static int volume_estimate_ray_batch(
+        alea_system_t* sys, size_t n_paths, size_t ray_begin, size_t ray_end,
+        uint64_t seed, size_t requested_workers,
+        double cx, double cy, double cz, double radius,
+        double* sum_l, double* sum_l2, size_t* out_actual_workers) {
     int error_flag = 0;
+    size_t actual_workers = 1;
+    int worker_limit = 1;
+    #ifdef _OPENMP
+    worker_limit = requested_workers > 0
+        ? (int)requested_workers : omp_get_max_threads();
+    #endif
+    double** worker_volumes = calloc(
+        (size_t)worker_limit, sizeof(*worker_volumes));
+    double** worker_l2 = sum_l2
+        ? calloc((size_t)worker_limit, sizeof(*worker_l2)) : NULL;
+    if (!worker_volumes || (sum_l2 && !worker_l2)) {
+        free(worker_volumes);
+        free(worker_l2);
+        return -1;
+    }
 
-    #pragma omp parallel
+    #pragma omp parallel if(worker_limit > 1) num_threads(worker_limit)
     {
-        double* local_vol = calloc(n_paths, sizeof(double));
-        double* local_l2 = rel_errors ? calloc(n_paths, sizeof(double)) : NULL;
-        double* ray_l = rel_errors ? calloc(n_paths, sizeof(double)) : NULL;
+        int worker_id = 0;
+        #ifdef _OPENMP
+        worker_id = omp_get_thread_num();
+        #endif
+        double* local_vol = calloc(n_paths, sizeof(*local_vol));
+        double* local_l2 = sum_l2 ? calloc(n_paths, sizeof(*local_l2)) : NULL;
+        double* ray_l = sum_l2 ? calloc(n_paths, sizeof(*ray_l)) : NULL;
+        size_t* touched_paths = sum_l2
+            ? calloc(n_paths, sizeof(*touched_paths)) : NULL;
         alea_raycast_result_t result;
         alea_raycast_result_init(&result);
+        worker_volumes[worker_id] = local_vol;
+        if (worker_l2) worker_l2[worker_id] = local_l2;
 
-        if (!local_vol || (rel_errors && (!local_l2 || !ray_l))) {
-            #pragma omp atomic
+        #ifdef _OPENMP
+        #pragma omp single
+        actual_workers = (size_t)omp_get_num_threads();
+        #endif
+
+        if (!local_vol ||
+            (sum_l2 && (!local_l2 || !ray_l || !touched_paths))) {
+            #pragma omp atomic update
             error_flag |= 1;
         }
 
-        int tid = 0;
-        #ifdef _OPENMP
-        tid = omp_get_thread_num();
-        #endif
-        uint32_t rng = 42 + (uint32_t)tid * 2654435761u;
+        #pragma omp for schedule(static)
+        for (size_t ray_index = ray_begin; ray_index < ray_end; ray_index++) {
+            int failed;
+            #pragma omp atomic read
+            failed = error_flag;
+            if (failed) continue;
 
-        #pragma omp for schedule(dynamic, 16)
-        for (int ray = 0; ray < n_rays; ray++) {
-            if (error_flag) continue;
-
+            uint32_t rng = volume_ray_rng(seed, ray_index);
             double rox, roy, roz, ux, uy, uz;
-            generate_cauchy_crofton_ray(&rng, cx, cy, cz, R,
+            generate_cauchy_crofton_ray(&rng, cx, cy, cz, radius,
                                         &rox, &roy, &roz, &ux, &uy, &uz);
 
-            if (ray_l) memset(ray_l, 0, n_paths * sizeof(double));
-
-            alea_raycast_result_clear(&result);
-            int rc = alea_raycast(sys, rox, roy, roz, ux, uy, uz, 4.0 * R, &result);
-            if (rc != 0) continue;
-
-            for (size_t s = 0; s < result.segments.count; s++) {
-                int seg_cell_id = result.segments.data[s].cell_id;
-                if (seg_cell_id < 0) continue;
-                double len = result.segments.data[s].t_exit -
-                             result.segments.data[s].t_enter;
-                if (len <= 0.0) continue;
-
-                double t_mid = (result.segments.data[s].t_enter +
-                                result.segments.data[s].t_exit) * 0.5;
-                double px = rox + t_mid * ux;
-                double py = roy + t_mid * uy;
-                double pz = roz + t_mid * uz;
-
-                alea_volume_path_t path;
-                int found = alea_volume_path_at_point(sys, px, py, pz, &path);
-                if (found <= 0) continue;
-                if (path.terminal_cell_id != seg_cell_id) continue;
-                if (path.path_id >= n_paths) continue;
-
-                local_vol[path.path_id] += len;
-                if (ray_l) ray_l[path.path_id] += len;
+            alea_ray_t ray_desc;
+            size_t touched_count = 0;
+            volume_interval_accumulator_t accum = {
+                .sys = sys,
+                .n_paths = n_paths,
+                .local_vol = local_vol,
+                .ray_l = ray_l,
+                .touched_paths = touched_paths,
+                .touched_count = &touched_count
+            };
+            int rc = alea_ray_init(
+                &ray_desc, rox, roy, roz, ux, uy, uz);
+            if (rc == 0) {
+                rc = alea_raycast_hier_visit_intervals_nocache(
+                    sys, &ray_desc, 4.0 * radius, &result,
+                    accumulate_volume_interval, &accum);
+            }
+            if (rc != 0) {
+                #pragma omp atomic update
+                error_flag |= 1;
+                continue;
             }
 
             if (local_l2) {
-                for (size_t i = 0; i < n_paths; i++) {
-                    local_l2[i] += ray_l[i] * ray_l[i];
+                for (size_t i = 0; i < touched_count; i++) {
+                    const size_t path_id = touched_paths[i];
+                    const double length = ray_l[path_id];
+                    local_l2[path_id] += length * length;
+                    ray_l[path_id] = 0.0;
                 }
             }
         }
 
-        #pragma omp critical
-        {
-            if (local_vol) {
-                for (size_t i = 0; i < n_paths; i++)
-                    volumes[i] += local_vol[i];
-            }
-            if (local_l2 && sum_l2) {
-                for (size_t i = 0; i < n_paths; i++)
-                    sum_l2[i] += local_l2[i];
-            }
-        }
-
         alea_raycast_result_free(&result);
-        free(local_vol);
-        free(local_l2);
         free(ray_l);
+        free(touched_paths);
     }
 
-    if (error_flag) {
-        free(sum_l2);
+    /* Fixed worker-index order makes a repeated run bit-reproducible for the
+     * same seed, batch size, and worker count. */
+    for (size_t worker = 0; worker < actual_workers; worker++) {
+        if (worker_volumes[worker]) {
+            for (size_t i = 0; i < n_paths; i++)
+                sum_l[i] += worker_volumes[worker][i];
+        }
+        if (sum_l2 && worker_l2[worker]) {
+            for (size_t i = 0; i < n_paths; i++)
+                sum_l2[i] += worker_l2[worker][i];
+        }
+        free(worker_volumes[worker]);
+        if (worker_l2) free(worker_l2[worker]);
+    }
+    free(worker_volumes);
+    free(worker_l2);
+
+    if (out_actual_workers) *out_actual_workers = actual_workers;
+    return error_flag ? -1 : 0;
+}
+
+static double volume_maximum_relative_error(
+        const double* errors, size_t count) {
+    double maximum = 0.0;
+    for (size_t i = 0; i < count; i++) {
+        if (errors[i] < 0.0 || !isfinite(errors[i])) return INFINITY;
+        if (errors[i] > maximum) maximum = errors[i];
+    }
+    return maximum;
+}
+
+int alea_estimate_volumes_ex(
+        alea_system_t* sys,
+        const alea_volume_estimate_options_t* supplied,
+        double* volumes,
+        double* rel_errors,
+        alea_volume_estimate_stats_t* out_stats) {
+    if (!sys || !supplied || !volumes) return -1;
+    if (supplied->max_rays == 0 ||
+        supplied->requested_workers > (size_t)INT_MAX ||
+        !isfinite(supplied->target_rel_error) ||
+        supplied->target_rel_error < 0.0 ||
+        supplied->target_rel_error > 1.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "invalid volume-estimation options");
         return -1;
     }
 
-    double scale = M_PI * R * R / (double)n_rays;
-    if (rel_errors) {
-        compute_volume_errors(volumes, sum_l2, rel_errors, n_paths, n_rays);
+    alea_error_clear();
+    const size_t n_paths = alea_volume_path_count(sys);
+    if (n_paths == 0 && alea_error_code() != (int)ALEA_OK) return -1;
+    if (n_paths == 0) return 0;
+    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
+
+    double cx, cy, cz, radius;
+    if (compute_path_bounding_sphere(
+            sys, n_paths, &cx, &cy, &cz, &radius) != 0 || radius <= 0.0) {
+        if (alea_compute_bounding_sphere(
+                sys, 1.0, &cx, &cy, &cz, &radius) != 0 || radius <= 0.0) {
+            return -1;
+        }
     }
-    for (size_t i = 0; i < n_paths; i++) {
-        volumes[i] *= scale;
+    radius *= 1.01;
+
+    const int need_errors = rel_errors != NULL ||
+        supplied->target_rel_error > 0.0 || supplied->progress != NULL;
+    double* sum_l2 = need_errors ? calloc(n_paths, sizeof(*sum_l2)) : NULL;
+    double* work_errors = rel_errors;
+    if (need_errors && !work_errors)
+        work_errors = calloc(n_paths, sizeof(*work_errors));
+    if ((need_errors && !sum_l2) || (need_errors && !work_errors)) {
+        free(sum_l2);
+        if (work_errors != rel_errors) free(work_errors);
+        return -1;
+    }
+
+    memset(volumes, 0, n_paths * sizeof(*volumes));
+    if (rel_errors) memset(rel_errors, 0, n_paths * sizeof(*rel_errors));
+    if (out_stats) memset(out_stats, 0, sizeof(*out_stats));
+
+    size_t batch_size = supplied->batch_size;
+    if (batch_size == 0) batch_size = 10000;
+    if (batch_size > supplied->max_rays) batch_size = supplied->max_rays;
+    size_t completed = 0;
+    size_t actual_workers = 1;
+    double maximum_error = INFINITY;
+    int converged = 0;
+    int cancelled = 0;
+
+    while (completed < supplied->max_rays) {
+        size_t batch_end = completed + batch_size;
+        if (batch_end < completed || batch_end > supplied->max_rays)
+            batch_end = supplied->max_rays;
+        if (volume_estimate_ray_batch(
+                sys, n_paths, completed, batch_end, supplied->seed,
+                supplied->requested_workers, cx, cy, cz, radius,
+                volumes, sum_l2, &actual_workers) != 0) {
+            free(sum_l2);
+            if (work_errors != rel_errors) free(work_errors);
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "hierarchical volume ray traversal failed");
+            return -1;
+        }
+        completed = batch_end;
+
+        if (need_errors) {
+            compute_volume_errors(
+                volumes, sum_l2, work_errors, n_paths, completed);
+            maximum_error = volume_maximum_relative_error(work_errors, n_paths);
+        }
+        if (supplied->target_rel_error > 0.0 &&
+            maximum_error <= supplied->target_rel_error) {
+            converged = 1;
+        }
+        if (supplied->progress && supplied->progress(
+                completed, supplied->max_rays, maximum_error,
+                supplied->progress_user_data) != 0) {
+            cancelled = 1;
+        }
+        if (converged || cancelled) break;
+    }
+
+    const double scale = M_PI * radius * radius / (double)completed;
+    for (size_t i = 0; i < n_paths; i++) volumes[i] *= scale;
+    if (out_stats) {
+        out_stats->rays_completed = completed;
+        out_stats->requested_workers = supplied->requested_workers;
+        out_stats->actual_workers = actual_workers;
+        out_stats->batch_size = batch_size;
+        out_stats->maximum_relative_error = maximum_error;
+        out_stats->converged = converged != 0;
+        out_stats->cancelled = cancelled != 0;
     }
 
     free(sum_l2);
+    if (work_errors != rel_errors) free(work_errors);
     return 0;
+}
+
+int alea_estimate_volumes(alea_system_t* sys,
+                          int n_rays,
+                          double* volumes,
+                          double* rel_errors) {
+    if (n_rays <= 0) return -1;
+    alea_volume_estimate_options_t options;
+    alea_volume_estimate_options_init(&options);
+    options.max_rays = (size_t)n_rays;
+    options.batch_size = (size_t)n_rays;
+    return alea_estimate_volumes_ex(
+        sys, &options, volumes, rel_errors, NULL);
 }
 
 /* ============================================================================

@@ -451,6 +451,22 @@ void render_framebuffer_free(render_framebuffer_t* fb) {
  * PER-PIXEL RENDERING (SOLID MODE)
  * ============================================================================ */
 
+static int render_shadow_occluded_nocache(
+        alea_system_t* sys,
+        alea_raycast_result_t* scratch,
+        double ox, double oy, double oz,
+        double dx, double dy, double dz,
+        double t_max) {
+    alea_ray_t ray;
+    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) return 0;
+    int occluded = 0;
+    if (alea_raycast_hier_any_hit_nocache(
+            sys, &ray, 0.0, t_max, -1, scratch, &occluded) != 0) {
+        return 0;
+    }
+    return occluded;
+}
+
 /**
  * Render a single pixel in solid/cutaway mode.
  * Uses a thread-local alea_raycast_result_t for buffer reuse.
@@ -526,156 +542,79 @@ static void render_pixel_solid(alea_system_t* sys,
 
     const double visible_t = ray_start + visible.t;
 
-    alea_ray_segment_t seg = {
-        .t_enter = visible_t,
-        .t_exit = t_max,
-        .cell_id = visible.cell_id,
-        .material_id = visible.material_id,
-        .density = visible.density,
-        .enter_surface_id = visible.surface_id,
-        .exit_surface_id = -1,
-        .enter_hit_index = -1,
-        .resolution_flags = visible.resolution_flags,
-        .path_index = UINT32_MAX
-    };
-    if (visible.surface_id > 0) {
-        const alea_ray_hit_t hit = {
-            .t = visible_t,
-            .surface_id = visible.surface_id,
-            .primitive_id = visible.primitive_id,
-            .nx = visible.nx, .ny = visible.ny, .nz = visible.nz
-        };
-        if (alea_vec_push(&result->hits, hit, alea_ray_hit_t) != 0)
-            return;
-        seg.enter_hit_index = 0;
+    double t_hit = visible_t;
+    int is_cross_section = 0;
+    if (entry_plane >= 0 && ray_start > 0.0 && visible.t < 1e-6) {
+        t_hit = t_min;
+        is_cross_section = 1;
     }
-    if (alea_vec_push(&result->segments, seg, alea_ray_segment_t) != 0)
-        return;
-    /* Find first non-void segment in visible region (past clips) */
-    for (size_t i = 0; i < result->segments.count; i++) {
-        const alea_ray_segment_t* seg = &result->segments.data[i];
 
-        /* Skip void segments and void-material cells (graveyard etc.) */
-        if (seg->cell_id < 0 || seg->material_id == 0) continue;
-
-        /* Skip segments entirely before clip */
-        if (seg->t_exit <= t_min + 1e-8) continue;
-
-        /* Determine hit point */
-        double t_hit;
-        int is_cross_section = 0;
-
-        if (entry_plane >= 0 && ray_start > 0.0 && visible.t < 1e-6) {
-            /* Segment straddles clip boundary — cross-section face */
-            t_hit = t_min;
-            is_cross_section = 1;
-        } else {
-            t_hit = seg->t_enter;
-        }
-
-        /* Get base color */
-        float br, bg, bb;
-        if (cfg->color_mode == RENDER_COLOR_DENSITY) {
-            shade_density(seg->density, &br, &bg, &bb);
-        } else {
-            int color_id;
-            if (cfg->color_mode == RENDER_COLOR_CELL)
-                color_id = seg->cell_id;
-            else
-                color_id = seg->material_id;
-            render_get_color(color_id, cfg->color_mode, cfg, &br, &bg, &bb);
-        }
-
-        if (is_cross_section) {
-            /* Flat shade for cross-section */
-            float tint = cfg->cross_section_tint;
-            out_color[0] = br * tint;
-            out_color[1] = bg * tint;
-            out_color[2] = bb * tint;
-            if (out_normal && entry_plane >= 0) {
-                out_normal[0] = (float)-cfg->clips[entry_plane].normal[0];
-                out_normal[1] = (float)-cfg->clips[entry_plane].normal[1];
-                out_normal[2] = (float)-cfg->clips[entry_plane].normal[2];
-            }
-        } else {
-            /* Find surface normal from hit list (O(1) via enter_hit_index) */
-            double nx = 0, ny = 0, nz = 1;
-            if (seg->enter_hit_index >= 0 &&
-                (size_t)seg->enter_hit_index < result->hits.count) {
-                nx = result->hits.data[seg->enter_hit_index].nx;
-                ny = result->hits.data[seg->enter_hit_index].ny;
-                nz = result->hits.data[seg->enter_hit_index].nz;
-            } else {
-                /* Fallback: linear search (cross-section or cell-aware path) */
-                for (size_t h = 0; h < result->hits.count; h++) {
-                    if (fabs(result->hits.data[h].t - t_hit) < 1e-6) {
-                        nx = result->hits.data[h].nx;
-                        ny = result->hits.data[h].ny;
-                        nz = result->hits.data[h].nz;
-                        break;
-                    }
-                }
-            }
-
-            /* Shade with lighting */
-            shade_surface(br, bg, bb, nx, ny, nz,
-                         light_dir, view_dir, cfg,
-                         &out_color[0], &out_color[1], &out_color[2]);
-
-            /* Shadow ray */
-            if (cfg->shadows) {
-                double hp[3] = {
-                    ox + t_hit * dx,
-                    oy + t_hit * dy,
-                    oz + t_hit * dz
-                };
-
-                /* Offset hit point along normal to avoid self-intersection */
-                double bias = 1e-4;
-                double sp_ox = hp[0] - nx * bias;
-                double sp_oy = hp[1] - ny * bias;
-                double sp_oz = hp[2] - nz * bias;
-
-                /* Shadow ray toward light */
-                double sl_dx = -light_dir[0];
-                double sl_dy = -light_dir[1];
-                double sl_dz = -light_dir[2];
-
-                double shadow_enter, shadow_exit;
-                int shadow_visible = clip_interval(
-                    sp_ox, sp_oy, sp_oz, sl_dx, sl_dy, sl_dz,
-                    cfg->clips, cfg->num_clips, 1e6,
-                    &shadow_enter, &shadow_exit, NULL) && shadow_enter <= 1e-8;
-
-                if (shadow_visible) {
-                    /* Quick occlusion test (early-out, no segment building) */
-                    int occluded = alea_ray_is_occluded(sys,
-                        sp_ox, sp_oy, sp_oz, sl_dx, sl_dy, sl_dz,
-                        shadow_exit);
-
-                    if (occluded) {
-                        /* In shadow — darken */
-                        float shadow_factor = 0.5f;
-                        out_color[0] *= shadow_factor;
-                        out_color[1] *= shadow_factor;
-                        out_color[2] *= shadow_factor;
-                    }
-                }
-            }
-
-            /* Store normal */
-            if (out_normal) {
-                out_normal[0] = (float)nx;
-                out_normal[1] = (float)ny;
-                out_normal[2] = (float)nz;
-            }
-        }
-
-        *out_cell_id = seg->cell_id;
-        *out_material_id = seg->material_id;
-        *out_depth = (float)t_hit;
-        return;
+    float br, bg, bb;
+    if (cfg->color_mode == RENDER_COLOR_DENSITY) {
+        shade_density(visible.density, &br, &bg, &bb);
+    } else {
+        const int color_id = cfg->color_mode == RENDER_COLOR_CELL
+            ? visible.cell_id : visible.material_id;
+        render_get_color(color_id, cfg->color_mode, cfg, &br, &bg, &bb);
     }
+
+    if (is_cross_section) {
+        const float tint = cfg->cross_section_tint;
+        out_color[0] = br * tint;
+        out_color[1] = bg * tint;
+        out_color[2] = bb * tint;
+        if (out_normal && entry_plane >= 0) {
+            out_normal[0] = (float)-cfg->clips[entry_plane].normal[0];
+            out_normal[1] = (float)-cfg->clips[entry_plane].normal[1];
+            out_normal[2] = (float)-cfg->clips[entry_plane].normal[2];
+        }
+    } else {
+        const double nx = visible.nx;
+        const double ny = visible.ny;
+        const double nz = visible.nz;
+        shade_surface(br, bg, bb, nx, ny, nz,
+                      light_dir, view_dir, cfg,
+                      &out_color[0], &out_color[1], &out_color[2]);
+
+        if (cfg->shadows) {
+            const double hp[3] = {
+                ox + t_hit * dx,
+                oy + t_hit * dy,
+                oz + t_hit * dz
+            };
+            const double bias = 1e-4;
+            const double sp_ox = hp[0] - nx * bias;
+            const double sp_oy = hp[1] - ny * bias;
+            const double sp_oz = hp[2] - nz * bias;
+            const double sl_dx = -light_dir[0];
+            const double sl_dy = -light_dir[1];
+            const double sl_dz = -light_dir[2];
+
+            double shadow_enter, shadow_exit;
+            const int shadow_visible = clip_interval(
+                sp_ox, sp_oy, sp_oz, sl_dx, sl_dy, sl_dz,
+                cfg->clips, cfg->num_clips, 1e6,
+                &shadow_enter, &shadow_exit, NULL) && shadow_enter <= 1e-8;
+            if (shadow_visible && render_shadow_occluded_nocache(
+                    sys, result, sp_ox, sp_oy, sp_oz,
+                    sl_dx, sl_dy, sl_dz, shadow_exit)) {
+                const float shadow_factor = 0.5f;
+                out_color[0] *= shadow_factor;
+                out_color[1] *= shadow_factor;
+                out_color[2] *= shadow_factor;
+            }
+        }
+
+        if (out_normal) {
+            out_normal[0] = (float)nx;
+            out_normal[1] = (float)ny;
+            out_normal[2] = (float)nz;
+        }
+    }
+
+    *out_cell_id = visible.cell_id;
+    *out_material_id = visible.material_id;
+    *out_depth = (float)t_hit;
 }
 
 /* ============================================================================
@@ -693,24 +632,24 @@ typedef struct {
     int cell_id;
 } render_xray_accumulator_t;
 
-static int render_xray_accumulate_segment(
-    void* context, const alea_ray_segment_t* seg) {
+static int render_xray_accumulate_interval(
+    void* context, const alea_raycast_selected_interval_view_t* interval) {
     render_xray_accumulator_t* accum = context;
-    if (seg->cell_id < 0 || seg->material_id == 0) return 0;
-    const double clipped_enter = seg->t_enter > accum->t_min
-        ? seg->t_enter : accum->t_min;
-    const double clipped_exit = seg->t_exit < accum->t_max
-        ? seg->t_exit : accum->t_max;
+    if (interval->cell_id < 0 || interval->material_id == 0) return 0;
+    const double clipped_enter = interval->t_enter > accum->t_min
+        ? interval->t_enter : accum->t_min;
+    const double clipped_exit = interval->t_exit < accum->t_max
+        ? interval->t_exit : accum->t_max;
     const double len = clipped_exit - clipped_enter;
     if (len <= 0 || len > 1e10) return 0;
 
-    float alpha = (float)(fabs(seg->density) * len *
+    float alpha = (float)(fabs(interval->density) * len *
                           accum->cfg->xray_density_scale);
     if (alpha > 1.0f) alpha = 1.0f;
 
     float cr, cg, cb;
     const int color_id = accum->cfg->color_mode == RENDER_COLOR_CELL
-        ? seg->cell_id : seg->material_id;
+        ? interval->cell_id : interval->material_id;
     render_get_color(color_id, accum->cfg->color_mode, accum->cfg,
                      &cr, &cg, &cb);
     const float factor = alpha * (1.0f - accum->accum_alpha);
@@ -719,7 +658,7 @@ static int render_xray_accumulate_segment(
     accum->accum_b += cb * factor;
     accum->accum_alpha += factor;
     if (accum->accum_alpha > 0.99f) return 1;
-    if (accum->cell_id < 0) accum->cell_id = seg->cell_id;
+    if (accum->cell_id < 0) accum->cell_id = interval->cell_id;
     return 0;
 }
 
@@ -759,8 +698,8 @@ static void render_pixel_xray(alea_system_t* sys,
     };
     alea_ray_t ray;
     if (alea_ray_init(&ray, trace_ox, trace_oy, trace_oz, dx, dy, dz) != 0 ||
-        alea_raycast_hier_visit_segments_nocache(
-            sys, &ray, 0, result, render_xray_accumulate_segment, &accum) != 0)
+        alea_raycast_hier_visit_intervals_nocache(
+            sys, &ray, 0, result, render_xray_accumulate_interval, &accum) != 0)
         return;
 
     /* Composite over background */

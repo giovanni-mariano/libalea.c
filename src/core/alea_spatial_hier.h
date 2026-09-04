@@ -109,6 +109,15 @@ typedef struct {
     alea_hier_ray_path_entry_t entries[ALEA_HIER_RAY_PATH_MAX];
 } alea_hier_ray_path_t;
 
+/* Resolve a live hierarchy path to the stable ID used by the physical-volume
+ * index.  This is an internal bridge for ray consumers that already own exact
+ * hierarchy evidence and must not repeat a point-location query.  Returns 1
+ * when found, 0 when the selected path has no indexed terminal occurrence
+ * (for example an unresolved fill container), and -1 on error. */
+int alea_volume_path_id_from_hier_path(
+    alea_system_t* sys, const alea_hier_ray_path_t* path,
+    uint64_t* out_path_id);
+
 /* Worker-local state for coherent point/path queries.  It is deliberately
  * bounded by one path per active worker; callers swap two workspaces rather
  * than retaining a path for every grid column. */
