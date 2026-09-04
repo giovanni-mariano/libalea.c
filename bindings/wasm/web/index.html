@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>libalea MCNP — 3D WASM viewer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">LIBALEA · MCNP · WEBASSEMBLY</p>
+        <h1>3D geometry viewer</h1>
+      </div>
+      <div id="status" class="status">Loading MCNP geometry…</div>
+    </header>
+
+    <section class="screen" aria-label="Interactive 3D MCNP geometry">
+      <canvas id="scene" width="320" height="180"></canvas>
+      <div class="hud"><span id="model-info">Waiting for model</span><span id="render-time"></span></div>
+    </section>
+
+    <section class="controls">
+      <label class="file-button">Load MCNP input
+        <input id="model-file" type="file" accept=".mcnp,.inp,.i,.txt">
+      </label>
+      <label><input id="clip" type="checkbox" checked> Cutaway</label>
+      <label class="range">Cut position
+        <input id="clip-position" type="range" min="0.25" max="0.7" value="0.5" step="0.01">
+      </label>
+      <div class="coordinates" aria-label="Camera target coordinates">
+        <label>X <input id="target-x" type="number" step="any" value="0"></label>
+        <label>Y <input id="target-y" type="number" step="any" value="0"></label>
+        <label>Z <input id="target-z" type="number" step="any" value="0"></label>
+        <button id="go-to" type="button">Go</button>
+        <button id="model-center" type="button">Model center</button>
+      </div>
+      <button id="pause" type="button">Pause</button>
+      <button id="record" type="button">Record 10s</button>
+    </section>
+    <footer>Enter MCNP X/Y/Z and press Go · drag to orbit · wheel to zoom</footer>
+  </main>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

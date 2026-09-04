@@ -1,0 +1,33 @@
+Seven-pin reactor cluster for the libalea WASM viewer
+c
+c Fuel pins: seven finite cylinders, material 1.
+1 1 -10.4 -10 5 -6 imp:n=1
+2 1 -10.4 -11 5 -6 imp:n=1
+3 1 -10.4 -12 5 -6 imp:n=1
+4 1 -10.4 -13 5 -6 imp:n=1
+5 1 -10.4 -14 5 -6 imp:n=1
+6 1 -10.4 -15 5 -6 imp:n=1
+7 1 -10.4 -16 5 -6 imp:n=1
+c Moderator fills the box outside every fuel cylinder.
+20 2 -0.72 1 -2 3 -4 5 -6 10 11 12 13 14 15 16 imp:n=1
+99 0 -1:2:-3:4:-5:6 imp:n=0
+
+c Rectangular assembly boundary, 12 x 12 x 10 cm.
+1 px -6
+2 px 6
+3 py -6
+4 py 6
+5 pz -5
+6 pz 5
+c Seven z-axis cylinders in a hexagonal cluster.
+10 c/z  0.0  0.0 1.25
+11 c/z  3.1  0.0 1.25
+12 c/z -3.1  0.0 1.25
+13 c/z  1.55  2.6847 1.25
+14 c/z -1.55  2.6847 1.25
+15 c/z  1.55 -2.6847 1.25
+16 c/z -1.55 -2.6847 1.25
+
+c Simplified compositions; rendering colors by material ID.
+m1 92235.80c 1.0
+m2 1001.80c 2.0 8016.80c 1.0

@@ -1,0 +1,3 @@
+/dist/
+/tests/test_wasm_binding
+/__pycache__/

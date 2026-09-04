@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  background: #070a12;
+  color: #edf5ff;
+}
+* { box-sizing: border-box; }
+body {
+  min-height: 100vh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 25% 5%, #15284a 0, transparent 38%), #070a12;
+}
+main { width: min(1100px, 94vw); }
+header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+h1 { margin: 0 0 1rem; font-size: clamp(2rem, 5vw, 4rem); line-height: .95; }
+.eyebrow { margin: 0 0 .6rem; color: #55d9ff; letter-spacing: .14em; }
+.status { margin-bottom: 1rem; color: #ffc95b; text-align: right; }
+.screen {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #4e6b91;
+  border-radius: 10px;
+  box-shadow: 0 22px 70px #000b, 0 0 0 5px #111827;
+  background: #07101f;
+}
+canvas { display: block; width: 100%; aspect-ratio: 16 / 9; cursor: grab; }
+canvas:active { cursor: grabbing; }
+.hud {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  justify-content: space-between;
+  padding: .65rem .8rem;
+  color: #c8d8eb;
+  background: linear-gradient(transparent, #02050bd9);
+  pointer-events: none;
+}
+.controls { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-top: 1.25rem; }
+.controls label { display: flex; align-items: center; gap: .45rem; color: #b9c8db; }
+.range { flex: 1; min-width: 190px; }
+.range input { flex: 1; }
+.coordinates { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
+.coordinates input {
+  width: 6.5rem;
+  border: 1px solid #536985;
+  border-radius: 6px;
+  padding: .55rem .5rem;
+  color: inherit;
+  background: #0b1425;
+  font: inherit;
+}
+button, .file-button {
+  border: 1px solid #536985;
+  border-radius: 999px;
+  padding: .65rem 1rem;
+  color: inherit;
+  background: #142039;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover, .file-button:hover { background: #203353; }
+button:disabled { cursor: wait; opacity: .55; }
+.file-button input { display: none; }
+footer { margin-top: 1rem; color: #8495ab; }
+@media (max-width: 650px) {
+  header { align-items: flex-start; flex-direction: column; }
+  .status { text-align: left; }
+}

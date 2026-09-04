@@ -138,8 +138,10 @@ int render_camera_setup(render_camera_t* cam,
         double cx, cy, cz, radius;
         int rc = alea_compute_bounding_sphere(sys, 1.0, &cx, &cy, &cz, &radius);
         if (rc != 0 || radius <= 0) {
+        if (cfg->log_level > 0) {
             fprintf(stderr, "render: failed to compute bounding sphere\n");
-            return -1;
+        }
+        return -1;
         }
 
         if (cfg->target_set) {
@@ -752,12 +754,15 @@ static int render_scene_xray_batched(alea_system_t* sys,
             }
         }
 #ifndef _OPENMP
-        fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)", tile_index + 1, n_tiles,
-                100.0 * (tile_index + 1) / n_tiles);
+        if (cfg->log_level > 0)
+            fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)",
+                    tile_index + 1, n_tiles,
+                    100.0 * (tile_index + 1) / n_tiles);
 #endif
         alea_raycast_result_free(&scratch);
     }
-    fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
+    if (cfg->log_level > 0)
+        fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
     return 0;
 }
 
@@ -790,9 +795,11 @@ int render_scene(alea_system_t* sys,
     num_threads = 1;
 #endif
 
-    fprintf(stderr, "render: %dx%d, %d tiles (%dx%d), %d thread%s, aa=%dx%d\n",
-            w, h, n_tiles, tile, tile, num_threads,
-            num_threads > 1 ? "s" : "", aa, aa);
+    if (cfg->log_level > 0)
+        fprintf(stderr,
+                "render: %dx%d, %d tiles (%dx%d), %d thread%s, aa=%dx%d\n",
+                w, h, n_tiles, tile, tile, num_threads,
+                num_threads > 1 ? "s" : "", aa, aa);
 
     if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1)
         return render_scene_xray_batched(sys, cfg, cam, fb, tile);
@@ -919,15 +926,17 @@ int render_scene(alea_system_t* sys,
             }
 
             /* Progress reporting */
-            #pragma omp atomic
-            progress_done++;
+            if (cfg->log_level > 0) {
+                #pragma omp atomic
+                progress_done++;
 
-            if (progress_done % (n_tiles / 20 + 1) == 0) {
-                #pragma omp critical
-                {
-                    fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)",
-                            progress_done, n_tiles,
-                            100.0 * progress_done / n_tiles);
+                if (progress_done % (n_tiles / 20 + 1) == 0) {
+                    #pragma omp critical
+                    {
+                        fprintf(stderr, "\rrender: %d/%d tiles (%.0f%%)",
+                                progress_done, n_tiles,
+                                100.0 * progress_done / n_tiles);
+                    }
                 }
             }
         }
@@ -935,7 +944,8 @@ int render_scene(alea_system_t* sys,
         alea_raycast_result_free(&result);
     }
 
-    fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
+    if (cfg->log_level > 0)
+        fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
 
     return 0;
 }

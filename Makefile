@@ -106,6 +106,7 @@ SLICE_DIR = $(SRC_DIR)/slice
 RENDER_DIR = $(SRC_DIR)/render
 MESH_DIR = $(SRC_DIR)/mesh
 GEO_VALIDATOR_DIR = $(SRC_DIR)/geo_validator
+WASM_BIND_DIR = bindings/wasm
 
 # Lua (vendored)
 LUA_DIR = vendor/lua/src
@@ -368,7 +369,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools mesh-benchmark install install-libs install-cli install-tools install-doc uninstall check-public-headers
+.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools mesh-benchmark wasm wasm-openmp wasm-demo test-wasm test-wasm-openmp install install-libs install-cli install-tools install-doc uninstall check-public-headers
 
 # Default target: core library only
 all: lib-core
@@ -389,6 +390,23 @@ cli: lib-core modules $(ALEA_CLI)
 # Build tools (mc_convert, mc_plotter)
 tools: lib-core modules
 	$(MAKE) -C tools WINDOWS_GNU=$(WINDOWS_GNU) EXEEXT=$(EXEEXT)
+
+# Emscripten bindings. These use isolated build/bin directories so native
+# objects are never mixed with WebAssembly objects.
+wasm:
+	$(MAKE) -C $(WASM_BIND_DIR) single
+
+wasm-openmp:
+	$(MAKE) -C $(WASM_BIND_DIR) openmp
+
+wasm-demo:
+	$(MAKE) -C $(WASM_BIND_DIR) demo
+
+test-wasm:
+	$(MAKE) -C $(WASM_BIND_DIR) test
+
+test-wasm-openmp:
+	$(MAKE) -C $(WASM_BIND_DIR) test-openmp
 
 # Build all tests (requires core + modules)
 tests: check-public-headers lib-core modules $(ALL_TEST_BINS)
@@ -899,6 +917,11 @@ help:
 	@echo "  full             - Build full library (core + all modules)"
 	@echo "  cli              - Build alea CLI"
 	@echo "  tools            - Build mc_convert, mc_plotter, nuc_plot, large_model_probe"
+	@echo "  wasm             - Build single-threaded Emscripten binding"
+	@echo "  wasm-openmp      - Build OpenMP Emscripten binding"
+	@echo "  wasm-demo        - Build the browser reference animation"
+	@echo "  test-wasm        - Run native-facade and generated WASM smoke tests"
+	@echo "  test-wasm-openmp - Run native-facade and OpenMP WASM smoke tests"
 	@echo "  install          - Install libraries, headers, CLI, tools, and docs"
 	@echo "  install-libs     - Install static libraries and public headers"
 	@echo "  install-cli      - Install alea CLI"
@@ -956,4 +979,4 @@ help:
 # Include generated dependency files (ignore if they don't exist yet)
 -include $(ALL_DEPS)
 
-.PHONY: all full lib-core modules cli tools tests test test-unit test-integration test-lua test-valgrind install install-libs install-cli install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz
+.PHONY: all full lib-core modules cli tools wasm wasm-openmp wasm-demo test-wasm test-wasm-openmp tests test test-unit test-integration test-lua test-valgrind install install-libs install-cli install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz
