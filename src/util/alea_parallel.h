@@ -21,12 +21,18 @@ typedef enum alea_parallel_status {
     ALEA_PARALLEL_ALLOCATION_FAILED,
     ALEA_PARALLEL_THREAD_CREATE_FAILED,
     ALEA_PARALLEL_THREAD_JOIN_FAILED,
-    ALEA_PARALLEL_CALLBACK_FAILED
+    ALEA_PARALLEL_CALLBACK_FAILED,
+    ALEA_PARALLEL_SYNCHRONIZATION_FAILED,
+    ALEA_PARALLEL_ALREADY_INITIALIZED
 } alea_parallel_status_t;
 
 int alea_parallel_enabled(void);
 size_t alea_parallel_max_workers(void);
 int alea_parallel_in_region(void);
+
+/* Configure the default before the first parallel operation creates the
+ * process executor. Zero restores the hardware-derived default. */
+alea_parallel_status_t alea_parallel_set_default_workers(size_t workers);
 
 size_t alea_parallel_effective_workers(size_t item_count, size_t grain_size,
                                        size_t max_workers);

@@ -5,13 +5,16 @@
 
 tinypar is a small C11 library for running an independent index range in
 parallel. It provides dynamic chunk scheduling, deterministic static-block
-scheduling, caller participation, cooperative callback failure, and a
-compile-time serial backend. It is not a task graph, event loop, or persistent
-worker pool.
+scheduling, caller participation, cooperative callback failure, an optional
+reusable executor, and a compile-time serial backend. It is not a task graph,
+event loop, or general OpenMP implementation.
 
 On POSIX platforms tinypar uses pthreads. On Windows it uses `_beginthreadex`
 and native Windows thread handles. The public API does not expose either
-backend's types.
+backend's types. The automatic Windows worker default is conservatively capped
+to the active processors in the caller's current processor group. Applications
+that deliberately manage affinity or run on newer cross-group Windows systems
+may request a larger explicit worker count.
 
 ## Build and test
 
@@ -38,11 +41,12 @@ Build them all (binaries land in `build/`):
 make examples
 ```
 
-`make benchmark` runs a small serial/static/dynamic comparison. Optional
-arguments select the item count, worker limit, and chunk size:
+`make benchmark` runs a serial/static/dynamic/executor comparison, including
+repeated short jobs. Optional arguments select the item count, worker limit,
+chunk size, repetition count, and short-job item count:
 
 ```sh
-build/benchmark_parallel_for 10000000 8 4096
+build/benchmark_parallel_for 10000000 8 4096 1000 64
 ```
 
 With an MSVC developer prompt:
@@ -83,10 +87,17 @@ The callback receives a stable worker index. A dynamic callback may run more
 than once for the same worker. A non-zero callback result cancels work that has
 not started and returns `TINYPAR_CALLBACK_FAILED` after all workers join.
 
-Each invocation owns its queue and cancellation state, so calls may run
-concurrently or recursively. tinypar does not use a global worker pool.
-`tinypar_in_parallel()` lets a consumer choose a one-worker configuration for
-nested calls when oversubscription is undesirable.
+Each one-shot top-level invocation owns its queue and cancellation state, so
+independent calls may run concurrently. Native workers wait at a start gate
+until the complete one-shot team has been created. This removes construction
+skew, but dynamic scheduling still does not guarantee that every requested
+worker receives a chunk.
+
+Nested calls made from a tinypar callback execute serially automatically. The
+public `tinypar_in_parallel()` query reports whether the current callback
+belongs to a multi-worker operation; it remains false in a one-worker callback.
+`tinypar_in_callback()` reports lexical callback execution in both cases and is
+useful for consumers that must size nested scratch for the actual serial path.
 
 ```c
 static int process(void* context, size_t worker, size_t begin, size_t end) {
@@ -100,7 +111,7 @@ static int process(void* context, size_t worker, size_t begin, size_t end) {
 tinypar_config_t config = {
     .item_count = count,
     .chunk_size = 16,
-    .max_workers = 0,  /* available logical processor count */
+    .max_workers = 0,  /* process worker default */
     .schedule = TINYPAR_SCHEDULE_DYNAMIC
 };
 tinypar_status_t status = tinypar_parallel_for(&config, process, context);
@@ -113,14 +124,66 @@ whose partition and final reduction order must remain reproducible:
 tinypar_config_t config = {
     .item_count = count,
     .chunk_size = 1024,
-    .max_workers = tinypar_in_parallel() ? 1 : 0,
+    .max_workers = 0,
     .schedule = TINYPAR_SCHEDULE_STATIC_BLOCK
 };
 ```
 
+Nested invocations do not need to override `max_workers`; TinyPar applies the
+serial fallback before choosing a team.
+
 The calling thread participates as worker zero. Successful invocations use the
 number of workers returned by `tinypar_effective_workers()`. A serial build
 always returns one effective worker for non-empty valid work.
+
+## Reusable executor
+
+Repeated short operations should use an explicit executor so native thread
+creation is paid once:
+
+```c
+tinypar_executor_config_t executor_config;
+tinypar_executor_config_init(&executor_config);
+executor_config.max_workers = 8;
+
+tinypar_executor_t* executor = NULL;
+tinypar_status_t status = tinypar_executor_create(
+    &executor_config, &executor);
+if (status == TINYPAR_OK) {
+    status = tinypar_executor_parallel_for(
+        executor, &config, process, context);
+    tinypar_status_t destroy_status = tinypar_executor_destroy(&executor);
+    if (status == TINYPAR_OK) status = destroy_status;
+}
+```
+
+The executor has a stable participant count returned by
+`tinypar_executor_workers()`. It can be smaller than requested if only part of
+the native worker team could be created. Worker indices remain stable and are
+always smaller than that count. Calls on one executor serialize; separate
+executors may run concurrently.
+
+Executor destruction must not race with new submissions. If destruction
+returns an error, the pointer remains non-null for a later destruction attempt,
+except when all workers terminated and only native handle cleanup failed; in
+that case the executor is safely released and the pointer is null.
+
+On POSIX, an executor must not be used or destroyed in a child created by
+`fork()` after the executor's workers exist. The child should call `exec()` or
+create its own executor through an application-controlled post-fork path.
+
+## Worker defaults and failures
+
+`tinypar_set_default_workers(n)` sets the process default used when a config or
+executor requests zero workers. Passing zero restores the hardware-derived
+default. An explicit nonzero `max_workers` always wins. This controls team size,
+not the aggregate size of unrelated executors or concurrent one-shot calls.
+
+All parallel-for calls are synchronous: after they return, no worker can access
+the callback or its context. Callback failure cancels work not yet started and
+waits for every participant. A platform failure that makes worker termination
+unknowable cannot safely satisfy this contract and is treated as an
+unrecoverable runtime invariant failure.
 
 ## License
 

@@ -113,6 +113,15 @@ native worker threads (POSIX threads on Linux/macOS, Win32 threads on Windows).
 `USE_OPENMP=1` remains accepted as a deprecated compatibility alias. Add
 `RELEASE=1` for an optimized build.
 
+Threaded builds reuse a process-wide TinyPar executor across parallel library
+operations. Call `alea_parallel_set_threads(n)` before the first parallel
+operation to select its worker count; passing zero restores the hardware
+default. Calls submitted concurrently share the bounded executor rather than
+creating independent native thread teams.
+
+On POSIX, once the threaded runtime has handled a parallel operation, a child
+created with `fork()` must call `exec()` before using libalea parallel APIs.
+
 Common Makefile variables:
 
 ```bash

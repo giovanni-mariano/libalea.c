@@ -10,7 +10,9 @@
 #include <stdint.h>
 
 size_t tinypar_platform_hardware_threads(void) {
-    DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    PROCESSOR_NUMBER processor;
+    GetCurrentProcessorNumberEx(&processor);
+    DWORD count = GetActiveProcessorCount(processor.Group);
     if (count != 0) return (size_t)count;
 
     SYSTEM_INFO info;
@@ -30,10 +32,57 @@ int tinypar_thread_start(tinypar_thread_t* thread, tinypar_thread_entry_t entry,
     return 1;
 }
 
-int tinypar_thread_join(tinypar_thread_t* thread) {
+tinypar_join_result_t tinypar_thread_join(tinypar_thread_t* thread) {
     DWORD waited = WaitForSingleObject(*thread, INFINITE);
-    BOOL closed = CloseHandle(*thread);
-    return waited == WAIT_OBJECT_0 && closed != 0;
+    if (waited != WAIT_OBJECT_0) return TINYPAR_JOIN_TERMINATION_UNKNOWN;
+    return CloseHandle(*thread) != 0
+        ? TINYPAR_JOIN_TERMINATED
+        : TINYPAR_JOIN_TERMINATED_CLEANUP_FAILED;
+}
+
+int tinypar_mutex_init(tinypar_mutex_t* mutex) {
+    InitializeCriticalSection(mutex);
+    return 1;
+}
+
+int tinypar_mutex_destroy(tinypar_mutex_t* mutex) {
+    DeleteCriticalSection(mutex);
+    return 1;
+}
+
+int tinypar_mutex_lock(tinypar_mutex_t* mutex) {
+    EnterCriticalSection(mutex);
+    return 1;
+}
+
+int tinypar_mutex_unlock(tinypar_mutex_t* mutex) {
+    LeaveCriticalSection(mutex);
+    return 1;
+}
+
+int tinypar_condition_init(tinypar_condition_t* condition) {
+    InitializeConditionVariable(condition);
+    return 1;
+}
+
+int tinypar_condition_destroy(tinypar_condition_t* condition) {
+    (void)condition;
+    return 1;
+}
+
+int tinypar_condition_wait(tinypar_condition_t* condition,
+                           tinypar_mutex_t* mutex) {
+    return SleepConditionVariableCS(condition, mutex, INFINITE) != 0;
+}
+
+int tinypar_condition_signal(tinypar_condition_t* condition) {
+    WakeConditionVariable(condition);
+    return 1;
+}
+
+int tinypar_condition_broadcast(tinypar_condition_t* condition) {
+    WakeAllConditionVariable(condition);
+    return 1;
 }
 
 #endif

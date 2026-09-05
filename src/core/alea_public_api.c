@@ -61,6 +61,12 @@ int alea_parallel_max_threads(void) {
     return (int)alea_parallel_max_workers();
 }
 
+int alea_parallel_set_threads(int threads) {
+    if (threads < 0) return -1;
+    return alea_parallel_set_default_workers((size_t)threads) ==
+        ALEA_PARALLEL_OK ? 0 : -1;
+}
+
 /* ============================================================================
  * ERROR HANDLING
  * ============================================================================ */

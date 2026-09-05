@@ -11,6 +11,7 @@
 #include "alea_mcnp.h"
 #include "core/alea_system.h"
 #include "core/alea_eval.h"
+#include "util/alea_parallel.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -29,11 +30,21 @@ TEST(null_system_destroy) {
     alea_destroy(NULL);
 }
 
+static int mark_parallel_range(void* opaque, size_t worker_index,
+                               size_t begin, size_t end) {
+    unsigned char* visits = opaque;
+    (void)worker_index;
+    for (size_t i = begin; i < end; i++) visits[i]++;
+    return 0;
+}
+
 TEST(parallel_backend_capabilities) {
     const int enabled = alea_parallel_enabled();
-    const int workers = alea_parallel_max_threads();
     ASSERT(enabled == 0 || enabled == 1);
-    ASSERT(workers >= 1);
+    ASSERT_EQ(alea_parallel_set_threads(-1), -1);
+    ASSERT_EQ(alea_parallel_set_threads(2), 0);
+    const int workers = alea_parallel_max_threads();
+    ASSERT_EQ(workers, enabled ? 2 : 1);
 #ifdef ALEA_USE_TINYPAR
     ASSERT_TRUE(enabled);
 #else
@@ -41,6 +52,15 @@ TEST(parallel_backend_capabilities) {
 #endif
     ASSERT_EQ(alea_openmp_enabled(), enabled);
     ASSERT_EQ(alea_openmp_max_threads(), workers);
+
+    unsigned char visits[4] = {0};
+    size_t actual_workers = 0;
+    ASSERT_EQ(alea_parallel_for(
+        4, 1, 0, ALEA_PARALLEL_STATIC_BLOCK, mark_parallel_range, visits,
+        &actual_workers), ALEA_PARALLEL_OK);
+    ASSERT_EQ(actual_workers, (size_t)(enabled ? 2 : 1));
+    for (size_t i = 0; i < 4; i++) ASSERT_EQ(visits[i], 1);
+    ASSERT_EQ(alea_parallel_set_threads(3), -1);
 }
 
 TEST(null_find_cell) {

@@ -27,11 +27,17 @@ Returns a static string like `"0.1.0"`.
 ```c
 int alea_parallel_enabled(void);
 int alea_parallel_max_threads(void);
+int alea_parallel_set_threads(int threads);
 ```
 
 `alea_parallel_enabled()` reports whether the library was built with tinypar's
 native threaded backend. `alea_parallel_max_threads()` reports the available
-worker count and always returns at least one. The older
+worker count and always returns at least one.
+`alea_parallel_set_threads()` selects the process worker default and must be
+called before the first parallel operation; zero restores the hardware-derived
+default, and the function returns zero on success. Once the persistent executor
+has been created, attempts to resize it return an error so queued operations
+cannot race with pool replacement. The older
 `alea_openmp_enabled()` and `alea_openmp_max_threads()` names remain as
 compatibility aliases and report the same values; they do not imply an OpenMP
 runtime dependency.
