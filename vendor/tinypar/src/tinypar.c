@@ -7,6 +7,7 @@
 #include "tinypar_platform.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 typedef struct tinypar_job {
@@ -32,6 +33,7 @@ typedef struct tinypar_start_gate {
     tinypar_mutex_t mutex;
     tinypar_condition_t condition;
     tinypar_start_state_t state;
+    size_t ready_workers;
 } tinypar_start_gate_t;
 
 typedef struct tinypar_worker_arg {
@@ -48,8 +50,8 @@ typedef struct tinypar_executor_worker_arg {
 struct tinypar_executor {
     tinypar_mutex_t submission_mutex;
     tinypar_mutex_t state_mutex;
-    tinypar_condition_t work_condition;
     tinypar_condition_t done_condition;
+    tinypar_condition_t* worker_conditions;
     tinypar_thread_t* threads;
     tinypar_executor_worker_arg_t* arguments;
     unsigned char* terminated;
@@ -57,6 +59,9 @@ struct tinypar_executor {
     size_t spawned_count;
     size_t generation;
     size_t completed_workers;
+    size_t active_workers;
+    size_t initialized_worker_conditions;
+    size_t ready_workers;
     int shutdown;
     int cleanup_failed;
     tinypar_job_t job;
@@ -72,12 +77,14 @@ static TINYPAR_THREAD_LOCAL unsigned tinypar_parallel_depth;
 static TINYPAR_THREAD_LOCAL unsigned tinypar_callback_depth;
 static tinypar_atomic_size_t tinypar_default_worker_limit = 0;
 
-static void tinypar_fatal_runtime_failure(void) {
+static void tinypar_fatal_runtime_failure(const char* reason) {
+    fprintf(stderr, "tinypar: unrecoverable runtime failure: %s\n", reason);
     abort();
 }
 
 static void tinypar_require_sync(int succeeded) {
-    if (!succeeded) tinypar_fatal_runtime_failure();
+    if (!succeeded)
+        tinypar_fatal_runtime_failure("native synchronization failed");
 }
 
 static int tinypar_valid_schedule(tinypar_schedule_t schedule) {
@@ -97,7 +104,10 @@ static void tinypar_job_init(tinypar_job_t* job,
     job->chunk_count = 1 + (config->item_count - 1) / config->chunk_size;
     job->worker_count = worker_count;
     job->schedule = config->schedule;
-    tinypar_atomic_size_init(&job->next_chunk, 0);
+    /* Reserve one initial chunk for every participant. This retains dynamic
+     * scheduling for the remaining chunks while preventing one fast worker
+     * from consuming a short job before the rest of the team runs. */
+    tinypar_atomic_size_init(&job->next_chunk, worker_count);
     tinypar_atomic_int_init(&job->cancelled, 0);
     tinypar_atomic_int_init(&job->status, TINYPAR_OK);
 }
@@ -121,22 +131,33 @@ static int tinypar_claim_chunk(tinypar_job_t* job, size_t* chunk) {
     return 0;
 }
 
+static int tinypar_run_dynamic_chunk(tinypar_worker_arg_t* argument,
+                                     size_t chunk) {
+    tinypar_job_t* job = argument->job;
+    size_t begin = chunk * job->chunk_size;
+    size_t remaining = job->item_count - begin;
+    size_t end = remaining < job->chunk_size
+        ? job->item_count : begin + job->chunk_size;
+    if (tinypar_atomic_int_load(&job->cancelled) != 0) return 0;
+    if (job->callback(job->context, argument->worker_index,
+                      begin, end) != 0) {
+        tinypar_fail_job(job);
+        return 0;
+    }
+    return 1;
+}
+
 static void tinypar_run_dynamic(tinypar_worker_arg_t* argument) {
     tinypar_job_t* job = argument->job;
+
+    if (argument->worker_index < job->chunk_count &&
+        !tinypar_run_dynamic_chunk(argument, argument->worker_index))
+        return;
 
     while (tinypar_atomic_int_load(&job->cancelled) == 0) {
         size_t chunk;
         if (!tinypar_claim_chunk(job, &chunk)) return;
-        size_t begin = chunk * job->chunk_size;
-        size_t remaining = job->item_count - begin;
-        size_t end = remaining < job->chunk_size
-            ? job->item_count : begin + job->chunk_size;
-        if (tinypar_atomic_int_load(&job->cancelled) != 0) return;
-        if (job->callback(job->context, argument->worker_index,
-                          begin, end) != 0) {
-            tinypar_fail_job(job);
-            return;
-        }
+        if (!tinypar_run_dynamic_chunk(argument, chunk)) return;
     }
 }
 
@@ -175,6 +196,7 @@ static int tinypar_start_gate_init(tinypar_start_gate_t* gate) {
         return 0;
     }
     gate->state = TINYPAR_START_WAITING;
+    gate->ready_workers = 0;
     return 1;
 }
 
@@ -185,6 +207,8 @@ static void tinypar_start_gate_destroy(tinypar_start_gate_t* gate) {
 
 static int tinypar_start_gate_wait(tinypar_start_gate_t* gate) {
     tinypar_require_sync(tinypar_mutex_lock(&gate->mutex));
+    gate->ready_workers++;
+    tinypar_require_sync(tinypar_condition_broadcast(&gate->condition));
     while (gate->state == TINYPAR_START_WAITING)
         tinypar_require_sync(
             tinypar_condition_wait(&gate->condition, &gate->mutex));
@@ -194,8 +218,14 @@ static int tinypar_start_gate_wait(tinypar_start_gate_t* gate) {
 }
 
 static void tinypar_start_gate_publish(tinypar_start_gate_t* gate,
-                                       tinypar_start_state_t state) {
+                                       tinypar_start_state_t state,
+                                       size_t expected_ready_workers) {
     tinypar_require_sync(tinypar_mutex_lock(&gate->mutex));
+    while (state == TINYPAR_START_RUN &&
+           gate->ready_workers != expected_ready_workers) {
+        tinypar_require_sync(
+            tinypar_condition_wait(&gate->condition, &gate->mutex));
+    }
     gate->state = state;
     tinypar_require_sync(tinypar_condition_broadcast(&gate->condition));
     tinypar_require_sync(tinypar_mutex_unlock(&gate->mutex));
@@ -223,7 +253,8 @@ static void tinypar_join_one_shot(tinypar_thread_t* threads,
     for (size_t i = 0; i < started; i++) {
         tinypar_join_result_t joined = tinypar_thread_join(&threads[i]);
         if (joined == TINYPAR_JOIN_TERMINATION_UNKNOWN)
-            tinypar_fatal_runtime_failure();
+            tinypar_fatal_runtime_failure(
+                "worker termination could not be established");
         if (joined == TINYPAR_JOIN_TERMINATED_CLEANUP_FAILED)
             *result = TINYPAR_THREAD_JOIN_FAILED;
     }
@@ -345,9 +376,11 @@ tinypar_status_t tinypar_parallel_for(const tinypar_config_t* config,
     tinypar_status_t result = TINYPAR_OK;
     if (started != spawned_count) {
         result = TINYPAR_THREAD_CREATE_FAILED;
-        tinypar_start_gate_publish(&start_gate, TINYPAR_START_ABORT);
+        tinypar_start_gate_publish(
+            &start_gate, TINYPAR_START_ABORT, 0);
     } else {
-        tinypar_start_gate_publish(&start_gate, TINYPAR_START_RUN);
+        tinypar_start_gate_publish(
+            &start_gate, TINYPAR_START_RUN, spawned_count);
         tinypar_worker_arg_t caller = { &job, NULL, 0 };
         tinypar_run_worker(&caller);
     }
@@ -372,11 +405,15 @@ static void* tinypar_executor_worker_entry(void* opaque)
     size_t observed_generation = 0;
 
     tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
+    executor->ready_workers++;
+    tinypar_require_sync(
+        tinypar_condition_signal(&executor->done_condition));
     for (;;) {
         while (!executor->shutdown &&
                executor->generation == observed_generation) {
             tinypar_require_sync(tinypar_condition_wait(
-                &executor->work_condition, &executor->state_mutex));
+                &executor->worker_conditions[argument->worker_index - 1],
+                &executor->state_mutex));
         }
         if (executor->shutdown) {
             tinypar_require_sync(tinypar_mutex_unlock(&executor->state_mutex));
@@ -388,28 +425,30 @@ static void* tinypar_executor_worker_entry(void* opaque)
         }
 
         observed_generation = executor->generation;
+        if (argument->worker_index > executor->active_workers)
+            continue;
         tinypar_job_t* job = &executor->job;
         tinypar_require_sync(tinypar_mutex_unlock(&executor->state_mutex));
-        if (argument->worker_index < job->worker_count) {
-            tinypar_worker_arg_t worker = {
-                job, NULL, argument->worker_index
-            };
-            tinypar_run_worker(&worker);
-        }
+        tinypar_worker_arg_t worker = {
+            job, NULL, argument->worker_index
+        };
+        tinypar_run_worker(&worker);
 
         tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
         executor->completed_workers++;
-        if (executor->completed_workers == executor->spawned_count)
+        if (executor->completed_workers == executor->active_workers)
             tinypar_require_sync(
                 tinypar_condition_signal(&executor->done_condition));
     }
 }
 
 static void tinypar_executor_destroy_sync(tinypar_executor_t* executor) {
+    for (size_t i = 0; i < executor->initialized_worker_conditions; i++) {
+        tinypar_require_sync(
+            tinypar_condition_destroy(&executor->worker_conditions[i]));
+    }
     tinypar_require_sync(
         tinypar_condition_destroy(&executor->done_condition));
-    tinypar_require_sync(
-        tinypar_condition_destroy(&executor->work_condition));
     tinypar_require_sync(tinypar_mutex_destroy(&executor->state_mutex));
     tinypar_require_sync(tinypar_mutex_destroy(&executor->submission_mutex));
 }
@@ -432,18 +471,10 @@ tinypar_status_t tinypar_executor_create(
 
     int submission_initialized = 0;
     int state_initialized = 0;
-    int work_initialized = 0;
-    int done_initialized = 0;
     if (!(submission_initialized =
               tinypar_mutex_init(&executor->submission_mutex)) ||
         !(state_initialized = tinypar_mutex_init(&executor->state_mutex)) ||
-        !(work_initialized =
-              tinypar_condition_init(&executor->work_condition)) ||
-        !(done_initialized =
-              tinypar_condition_init(&executor->done_condition))) {
-        if (work_initialized)
-            tinypar_require_sync(
-                tinypar_condition_destroy(&executor->work_condition));
+        !tinypar_condition_init(&executor->done_condition)) {
         if (state_initialized)
             tinypar_require_sync(tinypar_mutex_destroy(&executor->state_mutex));
         if (submission_initialized)
@@ -455,26 +486,45 @@ tinypar_status_t tinypar_executor_create(
 
     size_t wanted_threads = requested - 1;
     if (wanted_threads > SIZE_MAX / sizeof(*executor->threads) ||
-        wanted_threads > SIZE_MAX / sizeof(*executor->arguments)) {
+        wanted_threads > SIZE_MAX / sizeof(*executor->arguments) ||
+        wanted_threads > SIZE_MAX / sizeof(*executor->worker_conditions)) {
         tinypar_executor_destroy_sync(executor);
         free(executor);
         return TINYPAR_ALLOCATION_FAILED;
     }
 
     if (wanted_threads != 0) {
+        executor->worker_conditions = calloc(
+            wanted_threads, sizeof(*executor->worker_conditions));
         executor->threads = calloc(wanted_threads, sizeof(*executor->threads));
         executor->arguments = calloc(
             wanted_threads, sizeof(*executor->arguments));
         executor->terminated = calloc(
             wanted_threads, sizeof(*executor->terminated));
-        if (!executor->threads || !executor->arguments ||
+        if (!executor->worker_conditions || !executor->threads ||
+            !executor->arguments ||
             !executor->terminated) {
             free(executor->terminated);
             free(executor->arguments);
             free(executor->threads);
+            free(executor->worker_conditions);
             tinypar_executor_destroy_sync(executor);
             free(executor);
             return TINYPAR_ALLOCATION_FAILED;
+        }
+        for (; executor->initialized_worker_conditions < wanted_threads;
+             executor->initialized_worker_conditions++) {
+            if (!tinypar_condition_init(
+                    &executor->worker_conditions[
+                        executor->initialized_worker_conditions])) {
+                tinypar_executor_destroy_sync(executor);
+                free(executor->terminated);
+                free(executor->arguments);
+                free(executor->threads);
+                free(executor->worker_conditions);
+                free(executor);
+                return TINYPAR_SYNCHRONIZATION_FAILED;
+            }
         }
     }
 
@@ -489,6 +539,12 @@ tinypar_status_t tinypar_executor_create(
             break;
     }
     executor->worker_count = executor->spawned_count + 1;
+    tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
+    while (executor->ready_workers != executor->spawned_count) {
+        tinypar_require_sync(tinypar_condition_wait(
+            &executor->done_condition, &executor->state_mutex));
+    }
+    tinypar_require_sync(tinypar_mutex_unlock(&executor->state_mutex));
     *output = executor;
     return TINYPAR_OK;
 }
@@ -533,15 +589,18 @@ tinypar_status_t tinypar_executor_parallel_for(
     } else {
         tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
         executor->completed_workers = 0;
+        executor->active_workers = worker_count - 1;
         executor->generation++;
-        tinypar_require_sync(
-            tinypar_condition_broadcast(&executor->work_condition));
+        for (size_t i = 0; i < executor->active_workers; i++) {
+            tinypar_require_sync(
+                tinypar_condition_signal(&executor->worker_conditions[i]));
+        }
         tinypar_require_sync(tinypar_mutex_unlock(&executor->state_mutex));
 
         tinypar_run_worker(&caller);
 
         tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
-        while (executor->completed_workers != executor->spawned_count) {
+        while (executor->completed_workers != executor->active_workers) {
             tinypar_require_sync(tinypar_condition_wait(
                 &executor->done_condition, &executor->state_mutex));
         }
@@ -561,8 +620,10 @@ tinypar_status_t tinypar_executor_destroy(tinypar_executor_t** pointer) {
     tinypar_require_sync(tinypar_mutex_lock(&executor->submission_mutex));
     tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
     executor->shutdown = 1;
-    tinypar_require_sync(
-        tinypar_condition_broadcast(&executor->work_condition));
+    for (size_t i = 0; i < executor->spawned_count; i++) {
+        tinypar_require_sync(
+            tinypar_condition_signal(&executor->worker_conditions[i]));
+    }
     tinypar_require_sync(tinypar_mutex_unlock(&executor->state_mutex));
 
     int unknown = 0;
@@ -582,10 +643,11 @@ tinypar_status_t tinypar_executor_destroy(tinypar_executor_t** pointer) {
     if (unknown) return TINYPAR_THREAD_JOIN_FAILED;
 
     int cleanup_failed = executor->cleanup_failed;
+    tinypar_executor_destroy_sync(executor);
     free(executor->terminated);
     free(executor->arguments);
     free(executor->threads);
-    tinypar_executor_destroy_sync(executor);
+    free(executor->worker_conditions);
     free(executor);
     *pointer = NULL;
     return cleanup_failed ? TINYPAR_THREAD_JOIN_FAILED : TINYPAR_OK;

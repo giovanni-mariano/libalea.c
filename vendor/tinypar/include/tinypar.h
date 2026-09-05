@@ -87,10 +87,11 @@ size_t tinypar_effective_workers(size_t item_count, size_t chunk_size,
                                  size_t max_workers);
 
 /**
- * Run callback over [0, config->item_count). Dynamic scheduling claims chunks
- * as workers become available. Static-block scheduling assigns each worker one
- * deterministic contiguous range. The calling thread participates as worker
- * zero. A nested invocation inside a TinyPar callback executes serially.
+ * Run callback over [0, config->item_count). Dynamic scheduling assigns one
+ * initial chunk to every effective worker, then distributes remaining chunks
+ * as workers become available. Static-block scheduling assigns each worker
+ * one deterministic contiguous range. The calling thread participates as
+ * worker zero. A nested invocation inside a TinyPar callback executes serially.
  * Independent top-level invocations own separate state and may run
  * concurrently. On return, no worker can access callback or context.
  */

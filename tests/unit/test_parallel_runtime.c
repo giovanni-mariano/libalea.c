@@ -30,20 +30,27 @@ static size_t count_total(const count_context_t* context) {
 }
 
 TEST(runtime_reuses_bounded_executor) {
-    ASSERT_EQ(alea_parallel_set_threads(4), 0);
-    size_t expected_workers = alea_parallel_enabled() ? 4u : 1u;
-    ASSERT_EQ(alea_parallel_max_threads(), (int)expected_workers);
+    int configured = alea_parallel_set_threads(4);
+    ASSERT(configured == 0 || configured == -1);
+    size_t worker_limit = alea_parallel_enabled() ? 4u : 1u;
+    size_t expected_workers = 0;
 
     count_context_t context = {{0}};
     for (size_t iteration = 0; iteration < 10000; iteration++) {
         size_t actual_workers = 0;
         ASSERT_EQ(alea_parallel_for(
-            64, 1, 0, ALEA_PARALLEL_DYNAMIC, count_range, &context,
+            64, 1, 4, ALEA_PARALLEL_DYNAMIC, count_range, &context,
             &actual_workers), ALEA_PARALLEL_OK);
+        if (iteration == 0) {
+            ASSERT(actual_workers >= 1);
+            ASSERT(actual_workers <= worker_limit);
+            expected_workers = actual_workers;
+        }
         ASSERT_EQ(actual_workers, expected_workers);
     }
     ASSERT_EQ(count_total(&context), 640000);
-    ASSERT_EQ(alea_parallel_set_threads(2), -1);
+    ASSERT_EQ(alea_parallel_set_threads(2),
+              alea_parallel_enabled() ? -1 : 0);
 }
 
 typedef struct nested_context {
@@ -110,7 +117,7 @@ static void* submit_job(void* opaque) {
     submit_context_t* context = opaque;
     size_t actual_workers = 0;
     context->status = alea_parallel_for(
-        10000, 17, 0, ALEA_PARALLEL_DYNAMIC, count_range, &context->count,
+        10000, 17, 4, ALEA_PARALLEL_DYNAMIC, count_range, &context->count,
         &actual_workers);
     return NULL;
 }

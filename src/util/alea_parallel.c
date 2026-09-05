@@ -119,6 +119,33 @@ alea_parallel_status_t alea_parallel_for(
         return ALEA_PARALLEL_OK;
     }
 
+    tinypar_config_t config = {
+        .item_count = item_count,
+        .chunk_size = grain_size,
+        .max_workers = max_workers,
+        .schedule = schedule == ALEA_PARALLEL_STATIC_BLOCK
+            ? TINYPAR_SCHEDULE_STATIC_BLOCK : TINYPAR_SCHEDULE_DYNAMIC
+    };
+
+    /* Select the lexical nested path before touching the process executor.
+     * This prevents a first nested call from creating an otherwise idle team. */
+    if (tinypar_in_callback()) {
+        config.max_workers = 1;
+        if (out_actual_workers) *out_actual_workers = 1;
+        return map_status(tinypar_parallel_for(&config, callback, context));
+    }
+
+    size_t available_workers = alea_parallel_max_workers();
+    if (max_workers == 0 || max_workers > available_workers)
+        max_workers = available_workers;
+    size_t workers = tinypar_effective_workers(
+        item_count, grain_size, max_workers);
+    if (workers == 1) {
+        config.max_workers = 1;
+        if (out_actual_workers) *out_actual_workers = 1;
+        return map_status(tinypar_parallel_for(&config, callback, context));
+    }
+
     tinypar_executor_t* executor = NULL;
     alea_parallel_status_t executor_status =
         get_process_executor(&executor);
@@ -128,20 +155,13 @@ alea_parallel_status_t alea_parallel_for(
     }
 
     size_t executor_workers = tinypar_executor_workers(executor);
-    if (tinypar_in_callback()) max_workers = 1;
-    else if (max_workers == 0 || max_workers > executor_workers)
+    if (max_workers > executor_workers)
         max_workers = executor_workers;
-    size_t workers = tinypar_effective_workers(
+    workers = tinypar_effective_workers(
         item_count, grain_size, max_workers);
     if (out_actual_workers) *out_actual_workers = workers;
 
-    tinypar_config_t config = {
-        .item_count = item_count,
-        .chunk_size = grain_size,
-        .max_workers = max_workers,
-        .schedule = schedule == ALEA_PARALLEL_STATIC_BLOCK
-            ? TINYPAR_SCHEDULE_STATIC_BLOCK : TINYPAR_SCHEDULE_DYNAMIC
-    };
+    config.max_workers = max_workers;
     tinypar_status_t status = tinypar_executor_parallel_for(
         executor, &config, callback, context);
     return map_status(status);

@@ -60,7 +60,7 @@ TEST(parallel_backend_capabilities) {
         &actual_workers), ALEA_PARALLEL_OK);
     ASSERT_EQ(actual_workers, (size_t)(enabled ? 2 : 1));
     for (size_t i = 0; i < 4; i++) ASSERT_EQ(visits[i], 1);
-    ASSERT_EQ(alea_parallel_set_threads(3), -1);
+    ASSERT_EQ(alea_parallel_set_threads(3), enabled ? -1 : 0);
 }
 
 TEST(null_find_cell) {

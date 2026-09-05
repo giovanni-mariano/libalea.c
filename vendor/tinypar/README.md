@@ -88,10 +88,11 @@ than once for the same worker. A non-zero callback result cancels work that has
 not started and returns `TINYPAR_CALLBACK_FAILED` after all workers join.
 
 Each one-shot top-level invocation owns its queue and cancellation state, so
-independent calls may run concurrently. Native workers wait at a start gate
-until the complete one-shot team has been created. This removes construction
-skew, but dynamic scheduling still does not guarantee that every requested
-worker receives a chunk.
+independent calls may run concurrently. Native workers report ready at a start
+gate before the complete team is released. Dynamic scheduling reserves one
+initial chunk for each effective worker, then distributes all remaining chunks
+on demand. Every worker therefore participates in a successful job that has at
+least one chunk per worker.
 
 Nested calls made from a tinypar callback execute serially automatically. The
 public `tinypar_in_parallel()` query reports whether the current callback
@@ -161,7 +162,8 @@ The executor has a stable participant count returned by
 `tinypar_executor_workers()`. It can be smaller than requested if only part of
 the native worker team could be created. Worker indices remain stable and are
 always smaller than that count. Calls on one executor serialize; separate
-executors may run concurrently.
+executors may run concurrently. A job with a smaller per-call worker limit
+wakes only that job's active workers.
 
 Executor destruction must not race with new submissions. If destruction
 returns an error, the pointer remains non-null for a later destruction attempt,
@@ -183,7 +185,8 @@ All parallel-for calls are synchronous: after they return, no worker can access
 the callback or its context. Callback failure cancels work not yet started and
 waits for every participant. A platform failure that makes worker termination
 unknowable cannot safely satisfy this contract and is treated as an
-unrecoverable runtime invariant failure.
+unrecoverable runtime invariant failure: TinyPar prints a diagnostic and
+aborts rather than returning while callback state may still be live.
 
 ## License
 

@@ -37,7 +37,8 @@ worker count and always returns at least one.
 called before the first parallel operation; zero restores the hardware-derived
 default, and the function returns zero on success. Once the persistent executor
 has been created, attempts to resize it return an error so queued operations
-cannot race with pool replacement. The older
+cannot race with pool replacement. Nested calls and operations with one
+effective worker execute directly without initializing the pool. The older
 `alea_openmp_enabled()` and `alea_openmp_max_threads()` names remain as
 compatibility aliases and report the same values; they do not imply an OpenMP
 runtime dependency.

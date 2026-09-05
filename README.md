@@ -118,6 +118,8 @@ operations. Call `alea_parallel_set_threads(n)` before the first parallel
 operation to select its worker count; passing zero restores the hardware
 default. Calls submitted concurrently share the bounded executor rather than
 creating independent native thread teams.
+Nested calls and operations that need only one worker take a direct serial
+path without creating or waking the process executor.
 
 On POSIX, once the threaded runtime has handled a parallel operation, a child
 created with `fork()` must call `exec()` before using libalea parallel APIs.
