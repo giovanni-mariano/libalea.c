@@ -4,7 +4,7 @@
 import {readFile} from "node:fs/promises";
 
 const moduleName = process.argv[2] ?? "alea.js";
-const expectOpenmp = process.argv[3] === "openmp";
+const expectThreaded = process.argv[3] === "threaded";
 const largeInputMb = Number(process.argv[4] ?? 0);
 const imported = await import(new URL(`../dist/${moduleName}`, import.meta.url));
 const module = await imported.default({
@@ -29,8 +29,8 @@ function loadMcnp(bytes) {
 }
 
 const threaded = module._alea_wasm_parallel_enabled() !== 0;
-if (threaded !== expectOpenmp) {
-  throw new Error(`unexpected threaded state: expected ${expectOpenmp}, got ${threaded}`);
+if (threaded !== expectThreaded) {
+  throw new Error(`unexpected threaded state: expected ${expectThreaded}, got ${threaded}`);
 }
 let deck = input;
 if (largeInputMb > 0) {

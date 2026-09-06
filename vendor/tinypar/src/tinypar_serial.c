@@ -12,6 +12,10 @@ int tinypar_platform_threading_enabled(void) {
     return 0;
 }
 
+void tinypar_platform_worker_enter(size_t worker_index) {
+    (void)worker_index;
+}
+
 int tinypar_thread_start(tinypar_thread_t* thread, tinypar_thread_entry_t entry,
                          void* argument) {
     (void)thread;

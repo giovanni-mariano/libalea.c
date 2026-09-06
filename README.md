@@ -110,20 +110,22 @@ make install      # Install libraries, headers, CLI, tools, and docs
 
 The default build uses tinypar native worker threads (POSIX threads on
 Linux/macOS, Win32 threads on Windows). Set `USE_TINYPAR=0` for an explicitly
-serial build. `USE_OPENMP` remains accepted as a deprecated compatibility alias
-for the equivalent TinyPar selection. Add `RELEASE=1` for an optimized build.
+serial build. Add `RELEASE=1` for an optimized build.
 
 Threaded builds reuse a process-wide TinyPar executor across parallel library
 operations. Set `ALEA_NUM_THREADS=n`, or call
 `alea_parallel_set_threads(n)` before the first parallel operation, to select
 its worker count. An explicit API call overrides the environment; zero restores
-the hardware default. Calls submitted concurrently share the bounded executor rather than
-creating independent native thread teams.
+the hardware default. Calls submitted concurrently share the bounded executor
+rather than creating independent native thread teams.
 Nested calls and operations that need only one worker take a direct serial
 path without creating or waking the process executor.
+Per-operation worker arguments limit active participants and scratch usage;
+they do not shrink the persistent native team. Set the process limit before
+first use when the number of created native threads must also be bounded.
 
-On POSIX, once the threaded runtime has handled a parallel operation, a child
-created with `fork()` must call `exec()` before using libalea parallel APIs.
+On POSIX, a child created with `fork()` abandons the inherited worker state and
+lazily creates its own executor on the first parallel operation.
 
 Common Makefile variables:
 

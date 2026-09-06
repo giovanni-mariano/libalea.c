@@ -50,9 +50,6 @@ TEST(parallel_backend_capabilities) {
 #else
     ASSERT_FALSE(enabled);
 #endif
-    ASSERT_EQ(alea_openmp_enabled(), enabled);
-    ASSERT_EQ(alea_openmp_max_threads(), workers);
-
     unsigned char visits[4] = {0};
     size_t actual_workers = 0;
     ASSERT_EQ(alea_parallel_for(

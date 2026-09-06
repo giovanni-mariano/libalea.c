@@ -8,8 +8,10 @@
 #include "alea_mcnp.h"
 #include "core/alea_cell.h"
 #include "raycast/raycast.h"
+#include "util/alea_parallel.h"
 
 #include <math.h>
+#include <string.h>
 
 typedef struct {
     const alea_raycast_result_t* selected;
@@ -596,6 +598,75 @@ TEST(geo_validator_detects_nested_overlap_flat) {
     alea_destroy(sys);
 }
 
+typedef struct validator_serial_context {
+    alea_system_t* sys;
+    const alea_geom_validator_options_t* options;
+    alea_geom_validator_result_t* result;
+    int status;
+} validator_serial_context_t;
+
+static int run_validator_in_nested_region(
+        void* opaque, size_t worker, size_t begin, size_t end) {
+    validator_serial_context_t* context = opaque;
+    (void)begin;
+    (void)end;
+    if (worker != 0) return -1;
+    context->status = alea_validate_geometry(
+        context->sys, context->options, context->result);
+    return context->status;
+}
+
+TEST(geo_validator_parallel_rays_match_forced_serial_receipt) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int large_si = alea_sphere_surface(sys, 110, 0, 0, 0, 3.0);
+    int small_si = alea_sphere_surface(sys, 120, 0, 0, 0, 1.0);
+    ASSERT(large_si >= 0 && small_si >= 0);
+    alea_node_id_t large = alea_halfspace(sys, large_si, -1);
+    alea_node_id_t small = alea_halfspace(sys, small_si, -1);
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    ASSERT(alea_add_cell(sys, 11, large, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 12, small, m2, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t options;
+    alea_geom_validator_options_init(&options);
+    options.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    options.ray_count = 64;
+    options.seed = 23;
+    options.max_errors = 8;
+    options.max_crossings = 100;
+
+    alea_geom_validator_result_t serial, parallel;
+    alea_geom_validator_result_init(&serial);
+    alea_geom_validator_result_init(&parallel);
+    validator_serial_context_t serial_context = {
+        sys, &options, &serial, -1
+    };
+    ASSERT_EQ(alea_parallel_for(
+        1, 1, 1, ALEA_PARALLEL_STATIC_BLOCK,
+        run_validator_in_nested_region, &serial_context, NULL),
+        ALEA_PARALLEL_OK);
+    ASSERT_EQ(serial_context.status, 0);
+    ASSERT_EQ(alea_validate_geometry(sys, &options, &parallel), 0);
+
+    ASSERT_EQ(parallel.error_count, serial.error_count);
+    ASSERT_EQ(parallel.crossings_checked, serial.crossings_checked);
+    ASSERT_EQ(parallel.adjacency_hits, serial.adjacency_hits);
+    ASSERT_EQ(parallel.exact_queries, serial.exact_queries);
+    ASSERT_EQ(parallel.ambiguous_crossings, serial.ambiguous_crossings);
+    ASSERT_EQ(parallel.suppressed_samples, serial.suppressed_samples);
+    ASSERT_EQ(parallel.truncated, serial.truncated);
+    for (size_t error = 0; error < serial.error_count; error++)
+        ASSERT_EQ(memcmp(
+            &parallel.errors[error], &serial.errors[error],
+            sizeof(serial.errors[error])), 0);
+
+    alea_geom_validator_result_free(&parallel);
+    alea_geom_validator_result_free(&serial);
+    alea_destroy(sys);
+}
+
 TEST(geo_validator_reports_undefined_after_crossing) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -755,6 +826,7 @@ TEST(geo_validator_slice_accepts_complement_boundary) {
     ASSERT_EQ(alea_validate_geometry_slice(sys, &view, curves, &opts, &result), 0);
     ASSERT_EQ(result.error_count, 0);
     ASSERT(result.crossings_checked > 0);
+    ASSERT(result.sample_limited_curves > 0);
 
     alea_geom_validator_result_free(&result);
     alea_slice_curves_free(curves);

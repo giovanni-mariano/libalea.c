@@ -8,11 +8,10 @@
 
 #include <process.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 size_t tinypar_platform_hardware_threads(void) {
-    PROCESSOR_NUMBER processor;
-    GetCurrentProcessorNumberEx(&processor);
-    DWORD count = GetActiveProcessorCount(processor.Group);
+    DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
     if (count != 0) return (size_t)count;
 
     SYSTEM_INFO info;
@@ -22,6 +21,46 @@ size_t tinypar_platform_hardware_threads(void) {
 
 int tinypar_platform_threading_enabled(void) {
     return 1;
+}
+
+static int tinypar_platform_group_mask(WORD group, KAFFINITY* mask) {
+    DWORD bytes = 0;
+    if (GetLogicalProcessorInformationEx(RelationGroup, NULL, &bytes) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes == 0)
+        return 0;
+
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX* information = malloc(bytes);
+    if (!information) return 0;
+    int found = 0;
+    if (GetLogicalProcessorInformationEx(
+            RelationGroup, information, &bytes) &&
+        information->Relationship == RelationGroup &&
+        group < information->Group.ActiveGroupCount) {
+        *mask = information->Group.GroupInfo[group].ActiveProcessorMask;
+        found = *mask != 0;
+    }
+    free(information);
+    return found;
+}
+
+void tinypar_platform_worker_enter(size_t worker_index) {
+    WORD group_count = GetActiveProcessorGroupCount();
+    if (group_count <= 1) return;
+
+    size_t ordinal = worker_index;
+    for (WORD group = 0; group < group_count; group++) {
+        DWORD processors = GetActiveProcessorCount(group);
+        if (ordinal < processors) {
+            GROUP_AFFINITY affinity;
+            ZeroMemory(&affinity, sizeof(affinity));
+            affinity.Group = group;
+            if (!tinypar_platform_group_mask(group, &affinity.Mask)) return;
+            (void)SetThreadGroupAffinity(
+                GetCurrentThread(), &affinity, NULL);
+            return;
+        }
+        ordinal -= processors;
+    }
 }
 
 int tinypar_thread_start(tinypar_thread_t* thread, tinypar_thread_entry_t entry,

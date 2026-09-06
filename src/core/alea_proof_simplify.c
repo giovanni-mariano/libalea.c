@@ -274,8 +274,9 @@ static size_t proof_select_workers(size_t requested, size_t tasks,
                                    uint64_t budget) {
     size_t workers = requested;
     if (alea_parallel_in_region()) return 1;
-    if (workers == 0) workers = alea_parallel_max_workers();
-    if (workers == 0) workers = 1;
+    size_t available = alea_parallel_max_workers();
+    if (available == 0) available = 1;
+    if (workers == 0 || workers > available) workers = available;
     if (workers > tasks) workers = tasks;
     size_t budget_workers = budget / sizeof(proof_classification_t);
     if (workers > budget_workers) workers = budget_workers;
@@ -798,8 +799,9 @@ static size_t batch_select_workers(size_t requested, size_t tasks,
                                    uint64_t budget, uint64_t per_worker) {
     size_t workers = requested;
     if (alea_parallel_in_region()) return 1;
-    if (workers == 0) workers = alea_parallel_max_workers();
-    if (workers == 0) workers = 1;
+    size_t available = alea_parallel_max_workers();
+    if (available == 0) available = 1;
+    if (workers == 0 || workers > available) workers = available;
     if (workers > tasks) workers = tasks;
     if (budget == 0 || per_worker == UINT64_MAX) return 1;
     uint64_t by_budget = per_worker ? budget / per_worker : workers;
@@ -921,9 +923,20 @@ int alea_cells_simplify_proven(
     proof_batch_parallel_context_t parallel_context = {
         sys, requests, request_count, supplied, results, analyses, errors
     };
-    alea_parallel_status_t parallel_status = alea_parallel_for(
-        request_count, 1, outer_workers, ALEA_PARALLEL_STATIC_BLOCK,
-        proof_batch_parallel_range, &parallel_context, &observed_workers);
+    alea_parallel_status_t parallel_status;
+    if (outer_workers == 1) {
+        /* A one-worker TinyPar callback is still a lexical nested region. Run
+         * the outer body directly so a single-cell batch can use its requested
+         * inner proof team, matching OpenMP's inactive `parallel if(false)`
+         * semantics. */
+        parallel_status = proof_batch_parallel_range(
+            &parallel_context, 0, 0, request_count) == 0
+            ? ALEA_PARALLEL_OK : ALEA_PARALLEL_CALLBACK_FAILED;
+    } else {
+        parallel_status = alea_parallel_for(
+            request_count, 1, outer_workers, ALEA_PARALLEL_STATIC_BLOCK,
+            proof_batch_parallel_range, &parallel_context, &observed_workers);
+    }
     if (parallel_status != ALEA_PARALLEL_OK) {
         batch_free_analyses(analyses, request_count);
         free(errors);

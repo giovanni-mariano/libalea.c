@@ -26,7 +26,7 @@ linenoise/
 
 tinypar/
   Description: Portable parallel-loop runtime
-  Version:     commit 8d7ebc3973fb6045451f55d95d6e2c0702e225c5
+  Version:     commit 223c5550add6f1e97e4f883ef25ac77aaaea9019
   Source:      https://github.com/giovanni-mariano/tinypar
   License:     MPL-2.0
   Fetched:     2026-09-05

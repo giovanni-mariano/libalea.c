@@ -45,7 +45,7 @@ function loadMcnp(input) {
 }
 
 async function createModule(wantThreads) {
-  let moduleName = wantThreads ? "alea-openmp.js" : "alea.js";
+  let moduleName = wantThreads ? "alea-threaded.js" : "alea.js";
   try {
     const imported = await import(new URL(`../dist/${moduleName}`, import.meta.url));
     module = await imported.default({

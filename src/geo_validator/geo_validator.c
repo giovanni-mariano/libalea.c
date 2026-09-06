@@ -12,6 +12,7 @@
 #include "primitives/bbox.h"
 #include "raycast/ray_epsilon.h"
 #include "raycast/raycast.h"
+#include "util/alea_parallel.h"
 #include "util/math.h"
 
 #include <float.h>
@@ -1494,6 +1495,55 @@ static int validate_one_ray(alea_system_t* sys,
     return 0;
 }
 
+typedef struct validator_ray_parallel_context {
+    alea_system_t* sys;
+    const alea_ray_t* rays;
+    double t_max;
+    const alea_geom_validator_options_t* options;
+    alea_geom_validator_result_t* results;
+    int* statuses;
+} validator_ray_parallel_context_t;
+
+static int validate_ray_range(void* opaque, size_t worker_index,
+                              size_t begin, size_t end) {
+    validator_ray_parallel_context_t* context = opaque;
+    (void)worker_index;
+    for (size_t ray = begin; ray < end; ray++) {
+        if (alea_interrupted()) {
+            context->statuses[ray] = -1;
+            continue;
+        }
+        context->statuses[ray] = validate_one_ray(
+            context->sys, &context->rays[ray], context->t_max,
+            context->options, &context->results[ray]);
+    }
+    return 0;
+}
+
+static void free_validator_ray_results(
+        alea_geom_validator_result_t* results, size_t count) {
+    if (!results) return;
+    for (size_t ray = 0; ray < count; ray++)
+        alea_geom_validator_result_free(&results[ray]);
+    free(results);
+}
+
+static int merge_validator_ray_result(
+    alea_geom_validator_result_t* result,
+    const alea_geom_validator_result_t* ray_result,
+    const alea_geom_validator_options_t* options) {
+    for (size_t error = 0; error < ray_result->error_count; error++)
+        if (append_error(result, options, &ray_result->errors[error]) != 0)
+            return -1;
+    result->crossings_checked += ray_result->crossings_checked;
+    result->adjacency_hits += ray_result->adjacency_hits;
+    result->exact_queries += ray_result->exact_queries;
+    result->ambiguous_crossings += ray_result->ambiguous_crossings;
+    result->sample_limited_curves += ray_result->sample_limited_curves;
+    if (ray_result->truncated) result->truncated = 1;
+    return 0;
+}
+
 int alea_validate_geometry(alea_system_t* sys,
                            const alea_geom_validator_options_t* options,
                            alea_geom_validator_result_t* result) {
@@ -1508,6 +1558,8 @@ int alea_validate_geometry(alea_system_t* sys,
         return -1;
     if (!(local_options.flags & ALEA_GEOM_VALIDATE_RAYS))
         return 0;
+    if (result->truncated)
+        return 0;
 
     alea_bbox_t bounds = validator_bounds(sys);
     double bx = bounds.max_x - bounds.min_x;
@@ -1519,20 +1571,115 @@ int alea_validate_geometry(alea_system_t* sys,
         ? local_options.t_max
         : 3.0 * diag;
 
+    const size_t ray_count = (size_t)local_options.ray_count;
+    const size_t workers = alea_parallel_effective_workers(ray_count, 1, 0);
     uint64_t rng = local_options.seed ? local_options.seed : UINT64_C(42);
-    for (int i = 0; i < local_options.ray_count; i++) {
-        if (g_alea_interrupted) {
-            alea_set_error_detail(ALEA_ERR_INTERRUPTED,
-                                  "geometry validation interrupted");
-            return -1;
+    if (workers == 1) {
+        for (size_t i = 0; i < ray_count; i++) {
+            if (alea_interrupted()) {
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                      "geometry validation interrupted");
+                return -1;
+            }
+            if (result->truncated) break;
+            alea_ray_t ray;
+            generate_validation_ray(&rng, &bounds, &ray);
+            if (validate_one_ray(
+                    sys, &ray, t_max, &local_options, result) != 0)
+                return -1;
         }
-        if (result->truncated) break;
-        alea_ray_t ray;
-        generate_validation_ray(&rng, &bounds, &ray);
-        if (validate_one_ray(sys, &ray, t_max, &local_options, result) != 0)
-            return -1;
+        return 0;
     }
 
+    if (ray_count > SIZE_MAX / sizeof(alea_ray_t) ||
+        ray_count > SIZE_MAX / sizeof(alea_geom_validator_result_t) ||
+        ray_count > SIZE_MAX / sizeof(int)) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "geometry validation workspace is too large");
+        return -1;
+    }
+
+    alea_ray_t* rays = malloc(ray_count * sizeof(*rays));
+    alea_geom_validator_result_t* ray_results = calloc(
+        ray_count, sizeof(*ray_results));
+    int* statuses = calloc(ray_count, sizeof(*statuses));
+    if (!rays || !ray_results || !statuses) {
+        free(rays);
+        free_validator_ray_results(ray_results, ray_count);
+        free(statuses);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "geometry validation parallel workspace failed");
+        return -1;
+    }
+    for (size_t ray = 0; ray < ray_count; ray++) {
+        generate_validation_ray(&rng, &bounds, &rays[ray]);
+        alea_geom_validator_result_init(&ray_results[ray]);
+    }
+
+    /* Per-ray results retain every finding. The caller thread applies global
+     * signature and output limits in ray order, preserving deterministic serial
+     * receipts independently of worker scheduling. */
+    alea_geom_validator_options_t worker_options = local_options;
+    worker_options.max_errors = SIZE_MAX;
+    worker_options.max_samples_per_signature = 0;
+    validator_ray_parallel_context_t context = {
+        sys, rays, t_max, &worker_options, ray_results, statuses
+    };
+    alea_parallel_status_t parallel_status = alea_parallel_for(
+        ray_count, 1, workers, ALEA_PARALLEL_DYNAMIC,
+        validate_ray_range, &context, NULL);
+    if (parallel_status != ALEA_PARALLEL_OK || alea_interrupted()) {
+        free(rays);
+        free_validator_ray_results(ray_results, ray_count);
+        free(statuses);
+        alea_set_error_detail(
+            alea_interrupted() ? ALEA_ERR_INTERRUPTED : ALEA_ERR_INVALID_STATE,
+            alea_interrupted() ? "geometry validation interrupted" :
+            "geometry validation parallel execution failed");
+        return -1;
+    }
+
+    size_t max_crossings = local_options.max_crossings;
+    if (max_crossings == 0) max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
+    size_t max_errors = local_options.max_errors;
+    if (max_errors == 0) max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
+    int merge_failed = 0;
+    for (size_t ray = 0; ray < ray_count && !result->truncated; ray++) {
+        if (statuses[ray] != 0) {
+            merge_failed = 1;
+            break;
+        }
+        const alea_geom_validator_result_t* candidate = &ray_results[ray];
+        const int crosses_limit =
+            result->crossings_checked > max_crossings ||
+            candidate->crossings_checked >
+                max_crossings - result->crossings_checked;
+        const int may_cross_error_limit =
+            result->error_count > max_errors ||
+            candidate->error_count > max_errors - result->error_count;
+        if (crosses_limit || may_cross_error_limit) {
+            /* Re-run only the boundary ray against the cumulative result so
+             * limits and signature suppression stop at the exact serial point. */
+            if (validate_one_ray(
+                    sys, &rays[ray], t_max, &local_options, result) != 0)
+                merge_failed = 1;
+            continue;
+        }
+        if (merge_validator_ray_result(
+                result, candidate, &local_options) != 0) {
+            merge_failed = 1;
+            break;
+        }
+    }
+
+    free(rays);
+    free_validator_ray_results(ray_results, ray_count);
+    free(statuses);
+    if (merge_failed) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "geometry validation worker failed");
+        return -1;
+    }
     return 0;
 }
 
@@ -1721,20 +1868,30 @@ int alea_validate_geometry_slice(alea_system_t* sys,
         } else if (c.type == ALEA_CURVE_ELLIPSE || c.type == ALEA_CURVE_ELLIPSE_ARC) {
             arc = (t_hi - t_lo) * 0.5 * (c.data.ellipse.semi_a + c.data.ellipse.semi_b);
         }
-        int n_samples = (int)(arc / sample_spacing);
-        if (n_samples < 2) n_samples = 2;
         size_t sample_cap = local.max_samples_per_curve;
         if (sample_cap == 0) sample_cap = 2000;
         if (sample_cap < 2) sample_cap = 2;
-        if ((size_t)n_samples > sample_cap) {
-            n_samples = (int)sample_cap;
+        if (sample_cap == SIZE_MAX) sample_cap = SIZE_MAX - 1;
+        const double requested_samples = arc / sample_spacing;
+        size_t n_samples = 2;
+        if (!isfinite(requested_samples) ||
+            requested_samples >= (double)sample_cap) {
+            n_samples = sample_cap;
+            if (!isfinite(requested_samples) ||
+                requested_samples > (double)sample_cap)
+                result->sample_limited_curves++;
+        } else if (requested_samples > 2.0) {
+            n_samples = (size_t)requested_samples;
+        }
+        if (n_samples > sample_cap) {
+            n_samples = sample_cap;
             result->sample_limited_curves++;
         }
 
         double dt_finite = (t_hi - t_lo) * 1e-6;
         if (dt_finite < 1e-15) dt_finite = 1e-15;
 
-        for (int i = 0; i <= n_samples; i++) {
+        for (size_t i = 0; i <= n_samples; i++) {
             if (result->crossings_checked >= max_crossings) {
                 result->truncated = 1;
                 break;

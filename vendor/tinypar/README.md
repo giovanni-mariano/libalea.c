@@ -11,10 +11,9 @@ event loop, or general OpenMP implementation.
 
 On POSIX platforms tinypar uses pthreads. On Windows it uses `_beginthreadex`
 and native Windows thread handles. The public API does not expose either
-backend's types. The automatic Windows worker default is conservatively capped
-to the active processors in the caller's current processor group. Applications
-that deliberately manage affinity or run on newer cross-group Windows systems
-may request a larger explicit worker count.
+backend's types. Windows workers are distributed across active processor groups
+when the machine has more than one group, so the automatic worker default can
+use all active logical processors.
 
 ## Build and test
 
@@ -172,7 +171,9 @@ that case the executor is safely released and the pointer is null.
 
 On POSIX, an executor must not be used or destroyed in a child created by
 `fork()` after the executor's workers exist. The child should call `exec()` or
-create its own executor through an application-controlled post-fork path.
+call `tinypar_executor_abandon_after_fork()` before creating a fresh executor.
+Abandoning only clears the child copy of the pointer; it intentionally does not
+touch synchronization state inherited from vanished worker threads.
 
 ## Worker defaults and failures
 

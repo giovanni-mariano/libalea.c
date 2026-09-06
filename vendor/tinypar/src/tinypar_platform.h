@@ -44,6 +44,7 @@ typedef void* (*tinypar_thread_entry_t)(void* argument);
 
 size_t tinypar_platform_hardware_threads(void);
 int tinypar_platform_threading_enabled(void);
+void tinypar_platform_worker_enter(size_t worker_index);
 int tinypar_thread_start(tinypar_thread_t* thread, tinypar_thread_entry_t entry,
                          void* argument);
 

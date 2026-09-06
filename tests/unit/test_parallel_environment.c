@@ -12,11 +12,35 @@
 
 #include <stdlib.h>
 
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 static int count_range(void* context, size_t worker, size_t begin, size_t end) {
     (void)worker;
     size_t* visits = context;
     for (size_t item = begin; item < end; item++) visits[item]++;
     return 0;
+}
+
+TEST(parallel_environment_ignores_values_above_public_int_range) {
+#if defined(_WIN32)
+    SKIP("fresh-process environment probe is POSIX-only");
+#else
+    pid_t child = fork();
+    ASSERT(child >= 0);
+    if (child == 0) {
+        if (setenv("ALEA_NUM_THREADS", "18446744073709551615", 1) != 0)
+            _exit(1);
+        int workers = alea_parallel_max_threads();
+        _exit(workers >= 1 ? 0 : 2);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+#endif
 }
 
 TEST(parallel_environment_sets_process_default) {

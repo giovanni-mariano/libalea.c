@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <signal.h>
 #include <math.h>    /* nextafterf for alea_node_bbox_set */
 #include <float.h>   /* FLT_MAX for empty-bbox sentinel */
 #include "util/alea_atomic.h"
@@ -22,8 +21,9 @@
 #include "core/alea_transform.h"
 #include "core/alea_universe.h"
 
-/* Global interrupt flag (defined in alea_error.c) */
-extern volatile sig_atomic_t g_alea_interrupted;
+/* Process-wide cooperative interrupt flag (defined in alea_error.c). It must
+ * remain lock-free because the Python binding also stores it from SIGINT. */
+extern atomic_int g_alea_interrupted;
 
 #define ALEA_CACHE_UNIVERSE      (1u << 0)
 #define ALEA_CACHE_CELL_SURFACES (1u << 1)
@@ -44,7 +44,7 @@ extern volatile sig_atomic_t g_alea_interrupted;
  * Use in long-running loops. Sets error detail and returns the given value.
  */
 #define ALEA_CHECK_INTERRUPTED(retval) do { \
-    if (g_alea_interrupted) { \
+    if (atomic_load_explicit(&g_alea_interrupted, memory_order_relaxed)) { \
         alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Operation interrupted"); \
         return (retval); \
     } \

@@ -175,6 +175,11 @@ alea_sparse_surface_label_stats_t alea_sparse_surface_label_stats_get(void) {
     return result;
 }
 
+static void sparse_surface_label_stats_publish(
+        const alea_sparse_surface_label_stats_t* stats) {
+    SLICE_STATS_UPDATE(g_sparse_surface_label_stats = *stats);
+}
+
 /* ============================================================================
  * SLICE CURVES API
  * ============================================================================ */
@@ -7731,8 +7736,7 @@ int alea_find_surface_labels_sparse_on_grid(
         max_queries == 0 || max_labels == 0)
         return -1;
     if (alea_interrupted()) return -1;
-    SLICE_STATS_UPDATE(memset(&g_sparse_surface_label_stats, 0,
-                              sizeof(g_sparse_surface_label_stats)));
+    alea_sparse_surface_label_stats_t call_stats = {0};
     *out_labels = NULL;
     *out_count = 0;
     /* Build mutable query caches before independent edge traces enter the
@@ -7779,7 +7783,7 @@ int alea_find_surface_labels_sparse_on_grid(
                 free(local); free(candidates);
                 return -1;
             }
-            g_sparse_surface_label_stats.tiles_examined++;
+            call_stats.tiles_examined++;
             int x0 = (int)(tile_x * tile_size);
             int x1 = x0 + tile_size;
             if (x1 > width) x1 = width;
@@ -7804,7 +7808,7 @@ int alea_find_surface_labels_sparse_on_grid(
                         int a = grid_ids[(size_t)y * width + x];
                         int b = grid_ids[(size_t)ny * width + nx];
                         if (a == b) continue;
-                        g_sparse_surface_label_stats.changed_edges++;
+                        call_stats.changed_edges++;
                         if (local_count == local_capacity) {
                             free(local); free(candidates);
                             return -1;
@@ -7860,7 +7864,7 @@ int alea_find_surface_labels_sparse_on_grid(
     }
     free(local);
     if (alea_interrupted()) { free(candidates); return -1; }
-    g_sparse_surface_label_stats.candidate_edges = candidate_count;
+    call_stats.candidate_edges = candidate_count;
     sparse_grid_observation_t* observations = NULL;
     size_t observation_count = 0, observation_capacity = 0;
     int observation_failed = 0;
@@ -8015,12 +8019,12 @@ int alea_find_surface_labels_sparse_on_grid(
             };
             alea_ray_boundary_event_batch_result_t batch;
             alea_ray_boundary_event_batch_result_init(&batch);
-            g_sparse_surface_label_stats.batch_attempts++;
+            call_stats.batch_attempts++;
             if (alea_raycast_boundary_events_batch_nocache(
                     sys, origins, directions, ray_count, &query, &batch) == 0) {
-                g_sparse_surface_label_stats.breakpoint_hits += batch.breakpoint_hits;
-                g_sparse_surface_label_stats.selected_segments += batch.selected_segments;
-                g_sparse_surface_label_stats.batch_traces_used += ray_count;
+                call_stats.breakpoint_hits += batch.breakpoint_hits;
+                call_stats.selected_segments += batch.selected_segments;
+                call_stats.batch_traces_used += ray_count;
                 for (size_t r = 0; r < receipt_count; r++) {
                     boundary_trace_t forward = {0}, reverse = {0};
                     const size_t candidate = receipt_candidates[r];
@@ -8056,10 +8060,10 @@ int alea_find_surface_labels_sparse_on_grid(
         free(local_starts); free(local_ends);
         free(receipt_candidates); free(receipt_groups);
     }
-    g_sparse_surface_label_stats.local_provenance_traces_used = 0;
+    call_stats.local_provenance_traces_used = 0;
     for (size_t i = 0; i < candidate_count; i++)
         if (selected_ready[i])
-            g_sparse_surface_label_stats.local_provenance_traces_used++;
+            call_stats.local_provenance_traces_used++;
     for (size_t i = 0; i < candidate_count; i++)
         if (!selected_ready[i]) fallback_indices[fallback_count++] = i;
 
@@ -8075,7 +8079,7 @@ int alea_find_surface_labels_sparse_on_grid(
     int batch_ready = 0;
     if (fallback_count && fallback_count <= SIZE_MAX / 6 &&
         fallback_count <= SIZE_MAX / (2 * sizeof(*batch_forward))) {
-        g_sparse_surface_label_stats.batch_attempts++;
+        call_stats.batch_attempts++;
         const size_t ray_count = fallback_count * 2;
         double* origins = calloc(ray_count * 3, sizeof(*origins));
         double* directions = calloc(ray_count * 3, sizeof(*directions));
@@ -8126,9 +8130,9 @@ int alea_find_surface_labels_sparse_on_grid(
             if (alea_raycast_boundary_events_batch_nocache(
                     sys, origins, directions, ray_count, &query, &batch) == 0) {
                 batch_ready = 1;
-                g_sparse_surface_label_stats.breakpoint_hits +=
+                call_stats.breakpoint_hits +=
                     batch.breakpoint_hits;
-                g_sparse_surface_label_stats.selected_segments +=
+                call_stats.selected_segments +=
                     batch.selected_segments;
                 for (size_t j = 0; j < fallback_count && batch_ready; j++) {
                     const size_t i = fallback_indices[j];
@@ -8157,7 +8161,7 @@ int alea_find_surface_labels_sparse_on_grid(
             batch_forward = NULL; batch_reverse = NULL;
             free(batch_rows); batch_rows = NULL;
         } else {
-            g_sparse_surface_label_stats.batch_traces_used += ray_count;
+            call_stats.batch_traces_used += ray_count;
         }
     }
     sparse_final_parallel_context_t final_context = {
@@ -8171,11 +8175,9 @@ int alea_find_surface_labels_sparse_on_grid(
             sparse_final_candidate_range, &final_context, NULL) !=
         ALEA_PARALLEL_OK)
         observation_failed = 1;
-    alea_mutex_lock(&g_slice_stats_mutex);
     for (size_t worker = 0; worker < label_worker_count; worker++)
         sparse_surface_stats_merge(
-            &g_sparse_surface_label_stats, &label_worker_stats[worker]);
-    alea_mutex_unlock(&g_slice_stats_mutex);
+            &call_stats, &label_worker_stats[worker]);
     free(label_worker_stats);
     if (alea_interrupted()) observation_failed = 1;
     free(batch_forward);
@@ -8192,10 +8194,11 @@ int alea_find_surface_labels_sparse_on_grid(
         return -1;
     }
     if (observation_count == 0) {
+        sparse_surface_label_stats_publish(&call_stats);
         free(observations);
         return 0;
     }
-    g_sparse_surface_label_stats.observations = observation_count;
+    call_stats.observations = observation_count;
 
     qsort(observations, observation_count, sizeof(*observations),
           compare_sparse_grid_observation);
@@ -8248,7 +8251,8 @@ int alea_find_surface_labels_sparse_on_grid(
     free(ranked);
     *out_labels = labels;
     *out_count = (int)ranked_count;
-    g_sparse_surface_label_stats.labels = ranked_count;
+    call_stats.labels = ranked_count;
+    sparse_surface_label_stats_publish(&call_stats);
     return 0;
 }
 

@@ -6,8 +6,8 @@ LIBALEA_ROOT := ../..
 OUT_DIR := dist
 SINGLE_BUILD_DIR := build/wasm-single-simd
 SINGLE_BIN_DIR := bin/wasm-single-simd
-OPENMP_BUILD_DIR := build/wasm-openmp-simd
-OPENMP_BIN_DIR := bin/wasm-openmp-simd
+THREADED_BUILD_DIR := build/wasm-threaded-simd
+THREADED_BIN_DIR := bin/wasm-threaded-simd
 
 EMCC ?= emcc
 EMAR ?= emar
@@ -36,8 +36,6 @@ EXPORTED_FUNCTIONS := [\
 "_alea_wasm_set_target",\
 "_alea_wasm_parallel_enabled",\
 "_alea_wasm_parallel_max_threads",\
-"_alea_wasm_openmp_enabled",\
-"_alea_wasm_openmp_max_threads",\
 "_alea_wasm_last_error",\
 "_alea_wasm_destroy",\
 "_malloc",\
@@ -52,15 +50,15 @@ COMMON_LINK_FLAGS := -O3 -std=c11 --no-entry \
 	-sEXPORTED_RUNTIME_METHODS=HEAPU8 \
 	-sEXPORTED_FUNCTIONS='$(EXPORTED_FUNCTIONS)'
 
-.PHONY: all single openmp check-openmp-toolchain demo test test-openmp test-large-openmp test-node test-openmp-node test-native single-lib openmp-lib clean help
+.PHONY: all single threaded check-threaded-toolchain demo test test-threaded test-large-threaded test-node test-threaded-node test-native single-lib threaded-lib clean help
 
 all: single
 
 single: $(OUT_DIR)/alea.js
 
-openmp: check-openmp-toolchain $(OUT_DIR)/alea-openmp.js
+threaded: check-threaded-toolchain $(OUT_DIR)/alea-threaded.js
 
-check-openmp-toolchain:
+check-threaded-toolchain:
 	@version=`$(EMCC) --version | sed -n '1s/.* \([0-9][0-9.]*\) (.*/\1/p'`; \
 	if [ -z "$$version" ] || ! printf '%s\n%s\n' 6.0.3 "$$version" | sort -V -C; then \
 		echo "Threaded WASM requires Emscripten 6.0.3 or newer (found $$version)" >&2; \
@@ -73,16 +71,16 @@ demo: single
 
 test: test-native test-node
 
-test-openmp: test-native test-openmp-node
+test-threaded: test-native test-threaded-node
 
-test-large-openmp: openmp
-	node tests/test_wasm.mjs alea-openmp.js openmp $(LARGE_INPUT_MB)
+test-large-threaded: threaded
+	node tests/test_wasm.mjs alea-threaded.js threaded $(LARGE_INPUT_MB)
 
 test-node: single
 	node tests/test_wasm.mjs
 
-test-openmp-node: openmp
-	node tests/test_wasm.mjs alea-openmp.js openmp
+test-threaded-node: threaded
+	node tests/test_wasm.mjs alea-threaded.js threaded
 
 single-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
@@ -90,11 +88,11 @@ single-lib:
 		BUILD_DIR=$(SINGLE_BUILD_DIR) BIN_DIR=$(SINGLE_BIN_DIR) \
 		RELEASE=1 PORTABLE=1 USE_TINYPAR=0 lib-core $(SINGLE_BIN_DIR)/libalea_mcnp.a
 
-openmp-lib:
+threaded-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
 		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
-		BUILD_DIR=$(OPENMP_BUILD_DIR) BIN_DIR=$(OPENMP_BIN_DIR) \
-		RELEASE=1 PORTABLE=1 USE_TINYPAR=1 lib-core $(OPENMP_BIN_DIR)/libalea_mcnp.a
+		BUILD_DIR=$(THREADED_BUILD_DIR) BIN_DIR=$(THREADED_BIN_DIR) \
+		RELEASE=1 PORTABLE=1 USE_TINYPAR=1 lib-core $(THREADED_BIN_DIR)/libalea_mcnp.a
 
 $(OUT_DIR):
 	mkdir -p $@
@@ -105,13 +103,14 @@ $(OUT_DIR)/alea.js: Makefile alea_wasm.c alea_wasm.h single-lib | $(OUT_DIR)
 		alea_wasm.c $(LIBALEA_ROOT)/$(SINGLE_BIN_DIR)/libalea_mcnp.a \
 		$(LIBALEA_ROOT)/$(SINGLE_BIN_DIR)/libalea.a -lm -o $@
 
-$(OUT_DIR)/alea-openmp.js: Makefile alea_wasm.c alea_wasm.h openmp-lib | $(OUT_DIR)
+$(OUT_DIR)/alea-threaded.js: Makefile alea_wasm.c alea_wasm.h threaded-lib | $(OUT_DIR)
 	$(EMCC) $(WASM_SIMD_FLAGS) $(COMMON_LINK_FLAGS) -pthread \
+		-DALEA_WASM_THREAD_COUNT=$(PTHREAD_POOL_SIZE) \
 		-sPTHREAD_POOL_SIZE=$(PTHREAD_POOL_SIZE) \
 		-sINITIAL_MEMORY=$(WASM_INITIAL_MEMORY) \
 		-I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \
-		alea_wasm.c $(LIBALEA_ROOT)/$(OPENMP_BIN_DIR)/libalea_mcnp.a \
-		$(LIBALEA_ROOT)/$(OPENMP_BIN_DIR)/libalea.a -lm -o $@
+		alea_wasm.c $(LIBALEA_ROOT)/$(THREADED_BIN_DIR)/libalea_mcnp.a \
+		$(LIBALEA_ROOT)/$(THREADED_BIN_DIR)/libalea.a -lm -o $@
 
 test-native:
 	$(MAKE) -C $(LIBALEA_ROOT) USE_TINYPAR=0 lib-core bin/libalea_mcnp.a
@@ -125,17 +124,17 @@ test-native:
 clean:
 	rm -rf $(OUT_DIR) tests/test_wasm_binding \
 		$(LIBALEA_ROOT)/$(SINGLE_BUILD_DIR) $(LIBALEA_ROOT)/$(SINGLE_BIN_DIR) \
-		$(LIBALEA_ROOT)/$(OPENMP_BUILD_DIR) $(LIBALEA_ROOT)/$(OPENMP_BIN_DIR)
+		$(LIBALEA_ROOT)/$(THREADED_BUILD_DIR) $(LIBALEA_ROOT)/$(THREADED_BIN_DIR)
 
 help:
 	@echo "Targets:"
 	@echo "  single       Build the portable single-threaded WASM module"
-	@echo "  openmp       Build the tinypar/Web Worker WASM module (legacy name)"
+	@echo "  threaded     Build the TinyPar/Web Worker WASM module"
 	@echo "  demo         Build single-threaded WASM and print serving instructions"
 	@echo "  test         Run native-facade and real WASM smoke tests"
-	@echo "  test-openmp  Run native-facade and threaded WASM smoke tests"
-	@echo "  test-large-openmp  Parse a large synthetic MCNP input (default: 64 MiB)"
+	@echo "  test-threaded  Run native-facade and threaded WASM smoke tests"
+	@echo "  test-large-threaded  Parse a large synthetic MCNP input (default: 64 MiB)"
 	@echo "  test-node    Exercise the generated WASM module under Node.js"
-	@echo "  test-openmp-node  Exercise the generated threaded module under Node.js"
+	@echo "  test-threaded-node  Exercise the generated threaded module under Node.js"
 	@echo "  test-native  Exercise the binding facade with the native library"
 	@echo "  clean        Remove binding-specific generated files"

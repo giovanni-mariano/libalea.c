@@ -10,6 +10,9 @@
 
 #if !defined(_WIN32)
 #include <pthread.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 typedef struct count_context {
@@ -138,6 +141,39 @@ TEST(runtime_serializes_concurrent_submitters) {
         ASSERT_EQ(contexts[i].status, ALEA_PARALLEL_OK);
         ASSERT_EQ(count_total(&contexts[i].count), 10000);
     }
+}
+
+TEST(runtime_recreates_executor_in_post_fork_child) {
+    if (!alea_parallel_enabled()) SKIP("native worker backend disabled");
+
+    count_context_t parent_context = {{0}};
+    ASSERT_EQ(alea_parallel_for(
+        64, 1, 4, ALEA_PARALLEL_DYNAMIC, count_range, &parent_context, NULL),
+        ALEA_PARALLEL_OK);
+    ASSERT_EQ(count_total(&parent_context), 64);
+
+    pid_t child = fork();
+    ASSERT(child >= 0);
+    if (child == 0) {
+        alarm(5);
+        count_context_t child_context = {{0}};
+        alea_parallel_status_t status = alea_parallel_for(
+            64, 1, 4, ALEA_PARALLEL_DYNAMIC,
+            count_range, &child_context, NULL);
+        _exit(status == ALEA_PARALLEL_OK &&
+              count_total(&child_context) == 64 ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+
+    memset(&parent_context, 0, sizeof(parent_context));
+    ASSERT_EQ(alea_parallel_for(
+        64, 1, 4, ALEA_PARALLEL_DYNAMIC, count_range, &parent_context, NULL),
+        ALEA_PARALLEL_OK);
+    ASSERT_EQ(count_total(&parent_context), 64);
 }
 #endif
 

@@ -8,13 +8,22 @@
 #include "util/alea_atomic.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <pthread.h>
+#endif
 
 static atomic_flag g_executor_lock = ATOMIC_FLAG_INIT;
 static tinypar_executor_t* g_executor;
 static int g_executor_cleanup_registered;
 static int g_environment_checked;
+
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+static int g_fork_handler_registered;
+#endif
 
 static void executor_lock(void) {
     while (atomic_flag_test_and_set(&g_executor_lock)) {
@@ -25,6 +34,27 @@ static void executor_lock(void) {
 static void executor_unlock(void) {
     atomic_flag_clear(&g_executor_lock);
 }
+
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+static void executor_after_fork_child(void) {
+    /* Only the thread which called fork survives. The copied executor points at
+     * worker threads and synchronization state which no longer exist, and the
+     * initialization spinlock may have been owned by a vanished thread. */
+    tinypar_executor_abandon_after_fork(&g_executor);
+    atomic_flag_clear(&g_executor_lock);
+}
+
+static int register_fork_handler_locked(void) {
+    if (g_fork_handler_registered) return 1;
+    if (pthread_atfork(NULL, NULL, executor_after_fork_child) != 0) return 0;
+    g_fork_handler_registered = 1;
+    return 1;
+}
+#else
+static int register_fork_handler_locked(void) {
+    return 1;
+}
+#endif
 
 static void apply_environment_default_locked(void) {
     if (g_environment_checked) return;
@@ -38,7 +68,8 @@ static void apply_environment_default_locked(void) {
     errno = 0;
     char* end = NULL;
     unsigned long long parsed = strtoull(value, &end, 10);
-    if (errno != 0 || end == value || *end != '\0' || parsed > SIZE_MAX)
+    if (errno != 0 || end == value || *end != '\0' ||
+        parsed > SIZE_MAX || parsed > INT_MAX)
         return;
     (void)tinypar_set_default_workers((size_t)parsed);
 }
@@ -70,6 +101,10 @@ static alea_parallel_status_t get_process_executor(
         tinypar_executor_t** executor) {
     executor_lock();
     if (!g_executor) {
+        if (!register_fork_handler_locked()) {
+            executor_unlock();
+            return ALEA_PARALLEL_SYNCHRONIZATION_FAILED;
+        }
         apply_environment_default_locked();
         tinypar_executor_config_t config;
         tinypar_executor_config_init(&config);

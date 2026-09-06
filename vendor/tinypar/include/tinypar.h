@@ -118,6 +118,17 @@ tinypar_status_t tinypar_executor_create(
  */
 tinypar_status_t tinypar_executor_destroy(tinypar_executor_t** executor);
 
+/**
+ * Forget an inherited executor in a POSIX child after fork(). This performs no
+ * synchronization and releases no memory: native worker threads do not survive
+ * fork, so destroying or using their copied synchronization state is unsafe.
+ * The abandoned storage is reclaimed when the child exits. Applications may
+ * create a fresh executor after this call. Calling this anywhere except the
+ * post-fork child is invalid and leaks the live executor. This function is
+ * never needed on Windows.
+ */
+void tinypar_executor_abandon_after_fork(tinypar_executor_t** executor);
+
 /** Return the stable number of participants owned by an executor. */
 size_t tinypar_executor_workers(const tinypar_executor_t* executor);
 

@@ -39,6 +39,16 @@ static inline void tinypar_atomic_size_store(tinypar_atomic_size_t* value,
     }
 }
 
+static inline size_t tinypar_atomic_size_fetch_add(
+        tinypar_atomic_size_t* value, size_t increment) {
+    if (sizeof(size_t) == 8) {
+        return (size_t)_InterlockedExchangeAdd64(
+            (volatile __int64*)value, (__int64)increment);
+    }
+    return (size_t)_InterlockedExchangeAdd(
+        (volatile long*)value, (long)increment);
+}
+
 static inline int tinypar_atomic_size_compare_exchange(
         tinypar_atomic_size_t* value, size_t* expected, size_t desired) {
     size_t observed;
@@ -98,6 +108,11 @@ static inline size_t tinypar_atomic_size_load(
 static inline void tinypar_atomic_size_store(tinypar_atomic_size_t* value,
                                              size_t desired) {
     atomic_store_explicit(value, desired, memory_order_relaxed);
+}
+
+static inline size_t tinypar_atomic_size_fetch_add(
+        tinypar_atomic_size_t* value, size_t increment) {
+    return atomic_fetch_add_explicit(value, increment, memory_order_relaxed);
 }
 
 static inline int tinypar_atomic_size_compare_exchange(

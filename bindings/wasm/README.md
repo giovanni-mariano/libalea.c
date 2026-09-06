@@ -37,15 +37,14 @@ python3 serve.py
 
 Open <http://localhost:8000/web/>.
 
-For browser threads, also build the tinypar variant. The `openmp` target and
-generated filename are retained for compatibility:
+For browser threads, also build the TinyPar variant:
 
 ```sh
-make openmp PTHREAD_POOL_SIZE=8
+make threaded PTHREAD_POOL_SIZE=8
 python3 serve.py
 ```
 
-The viewer uses `alea-openmp.js` when the page is cross-origin isolated and
+The viewer uses `alea-threaded.js` when the page is cross-origin isolated and
 falls back to `alea.js`. `serve.py` sends the COOP/COEP headers required for
 `SharedArrayBuffer`; production hosting must do the same for all assets.
 
@@ -59,8 +58,8 @@ the render worker as raw bytes to avoid an additional UTF-16 text copy.
 
 ```sh
 make test
-make test-openmp
-make test-large-openmp LARGE_INPUT_MB=64
+make test-threaded
+make test-large-threaded LARGE_INPUT_MB=64
 ```
 
 The tests parse MCNP text, prepare geometry acceleration, render a cutaway 3D

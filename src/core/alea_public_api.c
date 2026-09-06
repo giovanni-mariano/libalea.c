@@ -49,14 +49,6 @@ const char* alea_version(void) {
     return ALEA_VERSION_STRING;
 }
 
-int alea_openmp_enabled(void) {
-    return alea_parallel_enabled();
-}
-
-int alea_openmp_max_threads(void) {
-    return (int)alea_parallel_max_workers();
-}
-
 int alea_parallel_max_threads(void) {
     return (int)alea_parallel_max_workers();
 }
@@ -88,15 +80,16 @@ void alea_error_clear(void) {
  * ============================================================================ */
 
 void alea_interrupt(void) {
-    g_alea_interrupted = 1;
+    atomic_store_explicit(&g_alea_interrupted, 1, memory_order_relaxed);
 }
 
 void alea_clear_interrupt(void) {
-    g_alea_interrupted = 0;
+    atomic_store_explicit(&g_alea_interrupted, 0, memory_order_relaxed);
 }
 
 bool alea_interrupted(void) {
-    return g_alea_interrupted != 0;
+    return atomic_load_explicit(
+        &g_alea_interrupted, memory_order_relaxed) != 0;
 }
 
 /* ============================================================================

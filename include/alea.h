@@ -66,9 +66,6 @@ int alea_parallel_max_threads(void);
  * the hardware-derived default. An explicit call overrides ALEA_NUM_THREADS.
  * Returns zero on success. */
 int alea_parallel_set_threads(int threads);
-/* Legacy compatibility aliases; these now report the active parallel backend. */
-int alea_openmp_enabled(void);
-int alea_openmp_max_threads(void);
 
 /* ============================================================================
  * ERROR HANDLING

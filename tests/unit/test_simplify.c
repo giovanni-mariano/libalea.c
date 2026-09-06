@@ -935,6 +935,36 @@ TEST(proof_simplify_worker_count_preserves_deterministic_receipt) {
     alea_destroy(sys);
 }
 
+TEST(proof_simplify_single_item_batch_preserves_inner_parallelism) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t small_pos, small_neg, big_pos, big_neg;
+    create_sphere(sys, 145, 0, 0, 0, 2.0, &small_pos, &small_neg);
+    create_sphere(sys, 146, 0, 0, 0, 5.0, &big_pos, &big_neg);
+    alea_node_id_t root = alea_create_intersection(sys, small_neg, big_neg);
+    ASSERT(alea_add_cell(sys, 6, root, ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+
+    alea_cell_simplify_request_t request = {
+        .cell_index = 0, .has_bounds = false
+    };
+    alea_cell_simplify_proof_result_t result;
+    alea_cells_simplify_proof_summary_t summary;
+    alea_cells_simplify_proof_options_t options;
+    alea_cells_simplify_proof_options_init(&options);
+    options.max_depth = 5;
+    options.requested_workers = 2;
+
+    ASSERT_EQ(alea_cells_simplify_proven(
+        sys, &request, 1, &options, &result, &summary), 0);
+    const size_t expected_workers =
+        alea_parallel_max_threads() >= 2 ? 2u : 1u;
+    ASSERT_EQ(result.actual_workers, expected_workers);
+    ASSERT_EQ(summary.actual_workers, expected_workers);
+    ASSERT_EQ(result.parallel_batch_count, expected_workers > 1 ? 1 : 0);
+    ASSERT_EQ(summary.parallel_batch_count, result.parallel_batch_count);
+    alea_destroy(sys);
+}
+
 TEST(proof_simplify_batch_is_ordered_read_only_and_transactional) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

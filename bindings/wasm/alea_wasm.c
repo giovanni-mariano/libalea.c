@@ -37,6 +37,13 @@ typedef struct {
 static alea_wasm_state_t state;
 static char last_error[256];
 
+#if defined(__EMSCRIPTEN_PTHREADS__)
+#ifndef ALEA_WASM_THREAD_COUNT
+#define ALEA_WASM_THREAD_COUNT 1
+#endif
+static int parallel_runtime_configured;
+#endif
+
 static void set_error(const char* message) {
     snprintf(last_error, sizeof(last_error), "%s",
              message && message[0] ? message : "unknown libalea error");
@@ -79,6 +86,16 @@ ALEA_WASM_EXPORT void alea_wasm_destroy(void) {
 ALEA_WASM_EXPORT int alea_wasm_init(int width, int height) {
     alea_wasm_destroy();
     last_error[0] = '\0';
+#if defined(__EMSCRIPTEN_PTHREADS__)
+    if (!parallel_runtime_configured) {
+        if (alea_parallel_set_threads(ALEA_WASM_THREAD_COUNT) != 0 &&
+            alea_parallel_max_threads() != ALEA_WASM_THREAD_COUNT) {
+            set_error("failed to cap TinyPar to the WebAssembly pthread pool");
+            return -1;
+        }
+        parallel_runtime_configured = 1;
+    }
+#endif
     if (width < 16 || height < 16 || width > 2048 || height > 2048) {
         set_error("frame dimensions must be between 16 and 2048 pixels");
         return -1;
@@ -257,10 +274,6 @@ ALEA_WASM_EXPORT int alea_wasm_parallel_enabled(void) {
 }
 ALEA_WASM_EXPORT int alea_wasm_parallel_max_threads(void) {
     return alea_parallel_max_threads();
-}
-ALEA_WASM_EXPORT int alea_wasm_openmp_enabled(void) { return alea_openmp_enabled(); }
-ALEA_WASM_EXPORT int alea_wasm_openmp_max_threads(void) {
-    return alea_openmp_max_threads();
 }
 ALEA_WASM_EXPORT const char* alea_wasm_last_error(void) {
     return last_error[0] ? last_error : alea_error();

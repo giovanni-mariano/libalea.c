@@ -120,6 +120,15 @@ static void tinypar_fail_job(tinypar_job_t* job) {
 }
 
 static int tinypar_claim_chunk(tinypar_job_t* job, size_t* chunk) {
+    if (job->chunk_count < SIZE_MAX) {
+        size_t next = tinypar_atomic_size_fetch_add(&job->next_chunk, 1);
+        if (next >= job->chunk_count) return 0;
+        *chunk = next;
+        return 1;
+    }
+
+    /* Preserve the full size_t input domain without allowing the claim counter
+     * to wrap after the final representable chunk. */
     size_t next = tinypar_atomic_size_load(&job->next_chunk);
     while (next < job->chunk_count) {
         if (tinypar_atomic_size_compare_exchange(
@@ -234,6 +243,7 @@ static void tinypar_start_gate_publish(tinypar_start_gate_t* gate,
 #if defined(_WIN32)
 static unsigned __stdcall tinypar_worker_entry(void* opaque) {
     tinypar_worker_arg_t* argument = opaque;
+    tinypar_platform_worker_enter(argument->worker_index);
     if (tinypar_start_gate_wait(argument->start_gate))
         tinypar_run_worker(argument);
     return 0;
@@ -241,6 +251,7 @@ static unsigned __stdcall tinypar_worker_entry(void* opaque) {
 #else
 static void* tinypar_worker_entry(void* opaque) {
     tinypar_worker_arg_t* argument = opaque;
+    tinypar_platform_worker_enter(argument->worker_index);
     if (tinypar_start_gate_wait(argument->start_gate))
         tinypar_run_worker(argument);
     return NULL;
@@ -402,6 +413,7 @@ static void* tinypar_executor_worker_entry(void* opaque)
 {
     tinypar_executor_worker_arg_t* argument = opaque;
     tinypar_executor_t* executor = argument->executor;
+    tinypar_platform_worker_enter(argument->worker_index);
     size_t observed_generation = 0;
 
     tinypar_require_sync(tinypar_mutex_lock(&executor->state_mutex));
@@ -551,6 +563,10 @@ tinypar_status_t tinypar_executor_create(
 
 size_t tinypar_executor_workers(const tinypar_executor_t* executor) {
     return executor ? executor->worker_count : 0;
+}
+
+void tinypar_executor_abandon_after_fork(tinypar_executor_t** executor) {
+    if (executor) *executor = NULL;
 }
 
 tinypar_status_t tinypar_executor_parallel_for(

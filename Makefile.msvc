@@ -82,13 +82,6 @@ LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 # /utf-8        - source/exec charset (files contain UTF-8 box-drawing in comments)
 # _CRT_SECURE_NO_WARNINGS / _CRT_NONSTDC_NO_WARNINGS - silence strdup/strcpy noise
 
-# USE_OPENMP remains a source-compatible build alias during migration.
-!IFDEF USE_OPENMP
-!IFNDEF USE_TINYPAR
-USE_TINYPAR = $(USE_OPENMP)
-!ENDIF
-!ENDIF
-
 !IFNDEF USE_TINYPAR
 USE_TINYPAR = 1
 !ENDIF

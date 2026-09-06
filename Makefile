@@ -45,11 +45,6 @@ DOCDIR ?= $(PREFIX)/share/doc/libalea
 # Automatic dependency generation
 DEPFLAGS = -MMD -MP
 
-# USE_OPENMP is retained as a compatibility alias for existing build scripts.
-ifneq ($(origin USE_OPENMP),undefined)
-  USE_TINYPAR := $(USE_OPENMP)
-endif
-
 # Native TinyPar threads are the default. Set USE_TINYPAR=0 for an explicitly
 # serial build (including single-threaded WebAssembly).
 USE_TINYPAR ?= 1
@@ -375,7 +370,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools mesh-benchmark wasm wasm-openmp wasm-demo test-wasm test-wasm-openmp install install-libs install-cli install-tools install-doc uninstall check-public-headers
+.PHONY: all clean full lib-core modules tests structure help test cli test-lua tools mesh-benchmark wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded install install-libs install-cli install-tools install-doc uninstall check-public-headers
 
 # Default target: core library only
 all: lib-core
@@ -402,8 +397,8 @@ tools: lib-core modules
 wasm:
 	$(MAKE) -C $(WASM_BIND_DIR) single
 
-wasm-openmp:
-	$(MAKE) -C $(WASM_BIND_DIR) openmp
+wasm-threaded:
+	$(MAKE) -C $(WASM_BIND_DIR) threaded
 
 wasm-demo:
 	$(MAKE) -C $(WASM_BIND_DIR) demo
@@ -411,8 +406,8 @@ wasm-demo:
 test-wasm:
 	$(MAKE) -C $(WASM_BIND_DIR) test
 
-test-wasm-openmp:
-	$(MAKE) -C $(WASM_BIND_DIR) test-openmp
+test-wasm-threaded:
+	$(MAKE) -C $(WASM_BIND_DIR) test-threaded
 
 # Build all tests (requires core + modules)
 tests: check-public-headers lib-core modules $(ALL_TEST_BINS)
@@ -930,10 +925,10 @@ help:
 	@echo "  cli              - Build alea CLI"
 	@echo "  tools            - Build mc_convert, mc_plotter, nuc_plot, large_model_probe"
 	@echo "  wasm             - Build single-threaded Emscripten binding"
-	@echo "  wasm-openmp      - Build threaded tinypar Emscripten binding (legacy target name)"
+	@echo "  wasm-threaded    - Build threaded TinyPar Emscripten binding"
 	@echo "  wasm-demo        - Build the browser reference animation"
 	@echo "  test-wasm        - Run native-facade and generated WASM smoke tests"
-	@echo "  test-wasm-openmp - Run native-facade and threaded WASM smoke tests"
+	@echo "  test-wasm-threaded - Run native-facade and threaded WASM smoke tests"
 	@echo "  install          - Install libraries, headers, CLI, tools, and docs"
 	@echo "  install-libs     - Install static libraries and public headers"
 	@echo "  install-cli      - Install alea CLI"
@@ -958,7 +953,6 @@ help:
 	@echo "  LIBDIR=$(LIBDIR)"
 	@echo "  INCLUDEDIR=$(INCLUDEDIR)"
 	@echo "  USE_TINYPAR=1    - Enable native tinypar worker threads"
-	@echo "  USE_OPENMP=1     - Deprecated alias for USE_TINYPAR=1"
 	@echo "  RELEASE=1        - Optimized build"
 	@echo "  PORTABLE=1       - Avoid -march=native in release builds"
 	@echo "  WINDOWS_GNU=1    - MinGW-w64/UCRT Windows build (.exe, no -fPIC)"
@@ -991,4 +985,4 @@ help:
 # Include generated dependency files (ignore if they don't exist yet)
 -include $(ALL_DEPS)
 
-.PHONY: all full lib-core modules cli tools wasm wasm-openmp wasm-demo test-wasm test-wasm-openmp tests test test-unit test-integration test-lua test-valgrind install install-libs install-cli install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz
+.PHONY: all full lib-core modules cli tools wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded tests test test-unit test-integration test-lua test-valgrind install install-libs install-cli install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz

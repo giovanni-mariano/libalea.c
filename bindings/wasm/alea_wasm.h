@@ -28,8 +28,6 @@ double alea_wasm_radius(void);
 int alea_wasm_set_target(double x, double y, double z);
 int alea_wasm_parallel_enabled(void);
 int alea_wasm_parallel_max_threads(void);
-int alea_wasm_openmp_enabled(void);
-int alea_wasm_openmp_max_threads(void);
 const char* alea_wasm_last_error(void);
 void alea_wasm_destroy(void);
 
