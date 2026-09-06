@@ -114,6 +114,10 @@ TEST(sparse_surface_labels_attribute_bounded_changed_edges) {
     ASSERT(labels[0].provenance_group >= 0);
     alea_sparse_surface_label_stats_t stats =
         alea_sparse_surface_label_stats_get();
+    ASSERT(stats.workers_used >= 1);
+    if (alea_parallel_enabled() && alea_parallel_max_threads() > 1 &&
+        stats.candidate_edges > 1)
+        ASSERT(stats.workers_used > 1);
     ASSERT_EQ(stats.local_provenance_traces_used, stats.candidate_edges);
     ASSERT_EQ(stats.batch_attempts, 0);
     free(labels);

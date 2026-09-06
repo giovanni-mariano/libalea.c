@@ -46,16 +46,20 @@ DOCDIR ?= $(PREFIX)/share/doc/libalea
 DEPFLAGS = -MMD -MP
 
 # USE_OPENMP is retained as a compatibility alias for existing build scripts.
-ifdef USE_OPENMP
-  USE_TINYPAR := 1
+ifneq ($(origin USE_OPENMP),undefined)
+  USE_TINYPAR := $(USE_OPENMP)
 endif
 
-# tinypar backend. USE_TINYPAR=1 enables native worker threads; otherwise the
-# same code paths use tinypar's dependency-free serial backend.
+# Native TinyPar threads are the default. Set USE_TINYPAR=0 for an explicitly
+# serial build (including single-threaded WebAssembly).
+USE_TINYPAR ?= 1
+
+# TinyPar backend. USE_TINYPAR=1 enables native worker threads; USE_TINYPAR=0
+# selects TinyPar's dependency-free serial backend.
 TINYPAR_DIR = vendor/tinypar
 TINYPAR_SRC_DIR = $(TINYPAR_DIR)/src
 TINYPAR_INCLUDE_DIR = $(TINYPAR_DIR)/include
-ifdef USE_TINYPAR
+ifeq ($(USE_TINYPAR),1)
   CFLAGS += -DALEA_USE_TINYPAR=1
   ifdef WINDOWS_GNU
     TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_win32.c
@@ -64,9 +68,11 @@ ifdef USE_TINYPAR
     CFLAGS += -pthread
     LDFLAGS += -pthread
   endif
-else
+else ifeq ($(USE_TINYPAR),0)
   TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_serial.c
   CFLAGS += -DTINYPAR_NO_THREADS
+else
+  $(error USE_TINYPAR must be 0 or 1)
 endif
 
 # Release build (set RELEASE=1)

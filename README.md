@@ -108,15 +108,16 @@ make install      # Install libraries, headers, CLI, tools, and docs
 
 ### Build Options by Platform
 
-The default build uses tinypar's serial backend. Add `USE_TINYPAR=1` to enable
-native worker threads (POSIX threads on Linux/macOS, Win32 threads on Windows).
-`USE_OPENMP=1` remains accepted as a deprecated compatibility alias. Add
-`RELEASE=1` for an optimized build.
+The default build uses tinypar native worker threads (POSIX threads on
+Linux/macOS, Win32 threads on Windows). Set `USE_TINYPAR=0` for an explicitly
+serial build. `USE_OPENMP` remains accepted as a deprecated compatibility alias
+for the equivalent TinyPar selection. Add `RELEASE=1` for an optimized build.
 
 Threaded builds reuse a process-wide TinyPar executor across parallel library
-operations. Call `alea_parallel_set_threads(n)` before the first parallel
-operation to select its worker count; passing zero restores the hardware
-default. Calls submitted concurrently share the bounded executor rather than
+operations. Set `ALEA_NUM_THREADS=n`, or call
+`alea_parallel_set_threads(n)` before the first parallel operation, to select
+its worker count. An explicit API call overrides the environment; zero restores
+the hardware default. Calls submitted concurrently share the bounded executor rather than
 creating independent native thread teams.
 Nested calls and operations that need only one worker take a direct serial
 path without creating or waking the process executor.

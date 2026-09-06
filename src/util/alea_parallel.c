@@ -7,11 +7,14 @@
 #include "tinypar.h"
 #include "util/alea_atomic.h"
 
+#include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 static atomic_flag g_executor_lock = ATOMIC_FLAG_INIT;
 static tinypar_executor_t* g_executor;
 static int g_executor_cleanup_registered;
+static int g_environment_checked;
 
 static void executor_lock(void) {
     while (atomic_flag_test_and_set(&g_executor_lock)) {
@@ -21,6 +24,23 @@ static void executor_lock(void) {
 
 static void executor_unlock(void) {
     atomic_flag_clear(&g_executor_lock);
+}
+
+static void apply_environment_default_locked(void) {
+    if (g_environment_checked) return;
+    g_environment_checked = 1;
+
+    const char* value = getenv("ALEA_NUM_THREADS");
+    if (!value || !*value) return;
+    for (const char* cursor = value; *cursor; cursor++)
+        if (*cursor < '0' || *cursor > '9') return;
+
+    errno = 0;
+    char* end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed > SIZE_MAX)
+        return;
+    (void)tinypar_set_default_workers((size_t)parsed);
 }
 
 static alea_parallel_status_t map_status(tinypar_status_t status) {
@@ -50,6 +70,7 @@ static alea_parallel_status_t get_process_executor(
         tinypar_executor_t** executor) {
     executor_lock();
     if (!g_executor) {
+        apply_environment_default_locked();
         tinypar_executor_config_t config;
         tinypar_executor_config_init(&config);
         tinypar_status_t status = tinypar_executor_create(&config, &g_executor);
@@ -72,6 +93,7 @@ int alea_parallel_enabled(void) {
 
 size_t alea_parallel_max_workers(void) {
     executor_lock();
+    apply_environment_default_locked();
     size_t workers = g_executor
         ? tinypar_executor_workers(g_executor) : tinypar_default_workers();
     executor_unlock();
@@ -88,6 +110,8 @@ alea_parallel_status_t alea_parallel_set_default_workers(size_t workers) {
         executor_unlock();
         return ALEA_PARALLEL_ALREADY_INITIALIZED;
     }
+    /* An explicit API call takes precedence over ALEA_NUM_THREADS. */
+    g_environment_checked = 1;
     tinypar_status_t status = tinypar_set_default_workers(workers);
     executor_unlock();
     return map_status(status);

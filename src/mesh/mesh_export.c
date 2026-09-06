@@ -46,7 +46,7 @@ void alea_mesh_config_init(alea_mesh_config_t *cfg) {
     cfg->max_refine_depth = 3;
     cfg->max_samples_per_voxel = 32768;
     cfg->sampling_seed = UINT64_C(0x6a09e667f3bcc909);
-    cfg->workers = 1;
+    cfg->workers = 0;
     cfg->ray_grid_u = 4;
     cfg->ray_grid_v = 4;
     cfg->ray_origin_mode = ALEA_MESH_RAY_ORIGINS_GRID;

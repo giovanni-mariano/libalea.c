@@ -174,6 +174,7 @@ TEST(mesh_config_defaults) {
     ASSERT_NULL(cfg.ray_points);
     ASSERT_EQ(cfg.ray_point_count, 0);
     ASSERT_EQ(cfg.ray_directions, ALEA_MESH_RAY_XYZ);
+    ASSERT_EQ(cfg.workers, 0);
     ASSERT_NEAR(cfg.mixed_threshold, 0.0, 1e-15);
     ASSERT(cfg.fields & ALEA_MESH_FIELD_SAMPLED_FRACTIONS);
     ASSERT_NULL(cfg.progress);

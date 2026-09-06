@@ -33,9 +33,10 @@ int alea_parallel_set_threads(int threads);
 `alea_parallel_enabled()` reports whether the library was built with tinypar's
 native threaded backend. `alea_parallel_max_threads()` reports the available
 worker count and always returns at least one.
-`alea_parallel_set_threads()` selects the process worker default and must be
-called before the first parallel operation; zero restores the hardware-derived
-default, and the function returns zero on success. Once the persistent executor
+`ALEA_NUM_THREADS` selects the initial process worker default.
+`alea_parallel_set_threads()` overrides that setting and must be called before
+the first parallel operation; zero restores the hardware-derived default, and
+the function returns zero on success. Once the persistent executor
 has been created, attempts to resize it return an error so queued operations
 cannot race with pool replacement. Nested calls and operations with one
 effective worker execute directly without initializing the pool. The older

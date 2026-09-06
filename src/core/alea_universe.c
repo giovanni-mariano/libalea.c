@@ -260,14 +260,13 @@ int alea_prebuild_universe_point_bvhs(alea_system_t* sys) {
 
 static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) {
     if (!sys || !univ) return -1;
-    if (univ->point_bvh_built) return 0;
-    if (univ->point_bvh_disabled) return -1;
 
     /* Serialize the lazy build across threads (parallel grid render in the
-     * plotter, or any concurrent call). The lock-free fast path above
-     * handles the already-built case. Using a plain mutex avoids a
-     * extra link-time dependency in serial builds. */
+     * plotter, or any concurrent call). The state flags are deliberately
+     * checked only while holding the mutex: an unsynchronised fast-path read
+     * races with the first builder publishing those flags. */
     static alea_mutex_t build_mutex = ALEA_MUTEX_INIT;
+    int result;
     alea_mutex_lock(&build_mutex);
     {
     if (univ->point_bvh_built || univ->point_bvh_disabled) goto done;
@@ -320,9 +319,10 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     univ->point_bvh_built = true;
     g_point_bvh_stats.bvh_builds++;
     done: ;
+    result = univ->point_bvh_built ? 0 : -1;
     } /* end critical section */
     alea_mutex_unlock(&build_mutex);
-    return univ->point_bvh_built ? 0 : -1;
+    return result;
 }
 
 static int process_cell_for_all_cells_query(const alea_system_t* sys,

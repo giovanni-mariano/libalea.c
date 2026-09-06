@@ -288,7 +288,8 @@ typedef struct {
  * Sets nx=ny=nz=10, format=GMSH, void_material_id=0, auto_pad=0.01,
  * sampling_mode=SUBCELL, subsamples_per_axis=2, mixed_threshold=0,
  * target_error=0.05, max_refine_depth=3, max_samples_per_voxel=32768,
- * workers=1, all current result fields enabled, bounds_mode=LEGACY, and bounds/custom
+ * workers=0 (runtime default), all current result fields enabled,
+ * bounds_mode=LEGACY, and bounds/custom
  * nodes/callbacks to zero/NULL.
  */
 void alea_mesh_config_init(alea_mesh_config_t *cfg);

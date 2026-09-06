@@ -369,6 +369,7 @@ int alea_find_surface_labels_on_boundary_map(
  * large-model path.  `max_labels` bounds the returned ranked surface labels.
  * Both limits must be positive. */
 typedef struct {
+    size_t workers_used; /**< Distinct runtime worker slots used by the last call. */
     size_t tiles_examined;
     size_t changed_edges;
     size_t candidate_edges;

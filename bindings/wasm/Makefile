@@ -88,7 +88,7 @@ single-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
 		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
 		BUILD_DIR=$(SINGLE_BUILD_DIR) BIN_DIR=$(SINGLE_BIN_DIR) \
-		RELEASE=1 PORTABLE=1 lib-core $(SINGLE_BIN_DIR)/libalea_mcnp.a
+		RELEASE=1 PORTABLE=1 USE_TINYPAR=0 lib-core $(SINGLE_BIN_DIR)/libalea_mcnp.a
 
 openmp-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
@@ -114,7 +114,7 @@ $(OUT_DIR)/alea-openmp.js: Makefile alea_wasm.c alea_wasm.h openmp-lib | $(OUT_D
 		$(LIBALEA_ROOT)/$(OPENMP_BIN_DIR)/libalea.a -lm -o $@
 
 test-native:
-	$(MAKE) -C $(LIBALEA_ROOT) lib-core bin/libalea_mcnp.a
+	$(MAKE) -C $(LIBALEA_ROOT) USE_TINYPAR=0 lib-core bin/libalea_mcnp.a
 	$(NATIVE_CC) -O2 -std=c11 -Wall -Wextra -Werror \
 		-I. -I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \
 		alea_wasm.c tests/test_wasm_binding.c \
