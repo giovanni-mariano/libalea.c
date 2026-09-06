@@ -260,14 +260,13 @@ int alea_prebuild_universe_point_bvhs(alea_system_t* sys) {
 
 static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) {
     if (!sys || !univ) return -1;
-    if (univ->point_bvh_built) return 0;
-    if (univ->point_bvh_disabled) return -1;
 
     /* Serialize the lazy build across threads (OpenMP grid render in the
-     * plotter, or any concurrent call). The lock-free fast path above
-     * handles the already-built case. Using a plain mutex avoids a
-     * link-time dependency on libgomp in non-OpenMP builds. */
+     * plotter, or any concurrent call). The state flags are deliberately
+     * checked only while holding the mutex: an unsynchronised fast-path read
+     * races with the first builder publishing those flags. */
     static alea_mutex_t build_mutex = ALEA_MUTEX_INIT;
+    int result;
     alea_mutex_lock(&build_mutex);
     {
     if (univ->point_bvh_built || univ->point_bvh_disabled) goto done;
@@ -320,9 +319,10 @@ static int ensure_universe_point_bvh(alea_system_t* sys, alea_universe_t* univ) 
     univ->point_bvh_built = true;
     g_point_bvh_stats.bvh_builds++;
     done: ;
+    result = univ->point_bvh_built ? 0 : -1;
     } /* end critical section */
     alea_mutex_unlock(&build_mutex);
-    return univ->point_bvh_built ? 0 : -1;
+    return result;
 }
 
 static int process_cell_for_all_cells_query(const alea_system_t* sys,
@@ -2684,7 +2684,7 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
                                      const alea_matrix_t* accumulated_transform,
                                      int depth) {
     if (ctx->error) return;
-    if (g_alea_interrupted) { ctx->error = -1; return; }
+    if (alea_interrupted_internal()) { ctx->error = -1; return; }
     if (ctx->config->max_depth > 0 && depth >= ctx->config->max_depth) return;
     
     const alea_universe_t* univ = alea_get_universe(ctx->src, universe_id);
@@ -2982,7 +2982,7 @@ alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
     alea_vec_free(&ctx.parent_cache);
     free(ctx.used_cell_ids);
     alea_destroy_remap_table(remap);
-    if (ctx.error || g_alea_interrupted) {
+    if (ctx.error || alea_interrupted_internal()) {
         alea_system_destroy(dst);
         alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Flatten operation interrupted");
         return NULL;

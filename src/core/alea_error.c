@@ -12,12 +12,16 @@
 
 #include "alea_types.h"
 #include "util/compat.h"
+#include "util/alea_atomic.h"
 #include <stdarg.h>
 #include <stdio.h>
-#include <signal.h>
 
-/* Global interrupt flag (signal-safe, cross-thread visible) */
-volatile sig_atomic_t g_alea_interrupted = 0;
+/* Global interrupt flag. Native C11 integer atomics are lock-free on supported
+ * targets, so signal handlers and OpenMP workers share defined storage. */
+#if defined(ATOMIC_INT_LOCK_FREE) && ATOMIC_INT_LOCK_FREE != 2
+#error "libalea requires lock-free atomic_int for signal-safe interruption"
+#endif
+atomic_int g_alea_interrupted = 0;
 
 /* Thread-local error state */
 static ALEA_THREAD_LOCAL alea_error_t g_last_error = ALEA_OK;

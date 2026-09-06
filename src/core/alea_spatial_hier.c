@@ -971,7 +971,7 @@ static int collect_placements_recursive(alea_system_t* sys,
                                         int support_bbox_trusted,
                                         int depth) {
     if (depth >= HIER_MAX_PLACEMENT_DEPTH) return 0;
-    if (g_alea_interrupted) return -1;
+    if (alea_interrupted_internal()) return -1;
 
     /* Periodic memory budget check during the long-growing phase. The
      * placement count grows monotonically, so use it as the polling clock. */

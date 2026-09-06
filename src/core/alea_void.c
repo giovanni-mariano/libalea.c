@@ -1863,7 +1863,7 @@ static int merge_void_cells_greedy(alea_system_t* sys,
 
         for (size_t i = 0; i < n; i++) {
             if (!alea_bitset_test(&alive, i)) continue;
-            if (g_alea_interrupted) { alea_bitset_destroy(&alive); free(surfaces); ALEA_CHECK_INTERRUPTED(-1); }
+            if (alea_interrupted_internal()) { alea_bitset_destroy(&alive); free(surfaces); ALEA_CHECK_INTERRUPTED(-1); }
 
             for (size_t j = i + 1; j < n; j++) {
                 if (!alea_bitset_test(&alive, j)) continue;
@@ -2055,7 +2055,7 @@ static int merge_void_cells_face_sorted(alea_system_t* sys,
         merged_any = false;
         pass++;
 
-        if (g_alea_interrupted) {
+        if (alea_interrupted_internal()) {
             free(faces); free(candidates);
             alea_bitset_destroy(&paired);
             alea_bitset_destroy(&alive);

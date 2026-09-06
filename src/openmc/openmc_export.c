@@ -1272,7 +1272,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
 
     /* ========== CELLS ========== */
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        if (g_alea_interrupted) return false;
+        if (alea_interrupted_internal()) return false;
         const alea_cell_entry_t* cell = &sys->cells.data[i];
 
         /* Skip cells in unreachable universes (orphaned in MCNP model) */
@@ -1545,7 +1545,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
     if (!prim_emitted.words) return false;
 
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
-        if (g_alea_interrupted) { alea_bitset_destroy(&prim_emitted); return false; }
+        if (alea_interrupted_internal()) { alea_bitset_destroy(&prim_emitted); return false; }
         const alea_surface_entry_t* surf = &sys->surfaces.data[i];
         int surf_id = surf->mc_surface_id;
 

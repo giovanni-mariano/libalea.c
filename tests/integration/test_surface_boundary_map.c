@@ -6,6 +6,10 @@
 #include "alea.h"
 #include "alea_slice.h"
 
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
 static alea_system_t* build_sphere_graveyard(void) {
     alea_system_t* sys = alea_create();
     if (!sys) return NULL;
@@ -114,11 +118,81 @@ TEST(sparse_surface_labels_attribute_bounded_changed_edges) {
     ASSERT(labels[0].provenance_group >= 0);
     alea_sparse_surface_label_stats_t stats =
         alea_sparse_surface_label_stats_get();
+    ASSERT(stats.workers_used >= 1);
     ASSERT_EQ(stats.local_provenance_traces_used, stats.candidate_edges);
     ASSERT_EQ(stats.batch_attempts, 0);
     free(labels);
     alea_destroy(sys);
 }
+
+#if !defined(_WIN32)
+typedef struct sparse_label_thread_context {
+    alea_system_t* sys;
+    alea_slice_view_t view;
+    const int* ids;
+    int result;
+} sparse_label_thread_context_t;
+
+static void* run_sparse_labels_repeatedly(void* opaque) {
+    sparse_label_thread_context_t* context = opaque;
+    context->result = 0;
+    for (int iteration = 0; iteration < 20; iteration++) {
+        alea_label_position_t* labels = NULL;
+        int label_count = 0;
+        if (alea_find_surface_labels_sparse_on_grid(
+                context->sys, &context->view, 96, 96, context->ids,
+                alea_slice_classify_cell, NULL, 2, 16, 8,
+                &labels, &label_count) != 0 ||
+            label_count != 1 || labels[0].id != 1) {
+            free(labels);
+            context->result = -1;
+            return NULL;
+        }
+        free(labels);
+    }
+    return NULL;
+}
+
+TEST(sparse_surface_label_stats_allow_concurrent_system_queries) {
+    alea_system_t* systems[2] = {
+        build_sphere_graveyard(), build_sphere_graveyard()
+    };
+    ASSERT_NOT_NULL(systems[0]);
+    ASSERT_NOT_NULL(systems[1]);
+    int* ids[2] = {
+        malloc(96u * 96u * sizeof(**ids)),
+        malloc(96u * 96u * sizeof(**ids))
+    };
+    ASSERT_NOT_NULL(ids[0]);
+    ASSERT_NOT_NULL(ids[1]);
+
+    sparse_label_thread_context_t contexts[2] = {0};
+    for (int i = 0; i < 2; i++) {
+        contexts[i].sys = systems[i];
+        alea_slice_view_axis(
+            &contexts[i].view, 2, 0.0, -2.0, 2.0, -2.0, 2.0);
+        contexts[i].ids = ids[i];
+        ASSERT_EQ(alea_find_cells_grid(
+            systems[i], &contexts[i].view, 96, 96, -1,
+            ids[i], NULL, NULL), 0);
+    }
+
+    pthread_t threads[2];
+    ASSERT_EQ(pthread_create(
+        &threads[0], NULL, run_sparse_labels_repeatedly, &contexts[0]), 0);
+    ASSERT_EQ(pthread_create(
+        &threads[1], NULL, run_sparse_labels_repeatedly, &contexts[1]), 0);
+    ASSERT_EQ(pthread_join(threads[0], NULL), 0);
+    ASSERT_EQ(pthread_join(threads[1], NULL), 0);
+    ASSERT_EQ(contexts[0].result, 0);
+    ASSERT_EQ(contexts[1].result, 0);
+
+    free(ids[0]);
+    free(ids[1]);
+    alea_destroy(systems[0]);
+    alea_destroy(systems[1]);
+}
+#endif
 
 TEST(surface_boundary_map_ignores_cell_only_event_for_material_grid) {
     alea_system_t* sys = alea_create();

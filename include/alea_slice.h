@@ -369,6 +369,7 @@ int alea_find_surface_labels_on_boundary_map(
  * large-model path.  `max_labels` bounds the returned ranked surface labels.
  * Both limits must be positive. */
 typedef struct {
+    size_t workers_used;
     size_t tiles_examined;
     size_t changed_edges;
     size_t candidate_edges;
@@ -394,7 +395,8 @@ int alea_find_surface_labels_sparse_on_grid(
     int margin, size_t max_queries, size_t max_labels,
     alea_label_position_t** out_labels, int* out_count);
 
-/** Return counters from the most recent sparse surface-label query. */
+/** Return counters from the most recently completed successful sparse
+ * surface-label query. Concurrent calls publish one complete snapshot each. */
 alea_sparse_surface_label_stats_t alea_sparse_surface_label_stats_get(void);
 
 /* ============================================================================

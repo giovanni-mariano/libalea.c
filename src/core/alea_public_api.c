@@ -89,15 +89,15 @@ void alea_error_clear(void) {
  * ============================================================================ */
 
 void alea_interrupt(void) {
-    g_alea_interrupted = 1;
+    atomic_store_explicit(&g_alea_interrupted, 1, memory_order_relaxed);
 }
 
 void alea_clear_interrupt(void) {
-    g_alea_interrupted = 0;
+    atomic_store_explicit(&g_alea_interrupted, 0, memory_order_relaxed);
 }
 
 bool alea_interrupted(void) {
-    return g_alea_interrupted != 0;
+    return alea_interrupted_internal();
 }
 
 /* ============================================================================

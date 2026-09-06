@@ -433,7 +433,7 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
     alea_bitset_t surf_seen = alea_bitset_create((size_t)max_surf_id + 1);
 
     for (size_t i = 0; i < mcnp->surface_count; i++) {
-        if (g_alea_interrupted) goto interrupted;
+        if (alea_interrupted_internal()) goto interrupted;
 
         int sid = mcnp->surfaces[i]->surface_id;
         if (surf_seen.words && alea_bitset_test(&surf_seen, sid)) {
@@ -465,7 +465,7 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
     ALEA_LOG_INFO("\nConverting materials...\n");
     t0 = alea_monotonic_seconds();
     for (size_t i = 0; i < mcnp->material_count; i++) {
-        if (g_alea_interrupted) goto interrupted;
+        if (alea_interrupted_internal()) goto interrupted;
         if (convert_material(sys, mcnp->materials[i]) < 0) {
             ALEA_LOG_WARN("Warning: Failed to convert material M%d\n",
                     mcnp->materials[i]->material_id);
@@ -479,7 +479,7 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
     alea_cell_conversion_profile_reset();
     t0 = alea_monotonic_seconds();
     for (size_t i = 0; i < mcnp->cell_count; i++) {
-        if (g_alea_interrupted) goto interrupted;
+        if (alea_interrupted_internal()) goto interrupted;
         if (alea_convert_cell(sys, mcnp->cells[i], model) == UINT32_MAX) {
             ALEA_LOG_ERROR("Failed to convert cell %d",
                            mcnp->cells[i]->cell_id);
