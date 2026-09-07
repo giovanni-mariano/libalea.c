@@ -20,6 +20,21 @@ typedef struct {
     int mismatch;
 } selected_coverage_parity_t;
 
+static int validator_results_equal(const alea_geom_validator_result_t* first,
+                                   const alea_geom_validator_result_t* second) {
+    return first->error_count == second->error_count &&
+        first->crossings_checked == second->crossings_checked &&
+        first->adjacency_hits == second->adjacency_hits &&
+        first->exact_queries == second->exact_queries &&
+        first->ambiguous_crossings == second->ambiguous_crossings &&
+        first->suppressed_samples == second->suppressed_samples &&
+        first->sample_limited_curves == second->sample_limited_curves &&
+        first->truncated == second->truncated &&
+        (first->error_count == 0 ||
+         memcmp(first->errors, second->errors,
+                first->error_count * sizeof(*first->errors)) == 0);
+}
+
 static int coverage_interval_has_single_owner_chain(
     const alea_ray_coverage_interval_t* interval) {
     size_t roots = 0;
@@ -661,6 +676,44 @@ TEST(geo_validator_parallel_rays_match_forced_serial_receipt) {
         ASSERT_EQ(memcmp(
             &parallel.errors[error], &serial.errors[error],
             sizeof(serial.errors[error])), 0);
+
+    alea_geom_validator_result_free(&parallel);
+    alea_geom_validator_result_free(&serial);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_parallel_batches_match_complete_serial_receipt) {
+    alea_system_t* sys = build_split_box_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_geom_validator_options_t options;
+    alea_geom_validator_options_init(&options);
+    options.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    options.ray_count = 257;
+    options.seed = 71;
+    options.max_errors = 1024;
+    options.max_crossings = 100000;
+
+    alea_geom_validator_result_t serial, parallel;
+    alea_geom_validator_result_init(&serial);
+    alea_geom_validator_result_init(&parallel);
+#ifdef _OPENMP
+    const int previous_threads = omp_get_max_threads();
+    const int previous_dynamic = omp_get_dynamic();
+    omp_set_dynamic(0);
+    omp_set_num_threads(1);
+#endif
+    ASSERT_EQ(alea_validate_geometry(sys, &options, &serial), 0);
+#ifdef _OPENMP
+    omp_set_num_threads(4);
+#endif
+    ASSERT_EQ(alea_validate_geometry(sys, &options, &parallel), 0);
+#ifdef _OPENMP
+    omp_set_num_threads(previous_threads);
+    omp_set_dynamic(previous_dynamic);
+#endif
+    ASSERT_EQ(serial.truncated, 0);
+    ASSERT(validator_results_equal(&serial, &parallel));
 
     alea_geom_validator_result_free(&parallel);
     alea_geom_validator_result_free(&serial);

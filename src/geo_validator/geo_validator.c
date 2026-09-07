@@ -16,6 +16,7 @@
 #include "util/math.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,8 @@
 #define VALIDATOR_DEFAULT_RAYS 128
 #define VALIDATOR_DEFAULT_MAX_ERRORS 1024
 #define VALIDATOR_DEFAULT_MAX_CROSSINGS 100000
+#define VALIDATOR_PARALLEL_BATCH_MIN 64
+#define VALIDATOR_PARALLEL_BATCHES_PER_WORKER 8
 
 typedef enum {
     COVERAGE_NONE = 0,
@@ -1591,89 +1594,113 @@ int alea_validate_geometry(alea_system_t* sys,
         return 0;
     }
 
-    if (ray_count > SIZE_MAX / sizeof(alea_ray_t) ||
-        ray_count > SIZE_MAX / sizeof(alea_geom_validator_result_t) ||
-        ray_count > SIZE_MAX / sizeof(int)) {
+    size_t batch_capacity = VALIDATOR_PARALLEL_BATCH_MIN;
+    if ((size_t)workers <=
+            SIZE_MAX / VALIDATOR_PARALLEL_BATCHES_PER_WORKER) {
+        const size_t worker_capacity = (size_t)workers *
+            VALIDATOR_PARALLEL_BATCHES_PER_WORKER;
+        if (worker_capacity > batch_capacity)
+            batch_capacity = worker_capacity;
+    }
+    if (batch_capacity > ray_count) batch_capacity = ray_count;
+    if (batch_capacity > (size_t)INT_MAX) batch_capacity = (size_t)INT_MAX;
+    if (batch_capacity > SIZE_MAX / sizeof(alea_ray_t) ||
+        batch_capacity > SIZE_MAX / sizeof(alea_geom_validator_result_t) ||
+        batch_capacity > SIZE_MAX / sizeof(int)) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                               "geometry validation workspace is too large");
         return -1;
     }
 
-    alea_ray_t* rays = malloc(ray_count * sizeof(*rays));
+    alea_ray_t* rays = malloc(batch_capacity * sizeof(*rays));
     alea_geom_validator_result_t* ray_results = calloc(
-        ray_count, sizeof(*ray_results));
-    int* statuses = calloc(ray_count, sizeof(*statuses));
+        batch_capacity, sizeof(*ray_results));
+    int* statuses = calloc(batch_capacity, sizeof(*statuses));
     if (!rays || !ray_results || !statuses) {
         free(rays);
-        free_validator_ray_results(ray_results, ray_count);
+        free_validator_ray_results(ray_results, batch_capacity);
         free(statuses);
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
                               "geometry validation parallel workspace failed");
         return -1;
     }
-    for (size_t ray = 0; ray < ray_count; ray++) {
-        generate_validation_ray(&rng, &bounds, &rays[ray]);
-        alea_geom_validator_result_init(&ray_results[ray]);
-    }
-
     /* Per-ray results retain every finding. The caller thread applies global
      * signature and output limits in ray order, preserving deterministic serial
      * receipts independently of worker scheduling. */
     alea_geom_validator_options_t worker_options = local_options;
     worker_options.max_errors = SIZE_MAX;
     worker_options.max_samples_per_signature = 0;
-    validator_ray_parallel_context_t context = {
-        sys, rays, t_max, &worker_options, ray_results, statuses
-    };
-    alea_parallel_status_t parallel_status = alea_parallel_for(
-        ray_count, 1, workers, ALEA_PARALLEL_DYNAMIC,
-        validate_ray_range, &context, NULL);
-    if (parallel_status != ALEA_PARALLEL_OK || alea_interrupted()) {
-        free(rays);
-        free_validator_ray_results(ray_results, ray_count);
-        free(statuses);
-        alea_set_error_detail(
-            alea_interrupted() ? ALEA_ERR_INTERRUPTED : ALEA_ERR_INVALID_STATE,
-            alea_interrupted() ? "geometry validation interrupted" :
-            "geometry validation parallel execution failed");
-        return -1;
-    }
-
     size_t max_crossings = local_options.max_crossings;
     if (max_crossings == 0) max_crossings = VALIDATOR_DEFAULT_MAX_CROSSINGS;
     size_t max_errors = local_options.max_errors;
     if (max_errors == 0) max_errors = VALIDATOR_DEFAULT_MAX_ERRORS;
     int merge_failed = 0;
-    for (size_t ray = 0; ray < ray_count && !result->truncated; ray++) {
-        if (statuses[ray] != 0) {
-            merge_failed = 1;
-            break;
+    for (size_t ray_base = 0;
+         ray_base < ray_count && !result->truncated;) {
+        const size_t remaining = ray_count - ray_base;
+        const size_t batch_count = remaining < batch_capacity
+            ? remaining : batch_capacity;
+        for (size_t ray = 0; ray < batch_count; ray++) {
+            generate_validation_ray(&rng, &bounds, &rays[ray]);
+            alea_geom_validator_result_init(&ray_results[ray]);
+            statuses[ray] = 0;
         }
-        const alea_geom_validator_result_t* candidate = &ray_results[ray];
-        const int crosses_limit =
-            result->crossings_checked > max_crossings ||
-            candidate->crossings_checked >
-                max_crossings - result->crossings_checked;
-        const int may_cross_error_limit =
-            result->error_count > max_errors ||
-            candidate->error_count > max_errors - result->error_count;
-        if (crosses_limit || may_cross_error_limit) {
-            /* Re-run only the boundary ray against the cumulative result so
-             * limits and signature suppression stop at the exact serial point. */
-            if (validate_one_ray(
-                    sys, &rays[ray], t_max, &local_options, result) != 0)
+        validator_ray_parallel_context_t context = {
+            sys, rays, t_max, &worker_options, ray_results, statuses
+        };
+        const alea_parallel_status_t parallel_status = alea_parallel_for(
+            batch_count, 1, workers, ALEA_PARALLEL_DYNAMIC,
+            validate_ray_range, &context, NULL);
+        if (parallel_status != ALEA_PARALLEL_OK || alea_interrupted()) {
+            for (size_t ray = 0; ray < batch_count; ray++)
+                alea_geom_validator_result_free(&ray_results[ray]);
+            free(rays);
+            free(ray_results);
+            free(statuses);
+            alea_set_error_detail(
+                alea_interrupted() ? ALEA_ERR_INTERRUPTED :
+                                     ALEA_ERR_INVALID_STATE,
+                alea_interrupted() ? "geometry validation interrupted" :
+                    "geometry validation parallel execution failed");
+            return -1;
+        }
+
+        for (size_t ray = 0; ray < batch_count && !result->truncated; ray++) {
+            if (statuses[ray] != 0) {
                 merge_failed = 1;
-            continue;
+                break;
+            }
+            const alea_geom_validator_result_t* candidate = &ray_results[ray];
+            const int crosses_limit =
+                result->crossings_checked > max_crossings ||
+                candidate->crossings_checked >
+                    max_crossings - result->crossings_checked;
+            const int may_cross_error_limit =
+                result->error_count > max_errors ||
+                candidate->error_count > max_errors - result->error_count;
+            if (crosses_limit || may_cross_error_limit) {
+                /* Re-run only the boundary ray against the cumulative result so
+                 * caps and signature suppression stop at the serial point. */
+                if (validate_one_ray(
+                        sys, &rays[ray], t_max,
+                        &local_options, result) != 0)
+                    merge_failed = 1;
+                continue;
+            }
+            if (merge_validator_ray_result(
+                    result, candidate, &local_options) != 0) {
+                merge_failed = 1;
+                break;
+            }
         }
-        if (merge_validator_ray_result(
-                result, candidate, &local_options) != 0) {
-            merge_failed = 1;
-            break;
-        }
+        for (size_t ray = 0; ray < batch_count; ray++)
+            alea_geom_validator_result_free(&ray_results[ray]);
+        if (merge_failed) break;
+        ray_base += batch_count;
     }
 
     free(rays);
-    free_validator_ray_results(ray_results, ray_count);
+    free(ray_results);
     free(statuses);
     if (merge_failed) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
