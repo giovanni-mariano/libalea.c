@@ -125,7 +125,6 @@ typedef struct {
     /* Quality */
     int aa_samples;         /**< NxN supersampling (1=off) */
     int aa_adaptive;        /**< Adaptive AA */
-    int universe_depth;     /**< -1=innermost, 0=root, N=level */
 
     /* Performance */
     int threads;

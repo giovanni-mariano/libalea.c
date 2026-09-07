@@ -116,7 +116,6 @@ static void print_usage(const char* prog) {
 "\n"
 "QUALITY:\n"
 "  --aa N                       Supersampling NxN (default: 1)\n"
-"  --universe-depth N           -1=innermost (default), 0=root, N=level\n"
 "\n"
 "PERFORMANCE:\n"
 "  --threads N                  Thread count (default: all cores)\n"
@@ -263,8 +262,6 @@ int main(int argc, char** argv) {
         /* Quality */
         else if (strcmp(arg, "--aa") == 0) {
             if (++i < argc) cfg.aa_samples = atoi(argv[i]);
-        } else if (strcmp(arg, "--universe-depth") == 0) {
-            if (++i < argc) cfg.universe_depth = atoi(argv[i]);
         }
         /* Performance */
         else if (strcmp(arg, "--threads") == 0) {

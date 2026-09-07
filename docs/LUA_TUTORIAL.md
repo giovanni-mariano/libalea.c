@@ -607,7 +607,6 @@ local fb = sys:render{
 
     -- Quality
     aa_samples = 2,      -- NxN supersampling
-    universe_depth = -1,  -- -1=innermost
 
     -- Output
     aux_output = 1,      -- enable depth/cellid/matid/normal maps

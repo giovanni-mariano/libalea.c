@@ -95,7 +95,6 @@ void render_config_init(render_config_t* cfg) {
     cfg->cross_section_tint = 0.85f;
 
     cfg->aa_samples = 1;
-    cfg->universe_depth = -1;
     cfg->tile_size = RENDER_DEFAULT_TILE;
     cfg->xray_density_scale = 0.1f;
     cfg->log_level = 2;

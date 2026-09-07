@@ -58,7 +58,6 @@ static void lua_to_render_config(lua_State* L, int idx, render_config_t* cfg) {
     GET_OPT_FLOAT(cross_section_tint);
     GET_OPT_INT(aa_samples);
     GET_OPT_INT(aa_adaptive);
-    GET_OPT_INT(universe_depth);
     GET_OPT_INT(threads);
     GET_OPT_INT(tile_size);
     GET_OPT_INT(preview);
@@ -164,7 +163,6 @@ static void push_render_config(lua_State* L, const render_config_t* cfg) {
     lua_pushnumber(L, cfg->cross_section_tint); lua_setfield(L, -2, "cross_section_tint");
     lua_pushinteger(L, cfg->aa_samples);     lua_setfield(L, -2, "aa_samples");
     lua_pushinteger(L, cfg->aa_adaptive);    lua_setfield(L, -2, "aa_adaptive");
-    lua_pushinteger(L, cfg->universe_depth); lua_setfield(L, -2, "universe_depth");
     lua_pushinteger(L, cfg->threads);        lua_setfield(L, -2, "threads");
     lua_pushinteger(L, cfg->tile_size);      lua_setfield(L, -2, "tile_size");
     lua_pushinteger(L, cfg->preview);        lua_setfield(L, -2, "preview");
