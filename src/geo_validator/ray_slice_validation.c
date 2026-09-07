@@ -68,6 +68,20 @@ typedef struct {
     double u_max;
 } trace_view_t;
 
+typedef struct {
+    const trace_view_t* trace;
+    size_t begin;
+    size_t end;
+    size_t index;
+} trace_cursor_t;
+
+typedef struct {
+    const alea_ray_coverage_slice_result_t* coverage;
+    size_t end;
+    size_t index;
+    double u_min;
+} coverage_cursor_t;
+
 static void validation_result_free_buffers(
     alea_ray_slice_validation_result_t* result) {
     if (!result) return;
@@ -181,17 +195,20 @@ static int coverage_row_span(const alea_ray_coverage_slice_result_t* coverage,
     return (*begin <= *end && *end <= coverage->interval_count) ? 0 : -1;
 }
 
-static void coverage_flags_at_u(
-    const alea_ray_coverage_slice_result_t* coverage, size_t begin, size_t end,
-    double u_min, double u, uint32_t coverage_flags, uint32_t* out_flags,
-    uint32_t* out_owners) {
+static void coverage_cursor_flags_at_u(
+    coverage_cursor_t* cursor, double u, uint32_t coverage_flags,
+    uint32_t* out_flags, uint32_t* out_owners) {
     *out_flags = 0;
     *out_owners = 0;
-    for (size_t i = begin; i < end; i++) {
-        const double enter = u_min + coverage->t_enter[i];
-        const double exit = u_min + coverage->t_exit[i];
-        if (u <= enter || u >= exit) continue;
-        uint32_t flag = coverage_kind_flag(coverage->kinds[i]);
+    while (cursor->index < cursor->end &&
+           u >= cursor->u_min + cursor->coverage->t_exit[cursor->index])
+        cursor->index++;
+    if (cursor->index < cursor->end) {
+        const size_t i = cursor->index;
+        const double enter = cursor->u_min + cursor->coverage->t_enter[i];
+        const double exit = cursor->u_min + cursor->coverage->t_exit[i];
+        if (u <= enter || u >= exit) return;
+        uint32_t flag = coverage_kind_flag(cursor->coverage->kinds[i]);
         /* Under the uniform policy no domain was imposed, so the sweep's
          * unowned intervals are exterior by the caller's declaration. */
         if (flag == ALEA_RAY_SLICE_DIAG_COVERAGE_GAP &&
@@ -202,9 +219,9 @@ static void coverage_flags_at_u(
             flag = 0;
         *out_flags = flag;
         const size_t owners =
-            coverage->owner_offsets[i + 1] - coverage->owner_offsets[i];
+            cursor->coverage->owner_offsets[i + 1] -
+            cursor->coverage->owner_offsets[i];
         *out_owners = owners > UINT32_MAX ? UINT32_MAX : (uint32_t)owners;
-        return;
     }
 }
 
@@ -280,30 +297,72 @@ static int compare_double(const void* a, const void* b) {
     return (da > db) - (da < db);
 }
 
-static int view_owner_at(const trace_view_t* trace, size_t row, double u,
-                         double tolerance, int32_t* out_cell,
-                         uint64_t* out_key) {
-    size_t begin = (size_t)trace->offsets[row];
-    size_t end = (size_t)trace->offsets[row + 1];
+static void trace_interval_bounds(const trace_view_t* trace, size_t index,
+                                  double* enter, double* exit) {
+    *enter = trace->t_enter[index];
+    *exit = trace->t_exit[index];
+    if (trace->reverse) {
+        const double r_enter = trace->u_max - *exit;
+        const double r_exit = trace->u_max - *enter;
+        *enter = r_enter;
+        *exit = r_exit;
+    }
+}
+
+static int trace_interval_contains(const trace_view_t* trace, size_t index,
+                                   double u, double tolerance) {
+    double enter, exit;
+    trace_interval_bounds(trace, index, &enter, &exit);
+    return u > enter - tolerance && u < exit + tolerance;
+}
+
+static void trace_cursor_init(trace_cursor_t* cursor,
+                              const trace_view_t* trace, size_t row) {
+    cursor->trace = trace;
+    cursor->begin = (size_t)trace->offsets[row];
+    cursor->end = (size_t)trace->offsets[row + 1];
+    cursor->index = trace->reverse ? cursor->end : cursor->begin;
+}
+
+static void trace_cursor_owner_at(trace_cursor_t* cursor, double u,
+                                  double tolerance, int32_t* out_cell,
+                                  uint64_t* out_key) {
+    const trace_view_t* trace = cursor->trace;
     *out_cell = -1;
     *out_key = UINT64_MAX;
-    for (size_t i = begin; i < end; i++) {
-        double enter = trace->t_enter[i];
-        double exit = trace->t_exit[i];
-        if (trace->reverse) {
-            double r_enter = trace->u_max - exit;
-            double r_exit = trace->u_max - enter;
-            enter = r_enter;
-            exit = r_exit;
+
+    if (!trace->reverse) {
+        while (cursor->index < cursor->end) {
+            double enter, exit;
+            trace_interval_bounds(trace, cursor->index, &enter, &exit);
+            if (u < exit + tolerance) break;
+            cursor->index++;
         }
-        if (u > enter - tolerance && u < exit + tolerance) {
-            *out_cell = trace->cells[i];
-            if (trace->occurrence_keys && trace->occurrence_keys[i] != 0)
-                *out_key = trace->occurrence_keys[i];
-            return 0;
+        if (cursor->index >= cursor->end ||
+            !trace_interval_contains(trace, cursor->index, u, tolerance))
+            return;
+    } else {
+        if (cursor->begin == cursor->end) return;
+        if (cursor->index == cursor->end) cursor->index--;
+        while (cursor->index > cursor->begin) {
+            double enter, exit;
+            trace_interval_bounds(trace, cursor->index, &enter, &exit);
+            if (u >= exit + tolerance ||
+                trace_interval_contains(
+                    trace, cursor->index - 1, u, tolerance)) {
+                cursor->index--;
+                continue;
+            }
+            break;
         }
+        if (!trace_interval_contains(trace, cursor->index, u, tolerance))
+            return;
     }
-    return 0;
+
+    const size_t index = cursor->index;
+    *out_cell = trace->cells[index];
+    if (trace->occurrence_keys && trace->occurrence_keys[index] != 0)
+        *out_key = trace->occurrence_keys[index];
 }
 
 static int add_trace_boundaries(const trace_view_t* trace, size_t row,
@@ -329,13 +388,6 @@ static int add_trace_boundaries(const trace_view_t* trace, size_t row,
         boundaries[(*count)++] = exit;
     }
     return 0;
-}
-
-static uint64_t selected_key(const trace_view_t* trace, size_t row, double u,
-                             double tolerance, int32_t* cell) {
-    uint64_t key;
-    (void)view_owner_at(trace, row, u, tolerance, cell, &key);
-    return key;
 }
 
 /* Find the canonical event evidence nearest a normalized U boundary.  The
@@ -1045,6 +1097,16 @@ int alea_validate_ray_slice_compact_with_event_cache(
                 if (unique == 0 || boundaries[i] - boundaries[unique - 1] > tolerance)
                     boundaries[unique++] = boundaries[i];
             }
+            trace_cursor_t forward_cursor, reverse_cursor;
+            coverage_cursor_t coverage_cursor = {
+                .coverage = coverage, .end = coverage_end,
+                .index = coverage_begin,
+                .u_min = view->u_min
+            };
+            if (reverse && has_selected) {
+                trace_cursor_init(&forward_cursor, &fwd, base);
+                trace_cursor_init(&reverse_cursor, &rev, base);
+            }
             for (size_t i = 0; i + 1 < unique; i++) {
                 double a = boundaries[i], b = boundaries[i + 1];
                 if (b - a <= tolerance) continue;
@@ -1053,8 +1115,10 @@ int alea_validate_ray_slice_compact_with_event_cache(
                 uint64_t fkey = UINT64_MAX, rkey = UINT64_MAX;
                 uint32_t flags = 0;
                 if (reverse && has_selected) {
-                    fkey = selected_key(&fwd, base, mid, tolerance, &fcell);
-                    rkey = selected_key(&rev, base, mid, tolerance, &rcell);
+                    trace_cursor_owner_at(
+                        &forward_cursor, mid, tolerance, &fcell, &fkey);
+                    trace_cursor_owner_at(
+                        &reverse_cursor, mid, tolerance, &rcell, &rkey);
                     const int mismatch = (fkey != UINT64_MAX && rkey != UINT64_MAX) ?
                         fkey != rkey : fcell != rcell;
                     /* Directional disagreement is trace-consistency evidence
@@ -1066,9 +1130,9 @@ int alea_validate_ray_slice_compact_with_event_cache(
                 uint32_t coverage_owners = 0;
                 if (coverage) {
                     uint32_t coverage_diag = 0;
-                    coverage_flags_at_u(coverage, coverage_begin, coverage_end,
-                                        view->u_min, mid, options.coverage_flags,
-                                        &coverage_diag, &coverage_owners);
+                    coverage_cursor_flags_at_u(
+                        &coverage_cursor, mid, options.coverage_flags,
+                        &coverage_diag, &coverage_owners);
                     flags |= coverage_diag;
                 }
                 if (!flags && !(options.flags & ALEA_RAY_SLICE_VALIDATION_INCLUDE_AGREEMENTS))
