@@ -1568,7 +1568,6 @@ Key `render_config_t` fields:
 | `edges` | 0 | Enable edge darkening |
 | `aa_samples` | 1 | NxN supersampling (1=off) |
 | `clips[N]` | - | Up to 16 clipping planes |
-| `universe_depth` | -1 | Universe hierarchy level |
 
 ### Camera
 
