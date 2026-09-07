@@ -20,6 +20,41 @@
 
 #define EPS 1e-6
 
+static int coverage_results_equal_except_status(
+    const alea_ray_coverage_slice_result_t* first,
+    const alea_ray_coverage_slice_result_t* second) {
+    if (first->row_count != second->row_count ||
+        first->interval_count != second->interval_count ||
+        first->owner_count != second->owner_count)
+        return 0;
+#define COVERAGE_ARRAY_SAME(member, count) \
+    ((count) == 0 || memcmp(first->member, second->member, \
+                            (count) * sizeof(*first->member)) == 0)
+    const size_t rows = first->row_count;
+    const size_t intervals = first->interval_count;
+    const size_t owners = first->owner_count;
+    const int same =
+        COVERAGE_ARRAY_SAME(row_offsets, rows + 1) &&
+        COVERAGE_ARRAY_SAME(row_direction_tags, rows) &&
+        COVERAGE_ARRAY_SAME(row_transverse_coordinates, rows) &&
+        COVERAGE_ARRAY_SAME(t_enter, intervals) &&
+        COVERAGE_ARRAY_SAME(t_exit, intervals) &&
+        COVERAGE_ARRAY_SAME(kinds, intervals) &&
+        COVERAGE_ARRAY_SAME(owner_offsets, intervals + 1) &&
+        COVERAGE_ARRAY_SAME(owner_count_lower_bounds, intervals) &&
+        COVERAGE_ARRAY_SAME(owner_cell_ids, owners) &&
+        COVERAGE_ARRAY_SAME(owner_cell_indices, owners) &&
+        COVERAGE_ARRAY_SAME(owner_material_ids, owners) &&
+        COVERAGE_ARRAY_SAME(owner_universe_ids, owners) &&
+        COVERAGE_ARRAY_SAME(owner_fill_universes, owners) &&
+        COVERAGE_ARRAY_SAME(owner_depths, owners) &&
+        COVERAGE_ARRAY_SAME(owner_occurrence_keys, owners) &&
+        COVERAGE_ARRAY_SAME(owner_parent_occurrence_keys, owners) &&
+        COVERAGE_ARRAY_SAME(owner_resolution_flags, owners);
+#undef COVERAGE_ARRAY_SAME
+    return same;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Ray-Primitive Intersection Tests                                           */
 /* ------------------------------------------------------------------------- */
@@ -2578,7 +2613,19 @@ TEST(public_compact_coverage_slice_publishes_borrowed_csr) {
     ASSERT_EQ(alea_ray_coverage_slice_row_count(adaptive), (size_t)3);
     ASSERT_EQ(alea_ray_coverage_slice_refinement_status(adaptive),
               ALEA_RAY_COVERAGE_REFINEMENT_MAX_DEPTH);
+    const double refined_origins[] = {-2, 0, 0, -2, 1, 0, -2, 2, 0};
+    const double refined_directions[] = {1, 0, 0, 1, 0, 0, 1, 0, 0};
+    const uint8_t refined_tags[] = {4, 4, 4};
+    const double refined_coordinates[] = {0, 1, 2};
+    alea_ray_coverage_slice_result_t* direct =
+        alea_ray_coverage_slice_result_create();
+    ASSERT_NOT_NULL(direct);
     options.max_refinement_depth = 0;
+    ASSERT_EQ(alea_ray_coverage_slice_query(
+                  sys, refined_origins, refined_directions, 3, refined_tags,
+                  refined_coordinates, &options, direct), 0);
+    ASSERT(coverage_results_equal_except_status(adaptive, direct));
+    alea_ray_coverage_slice_result_destroy(direct);
     alea_ray_coverage_slice_result_destroy(adaptive);
     const size_t* previous_offsets = offsets;
     options.max_output_bytes = 1;
