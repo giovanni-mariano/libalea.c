@@ -17,6 +17,7 @@
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
 #include "geo_validator/transition_slice_critical.h"
+#include "geo_validator/transition_validation.h"
 
 #define EPS 1e-6
 
@@ -777,6 +778,51 @@ TEST(supplied_transition_kernel_classifies_adjacency_and_anomalies) {
     ASSERT_EQ(result.after_cell_id, 92);
     ASSERT_EQ(result.connecting_surface_id, 542);
     ASSERT(result.flags & ALEA_TRANSITION_FLAG_TIED_SURFACE_CONNECTS);
+    alea_destroy(sys);
+}
+
+TEST(transition_fallback_workspace_reuses_allocations) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_plane_surface(sys, 549, 1.0, 0.0, 0.0, 0.0);
+    ASSERT(surface >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 99, alea_surface_at(sys, surface)->neg_node,
+                            ALEA_MATERIAL_VOID, 0.0, 0), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    const double point[3] = {0.0, 0.0, 0.0};
+    const double direction[3] = {1.0, 0.0, 0.0};
+    alea_transition_options_t options;
+    alea_transition_options_init(&options);
+    options.max_coverage_hits = 32;
+    alea_transition_workspace_t workspace;
+    alea_transition_workspace_init(&workspace);
+    alea_transition_result_t first, second;
+    ASSERT_EQ(alea_check_transition_local_reuse(
+                  sys, 0, 99, 549, NULL, 0, point, direction,
+                  &options, &first, &workspace), 0);
+    ASSERT(first.coverage_fallbacks > 0);
+    ASSERT_EQ(first.kind, ALEA_TRANSITION_GAP);
+    ASSERT_EQ(workspace.capacity, (size_t)32);
+    alea_cell_hit_t* hits = workspace.hits;
+    uint64_t* keys = workspace.keys;
+    uint64_t* parents = workspace.parents;
+    uint8_t* owners = workspace.owners;
+    size_t* child_counts = workspace.child_counts;
+
+    ASSERT_EQ(alea_check_transition_local_reuse(
+                  sys, 0, 99, 549, NULL, 0, point, direction,
+                  &options, &second, &workspace), 0);
+    ASSERT_EQ(second.kind, first.kind);
+    ASSERT_EQ(second.coverage_fallbacks, first.coverage_fallbacks);
+    ASSERT_EQ(workspace.hits, hits);
+    ASSERT_EQ(workspace.keys, keys);
+    ASSERT_EQ(workspace.parents, parents);
+    ASSERT_EQ(workspace.owners, owners);
+    ASSERT_EQ(workspace.child_counts, child_counts);
+    alea_transition_workspace_free(&workspace);
+    ASSERT_EQ(workspace.capacity, (size_t)0);
+    ASSERT_NULL(workspace.hits);
     alea_destroy(sys);
 }
 
@@ -3242,6 +3288,24 @@ TEST(transition_slice_active_boundary_filter_partitions_narrow_regions) {
     ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);
     ASSERT_EQ(stats.critical_active_segments, (size_t)2);
     options.max_curves_per_tile = 512;
+    /* A one-pair allowance is call-wide and remains useful at its smallest
+     * finite value.  It must neither round down to zero nor reset per tile. */
+    alea_transition_slice_critical_tile_t repeated_tiles[2] = {tile, tile};
+    options.max_curve_pairs = 1;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                  half_circle, &view, &options, repeated_tiles, 2,
+                  NULL, NULL, &stats), 0);
+    ASSERT_EQ(stats.critical_curve_pairs_tested, (size_t)1);
+    alea_interrupt();
+    const int interrupted_rc = alea_transition_slice_enumerate_critical_tiles(
+        half_circle, &view, &options, repeated_tiles, 2,
+        NULL, NULL, &stats);
+    const int interrupted_error = alea_error_code();
+    alea_clear_interrupt();
+    ASSERT_EQ(interrupted_rc, -1);
+    ASSERT_EQ(interrupted_error, ALEA_ERR_INTERRUPTED);
+    options.max_curve_pairs = 100000;
     alea_destroy(half_circle);
 
     /* General-quadric ellipse slices use the same bounded active-arc contract. */
