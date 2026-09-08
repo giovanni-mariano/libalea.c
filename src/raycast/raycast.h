@@ -14,6 +14,7 @@
 #include "util/alea_atomic.h"
 #include <stddef.h>
 
+typedef struct alea_transition_workspace alea_transition_workspace_t;
 
 /**
  * @file raycast.h
@@ -1215,6 +1216,11 @@ int alea_check_selected_boundary_event_transition_nocache(
     alea_system_t* sys, const alea_ray_boundary_event_t* event,
     const alea_transition_options_t* options,
     alea_transition_result_t* result);
+int alea_check_selected_boundary_event_transition_reuse_nocache(
+    alea_system_t* sys, const alea_ray_boundary_event_t* event,
+    const alea_transition_options_t* options,
+    alea_transition_result_t* result,
+    alea_transition_workspace_t* workspace);
 
 /**
  * Execute an internal semantic ray query using reusable caller-owned storage.

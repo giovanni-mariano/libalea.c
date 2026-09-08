@@ -20,6 +20,7 @@
 #include "core/alea_universe.h"
 #include "util/compat.h"
 #include "core/alea_spatial_hier.h"
+#include "geo_validator/transition_validation.h"
 #include "core/alea_eval.h"
 #include "util/alea_log.h"
 #include "util/alea_parallel.h"
@@ -4794,11 +4795,12 @@ static void selected_event_transition_receipt(
         event->after_parent_occurrence_key;
 }
 
-int alea_check_selected_boundary_event_transition_nocache(
+int alea_check_selected_boundary_event_transition_reuse_nocache(
     alea_system_t* sys, const alea_ray_boundary_event_t* event,
     const alea_transition_options_t* options,
-    alea_transition_result_t* result) {
-    if (!sys || !event || !result) return -1;
+    alea_transition_result_t* result,
+    alea_transition_workspace_t* workspace) {
+    if (!sys || !event || !result || !workspace) return -1;
     if (event->kind != ALEA_RAY_BOUNDARY_EVENT_PHYSICAL ||
         event->surface_id <= 0) {
         alea_set_error_detail(
@@ -4833,12 +4835,24 @@ int alea_check_selected_boundary_event_transition_nocache(
         selected_event_transition_receipt(event, result);
         return 0;
     }
-    int rc = alea_check_transition_local(
+    int rc = alea_check_transition_local_reuse(
         sys, event->active_universe_id, event->active_cell_id,
         event->surface_id, event->local_surface_ids,
         event->local_surface_count, event->local_point,
-        event->local_direction, options, result);
+        event->local_direction, options, result, workspace);
     if (rc == 0) selected_event_transition_receipt(event, result);
+    return rc;
+}
+
+int alea_check_selected_boundary_event_transition_nocache(
+    alea_system_t* sys, const alea_ray_boundary_event_t* event,
+    const alea_transition_options_t* options,
+    alea_transition_result_t* result) {
+    alea_transition_workspace_t workspace;
+    alea_transition_workspace_init(&workspace);
+    const int rc = alea_check_selected_boundary_event_transition_reuse_nocache(
+        sys, event, options, result, &workspace);
+    alea_transition_workspace_free(&workspace);
     return rc;
 }
 

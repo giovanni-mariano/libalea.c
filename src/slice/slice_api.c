@@ -474,12 +474,57 @@ static bool path_matrix_inverse_equal_exact(const alea_matrix_t* a,
     return true;
 }
 
+typedef struct {
+    uint32_t* slots; /* record ID plus one; zero denotes an empty slot */
+    size_t capacity;
+} slice_path_index_t;
+
+static void slice_path_index_free(slice_path_index_t* index) {
+    if (!index) return;
+    free(index->slots);
+    memset(index, 0, sizeof(*index));
+}
+
+static size_t slice_path_index_slot(uint64_t hash, size_t capacity) {
+    /* The table is always a power of two.  Mix the already stable path hash
+     * once more so low-bit patterns in transform payloads do not cluster. */
+    hash ^= hash >> 33;
+    hash *= UINT64_C(0xff51afd7ed558ccd);
+    hash ^= hash >> 33;
+    return (size_t)hash & (capacity - 1);
+}
+
+static int slice_path_index_reserve(slice_path_index_t* index,
+                                    const alea_slice_path_table_t* table,
+                                    size_t required) {
+    if (index->capacity && required <= index->capacity / 2) return 0;
+    size_t capacity = index->capacity ? index->capacity : 128;
+    while (required > capacity / 2) {
+        if (capacity > SIZE_MAX / 2) return -1;
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(*index->slots)) return -1;
+    uint32_t* slots = calloc(capacity, sizeof(*slots));
+    if (!slots) return -1;
+    for (size_t i = 0; i < table->count; i++) {
+        size_t slot = slice_path_index_slot(
+            table->records[i].chain_hash, capacity);
+        while (slots[slot] != 0) slot = (slot + 1) & (capacity - 1);
+        slots[slot] = (uint32_t)i + 1u;
+    }
+    free(index->slots);
+    index->slots = slots;
+    index->capacity = capacity;
+    return 0;
+}
+
 static int slice_path_table_intern(alea_slice_path_table_t* table,
+                                   slice_path_index_t* index,
                                    int universe_id,
                                    int depth,
                                    const alea_matrix_t* world_to_local,
                                    uint32_t* out_id) {
-    if (!table || !world_to_local || !out_id) return -1;
+    if (!table || !index || !world_to_local || !out_id) return -1;
     if (!world_to_local->has_inverse) return -1;
 
     uint64_t h = 1469598103934665603ULL;
@@ -487,7 +532,13 @@ static int slice_path_table_intern(alea_slice_path_table_t* table,
     h = path_hash_mix_u64(h, (uint64_t)(uint32_t)depth);
     h = path_hash_mix_u64(h, path_hash_matrix_inverse(world_to_local));
 
-    for (size_t i = 0; i < table->count; i++) {
+    /* UINT32_MAX is reserved by slice samples as the missing-path sentinel. */
+    if (table->count >= UINT32_MAX) return -1;
+    if (slice_path_index_reserve(index, table, table->count + 1) != 0)
+        return -1;
+    size_t slot = slice_path_index_slot(h, index->capacity);
+    while (index->slots[slot] != 0) {
+        const size_t i = (size_t)index->slots[slot] - 1u;
         const alea_slice_path_record_t* r = &table->records[i];
         if (r->universe_id == universe_id &&
             r->depth == depth &&
@@ -497,6 +548,7 @@ static int slice_path_table_intern(alea_slice_path_table_t* table,
             *out_id = (uint32_t)i;
             return 0;
         }
+        slot = (slot + 1) & (index->capacity - 1);
     }
 
     if (table->count == table->capacity) {
@@ -508,7 +560,6 @@ static int slice_path_table_intern(alea_slice_path_table_t* table,
         table->capacity = new_cap;
     }
 
-    if (table->count > UINT32_MAX) return -1;
     uint32_t id = (uint32_t)table->count;
     alea_slice_path_record_t* rec = &table->records[table->count++];
     rec->universe_id = universe_id;
@@ -516,6 +567,7 @@ static int slice_path_table_intern(alea_slice_path_table_t* table,
     rec->chain_hash = h;
     for (int i = 0; i < 12; i++)
         rec->world_to_local[i] = world_to_local->inv[i];
+    index->slots[slot] = id + 1u;
     *out_id = id;
     return 0;
 }
@@ -994,6 +1046,7 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
     if (out_errors) memset(out_errors, 0, n);
     for (size_t i = 0; i < n; i++) out_path_ids[i] = UINT32_MAX;
     alea_slice_path_table_free(out_paths);
+    slice_path_index_t path_index = {0};
 
     for (int j = 0; j < nv; j++) {
         double v = v_min + (j + 0.5) * dv;
@@ -1019,6 +1072,7 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
                 sys, previous_state, x, y, z, universe_depth, current_state,
                 &cell_id, &material_id, &error, NULL);
             if (rich_rc < 0) {
+                slice_path_index_free(&path_index);
                 return -1;
             }
 
@@ -1031,9 +1085,11 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
                 uint32_t path_id = UINT32_MAX;
                 if (slice_project_hier_path(&current_state->path, universe_depth,
                                             &target) != 0 ||
-                    slice_path_table_intern(out_paths, target->universe_id,
+                    slice_path_table_intern(out_paths, &path_index,
+                                            target->universe_id,
                                             target->depth, &target->transform,
                                             &path_id) != 0) {
+                    slice_path_index_free(&path_index);
                     return -1;
                 }
                 out_path_ids[idx] = path_id;
@@ -1084,6 +1140,7 @@ static int alea_find_cells_grid_with_paths(alea_system_t* sys,
                                         NULL);
     }
 
+    slice_path_index_free(&path_index);
     return 0;
 }
 
@@ -1270,6 +1327,7 @@ int alea_find_cells_grid_paths_selected(
     for (size_t i = 0; i < pixel_count; i++)
         out_path_ids[i] = UINT32_MAX;
     alea_slice_path_table_free(out_paths);
+    slice_path_index_t path_index = {0};
 
     const alea_slice_plane_t* plane = &view->plane;
     const double du = (view->u_max - view->u_min) / (double)nu;
@@ -1308,6 +1366,7 @@ int alea_find_cells_grid_paths_selected(
                 sys, have_previous ? previous : NULL, x, y, z,
                 universe_depth, current, &cell_id, &material_id, &error, NULL);
             if (rc < 0) {
+                slice_path_index_free(&path_index);
                 alea_slice_path_table_free(out_paths);
                 return -1;
             }
@@ -1318,9 +1377,11 @@ int alea_find_cells_grid_paths_selected(
                 uint32_t path_id = UINT32_MAX;
                 if (slice_project_hier_path(&current->path, universe_depth,
                                             &target) != 0 ||
-                    slice_path_table_intern(out_paths, target->universe_id,
+                    slice_path_table_intern(out_paths, &path_index,
+                                            target->universe_id,
                                             target->depth, &target->transform,
                                             &path_id) != 0) {
+                    slice_path_index_free(&path_index);
                     alea_slice_path_table_free(out_paths);
                     return -1;
                 }
@@ -1332,6 +1393,7 @@ int alea_find_cells_grid_paths_selected(
             have_previous = true;
         }
     }
+    slice_path_index_free(&path_index);
     return 0;
 }
 

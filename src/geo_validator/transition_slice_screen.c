@@ -4,6 +4,7 @@
 
 #include "alea_geo_validator.h"
 #include "transition_slice_critical.h"
+#include "transition_validation.h"
 
 #include "raycast/raycast.h"
 #include "raycast/ray_epsilon.h"
@@ -686,7 +687,7 @@ static void transition_slice_row_signature(
     row->event_count = events->events.count;
 }
 
-static int transition_slice_scan_ray(
+static int transition_slice_scan_ray_reuse(
     alea_system_t* sys, const alea_slice_view_t* view,
     const alea_transition_slice_options_t* options,
     alea_transition_slice_orientation_t orientation, size_t ray_index,
@@ -694,6 +695,7 @@ static int transition_slice_scan_ray(
     double transverse_coordinate, alea_raycast_result_t* scratch,
     alea_ray_boundary_event_result_t* events,
     transition_slice_coverage_scratch_t* coverage_scratch,
+    alea_transition_workspace_t* transition_workspace,
     alea_transition_slice_result_t* result, transition_slice_row_t* row) {
     const double u_span = view->u_max - view->u_min;
     const double v_span = view->v_max - view->v_min;
@@ -851,8 +853,9 @@ static int transition_slice_scan_ray(
                 transition_options.max_coverage_fallbacks =
                     options->max_coverage_fallbacks -
                     result->stats.coverage_fallbacks;
-            if (alea_check_selected_boundary_event_transition_nocache(
-                    sys, event, &transition_options, &transition) != 0)
+            if (alea_check_selected_boundary_event_transition_reuse_nocache(
+                    sys, event, &transition_options, &transition,
+                    transition_workspace) != 0)
                 return -1;
         }
         result->stats.coverage_fallbacks += transition.coverage_fallbacks;
@@ -1883,6 +1886,7 @@ static int transition_slice_scan_orientation(
     alea_raycast_result_t* scratch,
     alea_ray_boundary_event_result_t* events,
     transition_slice_coverage_scratch_t* coverage_scratch,
+    alea_transition_workspace_t* transition_workspace,
     size_t coverage_scratch_bytes,
     alea_transition_slice_result_t* result) {
     const size_t base_count = orientation == ALEA_TRANSITION_SLICE_HORIZONTAL
@@ -1916,9 +1920,10 @@ static int transition_slice_scan_orientation(
         const size_t ray_index = orientation == ALEA_TRANSITION_SLICE_HORIZONTAL
             ? result->stats.horizontal_rays_executed
             : result->stats.vertical_rays_executed;
-        int rc = transition_slice_scan_ray(
+        int rc = transition_slice_scan_ray_reuse(
             sys, view, options, orientation, ray_index, base, 0, coordinate,
-            scratch, events, coverage_scratch, result, &rows[base]);
+            scratch, events, coverage_scratch, transition_workspace, result,
+            &rows[base]);
         transition_slice_record_row_scratch(result, base_live_bytes);
         if (rc != 0) { free(rows); return rc; }
     }
@@ -2035,10 +2040,10 @@ static int transition_slice_scan_orientation(
                 orientation == ALEA_TRANSITION_SLICE_HORIZONTAL
                     ? result->stats.horizontal_rays_executed
                     : result->stats.vertical_rays_executed;
-            int rc = transition_slice_scan_ray(
+            int rc = transition_slice_scan_ray_reuse(
                 sys, view, options, orientation, ray_index, SIZE_MAX,
                 depth + 1, coordinate, scratch, events, coverage_scratch,
-                result, &next[output]);
+                transition_workspace, result, &next[output]);
             transition_slice_record_row_scratch(result, live_bytes);
             if (rc != 0) {
                 free(next); free(rows); return rc;
@@ -2102,6 +2107,7 @@ int alea_transition_slice_screen(
         alea_raycast_result_t scratch;
         alea_ray_boundary_event_result_t events;
         transition_slice_coverage_scratch_t coverage_scratch;
+        alea_transition_workspace_t transition_workspace;
         memset(&coverage_scratch, 0, sizeof(coverage_scratch));
         const int coverage_enabled =
             options.coverage_uniform_probes_per_ray != 0 ||
@@ -2111,6 +2117,7 @@ int alea_transition_slice_screen(
                 options.max_coverage_hits) : 0;
         alea_raycast_result_init(&scratch);
         alea_ray_boundary_event_result_init(&events);
+        alea_transition_workspace_init(&transition_workspace);
         int stop = 0, failed = 0;
         if (coverage_scratch_bytes == SIZE_MAX ||
             (options.max_row_scratch_bytes && coverage_enabled &&
@@ -2132,7 +2139,7 @@ int alea_transition_slice_screen(
                 (alea_transition_slice_orientation_t)orientation,
                 orientation == ALEA_TRANSITION_SLICE_HORIZONTAL
                     ? options.vertical_rays : 0,
-                &scratch, &events, &coverage_scratch,
+                &scratch, &events, &coverage_scratch, &transition_workspace,
                 coverage_scratch_bytes, &candidate);
             if (rc < 0) failed = 1;
             if (rc > 0) { stop = 1; scan_incomplete = 1; }
@@ -2141,6 +2148,7 @@ int alea_transition_slice_screen(
         alea_ray_boundary_event_result_free(&events);
         alea_raycast_result_free(&scratch);
         transition_slice_coverage_scratch_free(&coverage_scratch);
+        alea_transition_workspace_free(&transition_workspace);
         if (!failed) {
             int component_rc = transition_slice_build_components(
                 &options, &candidate);
