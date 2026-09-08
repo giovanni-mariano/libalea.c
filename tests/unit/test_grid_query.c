@@ -1009,6 +1009,38 @@ TEST(grid_path_ids_distinguish_lattice_element_placements) {
     mcnp_model_destroy(model);
 }
 
+TEST(grid_path_index_grows_without_changing_first_encounter_ids) {
+    mcnp_model_t* model = mcnp_load(
+        "tests/data/mcnp_lattice_many_paths.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+
+    enum { path_count = 100 };
+    int cell_ids[path_count];
+    uint32_t path_ids[path_count];
+    alea_slice_path_table_t paths = {0};
+    alea_slice_view_t view;
+    /* Pixel centers 0, 2, ..., 198 visit each placement once.  More than 64
+     * distinct paths forces the private index through its first rehash. */
+    alea_slice_view_axis(&view, 2, 0.0, -1.0, 199.0, -1.0, 1.0);
+
+    ASSERT_EQ(alea_find_cells_grid_coverage_paths(
+                  sys, &view, path_count, 1, -1,
+                  ALEA_GRID_COVERAGE_FAST | ALEA_GRID_PATH_IDS,
+                  cell_ids, NULL, NULL, NULL, NULL, path_ids, &paths), 0);
+    ASSERT_EQ(paths.count, (size_t)path_count);
+    for (uint32_t i = 0; i < path_count; i++) {
+        ASSERT(cell_ids[i] == 1 || cell_ids[i] == 2);
+        ASSERT_EQ(path_ids[i], i);
+        ASSERT_EQ(paths.records[i].universe_id, 1);
+        ASSERT_EQ(paths.records[i].depth, 1);
+    }
+
+    alea_slice_path_table_free(&paths);
+    mcnp_model_destroy(model);
+}
+
 TEST(grid_path_coverage_matches_recursive_lattice) {
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
     if (!model) return;
