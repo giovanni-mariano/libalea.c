@@ -167,6 +167,7 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
         const char* line_end = memchr(line_start, '\n', end - line_start);
         if (line_end == NULL) line_end = end;
         line_num++;
+        const int card_start_line = line_num;
 
 
         const char* trimmed_start = line_start;
@@ -334,6 +335,7 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
             case STATE_SURFACE_BLOCK: {
                 double t0 = alea_monotonic_seconds();
                 if (!parse_surface_card(ctx, logical_line_ptr, strlen(logical_line_ptr))) success = 0;
+                else ctx->surfaces[ctx->surface_count - 1]->source_line = card_start_line;
                 double t1 = alea_monotonic_seconds();
                 surface_parse_time += t1 - t0;
                 parsed_surface_cards++;
