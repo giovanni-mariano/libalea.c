@@ -17,6 +17,7 @@
 #include "util/poly_solve.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -26,6 +27,7 @@ typedef struct {
     alea_curve_2d_t curve;
     uint64_t occurrence_key;
     uint64_t universe_occurrence_key;
+    uint64_t occurrence_ordinal;
     uint32_t surface_index;
     int cell_id;
     double bbox[4];
@@ -66,6 +68,9 @@ typedef struct {
 typedef struct {
     int universe_id;
     uint64_t universe_occurrence_key;
+    size_t chain_hit_index;
+    int level;
+    uint64_t ordinal;
 } critical_universe_occurrence_t;
 
 static void record_unsupported_curve(
@@ -572,8 +577,10 @@ static int curve_priority_compare(const void* lhs, const void* rhs) {
 static int critical_curves_same_source(const critical_curve_t* first,
                                        const critical_curve_t* second) {
     return first->surface_index == second->surface_index &&
-           first->universe_occurrence_key ==
-               second->universe_occurrence_key;
+           ((first->occurrence_ordinal || second->occurrence_ordinal)
+            ? first->occurrence_ordinal == second->occurrence_ordinal
+            : first->universe_occurrence_key ==
+                  second->universe_occurrence_key);
 }
 
 static int curve_is_line(alea_curve_type_t type) {
@@ -2137,6 +2144,7 @@ typedef struct {
     const alea_hier_ray_path_t* path;
     int level;
     uint64_t universe_key;
+    uint64_t occurrence_ordinal;
     critical_curve_t* curves;
     size_t* curve_count;
     size_t curve_capacity;
@@ -2161,7 +2169,9 @@ static int emit_cell_implicit_conic_pieces(
 enum {
     CRITICAL_COLLECT_OK = 0,
     CRITICAL_COLLECT_MAX_CURVES = 1,
-    CRITICAL_COLLECT_CHAIN_TRUNCATED = 2
+    CRITICAL_COLLECT_CHAIN_TRUNCATED = 2,
+    CRITICAL_COLLECT_MAX_OCCURRENCE_HITS = 3,
+    CRITICAL_COLLECT_UNSUPPORTED_OCCURRENCE_TRAVERSAL = 4
 };
 
 static int double_compare(const void* lhs, const void* rhs) {
@@ -4135,7 +4145,10 @@ static int retain_ranked_curve(critical_region_visit_t* ctx,
     for (size_t i = 0; i < *ctx->curve_count; i++) {
         const critical_curve_t* saved = &ctx->curves[i];
         if (saved->surface_index == item->surface_index &&
-            saved->universe_occurrence_key == universe_occurrence_key &&
+            ((ctx->occurrence_ordinal &&
+              saved->occurrence_ordinal == ctx->occurrence_ordinal) ||
+             (!ctx->occurrence_ordinal && !saved->occurrence_ordinal &&
+              saved->universe_occurrence_key == universe_occurrence_key)) &&
             saved->curve.type == item->curve.type &&
             saved->component_index == item->component_index &&
             saved->has_parameter_domain == item->has_parameter_domain &&
@@ -4164,6 +4177,7 @@ static int retain_ranked_curve(critical_region_visit_t* ctx,
     critical_curve_t ranked = *item;
     ranked.occurrence_key = occurrence_key;
     ranked.universe_occurrence_key = universe_occurrence_key;
+    ranked.occurrence_ordinal = ctx->occurrence_ordinal;
     if (*ctx->curve_count < ctx->curve_capacity) {
         ctx->curves[(*ctx->curve_count)++] = ranked;
         return 0;
@@ -4400,7 +4414,7 @@ static int collect_ancestor_neighborhood(critical_region_visit_t* ctx) {
  * in the suspicious tile.  The deepest occurrence gets a local BLAS query so
  * card-distinct overlap/gap partners are retained.  Ancestors use the active
  * path-cell neighborhood so broad root bounds cannot starve the leaf query. */
-static int collect_tile_occurrence_curves(
+static int collect_tile_sampled_occurrence_curves(
     alea_system_t* sys, const alea_slice_view_t* view,
     const alea_transition_slice_critical_tile_t* tile,
     critical_universe_occurrence_t* occurrences, size_t occurrence_capacity,
@@ -4529,6 +4543,176 @@ static int collect_tile_occurrence_curves(
         stats->critical_occurrence_universe_queries++;
         stats->critical_region_candidates_scanned += visited;
         if (visit.stop_code != CRITICAL_COLLECT_OK) return visit.stop_code;
+    }
+    return CRITICAL_COLLECT_OK;
+}
+
+static int chain_hit_to_path(
+    const alea_system_t* sys, const alea_hier_spatial_chain_hit_t* hit,
+    alea_hier_ray_path_t* path) {
+    if (hit->chain_truncated ||
+        (size_t)hit->ancestor_count + 1u > ALEA_HIER_RAY_PATH_MAX)
+        return 0;
+    memset(path, 0, sizeof(*path));
+    for (uint8_t i = 0; i < hit->ancestor_count; i++) {
+        const uint32_t cell_index = hit->ancestor_cell_indices[i];
+        if (cell_index >= alea_vec_count(&sys->cells)) return -1;
+        const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+        alea_hier_ray_path_entry_t* entry = &path->entries[i];
+        entry->cell_index = cell_index;
+        entry->cell_id = cell->mc_cell_id;
+        entry->material_id = cell->material_id;
+        entry->universe_id = cell->universe_id;
+        entry->fill_universe = cell->fill_universe;
+        entry->depth = (int)i;
+        entry->is_lattice = hit->ancestor_is_lattice[i];
+        entry->lat_fill_universe =
+            hit->ancestor_lattice_fill_universes[i];
+        entry->lat_i = hit->ancestor_lattice_i[i];
+        entry->lat_j = hit->ancestor_lattice_j[i];
+        entry->lat_k = hit->ancestor_lattice_k[i];
+        entry->lat_ox = hit->ancestor_lattice_ox[i];
+        entry->lat_oy = hit->ancestor_lattice_oy[i];
+        entry->lat_oz = hit->ancestor_lattice_oz[i];
+        entry->transform = hit->ancestor_transforms[i];
+    }
+    const int level = hit->ancestor_count;
+    if (hit->hit.cell_index >= alea_vec_count(&sys->cells)) return -1;
+    const alea_cell_entry_t* cell = &sys->cells.data[hit->hit.cell_index];
+    alea_hier_ray_path_entry_t* terminal = &path->entries[level];
+    terminal->cell_index = hit->hit.cell_index;
+    terminal->cell_id = hit->hit.cell_id;
+    terminal->material_id = hit->hit.material_id;
+    terminal->universe_id = hit->hit.universe_id;
+    terminal->fill_universe = cell->fill_universe;
+    terminal->depth = hit->hit.depth;
+    terminal->transform = hit->hit.transform;
+    path->count = level + 1;
+    return 1;
+}
+
+static int chain_hit_same_universe_occurrence(
+    const alea_hier_spatial_chain_hit_t* first, int first_level,
+    const alea_hier_spatial_chain_hit_t* second, int second_level) {
+    if (first_level != second_level || first_level < 0 ||
+        first_level > first->ancestor_count ||
+        second_level > second->ancestor_count)
+        return 0;
+    for (int i = 0; i < first_level; i++) {
+        if (first->ancestor_cell_indices[i] !=
+                second->ancestor_cell_indices[i] ||
+            first->ancestor_is_lattice[i] !=
+                second->ancestor_is_lattice[i])
+            return 0;
+        if (first->ancestor_is_lattice[i] &&
+            (first->ancestor_lattice_fill_universes[i] !=
+                 second->ancestor_lattice_fill_universes[i] ||
+             first->ancestor_lattice_i[i] != second->ancestor_lattice_i[i] ||
+             first->ancestor_lattice_j[i] != second->ancestor_lattice_j[i] ||
+             first->ancestor_lattice_k[i] != second->ancestor_lattice_k[i]))
+            return 0;
+    }
+    return 1;
+}
+
+static int collect_tile_exhaustive_occurrence_curves(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    const alea_transition_slice_critical_tile_t* tile,
+    critical_universe_occurrence_t* occurrences, size_t occurrence_capacity,
+    alea_hier_spatial_chain_hit_t* chain_hits, size_t chain_hit_capacity,
+    critical_curve_t* curves, size_t* curve_count, size_t curve_capacity,
+    critical_curve_t* cell_curves, double* breakpoints,
+    size_t breakpoint_capacity, uint64_t max_active_boundary_tests,
+    int* out_found_path, alea_transition_slice_stats_t* stats) {
+    *out_found_path = 0;
+
+    /* The existing hierarchy query can enumerate finite hex lattices, but it
+     * cannot conservatively derive the unbounded element range for repeating
+     * hex lattices. Refuse completeness instead of silently under-enumerating. */
+    for (size_t ci = 0; ci < alea_vec_count(&sys->cells); ci++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[ci];
+        if (cell->lat_type != 0 && cell->lat_type != 1 &&
+            cell->lat_fill_repeating)
+            return CRITICAL_COLLECT_UNSUPPORTED_OCCURRENCE_TRAVERSAL;
+    }
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+    const alea_bbox_t world_bbox = tile_local_bbox(view, tile, &identity);
+    alea_hier_region_chain_status_t traversal_status =
+        ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
+    const int hit_count = alea_hier_spatial_query_region_chain_bounded(
+        sys, &world_bbox, chain_hits, chain_hit_capacity,
+        1, &traversal_status);
+    if (hit_count < 0) return -1;
+    stats->critical_exhaustive_chain_hits += (size_t)hit_count;
+    if (traversal_status == ALEA_HIER_REGION_CHAIN_MAX_HITS)
+        return CRITICAL_COLLECT_MAX_OCCURRENCE_HITS;
+    if (traversal_status != ALEA_HIER_REGION_CHAIN_COMPLETE)
+        return CRITICAL_COLLECT_UNSUPPORTED_OCCURRENCE_TRAVERSAL;
+
+    size_t occurrence_count = 0;
+    for (int hi = 0; hi < hit_count; hi++) {
+        alea_hier_ray_path_t path;
+        const int path_rc = chain_hit_to_path(sys, &chain_hits[hi], &path);
+        if (path_rc < 0) return -1;
+        if (path_rc == 0) return CRITICAL_COLLECT_CHAIN_TRUNCATED;
+        *out_found_path = 1;
+        stats->critical_occurrence_paths++;
+        for (int level = path.count - 1; level >= 0; level--) {
+            const alea_hier_ray_path_entry_t* entry = &path.entries[level];
+            const uint64_t universe_key =
+                path_universe_occurrence_key(&path, level);
+            int duplicate = 0;
+            for (size_t oi = 0; oi < occurrence_count; oi++) {
+                if (occurrences[oi].universe_id == entry->universe_id &&
+                    occurrences[oi].universe_occurrence_key == universe_key &&
+                    chain_hit_same_universe_occurrence(
+                        &chain_hits[occurrences[oi].chain_hit_index],
+                        occurrences[oi].level, &chain_hits[hi], level)) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            if (occurrence_count == occurrence_capacity)
+                return CRITICAL_COLLECT_MAX_OCCURRENCE_HITS;
+            const uint64_t occurrence_ordinal = occurrence_count + 1u;
+            occurrences[occurrence_count] =
+                (critical_universe_occurrence_t){
+                    .universe_id = entry->universe_id,
+                    .universe_occurrence_key = universe_key,
+                    .chain_hit_index = (size_t)hi,
+                    .level = level,
+                    .ordinal = occurrence_ordinal
+                };
+            occurrence_count++;
+            const alea_bbox_t local_bbox =
+                tile_local_bbox(view, tile, &entry->transform);
+            critical_region_visit_t visit = {
+                .sys = sys, .view = view, .tile = tile,
+                .path = &path, .level = level,
+                .universe_key = universe_key,
+                .occurrence_ordinal = occurrence_ordinal,
+                .curves = curves, .curve_count = curve_count,
+                .curve_capacity = curve_capacity,
+                .cell_curves = cell_curves,
+                .cell_curve_capacity = curve_capacity,
+                .breakpoints = breakpoints,
+                .breakpoint_capacity = breakpoint_capacity,
+                .max_active_boundary_tests = max_active_boundary_tests,
+                .stats = stats
+            };
+            size_t visited = 0;
+            if (alea_hier_spatial_visit_universe_region(
+                    sys, entry->universe_id, &local_bbox,
+                    visit_region_cell_curves, &visit, &visited) != 0)
+                return -1;
+            stats->critical_occurrence_universe_queries++;
+            stats->critical_region_candidates_scanned += visited;
+            if (visit.stop_code != CRITICAL_COLLECT_OK)
+                return visit.stop_code;
+        }
     }
     return CRITICAL_COLLECT_OK;
 }
@@ -4691,7 +4875,20 @@ static int transition_slice_enumerate_critical_tiles_reuse(
     const size_t max_points = options->max_critical_points;
     const size_t coverage_capacity = options->max_coverage_hits;
     const size_t point_slot_capacity = hash_capacity(max_points);
-    const size_t occurrence_capacity = 9u * ALEA_HIER_RAY_PATH_MAX;
+    const int exhaustive = options->occurrence_discovery ==
+        ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE;
+    const size_t chain_hit_capacity = exhaustive
+        ? options->max_exhaustive_occurrence_hits : 0u;
+    if (exhaustive &&
+        (chain_hit_capacity > INT_MAX ||
+         chain_hit_capacity > SIZE_MAX /
+            (ALEA_HIER_SPATIAL_HIT_CHAIN_MAX + 1u))) {
+        set_saturated(stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_SCRATCH_BYTES);
+        return 0;
+    }
+    const size_t occurrence_capacity = exhaustive
+        ? chain_hit_capacity * (ALEA_HIER_SPATIAL_HIT_CHAIN_MAX + 1u)
+        : 9u * ALEA_HIER_RAY_PATH_MAX;
     if (!max_curves || max_curves > (SIZE_MAX - 10) / 2 ||
         !max_points || !coverage_capacity ||
         !point_slot_capacity) {
@@ -4701,6 +4898,9 @@ static int transition_slice_enumerate_critical_tiles_reuse(
     size_t scratch_bytes = 0;
     if (checked_add(&scratch_bytes, occurrence_capacity,
                     sizeof(critical_universe_occurrence_t)) != 0 ||
+        (exhaustive && checked_add(
+            &scratch_bytes, chain_hit_capacity,
+            sizeof(alea_hier_spatial_chain_hit_t)) != 0) ||
         checked_add(&scratch_bytes, max_curves, sizeof(critical_curve_t)) != 0 ||
         checked_add(&scratch_bytes, max_curves, sizeof(critical_curve_t)) != 0 ||
         checked_add(&scratch_bytes, 2 * max_curves + 10, sizeof(double)) != 0 ||
@@ -4720,6 +4920,8 @@ static int transition_slice_enumerate_critical_tiles_reuse(
 
     critical_universe_occurrence_t* occurrences =
         calloc(occurrence_capacity, sizeof(*occurrences));
+    alea_hier_spatial_chain_hit_t* chain_hits = exhaustive
+        ? calloc(chain_hit_capacity, sizeof(*chain_hits)) : NULL;
     critical_curve_t* curves = calloc(max_curves, sizeof(*curves));
     critical_curve_t* cell_curves = calloc(max_curves, sizeof(*cell_curves));
     const size_t breakpoint_capacity = 2 * max_curves + 10;
@@ -4734,12 +4936,14 @@ static int transition_slice_enumerate_critical_tiles_reuse(
     uint64_t* coverage_parent_keys = calloc(
         coverage_capacity, sizeof(*coverage_parent_keys));
     uint8_t* coverage_mask = calloc(coverage_capacity, sizeof(*coverage_mask));
-    if (!occurrences || !curves || !cell_curves || !breakpoints ||
+    if (!occurrences || (exhaustive && !chain_hits) ||
+        !curves || !cell_curves || !breakpoints ||
         !points ||
         !point_slots || !order ||
         !coverage_hits || !coverage_keys || !coverage_parent_keys ||
         !coverage_mask) {
-        free(occurrences); free(curves); free(cell_curves); free(breakpoints);
+        free(occurrences); free(chain_hits); free(curves); free(cell_curves);
+        free(breakpoints);
         free(points); free(point_slots);
         free(order);
         free(coverage_hits); free(coverage_keys); free(coverage_parent_keys);
@@ -4774,14 +4978,20 @@ static int transition_slice_enumerate_critical_tiles_reuse(
         size_t curve_count = 0;
         size_t point_count = 0;
         int found_path = 0;
-        const int collect_rc = collect_tile_occurrence_curves(
-            sys, view, &tiles[ti], occurrences, occurrence_capacity,
-            curves, &curve_count, max_curves, cell_curves, breakpoints,
-            breakpoint_capacity,
-            options->max_active_boundary_tests,
-            &found_path, stats);
+        const int collect_rc = exhaustive
+            ? collect_tile_exhaustive_occurrence_curves(
+                sys, view, &tiles[ti], occurrences, occurrence_capacity,
+                chain_hits, chain_hit_capacity,
+                curves, &curve_count, max_curves, cell_curves, breakpoints,
+                breakpoint_capacity, options->max_active_boundary_tests,
+                &found_path, stats)
+            : collect_tile_sampled_occurrence_curves(
+                sys, view, &tiles[ti], occurrences, occurrence_capacity,
+                curves, &curve_count, max_curves, cell_curves, breakpoints,
+                breakpoint_capacity, options->max_active_boundary_tests,
+                &found_path, stats);
         if (collect_rc < 0) {
-            free(occurrences); free(curves); free(cell_curves);
+            free(occurrences); free(chain_hits); free(curves); free(cell_curves);
             free(breakpoints); free(points);
             free(point_slots); free(order);
             free(coverage_hits); free(coverage_keys);
@@ -4800,6 +5010,18 @@ static int transition_slice_enumerate_critical_tiles_reuse(
             stats->critical_chain_truncated_hits++;
             set_saturated(stats,
                           ALEA_TRANSITION_SLICE_CRITICAL_CHAIN_TRUNCATED);
+            continue;
+        }
+        if (collect_rc == CRITICAL_COLLECT_MAX_OCCURRENCE_HITS) {
+            set_saturated(
+                stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_OCCURRENCE_HITS);
+            continue;
+        }
+        if (collect_rc ==
+                CRITICAL_COLLECT_UNSUPPORTED_OCCURRENCE_TRAVERSAL) {
+            set_saturated(
+                stats,
+                ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL);
             continue;
         }
         stats->critical_curves += curve_count;
@@ -4995,7 +5217,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
                                   ALEA_TRANSITION_SLICE_CRITICAL_MAX_PROBES);
                     break;
                 }
-                free(occurrences); free(curves); free(cell_curves);
+                free(occurrences); free(chain_hits); free(curves); free(cell_curves);
                 free(breakpoints); free(points);
                 free(point_slots); free(order);
                 free(coverage_hits); free(coverage_keys);
@@ -5025,7 +5247,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
                 if (alea_check_selected_boundary_event_transition_reuse_nocache(
                         sys, event, &transition_options, &transition,
                         transition_workspace) != 0) {
-                    free(occurrences); free(curves); free(cell_curves);
+                    free(occurrences); free(chain_hits); free(curves); free(cell_curves);
                     free(breakpoints); free(points);
                     free(point_slots); free(order);
                     free(coverage_hits); free(coverage_keys);
@@ -5095,7 +5317,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
                         const int sink_rc = finding_sink(
                             &finding, finding_sink_userdata);
                         if (sink_rc < 0) {
-                            free(occurrences); free(curves); free(cell_curves);
+                            free(occurrences); free(chain_hits); free(curves); free(cell_curves);
                             free(breakpoints); free(points);
                             free(point_slots); free(order);
                             free(coverage_hits); free(coverage_keys);
@@ -5126,6 +5348,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
             const double tangent[2] = {-normal[1], normal[0]};
             const double radius = options->critical_probe_radius > 0.0
                 ? options->critical_probe_radius * 0.5 : 5e-7 * tile_scale;
+            int emitted_overlap = 0;
             for (int sector = 0; sector < 4; sector++) {
                 if (options->max_critical_sector_witnesses &&
                     stats->critical_sector_witnesses >=
@@ -5153,7 +5376,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
                         sys, world[0], world[1], world[2], coverage_hits,
                         coverage_keys, coverage_parent_keys, coverage_capacity);
                 if (count < 0) {
-                    free(occurrences); free(curves); free(cell_curves);
+                    free(occurrences); free(chain_hits); free(curves); free(cell_curves);
                     free(breakpoints); free(points);
                     free(point_slots); free(order); free(coverage_hits);
                     free(coverage_keys); free(coverage_parent_keys);
@@ -5175,14 +5398,101 @@ static int transition_slice_enumerate_critical_tiles_reuse(
                     continue;
                 if (classification.kind == ALEA_POINT_COVERAGE_GAP)
                     stats->critical_sector_gap_witnesses++;
-                else if (classification.kind == ALEA_POINT_COVERAGE_OVERLAP)
+                else if (classification.kind == ALEA_POINT_COVERAGE_OVERLAP) {
                     stats->critical_sector_overlap_witnesses++;
-                else if (classification.kind != ALEA_POINT_COVERAGE_UNIQUE)
+                    if (exhaustive && !emitted_overlap && finding_sink) {
+                        const critical_curve_t* source =
+                            &curves[points[pi].curve_index];
+                        alea_transition_slice_critical_finding_t finding;
+                        memset(&finding, 0, sizeof(finding));
+                        finding.transition.kind = ALEA_TRANSITION_OVERLAP;
+                        finding.transition.after_coverage_kind =
+                            ALEA_POINT_COVERAGE_OVERLAP;
+                        finding.transition.primary_surface_id =
+                            source->curve.surface_id;
+                        finding.transition.current_cell_id = source->cell_id;
+                        finding.transition.current_occurrence_key =
+                            source->occurrence_key;
+                        finding.transition.current_parent_occurrence_key =
+                            source->universe_occurrence_key;
+                        finding.transition.probe_distance = radius;
+                        for (int h = 0; h < count; h++) {
+                            if (!coverage_mask[h]) continue;
+                            if (finding.transition.owner_cell_count <
+                                    ALEA_TRANSITION_EVIDENCE_CAPACITY) {
+                                const size_t owner =
+                                    finding.transition.owner_cell_count++;
+                                finding.transition.owner_cell_ids[owner] =
+                                    coverage_hits[h].cell_id;
+                            }
+                            if (coverage_hits[h].cell_id == source->cell_id) {
+                                finding.transition.universe_id =
+                                    coverage_hits[h].universe_id;
+                                finding.transition.occurrence_depth =
+                                    coverage_hits[h].depth;
+                            } else if (!finding.transition.after_cell_id) {
+                                finding.transition.after_cell_id =
+                                    coverage_hits[h].cell_id;
+                                finding.transition.selected_after_occurrence_key =
+                                    coverage_keys[h];
+                                finding.transition.selected_after_parent_occurrence_key =
+                                    coverage_parent_keys[h];
+                            }
+                        }
+                        finding.transition.after_owner_count =
+                            classification.owner_count;
+                        memcpy(finding.transition.crossing_point, world,
+                               sizeof(world));
+                        memcpy(finding.transition.before_point, world,
+                               sizeof(world));
+                        memcpy(finding.transition.after_point, world,
+                               sizeof(world));
+                        for (int axis = 0; axis < 3; axis++)
+                            finding.transition.direction[axis] =
+                                sn*normal[0]*view->plane.u_axis[axis] +
+                                sn*normal[1]*view->plane.v_axis[axis] +
+                                st*tangent[0]*view->plane.u_axis[axis] +
+                                st*tangent[1]*view->plane.v_axis[axis];
+                        finding.tile_index = ti;
+                        finding.point_index = pi;
+                        finding.source_cell_id = source->cell_id;
+                        finding.source_surface_id = source->curve.surface_id;
+                        finding.source_occurrence_key = source->occurrence_key;
+                        finding.source_universe_occurrence_key =
+                            source->universe_occurrence_key;
+                        finding.uv[0] = u;
+                        finding.uv[1] = v;
+                        memcpy(finding.world_point, world, sizeof(world));
+                        memcpy(finding.direction,
+                               finding.transition.direction,
+                               sizeof(finding.direction));
+                        finding.radius = radius;
+                        retain_boundary_evidence(
+                            &finding, curves, curve_count, source,
+                            points[pi].uv, point_tolerance, options, stats);
+                        const int sink_rc = finding_sink(
+                            &finding, finding_sink_userdata);
+                        if (sink_rc < 0) goto failed;
+                        if (sink_rc > 0) {
+                            if (finding.boundary_piece_count > 0)
+                                stats->critical_boundary_evidence--;
+                            if (finding.boundary_evidence_truncated)
+                                stats->omitted_critical_boundary_evidence--;
+                            set_saturated(
+                                stats,
+                                ALEA_TRANSITION_SLICE_CRITICAL_MAX_FINDINGS);
+                            pi = point_count;
+                            break;
+                        }
+                        emitted_overlap = 1;
+                    }
+                } else if (classification.kind != ALEA_POINT_COVERAGE_UNIQUE)
                     stats->critical_sector_unresolved_witnesses++;
             }
         }
     }
-    free(occurrences); free(curves); free(cell_curves); free(breakpoints);
+    free(occurrences); free(chain_hits); free(curves); free(cell_curves);
+    free(breakpoints);
     free(points); free(point_slots);
     free(order);
     free(coverage_hits); free(coverage_keys); free(coverage_parent_keys);
@@ -5192,7 +5502,8 @@ static int transition_slice_enumerate_critical_tiles_reuse(
     return 0;
 
 failed:
-    free(occurrences); free(curves); free(cell_curves); free(breakpoints);
+    free(occurrences); free(chain_hits); free(curves); free(cell_curves);
+    free(breakpoints);
     free(points); free(point_slots);
     free(order);
     free(coverage_hits); free(coverage_keys); free(coverage_parent_keys);
