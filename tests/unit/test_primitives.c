@@ -10,7 +10,9 @@
 #include "alea.h"
 #include "alea_types.h"
 #include "core/alea_system.h"
+#include "core/alea_eval.h"
 #include "primitives/primitive_eval.h"
+#include "primitives/primitive_desc.h"
 #include "primitives/bbox.h"
 #include <string.h>
 #include <math.h>
@@ -457,7 +459,22 @@ static bool add_and_copy_payload(
     alea_primitive_id_t id = alea_get_or_create_primitive(sys, type, &data, &inverted);
     if (id == ALEA_PRIMITIVE_ID_INVALID) return false;
     if (!alea_primitive_copy_data(sys, id, out)) return false;
-    return alea_primitive_payload_const(sys, id) != NULL;
+    const void* payload = alea_primitive_payload_const(sys, id);
+    if (!payload) return false;
+    const double points[] = {
+        -INFINITY, -9.0, -1.0, -0.0, 0.0, 0x1p-52,
+        1.0 - 0x1p-53, 1.0, 1.0 + 0x1p-52, 9.0, INFINITY, NAN};
+    for (size_t i = 0; i < sizeof(points)/sizeof(points[0]); ++i) {
+        for (int axis = 0; axis < 3; ++axis) {
+            double xyz[3] = {0.25, -0.5, 0.75};
+            xyz[axis] = points[i];
+            double expected = alea_primitive_eval(type, out, xyz[0], xyz[1], xyz[2]);
+            double actual = alea_primitive_eval_payload(type, payload, xyz[0], xyz[1], xyz[2]);
+            if (!(isnan(expected) && isnan(actual)) &&
+                memcmp(&expected, &actual, sizeof(double)) != 0) return false;
+        }
+    }
+    return true;
 }
 
 TEST(primitive_payload_storage_all_types) {
@@ -575,6 +592,33 @@ TEST(primitive_payload_storage_all_types) {
     ASSERT_EQ(out.arb.num_faces, 4);
     ASSERT_NEAR(out.arb.corners[3][2], 9.0, 1e-12);
 
+    alea_destroy(sys);
+}
+
+TEST(typed_evaluation_preserves_invalid_payload_and_orientation) {
+    alea_system_t* sys = alea_create();
+    ASSERT(sys != NULL);
+    alea_primitive_data_t data = {0};
+    data.plane.a = 1.0;
+    int8_t inverted = 0;
+    uint32_t id = alea_get_or_create_primitive(
+        sys, ALEA_PRIMITIVE_PLANE, &data, &inverted);
+    for (int sense = -1; sense <= 1; sense += 2) {
+        for (int flip = 0; flip <= 1; ++flip) {
+            alea_node_id_t node = alea_add_primitive_node(sys, id, sense, flip, 1);
+            /* Test the evaluated side of the halfspace (avoid bbox rejection). */
+            double x = (sense > 0) != (flip != 0) ? 1.0 : -1.0;
+            alea_perf_reset();
+            ASSERT_EQ(alea_evaluate_point(sys, node, x, 0, 0), -1.0);
+            ASSERT_EQ(alea_perf_get().primitive_evaluations, 1);
+            uint32_t saved = sys->primitives.data[id].payload_index;
+            sys->primitives.data[id].payload_index = UINT32_MAX;
+            ASSERT_EQ(alea_evaluate_point(sys, node, x, 0, 0), 1.0);
+            sys->primitives.data[id].payload_index = saved;
+        }
+    }
+    ASSERT_EQ(alea_primitive_eval_payload(ALEA_PRIMITIVE_PLANE, NULL, 0, 0, 0), 1.0);
+    ASSERT_EQ(alea_primitive_eval_payload(0, &data.plane, 0, 0, 0), 1.0);
     alea_destroy(sys);
 }
 

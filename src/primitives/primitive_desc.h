@@ -84,6 +84,12 @@ typedef struct {
  */
 const alea_primitive_desc_t* alea_primitive_get_desc(alea_primitive_type_t type);
 
+/* Internal typed-storage evaluator. payload must point to the concrete data
+ * type corresponding to type, as returned by alea_primitive_payload_const().
+ * Null payloads and unsupported types evaluate as outside (+1). */
+double alea_primitive_eval_payload(alea_primitive_type_t type, const void* payload,
+                                   double x, double y, double z);
+
 /**
  * @brief Get primitive type name
  * @param type Primitive type enum value
