@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transition_slice_critical.h"
+#include "transition_validation.h"
 
 #include "core/alea_occurrence.h"
 #include "core/alea_eval.h"
@@ -58,6 +59,7 @@ typedef struct {
 
 typedef struct {
     size_t curve_index;
+    int cell_id;
     double u_min, u_max, v_min, v_max;
 } critical_curve_order_t;
 
@@ -546,6 +548,14 @@ static int curve_order_compare(const void* lhs, const void* rhs) {
     if (a->u_min > b->u_min) return 1;
     return (a->curve_index > b->curve_index) -
            (a->curve_index < b->curve_index);
+}
+
+static int curve_cell_order_compare(const void* lhs, const void* rhs) {
+    const critical_curve_order_t* a = lhs;
+    const critical_curve_order_t* b = rhs;
+    if (a->cell_id < b->cell_id) return -1;
+    if (a->cell_id > b->cell_id) return 1;
+    return curve_order_compare(lhs, rhs);
 }
 
 static int curve_priority_compare(const void* lhs, const void* rhs) {
@@ -4666,13 +4676,14 @@ static void set_saturated(alea_transition_slice_stats_t* stats,
         stats->critical_stop_reason = reason;
 }
 
-int alea_transition_slice_enumerate_critical_tiles(
+static int transition_slice_enumerate_critical_tiles_reuse(
     alea_system_t* sys, const alea_slice_view_t* view,
     const alea_transition_slice_options_t* options,
     const alea_transition_slice_critical_tile_t* tiles, size_t tile_count,
     alea_transition_slice_critical_finding_sink_t finding_sink,
     void* finding_sink_userdata,
-    alea_transition_slice_stats_t* stats) {
+    alea_transition_slice_stats_t* stats,
+    alea_transition_workspace_t* transition_workspace) {
     if (!sys || !view || !options || !stats || (tile_count && !tiles)) return -1;
     if (!tile_count) return 0;
 
@@ -4742,7 +4753,23 @@ int alea_transition_slice_enumerate_critical_tiles(
     if (scratch_bytes > stats->peak_critical_scratch_bytes)
         stats->peak_critical_scratch_bytes = scratch_bytes;
 
+    /* Reserve half (rounded up) of a finite call-wide solver allowance for
+     * same-cell topology.  Unlike the former per-tile counter, neither this
+     * reservation nor the total solver budget resets between tiles. */
+    const uint64_t same_cell_pair_budget = options->max_curve_pairs
+        ? options->max_curve_pairs / 2u + options->max_curve_pairs % 2u
+        : UINT64_MAX;
+    uint64_t same_cell_pairs_tested = 0;
+    int same_cell_pair_stopped = 0;
+    uint64_t pair_comparisons = 0;
+
     for (size_t ti = 0; ti < tile_count; ti++) {
+        if (alea_interrupted()) {
+            alea_set_error_detail(
+                ALEA_ERR_INTERRUPTED,
+                "critical slice curve enumeration interrupted");
+            goto failed;
+        }
         memset(point_slots, 0, point_slot_capacity * sizeof(*point_slots));
         size_t curve_count = 0;
         size_t point_count = 0;
@@ -4809,35 +4836,47 @@ int alea_transition_slice_enumerate_critical_tiles(
         }
         for (size_t ci = 0; ci < curve_count; ci++) {
             order[ci].curve_index = ci;
+            order[ci].cell_id = curves[ci].cell_id;
             order[ci].u_min = curves[ci].bbox[0];
             order[ci].u_max = curves[ci].bbox[1];
             order[ci].v_min = curves[ci].bbox[2];
             order[ci].v_max = curves[ci].bbox[3];
         }
-        qsort(order, curve_count, sizeof(*order), curve_order_compare);
         int pair_stopped = 0;
-        const uint64_t local_pair_budget = options->max_curve_pairs
-            ? options->max_curve_pairs / 2u : UINT64_MAX;
-        uint64_t local_pairs = 0;
-        int local_pair_stopped = 0;
-        for (size_t first = 0; first < curve_count && !pair_stopped &&
-             !local_pair_stopped; first++) {
-            for (size_t second = first + 1; second < curve_count; second++) {
-                if (curves[first].cell_id != curves[second].cell_id) continue;
+        qsort(order, curve_count, sizeof(*order), curve_cell_order_compare);
+        for (size_t oi = 0; oi < curve_count && !pair_stopped &&
+             !same_cell_pair_stopped; oi++) {
+            for (size_t oj = oi + 1; oj < curve_count; oj++) {
+                if (order[oj].cell_id != order[oi].cell_id) break;
+                if (order[oj].u_min > order[oi].u_max) break;
+                if ((++pair_comparisons & UINT64_C(4095)) == 0 &&
+                    alea_interrupted()) {
+                    alea_set_error_detail(
+                        ALEA_ERR_INTERRUPTED,
+                        "critical slice curve-pair scan interrupted");
+                    goto failed;
+                }
+                if (order[oj].v_min > order[oi].v_max ||
+                    order[oi].v_min > order[oj].v_max) continue;
+                const size_t first = order[oi].curve_index <
+                        order[oj].curve_index
+                    ? order[oi].curve_index : order[oj].curve_index;
+                const size_t second = order[oi].curve_index <
+                        order[oj].curve_index
+                    ? order[oj].curve_index : order[oi].curve_index;
                 if (critical_curves_same_source(
                         &curves[first], &curves[second])) continue;
-                if (curves[first].bbox[1] < curves[second].bbox[0] ||
-                    curves[second].bbox[1] < curves[first].bbox[0] ||
-                    curves[first].bbox[3] < curves[second].bbox[2] ||
-                    curves[second].bbox[3] < curves[first].bbox[2]) continue;
                 stats->critical_curve_pair_candidates++;
-                if (local_pairs >= local_pair_budget) {
+                if (same_cell_pairs_tested >= same_cell_pair_budget ||
+                    (options->max_curve_pairs &&
+                     stats->critical_curve_pairs_tested >=
+                        options->max_curve_pairs)) {
                     set_saturated(
                         stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVE_PAIRS);
-                    local_pair_stopped = 1;
+                    same_cell_pair_stopped = 1;
                     break;
                 }
-                local_pairs++;
+                same_cell_pairs_tested++;
                 stats->critical_curve_pairs_tested++;
                 const int pair_rc = solve_curve_pair(
                     &curves[first], &curves[second], first,
@@ -4860,10 +4899,18 @@ int alea_transition_slice_enumerate_critical_tiles(
                 }
             }
         }
+        qsort(order, curve_count, sizeof(*order), curve_order_compare);
         for (size_t oi = 0; oi < curve_count && !pair_stopped; oi++) {
             for (size_t oj = oi + 1; oj < curve_count; oj++) {
                 if (order[oj].u_min > order[oi].u_max + point_tolerance)
                     break;
+                if ((++pair_comparisons & UINT64_C(4095)) == 0 &&
+                    alea_interrupted()) {
+                    alea_set_error_detail(
+                        ALEA_ERR_INTERRUPTED,
+                        "critical slice curve-pair scan interrupted");
+                    goto failed;
+                }
                 if (order[oj].v_min > order[oi].v_max + point_tolerance ||
                     order[oi].v_min > order[oj].v_max + point_tolerance)
                     continue;
@@ -4975,8 +5022,9 @@ int alea_transition_slice_enumerate_critical_tiles(
                 transition_options.max_probe_distance = radius * 0.25;
                 transition_options.max_coverage_hits = options->max_coverage_hits;
                 alea_transition_result_t transition;
-                if (alea_check_selected_boundary_event_transition_nocache(
-                        sys, event, &transition_options, &transition) != 0) {
+                if (alea_check_selected_boundary_event_transition_reuse_nocache(
+                        sys, event, &transition_options, &transition,
+                        transition_workspace) != 0) {
                     free(occurrences); free(curves); free(cell_curves);
                     free(breakpoints); free(points);
                     free(point_slots); free(order);
@@ -4994,12 +5042,13 @@ int alea_transition_slice_enumerate_critical_tiles(
                         ALEA_BOUNDARY_PROVENANCE_ACTIVE_FRAME) &&
                     transition.current_cell_id > 0) {
                     alea_transition_result_t source_transition;
-                    if (alea_check_transition_local(
+                    if (alea_check_transition_local_reuse(
                             sys, event->active_universe_id,
                             transition.current_cell_id,
                             source->curve.surface_id, NULL, 0,
                             event->local_point, event->local_direction,
-                            &transition_options, &source_transition) == 0 &&
+                            &transition_options, &source_transition,
+                            transition_workspace) == 0 &&
                         source_transition.kind != ALEA_TRANSITION_VALID) {
                         source_transition.occurrence_depth =
                             transition.occurrence_depth;
@@ -5141,4 +5190,30 @@ int alea_transition_slice_enumerate_critical_tiles(
     alea_raycast_result_free(&ray_scratch);
     alea_ray_boundary_event_result_free(&ray_events);
     return 0;
+
+failed:
+    free(occurrences); free(curves); free(cell_curves); free(breakpoints);
+    free(points); free(point_slots);
+    free(order);
+    free(coverage_hits); free(coverage_keys); free(coverage_parent_keys);
+    free(coverage_mask);
+    alea_raycast_result_free(&ray_scratch);
+    alea_ray_boundary_event_result_free(&ray_events);
+    return -1;
+}
+
+int alea_transition_slice_enumerate_critical_tiles(
+    alea_system_t* sys, const alea_slice_view_t* view,
+    const alea_transition_slice_options_t* options,
+    const alea_transition_slice_critical_tile_t* tiles, size_t tile_count,
+    alea_transition_slice_critical_finding_sink_t finding_sink,
+    void* finding_sink_userdata,
+    alea_transition_slice_stats_t* stats) {
+    alea_transition_workspace_t workspace;
+    alea_transition_workspace_init(&workspace);
+    const int rc = transition_slice_enumerate_critical_tiles_reuse(
+        sys, view, options, tiles, tile_count, finding_sink,
+        finding_sink_userdata, stats, &workspace);
+    alea_transition_workspace_free(&workspace);
+    return rc;
 }
