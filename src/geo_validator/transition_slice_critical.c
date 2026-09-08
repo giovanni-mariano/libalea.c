@@ -4886,9 +4886,12 @@ static int transition_slice_enumerate_critical_tiles_reuse(
         set_saturated(stats, ALEA_TRANSITION_SLICE_CRITICAL_MAX_SCRATCH_BYTES);
         return 0;
     }
-    const size_t occurrence_capacity = exhaustive
+    size_t occurrence_capacity = exhaustive
         ? chain_hit_capacity * (ALEA_HIER_SPATIAL_HIT_CHAIN_MAX + 1u)
         : 9u * ALEA_HIER_RAY_PATH_MAX;
+    /* Incomplete exhaustive traversal falls back to the sampled collector. */
+    if (occurrence_capacity < 9u * ALEA_HIER_RAY_PATH_MAX)
+        occurrence_capacity = 9u * ALEA_HIER_RAY_PATH_MAX;
     if (!max_curves || max_curves > (SIZE_MAX - 10) / 2 ||
         !max_points || !coverage_capacity ||
         !point_slot_capacity) {
@@ -4978,7 +4981,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
         size_t curve_count = 0;
         size_t point_count = 0;
         int found_path = 0;
-        const int collect_rc = exhaustive
+        int collect_rc = exhaustive
             ? collect_tile_exhaustive_occurrence_curves(
                 sys, view, &tiles[ti], occurrences, occurrence_capacity,
                 chain_hits, chain_hit_capacity,
@@ -4990,6 +4993,31 @@ static int transition_slice_enumerate_critical_tiles_reuse(
                 curves, &curve_count, max_curves, cell_curves, breakpoints,
                 breakpoint_capacity, options->max_active_boundary_tests,
                 &found_path, stats);
+        if (exhaustive &&
+            (collect_rc == CRITICAL_COLLECT_MAX_OCCURRENCE_HITS ||
+             collect_rc == CRITICAL_COLLECT_UNSUPPORTED_OCCURRENCE_TRAVERSAL ||
+             collect_rc == CRITICAL_COLLECT_CHAIN_TRUNCATED)) {
+            /* An incomplete occurrence search must not suppress the evidence
+             * available from the sampled search. Keep the exhaustive failure
+             * receipt so this fallback can never certify complete coverage.
+             * Restart collection: sampled and exhaustive curves use different
+             * occurrence identity representations and cannot be mixed. */
+            const alea_transition_slice_critical_stop_reason_t reason =
+                collect_rc == CRITICAL_COLLECT_MAX_OCCURRENCE_HITS
+                    ? ALEA_TRANSITION_SLICE_CRITICAL_MAX_OCCURRENCE_HITS
+                : collect_rc == CRITICAL_COLLECT_CHAIN_TRUNCATED
+                    ? ALEA_TRANSITION_SLICE_CRITICAL_CHAIN_TRUNCATED
+                    : ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL;
+            if (collect_rc == CRITICAL_COLLECT_CHAIN_TRUNCATED)
+                stats->critical_chain_truncated_hits++;
+            set_saturated(stats, reason);
+            curve_count = 0;
+            collect_rc = collect_tile_sampled_occurrence_curves(
+                sys, view, &tiles[ti], occurrences, occurrence_capacity,
+                curves, &curve_count, max_curves, cell_curves, breakpoints,
+                breakpoint_capacity, options->max_active_boundary_tests,
+                &found_path, stats);
+        }
         if (collect_rc < 0) {
             free(occurrences); free(chain_hits); free(curves); free(cell_curves);
             free(breakpoints); free(points);

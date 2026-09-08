@@ -55,6 +55,7 @@ typedef enum {
  */
 typedef struct mcnp_surface {
     int surface_id;
+    int source_line;
     char* mnemonic;            // Surface type (PX, SO, CX, etc.)
     char* coefficients_str;    // Numeric parameters
     char* comments;

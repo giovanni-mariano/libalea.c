@@ -31,6 +31,25 @@ static int load_profile_enabled(void) {
     return v && *v && strcmp(v, "0") != 0;
 }
 
+/* Keep both surface locations inside the 256-byte native error buffer. */
+static void surface_parameter_preview(const char* text, char out[32]) {
+    size_t n = 0;
+    if (!text) text = "";
+    while (*text && n < 31) {
+        if (isspace((unsigned char)*text)) {
+            while (isspace((unsigned char)*text)) text++;
+            if (n && *text) out[n++] = ' ';
+        } else {
+            out[n++] = *text++;
+        }
+    }
+    if (*text) {
+        memcpy(out + 28, "...", 3);
+        n = 31;
+    }
+    out[n] = '\0';
+}
+
 static void load_profile_stage(const char* name, double start, double end) {
     if (load_profile_enabled()) {
         fprintf(stderr, "[alea-load-profile] %-28s %.6f s\n", name, end - start);
@@ -436,9 +455,33 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
         if (alea_interrupted_internal()) goto interrupted;
 
         int sid = mcnp->surfaces[i]->surface_id;
-        if (surf_seen.words && alea_bitset_test(&surf_seen, sid)) {
-            ALEA_LOG_WARN("Duplicate surface id=%d, skipping", sid);
-            continue;
+        /* If the bitset allocation failed, still enforce uniqueness. */
+        size_t previous = i;
+        if (!surf_seen.words || alea_bitset_test(&surf_seen, sid)) {
+            for (size_t j = 0; j < i; j++) {
+                if (mcnp->surfaces[j]->surface_id == sid) {
+                    previous = j;
+                    break;
+                }
+            }
+        }
+        if (previous != i) {
+            const mcnp_surface_t* first = mcnp->surfaces[previous];
+            const mcnp_surface_t* duplicate = mcnp->surfaces[i];
+            char first_parameters[32], duplicate_parameters[32];
+            surface_parameter_preview(first->coefficients_str, first_parameters);
+            surface_parameter_preview(duplicate->coefficients_str, duplicate_parameters);
+            alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                "Duplicate surface id=%d. Surface IDs must be unique. "
+                "First: line %d [%.8s transform=%d %s]; "
+                "repeated: line %d [%.8s transform=%d %s].",
+                sid, first->source_line, first->mnemonic, first->transform_id,
+                first_parameters, duplicate->source_line, duplicate->mnemonic,
+                duplicate->transform_id, duplicate_parameters);
+            alea_bitset_destroy(&surf_seen);
+            mcnp_model_destroy(model);
+            mcnp_context_destroy(mcnp);
+            return NULL;
         }
         if (surf_seen.words) alea_bitset_set(&surf_seen, sid);
 
