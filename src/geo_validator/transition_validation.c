@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_geo_validator.h"
+#include "transition_validation.h"
 
 #include "core/alea_eval.h"
 #include "core/alea_system.h"
@@ -15,6 +16,54 @@
 typedef struct {
     alea_transition_result_t result;
 } transition_probe_t;
+
+void alea_transition_workspace_init(alea_transition_workspace_t* workspace) {
+    if (workspace) memset(workspace, 0, sizeof(*workspace));
+}
+
+void alea_transition_workspace_free(alea_transition_workspace_t* workspace) {
+    if (!workspace) return;
+    free(workspace->hits);
+    free(workspace->keys);
+    free(workspace->parents);
+    free(workspace->owners);
+    free(workspace->child_counts);
+    memset(workspace, 0, sizeof(*workspace));
+}
+
+static int transition_workspace_reserve(alea_transition_workspace_t* workspace,
+                                        size_t capacity) {
+    if (!workspace || capacity == 0) return -1;
+    if (workspace->capacity >= capacity) return 0;
+    if (capacity > SIZE_MAX / sizeof(*workspace->hits) ||
+        capacity > SIZE_MAX / sizeof(*workspace->keys) ||
+        capacity > SIZE_MAX / sizeof(*workspace->parents) ||
+        capacity > SIZE_MAX / sizeof(*workspace->owners) ||
+        capacity > SIZE_MAX / sizeof(*workspace->child_counts))
+        return -1;
+    alea_cell_hit_t* hits = calloc(capacity, sizeof(*hits));
+    uint64_t* keys = calloc(capacity, sizeof(*keys));
+    uint64_t* parents = calloc(capacity, sizeof(*parents));
+    uint8_t* owners = calloc(capacity, sizeof(*owners));
+    size_t* child_counts = calloc(capacity, sizeof(*child_counts));
+    if (!hits || !keys || !parents || !owners || !child_counts) {
+        free(hits); free(keys); free(parents); free(owners);
+        free(child_counts);
+        return -1;
+    }
+    free(workspace->hits);
+    free(workspace->keys);
+    free(workspace->parents);
+    free(workspace->owners);
+    free(workspace->child_counts);
+    workspace->hits = hits;
+    workspace->keys = keys;
+    workspace->parents = parents;
+    workspace->owners = owners;
+    workspace->child_counts = child_counts;
+    workspace->capacity = capacity;
+    return 0;
+}
 
 void alea_transition_options_init(alea_transition_options_t* options) {
     if (!options) return;
@@ -132,51 +181,40 @@ static void transition_surface_candidates(
 
 static int transition_after_coverage(
     alea_system_t* sys, int universe_id, const double point[3],
-    size_t capacity, alea_transition_result_t* result) {
-    alea_cell_hit_t* hits = calloc(capacity, sizeof(*hits));
-    uint64_t* keys = calloc(capacity, sizeof(*keys));
-    uint64_t* parents = calloc(capacity, sizeof(*parents));
-    uint8_t* owners = calloc(capacity, sizeof(*owners));
-    if (!hits || !keys || !parents || !owners) {
-        free(hits); free(keys); free(parents); free(owners);
-        return -1;
-    }
+    size_t capacity, alea_transition_workspace_t* workspace,
+    alea_transition_result_t* result) {
+    if (transition_workspace_reserve(workspace, capacity) != 0) return -1;
     int count = alea_find_all_cells_in_universe_coverage_chain(
         sys, universe_id, point[0], point[1], point[2],
-        hits, keys, parents, capacity);
-    if (count < 0) {
-        free(hits); free(keys); free(parents); free(owners);
-        return -1;
-    }
+        workspace->hits, workspace->keys, workspace->parents, capacity);
+    if (count < 0) return -1;
     result->flags |= ALEA_TRANSITION_FLAG_COVERAGE_FALLBACK;
     result->coverage_fallbacks++;
     if ((size_t)count >= capacity) {
         result->flags |= ALEA_TRANSITION_FLAG_OWNERS_TRUNCATED;
         result->after_coverage_kind = ALEA_POINT_COVERAGE_UNRESOLVED;
-        free(hits); free(keys); free(parents); free(owners);
         return 1;
     }
 
     alea_point_coverage_classification_t classification;
-    if (alea_classify_point_coverage_chain(
-            hits, keys, parents, (size_t)count, -1,
-            owners, &classification) != 0) {
-        free(hits); free(keys); free(parents); free(owners);
+    if (alea_classify_point_coverage_chain_with_scratch(
+            workspace->hits, workspace->keys, workspace->parents,
+            (size_t)count, -1, workspace->owners, workspace->child_counts,
+            &classification) != 0) {
         return -1;
     }
     result->after_coverage_kind = classification.kind;
     result->after_owner_count = classification.owner_count;
     for (int i = 0; i < count; i++) {
-        if (!owners[i]) continue;
-        transition_append_id(hits[i].cell_id,
+        if (!workspace->owners[i]) continue;
+        transition_append_id(workspace->hits[i].cell_id,
                              result->owner_cell_ids,
                              &result->owner_cell_count,
                              &result->flags,
                              ALEA_TRANSITION_FLAG_OWNERS_TRUNCATED);
         if (classification.owner_count == 1)
-            result->after_cell_id = hits[i].cell_id;
+            result->after_cell_id = workspace->hits[i].cell_id;
     }
-    free(hits); free(keys); free(parents); free(owners);
     return 0;
 }
 
@@ -245,7 +283,8 @@ static int transition_probe(
     int current_cell_id, uint32_t primary_surface_index,
     int primary_surface_id, const int* tied_surface_ids,
     size_t tied_surface_count, const double point[3], const double direction[3],
-    double distance, size_t coverage_capacity, transition_probe_t* probe) {
+    double distance, size_t coverage_capacity,
+    alea_transition_workspace_t* workspace, transition_probe_t* probe) {
     alea_transition_result_t* result = &probe->result;
     memset(result, 0, sizeof(*result));
     result->kind = ALEA_TRANSITION_UNRESOLVED;
@@ -303,7 +342,8 @@ static int transition_probe(
     }
 
     int coverage_rc = transition_after_coverage(
-        sys, universe_id, result->after_point, coverage_capacity, result);
+        sys, universe_id, result->after_point, coverage_capacity,
+        workspace, result);
     if (coverage_rc < 0) return -1;
     if (coverage_rc > 0) {
         result->kind = ALEA_TRANSITION_TRUNCATED;
@@ -353,13 +393,14 @@ static int transition_probe_same(const transition_probe_t* a,
            a->result.after_owner_count == b->result.after_owner_count;
 }
 
-int alea_check_transition_local(
+int alea_check_transition_local_reuse(
     alea_system_t* sys, int universe_id, int current_cell_id,
     int primary_surface_id, const int* tied_surface_ids,
     size_t tied_surface_count, const double point[3],
     const double direction_input[3], const alea_transition_options_t* input,
-    alea_transition_result_t* result) {
-    if (!sys || !point || !direction_input || !result ||
+    alea_transition_result_t* result,
+    alea_transition_workspace_t* workspace) {
+    if (!sys || !point || !direction_input || !result || !workspace ||
         (tied_surface_count > 0 && !tied_surface_ids)) return -1;
     if (!sys->cell_adjacency_built || !sys->surface_cell_offsets) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
@@ -451,7 +492,8 @@ int alea_check_transition_local(
                 sys, universe_id, (uint32_t)current_cell_index,
                 current_cell_id, surface_index, primary_surface_id,
                 tied_surface_ids, tied_surface_count, point, direction,
-                distances[i], options.max_coverage_hits, &current) != 0)
+                distances[i], options.max_coverage_hits, workspace,
+                &current) != 0)
             return -1;
         current.result.offset_attempts = i + 1;
         total_fallbacks += current.result.coverage_fallbacks;
@@ -474,4 +516,20 @@ int alea_check_transition_local(
         result->kind = ALEA_TRANSITION_AMBIGUOUS_BOUNDARY;
     }
     return 0;
+}
+
+int alea_check_transition_local(
+    alea_system_t* sys, int universe_id, int current_cell_id,
+    int primary_surface_id, const int* tied_surface_ids,
+    size_t tied_surface_count, const double point[3],
+    const double direction_input[3], const alea_transition_options_t* input,
+    alea_transition_result_t* result) {
+    alea_transition_workspace_t workspace;
+    alea_transition_workspace_init(&workspace);
+    const int rc = alea_check_transition_local_reuse(
+        sys, universe_id, current_cell_id, primary_surface_id,
+        tied_surface_ids, tied_surface_count, point, direction_input,
+        input, result, &workspace);
+    alea_transition_workspace_free(&workspace);
+    return rc;
 }
