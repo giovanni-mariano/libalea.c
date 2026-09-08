@@ -30,45 +30,39 @@ static alea_bbox_t bbox_arb(const alea_primitive_data_t* data);
  * EVAL FUNCTIONS
  * ============================================================================ */
 
-static double eval_plane(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_plane_data_t* p = &data->plane;
+static double eval_plane_typed(const alea_plane_data_t* p, double x, double y, double z) {
     return p->a * x + p->b * y + p->c * z + p->d;
 }
 
-static double eval_sphere(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_sphere_data_t* s = &data->sphere;
+static double eval_sphere_typed(const alea_sphere_data_t* s, double x, double y, double z) {
     double dx = x - s->center_x;
     double dy = y - s->center_y;
     double dz = z - s->center_z;
     return dx*dx + dy*dy + dz*dz - s->radius*s->radius;
 }
 
-static double eval_cylinder_x(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_cylinder_x_data_t* c = &data->cyl_x;
+static double eval_cylinder_x_typed(const alea_cylinder_x_data_t* c, double x, double y, double z) {
     (void)x;
     double dy = y - c->center_y;
     double dz = z - c->center_z;
     return dy*dy + dz*dz - c->radius*c->radius;
 }
 
-static double eval_cylinder_y(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_cylinder_y_data_t* c = &data->cyl_y;
+static double eval_cylinder_y_typed(const alea_cylinder_y_data_t* c, double x, double y, double z) {
     (void)y;
     double dx = x - c->center_x;
     double dz = z - c->center_z;
     return dx*dx + dz*dz - c->radius*c->radius;
 }
 
-static double eval_cylinder_z(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_cylinder_z_data_t* c = &data->cyl_z;
+static double eval_cylinder_z_typed(const alea_cylinder_z_data_t* c, double x, double y, double z) {
     (void)z;
     double dx = x - c->center_x;
     double dy = y - c->center_y;
     return dx*dx + dy*dy - c->radius*c->radius;
 }
 
-static double eval_cone_x(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_cone_x_data_t* c = &data->cone_x;
+static double eval_cone_x_typed(const alea_cone_x_data_t* c, double x, double y, double z) {
     double dx = x - c->apex_x;
     double dy = y - c->apex_y;
     double dz = z - c->apex_z;
@@ -81,8 +75,7 @@ static double eval_cone_x(const alea_primitive_data_t* data, double x, double y,
     return f;
 }
 
-static double eval_cone_y(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_cone_y_data_t* c = &data->cone_y;
+static double eval_cone_y_typed(const alea_cone_y_data_t* c, double x, double y, double z) {
     double dx = x - c->apex_x;
     double dy = y - c->apex_y;
     double dz = z - c->apex_z;
@@ -95,8 +88,7 @@ static double eval_cone_y(const alea_primitive_data_t* data, double x, double y,
     return f;
 }
 
-static double eval_cone_z(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_cone_z_data_t* c = &data->cone_z;
+static double eval_cone_z_typed(const alea_cone_z_data_t* c, double x, double y, double z) {
     double dx = x - c->apex_x;
     double dy = y - c->apex_y;
     double dz = z - c->apex_z;
@@ -109,23 +101,21 @@ static double eval_cone_z(const alea_primitive_data_t* data, double x, double y,
     return f;
 }
 
-static double eval_box(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_box_data_t* b = &data->box;
+static double eval_box_typed(const alea_box_data_t* b, double x, double y, double z) {
     double dx = MAX(b->min_x - x, x - b->max_x);
     double dy = MAX(b->min_y - y, y - b->max_y);
     double dz = MAX(b->min_z - z, z - b->max_z);
     return MAX(dx, MAX(dy, dz));
 }
 
-static double eval_quadric(const alea_primitive_data_t* data, double x, double y, double z) {
-    const double* c = data->quadric.coeffs;
+static double eval_quadric_typed(const alea_quadric_data_t* data, double x, double y, double z) {
+    const double* c = data->coeffs;
     return c[0]*x*x + c[1]*y*y + c[2]*z*z +
            c[3]*x*y + c[4]*y*z + c[5]*x*z +
            c[6]*x + c[7]*y + c[8]*z + c[9];
 }
 
-static double eval_torus_x(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_torus_data_t* t = &data->torus;
+static double eval_torus_x_typed(const alea_torus_data_t* t, double x, double y, double z) {
     double dx = x - t->center_x;
     double dy = y - t->center_y;
     double dz = z - t->center_z;
@@ -140,8 +130,7 @@ static double eval_torus_x(const alea_primitive_data_t* data, double x, double y
     return term_axial + term_radial - 1.0;
 }
 
-static double eval_torus_y(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_torus_data_t* t = &data->torus;
+static double eval_torus_y_typed(const alea_torus_data_t* t, double x, double y, double z) {
     double dx = x - t->center_x;
     double dy = y - t->center_y;
     double dz = z - t->center_z;
@@ -156,8 +145,7 @@ static double eval_torus_y(const alea_primitive_data_t* data, double x, double y
     return term_axial + term_radial - 1.0;
 }
 
-static double eval_torus_z(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_torus_data_t* t = &data->torus;
+static double eval_torus_z_typed(const alea_torus_data_t* t, double x, double y, double z) {
     double dx = x - t->center_x;
     double dy = y - t->center_y;
     double dz = z - t->center_z;
@@ -173,8 +161,7 @@ static double eval_torus_z(const alea_primitive_data_t* data, double x, double y
 }
 
 
-static double eval_rcc(const alea_primitive_data_t* data, double x, double y, double z) {
-      const alea_rcc_data_t* rcc = &data->rcc;
+static double eval_rcc_typed(const alea_rcc_data_t* rcc, double x, double y, double z) {
       double px = x - rcc->base_x;
       double py = y - rcc->base_y;
       double pz = z - rcc->base_z;
@@ -208,8 +195,7 @@ static double eval_rcc(const alea_primitive_data_t* data, double x, double y, do
   }
 
 /* SPH macrobody - same as sphere but different storage */
-static double eval_sph(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_sph_data_t* s = &data->sph;
+static double eval_sph_typed(const alea_sph_data_t* s, double x, double y, double z) {
     double dx = x - s->center_x;
     double dy = y - s->center_y;
     double dz = z - s->center_z;
@@ -217,8 +203,7 @@ static double eval_sph(const alea_primitive_data_t* data, double x, double y, do
 }
 
 /* TRC - Truncated Right Cone (frustum) */
-static double eval_trc(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_trc_data_t* trc = &data->trc;
+static double eval_trc_typed(const alea_trc_data_t* trc, double x, double y, double z) {
 
     /* Transform point to local coords where base is at origin, axis is along +Z */
     double px = x - trc->base_x;
@@ -266,8 +251,7 @@ static double eval_trc(const alea_primitive_data_t* data, double x, double y, do
 }
 
 /* ELL - Ellipsoid defined by two foci and major axis length */
-static double eval_ell(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_ell_data_t* ell = &data->ell;
+static double eval_ell_typed(const alea_ell_data_t* ell, double x, double y, double z) {
 
     /* Distance to both foci */
     double d1 = sqrt((x - ell->v1_x)*(x - ell->v1_x) +
@@ -282,8 +266,7 @@ static double eval_ell(const alea_primitive_data_t* data, double x, double y, do
 }
 
 /* BOX_GENERAL - Oriented box defined by corner and 3 edge vectors */
-static double eval_box_general(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_box_general_data_t* b = &data->box_general;
+static double eval_box_general_typed(const alea_box_general_data_t* b, double x, double y, double z) {
 
     /* Transform to local coordinates */
     double px = x - b->corner_x;
@@ -316,8 +299,7 @@ static double eval_box_general(const alea_primitive_data_t* data, double x, doub
 }
 
 /* REC - Right Elliptical Cylinder */
-static double eval_rec(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_rec_data_t* rec = &data->rec;
+static double eval_rec_typed(const alea_rec_data_t* rec, double x, double y, double z) {
 
     /* Transform to local coordinates */
     double px = x - rec->base_x;
@@ -369,8 +351,7 @@ static double eval_rec(const alea_primitive_data_t* data, double x, double y, do
 }
 
 /* WED - Wedge (triangular prism) */
-static double eval_wed(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_wed_data_t* wed = &data->wed;
+static double eval_wed_typed(const alea_wed_data_t* wed, double x, double y, double z) {
 
     /* Transform to local coordinates */
     double px = x - wed->vertex_x;
@@ -410,8 +391,7 @@ static double eval_wed(const alea_primitive_data_t* data, double x, double y, do
 }
 
 /* RHP - Right Hexagonal Prism */
-static double eval_rhp(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_rhp_data_t* rhp = &data->rhp;
+static double eval_rhp_typed(const alea_rhp_data_t* rhp, double x, double y, double z) {
 
     /* Transform to local coordinates relative to base center */
     double px = x - rhp->base_x;
@@ -457,8 +437,7 @@ static double eval_rhp(const alea_primitive_data_t* data, double x, double y, do
 }
 
 /* ARB - Arbitrary Polyhedron */
-static double eval_arb(const alea_primitive_data_t* data, double x, double y, double z) {
-    const alea_arb_data_t* arb = &data->arb;
+static double eval_arb_typed(const alea_arb_data_t* arb, double x, double y, double z) {
 
     /* For each face, compute signed distance to plane */
     double max_dist = -1e30;
@@ -2020,6 +1999,125 @@ static bool xform_arb(const alea_primitive_data_t* in, const double* mat,
  * DESCRIPTOR TABLE
  * ============================================================================ */
 
+/* Union callers and typed storage share exactly the same arithmetic. */
+static double eval_plane(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_plane_typed(&data->plane, x, y, z);
+}
+
+static double eval_sphere(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_sphere_typed(&data->sphere, x, y, z);
+}
+
+static double eval_cylinder_x(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_cylinder_x_typed(&data->cyl_x, x, y, z);
+}
+
+static double eval_cylinder_y(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_cylinder_y_typed(&data->cyl_y, x, y, z);
+}
+
+static double eval_cylinder_z(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_cylinder_z_typed(&data->cyl_z, x, y, z);
+}
+
+static double eval_cone_x(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_cone_x_typed(&data->cone_x, x, y, z);
+}
+
+static double eval_cone_y(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_cone_y_typed(&data->cone_y, x, y, z);
+}
+
+static double eval_cone_z(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_cone_z_typed(&data->cone_z, x, y, z);
+}
+
+static double eval_box(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_box_typed(&data->box, x, y, z);
+}
+
+static double eval_torus_x(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_torus_x_typed(&data->torus, x, y, z);
+}
+
+static double eval_torus_y(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_torus_y_typed(&data->torus, x, y, z);
+}
+
+static double eval_torus_z(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_torus_z_typed(&data->torus, x, y, z);
+}
+
+static double eval_rcc(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_rcc_typed(&data->rcc, x, y, z);
+}
+
+static double eval_sph(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_sph_typed(&data->sph, x, y, z);
+}
+
+static double eval_trc(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_trc_typed(&data->trc, x, y, z);
+}
+
+static double eval_ell(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_ell_typed(&data->ell, x, y, z);
+}
+
+static double eval_box_general(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_box_general_typed(&data->box_general, x, y, z);
+}
+
+static double eval_rec(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_rec_typed(&data->rec, x, y, z);
+}
+
+static double eval_wed(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_wed_typed(&data->wed, x, y, z);
+}
+
+static double eval_rhp(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_rhp_typed(&data->rhp, x, y, z);
+}
+
+static double eval_arb(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_arb_typed(&data->arb, x, y, z);
+}
+
+static double eval_quadric(const alea_primitive_data_t* data, double x, double y, double z) {
+    return eval_quadric_typed(&data->quadric, x, y, z);
+}
+
+double alea_primitive_eval_payload(alea_primitive_type_t type, const void* payload,
+                                   double x, double y, double z) {
+    if (!payload) return 1.0;
+    switch (type) {
+        case ALEA_PRIMITIVE_PLANE: return eval_plane_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_SPHERE: return eval_sphere_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_CYLINDER_X: return eval_cylinder_x_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_CYLINDER_Y: return eval_cylinder_y_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_CYLINDER_Z: return eval_cylinder_z_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_CONE_X: return eval_cone_x_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_CONE_Y: return eval_cone_y_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_CONE_Z: return eval_cone_z_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_RPP: return eval_box_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_QUADRIC: return eval_quadric_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_TORUS_X: return eval_torus_x_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_TORUS_Y: return eval_torus_y_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_TORUS_Z: return eval_torus_z_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_RCC: return eval_rcc_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_BOX: return eval_box_general_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_SPH: return eval_sph_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_TRC: return eval_trc_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_ELL: return eval_ell_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_REC: return eval_rec_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_WED: return eval_wed_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_RHP: return eval_rhp_typed(payload, x, y, z);
+        case ALEA_PRIMITIVE_ARB: return eval_arb_typed(payload, x, y, z);
+        default: return 1.0;
+    }
+}
+
 /* Table indexed by primitive type. Index 0 is unused (types start at 1). */
 static const alea_primitive_desc_t g_prim_desc[] = {
     /*                           name          eval             bbox              interval             transform */
@@ -2113,4 +2211,3 @@ alea_interval_t alea_primitive_interval_eval(
     }
     return desc->interval_eval(data, box);
 }
-

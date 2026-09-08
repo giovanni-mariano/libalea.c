@@ -53,17 +53,17 @@ static inline double eval_primitive_node(
     }
 
     const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
-    alea_primitive_data_t prim_data;
-    if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &prim_data)) {
+    const void* payload = alea_primitive_payload_const(sys, node->primitive.primitive_id);
+    if (!payload) {
         ALEA_LOG_ERROR("Invalid primitive payload %u",
                 node->primitive.primitive_id);
         return 1.0;
     }
 
     // Evaluate the primitive
-    double distance = alea_primitive_eval(
+    double distance = alea_primitive_eval_payload(
         prim->type,
-        &prim_data,
+        payload,
         x, y, z
     );
 
