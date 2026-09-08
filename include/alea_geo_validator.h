@@ -274,6 +274,11 @@ typedef enum {
     ALEA_TRANSITION_SLICE_REFINEMENT_STOPPED
 } alea_transition_slice_refinement_status_t;
 
+typedef enum {
+    ALEA_TRANSITION_SLICE_OCCURRENCE_SAMPLED = 0,
+    ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE = 1
+} alea_transition_slice_occurrence_discovery_t;
+
 typedef struct {
     size_t struct_size;
     size_t horizontal_rays;
@@ -317,6 +322,8 @@ typedef struct {
     uint64_t max_critical_sector_witnesses;
     double critical_probe_radius;
     uint64_t max_critical_boundary_evidence;
+    alea_transition_slice_occurrence_discovery_t occurrence_discovery;
+    size_t max_exhaustive_occurrence_hits;
 } alea_transition_slice_options_t;
 
 #define ALEA_TRANSITION_SLICE_BOUNDARY_PIECE_CAPACITY 3
@@ -430,7 +437,9 @@ typedef enum {
     ALEA_TRANSITION_SLICE_CRITICAL_MAX_FINDINGS,
     ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE,
     ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVE_PAIRS,
-    ALEA_TRANSITION_SLICE_CRITICAL_MAX_SECTOR_WITNESSES
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_SECTOR_WITNESSES,
+    ALEA_TRANSITION_SLICE_CRITICAL_MAX_OCCURRENCE_HITS,
+    ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL
 } alea_transition_slice_critical_stop_reason_t;
 
 typedef enum {
@@ -527,6 +536,9 @@ typedef struct {
     size_t critical_occurrence_seed_points;
     size_t critical_occurrence_paths;
     size_t critical_occurrence_universe_queries;
+    size_t critical_exhaustive_chain_hits;
+    int occurrence_enumeration_complete;
+    alea_transition_slice_occurrence_discovery_t occurrence_discovery;
     size_t critical_root_region_fallbacks;
     size_t critical_chain_truncated_hits;
     size_t critical_surface_references;

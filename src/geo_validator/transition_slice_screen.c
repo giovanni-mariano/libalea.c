@@ -95,6 +95,8 @@ void alea_transition_slice_options_init(
     options->max_critical_boundary_evidence = 1024;
     options->max_curve_pairs = 100000;
     options->max_critical_sector_witnesses = 8192;
+    options->occurrence_discovery = ALEA_TRANSITION_SLICE_OCCURRENCE_SAMPLED;
+    options->max_exhaustive_occurrence_hits = 256;
 }
 
 const char* alea_transition_slice_critical_stop_reason_name(
@@ -128,6 +130,10 @@ const char* alea_transition_slice_critical_stop_reason_name(
         return "max_curve_pairs";
     case ALEA_TRANSITION_SLICE_CRITICAL_MAX_SECTOR_WITNESSES:
         return "max_critical_sector_witnesses";
+    case ALEA_TRANSITION_SLICE_CRITICAL_MAX_OCCURRENCE_HITS:
+        return "max_exhaustive_occurrence_hits";
+    case ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL:
+        return "unsupported_occurrence_traversal";
     }
     return "unknown";
 }
@@ -2082,12 +2088,20 @@ int alea_transition_slice_screen(
         options.min_transverse_spacing < 0.0 ||
         !isfinite(options.critical_tile_padding) ||
         options.critical_tile_padding < 0.0 ||
+        options.occurrence_discovery <
+            ALEA_TRANSITION_SLICE_OCCURRENCE_SAMPLED ||
+        options.occurrence_discovery >
+            ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE ||
+        (options.occurrence_discovery ==
+             ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE &&
+         options.max_exhaustive_occurrence_hits == 0) ||
         (options.refine_signals &
          ~(ALEA_TRANSITION_SLICE_REFINE_SIGNATURE |
            ALEA_TRANSITION_SLICE_REFINE_FINDING)))
         return -1;
 
     alea_transition_slice_result_t candidate = {0};
+    candidate.stats.occurrence_discovery = options.occurrence_discovery;
     candidate.stats.critical_enabled = options.enable_critical_refinement != 0;
     candidate.stats.critical_stop_reason = options.enable_critical_refinement
         ? ALEA_TRANSITION_SLICE_CRITICAL_NONE
@@ -2197,6 +2211,10 @@ int alea_transition_slice_screen(
     candidate.stats.critical_complete = options.enable_critical_refinement &&
         candidate.stats.critical_stop_reason ==
             ALEA_TRANSITION_SLICE_CRITICAL_NONE;
+    candidate.stats.occurrence_enumeration_complete =
+        options.occurrence_discovery ==
+            ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE &&
+        candidate.stats.critical_complete;
     candidate.stats.complete =
         candidate.stats.stop_reason == ALEA_TRANSITION_SLICE_STOP_NONE &&
         (!options.enable_critical_refinement ||

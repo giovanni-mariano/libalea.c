@@ -73,6 +73,12 @@ typedef struct {
     double ancestor_lattice_oz[ALEA_HIER_SPATIAL_HIT_CHAIN_MAX];
 } alea_hier_spatial_chain_hit_t;
 
+typedef enum {
+    ALEA_HIER_REGION_CHAIN_COMPLETE = 0,
+    ALEA_HIER_REGION_CHAIN_MAX_HITS = 1,
+    ALEA_HIER_REGION_CHAIN_UNSUPPORTED = 2
+} alea_hier_region_chain_status_t;
+
 /* A universe placement identified from two coordinate frames rather than
  * cell containment.  This is used for boundary failures where the reported
  * cell is expected not to contain the rounded event point. */
@@ -482,6 +488,10 @@ int alea_hier_spatial_query_region_chain(alea_system_t* sys,
                                          const alea_bbox_t* query_bbox,
                                          alea_hier_spatial_chain_hit_t* out_hits,
                                          size_t max_hits);
+int alea_hier_spatial_query_region_chain_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_chain_hit_t* out_hits, size_t max_hits,
+    int include_containers, alea_hier_region_chain_status_t* out_status);
 int alea_hier_spatial_query_slice_z(alea_system_t* sys,
                                     double z,
                                     double x_min,
