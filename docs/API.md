@@ -1554,7 +1554,7 @@ Initialize with defaults (1920x1080, 45 FOV, material coloring, no clipping).
 void render_config_free(render_config_t* cfg);
 ```
 
-Free config resources (custom color table).
+Free config resources (custom color table and owned filter ID tables).
 
 Key `render_config_t` fields:
 
@@ -1568,6 +1568,13 @@ Key `render_config_t` fields:
 | `edges` | 0 | Enable edge darkening |
 | `aa_samples` | 1 | NxN supersampling (1=off) |
 | `clips[N]` | - | Up to 16 clipping planes |
+| `clip_mode` | `RENDER_CLIP_AND` | Keep the intersection (`AND`) or union (`OR`) of enabled clip half-spaces |
+| `material_filter` | `RENDER_FILTER_ALL` | Show all, include, or exclude sorted material IDs |
+| `cell_filter` | `RENDER_FILTER_ALL` | Show all, include, or exclude sorted cell IDs |
+
+The material and cell filters are combined with logical AND. They apply to
+solid and X-ray rendering and to shadow occluders, so excluded geometry is
+transparent rather than merely recolored.
 
 ### Camera
 

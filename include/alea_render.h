@@ -83,6 +83,23 @@ typedef struct {
     double d;
 } render_clip_plane_t;
 
+typedef enum {
+    RENDER_CLIP_AND = 0,
+    RENDER_CLIP_OR = 1
+} render_clip_mode_t;
+
+typedef enum {
+    RENDER_FILTER_ALL = 0,
+    RENDER_FILTER_INCLUDE = 1,
+    RENDER_FILTER_EXCLUDE = 2
+} render_filter_mode_t;
+
+typedef struct {
+    render_filter_mode_t mode;
+    int* ids;              /**< Sorted unique IDs, owned by render_config_t. */
+    size_t count;
+} render_id_filter_t;
+
 /** Custom color entry (from palette file) */
 typedef struct {
     int id;
@@ -108,6 +125,11 @@ typedef struct {
     /* Clipping */
     render_clip_plane_t clips[RENDER_MAX_CLIPS];
     int num_clips;
+    render_clip_mode_t clip_mode;
+
+    /* Resolved render-cell selection. Both filters must accept an interval. */
+    render_id_filter_t material_filter;
+    render_id_filter_t cell_filter;
 
     /* Appearance */
     render_color_mode_t color_mode;
@@ -170,7 +192,7 @@ typedef struct {
 void render_config_init(render_config_t* cfg);
 
 /**
- * @brief Free render config resources (custom color table)
+ * @brief Free owned render config resources (colors and filter ID tables)
  */
 void render_config_free(render_config_t* cfg);
 
