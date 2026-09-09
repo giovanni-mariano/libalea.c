@@ -383,6 +383,57 @@ TEST(surface_with_transform) {
 /* Parse error handling tests                                                */
 /* ========================================================================= */
 
+TEST(density_may_touch_nested_geometry_parentheses) {
+    const char* cell_cards[] = {
+        "1 1 -8.0679((-1))\n",
+        "1 1 -8.0679 ((-1))\n",
+        "1 1 -7.927((-1))\n",
+        "1 1 -7.927 ((-1))\n"
+    };
+    for (size_t i = 0; i < sizeof(cell_cards) / sizeof(cell_cards[0]); i++) {
+        char input[256];
+        snprintf(input, sizeof(input),
+                 "Density geometry boundary\n%s"
+                 "2 0 1\n\n"
+                 "1 SO 2\n\n"
+                 "M1 1001 1\n",
+                 cell_cards[i]);
+        mcnp_model_t* model = parse_mcnp(input);
+        ASSERT_NOT_NULL(model);
+        ASSERT_EQ(alea_material_at(model->sys, 0, 0, 0), 1);
+        mcnp_model_destroy(model);
+    }
+}
+
+TEST(geometry_syntax_failure_sets_detailed_error) {
+    const char* input =
+        "Unbalanced geometry\n"
+        "625669 1 -8.0679((-1)))\n"
+        "2 0 1\n\n"
+        "1 SO 2\n\n"
+        "M1 1001 1\n";
+    alea_error_clear();
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NULL(model);
+    ASSERT_EQ(alea_error_code(), (int)ALEA_ERR_PARSE_ERROR);
+    ASSERT_NOT_NULL(strstr(alea_error(), "cell 625669"));
+    ASSERT_NOT_NULL(strstr(alea_error(), "Unmatched closing parenthesis"));
+}
+
+TEST(invalid_density_sets_detailed_error) {
+    const char* input =
+        "Invalid density\n"
+        "17 1 invalid -1\n"
+        "2 0 1\n\n"
+        "1 SO 2\n\n"
+        "M1 1001 1\n";
+    alea_error_clear();
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NULL(model);
+    ASSERT_EQ(alea_error_code(), (int)ALEA_ERR_PARSE_ERROR);
+    ASSERT_NOT_NULL(strstr(alea_error(), "Cell 17 has invalid density"));
+}
+
 TEST(parse_empty_string) {
     mcnp_model_t* model = mcnp_load_string("", 0);
     ASSERT_NULL(model);

@@ -321,12 +321,18 @@ alea_node_id_t parse_mcnp_geometry_with_like(
     if (out_but_clause) *out_but_clause = NULL;
 
     if (!geometry_expr || !*geometry_expr || !system) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                              "Cell %d has an empty geometry expression",
+                              cell_id);
         return ALEA_NODE_ID_INVALID;
     }
 
     // Pre-validate geometry expression
     char error_msg[256];
     if (!validate_geometry_syntax(geometry_expr, error_msg, sizeof(error_msg))) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                              "Geometry syntax error in cell %d: %s",
+                              cell_id, error_msg);
         ALEA_LOG_ERROR("Geometry syntax error in cell %d: %s", cell_id, error_msg);
         return ALEA_NODE_ID_INVALID;
     }
@@ -343,6 +349,9 @@ alea_node_id_t parse_mcnp_geometry_with_like(
     geom_lexer_next_token(&lexer);
 
     if (lexer.token.type == GEOM_TOKEN_END) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                              "Cell %d has an empty geometry expression",
+                              cell_id);
         return ALEA_NODE_ID_INVALID;
     }
 
@@ -357,8 +366,17 @@ alea_node_id_t parse_mcnp_geometry_with_like(
     }
 
     if (lexer.parse_errors > 0) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                              "Geometry parse error in cell %d: %s",
+                              cell_id, lexer.error_msg);
         ALEA_LOG_ERROR("Parse errors in cell %d: %s", cell_id, lexer.error_msg);
         return ALEA_NODE_ID_INVALID;
+    }
+
+    if (result == ALEA_NODE_ID_INVALID) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                              "Failed to parse geometry for cell %d",
+                              cell_id);
     }
 
     return result;

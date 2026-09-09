@@ -4,6 +4,7 @@
 
 #include "mcnp_parser.h"
 #include "mcnp_lexer.h"
+#include "alea_types.h"
 #include "util/alea_log.h"
 #include "util/str_builder.h"
 #include <stdio.h>
@@ -527,8 +528,22 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
         token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
         if (token_len == 0) { ALEA_LOG_ERROR("Cell %d: missing density for material %d", cell->cell_id, cell->material_id); return 0; }
         if (token_len >= sizeof(token_buf)) { ALEA_LOG_WARN("Cell %d: density token too long (%zu)", cell->cell_id, token_len); return 0; }
-        memcpy(token_buf, token_start, token_len); token_buf[token_len] = '\0';
-        cell->density = strtod(token_buf, NULL);
+        char* density_end = NULL;
+        cell->density = strtod(token_start, &density_end);
+        if (density_end == token_start) {
+            alea_set_error_detail(
+                ALEA_ERR_PARSE_ERROR,
+                "Cell %d has invalid density near '%.32s'",
+                cell->cell_id, token_start);
+            ALEA_LOG_ERROR("Cell %d: invalid density", cell->cell_id);
+            return 0;
+        }
+        /* MCNP Boolean delimiters may immediately follow the density, e.g.
+         * `-8.0679((-1:2))`. The whitespace lexer sees that as one token;
+         * resume at the first unconsumed parenthesis so it remains geometry. */
+        const char* token_end = token_start + token_len;
+        if (density_end < token_end && *density_end == '(')
+            cursor = density_end;
     } else {
         cell->density = 0.0;
     }
