@@ -1008,6 +1008,9 @@ typedef struct {
     alea_batch_trace_tmp_t* traces;
 } batch_trace_build_context_t;
 
+/* Internal scheduling grain; not a public tuning parameter. */
+#define BATCH_TRACE_RAY_CHUNK 4
+
 static int batch_trace_build_range(void* opaque, size_t worker,
                                    size_t begin, size_t end) {
     (void)worker;
@@ -1219,9 +1222,19 @@ static int raycast_hier_batch_execute(
         fields, max_segments, max_path_entries, &live_segment_count,
         &live_path_entry_count, traces
     };
-    alea_parallel_status_t parallel_status = alea_parallel_for(
-        ray_count, 1, 0, ALEA_PARALLEL_STATIC_BLOCK,
-        batch_trace_build_range, &trace_context, NULL);
+    /* Keep output indexed by ray, regardless of execution order. Avoid
+     * dynamic chunk dispatch entirely when only one worker is effective. */
+    size_t trace_workers = alea_parallel_effective_workers(
+        ray_count, BATCH_TRACE_RAY_CHUNK, 0);
+    alea_parallel_status_t parallel_status = ALEA_PARALLEL_OK;
+    if (trace_workers == 1) {
+        batch_trace_build_range(&trace_context, 0, 0, ray_count);
+    } else {
+        parallel_status = alea_parallel_for(
+            ray_count, BATCH_TRACE_RAY_CHUNK, trace_workers,
+            ALEA_PARALLEL_DYNAMIC, batch_trace_build_range,
+            &trace_context, NULL);
+    }
     if (parallel_status != ALEA_PARALLEL_OK) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "batch trace parallel execution failed: %s",

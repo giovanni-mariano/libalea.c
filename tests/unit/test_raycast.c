@@ -1746,6 +1746,48 @@ TEST(compact_hierarchical_batch_matches_single_ray_segments) {
     alea_destroy(sys);
 }
 
+TEST(compact_hierarchical_batch_interrupt_preserves_result_and_recovers) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 5);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 10, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    double origins[32 * 3] = {0};
+    double directions[32 * 3] = {0};
+    for (size_t i = 0; i < 32; i++) {
+        origins[i * 3] = -10;
+        origins[i * 3 + 1] = (double)i / 4 - 4;
+        directions[i * 3] = 1;
+    }
+    alea_raycast_batch_options_t options = {
+        .struct_size = sizeof(options),
+        .fields = ALEA_RAY_BATCH_PROJECTED_OWNER | ALEA_RAY_BATCH_FULL_PATHS,
+        .projected_depth = -1
+    };
+    alea_raycast_batch_result_t* batch = alea_raycast_batch_result_create();
+    ASSERT_NOT_NULL(batch);
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 32, 20,
+                                      &options, batch), 0);
+    size_t count = alea_raycast_batch_segment_count(batch);
+    const uint64_t* offsets = alea_raycast_batch_ray_offsets(batch);
+    alea_interrupt();
+    int rc = alea_raycast_hier_batch(sys, origins, directions, 32, 20,
+                                    &options, batch);
+    int error = alea_error_code();
+    alea_clear_interrupt();
+    ASSERT_EQ(rc, -1);
+    ASSERT_EQ(error, ALEA_ERR_INTERRUPTED);
+    ASSERT_EQ(alea_raycast_batch_segment_count(batch), count);
+    ASSERT(alea_raycast_batch_ray_offsets(batch) == offsets);
+    ASSERT_EQ(alea_raycast_hier_batch(sys, origins, directions, 32, 20,
+                                      &options, batch), 0);
+    ASSERT_EQ(alea_raycast_batch_segment_count(batch), count);
+    alea_raycast_batch_result_destroy(batch);
+    alea_destroy(sys);
+}
+
 TEST(compact_ray_slice_returns_view_u_coordinates) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
