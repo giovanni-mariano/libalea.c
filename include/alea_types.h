@@ -358,7 +358,18 @@ typedef struct {
 
 
 
-typedef struct alea_stats alea_stats_t;
+/** Statistics reported by alea_stats(). */
+typedef struct alea_stats {
+    size_t unique_primitives;
+    size_t dedup_hits;
+    size_t dedup_saved_bytes;
+    size_t current_memory;
+    size_t peak_memory;
+    size_t reallocations;
+    size_t surfaces_converted;
+    size_t failed_surfaces;
+    size_t cells_converted;
+} alea_stats_t;
 
 
 // ============================================================================

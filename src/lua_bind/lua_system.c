@@ -6,6 +6,7 @@
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* ============================================================================
  * System lifecycle
@@ -40,13 +41,21 @@ void alea_lua_system_release_if_pending(alea_lua_system_t* ud) {
     ud->sys = NULL;
 }
 
+static int l_free_guard_gc(lua_State* L) {
+    alea_lua_free_guard_t* guard = luaL_checkudata(L, 1, ALEA_FREE_GUARD_MT);
+    free(guard->ptr);
+    guard->ptr = NULL;
+    return 0;
+}
+
 static int l_system_destroy(lua_State* L) {
     alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (!ud->sys) {
+    if (!ud->sys || ud->destroy_pending) {
         return 0;
     }
 
     ud->destroy_pending = 1;
+    ud->node_generation++;
     alea_lua_system_release_if_pending(ud);
     return 0;
 }
@@ -57,7 +66,7 @@ static int l_system_gc(lua_State* L) {
 
 static int l_system_tostring(lua_State* L) {
     alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (!ud->sys) {
+    if (!ud->sys || ud->destroy_pending) {
         lua_pushliteral(L, "System(destroyed)");
     } else {
         lua_pushfstring(L, "System(%d cells, %d surfaces)",
@@ -68,8 +77,11 @@ static int l_system_tostring(lua_State* L) {
 }
 
 static int l_system_reset(lua_State* L) {
+    alea_lua_system_t* ud = alea_check_system(L, 1);
     alea_system_t* sys = alea_get_sys(L, 1);
+    alea_lua_require_no_dependents(L, ud, "reset system");
     alea_reset(sys);
+    ud->node_generation++;
     return 0;
 }
 
@@ -217,6 +229,11 @@ static const luaL_Reg alea_funcs[] = {
  * ============================================================================ */
 
 int luaopen_alea(lua_State* L) {
+    luaL_newmetatable(L, ALEA_FREE_GUARD_MT);
+    lua_pushcfunction(L, l_free_guard_gc);
+    lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
+
     /* Create System metatable */
     luaL_newmetatable(L, ALEA_SYSTEM_MT);
     luaL_setfuncs(L, system_meta, 0);

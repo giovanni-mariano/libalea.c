@@ -24,6 +24,7 @@
 #define ALEA_FRAMEBUFFER_MT "alea.Framebuffer"
 #define ALEA_GEOMRESULT_MT  "alea.GeometryValidationResult"
 #define ALEA_DIRECTIONAL_TRACE_CACHE_MT "alea.DirectionalTraceCache"
+#define ALEA_FREE_GUARD_MT   "alea.FreeGuard"
 
 /* ============================================================================
  * Userdata types
@@ -37,12 +38,16 @@ typedef struct {
     int destroy_pending;  /* destroy requested while dependent userdata exists */
     int active_void_results;
     int active_directional_trace_caches;
+    uint64_t node_generation;
 } alea_lua_system_t;
 
 typedef struct {
-    alea_system_t* sys; /* borrowed pointer */
+    alea_lua_system_t* owner; /* retained by uservalue */
     alea_node_id_t id;
+    uint64_t generation;
 } alea_lua_node_t;
+
+typedef struct { void* ptr; } alea_lua_free_guard_t;
 
 /* ============================================================================
  * Helpers
@@ -60,6 +65,7 @@ static inline void alea_lua_system_init(alea_lua_system_t* ud) {
     ud->destroy_pending = 0;
     ud->active_void_results = 0;
     ud->active_directional_trace_caches = 0;
+    ud->node_generation = 1;
 }
 
 static inline alea_system_t* alea_get_sys(lua_State* L, int idx) {
@@ -69,21 +75,75 @@ static inline alea_system_t* alea_get_sys(lua_State* L, int idx) {
     return ud->sys;
 }
 
-void alea_lua_system_release_if_pending(alea_lua_system_t* ud);
-
-static inline alea_lua_node_t* alea_check_node(lua_State* L, int idx) {
-    return (alea_lua_node_t*)luaL_checkudata(L, idx, ALEA_NODE_MT);
+static inline void alea_lua_require_no_dependents(lua_State* L,
+                                                   alea_lua_system_t* ud,
+                                                   const char* operation) {
+    if (ud->active_void_results || ud->active_directional_trace_caches)
+        luaL_error(L, "cannot %s while dependent results exist", operation);
 }
 
-static inline void alea_push_node(lua_State* L, alea_system_t* sys, alea_node_id_t id) {
+void alea_lua_system_release_if_pending(alea_lua_system_t* ud);
+
+static inline alea_lua_free_guard_t* alea_lua_push_free_guard(lua_State* L) {
+    alea_lua_free_guard_t* guard = lua_newuserdatauv(L, sizeof(*guard), 0);
+    guard->ptr = NULL;
+    luaL_setmetatable(L, ALEA_FREE_GUARD_MT);
+    return guard;
+}
+
+static inline alea_lua_node_t* alea_check_node(lua_State* L, int idx) {
+    alea_lua_node_t* node = (alea_lua_node_t*)luaL_checkudata(L, idx, ALEA_NODE_MT);
+    if (!node->owner || !node->owner->sys || node->owner->destroy_pending)
+        luaL_error(L, "node belongs to a destroyed system");
+    if (node->generation != node->owner->node_generation)
+        luaL_error(L, "node is stale after system mutation");
+    return node;
+}
+
+static inline alea_lua_node_t* alea_check_node_for_system(
+    lua_State* L, int node_idx, int system_idx)
+{
+    alea_lua_node_t* node = alea_check_node(L, node_idx);
+    alea_lua_system_t* owner = alea_check_system(L, system_idx);
+    if (node->owner != owner)
+        luaL_error(L, "node belongs to a different system");
+    return node;
+}
+
+static inline alea_lua_node_t* alea_check_node_same_owner(
+    lua_State* L, int node_idx, int other_node_idx)
+{
+    alea_lua_node_t* node = alea_check_node(L, node_idx);
+    alea_lua_node_t* other = alea_check_node(L, other_node_idx);
+    if (node->owner != other->owner)
+        luaL_error(L, "nodes belong to different systems");
+    return node;
+}
+
+static inline void alea_push_node(lua_State* L, int owner_idx, alea_node_id_t id) {
     if (id == ALEA_NODE_ID_INVALID) {
         lua_pushnil(L);
         return;
     }
-    alea_lua_node_t* ud = (alea_lua_node_t*)lua_newuserdata(L, sizeof(alea_lua_node_t));
-    ud->sys = sys;
+    owner_idx = lua_absindex(L, owner_idx);
+    alea_lua_system_t* owner = alea_check_system(L, owner_idx);
+    alea_lua_node_t* ud = (alea_lua_node_t*)lua_newuserdatauv(
+        L, sizeof(alea_lua_node_t), 1);
+    ud->owner = owner;
     ud->id = id;
+    ud->generation = owner->node_generation;
     luaL_setmetatable(L, ALEA_NODE_MT);
+    lua_pushvalue(L, owner_idx);
+    lua_setiuservalue(L, -2, 1);
+}
+
+static inline void alea_push_node_from_node(lua_State* L, int node_idx,
+                                            alea_node_id_t id) {
+    node_idx = lua_absindex(L, node_idx);
+    (void)alea_check_node(L, node_idx);
+    lua_getiuservalue(L, node_idx, 1);
+    alea_push_node(L, -1, id);
+    lua_remove(L, -2);
 }
 
 /* ============================================================================

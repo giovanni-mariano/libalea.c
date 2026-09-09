@@ -64,14 +64,14 @@ static int l_load_openmc(lua_State* L) {
 /* sys:export_mcnp(filename) */
 static int l_export_mcnp(lua_State* L) {
     alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (!ud->sys) return luaL_error(L, "system has been destroyed");
+    alea_system_t* sys = alea_get_sys(L, 1);
     const char* filename = luaL_checkstring(L, 2);
 
     int rc;
     if (ud->mcnp_model) {
         rc = mcnp_export((const mcnp_model_t*)ud->mcnp_model, filename);
     } else {
-        rc = mcnp_export_system(ud->sys, filename);
+        rc = mcnp_export_system(sys, filename);
     }
     if (rc != 0)
         return luaL_error(L, "export_mcnp failed: %s", alea_error());
@@ -81,14 +81,14 @@ static int l_export_mcnp(lua_State* L) {
 /* sys:export_openmc(filename) */
 static int l_export_openmc(lua_State* L) {
     alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (!ud->sys) return luaL_error(L, "system has been destroyed");
+    alea_system_t* sys = alea_get_sys(L, 1);
     const char* filename = luaL_checkstring(L, 2);
 
     int rc;
     if (ud->openmc_model) {
         rc = openmc_export((const openmc_model_t*)ud->openmc_model, filename);
     } else {
-        rc = openmc_export_system(ud->sys, filename);
+        rc = openmc_export_system(sys, filename);
     }
     if (rc != 0)
         return luaL_error(L, "export_openmc failed: %s", alea_error());
@@ -97,11 +97,10 @@ static int l_export_openmc(lua_State* L) {
 
 /* sys:export_serpent(filename) */
 static int l_export_serpent(lua_State* L) {
-    alea_lua_system_t* ud = alea_check_system(L, 1);
-    if (!ud->sys) return luaL_error(L, "system has been destroyed");
+    alea_system_t* sys = alea_get_sys(L, 1);
     const char* filename = luaL_checkstring(L, 2);
 
-    int rc = serpent_export_system(ud->sys, filename);
+    int rc = serpent_export_system(sys, filename);
     if (rc != 0)
         return luaL_error(L, "export_serpent failed: %s", alea_error());
     return 0;

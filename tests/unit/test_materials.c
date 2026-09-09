@@ -11,6 +11,7 @@
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_serpent.h"
+#include "alea_nucdata.h"
 #include <string.h>
 
 /* ========================================================================= */
@@ -557,6 +558,36 @@ TEST(material_full_roundtrip) {
     alea_material_nuclide_get(sys, m, 2, &zaid, NULL, &frac);
     ASSERT_EQ(zaid, 8016);
     ASSERT_NEAR(frac, 0.12, 1e-10);
+
+    alea_destroy(sys);
+}
+
+TEST(nuc_material_from_cell_validates_public_inputs) {
+    alea_nuc_xsdir_t xsdir;
+    memset(&xsdir, 0, sizeof(xsdir));
+
+    ASSERT_NULL(alea_nuc_material_from_cell(NULL, 0, &xsdir));
+
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    ASSERT_NULL(alea_nuc_material_from_cell(sys, -1, &xsdir));
+    ASSERT_NULL(alea_nuc_material_from_cell(sys, 0, &xsdir));
+
+    int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(surface >= 0);
+    alea_node_id_t root = alea_halfspace(sys, surface, -1);
+    ASSERT(root != ALEA_NODE_ID_INVALID);
+
+    int void_cell = alea_add_cell(sys, 1, root, ALEA_MATERIAL_VOID, 0.0, 0);
+    ASSERT_EQ(void_cell, 0);
+    ASSERT_NULL(alea_nuc_material_from_cell(sys, void_cell, &xsdir));
+
+    int material = alea_add_material(sys, 10);
+    ASSERT(material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, material, 92235, ".80c", 1.0), 0);
+    int no_density = alea_add_cell(sys, 2, root, material, 0.0, 0);
+    ASSERT_EQ(no_density, 1);
+    ASSERT_NULL(alea_nuc_material_from_cell(sys, no_density, &xsdir));
 
     alea_destroy(sys);
 }

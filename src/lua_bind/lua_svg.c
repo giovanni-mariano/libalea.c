@@ -60,8 +60,11 @@ static int l_svg_plot_create(lua_State* L) {
 /* plot:set_title(title) */
 static int l_svgplot_set_title(lua_State* L) {
     lua_svg_plot_t* ud = check_svgplot(L, 1);
+    const char* value = luaL_checkstring(L, 2);
+    char* copy = alea_strdup(value);
+    if (!copy) return luaL_error(L, "out of memory");
     free(ud->title);
-    ud->title = alea_strdup(luaL_checkstring(L, 2));
+    ud->title = copy;
     ud->plot.title = ud->title;
     return 0;
 }
@@ -69,8 +72,11 @@ static int l_svgplot_set_title(lua_State* L) {
 /* plot:set_x_label(label) */
 static int l_svgplot_set_x_label(lua_State* L) {
     lua_svg_plot_t* ud = check_svgplot(L, 1);
+    const char* value = luaL_checkstring(L, 2);
+    char* copy = alea_strdup(value);
+    if (!copy) return luaL_error(L, "out of memory");
     free(ud->x_label);
-    ud->x_label = alea_strdup(luaL_checkstring(L, 2));
+    ud->x_label = copy;
     ud->plot.x_label = ud->x_label;
     return 0;
 }
@@ -78,8 +84,11 @@ static int l_svgplot_set_x_label(lua_State* L) {
 /* plot:set_y_label(label) */
 static int l_svgplot_set_y_label(lua_State* L) {
     lua_svg_plot_t* ud = check_svgplot(L, 1);
+    const char* value = luaL_checkstring(L, 2);
+    char* copy = alea_strdup(value);
+    if (!copy) return luaL_error(L, "out of memory");
     free(ud->y_label);
-    ud->y_label = alea_strdup(luaL_checkstring(L, 2));
+    ud->y_label = copy;
     ud->plot.y_label = ud->y_label;
     return 0;
 }
@@ -132,24 +141,41 @@ static int l_svgplot_add(lua_State* L) {
     if (ci >= ALEA_SVG_MAX_CURVES)
         return luaL_error(L, "maximum %d curves per plot", ALEA_SVG_MAX_CURVES);
 
+    /* Validate before acquiring persistent native allocations. */
+    for (int i = 0; i < nx; i++) {
+        lua_rawgeti(L, 2, i + 1); (void)luaL_checknumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, 3, i + 1); (void)luaL_checknumber(L, -1); lua_pop(L, 1);
+    }
+
     /* Copy data arrays */
+    alea_lua_free_guard_t* x_guard = alea_lua_push_free_guard(L);
     double* x = malloc((size_t)nx * sizeof(double));
+    x_guard->ptr = x;
+    alea_lua_free_guard_t* y_guard = alea_lua_push_free_guard(L);
     double* y = malloc((size_t)nx * sizeof(double));
-    if (!x || !y) { free(x); free(y); return luaL_error(L, "out of memory"); }
+    y_guard->ptr = y;
+    if (!x || !y) return luaL_error(L, "out of memory");
 
     for (int i = 0; i < nx; i++) {
         lua_rawgeti(L, 2, i + 1);
-        x[i] = luaL_checknumber(L, -1);
+        x[i] = lua_tonumber(L, -1);
         lua_pop(L, 1);
         lua_rawgeti(L, 3, i + 1);
-        y[i] = luaL_checknumber(L, -1);
+        y[i] = lua_tonumber(L, -1);
         lua_pop(L, 1);
     }
 
-    ud->owned[ci].x = x;
-    ud->owned[ci].y = y;
-    ud->owned[ci].label = alea_strdup(label);
-    ud->owned[ci].color = color ? alea_strdup(color) : NULL;
+    alea_lua_free_guard_t* label_guard = alea_lua_push_free_guard(L);
+    label_guard->ptr = alea_strdup(label);
+    alea_lua_free_guard_t* color_guard = alea_lua_push_free_guard(L);
+    color_guard->ptr = color ? alea_strdup(color) : NULL;
+    if (!label_guard->ptr || (color && !color_guard->ptr))
+        return luaL_error(L, "out of memory");
+
+    ud->owned[ci].x = x; x_guard->ptr = NULL;
+    ud->owned[ci].y = y; y_guard->ptr = NULL;
+    ud->owned[ci].label = label_guard->ptr; label_guard->ptr = NULL;
+    ud->owned[ci].color = color_guard->ptr; color_guard->ptr = NULL;
 
     alea_svg_curve_t* c = &ud->plot.curves[ci];
     c->x = x;
@@ -159,6 +185,8 @@ static int l_svgplot_add(lua_State* L) {
     c->color = ud->owned[ci].color;
     c->width = 0;
     c->dashed = 0;
+    ud->plot.n_curves++;
+    lua_pop(L, 4);
 
     /* Optional opts table */
     if (lua_istable(L, 6)) {
@@ -170,7 +198,6 @@ static int l_svgplot_add(lua_State* L) {
         lua_pop(L, 1);
     }
 
-    ud->plot.n_curves++;
     return 0;
 }
 

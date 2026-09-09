@@ -10,46 +10,54 @@
 
 static int l_node_mul(lua_State* L) {
     alea_lua_node_t* a = alea_check_node(L, 1);
-    alea_lua_node_t* b = alea_check_node(L, 2);
-    alea_node_id_t result = alea_intersection(a->sys, a->id, b->id);
+    alea_lua_node_t* b = alea_check_node_same_owner(L, 2, 1);
+    alea_node_id_t result = alea_intersection(a->owner->sys, a->id, b->id);
     if (result == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "intersection failed: %s", alea_error());
-    alea_push_node(L, a->sys, result);
+    alea_push_node_from_node(L, 1, result);
     return 1;
 }
 
 static int l_node_add(lua_State* L) {
     alea_lua_node_t* a = alea_check_node(L, 1);
-    alea_lua_node_t* b = alea_check_node(L, 2);
-    alea_node_id_t result = alea_union(a->sys, a->id, b->id);
+    alea_lua_node_t* b = alea_check_node_same_owner(L, 2, 1);
+    alea_node_id_t result = alea_union(a->owner->sys, a->id, b->id);
     if (result == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "union failed: %s", alea_error());
-    alea_push_node(L, a->sys, result);
+    alea_push_node_from_node(L, 1, result);
     return 1;
 }
 
 static int l_node_sub(lua_State* L) {
     alea_lua_node_t* a = alea_check_node(L, 1);
-    alea_lua_node_t* b = alea_check_node(L, 2);
-    alea_node_id_t result = alea_difference(a->sys, a->id, b->id);
+    alea_lua_node_t* b = alea_check_node_same_owner(L, 2, 1);
+    alea_node_id_t result = alea_difference(a->owner->sys, a->id, b->id);
     if (result == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "difference failed: %s", alea_error());
-    alea_push_node(L, a->sys, result);
+    alea_push_node_from_node(L, 1, result);
     return 1;
 }
 
 static int l_node_bnot(lua_State* L) {
     alea_lua_node_t* a = alea_check_node(L, 1);
-    alea_node_id_t result = alea_complement(a->sys, a->id);
+    alea_node_id_t result = alea_complement(a->owner->sys, a->id);
     if (result == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "complement failed: %s", alea_error());
-    alea_push_node(L, a->sys, result);
+    alea_push_node_from_node(L, 1, result);
     return 1;
 }
 
 static int l_node_tostring(lua_State* L) {
-    alea_lua_node_t* nd = alea_check_node(L, 1);
-    alea_operation_t op = alea_node_operation(nd->sys, nd->id);
+    alea_lua_node_t* nd = (alea_lua_node_t*)luaL_checkudata(L, 1, ALEA_NODE_MT);
+    if (!nd->owner || !nd->owner->sys || nd->owner->destroy_pending) {
+        lua_pushliteral(L, "Node(destroyed)");
+        return 1;
+    }
+    if (nd->generation != nd->owner->node_generation) {
+        lua_pushfstring(L, "Node(stale, id=%d)", (int)nd->id);
+        return 1;
+    }
+    alea_operation_t op = alea_node_operation(nd->owner->sys, nd->id);
     const char* name;
     switch (op) {
         case ALEA_OP_PRIMITIVE:    name = "PRIMITIVE";    break;
@@ -75,7 +83,7 @@ static int l_system_half(lua_State* L) {
     alea_node_id_t id = alea_halfspace(sys, idx, sense);
     if (id == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "halfspace failed: invalid surface index %d", idx);
-    alea_push_node(L, sys, id);
+    alea_push_node(L, 1, id);
     return 1;
 }
 
@@ -86,7 +94,7 @@ static int l_system_inside(lua_State* L) {
     alea_node_id_t id = alea_halfspace(sys, idx, -1);
     if (id == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "inside failed: invalid surface index %d", idx);
-    alea_push_node(L, sys, id);
+    alea_push_node(L, 1, id);
     return 1;
 }
 
@@ -97,7 +105,7 @@ static int l_system_outside(lua_State* L) {
     alea_node_id_t id = alea_halfspace(sys, idx, +1);
     if (id == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "outside failed: invalid surface index %d", idx);
-    alea_push_node(L, sys, id);
+    alea_push_node(L, 1, id);
     return 1;
 }
 
@@ -119,7 +127,7 @@ static int l_system_cell(lua_State* L) {
 
     /* Required: region */
     lua_getfield(L, 2, "region");
-    alea_lua_node_t* node = (alea_lua_node_t*)luaL_checkudata(L, -1, ALEA_NODE_MT);
+    alea_lua_node_t* node = alea_check_node_for_system(L, -1, 1);
     alea_node_id_t root = node->id;
     lua_pop(L, 1);
 
@@ -197,7 +205,7 @@ static int l_union_n(lua_State* L) {
     alea_node_id_t* ids = (alea_node_id_t*)lua_newuserdata(L, sizeof(alea_node_id_t) * (size_t)n);
     for (lua_Integer i = 1; i <= n; i++) {
         lua_geti(L, 2, i);
-        alea_lua_node_t* nd = (alea_lua_node_t*)luaL_checkudata(L, -1, ALEA_NODE_MT);
+        alea_lua_node_t* nd = alea_check_node_for_system(L, -1, 1);
         ids[i - 1] = nd->id;
         lua_pop(L, 1);
     }
@@ -205,7 +213,7 @@ static int l_union_n(lua_State* L) {
     alea_node_id_t result = alea_union_n(sys, ids, (size_t)n);
     if (result == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "union_n failed: %s", alea_error());
-    alea_push_node(L, sys, result);
+    alea_push_node(L, 1, result);
     return 1;
 }
 
@@ -220,7 +228,7 @@ static int l_intersection_n(lua_State* L) {
     alea_node_id_t* ids = (alea_node_id_t*)lua_newuserdata(L, sizeof(alea_node_id_t) * (size_t)n);
     for (lua_Integer i = 1; i <= n; i++) {
         lua_geti(L, 2, i);
-        alea_lua_node_t* nd = (alea_lua_node_t*)luaL_checkudata(L, -1, ALEA_NODE_MT);
+        alea_lua_node_t* nd = alea_check_node_for_system(L, -1, 1);
         ids[i - 1] = nd->id;
         lua_pop(L, 1);
     }
@@ -228,7 +236,7 @@ static int l_intersection_n(lua_State* L) {
     alea_node_id_t result = alea_intersection_n(sys, ids, (size_t)n);
     if (result == ALEA_NODE_ID_INVALID)
         return luaL_error(L, "intersection_n failed: %s", alea_error());
-    alea_push_node(L, sys, result);
+    alea_push_node(L, 1, result);
     return 1;
 }
 

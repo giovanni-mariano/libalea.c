@@ -16,6 +16,21 @@ typedef struct {
     uint8_t* pixels;  /* tonemapped RGB pixels, allocated on first write */
 } alea_lua_framebuffer_t;
 
+#define ALEA_RENDER_CONFIG_GUARD_MT "alea.RenderConfigGuard"
+
+typedef struct {
+    render_config_t config;
+    int initialized;
+} alea_lua_render_config_guard_t;
+
+static int l_render_config_guard_gc(lua_State* L) {
+    alea_lua_render_config_guard_t* guard =
+        luaL_checkudata(L, 1, ALEA_RENDER_CONFIG_GUARD_MT);
+    if (guard->initialized) render_config_free(&guard->config);
+    guard->initialized = 0;
+    return 0;
+}
+
 static alea_lua_framebuffer_t* check_framebuffer(lua_State* L, int idx) {
     return (alea_lua_framebuffer_t*)luaL_checkudata(L, idx, ALEA_FRAMEBUFFER_MT);
 }
@@ -217,17 +232,22 @@ static int l_render_config(lua_State* L) {
 /* alea.render_load_colors(file, cfg_table) -> updated cfg_table */
 static int l_render_load_colors(lua_State* L) {
     const char* filename = luaL_checkstring(L, 1);
-    render_config_t cfg;
-    render_config_init(&cfg);
+    alea_lua_render_config_guard_t* guard = lua_newuserdata(L, sizeof(*guard));
+    guard->initialized = 0;
+    luaL_setmetatable(L, ALEA_RENDER_CONFIG_GUARD_MT);
+    render_config_t* cfg = &guard->config;
+    render_config_init(cfg);
+    guard->initialized = 1;
     if (lua_istable(L, 2))
-        lua_to_render_config(L, 2, &cfg);
+        lua_to_render_config(L, 2, cfg);
 
-    if (render_load_colors(filename, &cfg) != 0) {
-        render_config_free(&cfg);
+    if (render_load_colors(filename, cfg) != 0) {
         return luaL_error(L, "render_load_colors failed: %s", alea_error());
     }
-    push_render_config(L, &cfg);
-    render_config_free(&cfg);
+    push_render_config(L, cfg);
+    render_config_free(cfg);
+    guard->initialized = 0;
+    lua_remove(L, -2);
     return 1;
 }
 
@@ -444,6 +464,11 @@ static const luaL_Reg fb_methods[] = {
 };
 
 int luaopen_alea_render(lua_State* L) {
+    luaL_newmetatable(L, ALEA_RENDER_CONFIG_GUARD_MT);
+    lua_pushcfunction(L, l_render_config_guard_gc);
+    lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
+
     /* Add system methods */
     luaL_getmetatable(L, ALEA_SYSTEM_MT);
     lua_getfield(L, -1, "__index");

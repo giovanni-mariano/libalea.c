@@ -194,28 +194,14 @@ alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t*
                               double number_density);
 
 /**
- * @brief Create a nucdata material from a core material definition
+ * Build a nuclear material from a zero-based geometry cell index.
  *
- * Loads ACE nuclides via the xsdir and computes number densities from
- * the material's composition (atom or weight fractions) and density.
- * Elements must be expanded to nuclides before calling this function
- * (see alea_mat_expand_elements).
- *
- * The returned material owns the loaded nuclides — they are freed
- * when the material is destroyed.
- *
- * @param mat           Core material (with nuclides and fraction type)
- * @param cell_density  Cell density (positive = g/cm³, negative = atoms/b-cm)
- * @param is_mass_density  true if density is in g/cm³
- * @param xsdir         xsdir for resolving ZAIDs and loading ACE data
- * @return Allocated nucdata material, or NULL on error
+ * The caller owns the returned material. Nuclides referenced by it remain
+ * owned by xsdir, so xsdir must outlive the returned material.
  */
-struct alea_material;
-alea_nuc_material_t* alea_nuc_material_from_core(
-    const struct alea_material* mat,
-    double cell_density,
-    bool is_mass_density,
-    alea_nuc_xsdir_t* xsdir);
+struct alea_system;
+alea_nuc_material_t* alea_nuc_material_from_cell(
+    struct alea_system* sys, int cell_index, alea_nuc_xsdir_t* xsdir);
 
 /** Macroscopic cross sections (cm⁻¹) */
 double alea_nuc_mat_xs_total(const alea_nuc_material_t* mat, double energy);

@@ -16,6 +16,7 @@
 
 #include "alea_nucdata.h"
 #include "core/alea_materials.h"
+#include "core/alea_system.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -26,7 +27,65 @@
 /* Neutron mass in amu */
 #define NEUTRON_MASS_AMU 1.00866491595
 
-alea_nuc_material_t* alea_nuc_material_from_core(
+static alea_nuc_material_t* nuc_material_from_core(
+    const alea_material_t* mat, double cell_density,
+    bool is_mass_density, alea_nuc_xsdir_t* xsdir);
+
+alea_nuc_material_t* alea_nuc_material_from_cell(
+    alea_system_t* sys, int cell_index, alea_nuc_xsdir_t* xsdir)
+{
+    if (!sys || !xsdir || cell_index < 0 ||
+        (size_t)cell_index >= sys->cells.count) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "invalid system, xsdir, or cell index");
+        return NULL;
+    }
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    if (cell->material_index < 0 ||
+        (size_t)cell->material_index >= sys->materials.count) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "cell %d has no material", cell_index);
+        return NULL;
+    }
+
+    alea_material_t* mat = &sys->materials.data[cell->material_index];
+    if (mat->elements.count > 0 && mat->nuclides.count == 0 &&
+        alea_mat_expand_elements(mat) != 0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "failed to expand elements for material %d",
+                              mat->material_id);
+        return NULL;
+    }
+    if (mat->nuclides.count == 0) {
+        alea_set_error_detail(ALEA_ERR_EMPTY,
+                              "material %d has no nuclides", mat->material_id);
+        return NULL;
+    }
+
+    double density = cell->density;
+    bool is_mass_density = cell->is_mass_density;
+    if (density == 0.0 && mat->has_standard_density) {
+        density = mat->standard_density;
+        is_mass_density = density > 0.0;
+        if (density < 0.0) density = -density;
+    }
+    if (density == 0.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "cell %d / material %d has no density",
+                              cell_index, mat->material_id);
+        return NULL;
+    }
+
+    alea_nuc_material_t* result = nuc_material_from_core(
+        mat, density, is_mass_density, xsdir);
+    if (!result && alea_get_last_error() == ALEA_OK)
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "failed to build material for cell %d", cell_index);
+    return result;
+}
+
+static alea_nuc_material_t* nuc_material_from_core(
     const alea_material_t* mat,
     double cell_density,
     bool is_mass_density,

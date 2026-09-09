@@ -8,6 +8,20 @@
 
 #include <stdlib.h>
 
+#define ALEA_RAY_SLICE_RESULT_GUARD_MT "alea.RaySliceResultGuard"
+
+typedef struct {
+    alea_ray_slice_validation_result_t* result;
+} alea_lua_ray_slice_result_guard_t;
+
+static int l_ray_slice_result_guard_gc(lua_State* L) {
+    alea_lua_ray_slice_result_guard_t* ud =
+        luaL_checkudata(L, 1, ALEA_RAY_SLICE_RESULT_GUARD_MT);
+    if (ud->result) alea_ray_slice_validation_result_destroy(ud->result);
+    ud->result = NULL;
+    return 0;
+}
+
 typedef struct {
     alea_geom_validator_result_t* result;
 } alea_lua_geom_result_t;
@@ -197,11 +211,12 @@ static void push_geom_error(lua_State* L, const alea_geom_error_t* error) {
 static alea_lua_geom_result_t* push_new_result(lua_State* L) {
     alea_lua_geom_result_t* ud =
         (alea_lua_geom_result_t*)lua_newuserdata(L, sizeof(*ud));
+    ud->result = NULL;
+    luaL_setmetatable(L, ALEA_GEOMRESULT_MT);
     ud->result = (alea_geom_validator_result_t*)calloc(1, sizeof(*ud->result));
     if (!ud->result)
         luaL_error(L, "validate_geometry: out of memory");
     alea_geom_validator_result_init(ud->result);
-    luaL_setmetatable(L, ALEA_GEOMRESULT_MT);
     return ud;
 }
 
@@ -382,17 +397,21 @@ static int l_validate_ray_slice(lua_State* L) {
             (alea_lua_directional_trace_cache_t*)luaL_checkudata(
                 L, 5, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
         if (!ud->ptr) return luaL_error(L, "directional trace cache freed");
+        if (ud->system != alea_check_system(L, 1))
+            return luaL_error(L, "directional trace cache belongs to a different system");
         cache = ud->ptr;
     }
-    alea_ray_slice_validation_result_t* result =
-        alea_ray_slice_validation_result_create();
-    if (!result) return luaL_error(L, "validate_ray_slice: out of memory");
+    alea_lua_ray_slice_result_guard_t* guard = lua_newuserdata(L, sizeof(*guard));
+    guard->result = NULL;
+    luaL_setmetatable(L, ALEA_RAY_SLICE_RESULT_GUARD_MT);
+    guard->result = alea_ray_slice_validation_result_create();
+    if (!guard->result) return luaL_error(L, "validate_ray_slice: out of memory");
+    alea_ray_slice_validation_result_t* result = guard->result;
     int rc = cache ? alea_validate_ray_slice_compact_with_directional_cache(
                          sys, &view, rows, &options, NULL, NULL, cache, result) :
                      alea_validate_ray_slice_compact(
                          sys, &view, rows, &options, NULL, NULL, result);
     if (rc != 0) {
-        alea_ray_slice_validation_result_destroy(result);
         return luaL_error(L, "validate_ray_slice failed: %s", alea_error());
     }
     size_t count = alea_ray_slice_validation_interval_count(result);
@@ -420,6 +439,8 @@ static int l_validate_ray_slice(lua_State* L) {
     lua_pushinteger(L, alea_ray_slice_validation_executed_trace_mask(result));
     lua_setfield(L, -2, "executed_trace_mask");
     alea_ray_slice_validation_result_destroy(result);
+    guard->result = NULL;
+    lua_remove(L, -2);
     return 1;
 }
 
@@ -456,6 +477,11 @@ int luaopen_alea_geo_validator(lua_State* L) {
     lua_newtable(L);
     luaL_setfuncs(L, geom_result_methods, 0);
     lua_setfield(L, -2, "__index");
+    lua_pop(L, 1);
+
+    luaL_newmetatable(L, ALEA_RAY_SLICE_RESULT_GUARD_MT);
+    lua_pushcfunction(L, l_ray_slice_result_guard_gc);
+    lua_setfield(L, -2, "__gc");
     lua_pop(L, 1);
 
     return 0;
