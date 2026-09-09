@@ -24,7 +24,7 @@
 
 #include "alea_lua.h"
 #include "alea_nucdata.h"
-#include "core/alea_system.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,25 +45,23 @@ typedef struct {
 
 static int l_nuc_load_xsdir(lua_State* L) {
     const char* path = luaL_checkstring(L, 1);
-    alea_nuc_xsdir_t* xsdir = alea_nuc_xsdir_load(path);
-    if (!xsdir)
-        return luaL_error(L, "failed to load xsdir: %s", path);
-
     alea_nuc_xsdir_t** ud = lua_newuserdata(L, sizeof(alea_nuc_xsdir_t*));
-    *ud = xsdir;
+    *ud = NULL;
     luaL_setmetatable(L, ALEA_XSDIR_MT);
+    *ud = alea_nuc_xsdir_load(path);
+    if (!*ud)
+        return luaL_error(L, "failed to load xsdir: %s", path);
     return 1;
 }
 
 static int l_nuc_load_xsdir_dir(lua_State* L) {
     const char* path = luaL_checkstring(L, 1);
-    alea_nuc_xsdir_t* xsdir = alea_nuc_xsdir_load_dir(path);
-    if (!xsdir)
-        return luaL_error(L, "failed to load xsdir directory: %s", path);
-
     alea_nuc_xsdir_t** ud = lua_newuserdata(L, sizeof(alea_nuc_xsdir_t*));
-    *ud = xsdir;
+    *ud = NULL;
     luaL_setmetatable(L, ALEA_XSDIR_MT);
+    *ud = alea_nuc_xsdir_load_dir(path);
+    if (!*ud)
+        return luaL_error(L, "failed to load xsdir directory: %s", path);
     return 1;
 }
 
@@ -250,25 +248,23 @@ static int l_nuclide_broadened(lua_State* L) {
     alea_nuc_xsdir_t** xsdir_ud = luaL_testudata(L, -1, ALEA_XSDIR_MT);
     if (!xsdir_ud || !*xsdir_ud)
         return luaL_error(L, "broadened: nuclide has no associated xsdir");
+    alea_nuc_xsdir_t* xsdir = *xsdir_ud;
     lua_pop(L, 1);
 
+    lua_nuc_ud_t* ud = lua_newuserdata(L, sizeof(lua_nuc_ud_t));
+    ud->nuc = NULL;
+    ud->owned = 1;
+    luaL_setmetatable(L, ALEA_NUCLIDE_MT);
+
     /* Load a fresh (non-cached) copy */
-    alea_nuc_nuclide_t* fresh = alea_nuc_load_nuclide(*xsdir_ud, src_ud->nuc->zaid);
-    if (!fresh)
+    ud->nuc = alea_nuc_load_nuclide(xsdir, src_ud->nuc->zaid);
+    if (!ud->nuc)
         return luaL_error(L, "broadened: failed to reload nuclide %s", src_ud->nuc->zaid);
 
     /* Broaden the fresh copy */
-    alea_error_t err = alea_nuc_doppler_broaden(fresh, kT);
-    if (err != ALEA_OK) {
-        alea_nuc_nuclide_free(fresh);
+    alea_error_t err = alea_nuc_doppler_broaden(ud->nuc, kT);
+    if (err != ALEA_OK)
         return luaL_error(L, "broadened: %s", alea_error_string(err));
-    }
-
-    /* Wrap as owned userdata */
-    lua_nuc_ud_t* ud = lua_newuserdata(L, sizeof(lua_nuc_ud_t));
-    ud->nuc = fresh;
-    ud->owned = 1;
-    luaL_setmetatable(L, ALEA_NUCLIDE_MT);
 
     return 1;
 }
@@ -336,12 +332,14 @@ static int l_nuclide_tostring(lua_State* L) {
  * ============================================================================ */
 
 static int l_nuc_material_create(lua_State* L) {
-    alea_nuc_material_t* mat = alea_nuc_material_create();
-    if (!mat) return luaL_error(L, "failed to create material");
-
-    alea_nuc_material_t** ud = lua_newuserdata(L, sizeof(alea_nuc_material_t*));
-    *ud = mat;
+    alea_nuc_material_t** ud = lua_newuserdatauv(
+        L, sizeof(alea_nuc_material_t*), 1);
+    *ud = NULL;
     luaL_setmetatable(L, ALEA_NUCMAT_MT);
+    lua_newtable(L);
+    lua_setiuservalue(L, -2, 1);
+    *ud = alea_nuc_material_create();
+    if (!*ud) return luaL_error(L, "failed to create material");
     return 1;
 }
 
@@ -359,46 +357,24 @@ static alea_nuc_material_t* check_nucmat(lua_State* L, int idx) {
  */
 static int l_nuc_material_from_cell(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    int cell_index = (int)luaL_checkinteger(L, 2) - 1; /* 1-based Lua */
+    lua_Integer value = luaL_checkinteger(L, 2);
+    if (value < 0 || (uint64_t)value > INT_MAX)
+        return luaL_error(L, "cell index out of range");
+    int cell_index = (int)value; /* geometry indices are zero-based */
     alea_nuc_xsdir_t* xsdir = check_xsdir(L, 3);
 
-    /* Validate cell index */
-    if (cell_index < 0 || (size_t)cell_index >= alea_cell_count(sys))
-        return luaL_error(L, "cell index %d out of range [1,%d]",
-                          cell_index + 1, (int)alea_cell_count(sys));
-
-    const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
-    if (cell->material_index < 0)
-        return luaL_error(L, "cell %d is void (no material)", cell_index + 1);
-
-    alea_material_t* mat = &sys->materials.data[cell->material_index];
-
-    /* Expand elements to nuclides if needed */
-    if (mat->elements.count > 0 && mat->nuclides.count == 0)
-        alea_mat_expand_elements(mat);
-
-    if (mat->nuclides.count == 0)
-        return luaL_error(L, "material %d has no nuclides", mat->material_id);
-
-    /* Determine density: use cell density, fall back to material standard */
-    double density = cell->density;
-    bool is_mass = cell->is_mass_density;
-    if (density == 0.0 && mat->has_standard_density) {
-        density = mat->standard_density;
-        is_mass = (density > 0.0);
-        if (density < 0.0) density = -density;
-    }
-    if (density == 0.0)
-        return luaL_error(L, "no density set for cell %d / material %d",
-                          cell_index + 1, mat->material_id);
-
-    alea_nuc_material_t* nmat = alea_nuc_material_from_core(mat, density, is_mass, xsdir);
-    if (!nmat)
-        return luaL_error(L, "failed to build nuclear material from cell %d", cell_index + 1);
-
-    alea_nuc_material_t** ud = lua_newuserdata(L, sizeof(alea_nuc_material_t*));
-    *ud = nmat;
+    alea_nuc_material_t** ud = lua_newuserdatauv(
+        L, sizeof(alea_nuc_material_t*), 1);
+    *ud = NULL;
     luaL_setmetatable(L, ALEA_NUCMAT_MT);
+    lua_newtable(L);
+    lua_pushvalue(L, 3);
+    lua_rawseti(L, -2, 1);
+    lua_setiuservalue(L, -2, 1);
+
+    *ud = alea_nuc_material_from_cell(sys, cell_index, xsdir);
+    if (!*ud)
+        return luaL_error(L, "nuc_material_from_cell failed: %s", alea_error());
     return 1;
 }
 
@@ -407,6 +383,11 @@ static int l_nucmat_add(lua_State* L) {
     alea_nuc_material_t* mat = check_nucmat(L, 1);
     alea_nuc_nuclide_t* nuc = check_nuclide(L, 2);
     double nd = luaL_checknumber(L, 3);
+    lua_getiuservalue(L, 1, 1);
+    lua_Integer retained = (lua_Integer)lua_rawlen(L, -1);
+    lua_pushvalue(L, 2);
+    lua_rawseti(L, -2, retained + 1);
+    lua_pop(L, 1);
     alea_error_t err = alea_nuc_material_add(mat, nuc, nd);
     if (err != ALEA_OK)
         return luaL_error(L, "material_add failed: %s", alea_error_string(err));
@@ -481,8 +462,10 @@ static int l_nuc_mg_create(lua_State* L) {
         return luaL_error(L, "expected %d group boundaries, got %d",
                           n_groups + 1, n_bounds);
 
-    double* bounds = malloc((size_t)(n_groups + 1) * sizeof(double));
-    if (!bounds) return luaL_error(L, "out of memory");
+    if (n_groups < 1 || (size_t)n_groups >= SIZE_MAX / sizeof(double) - 1)
+        return luaL_error(L, "invalid group count");
+    double* bounds = lua_newuserdatauv(
+        L, (size_t)(n_groups + 1) * sizeof(double), 0);
 
     for (int i = 0; i < n_groups + 1; i++) {
         lua_rawgeti(L, 2, i + 1);
@@ -490,13 +473,11 @@ static int l_nuc_mg_create(lua_State* L) {
         lua_pop(L, 1);
     }
 
-    alea_nuc_multigroup_t* mg = alea_nuc_mg_create(n_groups, bounds);
-    free(bounds);
-    if (!mg) return luaL_error(L, "failed to create multigroup structure");
-
     alea_nuc_multigroup_t** ud = lua_newuserdata(L, sizeof(alea_nuc_multigroup_t*));
-    *ud = mg;
+    *ud = NULL;
     luaL_setmetatable(L, ALEA_MULTIGROUP_MT);
+    *ud = alea_nuc_mg_create(n_groups, bounds);
+    if (!*ud) return luaL_error(L, "failed to create multigroup structure");
     return 1;
 }
 

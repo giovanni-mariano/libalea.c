@@ -347,6 +347,14 @@ Example session:
 
 See `examples/lua/` for complete Lua scripts demonstrating all features.
 
+Lua geometry indices are zero-based and can be passed directly between APIs;
+this includes cell, surface, and material indices returned by construction and
+inspection functions. Domain identifiers such as MCNP cell IDs are preserved
+without adjustment. Positions within Lua sequences, including ray segments,
+slice curves, material components, and multigroup entries, are one-based.
+CSG nodes are opaque objects tied to their originating System and cannot be
+combined with nodes from another System.
+
 ## Tools
 
 Tools are built via `make tools`:

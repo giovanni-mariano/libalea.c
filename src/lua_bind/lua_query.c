@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_lua.h"
-#include "core/alea_system.h"
 #include <stdlib.h>
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -128,7 +127,7 @@ static int l_find_all_cells(lua_State* L) {
 /* sys:point_inside(node, x, y, z) -> boolean */
 static int l_point_inside(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     double x = luaL_checknumber(L, 3);
     double y = luaL_checknumber(L, 4);
     double z = luaL_checknumber(L, 5);
@@ -222,7 +221,7 @@ static int l_cell_info(lua_State* L) {
     lua_setfield(L, -2, "bbox");
 
     /* root node */
-    alea_push_node(L, sys, info.root);
+    alea_push_node(L, 1, info.root);
     lua_setfield(L, -2, "root");
 
     /* comments */
@@ -294,7 +293,7 @@ static int l_cells_by_universe(lua_State* L) {
 /* sys:node_operation(node) -> string */
 static int l_node_operation(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_operation_t op = alea_node_operation(sys, nd->id);
     const char* name;
     switch (op) {
@@ -312,23 +311,23 @@ static int l_node_operation(lua_State* L) {
 /* sys:node_left(node) -> Node or nil */
 static int l_node_left(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
-    alea_push_node(L, sys, alea_node_left(sys, nd->id));
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
+    alea_push_node(L, 1, alea_node_left(sys, nd->id));
     return 1;
 }
 
 /* sys:node_right(node) -> Node or nil */
 static int l_node_right(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
-    alea_push_node(L, sys, alea_node_right(sys, nd->id));
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
+    alea_push_node(L, 1, alea_node_right(sys, nd->id));
     return 1;
 }
 
 /* sys:node_sense(node) -> +1 or -1 or 0 */
 static int l_node_sense(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     lua_pushinteger(L, alea_node_sense(sys, nd->id));
     return 1;
 }
@@ -336,7 +335,7 @@ static int l_node_sense(lua_State* L) {
 /* sys:node_surface_id(node) -> int */
 static int l_node_surface_id(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     lua_pushinteger(L, alea_node_surface_id(sys, nd->id));
     return 1;
 }
@@ -393,7 +392,7 @@ static int l_cell_find_info(lua_State* L) {
     lua_pushnumber(L, info.bbox.max_z); lua_setfield(L, -2, "max_z");
     lua_setfield(L, -2, "bbox");
 
-    alea_push_node(L, sys, info.root);
+    alea_push_node(L, 1, info.root);
     lua_setfield(L, -2, "root");
 
     if (info.comments) {
@@ -438,9 +437,9 @@ static int l_surface_info(lua_State* L) {
     lua_pushinteger(L, surface_id);  lua_setfield(L, -2, "surface_id");
     lua_pushinteger(L, (int)type);   lua_setfield(L, -2, "type");
     lua_pushinteger(L, (int)btype);  lua_setfield(L, -2, "boundary_type");
-    alea_push_node(L, sys, pos_node);
+    alea_push_node(L, 1, pos_node);
     lua_setfield(L, -2, "pos_node");
-    alea_push_node(L, sys, neg_node);
+    alea_push_node(L, 1, neg_node);
     lua_setfield(L, -2, "neg_node");
     return 1;
 }
@@ -497,7 +496,7 @@ static int l_universe_find(lua_State* L) {
 /* sys:node_primitive_type(node) -> string */
 static int l_node_primitive_type(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_primitive_type_t type = alea_node_primitive_type(sys, nd->id);
     const char* name;
     switch (type) {
@@ -532,7 +531,7 @@ static int l_node_primitive_type(lua_State* L) {
 /* sys:node_primitive_id(node) -> int */
 static int l_node_primitive_id(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_primitive_id_t pid = alea_node_primitive_id(sys, nd->id);
     if (pid == ALEA_PRIMITIVE_ID_INVALID)
         lua_pushnil(L);
@@ -544,7 +543,7 @@ static int l_node_primitive_id(lua_State* L) {
 /* sys:node_primitive_data(node) -> table */
 static int l_node_primitive_data(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_primitive_data_t data;
     if (alea_node_primitive_data(sys, nd->id, &data) != 0) {
         lua_pushnil(L);
@@ -634,7 +633,7 @@ static int l_stats(lua_State* L) {
 /* sys:tree_print(node) */
 static int l_tree_print(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_tree_print(sys, nd->id);
     return 0;
 }

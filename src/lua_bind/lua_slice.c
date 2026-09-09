@@ -31,12 +31,15 @@ static int l_directional_trace_cache(lua_State* L) {
     int width = (int)luaL_checkinteger(L, 3);
     int height = (int)luaL_checkinteger(L, 4);
     alea_lua_directional_trace_cache_t* ud =
-        (alea_lua_directional_trace_cache_t*)lua_newuserdata(L, sizeof(*ud));
+        (alea_lua_directional_trace_cache_t*)lua_newuserdatauv(L, sizeof(*ud), 1);
     ud->system = alea_check_system(L, 1);
+    ud->ptr = NULL;
+    luaL_setmetatable(L, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
+    lua_pushvalue(L, 1);
+    lua_setiuservalue(L, -2, 1);
     ud->ptr = alea_slice_directional_trace_cache_create(sys, &view, width, height);
     if (!ud->ptr) return luaL_error(L, "directional_trace_cache failed");
     ud->system->active_directional_trace_caches++;
-    luaL_setmetatable(L, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
     return 1;
 }
 
@@ -44,9 +47,9 @@ static int l_directional_trace_cache_gc(lua_State* L) {
     alea_lua_directional_trace_cache_t* ud =
         (alea_lua_directional_trace_cache_t*)luaL_checkudata(
             L, 1, ALEA_DIRECTIONAL_TRACE_CACHE_MT);
-    alea_slice_directional_trace_cache_destroy(ud->ptr);
+    if (ud->ptr) alea_slice_directional_trace_cache_destroy(ud->ptr);
     ud->ptr = NULL;
-    if (ud->system) {
+    if (ud->system && ud->system->active_directional_trace_caches > 0) {
         ud->system->active_directional_trace_caches--;
         alea_lua_system_release_if_pending(ud->system);
         ud->system = NULL;
@@ -181,19 +184,26 @@ static int l_find_cells_grid(lua_State* L) {
     int nv = (int)luaL_checkinteger(L, 4);
     int depth = (int)luaL_optinteger(L, 5, -1);
 
+    if (nu <= 0 || nv <= 0 || (size_t)nu > SIZE_MAX / (size_t)nv)
+        return luaL_error(L, "find_cells_grid: invalid grid dimensions");
+
     size_t total = (size_t)nu * (size_t)nv;
+    alea_lua_free_guard_t* cell_guard = alea_lua_push_free_guard(L);
     int* cell_ids = (int*)calloc(total, sizeof(int));
+    cell_guard->ptr = cell_ids;
+    alea_lua_free_guard_t* mat_guard = alea_lua_push_free_guard(L);
     int* mat_ids  = (int*)calloc(total, sizeof(int));
+    mat_guard->ptr = mat_ids;
+    alea_lua_free_guard_t* error_guard = alea_lua_push_free_guard(L);
     uint8_t* errors = (uint8_t*)calloc(total, sizeof(uint8_t));
+    error_guard->ptr = errors;
     if (!cell_ids || !mat_ids || !errors) {
-        free(cell_ids); free(mat_ids); free(errors);
         return luaL_error(L, "find_cells_grid: out of memory");
     }
 
     int rc = alea_find_cells_grid(sys, &view, nu, nv, depth,
                                    cell_ids, mat_ids, errors);
     if (rc != 0) {
-        free(cell_ids); free(mat_ids); free(errors);
         return luaL_error(L, "find_cells_grid failed: %s", alea_error());
     }
 
@@ -223,9 +233,10 @@ static int l_find_cells_grid(lua_State* L) {
     }
     lua_setfield(L, -2, "errors");
 
-    free(cell_ids);
-    free(mat_ids);
-    free(errors);
+    free(cell_ids); cell_guard->ptr = NULL;
+    free(mat_ids); mat_guard->ptr = NULL;
+    free(errors); error_guard->ptr = NULL;
+    lua_remove(L, -2); lua_remove(L, -2); lua_remove(L, -2);
     return 1;
 }
 
@@ -240,11 +251,17 @@ static int l_check_grid_overlaps(lua_State* L) {
     luaL_checktype(L, 6, LUA_TTABLE);
     luaL_checktype(L, 7, LUA_TTABLE);
 
+    if (nu <= 0 || nv <= 0 || (size_t)nu > SIZE_MAX / (size_t)nv)
+        return luaL_error(L, "check_grid_overlaps: invalid grid dimensions");
+
     size_t total = (size_t)nu * (size_t)nv;
+    alea_lua_free_guard_t* cell_guard = alea_lua_push_free_guard(L);
     int* cell_ids = (int*)calloc(total, sizeof(int));
+    cell_guard->ptr = cell_ids;
+    alea_lua_free_guard_t* error_guard = alea_lua_push_free_guard(L);
     uint8_t* errors = (uint8_t*)calloc(total, sizeof(uint8_t));
+    error_guard->ptr = errors;
     if (!cell_ids || !errors) {
-        free(cell_ids); free(errors);
         return luaL_error(L, "check_grid_overlaps: out of memory");
     }
 
@@ -258,10 +275,9 @@ static int l_check_grid_overlaps(lua_State* L) {
     }
 
     int rc = alea_check_grid_overlaps(sys, &view, nu, nv, depth, cell_ids, errors);
-    free(cell_ids);
+    free(cell_ids); cell_guard->ptr = NULL;
 
     if (rc != 0) {
-        free(errors);
         return luaL_error(L, "check_grid_overlaps failed: %s", alea_error());
     }
 
@@ -270,7 +286,8 @@ static int l_check_grid_overlaps(lua_State* L) {
         lua_pushinteger(L, errors[i]);
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
-    free(errors);
+    free(errors); error_guard->ptr = NULL;
+    lua_remove(L, -2); lua_remove(L, -2);
     return 1;
 }
 
@@ -430,8 +447,13 @@ static int l_find_label_positions(lua_State* L) {
     int h = (int)luaL_checkinteger(L, 3);
     int min_px = (int)luaL_optinteger(L, 4, 100);
 
+    if (w <= 0 || h <= 0 || (size_t)w > SIZE_MAX / (size_t)h)
+        return luaL_error(L, "find_label_positions: invalid dimensions");
+
     size_t total = (size_t)w * (size_t)h;
+    alea_lua_free_guard_t* ids_guard = alea_lua_push_free_guard(L);
     int* ids = (int*)calloc(total, sizeof(int));
+    ids_guard->ptr = ids;
     if (!ids) return luaL_error(L, "out of memory");
 
     for (size_t i = 0; i < total; i++) {
@@ -441,9 +463,11 @@ static int l_find_label_positions(lua_State* L) {
     }
 
     alea_label_position_t* labels = NULL;
+    alea_lua_free_guard_t* labels_guard = alea_lua_push_free_guard(L);
     int count = 0;
     int rc = alea_find_label_positions(ids, w, h, min_px, &labels, &count);
-    free(ids);
+    labels_guard->ptr = labels;
+    free(ids); ids_guard->ptr = NULL;
     if (rc != 0)
         return luaL_error(L, "find_label_positions failed");
 
@@ -456,7 +480,8 @@ static int l_find_label_positions(lua_State* L) {
         lua_pushinteger(L, labels[i].pixel_count); lua_setfield(L, -2, "pixel_count");
         lua_rawseti(L, -2, i + 1);
     }
-    free(labels);
+    free(labels); labels_guard->ptr = NULL;
+    lua_remove(L, -2); lua_remove(L, -2);
     return 1;
 }
 
@@ -472,11 +497,17 @@ static int l_find_surface_label_positions(lua_State* L) {
     int h = (int)luaL_checkinteger(L, 7);
     int margin = (int)luaL_optinteger(L, 8, 10);
 
+    if (w <= 0 || h <= 0 || (size_t)w > SIZE_MAX / (size_t)h)
+        return luaL_error(L, "find_surface_label_positions: invalid dimensions");
+
+    int has_boundary_ids = !lua_isnoneornil(L, 9);
+    if (has_boundary_ids) luaL_checktype(L, 9, LUA_TTABLE);
+    alea_lua_free_guard_t* boundary_guard = alea_lua_push_free_guard(L);
     int* boundary_ids = NULL;
-    if (!lua_isnoneornil(L, 9)) {
-        luaL_checktype(L, 9, LUA_TTABLE);
+    if (has_boundary_ids) {
         size_t n = (size_t)w * (size_t)h;
         boundary_ids = malloc(n * sizeof(int));
+        boundary_guard->ptr = boundary_ids;
         if (!boundary_ids) return luaL_error(L, "find_surface_label_positions: out of memory");
         for (size_t i = 0; i < n; i++) {
             lua_rawgeti(L, 9, (lua_Integer)i + 1);
@@ -486,6 +517,7 @@ static int l_find_surface_label_positions(lua_State* L) {
     }
 
     alea_label_position_t* labels = NULL;
+    alea_lua_free_guard_t* labels_guard = alea_lua_push_free_guard(L);
     int count = 0;
     int rc = boundary_ids
         ? alea_find_surface_label_positions_on_boundaries(
@@ -494,7 +526,8 @@ static int l_find_surface_label_positions(lua_State* L) {
         : alea_find_surface_label_positions(
               ud->ptr, x_min, x_max, y_min, y_max,
               w, h, margin, &labels, &count);
-    free(boundary_ids);
+    labels_guard->ptr = labels;
+    free(boundary_ids); boundary_guard->ptr = NULL;
     if (rc != 0)
         return luaL_error(L, "find_surface_label_positions failed");
 
@@ -507,7 +540,8 @@ static int l_find_surface_label_positions(lua_State* L) {
         lua_pushinteger(L, labels[i].pixel_count); lua_setfield(L, -2, "pixel_count");
         lua_rawseti(L, -2, i + 1);
     }
-    free(labels);
+    free(labels); labels_guard->ptr = NULL;
+    lua_remove(L, -2); lua_remove(L, -2);
     return 1;
 }
 

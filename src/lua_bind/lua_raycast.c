@@ -14,6 +14,26 @@ typedef struct {
     alea_raycast_result_t* ptr;
 } alea_lua_raycast_result_t;
 
+#define ALEA_FIRST_VISIBLE_GUARD_MT "alea.FirstVisibleGuard"
+#define ALEA_BOUNDARY_EVENT_GUARD_MT "alea.BoundaryEventGuard"
+
+typedef struct { alea_ray_first_visible_query_result_t* ptr; } first_visible_guard_t;
+typedef struct { alea_ray_boundary_event_query_result_t* ptr; } boundary_event_guard_t;
+
+static int l_first_visible_guard_gc(lua_State* L) {
+    first_visible_guard_t* guard = luaL_checkudata(L, 1, ALEA_FIRST_VISIBLE_GUARD_MT);
+    if (guard->ptr) alea_ray_first_visible_query_result_destroy(guard->ptr);
+    guard->ptr = NULL;
+    return 0;
+}
+
+static int l_boundary_event_guard_gc(lua_State* L) {
+    boundary_event_guard_t* guard = luaL_checkudata(L, 1, ALEA_BOUNDARY_EVENT_GUARD_MT);
+    if (guard->ptr) alea_ray_boundary_event_query_result_destroy(guard->ptr);
+    guard->ptr = NULL;
+    return 0;
+}
+
 static alea_lua_raycast_result_t* check_rayresult(lua_State* L, int idx) {
     return (alea_lua_raycast_result_t*)luaL_checkudata(L, idx, ALEA_RAYRESULT_MT);
 }
@@ -138,6 +158,9 @@ static int l_rayresult_segment(lua_State* L) {
 /* sys:first_visible(ox, oy, oz, dx, dy, dz [, t_max]) -> table or nil */
 static int l_first_visible(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
+    double ox = luaL_checknumber(L, 2), oy = luaL_checknumber(L, 3);
+    double oz = luaL_checknumber(L, 4), dx = luaL_checknumber(L, 5);
+    double dy = luaL_checknumber(L, 6), dz = luaL_checknumber(L, 7);
     alea_ray_first_visible_options_t options;
     alea_ray_first_visible_options_init(&options);
     options.fields = ALEA_RAY_FIRST_VISIBLE_SURFACE_ID |
@@ -149,15 +172,23 @@ static int l_first_visible(lua_State* L) {
         lua_getfield(L, 8, "surface_id"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_FIRST_VISIBLE_SURFACE_ID; lua_pop(L, 1);
         lua_getfield(L, 8, "normal"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL; lua_pop(L, 1);
     } else options.t_max = luaL_optnumber(L, 8, 0.0);
-    alea_ray_first_visible_query_result_t* result =
-        alea_ray_first_visible_query_result_create();
-    if (!result) return luaL_error(L, "first_visible: out of memory");
+    first_visible_guard_t* guard = lua_newuserdata(L, sizeof(*guard));
+    guard->ptr = NULL;
+    luaL_setmetatable(L, ALEA_FIRST_VISIBLE_GUARD_MT);
+    guard->ptr = alea_ray_first_visible_query_result_create();
+    if (!guard->ptr) return luaL_error(L, "first_visible: out of memory");
+    alea_ray_first_visible_query_result_t* result = guard->ptr;
     int rc = alea_ray_first_visible_query(sys,
-        luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4),
-        luaL_checknumber(L, 5), luaL_checknumber(L, 6), luaL_checknumber(L, 7),
+        ox, oy, oz, dx, dy, dz,
         &options, result);
-    if (rc != 0) { alea_ray_first_visible_query_result_destroy(result); return luaL_error(L, "first_visible failed: %s", alea_error()); }
-    if (!alea_ray_first_visible_found(result)) { alea_ray_first_visible_query_result_destroy(result); lua_pushnil(L); return 1; }
+    if (rc != 0) return luaL_error(L, "first_visible failed: %s", alea_error());
+    if (!alea_ray_first_visible_found(result)) {
+        alea_ray_first_visible_query_result_destroy(result);
+        guard->ptr = NULL;
+        lua_pop(L, 1);
+        lua_pushnil(L);
+        return 1;
+    }
     double nx, ny, nz;
     lua_createtable(L, 0, 7);
     lua_pushnumber(L, alea_ray_first_visible_t(result)); lua_setfield(L, -2, "t");
@@ -167,12 +198,17 @@ static int l_first_visible(lua_State* L) {
     lua_pushinteger(L, alea_ray_first_visible_surface_id(result)); lua_setfield(L, -2, "surface_id");
     if (alea_ray_first_visible_normal(result, &nx, &ny, &nz) == 0) { lua_createtable(L, 3, 0); lua_pushnumber(L,nx); lua_rawseti(L,-2,1); lua_pushnumber(L,ny); lua_rawseti(L,-2,2); lua_pushnumber(L,nz); lua_rawseti(L,-2,3); lua_setfield(L,-2,"normal"); }
     alea_ray_first_visible_query_result_destroy(result);
+    guard->ptr = NULL;
+    lua_remove(L, -2);
     return 1;
 }
 
 /* sys:boundary_events(ox, oy, oz, dx, dy, dz [, t_max]) -> {events...} */
 static int l_boundary_events(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
+    double ox = luaL_checknumber(L, 2), oy = luaL_checknumber(L, 3);
+    double oz = luaL_checknumber(L, 4), dx = luaL_checknumber(L, 5);
+    double dy = luaL_checknumber(L, 6), dz = luaL_checknumber(L, 7);
     alea_ray_boundary_event_options_t options;
     alea_ray_boundary_event_options_init(&options);
     options.fields = ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID |
@@ -186,14 +222,16 @@ static int l_boundary_events(lua_State* L) {
         lua_getfield(L, 8, "primitive_id"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID; lua_pop(L, 1);
         lua_getfield(L, 8, "normal"); if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) options.fields &= ~ALEA_RAY_BOUNDARY_EVENT_NORMAL; lua_pop(L, 1);
     } else options.t_max = luaL_optnumber(L, 8, 0.0);
-    alea_ray_boundary_event_query_result_t* result =
-        alea_ray_boundary_event_query_result_create();
-    if (!result) return luaL_error(L, "boundary_events: out of memory");
+    boundary_event_guard_t* guard = lua_newuserdata(L, sizeof(*guard));
+    guard->ptr = NULL;
+    luaL_setmetatable(L, ALEA_BOUNDARY_EVENT_GUARD_MT);
+    guard->ptr = alea_ray_boundary_event_query_result_create();
+    if (!guard->ptr) return luaL_error(L, "boundary_events: out of memory");
+    alea_ray_boundary_event_query_result_t* result = guard->ptr;
     int rc = alea_ray_boundary_event_query(sys,
-        luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4),
-        luaL_checknumber(L, 5), luaL_checknumber(L, 6), luaL_checknumber(L, 7),
+        ox, oy, oz, dx, dy, dz,
         &options, result);
-    if (rc != 0) { alea_ray_boundary_event_query_result_destroy(result); return luaL_error(L, "boundary_events failed: %s", alea_error()); }
+    if (rc != 0) return luaL_error(L, "boundary_events failed: %s", alea_error());
     size_t count = alea_ray_boundary_event_count(result);
     lua_createtable(L, (int)count, 0);
     for (size_t i = 0; i < count; i++) {
@@ -216,6 +254,8 @@ static int l_boundary_events(lua_State* L) {
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
     alea_ray_boundary_event_query_result_destroy(result);
+    guard->ptr = NULL;
+    lua_remove(L, -2);
     return 1;
 }
 
@@ -304,6 +344,16 @@ int luaopen_alea_raycast(lua_State* L) {
     lua_newtable(L);
     luaL_setfuncs(L, rayresult_methods, 0);
     lua_setfield(L, -2, "__index");
+    lua_pop(L, 1);
+
+    luaL_newmetatable(L, ALEA_FIRST_VISIBLE_GUARD_MT);
+    lua_pushcfunction(L, l_first_visible_guard_gc);
+    lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
+
+    luaL_newmetatable(L, ALEA_BOUNDARY_EVENT_GUARD_MT);
+    lua_pushcfunction(L, l_boundary_event_guard_gc);
+    lua_setfield(L, -2, "__gc");
     lua_pop(L, 1);
 
     return 0;

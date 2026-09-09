@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_lua.h"
-#include "core/alea_system.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,15 +23,20 @@
 
 /* sys:flatten(universe_id) */
 static int l_flatten(lua_State* L) {
+    alea_lua_system_t* owner = alea_check_system(L, 1);
+    alea_lua_require_no_dependents(L, owner, "flatten system");
     alea_system_t* sys = alea_get_sys(L, 1);
     int uid = (int)luaL_optinteger(L, 2, 0);
     if (alea_flatten(sys, uid) < 0)
         return luaL_error(L, "flatten failed: %s", alea_error());
+    owner->node_generation++;
     return 0;
 }
 
 /* sys:split_union_cells() -> number of new cells */
 static int l_split_union_cells(lua_State* L) {
+    alea_lua_system_t* owner = alea_check_system(L, 1);
+    alea_lua_require_no_dependents(L, owner, "split union cells");
     alea_system_t* sys = alea_get_sys(L, 1);
     int n = alea_split_union_cells(sys);
     if (n < 0)
@@ -56,6 +60,8 @@ static int l_extract_universe(lua_State* L) {
 
 /* sys:merge(other, offset) */
 static int l_merge(lua_State* L) {
+    alea_lua_system_t* owner = alea_check_system(L, 1);
+    alea_lua_require_no_dependents(L, owner, "merge systems");
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_system_t* other = alea_get_sys(L, 2);
     int offset = (int)luaL_optinteger(L, 3, 0);
@@ -168,6 +174,8 @@ static int l_offset_material_ids(lua_State* L) {
 
 /* sys:simplify_all() -> stats table */
 static int l_simplify_all(lua_State* L) {
+    alea_lua_system_t* owner = alea_check_system(L, 1);
+    alea_lua_require_no_dependents(L, owner, "simplify system");
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_simplify_stats_t stats;
     memset(&stats, 0, sizeof(stats));
@@ -246,7 +254,9 @@ static int l_volume_paths(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
     size_t n = alea_volume_path_count(sys);
 
+    alea_lua_free_guard_t* paths_guard = alea_lua_push_free_guard(L);
     alea_volume_path_t* paths = n ? (alea_volume_path_t*)calloc(n, sizeof(*paths)) : NULL;
+    paths_guard->ptr = paths;
     if (n && !paths) return luaL_error(L, "out of memory");
 
     size_t got = alea_volume_paths_get(sys, paths, n);
@@ -258,7 +268,8 @@ static int l_volume_paths(lua_State* L) {
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
 
-    free(paths);
+    free(paths); paths_guard->ptr = NULL;
+    lua_remove(L, -2);
     return 1;
 }
 
@@ -268,11 +279,16 @@ static int l_estimate_volumes(lua_State* L) {
     int n_rays = (int)luaL_checkinteger(L, 2);
     size_t n = alea_volume_path_count(sys);
 
+    alea_lua_free_guard_t* paths_guard = alea_lua_push_free_guard(L);
     alea_volume_path_t* paths = n ? (alea_volume_path_t*)calloc(n, sizeof(*paths)) : NULL;
+    paths_guard->ptr = paths;
+    alea_lua_free_guard_t* volumes_guard = alea_lua_push_free_guard(L);
     double* volumes = n ? (double*)calloc(n, sizeof(double)) : NULL;
+    volumes_guard->ptr = volumes;
+    alea_lua_free_guard_t* errors_guard = alea_lua_push_free_guard(L);
     double* errors = n ? (double*)calloc(n, sizeof(double)) : NULL;
+    errors_guard->ptr = errors;
     if (n && (!paths || !volumes || !errors)) {
-        free(paths); free(volumes); free(errors);
         return luaL_error(L, "out of memory");
     }
 
@@ -280,7 +296,6 @@ static int l_estimate_volumes(lua_State* L) {
     if (got > n) got = n;
 
     if (alea_estimate_volumes(sys, n_rays, volumes, errors) != 0) {
-        free(paths); free(volumes); free(errors);
         return luaL_error(L, "estimate_volumes failed: %s", alea_error());
     }
 
@@ -290,9 +305,12 @@ static int l_estimate_volumes(lua_State* L) {
         lua_rawseti(L, -2, (lua_Integer)(i + 1));
     }
 
-    free(paths);
-    free(volumes);
-    free(errors);
+    free(paths); paths_guard->ptr = NULL;
+    free(volumes); volumes_guard->ptr = NULL;
+    free(errors); errors_guard->ptr = NULL;
+    lua_remove(L, -2);
+    lua_remove(L, -2);
+    lua_remove(L, -2);
     return 1;
 }
 
@@ -331,10 +349,13 @@ static int l_create_mixture(lua_State* L) {
     int new_id = (int)luaL_optinteger(L, 4, 0);
 
     lua_Integer n = luaL_len(L, 2);
+    alea_lua_free_guard_t* ids_guard = alea_lua_push_free_guard(L);
     int* ids = (int*)calloc((size_t)n, sizeof(int));
+    ids_guard->ptr = ids;
+    alea_lua_free_guard_t* fracs_guard = alea_lua_push_free_guard(L);
     double* fracs = (double*)calloc((size_t)n, sizeof(double));
+    fracs_guard->ptr = fracs;
     if (!ids || !fracs) {
-        free(ids); free(fracs);
         return luaL_error(L, "out of memory");
     }
 
@@ -348,8 +369,9 @@ static int l_create_mixture(lua_State* L) {
     }
 
     int result = alea_create_mixture(sys, ids, fracs, (size_t)n, new_id);
-    free(ids);
-    free(fracs);
+    free(ids); ids_guard->ptr = NULL;
+    free(fracs); fracs_guard->ptr = NULL;
+    lua_pop(L, 2);
     if (result < 0)
         return luaL_error(L, "create_mixture failed: %s", alea_error());
     lua_pushinteger(L, result);
@@ -414,18 +436,18 @@ static int l_cells_in_bbox(lua_State* L) {
 /* sys:expand_macrobody_node(node) -> Node */
 static int l_expand_macrobody_node(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_node_id_t result = alea_expand_macrobody(sys, nd->id);
-    alea_push_node(L, sys, result);
+    alea_push_node(L, 1, result);
     return 1;
 }
 
 /* sys:expand_all_macrobodies_node(node) -> Node */
 static int l_expand_all_macrobodies_node(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
-    alea_lua_node_t* nd = alea_check_node(L, 2);
+    alea_lua_node_t* nd = alea_check_node_for_system(L, 2, 1);
     alea_node_id_t result = alea_expand_all_macrobodies(sys, nd->id);
-    alea_push_node(L, sys, result);
+    alea_push_node(L, 1, result);
     return 1;
 }
 
@@ -434,6 +456,8 @@ static int l_expand_all_macrobodies_node(lua_State* L) {
  * ============================================================================ */
 
 static int l_expand_macrobodies(lua_State* L) {
+    alea_lua_system_t* owner = alea_check_system(L, 1);
+    alea_lua_require_no_dependents(L, owner, "expand macrobodies");
     alea_system_t* sys = alea_get_sys(L, 1);
     int n = alea_expand_macrobodies_in_system(sys);
     if (n < 0)
@@ -505,6 +529,8 @@ static int l_void_count(lua_State* L) {
 static int l_void_add_cells(lua_State* L) {
     alea_lua_void_result_t* ud = (alea_lua_void_result_t*)luaL_checkudata(L, 1, ALEA_VOIDRESULT_MT);
     if (!ud->ptr) return luaL_error(L, "void result freed");
+    if (!ud->owner || !ud->owner->sys || ud->owner->destroy_pending)
+        return luaL_error(L, "void result belongs to a destroyed system");
     int n = alea_void_add_cells(ud->sys, ud->ptr);
     if (n < 0)
         return luaL_error(L, "void_add_cells failed: %s", alea_error());
@@ -515,6 +541,8 @@ static int l_void_add_cells(lua_State* L) {
 static int l_void_merge(lua_State* L) {
     alea_lua_void_result_t* ud = (alea_lua_void_result_t*)luaL_checkudata(L, 1, ALEA_VOIDRESULT_MT);
     if (!ud->ptr) return luaL_error(L, "void result freed");
+    if (!ud->owner || !ud->owner->sys || ud->owner->destroy_pending)
+        return luaL_error(L, "void result belongs to a destroyed system");
     if (alea_void_merge(ud->sys, ud->ptr) < 0)
         return luaL_error(L, "void_merge failed: %s", alea_error());
     return 0;
@@ -543,8 +571,12 @@ static int l_void_get(lua_State* L) {
 static int l_void_to_node(lua_State* L) {
     alea_lua_void_result_t* ud = (alea_lua_void_result_t*)luaL_checkudata(L, 1, ALEA_VOIDRESULT_MT);
     if (!ud->ptr) return luaL_error(L, "void result freed");
+    if (!ud->owner || !ud->owner->sys || ud->owner->destroy_pending)
+        return luaL_error(L, "void result belongs to a destroyed system");
     alea_node_id_t node = alea_void_to_node(ud->sys, ud->ptr);
-    alea_push_node(L, ud->sys, node);
+    lua_getiuservalue(L, 1, 1);
+    alea_push_node(L, -1, node);
+    lua_remove(L, -2);
     return 1;
 }
 
