@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+//
 // SPDX-License-Identifier: MPL-2.0
 /* Build with -O3 -Iinclude -Isrc and link bin/libalea.a -lm -fopenmp.
  * Compare identical binaries against baseline and candidate libraries. */
