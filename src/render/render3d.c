@@ -102,9 +102,15 @@ void render_config_init(render_config_t* cfg) {
 
 void render_config_free(render_config_t* cfg) {
     free(cfg->custom_colors);
+    free(cfg->material_filter.ids);
+    free(cfg->cell_filter.ids);
     cfg->custom_colors = NULL;
     cfg->num_custom_colors = 0;
     cfg->custom_colors_sorted = 0;
+    cfg->material_filter.ids = NULL;
+    cfg->material_filter.count = 0;
+    cfg->cell_filter.ids = NULL;
+    cfg->cell_filter.count = 0;
 }
 
 /* ============================================================================
@@ -236,38 +242,140 @@ void render_camera_ray(const render_camera_t* cam,
  * CLIPPING PLANES
  * ============================================================================ */
 
-/** Intersect a forward ray with all retained clip half-spaces. */
-static int clip_interval(double ox, double oy, double oz,
-                         double dx, double dy, double dz,
-                         const render_clip_plane_t* clips, int num_clips,
-                         double ray_t_max, double* out_enter,
-                         double* out_exit, int* out_entry_plane) {
-    double t_enter = 0.0;
-    double t_exit = ray_t_max;
-    int entry_plane = -1;
-    for (int c = 0; c < num_clips; c++) {
-        const double* n = clips[c].normal;
-        const double value = n[0]*ox + n[1]*oy + n[2]*oz + clips[c].d;
-        const double rate = n[0]*dx + n[1]*dy + n[2]*dz;
-        if (fabs(rate) <= 1e-15) {
-            if (value < 0.0) return 0;
-            continue;
+typedef struct {
+    double t_enter;
+    double t_exit;
+    int entry_plane;
+} render_clip_interval_t;
+
+static int clip_halfspace_interval(
+        double ox, double oy, double oz, double dx, double dy, double dz,
+        const render_clip_plane_t* clip, int plane_index, double ray_t_max,
+        render_clip_interval_t* out) {
+    const double* n = clip->normal;
+    const double value = n[0]*ox + n[1]*oy + n[2]*oz + clip->d;
+    const double rate = n[0]*dx + n[1]*dy + n[2]*dz;
+    out->t_enter = 0.0;
+    out->t_exit = ray_t_max;
+    out->entry_plane = -1;
+    if (fabs(rate) <= 1e-15) return value >= 0.0;
+    const double crossing = -value / rate;
+    if (rate > 0.0) {
+        if (crossing > ray_t_max) return 0;
+        if (crossing > 0.0) {
+            out->t_enter = crossing;
+            out->entry_plane = plane_index;
         }
-        const double crossing = -value / rate;
-        if (rate > 0.0) {
-            if (crossing > t_enter) {
-                t_enter = crossing;
-                entry_plane = c;
-            }
-        } else if (crossing < t_exit) {
-            t_exit = crossing;
-        }
-        if (t_exit < t_enter || t_exit < 0.0) return 0;
+    } else {
+        if (crossing < 0.0) return 0;
+        if (crossing < ray_t_max) out->t_exit = crossing;
     }
-    *out_enter = t_enter > 0.0 ? t_enter : 0.0;
-    *out_exit = t_exit;
-    if (out_entry_plane) *out_entry_plane = entry_plane;
-    return *out_exit >= *out_enter;
+    return out->t_exit >= out->t_enter;
+}
+
+static int clip_intervals(double ox, double oy, double oz,
+                          double dx, double dy, double dz,
+                          const render_config_t* cfg, double ray_t_max,
+                          render_clip_interval_t out[RENDER_MAX_CLIPS]) {
+    if (cfg->num_clips <= 0) {
+        out[0] = (render_clip_interval_t){0.0, ray_t_max, -1};
+        return 1;
+    }
+    if (cfg->clip_mode == RENDER_CLIP_AND) {
+        render_clip_interval_t combined = {0.0, ray_t_max, -1};
+        for (int c = 0; c < cfg->num_clips; c++) {
+            render_clip_interval_t one;
+            if (!clip_halfspace_interval(ox, oy, oz, dx, dy, dz,
+                                         &cfg->clips[c], c, ray_t_max, &one))
+                return 0;
+            if (one.t_enter > combined.t_enter) {
+                combined.t_enter = one.t_enter;
+                combined.entry_plane = one.entry_plane;
+            }
+            if (one.t_exit < combined.t_exit) combined.t_exit = one.t_exit;
+            if (combined.t_exit < combined.t_enter) return 0;
+        }
+        out[0] = combined;
+        return 1;
+    }
+
+    int count = 0;
+    for (int c = 0; c < cfg->num_clips; c++) {
+        render_clip_interval_t one;
+        if (!clip_halfspace_interval(ox, oy, oz, dx, dy, dz,
+                                     &cfg->clips[c], c, ray_t_max, &one))
+            continue;
+        int at = count;
+        while (at > 0 && out[at - 1].t_enter > one.t_enter) {
+            out[at] = out[at - 1];
+            at--;
+        }
+        out[at] = one;
+        count++;
+    }
+    if (count == 0) return 0;
+    int merged = 0;
+    for (int i = 0; i < count; i++) {
+        if (merged == 0 || out[i].t_enter > out[merged - 1].t_exit)
+            out[merged++] = out[i];
+        else if (out[i].t_exit > out[merged - 1].t_exit)
+            out[merged - 1].t_exit = out[i].t_exit;
+    }
+    return merged;
+}
+
+static int render_id_filter_accepts(const render_id_filter_t* filter, int id) {
+    if (filter->mode == RENDER_FILTER_ALL) return 1;
+    size_t lo = 0, hi = filter->count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (filter->ids[mid] < id) lo = mid + 1;
+        else hi = mid;
+    }
+    const int found = lo < filter->count && filter->ids[lo] == id;
+    return filter->mode == RENDER_FILTER_INCLUDE ? found : !found;
+}
+
+static int render_interval_visible(const render_config_t* cfg,
+                                   int cell_id, int material_id) {
+    if (cell_id < 0 || material_id == 0) return 0;
+    return render_id_filter_accepts(&cfg->cell_filter, cell_id) &&
+           render_id_filter_accepts(&cfg->material_filter, material_id);
+}
+
+typedef struct {
+    const render_config_t* cfg;
+    alea_ray_first_visible_result_t visible;
+} render_filtered_hit_t;
+
+static int render_find_filtered_hit(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    render_filtered_hit_t* hit = context;
+    if (!render_interval_visible(hit->cfg, interval->cell_id,
+                                 interval->material_id))
+        return 0;
+    hit->visible.found = true;
+    hit->visible.t = interval->t_enter > 0.0 ? interval->t_enter : 0.0;
+    hit->visible.cell_id = interval->cell_id;
+    hit->visible.material_id = interval->material_id;
+    hit->visible.density = interval->density;
+    hit->visible.resolution_flags = interval->resolution_flags;
+    return 1;
+}
+
+typedef struct {
+    const render_config_t* cfg;
+    int found;
+} render_filtered_occluder_t;
+
+static int render_find_filtered_occluder(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    render_filtered_occluder_t* occluder = context;
+    occluder->found = render_interval_visible(
+        occluder->cfg, interval->cell_id, interval->material_id);
+    return occluder->found;
 }
 
 /* ============================================================================
@@ -452,18 +560,42 @@ void render_framebuffer_free(render_framebuffer_t* fb) {
 
 static int render_shadow_occluded_nocache(
         alea_system_t* sys,
+        const render_config_t* cfg,
         alea_raycast_result_t* scratch,
         double ox, double oy, double oz,
         double dx, double dy, double dz,
         double t_max) {
-    alea_ray_t ray;
-    if (alea_ray_init(&ray, ox, oy, oz, dx, dy, dz) != 0) return 0;
-    int occluded = 0;
-    if (alea_raycast_hier_any_hit_nocache(
-            sys, &ray, 0.0, t_max, -1, scratch, &occluded) != 0) {
-        return 0;
+    render_clip_interval_t retained[RENDER_MAX_CLIPS];
+    const int count = clip_intervals(
+        ox, oy, oz, dx, dy, dz, cfg, t_max, retained);
+    const int filters_active =
+        cfg->material_filter.mode != RENDER_FILTER_ALL ||
+        cfg->cell_filter.mode != RENDER_FILTER_ALL;
+    for (int region = 0; region < count; region++) {
+        const double start = retained[region].t_enter;
+        const double end = retained[region].t_exit;
+        if (end <= start) continue;
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, ox + start * dx, oy + start * dy,
+                          oz + start * dz, dx, dy, dz) != 0)
+            return 0;
+        if (!filters_active) {
+            int occluded = 0;
+            if (alea_raycast_hier_any_hit_nocache(
+                    sys, &ray, 0.0, end - start, -1,
+                    scratch, &occluded) != 0)
+                return 0;
+            if (occluded) return 1;
+        } else {
+            render_filtered_occluder_t occluder = {.cfg = cfg};
+            if (alea_raycast_hier_visit_intervals_nocache(
+                    sys, &ray, end - start, scratch,
+                    render_find_filtered_occluder, &occluder) != 0)
+                return 0;
+            if (occluder.found) return 1;
+        }
     }
-    return occluded;
+    return 0;
 }
 
 /**
@@ -494,12 +626,10 @@ static void render_pixel_solid(alea_system_t* sys,
     *out_depth = 1e30f;
     if (out_normal) { out_normal[0] = 0; out_normal[1] = 0; out_normal[2] = 0; }
 
-    double t_min, t_max;
-    int entry_plane = -1;
-    if (!clip_interval(ox, oy, oz, dx, dy, dz,
-                       cfg->clips, cfg->num_clips, 1e15,
-                       &t_min, &t_max, &entry_plane))
-        return;
+    render_clip_interval_t retained[RENDER_MAX_CLIPS];
+    const int retained_count = clip_intervals(
+        ox, oy, oz, dx, dy, dz, cfg, 1e15, retained);
+    if (retained_count == 0) return;
 
     /* Light and view direction */
     double light_dir[3];
@@ -515,38 +645,66 @@ static void render_pixel_solid(alea_system_t* sys,
     }
     double view_dir[3] = {dx, dy, dz};
 
-    /* Start hierarchy traversal at the retained interval.  Besides avoiding
-     * a separate point-location query for the cross-section, this skips every
-     * excluded surface between the camera and the clip plane. */
-    const double ray_start =
-        (entry_plane >= 0 && t_min > 1e-8) ? t_min + 1e-7 : 0.0;
-    if (ray_start >= t_max) return;
-    const double trace_ox = ox + ray_start * dx;
-    const double trace_oy = oy + ray_start * dy;
-    const double trace_oz = oz + ray_start * dz;
-    const double trace_t_max = t_max - ray_start;
-    alea_raycast_result_clear(result);
-
-    /* Solid rendering needs exactly one visible interval.  The hierarchical
-    * stepper handles lattice DDA and fill expansion, so it can stop as soon
-     * as that interval is found instead of materializing a full global trace. */
-    alea_ray_t ray;
-    alea_ray_init_normalized(
-        &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
     alea_ray_first_visible_result_t visible;
-    if (alea_raycast_hier_first_visible_nocache(
-            sys, &ray, 0.0, trace_t_max, -1, 1, result, &visible) != 0 ||
-        !visible.found)
-        return;
-
-    const double visible_t = ray_start + visible.t;
-
-    double t_hit = visible_t;
+    memset(&visible, 0, sizeof(visible));
+    visible.cell_id = -1;
+    visible.surface_id = -1;
+    const int filters_active =
+        cfg->material_filter.mode != RENDER_FILTER_ALL ||
+        cfg->cell_filter.mode != RENDER_FILTER_ALL;
+    double t_hit = 0.0;
+    int entry_plane = -1;
     int is_cross_section = 0;
-    if (entry_plane >= 0 && ray_start > 0.0 && visible.t < 1e-6) {
-        t_hit = t_min;
-        is_cross_section = 1;
+    for (int region = 0; region < retained_count && !visible.found; region++) {
+        const double t_min = retained[region].t_enter;
+        const double t_max = retained[region].t_exit;
+        entry_plane = retained[region].entry_plane;
+        const double bias = (entry_plane >= 0 && t_min > 1e-8)
+            ? fmin(1e-7, (t_max - t_min) * 0.25) : 0.0;
+        const double ray_start = t_min + bias;
+        if (ray_start >= t_max) continue;
+        const double trace_ox = ox + ray_start * dx;
+        const double trace_oy = oy + ray_start * dy;
+        const double trace_oz = oz + ray_start * dz;
+        const double trace_t_max = t_max - ray_start;
+        alea_raycast_result_clear(result);
+        alea_ray_t ray;
+        alea_ray_init_normalized(
+            &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
+        if (!filters_active) {
+            if (alea_raycast_hier_first_visible_nocache(
+                    sys, &ray, 0.0, trace_t_max, -1, 1,
+                    result, &visible) != 0)
+                return;
+        } else {
+            render_filtered_hit_t hit = {.cfg = cfg};
+            hit.visible.cell_id = -1;
+            hit.visible.surface_id = -1;
+            if (alea_raycast_hier_visit_intervals_nocache(
+                    sys, &ray, trace_t_max, result,
+                    render_find_filtered_hit, &hit) != 0)
+                return;
+            visible = hit.visible;
+            if (visible.found && visible.t > 1e-8) {
+                alea_ray_first_visible_result_t with_normal;
+                if (alea_raycast_hier_first_visible_nocache(
+                        sys, &ray, visible.t, trace_t_max,
+                        visible.material_id, 1, result, &with_normal) != 0)
+                    return;
+                if (with_normal.found &&
+                    with_normal.cell_id == visible.cell_id)
+                    visible = with_normal;
+            }
+        }
+        if (visible.found) {
+            t_hit = ray_start + visible.t;
+            if (entry_plane >= 0 && bias > 0.0 && visible.t < 1e-6) {
+                t_hit = t_min;
+                is_cross_section = 1;
+            }
+        }
     }
+    if (!visible.found) return;
 
     float br, bg, bb;
     if (cfg->color_mode == RENDER_COLOR_DENSITY) {
@@ -582,21 +740,19 @@ static void render_pixel_solid(alea_system_t* sys,
                 oz + t_hit * dz
             };
             const double bias = 1e-4;
-            const double sp_ox = hp[0] - nx * bias;
-            const double sp_oy = hp[1] - ny * bias;
-            const double sp_oz = hp[2] - nz * bias;
+            const double facing = nx*view_dir[0] + ny*view_dir[1] +
+                                  nz*view_dir[2];
+            const double normal_sign = facing > 0.0 ? -1.0 : 1.0;
+            const double sp_ox = hp[0] + normal_sign * nx * bias;
+            const double sp_oy = hp[1] + normal_sign * ny * bias;
+            const double sp_oz = hp[2] + normal_sign * nz * bias;
             const double sl_dx = -light_dir[0];
             const double sl_dy = -light_dir[1];
             const double sl_dz = -light_dir[2];
 
-            double shadow_enter, shadow_exit;
-            const int shadow_visible = clip_interval(
-                sp_ox, sp_oy, sp_oz, sl_dx, sl_dy, sl_dz,
-                cfg->clips, cfg->num_clips, 1e6,
-                &shadow_enter, &shadow_exit, NULL) && shadow_enter <= 1e-8;
-            if (shadow_visible && render_shadow_occluded_nocache(
-                    sys, result, sp_ox, sp_oy, sp_oz,
-                    sl_dx, sl_dy, sl_dz, shadow_exit)) {
+            if (render_shadow_occluded_nocache(
+                    sys, cfg, result, sp_ox, sp_oy, sp_oz,
+                    sl_dx, sl_dy, sl_dz, 1e6)) {
                 const float shadow_factor = 0.5f;
                 out_color[0] *= shadow_factor;
                 out_color[1] *= shadow_factor;
@@ -634,7 +790,9 @@ typedef struct {
 static int render_xray_accumulate_interval(
     void* context, const alea_raycast_selected_interval_view_t* interval) {
     render_xray_accumulator_t* accum = context;
-    if (interval->cell_id < 0 || interval->material_id == 0) return 0;
+    if (!render_interval_visible(
+            accum->cfg, interval->cell_id, interval->material_id))
+        return 0;
     const double clipped_enter = interval->t_enter > accum->t_min
         ? interval->t_enter : accum->t_min;
     const double clipped_exit = interval->t_exit < accum->t_max
@@ -678,28 +836,28 @@ static void render_pixel_xray(alea_system_t* sys,
     out_color[2] = cfg->background[2];
     *out_cell_id = -1;
 
-    double t_min, t_max;
-    if (!clip_interval(ox, oy, oz, dx, dy, dz,
-                       cfg->clips, cfg->num_clips, 1e15,
-                       &t_min, &t_max, NULL))
-        return;
-
-    /* X-ray starts at the retained interval too, avoiding traversal through
-     * geometry that cannot contribute to the image. */
-    const double ray_start = t_min > 1e-8 ? t_min + 1e-7 : 0.0;
-    if (ray_start >= t_max) return;
-    const double trace_ox = ox + ray_start * dx;
-    const double trace_oy = oy + ray_start * dy;
-    const double trace_oz = oz + ray_start * dz;
-    const double trace_t_max = t_max - ray_start;
+    render_clip_interval_t retained[RENDER_MAX_CLIPS];
+    const int retained_count = clip_intervals(
+        ox, oy, oz, dx, dy, dz, cfg, 1e15, retained);
+    if (retained_count == 0) return;
     render_xray_accumulator_t accum = {
-        .cfg = cfg, .t_min = 0.0, .t_max = trace_t_max, .cell_id = -1
+        .cfg = cfg, .cell_id = -1
     };
-    alea_ray_t ray;
-    if (alea_ray_init(&ray, trace_ox, trace_oy, trace_oz, dx, dy, dz) != 0 ||
-        alea_raycast_hier_visit_intervals_nocache(
-            sys, &ray, 0, result, render_xray_accumulate_interval, &accum) != 0)
-        return;
+    for (int region = 0; region < retained_count &&
+         accum.accum_alpha <= 0.99f; region++) {
+        const double ray_start = retained[region].t_enter;
+        const double trace_t_max = retained[region].t_exit - ray_start;
+        if (trace_t_max <= 0.0) continue;
+        accum.t_min = 0.0;
+        accum.t_max = trace_t_max;
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, ox + ray_start * dx, oy + ray_start * dy,
+                          oz + ray_start * dz, dx, dy, dz) != 0 ||
+            alea_raycast_hier_visit_intervals_nocache(
+                sys, &ray, trace_t_max, result,
+                render_xray_accumulate_interval, &accum) != 0)
+            return;
+    }
 
     /* Composite over background */
     const float bg_factor = 1.0f - accum.accum_alpha;
@@ -931,7 +1089,10 @@ int render_scene(alea_system_t* sys,
                 w, h, n_tiles, tile, tile, num_threads,
                 num_threads > 1 ? "s" : "", aa, aa);
 
-    if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1)
+    if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1 &&
+        cfg->num_clips == 0 &&
+        cfg->material_filter.mode == RENDER_FILTER_ALL &&
+        cfg->cell_filter.mode == RENDER_FILTER_ALL)
         return render_scene_xray_batched(sys, cfg, cam, fb, tile);
 
     atomic_int progress_done;

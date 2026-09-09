@@ -65,6 +65,9 @@ TEST(config_init_defaults) {
     ASSERT_NEAR(cfg.ambient, 0.3f, 1e-3);
     ASSERT_NEAR(cfg.diffuse, 0.6f, 1e-3);
     ASSERT_EQ(cfg.num_clips, 0);
+    ASSERT_EQ(cfg.clip_mode, RENDER_CLIP_AND);
+    ASSERT_EQ(cfg.material_filter.mode, RENDER_FILTER_ALL);
+    ASSERT_EQ(cfg.cell_filter.mode, RENDER_FILTER_ALL);
     ASSERT_EQ(cfg.shadows, 0);
     ASSERT_EQ(cfg.edges, 0);
 
@@ -197,6 +200,60 @@ TEST(camera_ray_perspective_center) {
 /* ============================================================================
  * Render tests (small framebuffers for speed)
  * ============================================================================ */
+
+
+
+TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
+    alea_system_t* sys = create_test_scene();
+    ASSERT_NOT_NULL(sys);
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.width = 1;
+    cfg.height = 1;
+    cfg.eye[0] = -20; cfg.eye[1] = 0; cfg.eye[2] = 0;
+    cfg.target[0] = 10; cfg.target[1] = 0; cfg.target[2] = 0;
+    cfg.up[2] = 1;
+    cfg.eye_set = cfg.target_set = 1;
+    render_camera_t cam;
+    ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+    render_framebuffer_t* fb = render_framebuffer_create(1, 1, 1);
+    ASSERT_NOT_NULL(fb);
+
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 1);
+    int hidden = 1;
+    cfg.cell_filter.mode = RENDER_FILTER_EXCLUDE;
+    cfg.cell_filter.ids = &hidden;
+    cfg.cell_filter.count = 1;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 2);
+    ASSERT_EQ(fb->material_id[0], 2);
+    cfg.cell_filter.mode = RENDER_FILTER_ALL;
+    cfg.cell_filter.ids = NULL;
+    cfg.cell_filter.count = 0;
+
+    cfg.num_clips = 2;
+    cfg.clips[0].normal[0] = 1;
+    cfg.clips[0].d = -2;  /* x >= 2 */
+    cfg.clips[1].normal[0] = -1;
+    cfg.clips[1].d = -2;  /* x <= -2 */
+    cfg.clip_mode = RENDER_CLIP_AND;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], -1);
+    cfg.clip_mode = RENDER_CLIP_OR;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 1);
+    ASSERT_NEAR(fb->depth[0], 15.0, 1e-4);
+
+    cfg.render_mode = RENDER_MODE_XRAY;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 1);
+
+    render_framebuffer_free(fb);
+    render_config_free(&cfg);
+    alea_destroy(sys);
+}
+
 
 TEST(render_solid_basic) {
     alea_system_t* sys = create_test_scene();
