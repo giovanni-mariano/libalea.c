@@ -935,6 +935,80 @@ const uint64_t* alea_raycast_batch_path_occurrence_keys(const alea_raycast_batch
     return result ? result->path_occurrence_keys : NULL;
 }
 
+/* Internal scheduling grain; not a public tuning parameter. */
+#define BATCH_TRACE_RAY_CHUNK 4
+
+typedef struct {
+    alea_system_t* sys;
+    const double* origins_xyz;
+    const double* directions_xyz;
+    double scalar_t_max;
+    const double* t_mins;
+    const double* t_maxs;
+    uint32_t fields;
+    uint64_t max_segments;
+    uint64_t max_path_entries;
+    atomic_uint_fast64_t* live_segment_count;
+    atomic_uint_fast64_t* live_path_entry_count;
+    alea_batch_trace_tmp_t* traces;
+} batch_trace_build_context_t;
+
+static int batch_trace_build_range(void* opaque, size_t worker,
+                                   size_t begin, size_t end) {
+    (void)worker;
+    batch_trace_build_context_t* context = opaque;
+    for (size_t i = begin; i < end; i++) {
+        alea_batch_trace_tmp_t* temporary = &context->traces[i];
+        if (alea_interrupted()) {
+            temporary->status = -1;
+            continue;
+        }
+        alea_raycast_result_init(&temporary->trace);
+        if (context->fields & (ALEA_RAY_BATCH_PROJECTED_OWNER |
+                               ALEA_RAY_BATCH_FULL_PATHS))
+            temporary->trace.capture_paths = 1;
+        if (context->max_segments != 0) {
+            temporary->trace.segment_counter = context->live_segment_count;
+            temporary->trace.segment_limit = context->max_segments;
+        }
+        if ((context->fields & ALEA_RAY_BATCH_FULL_PATHS) &&
+            context->max_path_entries != 0) {
+            temporary->trace.path_entry_counter =
+                context->live_path_entry_count;
+            temporary->trace.path_entry_limit = context->max_path_entries;
+        }
+        const double* origin = &context->origins_xyz[i * 3];
+        const double* direction = &context->directions_xyz[i * 3];
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, origin[0], origin[1], origin[2], direction[0],
+                          direction[1], direction[2]) != 0) {
+            temporary->status = -1;
+            continue;
+        }
+        const double ray_t_max = context->t_maxs
+            ? context->t_maxs[i] : context->scalar_t_max;
+        temporary->status = alea_raycast_hier_segments_nocache(
+            context->sys, &ray, ray_t_max, &temporary->trace);
+        if (temporary->status == 0 && context->t_mins &&
+            context->t_mins[i] > 0.0) {
+            const double ray_t_min = context->t_mins[i];
+            size_t write = 0;
+            for (size_t j = 0; j < temporary->trace.segments.count; j++) {
+                alea_ray_segment_t segment = temporary->trace.segments.data[j];
+                if (segment.t_exit <= ray_t_min + RAY_EPSILON) continue;
+                if (segment.t_enter < ray_t_min) {
+                    segment.t_enter = ray_t_min;
+                    segment.enter_surface_id = -1;
+                    segment.enter_hit_index = -1;
+                }
+                temporary->trace.segments.data[write++] = segment;
+            }
+            temporary->trace.segments.count = write;
+        }
+    }
+    return 0;
+}
+
 static int raycast_hier_batch_execute(
     alea_system_t* sys, const double* origins_xyz,
     const double* directions_xyz, size_t ray_count,
@@ -1022,50 +1096,22 @@ static int raycast_hier_batch_execute(
         return -1;
     }
 
+    batch_trace_build_context_t trace_context = {
+        sys, origins_xyz, directions_xyz, scalar_t_max, t_mins, t_maxs,
+        fields, max_segments, max_path_entries, &live_segment_count,
+        &live_path_entry_count, traces
+    };
+    /* Ray costs vary with geometry. Keep indexed output, but distribute work
+     * dynamically. A serial batch uses one full-range callback. */
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(static)
+    if (omp_get_max_threads() > 1 && ray_count > BATCH_TRACE_RAY_CHUNK) {
+        #pragma omp parallel for schedule(dynamic, BATCH_TRACE_RAY_CHUNK)
+        for (size_t i = 0; i < ray_count; i++)
+            batch_trace_build_range(&trace_context, 0, i, i + 1);
+    } else
 #endif
-    for (size_t i = 0; i < ray_count; i++) {
-        if (alea_interrupted()) {
-            traces[i].status = -1;
-            continue;
-        }
-        alea_raycast_result_init(&traces[i].trace);
-        if (fields & (ALEA_RAY_BATCH_PROJECTED_OWNER | ALEA_RAY_BATCH_FULL_PATHS))
-            traces[i].trace.capture_paths = 1;
-        if (max_segments != 0) {
-            traces[i].trace.segment_counter = &live_segment_count;
-            traces[i].trace.segment_limit = max_segments;
-        }
-        if ((fields & ALEA_RAY_BATCH_FULL_PATHS) && max_path_entries != 0) {
-            traces[i].trace.path_entry_counter = &live_path_entry_count;
-            traces[i].trace.path_entry_limit = max_path_entries;
-        }
-        const double* o = &origins_xyz[i * 3];
-        const double* d = &directions_xyz[i * 3];
-        alea_ray_t ray;
-        if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0) {
-            traces[i].status = -1;
-            continue;
-        }
-        const double ray_t_max = t_maxs ? t_maxs[i] : scalar_t_max;
-        traces[i].status = alea_raycast_hier_segments_nocache(
-            sys, &ray, ray_t_max, &traces[i].trace);
-        if (traces[i].status == 0 && t_mins && t_mins[i] > 0.0) {
-            const double ray_t_min = t_mins[i];
-            size_t write = 0;
-            for (size_t j = 0; j < traces[i].trace.segments.count; j++) {
-                alea_ray_segment_t segment = traces[i].trace.segments.data[j];
-                if (segment.t_exit <= ray_t_min + RAY_EPSILON) continue;
-                if (segment.t_enter < ray_t_min) {
-                    segment.t_enter = ray_t_min;
-                    segment.enter_surface_id = -1;
-                    segment.enter_hit_index = -1;
-                }
-                traces[i].trace.segments.data[write++] = segment;
-            }
-            traces[i].trace.segments.count = write;
-        }
+    {
+        batch_trace_build_range(&trace_context, 0, 0, ray_count);
     }
     for (size_t i = 0; i < ray_count; i++) {
         if (traces[i].status != 0 || alea_interrupted()) {
