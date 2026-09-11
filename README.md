@@ -480,6 +480,17 @@ Use `.venv-docs/bin/mkdocs build --strict` for the same strict build intended
 for publication. Only the public documents listed in `mkdocs.yml` are included;
 other local notes under `docs/` are excluded.
 
+The documentation website is published at
+<https://giovanni-mariano.github.io/libalea.c/> by the **Documentation** GitHub
+Actions workflow. Documentation changes in pull requests targeting `main` are
+built with `--strict`; changes pushed to `main` are built and deployed.
+
+To enable publication, open the repository's **Settings → Pages → Build and
+deployment** and select **GitHub Actions** as the source. Then push the workflow
+to `main`, or select **Actions → Documentation → Run workflow** on `main`.
+The workflow uses GitHub's built-in token; no personal access token or
+`gh-pages` branch is needed.
+
 ## Project Structure
 
 ```

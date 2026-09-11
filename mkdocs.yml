@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 site_name: ALEA
+site_url: https://giovanni-mariano.github.io/libalea.c/
 site_description: CSG geometry tools for particle transport applications
 repo_name: giovanni-mariano/libalea.c
 repo_url: https://github.com/giovanni-mariano/libalea.c
