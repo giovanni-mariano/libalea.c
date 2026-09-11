@@ -30,7 +30,7 @@ def main():
         ("MINGW64_NT-10.0", "Windows_NT", None, 0, True),
     ]
     env = os.environ.copy()
-    for key in (*names, "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"):
+    for key in (*names, "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "PORTABLE", "RELEASE"):
         env.pop(key, None)
     for uname, system, override, threads, windows in cases:
         args = ["make", "--no-print-directory", "-s", "-f", "Makefile",
@@ -68,6 +68,38 @@ def main():
         assert tool_values["PROBE_LIBS"] == ("-lpsapi" if windows else ""), args
         assert tool_values["THREAD_FLAGS"] == ("-pthread" if threads and not windows else ""), args
     print("GNU Make platform checks: {} cases passed".format(len(cases)))
+
+    # Test actual Makefile flags for command-line and inherited environment
+    # values. AleaTHOR passes PORTABLE=1 by default, but inherits PORTABLE=0
+    # from the environment when the user requests a native build.
+    flag_probe = "$(info FLAGS=$(CFLAGS))\n.PHONY: flags_probe\nflags_probe:\n\t@:\n"
+    count = 0
+    for directory in (root, root / "tools"):
+        for release in (False, True):
+            for portable, source in ((None, "unset"), ("0", "command"),
+                                     ("1", "command"), ("0", "environment"),
+                                     ("1", "environment")):
+                args = ["make", "--no-print-directory", "-s", "-f", "Makefile",
+                        "-f", "-", "flags_probe", "UNAME_S=Linux", "OS="]
+                case_env = env.copy()
+                if release:
+                    args.append("RELEASE=1")
+                if source == "command":
+                    args.append("PORTABLE=" + portable)
+                elif source == "environment":
+                    case_env["PORTABLE"] = portable
+                result = subprocess.run(args, input=flag_probe, text=True,
+                                        cwd=directory, env=case_env,
+                                        capture_output=True, check=True)
+                flags = next(line.removeprefix("FLAGS=").split()
+                             for line in result.stdout.splitlines()
+                             if line.startswith("FLAGS="))
+                context = (str(directory), release, portable, source, flags)
+                assert ("-march=native" in flags) == (release and portable != "1"), context
+                assert ("-O3" in flags) == release, context
+                assert ("-DNDEBUG" in flags) == release, context
+                count += 1
+    print("GNU Make portability checks: {} cases passed".format(count))
 
 
 if __name__ == "__main__":

@@ -132,6 +132,11 @@ and condition variables are never destroyed or used during this reclamation.
 
 Common Makefile variables:
 
+For GNU Make release builds, `PORTABLE=1` keeps the compiler's default CPU
+target; `PORTABLE=0` (or leaving it unset) enables `-march=native`. Both use
+`-O3`. Environment variables and command-line assignments have the same
+meaning. Use `PORTABLE=1` for binaries distributed to other CPU types.
+
 ```bash
 make CC=clang full cli tools                  # Select compiler
 make PREFIX=/opt/libalea install             # Install prefix

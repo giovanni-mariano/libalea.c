@@ -32,7 +32,7 @@ endif
 
 # Release build (set RELEASE=1)
 ifdef RELEASE
-  ifdef PORTABLE
+  ifeq ($(PORTABLE),1)
     CFLAGS += -O3 -DNDEBUG
   else
     CFLAGS += -O3 -march=native -DNDEBUG
