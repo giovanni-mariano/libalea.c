@@ -451,9 +451,20 @@ end
 | [Concepts](docs/CONCEPTS.md) | All users | Surfaces, sense, cells, universes, lattices, and other domain concepts |
 | [Architecture](docs/ARCHITECTURE.md) | Contributors | Internal data model, algorithms, and design decisions |
 | [API Reference](docs/API.md) | All users | Every public function, grouped by task |
-| [Mesh Sampling Plan](docs/PLAN_MESH_SAMPLING.md) | Contributors | Plan for hardening mesh sampling and adding mixed-material support |
 
 Start with the **Tutorial** (C) or **Lua Tutorial** if you're new. Refer to **Concepts** when something doesn't behave as you expect. The **API Reference** is for when you know what you want but forgot the function name.
+
+Build and preview the documentation site locally with:
+
+```bash
+python3 -m venv .venv-docs
+.venv-docs/bin/pip install -r requirements-docs.txt
+.venv-docs/bin/mkdocs serve
+```
+
+Use `.venv-docs/bin/mkdocs build --strict` for the same strict build intended
+for publication. Only the public documents listed in `mkdocs.yml` are included;
+other local notes under `docs/` are excluded.
 
 ## Project Structure
 

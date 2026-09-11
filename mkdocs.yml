@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+#
+# SPDX-License-Identifier: MPL-2.0
+
+site_name: ALEA
+site_description: CSG geometry tools for particle transport applications
+repo_name: giovanni-mariano/libalea.c
+repo_url: https://github.com/giovanni-mariano/libalea.c
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Keep local notes and untracked design documents out of published builds.
+hooks:
+  - tools/mkdocs_public_docs.py
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - C tutorial: TUTORIAL.md
+      - Lua tutorial: LUA_TUTORIAL.md
+  - User guide:
+      - Core concepts: CONCEPTS.md
+      - API reference: API.md
+  - Development:
+      - Architecture: ARCHITECTURE.md
+      - Surface deduplication: SURFACE_DEDUP.md
