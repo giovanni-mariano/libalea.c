@@ -569,6 +569,19 @@ void tinypar_executor_abandon_after_fork(tinypar_executor_t** executor) {
     if (executor) *executor = NULL;
 }
 
+void tinypar_executor_free_after_fork(tinypar_executor_t** pointer) {
+    if (!pointer || !*pointer) return;
+    tinypar_executor_t* executor = *pointer;
+    /* These are child-private copies. In particular, do not destroy copied
+     * condition variables: their waiter counts can refer to vanished threads. */
+    free(executor->terminated);
+    free(executor->arguments);
+    free(executor->threads);
+    free(executor->worker_conditions);
+    free(executor);
+    *pointer = NULL;
+}
+
 tinypar_status_t tinypar_executor_parallel_for(
         tinypar_executor_t* executor,
         const tinypar_config_t* config,

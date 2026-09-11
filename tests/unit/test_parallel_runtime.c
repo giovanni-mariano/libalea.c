@@ -143,7 +143,8 @@ TEST(runtime_serializes_concurrent_submitters) {
     }
 }
 
-TEST(runtime_recreates_executor_in_post_fork_child) {
+/* mode: 0 = _exit, 1 = exit, 2 = no reuse, 3 = fork again before reuse. */
+static void check_post_fork_executor(int mode) {
     if (!alea_parallel_enabled()) SKIP("native worker backend disabled");
 
     count_context_t parent_context = {{0}};
@@ -152,16 +153,30 @@ TEST(runtime_recreates_executor_in_post_fork_child) {
         ALEA_PARALLEL_OK);
     ASSERT_EQ(count_total(&parent_context), 64);
 
+    fflush(NULL);
     pid_t child = fork();
     ASSERT(child >= 0);
     if (child == 0) {
         alarm(5);
+        if (mode == 2) exit(0);
+        if (mode == 3) {
+            pid_t grandchild = fork();
+            if (grandchild < 0) exit(1);
+            if (grandchild == 0) exit(0);
+            int grandchild_status = 0;
+            if (waitpid(grandchild, &grandchild_status, 0) != grandchild ||
+                !WIFEXITED(grandchild_status) ||
+                WEXITSTATUS(grandchild_status) != 0) exit(1);
+        }
         count_context_t child_context = {{0}};
         alea_parallel_status_t status = alea_parallel_for(
             64, 1, 4, ALEA_PARALLEL_DYNAMIC,
             count_range, &child_context, NULL);
-        _exit(status == ALEA_PARALLEL_OK &&
-              count_total(&child_context) == 64 ? 0 : 1);
+        int result = status == ALEA_PARALLEL_OK &&
+                     count_total(&child_context) == 64 ? 0 : 1;
+        /* Exercise atexit cleanup as well as immediate process termination. */
+        if (mode != 0) exit(result);
+        _exit(result);
     }
 
     int status = 0;
@@ -174,6 +189,22 @@ TEST(runtime_recreates_executor_in_post_fork_child) {
         64, 1, 4, ALEA_PARALLEL_DYNAMIC, count_range, &parent_context, NULL),
         ALEA_PARALLEL_OK);
     ASSERT_EQ(count_total(&parent_context), 64);
+}
+
+TEST(runtime_recreates_executor_in_post_fork_child) {
+    check_post_fork_executor(0);
+}
+
+TEST(runtime_cleans_executor_in_post_fork_child) {
+    check_post_fork_executor(1);
+}
+
+TEST(runtime_cleans_inherited_executor_without_child_reuse) {
+    check_post_fork_executor(2);
+}
+
+TEST(runtime_preserves_pending_cleanup_across_second_fork) {
+    check_post_fork_executor(3);
 }
 #endif
 

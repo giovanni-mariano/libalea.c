@@ -174,6 +174,12 @@ On POSIX, an executor must not be used or destroyed in a child created by
 call `tinypar_executor_abandon_after_fork()` before creating a fresh executor.
 Abandoning only clears the child copy of the pointer; it intentionally does not
 touch synchronization state inherited from vanished worker threads.
+Applications that continue execution may retain a separate copy of the
+inherited pointer and call `tinypar_executor_free_after_fork()` after returning
+from `fork()`, outside inherited callbacks and executor invocations. This frees
+only heap storage; it never joins threads or destroys copied locks. It calls
+`free()` and therefore must not run inside a `pthread_atfork` handler. This
+does not extend POSIX's guarantees for execution after a multithreaded fork.
 
 ## Worker defaults and failures
 

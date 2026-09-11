@@ -126,6 +126,9 @@ first use when the number of created native threads must also be bounded.
 
 On POSIX, a child created with `fork()` abandons the inherited worker state and
 lazily creates its own executor on the first parallel operation.
+Inherited heap storage is retained by the fork handler and freed before that
+replacement is created, or during normal process-exit cleanup. Copied locks
+and condition variables are never destroyed or used during this reclamation.
 
 Common Makefile variables:
 

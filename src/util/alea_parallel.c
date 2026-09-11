@@ -23,6 +23,7 @@ static int g_environment_checked;
 
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 static int g_fork_handler_registered;
+static tinypar_executor_t* g_inherited_executor;
 #endif
 
 static void executor_lock(void) {
@@ -40,6 +41,9 @@ static void executor_after_fork_child(void) {
     /* Only the thread which called fork survives. The copied executor points at
      * worker threads and synchronization state which no longer exist, and the
      * initialization spinlock may have been owned by a vanished thread. */
+    /* Preserve storage for deferred reclamation; free is not safe here.
+     * A second fork before initialization must retain the pending pointer. */
+    if (g_executor) g_inherited_executor = g_executor;
     tinypar_executor_abandon_after_fork(&g_executor);
     atomic_flag_clear(&g_executor_lock);
 }
@@ -93,6 +97,10 @@ static alea_parallel_status_t map_status(tinypar_status_t status) {
 
 static void destroy_process_executor(void) {
     executor_lock();
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    if (!tinypar_in_callback())
+        tinypar_executor_free_after_fork(&g_inherited_executor);
+#endif
     if (g_executor) (void)tinypar_executor_destroy(&g_executor);
     executor_unlock();
 }
@@ -101,6 +109,10 @@ static alea_parallel_status_t get_process_executor(
         tinypar_executor_t** executor) {
     executor_lock();
     if (!g_executor) {
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+        /* Called outside callbacks, after the fork handler has returned. */
+        tinypar_executor_free_after_fork(&g_inherited_executor);
+#endif
         if (!register_fork_handler_locked()) {
             executor_unlock();
             return ALEA_PARALLEL_SYNCHRONIZATION_FAILED;

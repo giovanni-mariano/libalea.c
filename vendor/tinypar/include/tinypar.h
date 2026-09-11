@@ -129,6 +129,17 @@ tinypar_status_t tinypar_executor_destroy(tinypar_executor_t** executor);
  */
 void tinypar_executor_abandon_after_fork(tinypar_executor_t** executor);
 
+/**
+ * Release only the heap storage of an executor inherited by a POSIX child.
+ * No threads are joined and no copied synchronization objects are accessed.
+ * Call only after returning from fork, outside any inherited callback or
+ * executor invocation, and before sharing the pointer with new child threads.
+ * This calls free(), so it must not be used inside an atfork handler. The
+ * application must support continuing execution after a multithreaded fork.
+ * Never pass a live executor created in the current process.
+ */
+void tinypar_executor_free_after_fork(tinypar_executor_t** executor);
+
 /** Return the stable number of participants owned by an executor. */
 size_t tinypar_executor_workers(const tinypar_executor_t* executor);
 
