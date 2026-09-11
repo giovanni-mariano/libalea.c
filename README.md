@@ -189,6 +189,10 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make make
 Open a UCRT64 shell, clone the repository with submodules, and build with the
 GNU Makefile:
 
+MinGW/MSYS2 and `OS=Windows_NT` are detected automatically: TinyPar uses
+Win32 threads and executables use the `.exe` suffix. For cross-compilation
+from a Unix host, pass `WINDOWS_GNU=1` explicitly.
+
 ```bash
 make full cli tools
 make test-unit test-integration

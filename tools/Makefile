@@ -12,20 +12,22 @@ INCLUDES = -I../include
 BIN_DIR = ../bin
 LDFLAGS ?= -lm
 
-ifdef WINDOWS_GNU
+UNAME_S := $(shell uname -s 2>/dev/null)
+WINDOWS_GNU ?= $(if $(filter Windows_NT,$(OS))$(filter MINGW% MSYS%,$(UNAME_S)),1,0)
+
+ifeq ($(WINDOWS_GNU),1)
   EXEEXT ?= .exe
 else
   EXEEXT ?=
 endif
 
-# Platform-specific linker spelling below.
-UNAME_S := $(shell uname -s)
-
-# Threaded library support (pass USE_TINYPAR=1 when linking a threaded build)
-ifdef USE_TINYPAR
-  THREAD_FLAGS = -pthread
-else
-  THREAD_FLAGS =
+# Match the library default; only the POSIX backend requires pthread linkage.
+USE_TINYPAR ?= 1
+THREAD_FLAGS =
+ifeq ($(USE_TINYPAR),1)
+  ifneq ($(WINDOWS_GNU),1)
+    THREAD_FLAGS = -pthread
+  endif
 endif
 
 # Release build (set RELEASE=1)
@@ -53,9 +55,7 @@ LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_SERPENT) $(BIN_DIR)/libalea.a
 LDFLAGS += $(THREAD_FLAGS)
 
 # Windows: link psapi for GetProcessMemoryInfo in large_model_probe
-ifdef WINDOWS_GNU
-  PROBE_LIBS = -lpsapi
-else ifeq ($(OS),Windows_NT)
+ifeq ($(WINDOWS_GNU),1)
   PROBE_LIBS = -lpsapi
 else
   PROBE_LIBS =

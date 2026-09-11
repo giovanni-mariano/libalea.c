@@ -15,18 +15,23 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DATA ?= $(INSTALL) -m 644
 MKDIR_P ?= mkdir -p
 
-# Set WINDOWS_GNU=1 for conda/MSYS2-style MinGW-w64 UCRT builds.
+# Detect native Windows GNU builds once for TinyPar, Lua, and executable names.
+# WINDOWS_GNU=1 remains available for cross-compilation from a Unix host.
+UNAME_S := $(shell uname -s 2>/dev/null)
+WINDOWS_GNU ?= $(if $(filter Windows_NT,$(OS))$(filter MINGW% MSYS%,$(UNAME_S)),1,0)
+
+# Conda/MSYS2-style MinGW-w64 UCRT builds are detected automatically.
 # Conda users need the UCRT GCC and binutils packages, e.g.
 #   mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils
 #   make WINDOWS_GNU=1 CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar full cli tools
 DEFAULT_CFLAGS = -Wall -Wextra -g -std=c11
-ifndef WINDOWS_GNU
+ifneq ($(WINDOWS_GNU),1)
   DEFAULT_CFLAGS += -fPIC
 endif
 CFLAGS ?= $(DEFAULT_CFLAGS)
 LDFLAGS ?= -lm
 
-ifdef WINDOWS_GNU
+ifeq ($(WINDOWS_GNU),1)
   EXEEXT ?= .exe
   PICFLAGS ?=
 else
@@ -56,7 +61,7 @@ TINYPAR_SRC_DIR = $(TINYPAR_DIR)/src
 TINYPAR_INCLUDE_DIR = $(TINYPAR_DIR)/include
 ifeq ($(USE_TINYPAR),1)
   CFLAGS += -DALEA_USE_TINYPAR=1
-  ifdef WINDOWS_GNU
+  ifeq ($(WINDOWS_GNU),1)
     TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_win32.c
   else
     TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_posix.c
@@ -572,14 +577,7 @@ $(BUILD_DIR)/geo_validator/%.o: $(GEO_VALIDATOR_DIR)/%.c | $(BUILD_DIR)/geo_vali
 
 # Lua 5.5 (vendored) - suppress warnings with -w
 # Use LUA_USE_POSIX on Unix, LUA_USE_WINDOWS on Windows
-LUA_UNAME_S := $(shell uname -s)
-ifdef WINDOWS_GNU
-  LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
-else ifeq ($(OS),Windows_NT)
-  LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
-else ifneq ($(findstring MINGW,$(LUA_UNAME_S)),)
-  LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
-else ifneq ($(findstring MSYS,$(LUA_UNAME_S)),)
+ifeq ($(WINDOWS_GNU),1)
   LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
 else
   LUA_PLAT_FLAGS = -DLUA_USE_POSIX
@@ -596,29 +594,14 @@ $(BUILD_DIR)/lua_bind/%.o: $(LUA_BIND_DIR)/%.c | $(BUILD_DIR)/lua_bind
 
 # Linenoise (POSIX only - provides line editing in REPL)
 # Windows uses fgets fallback in lua_main.c
-ifdef WINDOWS_GNU
-  LINENOISE_OBJ =
-  LINENOISE_INC =
-  CLI_LDFLAGS = $(LDFLAGS)
-else ifeq ($(OS),Windows_NT)
+ifeq ($(WINDOWS_GNU),1)
   LINENOISE_OBJ =
   LINENOISE_INC =
   CLI_LDFLAGS = $(LDFLAGS)
 else
-  UNAME_S := $(shell uname -s)
-  ifneq ($(findstring MINGW,$(UNAME_S)),)
-    LINENOISE_OBJ =
-    LINENOISE_INC =
-    CLI_LDFLAGS = $(LDFLAGS)
-  else ifneq ($(findstring MSYS,$(UNAME_S)),)
-    LINENOISE_OBJ =
-    LINENOISE_INC =
-    CLI_LDFLAGS = $(LDFLAGS)
-  else
-    LINENOISE_OBJ = $(BUILD_DIR)/linenoise/linenoise.o
-    LINENOISE_INC = -I$(LINENOISE_DIR)
-    CLI_LDFLAGS = $(LDFLAGS) -ldl
-  endif
+  LINENOISE_OBJ = $(BUILD_DIR)/linenoise/linenoise.o
+  LINENOISE_INC = -I$(LINENOISE_DIR)
+  CLI_LDFLAGS = $(LDFLAGS) -ldl
 endif
 
 $(BUILD_DIR)/linenoise/linenoise.o: $(LINENOISE_DIR)/linenoise.c | $(BUILD_DIR)/linenoise

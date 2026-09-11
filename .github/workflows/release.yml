@@ -210,10 +210,10 @@ jobs:
             zip
 
       - name: Build release
-        run: make full cli tools RELEASE=1 CFLAGS="-Wall -Wextra -O3 -DNDEBUG -std=c11"
+        run: make full cli tools RELEASE=1 PORTABLE=1 USE_TINYPAR=1
 
       - name: Run tests
-        run: make test-unit test-integration
+        run: make test-unit test-integration RELEASE=1 PORTABLE=1 USE_TINYPAR=1
 
       - name: Package
         run: |
