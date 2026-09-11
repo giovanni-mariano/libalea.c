@@ -12,7 +12,7 @@
 #include "raycast/raycast.h"
 #include "core/alea_system.h"
 #include "util/alea_parallel.h"
-#include <stdatomic.h>
+#include "util/alea_atomic.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

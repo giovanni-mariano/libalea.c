@@ -24,7 +24,7 @@
 #include <math.h>
 #include <float.h>
 #include <stdio.h>
-#include <stdatomic.h>
+#include "util/alea_atomic.h"
 #include "util/math.h"
 
 #include "util/compat.h"

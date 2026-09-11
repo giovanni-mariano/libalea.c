@@ -26,7 +26,7 @@
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
-#include <stdatomic.h>
+#include "util/alea_atomic.h"
 
 /* ============================================================================
  * Config
