@@ -90,11 +90,15 @@ local clad_region = out_s1 * in_s2       -- 5 <= r < 6
 local mod_region  = out_s2 * in_s3       -- 6 <= r < 15
 local void_region = out_s3               -- r >= 15
 
--- Create cells
-sys:cell{id = 1, region = fuel_region, material = 1, density = 10.97}
-sys:cell{id = 2, region = clad_region, material = 2, density = 6.56}
-sys:cell{id = 3, region = mod_region,  material = 3, density = 1.0}
-sys:cell{id = 4, region = void_region, material = 0, density = 0.0}
+-- Register material IDs and keep the returned zero-based material indices.
+local fuel = sys:material(1)
+local clad = sys:material(2)
+local moderator = sys:material(3)
+
+sys:cell{id = 1, region = fuel_region, material = fuel, density = -10.97}
+sys:cell{id = 2, region = clad_region, material = clad, density = -6.56}
+sys:cell{id = 3, region = mod_region, material = moderator, density = -1.0}
+sys:cell{id = 4, region = void_region} -- omitted material means void
 
 sys:print_summary()
 ```
@@ -113,19 +117,29 @@ sys:cone_z(id, cx, cy, cz, t2)                 -- t2 = tan^2(half-angle)
 
 Pass `id=0` for automatic surface ID assignment.
 
+`sys:material(id)` returns a zero-based material index. The `material` field of
+`sys:cell{...}` expects that index, not the external material ID. Omit the
+field for void; the underlying value is `ALEA_MATERIAL_VOID` (-1).
+Cell density follows MCNP sign convention: negative values are g/cm³ and
+positive values are atoms/barn-cm. This differs from
+`sys:material_set_density()`, whose material-property convention is positive
+g/cm³ and negative atoms/barn-cm.
+
 ### Universe fills
 
 ```lua
 -- Universe 1: fuel pin
 local s_fuel = sys:sphere(0, 0, 0, 0, 0.5)
 local s_clad = sys:sphere(0, 0, 0, 0, 0.6)
+local fuel = sys:material(1)
+local clad = sys:material(2)
 
-sys:cell{id = 10, region = sys:inside(s_fuel), material = 1, density = 10.0, universe = 1}
-sys:cell{id = 11, region = sys:outside(s_fuel) * sys:inside(s_clad), material = 2, density = 8.0, universe = 1}
+sys:cell{id = 10, region = sys:inside(s_fuel), material = fuel, density = -10.0, universe = 1}
+sys:cell{id = 11, region = sys:outside(s_fuel) * sys:inside(s_clad), material = clad, density = -8.0, universe = 1}
 
 -- Universe 0: container filled with universe 1
 local s_box = sys:box(0, -5, 5, -5, 5, -5, 5)
-sys:cell{id = 1, region = sys:inside(s_box), material = 0, density = 0.0, universe = 0, fill = 1}
+sys:cell{id = 1, region = sys:inside(s_box), universe = 0, fill = 1}
 ```
 
 ## 3. Point Queries
@@ -254,6 +268,10 @@ for i, pair in ipairs(overlaps) do
 end
 ```
 
+The returned pair members are zero-based cell indices. This is a fast
+root-universe bounding-box/corner/center screen and can miss overlaps; use the
+transport-style validator below for diagnostic evidence.
+
 ## 6. Volume Estimation
 
 Monte Carlo volume estimation using ray tracing:
@@ -292,6 +310,13 @@ sys:export_openmc("geometry.xml")
 ```lua
 local sys = alea.load_openmc("geometry.xml")
 sys:export_mcnp("output.inp")
+```
+
+### Export to Serpent
+
+```lua
+local sys = alea.load_mcnp("input.inp")
+sys:export_serpent("geometry.serpent")
 ```
 
 ### Round-trip verification
@@ -400,6 +425,8 @@ local params = {
 }
 
 local sys = alea.create()
+local fuel = sys:material(1)
+local clad = sys:material(2)
 local cell_id = 1
 local surf_id = 1
 
@@ -416,10 +443,10 @@ for iy = 0, params.ny - 1 do
         local s_clad = sys:cylinder_z(surf_id, cx, cy, params.clad_radius)
         surf_id = surf_id + 1
 
-        sys:cell{id = cell_id, region = sys:inside(s_fuel), material = 1, density = 10.97}
+        sys:cell{id = cell_id, region = sys:inside(s_fuel), material = fuel, density = -10.97}
         cell_id = cell_id + 1
 
-        sys:cell{id = cell_id, region = sys:outside(s_fuel) * sys:inside(s_clad), material = 2, density = 6.56}
+        sys:cell{id = cell_id, region = sys:outside(s_fuel) * sys:inside(s_clad), material = clad, density = -6.56}
         cell_id = cell_id + 1
     end
 end
@@ -429,16 +456,60 @@ sys:export_mcnp("/tmp/pin_array.inp")
 
 ## 11. Validation
 
-Check geometry for issues:
+`sys:validate()` checks internal structure. It does not prove that transport
+coverage is free of gaps or overlaps:
 
 ```lua
 local issues = sys:validate()
 if issues == 0 then
-    print("Geometry is valid")
+    print("Internal structure is valid")
 else
     print("Found " .. issues .. " issues")
 end
 ```
+
+For occurrence-aware transport diagnostics, use `validate_geometry`:
+
+```lua
+sys:prepare_query_acceleration()
+
+local report = sys:validate_geometry{
+    ray_count = 20000,
+    seed = 12345,
+    max_errors = 1000,
+    max_samples_per_signature = 8,
+    strict = true,
+    -- Optional closed diagnostic domain:
+    -- validation_bounds = {-100, 100, -100, 100, -100, 100},
+}
+
+local stats = report:stats()
+print(string.format("%d findings from %d crossings; truncated=%s",
+    report:error_count(), stats.crossings_checked, tostring(stats.truncated)))
+
+for _, finding in ipairs(report:errors()) do
+    print(string.format("%s: cell %d, surface %d at (%.6g, %.6g, %.6g)",
+        finding.type, finding.found_cell_id, finding.surface_id,
+        finding.crossing_point[1], finding.crossing_point[2],
+        finding.crossing_point[3]))
+end
+```
+
+`validate_geometry_ray(ox, oy, oz, dx, dy, dz, t_max [, options])`
+checks a known ray. To validate an analytical plane, reuse its curves:
+
+```lua
+local view = alea.slice_view_axis(2, 0, -10, 10, -10, 10)
+local curves = sys:get_slice_curves(view)
+local report = sys:validate_geometry_slice(view, curves, {
+    max_samples_per_curve = 512,
+    max_crossings = 100000,
+})
+print(report:summary().total)
+```
+
+An empty but truncated report is not a complete clean result. Always inspect
+`report:stats().truncated` for bounded validation runs.
 
 ## 12. Ray Tracing
 
@@ -483,6 +554,37 @@ local result = sys:raycast_cell_aware(-10, 0, 0, 1, 0, 0, 100)
 local cell_id, t = sys:ray_first_cell(-10, 0, 0, 1, 0, 0, 100)
 if cell_id then
     print("First cell: " .. cell_id .. " at distance " .. t)
+end
+```
+
+### Visibility and ownership boundaries
+
+Use `first_visible` when only the first non-void interval is needed:
+
+```lua
+local hit = sys:first_visible(-10, 0, 0, 1, 0, 0, {
+    t_max = 100,
+    surface_id = true,
+    normal = true,
+})
+if hit then
+    print(hit.cell_id, hit.material_id, hit.t, hit.surface_id)
+end
+```
+
+`boundary_events` returns ordered changes of ownership and can retain every
+coincident physical surface:
+
+```lua
+local events = sys:boundary_events(-10, 0, 0, 1, 0, 0, {
+    t_max = 100,
+    primitive_id = true,
+    normal = true,
+    include_all_coincident_physical = true,
+})
+for _, event in ipairs(events) do
+    print(event.t, event.kind, event.surface_id,
+          event.cell_before, event.cell_after)
 end
 ```
 
@@ -553,6 +655,36 @@ local slabels = alea.find_surface_label_positions(curves,
 alea.slice_curve_set_debug(true)       -- verbose curve generation
 alea.slice_point_trace_set_debug(true) -- verbose point queries
 ```
+
+### Bidirectional ray-slice diagnostics
+
+`validate_ray_slice` compares compact forward/reverse ownership traces. A
+directional cache can reuse canonical boundary events across consumers:
+
+```lua
+local rows = 512
+local cache = sys:directional_trace_cache(view, 512, rows)
+local intervals = sys:validate_ray_slice(view, rows, {
+    projected_depth = -1,
+    include_agreements = false,
+    absolute_tolerance = 1e-10,
+    relative_tolerance = 1e-9,
+}, cache)
+
+print("reused mask:", intervals.reused_trace_mask,
+      "executed mask:", intervals.executed_trace_mask)
+for _, interval in ipairs(intervals) do
+    if interval.flags ~= 0 then
+        print(interval.row, interval.u_enter, interval.u_exit,
+              interval.flags, interval.enter_surface_id,
+              interval.exit_surface_id)
+    end
+end
+```
+
+The cache is valid only for the exact system generation, view, width, and
+height used to create it. Lua keeps the system alive until the cache is
+collected.
 
 ## 14. 3D Rendering
 
@@ -667,15 +799,16 @@ local mesh = sys:mesh_sample{
     y_min = -10, y_max = 10,
     z_min = -10, z_max = 10,
     void_material_id = 0,
-    sampling_mode = 4,        -- 0=center, 1=corners, 2=regular, 3=stratified, 4=adaptive
+    sampling_mode = 4,        -- 0=center, 1=corners, 2=subcell, 3=stratified,
+                              -- 4=adaptive, 5=face-ray
     subsamples_per_axis = 2,
     target_error = 0.05,
     max_refine_depth = 3,
     max_samples_per_voxel = 32768,
     sampling_seed = 12345,
-    workers = 1,              -- USE_TINYPAR build: 0=backend default
+    workers = 0,              -- parallel-backend default; 1 forces serial
     bounds_mode = 0,          -- 0=legacy, 1=auto root AABB, 2=explicit
-    fields = 511,             -- ALEA_MESH_FIELD_* mask; 511=current complete result
+    -- Omit fields to retain the current default result arrays.
 }
 
 -- Inspect results
@@ -719,7 +852,72 @@ local cells = grid:cells() -- stable id/parent_id/child_ids and sampled metadata
 grid:export(1, "adaptive.vtk")
 ```
 
-## 16. Error Handling and Logging
+Avoid hard-coded numeric "all fields" masks: the C API can add result fields.
+Lua currently exposes packed per-material fractions through
+`mesh:material_fractions()`; packed per-concrete-cell fractions are available
+through the C API.
+
+## 16. Nuclear Data
+
+Load an `xsdir`/`xsdata` file, or a directory of FENDL-style `.xsd` files:
+
+```lua
+local xsdir = alea.nuc_load_xsdir("/path/to/xsdir")
+-- local xsdir = alea.nuc_load_xsdir_dir("/path/to/xsd-directory")
+
+print("Directory entries:", xsdir:count())
+local entry = xsdir:find("92235.80c")
+if entry then
+    print(entry.zaid, entry.awr, entry.temperature, entry.filename)
+end
+
+local u235 = xsdir:load_nuclide("92235.80c")
+local energy = 1.0 -- MeV
+print("total barns:", u235:xs_total(energy))
+print("elastic barns:", u235:xs_elastic(energy))
+print("absorption barns:", u235:xs_absorption(energy))
+```
+
+Loaded nuclides are shared immutable entries in the xsdir cache. The userdata
+keeps its xsdir alive. `u235:broadened(kT)` loads an independent copy before
+performing in-place Doppler broadening.
+
+Before collision sampling, inspect the explicit capability report:
+
+```lua
+local capability = u235:capabilities()
+print("transport ready:", capability.transport_ready)
+if not capability.transport_ready then
+    print("MT:", capability.mt, "law:", capability.law, capability.detail)
+end
+
+-- Low-level stationary-target elastic sample. Both variates are in [0,1).
+if capability.transport_ready then
+    local mu_cm, energy_out = u235:sample_elastic(energy, 0.25, 0.75)
+    print(mu_cm, energy_out)
+end
+```
+
+Reading a reaction is not the same as being able to transport it. Inelastic,
+fission emission, URR-coordinated collisions, target motion, thermal scattering,
+and photon collisions are rejected by the current restricted collision model.
+The prepared-material evaluation/flight/collision interface is currently a C
+API; Lua exposes capability inspection and low-level elastic sampling. See
+[Nuclear-data transport capabilities](NUCDATA_CAPABILITIES.md).
+
+Macroscopic inspection is available through nuclear materials:
+
+```lua
+local mat = alea.nuc_material()
+mat:add(u235, 0.0048) -- atoms per barn-cm
+print("macroscopic total (1/cm):", mat:xs_total(energy))
+print("mean free path (cm):", mat:mean_free_path(energy))
+
+-- Or map the composition/density of zero-based geometry cell index 0.
+local from_geometry = alea.nuc_material_from_cell(sys, 0, xsdir)
+```
+
+## 17. Error Handling and Logging
 
 ### Error state
 
@@ -780,6 +978,7 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | **Export** | |
 | Export MCNP | `sys:export_mcnp(file)` |
 | Export OpenMC | `sys:export_openmc(file)` |
+| Export Serpent | `sys:export_serpent(file)` |
 | **CSG Construction** | |
 | Inside surface | `sys:inside(surf_idx)` |
 | Outside surface | `sys:outside(surf_idx)` |
@@ -845,6 +1044,10 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | **Validation** | |
 | Validate | `sys:validate()` |
 | Find overlaps | `sys:find_overlaps()` |
+| Transport validation | `sys:validate_geometry(options)` |
+| Validate one ray | `sys:validate_geometry_ray(...[, options])` |
+| Validate slice curves | `sys:validate_geometry_slice(view, curves[, options])` |
+| Validate compact ray slice | `sys:validate_ray_slice(view, rows[, options[, cache]])` |
 | **Raycast** | |
 | Cast ray | `sys:raycast(ox,oy,oz,dx,dy,dz,t_max)` |
 | Cell-aware raycast | `sys:raycast_cell_aware(...)` |
@@ -881,6 +1084,17 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Mesh info | `mesh:info()` |
 | Material IDs | `mesh:material_ids()` |
 | Cell IDs | `mesh:cell_ids()` |
+| Sample counts | `mesh:sample_counts()` |
+| Material fractions | `mesh:material_fractions([voxel])` |
+| Adaptive grid | `sys:adaptive_grid_sample(config)` |
+| **Nuclear Data** | |
+| Load xsdir | `alea.nuc_load_xsdir(path)` |
+| Load `.xsd` directory | `alea.nuc_load_xsdir_dir(path)` |
+| Cached nuclide | `xsdir:load_nuclide(zaid)` |
+| Capability report | `nuclide:capabilities()` |
+| Elastic sample | `nuclide:sample_elastic(E, xi1, xi2)` |
+| Nuclear material | `alea.nuc_material()` |
+| Material from geometry | `alea.nuc_material_from_cell(sys, index, xsdir)` |
 | **Error/Logging** | |
 | Error message | `alea.error()` |
 | Error code | `alea.error_code()` |
@@ -893,4 +1107,5 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 
 - See the example scripts in `examples/lua/` for complete working programs
 - Read [Concepts](CONCEPTS.md) for domain concepts (sense, universes, lattices)
-- Read [API Reference](API.md) for the complete C API (Lua bindings mirror this closely)
+- Read [API Reference](API.md) for the C API. Lua exposes a curated subset with
+  Lua-native ownership and table conventions.

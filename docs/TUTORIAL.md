@@ -2,10 +2,11 @@
 
 This tutorial walks through the main things you can do with Alea. Each section is self-contained: real code, real results, no hand-waving.
 
-All code compiles with:
+Build the library first, then compile examples from the repository root with:
 
 ```bash
-gcc -o example example.c -I../include ../bin/libalea_full.a -lm
+make full
+cc -std=c11 -Wall -Wextra -Iinclude example.c bin/libalea_full.a -lm -o example
 ```
 
 `libalea_full.a` bundles the core library with the MCNP and OpenMC modules. Build it with `make full`. If you only need the core (no MCNP/OpenMC I/O), link against `libalea.a` instead.
@@ -25,10 +26,14 @@ int main(void) {
         fprintf(stderr, "Load failed: %s\n", alea_error());
         return 1;
     }
-    alea_system_t* sys = model->sys;
+    alea_system_t* sys = mcnp_model_system(model);  /* borrowed */
 
-    // Build the index — required before any queries
-    alea_build_universe_index(sys);
+    // Build all shared query caches before concurrent or repeated queries.
+    if (alea_prepare_query_acceleration(sys) != 0) {
+        fprintf(stderr, "Query setup failed: %s\n", alea_error());
+        mcnp_model_destroy(model);
+        return 1;
+    }
 
     alea_print_summary(sys);
     mcnp_model_destroy(model);
@@ -42,7 +47,7 @@ For OpenMC (requires `alea_openmc.h`):
 
 ```c
 openmc_model_t* model = openmc_load("geometry.xml");
-alea_system_t* sys = model->sys;
+alea_system_t* sys = openmc_model_system(model);  /* borrowed */
 ```
 
 You can also load from a string instead of a file:
@@ -50,10 +55,20 @@ You can also load from a string instead of a file:
 ```c
 const char* input = "1 1 -10.0 -1\n2 0 1\n\n1 SO 5.0\n\n";
 mcnp_model_t* model = mcnp_load_string(input, strlen(input));
-alea_system_t* sys = model->sys;
+alea_system_t* sys = mcnp_model_system(model);
 ```
 
-**Important**: Always call `alea_build_universe_index(sys)` after loading. Without it, point queries, overlap detection, and slicing will not work correctly.
+The model owns the borrowed system pointer. Destroying the model invalidates it.
+Use `mcnp_model_take_system()` or `openmc_model_take_system()` when the system
+must outlive the format wrapper; after detaching it, the caller must eventually
+call `alea_destroy()`.
+
+**Important**: prepare query caches after loading or after a geometry mutation.
+`alea_prepare_query_acceleration()` is the general entry point for point,
+raycast, slice, mesh, render, and validation workloads. The narrower
+`alea_build_universe_index()` remains useful when only hierarchy lookup is
+needed. Cache preparation is idempotent, and geometry-changing APIs invalidate
+affected caches.
 
 ## 2. Asking Questions About the Geometry
 
@@ -124,7 +139,55 @@ for (int i = 0; i < noverlaps; i++) {
 }
 ```
 
-This samples random points within each cell's bounding box and checks if multiple cells claim the same point. It's statistical — not exhaustive — but it catches the vast majority of real overlaps.
+This is a cheap root-universe screen: it intersects each candidate pair's
+bounding boxes and probes the eight corners plus the center. Returned values
+are zero-based cell indices, not external cell IDs. It is deliberately bounded
+and can miss overlaps; use it for a quick hint, not as evidence that a model is
+clean.
+
+### Transport-style validation
+
+For actionable geometry diagnostics, use the occurrence-aware validator rather
+than treating `alea_find_overlaps()` as a proof that a model is valid:
+
+```c
+#include <alea_geo_validator.h>
+
+alea_geom_validator_options_t options;
+alea_geom_validator_options_init(&options);
+options.ray_count = 20000;
+options.seed = 12345;
+options.max_errors = 1000;
+
+alea_geom_validator_result_t validation;
+alea_geom_validator_result_init(&validation);
+
+if (alea_validate_geometry(sys, &options, &validation) != 0) {
+    fprintf(stderr, "validation failed: %s\n", alea_error());
+} else {
+    for (size_t i = 0; i < alea_geom_validator_error_count(&validation); i++) {
+        alea_geom_error_t error;
+        if (alea_geom_validator_error_get(&validation, i, &error) == 0) {
+            printf("%s near cell %d at (%.6g, %.6g, %.6g)\n",
+                   alea_geom_error_type_name(error.type),
+                   error.found_cell_id,
+                   error.crossing_point[0], error.crossing_point[1],
+                   error.crossing_point[2]);
+        }
+    }
+}
+
+alea_geom_validator_result_free(&validation);
+```
+
+`alea_validate_geometry()` runs bounded randomized ray validation. For a known
+ray use `alea_validate_geometry_ray()`. For a plotted plane, combine
+`alea_get_slice_curves()` with `alea_validate_geometry_slice()`; analytical
+curve sampling can expose fully nested overlaps that random rays miss. Set
+`ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS` plus `validation_bounds` when unowned space
+inside a closed world box must be reported as an interior gap. Results may be
+truncated when a configured error or work budget is reached, so inspect
+`validation.truncated` and its counters.
 
 ## 3. Visualizing the Geometry
 
@@ -227,6 +290,11 @@ alea_slice_curves_free(curves);
 
 The typical workflow combines both: use the grid for pixel coloring, and overlay the curves for crisp surface boundaries. The `tools/mc_plotter.c` program does exactly this.
 
+For new diagnostic tooling, the grid's three-state error byte is only a fast
+overlay. Use `alea_find_cells_grid_coverage()` when you need explicit
+none/unique/multiple coverage, or the APIs in `alea_geo_validator.h` when you
+need occurrence-aware findings and provenance.
+
 ### Label positioning
 
 To place cell or surface labels on a slice image:
@@ -244,6 +312,40 @@ free(labels);
 ```
 
 The `min_pixels` parameter (100 above) filters out tiny regions that are too small for a readable label. The algorithm finds a point guaranteed to be inside the region, close to its centroid — it handles non-convex shapes correctly.
+
+### Sampling and exporting a 3D mesh
+
+`alea_mesh_sample()` produces a rectilinear hexahedral grid. Initialize the
+configuration first so newly added fields receive safe defaults:
+
+```c
+#include <alea_mesh.h>
+
+alea_mesh_config_t mesh_options;
+alea_mesh_config_init(&mesh_options);
+mesh_options.nx = 80;
+mesh_options.ny = 80;
+mesh_options.nz = 80;
+mesh_options.bounds_mode = ALEA_MESH_BOUNDS_AUTO;
+mesh_options.sampling_mode = ALEA_MESH_SAMPLE_ADAPTIVE;
+mesh_options.target_error = 0.02;
+mesh_options.workers = 0;  /* parallel-backend default */
+
+alea_mesh_result_t* mesh = alea_mesh_sample(sys, &mesh_options);
+if (!mesh) {
+    fprintf(stderr, "mesh sampling failed: %s\n", alea_error());
+} else {
+    alea_mesh_export(mesh, ALEA_MESH_VTK, "geometry.vtk");
+    alea_mesh_result_free(mesh);
+}
+```
+
+The default result field mask retains all current fields, including packed
+per-material and per-concrete-cell sampled fractions. These are sampling
+estimates, not exact volume fractions. Use `alea_mesh_export_ex()` to choose
+diagnostic arrays written to VTK/Gmsh, `alea_mesh_visit()` to stream voxels
+without retaining all arrays, or `alea_adaptive_grid_sample()` for a separate
+nonconforming octree grid.
 
 ## 4. Tracing Rays
 
@@ -310,6 +412,52 @@ alea_raycast_cell_aware(sys, ox, oy, oz, dx, dy, dz, t_max, result);
 
 Same interface and same result format. On lattice models this entry point uses the canonical DDA-aware path so lattice element-boundary hits are preserved.
 
+For high-throughput work, use `alea_raycast_hier_batch()` and request only the
+fields you consume. For visibility picking, `alea_ray_first_visible_query()`
+avoids constructing a full segment list. For boundary inspection,
+`alea_ray_boundary_event_query()` reports physical, synthetic lattice, and
+unresolved events. The result objects for these queries are reusable: create
+once, execute many queries, then destroy.
+
+### Estimating volumes
+
+Alea provides two different estimators:
+
+- `alea_estimate_volumes_ex()` uses reproducible Cauchy–Crofton rays and
+  reports volumes for concrete hierarchy paths, so repeated fill and lattice
+  occurrences remain distinct.
+- `alea_cell_estimate_volume()` uses a deterministic interval/octree method for
+  one cell definition in its universe-local frame and returns lower/upper
+  bounds plus convergence and resource-limit information.
+
+```c
+size_t path_count = alea_volume_path_count(sys);
+double* volumes = calloc(path_count, sizeof(*volumes));
+double* errors = calloc(path_count, sizeof(*errors));
+
+alea_volume_estimate_options_t volume_options;
+alea_volume_estimate_options_init(&volume_options);
+volume_options.max_rays = 1000000;
+volume_options.seed = 12345;
+volume_options.requested_workers = 0;
+volume_options.target_rel_error = 0.01;
+
+alea_volume_estimate_stats_t volume_stats;
+if (alea_estimate_volumes_ex(sys, &volume_options, volumes, errors,
+                             &volume_stats) == 0) {
+    printf("used %zu rays; converged=%d\n",
+           volume_stats.rays_completed, volume_stats.converged);
+}
+
+free(errors);
+free(volumes);
+```
+
+The output order is the order returned by `alea_volume_paths_get()`. The
+production RNG is counter-based Philox, so a seed is reproducible independently
+of worker count. Treat `converged == false` as a reported statistical result,
+not necessarily an API failure.
+
 ## 5. Building Geometry from Scratch
 
 You don't have to load from a file. You can build geometry programmatically:
@@ -321,21 +469,23 @@ alea_system_t* sys = alea_create();
 int s1 = alea_sphere_surface(sys, 0, 0, 0, 0, 10.0);
 int s2 = alea_cylinder_z_surface(sys, 0, 0, 0, 3.0);
 
-alea_node_id_t outer = alea_surface_at(sys, s1)->neg_node;  // inside sphere
-alea_node_id_t hole  = alea_surface_at(sys, s2)->neg_node;  // inside cylinder
+alea_node_id_t outer = alea_halfspace(sys, s1, -1);  // inside sphere
+alea_node_id_t hole  = alea_halfspace(sys, s2, -1);  // inside cylinder
 
 // Boolean difference: sphere minus cylinder
 alea_node_id_t region = alea_difference(sys, outer, hole);
 
-// Add as cell 1, material 1, density 10.0, universe 0
-alea_add_cell(sys, 1, region, 1, 10.0, 0);
+// Add material 1, then cell 1 at 10.0 g/cm3 in universe 0.
+int material_index = alea_add_material(sys, 1);
+alea_add_cell(sys, 1, region, material_index, -10.0, 0);
 
-alea_build_universe_index(sys);
+alea_prepare_query_acceleration(sys);
 ```
 
 ### Creating surfaces
 
-Each surface function returns an index. Access `neg_node` (interior) or `pos_node` (exterior):
+Each surface function returns a surface index. Convert it to a CSG halfspace
+with `alea_halfspace()`; applications must not access internal surface storage.
 
 ```c
 int idx = alea_plane_surface(sys, id, a, b, c, d);      // ax + by + cz + d = 0
@@ -346,9 +496,9 @@ int idx = alea_cylinder_y_surface(sys, id, cx, cz, r);  // infinite along Y
 int idx = alea_box_surface(sys, id, xmin, xmax, ymin, ymax, zmin, zmax);
 int idx = alea_cone_z_surface(sys, id, cx, cy, cz, t2); // t2 = tan^2(half-angle)
 
-// Get the halfspace nodes
-alea_node_id_t inside  = alea_surface_at(sys, idx)->neg_node;
-alea_node_id_t outside = alea_surface_at(sys, idx)->pos_node;
+// Negative and positive sides of the surface equation.
+alea_node_id_t inside  = alea_halfspace(sys, idx, -1);
+alea_node_id_t outside = alea_halfspace(sys, idx, +1);
 ```
 
 Pass `id=0` for automatic surface ID assignment.
@@ -376,21 +526,39 @@ To create nested geometry (like a fuel pin inside a lattice cell):
 ```c
 // Universe 1: the fuel pin
 int s_fuel = alea_sphere_surface(sys, 0, 0, 0, 0, 0.5);
-alea_node_id_t fuel_r = alea_surface_at(sys, s_fuel)->neg_node;
-alea_add_cell(sys, 10, fuel_r, 1, 10.0, 1);  // universe 1
+alea_node_id_t fuel_r = alea_halfspace(sys, s_fuel, -1);
+int fuel_material = alea_add_material(sys, 1);
+int clad_material = alea_add_material(sys, 2);
+alea_add_cell(sys, 10, fuel_r, fuel_material, -10.0, 1);  // universe 1
 
 int s_clad = alea_sphere_surface(sys, 0, 0, 0, 0, 0.6);
 alea_node_id_t clad_r = alea_difference(sys,
-    alea_surface_at(sys, s_clad)->neg_node,
-    alea_surface_at(sys, s_fuel)->neg_node);
-alea_add_cell(sys, 11, clad_r, 2, 8.0, 1);   // universe 1
+    alea_halfspace(sys, s_clad, -1),
+    alea_halfspace(sys, s_fuel, -1));
+alea_add_cell(sys, 11, clad_r, clad_material, -8.0, 1);  // universe 1
 
 // Universe 0: container that fills with universe 1
 int s_box = alea_box_surface(sys, 0, -5, 5, -5, 5, -5, 5);
-alea_node_id_t box = alea_surface_at(sys, s_box)->neg_node;
-int cell_idx = alea_add_cell(sys, 1, box, 0, 0.0, 0);  // universe 0
+alea_node_id_t box = alea_halfspace(sys, s_box, -1);
+int cell_idx = alea_add_cell(sys, 1, box, ALEA_MATERIAL_VOID, 0.0, 0);
 alea_set_fill(sys, cell_idx, 1, 0);  // fill with universe 1, no transform
 ```
+
+Named transforms accept the normalized MCNP representation: three translation
+values or twelve translation-and-rotation values. Angles are interpreted in
+degrees when the final argument is nonzero.
+
+```c
+double translation[3] = {10.0, 0.0, 0.0};
+if (alea_add_transform(sys, 7, translation, 3, 0) != 0)
+    fprintf(stderr, "transform failed: %s\n", alea_error());
+else
+    alea_set_fill(sys, cell_idx, 1, 7);
+```
+
+Use `alea_add_inline_transform()` when importing or constructing an anonymous
+cell-local transform. It deduplicates the normalized transform and returns the
+assigned transform ID.
 
 ## 6. Exporting
 
@@ -410,6 +578,14 @@ mcnp_export(model, "output.inp");
 
 ```c
 openmc_export_system(sys, "geometry.xml");
+```
+
+### To Serpent (`alea_serpent.h`)
+
+```c
+#include <alea_serpent.h>
+
+serpent_export_system(sys, "geometry.serpent");
 ```
 
 ### To a file stream
@@ -452,7 +628,7 @@ alea_bbox_t bounds = {
     .min_z = -200, .max_z = 200
 };
 
-void_result_t* voids = alea_void_generate(sys, &bounds);
+void_result_t* voids = alea_void_generate_in_bbox(sys, &bounds);
 if (voids) {
     size_t n = alea_void_count(voids);
     printf("Found %zu void regions\n", n);
@@ -478,12 +654,12 @@ Converting between MCNP and OpenMC:
 ```c
 // MCNP to OpenMC
 mcnp_model_t* model = mcnp_load("input.inp");
-openmc_export_system(model->sys, "geometry.xml");
+openmc_export_system(mcnp_model_system(model), "geometry.xml");
 mcnp_model_destroy(model);
 
 // OpenMC to MCNP
 openmc_model_t* omc = openmc_load("geometry.xml");
-mcnp_export_system(omc->sys, "output.inp");
+mcnp_export_system(openmc_model_system(omc), "output.inp");
 openmc_model_destroy(omc);
 ```
 
@@ -494,9 +670,9 @@ mcnp_model_t* a = mcnp_load("model_a.inp");
 mcnp_model_t* b = mcnp_load("model_b.inp");
 
 // Merge b into a, offsetting all IDs by 100000 to avoid collisions
-alea_merge(a->sys, b->sys, 100000);
+alea_merge(mcnp_model_system(a), mcnp_model_system(b), 100000);
 
-mcnp_export_system(a->sys, "combined.inp");
+mcnp_export_system(mcnp_model_system(a), "combined.inp");
 mcnp_model_destroy(a);
 mcnp_model_destroy(b);
 ```
@@ -534,5 +710,6 @@ alea_offset_cell_ids(sys, 10000);  // add 10000 to all cell IDs
 ## Next Steps
 
 - Read [Concepts](CONCEPTS.md) to understand sense, universes, lattices, and other domain concepts
-- Read the [API Reference](API.md) for the complete function listing
+- Read the [API Reference](API.md) for supported C workflows, contracts, and
+  advanced query families; installed public headers remain canonical.
 - Look at `tools/mc_plotter.c` for a complete visualization example, and the `examples/c/` directory for other usage patterns

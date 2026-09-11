@@ -1,14 +1,36 @@
 # API Reference
 
-Every public function in Alea, grouped by what you're trying to do.
+The supported public C API, grouped by task. The declarations and ownership
+comments in `include/` are the canonical source when a release and this guide
+temporarily differ.
 
-**Headers**: `alea.h` (main), `alea_types.h` (types and constants), `alea_raycast.h` (ray tracing), `alea_slice.h` (visualization), `alea_render.h` (3D rendering), `alea_mesh.h` (mesh export), `alea_mcnp.h` (MCNP I/O), `alea_openmc.h` (OpenMC I/O), `alea_nucdata.h` (nuclear data).
+**Headers**:
+
+| Header | Purpose |
+|--------|---------|
+| `alea.h` | Core lifecycle, CSG, queries, transforms, materials, volumes, voids, and manipulation |
+| `alea_types.h` | Shared public types, constants, and error codes |
+| `alea_log.h` | Logging level and callback control |
+| `alea_raycast.h` | Scalar, batch, visibility, boundary-event, and complete-coverage ray queries |
+| `alea_slice.h` | Slice views, grid/raster queries, analytical curves, labels, and boundary provenance |
+| `alea_geo_validator.h` | Occurrence-aware ray, slice, transition, and compact ray-slice diagnostics |
+| `alea_render.h` | CPU 3D rendering and image output |
+| `alea_mesh.h` | Structured sampling, streaming, and adaptive octree export |
+| `alea_mcnp.h` | MCNP load/export and model ownership |
+| `alea_openmc.h` | OpenMC XML load/export and model ownership |
+| `alea_serpent.h` | Serpent export |
+| `alea_nucdata.h` / `alea_nucdata_types.h` | ACE data, cross sections, materials, and restricted collision physics |
 
 **Conventions**:
-- Functions returning pointers return `NULL` on error
-- Functions returning `int` return 0 on success, negative on error
+- Functions returning pointers normally return `NULL` on error.
+- Most status-returning functions use 0 for success and -1 or an
+  `alea_error_t` value for failure. Query functions that return counts,
+  indices, or classifications document their own contract.
 - After any error, `alea_error()` gives a human-readable message
-- Node IDs, cell IDs, and surface IDs are all 0-based internally but MCNP-numbered externally
+- Array indices are zero-based. User-facing cell and surface IDs preserve
+  MCNP/OpenMC numbering and are not interchangeable with indices.
+- Unless explicitly documented as retained, returned pointers are borrowed and
+  become invalid when their owner is destroyed or mutated.
 
 ---
 
@@ -39,9 +61,9 @@ the first parallel operation; zero restores the hardware-derived default, and
 the function returns zero on success. Once the persistent executor
 has been created, attempts to resize it return an error so queued operations
 cannot race with pool replacement. Nested calls and operations with one
-effective worker execute directly without initializing the pool. The older
-`alea_openmp_enabled()` and `alea_openmp_max_threads()` names remain as
-compatibility aliases and report the same values; they do not imply an OpenMP
+effective worker execute directly without initializing the pool. Current
+public headers expose only the `alea_parallel_*` names; archive filenames that
+still contain `openmp` are packaging compatibility names, not an OpenMP API or
 runtime dependency.
 
 ---
@@ -224,6 +246,33 @@ Set the configuration.
 
 ---
 
+## Transforms
+
+### alea_add_transform
+
+```c
+int alea_add_transform(alea_system_t* sys, int transform_id,
+                       const double* data, int value_count, int degrees);
+```
+
+Add or replace a named transform. `data` is the normalized MCNP-style form:
+three translation values or twelve translation-and-rotation values.
+`degrees != 0` means rotation entries are angles in degrees. Returns 0 on
+success.
+
+### alea_add_inline_transform
+
+```c
+int alea_add_inline_transform(alea_system_t* sys, const double* data,
+                              int value_count, int degrees,
+                              int cell_id, const char* role);
+```
+
+Add a deduplicated anonymous transform and return its assigned transform ID.
+`cell_id` and `role` retain provenance for diagnostics and export.
+
+---
+
 ## Loading Models
 
 Loading functions live in format-specific headers (`alea_mcnp.h`, `alea_openmc.h`). See [MCNP Module](#mcnp-module-alea_mcnph) and [OpenMC Module](#openmc-module-alea_openmch).
@@ -264,6 +313,21 @@ caches. Call `alea_prepare_query_acceleration()` first when a built index is
 required. The hierarchical fields report the TLAS/BLAS shape, including
 universe, BLAS, placement, transform, and memory counts.
 
+### Surface-reference index
+
+```c
+int alea_surface_reference_stats(const alea_system_t* sys,
+                                 alea_surface_reference_stats_t* out_stats);
+int alea_surface_cell_references(const alea_system_t* sys, int surface_id,
+                                 alea_surface_cell_reference_t* out_refs,
+                                 size_t capacity, size_t* out_count);
+```
+
+Inspect and query the prepared exact surface-to-cell reverse index. A count-only
+call passes `out_refs == NULL` and `capacity == 0`; `out_count` always receives
+the complete number of references. Prepare query acceleration before requesting
+references.
+
 ---
 
 ## Geometry Queries
@@ -271,7 +335,7 @@ universe, BLAS, placement, transform, and memory counts.
 ### alea_find_cell
 
 ```c
-int alea_find_cell(const alea_system_t* sys, double x, double y, double z);
+int alea_find_cell(alea_system_t* sys, double x, double y, double z);
 ```
 
 Legacy convenience wrapper for single-point queries. Prefer `alea_find_cell_at()` for resolved point answers, or `alea_find_all_cells()` when hierarchy detail is needed.
@@ -281,11 +345,36 @@ Returns the internal cell index, or `-1` if not found.
 ### alea_find_all_cells
 
 ```c
-int alea_find_all_cells(const alea_system_t* sys, double x, double y, double z,
+int alea_find_all_cells(alea_system_t* sys, double x, double y, double z,
                         alea_cell_hit_t* hits, size_t max_hits);
 ```
 
-Find all cells containing a point (useful for overlap detection). Returns number of hits, or -1 on error.
+Return the selected containment hierarchy for a point. This is useful for
+inspecting fills, but it is not a complete overlap query because it follows one
+selected branch. Returns the number of hits, or -1 on error.
+
+### Complete point coverage
+
+```c
+int alea_find_all_cells_coverage_chain(
+    alea_system_t* sys, double x, double y, double z,
+    alea_cell_hit_t* hits, uint64_t* occurrence_keys,
+    uint64_t* parent_occurrence_keys, size_t max_hits);
+
+int alea_classify_point_coverage_chain(
+    const alea_cell_hit_t* hits, const uint64_t* occurrence_keys,
+    const uint64_t* parent_occurrence_keys, size_t hit_count,
+    int universe_depth, uint8_t* out_owner_mask,
+    alea_point_coverage_classification_t* out_classification);
+```
+
+The ordinary point query selects one hierarchy branch. These diagnostic APIs
+retain all concrete claimant occurrences and classify them as unique, gap,
+overlap, undefined fill, or unresolved. When the returned hit count equals the
+provided capacity, conservatively treat the set as potentially truncated.
+`alea_find_all_cells_in_universe_coverage_chain()` starts in a supplied
+universe-local frame; the `_with_scratch` classifier is the allocation-free
+hot-loop form.
 
 ### alea_point_inside
 
@@ -299,7 +388,7 @@ Test if a point is inside a CSG node's region.
 ### alea_material_at
 
 ```c
-int alea_material_at(const alea_system_t* sys, double x, double y, double z);
+int alea_material_at(alea_system_t* sys, double x, double y, double z);
 ```
 
 Legacy convenience wrapper for single-point queries. Prefer `alea_find_cell_at()`.
@@ -309,15 +398,19 @@ Returns material ID, `0` for void, or `-1` on error.
 ### alea_find_overlaps
 
 ```c
-int alea_find_overlaps(const alea_system_t* sys, int* pairs, size_t max_pairs);
+int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 ```
 
-Find overlapping cell pairs by random sampling. `pairs` is filled as `[cell1, cell2, cell1, cell2, ...]`. Returns number of pairs found.
+Perform a cheap root-universe overlap screen. Candidate pairs are selected by
+intersecting cell bounding boxes, then tested at the eight intersection-box
+corners and its center. `pairs` receives zero-based cell indices as
+`[a0, b0, a1, b1, ...]`. This bounded heuristic can miss overlaps; use the
+geometry validator for transport diagnostics.
 
 ### alea_find_cell_at
 
 ```c
-int alea_find_cell_at(const alea_system_t* sys, double x, double y, double z,
+int alea_find_cell_at(alea_system_t* sys, double x, double y, double z,
                       int* out_cell_id, int* out_material);
 ```
 
@@ -562,7 +655,10 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root,
                   int material_index, double density, int universe);
 ```
 
-Add a cell to the system. `cell_id` is the MCNP-style cell number (0 for auto-assign). `root` is the CSG tree root. `material_index` is the material number (0 for void). Returns cell index or -1 on error.
+Add a cell to the system. `cell_id` is the MCNP-style cell number (0 for
+auto-assignment), and `root` is the CSG tree root. `material_index` is the
+zero-based index returned by `alea_add_material()`, not a material ID. Pass
+`ALEA_MATERIAL_VOID` (-1) for a void cell. Returns the new cell index or -1.
 
 ### alea_set_fill
 
@@ -595,6 +691,14 @@ int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_inde
 ```
 
 Set cell material. Pass `ALEA_MATERIAL_VOID` (-1) for void. Derives the MCNP material ID from the material index automatically.
+
+### alea_cell_set_mixture
+
+```c
+int alea_cell_set_mixture(alea_system_t* sys, int cell_index, int mixture_id);
+```
+
+Assign a mixture created by `alea_create_mixture()` to a cell.
 
 ### alea_cell_set_density
 
@@ -642,6 +746,30 @@ void alea_simplify_and_prune_cells(alea_system_t* sys,
 Full optimization pass on all cells: NNF conversion, associative Boolean normalization, balancing, contradiction detection, and empty-cell removal. This does not flatten universe hierarchy. `stats` can be NULL.
 
 **`alea_simplify_stats_t` fields**: `nodes_before`, `nodes_after`, `complements_eliminated`, `double_negations`, `idempotent_reductions`, `absorption_reductions`, `subtrees_deduplicated`, `cell_complements_expanded`, `contradictions_found`, `tautologies_found`, `empty_cells_removed`, `union_branches_absorbed`, `union_common_factors`, `union_branches_subsumed`.
+
+### Proof-assisted simplification
+
+```c
+void alea_cell_simplify_proof_options_init(
+    alea_cell_simplify_proof_options_t* options);
+int alea_cell_simplify_proven(
+    alea_system_t* sys, size_t cell_index,
+    const alea_cell_simplify_proof_options_t* options,
+    alea_cell_simplify_proof_result_t* out_result);
+```
+
+Propose a simpler universe-local cell expression and install it only after an
+interval/octree proof shows that the symmetric difference is empty over a
+complete domain. With `options.apply == false`, the operation is a dry run.
+The result distinguishes proven, disproven, and inconclusive candidates and
+reports bounds, witnesses, work limits, and whether a change was applied.
+Explicit bounds are a caller assertion of the complete cell domain, not a
+clipping box.
+
+`alea_cells_simplify_proven()` applies the same contract to an ordered batch.
+Analysis may run in parallel, publication is transactional and serial, results
+retain request order, and duplicate cell indices are rejected. Initialize its
+options with `alea_cells_simplify_proof_options_init()`.
 
 ### alea_split_union_cells
 
@@ -1019,6 +1147,28 @@ int alea_find_material_by_id(const alea_system_t* sys, int material_id);
 
 Find material index by MCNP ID. Returns -1 if not found.
 
+### Material composition and inspection
+
+All functions below take the zero-based material index returned by
+`alea_add_material()`:
+
+| Function | Contract |
+|----------|----------|
+| `alea_material_count(sys)` | Number of registered materials |
+| `alea_material_get_id(sys, index)` | External material ID, or -1 on error |
+| `alea_material_add_nuclide(sys, index, zaid, library, fraction)` | Add an explicit nuclide; `library` may be NULL |
+| `alea_material_add_element(sys, index, Z, library, fraction)` | Add a natural element |
+| `alea_material_set_density(sys, index, density)` | Positive = g/cm³, negative = atoms/b-cm |
+| `alea_material_set_weight_fraction(sys, index, is_weight)` | Choose weight (`true`) or atom fractions |
+| `alea_material_expand_elements(sys, index)` | Replace natural elements with isotopic nuclides |
+| `alea_material_nuclide_count` / `alea_material_nuclide_get` | Inspect explicit nuclide entries |
+| `alea_material_element_count` / `alea_material_element_get` | Inspect element entries |
+| `alea_material_get_density` | Return density and whether it was explicitly set |
+| `alea_material_is_weight_fraction` | Report the fraction convention |
+
+Library strings returned by the inspection accessors are borrowed and must not
+be freed.
+
 ### alea_create_mixture
 
 ```c
@@ -1028,6 +1178,11 @@ int alea_create_mixture(alea_system_t* sys, const int* mat_ids,
 
 Create a new material as a weighted mixture. Returns the assigned material ID or -1 on error.
 
+Mixtures have a separate index space. Use `alea_find_mixture_by_id()`,
+`alea_mixture_count()`, `alea_mixture_get_id()`,
+`alea_mixture_component_count()`, and `alea_mixture_component_get()` to inspect
+them. Assign a mixture to a cell with `alea_cell_set_mixture()`.
+
 ---
 
 ## Volume Estimation
@@ -1035,7 +1190,7 @@ Create a new material as a weighted mixture. Returns the assigned material ID or
 ### alea_compute_bounding_sphere
 
 ```c
-int alea_compute_bounding_sphere(const alea_system_t* sys, double tol,
+int alea_compute_bounding_sphere(alea_system_t* sys, double tol,
                                  double* cx, double* cy, double* cz,
                                  double* radius);
 ```
@@ -1087,6 +1242,65 @@ Estimate physical volumes using Cauchy-Crofton random ray tracing. Arrays must
 be sized to `alea_volume_path_count(sys)`. Every entry represents one concrete
 placement, preserving fill ancestry, transformations, and lattice coordinates.
 `rel_errors` can be NULL.
+
+### Direct path resolution
+
+```c
+int alea_volume_path_resolve_at_point(alea_system_t* sys,
+                                      double x, double y, double z,
+                                      alea_volume_path_t* out_path);
+int alea_volume_path_resolve_cell_at_point(
+    alea_system_t* sys, double x, double y, double z,
+    int target_cell_id, int target_universe_id,
+    alea_volume_path_t* out_path);
+```
+
+`alea_volume_path_resolve_at_point()` walks only the containing hierarchy branch
+and does not build the potentially large global path enumeration; its
+`path_id` is `UINT64_MAX`. The target-cell form explores all containing
+branches and returns 0 for absent, 1 for a unique occurrence, 2 for multiple
+occurrences, and -1 on error. Use
+`alea_volume_path_resolve_cell_point_sets()` for deterministic bounded parallel
+resolution of many independent point sets, or
+`alea_volume_path_resolve_cell_from_transform_evidence()` to match printed
+world/local coordinates for non-lattice fill diagnostics.
+
+### alea_estimate_volumes_ex
+
+```c
+void alea_volume_estimate_options_init(
+    alea_volume_estimate_options_t* options);
+int alea_estimate_volumes_ex(
+    alea_system_t* sys,
+    const alea_volume_estimate_options_t* options,
+    double* volumes, double* rel_errors,
+    alea_volume_estimate_stats_t* out_stats);
+```
+
+The production Cauchy–Crofton estimator adds a seed, stable RNG selection,
+worker and batch control, convergence-based early stopping, progress
+notification, and an execution receipt. Initialize the options, then set the
+required `max_rays`. Philox (`ALEA_RNG_PHILOX4X32_10`) is the production
+counter-based engine and is reproducible across worker counts; the legacy LCG
+is retained for compatibility. A progress callback returning nonzero requests
+successful cancellation, which is recorded in `out_stats`.
+
+### Deterministic cell-local volume
+
+```c
+void alea_cell_volume_options_init(alea_cell_volume_options_t* options);
+int alea_cell_estimate_volume(
+    const alea_system_t* sys, size_t cell_index,
+    const alea_cell_volume_options_t* options,
+    alea_cell_volume_result_t* out_result);
+```
+
+Estimate one cell definition in its universe-local frame with an
+interval/octree method. The result reports the estimate, rigorous unresolved
+volume interval, bounds and their source, convergence, resource-limit status,
+and execution statistics. Without explicit bounds the implementation uses the
+stored cell box, plane constraints, or bounded adaptive discovery. Explicit
+bounds describe a clipped integration domain.
 
 ---
 
@@ -1159,13 +1373,38 @@ Expand all macrobodies in all cells.
 
 Void options are read from `sys->config` (see [Configuration](#configuration)).
 
-### alea_void_generate
+### alea_void_generate_in_bbox
 
 ```c
-void_result_t* alea_void_generate(alea_system_t* sys, const alea_bbox_t* bounds);
+void_result_t* alea_void_generate_in_bbox(
+    alea_system_t* sys, const alea_bbox_t* bounds);
 ```
 
-Generate void regions via octree subdivision. Returns opaque result (must be freed with `alea_void_free`).
+Generate void regions via octree subdivision. Returns an opaque result that
+must be freed with `alea_void_free()`. A `NULL` bounds pointer uses the root
+universe bounds plus a margin.
+
+The full explicit family is:
+
+```c
+void alea_void_options_init(alea_void_options_t* options);
+void_result_t* alea_void_generate_in_bbox(
+    alea_system_t* sys, const alea_bbox_t* bounds);
+void_result_t* alea_void_generate_in_region(
+    alea_system_t* sys, alea_node_id_t bounds_region);
+void_result_t* alea_void_generate_in_bbox_ex(
+    alea_system_t* sys, const alea_bbox_t* bounds,
+    const alea_void_options_t* options);
+void_result_t* alea_void_generate_in_region_ex(
+    alea_system_t* sys, alea_node_id_t bounds_region,
+    const alea_void_options_t* options);
+```
+
+The `_ex` forms make depth, minimum size, probes, worker request, parallel
+scratch budget, and frontier depth explicit. A zero scratch budget forces
+serial execution. `alea_void_get_execution_stats()` copies the actual worker,
+frontier, batch, and scratch receipt from a result. Region forms retain a finite
+CSG bounding region rather than synthesizing one from an RPP.
 
 ### alea_void_add_cells
 
@@ -1233,7 +1472,67 @@ Free a void result.
 int alea_validate(const alea_system_t* sys);
 ```
 
-Validate system integrity. Returns 0 if valid, otherwise the number of issues found.
+Check internal structural integrity. Returns 0 if valid, otherwise the number of
+issues found. This is not a transport-style gap/overlap validator.
+
+### Occurrence-aware geometry validation (`alea_geo_validator.h`)
+
+```c
+void alea_geom_validator_options_init(alea_geom_validator_options_t* options);
+void alea_geom_validator_result_init(alea_geom_validator_result_t* result);
+void alea_geom_validator_result_free(alea_geom_validator_result_t* result);
+
+int alea_validate_geometry(alea_system_t* sys,
+                           const alea_geom_validator_options_t* options,
+                           alea_geom_validator_result_t* result);
+int alea_validate_geometry_ray(alea_system_t* sys,
+                               const alea_geom_validator_options_t* options,
+                               double ox, double oy, double oz,
+                               double dx, double dy, double dz,
+                               double t_max,
+                               alea_geom_validator_result_t* result);
+int alea_validate_geometry_slice(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 const alea_slice_curves_t* curves,
+                                 const alea_geom_validator_options_t* options,
+                                 alea_geom_validator_result_t* result);
+```
+
+These APIs report structured occurrence-aware findings: undefined coverage
+after a crossing, overlaps, non-adjacent transitions, missing neighbors,
+ambiguous boundaries, and interior gaps. `alea_validate_geometry()` samples
+bounded random rays; the ray form checks a supplied ray; the slice form samples
+analytical boundary curves and retains curve/UV provenance.
+
+Initialize both options and result before the first call, and always free the
+result. Read findings with `alea_geom_validator_error_count()` and
+`alea_geom_validator_error_get()`; `alea_geom_error_type_name()` returns a
+stable display name. Work and output are bounded by `max_errors`,
+`max_samples_per_signature`, `max_samples_per_curve`, and `max_crossings`.
+Inspect `result.truncated` and the result counters before interpreting an empty
+finding list as complete. With `ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS`, unowned
+coverage inside `validation_bounds` is an interior gap; exterior void may be
+allowed separately.
+
+### Transition and ray-slice diagnostics
+
+`alea_check_transition_local()` validates one supplied boundary witness in an
+active universe-local frame and returns an `alea_transition_result_t` with
+candidate/owner evidence. Query acceleration must already be prepared.
+
+`alea_transition_slice_screen()` and `_batch()` provide memory-bounded 2D
+transition screening with reusable opaque results, refinement status, critical
+tiles, findings, components, links, and coverage evidence. Initialize option
+structures with their `_init` functions and use the accessor API rather than
+assuming result layout.
+
+`alea_validate_ray_slice_compact()` compares forward/reverse selected-owner
+traces and can add complete-coverage diagnostics. Results are reusable and
+transactional: a failed call does not publish partial arrays. The
+`_with_directional_cache` form accepts a cache created by
+`alea_slice_directional_trace_cache_create()` to reuse canonical U/V boundary
+events. A cache is tied to the system generation, exact view, and dimensions,
+and must be destroyed before its system.
 
 ---
 
@@ -1255,6 +1554,18 @@ alea_log_level_t alea_log_get_level(void);
 
 Get the current log level.
 
+### alea_log_set_callback
+
+```c
+void alea_log_set_callback(alea_log_callback_t callback, void* user_data);
+```
+
+Install a process-wide formatted-message callback, or pass `NULL` to restore
+stderr logging. It may be invoked by any library worker thread. The callback
+and user data are borrowed until replacement/unregistration; synchronize their
+state and unregister before destroying it. Recursive calls into Alea logging
+from the callback are unsupported.
+
 ---
 
 ## Raycast (alea_raycast.h)
@@ -1272,7 +1583,7 @@ Create a heap-allocated raycast result. Destroy with `alea_raycast_result_destro
 ### alea_raycast
 
 ```c
-int alea_raycast(const alea_system_t* sys,
+int alea_raycast(alea_system_t* sys,
                  double ox, double oy, double oz,
                  double dx, double dy, double dz,
                  double t_max,
@@ -1284,7 +1595,7 @@ Cast a ray and find all cell intersections. Direction is normalized internally. 
 ### alea_raycast_cell_aware
 
 ```c
-int alea_raycast_cell_aware(const alea_system_t* sys,
+int alea_raycast_cell_aware(alea_system_t* sys,
                             double ox, double oy, double oz,
                             double dx, double dy, double dz,
                             double t_max,
@@ -1296,10 +1607,44 @@ Cell-aware raycast using per-cell surface index. It is semantically equivalent t
 testing only surfaces belonging to each cell. For lattice models it uses the
 canonical lattice-aware path so DDA element-boundary hits are included.
 
+### Hierarchical fast segments and batches
+
+```c
+int alea_raycast_hier_fast_segments(
+    alea_system_t* sys,
+    double ox, double oy, double oz,
+    double dx, double dy, double dz,
+    double t_max, alea_raycast_result_t* result);
+
+alea_raycast_batch_result_t* alea_raycast_batch_result_create(void);
+void alea_raycast_batch_result_destroy(alea_raycast_batch_result_t* result);
+int alea_raycast_hier_batch(
+    alea_system_t* sys, const double* origins_xyz,
+    const double* directions_xyz, size_t ray_count, double t_max,
+    const alea_raycast_batch_options_t* options,
+    alea_raycast_batch_result_t* result);
+```
+
+The fast scalar form returns material/path segments using the hierarchy walker;
+its full primitive-hit list is not part of the contract. The batch form accepts
+packed XYZ arrays and publishes input-order CSR data. Initialize
+`alea_raycast_batch_options_t`, request only needed `ALEA_RAY_BATCH_*` fields,
+and reuse the result across calls. A failed call does not publish a partial
+result.
+
+The batch accessor families expose ray offsets, interval endpoints, leaf
+cell/material/density/surface data, resolution flags, projected ownership, and
+optional full hierarchy paths. Every returned array is borrowed from the result
+until its next successful query or destruction. Full paths add a second CSR
+layer through `alea_raycast_batch_segment_path_offsets()`. Use
+`alea_generate_cauchy_crofton_rays()` only for the legacy deterministic LCG ray
+generator; production volume estimation uses the configurable estimator in
+the volume section.
+
 ### alea_ray_first_cell
 
 ```c
-int alea_ray_first_cell(const alea_system_t* sys,
+int alea_ray_first_cell(alea_system_t* sys,
                         double ox, double oy, double oz,
                         double dx, double dy, double dz,
                         double t_max, double* out_t);
@@ -1387,7 +1732,7 @@ Initialize a slice view with arbitrary orientation. Normal vector is normalized;
 #### alea_find_cells_grid
 
 ```c
-int alea_find_cells_grid(const alea_system_t* sys,
+int alea_find_cells_grid(alea_system_t* sys,
                          const alea_slice_view_t* view,
                          int nu, int nv,
                          int universe_depth,
@@ -1401,7 +1746,7 @@ Find cells on a 2D grid. `universe_depth`: -1=innermost, 0=root, N=level N. `out
 #### alea_check_grid_overlaps
 
 ```c
-int alea_check_grid_overlaps(const alea_system_t* sys,
+int alea_check_grid_overlaps(alea_system_t* sys,
                              const alea_slice_view_t* view,
                              int nu, int nv,
                              int universe_depth,
@@ -1414,7 +1759,7 @@ Comprehensive overlap detection. Re-queries every non-void pixel to detect fully
 #### alea_check_grid_overlaps_curves
 
 ```c
-int alea_check_grid_overlaps_curves(const alea_system_t* sys,
+int alea_check_grid_overlaps_curves(alea_system_t* sys,
                                     const alea_slice_view_t* view,
                                     const alea_slice_curves_t* curves,
                                     int nu, int nv,
@@ -1430,7 +1775,7 @@ Efficient nested overlap detection. Only probes pixels where a surface curve cro
 #### alea_get_slice_curves
 
 ```c
-alea_slice_curves_t* alea_get_slice_curves(const alea_system_t* sys,
+alea_slice_curves_t* alea_get_slice_curves(alea_system_t* sys,
                                            const alea_slice_view_t* view);
 ```
 
@@ -1504,11 +1849,16 @@ Boundary-aware variant. Pass the same `cell_ids` or `material_ids` grid used for
 
 ### Error Checking
 
+The functions in this subsection are deprecated compatibility APIs. New code
+should use `alea_validate_geometry_slice()` from `alea_geo_validator.h`, which
+returns structured primitive-keyed findings. The grid error byte remains useful
+as a fast visualization overlay.
+
 #### alea_check_slice_errors
 
 ```c
 alea_slice_error_result_t* alea_check_slice_errors(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     int universe_depth);
@@ -1520,7 +1870,7 @@ Check surface curves for geometry errors (overlaps/gaps) using CSG point-contain
 
 ```c
 alea_slice_error_result_t* alea_check_slice_errors_grid(
-    const alea_system_t* sys,
+    alea_system_t* sys,
     const alea_slice_view_t* view,
     const alea_slice_curves_t* curves,
     const int* cell_ids,
@@ -1606,7 +1956,7 @@ transparent rather than merely recolored.
 ```c
 int render_camera_setup(render_camera_t* cam,
                         const render_config_t* cfg,
-                        const alea_system_t* sys);
+                        alea_system_t* sys);
 ```
 
 Set up camera from config. Auto-fits from model bounding sphere if eye/target not set.
@@ -1628,7 +1978,7 @@ Generate camera ray for pixel `(px, py)`.
 #### render_scene
 
 ```c
-int render_scene(const alea_system_t* sys,
+int render_scene(alea_system_t* sys,
                  const render_config_t* cfg,
                  const render_camera_t* cam,
                  render_framebuffer_t* fb);
@@ -1729,7 +2079,7 @@ Key `alea_mesh_config_t` fields:
 | `format` | `ALEA_MESH_GMSH` | `ALEA_MESH_GMSH` or `ALEA_MESH_VTK` |
 | `void_material_id` | 0 | Material ID for void regions |
 | `auto_pad` | 0.01 | Fractional padding for auto-bounds |
-| `sampling_mode` | `ALEA_MESH_SAMPLE_SUBCELL` | Center, corners, regular, stratified, or adaptive sampling |
+| `sampling_mode` | `ALEA_MESH_SAMPLE_SUBCELL` | Center, corners, subcell, stratified, adaptive, or face-ray sampling |
 | `subsamples_per_axis` | 2 | Initial per-axis sample count |
 | `mixed_threshold` | 0 | Tolerance before a voxel is flagged as mixed |
 | `target_error` | 0.05 | Adaptive total-variation convergence target |
@@ -1737,7 +2087,12 @@ Key `alea_mesh_config_t` fields:
 | `max_samples_per_voxel` | 32768 | Hard cumulative query limit per voxel |
 | `max_total_samples` | 0 | Whole-run query budget; zero is unlimited |
 | `sampling_seed` | fixed | Reproducible stratified-sampling seed |
-| `workers` | 1 | Sampling workers; 0 selects the parallel backend default |
+| `workers` | 0 | Parallel-backend default; 1 forces serial sampling |
+| `ray_grid_u`, `ray_grid_v` | implementation defaults | Tensor-grid origins per transverse face tile in ray mode |
+| `ray_origin_mode` | grid | Grid, seeded Sobol, or caller-provided normalized face origins |
+| `ray_samples` | implementation default | Sobol origins per face tile |
+| `ray_points`, `ray_point_count` | NULL, 0 | Custom normalized `(u,v)` face origins |
+| `ray_directions` | `ALEA_MESH_RAY_XYZ` | Enabled X/Y/Z ray directions |
 | `bounds_mode` | `ALEA_MESH_BOUNDS_LEGACY` | Compatibility, explicit, or root-AABB inference |
 | `fields` | all current result fields | Arrays retained in the result |
 | `progress` | NULL | Optional callback after each completed Z slab; nonzero cancels |
@@ -1745,7 +2100,7 @@ Key `alea_mesh_config_t` fields:
 ### alea_mesh_sample
 
 ```c
-alea_mesh_result_t* alea_mesh_sample(const alea_system_t* sys,
+alea_mesh_result_t* alea_mesh_sample(alea_system_t* sys,
                                      const alea_mesh_config_t* cfg);
 ```
 
@@ -1769,6 +2124,9 @@ Material fractions are point-count estimates, not exact volume fractions. A voxe
 | `fraction_spans` | `nx*ny*nz` spans into the packed fraction array |
 | `fractions` | Packed `(material_id, fraction)` entries |
 | `fraction_count` | Number of packed entries |
+| `cell_fraction_spans` | `nx*ny*nz` spans into concrete-cell fractions |
+| `cell_fractions` | Packed `(cell_id, material_id, fraction)` entries |
+| `cell_fraction_count` | Number of packed concrete-cell entries |
 | `fields` | Materialized `ALEA_MESH_FIELD_*` arrays |
 | `bounds_source` | Whether coordinates were explicit, custom, or inferred |
 | `bounds_padding` | Fractional automatic padding actually applied |
@@ -1781,6 +2139,9 @@ still prefer explicit bounds.
 
 Set `cfg.fields` to retain only arrays required by the caller. Material
 discovery remains complete even when sparse per-voxel fractions are omitted.
+The current field bits run from `ALEA_MESH_FIELD_MATERIAL_ID` through
+`ALEA_MESH_FIELD_CELL_FRACTIONS`; call `alea_mesh_config_init()` instead of
+hard-coding an "all fields" numeric mask so future fields are included safely.
 
 ### alea_mesh_export
 
@@ -1866,7 +2227,7 @@ resolution but is not boundary-conforming meshing.
 ### alea_mesh_export_system
 
 ```c
-int alea_mesh_export_system(const alea_system_t* sys,
+int alea_mesh_export_system(alea_system_t* sys,
                             const alea_mesh_config_t* cfg,
                             const char* filename);
 ```
@@ -1893,7 +2254,8 @@ Link `libalea_mcnp.a` (or use `libalea_full.a` which bundles everything).
 mcnp_model_t* mcnp_load(const char* filename);
 ```
 
-Load an MCNP input file. Returns model with `model->sys` ready for queries.
+Load an MCNP input file. Obtain its borrowed system with
+`mcnp_model_system()` and prepare the desired query caches before querying.
 
 #### mcnp_load_string
 
@@ -1924,7 +2286,7 @@ Export to an open stream.
 #### mcnp_export_system
 
 ```c
-int mcnp_export_system(const alea_system_t* sys, const char* filename);
+int mcnp_export_system(alea_system_t* sys, const char* filename);
 ```
 
 Export a bare system (no MCNP params) with default config.
@@ -1932,7 +2294,7 @@ Export a bare system (no MCNP params) with default config.
 #### mcnp_export_system_stream
 
 ```c
-int mcnp_export_system_stream(const alea_system_t* sys, FILE* out);
+int mcnp_export_system_stream(alea_system_t* sys, FILE* out);
 ```
 
 Export a bare system to a stream.
@@ -1946,6 +2308,19 @@ void mcnp_model_destroy(mcnp_model_t* model);
 ```
 
 Destroy model, freeing sys (if owned) and params.
+
+#### mcnp_model_system / mcnp_model_take_system
+
+```c
+alea_system_t* mcnp_model_system(mcnp_model_t* model);
+alea_system_t* mcnp_model_take_system(mcnp_model_t* model);
+```
+
+The first returns a borrowed pointer valid until model destruction or
+detachment. The second transfers an owned model's system to the caller; after
+that, the caller must call `alea_destroy()`, and another take returns `NULL`.
+A wrapper created by `mcnp_model_wrap()` is non-owning, so detaching it does not
+transfer ownership from the original system owner.
 
 #### mcnp_model_wrap
 
@@ -1964,29 +2339,8 @@ const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t i
 
 Get cell params by index (bounds-checked). Returns NULL if out of range.
 
-#### mcnp_model_reserve_params
-
-```c
-int mcnp_model_reserve_params(mcnp_model_t* model, size_t cap);
-```
-
-Ensure the params array has room for at least `cap` entries.
-
-#### mcnp_model_add_params
-
-```c
-int mcnp_model_add_params(mcnp_model_t* model);
-```
-
-Append a new cell params entry with defaults (imp=1.0). Returns index or -1.
-
-#### mcnp_model_register_hooks
-
-```c
-void mcnp_model_register_hooks(mcnp_model_t* model);
-```
-
-Register cell callbacks so that `alea_add_cell()`, split, merge, etc. automatically grow/copy the parallel params array.
+`mcnp_model_inline_transform_const()` returns a borrowed inline-transform
+record by index, or `NULL` when the index is invalid.
 
 ### MCNP Export Configuration
 
@@ -2047,7 +2401,7 @@ Export to stream.
 #### openmc_export_system
 
 ```c
-int openmc_export_system(const alea_system_t* sys, const char* filename);
+int openmc_export_system(alea_system_t* sys, const char* filename);
 ```
 
 Export a bare system with default config.
@@ -2055,7 +2409,7 @@ Export a bare system with default config.
 #### openmc_export_system_stream
 
 ```c
-int openmc_export_system_stream(const alea_system_t* sys, FILE* out);
+int openmc_export_system_stream(alea_system_t* sys, FILE* out);
 ```
 
 ### Model Management
@@ -2068,6 +2422,17 @@ void openmc_model_destroy(openmc_model_t* model);
 
 Destroy model. Frees system if owned.
 
+#### openmc_model_system / openmc_model_take_system
+
+```c
+alea_system_t* openmc_model_system(openmc_model_t* model);
+alea_system_t* openmc_model_take_system(openmc_model_t* model);
+```
+
+Borrow the wrapped system or detach it from an owning model. After a successful
+detach, the caller owns the system and must destroy it; a second detach returns
+`NULL`.
+
 #### openmc_model_wrap
 
 ```c
@@ -2078,11 +2443,26 @@ Create a non-owning wrapper around an existing system.
 
 ---
 
+## Serpent Export (`alea_serpent.h`)
+
+```c
+int serpent_export_system(alea_system_t* sys, const char* filename);
+int serpent_export_system_stream(alea_system_t* sys, FILE* out);
+```
+
+Export a bare system as Serpent input. Link `libalea_serpent.a` or
+`libalea_full.a`.
+
+---
+
 ## Nuclear Data (`alea_nucdata.h`)
 
 Nuclear data module for ACE-format cross sections, reaction classification, and data decoding. All functions are declared in `alea_nucdata.h` with types in `alea_nucdata_types.h`. Energies are in MeV, cross sections in barns (microscopic) or cm⁻¹ (macroscopic). All functions are thread-safe for read-only access to loaded nuclides.
 
-All objects are user-owned — no hidden state or caches. The user loads an xsdir, loads nuclides from it, and frees them when done.
+Ownership is explicit. `alea_nuc_load_nuclide()` returns a fresh caller-owned
+nuclide. `alea_nuc_xsdir_get_nuclide()` instead returns an immutable borrowed
+nuclide from the xsdir cache; do not free or Doppler-broaden it, and keep the
+xsdir alive while it is referenced.
 
 ```c
 alea_nuc_xsdir_t* xsdir = alea_nuc_xsdir_load("/path/to/xsdir");
@@ -2134,6 +2514,17 @@ size_t alea_nuc_xsdir_count(const alea_nuc_xsdir_t* xsdir);
 
 Number of entries in the loaded xsdir.
 
+#### alea_nuc_xsdir_get_nuclide
+
+```c
+alea_nuc_nuclide_t* alea_nuc_xsdir_get_nuclide(
+    alea_nuc_xsdir_t* xsdir, const char* zaid);
+```
+
+Load on first use and then return the cached borrowed pointer. The xsdir owns
+it. Use `alea_nuc_load_nuclide()` when an independently owned, mutable nuclide
+is required.
+
 ### ACE Table I/O
 
 #### alea_nuc_ace_read
@@ -2142,7 +2533,8 @@ Number of entries in the loaded xsdir.
 alea_error_t alea_nuc_ace_read(const char* path, int address, int file_type, alea_nuc_ace_table_t* table);
 ```
 
-Read raw ACE table from file. `file_type` is 1 (ASCII) or 2 (binary). `address` is the start line or byte offset.
+Read a raw ACE table. `file_type` is 1 (ASCII) or 2 (binary); `address` is
+the 1-based start line for Type 1 or the record number for Type 2.
 
 #### alea_nuc_ace_free
 
@@ -2248,6 +2640,17 @@ alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t*
 
 Add a nuclide with number density in atoms/barn-cm.
 
+#### alea_nuc_material_from_cell
+
+```c
+alea_nuc_material_t* alea_nuc_material_from_cell(
+    alea_system_t* sys, int cell_index, alea_nuc_xsdir_t* xsdir);
+```
+
+Build a caller-owned nuclear material from a zero-based geometry cell index.
+Its nuclides are borrowed from the xsdir cache, so destroy the material before
+the xsdir.
+
 ### Macroscopic Cross Sections
 
 Σ_macro = Σᵢ Nᵢ · σᵢ(E). Returns cm⁻¹.
@@ -2277,6 +2680,56 @@ int alea_nuc_sample_reaction(const alea_nuc_nuclide_t* nuc, double energy, doubl
 ```
 
 Sample which reaction (MT) occurs on a nuclide. Returns reaction index (0 = elastic).
+
+#### alea_nuc_sample_collision
+
+```c
+alea_error_t alea_nuc_sample_collision(
+    const alea_nuc_nuclide_t* nuc, int mt, double energy,
+    const double xi[3], alea_nuc_interaction_t* result);
+```
+
+Low-level single-nuclide stationary-target sampling for elastic MT=2 and
+supported absorption reactions. Caller-supplied variates must be in `[0,1)`;
+the result is unchanged on failure.
+
+### Prepared continuous-energy collision physics
+
+```c
+alea_error_t alea_nuc_capabilities(
+    const alea_nuc_nuclide_t* nuc, alea_nuc_capability_report_t* report);
+alea_error_t alea_nuc_prepare_material(
+    const alea_nuc_material_t* material,
+    const alea_nuc_prepare_requirements_t* requirements,
+    alea_nuc_capability_report_t* report,
+    alea_nuc_prepared_material_t** prepared);
+void alea_nuc_prepared_material_free(alea_nuc_prepared_material_t* prepared);
+alea_error_t alea_nuc_evaluate(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_evaluation_t* evaluation);
+alea_error_t alea_nuc_sample_flight(
+    const alea_nuc_evaluation_t* evaluation,
+    alea_nuc_random_fn random, void* random_context, double* distance);
+alea_error_t alea_nuc_collide(
+    const alea_nuc_evaluation_t* evaluation,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_collision_result_t* result);
+```
+
+Preparation is a capability gate, not an approximation switch: it rejects
+active reaction physics that the restricted transport model cannot represent.
+The current accepted set covers stationary-target elastic scattering and
+non-fission absorption. Prepared materials are immutable and borrow the source
+material, component array, and nuclides; all must outlive the prepared object.
+
+Evaluation computes macroscopic state without sampling. Flight and collision
+then consume a caller-provided finite `[0,1)` RNG. They verify that the stored
+evaluation still matches the incident state and prepared material, allocate no
+memory during sampling, and leave output values unchanged on failure (although
+the RNG may already have advanced). See
+[Nuclear-data transport capabilities](NUCDATA_CAPABILITIES.md) for the precise
+accepted and rejected physics matrix.
 
 ### Reaction Classification
 
@@ -2322,6 +2775,9 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
 ```
 
 Collapse pointwise cross sections into group constants using 1/E flux weighting. Fills sigma_t, sigma_a, sigma_s, sigma_f, nu_sigma_f, chi, and the scattering matrix.
+
+Call `alea_nuc_mg_set_spectrum()` before collapse to replace the default 1/E
+weighting with a caller-defined spectrum callback.
 
 #### alea_nuc_mg_scatter / alea_nuc_mg_scatter_adjoint
 
@@ -2381,6 +2837,14 @@ Human-readable error message for an error code.
 | `ALEA_ERR_NOT_FOUND` | ZAID not found in xsdir |
 | `ALEA_ERR_INVALID_ARG` | Invalid data format |
 | `ALEA_ERR_UNSUPPORTED` | Unsupported operation (e.g. broadening to lower T) |
+| `ALEA_ERR_INVALID_ID` | ID or index is out of range |
+| `ALEA_ERR_INVALID_STATE` | Operation is invalid for the object's state |
+| `ALEA_ERR_FILE_WRITE` | Output I/O failure |
+| `ALEA_ERR_EXPORT_FAILED` | Export operation failed |
+| `ALEA_ERR_NOT_IMPLEMENTED` | Recognized but unavailable feature |
+| `ALEA_ERR_INTERRUPTED` | Cooperative interruption requested |
+| `ALEA_ERR_EMPTY` | Required collection is empty |
+| `ALEA_ERR_OVERFLOW` | Capacity was insufficient or result was truncated |
 
 ## Ray-query convenience APIs
 
