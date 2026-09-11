@@ -376,6 +376,7 @@ The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea
 | `alea_nuc_sample_distance` | Distance to the next collision from macroscopic total cross section |
 | `alea_nuc_sample_nuclide` | Target nuclide in a material |
 | `alea_nuc_sample_reaction` | Reaction MT on a selected nuclide |
+| `alea_nuc_prepare_material` / `alea_nuc_evaluate` / `alea_nuc_collide` | Capability-checked stationary-target neutron elastic and absorption collisions |
 | `alea_nuc_urr_factors` | Unresolved-resonance probability-table factors |
 | `alea_nuc_mg_sample_scatter` | Outgoing multigroup scatter group |
 | `alea_mesh_sample` / `alea_mesh_visit` | Fixed structured-grid composition estimates |
@@ -386,7 +387,8 @@ uniform, interface, and many-material grids across center, regular subcell, and
 stratified modes. The benchmark also reports retained bytes per voxel for
 material-only, diagnostic, and complete result masks.
 
-Full outgoing collision kinematics are not exposed by the tracked public headers or Makefile.
+See [nuclear-data transport capabilities](docs/NUCDATA_CAPABILITIES.md) for the
+supported physics, ownership contract, units, and restricted slab example.
 
 ## Examples
 

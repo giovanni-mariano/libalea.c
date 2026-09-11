@@ -53,8 +53,14 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
             free(ed->data);
             free(ed->temp_energy);
             free(ed->temp_T);
+            free(ed->temp_nbt);
+            free(ed->temp_interp);
             free(ed->temp_C);
             free(ed->watt_b_energy);
+            free(ed->watt_b_nbt);
+            free(ed->watt_b_interp);
+            free(ed->tab.nbt);
+            free(ed->tab.interp);
             /* Free tabular data (law 4/44) */
             if (ed->tab.n_ein > 0) {
                 for (int j = 0; j < ed->tab.n_ein; j++) {
@@ -66,6 +72,8 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
                     if (ed->tab.ang_lc) free(ed->tab.ang_lc[j]);
                 }
                 free(ed->tab.ein);
+                free(ed->tab.interpolation);
+                free(ed->tab.n_discrete);
                 free(ed->tab.n_eout);
                 free(ed->tab.eout);
                 free(ed->tab.pdf);
@@ -89,6 +97,8 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
         for (int i = 0; i < 3; i++) {
             if (bars[i]) {
                 free(bars[i]->coeffs);
+                free(bars[i]->nbt);
+                free(bars[i]->interp);
                 free(bars[i]->energy);
                 free(bars[i]->nu);
                 free(bars[i]);

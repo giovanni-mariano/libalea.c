@@ -238,6 +238,64 @@ int alea_nuc_sample_nuclide(const alea_nuc_material_t* mat, double energy, doubl
 int alea_nuc_sample_reaction(const alea_nuc_nuclide_t* nuc, double energy, double xi,
                          int* out_mt);
 
+/**
+ * Sample a single-nuclide collision using caller-supplied random values.
+ * The initial implementation supports stationary-target elastic scattering
+ * (MT=2) and absorption reactions. Energy is in MeV and xi values must lie in
+ * [0,1). For elastic scattering, result->mu is in the center-of-mass frame.
+ * The result is unchanged on failure.
+ */
+alea_error_t alea_nuc_sample_collision(const alea_nuc_nuclide_t* nuc, int mt,
+                                       double energy, const double xi[3],
+                                       alea_nuc_interaction_t* result);
+
+/* ============================================================================
+ * PREPARED CONTINUOUS-ENERGY COLLISION PHYSICS
+ * ============================================================================ */
+
+/** Inspect whether a nuclide supports the restricted collision model. */
+alea_error_t alea_nuc_capabilities(const alea_nuc_nuclide_t* nuc,
+                                   alea_nuc_capability_report_t* report);
+
+/**
+ * Prepare an immutable material for collision sampling. The returned object
+ * borrows the material and nuclides, which must outlive it. Preparation fails
+ * when active reaction physics cannot be represented faithfully.
+ */
+alea_error_t alea_nuc_prepare_material(
+    const alea_nuc_material_t* material,
+    const alea_nuc_prepare_requirements_t* requirements,
+    alea_nuc_capability_report_t* report,
+    alea_nuc_prepared_material_t** prepared);
+
+void alea_nuc_prepared_material_free(alea_nuc_prepared_material_t* prepared);
+
+/** Evaluate one incident neutron in a prepared material without sampling. */
+alea_error_t alea_nuc_evaluate(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_evaluation_t* evaluation);
+
+/**
+ * Sample a flight distance in cm from an existing evaluation. The RNG must
+ * return finite values in [0,1). The distance is unchanged on failure. A call
+ * may consume RNG values before reporting an error.
+ */
+alea_error_t alea_nuc_sample_flight(const alea_nuc_evaluation_t* evaluation,
+                                    alea_nuc_random_fn random,
+                                    void* random_context,
+                                    double* distance);
+
+/**
+ * Sample target, reaction and collision outcome from one evaluation. The RNG
+ * must return finite values in [0,1). No allocation occurs in this call. The
+ * result is unchanged on failure; caller RNG values may already be consumed.
+ */
+alea_error_t alea_nuc_collide(const alea_nuc_evaluation_t* evaluation,
+                              alea_nuc_random_fn random,
+                              void* random_context,
+                              alea_nuc_collision_result_t* result);
+
 /* ============================================================================
  * FISSION DATA
  * ============================================================================ */

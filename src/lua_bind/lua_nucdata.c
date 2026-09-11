@@ -273,6 +273,38 @@ static int l_nuclide_broadened(lua_State* L) {
     return 1;
 }
 
+/* nuc:capabilities() -> report table */
+static int l_nuclide_capabilities(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    alea_nuc_capability_report_t report;
+    alea_error_t err = alea_nuc_capabilities(nuc, &report);
+    lua_createtable(L, 0, 7);
+    lua_pushboolean(L, err == ALEA_OK); lua_setfield(L, -2, "transport_ready");
+    lua_pushinteger(L, (lua_Integer)report.available_capabilities);
+    lua_setfield(L, -2, "available");
+    lua_pushinteger(L, (lua_Integer)report.missing_capabilities);
+    lua_setfield(L, -2, "missing");
+    lua_pushinteger(L, (lua_Integer)report.issue); lua_setfield(L, -2, "issue");
+    lua_pushinteger(L, report.mt); lua_setfield(L, -2, "mt");
+    lua_pushinteger(L, report.law); lua_setfield(L, -2, "law");
+    lua_pushstring(L, report.detail); lua_setfield(L, -2, "detail");
+    return 1;
+}
+
+/* nuc:sample_elastic(energy, angular_select_xi, angle_xi) -> mu_cm, energy_out */
+static int l_nuclide_sample_elastic(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    double energy = luaL_checknumber(L, 2);
+    double xi[3] = {luaL_checknumber(L, 3), luaL_checknumber(L, 4), 0.0};
+    alea_nuc_interaction_t result;
+    alea_error_t err = alea_nuc_sample_collision(nuc, 2, energy, xi, &result);
+    if (err != ALEA_OK)
+        return luaL_error(L, "sample_elastic: %s", alea_error_string(err));
+    lua_pushnumber(L, result.mu);
+    lua_pushnumber(L, result.energy_out);
+    return 2;
+}
+
 /* nuc:energy_range() -> E_min, E_max */
 static int l_nuclide_energy_range(lua_State* L) {
     alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
@@ -614,6 +646,8 @@ static const luaL_Reg nuclide_methods[] = {
     {"A",               l_nuclide_A},
     {"awr",             l_nuclide_awr},
     {"temperature",     l_nuclide_temperature},
+    {"capabilities",    l_nuclide_capabilities},
+    {"sample_elastic",  l_nuclide_sample_elastic},
     {"n_energies",      l_nuclide_n_energies},
     {"n_reactions",     l_nuclide_n_reactions},
     {"xs_total",        l_nuclide_xs_total},

@@ -128,6 +128,7 @@ typedef enum {
 /** Angular distribution at one incident energy */
 typedef struct {
     alea_nuc_angular_type_t type;
+    int interpolation;      /* ACE JJ: 1=histogram, 2=lin-lin */
     int n_cosines;
     double* cosine;         /* NULL for isotropic */
     double* pdf;
@@ -175,18 +176,29 @@ typedef struct alea_nuc_energy_dist {
     double level_Q;
 
     /* Maxwell/Evaporation/Watt parameters */
+    int n_temp_regions;         /* interpolation regions for T(E) / Watt a(E) */
+    int* temp_nbt;
+    int* temp_interp;
     int n_temp;
     double* temp_energy;        /* incident energy grid */
     double* temp_T;             /* nuclear temperature T(E) */
     double* temp_C;             /* Watt b(E), or restriction energy C(E) */
     int n_watt_b;               /* number of points in Watt b(E) */
+    int n_watt_b_regions;       /* interpolation regions for Watt b(E) */
+    int* watt_b_nbt;
+    int* watt_b_interp;
     double* watt_b_energy;      /* incident energy grid for Watt b(E) */
     double watt_a, watt_b;      /* Watt parameters (if constant) */
 
     /* Continuous tabular (law 4) and Kalbach-Mann (law 44) */
     struct {
         int n_ein;              /* number of incident energies */
+        int n_regions;          /* interpolation regions for incident energy */
+        int* nbt;
+        int* interp;
         double* ein;            /* incident energy grid */
+        int* interpolation;     /* outgoing interpolation code per Ein */
+        int* n_discrete;        /* discrete outgoing lines per Ein */
         int* n_eout;            /* number of outgoing energies per Ein */
         double** eout;          /* outgoing energy grids [n_ein][n_eout[i]] */
         double** pdf;           /* probability density [n_ein][n_eout[i]] */
@@ -207,6 +219,7 @@ typedef struct {
     int mt;                     /* ENDF MT number */
     double q_value;             /* Q-value (MeV) */
     int ty;                     /* TYR value: yield, sign indicates ang. dist */
+    bool center_of_mass;        /* negative TYR: distribution is in CM frame */
     int threshold_index;        /* first energy index (1-based) on main grid */
     int n_energies;             /* number of XS values */
     double* xs;                 /* cross-section array (on sub-grid) */
@@ -232,6 +245,9 @@ typedef struct {
     double* coeffs;
 
     /* Tabular */
+    int n_regions;
+    int* nbt;
+    int* interp;
     int n_energies;
     double* energy;
     double* nu;
@@ -402,6 +418,84 @@ typedef struct {
     int n_secondary;            /* secondary neutrons (from TYR / ν̄) */
     double weight_factor;       /* 1.0 forward, correction for adjoint */
 } alea_nuc_interaction_t;
+
+/* ============================================================================
+ * PREPARED CONTINUOUS-ENERGY COLLISION PHYSICS
+ * ============================================================================ */
+
+typedef struct alea_nuc_prepared_material alea_nuc_prepared_material_t;
+
+typedef enum {
+    ALEA_NUC_CAP_STATIONARY_ELASTIC = 1u << 0,
+    ALEA_NUC_CAP_ABSORPTION         = 1u << 1,
+    ALEA_NUC_CAP_FREE_GAS           = 1u << 2,
+    ALEA_NUC_CAP_THERMAL_SAB        = 1u << 3,
+    ALEA_NUC_CAP_FISSION            = 1u << 4,
+    ALEA_NUC_CAP_PHOTON             = 1u << 5,
+    ALEA_NUC_CAP_URR                = 1u << 6,
+} alea_nuc_capability_t;
+
+#define ALEA_NUC_CAP_RESTRICTED_NEUTRON \
+    (ALEA_NUC_CAP_STATIONARY_ELASTIC | ALEA_NUC_CAP_ABSORPTION)
+
+typedef enum {
+    ALEA_NUC_PREP_OK = 0,
+    ALEA_NUC_PREP_EMPTY_MATERIAL,
+    ALEA_NUC_PREP_UNSUPPORTED_CAPABILITY,
+    ALEA_NUC_PREP_UNSUPPORTED_PARTICLE,
+    ALEA_NUC_PREP_UNSUPPORTED_URR,
+    ALEA_NUC_PREP_UNSUPPORTED_REACTION,
+    ALEA_NUC_PREP_INVALID_ANGULAR,
+    ALEA_NUC_PREP_INVALID_CROSS_SECTIONS,
+} alea_nuc_prepare_issue_t;
+
+typedef struct {
+    uint32_t required_capabilities;
+} alea_nuc_prepare_requirements_t;
+
+typedef struct {
+    uint32_t available_capabilities;
+    uint32_t missing_capabilities;
+    alea_nuc_prepare_issue_t issue;
+    int component_index;    /* -1 if the issue is not component-specific */
+    int mt;                 /* 0 if the issue is not reaction-specific */
+    int law;                /* 0 if the issue is not distribution-specific */
+    char detail[192];
+} alea_nuc_capability_report_t;
+
+typedef double (*alea_nuc_random_fn)(void* context);
+
+typedef struct {
+    alea_nuc_particle_t type;
+    double energy;          /* MeV */
+    double direction[3];    /* unit vector */
+    double weight;
+    double time;            /* seconds */
+} alea_nuc_particle_state_t;
+
+typedef struct {
+    const alea_nuc_prepared_material_t* prepared;
+    alea_nuc_particle_state_t incident;
+    double macro_total;       /* cm^-1 */
+    double macro_elastic;     /* cm^-1 */
+    double macro_absorption;  /* cm^-1 */
+} alea_nuc_evaluation_t;
+
+typedef enum {
+    ALEA_NUC_OUTCOME_ABSORBED = 0,
+    ALEA_NUC_OUTCOME_SCATTERED,
+} alea_nuc_collision_outcome_t;
+
+typedef struct {
+    alea_nuc_collision_outcome_t outcome;
+    int component_index;
+    int mt;
+    double mu_cm;
+    double mu_lab;
+    bool deposition_available;
+    double local_energy_deposition; /* MeV */
+    alea_nuc_particle_state_t outgoing; /* valid when outcome is SCATTERED */
+} alea_nuc_collision_result_t;
 
 #ifdef __cplusplus
 }

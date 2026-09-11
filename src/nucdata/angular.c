@@ -106,6 +106,7 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
                     !xss_range_valid(t, dloc + 2, 3 * np))
                     goto fail;
                 pt->type = ALEA_NUC_ANG_TABULAR;
+                pt->interpolation = jj;
                 pt->n_cosines = np;
                 pt->cosine = malloc((size_t)np * sizeof(double));
                 pt->pdf = malloc((size_t)np * sizeof(double));

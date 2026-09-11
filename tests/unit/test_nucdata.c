@@ -24,6 +24,18 @@ static double constant_spectrum(double E, void* ctx) {
     return 1.0;
 }
 
+typedef struct {
+    const double* values;
+    int count;
+    int position;
+} sequence_rng_t;
+
+static double sequence_rng(void* context) {
+    sequence_rng_t* rng = context;
+    if (!rng || rng->position >= rng->count) return NAN;
+    return rng->values[rng->position++];
+}
+
 static int write_minimal_ascii_ace(const char* path, int threshold) {
     FILE* fp = fopen(path, "w");
     if (!fp) return 0;
@@ -517,8 +529,8 @@ TEST(angular_decode_stops_at_secondary_neutron_count) {
 TEST(watt_decode_keeps_independent_a_and_b_grids) {
     double raw[] = {
         0, 11, 10, 0, 2, 1, 3, 1, 1,
-        0, 2, 1, 3, 1, 1,
-        0, 1, 1, 2, 0
+        1, 2, 5, 2, 1, 3, 1, 1,
+        1, 1, 2, 1, 1, 2, 0
     };
     alea_nuc_ace_table_t table;
     memset(&table, 0, sizeof(table));
@@ -529,14 +541,22 @@ TEST(watt_decode_keeps_independent_a_and_b_grids) {
     ASSERT_NOT_NULL(ed);
     ASSERT_EQ(ed->law, ALEA_NUC_ELAW_WATT);
     ASSERT_EQ(ed->n_temp, 2);
+    ASSERT_EQ(ed->n_temp_regions, 1);
+    ASSERT_EQ(ed->temp_nbt[0], 2);
+    ASSERT_EQ(ed->temp_interp[0], 5);
     ASSERT_EQ(ed->n_watt_b, 1);
+    ASSERT_EQ(ed->n_watt_b_regions, 1);
+    ASSERT_EQ(ed->watt_b_nbt[0], 1);
+    ASSERT_EQ(ed->watt_b_interp[0], 2);
     ASSERT_NEAR(ed->temp_energy[1], 3.0, 1e-12);
     ASSERT_NEAR(ed->watt_b_energy[0], 1.0, 1e-12);
     ASSERT_NEAR(ed->temp_C[0], 2.0, 1e-12);
 
     free(ed->nbt); free(ed->interp); free(ed->energy); free(ed->probability);
     free(ed->temp_energy); free(ed->temp_T);
-    free(ed->watt_b_energy); free(ed->temp_C); free(ed);
+    free(ed->temp_nbt); free(ed->temp_interp);
+    free(ed->watt_b_energy); free(ed->temp_C);
+    free(ed->watt_b_nbt); free(ed->watt_b_interp); free(ed);
 }
 
 TEST(doppler_preserves_high_energy_constant_and_absorption) {
@@ -631,6 +651,325 @@ TEST(urr_factors_rejects_malformed_table) {
     nuc.urr = &urr;
 
     ASSERT_EQ(alea_nuc_urr_factors(&nuc, 1.0, 0.5, factors), 0);
+}
+
+TEST(nu_bar_honors_loglog_interpolation_metadata) {
+    int nbt[] = {2};
+    int interp[] = {5};
+    double energy[] = {1.0, 100.0};
+    double values[] = {1.0, 100.0};
+    alea_nuc_nu_bar_t total;
+    alea_nuc_fission_t fission;
+    alea_nuc_nuclide_t nuc;
+    memset(&total, 0, sizeof(total));
+    total.type = ALEA_NUC_NU_TABULAR;
+    total.n_regions = 1; total.nbt = nbt; total.interp = interp;
+    total.n_energies = 2; total.energy = energy; total.nu = values;
+    memset(&fission, 0, sizeof(fission)); fission.total = &total;
+    memset(&nuc, 0, sizeof(nuc)); nuc.fission = &fission;
+    ASSERT_NEAR(alea_nuc_nu_bar(&nuc, 10.0), 10.0, 1e-12);
+}
+
+TEST(low_level_elastic_collision_samples_tabular_angle) {
+    double energy[] = {0.5, 2.0};
+    double incident_energy[] = {1.0};
+    double cosine[] = {-1.0, 1.0};
+    double pdf[] = {0.5, 0.5};
+    double cdf[] = {0.0, 1.0};
+    alea_nuc_angular_point_t point;
+    alea_nuc_angular_dist_t angular;
+    alea_nuc_nuclide_t nuc;
+    double xi[] = {0.0, 0.25, 0.0};
+    alea_nuc_interaction_t result;
+
+    memset(&point, 0, sizeof(point));
+    point.type = ALEA_NUC_ANG_TABULAR; point.interpolation = 1;
+    point.n_cosines = 2; point.cosine = cosine; point.pdf = pdf; point.cdf = cdf;
+    memset(&angular, 0, sizeof(angular));
+    angular.n_energies = 1; angular.energy = incident_energy; angular.data = &point;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.awr = 1.0; nuc.n_energies = 2; nuc.energy = energy;
+    nuc.elastic_angular = &angular;
+
+    ASSERT_EQ(alea_nuc_sample_collision(&nuc, 2, 1.0, xi, &result), ALEA_OK);
+    ASSERT_NEAR(result.mu, -0.5, 1e-12);
+    ASSERT_NEAR(result.energy_out, 0.25, 1e-12);
+    ASSERT_EQ(result.n_secondary, 1);
+}
+
+TEST(hydrogen_isotropic_elastic_samples_expected_energy_mean) {
+    double energy[] = {0.5, 2.0};
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.awr = 1.0; nuc.n_energies = 2; nuc.energy = energy;
+    double sum = 0.0;
+    for (int i = 0; i < 1000; i++) {
+        double xi[] = {0.0, (i + 0.5) / 1000.0, 0.0};
+        alea_nuc_interaction_t result;
+        ASSERT_EQ(alea_nuc_sample_collision(&nuc, 2, 1.0, xi, &result),
+                  ALEA_OK);
+        ASSERT_TRUE(result.energy_out >= 0.0 && result.energy_out <= 1.0);
+        sum += result.energy_out;
+    }
+    ASSERT_NEAR(sum / 1000.0, 0.5, 1e-12);
+}
+
+TEST(low_level_elastic_inverts_linear_tabular_pdf) {
+    double energy[] = {0.5, 2.0};
+    double incident_energy[] = {1.0};
+    double cosine[] = {-1.0, 1.0};
+    double pdf[] = {0.0, 1.0};
+    double cdf[] = {0.0, 1.0};
+    alea_nuc_angular_point_t point = {
+        ALEA_NUC_ANG_TABULAR, 2, 2, cosine, pdf, cdf
+    };
+    alea_nuc_angular_dist_t angular = {1, incident_energy, &point};
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.awr = 1.0; nuc.n_energies = 2; nuc.energy = energy;
+    nuc.elastic_angular = &angular;
+    double xi[] = {0.0, 0.25, 0.0};
+    alea_nuc_interaction_t result;
+    ASSERT_EQ(alea_nuc_sample_collision(&nuc, 2, 1.0, xi, &result), ALEA_OK);
+    ASSERT_NEAR(result.mu, 0.0, 1e-12);
+    ASSERT_NEAR(result.energy_out, 0.5, 1e-12);
+}
+
+TEST(prepared_collision_evaluates_flight_and_elastic_scatter) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {2.0, 2.0};
+    double elastic[] = {1.5, 1.5};
+    double absorption[] = {0.5, 0.5};
+    double capture[] = {0.5, 0.5};
+    alea_nuc_reaction_t reaction;
+    alea_nuc_nuclide_t nuc;
+    alea_nuc_mat_component_t component;
+    alea_nuc_material_t material;
+    alea_nuc_prepare_requirements_t requirements = {
+        .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
+    };
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+
+    memset(&reaction, 0, sizeof(reaction));
+    reaction.mt = 102; reaction.threshold_index = 1;
+    reaction.n_energies = 2; reaction.xs = capture;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON; nuc.awr = 1.0;
+    nuc.n_energies = 2; nuc.energy = energy; nuc.sigma_total = total;
+    nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
+    nuc.n_reactions = 1; nuc.reactions = &reaction;
+    component.nuclide = &nuc; component.number_density = 0.1;
+    memset(&material, 0, sizeof(material));
+    material.components = &component; material.n_components = 1;
+
+    ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                        &prepared), ALEA_OK);
+    ASSERT_NOT_NULL(prepared);
+    ASSERT_EQ(report.available_capabilities, ALEA_NUC_CAP_RESTRICTED_NEUTRON);
+
+    alea_nuc_particle_state_t incident = {
+        .type = ALEA_NUC_PARTICLE_NEUTRON,
+        .energy = 2.0,
+        .direction = {0.0, 0.0, 1.0},
+        .weight = 1.0,
+        .time = 0.0
+    };
+    alea_nuc_evaluation_t evaluation;
+    ASSERT_EQ(alea_nuc_evaluate(prepared, &incident, &evaluation), ALEA_OK);
+    ASSERT_NEAR(evaluation.macro_total, 0.2, 1e-12);
+    ASSERT_NEAR(evaluation.macro_elastic, 0.15, 1e-12);
+    ASSERT_NEAR(evaluation.macro_absorption, 0.05, 1e-12);
+
+    double flight_draws[] = {1.0 - exp(-2.0)};
+    sequence_rng_t flight_rng = {flight_draws, 1, 0};
+    double distance = 0.0;
+    ASSERT_EQ(alea_nuc_sample_flight(&evaluation, sequence_rng, &flight_rng,
+                                     &distance), ALEA_OK);
+    ASSERT_NEAR(distance, 10.0, 1e-12);
+
+    double collision_draws[] = {0.25, 0.25, 0.0, 0.75, 0.0};
+    sequence_rng_t collision_rng = {collision_draws, 5, 0};
+    alea_nuc_collision_result_t result;
+    ASSERT_EQ(alea_nuc_collide(&evaluation, sequence_rng, &collision_rng,
+                               &result), ALEA_OK);
+    ASSERT_EQ(result.outcome, ALEA_NUC_OUTCOME_SCATTERED);
+    ASSERT_EQ(result.component_index, 0);
+    ASSERT_EQ(result.mt, 2);
+    ASSERT_NEAR(result.mu_cm, 0.5, 1e-12);
+    ASSERT_NEAR(result.outgoing.energy, 1.5, 1e-12);
+    ASSERT_NEAR(result.outgoing.direction[0] * result.outgoing.direction[0] +
+                result.outgoing.direction[1] * result.outgoing.direction[1] +
+                result.outgoing.direction[2] * result.outgoing.direction[2],
+                1.0, 1e-12);
+    ASSERT_TRUE(result.deposition_available);
+    ASSERT_NEAR(result.local_energy_deposition, 0.5, 1e-12);
+
+    evaluation.macro_total = 0.25;
+    result.mt = -1;
+    ASSERT_EQ(alea_nuc_collide(&evaluation, sequence_rng, &collision_rng,
+                               &result), ALEA_ERR_INVALID_STATE);
+    ASSERT_EQ(result.mt, -1);
+
+    alea_nuc_prepared_material_free(prepared);
+}
+
+TEST(prepared_collision_selects_absorption_channel) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {2.0, 2.0};
+    double elastic[] = {1.0, 1.0};
+    double absorption[] = {1.0, 1.0};
+    double capture[] = {1.0, 1.0};
+    alea_nuc_reaction_t reaction = {
+        .mt = 102, .threshold_index = 1, .n_energies = 2, .xs = capture
+    };
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON; nuc.awr = 12.0;
+    nuc.n_energies = 2; nuc.energy = energy; nuc.sigma_total = total;
+    nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
+    nuc.n_reactions = 1; nuc.reactions = &reaction;
+    alea_nuc_mat_component_t component = {&nuc, 0.1};
+    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_prepare_requirements_t requirements = {
+        ALEA_NUC_CAP_RESTRICTED_NEUTRON
+    };
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                        &prepared), ALEA_OK);
+    alea_nuc_particle_state_t incident = {
+        ALEA_NUC_PARTICLE_NEUTRON, 2.0, {1.0, 0.0, 0.0}, 1.0, 0.0
+    };
+    alea_nuc_evaluation_t evaluation;
+    ASSERT_EQ(alea_nuc_evaluate(prepared, &incident, &evaluation), ALEA_OK);
+    double draws[] = {0.2, 0.9};
+    sequence_rng_t rng = {draws, 2, 0};
+    alea_nuc_collision_result_t result;
+    ASSERT_EQ(alea_nuc_collide(&evaluation, sequence_rng, &rng, &result), ALEA_OK);
+    ASSERT_EQ(result.outcome, ALEA_NUC_OUTCOME_ABSORBED);
+    ASSERT_EQ(result.mt, 102);
+    ASSERT_FALSE(result.deposition_available);
+    ASSERT_TRUE(isnan(result.local_energy_deposition));
+    alea_nuc_prepared_material_free(prepared);
+}
+
+TEST(prepared_collision_selects_target_by_macroscopic_total) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {1.0, 1.0};
+    double elastic[] = {1.0, 1.0};
+    double absorption[] = {0.0, 0.0};
+    alea_nuc_nuclide_t nuclides[2];
+    memset(nuclides, 0, sizeof(nuclides));
+    for (int i = 0; i < 2; i++) {
+        nuclides[i].particle = ALEA_NUC_PARTICLE_NEUTRON;
+        nuclides[i].awr = 1.0 + i;
+        nuclides[i].n_energies = 2; nuclides[i].energy = energy;
+        nuclides[i].sigma_total = total; nuclides[i].sigma_elastic = elastic;
+        nuclides[i].sigma_abs = absorption;
+    }
+    alea_nuc_mat_component_t components[] = {
+        {&nuclides[0], 0.25}, {&nuclides[1], 0.75}
+    };
+    alea_nuc_material_t material = {components, 2, 2};
+    alea_nuc_prepare_requirements_t requirements = {
+        ALEA_NUC_CAP_RESTRICTED_NEUTRON
+    };
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                        &prepared), ALEA_OK);
+    alea_nuc_particle_state_t incident = {
+        ALEA_NUC_PARTICLE_NEUTRON, 2.0, {0.0, 0.0, 1.0}, 1.0, 0.0
+    };
+    alea_nuc_evaluation_t evaluation;
+    ASSERT_EQ(alea_nuc_evaluate(prepared, &incident, &evaluation), ALEA_OK);
+    double draws[] = {0.5, 0.5, 0.0, 0.5, 0.0};
+    sequence_rng_t rng = {draws, 5, 0};
+    alea_nuc_collision_result_t result;
+    ASSERT_EQ(alea_nuc_collide(&evaluation, sequence_rng, &rng, &result),
+              ALEA_OK);
+    ASSERT_EQ(result.component_index, 1);
+    alea_nuc_prepared_material_free(prepared);
+}
+
+TEST(preparation_rejects_active_inelastic_and_urr) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {1.0, 1.0};
+    double elastic[] = {0.0, 0.0};
+    double absorption[] = {0.0, 0.0};
+    double scatter[] = {1.0, 1.0};
+    alea_nuc_reaction_t reaction = {
+        .mt = 51, .ty = 1, .threshold_index = 1,
+        .n_energies = 2, .xs = scatter
+    };
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON; nuc.awr = 56.0;
+    nuc.n_energies = 2; nuc.energy = energy; nuc.sigma_total = total;
+    nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
+    nuc.n_reactions = 1; nuc.reactions = &reaction;
+    alea_nuc_mat_component_t component = {&nuc, 0.1};
+    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_prepare_requirements_t requirements = {
+        ALEA_NUC_CAP_RESTRICTED_NEUTRON
+    };
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                        &prepared), ALEA_ERR_UNSUPPORTED);
+    ASSERT_NULL(prepared);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_UNSUPPORTED_REACTION);
+    ASSERT_EQ(report.mt, 51);
+
+    nuc.n_reactions = 0; nuc.reactions = NULL;
+    nuc.sigma_total = elastic;
+    alea_nuc_urr_t urr;
+    memset(&urr, 0, sizeof(urr)); nuc.urr = &urr;
+    ASSERT_EQ(alea_nuc_capabilities(&nuc, &report), ALEA_ERR_UNSUPPORTED);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_UNSUPPORTED_URR);
+}
+
+TEST(preparation_rejects_nonfinite_reaction_cross_section) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {1.0, 1.0};
+    double elastic[] = {0.0, 0.0};
+    double absorption[] = {1.0, 1.0};
+    double capture[] = {1.0, NAN};
+    alea_nuc_reaction_t reaction = {
+        .mt = 102, .threshold_index = 1, .n_energies = 2, .xs = capture
+    };
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON; nuc.awr = 12.0;
+    nuc.n_energies = 2; nuc.energy = energy; nuc.sigma_total = total;
+    nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
+    nuc.n_reactions = 1; nuc.reactions = &reaction;
+    alea_nuc_capability_report_t report;
+    ASSERT_EQ(alea_nuc_capabilities(&nuc, &report), ALEA_ERR_UNSUPPORTED);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_INVALID_CROSS_SECTIONS);
+    ASSERT_EQ(report.mt, 102);
+}
+
+TEST(preparation_rejects_unknown_zero_yield_reaction) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {1.0, 1.0};
+    double elastic[] = {0.0, 0.0};
+    double absorption[] = {1.0, 1.0};
+    double unknown[] = {1.0, 1.0};
+    alea_nuc_reaction_t reaction = {
+        .mt = 999, .threshold_index = 1, .n_energies = 2, .xs = unknown
+    };
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON; nuc.awr = 12.0;
+    nuc.n_energies = 2; nuc.energy = energy; nuc.sigma_total = total;
+    nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
+    nuc.n_reactions = 1; nuc.reactions = &reaction;
+    alea_nuc_capability_report_t report;
+    ASSERT_EQ(alea_nuc_capabilities(&nuc, &report), ALEA_ERR_UNSUPPORTED);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_UNSUPPORTED_REACTION);
+    ASSERT_EQ(report.mt, 999);
 }
 
 /* --- Error strings --- */

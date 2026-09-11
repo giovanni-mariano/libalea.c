@@ -206,6 +206,7 @@ NUCDATA_SRCS = \
 	$(NUCDATA_DIR)/xs_decode.c \
 	$(NUCDATA_DIR)/lookup.c \
 	$(NUCDATA_DIR)/material.c \
+	$(NUCDATA_DIR)/collision.c \
 	$(NUCDATA_DIR)/reaction.c \
 	$(NUCDATA_DIR)/angular.c \
 	$(NUCDATA_DIR)/energy_dist.c \

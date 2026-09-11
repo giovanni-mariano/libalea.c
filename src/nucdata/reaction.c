@@ -15,6 +15,47 @@
 #include <math.h>
 #include <stdlib.h>
 
+static double interpolate_tabulated(double x0, double x1,
+                                    double y0, double y1,
+                                    double x, int interpolation) {
+    if (x <= x0) return y0;
+    if (x >= x1) return y1;
+    double f;
+    switch (interpolation) {
+    case 1: /* histogram */
+        return y0;
+    case 3: /* lin-log: y linear in log(x) */
+        if (x0 > 0.0 && x1 > 0.0)
+            f = log(x / x0) / log(x1 / x0);
+        else
+            f = (x - x0) / (x1 - x0);
+        return y0 + f * (y1 - y0);
+    case 4: /* log-lin: log(y) linear in x */
+        f = (x - x0) / (x1 - x0);
+        if (y0 > 0.0 && y1 > 0.0) return y0 * pow(y1 / y0, f);
+        return y0 + f * (y1 - y0);
+    case 5: /* log-log */
+        if (x0 > 0.0 && x1 > 0.0 && y0 > 0.0 && y1 > 0.0) {
+            f = log(x / x0) / log(x1 / x0);
+            return y0 * pow(y1 / y0, f);
+        }
+        /* fall through */
+    case 2: /* lin-lin */
+    default:
+        f = (x - x0) / (x1 - x0);
+        return y0 + f * (y1 - y0);
+    }
+}
+
+static int interpolation_for_interval(const int* nbt, const int* interp,
+                                      int n_regions, int interval) {
+    if (!nbt || !interp || n_regions <= 0) return 2;
+    int upper_point = interval + 2; /* ENDF NBT values are 1-based */
+    for (int r = 0; r < n_regions; r++)
+        if (upper_point <= nbt[r]) return interp[r];
+    return interp[n_regions - 1];
+}
+
 /* ============================================================================
  * REACTION CLASSIFICATION
  * ============================================================================ */
@@ -84,10 +125,20 @@ static double eval_tabulated_yield(const alea_nuc_nuclide_t* nuc, int loc, doubl
     const double* egrid = &t->xss[base];     /* NE, E[0..NE-1] */
     const double* evals = &t->xss[base + ne]; /* Y[0..NE-1] */
 
-    double f;
-    int ie = alea_nuc_energy_lookup(egrid + 1, ne, energy, &f);
+    int ie = alea_nuc_energy_lookup(egrid + 1, ne, energy, NULL);
     if (ie < 0) return evals[1]; /* below grid, use first value */
-    return evals[ie + 1] + f * (evals[ie + 2] - evals[ie + 1]);
+    int interpolation = 2;
+    int upper_point = ie + 2;
+    for (int r = 0; r < nr; r++) {
+        int nbt = xss_int(t, loc + 1 + r);
+        if (upper_point <= nbt) {
+            interpolation = xss_int(t, loc + 1 + nr + r);
+            break;
+        }
+    }
+    return interpolate_tabulated(egrid[ie + 1], egrid[ie + 2],
+                                 evals[ie + 1], evals[ie + 2],
+                                 energy, interpolation);
 }
 
 double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double energy) {
@@ -170,10 +221,13 @@ double alea_nuc_nu_bar(const alea_nuc_nuclide_t* nuc, double energy) {
     }
 
     if (nu->type == ALEA_NUC_NU_TABULAR && nu->n_energies > 0) {
-        double f;
-        int ie = alea_nuc_energy_lookup(nu->energy, nu->n_energies, energy, &f);
+        int ie = alea_nuc_energy_lookup(nu->energy, nu->n_energies, energy, NULL);
         if (ie < 0) return nu->nu[0];
-        return nu->nu[ie] + f * (nu->nu[ie + 1] - nu->nu[ie]);
+        int interpolation = interpolation_for_interval(
+            nu->nbt, nu->interp, nu->n_regions, ie);
+        return interpolate_tabulated(nu->energy[ie], nu->energy[ie + 1],
+                                     nu->nu[ie], nu->nu[ie + 1],
+                                     energy, interpolation);
     }
 
     return 0.0;

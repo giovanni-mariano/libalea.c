@@ -60,6 +60,7 @@ int main(int argc, char* argv[])
     int n_particles = 5000;
     int n_batches = 30;
     int n_inactive = 10;
+    int exit_code = 0;
 
     printf("=== k-eigenvalue: Bare U-235 Sphere ===\n");
     printf("Radius: %.1f cm\n", radius);
@@ -119,7 +120,11 @@ int main(int argc, char* argv[])
 
                 /* Sample reaction */
                 int mt;
-                alea_nuc_sample_reaction(u235, energy, rng(), &mt);
+                if (alea_nuc_sample_reaction(u235, energy, rng(), &mt) < 0) {
+                    fprintf(stderr, "reaction selection failed\n");
+                    exit_code = 1;
+                    goto cleanup;
+                }
 
                 /* Fission: bank new source sites */
                 if (mt == 18 || mt == 19) {
@@ -132,7 +137,16 @@ int main(int argc, char* argv[])
                         /* Sample fission energy from fission spectrum */
                         double xi3[3] = {rng(), rng(), rng()};
                         alea_nuc_interaction_t result;
-                        alea_nuc_sample_collision(u235, mt, energy, xi3, &result);
+                        alea_error_t err = alea_nuc_sample_collision(
+                            u235, mt, energy, xi3, &result);
+                        if (err != ALEA_OK) {
+                            fprintf(stderr,
+                                "k_eigenvalue requires unsupported MT %d "
+                                "outgoing-particle physics: %s\n",
+                                mt, alea_error_string(err));
+                            exit_code = 1;
+                            goto cleanup;
+                        }
                         fission_bank[fission_count].energy = result.energy_out;
                         fission_count++;
                     }
@@ -149,12 +163,25 @@ int main(int argc, char* argv[])
                 /* Scattering */
                 double xi[3] = {rng(), rng(), rng()};
                 alea_nuc_interaction_t result;
-                alea_nuc_sample_collision(u235, mt, energy, xi, &result);
+                alea_error_t err = alea_nuc_sample_collision(
+                    u235, mt, energy, xi, &result);
+                if (err != ALEA_OK) {
+                    fprintf(stderr,
+                        "k_eigenvalue requires unsupported MT %d scattering "
+                        "physics: %s\n", mt, alea_error_string(err));
+                    exit_code = 1;
+                    goto cleanup;
+                }
+                double incident_energy = energy;
                 energy = result.energy_out;
                 if (energy <= 1e-11) break;
 
                 /* Rotate direction */
-                double mu_s = result.mu;
+                double energy_ratio = energy / incident_energy;
+                double mu_s = (1.0 + u235->awr * result.mu) /
+                    ((u235->awr + 1.0) * sqrt(energy_ratio));
+                if (mu_s > 1.0) mu_s = 1.0;
+                if (mu_s < -1.0) mu_s = -1.0;
                 double cos_phi = cos(2.0 * M_PI * rng());
                 double sin_mu = sqrt(1.0 - mu_s * mu_s);
                 double sin_uz = sqrt(1.0 - uz * uz);
@@ -212,9 +239,10 @@ int main(int argc, char* argv[])
     printf("k_eff = %.4f ± %.4f\n", k_avg, k_std);
     printf("(Godiva critical radius ≈ 8.7 cm → k_eff ≈ 1.0)\n");
 
+cleanup:
     free(source);
     alea_nuc_material_destroy(fuel);
     alea_nuc_nuclide_free(u235);
     alea_nuc_xsdir_free(xsdir);
-    return 0;
+    return exit_code;
 }

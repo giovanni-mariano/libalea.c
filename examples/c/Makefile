@@ -41,7 +41,10 @@ render3d: render3d.c
 void_demo: void_demo.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
+slab_transport: slab_transport.c
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_NUCDATA)
+
 clean:
-	rm -f $(EXAMPLES) *.inp *.ppm *.bmp *.png
+	rm -f $(EXAMPLES) slab_transport *.inp *.ppm *.bmp *.png
 
 .PHONY: all clean

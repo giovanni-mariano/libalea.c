@@ -93,6 +93,7 @@ static alea_error_t decode_reactions(alea_nuc_nuclide_t* nuc, const alea_nuc_ace
         r->mt      = xss_int(t, mtr + i);
         r->q_value = xss(t, lqr + i);
         r->ty      = xss_int(t, tyr + i);
+        r->center_of_mass = r->ty < 0;
 
         /* Cross-section data location */
         int loc = xss_int(t, lsig + i);  /* relative to SIG block */
@@ -135,18 +136,84 @@ static alea_nuc_nu_bar_t* decode_nu_block(const alea_nuc_ace_table_t* t, int loc
     if (lnu == 1) {
         nu->type = ALEA_NUC_NU_POLYNOMIAL;
         nu->n_coeffs = xss_int(t, loc + 1);
+        if (nu->n_coeffs <= 0 || nu->n_coeffs > 100000) {
+            xss_mark_corrupt(t);
+            free(nu);
+            return NULL;
+        }
         nu->coeffs = xss_copy(t, loc + 2, nu->n_coeffs);
         if (!nu->coeffs) { free(nu); return NULL; }
+        for (int i = 0; i < nu->n_coeffs; i++) {
+            if (!isfinite(nu->coeffs[i])) {
+                xss_mark_corrupt(t);
+                free(nu->coeffs);
+                free(nu);
+                return NULL;
+            }
+        }
     } else if (lnu == 2) {
         nu->type = ALEA_NUC_NU_TABULAR;
         int nr_interp = xss_int(t, loc + 1);
+        if (nr_interp < 0 || nr_interp > 100000 ||
+            !xss_range_valid(t, loc + 2, 2 * nr_interp + 1)) {
+            free(nu);
+            return NULL;
+        }
+        nu->n_regions = nr_interp;
+        if (nr_interp > 0) {
+            nu->nbt = malloc((size_t)nr_interp * sizeof(int));
+            nu->interp = malloc((size_t)nr_interp * sizeof(int));
+            if (!nu->nbt || !nu->interp) {
+                xss_mark_allocation_error(t);
+                free(nu->nbt);
+                free(nu->interp);
+                free(nu);
+                return NULL;
+            }
+            for (int i = 0; i < nr_interp; i++) {
+                nu->nbt[i] = xss_int(t, loc + 2 + i);
+                nu->interp[i] = xss_int(t, loc + 2 + nr_interp + i);
+            }
+        }
         int base = loc + 2 + 2 * nr_interp; /* skip NBT/INT pairs */
         nu->n_energies = xss_int(t, base);
+        if (nu->n_energies <= 0 || nu->n_energies > 100000 ||
+            !xss_range_valid(t, base + 1, 2 * nu->n_energies)) {
+            free(nu->nbt); free(nu->interp); free(nu);
+            return NULL;
+        }
         nu->energy = xss_copy(t, base + 1, nu->n_energies);
         nu->nu     = xss_copy(t, base + 1 + nu->n_energies, nu->n_energies);
         if (!nu->energy || !nu->nu) {
+            free(nu->nbt); free(nu->interp);
             free(nu->energy); free(nu->nu); free(nu);
             return NULL;
+        }
+        for (int i = 0; i < nr_interp; i++) {
+            if (nu->nbt[i] < 2 || nu->nbt[i] > nu->n_energies ||
+                (i > 0 && nu->nbt[i] <= nu->nbt[i - 1]) ||
+                nu->interp[i] < 1 || nu->interp[i] > 5) {
+                xss_mark_corrupt(t);
+                free(nu->nbt); free(nu->interp);
+                free(nu->energy); free(nu->nu); free(nu);
+                return NULL;
+            }
+        }
+        if (nr_interp > 0 && nu->nbt[nr_interp - 1] != nu->n_energies) {
+            xss_mark_corrupt(t);
+            free(nu->nbt); free(nu->interp);
+            free(nu->energy); free(nu->nu); free(nu);
+            return NULL;
+        }
+        for (int i = 0; i < nu->n_energies; i++) {
+            if (!isfinite(nu->energy[i]) || !isfinite(nu->nu[i]) ||
+                nu->nu[i] < 0.0 ||
+                (i > 0 && nu->energy[i] <= nu->energy[i - 1])) {
+                xss_mark_corrupt(t);
+                free(nu->nbt); free(nu->interp);
+                free(nu->energy); free(nu->nu); free(nu);
+                return NULL;
+            }
         }
     } else {
         free(nu);
@@ -182,17 +249,26 @@ static alea_error_t decode_nu(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_
         if (nu_loc >= t->xss_length) return ALEA_ERR_PARSE_ERROR;
         int prompt_loc = nu_loc + 1;
         alea_nuc_nu_bar_t* prompt = decode_nu_block(t, prompt_loc);
-        if (prompt) nuc->fission->prompt = prompt;
+        if (!prompt)
+            return t->allocation_error ? ALEA_ERR_OUT_OF_MEMORY
+                                       : ALEA_ERR_PARSE_ERROR;
+        nuc->fission->prompt = prompt;
 
         if (abs(knu) > t->xss_length - prompt_loc)
             return ALEA_ERR_PARSE_ERROR;
         int total_loc = prompt_loc + abs(knu);
         alea_nuc_nu_bar_t* total = decode_nu_block(t, total_loc);
-        if (total) nuc->fission->total = total;
+        if (!total)
+            return t->allocation_error ? ALEA_ERR_OUT_OF_MEMORY
+                                       : ALEA_ERR_PARSE_ERROR;
+        nuc->fission->total = total;
     } else {
         /* Single ν̄ representation (total) */
         alea_nuc_nu_bar_t* total = decode_nu_block(t, nu_loc);
-        if (total) nuc->fission->total = total;
+        if (!total)
+            return t->allocation_error ? ALEA_ERR_OUT_OF_MEMORY
+                                       : ALEA_ERR_PARSE_ERROR;
+        nuc->fission->total = total;
     }
 
     return ALEA_OK;

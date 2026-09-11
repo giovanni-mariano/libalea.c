@@ -15,6 +15,7 @@ PUBLIC_DOCUMENTS = frozenset(
         "CONCEPTS.md",
         "API.md",
         "ARCHITECTURE.md",
+        "NUCDATA_CAPABILITIES.md",
         "SURFACE_DEDUP.md",
     }
 )

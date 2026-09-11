@@ -62,6 +62,7 @@ nav:
   - User guide:
       - Core concepts: CONCEPTS.md
       - API reference: API.md
+      - Nuclear-data capabilities: NUCDATA_CAPABILITIES.md
   - Development:
       - Architecture: ARCHITECTURE.md
       - Surface deduplication: SURFACE_DEDUP.md
