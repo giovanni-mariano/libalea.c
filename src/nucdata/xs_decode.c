@@ -35,7 +35,9 @@ static alea_error_t decode_esz(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table
     int ne = t->nxs[2];    /* NXS[3]: number of energies */
     int esz = t->jxs[0];   /* JXS[1]: start of ESZ block */
 
-    if (ne <= 0 || esz <= 0) return ALEA_ERR_INVALID_ARG;
+    if (ne <= 0 || esz <= 0 || ne > t->xss_length / 5 ||
+        !xss_range_valid(t, esz, 5 * ne))
+        return ALEA_ERR_INVALID_ARG;
 
     nuc->n_energies = ne;
     nuc->energy       = xss_copy(t, esz,          ne);
@@ -47,6 +49,14 @@ static alea_error_t decode_esz(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table
     if (!nuc->energy || !nuc->sigma_total || !nuc->sigma_abs ||
         !nuc->sigma_elastic || !nuc->heating)
         return ALEA_ERR_OUT_OF_MEMORY;
+
+    for (int i = 0; i < ne; i++) {
+        if (!isfinite(nuc->energy[i]) || (i > 0 && nuc->energy[i] <= nuc->energy[i - 1]))
+            return ALEA_ERR_PARSE_ERROR;
+        /* ACE stores heating numbers (MeV/collision). Internally/publicly the
+         * heating array is a heating cross section (MeV-barn). */
+        nuc->heating[i] *= nuc->sigma_total[i];
+    }
 
     return ALEA_OK;
 }
@@ -68,7 +78,9 @@ static alea_error_t decode_reactions(alea_nuc_nuclide_t* nuc, const alea_nuc_ace
     int lsig = t->jxs[5];  /* JXS[6]: XS locators (relative to JXS[7]) */
     int sig  = t->jxs[6];  /* JXS[7]: SIG block start */
 
-    if (mtr <= 0 || lqr <= 0 || tyr <= 0 || lsig <= 0 || sig <= 0)
+    if (mtr <= 0 || lqr <= 0 || tyr <= 0 || lsig <= 0 || sig <= 0 ||
+        !xss_range_valid(t, mtr, nr) || !xss_range_valid(t, lqr, nr) ||
+        !xss_range_valid(t, tyr, nr) || !xss_range_valid(t, lsig, nr))
         return ALEA_ERR_INVALID_ARG;
 
     nuc->reactions = calloc((size_t)nr, sizeof(alea_nuc_reaction_t));
@@ -84,16 +96,21 @@ static alea_error_t decode_reactions(alea_nuc_nuclide_t* nuc, const alea_nuc_ace
 
         /* Cross-section data location */
         int loc = xss_int(t, lsig + i);  /* relative to SIG block */
-        int abs_loc = sig + loc - 1;     /* 1-based absolute position */
+        int abs_loc = xss_relative_loc(t, sig, loc);
+        if (abs_loc == 0 || !xss_range_valid(t, abs_loc, 2))
+            return ALEA_ERR_PARSE_ERROR;
 
         /* SIG sub-array format: threshold_index, n_energies, xs[n_energies] */
         r->threshold_index = xss_int(t, abs_loc);
         r->n_energies      = xss_int(t, abs_loc + 1);
 
-        if (r->n_energies > 0) {
-            r->xs = xss_copy(t, abs_loc + 2, r->n_energies);
-            if (!r->xs) return ALEA_ERR_OUT_OF_MEMORY;
-        }
+        if (r->threshold_index < 1 || r->threshold_index > nuc->n_energies ||
+            r->n_energies <= 0 ||
+            r->n_energies > nuc->n_energies - r->threshold_index + 1)
+            return ALEA_ERR_PARSE_ERROR;
+
+        r->xs = xss_copy(t, abs_loc + 2, r->n_energies);
+        if (!r->xs) return t->decode_error ? ALEA_ERR_PARSE_ERROR : ALEA_ERR_OUT_OF_MEMORY;
 
         r->angular = NULL;
         r->energy = NULL;
@@ -110,7 +127,10 @@ static alea_nuc_nu_bar_t* decode_nu_block(const alea_nuc_ace_table_t* t, int loc
     int lnu = xss_int(t, loc);  /* type flag: 1=polynomial, 2=tabular */
 
     alea_nuc_nu_bar_t* nu = calloc(1, sizeof(*nu));
-    if (!nu) return NULL;
+    if (!nu) {
+        xss_mark_allocation_error(t);
+        return NULL;
+    }
 
     if (lnu == 1) {
         nu->type = ALEA_NUC_NU_POLYNOMIAL;
@@ -156,12 +176,16 @@ static alea_error_t decode_nu(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_
      */
     int knu = xss_int(t, nu_loc);
 
+    if (knu == INT_MIN) return ALEA_ERR_PARSE_ERROR;
     if (knu < 0) {
         /* Both prompt and total ν̄ present */
+        if (nu_loc >= t->xss_length) return ALEA_ERR_PARSE_ERROR;
         int prompt_loc = nu_loc + 1;
         alea_nuc_nu_bar_t* prompt = decode_nu_block(t, prompt_loc);
         if (prompt) nuc->fission->prompt = prompt;
 
+        if (abs(knu) > t->xss_length - prompt_loc)
+            return ALEA_ERR_PARSE_ERROR;
         int total_loc = prompt_loc + abs(knu);
         alea_nuc_nu_bar_t* total = decode_nu_block(t, total_loc);
         if (total) nuc->fission->total = total;
@@ -192,7 +216,7 @@ static alea_error_t decode_nu(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_
  */
 static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_t* t) {
     int ne = t->nxs[2];    /* NXS[3]: number of energies */
-    if (ne <= 0) return ALEA_ERR_INVALID_ARG;
+    if (ne <= 0 || ne > t->xss_length / 5) return ALEA_ERR_INVALID_ARG;
 
     nuc->photon = calloc(1, sizeof(alea_nuc_photon_data_t));
     if (!nuc->photon) return ALEA_ERR_OUT_OF_MEMORY;
@@ -202,6 +226,7 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
 
     /* ESZG block: 5 arrays of NE starting at JXS[1], stored as ln values */
     int esz = t->jxs[0]; /* JXS[1] */
+    if (!xss_range_valid(t, esz, 5 * ne)) return ALEA_ERR_INVALID_ARG;
 
     ph->energy              = xss_copy(t, esz,          ne);
     ph->sigma_incoherent    = xss_copy(t, esz + ne,     ne);
@@ -212,6 +237,12 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
     if (!ph->energy || !ph->sigma_incoherent || !ph->sigma_coherent ||
         !ph->sigma_photoelectric || !ph->sigma_pair)
         return ALEA_ERR_OUT_OF_MEMORY;
+
+    for (int i = 0; i < ne; i++) {
+        if (!isfinite(ph->energy[i]) ||
+            (i > 0 && ph->energy[i] <= ph->energy[i - 1]))
+            return ALEA_ERR_PARSE_ERROR;
+    }
 
     /* Save log-space copies before converting to linear (for fast log-log interp) */
     ph->ln_energy              = malloc((size_t)ne * sizeof(double));
@@ -238,11 +269,12 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
         /* Pair production: ln(σ) = 0.0 is sentinel for "zero below threshold" */
         if (ph->sigma_pair[i] != 0.0)
             ph->sigma_pair[i] = exp(ph->sigma_pair[i]);
+        if (!isfinite(ph->energy[i])) return ALEA_ERR_PARSE_ERROR;
     }
 
     /* Heating numbers at JXS[5] if present */
     int lhnm = t->jxs[4]; /* JXS[5]: heating numbers */
-    if (lhnm > 0 && lhnm + ne - 1 <= t->xss_length) {
+    if (lhnm > 0 && xss_range_valid(t, lhnm, ne)) {
         ph->heating = xss_copy(t, lhnm, ne);
     } else {
         ph->heating = calloc((size_t)ne, sizeof(double));
@@ -318,6 +350,7 @@ static alea_error_t decode_urr(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table
     int interp = xss_int(t, loc + 2);
     int ilf = xss_int(t, loc + 3);  /* inelastic flag */
     int ioa = xss_int(t, loc + 4);  /* absorption flag */
+    int iff = xss_int(t, loc + 5);  /* multiply smooth cross sections */
 
     if (N <= 0 || M <= 0 || N > 10000 || M > 1000) return ALEA_OK;
 
@@ -329,8 +362,11 @@ static alea_error_t decode_urr(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table
     nuc->urr->interp = interp;
     nuc->urr->inelastic_flag = ilf;
     nuc->urr->absorption_flag = ioa;
+    nuc->urr->multiply_smooth = (iff == 1);
 
     nuc->urr->energy = xss_copy(t, loc + 6, N);
+    if (M > INT_MAX / 6 || N > INT_MAX / (6 * M))
+        return ALEA_ERR_PARSE_ERROR;
     int table_size = N * 6 * M;
     nuc->urr->table = xss_copy(t, loc + 6 + N, table_size);
 
@@ -441,6 +477,8 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
                     if (mt >= 0 && mt < ALEA_NUC_MT_TABLE_SIZE)
                         nuc->mt_to_rxn[mt] = i;
                 }
+            } else {
+                err = ALEA_ERR_OUT_OF_MEMORY;
             }
         }
     } else if (raw.type == ALEA_NUC_TABLE_PHOTOATOMIC) {
@@ -466,6 +504,11 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
     if (raw.decode_error || nuc->raw.decode_error) {
         ALEA_LOG_ERROR("rejecting '%s': out-of-bounds XSS access during decode "
                        "(corrupt or malformed ACE data)", zaid);
+        alea_nuc_nuclide_free(nuc);
+        return NULL;
+    }
+    if (raw.allocation_error || nuc->raw.allocation_error) {
+        ALEA_LOG_ERROR("rejecting '%s': allocation failed during ACE decode", zaid);
         alea_nuc_nuclide_free(nuc);
         return NULL;
     }

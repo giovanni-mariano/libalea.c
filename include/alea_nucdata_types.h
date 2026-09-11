@@ -46,7 +46,7 @@ typedef struct {
     char filename[512];     /* path to ACE file */
     int access_route;       /* 0 = default */
     int file_type;          /* 1 = ASCII, 2 = binary */
-    int address;            /* start line (Type 1) or byte offset (Type 2) */
+    int address;            /* start line (Type 1) or record number (Type 2) */
     int table_length;       /* number of words in XSS */
     int record_length;      /* 0 for ASCII */
     int num_entries;        /* entries per record, 0 for ASCII */
@@ -111,6 +111,7 @@ typedef struct {
      * signalling corrupt/malformed data. The loader rejects the nuclide
      * rather than fabricating zero-valued physics. */
     bool decode_error;
+    bool allocation_error;    /* allocation failed during nested decoding */
 } alea_nuc_ace_table_t;
 
 /* ============================================================================
@@ -177,7 +178,9 @@ typedef struct alea_nuc_energy_dist {
     int n_temp;
     double* temp_energy;        /* incident energy grid */
     double* temp_T;             /* nuclear temperature T(E) */
-    double* temp_C;             /* restriction energy C(E) */
+    double* temp_C;             /* Watt b(E), or restriction energy C(E) */
+    int n_watt_b;               /* number of points in Watt b(E) */
+    double* watt_b_energy;      /* incident energy grid for Watt b(E) */
     double watt_a, watt_b;      /* Watt parameters (if constant) */
 
     /* Continuous tabular (law 4) and Kalbach-Mann (law 44) */
@@ -250,6 +253,7 @@ typedef struct {
     int interp;                 /* interpolation flag */
     int inelastic_flag;         /* treatment of inelastic */
     int absorption_flag;
+    bool multiply_smooth;       /* table values multiply smooth cross sections */
     double* energy;             /* incident energies */
     double* table;              /* n_energies × n_bands × 6 */
 } alea_nuc_urr_t;

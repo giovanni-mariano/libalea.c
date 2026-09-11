@@ -252,6 +252,37 @@ static int is_fission_mt(int mt) {
     return mt == 18 || mt == 19 || mt == 20 || mt == 21 || mt == 38;
 }
 
+static int has_total_fission(const alea_nuc_nuclide_t* nuc) {
+    for (int r = 0; r < nuc->n_reactions; r++)
+        if (nuc->reactions[r].mt == 18 && nuc->reactions[r].xs)
+            return 1;
+    return 0;
+}
+
+static double group_flux_midpoint(const alea_nuc_multigroup_t* mg,
+                                  const double* egrid, int n,
+                                  double E_lo, double E_hi) {
+    double sum = 0.0;
+    for (int i = 0; i < n - 1; i++) {
+        if (egrid[i + 1] <= E_lo) continue;
+        if (egrid[i] >= E_hi) break;
+        double e0 = egrid[i] > E_lo ? egrid[i] : E_lo;
+        double e1 = egrid[i + 1] < E_hi ? egrid[i + 1] : E_hi;
+        if (e1 > e0) sum += weight(mg, 0.5 * (e0 + e1)) * (e1 - e0);
+    }
+    return sum;
+}
+
+static double eval_table(const double* grid, const double* values, int n,
+                         double E) {
+    if (!grid || !values || n <= 0) return 0.0;
+    if (n == 1 || E <= grid[0]) return values[0];
+    if (E >= grid[n - 1]) return values[n - 1];
+    double f;
+    int i = alea_nuc_energy_lookup(grid, n, E, &f);
+    return i >= 0 ? values[i] + f * (values[i + 1] - values[i]) : 0.0;
+}
+
 /**
  * Build elastic scattering transfer matrix by integrating over
  * incident energies within each group.
@@ -394,11 +425,10 @@ static alea_error_t build_inelastic_scatter(alea_nuc_multigroup_t* mg,
             double Eg_hi = mg->bounds[gf];
             double Eg_lo = mg->bounds[gf + 1];
 
-            int i_start = ie_start;
-            if (i_start < 0) i_start = 0;
+            int i_start = 0;
             while (i_start < n - 1 && egrid[i_start + 1] < Eg_lo) i_start++;
 
-            double sum_flux = 0.0;
+            double sum_flux = group_flux_midpoint(mg, egrid, n, Eg_lo, Eg_hi);
             memset(transfer, 0, (size_t)G * sizeof(double));
 
             for (int i = i_start; i < n - 1; i++) {
@@ -413,8 +443,6 @@ static alea_error_t build_inelastic_scatter(alea_nuc_multigroup_t* mg,
                 double E_mid = 0.5 * (e0 + e1);
                 double de = e1 - e0;
                 double phi = weight(mg, E_mid);
-                sum_flux += phi * de;
-
                 /* Get reaction XS at E_mid */
                 double dE_grid = egrid[i + 1] - egrid[i];
                 double f_mid = (dE_grid > 0.0) ? (E_mid - egrid[i]) / dE_grid : 0.0;
@@ -498,9 +526,11 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
 
     /* Build full-grid fission XS once (outside group loop) */
     double* fission_xs = NULL;
+    int total_fission = has_total_fission(nuc);
     for (int r = 0; r < nuc->n_reactions; r++) {
         if (is_fission_mt(nuc->reactions[r].mt)) {
             const alea_nuc_reaction_t* rxn = &nuc->reactions[r];
+            if (total_fission && rxn->mt != 18) continue;
             if (!rxn->xs || rxn->n_energies <= 0) continue;
             if (!fission_xs) {
                 fission_xs = calloc((size_t)nuc->n_energies, sizeof(double));
@@ -549,21 +579,19 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
                 const alea_nuc_energy_dist_t* ed = nuc->reactions[r].energy;
                 while (ed) {
                     if (ed->law == ALEA_NUC_ELAW_WATT && ed->n_temp > 0 &&
-                        ed->temp_T && ed->temp_C) {
+                        ed->n_watt_b > 0 && ed->temp_T && ed->temp_C &&
+                        ed->temp_energy && ed->watt_b_energy) {
                         /* Average Watt parameters over fission groups */
                         double sum_w = 0.0, sum_a = 0.0, sum_b = 0.0;
                         for (int g = 0; g < G; g++) {
                             double nsf = mg->nu_sigma_f[g];
                             if (nsf <= 0.0) continue;
                             double E_mid = sqrt(mg->bounds[g] * mg->bounds[g + 1]);
-                            double f;
-                            int ie = alea_nuc_energy_lookup(ed->temp_energy,
-                                                       ed->n_temp, E_mid, &f);
-                            if (ie >= 0) {
-                                double a_g = ed->temp_T[ie] +
-                                    f * (ed->temp_T[ie + 1] - ed->temp_T[ie]);
-                                double b_g = ed->temp_C[ie] +
-                                    f * (ed->temp_C[ie + 1] - ed->temp_C[ie]);
+                            double a_g = eval_table(ed->temp_energy, ed->temp_T,
+                                                    ed->n_temp, E_mid);
+                            double b_g = eval_table(ed->watt_b_energy, ed->temp_C,
+                                                    ed->n_watt_b, E_mid);
+                            if (a_g > 0.0 && b_g > 0.0) {
                                 sum_a += a_g * nsf;
                                 sum_b += b_g * nsf;
                                 sum_w += nsf;

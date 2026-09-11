@@ -54,6 +54,7 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
             free(ed->temp_energy);
             free(ed->temp_T);
             free(ed->temp_C);
+            free(ed->watt_b_energy);
             /* Free tabular data (law 4/44) */
             if (ed->tab.n_ein > 0) {
                 for (int j = 0; j < ed->tab.n_ein; j++) {
@@ -143,28 +144,46 @@ alea_error_t alea_nuc_parse_zaid(const char* zaid, int* Z, int* A, int* meta,
     memcpy(buf, zaid, len);
     buf[len] = '\0';
 
-    int za = atoi(buf);
-    if (za <= 0) return ALEA_ERR_PARSE_ERROR;
+    char* end = NULL;
+    long parsed = strtol(buf, &end, 10);
+    if (parsed <= 0 || parsed > INT_MAX || !end || *end != '\0')
+        return ALEA_ERR_PARSE_ERROR;
+    int za = (int)parsed;
 
-    if (Z) *Z = za / 1000;
-    if (A) *A = za % 1000;
-    if (meta) *meta = 0; /* TODO: metastable parsing from suffix */
+    int z, a, m;
+    if (za > 1000000) {
+        z = (za / 1000) % 1000;
+        a = za % 1000;
+        m = (za == 1095242) ? 0 : za / 1000000;
+    } else {
+        z = za / 1000;
+        a = za % 1000;
+        if (za == 95242) m = 1;
+        else if (za == 95642) m = 0;
+        else m = a > 300 ? 1 : 0;
+    }
+    while (z > 0 && a > 3 * z) a -= 100;
+    if (z <= 0 || a < 0) return ALEA_ERR_PARSE_ERROR;
+
+    if (Z) *Z = z;
+    if (A) *A = a;
+    if (meta) *meta = m;
 
     /* Parse table type from suffix character */
     const char* suffix = dot + 1;
     /* Skip digits to find the letter */
     while (*suffix >= '0' && *suffix <= '9') suffix++;
 
-    if (type) {
-        switch (*suffix) {
-        case 'c': *type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON; break;
-        case 'p': *type = ALEA_NUC_TABLE_PHOTOATOMIC; break;
-        case 'u': *type = ALEA_NUC_TABLE_PHOTONUCLEAR; break;
-        case 't': *type = ALEA_NUC_TABLE_THERMAL_SAB; break;
-        case 'e': *type = ALEA_NUC_TABLE_ELECTRON; break;
-        default:  return ALEA_ERR_PARSE_ERROR;
-        }
+    alea_nuc_table_type_t parsed_type;
+    switch (*suffix) {
+    case 'c': parsed_type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON; break;
+    case 'p': parsed_type = ALEA_NUC_TABLE_PHOTOATOMIC; break;
+    case 'u': parsed_type = ALEA_NUC_TABLE_PHOTONUCLEAR; break;
+    case 't': parsed_type = ALEA_NUC_TABLE_THERMAL_SAB; break;
+    case 'e': parsed_type = ALEA_NUC_TABLE_ELECTRON; break;
+    default:  return ALEA_ERR_PARSE_ERROR;
     }
+    if (type) *type = parsed_type;
 
     return ALEA_OK;
 }

@@ -44,6 +44,7 @@ static void ed_free_node(alea_nuc_energy_dist_t* ed) {
     free(ed->temp_energy);
     free(ed->temp_T);
     free(ed->temp_C);
+    free(ed->watt_b_energy);
     if (ed->tab.n_ein > 0) {
         for (int j = 0; j < ed->tab.n_ein; j++) {
             if (ed->tab.eout) free(ed->tab.eout[j]);
@@ -84,7 +85,8 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
     int dlw_base = t->jxs[10]; /* JXS[11]: DLW data block (0-indexed: jxs[10]) */
     if (dlw_base <= 0) return NULL;
 
-    int abs_loc = dlw_base + ldlw_loc - 1;
+    int abs_loc = xss_relative_loc(t, dlw_base, ldlw_loc);
+    if (abs_loc == 0) return NULL;
 
     alea_nuc_energy_dist_t* head = NULL;
     alea_nuc_energy_dist_t* prev = NULL;
@@ -92,7 +94,17 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
 
     while (abs_loc > 0 && abs_loc <= t->xss_length && max_laws-- > 0) {
         alea_nuc_energy_dist_t* ed = calloc(1, sizeof(*ed));
-        if (!ed) { ed_free_chain(head); return NULL; }
+        if (!ed) {
+            xss_mark_allocation_error(t);
+            ed_free_chain(head);
+            return NULL;
+        }
+
+        if (!xss_range_valid(t, abs_loc, 4)) {
+            ed_free_node(ed);
+            ed_free_chain(head);
+            return NULL;
+        }
 
         int lnw = xss_int(t, abs_loc);      /* next law locator (0 = none) */
         int law = xss_int(t, abs_loc + 1);   /* law number */
@@ -105,10 +117,19 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
         int nr_interp = xss_int(t, pos);
         pos++;
 
+        if (nr_interp < 0 || nr_interp > 100000 ||
+            !xss_range_valid(t, pos, 2 * nr_interp + 1)) {
+            xss_mark_corrupt(t);
+            ed_free_node(ed);
+            ed_free_chain(head);
+            return NULL;
+        }
+
         if (nr_interp > 0) {
             ed->n_regions = nr_interp;
             ed->nbt = malloc((size_t)nr_interp * sizeof(int));
             ed->interp = malloc((size_t)nr_interp * sizeof(int));
+            if (!ed->nbt || !ed->interp) xss_mark_allocation_error(t);
             if (ed->nbt && ed->interp) {
                 for (int i = 0; i < nr_interp; i++)
                     ed->nbt[i] = xss_int(t, pos + i);
@@ -120,11 +141,18 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
 
         int ne = xss_int(t, pos);
         pos++;
+        if (ne < 0 || ne > 100000 || !xss_range_valid(t, pos, 2 * ne)) {
+            xss_mark_corrupt(t);
+            ed_free_node(ed);
+            ed_free_chain(head);
+            return NULL;
+        }
         ed->n_energies = ne;
 
         if (ne > 0) {
             ed->energy = malloc((size_t)ne * sizeof(double));
             ed->probability = malloc((size_t)ne * sizeof(double));
+            if (!ed->energy || !ed->probability) xss_mark_allocation_error(t);
             if (ed->energy && ed->probability) {
                 for (int i = 0; i < ne; i++)
                     ed->energy[i] = xss(t, pos + i);
@@ -134,10 +162,15 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
         }
 
         /* Decode law-specific data */
-        int data_loc = dlw_base + idat - 1;
-
+        int data_loc = xss_relative_loc(t, dlw_base, idat);
+        if (data_loc == 0) {
+            ed_free_node(ed);
+            ed_free_chain(head);
+            return NULL;
+        }
         switch (law) {
         case 3: /* Level scattering */
+            if (!xss_range_valid(t, data_loc, 2)) break;
             ed->level_A = xss(t, data_loc);     /* (A+1)/A factor */
             ed->level_Q = xss(t, data_loc + 1); /* Q-value */
             break;
@@ -146,12 +179,23 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
         case 9: /* Evaporation spectrum */
         {
             int nr2 = xss_int(t, data_loc);
+            if (nr2 < 0 || data_loc >= t->xss_length ||
+                nr2 > (t->xss_length - data_loc - 1) / 2) {
+                xss_mark_corrupt(t);
+                break;
+            }
             int base = data_loc + 1 + 2 * nr2;
             int nt = xss_int(t, base);
+            if (nt < 0 || nt > 100000 ||
+                !xss_range_valid(t, base + 1, 2 * nt + 1)) {
+                xss_mark_corrupt(t);
+                break;
+            }
             ed->n_temp = nt;
             if (nt > 0) {
                 ed->temp_energy = malloc((size_t)nt * sizeof(double));
                 ed->temp_T = malloc((size_t)nt * sizeof(double));
+                if (!ed->temp_energy || !ed->temp_T) xss_mark_allocation_error(t);
                 if (ed->temp_energy && ed->temp_T) {
                     for (int i = 0; i < nt; i++)
                         ed->temp_energy[i] = xss(t, base + 1 + i);
@@ -167,12 +211,23 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
         case 11: /* Watt fission spectrum */
         {
             int nr2 = xss_int(t, data_loc);
+            if (nr2 < 0 || data_loc >= t->xss_length ||
+                nr2 > (t->xss_length - data_loc - 1) / 2) {
+                xss_mark_corrupt(t);
+                break;
+            }
             int base = data_loc + 1 + 2 * nr2;
             int na = xss_int(t, base);
+            if (na <= 0 || na > 100000 ||
+                !xss_range_valid(t, base + 1, 2 * na + 1)) {
+                xss_mark_corrupt(t);
+                break;
+            }
             /* Read 'a' parameter table */
             ed->n_temp = na;
             ed->temp_energy = malloc((size_t)na * sizeof(double));
             ed->temp_T = malloc((size_t)na * sizeof(double));
+            if (!ed->temp_energy || !ed->temp_T) xss_mark_allocation_error(t);
             if (ed->temp_energy && ed->temp_T) {
                 for (int i = 0; i < na; i++)
                     ed->temp_energy[i] = xss(t, base + 1 + i);
@@ -182,13 +237,27 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
             /* 'b' parameter table follows */
             int bbase = base + 1 + 2 * na;
             int nr3 = xss_int(t, bbase);
+            if (nr3 < 0 || bbase >= t->xss_length ||
+                nr3 > (t->xss_length - bbase - 1) / 2) {
+                xss_mark_corrupt(t);
+                break;
+            }
             int bbase2 = bbase + 1 + 2 * nr3;
             int nb = xss_int(t, bbase2);
-            /* Read b parameter (store as temp_C for first entry) */
+            if (nb <= 0 || nb > 100000 ||
+                !xss_range_valid(t, bbase2 + 1, 2 * nb + 1)) {
+                xss_mark_corrupt(t);
+                break;
+            }
+            ed->n_watt_b = nb;
+            ed->watt_b_energy = malloc((size_t)nb * sizeof(double));
             ed->temp_C = malloc((size_t)nb * sizeof(double));
-            if (ed->temp_C) {
-                for (int i = 0; i < nb; i++)
+            if (!ed->watt_b_energy || !ed->temp_C) xss_mark_allocation_error(t);
+            if (ed->watt_b_energy && ed->temp_C) {
+                for (int i = 0; i < nb; i++) {
+                    ed->watt_b_energy[i] = xss(t, bbase2 + 1 + i);
                     ed->temp_C[i] = xss(t, bbase2 + 1 + nb + i);
+                }
             }
             /* Restriction energy */
             ed->level_Q = xss(t, bbase2 + 1 + 2 * nb);
@@ -201,12 +270,18 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
         {
             int pos2 = data_loc;
             int nr2 = xss_int(t, pos2);
+            if (nr2 < 0 || pos2 >= t->xss_length ||
+                nr2 > (t->xss_length - pos2 - 1) / 2) {
+                xss_mark_corrupt(t);
+                break;
+            }
             pos2 += 1 + 2 * nr2; /* skip interpolation data */
 
             int n_ein = xss_int(t, pos2);
             pos2++;
 
             if (n_ein <= 0 || n_ein > 100000) break;
+            if (!xss_range_valid(t, pos2, 2 * n_ein)) break;
 
             ed->tab.n_ein = n_ein;
             ed->tab.dlw_base = dlw_base;
@@ -224,7 +299,15 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
             }
 
             if (!ed->tab.ein || !ed->tab.n_eout || !ed->tab.eout ||
-                !ed->tab.pdf || !ed->tab.cdf) break;
+                !ed->tab.pdf || !ed->tab.cdf) {
+                xss_mark_allocation_error(t);
+                break;
+            }
+            if ((law == 44 && (!ed->tab.precompound_r || !ed->tab.precompound_a)) ||
+                (law == 61 && !ed->tab.ang_lc)) {
+                xss_mark_allocation_error(t);
+                break;
+            }
 
             /* Read incident energies */
             for (int j = 0; j < n_ein; j++)
@@ -232,24 +315,36 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
 
             /* Read locators */
             int* locs = malloc((size_t)n_ein * sizeof(int));
-            if (!locs) break;
+            if (!locs) {
+                xss_mark_allocation_error(t);
+                break;
+            }
             for (int j = 0; j < n_ein; j++)
                 locs[j] = xss_int(t, pos2 + n_ein + j);
 
             /* Decode each outgoing distribution */
             for (int j = 0; j < n_ein; j++) {
-                int dloc = dlw_base + locs[j] - 1;
+                int dloc = xss_relative_loc(t, dlw_base, locs[j]);
+                if (dloc == 0) continue;
                 /* int intt = xss_int(t, dloc); */ /* interpolation type */
                 int np = xss_int(t, dloc + 1);
 
                 if (np <= 0 || np > 100000) { ed->tab.n_eout[j] = 0; continue; }
+                int arrays = law == 44 ? 5 : (law == 61 ? 4 : 3);
+                if (!xss_range_valid(t, dloc + 2, arrays * np)) {
+                    ed->tab.n_eout[j] = 0;
+                    continue;
+                }
                 ed->tab.n_eout[j] = np;
 
                 ed->tab.eout[j] = malloc((size_t)np * sizeof(double));
                 ed->tab.pdf[j] = malloc((size_t)np * sizeof(double));
                 ed->tab.cdf[j] = malloc((size_t)np * sizeof(double));
 
-                if (!ed->tab.eout[j] || !ed->tab.pdf[j] || !ed->tab.cdf[j]) continue;
+                if (!ed->tab.eout[j] || !ed->tab.pdf[j] || !ed->tab.cdf[j]) {
+                    xss_mark_allocation_error(t);
+                    continue;
+                }
 
                 for (int k = 0; k < np; k++)
                     ed->tab.eout[j][k] = xss(t, dloc + 2 + k);
@@ -262,6 +357,8 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
                 if (law == 44 && ed->tab.precompound_r && ed->tab.precompound_a) {
                     ed->tab.precompound_r[j] = malloc((size_t)np * sizeof(double));
                     ed->tab.precompound_a[j] = malloc((size_t)np * sizeof(double));
+                    if (!ed->tab.precompound_r[j] || !ed->tab.precompound_a[j])
+                        xss_mark_allocation_error(t);
                     if (ed->tab.precompound_r[j] && ed->tab.precompound_a[j]) {
                         for (int k = 0; k < np; k++)
                             ed->tab.precompound_r[j][k] = xss(t, dloc + 2 + 3 * np + k);
@@ -273,6 +370,7 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
                 /* Law 61: angular locators follow CDF */
                 if (law == 61 && ed->tab.ang_lc) {
                     ed->tab.ang_lc[j] = malloc((size_t)np * sizeof(int));
+                    if (!ed->tab.ang_lc[j]) xss_mark_allocation_error(t);
                     if (ed->tab.ang_lc[j]) {
                         for (int k = 0; k < np; k++)
                             ed->tab.ang_lc[j][k] = xss_int(t, dloc + 2 + 3 * np + k);
@@ -285,6 +383,7 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
 
         case 66: /* N-body phase space */
         {
+            if (!xss_range_valid(t, data_loc, 2)) break;
             ed->tab.n_ein = xss_int(t, data_loc);   /* NPSX */
             ed->level_A = xss(t, data_loc + 1);      /* Ap (total mass) */
             break;
@@ -304,10 +403,20 @@ alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* 
         prev = ed;
 
         /* Next law? */
-        if (lnw > 0)
-            abs_loc = dlw_base + lnw - 1;
-        else
+        if (lnw > 0) {
+            abs_loc = xss_relative_loc(t, dlw_base, lnw);
+            if (abs_loc == 0) {
+                ed_free_chain(head);
+                return NULL;
+            }
+        } else
             abs_loc = 0;
+    }
+
+    if (abs_loc > 0) {
+        xss_mark_corrupt(t);
+        ed_free_chain(head);
+        return NULL;
     }
 
     return head;

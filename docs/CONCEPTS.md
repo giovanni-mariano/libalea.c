@@ -510,10 +510,14 @@ The suffix letter identifies the table type:
 
 The module supports `.c` and `.p` tables.
 
+The reader accepts legacy ACE text headers and standard 4096-byte Type-2
+direct-access records. Versioned ACE 2.x text headers are currently rejected
+as unsupported rather than being interpreted as legacy headers.
+
 Each ACE table has three index structures:
 
 - **NXS[16]**: Table dimensions — energy grid size, number of reactions, etc.
-- **JXS[32]**: Block locators — byte offsets into the XSS data array.
+- **JXS[32]**: Block locators — 1-based indices into the XSS data array.
 - **XSS[N]**: The data itself — a flat array of doubles containing all physics data.
 
 All indices are **1-based** (Fortran convention). The library converts to 0-based internally.
@@ -549,7 +553,7 @@ The ACE ESZ block provides four principal cross sections on a common energy grid
 - **σ_total**: Sum of all interactions. Determines collision rate.
 - **σ_absorption**: Reactions that remove the neutron (capture, fission, etc.).
 - **σ_elastic**: Elastic scattering — neutron bounces off nucleus.
-- **heating**: Energy deposited per collision (MeV-barn).
+- **heating**: Heating cross section (MeV-barn); dividing it by total cross section gives energy deposited per collision (MeV).
 
 Each non-elastic reaction has an MT number from the ENDF convention:
 
@@ -634,7 +638,7 @@ In the unresolved resonance region (typically 1 keV to 1 MeV for heavy nuclides)
 Cross sections at temperature T₀ must be adjusted for temperature T > T₀. The thermal motion of target nuclei smears resonance peaks:
 
 ```
-σ_D(E) = 1/(y√π) · ∫ y'·σ(E')·[exp(−(y'−y)²) − exp(−(y'+y)²)] dy'
+σ_D(E) = 1/(y²√π) · ∫ y'²·σ(E')·[exp(−(y'−y)²) − exp(−(y'+y)²)] dy'
 ```
 
 where y = √(AWR·E/ΔkT) and ΔkT = kT_new − kT_old. Broadening can only increase temperature.
@@ -648,6 +652,12 @@ Multigroup methods discretize the energy variable into G groups with boundaries 
 ```
 
 The module uses 1/E weighting (φ(E) ∼ 1/E). The scattering transfer matrix, fission spectrum χ[g], and adjoint scattering matrix are all computed during collapse.
+
+The current collapse model uses isotropic center-of-mass elastic scattering,
+simplified inelastic energy placement, and Watt fission spectra. It does not
+yet integrate the decoded angular distributions or general tabular outgoing
+spectra, so it should not be treated as a general-purpose evaluated-data
+processor for those reactions.
 
 ### Nuclear Materials
 

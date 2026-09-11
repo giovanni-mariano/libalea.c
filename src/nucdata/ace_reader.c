@@ -47,6 +47,11 @@ static alea_error_t ace_read_type1(FILE* fp, alea_nuc_ace_table_t* table) {
     /* --- Line 1: ZAID, AWR, temperature, date, comment --- */
     if (!fgets(line, sizeof(line), fp)) return ALEA_ERR_FILE_READ;
 
+    const char* first = line;
+    while (*first && isspace((unsigned char)*first)) first++;
+    if (strncmp(first, "2.0.", 4) == 0)
+        return ALEA_ERR_UNSUPPORTED;
+
     /* ZAID is first token, AWR second, temperature third, date fourth */
     char date_buf[12] = {0};
     int n = sscanf(line, "%23s %lf %lf %11s",
@@ -213,29 +218,24 @@ static alea_error_t ace_read_type1(FILE* fp, alea_nuc_ace_table_t* table) {
  * Read ACE Type 2 (binary) table.
  */
 static alea_error_t ace_read_type2(FILE* fp, int address, alea_nuc_ace_table_t* table) {
-    /* Seek to byte offset */
-    if (fseek(fp, (long)address, SEEK_SET) != 0)
+    const long record_length = 4096;
+    long start = address > 1 ? (long)(address - 1) * record_length : 0;
+    if (address < 0 || fseek(fp, start, SEEK_SET) != 0)
         return ALEA_ERR_FILE_READ;
 
     /*
      * Binary ACE format (platform-native endianness):
-     *   Record 1: ZAID(10A1), AWR(1F), TZ(1F), HD(10A1), HK(70A1), HM(10A1)
-     *             then IZ(16I), AW(16F), NXS(16I), JXS(32I)
-     *   Record 2: XSS(NXS[1] doubles)
-     *
-     * Fortran unformatted records have 4-byte length markers before and after.
+     * ACE Type 2 uses fixed-length direct-access records. The 500-byte header
+     * contains 16 interleaved IZ/AW pairs and is padded to the next record;
+     * XSS begins at the following record.
      */
-
-    /* Skip Fortran record marker */
-    int32_t rec_len;
-    if (fread(&rec_len, 4, 1, fp) != 1) return ALEA_ERR_FILE_READ;
 
     /* ZAID: 10 characters */
     char zaid_buf[11] = {0};
     if (fread(zaid_buf, 1, 10, fp) != 10) return ALEA_ERR_FILE_READ;
     /* Trim trailing spaces */
     for (int i = 9; i >= 0 && zaid_buf[i] == ' '; i--) zaid_buf[i] = '\0';
-    strncpy(table->zaid, zaid_buf, sizeof(table->zaid) - 1);
+    snprintf(table->zaid, sizeof(table->zaid), "%s", zaid_buf);
 
     /* AWR, temperature */
     if (fread(&table->awr, sizeof(double), 1, fp) != 1) return ALEA_ERR_FILE_READ;
@@ -244,22 +244,25 @@ static alea_error_t ace_read_type2(FILE* fp, int address, alea_nuc_ace_table_t* 
     /* HD: date (10 chars) */
     char hd[11] = {0};
     if (fread(hd, 1, 10, fp) != 10) return ALEA_ERR_FILE_READ;
-    strncpy(table->date, hd, sizeof(table->date) - 1);
+    snprintf(table->date, sizeof(table->date), "%s", hd);
 
     /* HK: comment (70 chars) */
     char hk[71] = {0};
     if (fread(hk, 1, 70, fp) != 70) return ALEA_ERR_FILE_READ;
-    strncpy(table->comment, hk, sizeof(table->comment) - 1);
+    snprintf(table->comment, sizeof(table->comment), "%s", hk);
 
     /* HM: 10 chars (source identifier, skip) */
     char hm[11];
     if (fread(hm, 1, 10, fp) != 10) return ALEA_ERR_FILE_READ;
 
-    /* IZ(16), AW(16) */
-    int32_t iz32[16];
-    if (fread(iz32, sizeof(int32_t), 16, fp) != 16) return ALEA_ERR_FILE_READ;
-    for (int i = 0; i < 16; i++) table->iz[i] = iz32[i];
-    if (fread(table->aw, sizeof(double), 16, fp) != 16) return ALEA_ERR_FILE_READ;
+    /* Interleaved IZ/AW pairs */
+    for (int i = 0; i < 16; i++) {
+        int32_t iz;
+        if (fread(&iz, sizeof(iz), 1, fp) != 1 ||
+            fread(&table->aw[i], sizeof(double), 1, fp) != 1)
+            return ALEA_ERR_FILE_READ;
+        table->iz[i] = iz;
+    }
 
     /* NXS(16) */
     int32_t nxs32[16];
@@ -271,14 +274,12 @@ static alea_error_t ace_read_type2(FILE* fp, int address, alea_nuc_ace_table_t* 
     if (fread(jxs32, sizeof(int32_t), 32, fp) != 32) return ALEA_ERR_FILE_READ;
     for (int i = 0; i < 32; i++) table->jxs[i] = jxs32[i];
 
-    /* End-of-record marker */
-    if (fread(&rec_len, 4, 1, fp) != 1) return ALEA_ERR_FILE_READ;
-
-    /* Record 2: XSS array */
-    if (fread(&rec_len, 4, 1, fp) != 1) return ALEA_ERR_FILE_READ;
-
     table->xss_length = table->nxs[0];
-    if (table->xss_length <= 0) return ALEA_ERR_PARSE_ERROR;
+    if (table->xss_length <= 0 || table->xss_length > 500000000)
+        return ALEA_ERR_PARSE_ERROR;
+
+    if (fseek(fp, start + record_length, SEEK_SET) != 0)
+        return ALEA_ERR_FILE_READ;
 
     table->xss = malloc((size_t)table->xss_length * sizeof(double));
     if (!table->xss) return ALEA_ERR_OUT_OF_MEMORY;

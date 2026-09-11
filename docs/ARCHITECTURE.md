@@ -442,11 +442,11 @@ The nuclear data module (`libalea_nucdata.a`) reads ACE nuclear data files and p
 
 ### Data Pipeline
 
-**1. Loading: xsdir → ACE → nuclide.** The user first loads an xsdir file, which maps ZAID strings like `"92235.80c"` to ACE file paths and byte offsets. Then `alea_nuc_load_nuclide` reads the ACE file and decodes the physics.
+**1. Loading: xsdir → ACE → nuclide.** The user first loads an xsdir file, which maps ZAID strings like `"92235.80c"` to ACE file paths and table addresses (line numbers for Type 1 files and direct-access record numbers for Type 2 files). Then `alea_nuc_load_nuclide` reads the ACE file and decodes the physics.
 
 ACE tables use Fortran-style 1-based indexing throughout. The NXS array (16 ints) gives table dimensions, the JXS array (32 ints) gives block locators into the XSS data array. The internal `xss()` helper converts 1-based indices to 0-based with bounds checking.
 
-**2. Decode: XSS blocks.** `xs_decode.c` extracts physics blocks — ESZ (energy grid + principal cross sections), SIG (non-elastic reactions), NU (fission nu-bar), photon data, and URR probability tables. After decoding, an MT-to-reaction lookup table is built for O(1) reaction finding. Angular and energy distributions are decoded lazily on first collision sample.
+**2. Decode: XSS blocks.** `xs_decode.c` extracts physics blocks — ESZ (energy grid + principal cross sections), SIG (non-elastic reactions), NU (fission nu-bar), photon data, and URR probability tables. Angular and outgoing-energy distributions are decoded during loading, then an MT-to-reaction lookup table is built for O(1) reaction finding.
 
 **3. Runtime: lookups and sampling.** All cross-section lookups start with a binary search on the nuclide's energy grid. Reaction sampling does one O(log N) search then walks all reaction cross sections using direct sub-grid indexing — no per-reaction binary search. This is the hot path in transport.
 
@@ -462,7 +462,7 @@ ACE tables use Fortran-style 1-based indexing throughout. The NXS array (16 ints
 
 - **Single binary search** per collision event for reaction sampling
 - **Sub-grid indexing**: each reaction's threshold offset converts main-grid index to sub-array index without additional searches
-- **Doppler broadening**: O(N × W) where W is the local integration window width (~50-200 points at room temperature)
+- **Doppler broadening**: O(N × W), where W is the number of quadrature panels in the local Gaussian integration window
 - **Memory**: loaded nuclide dominated by XSS array (0.5-5 MB for neutron tables). Decoded structures add ~30-50% overhead.
 
 ## See Also

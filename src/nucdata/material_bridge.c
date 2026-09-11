@@ -101,15 +101,41 @@ static alea_nuc_material_t* nuc_material_from_core(
     double* A = malloc((size_t)n * sizeof(double));
     if (!nuclides || !A) { free(nuclides); free(A); return NULL; }
 
+    double fraction_sum = 0.0;
     for (int i = 0; i < n; i++) {
         const alea_nuclide_t* cn = &mat->nuclides.data[i];
+        if (!isfinite(cn->fraction) || cn->fraction < 0.0) {
+            free(nuclides);
+            free(A);
+            return NULL;
+        }
+        fraction_sum += cn->fraction;
 
         /* Form ZAID string: "92235.80c" */
         char zaid_str[32];
-        if (cn->library && cn->library[0])
-            snprintf(zaid_str, sizeof(zaid_str), "%d%s", cn->zaid, cn->library);
-        else
-            snprintf(zaid_str, sizeof(zaid_str), "%d", cn->zaid);
+        if (cn->library && cn->library[0]) {
+            snprintf(zaid_str, sizeof(zaid_str), "%d%s%s", cn->zaid,
+                     cn->library[0] == '.' ? "" : ".", cn->library);
+        } else {
+            /* With no library specified, use the first matching numeric ZAID. */
+            zaid_str[0] = '\0';
+            char prefix[24];
+            snprintf(prefix, sizeof(prefix), "%d.", cn->zaid);
+            size_t prefix_len = strlen(prefix);
+            for (size_t j = 0; j < xsdir->count; j++) {
+                if (strncmp(xsdir->entries[j].zaid, prefix, prefix_len) == 0 &&
+                    xsdir->entries[j].type == ALEA_NUC_TABLE_CONTINUOUS_NEUTRON) {
+                    snprintf(zaid_str, sizeof(zaid_str), "%s", xsdir->entries[j].zaid);
+                    break;
+                }
+            }
+        }
+
+        if (!zaid_str[0]) {
+            free(nuclides);
+            free(A);
+            return NULL;
+        }
 
         nuclides[i] = alea_nuc_xsdir_get_nuclide(xsdir, zaid_str);
         if (!nuclides[i]) {
@@ -120,6 +146,17 @@ static alea_nuc_material_t* nuc_material_from_core(
         }
 
         A[i] = nuclides[i]->awr * NEUTRON_MASS_AMU;
+        if (!isfinite(A[i]) || A[i] <= 0.0) {
+            free(nuclides);
+            free(A);
+            return NULL;
+        }
+    }
+
+    if (!isfinite(fraction_sum) || fraction_sum <= 0.0) {
+        free(nuclides);
+        free(A);
+        return NULL;
     }
 
     alea_nuc_material_t* nmat = alea_nuc_material_create();
@@ -131,8 +168,9 @@ static alea_nuc_material_t* nuc_material_from_core(
     if (weight_frac && is_mass_density) {
         /* N_i = ρ · N_A · w_i / A_i */
         for (int i = 0; i < n; i++) {
-            double Ni = rho * N_AVOGADRO * mat->nuclides.data[i].fraction / A[i];
-            alea_nuc_material_add(nmat, nuclides[i], Ni);
+            double wi = mat->nuclides.data[i].fraction / fraction_sum;
+            double Ni = rho * N_AVOGADRO * wi / A[i];
+            if (alea_nuc_material_add(nmat, nuclides[i], Ni) != ALEA_OK) goto fail;
         }
     } else if (!weight_frac && is_mass_density) {
         /* Ā = Σ f_i · A_i, then N_i = (ρ · N_A / Ā) · f_i */
@@ -142,13 +180,13 @@ static alea_nuc_material_t* nuc_material_from_core(
         if (A_avg <= 0.0) A_avg = 1.0;
         for (int i = 0; i < n; i++) {
             double Ni = rho * N_AVOGADRO / A_avg * mat->nuclides.data[i].fraction;
-            alea_nuc_material_add(nmat, nuclides[i], Ni);
+            if (alea_nuc_material_add(nmat, nuclides[i], Ni) != ALEA_OK) goto fail;
         }
     } else if (!weight_frac && !is_mass_density) {
         /* N_i = N_total · f_i */
         for (int i = 0; i < n; i++) {
-            double Ni = rho * mat->nuclides.data[i].fraction;
-            alea_nuc_material_add(nmat, nuclides[i], Ni);
+            double Ni = rho * mat->nuclides.data[i].fraction / fraction_sum;
+            if (alea_nuc_material_add(nmat, nuclides[i], Ni) != ALEA_OK) goto fail;
         }
     } else {
         /* Weight fractions + atom density: N_i = N_total · (w_i/A_i) / Σ(w_j/A_j) */
@@ -158,11 +196,17 @@ static alea_nuc_material_t* nuc_material_from_core(
         if (sum_wA <= 0.0) sum_wA = 1.0;
         for (int i = 0; i < n; i++) {
             double Ni = rho * (mat->nuclides.data[i].fraction / A[i]) / sum_wA;
-            alea_nuc_material_add(nmat, nuclides[i], Ni);
+            if (alea_nuc_material_add(nmat, nuclides[i], Ni) != ALEA_OK) goto fail;
         }
     }
 
     free(nuclides);
     free(A);
     return nmat;
+
+fail:
+    alea_nuc_material_destroy(nmat);
+    free(nuclides);
+    free(A);
+    return NULL;
 }

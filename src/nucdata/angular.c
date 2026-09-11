@@ -42,18 +42,26 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
     if (land_loc <= 0) return NULL; /* isotropic */
 
     int and_base = t->jxs[8]; /* JXS[9]: AND data block (0-indexed: jxs[8]) */
-    int abs_loc = and_base + land_loc - 1;
+    int abs_loc = xss_relative_loc(t, and_base, land_loc);
+    if (abs_loc == 0) return NULL;
 
     int ne = xss_int(t, abs_loc);
     if (ne <= 0 || ne > 100000) return NULL; /* sanity check */
+    if (!xss_range_valid(t, abs_loc + 1, 2 * ne)) return NULL;
 
     alea_nuc_angular_dist_t* ang = calloc(1, sizeof(*ang));
-    if (!ang) return NULL;
+    if (!ang) {
+        xss_mark_allocation_error(t);
+        return NULL;
+    }
 
     ang->n_energies = ne;
     ang->energy = malloc((size_t)ne * sizeof(double));
     ang->data = calloc((size_t)ne, sizeof(alea_nuc_angular_point_t));
-    if (!ang->energy || !ang->data) goto fail;
+    if (!ang->energy || !ang->data) {
+        xss_mark_allocation_error(t);
+        goto fail;
+    }
 
     /* Read incident energy grid */
     for (int i = 0; i < ne; i++)
@@ -83,18 +91,29 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
              * Detection: read the first value at the locator. If it is
              * a valid interpolation flag (1 or 2), treat as tabular.
              * Otherwise treat as 32 equiprobable bins. */
-            int dloc = and_base + abs(lc) - 1;
+            if (lc == INT_MIN) {
+                xss_mark_corrupt(t);
+                goto fail;
+            }
+            int dloc = xss_relative_loc(t, and_base, abs(lc));
+            if (dloc == 0) goto fail;
             int jj = xss_int(t, dloc);
 
             if (jj == 1 || jj == 2) {
                 /* Tabular format: JJ, NP, cosines[NP], PDF[NP], CDF[NP] */
                 int np = xss_int(t, dloc + 1);
+                if (np <= 0 || np > 100000 ||
+                    !xss_range_valid(t, dloc + 2, 3 * np))
+                    goto fail;
                 pt->type = ALEA_NUC_ANG_TABULAR;
                 pt->n_cosines = np;
                 pt->cosine = malloc((size_t)np * sizeof(double));
                 pt->pdf = malloc((size_t)np * sizeof(double));
                 pt->cdf = malloc((size_t)np * sizeof(double));
-                if (!pt->cosine || !pt->pdf || !pt->cdf) goto fail;
+                if (!pt->cosine || !pt->pdf || !pt->cdf) {
+                    xss_mark_allocation_error(t);
+                    goto fail;
+                }
 
                 for (int j = 0; j < np; j++)
                     pt->cosine[j] = xss(t, dloc + 2 + j);
@@ -104,10 +123,14 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
                     pt->cdf[j] = xss(t, dloc + 2 + 2 * np + j);
             } else {
                 /* 32 equiprobable cosine bins (33 boundary values, no header) */
+                if (!xss_range_valid(t, dloc, 33)) goto fail;
                 pt->type = ALEA_NUC_ANG_EQUIPROBABLE;
                 pt->n_cosines = 33;
                 pt->cosine = malloc(33 * sizeof(double));
-                if (!pt->cosine) goto fail;
+                if (!pt->cosine) {
+                    xss_mark_allocation_error(t);
+                    goto fail;
+                }
                 for (int j = 0; j < 33; j++)
                     pt->cosine[j] = xss(t, dloc + j);
                 pt->pdf = NULL;
@@ -145,7 +168,12 @@ void alea_nuc_decode_all_angular(alea_nuc_nuclide_t* nuc) {
     if (land_base <= 0) return;
     if (t->jxs[8] <= 0) return; /* JXS[9]: AND data block required */
 
-    int nr = nuc->n_reactions;
+    int nr = t->nxs[4]; /* NXS[5]: reactions with secondary neutrons */
+    if (nr < 0) {
+        xss_mark_corrupt(t);
+        return;
+    }
+    if (nr > nuc->n_reactions) nr = nuc->n_reactions;
 
     /* LAND array at JXS[8]: first entry is elastic, then NR reactions */
 

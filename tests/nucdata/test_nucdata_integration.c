@@ -40,8 +40,8 @@ int main(void) {
 
     alea_nuc_xsdir_t* xsdir = alea_nuc_xsdir_load_dir(FENDL_DIR);
     if (!xsdir) {
-        fprintf(stderr, "Failed to load xsdir from %s\n", FENDL_DIR);
-        return 1;
+        printf("SKIP: FENDL data not downloaded (%s)\n", FENDL_DIR);
+        return 0;
     }
 
     /* Load nuclides */

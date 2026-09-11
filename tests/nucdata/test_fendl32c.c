@@ -138,7 +138,9 @@ alea_test_entry_t *alea_test_list = NULL;
 alea_test_entry_t **alea_test_tail = &alea_test_list;
 int alea_test_passed = 0;
 int alea_test_failed = 0;
+int alea_test_skipped = 0;
 int alea_test_current_failed = 0;
+int alea_test_current_skipped = 0;
 const char *alea_test_current_name = NULL;
 
 int main(int argc, char **argv) {
@@ -152,11 +154,14 @@ int main(int argc, char **argv) {
     for (alea_test_entry_t *t = alea_test_list; t; t = t->next) {
         if (filter && strstr(t->name, filter) == NULL) continue;
         alea_test_current_failed = 0;
+        alea_test_current_skipped = 0;
         alea_test_current_name = t->name;
         printf("  %-50s ", t->name);
         fflush(stdout);
         t->fn();
-        if (alea_test_current_failed) {
+        if (alea_test_current_skipped) {
+            alea_test_skipped++;
+        } else if (alea_test_current_failed) {
             alea_test_failed++;
         } else {
             printf("OK\n");
@@ -165,7 +170,8 @@ int main(int argc, char **argv) {
     }
 
     printf("\n----------------------------------------\n");
-    printf("Results: %d passed, %d failed\n", alea_test_passed, alea_test_failed);
+    printf("Results: %d passed, %d failed, %d skipped\n",
+           alea_test_passed, alea_test_failed, alea_test_skipped);
     printf("----------------------------------------\n\n");
 
     alea_nuc_xsdir_free(xsdir);

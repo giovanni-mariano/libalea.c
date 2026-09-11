@@ -10,7 +10,7 @@
  * Macroscopic XS: Σ = Σᵢ Nᵢ · σᵢ(E)
  */
 
-#include "alea_nucdata.h"
+#include "nuclear_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -29,6 +29,8 @@ void alea_nuc_material_destroy(alea_nuc_material_t* mat) {
 alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t* nuclide,
                               double number_density) {
     if (!mat || !nuclide) return ALEA_ERR_NULL_ARG;
+    if (!isfinite(number_density) || number_density < 0.0)
+        return ALEA_ERR_INVALID_ARG;
 
     /* Grow array (doubling, matches alea_vec pattern) */
     if (mat->n_components >= mat->capacity) {
@@ -79,7 +81,8 @@ double alea_nuc_mat_xs_elastic(const alea_nuc_material_t* mat, double energy) {
 
 int alea_nuc_sample_nuclide(const alea_nuc_material_t* mat, double energy, double xi,
                         alea_nuc_nuclide_t** out_nuclide) {
-    if (!mat || mat->n_components <= 0 || !out_nuclide) return -1;
+    if (!mat || mat->n_components <= 0 || !out_nuclide ||
+        !isfinite(xi) || xi < 0.0 || xi >= 1.0) return -1;
 
     /* Single pass: accumulate cumulative macroscopic XS */
     int nc = mat->n_components;
@@ -112,18 +115,22 @@ int alea_nuc_sample_nuclide(const alea_nuc_material_t* mat, double energy, doubl
 
 int alea_nuc_sample_reaction(const alea_nuc_nuclide_t* nuc, double energy, double xi,
                          int* out_mt) {
-    if (!nuc || !out_mt) return -1;
+    if (!nuc || !out_mt || !isfinite(xi) || xi < 0.0 || xi >= 1.0) return -1;
 
     double sigma_t = alea_nuc_xs_total(nuc, energy);
     if (sigma_t <= 0.0) return -1;
 
     /* Single binary search on main energy grid — reuse for all reactions */
     double f;
-    int ie = alea_nuc_energy_lookup(nuc->energy, nuc->n_energies, energy, &f);
+    int ie = alea_nuc_energy_lookup_trusted(nuc->energy, nuc->n_energies, energy, &f);
     if (ie < 0) { *out_mt = 2; return 0; }
 
     double threshold = xi * sigma_t;
     double cumul = 0.0;
+    int has_mt18 = 0;
+    for (int i = 0; i < nuc->n_reactions; i++)
+        if (nuc->reactions[i].mt == 18 && nuc->reactions[i].xs)
+            has_mt18 = 1;
 
     /* Elastic (direct interpolation, no binary search) */
     if (nuc->sigma_elastic) {
@@ -135,6 +142,8 @@ int alea_nuc_sample_reaction(const alea_nuc_nuclide_t* nuc, double energy, doubl
     /* Non-elastic reactions (direct sub-grid access, no per-reaction search) */
     for (int i = 0; i < nuc->n_reactions; i++) {
         const alea_nuc_reaction_t* r = &nuc->reactions[i];
+        if (has_mt18 && (r->mt == 19 || r->mt == 20 ||
+                         r->mt == 21 || r->mt == 38)) continue;
         if (r->n_energies <= 0 || !r->xs) continue;
 
         int ie_start = r->threshold_index - 1;

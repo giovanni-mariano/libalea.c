@@ -7,8 +7,31 @@
  * @brief Energy grid binary search and cross-section interpolation
  */
 
-#include "alea_nucdata.h"
+#include "nuclear_internal.h"
 #include <math.h>
+
+/* Binary search for grids already validated during decoding. */
+int alea_nuc_energy_lookup_trusted(const double* energy, int n, double E,
+                                   double* frac) {
+    if (n < 2 || !energy || !isfinite(E)) return -1;
+    if (E <= energy[0]) {
+        if (frac) *frac = 0.0;
+        return 0;
+    }
+    if (E >= energy[n - 1]) {
+        if (frac) *frac = 1.0;
+        return n - 2;
+    }
+    int lo = 0, hi = n - 2;
+    while (lo < hi) {
+        int mid = lo + (hi - lo + 1) / 2;
+        if (energy[mid] <= E) lo = mid;
+        else hi = mid - 1;
+    }
+    if (frac)
+        *frac = (E - energy[lo]) / (energy[lo + 1] - energy[lo]);
+    return lo;
+}
 
 int alea_nuc_energy_lookup(const double* energy, int n, double E, double* frac) {
     if (n < 2 || !energy || !isfinite(E)) return -1;
@@ -18,32 +41,7 @@ int alea_nuc_energy_lookup(const double* energy, int n, double E, double* frac) 
         if (i > 0 && !(energy[i] > energy[i - 1])) return -1;
     }
 
-    /* Clamp to grid bounds */
-    if (E <= energy[0]) {
-        if (frac) *frac = 0.0;
-        return 0;
-    }
-    if (E >= energy[n - 1]) {
-        if (frac) *frac = 1.0;
-        return n - 2;
-    }
-
-    /* Binary search for i such that energy[i] <= E < energy[i+1] */
-    int lo = 0, hi = n - 2;
-    while (lo < hi) {
-        int mid = (lo + hi + 1) / 2;
-        if (energy[mid] <= E)
-            lo = mid;
-        else
-            hi = mid - 1;
-    }
-
-    if (frac) {
-        double dE = energy[lo + 1] - energy[lo];
-        *frac = (dE > 0.0) ? (E - energy[lo]) / dE : 0.0;
-    }
-
-    return lo;
+    return alea_nuc_energy_lookup_trusted(energy, n, E, frac);
 }
 
 /** Linear interpolation on a grid */
@@ -51,7 +49,7 @@ static double interp(const double* grid, const double* values, int n,
                      double E) {
     if (!grid || !values || n < 2) return 0.0;
     double f;
-    int i = alea_nuc_energy_lookup(grid, n, E, &f);
+    int i = alea_nuc_energy_lookup_trusted(grid, n, E, &f);
     if (i < 0) return 0.0;
     return values[i] + f * (values[i + 1] - values[i]);
 }
@@ -66,6 +64,9 @@ double alea_nuc_interp_loglog(const double* grid, const double* values, int n,
 
     double v0 = values[i];
     double v1 = values[i + 1];
+
+    if (f <= 0.0) return v0;
+    if (f >= 1.0) return v1;
 
     if (E <= 0.0)
         return v0 + f * (v1 - v0);
@@ -86,6 +87,12 @@ double alea_nuc_interp_loglog(const double* grid, const double* values, int n,
 
 double alea_nuc_xs_total(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc || !nuc->sigma_total) return 0.0;
+    if (nuc->particle == ALEA_NUC_PARTICLE_PHOTON && nuc->photon) {
+        return alea_nuc_photon_xs_incoherent(nuc, energy) +
+               alea_nuc_photon_xs_coherent(nuc, energy) +
+               alea_nuc_photon_xs_photoelectric(nuc, energy) +
+               alea_nuc_photon_xs_pair(nuc, energy);
+    }
     return interp(nuc->energy, nuc->sigma_total, nuc->n_energies, energy);
 }
 
@@ -122,10 +129,12 @@ static double interp_photon_ll(const double* ln_grid, const double* ln_values,
                                 int n, double ln_E) {
     if (!ln_grid || !ln_values || n < 2 || !isfinite(ln_E)) return 0.0;
     double f;
-    int i = alea_nuc_energy_lookup(ln_grid, n, ln_E, &f);
+    int i = alea_nuc_energy_lookup_trusted(ln_grid, n, ln_E, &f);
     if (i < 0) return 0.0;
     double ln_v0 = ln_values[i];
     double ln_v1 = ln_values[i + 1];
+    if (f <= 0.0) return ln_v0 <= -1e30 ? 0.0 : exp(ln_v0);
+    if (f >= 1.0) return ln_v1 <= -1e30 ? 0.0 : exp(ln_v1);
     if (ln_v0 <= -1e30 || ln_v1 <= -1e30) return 0.0;
     return exp(ln_v0 + f * (ln_v1 - ln_v0));
 }
@@ -194,14 +203,15 @@ double alea_nuc_xs_reaction(const alea_nuc_nuclide_t* nuc, int mt, double energy
     }
 
     double f;
-    int ie = alea_nuc_energy_lookup(nuc->energy, nuc->n_energies, energy, &f);
+    int ie = alea_nuc_energy_lookup_trusted(nuc->energy, nuc->n_energies, energy, &f);
     if (ie < 0) return 0.0;
     return reaction_xs_at(r, ie, f);
 }
 
 int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi,
                      double factors[5]) {
-    if (!nuc || !nuc->urr || !factors) return 0;
+    if (!nuc || !nuc->urr || !factors || !isfinite(energy) ||
+        !isfinite(xi) || xi < 0.0 || xi >= 1.0) return 0;
 
     const alea_nuc_urr_t* urr = nuc->urr;
     int N = urr->n_energies;
@@ -234,7 +244,7 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
         /* At or below first energy, use lower bracket directly */
         for (int q = 0; q < 5; q++)
             factors[q] = f_lo[q];
-        return 1;
+        goto normalize;
     }
 
     /* Find probability band at upper energy */
@@ -251,6 +261,9 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
     /* Interpolate between energies */
     if (urr->interp == 5) {
         /* Log-log interpolation */
+        if (energy > 0.0 && urr->energy[ie] > 0.0 && urr->energy[ie + 1] > 0.0)
+            f = log(energy / urr->energy[ie]) /
+                log(urr->energy[ie + 1] / urr->energy[ie]);
         for (int q = 0; q < 5; q++) {
             if (f_lo[q] > 0.0 && f_hi[q] > 0.0)
                 factors[q] = f_lo[q] * pow(f_hi[q] / f_lo[q], f);
@@ -261,6 +274,25 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
         /* Lin-lin interpolation */
         for (int q = 0; q < 5; q++)
             factors[q] = f_lo[q] + f * (f_hi[q] - f_lo[q]);
+    }
+
+normalize:
+    if (!urr->multiply_smooth) {
+        double smooth[5];
+        smooth[0] = alea_nuc_xs_total(nuc, energy);
+        smooth[1] = alea_nuc_xs_elastic(nuc, energy);
+        smooth[2] = alea_nuc_xs_reaction(nuc, 18, energy);
+        if (smooth[2] <= 0.0) {
+            for (int r = 0; r < nuc->n_reactions; r++) {
+                int mt = nuc->reactions[r].mt;
+                if (mt == 19 || mt == 20 || mt == 21 || mt == 38)
+                    smooth[2] += alea_nuc_xs_reaction(nuc, mt, energy);
+            }
+        }
+        smooth[3] = alea_nuc_xs_reaction(nuc, 102, energy);
+        smooth[4] = alea_nuc_xs_heating(nuc, energy);
+        for (int q = 0; q < 5; q++)
+            factors[q] = smooth[q] > 0.0 ? factors[q] / smooth[q] : 0.0;
     }
 
     return 1;

@@ -22,7 +22,7 @@ EPRDATA14_DIR = eprdata14
 MCPLIB84_DIR = mcplib84
 
 # Test binaries
-TESTS = test_endfb80 test_fendl32c test_eprdata14 test_photon_xs
+TESTS = test_endfb80 test_fendl32c test_eprdata14 test_photon_xs test_nucdata_integration
 BENCH = bench_load
 
 # ============================================================================
@@ -104,6 +104,9 @@ test_eprdata14: test_eprdata14.c $(LIBS)
 test_photon_xs: test_photon_xs.c $(LIBS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
 
+test_nucdata_integration: test_nucdata_integration.c $(LIBS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
+
 # ============================================================================
 # Run tests
 # ============================================================================
@@ -119,7 +122,7 @@ test: $(TESTS)
 	done; \
 	echo ""; \
 	if [ $$failed -eq 0 ]; then \
-		echo "All nuclear data tests passed!"; \
+		echo "No nuclear data test failures."; \
 	else \
 		echo "$$failed test(s) failed"; \
 		exit 1; \

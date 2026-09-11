@@ -9,22 +9,20 @@
  * Broadens cross sections from temperature T₀ to T using the exact
  * kernel method:
  *
- *   σ_D(E) = 1/(y√π) ∫₀^∞ y'·σ(E')·[exp(-(y'-y)²) - exp(-(y'+y)²)] dy'
+ *   σ_D(E) = 1/(y²√π) ∫₀^∞ y'²·σ(E')·[exp(-(y'-y)²) - exp(-(y'+y)²)] dy'
  *
  * where y = √(α·E), α = AWR / ΔkT, ΔkT = kT_new - kT_old.
  *
  * The second exponential (y'+y)² is negligible for y > ~4 (above ~1 eV
  * for most nuclides at room temperature).
  *
- * Uses trapezoidal quadrature on the existing ACE energy grid
- * transformed to y-space. Integration window is ±4σ of the Gaussian
- * kernel, found via binary search for O(N·W) complexity where W is
- * the local window width.
+ * Uses composite Simpson quadrature in transformed y-space. Sampling the
+ * existing ACE knots directly is unstable when the Doppler kernel is much
+ * narrower than a grid interval, so sigma is interpolated between knots on a
+ * quadrature mesh that resolves the Gaussian.
  *
  * Strategy for consistency:
- * - Broaden σ_total and σ_elastic independently on the full grid.
- * - Re-derive σ_abs = σ_total - σ_elastic after broadening to maintain
- *   the identity σ_total = σ_elastic + σ_abs.
+ * - Broaden σ_total, σ_absorption, and σ_elastic independently.
  * - Broaden per-reaction XS on the full grid (padded with zeros below
  *   threshold) to properly capture the kernel tail near threshold.
  */
@@ -52,65 +50,49 @@ static void broaden_array(const double* y_grid,
 
     for (int j = 0; j < n; j++) {
         double yj = y_grid[j];
-
-        /* At very low y (< 1e-6), the Gaussian kernel is so wide that
-         * all grid points contribute equally — σ_D ≈ σ_0. This threshold
-         * corresponds to E < ~1e-12/α MeV, well below any resonance
-         * structure. */
         if (yj < 1e-6) {
             buf[j] = sigma_in[j];
             continue;
         }
 
-        /* Find integration bounds in index space: y_grid[i] ∈ [yj-4, yj+4] */
-        double y_lo = yj - ALEA_NUC_KERNEL_HALFWIDTH;
-        if (y_lo < 0.0) y_lo = 0.0;
-        double y_hi = yj + ALEA_NUC_KERNEL_HALFWIDTH;
-
-        /* Binary search for lower bound */
-        int lo = 0, hi = n - 1;
-        while (lo < hi) {
-            int mid = (lo + hi) / 2;
-            if (y_grid[mid] < y_lo)
-                lo = mid + 1;
-            else
-                hi = mid;
-        }
-        int i_lo = lo;
-
-        /* Binary search for upper bound */
-        lo = i_lo;
-        hi = n - 1;
-        while (lo < hi) {
-            int mid = (lo + hi + 1) / 2;
-            if (y_grid[mid] > y_hi)
-                hi = mid - 1;
-            else
-                lo = mid;
-        }
-        int i_hi = lo;
-
-        /* Trapezoidal integration in y-space */
+        double x_lo = yj > 8.0 ? yj - 8.0 : 0.0;
+        double x_hi = yj + 8.0;
+        int panels = (int)ceil((x_hi - x_lo) / 0.125);
+        if (panels < 16) panels = 16;
+        if (panels & 1) panels++;
+        double h = (x_hi - x_lo) / panels;
         double sum = 0.0;
-        for (int i = i_lo; i <= i_hi; i++) {
-            double yi = y_grid[i];
-            double d1 = yi - yj;
-            double d2 = yi + yj;
-            double kernel = yi * (exp(-d1 * d1) - exp(-d2 * d2));
 
-            /* Trapezoidal weight */
-            double dy;
-            if (i == 0)
-                dy = (y_grid[1] - y_grid[0]);
-            else if (i == n - 1)
-                dy = (y_grid[n - 1] - y_grid[n - 2]);
-            else
-                dy = (y_grid[i + 1] - y_grid[i - 1]) / 2.0;
+        for (int k = 0; k <= panels; k++) {
+            double x = x_lo + k * h;
+            double sigma;
+            if (x <= y_grid[0]) {
+                sigma = sigma_in[0];
+            } else if (x >= y_grid[n - 1]) {
+                sigma = sigma_in[n - 1];
+            } else {
+                int lo = 0, hi = n - 2;
+                while (lo < hi) {
+                    int mid = lo + (hi - lo + 1) / 2;
+                    if (y_grid[mid] <= x) lo = mid;
+                    else hi = mid - 1;
+                }
+                /* ACE cross sections are linear in energy, and E is
+                 * proportional to y squared. */
+                double f = (x * x - y_grid[lo] * y_grid[lo]) /
+                           (y_grid[lo + 1] * y_grid[lo + 1] -
+                            y_grid[lo] * y_grid[lo]);
+                sigma = sigma_in[lo] + f * (sigma_in[lo + 1] - sigma_in[lo]);
+            }
 
-            sum += sigma_in[i] * kernel * dy;
+            double d = x - yj;
+            double kernel_diff = exp(-d * d) * -expm1(-4.0 * x * yj);
+            double integrand = x * x * sigma * kernel_diff;
+            int weight = (k == 0 || k == panels) ? 1 : (k & 1 ? 4 : 2);
+            sum += weight * integrand;
         }
 
-        buf[j] = sum / (yj * sqrt(M_PI));
+        buf[j] = (h / 3.0) * sum / (yj * yj * sqrt(M_PI));
 
         /* Ensure non-negative */
         if (buf[j] < 0.0) buf[j] = 0.0;
@@ -128,18 +110,37 @@ alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target)
     double dkT = kT_target - kT_old;
 
     /* Can only broaden to higher temperature */
-    if (dkT <= 0.0) return ALEA_ERR_UNSUPPORTED;
+    if (!isfinite(kT_target) || dkT <= 0.0) return ALEA_ERR_UNSUPPORTED;
 
     int n = nuc->n_energies;
-    if (n <= 1 || !nuc->energy) return ALEA_ERR_INVALID_ARG;
+    if (n <= 1 || !nuc->energy || !isfinite(nuc->awr) || nuc->awr <= 0.0)
+        return ALEA_ERR_INVALID_ARG;
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(nuc->energy[i]) || nuc->energy[i] < 0.0 ||
+            (i > 0 && nuc->energy[i] <= nuc->energy[i - 1]))
+            return ALEA_ERR_INVALID_ARG;
+    }
+    for (int r = 0; r < nuc->n_reactions; r++) {
+        const alea_nuc_reaction_t* rxn = &nuc->reactions[r];
+        if (!rxn->xs) continue;
+        int ie_start = rxn->threshold_index - 1;
+        if (ie_start < 0 || ie_start >= n || rxn->n_energies <= 0 ||
+            rxn->n_energies > n - ie_start)
+            return ALEA_ERR_INVALID_ARG;
+    }
 
     /* α = AWR / ΔkT — controls the kernel width */
     double alpha = nuc->awr / dkT;
+    if (!isfinite(alpha) || alpha <= 0.0) return ALEA_ERR_INVALID_ARG;
 
     /* Precompute y = √(α·E) for each grid point */
     double* y_grid = malloc((size_t)n * sizeof(double));
     double* work = malloc((size_t)n * sizeof(double));
-    if (!y_grid || !work) { free(y_grid); free(work); return ALEA_ERR_OUT_OF_MEMORY; }
+    double* full_xs = nuc->n_reactions > 0 ? calloc((size_t)n, sizeof(double)) : NULL;
+    if (!y_grid || !work || (nuc->n_reactions > 0 && !full_xs)) {
+        free(y_grid); free(work); free(full_xs);
+        return ALEA_ERR_OUT_OF_MEMORY;
+    }
 
     for (int i = 0; i < n; i++)
         y_grid[i] = sqrt(alpha * nuc->energy[i]);
@@ -149,25 +150,16 @@ alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target)
         broaden_array(y_grid, nuc->sigma_total, nuc->sigma_total, n, work);
     if (nuc->sigma_elastic)
         broaden_array(y_grid, nuc->sigma_elastic, nuc->sigma_elastic, n, work);
+    if (nuc->sigma_abs)
+        broaden_array(y_grid, nuc->sigma_abs, nuc->sigma_abs, n, work);
     if (nuc->heating)
         broaden_array(y_grid, nuc->heating, nuc->heating, n, work);
-
-    /* Re-derive absorption = total - elastic to maintain consistency.
-     * This ensures σ_total = σ_elastic + σ_abs exactly after broadening,
-     * rather than broadening σ_abs independently which breaks the identity. */
-    if (nuc->sigma_abs && nuc->sigma_total && nuc->sigma_elastic) {
-        for (int i = 0; i < n; i++) {
-            nuc->sigma_abs[i] = nuc->sigma_total[i] - nuc->sigma_elastic[i];
-            if (nuc->sigma_abs[i] < 0.0) nuc->sigma_abs[i] = 0.0;
-        }
-    }
 
     /* Broaden per-reaction cross sections on the FULL energy grid.
      * Embed the reaction XS (which starts at threshold_index) into a
      * full-grid array padded with zeros, broaden, then extract back.
      * This properly captures the kernel tail reaching into the zero
      * region below threshold. */
-    double* full_xs = calloc((size_t)n, sizeof(double));
     if (full_xs) {
         for (int r = 0; r < nuc->n_reactions; r++) {
             alea_nuc_reaction_t* rxn = &nuc->reactions[r];
@@ -175,17 +167,16 @@ alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target)
 
             int ie_start = rxn->threshold_index - 1; /* 0-based */
             int nr = rxn->n_energies;
-
             /* Embed into full grid (zeros below threshold) */
             memset(full_xs, 0, (size_t)n * sizeof(double));
-            for (int i = 0; i < nr && ie_start + i < n; i++)
+            for (int i = 0; i < nr; i++)
                 full_xs[ie_start + i] = rxn->xs[i];
 
             /* Broaden on full grid */
             broaden_array(y_grid, full_xs, full_xs, n, work);
 
             /* Extract back into reaction sub-grid */
-            for (int i = 0; i < nr && ie_start + i < n; i++)
+            for (int i = 0; i < nr; i++)
                 rxn->xs[i] = full_xs[ie_start + i];
         }
         free(full_xs);

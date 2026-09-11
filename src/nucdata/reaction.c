@@ -68,7 +68,7 @@ static double eval_tabulated_yield(const alea_nuc_nuclide_t* nuc, int loc, doubl
     const alea_nuc_ace_table_t* t = &nuc->raw;
     if (loc <= 0 || loc > t->xss_length) return 1.0;
 
-    int nr = (int)t->xss[loc - 1];
+    int nr = xss_int(t, loc);
     /* Bound nr against the remaining space *before* forming loc + 2*nr, so the
      * multiply cannot overflow int and wrap past the check. */
     if (nr < 0 || nr > (t->xss_length - loc) / 2) return 1.0;
@@ -77,7 +77,7 @@ static double eval_tabulated_yield(const alea_nuc_nuclide_t* nuc, int loc, doubl
      * past the end (the old `> xss_length` allowed base == xss_length). */
     if (base >= t->xss_length) return 1.0;
 
-    int ne = (int)t->xss[base];
+    int ne = xss_int(t, base + 1);
     /* Likewise bound ne before forming base + 1 + 2*ne. */
     if (ne <= 0 || ne > (t->xss_length - base - 1) / 2) return 1.0;
 
@@ -109,6 +109,7 @@ double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double ene
         int ty = r->ty;
         if (ty == 0) return 0.0; /* absorption */
 
+        if (ty == INT_MIN) return 0.0;
         int abs_ty = abs(ty);
 
         /* TYR=19: fission, use ν̄ */
@@ -117,11 +118,12 @@ double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double ene
         /* |TYR| = 1-4: fixed integer yield */
         if (abs_ty >= 1 && abs_ty <= 4) return (double)abs_ty;
 
-        /* |TYR| > 4: locator to tabulated yield in DLW block */
-        if (abs_ty > 4) {
+        /* |TYR| > 100: locator to tabulated yield in DLW block. */
+        if (abs_ty > 100) {
             int dlw_base = nuc->raw.jxs[10]; /* JXS[11] */
-            if (dlw_base > 0)
-                return eval_tabulated_yield(nuc, dlw_base + abs_ty - 1, energy);
+            int yield_loc = xss_relative_loc(&nuc->raw, dlw_base, abs_ty - 100);
+            if (yield_loc > 0)
+                return eval_tabulated_yield(nuc, yield_loc, energy);
         }
 
         return 1.0; /* fallback */

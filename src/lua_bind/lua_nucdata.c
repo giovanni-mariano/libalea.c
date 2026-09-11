@@ -266,6 +266,10 @@ static int l_nuclide_broadened(lua_State* L) {
     if (err != ALEA_OK)
         return luaL_error(L, "broadened: %s", alea_error_string(err));
 
+    /* Retain the same xsdir so the returned nuclide can be broadened again. */
+    lua_getuservalue(L, 1);
+    lua_setuservalue(L, -2);
+
     return 1;
 }
 

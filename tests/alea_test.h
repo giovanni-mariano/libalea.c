@@ -80,7 +80,9 @@ extern alea_test_entry_t *alea_test_list;
 extern alea_test_entry_t **alea_test_tail;
 extern int alea_test_passed;
 extern int alea_test_failed;
+extern int alea_test_skipped;
 extern int alea_test_current_failed;
+extern int alea_test_current_skipped;
 extern const char *alea_test_current_name;
 
 /* Run a function before main(). GCC/Clang use the constructor attribute; MSVC
@@ -192,9 +194,10 @@ extern const char *alea_test_current_name;
 #define ASSERT_TRUE(cond)  ASSERT(cond)
 #define ASSERT_FALSE(cond) ASSERT(!(cond))
 
-/* Skip remaining assertions in this test (test still passes) */
+/* Skip remaining assertions in this test. */
 #define SKIP(reason) do { \
     printf("    SKIP: %s\n", reason); \
+    alea_test_current_skipped = 1; \
     return; \
 } while(0)
 
@@ -207,7 +210,9 @@ extern const char *alea_test_current_name;
     alea_test_entry_t **alea_test_tail = &alea_test_list; \
     int alea_test_passed = 0; \
     int alea_test_failed = 0; \
+    int alea_test_skipped = 0; \
     int alea_test_current_failed = 0; \
+    int alea_test_current_skipped = 0; \
     const char *alea_test_current_name = NULL; \
     \
     int main(int argc, char **argv) { \
@@ -217,11 +222,14 @@ extern const char *alea_test_current_name;
         for (alea_test_entry_t *t = alea_test_list; t; t = t->next) { \
             if (filter && strstr(t->name, filter) == NULL) continue; \
             alea_test_current_failed = 0; \
+            alea_test_current_skipped = 0; \
             alea_test_current_name = t->name; \
             printf("  %-50s ", t->name); \
             fflush(stdout); \
             t->fn(); \
-            if (alea_test_current_failed) { \
+            if (alea_test_current_skipped) { \
+                alea_test_skipped++; \
+            } else if (alea_test_current_failed) { \
                 alea_test_failed++; \
             } else { \
                 printf("OK\n"); \
@@ -229,7 +237,8 @@ extern const char *alea_test_current_name;
             } \
         } \
         printf("\n----------------------------------------\n"); \
-        printf("Results: %d passed, %d failed\n", alea_test_passed, alea_test_failed); \
+        printf("Results: %d passed, %d failed, %d skipped\n", \
+               alea_test_passed, alea_test_failed, alea_test_skipped); \
         printf("----------------------------------------\n\n"); \
         return alea_test_failed > 0 ? 1 : 0; \
     }
