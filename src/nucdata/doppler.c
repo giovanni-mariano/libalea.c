@@ -112,6 +112,11 @@ alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target)
     /* Can only broaden to higher temperature */
     if (!isfinite(kT_target) || dkT <= 0.0) return ALEA_ERR_UNSUPPORTED;
 
+    /* Probability tables are processed for the source table temperature.
+     * Broadening only the smooth pointwise data would create an internally
+     * inconsistent transport table, so reject before allocation or mutation. */
+    if (nuc->urr) return ALEA_ERR_UNSUPPORTED;
+
     int n = nuc->n_energies;
     if (n <= 1 || !nuc->energy || !isfinite(nuc->awr) || nuc->awr <= 0.0)
         return ALEA_ERR_INVALID_ARG;

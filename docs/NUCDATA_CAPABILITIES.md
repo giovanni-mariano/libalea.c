@@ -118,7 +118,9 @@ sections while collision selection retains the sampled table's distributions
 and URR representation. No table is mutated, and exact endpoints use one
 component. In-place Doppler broadening remains a separate caller-owned option;
 its numerical gates cover the 1/v invariant and a narrow-resonance reference
-quadrature.
+quadrature. It rejects a nuclide with an attached URR probability table before
+allocation or mutation because broadening only the smooth cross sections would
+mix data processed at different temperatures.
 
 `alea_nuc_load_thermal()` decodes the discrete and continuous correlated ACE
 representations for incoherent inelastic scattering and coherent, incoherent,

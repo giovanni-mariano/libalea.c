@@ -1500,6 +1500,52 @@ TEST(doppler_preserves_high_energy_constant_and_absorption) {
     ASSERT_NEAR(absorption[1], 0.0, 1e-12);
 }
 
+TEST(doppler_rejects_urr_table_without_mutation_or_allocation) {
+    double energy[] = {1.0, 2.0, 3.0};
+    double total[] = {3.0, 4.0, 5.0};
+    double elastic[] = {1.0, 2.0, 3.0};
+    double absorption[] = {2.0, 2.0, 2.0};
+    double heating[] = {0.1, 0.2, 0.3};
+    double reaction_xs[] = {2.0, 2.0, 2.0};
+    alea_nuc_reaction_t reaction = {
+        .mt = 102, .threshold_index = 1, .n_energies = 3,
+        .xs = reaction_xs
+    };
+    alea_nuc_urr_t urr = {0};
+    alea_nuc_nuclide_t nuc = {0};
+    nuc.awr = 238.0;
+    nuc.temperature = 2.53e-8;
+    nuc.n_energies = 3;
+    nuc.energy = energy;
+    nuc.sigma_total = total;
+    nuc.sigma_elastic = elastic;
+    nuc.sigma_abs = absorption;
+    nuc.heating = heating;
+    nuc.n_reactions = 1;
+    nuc.reactions = &reaction;
+    nuc.urr = &urr;
+
+    nuc_alloc_failure_t allocation = {0, 0};
+    alea_nuc_set_alloc_failure(fail_nuc_allocation, &allocation);
+    alea_error_t status = alea_nuc_doppler_broaden(&nuc, 5.06e-8);
+    alea_nuc_set_alloc_failure(NULL, NULL);
+
+    ASSERT_EQ(status, ALEA_ERR_UNSUPPORTED);
+    ASSERT_EQ(allocation.calls, 0);
+    ASSERT_EQ(nuc.temperature, 2.53e-8);
+    const double expected_total[] = {3.0, 4.0, 5.0};
+    const double expected_elastic[] = {1.0, 2.0, 3.0};
+    const double expected_absorption[] = {2.0, 2.0, 2.0};
+    const double expected_heating[] = {0.1, 0.2, 0.3};
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ(total[i], expected_total[i]);
+        ASSERT_EQ(elastic[i], expected_elastic[i]);
+        ASSERT_EQ(absorption[i], expected_absorption[i]);
+        ASSERT_EQ(heating[i], expected_heating[i]);
+        ASSERT_EQ(reaction_xs[i], 2.0);
+    }
+}
+
 TEST(doppler_preserves_one_over_v_cross_section) {
     enum { N = 401 };
     double energy[N], total[N];

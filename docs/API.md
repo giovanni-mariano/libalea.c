@@ -3013,7 +3013,11 @@ Sample outgoing group from scattering CDF. Set `adjoint=1` for transposed matrix
 alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target);
 ```
 
-Broaden cross sections in-place to temperature `kT_target` (MeV). Can only broaden to higher temperatures. Modifies total, absorption, elastic, heating, and per-reaction cross sections.
+Broaden cross sections in-place to temperature `kT_target` (MeV). Can only
+broaden to higher temperatures. Modifies total, absorption, elastic, heating,
+and per-reaction cross sections. A nuclide with an attached URR probability
+table is rejected before allocation or mutation because the probability table
+retains its source temperature.
 
 The quadrature implementation is validated against the invariant 1/v shape
 and independent high-precision integration of a narrow resonance. It operates

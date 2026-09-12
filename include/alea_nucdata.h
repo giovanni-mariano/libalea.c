@@ -622,7 +622,9 @@ int alea_nuc_mg_sample_scatter(const alea_nuc_multigroup_t* mg, int g_from,
  * to account for thermal motion of target nuclei. Modifies the nuclide
  * in-place (total, absorption, elastic, heating, and per-reaction XS).
  *
- * Can only broaden to a higher temperature than the current one.
+ * Can only broaden to a higher temperature than the current one. Nuclides
+ * with unresolved-resonance probability tables are rejected because those
+ * tables retain the temperature at which they were processed.
  * The nuclide must be caller-owned; cached pointers returned by
  * alea_nuc_xsdir_get_nuclide() are shared and immutable. The decoded URR
  * probability table and raw ACE data retain their source-table temperature.
@@ -630,6 +632,7 @@ int alea_nuc_mg_sample_scatter(const alea_nuc_multigroup_t* mg, int g_from,
  * @param nuc        Nuclide to broaden
  * @param kT_target  Target temperature in MeV (e.g., 2.53e-8 for 293.6 K)
  * @return ALEA_OK on success, ALEA_ERR_UNSUPPORTED if kT_target <= current
+ *         or a URR probability table is attached
  */
 alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target);
 
