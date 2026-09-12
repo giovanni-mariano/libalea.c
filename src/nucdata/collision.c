@@ -82,6 +82,16 @@ static int reaction_is_supported_absorption_mt(int mt) {
     return mt >= 600 && mt <= 849;
 }
 
+static int reaction_is_urr_inelastic_mt(int mt) {
+    return mt == 4 || (mt >= 51 && mt <= 91);
+}
+
+static int reaction_is_urr_other_absorption(
+    const alea_nuc_reaction_t* reaction) {
+    return reaction && reaction->ty == 0 && reaction->mt != 102 &&
+           reaction_is_supported_absorption_mt(reaction->mt);
+}
+
 static int aggregate_mt_for(int mt) {
     if (mt >= 600 && mt <= 649) return 103;
     if (mt >= 650 && mt <= 699) return 104;
@@ -113,6 +123,18 @@ static int reaction_is_redundant(const alea_nuc_nuclide_t* nuc,
          reaction->mt == 38) && nuclide_has_active_mt(nuc, 18)) return 1;
     int aggregate = aggregate_mt_for(reaction->mt);
     return aggregate != 0 && nuclide_has_active_mt(nuc, aggregate);
+}
+
+static int reaction_is_named_urr_competitor(
+    const alea_nuc_nuclide_t* nuc, const alea_nuc_reaction_t* reaction) {
+    if (!nuc || !nuc->urr || !reaction) return 0;
+    if (reaction_is_urr_inelastic_mt(reaction->mt))
+        return reaction->mt != 4 &&
+               nuc->urr->inelastic_flag == reaction->mt;
+    if (reaction_is_urr_other_absorption(reaction))
+        return nuc->urr->absorption_flag == reaction->mt ||
+               nuc->urr->absorption_flag == aggregate_mt_for(reaction->mt);
+    return 0;
 }
 
 static int composite_neutron_charged_particle_mt(int mt) {
@@ -231,6 +253,48 @@ static int validate_urr(const alea_nuc_urr_t* urr) {
     return 1;
 }
 
+static int reaction_positive_in_urr(const alea_nuc_nuclide_t* nuc, int mt) {
+    if (!nuc || !nuc->urr) return 0;
+    for (int i = 0; i < nuc->urr->n_energies; i++)
+        if (alea_nuc_xs_reaction(nuc, mt, nuc->urr->energy[i]) > 0.0)
+            return 1;
+    return 0;
+}
+
+static int validate_urr_competition(const alea_nuc_nuclide_t* nuc) {
+    if (!nuc || !nuc->urr) return 1;
+    const alea_nuc_urr_t* urr = nuc->urr;
+    if (urr->inelastic_flag > 0 &&
+        (!reaction_is_urr_inelastic_mt(urr->inelastic_flag) ||
+         !reaction_positive_in_urr(nuc, urr->inelastic_flag)))
+        return 0;
+    if (urr->inelastic_flag == 4) {
+        int sampleable = 0;
+        for (int i = 0; i < nuc->n_reactions; i++) {
+            const alea_nuc_reaction_t* reaction = &nuc->reactions[i];
+            if (reaction->mt >= 51 && reaction->mt <= 91 &&
+                !reaction_is_redundant(nuc, reaction) &&
+                reaction_positive_in_urr(nuc, reaction->mt)) {
+                sampleable = 1;
+                break;
+            }
+        }
+        if (!sampleable) return 0;
+    }
+    if (urr->absorption_flag > 0) {
+        const alea_nuc_reaction_t* reaction = NULL;
+        for (int i = 0; i < nuc->n_reactions; i++)
+            if (nuc->reactions[i].mt == urr->absorption_flag) {
+                reaction = &nuc->reactions[i];
+                break;
+            }
+        if (!reaction_is_urr_other_absorption(reaction) ||
+            !reaction_positive_in_urr(nuc, urr->absorption_flag))
+            return 0;
+    }
+    return 1;
+}
+
 static int validate_delayed(const alea_nuc_nuclide_t* nuc) {
     if (!nuc->fission) return 1;
     int n = nuc->fission->n_delayed_groups;
@@ -339,10 +403,10 @@ static alea_error_t inspect_nuclide(const alea_nuc_nuclide_t* nuc,
         return report_failure(report, ALEA_NUC_PREP_UNSUPPORTED_PARTICLE,
             ALEA_NUC_CAP_RESTRICTED_NEUTRON, component, 0,
             "continuous collision preparation accepts neutron tables only");
-    if (!validate_urr(nuc->urr))
+    if (!validate_urr(nuc->urr) || !validate_urr_competition(nuc))
         return report_failure(report, ALEA_NUC_PREP_UNSUPPORTED_URR,
             ALEA_NUC_CAP_URR, component, 0,
-            "unresolved-resonance probability table is invalid");
+            "unresolved-resonance table or competition flag is invalid");
     if (!validate_delayed(nuc))
         return report_failure(report,
             ALEA_NUC_PREP_INVALID_ENERGY_DISTRIBUTION,
@@ -455,7 +519,8 @@ static alea_error_t inspect_nuclide(const alea_nuc_nuclide_t* nuc,
                     "reaction cross sections must be finite and nonnegative");
         }
         if (!reaction_has_positive_xs(reaction)) continue;
-        if (reaction_is_redundant(nuc, reaction)) continue;
+        if (reaction_is_redundant(nuc, reaction) &&
+            !reaction_is_named_urr_competitor(nuc, reaction)) continue;
         if (reaction->ty == 0) {
             if (reaction_is_supported_absorption_mt(reaction->mt)) continue;
             return report_failure(report, ALEA_NUC_PREP_UNSUPPORTED_REACTION,
@@ -687,7 +752,8 @@ alea_error_t alea_nuc_prepare_material(
         for (int r = 0; r < maximum; r++) {
             const alea_nuc_reaction_t* reaction = &source->nuclide->reactions[r];
             if (reaction_has_positive_xs(reaction) &&
-                !reaction_is_redundant(source->nuclide, reaction))
+                (!reaction_is_redundant(source->nuclide, reaction) ||
+                 reaction_is_named_urr_competitor(source->nuclide, reaction)))
                 component->event_reactions[component->n_event_reactions++] = r;
         }
     }
@@ -806,7 +872,45 @@ static double sampled_reaction_xs(const alea_nuc_nuclide_t* nuc,
                                   double energy,
                                   const alea_nuc_urr_sample_t* urr) {
     double xs = reaction_xs(nuc, reaction, energy);
-    if (!urr || !urr->active) return xs;
+    if (!urr || !urr->active)
+        return reaction_is_redundant(nuc, reaction) ? 0.0 : xs;
+    if (reaction_is_urr_inelastic_mt(reaction->mt)) {
+        int flag = nuc->urr->inelastic_flag;
+        if (flag < 0) return 0.0;
+        if (flag == 4) {
+            if (reaction->mt == 4) return 0.0;
+            double smooth_sum = 0.0;
+            for (int i = 0; i < nuc->n_reactions; i++) {
+                const alea_nuc_reaction_t* candidate = &nuc->reactions[i];
+                if (reaction_is_urr_inelastic_mt(candidate->mt) &&
+                    candidate->mt != 4 &&
+                    !reaction_is_redundant(nuc, candidate))
+                    smooth_sum += reaction_xs(nuc, candidate, energy);
+            }
+            double aggregate = alea_nuc_xs_reaction(nuc, 4, energy);
+            return smooth_sum > 0.0 ? xs * aggregate / smooth_sum : 0.0;
+        }
+        if (flag > 0 && reaction->mt != flag) return 0.0;
+    }
+    if (reaction_is_urr_other_absorption(reaction)) {
+        int flag = nuc->urr->absorption_flag;
+        if (flag < 0) return 0.0;
+        if (flag > 0) {
+            double detail_sum = 0.0;
+            for (int i = 0; i < nuc->n_reactions; i++) {
+                const alea_nuc_reaction_t* candidate = &nuc->reactions[i];
+                if (reaction_is_urr_other_absorption(candidate) &&
+                    aggregate_mt_for(candidate->mt) == flag)
+                    detail_sum += reaction_xs(nuc, candidate, energy);
+            }
+            if (detail_sum > 0.0) {
+                if (aggregate_mt_for(reaction->mt) != flag) return 0.0;
+                double aggregate = alea_nuc_xs_reaction(nuc, flag, energy);
+                return xs * aggregate / detail_sum;
+            }
+            if (reaction->mt != flag) return 0.0;
+        }
+    }
     if (fission_mt(reaction->mt)) return xs * urr->factors[2];
     if (reaction->mt == 102) return xs * urr->factors[3];
     return xs;
@@ -889,17 +993,9 @@ static alea_error_t evaluate_checked(
         }
         double microscopic_total = microscopic_thermal + microscopic_elastic +
             microscopic_absorption + microscopic_emission;
-        /* Use the sum of the sampled partial cross sections for transport.
-         * Processed probability-table totals can differ slightly from that
-         * sum because each column is independently rounded.  The partial sum
-         * keeps flight and reaction selection exactly normalized. */
-        if (urr && urr->active) {
-            double table_total = alea_nuc_xs_total(
-                nuc, incident->energy) * urr->factors[0];
-            if (fabs(microscopic_total - table_total) >
-                1e-3 * fmax(1.0, table_total))
-                return ALEA_ERR_UNSUPPORTED;
-        }
+        /* ACE probability-table totals are diagnostic. Transport uses the
+         * sum of sampled elastic, fission and capture plus the smooth
+         * competition channels selected by ILF and IOA. */
         candidate->macro_total += component->number_density * microscopic_total;
         candidate->macro_elastic += component->number_density * microscopic_elastic;
         candidate->macro_thermal += component->number_density * microscopic_thermal;

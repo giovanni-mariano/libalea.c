@@ -118,6 +118,22 @@ individual tables. The source-table SHA-256 values are
 `da2f69bce3b620159923e4c994cf07542ff35fccb1b85371b83b0efd69ba4328` for
 `92238.01c`.
 
+The full-library URR representation gate scans the 343 `.00c` tables with URR
+data in Lib80 and the 268 `.71c` tables with URR data in the 293.6 K
+ENDF/B-VII.1 library. It exercises every URR energy knot and logarithmic
+interval midpoint at seven probability quantiles. The matrix includes linear
+and log-log interpolation, absolute tables and smooth-cross-section factors,
+and negative, zero, and positive competition flags. It requires all Lib80
+tables to prepare and evaluate. The older library has two pinned fail-closed
+cases: `32070.71c` has an invalid URR table and `63153.71c` has an invalid MT=91
+neutron-emission energy distribution. Run it with:
+
+```sh
+make test-urr-matrix-required \
+  ALEA_ENDFB80_XSDIR=/path/to/Lib80x/xsdir \
+  ALEA_ENDFB71_XSDIR=/path/to/ENDF-B-VII.1-neutron-293.6K/xsdir
+```
+
 The same pinned U-235 evaluation supplies a resonance-bearing table for the
 required temperature-mixing gate. `make test-temperature-mix-required` creates
 an independently Doppler-broadened upper table, mixes the two immutable tables,

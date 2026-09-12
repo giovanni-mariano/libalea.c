@@ -47,14 +47,14 @@ NJOY_TEST59_DIR = njoy-test59
 NJOY_TEST25_DIR = njoy-test25
 
 # Test binaries
-TESTS = test_endfb80 test_fendl32c test_eprdata12 test_eprdata14 test_eprdata25 test_photon_xs test_nucdata_integration test_thermal test_photon_production test_production_photon_angles test_production_urr test_temperature_mix test_photoatomic_relaxation
+TESTS = test_endfb80 test_fendl32c test_eprdata12 test_eprdata14 test_eprdata25 test_photon_xs test_nucdata_integration test_thermal test_photon_production test_production_photon_angles test_production_urr test_urr_matrix test_temperature_mix test_photoatomic_relaxation
 BENCH = bench_load
 
 # ============================================================================
 # Targets
 # ============================================================================
 
-.PHONY: all test test-inventory-required test-photon-production-required test-production-photon-angles-required test-production-urr-required test-photoatomic-relaxation-required test-temperature-mix-required test-thermal-required clean data data-fendl32c data-endfb80 data-eprdata12 data-eprdata14 data-eprdata25 data-mcplib84 data-endfb71-tsl data-njoy-test74 data-njoy-test07 data-njoy-test08 data-njoy-test25 data-njoy-test59 help
+.PHONY: all test test-inventory-required test-photon-production-required test-production-photon-angles-required test-production-urr-required test-urr-matrix-required test-photoatomic-relaxation-required test-temperature-mix-required test-thermal-required clean data data-fendl32c data-endfb80 data-eprdata12 data-eprdata14 data-eprdata25 data-mcplib84 data-endfb71-tsl data-njoy-test74 data-njoy-test07 data-njoy-test08 data-njoy-test25 data-njoy-test59 help
 
 all: $(TESTS)
 
@@ -77,6 +77,7 @@ help:
 	@echo "  make test-photon-production-required - Download and run pinned photon tests"
 	@echo "  make test-production-photon-angles-required - Run production anisotropy benchmark"
 	@echo "  make test-production-urr-required - Run production U-238 URR benchmark"
+	@echo "  make test-urr-matrix-required - Scan production URR representations"
 	@echo "  make test-photoatomic-relaxation-required - Validate fluorescence metadata"
 	@echo "  make test-temperature-mix-required - Run real resonance-table mixing tests"
 	@echo "  make test-thermal-required - Download and run pinned continuous thermal tests"
@@ -245,6 +246,9 @@ test_production_photon_angles: test_production_photon_angles.c $(LIBS)
 test_production_urr: test_production_urr.c $(LIBS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
 
+test_urr_matrix: test_urr_matrix.c $(LIBS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
+
 test_temperature_mix: test_temperature_mix.c $(LIBS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
 
@@ -286,6 +290,14 @@ test-production-urr-required: test_production_urr
 	@test -n "$(ALEA_ENDFB80_XSDIR)" || \
 		(echo "ALEA_ENDFB80_XSDIR is required"; exit 1)
 	ALEA_ENDFB80_XSDIR="$(ALEA_ENDFB80_XSDIR)" ./test_production_urr
+
+test-urr-matrix-required: test_urr_matrix
+	@test -n "$(ALEA_ENDFB80_XSDIR)" || \
+		(echo "ALEA_ENDFB80_XSDIR is required"; exit 1)
+	@test -n "$(ALEA_ENDFB71_XSDIR)" || \
+		(echo "ALEA_ENDFB71_XSDIR is required"; exit 1)
+	ALEA_ENDFB80_XSDIR="$(ALEA_ENDFB80_XSDIR)" \
+	ALEA_ENDFB71_XSDIR="$(ALEA_ENDFB71_XSDIR)" ./test_urr_matrix
 
 test-temperature-mix-required: data-njoy-test07 test_temperature_mix
 	./test_temperature_mix

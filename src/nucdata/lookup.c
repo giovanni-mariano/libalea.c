@@ -289,7 +289,7 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
     const double* tab_lo = &urr->table[ie * 6 * M];
     int band_lo = M - 1;
     for (int j = 0; j < M; j++) {
-        if (tab_lo[j] >= xi) { band_lo = j; break; }
+        if (xi < tab_lo[j]) { band_lo = j; break; }
     }
 
     /* Extract factors at lower energy */
@@ -308,7 +308,7 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
     const double* tab_hi = &urr->table[(ie + 1) * 6 * M];
     int band_hi = M - 1;
     for (int j = 0; j < M; j++) {
-        if (tab_hi[j] >= xi) { band_hi = j; break; }
+        if (xi < tab_hi[j]) { band_hi = j; break; }
     }
 
     double f_hi[5];

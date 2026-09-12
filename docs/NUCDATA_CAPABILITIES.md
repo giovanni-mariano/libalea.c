@@ -118,6 +118,17 @@ sections while collision selection retains the sampled table's distributions
 and URR representation. Coordinated URR evaluation uses one probability
 quantile for both bounding tables so their resonance fluctuations remain
 correlated. No table is mutated, and exact endpoints use one component.
+For unresolved-resonance transport, the ACE ILF and IOA flags determine which
+smooth inelastic and other-absorption competition channels are added to the
+sampled elastic, fission, and capture values. A negative flag suppresses that
+category, zero sums its applicable smooth reactions, and a positive flag names
+either a summed competition tabulation or the sole competition reaction.
+Aggregate MT=4 rates are distributed over the sampleable inelastic channels
+in proportion to their smooth cross sections, as are aggregate charged-particle
+absorption rates when level reactions are present. Preparation validates named
+tabulations over the URR range. The probability-table total remains diagnostic
+because transport reconstructs an exactly normalized total from the selected
+partial channels.
 In-place Doppler broadening remains a separate caller-owned option;
 its numerical gates cover the 1/v invariant and a narrow-resonance reference
 quadrature. It rejects a nuclide with an attached URR probability table before

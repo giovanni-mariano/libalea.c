@@ -1365,6 +1365,179 @@ TEST(urr_loglog_uses_log_energy_fraction) {
     ASSERT_NEAR(factors[0], 10.0, 1e-12);
 }
 
+TEST(urr_inverse_cdf_skips_zero_probability_and_boundary_bands) {
+    double energy[] = {1.0, 2.0};
+    double table[] = {
+        0.0, 0.5, 1.0,  10.0, 20.0, 30.0,
+        1.0, 2.0, 3.0,  1.0, 2.0, 3.0,
+        1.0, 2.0, 3.0,  1.0, 2.0, 3.0,
+        0.0, 0.5, 1.0,  10.0, 20.0, 30.0,
+        1.0, 2.0, 3.0,  1.0, 2.0, 3.0,
+        1.0, 2.0, 3.0,  1.0, 2.0, 3.0
+    };
+    alea_nuc_urr_t urr = {
+        .n_energies = 2, .n_bands = 3, .interp = 2,
+        .multiply_smooth = true, .energy = energy, .table = table
+    };
+    alea_nuc_nuclide_t nuc = {0};
+    double factors[5];
+    nuc.urr = &urr;
+
+    ASSERT_EQ(alea_nuc_urr_factors(&nuc, 1.0, 0.0, factors), 1);
+    ASSERT_NEAR(factors[0], 20.0, 1e-12);
+    ASSERT_EQ(alea_nuc_urr_factors(&nuc, 1.0, 0.499, factors), 1);
+    ASSERT_NEAR(factors[0], 20.0, 1e-12);
+    ASSERT_EQ(alea_nuc_urr_factors(&nuc, 1.0, 0.5, factors), 1);
+    ASSERT_NEAR(factors[0], 30.0, 1e-12);
+}
+
+TEST(urr_other_absorption_flag_controls_smooth_competition) {
+    double energy[] = {1.0, 3.0};
+    double urr_energy[] = {1.0, 2.0};
+    double total[] = {7.0, 7.0}, elastic[] = {1.0, 1.0};
+    double absorption[] = {6.0, 6.0};
+    double capture[] = {1.0, 1.0}, proton[] = {2.0, 2.0};
+    double alpha[] = {3.0, 3.0}, alpha_level[] = {3.0, 3.0};
+    double urr_table[] = {
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+    };
+    alea_nuc_reaction_t reactions[] = {
+        {.mt=102, .ty=0, .threshold_index=1, .n_energies=2, .xs=capture},
+        {.mt=103, .ty=0, .threshold_index=1, .n_energies=2, .xs=proton},
+        {.mt=107, .ty=0, .threshold_index=1, .n_energies=2, .xs=alpha},
+        {.mt=800, .ty=0, .threshold_index=1, .n_energies=2, .xs=alpha_level}
+    };
+    alea_nuc_urr_t urr = {
+        .n_energies=2, .n_bands=1, .interp=2, .multiply_smooth=true,
+        .inelastic_flag=-1, .absorption_flag=-1,
+        .energy=urr_energy, .table=urr_table
+    };
+    alea_nuc_nuclide_t nuc = {0};
+    nuc.particle=ALEA_NUC_PARTICLE_NEUTRON; nuc.awr=12.0;
+    nuc.n_energies=2; nuc.energy=energy; nuc.sigma_total=total;
+    nuc.sigma_elastic=elastic; nuc.sigma_abs=absorption;
+    nuc.n_reactions=4; nuc.reactions=reactions; nuc.urr=&urr;
+    alea_nuc_mat_component_t component = {&nuc, 1.0};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
+    alea_nuc_prepare_requirements_t requirements = {
+        .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
+                                 ALEA_NUC_CAP_URR
+    };
+    const int flags[] = {-1, 0, 107, 800};
+    const double expected_total[] = {2.0, 7.0, 5.0, 5.0};
+    const double expected_absorption[] = {1.0, 6.0, 4.0, 4.0};
+    for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+        urr.absorption_flag = flags[i];
+        alea_nuc_capability_report_t report;
+        alea_nuc_prepared_material_t* prepared = NULL;
+        ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                            &prepared), ALEA_OK);
+        alea_nuc_particle_state_t incident = {
+            ALEA_NUC_PARTICLE_NEUTRON, 1.5, {0.0, 0.0, 1.0}, 1.0, 0.0
+        };
+        alea_nuc_urr_sample_t sample;
+        alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+        alea_nuc_evaluation_t evaluation;
+        double draw = 0.5;
+        sequence_rng_t rng = {&draw, 1, 0};
+        ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, sequence_rng,
+                                        &rng, &workspace, &evaluation), ALEA_OK);
+        ASSERT_NEAR(evaluation.macro_total, expected_total[i], 1e-12);
+        ASSERT_NEAR(evaluation.macro_absorption, expected_absorption[i], 1e-12);
+        incident.energy = 3.0;
+        ASSERT_EQ(alea_nuc_evaluate(prepared, &incident, &evaluation), ALEA_OK);
+        ASSERT_NEAR(evaluation.macro_total, 7.0, 1e-12);
+        ASSERT_NEAR(evaluation.macro_absorption, 6.0, 1e-12);
+        alea_nuc_prepared_material_free(prepared);
+    }
+
+    urr.absorption_flag = 801;
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                        &prepared), ALEA_ERR_UNSUPPORTED);
+    ASSERT_NULL(prepared);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_UNSUPPORTED_URR);
+}
+
+TEST(urr_inelastic_flag_controls_smooth_competition) {
+    double energy[] = {1.0, 3.0};
+    double urr_energy[] = {1.0, 2.0};
+    double total[] = {6.0, 6.0}, elastic[] = {1.0, 1.0};
+    double zero[] = {0.0, 0.0};
+    double aggregate[] = {5.0, 5.0};
+    double level1[] = {2.0, 2.0}, continuum[] = {3.0, 3.0};
+    double urr_table[] = {
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+    };
+    alea_nuc_energy_dist_t spectra[2] = {
+        {.law=ALEA_NUC_ELAW_LEVEL, .level_Q=0.5},
+        {.law=ALEA_NUC_ELAW_LEVEL, .level_Q=0.5}
+    };
+    alea_nuc_reaction_t reactions[] = {
+        {.mt=4, .ty=0, .threshold_index=1, .n_energies=2,
+         .xs=aggregate},
+        {.mt=51, .ty=1, .threshold_index=1, .n_energies=2,
+         .xs=level1, .energy=&spectra[0]},
+        {.mt=91, .ty=1, .threshold_index=1, .n_energies=2,
+         .xs=continuum, .energy=&spectra[1]}
+    };
+    alea_nuc_urr_t urr = {
+        .n_energies=2, .n_bands=1, .interp=2, .multiply_smooth=true,
+        .inelastic_flag=-1, .absorption_flag=-1,
+        .energy=urr_energy, .table=urr_table
+    };
+    alea_nuc_nuclide_t nuc = {0};
+    nuc.particle=ALEA_NUC_PARTICLE_NEUTRON; nuc.awr=12.0;
+    nuc.n_energies=2; nuc.energy=energy; nuc.sigma_total=total;
+    nuc.sigma_elastic=elastic; nuc.sigma_abs=zero;
+    nuc.n_reactions=3; nuc.reactions=reactions; nuc.urr=&urr;
+    alea_nuc_mat_component_t component = {&nuc, 1.0};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
+    alea_nuc_prepare_requirements_t requirements = {
+        .required_capabilities = ALEA_NUC_CAP_CONTINUOUS_NEUTRON |
+                                 ALEA_NUC_CAP_URR
+    };
+    const int flags[] = {-1, 0, 91, 4};
+    const double expected_total[] = {1.0, 6.0, 4.0, 6.0};
+    const double expected_emission[] = {0.0, 5.0, 3.0, 5.0};
+    for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+        urr.inelastic_flag = flags[i];
+        alea_nuc_capability_report_t report;
+        alea_nuc_prepared_material_t* prepared = NULL;
+        ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                            &prepared), ALEA_OK);
+        alea_nuc_particle_state_t incident = {
+            ALEA_NUC_PARTICLE_NEUTRON, 1.5, {0.0, 0.0, 1.0}, 1.0, 0.0
+        };
+        alea_nuc_urr_sample_t sample;
+        alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+        alea_nuc_evaluation_t evaluation;
+        double draw = 0.5;
+        sequence_rng_t rng = {&draw, 1, 0};
+        ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, sequence_rng,
+                                        &rng, &workspace, &evaluation), ALEA_OK);
+        ASSERT_NEAR(evaluation.macro_total, expected_total[i], 1e-12);
+        ASSERT_NEAR(evaluation.macro_neutron_emission,
+                    expected_emission[i], 1e-12);
+        incident.energy = 3.0;
+        ASSERT_EQ(alea_nuc_evaluate(prepared, &incident, &evaluation), ALEA_OK);
+        ASSERT_NEAR(evaluation.macro_total, 6.0, 1e-12);
+        ASSERT_NEAR(evaluation.macro_neutron_emission, 5.0, 1e-12);
+        alea_nuc_prepared_material_free(prepared);
+    }
+
+    urr.inelastic_flag = 50;
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(&material, &requirements, &report,
+                                        &prepared), ALEA_ERR_UNSUPPORTED);
+    ASSERT_NULL(prepared);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_UNSUPPORTED_URR);
+}
+
 TEST(urr_absolute_values_are_normalized_to_factors) {
     double energy[] = {1.0, 3.0};
     double total[] = {10.0, 10.0};

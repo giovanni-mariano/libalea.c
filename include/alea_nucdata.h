@@ -240,8 +240,12 @@ double alea_nuc_interp_loglog(const double* grid, const double* values, int n,
 /**
  * @brief Get URR-modified cross section factors at given energy
  *
- * Samples a probability band using xi, returns cross section factors
- * for total, elastic, fission, capture, heating.
+ * Samples a probability band using the inverse CDF and returns cross section
+ * factors for total, elastic, fission, capture, and heating. Absolute ACE
+ * probability tables are normalized to the corresponding smooth cross
+ * sections before these factors are returned. The ACE total is diagnostic;
+ * transport reconstructs its total from sampled partials and the smooth
+ * competition channels selected by the table's ILF and IOA flags.
  *
  * @param nuc     Nuclide with URR data
  * @param energy  Incident energy (MeV)
