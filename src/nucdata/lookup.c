@@ -54,6 +54,24 @@ static double interp(const double* grid, const double* values, int n,
     return values[i] + f * (values[i + 1] - values[i]);
 }
 
+/* Photoatomic grids may repeat an energy to encode a right-continuous shell
+ * threshold. The trusted lookup selects the last copy at the exact knot. */
+static double interp_photon_values_ll(const alea_nuc_photon_data_t* photon,
+                                      const double* values, double energy) {
+    if (!photon || !photon->ln_energy || !values ||
+        photon->n_energies < 2 || energy <= 0.0 || !isfinite(energy)) return 0.0;
+    double fraction;
+    int i = alea_nuc_energy_lookup_trusted(
+        photon->ln_energy, photon->n_energies, log(energy), &fraction);
+    if (i < 0) return 0.0;
+    double v0 = values[i], v1 = values[i + 1];
+    if (fraction <= 0.0) return v0;
+    if (fraction >= 1.0) return v1;
+    if (v0 <= 0.0 || v1 <= 0.0)
+        return v0 + fraction * (v1 - v0);
+    return exp(log(v0) + fraction * (log(v1) - log(v0)));
+}
+
 /** Log-log interpolation (common for cross sections) */
 double alea_nuc_interp_loglog(const double* grid, const double* values, int n,
                          double E) {
@@ -86,13 +104,14 @@ double alea_nuc_interp_loglog(const double* grid, const double* values, int n,
 }
 
 double alea_nuc_xs_total(const alea_nuc_nuclide_t* nuc, double energy) {
-    if (!nuc || !nuc->sigma_total) return 0.0;
+    if (!nuc) return 0.0;
     if (nuc->particle == ALEA_NUC_PARTICLE_PHOTON && nuc->photon) {
         return alea_nuc_photon_xs_incoherent(nuc, energy) +
                alea_nuc_photon_xs_coherent(nuc, energy) +
                alea_nuc_photon_xs_photoelectric(nuc, energy) +
                alea_nuc_photon_xs_pair(nuc, energy);
     }
+    if (!nuc->sigma_total) return 0.0;
     return interp(nuc->energy, nuc->sigma_total, nuc->n_energies, energy);
 }
 
@@ -110,8 +129,8 @@ double alea_nuc_xs_heating(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc) return 0.0;
     if (nuc->particle == ALEA_NUC_PARTICLE_PHOTON && nuc->photon) {
         if (!nuc->photon->heating) return 0.0;
-        return alea_nuc_interp_loglog(nuc->photon->energy, nuc->photon->heating,
-                                  nuc->photon->n_energies, energy);
+        return interp_photon_values_ll(nuc->photon, nuc->photon->heating,
+                                       energy);
     }
     if (!nuc->heating) return 0.0;
     return interp(nuc->energy, nuc->heating, nuc->n_energies, energy);
@@ -166,6 +185,23 @@ double alea_nuc_photon_xs_photoelectric(const alea_nuc_nuclide_t* nuc, double en
                              ph->n_energies, log(energy));
 }
 
+double alea_nuc_photon_xs_photoelectric_subshell(
+    const alea_nuc_nuclide_t* nuc, int designator, double energy) {
+    if (!nuc || !nuc->photon || designator <= 0 ||
+        energy <= 0.0 || !isfinite(energy)) return 0.0;
+    const alea_nuc_photon_data_t* ph = nuc->photon;
+    if (!ph->ln_energy || ph->n_subshells < 0 ||
+        (ph->n_subshells > 0 && !ph->subshells)) return 0.0;
+    for (int i = 0; i < ph->n_subshells; i++) {
+        const alea_nuc_atomic_subshell_t* shell = &ph->subshells[i];
+        if (shell->designator != designator || !shell->ln_photoelectric_xs)
+            continue;
+        return interp_photon_ll(ph->ln_energy, shell->ln_photoelectric_xs,
+                                ph->n_energies, log(energy));
+    }
+    return 0.0;
+}
+
 double alea_nuc_photon_xs_pair(const alea_nuc_nuclide_t* nuc, double energy) {
     if (!nuc || !nuc->photon) return 0.0;
     if (energy <= 0.0 || !isfinite(energy)) return 0.0;
@@ -187,20 +223,41 @@ static inline double reaction_xs_at(const alea_nuc_reaction_t* r, int ie, double
 
 double alea_nuc_xs_reaction(const alea_nuc_nuclide_t* nuc, int mt, double energy) {
     if (!nuc) return 0.0;
+    if (mt == 1) return alea_nuc_xs_total(nuc, energy);
     if (mt == 2) return alea_nuc_xs_elastic(nuc, energy);
+    if (mt == 3) {
+        double value = alea_nuc_xs_total(nuc, energy) -
+                       alea_nuc_xs_elastic(nuc, energy);
+        return value > 0.0 ? value : 0.0;
+    }
+    if (mt == 27 || mt == 101) return alea_nuc_xs_absorption(nuc, energy);
 
     /* O(1) lookup via MT table */
     const alea_nuc_reaction_t* r = NULL;
     if (nuc->mt_to_rxn && mt >= 0 && mt < ALEA_NUC_MT_TABLE_SIZE) {
         int idx = nuc->mt_to_rxn[mt];
-        if (idx < 0) return 0.0;
-        r = &nuc->reactions[idx];
+        if (idx >= 0) r = &nuc->reactions[idx];
     } else {
         for (int i = 0; i < nuc->n_reactions; i++) {
             if (nuc->reactions[i].mt == mt) { r = &nuc->reactions[i]; break; }
         }
-        if (!r) return 0.0;
     }
+
+    /* Some ACE photon-production channels reference redundant aggregate
+     * reactions that are omitted from MTR. Reconstruct the two aggregates
+     * used by conventional neutron tables from their sampled children. */
+    if (!r && (mt == 4 || mt == 18)) {
+        double sum = 0.0;
+        for (int i = 0; i < nuc->n_reactions; i++) {
+            int child = nuc->reactions[i].mt;
+            if ((mt == 4 && child >= 51 && child <= 91) ||
+                (mt == 18 && (child == 19 || child == 20 || child == 21 ||
+                              child == 38)))
+                sum += alea_nuc_xs_reaction(nuc, child, energy);
+        }
+        return sum;
+    }
+    if (!r) return 0.0;
 
     double f;
     int ie = alea_nuc_energy_lookup_trusted(nuc->energy, nuc->n_energies, energy, &f);
@@ -277,6 +334,12 @@ int alea_nuc_urr_factors(const alea_nuc_nuclide_t* nuc, double energy, double xi
     }
 
 normalize:
+    /* Some processed probability tables contain small negative capture
+     * values in their highest probability bands. A negative reaction rate
+     * cannot enter transport selection, so clamp collision cross sections;
+     * keep heating signed because negative kerma is meaningful. */
+    for (int q = 0; q < 4; q++)
+        if (factors[q] < 0.0) factors[q] = 0.0;
     if (!urr->multiply_smooth) {
         double smooth[5];
         smooth[0] = alea_nuc_xs_total(nuc, energy);

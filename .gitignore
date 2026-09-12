@@ -11,3 +11,10 @@ tools/mc_plotter
 # Test temp files
 *_tmp.*
 plans/*
+tests/nucdata/endfb71-tsl/
+tests/nucdata/endfb71-tsl.tar.gz
+tests/nucdata/njoy-test74/
+tests/nucdata/njoy-test07/
+tests/nucdata/njoy-test08/
+tests/nucdata/njoy-test59/
+tests/nucdata/njoy-test25/

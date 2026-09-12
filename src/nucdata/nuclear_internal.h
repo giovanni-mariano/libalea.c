@@ -19,6 +19,14 @@
 #include <math.h>
 #include <limits.h>
 
+/* Module-local allocation layer. The hook is test-only and must only be
+ * changed while no other thread is using the nuclear-data module. */
+void alea_nuc_set_alloc_failure(bool (*should_fail)(void*), void* context);
+void* alea_nuc_malloc(size_t size);
+void* alea_nuc_calloc(size_t count, size_t size);
+void* alea_nuc_realloc(void* pointer, size_t size);
+char* alea_nuc_strdup(const char* text);
+
 /* Flag the table as corrupt after an out-of-bounds XSS access. The table is a
  * genuinely mutable, heap-owned object — the const on the helper parameters is
  * only an API courtesy — so recording the error through it is well-defined.
@@ -91,7 +99,7 @@ static inline double* xss_copy(const alea_nuc_ace_table_t* t, int start, int n) 
     if (n <= 0) return NULL;
     if (!xss_range_valid(t, start, n)) return NULL;
     int i = start - 1;
-    double* arr = malloc((size_t)n * sizeof(double));
+    double* arr = alea_nuc_malloc((size_t)n * sizeof(double));
     if (arr)
         memcpy(arr, &t->xss[i], (size_t)n * sizeof(double));
     else
@@ -101,14 +109,61 @@ static inline double* xss_copy(const alea_nuc_ace_table_t* t, int start, int n) 
 
 /* angular.c — decode */
 alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, int n_reactions);
+alea_nuc_angular_dist_t* alea_nuc_decode_angular_base(
+    const alea_nuc_ace_table_t* table, int locator, int and_base);
 void alea_nuc_decode_all_angular(alea_nuc_nuclide_t* nuc);
 
 /* energy_dist.c — decode */
 alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist(const alea_nuc_ace_table_t* t, int ldlw_loc);
+alea_nuc_energy_dist_t* alea_nuc_decode_energy_dist_base(
+    const alea_nuc_ace_table_t* t, int ldlw_loc, int dlw_base);
 void alea_nuc_decode_all_energy(alea_nuc_nuclide_t* nuc);
+void alea_nuc_energy_dist_free(alea_nuc_energy_dist_t* distribution);
+alea_error_t alea_nuc_decode_delayed_neutrons(
+    alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_t* table);
+alea_error_t alea_nuc_decode_photon_production(
+    alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_t* table);
+double alea_nuc_photon_production_event_yield(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production,
+    int event_mt, double energy);
 
 /* lookup.c — fast path for immutable grids validated during decoding */
 int alea_nuc_energy_lookup_trusted(const double* energy, int n, double E,
                                    double* frac);
+
+/* interpolation.c — validated ENDF/ACE interpolation and tabular sampling */
+bool alea_nuc_interp_regions_valid(const int* nbt, const int* interp,
+                                   int n_regions, int n_points);
+int alea_nuc_interp_code_for_interval(const int* nbt, const int* interp,
+                                      int n_regions, int interval);
+alea_error_t alea_nuc_interp_pair(double x0, double x1, double y0, double y1,
+                                  double query, int interpolation,
+                                  double* value);
+alea_error_t alea_nuc_interp_eval(const double* x, const double* y, int n,
+                                  const int* nbt, const int* interp,
+                                  int n_regions, double query, double* value);
+bool alea_nuc_tabular_pdf_valid(const double* x, const double* pdf,
+                                const double* cdf, int n, int interpolation,
+                                int n_discrete);
+alea_error_t alea_nuc_tabular_pdf_sample(const double* x, const double* pdf,
+                                         const double* cdf, int n,
+                                         int interpolation, int n_discrete,
+                                         double xi, double* value,
+                                         int* sampled_index);
+alea_error_t alea_nuc_energy_dist_validate(
+    const alea_nuc_energy_dist_t* distribution, int* unsupported_law);
+double alea_nuc_sample_angular_mu_internal(
+    const alea_nuc_angular_dist_t* angular, double energy,
+    double select_xi, double sample_xi);
+int alea_nuc_validate_angular_internal(
+    const alea_nuc_angular_dist_t* angular);
+void alea_nuc_rotate_direction_internal(
+    const double incident[3], double mu, double phi, double output[3]);
+
+/* thermal.c — thermal ACE decode and sampling */
+alea_error_t alea_nuc_decode_thermal_internal(
+    const alea_nuc_ace_table_t* table, alea_nuc_thermal_t** thermal);
+int alea_nuc_thermal_validate_internal(const alea_nuc_thermal_t* thermal);
 
 #endif /* NUCLEAR_INTERNAL_H */

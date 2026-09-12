@@ -12,31 +12,24 @@
  * absorption collisions.
  *
  * Usage:
- *   ./slab_transport <path-to-ace-dir> [thickness_cm] [histories] [zaid]
+ *   ./slab_transport <path-to-ace-dir> [thickness_cm] [histories] [zaid] [seed]
  */
 
 #include "alea_nucdata.h"
 
 #include <math.h>
 #include <stdint.h>
+#include <inttypes.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-
-static uint64_t rng_state;
-
-static double random_uniform(void* context) {
-    uint64_t* state = context;
-    *state = *state * UINT64_C(6364136223846793005) +
-             UINT64_C(1442695040888963407);
-    return (double)(*state >> 11) / 9007199254740992.0;
-}
 
 int main(int argc, char* argv[]) {
     const char* datadir = "test/fendl-FENDL-3.2c-neutron-ace/neutron/ace";
     const char* zaid = "1001.32c";
     double thickness = 5.0;
     int histories = 100000;
+    uint64_t seed = 1;
     if (argc > 1) datadir = argv[1];
     if (argc > 2) thickness = atof(argv[2]);
     if (argc > 3) histories = atoi(argv[3]);
@@ -45,7 +38,17 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "thickness and history count must be positive\n");
         return 2;
     }
-    rng_state = (uint64_t)time(NULL);
+    if (argc > 5) {
+        char* end;
+        errno = 0;
+        uintmax_t parsed = strtoumax(argv[5], &end, 10);
+        if (errno || end == argv[5] || *end || argv[5][0] == '-' ||
+            parsed > UINT64_MAX) {
+            fprintf(stderr, "seed must be an unsigned 64-bit integer\n");
+            return 2;
+        }
+        seed = (uint64_t)parsed;
+    }
 
     alea_nuc_xsdir_t* xsdir = alea_nuc_xsdir_load_dir(datadir);
     if (!xsdir) {
@@ -107,8 +110,13 @@ int main(int argc, char* argv[]) {
                 break;
             }
             double distance;
-            err = alea_nuc_sample_flight(&evaluation, random_uniform,
-                                         &rng_state, &distance);
+            alea_nuc_rng_t flight_rng, collision_rng;
+            alea_nuc_rng_init(&flight_rng, seed, (uint32_t)history, 0,
+                              (uint32_t)collisions, ALEA_NUC_RNG_FLIGHT);
+            alea_nuc_rng_init(&collision_rng, seed, (uint32_t)history, 0,
+                              (uint32_t)collisions, ALEA_NUC_RNG_COLLISION);
+            err = alea_nuc_sample_flight(&evaluation, alea_nuc_rng_uniform,
+                                         &flight_rng, &distance);
             if (err != ALEA_OK) {
                 fprintf(stderr, "flight sampling failed: %s\n",
                         alea_error_string(err));
@@ -129,8 +137,8 @@ int main(int argc, char* argv[]) {
             }
 
             alea_nuc_collision_result_t collision;
-            err = alea_nuc_collide(&evaluation, random_uniform,
-                                   &rng_state, &collision);
+            err = alea_nuc_collide(&evaluation, alea_nuc_rng_uniform,
+                                   &collision_rng, &collision);
             if (err != ALEA_OK) {
                 fprintf(stderr, "collision sampling failed: %s\n",
                         alea_error_string(err));
@@ -155,6 +163,7 @@ int main(int argc, char* argv[]) {
     }
 
     printf("restricted hydrogen slab, %s\n", zaid);
+    printf("RNG: Philox4x32-10, seed: %" PRIu64 "\n", seed);
     printf("histories: %d, thickness: %.6g cm\n", histories, thickness);
     printf("transmitted: %d (%.3f%%)\n", transmitted,
            100.0 * transmitted / histories);

@@ -144,6 +144,7 @@ typedef struct {
 
 /** Energy distribution law identifier */
 typedef enum {
+    ALEA_NUC_ELAW_DISCRETE_PHOTON = 2,  /* discrete secondary photon */
     ALEA_NUC_ELAW_LEVEL = 3,            /* level scattering */
     ALEA_NUC_ELAW_CONT_TABULAR = 4,     /* continuous tabular */
     ALEA_NUC_ELAW_GENERAL_EVAP = 5,     /* general evaporation */
@@ -153,7 +154,23 @@ typedef enum {
     ALEA_NUC_ELAW_KALBACH = 44,         /* Kalbach-Mann */
     ALEA_NUC_ELAW_NBODY = 66,           /* N-body phase space */
     ALEA_NUC_ELAW_CORRELATED = 61,      /* correlated energy-angle */
+    ALEA_NUC_ELAW_LAB_ANGLE_ENERGY = 67,/* laboratory angle then energy */
 } alea_nuc_energy_law_t;
+
+typedef struct {
+    int interpolation;
+    int n_points;
+    double* energy;
+    double* pdf;
+    double* cdf;
+} alea_nuc_law67_energy_t;
+
+typedef struct {
+    int interpolation;
+    int n_cosines;
+    double* cosine;
+    alea_nuc_law67_energy_t* spectrum; /* one conditional spectrum per cosine */
+} alea_nuc_law67_incident_t;
 
 /** Energy distribution (can be a chain of laws with probability) */
 typedef struct alea_nuc_energy_dist {
@@ -172,8 +189,13 @@ typedef struct alea_nuc_energy_dist {
     int data_length;
 
     /* Level scattering (law 3) */
-    double level_A;             /* (A+1)/A factor squared */
-    double level_Q;
+    double level_A;             /* threshold energy */
+    double level_Q;             /* outgoing/incident mass-ratio factor */
+
+    /* Discrete photon (law 2) */
+    int discrete_photon_primary;
+    double discrete_photon_energy;
+    double discrete_photon_awr;
 
     /* Maxwell/Evaporation/Watt parameters */
     int n_temp_regions;         /* interpolation regions for T(E) / Watt a(E) */
@@ -189,6 +211,17 @@ typedef struct alea_nuc_energy_dist {
     int* watt_b_interp;
     double* watt_b_energy;      /* incident energy grid for Watt b(E) */
     double watt_a, watt_b;      /* Watt parameters (if constant) */
+    double restriction_energy;  /* signed U; outgoing upper limit is E-U */
+
+    /* General evaporation law 5: equiprobable dimensionless X boundaries */
+    int n_general_evap;
+    double* general_evap_x;
+
+    /* N-body phase space (law 66) */
+    int nbody_particles;
+    double nbody_total_mass;
+    double nbody_target_awr;
+    double nbody_q_value;
 
     /* Continuous tabular (law 4) and Kalbach-Mann (law 44) */
     struct {
@@ -208,8 +241,19 @@ typedef struct alea_nuc_energy_dist {
         double** precompound_a; /* a values [n_ein][n_eout[i]], NULL for law 4 */
         /* Correlated angular (law 61 only): LC locators per (ein, eout) */
         int** ang_lc;           /* angular locators [n_ein][n_eout[i]], NULL for law 4/44 */
+        alea_nuc_angular_point_t** correlated_mu; /* decoded law 61 angles */
         int dlw_base;           /* DLW block base for resolving angular locators */
     } tab;
+
+    /* Law 67: incident energy -> equiprobable cosine -> conditional energy. */
+    struct {
+        int n_ein;
+        int n_regions;
+        int* nbt;
+        int* interp;
+        double* ein;
+        alea_nuc_law67_incident_t* incident;
+    } law67;
 
     struct alea_nuc_energy_dist* next; /* linked list for multiple laws */
 } alea_nuc_energy_dist_t;
@@ -227,6 +271,23 @@ typedef struct {
     alea_nuc_angular_dist_t* angular;
     alea_nuc_energy_dist_t* energy;
 } alea_nuc_reaction_t;
+
+/** One neutron-induced photon-production channel from ACE MTRP/SIGP. */
+typedef struct {
+    int mt;                     /* encoded photon-production MT */
+    int parent_mt;              /* incident-neutron reaction MT */
+    int mf;                     /* source ENDF file: 12, 13, or 16 */
+    bool production_xs;         /* values are production XS rather than yield */
+    int threshold_index;        /* 1-based main-grid index for MF=13 */
+    int n_regions;
+    int* nbt;
+    int* interp;
+    int n_energies;
+    double* energy;             /* incident grid for MF=12/16 */
+    double* values;             /* yield or photon-production XS */
+    alea_nuc_angular_dist_t* angular;
+    alea_nuc_energy_dist_t* spectrum;
+} alea_nuc_photon_production_t;
 
 /* ============================================================================
  * FISSION DATA
@@ -254,9 +315,22 @@ typedef struct {
 } alea_nuc_nu_bar_t;
 
 typedef struct {
+    double decay_rate;          /* s^-1 */
+    int n_regions;
+    int* nbt;
+    int* interp;
+    int n_energies;
+    double* energy;
+    double* probability;
+    alea_nuc_energy_dist_t* spectrum;
+} alea_nuc_delayed_group_t;
+
+typedef struct {
     alea_nuc_nu_bar_t* total;        /* total ν̄ */
     alea_nuc_nu_bar_t* prompt;       /* prompt ν̄ (NULL if not given) */
     alea_nuc_nu_bar_t* delayed;      /* delayed ν̄ (NULL if not given) */
+    int n_delayed_groups;
+    alea_nuc_delayed_group_t* delayed_groups;
 } alea_nuc_fission_t;
 
 /* ============================================================================
@@ -277,6 +351,39 @@ typedef struct {
 /* ============================================================================
  * PHOTON DATA (photoatomic .p tables)
  * ============================================================================ */
+
+typedef struct {
+    int primary_designator;    /* shell receiving the first vacancy */
+    int secondary_designator;  /* 0 for radiative, otherwise second vacancy */
+    double energy;             /* tabulated photon/electron energy, MeV */
+    double cumulative_probability;
+} alea_nuc_atomic_transition_t;
+
+typedef struct {
+    int designator;
+    double occupancy;
+    double binding_energy;              /* MeV */
+    double compton_vacancy_probability;
+    int n_transitions;
+    alea_nuc_atomic_transition_t* transitions;
+    double* ln_photoelectric_xs;         /* common photon energy grid */
+    size_t max_relaxation_photons;       /* exact cascade capacity bound */
+} alea_nuc_atomic_subshell_t;
+
+typedef struct {
+    double electron_count;
+    double binding_energy;              /* MeV */
+    double cumulative_probability;
+    int profile_index;
+} alea_nuc_compton_shell_t;
+
+typedef struct {
+    int interpolation;
+    int n_momenta;
+    double* momentum;                    /* p_z in atomic units */
+    double* pdf;
+    double* cdf;
+} alea_nuc_compton_profile_t;
 
 typedef struct {
     int n_energies;
@@ -304,10 +411,68 @@ typedef struct {
     double* coherent_ff;            /* F(q,Z) form factor */
     double* coherent_ff_cumulative; /* integrated form factor */
 
-    /* Fluorescence */
+    /* Detailed EPR subshell photoelectric and atomic-relaxation data. */
+    int epr_format;
+    int n_compton_shells;
+    alea_nuc_compton_shell_t* compton_shells;
+    int n_compton_profiles;
+    alea_nuc_compton_profile_t* compton_profiles;
+    int n_subshells;
+    alea_nuc_atomic_subshell_t* subshells;
+
+    /* Averaged fluorescence representation in older photoatomic tables. */
     int n_fluorescence;
-    /* TODO: fluorescence shell data */
+    double* fluorescence_edge;   /* incident-energy edge, MeV */
+    double* fluorescence_phi;    /* cumulative edge-jump parameter */
+    double* fluorescence_yield;  /* cumulative photon yield */
+    double* fluorescence_energy; /* representative photon energy, MeV */
 } alea_nuc_photon_data_t;
+
+/* ============================================================================
+ * THERMAL SCATTERING DATA (.t tables)
+ * ============================================================================ */
+
+typedef enum {
+    ALEA_NUC_THERMAL_ELASTIC_NONE = 0,
+    ALEA_NUC_THERMAL_ELASTIC_INCOHERENT = 3,
+    ALEA_NUC_THERMAL_ELASTIC_COHERENT = 4,
+    ALEA_NUC_THERMAL_ELASTIC_MIXED = 5,
+} alea_nuc_thermal_elastic_mode_t;
+
+/** Decoded thermal ACE table with discrete or continuous inelastic data. */
+typedef struct {
+    char zaid[24];
+    double awr;
+    double temperature;          /* kT in MeV */
+
+    int n_applicable_zaids;
+    int applicable_zaids[16];    /* ACE IZ identifiers */
+
+    int n_inelastic_energies;
+    double* inelastic_energy;    /* incident energy grid, MeV */
+    double* inelastic_xs;        /* barns */
+    int n_inelastic_outgoing;
+    int n_inelastic_cosines;
+    bool inelastic_continuous;   /* ACE IFENG=2 */
+    bool inelastic_skewed;
+    int n_inelastic_outgoing_total;
+    int* inelastic_outgoing_offset; /* [incident + 1], continuous only */
+    double* inelastic_energy_out; /* flattened outgoing energies, MeV */
+    double* inelastic_pdf;        /* continuous only, MeV^-1 */
+    double* inelastic_cdf;        /* continuous only */
+    double* inelastic_mu;         /* [flattened outgoing][cosine] */
+
+    alea_nuc_thermal_elastic_mode_t elastic_mode;
+    int n_coherent_edges;
+    double* coherent_edge;       /* Bragg edges, MeV */
+    double* coherent_factor;     /* cumulative structure factor, MeV*b */
+
+    int n_incoherent_energies;
+    double* incoherent_energy;   /* MeV */
+    double* incoherent_xs;       /* barns */
+    int n_incoherent_cosines;
+    double* incoherent_mu;       /* [incident][cosine] */
+} alea_nuc_thermal_t;
 
 /* ============================================================================
  * NUCLIDE — fully decoded ACE table
@@ -334,6 +499,12 @@ typedef struct {
     /* Reactions (non-elastic) */
     int n_reactions;
     alea_nuc_reaction_t* reactions;
+
+    int n_photon_productions;
+    alea_nuc_photon_production_t* photon_productions;
+    double* total_photon_production_xs; /* GPD, on the main neutron grid */
+    int n_photon_yield_multipliers;
+    int* photon_yield_multipliers;      /* YP neutron MT identifiers */
 
     /* Fission (NULL if non-fissile) */
     alea_nuc_fission_t* fission;
@@ -433,10 +604,16 @@ typedef enum {
     ALEA_NUC_CAP_FISSION            = 1u << 4,
     ALEA_NUC_CAP_PHOTON             = 1u << 5,
     ALEA_NUC_CAP_URR                = 1u << 6,
+    ALEA_NUC_CAP_NEUTRON_EMISSION   = 1u << 7,
+    ALEA_NUC_CAP_DELAYED_NEUTRON    = 1u << 8,
+    ALEA_NUC_CAP_PHOTON_PRODUCTION  = 1u << 9,
 } alea_nuc_capability_t;
 
 #define ALEA_NUC_CAP_RESTRICTED_NEUTRON \
     (ALEA_NUC_CAP_STATIONARY_ELASTIC | ALEA_NUC_CAP_ABSORPTION)
+
+#define ALEA_NUC_CAP_CONTINUOUS_NEUTRON \
+    (ALEA_NUC_CAP_RESTRICTED_NEUTRON | ALEA_NUC_CAP_NEUTRON_EMISSION)
 
 typedef enum {
     ALEA_NUC_PREP_OK = 0,
@@ -445,12 +622,23 @@ typedef enum {
     ALEA_NUC_PREP_UNSUPPORTED_PARTICLE,
     ALEA_NUC_PREP_UNSUPPORTED_URR,
     ALEA_NUC_PREP_UNSUPPORTED_REACTION,
+    ALEA_NUC_PREP_INVALID_ENERGY_DISTRIBUTION,
     ALEA_NUC_PREP_INVALID_ANGULAR,
     ALEA_NUC_PREP_INVALID_CROSS_SECTIONS,
+    ALEA_NUC_PREP_INVALID_THERMAL_ASSOCIATION,
 } alea_nuc_prepare_issue_t;
+
+/** Bind one material component to a thermal scattering table. */
+typedef struct {
+    int component_index;
+    const alea_nuc_thermal_t* thermal;
+} alea_nuc_thermal_association_t;
 
 typedef struct {
     uint32_t required_capabilities;
+    const alea_nuc_thermal_association_t* thermal_associations;
+    size_t n_thermal_associations;
+    double thermal_temperature_tolerance; /* absolute kT tolerance, MeV */
 } alea_nuc_prepare_requirements_t;
 
 typedef struct {
@@ -465,6 +653,21 @@ typedef struct {
 
 typedef double (*alea_nuc_random_fn)(void* context);
 
+/** Caller-owned Philox address. Initialize before passing to the RNG callback. */
+typedef struct {
+    uint64_t seed;
+    uint64_t entity_id;
+    uint64_t local_draw;
+    uint32_t event_index;
+    uint32_t domain;
+} alea_nuc_rng_t;
+
+typedef enum {
+    ALEA_NUC_RNG_FLIGHT = 0,
+    ALEA_NUC_RNG_COLLISION,
+    ALEA_NUC_RNG_URR
+} alea_nuc_rng_domain_t;
+
 typedef struct {
     alea_nuc_particle_t type;
     double energy;          /* MeV */
@@ -474,17 +677,43 @@ typedef struct {
 } alea_nuc_particle_state_t;
 
 typedef struct {
+    alea_nuc_particle_state_t outgoing;
+    double mu_cm;
+    double mu_lab;
+} alea_nuc_free_gas_result_t;
+
+typedef struct {
+    bool active;
+    double factors[5]; /* total, elastic, fission, capture, heating */
+} alea_nuc_urr_sample_t;
+
+typedef struct {
+    alea_nuc_urr_sample_t* components;
+    size_t capacity;
+} alea_nuc_evaluation_workspace_t;
+
+typedef struct {
     const alea_nuc_prepared_material_t* prepared;
     alea_nuc_particle_state_t incident;
     double macro_total;       /* cm^-1 */
     double macro_elastic;     /* cm^-1 */
+    double macro_thermal;     /* cm^-1, replaces free-atom elastic in range */
     double macro_absorption;  /* cm^-1 */
+    double macro_neutron_emission; /* cm^-1 */
+    const alea_nuc_evaluation_workspace_t* workspace;
 } alea_nuc_evaluation_t;
 
 typedef enum {
     ALEA_NUC_OUTCOME_ABSORBED = 0,
     ALEA_NUC_OUTCOME_SCATTERED,
+    ALEA_NUC_OUTCOME_REPLACED,
 } alea_nuc_collision_outcome_t;
+
+typedef struct {
+    alea_nuc_particle_state_t* particles;
+    size_t capacity;
+    size_t count;
+} alea_nuc_secondary_buffer_t;
 
 typedef struct {
     alea_nuc_collision_outcome_t outcome;
@@ -495,6 +724,7 @@ typedef struct {
     bool deposition_available;
     double local_energy_deposition; /* MeV */
     alea_nuc_particle_state_t outgoing; /* valid when outcome is SCATTERED */
+    size_t n_emitted; /* particles appended to the caller's secondary buffer */
 } alea_nuc_collision_result_t;
 
 #ifdef __cplusplus

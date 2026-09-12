@@ -624,10 +624,10 @@ Fissile nuclides have special data:
 
 Photoatomic tables (`.p` suffix) contain four interaction types:
 
-- **Compton (incoherent) scattering — MT 504**: photon scatters off electron, losing energy. Klein-Nishina cross section with composition-rejection sampling.
+- **Compton (incoherent) scattering — MT 504**: photon scatters off an electron. The angle uses Klein-Nishina and the incoherent scattering function; EPR Compton profiles account for bound-electron momentum in the scattered energy and can initiate an atomic-relaxation cascade.
 - **Rayleigh (coherent) scattering — MT 502**: elastic scattering off atom, no energy change. Angular distribution from atomic form factor F(q,Z).
-- **Photoelectric absorption — MT 522**: photon fully absorbed. Dominant below ~100 keV.
-- **Pair production — MT 516**: above 1.022 MeV, photon converts to electron-positron pair. Two 0.511 MeV annihilation photons created.
+- **Photoelectric absorption — MT 522**: photon is absorbed. Detailed EPR tables can emit a shell-relaxation cascade; charged particles are deposited locally.
+- **Pair production — MT 517**: above 1.022 MeV, photon converts to an electron-positron pair. Two 0.511 MeV annihilation photons are created.
 
 ### Unresolved Resonance Region (URR)
 

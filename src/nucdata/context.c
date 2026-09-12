@@ -43,50 +43,32 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
             free(r->angular);
         }
 
-        alea_nuc_energy_dist_t* ed = r->energy;
-        while (ed) {
-            alea_nuc_energy_dist_t* next = ed->next;
-            free(ed->nbt);
-            free(ed->interp);
-            free(ed->energy);
-            free(ed->probability);
-            free(ed->data);
-            free(ed->temp_energy);
-            free(ed->temp_T);
-            free(ed->temp_nbt);
-            free(ed->temp_interp);
-            free(ed->temp_C);
-            free(ed->watt_b_energy);
-            free(ed->watt_b_nbt);
-            free(ed->watt_b_interp);
-            free(ed->tab.nbt);
-            free(ed->tab.interp);
-            /* Free tabular data (law 4/44) */
-            if (ed->tab.n_ein > 0) {
-                for (int j = 0; j < ed->tab.n_ein; j++) {
-                    free(ed->tab.eout ? ed->tab.eout[j] : NULL);
-                    free(ed->tab.pdf ? ed->tab.pdf[j] : NULL);
-                    free(ed->tab.cdf ? ed->tab.cdf[j] : NULL);
-                    if (ed->tab.precompound_r) free(ed->tab.precompound_r[j]);
-                    if (ed->tab.precompound_a) free(ed->tab.precompound_a[j]);
-                    if (ed->tab.ang_lc) free(ed->tab.ang_lc[j]);
-                }
-                free(ed->tab.ein);
-                free(ed->tab.interpolation);
-                free(ed->tab.n_discrete);
-                free(ed->tab.n_eout);
-                free(ed->tab.eout);
-                free(ed->tab.pdf);
-                free(ed->tab.cdf);
-                free(ed->tab.precompound_r);
-                free(ed->tab.precompound_a);
-                free(ed->tab.ang_lc);
-            }
-            free(ed);
-            ed = next;
-        }
+        alea_nuc_energy_dist_free(r->energy);
     }
     free(nuc->reactions);
+
+    for (int i = 0; i < nuc->n_photon_productions; i++) {
+        alea_nuc_photon_production_t* production =
+            &nuc->photon_productions[i];
+        free(production->nbt);
+        free(production->interp);
+        free(production->energy);
+        free(production->values);
+        if (production->angular) {
+            for (int j = 0; j < production->angular->n_energies; j++) {
+                free(production->angular->data[j].cosine);
+                free(production->angular->data[j].pdf);
+                free(production->angular->data[j].cdf);
+            }
+            free(production->angular->energy);
+            free(production->angular->data);
+            free(production->angular);
+        }
+        alea_nuc_energy_dist_free(production->spectrum);
+    }
+    free(nuc->photon_productions);
+    free(nuc->total_photon_production_xs);
+    free(nuc->photon_yield_multipliers);
 
     if (nuc->fission) {
         alea_nuc_nu_bar_t* bars[] = {
@@ -104,6 +86,16 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
                 free(bars[i]);
             }
         }
+        for (int i = 0; i < nuc->fission->n_delayed_groups; i++) {
+            alea_nuc_delayed_group_t* group =
+                &nuc->fission->delayed_groups[i];
+            free(group->nbt);
+            free(group->interp);
+            free(group->energy);
+            free(group->probability);
+            alea_nuc_energy_dist_free(group->spectrum);
+        }
+        free(nuc->fission->delayed_groups);
         free(nuc->fission);
     }
 
@@ -132,6 +124,22 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc) {
         free(nuc->photon->coherent_momentum);
         free(nuc->photon->coherent_ff);
         free(nuc->photon->coherent_ff_cumulative);
+        for (int i = 0; i < nuc->photon->n_compton_profiles; i++) {
+            free(nuc->photon->compton_profiles[i].momentum);
+            free(nuc->photon->compton_profiles[i].pdf);
+            free(nuc->photon->compton_profiles[i].cdf);
+        }
+        free(nuc->photon->compton_profiles);
+        free(nuc->photon->compton_shells);
+        for (int i = 0; i < nuc->photon->n_subshells; i++) {
+            free(nuc->photon->subshells[i].transitions);
+            free(nuc->photon->subshells[i].ln_photoelectric_xs);
+        }
+        free(nuc->photon->subshells);
+        free(nuc->photon->fluorescence_edge);
+        free(nuc->photon->fluorescence_phi);
+        free(nuc->photon->fluorescence_yield);
+        free(nuc->photon->fluorescence_energy);
         free(nuc->photon);
     }
 

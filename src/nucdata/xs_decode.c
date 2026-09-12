@@ -2,6 +2,233 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "nuclear_internal.h"
+#include <stdio.h>
+
+static int photon_shell_index(const alea_nuc_photon_data_t* ph,
+                              int designator) {
+    for (int i = 0; i < ph->n_subshells; i++)
+        if (ph->subshells[i].designator == designator) return i;
+    return -1;
+}
+
+static bool relaxation_bound(alea_nuc_photon_data_t* ph, int index,
+                             unsigned char* state, size_t* bound) {
+    if (state[index] == 2) {
+        *bound = ph->subshells[index].max_relaxation_photons;
+        return true;
+    }
+    if (state[index] == 1) return false;
+    state[index] = 1;
+    alea_nuc_atomic_subshell_t* shell = &ph->subshells[index];
+    size_t maximum = 0;
+    for (int i = 0; i < shell->n_transitions; i++) {
+        const alea_nuc_atomic_transition_t* transition =
+            &shell->transitions[i];
+        int primary = photon_shell_index(ph, transition->primary_designator);
+        int secondary = transition->secondary_designator == 0 ? -1 :
+            photon_shell_index(ph, transition->secondary_designator);
+        size_t first = 0, second = 0;
+        if (primary < 0 ||
+            !relaxation_bound(ph, primary, state, &first) ||
+            (secondary >= 0 &&
+             !relaxation_bound(ph, secondary, state, &second))) return false;
+        size_t radiative = transition->secondary_designator == 0 ? 1u : 0u;
+        if (first > SIZE_MAX - radiative ||
+            second > SIZE_MAX - radiative - first) return false;
+        size_t candidate = radiative + first + second;
+        if (candidate > maximum) maximum = candidate;
+    }
+    shell->max_relaxation_photons = maximum;
+    state[index] = 2;
+    *bound = maximum;
+    return true;
+}
+
+static alea_error_t decode_compton_profiles(alea_nuc_photon_data_t* ph,
+                                            const alea_nuc_ace_table_t* t) {
+    int nd = t->nxs[4];
+    if (nd == 0) return ALEA_OK;
+    if (nd < 0 || nd > 128) return ALEA_ERR_PARSE_ERROR;
+    int lneps = t->jxs[5], lswd = t->jxs[8], swd = t->jxs[9];
+    if (lneps <= 0 || lswd <= lneps || swd <= 0 ||
+        (lswd - lneps) % 3 != 0) return ALEA_ERR_PARSE_ERROR;
+    int ns = (lswd - lneps) / 3;
+    if (ns < nd || ns > 128 || !xss_range_valid(t, lneps, 3 * ns) ||
+        !xss_range_valid(t, lswd, nd)) return ALEA_ERR_PARSE_ERROR;
+
+    ph->compton_shells = alea_nuc_calloc(
+        (size_t)ns, sizeof(*ph->compton_shells));
+    ph->compton_profiles = alea_nuc_calloc(
+        (size_t)nd, sizeof(*ph->compton_profiles));
+    if (!ph->compton_shells || !ph->compton_profiles)
+        return ALEA_ERR_OUT_OF_MEMORY;
+    ph->n_compton_shells = ns;
+    ph->n_compton_profiles = nd;
+
+    double probability_sum = 0.0;
+    int cumulative = t->nxs[5] == 3;
+    for (int i = 0; i < ns; i++) {
+        alea_nuc_compton_shell_t* shell = &ph->compton_shells[i];
+        shell->electron_count = xss(t, lneps + i);
+        shell->binding_energy = xss(t, lneps + ns + i);
+        double probability = xss(t, lneps + 2 * ns + i);
+        if (!isfinite(shell->electron_count) || shell->electron_count <= 0.0 ||
+            !isfinite(shell->binding_energy) || shell->binding_energy < 0.0 ||
+            !isfinite(probability) || probability < 0.0)
+            return ALEA_ERR_PARSE_ERROR;
+        if (cumulative) {
+            if (probability < probability_sum || probability > 1.0)
+                return ALEA_ERR_PARSE_ERROR;
+            probability_sum = probability;
+        } else {
+            probability_sum += probability;
+            if (!isfinite(probability_sum)) return ALEA_ERR_PARSE_ERROR;
+        }
+        shell->cumulative_probability = probability_sum;
+        /* Some later EPR tables retain more relativistic selection bins than
+         * profile records. Their trailing bins use the final profile. */
+        shell->profile_index = i < nd ? i : nd - 1;
+    }
+    if (!(probability_sum > 0.0) || fabs(probability_sum - 1.0) > 1e-8)
+        return ALEA_ERR_PARSE_ERROR;
+    for (int i = 0; i < ns; i++)
+        ph->compton_shells[i].cumulative_probability /= probability_sum;
+
+    for (int i = 0; i < nd; i++) {
+        int offset = xss_int(t, lswd + i);
+        int pos = xss_relative_loc(t, swd, offset);
+        if (pos == 0 || !xss_range_valid(t, pos, 2))
+            return ALEA_ERR_PARSE_ERROR;
+        alea_nuc_compton_profile_t* profile = &ph->compton_profiles[i];
+        profile->interpolation = xss_int(t, pos);
+        profile->n_momenta = xss_int(t, pos + 1);
+        int n = profile->n_momenta;
+        if (profile->interpolation != 2 || n < 2 || n > 100000 ||
+            n > t->xss_length / 3 || !xss_range_valid(t, pos + 2, 3 * n))
+            return ALEA_ERR_PARSE_ERROR;
+        profile->momentum = xss_copy(t, pos + 2, n);
+        profile->pdf = xss_copy(t, pos + 2 + n, n);
+        profile->cdf = xss_copy(t, pos + 2 + 2 * n, n);
+        if (!profile->momentum || !profile->pdf || !profile->cdf)
+            return ALEA_ERR_OUT_OF_MEMORY;
+        for (int j = 0; j < n; j++) {
+            if (!isfinite(profile->momentum[j]) || profile->momentum[j] < 0.0 ||
+                !isfinite(profile->pdf[j]) || profile->pdf[j] < 0.0 ||
+                !isfinite(profile->cdf[j]) || profile->cdf[j] < 0.0 ||
+                profile->cdf[j] > 1.0 ||
+                (j > 0 && (profile->momentum[j] <= profile->momentum[j - 1] ||
+                           profile->cdf[j] < profile->cdf[j - 1])))
+                return ALEA_ERR_PARSE_ERROR;
+        }
+        if (profile->cdf[0] > 1e-10 || profile->cdf[n - 1] < 1.0 - 1e-10)
+            return ALEA_ERR_PARSE_ERROR;
+    }
+    return t->decode_error ? ALEA_ERR_PARSE_ERROR : ALEA_OK;
+}
+
+static alea_error_t decode_epr_shells(alea_nuc_photon_data_t* ph,
+                                      const alea_nuc_ace_table_t* t) {
+    int format = t->nxs[5];
+    if (format != 1 && format != 3) return ALEA_OK;
+    alea_error_t compton_error = decode_compton_profiles(ph, t);
+    if (compton_error != ALEA_OK) return compton_error;
+    int ns = t->nxs[6];
+    if (ns <= 0 || ns > 128) return ALEA_ERR_PARSE_ERROR;
+    int subsh = t->jxs[10], occup = t->jxs[11], bind = t->jxs[12];
+    int cprob = t->jxs[13], ntr = t->jxs[14], sphel = t->jxs[15];
+    int relo = t->jxs[16], xprob = t->jxs[17];
+    if (!xss_range_valid(t, subsh, ns) || !xss_range_valid(t, occup, ns) ||
+        !xss_range_valid(t, bind, ns) || !xss_range_valid(t, cprob, ns) ||
+        !xss_range_valid(t, ntr, ns) || !xss_range_valid(t, relo, ns) ||
+        ph->n_energies > t->xss_length / ns ||
+        !xss_range_valid(t, sphel, ns * ph->n_energies) || xprob <= 0)
+        return ALEA_ERR_PARSE_ERROR;
+
+    ph->subshells = alea_nuc_calloc((size_t)ns, sizeof(*ph->subshells));
+    if (!ph->subshells) return ALEA_ERR_OUT_OF_MEMORY;
+    ph->epr_format = format;
+    ph->n_subshells = ns;
+    double previous_vacancy_cdf = 0.0;
+    for (int i = 0; i < ns; i++) {
+        alea_nuc_atomic_subshell_t* shell = &ph->subshells[i];
+        shell->designator = xss_int(t, subsh + i);
+        shell->occupancy = xss(t, occup + i);
+        shell->binding_energy = xss(t, bind + i);
+        shell->compton_vacancy_probability = xss(t, cprob + i);
+        shell->n_transitions = xss_int(t, ntr + i);
+        int offset = xss_int(t, relo + i);
+        if (shell->designator <= 0 || !isfinite(shell->occupancy) ||
+            shell->occupancy < 0.0 || !isfinite(shell->binding_energy) ||
+            shell->binding_energy <= 0.0 ||
+            !isfinite(shell->compton_vacancy_probability) ||
+            shell->compton_vacancy_probability < previous_vacancy_cdf ||
+            shell->compton_vacancy_probability > 1.0 ||
+            shell->n_transitions < 0 || shell->n_transitions > 100000 ||
+            offset < 0 ||
+            photon_shell_index(ph, shell->designator) != i)
+            return ALEA_ERR_PARSE_ERROR;
+        previous_vacancy_cdf = shell->compton_vacancy_probability;
+        shell->ln_photoelectric_xs = xss_copy(
+            t, sphel + i * ph->n_energies, ph->n_energies);
+        if (!shell->ln_photoelectric_xs) return ALEA_ERR_OUT_OF_MEMORY;
+        for (int j = 0; j < ph->n_energies; j++) {
+            if (!isfinite(shell->ln_photoelectric_xs[j]))
+                return ALEA_ERR_PARSE_ERROR;
+            if (shell->ln_photoelectric_xs[j] == 0.0)
+                shell->ln_photoelectric_xs[j] = -HUGE_VAL;
+        }
+        if (shell->n_transitions == 0) continue;
+        if (offset > t->xss_length - xprob ||
+            shell->n_transitions > t->xss_length / 4 ||
+            !xss_range_valid(t, xprob + offset, 4 * shell->n_transitions))
+            return ALEA_ERR_PARSE_ERROR;
+        shell->transitions = alea_nuc_malloc(
+            (size_t)shell->n_transitions * sizeof(*shell->transitions));
+        if (!shell->transitions) return ALEA_ERR_OUT_OF_MEMORY;
+        double previous = 0.0;
+        for (int j = 0; j < shell->n_transitions; j++) {
+            int pos = xprob + offset + 4 * j;
+            alea_nuc_atomic_transition_t* transition = &shell->transitions[j];
+            transition->primary_designator = xss_int(t, pos);
+            transition->secondary_designator = xss_int(t, pos + 1);
+            transition->energy = xss(t, pos + 2);
+            transition->cumulative_probability = xss(t, pos + 3);
+            if (transition->primary_designator <= 0 ||
+                transition->secondary_designator < 0 ||
+                !isfinite(transition->energy) ||
+                (transition->secondary_designator == 0 &&
+                 transition->energy < 0.0) ||
+                !isfinite(transition->cumulative_probability) ||
+                transition->cumulative_probability < previous ||
+                transition->cumulative_probability > 1.0)
+                return ALEA_ERR_PARSE_ERROR;
+            previous = transition->cumulative_probability;
+        }
+        if (previous < 1.0 - 1e-10) return ALEA_ERR_PARSE_ERROR;
+    }
+
+    for (int i = 0; i < ns; i++) {
+        alea_nuc_atomic_subshell_t* shell = &ph->subshells[i];
+        for (int j = 0; j < shell->n_transitions; j++) {
+            alea_nuc_atomic_transition_t* transition = &shell->transitions[j];
+            int first = photon_shell_index(ph, transition->primary_designator);
+            int second = transition->secondary_designator == 0 ? -1 :
+                photon_shell_index(ph, transition->secondary_designator);
+            if (first <= i ||
+                (transition->secondary_designator != 0 && second <= i))
+                return ALEA_ERR_PARSE_ERROR;
+        }
+    }
+    unsigned char state[128] = {0};
+    for (int i = 0; i < ns; i++) {
+        size_t ignored;
+        if (!relaxation_bound(ph, i, state, &ignored))
+            return ALEA_ERR_PARSE_ERROR;
+    }
+    return t->decode_error ? ALEA_ERR_PARSE_ERROR : ALEA_OK;
+}
+
 /**
  * @file xs_decode.c
  * @brief Decode cross-section data from raw ACE XSS array
@@ -21,12 +248,6 @@
  *
  * All JXS values are 1-based (Fortran convention).
  */
-
-#include "nuclear_internal.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
 
 /**
  * Decode ESZ block — principal cross sections on the main energy grid.
@@ -51,7 +272,8 @@ static alea_error_t decode_esz(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table
         return ALEA_ERR_OUT_OF_MEMORY;
 
     for (int i = 0; i < ne; i++) {
-        if (!isfinite(nuc->energy[i]) || (i > 0 && nuc->energy[i] <= nuc->energy[i - 1]))
+        if (!isfinite(nuc->energy[i]) ||
+            (i > 0 && nuc->energy[i] < nuc->energy[i - 1]))
             return ALEA_ERR_PARSE_ERROR;
         /* ACE stores heating numbers (MeV/collision). Internally/publicly the
          * heating array is a heating cross section (MeV-barn). */
@@ -83,7 +305,7 @@ static alea_error_t decode_reactions(alea_nuc_nuclide_t* nuc, const alea_nuc_ace
         !xss_range_valid(t, tyr, nr) || !xss_range_valid(t, lsig, nr))
         return ALEA_ERR_INVALID_ARG;
 
-    nuc->reactions = calloc((size_t)nr, sizeof(alea_nuc_reaction_t));
+    nuc->reactions = alea_nuc_calloc((size_t)nr, sizeof(alea_nuc_reaction_t));
     if (!nuc->reactions) return ALEA_ERR_OUT_OF_MEMORY;
     nuc->n_reactions = nr;
 
@@ -127,7 +349,7 @@ static alea_error_t decode_reactions(alea_nuc_nuclide_t* nuc, const alea_nuc_ace
 static alea_nuc_nu_bar_t* decode_nu_block(const alea_nuc_ace_table_t* t, int loc) {
     int lnu = xss_int(t, loc);  /* type flag: 1=polynomial, 2=tabular */
 
-    alea_nuc_nu_bar_t* nu = calloc(1, sizeof(*nu));
+    alea_nuc_nu_bar_t* nu = alea_nuc_calloc(1, sizeof(*nu));
     if (!nu) {
         xss_mark_allocation_error(t);
         return NULL;
@@ -161,8 +383,8 @@ static alea_nuc_nu_bar_t* decode_nu_block(const alea_nuc_ace_table_t* t, int loc
         }
         nu->n_regions = nr_interp;
         if (nr_interp > 0) {
-            nu->nbt = malloc((size_t)nr_interp * sizeof(int));
-            nu->interp = malloc((size_t)nr_interp * sizeof(int));
+            nu->nbt = alea_nuc_malloc((size_t)nr_interp * sizeof(int));
+            nu->interp = alea_nuc_malloc((size_t)nr_interp * sizeof(int));
             if (!nu->nbt || !nu->interp) {
                 xss_mark_allocation_error(t);
                 free(nu->nbt);
@@ -230,7 +452,7 @@ static alea_error_t decode_nu(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_
     int nu_loc = t->jxs[1];  /* JXS[2]: NU block */
     if (nu_loc <= 0) return ALEA_OK;  /* non-fissile nuclide */
 
-    nuc->fission = calloc(1, sizeof(alea_nuc_fission_t));
+    nuc->fission = alea_nuc_calloc(1, sizeof(alea_nuc_fission_t));
     if (!nuc->fission) return ALEA_ERR_OUT_OF_MEMORY;
 
     /*
@@ -274,6 +496,82 @@ static alea_error_t decode_nu(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_
     return ALEA_OK;
 }
 
+alea_error_t alea_nuc_decode_delayed_neutrons(
+    alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table_t* t) {
+    int groups = t->nxs[7];       /* NXS(8): precursor families */
+    int dnu = t->jxs[23];         /* JXS(24): delayed nubar */
+    int bdd = t->jxs[24];         /* JXS(25): precursor data */
+    int dnedl = t->jxs[25];       /* JXS(26): spectrum locators */
+    int dned = t->jxs[26];        /* JXS(27): spectra */
+    if (groups == 0 && dnu == 0 && bdd == 0 && dnedl == 0 && dned == 0)
+        return ALEA_OK;
+    if (groups <= 0 || groups > 64 || dnu <= 0 || bdd <= 0 ||
+        dnedl <= 0 || dned <= 0 || !xss_range_valid(t, dnedl, groups))
+        return ALEA_ERR_PARSE_ERROR;
+    if (!nuc->fission) {
+        nuc->fission = alea_nuc_calloc(1, sizeof(*nuc->fission));
+        if (!nuc->fission) return ALEA_ERR_OUT_OF_MEMORY;
+    }
+    nuc->fission->delayed = decode_nu_block(t, dnu);
+    if (!nuc->fission->delayed)
+        return t->allocation_error ? ALEA_ERR_OUT_OF_MEMORY
+                                   : ALEA_ERR_PARSE_ERROR;
+    nuc->fission->delayed_groups = alea_nuc_calloc(
+        (size_t)groups, sizeof(*nuc->fission->delayed_groups));
+    if (!nuc->fission->delayed_groups) return ALEA_ERR_OUT_OF_MEMORY;
+    nuc->fission->n_delayed_groups = groups;
+
+    int pos = bdd;
+    for (int g = 0; g < groups; g++) {
+        alea_nuc_delayed_group_t* group = &nuc->fission->delayed_groups[g];
+        if (!xss_range_valid(t, pos, 3)) return ALEA_ERR_PARSE_ERROR;
+        double inverse_shakes = xss(t, pos);
+        int nr = xss_int(t, pos + 1);
+        if (!isfinite(inverse_shakes) || inverse_shakes <= 0.0 || nr < 0 ||
+            nr > (t->xss_length - pos - 2) / 2)
+            return ALEA_ERR_PARSE_ERROR;
+        int ne_pos = pos + 2 + 2 * nr;
+        int ne = xss_int(t, ne_pos);
+        if (ne <= 0 || ne > 100000 ||
+            !xss_range_valid(t, ne_pos + 1, 2 * ne))
+            return ALEA_ERR_PARSE_ERROR;
+        group->decay_rate = inverse_shakes * 1.0e8;
+        group->n_regions = nr;
+        group->n_energies = ne;
+        if (nr > 0) {
+            group->nbt = alea_nuc_malloc((size_t)nr * sizeof(int));
+            group->interp = alea_nuc_malloc((size_t)nr * sizeof(int));
+            if (!group->nbt || !group->interp) return ALEA_ERR_OUT_OF_MEMORY;
+            for (int i = 0; i < nr; i++) {
+                group->nbt[i] = xss_int(t, pos + 2 + i);
+                group->interp[i] = xss_int(t, pos + 2 + nr + i);
+            }
+        }
+        group->energy = xss_copy(t, ne_pos + 1, ne);
+        group->probability = xss_copy(t, ne_pos + 1 + ne, ne);
+        if (!group->energy || !group->probability)
+            return ALEA_ERR_OUT_OF_MEMORY;
+        if (!alea_nuc_interp_regions_valid(group->nbt, group->interp,
+                                           nr, ne))
+            return ALEA_ERR_PARSE_ERROR;
+        for (int i = 0; i < ne; i++) {
+            if (!isfinite(group->energy[i]) ||
+                !isfinite(group->probability[i]) ||
+                group->probability[i] < 0.0 ||
+                (i > 0 && group->energy[i] <= group->energy[i - 1]))
+                return ALEA_ERR_PARSE_ERROR;
+        }
+        int spectrum_locator = xss_int(t, dnedl + g);
+        group->spectrum = alea_nuc_decode_energy_dist_base(
+            t, spectrum_locator, dned);
+        if (!group->spectrum)
+            return t->allocation_error ? ALEA_ERR_OUT_OF_MEMORY
+                                       : ALEA_ERR_PARSE_ERROR;
+        pos += 3 + 2 * nr + 2 * ne;
+    }
+    return ALEA_OK;
+}
+
 /**
  * Decode photoatomic (.p) table cross sections.
  *
@@ -294,7 +592,7 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
     int ne = t->nxs[2];    /* NXS[3]: number of energies */
     if (ne <= 0 || ne > t->xss_length / 5) return ALEA_ERR_INVALID_ARG;
 
-    nuc->photon = calloc(1, sizeof(alea_nuc_photon_data_t));
+    nuc->photon = alea_nuc_calloc(1, sizeof(alea_nuc_photon_data_t));
     if (!nuc->photon) return ALEA_ERR_OUT_OF_MEMORY;
 
     alea_nuc_photon_data_t* ph = nuc->photon;
@@ -316,24 +614,29 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
 
     for (int i = 0; i < ne; i++) {
         if (!isfinite(ph->energy[i]) ||
-            (i > 0 && ph->energy[i] <= ph->energy[i - 1]))
+            (i > 0 && ph->energy[i] < ph->energy[i - 1]))
             return ALEA_ERR_PARSE_ERROR;
     }
 
     /* Save log-space copies before converting to linear (for fast log-log interp) */
-    ph->ln_energy              = malloc((size_t)ne * sizeof(double));
-    ph->ln_sigma_incoherent    = malloc((size_t)ne * sizeof(double));
-    ph->ln_sigma_coherent      = malloc((size_t)ne * sizeof(double));
-    ph->ln_sigma_photoelectric = malloc((size_t)ne * sizeof(double));
-    ph->ln_sigma_pair          = malloc((size_t)ne * sizeof(double));
-    if (ph->ln_energy) memcpy(ph->ln_energy, ph->energy, (size_t)ne * sizeof(double));
-    if (ph->ln_sigma_incoherent) memcpy(ph->ln_sigma_incoherent, ph->sigma_incoherent, (size_t)ne * sizeof(double));
-    if (ph->ln_sigma_coherent) memcpy(ph->ln_sigma_coherent, ph->sigma_coherent, (size_t)ne * sizeof(double));
-    if (ph->ln_sigma_photoelectric) memcpy(ph->ln_sigma_photoelectric, ph->sigma_photoelectric, (size_t)ne * sizeof(double));
-    if (ph->ln_sigma_pair) {
-        for (int i = 0; i < ne; i++)
-            ph->ln_sigma_pair[i] = (ph->sigma_pair[i] == 0.0) ? -HUGE_VAL : ph->sigma_pair[i];
-    }
+    ph->ln_energy              = alea_nuc_malloc((size_t)ne * sizeof(double));
+    ph->ln_sigma_incoherent    = alea_nuc_malloc((size_t)ne * sizeof(double));
+    ph->ln_sigma_coherent      = alea_nuc_malloc((size_t)ne * sizeof(double));
+    ph->ln_sigma_photoelectric = alea_nuc_malloc((size_t)ne * sizeof(double));
+    ph->ln_sigma_pair          = alea_nuc_malloc((size_t)ne * sizeof(double));
+    if (!ph->ln_energy || !ph->ln_sigma_incoherent ||
+        !ph->ln_sigma_coherent || !ph->ln_sigma_photoelectric ||
+        !ph->ln_sigma_pair) return ALEA_ERR_OUT_OF_MEMORY;
+    memcpy(ph->ln_energy, ph->energy, (size_t)ne * sizeof(double));
+    memcpy(ph->ln_sigma_incoherent, ph->sigma_incoherent,
+           (size_t)ne * sizeof(double));
+    memcpy(ph->ln_sigma_coherent, ph->sigma_coherent,
+           (size_t)ne * sizeof(double));
+    memcpy(ph->ln_sigma_photoelectric, ph->sigma_photoelectric,
+           (size_t)ne * sizeof(double));
+    for (int i = 0; i < ne; i++)
+        ph->ln_sigma_pair[i] = (ph->sigma_pair[i] == 0.0)
+                            ? -HUGE_VAL : ph->sigma_pair[i];
 
     /* Convert from natural log to linear */
     for (int i = 0; i < ne; i++) {
@@ -353,14 +656,14 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
     if (lhnm > 0 && xss_range_valid(t, lhnm, ne)) {
         ph->heating = xss_copy(t, lhnm, ne);
     } else {
-        ph->heating = calloc((size_t)ne, sizeof(double));
+        ph->heating = alea_nuc_calloc((size_t)ne, sizeof(double));
     }
     if (!ph->heating) return ALEA_ERR_OUT_OF_MEMORY;
 
     /* Build total XS and nuclide-level arrays */
     nuc->n_energies = ne;
-    nuc->energy = malloc((size_t)ne * sizeof(double));
-    nuc->sigma_total = malloc((size_t)ne * sizeof(double));
+    nuc->energy = alea_nuc_malloc((size_t)ne * sizeof(double));
+    nuc->sigma_total = alea_nuc_malloc((size_t)ne * sizeof(double));
     if (!nuc->energy || !nuc->sigma_total) return ALEA_ERR_OUT_OF_MEMORY;
 
     for (int i = 0; i < ne; i++) {
@@ -371,28 +674,54 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
                                ph->sigma_pair[i];
     }
 
-    /* Incoherent scattering function S(q,Z) at JXS[2] — 21 fixed points */
+    int epr_format = t->nxs[5];
+
+    /* Incoherent scattering function S(q,Z) at JXS[2]. */
     int jinc = t->jxs[1]; /* JXS[2]: JINC */
     if (jinc > 0) {
-        ph->n_incoherent_ff = 21;
-        ph->incoherent_ff = xss_copy(t, jinc, 21);
-        /* Standard MCNP momentum transfer grid for incoherent (inverse Angstroms) */
-        ph->incoherent_momentum = malloc(21 * sizeof(double));
-        if (ph->incoherent_momentum) {
+        if (epr_format == 1 || epr_format == 3) {
+            int n = epr_format == 3 ? t->nxs[12] :
+                (t->jxs[2] - jinc) / 2;
+            if (n < 2 || n > t->xss_length / 2 ||
+                (epr_format == 1 && t->jxs[2] - jinc != 2 * n) ||
+                !xss_range_valid(t, jinc, 2 * n)) return ALEA_ERR_PARSE_ERROR;
+            ph->n_incoherent_ff = n;
+            ph->incoherent_momentum = xss_copy(t, jinc, n);
+            ph->incoherent_ff = xss_copy(t, jinc + n, n);
+        } else {
+            ph->n_incoherent_ff = 21;
+            ph->incoherent_ff = xss_copy(t, jinc, 21);
+            ph->incoherent_momentum = alea_nuc_malloc(21 * sizeof(double));
+            if (ph->incoherent_momentum) {
             static const double jinc_grid[21] = {
                 0.0, 0.005, 0.01, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5,
                 0.6, 0.7, 0.8, 0.9, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 8.0
             };
             memcpy(ph->incoherent_momentum, jinc_grid, 21 * sizeof(double));
+            }
         }
+        if (!ph->incoherent_ff || !ph->incoherent_momentum)
+            return t->decode_error ? ALEA_ERR_PARSE_ERROR
+                                   : ALEA_ERR_OUT_OF_MEMORY;
     }
 
-    /* Coherent form factor at JXS[3] — 55 momentum values + 55 integrated FF */
+    /* Coherent form-factor data at JXS[3]. */
     int jcoh = t->jxs[2]; /* JXS[3]: JCOH */
     if (jcoh > 0) {
-        ph->n_coherent_ff = 55;
-        ph->coherent_momentum = malloc(55 * sizeof(double));
-        if (ph->coherent_momentum) {
+        if (epr_format == 1 || epr_format == 3) {
+            int n = epr_format == 3 ? t->nxs[13] :
+                (t->jxs[3] - jcoh) / 3;
+            if (n < 2 || n > t->xss_length / 3 ||
+                (epr_format == 1 && t->jxs[3] - jcoh != 3 * n) ||
+                !xss_range_valid(t, jcoh, 3 * n)) return ALEA_ERR_PARSE_ERROR;
+            ph->n_coherent_ff = n;
+            ph->coherent_momentum = xss_copy(t, jcoh, n);
+            ph->coherent_ff_cumulative = xss_copy(t, jcoh + n, n);
+            ph->coherent_ff = xss_copy(t, jcoh + 2 * n, n);
+        } else {
+            ph->n_coherent_ff = 55;
+            ph->coherent_momentum = alea_nuc_malloc(55 * sizeof(double));
+            if (ph->coherent_momentum) {
             /* Standard MCNP momentum transfer grid for coherent (inverse Angstroms) */
             static const double jcoh_grid[55] = {
                 0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12,
@@ -400,12 +729,60 @@ static alea_error_t decode_photon(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_ta
                 0.60, 0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30, 1.40, 1.50,
                 1.60, 1.70, 1.80, 1.90, 2.00, 2.20, 2.40, 2.60, 2.80, 3.00,
                 3.20, 3.40, 3.60, 3.80, 4.00, 4.20, 4.40, 4.60, 4.80, 5.00,
-                5.50, 6.00, 7.00, 8.00, 10.0
+                5.20, 5.40, 5.60, 5.80, 6.00
             };
             memcpy(ph->coherent_momentum, jcoh_grid, 55 * sizeof(double));
+            }
+            ph->coherent_ff_cumulative = xss_copy(t, jcoh, 55);
+            ph->coherent_ff = xss_copy(t, jcoh + 55, 55);
         }
-        ph->coherent_ff = xss_copy(t, jcoh, 55);
-        ph->coherent_ff_cumulative = xss_copy(t, jcoh + 55, 55);
+        if (!ph->coherent_momentum || !ph->coherent_ff ||
+            !ph->coherent_ff_cumulative)
+            return t->decode_error ? ALEA_ERR_PARSE_ERROR
+                                   : ALEA_ERR_OUT_OF_MEMORY;
+    }
+
+    /* JFLO stores the Cashwell-Everett averaged fluorescence representation
+     * as four arrays of NXS(4) values: edge, phi, cumulative yield, and
+     * representative photon energy. Preserve it for inspection and future
+     * relaxation sampling; it is not a shell-resolved transition table. */
+    alea_error_t epr_error = decode_epr_shells(ph, t);
+    if (epr_error != ALEA_OK) return epr_error;
+
+    int nflo = (epr_format == 1 || epr_format == 3) ? 0 : t->nxs[3];
+    int jflo = t->jxs[3];
+    if (nflo < 0 || nflo > 1000) return ALEA_ERR_PARSE_ERROR;
+    if (nflo > 0) {
+        if (jflo <= 0 || !xss_range_valid(t, jflo, 4 * nflo))
+            return ALEA_ERR_PARSE_ERROR;
+        ph->n_fluorescence = nflo;
+        ph->fluorescence_edge = xss_copy(t, jflo, nflo);
+        ph->fluorescence_phi = xss_copy(t, jflo + nflo, nflo);
+        ph->fluorescence_yield = xss_copy(t, jflo + 2 * nflo, nflo);
+        ph->fluorescence_energy = xss_copy(t, jflo + 3 * nflo, nflo);
+        if (!ph->fluorescence_edge || !ph->fluorescence_phi ||
+            !ph->fluorescence_yield || !ph->fluorescence_energy)
+            return ALEA_ERR_OUT_OF_MEMORY;
+        for (int i = 0; i < nflo; i++) {
+            if (!isfinite(ph->fluorescence_edge[i]) ||
+                !isfinite(ph->fluorescence_phi[i]) ||
+                !isfinite(ph->fluorescence_yield[i]) ||
+                !isfinite(ph->fluorescence_energy[i]) ||
+                ph->fluorescence_edge[i] < 0.0 ||
+                ph->fluorescence_phi[i] < 0.0 ||
+                ph->fluorescence_yield[i] < 0.0 ||
+                ph->fluorescence_energy[i] < 0.0 ||
+                ph->fluorescence_energy[i] > ph->fluorescence_edge[i] ||
+                (i > 0 &&
+                 (ph->fluorescence_edge[i] < ph->fluorescence_edge[i - 1] ||
+                  ph->fluorescence_phi[i] < ph->fluorescence_phi[i - 1] ||
+                  ph->fluorescence_yield[i] <
+                      ph->fluorescence_yield[i - 1])))
+                return ALEA_ERR_PARSE_ERROR;
+        }
+    } else if (epr_format != 1 && epr_format != 3 &&
+               jflo > 0 && jflo != lhnm) {
+        return ALEA_ERR_PARSE_ERROR;
     }
 
     return ALEA_OK;
@@ -430,7 +807,7 @@ static alea_error_t decode_urr(alea_nuc_nuclide_t* nuc, const alea_nuc_ace_table
 
     if (N <= 0 || M <= 0 || N > 10000 || M > 1000) return ALEA_OK;
 
-    nuc->urr = calloc(1, sizeof(alea_nuc_urr_t));
+    nuc->urr = alea_nuc_calloc(1, sizeof(alea_nuc_urr_t));
     if (!nuc->urr) return ALEA_ERR_OUT_OF_MEMORY;
 
     nuc->urr->n_energies = N;
@@ -472,7 +849,7 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
     if (entry->filename[0] == '/') {
         size_t len = strlen(entry->filename);
         if (len >= sizeof(filepath_buf)) {
-            filepath_alloc = malloc(len + 1);
+            filepath_alloc = alea_nuc_malloc(len + 1);
             if (!filepath_alloc) return NULL;
             filepath = filepath_alloc;
         }
@@ -480,7 +857,7 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
     } else if (xsdir->datapath[0]) {
         size_t len = strlen(xsdir->datapath) + 1 + strlen(entry->filename);
         if (len >= sizeof(filepath_buf)) {
-            filepath_alloc = malloc(len + 1);
+            filepath_alloc = alea_nuc_malloc(len + 1);
             if (!filepath_alloc) return NULL;
             filepath = filepath_alloc;
         }
@@ -489,7 +866,7 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
     } else {
         size_t len = strlen(entry->filename);
         if (len >= sizeof(filepath_buf)) {
-            filepath_alloc = malloc(len + 1);
+            filepath_alloc = alea_nuc_malloc(len + 1);
             if (!filepath_alloc) return NULL;
             filepath = filepath_alloc;
         }
@@ -508,7 +885,7 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
     free(filepath_alloc);
 
     /* Allocate nuclide */
-    alea_nuc_nuclide_t* nuc = calloc(1, sizeof(*nuc));
+    alea_nuc_nuclide_t* nuc = alea_nuc_calloc(1, sizeof(*nuc));
     if (!nuc) { alea_nuc_ace_free(&raw); return NULL; }
 
     strncpy(nuc->zaid, zaid, sizeof(nuc->zaid) - 1);
@@ -525,26 +902,16 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
         err = decode_esz(nuc, &raw);
         if (err == ALEA_OK) err = decode_reactions(nuc, &raw);
         if (err == ALEA_OK) err = decode_nu(nuc, &raw);
+        if (err == ALEA_OK) err = alea_nuc_decode_delayed_neutrons(nuc, &raw);
+        if (err == ALEA_OK) err = alea_nuc_decode_photon_production(nuc, &raw);
         if (err == ALEA_OK) err = decode_urr(nuc, &raw);
         if (err == ALEA_OK) {
             /* Decode angular and energy distributions */
             alea_nuc_decode_all_angular(nuc);
             alea_nuc_decode_all_energy(nuc);
 
-            /* Propagate Q-values to Law 66 (N-body phase space)
-             * energy distributions, which need Q for the available
-             * energy calculation but don't store it in the ACE data. */
-            for (int i = 0; i < nuc->n_reactions; i++) {
-                alea_nuc_energy_dist_t* ed = nuc->reactions[i].energy;
-                while (ed) {
-                    if (ed->law == ALEA_NUC_ELAW_NBODY)
-                        ed->level_Q = nuc->reactions[i].q_value;
-                    ed = ed->next;
-                }
-            }
-
             /* Build MT → reaction index lookup table */
-            nuc->mt_to_rxn = malloc(ALEA_NUC_MT_TABLE_SIZE * sizeof(int));
+            nuc->mt_to_rxn = alea_nuc_malloc(ALEA_NUC_MT_TABLE_SIZE * sizeof(int));
             if (nuc->mt_to_rxn) {
                 memset(nuc->mt_to_rxn, 0xFF,
                        ALEA_NUC_MT_TABLE_SIZE * sizeof(int)); /* -1 */

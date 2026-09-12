@@ -74,7 +74,7 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Windows x64 (MSVC, threaded; legacy archive name) | `alea-windows-msvc-openmp-x64.zip` |
 
 The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
-`mc_convert`, `mc_plotter`, `nuc_plot`, `large_model_probe`, static libraries,
+`mc_convert`, `mc_plotter`, `nuc_plot`, `nuc_inventory`, `large_model_probe`, static libraries,
 and headers. The MSVC archives package the `.lib` static libraries and headers.
 The two archives retaining `openmp` in their names are compatibility artifacts;
 current releases use the vendored tinypar backend and have no OpenMP runtime
@@ -100,7 +100,7 @@ make              # Build core library (bin/libalea.a)
 make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a, libalea_serpent.a, libalea_nucdata.a)
 make full         # Build everything into libalea_full.a
 make cli          # Build the alea CLI tool
-make tools        # Build mc_convert, mc_plotter, nuc_plot, and large_model_probe
+make tools        # Build command-line conversion, plotting, and inspection tools
 make test         # Build and run tests
 make test-lua     # Build the CLI and run Lua tests
 make install      # Install libraries, headers, CLI, tools, and docs
@@ -357,6 +357,7 @@ Tools are built via `make tools`:
 | `mc_convert` | Convert between MCNP, OpenMC, and Serpent geometry formats |
 | `mc_plotter` | Render 2D cross-section slices of CSG geometry to PNG/BMP |
 | `nuc_plot` | Generate SVG plots of nuclear cross sections, angular distributions, fission spectra, and more |
+| `nuc_inventory` | Report which tables in an xsdir can be decoded, evaluated, and sampled |
 | `large_model_probe` | Inspect large MCNP models and benchmark hierarchy query/raycast behavior |
 
 ```bash
@@ -364,6 +365,7 @@ bin/mc_convert model.inp model.xml
 bin/mc_convert model.inp model.serp --output-format serpent
 bin/mc_plotter model.inp Z 0 -100 100 -100 100 800x800 output.png
 bin/nuc_plot --xsdir /path/to/xsdir --zaid 92235.80c --plot xs --output u235.svg
+bin/nuc_inventory /path/to/xsdir 92235.80c
 bin/large_model_probe model.inp --queries 10000 --hier-build
 ```
 
@@ -376,8 +378,13 @@ The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea
 | `alea_nuc_sample_distance` | Distance to the next collision from macroscopic total cross section |
 | `alea_nuc_sample_nuclide` | Target nuclide in a material |
 | `alea_nuc_sample_reaction` | Reaction MT on a selected nuclide |
-| `alea_nuc_prepare_material` / `alea_nuc_evaluate` / `alea_nuc_collide` | Capability-checked stationary-target neutron elastic and absorption collisions |
-| `alea_nuc_urr_factors` | Unresolved-resonance probability-table factors |
+| `alea_nuc_sample_energy_angle_distribution` | Correlated outgoing energy and angle for supported neutron laws |
+| `alea_nuc_prepare_material` / `alea_nuc_evaluate` / `alea_nuc_collide` | Capability-checked neutron or photoatomic mixture collisions |
+| `alea_nuc_collide_with_secondaries` | Neutron, delayed-neutron, and photon emission using a caller-owned particle buffer |
+| `alea_nuc_evaluate_urr` / `alea_nuc_urr_factors` | Coordinated evaluation or standalone unresolved-resonance factors |
+| `alea_nuc_sample_photon_collision` | Coherent, bound-electron Compton, photoelectric, or pair interaction on one element |
+| `alea_nuc_xs_photon_production_total` | Aggregate neutron-induced photon-production cross section |
+| `alea_nuc_sample_thermal_collision` | Discrete ACE bound thermal elastic or inelastic collision |
 | `alea_nuc_mg_sample_scatter` | Outgoing multigroup scatter group |
 | `alea_mesh_sample` / `alea_mesh_visit` | Fixed structured-grid composition estimates |
 | `alea_adaptive_grid_sample` | Nonconforming adaptive octree voxels |
@@ -522,7 +529,7 @@ src/
   mesh/                Structured hex mesh export (Gmsh, VTK)
   lua_bind/            Lua bindings for CLI
   util/                Arena allocator, logging, vectors, math
-tools/               mc_convert, mc_plotter, nuc_plot
+tools/               mc_convert, mc_plotter, nuc_plot, nuc_inventory
                      large_model_probe
 examples/
   c/                   C example programs

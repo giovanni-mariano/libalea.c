@@ -17,7 +17,7 @@
  * The 'address' from xsdir is the 1-based line number where the table starts.
  */
 
-#include "alea_nucdata.h"
+#include "nuclear_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +31,25 @@ static alea_error_t skip_to_line(FILE* fp, int target_line) {
     for (int i = 1; i < target_line; i++) {
         if (!fgets(buf, sizeof(buf), fp))
             return ALEA_ERR_FILE_READ;
+    }
+    return ALEA_OK;
+}
+
+static alea_error_t ace_table_type(const char* zaid,
+                                   alea_nuc_table_type_t* type) {
+    if (!zaid || !type) return ALEA_ERR_NULL_ARG;
+    const char* dot = strchr(zaid, '.');
+    if (!dot) return ALEA_ERR_PARSE_ERROR;
+    const char* suffix = dot + 1;
+    while (*suffix >= '0' && *suffix <= '9') suffix++;
+    if (suffix[0] == '\0' || suffix[1] != '\0') return ALEA_ERR_PARSE_ERROR;
+    switch (*suffix) {
+    case 'c': *type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON; break;
+    case 'p': *type = ALEA_NUC_TABLE_PHOTOATOMIC; break;
+    case 'u': *type = ALEA_NUC_TABLE_PHOTONUCLEAR; break;
+    case 't': *type = ALEA_NUC_TABLE_THERMAL_SAB; break;
+    case 'e': *type = ALEA_NUC_TABLE_ELECTRON; break;
+    default: return ALEA_ERR_PARSE_ERROR;
     }
     return ALEA_OK;
 }
@@ -191,7 +210,7 @@ static alea_error_t ace_read_type1(FILE* fp, alea_nuc_ace_table_t* table) {
         return ALEA_ERR_PARSE_ERROR;
     }
 
-    table->xss = malloc((size_t)table->xss_length * sizeof(double));
+    table->xss = alea_nuc_malloc((size_t)table->xss_length * sizeof(double));
     if (!table->xss) return ALEA_ERR_OUT_OF_MEMORY;
 
     int read = 0;
@@ -281,7 +300,7 @@ static alea_error_t ace_read_type2(FILE* fp, int address, alea_nuc_ace_table_t* 
     if (fseek(fp, start + record_length, SEEK_SET) != 0)
         return ALEA_ERR_FILE_READ;
 
-    table->xss = malloc((size_t)table->xss_length * sizeof(double));
+    table->xss = alea_nuc_malloc((size_t)table->xss_length * sizeof(double));
     if (!table->xss) return ALEA_ERR_OUT_OF_MEMORY;
 
     size_t nread = fread(table->xss, sizeof(double), (size_t)table->xss_length, fp);
@@ -320,7 +339,7 @@ alea_error_t alea_nuc_ace_read(const char* path, int address, int file_type,
 
     if (err == ALEA_OK) {
         /* Determine table type from ZAID suffix */
-        alea_nuc_parse_zaid(table->zaid, NULL, NULL, NULL, &table->type);
+        err = ace_table_type(table->zaid, &table->type);
     }
 
     return err;

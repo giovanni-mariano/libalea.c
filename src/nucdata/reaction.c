@@ -12,49 +12,6 @@
  */
 
 #include "nuclear_internal.h"
-#include <math.h>
-#include <stdlib.h>
-
-static double interpolate_tabulated(double x0, double x1,
-                                    double y0, double y1,
-                                    double x, int interpolation) {
-    if (x <= x0) return y0;
-    if (x >= x1) return y1;
-    double f;
-    switch (interpolation) {
-    case 1: /* histogram */
-        return y0;
-    case 3: /* lin-log: y linear in log(x) */
-        if (x0 > 0.0 && x1 > 0.0)
-            f = log(x / x0) / log(x1 / x0);
-        else
-            f = (x - x0) / (x1 - x0);
-        return y0 + f * (y1 - y0);
-    case 4: /* log-lin: log(y) linear in x */
-        f = (x - x0) / (x1 - x0);
-        if (y0 > 0.0 && y1 > 0.0) return y0 * pow(y1 / y0, f);
-        return y0 + f * (y1 - y0);
-    case 5: /* log-log */
-        if (x0 > 0.0 && x1 > 0.0 && y0 > 0.0 && y1 > 0.0) {
-            f = log(x / x0) / log(x1 / x0);
-            return y0 * pow(y1 / y0, f);
-        }
-        /* fall through */
-    case 2: /* lin-lin */
-    default:
-        f = (x - x0) / (x1 - x0);
-        return y0 + f * (y1 - y0);
-    }
-}
-
-static int interpolation_for_interval(const int* nbt, const int* interp,
-                                      int n_regions, int interval) {
-    if (!nbt || !interp || n_regions <= 0) return 2;
-    int upper_point = interval + 2; /* ENDF NBT values are 1-based */
-    for (int r = 0; r < n_regions; r++)
-        if (upper_point <= nbt[r]) return interp[r];
-    return interp[n_regions - 1];
-}
 
 /* ============================================================================
  * REACTION CLASSIFICATION
@@ -125,20 +82,28 @@ static double eval_tabulated_yield(const alea_nuc_nuclide_t* nuc, int loc, doubl
     const double* egrid = &t->xss[base];     /* NE, E[0..NE-1] */
     const double* evals = &t->xss[base + ne]; /* Y[0..NE-1] */
 
+    if (energy <= egrid[1]) return evals[1];
+    if (energy >= egrid[ne]) return evals[ne];
     int ie = alea_nuc_energy_lookup(egrid + 1, ne, energy, NULL);
-    if (ie < 0) return evals[1]; /* below grid, use first value */
+    if (ie < 0) return 1.0;
     int interpolation = 2;
     int upper_point = ie + 2;
     for (int r = 0; r < nr; r++) {
-        int nbt = xss_int(t, loc + 1 + r);
-        if (upper_point <= nbt) {
-            interpolation = xss_int(t, loc + 1 + nr + r);
+        int breakpoint = xss_int(t, loc + 1 + r);
+        int code = xss_int(t, loc + 1 + nr + r);
+        if (breakpoint < 2 || breakpoint > ne || code < 1 || code > 5)
+            return 1.0;
+        if (upper_point <= breakpoint) {
+            interpolation = code;
             break;
         }
     }
-    return interpolate_tabulated(egrid[ie + 1], egrid[ie + 2],
-                                 evals[ie + 1], evals[ie + 2],
-                                 energy, interpolation);
+    double result = 1.0;
+    if (alea_nuc_interp_pair(egrid[ie + 1], egrid[ie + 2],
+                             evals[ie + 1], evals[ie + 2], energy,
+                             interpolation, &result) != ALEA_OK)
+        return 1.0;
+    return result;
 }
 
 double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double energy) {
@@ -163,8 +128,8 @@ double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double ene
         if (ty == INT_MIN) return 0.0;
         int abs_ty = abs(ty);
 
-        /* TYR=19: fission, use ν̄ */
-        if (abs_ty == 19) return alea_nuc_nu_bar(nuc, energy);
+        /* TYR=19: fission, emit the prompt component at collision time. */
+        if (abs_ty == 19) return alea_nuc_prompt_nu_bar(nuc, energy);
 
         /* |TYR| = 1-4: fixed integer yield */
         if (abs_ty >= 1 && abs_ty <= 4) return (double)abs_ty;
@@ -190,7 +155,7 @@ double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double ene
 
     /* Fission without nubar data */
     if (mt == 18 || mt == 19 || mt == 20 || mt == 21 || mt == 38)
-        return alea_nuc_nu_bar(nuc, energy);
+        return alea_nuc_prompt_nu_bar(nuc, energy);
 
     /* (n,2n), (n,3n), (n,4n) */
     if (mt == 16) return 2.0;
@@ -203,11 +168,7 @@ double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double ene
 /**
  * Evaluate ν̄ at given energy.
  */
-double alea_nuc_nu_bar(const alea_nuc_nuclide_t* nuc, double energy) {
-    if (!nuc || !nuc->fission) return 0.0;
-
-    const alea_nuc_nu_bar_t* nu = nuc->fission->total;
-    if (!nu) nu = nuc->fission->prompt;
+static double evaluate_nu_bar(const alea_nuc_nu_bar_t* nu, double energy) {
     if (!nu) return 0.0;
 
     if (nu->type == ALEA_NUC_NU_POLYNOMIAL) {
@@ -221,14 +182,31 @@ double alea_nuc_nu_bar(const alea_nuc_nuclide_t* nuc, double energy) {
     }
 
     if (nu->type == ALEA_NUC_NU_TABULAR && nu->n_energies > 0) {
-        int ie = alea_nuc_energy_lookup(nu->energy, nu->n_energies, energy, NULL);
-        if (ie < 0) return nu->nu[0];
-        int interpolation = interpolation_for_interval(
-            nu->nbt, nu->interp, nu->n_regions, ie);
-        return interpolate_tabulated(nu->energy[ie], nu->energy[ie + 1],
-                                     nu->nu[ie], nu->nu[ie + 1],
-                                     energy, interpolation);
+        double result = 0.0;
+        if (alea_nuc_interp_eval(nu->energy, nu->nu, nu->n_energies,
+                                 nu->nbt, nu->interp, nu->n_regions,
+                                 energy, &result) == ALEA_OK)
+            return result;
     }
 
     return 0.0;
+}
+
+double alea_nuc_nu_bar(const alea_nuc_nuclide_t* nuc, double energy) {
+    if (!nuc || !nuc->fission) return 0.0;
+    const alea_nuc_nu_bar_t* nu = nuc->fission->total;
+    if (!nu) nu = nuc->fission->prompt;
+    return evaluate_nu_bar(nu, energy);
+}
+
+double alea_nuc_prompt_nu_bar(const alea_nuc_nuclide_t* nuc, double energy) {
+    if (!nuc || !nuc->fission) return 0.0;
+    const alea_nuc_nu_bar_t* nu = nuc->fission->prompt;
+    if (!nu) nu = nuc->fission->total;
+    return evaluate_nu_bar(nu, energy);
+}
+
+double alea_nuc_delayed_nu_bar(const alea_nuc_nuclide_t* nuc, double energy) {
+    if (!nuc || !nuc->fission) return 0.0;
+    return evaluate_nu_bar(nuc->fission->delayed, energy);
 }

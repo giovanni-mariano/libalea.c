@@ -19,7 +19,7 @@
  * The adjoint matrix is the transpose.
  */
 
-#include "alea_nucdata.h"
+#include "nuclear_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -40,18 +40,18 @@ alea_nuc_multigroup_t* alea_nuc_mg_create(int n_groups, const double* bounds) {
     size_t groups = (size_t)n_groups;
     if (groups > SIZE_MAX / groups) return NULL;
 
-    alea_nuc_multigroup_t* mg = calloc(1, sizeof(*mg));
+    alea_nuc_multigroup_t* mg = alea_nuc_calloc(1, sizeof(*mg));
     if (!mg) return NULL;
 
     mg->n_groups = n_groups;
-    mg->bounds = malloc((groups + 1) * sizeof(double));
-    mg->sigma_t = calloc(groups, sizeof(double));
-    mg->sigma_a = calloc(groups, sizeof(double));
-    mg->sigma_s = calloc(groups, sizeof(double));
-    mg->sigma_f = calloc(groups, sizeof(double));
-    mg->nu_sigma_f = calloc(groups, sizeof(double));
-    mg->chi = calloc(groups, sizeof(double));
-    mg->scatter = calloc(groups * groups, sizeof(double));
+    mg->bounds = alea_nuc_malloc((groups + 1) * sizeof(double));
+    mg->sigma_t = alea_nuc_calloc(groups, sizeof(double));
+    mg->sigma_a = alea_nuc_calloc(groups, sizeof(double));
+    mg->sigma_s = alea_nuc_calloc(groups, sizeof(double));
+    mg->sigma_f = alea_nuc_calloc(groups, sizeof(double));
+    mg->nu_sigma_f = alea_nuc_calloc(groups, sizeof(double));
+    mg->chi = alea_nuc_calloc(groups, sizeof(double));
+    mg->scatter = alea_nuc_calloc(groups * groups, sizeof(double));
 
     if (!mg->bounds || !mg->sigma_t || !mg->sigma_a ||
         !mg->sigma_s || !mg->sigma_f || !mg->nu_sigma_f ||
@@ -393,7 +393,7 @@ static alea_error_t build_inelastic_scatter(alea_nuc_multigroup_t* mg,
     double A = nuc->awr;
     const double* egrid = nuc->energy;
     int n = nuc->n_energies;
-    double* transfer = calloc((size_t)G, sizeof(double));
+    double* transfer = alea_nuc_calloc((size_t)G, sizeof(double));
     if (!transfer) return ALEA_ERR_OUT_OF_MEMORY;
 
     for (int r = 0; r < nuc->n_reactions; r++) {
@@ -533,7 +533,7 @@ alea_error_t alea_nuc_mg_collapse(alea_nuc_multigroup_t* mg, const alea_nuc_nucl
             if (total_fission && rxn->mt != 18) continue;
             if (!rxn->xs || rxn->n_energies <= 0) continue;
             if (!fission_xs) {
-                fission_xs = calloc((size_t)nuc->n_energies, sizeof(double));
+                fission_xs = alea_nuc_calloc((size_t)nuc->n_energies, sizeof(double));
                 if (!fission_xs) return ALEA_ERR_OUT_OF_MEMORY;
             }
             int ie_start = rxn->threshold_index - 1;

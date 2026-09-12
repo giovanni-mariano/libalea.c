@@ -61,7 +61,7 @@ else
   PROBE_LIBS =
 endif
 
-TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
+TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/nuc_inventory$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
 
 all: $(TOOLS)
 
@@ -71,8 +71,13 @@ $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 $(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
-$(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c
+$(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c \
+                              $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a $(LDFLAGS)
+
+$(BIN_DIR)/nuc_inventory$(EXEEXT): nuc_inventory.c \
+                                   $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a $(LDFLAGS)
 
 $(BIN_DIR)/large_model_probe$(EXEEXT): large_model_probe.c
 	$(CC) $(CFLAGS) $(INCLUDES) -I../src -o $@ $< $(LIBS_ALL) $(LDFLAGS) $(PROBE_LIBS)

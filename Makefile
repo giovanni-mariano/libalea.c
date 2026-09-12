@@ -200,12 +200,20 @@ MCNP_MODEL_SRCS = \
 
 # Nuclear data module
 NUCDATA_SRCS = \
+    $(NUCDATA_DIR)/alloc.c \
+    $(NUCDATA_DIR)/rng.c \
 	$(NUCDATA_DIR)/context.c \
 	$(NUCDATA_DIR)/ace_reader.c \
 	$(NUCDATA_DIR)/xsdir.c \
 	$(NUCDATA_DIR)/xs_decode.c \
 	$(NUCDATA_DIR)/lookup.c \
 	$(NUCDATA_DIR)/material.c \
+	$(NUCDATA_DIR)/interpolation.c \
+	$(NUCDATA_DIR)/energy_sample.c \
+	$(NUCDATA_DIR)/free_gas.c \
+	$(NUCDATA_DIR)/thermal.c \
+	$(NUCDATA_DIR)/photon_sample.c \
+	$(NUCDATA_DIR)/photon_production.c \
 	$(NUCDATA_DIR)/collision.c \
 	$(NUCDATA_DIR)/reaction.c \
 	$(NUCDATA_DIR)/angular.c \
@@ -841,6 +849,7 @@ install-tools: tools
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_convert$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_plotter$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/nuc_plot$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/nuc_inventory$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/large_model_probe$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 
 install-doc:
@@ -857,6 +866,8 @@ uninstall:
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_plotter.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/nuc_plot"
 	@rm -f "$(DESTDIR)$(BINDIR)/nuc_plot.exe"
+	@rm -f "$(DESTDIR)$(BINDIR)/nuc_inventory"
+	@rm -f "$(DESTDIR)$(BINDIR)/nuc_inventory.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/large_model_probe"
 	@rm -f "$(DESTDIR)$(BINDIR)/large_model_probe.exe"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea.a"
@@ -907,7 +918,7 @@ help:
 	@echo "  modules          - Build MCNP, OpenMC, Serpent, and nucdata modules"
 	@echo "  full             - Build full library (core + all modules)"
 	@echo "  cli              - Build alea CLI"
-	@echo "  tools            - Build mc_convert, mc_plotter, nuc_plot, large_model_probe"
+	@echo "  tools            - Build conversion, plotting, and inspection tools"
 	@echo "  wasm             - Build single-threaded Emscripten binding"
 	@echo "  wasm-threaded    - Build threaded TinyPar Emscripten binding"
 	@echo "  wasm-demo        - Build the browser reference animation"

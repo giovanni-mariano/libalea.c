@@ -25,6 +25,7 @@
 #include "alea_lua.h"
 #include "alea_nucdata.h"
 #include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -303,6 +304,138 @@ static int l_nuclide_sample_elastic(lua_State* L) {
     lua_pushnumber(L, result.mu);
     lua_pushnumber(L, result.energy_out);
     return 2;
+}
+
+static uint32_t check_uint32(lua_State* L, int index, const char* name) {
+    lua_Integer value = luaL_checkinteger(L, index);
+    if (value < 0 || (uint64_t)value > UINT32_MAX)
+        luaL_error(L, "%s must be in [0, 2^32-1]", name);
+    return (uint32_t)value;
+}
+
+static uint64_t check_seed(lua_State* L, int index) {
+    lua_Integer value = luaL_checkinteger(L, index);
+    if (value < 0) luaL_error(L, "seed must be non-negative");
+    return (uint64_t)value;
+}
+
+static alea_nuc_rng_t collision_rng(lua_State* L, int first_argument) {
+    uint64_t seed = check_seed(L, first_argument);
+    uint32_t history = check_uint32(L, first_argument + 1, "history_id");
+    uint32_t particle = check_uint32(L, first_argument + 2, "particle_ordinal");
+    uint32_t event = check_uint32(L, first_argument + 3, "event_index");
+    alea_nuc_rng_t rng;
+    alea_error_t err = alea_nuc_rng_init(
+        &rng, seed, history, particle, event, ALEA_NUC_RNG_COLLISION);
+    if (err != ALEA_OK)
+        luaL_error(L, "failed to initialize collision RNG: %s",
+                   alea_error_string(err));
+    return rng;
+}
+
+static const alea_nuc_reaction_t* find_reaction(
+    const alea_nuc_nuclide_t* nuc, int mt) {
+    if (mt >= 0 && mt < ALEA_NUC_MT_TABLE_SIZE && nuc->mt_to_rxn) {
+        int index = nuc->mt_to_rxn[mt];
+        if (index >= 0 && index < nuc->n_reactions)
+            return &nuc->reactions[index];
+    }
+    for (int i = 0; i < nuc->n_reactions; i++)
+        if (nuc->reactions[i].mt == mt) return &nuc->reactions[i];
+    return NULL;
+}
+
+/* nuc:sample_reaction_energy(mt, energy, seed, history, particle, event)
+ *     -> outgoing_energy
+ *
+ * Samples the decoded outgoing-energy marginal with libalea's addressed
+ * collision RNG. Changing event selects an independent, reproducible sample.
+ */
+static int l_nuclide_sample_reaction_energy(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    int mt = (int)luaL_checkinteger(L, 2);
+    double incident_energy = luaL_checknumber(L, 3);
+    if (!isfinite(incident_energy) || incident_energy < 0.0)
+        return luaL_error(L, "incident energy must be finite and non-negative");
+    const alea_nuc_reaction_t* reaction = find_reaction(nuc, mt);
+    if (!reaction) return luaL_error(L, "reaction MT=%d is not present", mt);
+    if (!reaction->energy)
+        return luaL_error(L, "reaction MT=%d has no outgoing-energy law", mt);
+
+    alea_nuc_rng_t rng = collision_rng(L, 4);
+    double sampled;
+    alea_error_t err = alea_nuc_sample_energy_distribution(
+        reaction->energy, incident_energy, alea_nuc_rng_uniform, &rng,
+        &sampled);
+    if (err != ALEA_OK)
+        return luaL_error(L, "sample_reaction_energy: %s",
+                          alea_error_string(err));
+    lua_pushnumber(L, sampled);
+    return 1;
+}
+
+/* nuc:photon_productions() -> channel metadata */
+static int l_nuclide_photon_productions(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    lua_createtable(L, nuc->n_photon_productions, 0);
+    for (int i = 0; i < nuc->n_photon_productions; i++) {
+        const alea_nuc_photon_production_t* production =
+            &nuc->photon_productions[i];
+        lua_createtable(L, 0, 5);
+        lua_pushinteger(L, production->mt); lua_setfield(L, -2, "mt");
+        lua_pushinteger(L, production->parent_mt);
+        lua_setfield(L, -2, "parent_mt");
+        lua_pushinteger(L, production->mf); lua_setfield(L, -2, "mf");
+        lua_pushboolean(L, production->production_xs);
+        lua_setfield(L, -2, "production_xs");
+        if (production->spectrum) {
+            lua_pushinteger(L, production->spectrum->law);
+            lua_setfield(L, -2, "energy_law");
+        }
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+/* nuc:sample_photon(mt, energy, seed, history, particle, event) -> state */
+static int l_nuclide_sample_photon(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    int mt = (int)luaL_checkinteger(L, 2);
+    double incident_energy = luaL_checknumber(L, 3);
+    if (!isfinite(incident_energy) || incident_energy < 0.0)
+        return luaL_error(L, "incident energy must be finite and non-negative");
+    const alea_nuc_photon_production_t* production = NULL;
+    for (int i = 0; i < nuc->n_photon_productions; i++)
+        if (nuc->photon_productions[i].mt == mt) {
+            production = &nuc->photon_productions[i];
+            break;
+        }
+    if (!production)
+        return luaL_error(L, "photon-production MT=%d is not present", mt);
+
+    alea_nuc_rng_t rng = collision_rng(L, 4);
+    const alea_nuc_particle_state_t incident = {
+        ALEA_NUC_PARTICLE_NEUTRON, incident_energy,
+        {0.0, 0.0, 1.0}, 1.0, 0.0
+    };
+    alea_nuc_particle_state_t photon;
+    alea_error_t err = alea_nuc_sample_photon_production(
+        nuc, production, &incident, alea_nuc_rng_uniform, &rng, &photon);
+    if (err != ALEA_OK)
+        return luaL_error(L, "sample_photon: %s", alea_error_string(err));
+
+    lua_createtable(L, 0, 5);
+    lua_pushnumber(L, photon.energy); lua_setfield(L, -2, "energy");
+    lua_pushnumber(L, photon.direction[2]); lua_setfield(L, -2, "mu");
+    lua_createtable(L, 3, 0);
+    for (int i = 0; i < 3; i++) {
+        lua_pushnumber(L, photon.direction[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    lua_setfield(L, -2, "direction");
+    lua_pushnumber(L, photon.weight); lua_setfield(L, -2, "weight");
+    lua_pushnumber(L, photon.time); lua_setfield(L, -2, "time");
+    return 1;
 }
 
 /* nuc:energy_range() -> E_min, E_max */
@@ -648,6 +781,9 @@ static const luaL_Reg nuclide_methods[] = {
     {"temperature",     l_nuclide_temperature},
     {"capabilities",    l_nuclide_capabilities},
     {"sample_elastic",  l_nuclide_sample_elastic},
+    {"sample_reaction_energy", l_nuclide_sample_reaction_energy},
+    {"photon_productions", l_nuclide_photon_productions},
+    {"sample_photon",   l_nuclide_sample_photon},
     {"n_energies",      l_nuclide_n_energies},
     {"n_reactions",     l_nuclide_n_reactions},
     {"xs_total",        l_nuclide_xs_total},

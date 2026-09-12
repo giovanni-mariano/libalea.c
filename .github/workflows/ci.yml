@@ -34,6 +34,26 @@ jobs:
       - name: Run unit tests
         run: make test-unit CC=${{ matrix.compiler }} USE_TINYPAR=1
 
+      - name: Validate pinned photon-production data (gcc only)
+        if: matrix.compiler == 'gcc'
+        run: make -C tests/nucdata test-photon-production-required CC=${{ matrix.compiler }}
+
+      - name: Validate real temperature-table mixing (gcc only)
+        if: matrix.compiler == 'gcc'
+        run: make -C tests/nucdata test-temperature-mix-required CC=${{ matrix.compiler }}
+
+      - name: Validate photoatomic fluorescence metadata (gcc only)
+        if: matrix.compiler == 'gcc'
+        run: make -C tests/nucdata test-photoatomic-relaxation-required CC=${{ matrix.compiler }}
+
+      - name: Validate pinned continuous thermal data (gcc only)
+        if: matrix.compiler == 'gcc'
+        run: make -C tests/nucdata test-thermal-required CC=${{ matrix.compiler }}
+
+      - name: Inventory nuclear-data capabilities (gcc only)
+        if: matrix.compiler == 'gcc'
+        run: make -C tests/nucdata test-inventory-required CC=${{ matrix.compiler }}
+
       - name: Run integration tests
         run: make test-integration CC=${{ matrix.compiler }} USE_TINYPAR=1
 

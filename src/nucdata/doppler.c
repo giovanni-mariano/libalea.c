@@ -27,7 +27,7 @@
  *   threshold) to properly capture the kernel tail near threshold.
  */
 
-#include "alea_nucdata.h"
+#include "nuclear_internal.h"
 #include "constants.h"
 #include <stdlib.h>
 #include <string.h>
@@ -134,9 +134,9 @@ alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target)
     if (!isfinite(alpha) || alpha <= 0.0) return ALEA_ERR_INVALID_ARG;
 
     /* Precompute y = √(α·E) for each grid point */
-    double* y_grid = malloc((size_t)n * sizeof(double));
-    double* work = malloc((size_t)n * sizeof(double));
-    double* full_xs = nuc->n_reactions > 0 ? calloc((size_t)n, sizeof(double)) : NULL;
+    double* y_grid = alea_nuc_malloc((size_t)n * sizeof(double));
+    double* work = alea_nuc_malloc((size_t)n * sizeof(double));
+    double* full_xs = nuc->n_reactions > 0 ? alea_nuc_calloc((size_t)n, sizeof(double)) : NULL;
     if (!y_grid || !work || (nuc->n_reactions > 0 && !full_xs)) {
         free(y_grid); free(work); free(full_xs);
         return ALEA_ERR_OUT_OF_MEMORY;

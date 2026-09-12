@@ -896,11 +896,28 @@ if capability.transport_ready then
     local mu_cm, energy_out = u235:sample_elastic(energy, 0.25, 0.75)
     print(mu_cm, energy_out)
 end
+
+-- Sample an outgoing-energy marginal using libalea's addressed RNG.
+-- The final four values are seed, history, particle, and event identifiers.
+local emitted = u235:sample_reaction_energy(51, energy, 1234, 9, 2, 7)
+
+-- Inspect and sample neutron-induced photon-production channels.
+for _, channel in ipairs(u235:photon_productions()) do
+    print(channel.mt, channel.parent_mt, channel.mf, channel.energy_law)
+end
+local photon = u235:sample_photon(4001, energy, 1234, 9, 2, 8)
+print(photon.energy, photon.mu, table.unpack(photon.direction))
 ```
 
 Reading a reaction is not the same as being able to transport it. Inelastic,
-fission emission, URR-coordinated collisions, target motion, thermal scattering,
-and photon collisions are rejected by the current restricted collision model.
+free-gas target motion, bound thermal scattering, and photon collisions are
+not exposed by the current Lua prepared-collision interface. Lua can inspect
+and sample decoded neutron outgoing-energy marginals and neutron-induced photon
+energy-angle distributions. These methods use the same C implementation and
+event-addressed RNG as transport. The C interface additionally supports
+prompt/delayed neutron emission, free-gas elastic scattering, coordinated URR
+evaluation, and prepared-material or standalone sampling of discrete or
+continuous correlated thermal ACE tables.
 The prepared-material evaluation/flight/collision interface is currently a C
 API; Lua exposes capability inspection and low-level elastic sampling. See
 [Nuclear-data transport capabilities](NUCDATA_CAPABILITIES.md).
@@ -1093,6 +1110,9 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Cached nuclide | `xsdir:load_nuclide(zaid)` |
 | Capability report | `nuclide:capabilities()` |
 | Elastic sample | `nuclide:sample_elastic(E, xi1, xi2)` |
+| Reaction energy sample | `nuclide:sample_reaction_energy(mt, E, seed, history, particle, event)` |
+| Photon-production channels | `nuclide:photon_productions()` |
+| Photon-production sample | `nuclide:sample_photon(mt, E, seed, history, particle, event)` |
 | Nuclear material | `alea.nuc_material()` |
 | Material from geometry | `alea.nuc_material_from_cell(sys, index, xsdir)` |
 | **Error/Logging** | |

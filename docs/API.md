@@ -2506,6 +2506,40 @@ const alea_nuc_xsdir_entry_t* alea_nuc_xsdir_find(const alea_nuc_xsdir_t* xsdir,
 
 Find an xsdir entry by ZAID string (e.g. `"92235.80c"`). Returns NULL if not found.
 
+#### alea_nuc_xsdir_find_temperature
+
+```c
+alea_error_t alea_nuc_xsdir_find_temperature(
+    const alea_nuc_xsdir_t* xsdir,
+    const char* zaid,
+    double kT,
+    double abs_tolerance,
+    const alea_nuc_xsdir_entry_t** entry);
+```
+
+Find the closest evaluated table in the same ZAID family and of the same table
+type. The numeric evaluation suffix may differ. Selection succeeds only when
+the table kT is within the caller-supplied absolute tolerance, in MeV. The call
+returns `ALEA_ERR_INVALID_STATE` for an equidistant ambiguity and leaves the
+output entry null on every failure.
+
+#### alea_nuc_xsdir_find_temperature_bracket
+
+```c
+alea_error_t alea_nuc_xsdir_find_temperature_bracket(
+    const alea_nuc_xsdir_t* xsdir,
+    const char* zaid,
+    double kT,
+    const alea_nuc_xsdir_entry_t** lower,
+    const alea_nuc_xsdir_entry_t** upper,
+    double* upper_fraction);
+```
+
+Find the same-family evaluated tables immediately below and above a requested
+kT. Extrapolation and duplicate endpoint temperatures fail. An exact match
+returns the same entry twice with a zero upper fraction. Between tables, the
+fraction is linear in kT.
+
 #### alea_nuc_xsdir_count
 
 ```c
@@ -2562,6 +2596,37 @@ void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc);
 
 Free a nuclide and all its data.
 
+### Thermal Scattering Tables
+
+```c
+alea_nuc_thermal_t* alea_nuc_load_thermal(
+    const alea_nuc_xsdir_t* xsdir, const char* zaid);
+void alea_nuc_thermal_free(alea_nuc_thermal_t* thermal);
+
+double alea_nuc_thermal_xs_inelastic(
+    const alea_nuc_thermal_t* thermal, double energy);
+double alea_nuc_thermal_xs_elastic(
+    const alea_nuc_thermal_t* thermal, double energy);
+double alea_nuc_thermal_xs_total(
+    const alea_nuc_thermal_t* thermal, double energy);
+
+alea_error_t alea_nuc_sample_thermal_collision(
+    const alea_nuc_thermal_t* thermal,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_collision_result_t* result);
+```
+
+Load, inspect, and sample discrete (`IFENG=0/1`) or continuous correlated
+(`IFENG=2`) thermal ACE tables. The decoder supports incoherent inelastic
+scattering and coherent, incoherent, or mixed elastic modes. For continuous
+inelastic data it preserves each outgoing-energy PDF/CDF and correlated set of
+equiprobable cosines. Energies and kT are in MeV; cross sections are in barns.
+The collision result uses MT 2 for elastic and MT 4 for thermal inelastic
+scattering. Both representations may be associated with prepared-material
+components through `ALEA_NUC_CAP_THERMAL_SAB`.
+
 ### Microscopic Cross Sections
 
 All take a nuclide pointer and energy in MeV, return barns.
@@ -2584,7 +2649,58 @@ Log-log interpolation on photoatomic data. Takes energy in MeV, returns barns.
 | `alea_nuc_photon_xs_incoherent(nuc, energy)` | Compton (incoherent) scattering |
 | `alea_nuc_photon_xs_coherent(nuc, energy)` | Rayleigh (coherent) scattering |
 | `alea_nuc_photon_xs_photoelectric(nuc, energy)` | Photoelectric absorption |
+| `alea_nuc_photon_xs_photoelectric_subshell(nuc, designator, energy)` | Photoelectric absorption in one EPR subshell |
 | `alea_nuc_photon_xs_pair(nuc, energy)` | Pair production (including triplet) |
+| `alea_nuc_photon_secondary_capacity(nuc, energy)` | Required secondary slots for any possible photoatomic event |
+
+```c
+alea_error_t alea_nuc_sample_photon_collision(
+    const alea_nuc_nuclide_t* element,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_collision_result_t* result);
+
+alea_error_t alea_nuc_sample_photon_collision_with_secondaries(
+    const alea_nuc_nuclide_t* element,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_secondary_buffer_t* secondaries,
+    alea_nuc_collision_result_t* result);
+```
+
+Samples a photoatomic interaction on one element. Coherent and incoherent
+events return a scattered photon; MT 522 photoelectric and MT 517 pair
+production terminate it. The current model deposits Compton electron energy
+locally. The basic collision call deposits the full pair-event and
+photoelectric energy. EPR Compton events sample a shell and longitudinal
+electron momentum from the decoded ACE profile, producing a Doppler-broadened
+scattered energy. For EPR tables, the secondary-buffer variant selects the
+photoelectric vacancy by subshell cross section, samples the atomic transition
+cascade, and banks its radiative photons. A Compton-induced vacancy follows the
+same cascade. It also banks pair-event annihilation
+photons. Photoelectrons, Auger electrons, Coster-Kronig electrons, and remaining
+pair kinetic energy are deposited locally. Explicit charged-particle transport
+is not included.
+
+When present, `alea_nuc_photon_data_t` also preserves the ACE JFLO averaged
+fluorescence arrays as `fluorescence_edge`, `fluorescence_phi`,
+`fluorescence_yield`, and `fluorescence_energy`. This Cashwell-Everett block is
+inspection data; it is not a shell-resolved transition table, so older tables
+using this representation retain full local photoelectric deposition.
+
+The `_with_secondaries` variant banks detailed EPR photoelectric and Compton
+relaxation photons and the two back-to-back 511 keV annihilation photons from
+pair production. Before any
+RNG consumption it requires enough free slots for the largest possible event
+at the incident energy. The same
+behavior is available through `alea_nuc_collide_with_secondaries()` for a
+prepared photoatomic material. The original function retains its local-only
+pair-deposition model for callers that do not supply a secondary bank.
+
+Prepared materials containing only photoatomic tables may request
+`ALEA_NUC_CAP_PHOTON`. The ordinary evaluation, flight, and collision calls
+then compute mixture attenuation, select the interacting element, and sample
+the photoatomic event. Preparation rejects mixed neutron/photon table sets.
 
 ### Energy Grid Utilities
 
@@ -2640,6 +2756,24 @@ alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t*
 
 Add a nuclide with number density in atoms/barn-cm.
 
+#### alea_nuc_material_add_temperature_mix
+
+```c
+alea_error_t alea_nuc_material_add_temperature_mix(
+    alea_nuc_material_t* mat,
+    alea_nuc_nuclide_t* lower,
+    alea_nuc_nuclide_t* upper,
+    double upper_fraction,
+    double number_density);
+```
+
+Represent one isotope at an intermediate temperature with immutable lower and
+upper evaluated tables. The operation atomically adds weighted material
+components, giving linear expected cross sections while retaining the
+reaction, distribution, and URR data from whichever component is selected at
+a collision. Endpoint fractions add one component. Both tables must describe
+the same neutron nuclide and be ordered by kT.
+
 #### alea_nuc_material_from_cell
 
 ```c
@@ -2693,7 +2827,35 @@ Low-level single-nuclide stationary-target sampling for elastic MT=2 and
 supported absorption reactions. Caller-supplied variates must be in `[0,1)`;
 the result is unchanged on failure.
 
+```c
+alea_error_t alea_nuc_sample_energy_distribution(
+    const alea_nuc_energy_dist_t* distribution, double incident_energy,
+    alea_nuc_random_fn random, void* random_context, double* energy_out);
+alea_error_t alea_nuc_sample_energy_angle_distribution(
+    const alea_nuc_energy_dist_t* distribution, double incident_energy,
+    alea_nuc_random_fn random, void* random_context,
+    double* energy_out, double* mu_out, bool* angle_is_correlated);
+```
+
+The joint form preserves correlations for Kalbach-Mann, laws 61 and 67, and
+N-body phase space. For an independent distribution it returns the sampled
+energy, reports `angle_is_correlated=false`, and leaves `mu_out` unchanged.
+
 ### Prepared continuous-energy collision physics
+
+The built-in RNG adapter uses libalea's Philox4x32-10:
+
+```c
+alea_nuc_rng_t rng;
+alea_nuc_rng_init(&rng, seed, history_id, particle_ordinal, event_index,
+                  ALEA_NUC_RNG_COLLISION);
+alea_nuc_collide(&evaluation, alea_nuc_rng_uniform, &rng, &result);
+```
+
+Use `ALEA_NUC_RNG_FLIGHT` for flight sampling and `ALEA_NUC_RNG_URR` for
+probability-table evaluation. Addresses are independent of worker assignment.
+The slab example accepts an optional final seed argument, defaulting to 1,
+and prints the seed used. Custom RNG callbacks remain supported.
 
 ```c
 alea_error_t alea_nuc_capabilities(
@@ -2708,6 +2870,17 @@ alea_error_t alea_nuc_evaluate(
     const alea_nuc_prepared_material_t* prepared,
     const alea_nuc_particle_state_t* incident,
     alea_nuc_evaluation_t* evaluation);
+alea_error_t alea_nuc_evaluate_urr(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_evaluation_workspace_t* workspace,
+    alea_nuc_evaluation_t* evaluation);
+alea_error_t alea_nuc_sample_free_gas_elastic(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_particle_state_t* incident, double kT,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_free_gas_result_t* result);
 alea_error_t alea_nuc_sample_flight(
     const alea_nuc_evaluation_t* evaluation,
     alea_nuc_random_fn random, void* random_context, double* distance);
@@ -2715,21 +2888,57 @@ alea_error_t alea_nuc_collide(
     const alea_nuc_evaluation_t* evaluation,
     alea_nuc_random_fn random, void* random_context,
     alea_nuc_collision_result_t* result);
+alea_error_t alea_nuc_collide_with_secondaries(
+    const alea_nuc_evaluation_t* evaluation,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_secondary_buffer_t* secondaries,
+    alea_nuc_collision_result_t* result);
 ```
 
-Preparation is a capability gate, not an approximation switch: it rejects
-active reaction physics that the restricted transport model cannot represent.
-The current accepted set covers stationary-target elastic scattering and
-non-fission absorption. Prepared materials are immutable and borrow the source
-material, component array, and nuclides; all must outlive the prepared object.
+`alea_nuc_prepare_requirements_t` may bind thermal tables explicitly:
+
+```c
+alea_nuc_thermal_association_t thermal[] = {{hydrogen_index, lwtr}};
+alea_nuc_prepare_requirements_t requirements = {
+    .required_capabilities = ALEA_NUC_CAP_CONTINUOUS_NEUTRON |
+                             ALEA_NUC_CAP_THERMAL_SAB,
+    .thermal_associations = thermal,
+    .n_thermal_associations = 1,
+    .thermal_temperature_tolerance = 1.0e-10
+};
+```
+
+Preparation verifies each association against the ACE applicability ZAIDs and
+the neutron-table kT. Below and at the highest incident energy in the thermal
+table, its elastic and inelastic scattering replace that component's
+free-atom elastic contribution. `alea_nuc_evaluation_t.macro_thermal` reports
+the replacement separately; `macro_elastic` contains only free-atom elastic
+scattering. Above the cutoff, free-atom elastic scattering resumes.
+
+Preparation rejects active reaction physics that its requested capability set
+cannot represent. The accepted continuous-neutron set covers stationary-target
+elastic scattering, absorption, general neutron emission, prompt fission,
+opt-in delayed fission emission, coordinated URR probability tables, explicit
+bound-thermal associations, and opt-in constant-cross-section free-gas elastic
+scattering below `400 kT`.
+Prepared materials are immutable and borrow the source
+material, component array, nuclides, and associated thermal tables; all must
+outlive the prepared object.
 
 Evaluation computes macroscopic state without sampling. Flight and collision
 then consume a caller-provided finite `[0,1)` RNG. They verify that the stored
-evaluation still matches the incident state and prepared material, allocate no
+evaluation still matches the incident state and prepared material (and the URR
+workspace when present), allocate no
 memory during sampling, and leave output values unchanged on failure (although
 the RNG may already have advanced). See
 [Nuclear-data transport capabilities](NUCDATA_CAPABILITIES.md) for the precise
 accepted and rejected physics matrix.
+
+`alea_nuc_sample_free_gas_elastic()` is the corresponding low-level sampler.
+It uses the caller-supplied kT in MeV and returns the outgoing neutron plus
+center-of-mass and laboratory scattering cosines. The model samples a
+collision-conditioned Maxwellian target velocity under a constant elastic
+cross-section assumption.
 
 ### Reaction Classification
 
@@ -2805,6 +3014,11 @@ alea_error_t alea_nuc_doppler_broaden(alea_nuc_nuclide_t* nuc, double kT_target)
 ```
 
 Broaden cross sections in-place to temperature `kT_target` (MeV). Can only broaden to higher temperatures. Modifies total, absorption, elastic, heating, and per-reaction cross sections.
+
+The quadrature implementation is validated against the invariant 1/v shape
+and independent high-precision integration of a narrow resonance. It operates
+on a caller-owned nuclide and cannot recover resonance structure absent from
+the input energy grid.
 
 ### Utility
 

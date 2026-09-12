@@ -66,6 +66,43 @@ const alea_nuc_xsdir_entry_t* alea_nuc_xsdir_find(const alea_nuc_xsdir_t* xsdir,
                                                    const char* zaid);
 
 /**
+ * @brief Find a table in the same ZAID family at an exact temperature
+ *
+ * The ZAID is used as a family anchor: the part before the dot and the table
+ * type suffix must match, while the numeric evaluation suffix may differ.
+ * For example, "1001.80c" can select "1001.81c", and "lwtr.20t" can
+ * select another light-water thermal table. The closest entry whose kT is
+ * within abs_tolerance is returned. Temperatures and tolerance are in MeV.
+ *
+ * On failure, *entry is set to NULL. Equidistant matching entries are
+ * rejected because choosing between distinct evaluated tables is ambiguous.
+ */
+alea_error_t alea_nuc_xsdir_find_temperature(
+    const alea_nuc_xsdir_t* xsdir,
+    const char* zaid,
+    double kT,
+    double abs_tolerance,
+    const alea_nuc_xsdir_entry_t** entry);
+
+/**
+ * @brief Find evaluated tables bracketing a requested temperature
+ *
+ * Matching uses the same ZAID-family and table-type rules as
+ * alea_nuc_xsdir_find_temperature(). Extrapolation is rejected. For an exact
+ * match, lower and upper identify the same entry and upper_fraction is zero.
+ * Otherwise upper_fraction is (kT - lower->temperature) divided by the
+ * bracketing temperature interval. Duplicate entries at either selected
+ * temperature are rejected as ambiguous.
+ */
+alea_error_t alea_nuc_xsdir_find_temperature_bracket(
+    const alea_nuc_xsdir_t* xsdir,
+    const char* zaid,
+    double kT,
+    const alea_nuc_xsdir_entry_t** lower,
+    const alea_nuc_xsdir_entry_t** upper,
+    double* upper_fraction);
+
+/**
  * @brief Get a nuclide from the xsdir cache, loading it if needed
  *
  * Unlike alea_nuc_load_nuclide() which always creates a fresh copy owned
@@ -133,6 +170,36 @@ alea_nuc_nuclide_t* alea_nuc_load_nuclide(const alea_nuc_xsdir_t* xsdir, const c
  */
 void alea_nuc_nuclide_free(alea_nuc_nuclide_t* nuc);
 
+/**
+ * Load and decode a thermal scattering ACE table. Discrete IFENG=0/1 and
+ * continuous correlated IFENG=2 inelastic representations are supported.
+ * The caller owns the result.
+ */
+alea_nuc_thermal_t* alea_nuc_load_thermal(const alea_nuc_xsdir_t* xsdir,
+                                          const char* zaid);
+
+void alea_nuc_thermal_free(alea_nuc_thermal_t* thermal);
+
+/** Thermal incoherent-inelastic, elastic, and total cross sections (barns). */
+double alea_nuc_thermal_xs_inelastic(const alea_nuc_thermal_t* thermal,
+                                     double energy);
+double alea_nuc_thermal_xs_elastic(const alea_nuc_thermal_t* thermal,
+                                   double energy);
+double alea_nuc_thermal_xs_total(const alea_nuc_thermal_t* thermal,
+                                 double energy);
+
+/**
+ * Sample one collision from a decoded thermal table. The outgoing
+ * neutron retains the incident weight and time. MT is 2 for elastic and 4 for
+ * incoherent inelastic scattering.
+ */
+alea_error_t alea_nuc_sample_thermal_collision(
+    const alea_nuc_thermal_t* thermal,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_collision_result_t* result);
+
 /* ============================================================================
  * CROSS-SECTION LOOKUP (microscopic)
  *
@@ -196,6 +263,20 @@ alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t*
                               double number_density);
 
 /**
+ * Add one nuclide represented by two bracketing temperature tables. The
+ * material borrows both tables and adds densities (1-upper_fraction)*N and
+ * upper_fraction*N atomically. This gives linear expected cross sections;
+ * collision selection retains the distributions and URR data belonging to
+ * the selected table. Endpoint fractions add only one component.
+ */
+alea_error_t alea_nuc_material_add_temperature_mix(
+    alea_nuc_material_t* mat,
+    alea_nuc_nuclide_t* lower,
+    alea_nuc_nuclide_t* upper,
+    double upper_fraction,
+    double number_density);
+
+/**
  * Build a nuclear material from a zero-based geometry cell index.
  *
  * The caller owns the returned material. Nuclides referenced by it remain
@@ -253,14 +334,72 @@ alea_error_t alea_nuc_sample_collision(const alea_nuc_nuclide_t* nuc, int mt,
  * PREPARED CONTINUOUS-ENERGY COLLISION PHYSICS
  * ============================================================================ */
 
+/** Initialize a Philox event stream from src/rng. Particle ordinals must be
+ * unique within a history; event indices must be unique within a particle.
+ * Separate domains isolate flight, collision, and URR draws. No allocation.
+ */
+alea_error_t alea_nuc_rng_init(alea_nuc_rng_t* rng, uint64_t seed,
+    uint32_t history_id, uint32_t particle_ordinal, uint32_t event_index,
+    alea_nuc_rng_domain_t domain);
+
+/** Callback for nuclear-data samplers: 53-bit uniform in [0,1).
+ * Returns NAN on invalid state or exhaustion of the event's 2^32 words.
+ */
+double alea_nuc_rng_uniform(void* context);
+
+/**
+ * Sample an outgoing energy from an ACE energy-distribution chain.
+ * Supported laws are level scattering (3), continuous tabular (4), general
+ * evaporation (5), Maxwell (7), evaporation (9), Watt (11), and the energy
+ * marginal of Kalbach-Mann (44), correlated law 61, N-body phase space law 66,
+ * and laboratory angle-energy law 67. The RNG must return finite values in
+ * [0,1). The output is unchanged on failure.
+ */
+alea_error_t alea_nuc_sample_energy_distribution(
+    const alea_nuc_energy_dist_t* distribution,
+    double incident_energy,
+    alea_nuc_random_fn random,
+    void* random_context,
+    double* energy_out);
+
+/**
+ * Sample an outgoing energy and any angle correlated with it. For laws 44,
+ * 61, 66, and 67, mu_out is the sampled cosine and angle_is_correlated is
+ * true. Other supported laws leave mu_out unchanged and report false so the
+ * caller can sample the reaction's separate angular distribution.
+ */
+alea_error_t alea_nuc_sample_energy_angle_distribution(
+    const alea_nuc_energy_dist_t* distribution,
+    double incident_energy,
+    alea_nuc_random_fn random,
+    void* random_context,
+    double* energy_out,
+    double* mu_out,
+    bool* angle_is_correlated);
+
+/**
+ * Sample elastic scattering from a free target at kT (MeV), using the
+ * collision-conditioned constant-cross-section target-velocity model.
+ */
+alea_error_t alea_nuc_sample_free_gas_elastic(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_particle_state_t* incident,
+    double kT,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_free_gas_result_t* result);
+
 /** Inspect whether a nuclide supports the restricted collision model. */
 alea_error_t alea_nuc_capabilities(const alea_nuc_nuclide_t* nuc,
                                    alea_nuc_capability_report_t* report);
 
 /**
  * Prepare an immutable material for collision sampling. The returned object
- * borrows the material and nuclides, which must outlive it. Preparation fails
- * when active reaction physics cannot be represented faithfully.
+ * borrows the material, nuclides, and any thermal tables named by the
+ * requirements; all must outlive it. A thermal association replaces the
+ * component's free-atom elastic cross section through the highest incident
+ * energy in the thermal table. Preparation fails when active reaction physics
+ * cannot be represented faithfully.
  */
 alea_error_t alea_nuc_prepare_material(
     const alea_nuc_material_t* material,
@@ -274,6 +413,19 @@ void alea_nuc_prepared_material_free(alea_nuc_prepared_material_t* prepared);
 alea_error_t alea_nuc_evaluate(
     const alea_nuc_prepared_material_t* prepared,
     const alea_nuc_particle_state_t* incident,
+    alea_nuc_evaluation_t* evaluation);
+
+/**
+ * Evaluate a neutron while sampling one coordinated unresolved-resonance
+ * realization per material component. The caller-owned workspace must remain
+ * unchanged and alive through flight and collision sampling.
+ */
+alea_error_t alea_nuc_evaluate_urr(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_evaluation_workspace_t* workspace,
     alea_nuc_evaluation_t* evaluation);
 
 /**
@@ -296,12 +448,32 @@ alea_error_t alea_nuc_collide(const alea_nuc_evaluation_t* evaluation,
                               void* random_context,
                               alea_nuc_collision_result_t* result);
 
+/**
+ * Sample a collision that may emit neutrons and, when requested during
+ * preparation, reaction-conditioned photons. Emissions are appended to
+ * caller-owned storage. Capacity is
+ * checked before RNG is consumed, and buffer count/result are unchanged on
+ * failure. Ordinary calls allocate no memory.
+ */
+alea_error_t alea_nuc_collide_with_secondaries(
+    const alea_nuc_evaluation_t* evaluation,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_secondary_buffer_t* secondaries,
+    alea_nuc_collision_result_t* result);
+
 /* ============================================================================
  * FISSION DATA
  * ============================================================================ */
 
 /** Evaluate ν̄(E) — average neutrons per fission */
 double alea_nuc_nu_bar(const alea_nuc_nuclide_t* nuc, double energy);
+
+/** Evaluate prompt ν̄(E), falling back to the sole ν̄ representation. */
+double alea_nuc_prompt_nu_bar(const alea_nuc_nuclide_t* nuc, double energy);
+
+/** Evaluate delayed ν̄(E), or zero when no delayed-yield data are present. */
+double alea_nuc_delayed_nu_bar(const alea_nuc_nuclide_t* nuc, double energy);
 
 /* ============================================================================
  * REACTION CLASSIFICATION
@@ -313,6 +485,25 @@ alea_nuc_reaction_class_t alea_nuc_reaction_classify(int mt);
 /** Get neutron yield for a reaction at given energy (from TYR field) */
 double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double energy);
 
+/** Evaluate the mean photon yield for one decoded production channel. */
+double alea_nuc_photon_production_yield(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production,
+    double energy);
+
+/** Evaluate the aggregate neutron-induced photon-production cross section. */
+double alea_nuc_xs_photon_production_total(
+    const alea_nuc_nuclide_t* nuc, double energy);
+
+/** Sample one photon from a decoded production channel without allocation. */
+alea_error_t alea_nuc_sample_photon_production(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_particle_state_t* photon);
+
 /* ============================================================================
  * PHOTON CROSS SECTIONS
  * ============================================================================ */
@@ -321,7 +512,42 @@ double alea_nuc_reaction_yield(const alea_nuc_nuclide_t* nuc, int mt, double ene
 double alea_nuc_photon_xs_incoherent(const alea_nuc_nuclide_t* nuc, double energy);
 double alea_nuc_photon_xs_coherent(const alea_nuc_nuclide_t* nuc, double energy);
 double alea_nuc_photon_xs_photoelectric(const alea_nuc_nuclide_t* nuc, double energy);
+/** Photoelectric cross section for one EPR subshell designator (barns). */
+double alea_nuc_photon_xs_photoelectric_subshell(
+    const alea_nuc_nuclide_t* nuc, int designator, double energy);
 double alea_nuc_photon_xs_pair(const alea_nuc_nuclide_t* nuc, double energy);
+
+/** Maximum secondary slots required by any photoatomic event at this energy. */
+size_t alea_nuc_photon_secondary_capacity(
+    const alea_nuc_nuclide_t* element, double energy);
+
+/**
+ * Sample one photoatomic collision. MT 502 is coherent scattering, MT 504
+ * incoherent scattering, MT 517 pair production, and MT 522 photoelectric
+ * absorption. Charged-particle and annihilation energy is deposited locally.
+ */
+alea_error_t alea_nuc_sample_photon_collision(
+    const alea_nuc_nuclide_t* element,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_collision_result_t* result);
+
+/**
+ * Sample one photoatomic collision and append explicit secondaries. Pair
+ * production emits two back-to-back 0.51099895069 MeV annihilation photons.
+ * Photoelectric absorption emits the radiative part of a detailed EPR atomic
+ * relaxation cascade when those data are present. Charged-particle energy is
+ * deposited locally. Capacity for every possible secondary is required before
+ * RNG consumption.
+ */
+alea_error_t alea_nuc_sample_photon_collision_with_secondaries(
+    const alea_nuc_nuclide_t* element,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_secondary_buffer_t* secondaries,
+    alea_nuc_collision_result_t* result);
 
 /* ============================================================================
  * MULTIGROUP

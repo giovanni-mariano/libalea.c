@@ -33,6 +33,7 @@ jobs:
           cp bin/mc_convert dist/alea-linux-x64/
           cp bin/mc_plotter dist/alea-linux-x64/
           cp bin/nuc_plot dist/alea-linux-x64/
+          cp bin/nuc_inventory dist/alea-linux-x64/
           cp bin/large_model_probe dist/alea-linux-x64/
           cp bin/*.a dist/alea-linux-x64/
           cp -r include dist/alea-linux-x64/
@@ -79,6 +80,7 @@ jobs:
           cp bin/mc_convert dist/alea-linux-conda-openmp-x64/
           cp bin/mc_plotter dist/alea-linux-conda-openmp-x64/
           cp bin/nuc_plot dist/alea-linux-conda-openmp-x64/
+          cp bin/nuc_inventory dist/alea-linux-conda-openmp-x64/
           cp bin/large_model_probe dist/alea-linux-conda-openmp-x64/
           cp bin/*.a dist/alea-linux-conda-openmp-x64/
           cp -r include dist/alea-linux-conda-openmp-x64/
@@ -116,6 +118,7 @@ jobs:
           cp bin/mc_convert dist/alea-linux-arm64/
           cp bin/mc_plotter dist/alea-linux-arm64/
           cp bin/nuc_plot dist/alea-linux-arm64/
+          cp bin/nuc_inventory dist/alea-linux-arm64/
           cp bin/large_model_probe dist/alea-linux-arm64/
           cp bin/*.a dist/alea-linux-arm64/
           cp -r include dist/alea-linux-arm64/
@@ -147,6 +150,7 @@ jobs:
           cp bin/mc_convert dist/alea-macos-x64/
           cp bin/mc_plotter dist/alea-macos-x64/
           cp bin/nuc_plot dist/alea-macos-x64/
+          cp bin/nuc_inventory dist/alea-macos-x64/
           cp bin/large_model_probe dist/alea-macos-x64/
           cp bin/*.a dist/alea-macos-x64/
           cp -r include dist/alea-macos-x64/
@@ -178,6 +182,7 @@ jobs:
           cp bin/mc_convert dist/alea-macos-arm64/
           cp bin/mc_plotter dist/alea-macos-arm64/
           cp bin/nuc_plot dist/alea-macos-arm64/
+          cp bin/nuc_inventory dist/alea-macos-arm64/
           cp bin/large_model_probe dist/alea-macos-arm64/
           cp bin/*.a dist/alea-macos-arm64/
           cp -r include dist/alea-macos-arm64/
@@ -222,6 +227,7 @@ jobs:
           cp bin/mc_convert.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_convert dist/alea-windows-x64/mc_convert.exe
           cp bin/mc_plotter.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_plotter dist/alea-windows-x64/mc_plotter.exe
           cp bin/nuc_plot.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/nuc_plot dist/alea-windows-x64/nuc_plot.exe
+          cp bin/nuc_inventory.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/nuc_inventory dist/alea-windows-x64/nuc_inventory.exe
           cp bin/large_model_probe.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/large_model_probe dist/alea-windows-x64/large_model_probe.exe
           cp bin/*.a dist/alea-windows-x64/
           cp -r include dist/alea-windows-x64/

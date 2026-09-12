@@ -15,13 +15,14 @@
  *   - Lines ending with '+' are continuation lines
  */
 
-#include "alea_nucdata.h"
-#include "util/alea_log.h"
+#include "nuclear_internal.h"
 #include "util/compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
+#include <float.h>
 
 #define XSDIR_INITIAL_CAPACITY 1024
 #define XSDIR_MAX_LINE 4096
@@ -55,7 +56,7 @@ static alea_error_t xsdir_add_entry(alea_nuc_xsdir_t* xsdir, const char* line) {
     /* Grow if needed */
     if (xsdir->count >= xsdir->capacity) {
         size_t new_cap = xsdir->capacity ? xsdir->capacity * 2 : XSDIR_INITIAL_CAPACITY;
-        alea_nuc_xsdir_entry_t* p = realloc(xsdir->entries, new_cap * sizeof(*p));
+        alea_nuc_xsdir_entry_t* p = alea_nuc_realloc(xsdir->entries, new_cap * sizeof(*p));
         if (!p) return ALEA_ERR_OUT_OF_MEMORY;
         xsdir->entries = p;
         xsdir->capacity = new_cap;
@@ -169,7 +170,7 @@ static alea_error_t xsdir_parse_file(alea_nuc_xsdir_t* xsdir, const char* path) 
 alea_nuc_xsdir_t* alea_nuc_xsdir_load(const char* path) {
     if (!path) return NULL;
 
-    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    alea_nuc_xsdir_t* xsdir = alea_nuc_calloc(1, sizeof(*xsdir));
     if (!xsdir) return NULL;
 
     alea_error_t err = xsdir_parse_file(xsdir, path);
@@ -189,7 +190,7 @@ alea_nuc_xsdir_t* alea_nuc_xsdir_load_dir(const char* dirpath) {
     alea_dir_t* dir = alea_dir_open(dirpath);
     if (!dir) return NULL;
 
-    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    alea_nuc_xsdir_t* xsdir = alea_nuc_calloc(1, sizeof(*xsdir));
     if (!xsdir) { alea_dir_close(dir); return NULL; }
 
     /* Set datapath to the directory so relative filenames resolve */
@@ -212,7 +213,7 @@ alea_nuc_xsdir_t* alea_nuc_xsdir_load_dir(const char* dirpath) {
         char* filepath = filepath_buf;
         char* filepath_alloc = NULL;
         if (path_len > sizeof(filepath_buf)) {
-            filepath_alloc = malloc(path_len);
+            filepath_alloc = alea_nuc_malloc(path_len);
             if (!filepath_alloc) continue;
             filepath = filepath_alloc;
         }
@@ -267,6 +268,139 @@ const alea_nuc_xsdir_entry_t* alea_nuc_xsdir_find(const alea_nuc_xsdir_t* xsdir,
     return NULL;
 }
 
+static int zaid_family(const char* zaid, size_t* family_length,
+                       alea_nuc_table_type_t* type) {
+    if (!zaid || !family_length || !type) return 0;
+    const char* dot = strchr(zaid, '.');
+    if (!dot || dot == zaid) return 0;
+    const char* suffix = dot + 1;
+    if (!isdigit((unsigned char)*suffix)) return 0;
+    while (isdigit((unsigned char)*suffix)) suffix++;
+    if (suffix[0] == '\0' || suffix[1] != '\0') return 0;
+    switch (*suffix) {
+    case 'c': *type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON; break;
+    case 'p': *type = ALEA_NUC_TABLE_PHOTOATOMIC; break;
+    case 'u': *type = ALEA_NUC_TABLE_PHOTONUCLEAR; break;
+    case 't': *type = ALEA_NUC_TABLE_THERMAL_SAB; break;
+    case 'e': *type = ALEA_NUC_TABLE_ELECTRON; break;
+    default: return 0;
+    }
+    *family_length = (size_t)(dot - zaid);
+    return 1;
+}
+
+alea_error_t alea_nuc_xsdir_find_temperature(
+    const alea_nuc_xsdir_t* xsdir, const char* zaid, double kT,
+    double abs_tolerance, const alea_nuc_xsdir_entry_t** output) {
+    if (!xsdir || !zaid || !output) return ALEA_ERR_NULL_ARG;
+    *output = NULL;
+    if (!isfinite(kT) || kT < 0.0 || !isfinite(abs_tolerance) ||
+        abs_tolerance < 0.0)
+        return ALEA_ERR_INVALID_ARG;
+
+    size_t requested_family_length;
+    alea_nuc_table_type_t requested_type;
+    if (!zaid_family(zaid, &requested_family_length, &requested_type))
+        return ALEA_ERR_INVALID_ARG;
+
+    const alea_nuc_xsdir_entry_t* best = NULL;
+    double best_delta = HUGE_VAL;
+    int ambiguous = 0;
+    for (size_t i = 0; i < xsdir->count; i++) {
+        const alea_nuc_xsdir_entry_t* candidate = &xsdir->entries[i];
+        size_t candidate_family_length;
+        alea_nuc_table_type_t candidate_type;
+        if (!zaid_family(candidate->zaid, &candidate_family_length,
+                         &candidate_type) ||
+            candidate_type != requested_type ||
+            candidate_family_length != requested_family_length ||
+            memcmp(candidate->zaid, zaid, requested_family_length) != 0 ||
+            !isfinite(candidate->temperature) || candidate->temperature < 0.0)
+            continue;
+        double delta = fabs(candidate->temperature - kT);
+        if (delta > abs_tolerance) continue;
+        double tie_tolerance = 8.0 * DBL_EPSILON *
+                               fmax(fmax(delta, best_delta), DBL_MIN);
+        if (!best || delta < best_delta - tie_tolerance) {
+            best = candidate;
+            best_delta = delta;
+            ambiguous = 0;
+        } else if (fabs(delta - best_delta) <= tie_tolerance) {
+            ambiguous = 1;
+        }
+    }
+    if (!best) return ALEA_ERR_NOT_FOUND;
+    if (ambiguous) return ALEA_ERR_INVALID_STATE;
+    *output = best;
+    return ALEA_OK;
+}
+
+alea_error_t alea_nuc_xsdir_find_temperature_bracket(
+    const alea_nuc_xsdir_t* xsdir, const char* zaid, double kT,
+    const alea_nuc_xsdir_entry_t** lower,
+    const alea_nuc_xsdir_entry_t** upper, double* upper_fraction) {
+    if (!xsdir || !zaid || !lower || !upper || !upper_fraction)
+        return ALEA_ERR_NULL_ARG;
+    *lower = NULL;
+    *upper = NULL;
+    *upper_fraction = 0.0;
+    if (!isfinite(kT) || kT < 0.0) return ALEA_ERR_INVALID_ARG;
+
+    size_t requested_family_length;
+    alea_nuc_table_type_t requested_type;
+    if (!zaid_family(zaid, &requested_family_length, &requested_type))
+        return ALEA_ERR_INVALID_ARG;
+
+    int lower_ambiguous = 0, upper_ambiguous = 0;
+    for (size_t i = 0; i < xsdir->count; i++) {
+        const alea_nuc_xsdir_entry_t* candidate = &xsdir->entries[i];
+        size_t family_length;
+        alea_nuc_table_type_t type;
+        if (!zaid_family(candidate->zaid, &family_length, &type) ||
+            type != requested_type ||
+            family_length != requested_family_length ||
+            memcmp(candidate->zaid, zaid, requested_family_length) != 0 ||
+            !isfinite(candidate->temperature) || candidate->temperature < 0.0)
+            continue;
+
+        if (candidate->temperature <= kT) {
+            if (!*lower || candidate->temperature > (*lower)->temperature) {
+                *lower = candidate;
+                lower_ambiguous = 0;
+            } else if (candidate->temperature == (*lower)->temperature) {
+                lower_ambiguous = 1;
+            }
+        }
+        if (candidate->temperature >= kT) {
+            if (!*upper || candidate->temperature < (*upper)->temperature) {
+                *upper = candidate;
+                upper_ambiguous = 0;
+            } else if (candidate->temperature == (*upper)->temperature) {
+                upper_ambiguous = 1;
+            }
+        }
+    }
+    if (!*lower || !*upper) {
+        *lower = NULL;
+        *upper = NULL;
+        return ALEA_ERR_NOT_FOUND;
+    }
+    if (lower_ambiguous || upper_ambiguous) {
+        *lower = NULL;
+        *upper = NULL;
+        return ALEA_ERR_INVALID_STATE;
+    }
+    if (*lower == *upper) return ALEA_OK;
+    double interval = (*upper)->temperature - (*lower)->temperature;
+    if (!(interval > 0.0) || !isfinite(interval)) {
+        *lower = NULL;
+        *upper = NULL;
+        return ALEA_ERR_INVALID_STATE;
+    }
+    *upper_fraction = (kT - (*lower)->temperature) / interval;
+    return ALEA_OK;
+}
+
 size_t alea_nuc_xsdir_count(const alea_nuc_xsdir_t* xsdir) {
     return xsdir ? xsdir->count : 0;
 }
@@ -290,7 +424,7 @@ static uint32_t cache_hash(const char* s) {
 
 static int cache_grow(alea_nuc_xsdir_t* xsdir) {
     size_t new_cap = xsdir->cache_capacity * 2;
-    alea_nuc_cache_entry_t* new_cache = calloc(new_cap, sizeof(*new_cache));
+    alea_nuc_cache_entry_t* new_cache = alea_nuc_calloc(new_cap, sizeof(*new_cache));
     if (!new_cache) return -1;
 
     /* Re-insert all existing entries */
@@ -314,7 +448,7 @@ alea_nuc_nuclide_t* alea_nuc_xsdir_get_nuclide(alea_nuc_xsdir_t* xsdir, const ch
 
     /* Initialize cache on first use */
     if (!xsdir->cache) {
-        xsdir->cache = calloc(CACHE_INITIAL_CAPACITY, sizeof(*xsdir->cache));
+        xsdir->cache = alea_nuc_calloc(CACHE_INITIAL_CAPACITY, sizeof(*xsdir->cache));
         if (!xsdir->cache) return NULL;
         xsdir->cache_capacity = CACHE_INITIAL_CAPACITY;
         xsdir->cache_count = 0;

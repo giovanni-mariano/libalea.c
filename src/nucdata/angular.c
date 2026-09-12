@@ -38,10 +38,9 @@
  * Decode angular distribution for one reaction from the AND block.
  * Returns NULL if isotropic (locator = 0).
  */
-alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, int land_loc) {
+alea_nuc_angular_dist_t* alea_nuc_decode_angular_base(
+    const alea_nuc_ace_table_t* t, int land_loc, int and_base) {
     if (land_loc <= 0) return NULL; /* isotropic */
-
-    int and_base = t->jxs[8]; /* JXS[9]: AND data block (0-indexed: jxs[8]) */
     int abs_loc = xss_relative_loc(t, and_base, land_loc);
     if (abs_loc == 0) return NULL;
 
@@ -49,15 +48,15 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
     if (ne <= 0 || ne > 100000) return NULL; /* sanity check */
     if (!xss_range_valid(t, abs_loc + 1, 2 * ne)) return NULL;
 
-    alea_nuc_angular_dist_t* ang = calloc(1, sizeof(*ang));
+    alea_nuc_angular_dist_t* ang = alea_nuc_calloc(1, sizeof(*ang));
     if (!ang) {
         xss_mark_allocation_error(t);
         return NULL;
     }
 
     ang->n_energies = ne;
-    ang->energy = malloc((size_t)ne * sizeof(double));
-    ang->data = calloc((size_t)ne, sizeof(alea_nuc_angular_point_t));
+    ang->energy = alea_nuc_malloc((size_t)ne * sizeof(double));
+    ang->data = alea_nuc_calloc((size_t)ne, sizeof(alea_nuc_angular_point_t));
     if (!ang->energy || !ang->data) {
         xss_mark_allocation_error(t);
         goto fail;
@@ -108,9 +107,9 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
                 pt->type = ALEA_NUC_ANG_TABULAR;
                 pt->interpolation = jj;
                 pt->n_cosines = np;
-                pt->cosine = malloc((size_t)np * sizeof(double));
-                pt->pdf = malloc((size_t)np * sizeof(double));
-                pt->cdf = malloc((size_t)np * sizeof(double));
+                pt->cosine = alea_nuc_malloc((size_t)np * sizeof(double));
+                pt->pdf = alea_nuc_malloc((size_t)np * sizeof(double));
+                pt->cdf = alea_nuc_malloc((size_t)np * sizeof(double));
                 if (!pt->cosine || !pt->pdf || !pt->cdf) {
                     xss_mark_allocation_error(t);
                     goto fail;
@@ -127,7 +126,7 @@ alea_nuc_angular_dist_t* alea_nuc_decode_angular(const alea_nuc_ace_table_t* t, 
                 if (!xss_range_valid(t, dloc, 33)) goto fail;
                 pt->type = ALEA_NUC_ANG_EQUIPROBABLE;
                 pt->n_cosines = 33;
-                pt->cosine = malloc(33 * sizeof(double));
+                pt->cosine = alea_nuc_malloc(33 * sizeof(double));
                 if (!pt->cosine) {
                     xss_mark_allocation_error(t);
                     goto fail;
@@ -156,6 +155,11 @@ fail:
         free(ang);
     }
     return NULL;
+}
+
+alea_nuc_angular_dist_t* alea_nuc_decode_angular(
+    const alea_nuc_ace_table_t* t, int land_loc) {
+    return alea_nuc_decode_angular_base(t, land_loc, t->jxs[8]);
 }
 
 /**

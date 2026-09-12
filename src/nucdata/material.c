@@ -14,9 +14,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
+#include <stdint.h>
 
 alea_nuc_material_t* alea_nuc_material_create(void) {
-    alea_nuc_material_t* mat = calloc(1, sizeof(*mat));
+    alea_nuc_material_t* mat = alea_nuc_calloc(1, sizeof(*mat));
     return mat;
 }
 
@@ -26,26 +28,76 @@ void alea_nuc_material_destroy(alea_nuc_material_t* mat) {
     free(mat);
 }
 
+static alea_error_t material_reserve(alea_nuc_material_t* mat, int additional) {
+    if (!mat) return ALEA_ERR_NULL_ARG;
+    if (additional < 0 || mat->n_components < 0 || mat->capacity < 0 ||
+        mat->n_components > mat->capacity ||
+        (mat->capacity > 0 && !mat->components))
+        return ALEA_ERR_INVALID_ARG;
+    if (additional > INT_MAX - mat->n_components) return ALEA_ERR_OVERFLOW;
+    int needed = mat->n_components + additional;
+    if (needed <= mat->capacity) return ALEA_OK;
+    int new_cap = mat->capacity ? mat->capacity : 4;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) { new_cap = needed; break; }
+        new_cap *= 2;
+    }
+    if ((size_t)new_cap > SIZE_MAX / sizeof(*mat->components))
+        return ALEA_ERR_OVERFLOW;
+    alea_nuc_mat_component_t* p = alea_nuc_realloc(
+        mat->components, (size_t)new_cap * sizeof(*p));
+        if (!p) return ALEA_ERR_OUT_OF_MEMORY;
+    mat->components = p;
+    mat->capacity = new_cap;
+    return ALEA_OK;
+}
+
 alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t* nuclide,
                               double number_density) {
     if (!mat || !nuclide) return ALEA_ERR_NULL_ARG;
     if (!isfinite(number_density) || number_density < 0.0)
         return ALEA_ERR_INVALID_ARG;
-
-    /* Grow array (doubling, matches alea_vec pattern) */
-    if (mat->n_components >= mat->capacity) {
-        int new_cap = mat->capacity ? mat->capacity * 2 : 4;
-        alea_nuc_mat_component_t* p = realloc(mat->components,
-                                          (size_t)new_cap * sizeof(*p));
-        if (!p) return ALEA_ERR_OUT_OF_MEMORY;
-        mat->components = p;
-        mat->capacity = new_cap;
-    }
+    alea_error_t err = material_reserve(mat, 1);
+    if (err != ALEA_OK) return err;
 
     mat->components[mat->n_components].nuclide = nuclide;
     mat->components[mat->n_components].number_density = number_density;
     mat->n_components++;
 
+    return ALEA_OK;
+}
+
+alea_error_t alea_nuc_material_add_temperature_mix(
+    alea_nuc_material_t* mat, alea_nuc_nuclide_t* lower,
+    alea_nuc_nuclide_t* upper, double upper_fraction,
+    double number_density) {
+    if (!mat || !lower || !upper) return ALEA_ERR_NULL_ARG;
+    if (!isfinite(upper_fraction) || upper_fraction < 0.0 ||
+        upper_fraction > 1.0 || !isfinite(number_density) ||
+        number_density < 0.0 || lower->particle != ALEA_NUC_PARTICLE_NEUTRON ||
+        upper->particle != ALEA_NUC_PARTICLE_NEUTRON || lower->Z != upper->Z ||
+        lower->A != upper->A || lower->metastable != upper->metastable ||
+        !isfinite(lower->temperature) || !isfinite(upper->temperature) ||
+        lower->temperature < 0.0 ||
+        upper->temperature < lower->temperature ||
+        ((lower == upper || lower->temperature == upper->temperature) &&
+         upper_fraction != 0.0))
+        return ALEA_ERR_INVALID_ARG;
+
+    int additional = (lower == upper || upper_fraction == 0.0 ||
+                      upper_fraction == 1.0) ? 1 : 2;
+    alea_error_t err = material_reserve(mat, additional);
+    if (err != ALEA_OK) return err;
+    if (upper_fraction < 1.0) {
+        mat->components[mat->n_components++] = (alea_nuc_mat_component_t){
+            lower, (1.0 - upper_fraction) * number_density
+        };
+    }
+    if (upper_fraction > 0.0) {
+        mat->components[mat->n_components++] = (alea_nuc_mat_component_t){
+            upper, upper_fraction * number_density
+        };
+    }
     return ALEA_OK;
 }
 
@@ -88,7 +140,7 @@ int alea_nuc_sample_nuclide(const alea_nuc_material_t* mat, double energy, doubl
     int nc = mat->n_components;
     double cumul = 0.0;
     double partials[64];
-    double* p = (nc <= 64) ? partials : malloc((size_t)nc * sizeof(double));
+    double* p = (nc <= 64) ? partials : alea_nuc_malloc((size_t)nc * sizeof(double));
     if (!p) return -1;
 
     for (int i = 0; i < nc; i++) {

@@ -10,17 +10,39 @@
 #include "alea_nucdata.h"
 #include "alea_test.h"
 
-#define EPRDATA14_XSDIR "eprdata14/eprdata14/xsdir"
+#include <stdint.h>
+
+#ifndef EPRDATA_XSDIR
+#define EPRDATA_XSDIR "eprdata14/xsdir"
+#endif
+#ifndef EPRDATA_SUFFIX
+#define EPRDATA_SUFFIX ".14p"
+#endif
+#ifndef EPRDATA_LABEL
+#define EPRDATA_LABEL "eprdata14"
+#endif
+#ifndef EPRDATA_FORMAT
+#define EPRDATA_FORMAT 3
+#endif
 
 static alea_nuc_xsdir_t* xsdir;
 static alea_nuc_nuclide_t* h;
 static alea_nuc_nuclide_t* pb;
 
+typedef struct { uint64_t state; } test_rng_t;
+
+static double test_rng(void* context) {
+    test_rng_t* rng = context;
+    rng->state = rng->state * UINT64_C(6364136223846793005) +
+                 UINT64_C(1442695040888963407);
+    return (double)(rng->state >> 11) * 0x1.0p-53;
+}
+
 static void setup(void) {
-    xsdir = alea_nuc_xsdir_load(EPRDATA14_XSDIR);
+    xsdir = alea_nuc_xsdir_load(EPRDATA_XSDIR);
     if (!xsdir) return;
-    h  = alea_nuc_xsdir_get_nuclide(xsdir, "1000.14p");
-    pb = alea_nuc_xsdir_get_nuclide(xsdir, "82000.14p");
+    h  = alea_nuc_xsdir_get_nuclide(xsdir, "1000" EPRDATA_SUFFIX);
+    pb = alea_nuc_xsdir_get_nuclide(xsdir, "82000" EPRDATA_SUFFIX);
 }
 
 /* --- xsdir --- */
@@ -131,6 +153,132 @@ TEST(lead_coherent_ff) {
     ASSERT(pb->photon->n_coherent_ff > 0);
 }
 
+TEST(lead_decodes_detailed_subshell_relaxation_data) {
+    if (!pb) SKIP("no data");
+    ASSERT_EQ(pb->photon->epr_format, EPRDATA_FORMAT);
+    ASSERT(pb->photon->n_subshells > 10);
+    int transitions = 0;
+    size_t max_photons = 0;
+    for (int i = 0; i < pb->photon->n_subshells; i++) {
+        const alea_nuc_atomic_subshell_t* shell = &pb->photon->subshells[i];
+        ASSERT(shell->designator > 0);
+        ASSERT(shell->binding_energy > 0.0);
+        transitions += shell->n_transitions;
+        if (shell->max_relaxation_photons > max_photons)
+            max_photons = shell->max_relaxation_photons;
+    }
+    ASSERT(transitions > 100);
+    ASSERT(max_photons > 0 && max_photons < 256);
+}
+
+TEST(lead_decodes_bound_compton_profiles) {
+    if (!pb) SKIP("no data");
+    ASSERT(pb->photon->n_compton_shells > 10);
+    ASSERT(pb->photon->n_compton_profiles > 10);
+    ASSERT(pb->photon->n_compton_shells >=
+           pb->photon->n_compton_profiles);
+    ASSERT_NEAR(pb->photon->compton_shells[
+                    pb->photon->n_compton_shells - 1]
+                    .cumulative_probability, 1.0, 1e-12);
+    for (int i = 0; i < pb->photon->n_compton_profiles; i++) {
+        const alea_nuc_compton_profile_t* profile =
+            &pb->photon->compton_profiles[i];
+        ASSERT_EQ(profile->interpolation, 2);
+        ASSERT(profile->n_momenta >= 2);
+        ASSERT_NEAR(profile->cdf[0], 0.0, 1e-12);
+        ASSERT_NEAR(profile->cdf[profile->n_momenta - 1], 1.0, 1e-12);
+    }
+}
+
+TEST(lead_subshell_cross_sections_sum_to_photoelectric_total) {
+    if (!pb) SKIP("no data");
+    const double energies[] = {0.05, 0.1, 1.0};
+    for (size_t j = 0; j < sizeof(energies) / sizeof(energies[0]); j++) {
+        double sum = 0.0;
+        for (int i = 0; i < pb->photon->n_subshells; i++)
+            sum += alea_nuc_photon_xs_photoelectric_subshell(
+                pb, pb->photon->subshells[i].designator, energies[j]);
+        ASSERT_NEAR(sum, alea_nuc_photon_xs_photoelectric(pb, energies[j]),
+                    5e-6 * fmax(1.0, sum));
+    }
+}
+
+TEST(lead_photoelectric_cascades_conserve_energy) {
+    if (!pb) SKIP("no data");
+    size_t capacity = 0;
+    for (int i = 0; i < pb->photon->n_subshells; i++)
+        if (pb->photon->subshells[i].max_relaxation_photons > capacity)
+            capacity = pb->photon->subshells[i].max_relaxation_photons;
+    if (capacity < 2) SKIP("no multi-photon relaxation cascade");
+    alea_nuc_particle_state_t* particles = calloc(capacity, sizeof(*particles));
+    ASSERT_NOT_NULL(particles);
+    alea_nuc_secondary_buffer_t buffer = {particles, capacity, 0};
+    alea_nuc_particle_state_t incident = {
+        ALEA_NUC_PARTICLE_PHOTON, 0.05, {0.0, 0.0, 1.0}, 0.75, 2.0
+    };
+    test_rng_t rng = {UINT64_C(0x123456789abcdef0)};
+    int photoelectric_events = 0, relaxation_photons = 0;
+    for (int history = 0; history < 1000; history++) {
+        buffer.count = 0;
+        alea_nuc_collision_result_t result;
+        ASSERT_EQ(alea_nuc_sample_photon_collision_with_secondaries(
+                      pb, &incident, test_rng, &rng, &buffer, &result), ALEA_OK);
+        if (result.mt != 522) continue;
+        photoelectric_events++;
+        double photon_energy = 0.0;
+        ASSERT_EQ(buffer.count, result.n_emitted);
+        for (size_t i = 0; i < buffer.count; i++) {
+            photon_energy += buffer.particles[i].energy;
+            ASSERT_EQ(buffer.particles[i].type, ALEA_NUC_PARTICLE_PHOTON);
+            ASSERT_EQ(buffer.particles[i].weight, incident.weight);
+            ASSERT_EQ(buffer.particles[i].time, incident.time);
+        }
+        relaxation_photons += (int)buffer.count;
+        ASSERT_NEAR(photon_energy + result.local_energy_deposition,
+                    incident.energy, 2e-13);
+    }
+    free(particles);
+    ASSERT(photoelectric_events > 500);
+    ASSERT(relaxation_photons > 0);
+}
+
+TEST(lead_bound_compton_events_conserve_energy) {
+    if (!pb) SKIP("no data");
+    alea_nuc_particle_state_t incident = {
+        ALEA_NUC_PARTICLE_PHOTON, 1.0, {0.0, 0.0, 1.0}, 0.75, 2.0
+    };
+    size_t capacity = alea_nuc_photon_secondary_capacity(pb, incident.energy);
+    ASSERT(capacity > 0 && capacity < 256);
+    alea_nuc_particle_state_t* particles = calloc(capacity, sizeof(*particles));
+    ASSERT_NOT_NULL(particles);
+    alea_nuc_secondary_buffer_t buffer = {particles, capacity, 0};
+    test_rng_t rng = {UINT64_C(0x6a09e667f3bcc909)};
+    int compton_events = 0, broadened_events = 0, relaxation_photons = 0;
+    for (int history = 0; history < 2000; history++) {
+        buffer.count = 0;
+        alea_nuc_collision_result_t result;
+        ASSERT_EQ(alea_nuc_sample_photon_collision_with_secondaries(
+                      pb, &incident, test_rng, &rng, &buffer, &result), ALEA_OK);
+        if (result.mt != 504) continue;
+        compton_events++;
+        double banked = 0.0;
+        for (size_t i = 0; i < buffer.count; i++)
+            banked += buffer.particles[i].energy;
+        relaxation_photons += (int)buffer.count;
+        double free_energy = incident.energy /
+            (1.0 + incident.energy / 0.51099895069 * (1.0 - result.mu_lab));
+        if (fabs(result.outgoing.energy - free_energy) > 1e-10)
+            broadened_events++;
+        ASSERT_NEAR(result.outgoing.energy + banked +
+                    result.local_energy_deposition, incident.energy, 2e-10);
+        ASSERT_EQ(buffer.count, result.n_emitted);
+    }
+    free(particles);
+    ASSERT(compton_events > 100);
+    ASSERT(broadened_events > 100);
+    ASSERT(relaxation_photons > 0);
+}
+
 TEST(lead_heating_per_collision_1MeV) {
     if (!pb) SKIP("no data");
     double hpc = alea_nuc_heating_per_collision(pb, 1.0);
@@ -144,7 +292,7 @@ TEST(load_all_100_elements) {
     int loaded = 0;
     for (int z = 1; z <= 100; z++) {
         char zaid[24];
-        snprintf(zaid, sizeof(zaid), "%d000.14p", z);
+        snprintf(zaid, sizeof(zaid), "%d000%s", z, EPRDATA_SUFFIX);
         alea_nuc_nuclide_t* nuc = alea_nuc_xsdir_get_nuclide(xsdir, zaid);
         if (!nuc || !nuc->photon || nuc->n_energies <= 0) continue;
         double sig = alea_nuc_xs_total(nuc, 1.0);
@@ -167,7 +315,7 @@ const char *alea_test_current_name = NULL;
 int main(int argc, char **argv) {
     const char *filter = argc > 1 ? argv[1] : NULL;
 
-    printf("nucdata eprdata14 photon tests\n");
+    printf("nucdata %s photon tests\n", EPRDATA_LABEL);
     printf("===============================\n");
 
     setup();

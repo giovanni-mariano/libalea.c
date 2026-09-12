@@ -14,7 +14,7 @@
  * The nuclides are owned by the xsdir, not by the returned material.
  */
 
-#include "alea_nucdata.h"
+#include "nuclear_internal.h"
 #include "core/alea_materials.h"
 #include "core/alea_system.h"
 #include <stdio.h>
@@ -97,8 +97,8 @@ static alea_nuc_material_t* nuc_material_from_core(
     if (n == 0) return NULL;
 
     /* Load all nuclides (cached) and collect atomic masses */
-    alea_nuc_nuclide_t** nuclides = malloc((size_t)n * sizeof(*nuclides));
-    double* A = malloc((size_t)n * sizeof(double));
+    alea_nuc_nuclide_t** nuclides = alea_nuc_malloc((size_t)n * sizeof(*nuclides));
+    double* A = alea_nuc_malloc((size_t)n * sizeof(double));
     if (!nuclides || !A) { free(nuclides); free(A); return NULL; }
 
     double fraction_sum = 0.0;
