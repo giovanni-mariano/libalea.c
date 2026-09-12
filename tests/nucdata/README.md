@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # External nuclear-data tests
 
 The broad external-library tests are optional when their evaluated-data
