@@ -125,7 +125,7 @@ TEST(endfb71_graphite_applies_to_natural_carbon_isotopes) {
     carbon13.sigma_elastic = one;
     carbon13.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&carbon13, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_thermal_association_t association = {0, thermal};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
@@ -340,7 +340,7 @@ TEST(njoy74_prepared_moderator_channel_statistics) {
     hydrogen.sigma_abs = zero;
     hydrogen.heating = zero;
     alea_nuc_mat_component_t component = {&hydrogen, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_thermal_association_t association = {0, thermal};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
@@ -458,7 +458,7 @@ TEST(njoy25_light_water_moderator_matches_discrete_expectation) {
     hydrogen.sigma_total = free_elastic;
     hydrogen.sigma_elastic = free_elastic; hydrogen.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&hydrogen, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_thermal_association_t association = {0, thermal};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |

@@ -27,6 +27,7 @@ typedef struct {
     const alea_nuc_thermal_t* thermal;
     int* event_reactions;
     int n_event_reactions;
+    int temperature_mix_peer;
 } prepared_component_t;
 
 struct alea_nuc_prepared_material {
@@ -654,6 +655,27 @@ alea_error_t alea_nuc_prepare_material(
         }
         prepared_component_t* component = &prepared->components[i];
         component->source = source;
+        component->temperature_mix_peer = -1;
+        if (material->temperature_mix_peer &&
+            material->temperature_mix_peer[i] != 0) {
+            int peer = material->temperature_mix_peer[i] - 1;
+            if (peer < 0 || peer >= material->n_components || peer == i ||
+                material->temperature_mix_peer[peer] != i + 1 ||
+                !material->components[peer].nuclide ||
+                source->nuclide->Z != material->components[peer].nuclide->Z ||
+                source->nuclide->A != material->components[peer].nuclide->A ||
+                source->nuclide->metastable !=
+                    material->components[peer].nuclide->metastable ||
+                source->nuclide->temperature ==
+                    material->components[peer].nuclide->temperature) {
+                alea_nuc_prepared_material_free(prepared);
+                return report_failure(report,
+                    ALEA_NUC_PREP_INVALID_TEMPERATURE_MIX,
+                    requirements->required_capabilities, i, 0,
+                    "temperature-mixture peer metadata is inconsistent");
+            }
+            component->temperature_mix_peer = peer;
+        }
         int maximum = source->nuclide->n_reactions;
         if (maximum > 0) {
             component->event_reactions = alea_nuc_malloc((size_t)maximum * sizeof(int));
@@ -940,22 +962,42 @@ alea_error_t alea_nuc_evaluate_urr(
     if (workspace->capacity < (size_t)prepared->n_components ||
         (prepared->n_components > 0 && !workspace->components))
         return ALEA_ERR_INVALID_ARG;
+    memset(workspace->components, 0,
+           (size_t)prepared->n_components * sizeof(*workspace->components));
     for (int i = 0; i < prepared->n_components; i++) {
-        alea_nuc_urr_sample_t sample;
-        memset(&sample, 0, sizeof(sample));
+        int peer = prepared->components[i].temperature_mix_peer;
+        if (peer >= 0 && peer < i) continue;
         const alea_nuc_nuclide_t* nuc =
             prepared->components[i].source->nuclide;
-        if (nuc->urr && incident->energy >= nuc->urr->energy[0] &&
-            incident->energy <= nuc->urr->energy[nuc->urr->n_energies - 1]) {
-            double u;
-            alea_error_t err = draw_uniform(random, random_context, &u);
-            if (err != ALEA_OK) return err;
-            if (!alea_nuc_urr_factors(nuc, incident->energy, u,
-                                      sample.factors))
-                return ALEA_ERR_INVALID_STATE;
-            sample.active = true;
+        int active = nuc->urr && incident->energy >= nuc->urr->energy[0] &&
+            incident->energy <= nuc->urr->energy[nuc->urr->n_energies - 1];
+        int peer_active = 0;
+        const alea_nuc_nuclide_t* peer_nuc = NULL;
+        if (peer >= 0) {
+            peer_nuc = prepared->components[peer].source->nuclide;
+            peer_active = peer_nuc->urr &&
+                incident->energy >= peer_nuc->urr->energy[0] &&
+                incident->energy <=
+                    peer_nuc->urr->energy[peer_nuc->urr->n_energies - 1];
         }
-        workspace->components[i] = sample;
+        if (!active && !peer_active) continue;
+        double u;
+        alea_error_t err = draw_uniform(random, random_context, &u);
+        if (err != ALEA_OK) return err;
+        if (active) {
+            alea_nuc_urr_sample_t* sample = &workspace->components[i];
+            if (!alea_nuc_urr_factors(nuc, incident->energy, u,
+                                      sample->factors))
+                return ALEA_ERR_INVALID_STATE;
+            sample->active = true;
+        }
+        if (peer_active) {
+            alea_nuc_urr_sample_t* sample = &workspace->components[peer];
+            if (!alea_nuc_urr_factors(peer_nuc, incident->energy, u,
+                                      sample->factors))
+                return ALEA_ERR_INVALID_STATE;
+            sample->active = true;
+        }
     }
     alea_nuc_evaluation_t candidate;
     alea_error_t err = evaluate_checked(prepared, incident, workspace,

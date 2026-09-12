@@ -36,6 +36,8 @@ static const char* issue_name(alea_nuc_prepare_issue_t issue) {
         return "invalid-energy-distribution";
     case ALEA_NUC_PREP_INVALID_ANGULAR: return "invalid-angular";
     case ALEA_NUC_PREP_INVALID_CROSS_SECTIONS: return "invalid-cross-sections";
+    case ALEA_NUC_PREP_INVALID_TEMPERATURE_MIX:
+        return "invalid-temperature-mix";
     case ALEA_NUC_PREP_INVALID_THERMAL_ASSOCIATION:
         return "invalid-thermal-association";
     }
@@ -152,7 +154,7 @@ int main(int argc, char** argv) {
             /* Photon production is opt-in. Report its defect when present,
              * but do not let it hide otherwise valid neutron collisions. */
             alea_nuc_mat_component_t component = {nuc, 1.0};
-            alea_nuc_material_t material = {&component, 1, 1};
+            alea_nuc_material_t material = {&component, 1, 1, NULL};
             alea_nuc_prepare_requirements_t requirements = {
                 .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
             };

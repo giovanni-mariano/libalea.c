@@ -482,6 +482,9 @@ TEST(material_temperature_mix_interpolates_and_selects_tables) {
     ASSERT_EQ(material->n_components, 2);
     ASSERT_NEAR(material->components[0].number_density, 0.3, 1e-15);
     ASSERT_NEAR(material->components[1].number_density, 0.1, 1e-15);
+    ASSERT_NOT_NULL(material->temperature_mix_peer);
+    ASSERT_EQ(material->temperature_mix_peer[0], 2);
+    ASSERT_EQ(material->temperature_mix_peer[1], 1);
     ASSERT_NEAR(alea_nuc_mat_xs_total(material, 1.5), 1.2, 1e-14);
 
     nucdata_rng_t rng = {UINT64_C(0x12fb791a33d96e41)};
@@ -504,9 +507,38 @@ TEST(material_temperature_mix_interpolates_and_selects_tables) {
                   material, &lower, &lower, 0.0, 0.4), ALEA_OK);
     ASSERT_EQ(material->n_components, 1);
     ASSERT_TRUE(material->components[0].nuclide == &lower);
+    ASSERT_EQ(material->temperature_mix_peer[0], 0);
     ASSERT_EQ(alea_nuc_material_add_temperature_mix(
                   material, &lower, &upper, NAN, 0.4), ALEA_ERR_INVALID_ARG);
     ASSERT_EQ(material->n_components, 1);
+    alea_nuc_material_destroy(material);
+}
+
+TEST(material_temperature_mix_allocation_failure_is_transactional) {
+    alea_nuc_nuclide_t lower = {0}, upper = {0};
+    lower.Z = upper.Z = 92;
+    lower.A = upper.A = 238;
+    lower.particle = upper.particle = ALEA_NUC_PARTICLE_NEUTRON;
+    lower.temperature = 2.5e-8;
+    upper.temperature = 5.0e-8;
+    alea_nuc_material_t* material = alea_nuc_material_create();
+    ASSERT_NOT_NULL(material);
+
+    for (size_t fail_at = 0; fail_at < 2; fail_at++) {
+        nuc_alloc_failure_t allocation = {fail_at, 0};
+        alea_nuc_set_alloc_failure(fail_nuc_allocation, &allocation);
+        alea_error_t status = alea_nuc_material_add_temperature_mix(
+            material, &lower, &upper, 0.5, 0.1);
+        alea_nuc_set_alloc_failure(NULL, NULL);
+        ASSERT_EQ(status, ALEA_ERR_OUT_OF_MEMORY);
+        ASSERT_EQ(material->n_components, 0);
+        ASSERT_NULL(material->components);
+        ASSERT_NULL(material->temperature_mix_peer);
+    }
+
+    ASSERT_EQ(alea_nuc_material_add_temperature_mix(
+                  material, &lower, &upper, 0.5, 0.1), ALEA_OK);
+    ASSERT_EQ(material->n_components, 2);
     alea_nuc_material_destroy(material);
 }
 
@@ -1217,7 +1249,7 @@ TEST(prepared_photon_collision_banks_annihilation_photons) {
     element.n_energies = 2;
     element.energy = energy;
     alea_nuc_mat_component_t component = {&element, 0.5};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_PHOTON
     };
@@ -1262,7 +1294,7 @@ TEST(prepared_photon_mixture_evaluates_and_selects_element) {
     alea_nuc_mat_component_t components[] = {
         {&elements[0], 1.0}, {&elements[1], 1.0}
     };
-    alea_nuc_material_t material = {components, 2, 2};
+    alea_nuc_material_t material = {components, 2, 2, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_PHOTON
     };
@@ -1305,7 +1337,7 @@ TEST(preparation_rejects_mixed_neutron_and_photon_tables) {
     alea_nuc_mat_component_t components[] = {
         {&tables[0], 1.0}, {&tables[1], 1.0}
     };
-    alea_nuc_material_t material = {components, 2, 2};
+    alea_nuc_material_t material = {components, 2, 2, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -2325,7 +2357,7 @@ TEST(prepared_collision_selects_absorption_channel) {
     nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
     nuc.n_reactions = 1; nuc.reactions = &reaction;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -2366,7 +2398,7 @@ TEST(prepared_collision_selects_target_by_macroscopic_total) {
     alea_nuc_mat_component_t components[] = {
         {&nuclides[0], 0.25}, {&nuclides[1], 0.75}
     };
-    alea_nuc_material_t material = {components, 2, 2};
+    alea_nuc_material_t material = {components, 2, 2, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -2405,7 +2437,7 @@ TEST(preparation_rejects_inelastic_without_distribution_and_urr) {
     nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
     nuc.n_reactions = 1; nuc.reactions = &reaction;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -2445,7 +2477,7 @@ TEST(prepared_collision_emits_multiple_neutrons_into_caller_buffer) {
     nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
     nuc.n_reactions = 1; nuc.reactions = &reaction;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_CONTINUOUS_NEUTRON
     };
@@ -2503,7 +2535,7 @@ TEST(prepared_collisions_are_worker_schedule_deterministic) {
     nuc.sigma_elastic = elastic;
     nuc.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -2551,7 +2583,7 @@ TEST(secondary_capacity_failure_precedes_rng_and_publication) {
     nuc.sigma_total=total; nuc.sigma_elastic=zero; nuc.sigma_abs=zero;
     nuc.n_reactions=1; nuc.reactions=&reaction;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_NEUTRON_EMISSION
     };
@@ -2603,7 +2635,7 @@ TEST(coordinated_urr_evaluation_drives_flight_and_reaction_probabilities) {
     nuc.sigma_abs=absorption; nuc.n_reactions=1; nuc.reactions=&reaction;
     nuc.urr=&urr;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
                                  ALEA_NUC_CAP_URR
@@ -2644,6 +2676,77 @@ TEST(coordinated_urr_evaluation_drives_flight_and_reaction_probabilities) {
     alea_nuc_prepared_material_free(prepared);
 }
 
+TEST(temperature_mix_uses_one_correlated_urr_quantile) {
+    double energy[] = {1.0, 3.0};
+    double total[] = {1.0, 1.0}, elastic[] = {1.0, 1.0};
+    double zero[] = {0.0, 0.0};
+    double lower_table[] = {
+        0.25, 1.0, 1.0, 2.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+        0.25, 1.0, 1.0, 2.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0
+    };
+    double upper_table[] = {
+        0.75, 1.0, 3.0, 4.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+        0.75, 1.0, 3.0, 4.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0
+    };
+    alea_nuc_urr_t lower_urr = {
+        .n_energies=2, .n_bands=2, .interp=2, .multiply_smooth=true,
+        .energy=energy, .table=lower_table
+    };
+    alea_nuc_urr_t upper_urr = {
+        .n_energies=2, .n_bands=2, .interp=2, .multiply_smooth=true,
+        .energy=energy, .table=upper_table
+    };
+    alea_nuc_nuclide_t lower = {0}, upper = {0};
+    lower.Z = upper.Z = 92; lower.A = upper.A = 238;
+    lower.particle = upper.particle = ALEA_NUC_PARTICLE_NEUTRON;
+    lower.awr = upper.awr = 238.0;
+    lower.temperature = 2.5e-8; upper.temperature = 5.0e-8;
+    lower.n_energies = upper.n_energies = 2;
+    lower.energy = upper.energy = energy;
+    lower.sigma_total = upper.sigma_total = total;
+    lower.sigma_elastic = upper.sigma_elastic = elastic;
+    lower.sigma_abs = upper.sigma_abs = zero;
+    lower.urr = &lower_urr; upper.urr = &upper_urr;
+
+    alea_nuc_material_t* material = alea_nuc_material_create();
+    ASSERT_NOT_NULL(material);
+    ASSERT_EQ(alea_nuc_material_add_temperature_mix(
+                  material, &lower, &upper, 0.25, 0.1), ALEA_OK);
+    alea_nuc_prepare_requirements_t requirements = {
+        .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
+                                 ALEA_NUC_CAP_URR
+    };
+    alea_nuc_capability_report_t report;
+    alea_nuc_prepared_material_t* prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(material, &requirements, &report,
+                                        &prepared), ALEA_OK);
+    alea_nuc_particle_state_t incident = {
+        ALEA_NUC_PARTICLE_NEUTRON, 2.0, {0.0, 0.0, 1.0}, 1.0, 0.0
+    };
+    alea_nuc_urr_sample_t samples[2];
+    alea_nuc_evaluation_workspace_t workspace = {samples, 2};
+    alea_nuc_evaluation_t evaluation;
+    double draw = 0.5;
+    sequence_rng_t rng = {&draw, 1, 0};
+    ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, sequence_rng, &rng,
+                                    &workspace, &evaluation), ALEA_OK);
+    ASSERT_EQ(rng.position, 1);
+    ASSERT_TRUE(samples[0].active);
+    ASSERT_TRUE(samples[1].active);
+    ASSERT_NEAR(samples[0].factors[0], 2.0, 1e-14);
+    ASSERT_NEAR(samples[1].factors[0], 3.0, 1e-14);
+    ASSERT_NEAR(evaluation.macro_total, 0.225, 1e-14);
+    alea_nuc_prepared_material_free(prepared);
+
+    material->temperature_mix_peer[1] = 0;
+    prepared = NULL;
+    ASSERT_EQ(alea_nuc_prepare_material(material, &requirements, &report,
+                                        &prepared), ALEA_ERR_UNSUPPORTED);
+    ASSERT_NULL(prepared);
+    ASSERT_EQ(report.issue, ALEA_NUC_PREP_INVALID_TEMPERATURE_MIX);
+    alea_nuc_material_destroy(material);
+}
+
 TEST(delayed_fission_emission_selects_group_spectrum_and_time) {
     double energy[] = {1.0, 3.0}, total_xs[] = {1.0, 1.0};
     double zero[] = {0.0, 0.0}, fission_xs[] = {1.0, 1.0};
@@ -2679,7 +2782,7 @@ TEST(delayed_fission_emission_selects_group_spectrum_and_time) {
     nuc.sigma_total=total_xs; nuc.sigma_elastic=zero; nuc.sigma_abs=zero;
     nuc.n_reactions=1; nuc.reactions=&reaction; nuc.fission=&fission;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_CONTINUOUS_NEUTRON |
                                  ALEA_NUC_CAP_FISSION |
@@ -2861,7 +2964,7 @@ TEST(preparation_excludes_derived_responses_from_event_channels) {
     nuc.n_reactions = 3;
     nuc.reactions = reactions;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -2897,7 +3000,7 @@ TEST(preparation_accepts_right_continuous_main_grid) {
     nuc.sigma_elastic = total;
     nuc.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON
     };
@@ -3047,7 +3150,7 @@ TEST(prepared_free_gas_elastic_uses_table_temperature_below_cutoff) {
     nuc.n_energies = 2; nuc.energy = energy;
     nuc.sigma_total = total; nuc.sigma_elastic = total; nuc.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
                                  ALEA_NUC_CAP_FREE_GAS
@@ -3095,7 +3198,7 @@ TEST(preparation_requires_temperature_for_every_free_gas_component) {
     alea_nuc_mat_component_t components[] = {
         {&nuclides[0], 0.1}, {&nuclides[1], 0.2}
     };
-    alea_nuc_material_t material = {components, 2, 2};
+    alea_nuc_material_t material = {components, 2, 2, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
                                  ALEA_NUC_CAP_FREE_GAS
@@ -3237,7 +3340,7 @@ TEST(prepared_thermal_replaces_free_atom_elastic_below_table_cutoff) {
     nuc.sigma_elastic = elastic; nuc.sigma_abs = absorption;
     nuc.n_reactions = 1; nuc.reactions = &reaction;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_thermal_association_t association = {0, thermal};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
@@ -3309,7 +3412,7 @@ TEST(prepared_thermal_rejects_wrong_nuclide_temperature_and_duplicates) {
     nuc.n_energies = 2; nuc.energy = energy; nuc.sigma_total = total;
     nuc.sigma_elastic = total; nuc.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_thermal_association_t associations[] = {
         {0, thermal}, {0, thermal}
     };
@@ -3544,7 +3647,7 @@ TEST(thermal_continuous_decode_and_correlated_sampling) {
     nuc.n_energies = 2; nuc.energy = neutron_energy;
     nuc.sigma_total = one; nuc.sigma_elastic = one; nuc.sigma_abs = zero;
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_thermal_association_t association = {0, thermal};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
@@ -3788,7 +3891,7 @@ TEST(photon_production_decodes_yield_and_cross_section_forms) {
 
     incident.energy = 1.5;
     alea_nuc_mat_component_t component = {nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
                                  ALEA_NUC_CAP_PHOTON_PRODUCTION
@@ -3862,7 +3965,7 @@ TEST(prepared_photon_production_accepts_mt3_aggregate_parent) {
     nuc.photon_productions = &production;
 
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
                                  ALEA_NUC_CAP_PHOTON_PRODUCTION
@@ -3950,7 +4053,7 @@ TEST(prepared_photon_production_conditions_partial_parent_on_aggregate) {
     nuc.photon_productions = &production;
 
     alea_nuc_mat_component_t component = {&nuc, 0.1};
-    alea_nuc_material_t material = {&component, 1, 1};
+    alea_nuc_material_t material = {&component, 1, 1, NULL};
     alea_nuc_prepare_requirements_t requirements = {
         .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
                                  ALEA_NUC_CAP_PHOTON_PRODUCTION

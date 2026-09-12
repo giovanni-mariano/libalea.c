@@ -267,7 +267,8 @@ alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t*
  * material borrows both tables and adds densities (1-upper_fraction)*N and
  * upper_fraction*N atomically. This gives linear expected cross sections;
  * collision selection retains the distributions and URR data belonging to
- * the selected table. Endpoint fractions add only one component.
+ * the selected table. Coordinated URR evaluation uses the same probability
+ * quantile for both bounding tables. Endpoint fractions add only one component.
  */
 alea_error_t alea_nuc_material_add_temperature_mix(
     alea_nuc_material_t* mat,
@@ -418,7 +419,8 @@ alea_error_t alea_nuc_evaluate(
 /**
  * Evaluate a neutron while sampling one coordinated unresolved-resonance
  * realization per material component. The caller-owned workspace must remain
- * unchanged and alive through flight and collision sampling.
+ * unchanged and alive through flight and collision sampling. Components made
+ * by one temperature-mix call share a probability quantile.
  */
 alea_error_t alea_nuc_evaluate_urr(
     const alea_nuc_prepared_material_t* prepared,

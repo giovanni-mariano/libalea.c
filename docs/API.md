@@ -2771,8 +2771,9 @@ Represent one isotope at an intermediate temperature with immutable lower and
 upper evaluated tables. The operation atomically adds weighted material
 components, giving linear expected cross sections while retaining the
 reaction, distribution, and URR data from whichever component is selected at
-a collision. Endpoint fractions add one component. Both tables must describe
-the same neutron nuclide and be ordered by kT.
+a collision. Coordinated URR evaluation applies the same probability quantile
+to both bounding tables. Endpoint fractions add one component. Both tables
+must describe the same neutron nuclide and be ordered by kT.
 
 #### alea_nuc_material_from_cell
 

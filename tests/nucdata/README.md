@@ -89,9 +89,10 @@ second cosine moments for its 32-bin equiprobable representation. The source
 table SHA-256 is
 `1b93295279fa1ea1ea84b120d22e330f7f3f641a3eeb03be1fc880e6c63ddcf3`.
 
-Production unresolved-resonance transport is checked with `92238.00c` from
-the official ENDF/B-VIII.0 Lib80 library. Set `ALEA_ENDFB80_XSDIR` to its
-extracted `xsdir` and run:
+Production unresolved-resonance transport is checked with the separately
+processed `92238.00c` and `92238.01c` U-238 tables from the official
+ENDF/B-VIII.0 Lib80 library. Set `ALEA_ENDFB80_XSDIR` to its extracted `xsdir`
+and run:
 
 ```sh
 make test-production-urr-required \
@@ -102,9 +103,14 @@ The gate pins the U-238 probability-table metadata and factors at 50 keV,
 checks coordinated macroscopic reaction rates, and compares transmission
 through two consecutive same-material geometry segments with the analytic
 attenuation. It also verifies that entering a material with a different number
-density requires a new evaluation and scales the sampled macroscopic rate.
-The source table SHA-256 is
-`35f1d10d8248395e8390e0322409a55c76d788197f69134d4335913f06626c27`.
+density requires a new evaluation and scales the sampled macroscopic rate. A
+temperature-mixture case verifies that both evaluated temperatures use one URR
+quantile and that their weighted sampled rates reproduce evaluations of the
+individual tables. The source-table SHA-256 values are
+`35f1d10d8248395e8390e0322409a55c76d788197f69134d4335913f06626c27` for
+`92238.00c` and
+`da2f69bce3b620159923e4c994cf07542ff35fccb1b85371b83b0efd69ba4328` for
+`92238.01c`.
 
 The same pinned U-235 evaluation supplies a resonance-bearing table for the
 required temperature-mixing gate. `make test-temperature-mix-required` creates

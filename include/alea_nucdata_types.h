@@ -536,6 +536,7 @@ typedef struct {
     alea_nuc_mat_component_t* components;
     int n_components;
     int capacity;
+    int* temperature_mix_peer; /* owned parallel metadata: peer index + 1, or 0 */
 } alea_nuc_material_t;
 
 /* ============================================================================
@@ -625,6 +626,7 @@ typedef enum {
     ALEA_NUC_PREP_INVALID_ENERGY_DISTRIBUTION,
     ALEA_NUC_PREP_INVALID_ANGULAR,
     ALEA_NUC_PREP_INVALID_CROSS_SECTIONS,
+    ALEA_NUC_PREP_INVALID_TEMPERATURE_MIX,
     ALEA_NUC_PREP_INVALID_THERMAL_ASSOCIATION,
 } alea_nuc_prepare_issue_t;
 

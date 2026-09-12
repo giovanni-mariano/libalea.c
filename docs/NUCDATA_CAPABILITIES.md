@@ -115,8 +115,10 @@ only inside the caller's absolute kT tolerance and rejects equidistant matches.
 tables without extrapolation. Load both and pass them to
 `alea_nuc_material_add_temperature_mix()` to obtain linear expected cross
 sections while collision selection retains the sampled table's distributions
-and URR representation. No table is mutated, and exact endpoints use one
-component. In-place Doppler broadening remains a separate caller-owned option;
+and URR representation. Coordinated URR evaluation uses one probability
+quantile for both bounding tables so their resonance fluctuations remain
+correlated. No table is mutated, and exact endpoints use one component.
+In-place Doppler broadening remains a separate caller-owned option;
 its numerical gates cover the 1/v invariant and a narrow-resonance reference
 quadrature. It rejects a nuclide with an attached URR probability table before
 allocation or mutation because broadening only the smooth cross sections would

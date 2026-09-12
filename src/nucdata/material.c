@@ -25,6 +25,7 @@ alea_nuc_material_t* alea_nuc_material_create(void) {
 void alea_nuc_material_destroy(alea_nuc_material_t* mat) {
     if (!mat) return;
     free(mat->components);
+    free(mat->temperature_mix_peer);
     free(mat);
 }
 
@@ -44,10 +45,25 @@ static alea_error_t material_reserve(alea_nuc_material_t* mat, int additional) {
     }
     if ((size_t)new_cap > SIZE_MAX / sizeof(*mat->components))
         return ALEA_ERR_OVERFLOW;
-    alea_nuc_mat_component_t* p = alea_nuc_realloc(
-        mat->components, (size_t)new_cap * sizeof(*p));
-        if (!p) return ALEA_ERR_OUT_OF_MEMORY;
-    mat->components = p;
+    alea_nuc_mat_component_t* components = alea_nuc_malloc(
+        (size_t)new_cap * sizeof(*components));
+    int* peers = alea_nuc_calloc((size_t)new_cap, sizeof(*peers));
+    if (!components || !peers) {
+        free(components);
+        free(peers);
+        return ALEA_ERR_OUT_OF_MEMORY;
+    }
+    if (mat->n_components > 0) {
+        memcpy(components, mat->components,
+               (size_t)mat->n_components * sizeof(*components));
+        if (mat->temperature_mix_peer)
+            memcpy(peers, mat->temperature_mix_peer,
+                   (size_t)mat->n_components * sizeof(*peers));
+    }
+    free(mat->components);
+    free(mat->temperature_mix_peer);
+    mat->components = components;
+    mat->temperature_mix_peer = peers;
     mat->capacity = new_cap;
     return ALEA_OK;
 }
@@ -62,6 +78,7 @@ alea_error_t alea_nuc_material_add(alea_nuc_material_t* mat, alea_nuc_nuclide_t*
 
     mat->components[mat->n_components].nuclide = nuclide;
     mat->components[mat->n_components].number_density = number_density;
+    mat->temperature_mix_peer[mat->n_components] = 0;
     mat->n_components++;
 
     return ALEA_OK;
@@ -88,6 +105,7 @@ alea_error_t alea_nuc_material_add_temperature_mix(
                       upper_fraction == 1.0) ? 1 : 2;
     alea_error_t err = material_reserve(mat, additional);
     if (err != ALEA_OK) return err;
+    int first = mat->n_components;
     if (upper_fraction < 1.0) {
         mat->components[mat->n_components++] = (alea_nuc_mat_component_t){
             lower, (1.0 - upper_fraction) * number_density
@@ -97,6 +115,12 @@ alea_error_t alea_nuc_material_add_temperature_mix(
         mat->components[mat->n_components++] = (alea_nuc_mat_component_t){
             upper, upper_fraction * number_density
         };
+    }
+    for (int i = first; i < mat->n_components; i++)
+        mat->temperature_mix_peer[i] = 0;
+    if (additional == 2) {
+        mat->temperature_mix_peer[first] = first + 2;
+        mat->temperature_mix_peer[first + 1] = first + 1;
     }
     return ALEA_OK;
 }
