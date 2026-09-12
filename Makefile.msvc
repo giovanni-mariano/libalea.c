@@ -217,12 +217,21 @@ SERPENT_OBJS = \
 
 # --- Nuclear data module ---------------------------------------------------
 NUCDATA_OBJS = \
+	$(BUILD)\nucdata\alloc.obj \
+	$(BUILD)\nucdata\rng.obj \
 	$(BUILD)\nucdata\context.obj \
 	$(BUILD)\nucdata\ace_reader.obj \
 	$(BUILD)\nucdata\xsdir.obj \
 	$(BUILD)\nucdata\xs_decode.obj \
 	$(BUILD)\nucdata\lookup.obj \
 	$(BUILD)\nucdata\material.obj \
+	$(BUILD)\nucdata\interpolation.obj \
+	$(BUILD)\nucdata\energy_sample.obj \
+	$(BUILD)\nucdata\free_gas.obj \
+	$(BUILD)\nucdata\thermal.obj \
+	$(BUILD)\nucdata\photon_sample.obj \
+	$(BUILD)\nucdata\photon_production.obj \
+	$(BUILD)\nucdata\collision.obj \
 	$(BUILD)\nucdata\reaction.obj \
 	$(BUILD)\nucdata\angular.obj \
 	$(BUILD)\nucdata\energy_dist.obj \
@@ -643,6 +652,12 @@ $(BUILD)\openmc\openmc_model.obj: $(SRC)\openmc\openmc_model.c dirs
 $(BUILD)\serpent\serpent_export.obj: $(SRC)\serpent\serpent_export.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\serpent\ $(SRC)\serpent\serpent_export.c
 
+$(BUILD)\nucdata\alloc.obj: $(SRC)\nucdata\alloc.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\alloc.c
+
+$(BUILD)\nucdata\rng.obj: $(SRC)\nucdata\rng.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\rng.c
+
 $(BUILD)\nucdata\context.obj: $(SRC)\nucdata\context.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\context.c
 
@@ -660,6 +675,27 @@ $(BUILD)\nucdata\lookup.obj: $(SRC)\nucdata\lookup.c dirs
 
 $(BUILD)\nucdata\material.obj: $(SRC)\nucdata\material.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\material.c
+
+$(BUILD)\nucdata\interpolation.obj: $(SRC)\nucdata\interpolation.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\interpolation.c
+
+$(BUILD)\nucdata\energy_sample.obj: $(SRC)\nucdata\energy_sample.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\energy_sample.c
+
+$(BUILD)\nucdata\free_gas.obj: $(SRC)\nucdata\free_gas.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\free_gas.c
+
+$(BUILD)\nucdata\thermal.obj: $(SRC)\nucdata\thermal.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\thermal.c
+
+$(BUILD)\nucdata\photon_sample.obj: $(SRC)\nucdata\photon_sample.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\photon_sample.c
+
+$(BUILD)\nucdata\photon_production.obj: $(SRC)\nucdata\photon_production.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\photon_production.c
+
+$(BUILD)\nucdata\collision.obj: $(SRC)\nucdata\collision.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\collision.c
 
 $(BUILD)\nucdata\reaction.obj: $(SRC)\nucdata\reaction.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\reaction.c
