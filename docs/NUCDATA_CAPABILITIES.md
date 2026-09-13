@@ -190,8 +190,9 @@ Sampling allocates no memory after preparation; a unit gate arms the internal
 allocation hook across evaluation and a multi-neutron collision and requires
 zero allocator calls. A failed operation
 does not publish an output value, though it may already have consumed values
-from the caller's RNG. Flight and collision calls verify that their evaluation
-still matches the stored particle state and the prepared material data.
+from the caller's RNG. Flight and collision calls verify the evaluation's
+stored particle state, macroscopic rates, workspace identity, and sampled URR
+state with a lightweight integrity tag.
 
 Decoder and construction allocations pass through a module-local layer. Unit
 tests inject a failure at each allocation in complete synthetic neutron and
@@ -216,6 +217,23 @@ workspace after a material boundary, and reevaluate after any collision that
 changes the neutron energy. The macroscopic total is the sum of sampled event
 partials; the independently rounded probability-table total is retained as a
 consistency check with a 0.1% relative tolerance.
+
+Call `alea_nuc_evaluation_workspace_sizes()` after preparation to size three
+component-rate arrays and one flattened reaction-rate array. Supplying all four
+arrays to `alea_nuc_evaluate_with_workspace()` or
+`alea_nuc_evaluate_urr()` caches the microscopic rates used by target and event
+selection. This avoids repeating cross-section searches during collision. A
+partial or undersized cache is rejected. Each worker needs its own workspace;
+the immutable prepared material and decoded tables may be shared. The caller
+must leave the workspace arrays unchanged while an evaluation refers to them.
+
+History-level parallelism belongs in the transport driver because histories
+carry independent particle banks, tallies, and event-addressed RNG state. The
+nuclear-data hot path has no shared mutable state and performs no allocation,
+so independent histories can call it concurrently. The maintained
+`tests/nucdata/bench_transport` program demonstrates dynamic scheduling with
+one workspace per worker and reports serial kernel costs, throughput, and
+parallel speedup.
 
 Elastic collisions return both center-of-mass and laboratory cosines and a
 three-dimensional outgoing direction. The elastic recoil energy is reported as

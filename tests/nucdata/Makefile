@@ -6,6 +6,7 @@
 
 CC = gcc
 CFLAGS = -Wall -Wextra -g -std=c11
+BENCH_CFLAGS = -Wall -Wextra -O3 -DNDEBUG -std=c11 -pthread
 INCLUDES = -I../../include -I../../tests
 LIBS = ../../bin/libalea_nucdata.a ../../bin/libalea.a -lm
 
@@ -48,7 +49,7 @@ NJOY_TEST25_DIR = njoy-test25
 
 # Test binaries
 TESTS = test_endfb80 test_fendl32c test_eprdata12 test_eprdata14 test_eprdata25 test_photon_xs test_nucdata_integration test_thermal test_photon_production test_production_photon_angles test_production_urr test_urr_matrix test_temperature_mix test_photoatomic_relaxation
-BENCH = bench_load
+BENCH = bench_load bench_transport
 
 # ============================================================================
 # Targets
@@ -82,6 +83,7 @@ help:
 	@echo "  make test-temperature-mix-required - Run real resonance-table mixing tests"
 	@echo "  make test-thermal-required - Download and run pinned continuous thermal tests"
 	@echo "  make test-inventory-required - Inventory representative pinned tables"
+	@echo "  make bench_transport - Build the history-parallel transport benchmark"
 	@echo ""
 	@echo "  make all            - Build all test binaries"
 	@echo "  make test           - Build and run all tests"
@@ -206,6 +208,9 @@ $(NJOY_TEST25_DIR)/xsdir:
 
 bench_load: bench_load.c $(LIBS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
+
+bench_transport: bench_transport.c $(LIBS)
+	$(CC) $(BENCH_CFLAGS) $(INCLUDES) -I../../src -o $@ $< $(LIBS)
 
 test_fendl32c: test_fendl32c.c $(LIBS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)

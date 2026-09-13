@@ -27,6 +27,7 @@ typedef struct {
     const alea_nuc_thermal_t* thermal;
     int* event_reactions;
     int n_event_reactions;
+    size_t rate_offset;
     int temperature_mix_peer;
 } prepared_component_t;
 
@@ -37,6 +38,7 @@ struct alea_nuc_prepared_material {
     uint32_t capabilities;
     uint32_t requested_capabilities;
     alea_nuc_particle_t particle;
+    size_t n_event_reactions;
 };
 
 static void report_clear(alea_nuc_capability_report_t* report) {
@@ -179,13 +181,8 @@ static double photon_yield_for_event(
         nuc, production, reaction_mt, energy);
 }
 
-static double reaction_xs(const alea_nuc_nuclide_t* nuc,
-                          const alea_nuc_reaction_t* reaction,
-                          double energy) {
-    double f;
-    int ie = alea_nuc_energy_lookup_trusted(nuc->energy, nuc->n_energies,
-                                            energy, &f);
-    if (ie < 0) return 0.0;
+static double reaction_xs_at(const alea_nuc_reaction_t* reaction,
+                             int ie, double f) {
     int start = reaction->threshold_index - 1;
     int ri = ie - start;
     if (ri < 0 || !reaction->xs || reaction->n_energies <= 0) return 0.0;
@@ -194,6 +191,15 @@ static double reaction_xs(const alea_nuc_nuclide_t* nuc,
             ? reaction->xs[reaction->n_energies - 1] : 0.0;
     return reaction->xs[ri] +
            f * (reaction->xs[ri + 1] - reaction->xs[ri]);
+}
+
+static double reaction_xs(const alea_nuc_nuclide_t* nuc,
+                          const alea_nuc_reaction_t* reaction,
+                          double energy) {
+    double f;
+    int ie = alea_nuc_energy_lookup_trusted(nuc->energy, nuc->n_energies,
+                                            energy, &f);
+    return ie >= 0 ? reaction_xs_at(reaction, ie, f) : 0.0;
 }
 
 static int validate_angular_point(const alea_nuc_angular_point_t* point) {
@@ -631,6 +637,15 @@ void alea_nuc_prepared_material_free(alea_nuc_prepared_material_t* prepared) {
     free(prepared);
 }
 
+alea_error_t alea_nuc_evaluation_workspace_sizes(
+    const alea_nuc_prepared_material_t* prepared, size_t* component_count,
+    size_t* reaction_count) {
+    if (!prepared) return ALEA_ERR_NULL_ARG;
+    if (component_count) *component_count = (size_t)prepared->n_components;
+    if (reaction_count) *reaction_count = prepared->n_event_reactions;
+    return ALEA_OK;
+}
+
 alea_error_t alea_nuc_prepare_material(
     const alea_nuc_material_t* material,
     const alea_nuc_prepare_requirements_t* requirements,
@@ -742,6 +757,7 @@ alea_error_t alea_nuc_prepare_material(
             component->temperature_mix_peer = peer;
         }
         int maximum = source->nuclide->n_reactions;
+        component->rate_offset = prepared->n_event_reactions;
         if (maximum > 0) {
             component->event_reactions = alea_nuc_malloc((size_t)maximum * sizeof(int));
             if (!component->event_reactions) {
@@ -756,6 +772,7 @@ alea_error_t alea_nuc_prepare_material(
                  reaction_is_named_urr_competitor(source->nuclide, reaction)))
                 component->event_reactions[component->n_event_reactions++] = r;
         }
+        prepared->n_event_reactions += (size_t)component->n_event_reactions;
     }
 
     if (populated_components == 0) {
@@ -867,11 +884,52 @@ static int fission_mt(int mt) {
     return mt == 18 || mt == 19 || mt == 20 || mt == 21 || mt == 38;
 }
 
+typedef struct {
+    double inelastic;
+    double other_absorption;
+    int other_absorption_is_aggregate;
+} urr_competition_scale_t;
+
+static urr_competition_scale_t urr_competition_scale(
+    const alea_nuc_nuclide_t* nuc, double energy, int ie, double f,
+    const alea_nuc_urr_sample_t* urr) {
+    urr_competition_scale_t scale = {1.0, 1.0, 0};
+    if (!urr || !urr->active) return scale;
+    if (nuc->urr->inelastic_flag == 4) {
+        double smooth_sum = 0.0;
+        for (int i = 0; i < nuc->n_reactions; i++) {
+            const alea_nuc_reaction_t* reaction = &nuc->reactions[i];
+            if (reaction->mt >= 51 && reaction->mt <= 91 &&
+                !reaction_is_redundant(nuc, reaction))
+                smooth_sum += reaction_xs_at(reaction, ie, f);
+        }
+        double aggregate = alea_nuc_xs_reaction(nuc, 4, energy);
+        scale.inelastic = smooth_sum > 0.0 ? aggregate / smooth_sum : 0.0;
+    }
+    int flag = nuc->urr->absorption_flag;
+    if (flag > 0) {
+        double detail_sum = 0.0;
+        for (int i = 0; i < nuc->n_reactions; i++) {
+            const alea_nuc_reaction_t* reaction = &nuc->reactions[i];
+            if (reaction_is_urr_other_absorption(reaction) &&
+                aggregate_mt_for(reaction->mt) == flag)
+                detail_sum += reaction_xs_at(reaction, ie, f);
+        }
+        if (detail_sum > 0.0) {
+            scale.other_absorption =
+                alea_nuc_xs_reaction(nuc, flag, energy) / detail_sum;
+            scale.other_absorption_is_aggregate = 1;
+        }
+    }
+    return scale;
+}
+
 static double sampled_reaction_xs(const alea_nuc_nuclide_t* nuc,
                                   const alea_nuc_reaction_t* reaction,
-                                  double energy,
-                                  const alea_nuc_urr_sample_t* urr) {
-    double xs = reaction_xs(nuc, reaction, energy);
+                                  int ie, double f,
+                                  const alea_nuc_urr_sample_t* urr,
+                                  const urr_competition_scale_t* scale) {
+    double xs = reaction_xs_at(reaction, ie, f);
     if (!urr || !urr->active)
         return reaction_is_redundant(nuc, reaction) ? 0.0 : xs;
     if (reaction_is_urr_inelastic_mt(reaction->mt)) {
@@ -879,16 +937,7 @@ static double sampled_reaction_xs(const alea_nuc_nuclide_t* nuc,
         if (flag < 0) return 0.0;
         if (flag == 4) {
             if (reaction->mt == 4) return 0.0;
-            double smooth_sum = 0.0;
-            for (int i = 0; i < nuc->n_reactions; i++) {
-                const alea_nuc_reaction_t* candidate = &nuc->reactions[i];
-                if (reaction_is_urr_inelastic_mt(candidate->mt) &&
-                    candidate->mt != 4 &&
-                    !reaction_is_redundant(nuc, candidate))
-                    smooth_sum += reaction_xs(nuc, candidate, energy);
-            }
-            double aggregate = alea_nuc_xs_reaction(nuc, 4, energy);
-            return smooth_sum > 0.0 ? xs * aggregate / smooth_sum : 0.0;
+            return xs * scale->inelastic;
         }
         if (flag > 0 && reaction->mt != flag) return 0.0;
     }
@@ -896,17 +945,9 @@ static double sampled_reaction_xs(const alea_nuc_nuclide_t* nuc,
         int flag = nuc->urr->absorption_flag;
         if (flag < 0) return 0.0;
         if (flag > 0) {
-            double detail_sum = 0.0;
-            for (int i = 0; i < nuc->n_reactions; i++) {
-                const alea_nuc_reaction_t* candidate = &nuc->reactions[i];
-                if (reaction_is_urr_other_absorption(candidate) &&
-                    aggregate_mt_for(candidate->mt) == flag)
-                    detail_sum += reaction_xs(nuc, candidate, energy);
-            }
-            if (detail_sum > 0.0) {
+            if (scale->other_absorption_is_aggregate) {
                 if (aggregate_mt_for(reaction->mt) != flag) return 0.0;
-                double aggregate = alea_nuc_xs_reaction(nuc, flag, energy);
-                return xs * aggregate / detail_sum;
+                return xs * scale->other_absorption;
             }
             if (reaction->mt != flag) return 0.0;
         }
@@ -921,6 +962,24 @@ static const alea_nuc_urr_sample_t* component_urr(
     if (!workspace || !workspace->components || component < 0 ||
         (size_t)component >= workspace->capacity) return NULL;
     return &workspace->components[component];
+}
+
+/* 0 = absent, 1 = complete, -1 = partial or undersized. */
+static int workspace_rate_cache_state(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_evaluation_workspace_t* workspace) {
+    if (!workspace) return 0;
+    int any = workspace->component_total || workspace->component_elastic ||
+        workspace->component_thermal || workspace->reaction_rates ||
+        workspace->component_rate_capacity || workspace->reaction_rate_capacity;
+    if (!any) return 0;
+    if (!workspace->component_total || !workspace->component_elastic ||
+        !workspace->component_thermal ||
+        workspace->component_rate_capacity < (size_t)prepared->n_components ||
+        (prepared->n_event_reactions > 0 && !workspace->reaction_rates) ||
+        workspace->reaction_rate_capacity < prepared->n_event_reactions)
+        return -1;
+    return 1;
 }
 
 static int component_thermal_active(const prepared_component_t* component,
@@ -940,6 +999,19 @@ static alea_error_t evaluate_checked(
     alea_nuc_evaluation_t* candidate) {
     if (!prepared || !particle_valid(incident, prepared->particle))
         return ALEA_ERR_INVALID_ARG;
+    int cache_state = workspace_rate_cache_state(prepared, workspace);
+    if (cache_state < 0) return ALEA_ERR_INVALID_ARG;
+    if (cache_state > 0) {
+        memset(workspace->component_total, 0,
+               (size_t)prepared->n_components * sizeof(double));
+        memset(workspace->component_elastic, 0,
+               (size_t)prepared->n_components * sizeof(double));
+        memset(workspace->component_thermal, 0,
+               (size_t)prepared->n_components * sizeof(double));
+        if (prepared->n_event_reactions > 0)
+            memset(workspace->reaction_rates, 0,
+                   prepared->n_event_reactions * sizeof(double));
+    }
     memset(candidate, 0, sizeof(*candidate));
     candidate->prepared = prepared;
     candidate->incident = *incident;
@@ -963,10 +1035,19 @@ static alea_error_t evaluate_checked(
             candidate->macro_elastic += component->number_density *
                                          (coherent + incoherent);
             candidate->macro_absorption += component->number_density * absorption;
+            if (cache_state > 0) {
+                workspace->component_total[i] = total;
+                workspace->component_elastic[i] = coherent + incoherent;
+                workspace->component_thermal[i] = 0.0;
+            }
             continue;
         }
         const prepared_component_t* prepared_component =
             &prepared->components[i];
+        double main_fraction;
+        int main_index = alea_nuc_energy_lookup_trusted(
+            nuc->energy, nuc->n_energies, incident->energy, &main_fraction);
+        if (main_index < 0) return ALEA_ERR_INVALID_STATE;
         int thermal_active = component_thermal_active(
             prepared_component, incident->energy);
         double microscopic_thermal = thermal_active ?
@@ -979,20 +1060,33 @@ static alea_error_t evaluate_checked(
             return ALEA_ERR_UNSUPPORTED;
         if (urr_applies && (!urr || !urr->active)) return ALEA_ERR_UNSUPPORTED;
         double microscopic_elastic = thermal_active ? 0.0 :
-            alea_nuc_xs_elastic(nuc, incident->energy);
+            nuc->sigma_elastic[main_index] + main_fraction *
+                (nuc->sigma_elastic[main_index + 1] -
+                 nuc->sigma_elastic[main_index]);
         if (urr && urr->active) microscopic_elastic *= urr->factors[1];
         double microscopic_absorption = 0.0;
         double microscopic_emission = 0.0;
+        urr_competition_scale_t competition = urr_competition_scale(
+            nuc, incident->energy, main_index, main_fraction, urr);
         for (int j = 0; j < prepared_component->n_event_reactions; j++) {
             const alea_nuc_reaction_t* reaction = &nuc->reactions[
                 prepared_component->event_reactions[j]];
-            double xs = sampled_reaction_xs(nuc, reaction, incident->energy,
-                                            urr);
+            double xs = sampled_reaction_xs(
+                nuc, reaction, main_index, main_fraction,
+                urr, &competition);
+            if (cache_state > 0)
+                workspace->reaction_rates[
+                    prepared_component->rate_offset + (size_t)j] = xs;
             if (reaction->ty == 0) microscopic_absorption += xs;
             else microscopic_emission += xs;
         }
         double microscopic_total = microscopic_thermal + microscopic_elastic +
             microscopic_absorption + microscopic_emission;
+        if (cache_state > 0) {
+            workspace->component_total[i] = microscopic_total;
+            workspace->component_elastic[i] = microscopic_elastic;
+            workspace->component_thermal[i] = microscopic_thermal;
+        }
         /* ACE probability-table totals are diagnostic. Transport uses the
          * sum of sampled elastic, fission and capture plus the smooth
          * competition channels selected by ILF and IOA. */
@@ -1017,20 +1111,62 @@ static alea_error_t evaluate_checked(
     return ALEA_OK;
 }
 
+static uint64_t tag_bytes(uint64_t tag, const void* data, size_t size) {
+    const unsigned char* bytes = data;
+    for (size_t i = 0; i < size; i++) {
+        tag ^= bytes[i];
+        tag *= UINT64_C(1099511628211);
+    }
+    return tag;
+}
+
+static uint64_t evaluation_tag(const alea_nuc_evaluation_t* evaluation) {
+    uint64_t tag = UINT64_C(1469598103934665603);
+    tag = tag_bytes(tag, &evaluation->prepared, sizeof(evaluation->prepared));
+    tag = tag_bytes(tag, &evaluation->incident, sizeof(evaluation->incident));
+    tag = tag_bytes(tag, &evaluation->macro_total,
+                    sizeof(evaluation->macro_total));
+    tag = tag_bytes(tag, &evaluation->macro_elastic,
+                    sizeof(evaluation->macro_elastic));
+    tag = tag_bytes(tag, &evaluation->macro_thermal,
+                    sizeof(evaluation->macro_thermal));
+    tag = tag_bytes(tag, &evaluation->macro_absorption,
+                    sizeof(evaluation->macro_absorption));
+    tag = tag_bytes(tag, &evaluation->macro_neutron_emission,
+                    sizeof(evaluation->macro_neutron_emission));
+    tag = tag_bytes(tag, &evaluation->workspace, sizeof(evaluation->workspace));
+    if (evaluation->workspace && evaluation->prepared) {
+        const alea_nuc_evaluation_workspace_t* workspace = evaluation->workspace;
+        tag = tag_bytes(tag, &workspace->components,
+                        sizeof(workspace->components));
+        tag = tag_bytes(tag, &workspace->capacity, sizeof(workspace->capacity));
+        size_t count = (size_t)evaluation->prepared->n_components;
+        if (workspace->components && workspace->capacity >= count)
+            tag = tag_bytes(tag, workspace->components,
+                            count * sizeof(*workspace->components));
+        tag = tag_bytes(tag, &workspace->component_total,
+                        sizeof(workspace->component_total));
+        tag = tag_bytes(tag, &workspace->component_elastic,
+                        sizeof(workspace->component_elastic));
+        tag = tag_bytes(tag, &workspace->component_thermal,
+                        sizeof(workspace->component_thermal));
+        tag = tag_bytes(tag, &workspace->component_rate_capacity,
+                        sizeof(workspace->component_rate_capacity));
+        tag = tag_bytes(tag, &workspace->reaction_rates,
+                        sizeof(workspace->reaction_rates));
+        tag = tag_bytes(tag, &workspace->reaction_rate_capacity,
+                        sizeof(workspace->reaction_rate_capacity));
+    }
+    return tag ? tag : 1;
+}
+
+static void evaluation_seal(alea_nuc_evaluation_t* evaluation) {
+    evaluation->validation_tag = evaluation_tag(evaluation);
+}
+
 static int evaluation_matches(const alea_nuc_evaluation_t* evaluation) {
-    if (!evaluation || !evaluation->prepared) return 0;
-    alea_nuc_evaluation_t current;
-    if (evaluate_checked(evaluation->prepared, &evaluation->incident,
-                         evaluation->workspace,
-                         &current) != ALEA_OK) return 0;
-    double scale = fmax(1.0, current.macro_total);
-    return fabs(evaluation->macro_total - current.macro_total) <= 1e-12 * scale &&
-           fabs(evaluation->macro_elastic - current.macro_elastic) <= 1e-12 * scale &&
-           fabs(evaluation->macro_thermal - current.macro_thermal) <= 1e-12 * scale &&
-           fabs(evaluation->macro_absorption - current.macro_absorption) <=
-               1e-12 * scale &&
-           fabs(evaluation->macro_neutron_emission -
-                current.macro_neutron_emission) <= 1e-12 * scale;
+    return evaluation && evaluation->prepared && evaluation->validation_tag &&
+           evaluation->validation_tag == evaluation_tag(evaluation);
 }
 
 alea_error_t alea_nuc_evaluate(
@@ -1041,6 +1177,25 @@ alea_error_t alea_nuc_evaluate(
     alea_nuc_evaluation_t candidate;
     alea_error_t err = evaluate_checked(prepared, incident, NULL, &candidate);
     if (err != ALEA_OK) return err;
+    evaluation_seal(&candidate);
+    *evaluation = candidate;
+    return ALEA_OK;
+}
+
+alea_error_t alea_nuc_evaluate_with_workspace(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_evaluation_workspace_t* workspace,
+    alea_nuc_evaluation_t* evaluation) {
+    if (!prepared || !incident || !workspace || !evaluation)
+        return ALEA_ERR_NULL_ARG;
+    if (workspace_rate_cache_state(prepared, workspace) != 1)
+        return ALEA_ERR_INVALID_ARG;
+    alea_nuc_evaluation_t candidate;
+    alea_error_t err = evaluate_checked(prepared, incident, workspace,
+                                        &candidate);
+    if (err != ALEA_OK) return err;
+    evaluation_seal(&candidate);
     *evaluation = candidate;
     return ALEA_OK;
 }
@@ -1055,6 +1210,8 @@ alea_error_t alea_nuc_evaluate_urr(
         return ALEA_ERR_NULL_ARG;
     if (prepared->particle != ALEA_NUC_PARTICLE_NEUTRON)
         return ALEA_ERR_UNSUPPORTED;
+    if (workspace_rate_cache_state(prepared, workspace) < 0)
+        return ALEA_ERR_INVALID_ARG;
     if (workspace->capacity < (size_t)prepared->n_components ||
         (prepared->n_components > 0 && !workspace->components))
         return ALEA_ERR_INVALID_ARG;
@@ -1099,6 +1256,7 @@ alea_error_t alea_nuc_evaluate_urr(
     alea_error_t err = evaluate_checked(prepared, incident, workspace,
                                         &candidate);
     if (err != ALEA_OK) return err;
+    evaluation_seal(&candidate);
     *evaluation = candidate;
     return ALEA_OK;
 }
@@ -1246,25 +1404,64 @@ void alea_nuc_rotate_direction_internal(
 static void evaluated_component_xs(const alea_nuc_evaluation_t* evaluation,
                                    int component_index, double* total,
                                    double* elastic, double* thermal) {
+    const alea_nuc_evaluation_workspace_t* workspace = evaluation->workspace;
+    if (workspace_rate_cache_state(evaluation->prepared, workspace) > 0) {
+        *total = workspace->component_total[component_index];
+        *elastic = workspace->component_elastic[component_index];
+        *thermal = workspace->component_thermal[component_index];
+        return;
+    }
     const prepared_component_t* component =
         &evaluation->prepared->components[component_index];
     const alea_nuc_nuclide_t* nuc = component->source->nuclide;
     const alea_nuc_urr_sample_t* urr = component_urr(
         evaluation->workspace, component_index);
+    double main_fraction;
+    int main_index = alea_nuc_energy_lookup_trusted(
+        nuc->energy, nuc->n_energies, evaluation->incident.energy,
+        &main_fraction);
     int thermal_active = component_thermal_active(
         component, evaluation->incident.energy);
     *thermal = thermal_active ? alea_nuc_thermal_xs_total(
         component->thermal, evaluation->incident.energy) : 0.0;
     *elastic = thermal_active ? 0.0 :
-        alea_nuc_xs_elastic(nuc, evaluation->incident.energy);
+        nuc->sigma_elastic[main_index] + main_fraction *
+            (nuc->sigma_elastic[main_index + 1] -
+             nuc->sigma_elastic[main_index]);
     if (urr && urr->active) *elastic *= urr->factors[1];
     *total = *thermal + *elastic;
+    urr_competition_scale_t competition = urr_competition_scale(
+        nuc, evaluation->incident.energy, main_index, main_fraction, urr);
     for (int i = 0; i < component->n_event_reactions; i++) {
         const alea_nuc_reaction_t* reaction =
             &nuc->reactions[component->event_reactions[i]];
         *total += sampled_reaction_xs(nuc, reaction,
-                                      evaluation->incident.energy, urr);
+                                      main_index, main_fraction, urr,
+                                      &competition);
     }
+}
+
+static double evaluated_reaction_xs(const alea_nuc_evaluation_t* evaluation,
+                                    int component_index, int event_index) {
+    const prepared_component_t* component =
+        &evaluation->prepared->components[component_index];
+    const alea_nuc_evaluation_workspace_t* workspace = evaluation->workspace;
+    if (workspace_rate_cache_state(evaluation->prepared, workspace) > 0)
+        return workspace->reaction_rates[
+            component->rate_offset + (size_t)event_index];
+    const alea_nuc_nuclide_t* nuc = component->source->nuclide;
+    int reaction_index = component->event_reactions[event_index];
+    const alea_nuc_urr_sample_t* urr = component_urr(
+        workspace, component_index);
+    double main_fraction;
+    int main_index = alea_nuc_energy_lookup_trusted(
+        nuc->energy, nuc->n_energies, evaluation->incident.energy,
+        &main_fraction);
+    urr_competition_scale_t competition = urr_competition_scale(
+        nuc, evaluation->incident.energy, main_index, main_fraction, urr);
+    return sampled_reaction_xs(
+        nuc, &nuc->reactions[reaction_index], main_index, main_fraction,
+        urr, &competition);
 }
 
 static alea_error_t sample_prepared_elastic(
@@ -1294,20 +1491,20 @@ static alea_error_t sample_prepared_elastic(
                                 &angular_sample)) != ALEA_OK ||
             (err = draw_uniform(random, random_context, &azimuth)) != ALEA_OK)
             return err;
-        double xi[3] = {angular_select, angular_sample, 0.0};
-        alea_nuc_interaction_t interaction;
-        err = alea_nuc_sample_collision(nuc, 2, evaluation->incident.energy,
-                                        xi, &interaction);
-        if (err != ALEA_OK) return err;
-        candidate->mu_cm = interaction.mu;
-        double ratio = interaction.energy_out / evaluation->incident.energy;
+        candidate->mu_cm = sample_elastic_mu_cm(
+            nuc, evaluation->incident.energy, angular_select, angular_sample);
+        double A = nuc->awr;
+        double energy_out = evaluation->incident.energy *
+            (A * A + 2.0 * A * candidate->mu_cm + 1.0) /
+            ((A + 1.0) * (A + 1.0));
+        double ratio = energy_out / evaluation->incident.energy;
         candidate->mu_lab = ratio > 0.0
             ? (1.0 + nuc->awr * candidate->mu_cm) /
               ((nuc->awr + 1.0) * sqrt(ratio))
             : 1.0;
         candidate->mu_lab = fmin(1.0, fmax(-1.0, candidate->mu_lab));
         candidate->outgoing = evaluation->incident;
-        candidate->outgoing.energy = interaction.energy_out;
+        candidate->outgoing.energy = energy_out;
         alea_nuc_rotate_direction_internal(
             evaluation->incident.direction, candidate->mu_lab,
             2.0 * M_PI * azimuth, candidate->outgoing.direction);
@@ -1342,9 +1539,14 @@ static alea_error_t collide_photon(const alea_nuc_evaluation_t* evaluation,
     for (int i = 0; i < evaluation->prepared->n_components; i++) {
         const alea_nuc_mat_component_t* component =
             evaluation->prepared->components[i].source;
-        double contribution = component->number_density *
-            alea_nuc_xs_total(component->nuclide,
-                              evaluation->incident.energy);
+        double microscopic_total;
+        if (workspace_rate_cache_state(evaluation->prepared,
+                                       evaluation->workspace) > 0)
+            microscopic_total = evaluation->workspace->component_total[i];
+        else
+            microscopic_total = alea_nuc_xs_total(
+                component->nuclide, evaluation->incident.energy);
+        double contribution = component->number_density * microscopic_total;
         if (contribution > 0.0) selected = i;
         sum += contribution;
         if (threshold < sum) { selected = i; break; }
@@ -1434,9 +1636,7 @@ alea_error_t alea_nuc_collide(const alea_nuc_evaluation_t* evaluation,
             component->n_event_reactions - 1];
         for (int i = 0; i < component->n_event_reactions; i++) {
             int index = component->event_reactions[i];
-            sum += sampled_reaction_xs(
-                nuc, &nuc->reactions[index], evaluation->incident.energy,
-                component_urr(evaluation->workspace, selected));
+            sum += evaluated_reaction_xs(evaluation, selected, i);
             if (sum >= residual) {
                 reaction_index = index;
                 break;
@@ -1667,9 +1867,7 @@ alea_error_t alea_nuc_collide_with_secondaries(
     int reaction_index = -1;
     for (int i = 0; i < component->n_event_reactions; i++) {
         int index = component->event_reactions[i];
-        double xs = sampled_reaction_xs(
-            nuc, &nuc->reactions[index], evaluation->incident.energy,
-            component_urr(evaluation->workspace, selected));
+        double xs = evaluated_reaction_xs(evaluation, selected, i);
         if (xs > 0.0) reaction_index = index;
         sum += xs;
         if (residual < sum) { reaction_index = index; break; }

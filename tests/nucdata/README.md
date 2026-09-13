@@ -141,6 +141,32 @@ checks macroscopic cross sections at thermal, resonance, and fast energies, and
 verifies the table-selection frequency against the cross-section-weighted
 probability.
 
+## Transport performance benchmark
+
+`bench_transport` measures pointwise URR evaluation, flight sampling, elastic
+collision sampling, and complete-history scaling. Build the root libraries in
+release mode, then run the benchmark against Lib80:
+
+```sh
+make RELEASE=1 -j4 lib-core modules
+make -C tests/nucdata bench_transport
+tests/nucdata/bench_transport /path/to/Lib80x/xsdir 1000000 8
+```
+
+The optional arguments are the history count and maximum worker count. The
+case uses U-238 at 50 keV, where probability-table sampling is active, and
+allocates a private evaluation workspace for each worker. The prepared
+material and decoded table are shared and immutable. The checksum keeps all
+sampled results observable; timings are informational and are not pass/fail
+thresholds.
+
+On an Intel Core i7-8550U with GCC release optimization, the median of three
+one-million-history runs measured 1023 ns/evaluation, 377 ns/flight, and
+637 ns/collision. Median complete-history throughput was 0.457 million/s with
+one worker and 2.235 million/s with eight workers; the median measured speedup
+was 4.72-fold. Record a local baseline on the target machine before using the
+benchmark to assess a change.
+
 Photoatomic fluorescence metadata is checked with the 1.45 MB uranium ACE
 table from NJOY2016.79 test 59:
 

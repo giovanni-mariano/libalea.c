@@ -1437,7 +1437,9 @@ TEST(urr_other_absorption_flag_controls_smooth_competition) {
             ALEA_NUC_PARTICLE_NEUTRON, 1.5, {0.0, 0.0, 1.0}, 1.0, 0.0
         };
         alea_nuc_urr_sample_t sample;
-        alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+        alea_nuc_evaluation_workspace_t workspace = {
+            .components=&sample, .capacity=1
+        };
         alea_nuc_evaluation_t evaluation;
         double draw = 0.5;
         sequence_rng_t rng = {&draw, 1, 0};
@@ -1513,7 +1515,9 @@ TEST(urr_inelastic_flag_controls_smooth_competition) {
             ALEA_NUC_PARTICLE_NEUTRON, 1.5, {0.0, 0.0, 1.0}, 1.0, 0.0
         };
         alea_nuc_urr_sample_t sample;
-        alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+        alea_nuc_evaluation_workspace_t workspace = {
+            .components=&sample, .capacity=1
+        };
         alea_nuc_evaluation_t evaluation;
         double draw = 0.5;
         sequence_rng_t rng = {&draw, 1, 0};
@@ -2481,6 +2485,38 @@ TEST(prepared_collision_evaluates_flight_and_elastic_scatter) {
     ASSERT_NEAR(evaluation.macro_elastic, 0.15, 1e-12);
     ASSERT_NEAR(evaluation.macro_absorption, 0.05, 1e-12);
 
+    size_t component_count = 0, reaction_count = 0;
+    ASSERT_EQ(alea_nuc_evaluation_workspace_sizes(
+                  prepared, &component_count, &reaction_count), ALEA_OK);
+    ASSERT_EQ(component_count, 1);
+    ASSERT_EQ(reaction_count, 1);
+    double component_total[1], component_elastic[1], component_thermal[1];
+    double reaction_rates[1];
+    alea_nuc_evaluation_workspace_t rate_workspace = {
+        .component_total=component_total,
+        .component_elastic=component_elastic,
+        .component_thermal=component_thermal,
+        .component_rate_capacity=1,
+        .reaction_rates=reaction_rates,
+        .reaction_rate_capacity=1
+    };
+    alea_nuc_evaluation_t cached_evaluation;
+    ASSERT_EQ(alea_nuc_evaluate_with_workspace(
+                  prepared, &incident, &rate_workspace, &cached_evaluation),
+              ALEA_OK);
+    ASSERT_NEAR(component_total[0], 2.0, 1e-12);
+    ASSERT_NEAR(component_elastic[0], 1.5, 1e-12);
+    ASSERT_NEAR(component_thermal[0], 0.0, 1e-12);
+    ASSERT_NEAR(reaction_rates[0], 0.5, 1e-12);
+    rate_workspace.reaction_rates = NULL;
+    double unchanged_distance = 7.0, unused_draw = 0.5;
+    sequence_rng_t unchanged_rng = {&unused_draw, 1, 0};
+    ASSERT_EQ(alea_nuc_sample_flight(
+                  &cached_evaluation, sequence_rng, &unchanged_rng,
+                  &unchanged_distance), ALEA_ERR_INVALID_STATE);
+    ASSERT_NEAR(unchanged_distance, 7.0, 0.0);
+    ASSERT_EQ(unchanged_rng.position, 0);
+
     double flight_draws[] = {1.0 - exp(-2.0)};
     sequence_rng_t flight_rng = {flight_draws, 1, 0};
     double distance = 0.0;
@@ -2824,7 +2860,17 @@ TEST(coordinated_urr_evaluation_drives_flight_and_reaction_probabilities) {
     ASSERT_EQ(alea_nuc_evaluate(prepared, &incident, &evaluation),
               ALEA_ERR_UNSUPPORTED);
     alea_nuc_urr_sample_t sample;
-    alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+    double component_total[1], component_elastic[1], component_thermal[1];
+    double reaction_rates[1];
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components=&sample, .capacity=1,
+        .component_total=component_total,
+        .component_elastic=component_elastic,
+        .component_thermal=component_thermal,
+        .component_rate_capacity=1,
+        .reaction_rates=reaction_rates,
+        .reaction_rate_capacity=1
+    };
     double urr_draw = 0.5;
     sequence_rng_t urr_rng = {&urr_draw, 1, 0};
     ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, sequence_rng,
@@ -2833,6 +2879,10 @@ TEST(coordinated_urr_evaluation_drives_flight_and_reaction_probabilities) {
     ASSERT_NEAR(evaluation.macro_total, 0.15, 1e-12);
     ASSERT_NEAR(evaluation.macro_elastic, 0.05, 1e-12);
     ASSERT_NEAR(evaluation.macro_absorption, 0.10, 1e-12);
+    ASSERT_NEAR(component_total[0], 1.5, 1e-12);
+    ASSERT_NEAR(component_elastic[0], 0.5, 1e-12);
+    ASSERT_NEAR(component_thermal[0], 0.0, 1e-12);
+    ASSERT_NEAR(reaction_rates[0], 1.0, 1e-12);
     double collision_draws[] = {0.5, 0.9};
     sequence_rng_t collision_rng = {collision_draws, 2, 0};
     alea_nuc_collision_result_t result;
@@ -2897,7 +2947,9 @@ TEST(temperature_mix_uses_one_correlated_urr_quantile) {
         ALEA_NUC_PARTICLE_NEUTRON, 2.0, {0.0, 0.0, 1.0}, 1.0, 0.0
     };
     alea_nuc_urr_sample_t samples[2];
-    alea_nuc_evaluation_workspace_t workspace = {samples, 2};
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components=samples, .capacity=2
+    };
     alea_nuc_evaluation_t evaluation;
     double draw = 0.5;
     sequence_rng_t rng = {&draw, 1, 0};

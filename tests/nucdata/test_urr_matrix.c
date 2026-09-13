@@ -105,7 +105,9 @@ static int evaluate_table(const char* zaid, alea_nuc_nuclide_t* nuclide,
     }
 
     alea_nuc_urr_sample_t sample;
-    alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components=&sample, .capacity=1
+    };
     for (int i = 0; i < nuclide->urr->n_energies; i++) {
         double energies[2] = {nuclide->urr->energy[i], 0.0};
         int count = 1;

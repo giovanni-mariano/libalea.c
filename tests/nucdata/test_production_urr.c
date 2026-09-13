@@ -123,7 +123,9 @@ TEST(production_u238_urr_metadata_and_sampled_rates) {
         ALEA_NUC_PARTICLE_NEUTRON, energy, {0.0, 0.0, 1.0}, 1.0, 0.0
     };
     alea_nuc_urr_sample_t sample;
-    alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components=&sample, .capacity=1
+    };
     alea_nuc_evaluation_t evaluation;
     fixed_rng_t urr_rng = {xi, 0};
     ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, fixed_uniform,
@@ -154,7 +156,9 @@ TEST(production_u238_urr_transmission_across_boundaries) {
         ALEA_NUC_PARTICLE_NEUTRON, 0.05, {0.0, 0.0, 1.0}, 1.0, 0.0
     };
     alea_nuc_urr_sample_t sample;
-    alea_nuc_evaluation_workspace_t workspace = {&sample, 1};
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components=&sample, .capacity=1
+    };
     alea_nuc_evaluation_t evaluation;
     fixed_rng_t urr_rng = {0.5, 0};
     ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, fixed_uniform,
@@ -191,7 +195,9 @@ TEST(production_u238_urr_transmission_across_boundaries) {
         prepare(0.025, &dense_material);
     ASSERT_NOT_NULL(dense_prepared);
     alea_nuc_urr_sample_t dense_sample;
-    alea_nuc_evaluation_workspace_t dense_workspace = {&dense_sample, 1};
+    alea_nuc_evaluation_workspace_t dense_workspace = {
+        .components=&dense_sample, .capacity=1
+    };
     alea_nuc_evaluation_t dense_evaluation;
     fixed_rng_t dense_rng = {0.5, 0};
     ASSERT_EQ(alea_nuc_evaluate_urr(dense_prepared, &incident, fixed_uniform,
@@ -237,7 +243,9 @@ TEST(production_u238_temperature_mix_correlates_urr_tables) {
         ALEA_NUC_PARTICLE_NEUTRON, 0.05, {0.0, 0.0, 1.0}, 1.0, 0.0
     };
     alea_nuc_urr_sample_t samples[2];
-    alea_nuc_evaluation_workspace_t workspace = {samples, 2};
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components=samples, .capacity=2
+    };
     alea_nuc_evaluation_t evaluation;
     fixed_rng_t rng = {0.5, 0};
     ASSERT_EQ(alea_nuc_evaluate_urr(prepared, &incident, fixed_uniform, &rng,
@@ -261,8 +269,12 @@ TEST(production_u238_temperature_mix_correlates_urr_tables) {
     ASSERT_NOT_NULL(lower_prepared);
     ASSERT_NOT_NULL(upper_prepared);
     alea_nuc_urr_sample_t lower_sample, upper_sample;
-    alea_nuc_evaluation_workspace_t lower_workspace = {&lower_sample, 1};
-    alea_nuc_evaluation_workspace_t upper_workspace = {&upper_sample, 1};
+    alea_nuc_evaluation_workspace_t lower_workspace = {
+        .components=&lower_sample, .capacity=1
+    };
+    alea_nuc_evaluation_workspace_t upper_workspace = {
+        .components=&upper_sample, .capacity=1
+    };
     alea_nuc_evaluation_t lower_evaluation, upper_evaluation;
     fixed_rng_t lower_rng = {0.5, 0}, upper_rng = {0.5, 0};
     ASSERT_EQ(alea_nuc_evaluate_urr(

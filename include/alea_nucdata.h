@@ -414,10 +414,34 @@ alea_error_t alea_nuc_prepare_material(
 
 void alea_nuc_prepared_material_free(alea_nuc_prepared_material_t* prepared);
 
+/**
+ * Return the caller-owned storage sizes for cached evaluation rates.
+ * Component storage consists of three arrays of component_count doubles.
+ * Reaction storage consists of reaction_count doubles. Either output may be
+ * NULL. The prepared material remains immutable and owns no worker scratch.
+ */
+alea_error_t alea_nuc_evaluation_workspace_sizes(
+    const alea_nuc_prepared_material_t* prepared,
+    size_t* component_count,
+    size_t* reaction_count);
+
 /** Evaluate one incident neutron in a prepared material without sampling. */
 alea_error_t alea_nuc_evaluate(
     const alea_nuc_prepared_material_t* prepared,
     const alea_nuc_particle_state_t* incident,
+    alea_nuc_evaluation_t* evaluation);
+
+/**
+ * Evaluate without URR sampling and cache component and reaction rates in
+ * caller-owned workspace arrays. The workspace must provide all rate arrays
+ * at the sizes reported by alea_nuc_evaluation_workspace_sizes(). Cached
+ * rates remain tied to the published evaluation and must not be modified
+ * before flight or collision sampling.
+ */
+alea_error_t alea_nuc_evaluate_with_workspace(
+    const alea_nuc_prepared_material_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_evaluation_workspace_t* workspace,
     alea_nuc_evaluation_t* evaluation);
 
 /**

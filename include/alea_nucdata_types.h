@@ -692,6 +692,12 @@ typedef struct {
 typedef struct {
     alea_nuc_urr_sample_t* components;
     size_t capacity;
+    double* component_total;   /* optional cached microscopic rates */
+    double* component_elastic;
+    double* component_thermal;
+    size_t component_rate_capacity;
+    double* reaction_rates;    /* flattened prepared event-reaction rates */
+    size_t reaction_rate_capacity;
 } alea_nuc_evaluation_workspace_t;
 
 typedef struct {
@@ -703,6 +709,7 @@ typedef struct {
     double macro_absorption;  /* cm^-1 */
     double macro_neutron_emission; /* cm^-1 */
     const alea_nuc_evaluation_workspace_t* workspace;
+    uint64_t validation_tag; /* internal integrity tag; callers must not modify */
 } alea_nuc_evaluation_t;
 
 typedef enum {
