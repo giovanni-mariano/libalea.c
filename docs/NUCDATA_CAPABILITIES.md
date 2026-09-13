@@ -268,8 +268,8 @@ radiative photons. The sampler deposits the incident energy minus transported
 photon energy, preserving eventwise energy balance. Pair events bank two
 back-to-back annihilation photons through the same API. Older JFLO data retain their averaged
 metadata and use full local deposition because they cannot define an individual
-shell cascade. Explicit electron and positron transport remains outside this
-increment.
+shell cascade. Electron and positron transport is outside the package scope;
+their energy is handled by the documented local-deposition model.
 
 ## Example
 
