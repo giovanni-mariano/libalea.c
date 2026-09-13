@@ -81,6 +81,14 @@ int ray_intersect_trc(const alea_ray_t* ray,
                       const alea_trc_data_t* trc,
                       double* restrict t_out);
 
+/* Remaining bounded MCNP macrobodies */
+int ray_intersect_ell(const alea_ray_t* ray,
+                      const alea_ell_data_t* ell,
+                      double* restrict t_out);
+int ray_intersect_rec(const alea_ray_t* ray,
+                      const alea_rec_data_t* rec,
+                      double* restrict t_out);
+
 /**
  * @brief Dispatch to appropriate intersection function by primitive type
  *

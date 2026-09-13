@@ -906,7 +906,11 @@ static bool surface_to_primitive(
         out_data->ell.v2_x = parse_coefficient(&cursor);
         out_data->ell.v2_y = parse_coefficient(&cursor);
         out_data->ell.v2_z = parse_coefficient(&cursor);
-        out_data->ell.major_axis_len = parse_coefficient(&cursor);
+        double rm = parse_coefficient(&cursor);
+        /* Internally the positive focal form stores the full major-axis
+         * length (2a); MCNP supplies the major radius a. Negative rm selects
+         * the center/major-vector form and is preserved verbatim. */
+        out_data->ell.major_axis_len = (rm > 0.0) ? 2.0*rm : rm;
 
     // ========================================================================
     // RIGHT ELLIPTICAL CYLINDER (REC)

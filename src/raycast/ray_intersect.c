@@ -12,6 +12,8 @@
 
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
+#include "primitives/primitive_eval.h"
+#include "primitives/primitive_desc.h"
 #include "util/poly_solve.h"
 #include <math.h>
 #include <float.h>
@@ -574,6 +576,139 @@ int ray_intersect_trc(const alea_ray_t* ray,
     return count;
 }
 
+static void ray_quadric_from_matrix(const double q[3][3],
+                                    double cx, double cy, double cz,
+                                    alea_quadric_data_t* out) {
+    const double c[3] = {cx, cy, cz};
+    double qc[3] = {0.0, 0.0, 0.0};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            qc[i] += q[i][j] * c[j];
+    out->coeffs[0] = q[0][0]; out->coeffs[1] = q[1][1]; out->coeffs[2] = q[2][2];
+    out->coeffs[3] = 2.0*q[0][1]; out->coeffs[4] = 2.0*q[1][2];
+    out->coeffs[5] = 2.0*q[0][2];
+    out->coeffs[6] = -2.0*qc[0]; out->coeffs[7] = -2.0*qc[1];
+    out->coeffs[8] = -2.0*qc[2];
+    out->coeffs[9] = cx*qc[0] + cy*qc[1] + cz*qc[2] - 1.0;
+}
+
+static int ell_quadric(const alea_ell_data_t* ell, alea_quadric_data_t* out) {
+    double center[3], u[3], a, b_sq;
+    if (ell->major_axis_len < 0.0) {
+        center[0]=ell->v1_x; center[1]=ell->v1_y; center[2]=ell->v1_z;
+        u[0]=ell->v2_x; u[1]=ell->v2_y; u[2]=ell->v2_z;
+        a=sqrt(u[0]*u[0]+u[1]*u[1]+u[2]*u[2]);
+        b_sq=ell->major_axis_len*ell->major_axis_len;
+    } else {
+        center[0]=0.5*(ell->v1_x+ell->v2_x);
+        center[1]=0.5*(ell->v1_y+ell->v2_y);
+        center[2]=0.5*(ell->v1_z+ell->v2_z);
+        u[0]=0.5*(ell->v2_x-ell->v1_x);
+        u[1]=0.5*(ell->v2_y-ell->v1_y);
+        u[2]=0.5*(ell->v2_z-ell->v1_z);
+        a=0.5*ell->major_axis_len;
+        const double focal_sq=u[0]*u[0]+u[1]*u[1]+u[2]*u[2];
+        b_sq=a*a-focal_sq;
+    }
+    const double axial_sq=u[0]*u[0]+u[1]*u[1]+u[2]*u[2];
+    const double a_sq = a*a;
+    if (!(a > 0.0) || !(b_sq > 1e-20) || !isfinite(b_sq)) return 0;
+    double q[3][3] = {{0}};
+    if (axial_sq <= 1e-20) {
+        q[0][0] = q[1][1] = q[2][2] = 1.0/a_sq;
+    } else {
+        const double inv_c = 1.0/sqrt(axial_sq);
+        for (int i = 0; i < 3; i++) u[i] *= inv_c;
+        const double inv_b2 = 1.0/b_sq;
+        const double delta = 1.0/a_sq - inv_b2;
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                q[i][j] = (i == j ? inv_b2 : 0.0) + delta*u[i]*u[j];
+    }
+    ray_quadric_from_matrix(q, center[0], center[1], center[2], out);
+    return 1;
+}
+
+static int rec_quadric(const alea_rec_data_t* rec, alea_quadric_data_t* out) {
+    const double a[3] = {rec->axis1_x, rec->axis1_y, rec->axis1_z};
+    const double b[3] = {rec->axis2_x, rec->axis2_y, rec->axis2_z};
+    const double a2 = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
+    const double b2 = b[0]*b[0] + b[1]*b[1] + b[2]*b[2];
+    if (a2 <= 1e-20 || b2 <= 1e-20) return 0;
+    double q[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            q[i][j] = a[i]*a[j]/(a2*a2) + b[i]*b[j]/(b2*b2);
+    ray_quadric_from_matrix(q, rec->base_x, rec->base_y, rec->base_z, out);
+    return 1;
+}
+
+int ray_intersect_ell(const alea_ray_t* ray, const alea_ell_data_t* ell,
+                      double* restrict t_out) {
+    alea_quadric_data_t q;
+    if (!ell_quadric(ell, &q)) return 0;
+    return ray_intersect_quadric(ray, &q, t_out);
+}
+
+static void sort_unique_hits(double* hits, int* count) {
+    for (int i = 1; i < *count; i++) {
+        double v = hits[i];
+        int j = i;
+        while (j > 0 && hits[j-1] > v) { hits[j] = hits[j-1]; j--; }
+        hits[j] = v;
+    }
+    int n = 0;
+    for (int i = 0; i < *count; i++) {
+        if (n == 0 || fabs(hits[i] - hits[n-1]) > 1e-9*(1.0 + fabs(hits[i])))
+            hits[n++] = hits[i];
+    }
+    *count = n;
+}
+
+int ray_intersect_rec(const alea_ray_t* ray, const alea_rec_data_t* rec,
+                      double* restrict t_out) {
+    const double h[3] = {rec->height_x, rec->height_y, rec->height_z};
+    const double h2 = h[0]*h[0] + h[1]*h[1] + h[2]*h[2];
+    const double a2 = rec->axis1_x*rec->axis1_x + rec->axis1_y*rec->axis1_y +
+                      rec->axis1_z*rec->axis1_z;
+    const double b2 = rec->axis2_x*rec->axis2_x + rec->axis2_y*rec->axis2_y +
+                      rec->axis2_z*rec->axis2_z;
+    if (h2 <= 1e-20 || a2 <= 1e-20 || b2 <= 1e-20) return 0;
+    alea_quadric_data_t q;
+    if (!rec_quadric(rec, &q)) return 0;
+
+    const double op[3] = {ray->ox-rec->base_x, ray->oy-rec->base_y,
+                          ray->oz-rec->base_z};
+    const double d[3] = {ray->dx, ray->dy, ray->dz};
+    const double oh = (op[0]*h[0] + op[1]*h[1] + op[2]*h[2])/h2;
+    const double dh = (d[0]*h[0] + d[1]*h[1] + d[2]*h[2])/h2;
+    double hits[4];
+    int count = 0;
+    double side[2];
+    int side_count = ray_intersect_quadric(ray, &q, side);
+    for (int i = 0; i < side_count; i++) {
+        const double s = oh + side[i]*dh;
+        if (s >= -RAY_EPSILON && s <= 1.0 + RAY_EPSILON) hits[count++] = side[i];
+    }
+    if (fabs(dh) > RAY_EPSILON) {
+        for (int cap = 0; cap <= 1; cap++) {
+            const double t = ((double)cap - oh)/dh;
+            const double px = op[0] + t*d[0] - cap*h[0];
+            const double py = op[1] + t*d[1] - cap*h[1];
+            const double pz = op[2] + t*d[2] - cap*h[2];
+            const double ea = (px*rec->axis1_x + py*rec->axis1_y +
+                               pz*rec->axis1_z)/a2;
+            const double eb = (px*rec->axis2_x + py*rec->axis2_y +
+                               pz*rec->axis2_z)/b2;
+            if (ea*ea + eb*eb <= 1.0 + RAY_EPSILON) hits[count++] = t;
+        }
+    }
+    sort_unique_hits(hits, &count);
+    if (count > 2) count = 2;
+    for (int i = 0; i < count; i++) t_out[i] = hits[i];
+    return count;
+}
+
 /* ============================================================================
  * TORUS (QUARTIC - EXPENSIVE)
  * ============================================================================ */
@@ -677,6 +812,149 @@ int ray_intersect_torus(const alea_ray_t* ray,
     return n;
 }
 
+typedef struct {
+    double a, b, c, d;
+} ray_halfspace_t;
+
+static void orient_ray_halfspace(ray_halfspace_t* p,
+                                 double x, double y, double z) {
+    if (p->a*x + p->b*y + p->c*z + p->d > 0.0) {
+        p->a = -p->a; p->b = -p->b; p->c = -p->c; p->d = -p->d;
+    }
+}
+
+static int ray_clip_halfspaces(const alea_ray_t* ray,
+                               const ray_halfspace_t* planes, int plane_count,
+                               double* restrict t_out) {
+    double enter = -INFINITY, leave = INFINITY;
+    for (int i = 0; i < plane_count; i++) {
+        const ray_halfspace_t* p = &planes[i];
+        const double value = p->a*ray->ox + p->b*ray->oy + p->c*ray->oz + p->d;
+        const double slope = p->a*ray->dx + p->b*ray->dy + p->c*ray->dz;
+        if (fabs(slope) <= RAY_EPSILON) {
+            if (value > RAY_EPSILON) return 0;
+            continue;
+        }
+        const double t = -value/slope;
+        if (slope < 0.0) enter = fmax(enter, t);
+        else leave = fmin(leave, t);
+        if (enter > leave + RAY_EPSILON) return 0;
+    }
+    if (!isfinite(enter) || !isfinite(leave)) return 0;
+    t_out[0] = enter;
+    t_out[1] = leave;
+    return 2;
+}
+
+static int ray_intersect_box_general(const alea_ray_t* ray,
+                                     const alea_box_general_data_t* box,
+                                     double* restrict t_out) {
+    const double v1[3] = {box->v1_x, box->v1_y, box->v1_z};
+    const double v2[3] = {box->v2_x, box->v2_y, box->v2_z};
+    const double v3[3] = {box->v3_x, box->v3_y, box->v3_z};
+    double n[3][3] = {
+        {v2[1]*v3[2]-v2[2]*v3[1], v2[2]*v3[0]-v2[0]*v3[2], v2[0]*v3[1]-v2[1]*v3[0]},
+        {v3[1]*v1[2]-v3[2]*v1[1], v3[2]*v1[0]-v3[0]*v1[2], v3[0]*v1[1]-v3[1]*v1[0]},
+        {v1[1]*v2[2]-v1[2]*v2[1], v1[2]*v2[0]-v1[0]*v2[2], v1[0]*v2[1]-v1[1]*v2[0]}
+    };
+    const double c[3] = {box->corner_x, box->corner_y, box->corner_z};
+    const double inside[3] = {c[0]+0.5*(v1[0]+v2[0]+v3[0]),
+                              c[1]+0.5*(v1[1]+v2[1]+v3[1]),
+                              c[2]+0.5*(v1[2]+v2[2]+v3[2])};
+    ray_halfspace_t p[6];
+    for (int i = 0; i < 3; i++) {
+        const double len2 = n[i][0]*n[i][0] + n[i][1]*n[i][1] + n[i][2]*n[i][2];
+        if (len2 <= 1e-20) return 0;
+        const double* edge = i == 0 ? v1 : (i == 1 ? v2 : v3);
+        p[2*i] = (ray_halfspace_t){n[i][0], n[i][1], n[i][2],
+                                  -(n[i][0]*c[0]+n[i][1]*c[1]+n[i][2]*c[2])};
+        const double top[3] = {c[0]+edge[0], c[1]+edge[1], c[2]+edge[2]};
+        p[2*i+1] = (ray_halfspace_t){n[i][0], n[i][1], n[i][2],
+                                    -(n[i][0]*top[0]+n[i][1]*top[1]+n[i][2]*top[2])};
+        orient_ray_halfspace(&p[2*i], inside[0], inside[1], inside[2]);
+        orient_ray_halfspace(&p[2*i+1], inside[0], inside[1], inside[2]);
+    }
+    return ray_clip_halfspaces(ray, p, 6, t_out);
+}
+
+static int ray_intersect_wed(const alea_ray_t* ray, const alea_wed_data_t* w,
+                             double* restrict t_out) {
+    const double c[3] = {w->vertex_x, w->vertex_y, w->vertex_z};
+    const double v1[3] = {w->v1_x, w->v1_y, w->v1_z};
+    const double v2[3] = {w->v2_x, w->v2_y, w->v2_z};
+    const double v3[3] = {w->v3_x, w->v3_y, w->v3_z};
+    const double inside[3] = {c[0]+(v1[0]+v2[0])/3.0+0.5*v3[0],
+                              c[1]+(v1[1]+v2[1])/3.0+0.5*v3[1],
+                              c[2]+(v1[2]+v2[2])/3.0+0.5*v3[2]};
+    const double points[5][3] = {
+        {c[0], c[1], c[2]}, {c[0]+v3[0], c[1]+v3[1], c[2]+v3[2]},
+        {c[0], c[1], c[2]}, {c[0], c[1], c[2]},
+        {c[0]+v1[0], c[1]+v1[1], c[2]+v1[2]}
+    };
+    double normals[5][3] = {
+        {v1[1]*v2[2]-v1[2]*v2[1], v1[2]*v2[0]-v1[0]*v2[2], v1[0]*v2[1]-v1[1]*v2[0]},
+        {v1[1]*v2[2]-v1[2]*v2[1], v1[2]*v2[0]-v1[0]*v2[2], v1[0]*v2[1]-v1[1]*v2[0]},
+        {v3[1]*v1[2]-v3[2]*v1[1], v3[2]*v1[0]-v3[0]*v1[2], v3[0]*v1[1]-v3[1]*v1[0]},
+        {v2[1]*v3[2]-v2[2]*v3[1], v2[2]*v3[0]-v2[0]*v3[2], v2[0]*v3[1]-v2[1]*v3[0]},
+        {(v2[1]-v1[1])*v3[2]-(v2[2]-v1[2])*v3[1],
+         (v2[2]-v1[2])*v3[0]-(v2[0]-v1[0])*v3[2],
+         (v2[0]-v1[0])*v3[1]-(v2[1]-v1[1])*v3[0]}
+    };
+    ray_halfspace_t p[5];
+    for (int i = 0; i < 5; i++) {
+        const double len2 = normals[i][0]*normals[i][0] + normals[i][1]*normals[i][1] + normals[i][2]*normals[i][2];
+        if (len2 <= 1e-20) return 0;
+        p[i] = (ray_halfspace_t){normals[i][0], normals[i][1], normals[i][2],
+                                -(normals[i][0]*points[i][0]+normals[i][1]*points[i][1]+normals[i][2]*points[i][2])};
+        orient_ray_halfspace(&p[i], inside[0], inside[1], inside[2]);
+    }
+    return ray_clip_halfspaces(ray, p, 5, t_out);
+}
+
+static int ray_intersect_rhp(const alea_ray_t* ray, const alea_rhp_data_t* r,
+                             double* restrict t_out) {
+    const double hlen = sqrt(r->height_x*r->height_x+r->height_y*r->height_y+r->height_z*r->height_z);
+    if (hlen <= 1e-20) return 0;
+    const double axis[3] = {r->height_x/hlen, r->height_y/hlen, r->height_z/hlen};
+    const double c[3] = {r->base_x, r->base_y, r->base_z};
+    ray_halfspace_t p[8] = {
+        {-axis[0],-axis[1],-axis[2], axis[0]*c[0]+axis[1]*c[1]+axis[2]*c[2]},
+        { axis[0], axis[1], axis[2],-(axis[0]*(c[0]+r->height_x)+axis[1]*(c[1]+r->height_y)+axis[2]*(c[2]+r->height_z))}
+    };
+    double radial[3][3];
+    if (!alea_rhp_resolve_radials(r, radial)) return 0;
+    for (int i = 0; i < 3; i++) {
+        const double len = sqrt(radial[i][0]*radial[i][0]+radial[i][1]*radial[i][1]+radial[i][2]*radial[i][2]);
+        if (len <= 1e-20) return 0;
+        const double nx=radial[i][0]/len, ny=radial[i][1]/len, nz=radial[i][2]/len;
+        p[2+2*i] = (ray_halfspace_t){nx,ny,nz,-(nx*c[0]+ny*c[1]+nz*c[2])-len};
+        p[3+2*i] = (ray_halfspace_t){-nx,-ny,-nz,nx*c[0]+ny*c[1]+nz*c[2]-len};
+    }
+    return ray_clip_halfspaces(ray, p, 8, t_out);
+}
+
+static int ray_intersect_arb(const alea_ray_t* ray, const alea_arb_data_t* arb,
+                             double* restrict t_out) {
+    if (arb->num_corners < 4 || arb->num_corners > 8 ||
+        arb->num_faces < 4 || arb->num_faces > 6) return 0;
+    double inside[3] = {0};
+    for (int i=0;i<arb->num_corners;i++) for (int j=0;j<3;j++) inside[j]+=arb->corners[i][j];
+    for (int j=0;j<3;j++) inside[j]/=arb->num_corners;
+    ray_halfspace_t p[6];
+    for (int f=0;f<arb->num_faces;f++) {
+        int i0=arb->faces[f][0]-1, i1=arb->faces[f][1]-1, i2=arb->faces[f][2]-1;
+        if (i0<0||i1<0||i2<0||i0>=arb->num_corners||i1>=arb->num_corners||i2>=arb->num_corners) return 0;
+        const double* a=arb->corners[i0]; const double* b=arb->corners[i1]; const double* c=arb->corners[i2];
+        const double e1[3]={b[0]-a[0],b[1]-a[1],b[2]-a[2]};
+        const double e2[3]={c[0]-a[0],c[1]-a[1],c[2]-a[2]};
+        const double nx=e1[1]*e2[2]-e1[2]*e2[1], ny=e1[2]*e2[0]-e1[0]*e2[2], nz=e1[0]*e2[1]-e1[1]*e2[0];
+        if (nx*nx+ny*ny+nz*nz <= 1e-20) return 0;
+        p[f]=(ray_halfspace_t){nx,ny,nz,-(nx*a[0]+ny*a[1]+nz*a[2])};
+        orient_ray_halfspace(&p[f],inside[0],inside[1],inside[2]);
+    }
+    return ray_clip_halfspaces(ray,p,arb->num_faces,t_out);
+}
+
 /* ============================================================================
  * DISPATCH
  * ============================================================================ */
@@ -725,8 +1003,26 @@ int ray_intersect_primitive(const alea_ray_t* ray,
         case ALEA_PRIMITIVE_RCC:
             return ray_intersect_rcc(ray, &data->rcc, t_out);
 
+        case ALEA_PRIMITIVE_BOX:
+            return ray_intersect_box_general(ray, &data->box_general, t_out);
+
         case ALEA_PRIMITIVE_TRC:
             return ray_intersect_trc(ray, &data->trc, t_out);
+
+        case ALEA_PRIMITIVE_ELL:
+            return ray_intersect_ell(ray, &data->ell, t_out);
+
+        case ALEA_PRIMITIVE_REC:
+            return ray_intersect_rec(ray, &data->rec, t_out);
+
+        case ALEA_PRIMITIVE_WED:
+            return ray_intersect_wed(ray, &data->wed, t_out);
+
+        case ALEA_PRIMITIVE_RHP:
+            return ray_intersect_rhp(ray, &data->rhp, t_out);
+
+        case ALEA_PRIMITIVE_ARB:
+            return ray_intersect_arb(ray, &data->arb, t_out);
 
         default:
             return 0;  /* Unknown primitive */
@@ -939,6 +1235,33 @@ void primitive_normal_at(alea_primitive_type_t type,
             double len = sqrt(gx * gx + gy * gy + gz * gz);
             if (len > RAY_EPSILON) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
+            } else {
+                *nx = 0; *ny = 0; *nz = 1;
+            }
+            break;
+        }
+
+        case ALEA_PRIMITIVE_RCC:
+        case ALEA_PRIMITIVE_BOX:
+        case ALEA_PRIMITIVE_TRC:
+        case ALEA_PRIMITIVE_ELL:
+        case ALEA_PRIMITIVE_REC:
+        case ALEA_PRIMITIVE_WED:
+        case ALEA_PRIMITIVE_RHP:
+        case ALEA_PRIMITIVE_ARB: {
+            /* The macrobody evaluators are signed classifiers whose local
+             * gradient gives the outward normal, including caps and faces. */
+            const double scale = 1.0 + fmax(fabs(px), fmax(fabs(py), fabs(pz)));
+            const double h = 1e-6 * scale;
+            const double gx = alea_primitive_eval(type, data, px+h, py, pz) -
+                              alea_primitive_eval(type, data, px-h, py, pz);
+            const double gy = alea_primitive_eval(type, data, px, py+h, pz) -
+                              alea_primitive_eval(type, data, px, py-h, pz);
+            const double gz = alea_primitive_eval(type, data, px, py, pz+h) -
+                              alea_primitive_eval(type, data, px, py, pz-h);
+            const double len = sqrt(gx*gx + gy*gy + gz*gz);
+            if (len > RAY_EPSILON) {
+                *nx = gx/len; *ny = gy/len; *nz = gz/len;
             } else {
                 *nx = 0; *ny = 0; *nz = 1;
             }

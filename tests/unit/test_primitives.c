@@ -11,6 +11,7 @@
 #include "alea_types.h"
 #include "core/alea_system.h"
 #include "core/alea_eval.h"
+#include "core/alea_macrobody.h"
 #include "primitives/primitive_eval.h"
 #include "primitives/primitive_desc.h"
 #include "primitives/bbox.h"
@@ -619,6 +620,106 @@ TEST(typed_evaluation_preserves_invalid_payload_and_orientation) {
     }
     ASSERT_EQ(alea_primitive_eval_payload(ALEA_PRIMITIVE_PLANE, NULL, 0, 0, 0), 1.0);
     ASSERT_EQ(alea_primitive_eval_payload(0, &data.plane, 0, 0, 0), 1.0);
+    alea_destroy(sys);
+}
+
+TEST(expand_ell_to_quadric_preserves_containment) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_primitive_data_t data = {0};
+    data.ell.v1_z = -3.0;
+    data.ell.v2_z = 3.0;
+    data.ell.major_axis_len = 10.0;
+
+    alea_node_id_t inside, outside;
+    ASSERT_EQ(alea_expand_macrobody_immediate(
+        sys, ALEA_PRIMITIVE_ELL, &data, &inside, &outside), 0);
+    ASSERT(alea_evaluate_point(sys, inside, 0.0, 0.0, 0.0) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, inside, 0.0, 0.0, 6.0) > 0.0);
+    ASSERT(alea_evaluate_point(sys, outside, 0.0, 0.0, 0.0) > 0.0);
+    ASSERT(alea_evaluate_point(sys, outside, 0.0, 0.0, 6.0) <= 0.0);
+    alea_destroy(sys);
+}
+
+TEST(ell_negative_minor_radius_form_evaluates_and_expands) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_primitive_data_t data = {0};
+    data.ell.v2_z = 3.0;          /* major-axis vector */
+    data.ell.major_axis_len = -2.0; /* MCNP negative form: minor radius */
+    ASSERT(alea_primitive_eval(ALEA_PRIMITIVE_ELL,&data,0,0,2.5)<0.0);
+    ASSERT(alea_primitive_eval(ALEA_PRIMITIVE_ELL,&data,2.5,0,0)>0.0);
+    alea_node_id_t inside,outside;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys,ALEA_PRIMITIVE_ELL,&data,&inside,&outside),0);
+    ASSERT(alea_evaluate_point(sys,inside,0,0,2.5)<=0.0);
+    ASSERT(alea_evaluate_point(sys,inside,2.5,0,0)>0.0);
+    alea_destroy(sys);
+}
+
+TEST(expand_rec_to_quadric_and_caps_preserves_containment) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_primitive_data_t data = {0};
+    data.rec.height_z = 10.0;
+    data.rec.axis1_x = 3.0;
+    data.rec.axis2_y = 2.0;
+
+    alea_node_id_t inside, outside;
+    ASSERT_EQ(alea_expand_macrobody_immediate(
+        sys, ALEA_PRIMITIVE_REC, &data, &inside, &outside), 0);
+    ASSERT(alea_evaluate_point(sys, inside, 0.0, 0.0, 5.0) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, inside, 4.0, 0.0, 5.0) > 0.0);
+    ASSERT(alea_evaluate_point(sys, inside, 0.0, 0.0, -1.0) > 0.0);
+    ASSERT(alea_evaluate_point(sys, inside, 0.0, 0.0, 11.0) > 0.0);
+    ASSERT(alea_evaluate_point(sys, outside, 0.0, 0.0, 5.0) > 0.0);
+    ASSERT(alea_evaluate_point(sys, outside, 4.0, 0.0, 5.0) <= 0.0);
+    alea_destroy(sys);
+}
+
+TEST(expanded_macrobody_halfspaces_contain_interior_points) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_primitive_data_t d = {0};
+    alea_node_id_t neg, pos;
+
+    d.box.min_x = d.box.min_y = d.box.min_z = -1.0;
+    d.box.max_x = d.box.max_y = d.box.max_z = 1.0;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys, ALEA_PRIMITIVE_RPP, &d, &neg, &pos), 0);
+    ASSERT(alea_evaluate_point(sys, neg, 0, 0, 0) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, neg, 2, 0, 0) > 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.rcc.height_z = 4.0; d.rcc.radius = 1.0;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys, ALEA_PRIMITIVE_RCC, &d, &neg, &pos), 0);
+    ASSERT(alea_evaluate_point(sys, neg, 0, 0, 2) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, neg, 0, 0, -1) > 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.box_general.v1_x = 2.0; d.box_general.v2_y = 3.0; d.box_general.v3_z = 4.0;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys, ALEA_PRIMITIVE_BOX, &d, &neg, &pos), 0);
+    ASSERT(alea_evaluate_point(sys, neg, 1, 1, 1) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, neg, -1, 1, 1) > 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.trc.height_z = 4.0; d.trc.base_radius = 2.0; d.trc.top_radius = 1.0;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys, ALEA_PRIMITIVE_TRC, &d, &neg, &pos), 0);
+    ASSERT(alea_evaluate_point(sys, neg, 0, 0, 2) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, neg, 0, 0, -1) > 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.wed.v1_x = 4.0; d.wed.v2_y = 4.0; d.wed.v3_z = 4.0;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys, ALEA_PRIMITIVE_WED, &d, &neg, &pos), 0);
+    ASSERT(alea_evaluate_point(sys, neg, 0.5, 0.5, 2) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, neg, 3, 3, 2) > 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.rhp.height_z = 4.0;
+    d.rhp.r1_x = 2.0;
+    d.rhp.r2_x = -1.0; d.rhp.r2_y = 1.7320508075688772;
+    d.rhp.r3_x = -1.0; d.rhp.r3_y = -1.7320508075688772;
+    ASSERT_EQ(alea_expand_macrobody_immediate(sys, ALEA_PRIMITIVE_RHP, &d, &neg, &pos), 0);
+    ASSERT(alea_evaluate_point(sys, neg, 0, 0, 2) <= 0.0);
+    ASSERT(alea_evaluate_point(sys, neg, 4, 0, 2) > 0.0);
     alea_destroy(sys);
 }
 

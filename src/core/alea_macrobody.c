@@ -10,6 +10,7 @@
 #include "alea_macrobody.h"
 #include "alea_simplify.h"
 #include "primitives/bbox.h"
+#include "primitives/primitive_desc.h"
 #include "util/alea_vec.h"
 #include <math.h>
 #include <string.h>
@@ -102,6 +103,106 @@ static void vec3_cross(double ax, double ay, double az,
     *rx = ay*bz - az*by;
     *ry = az*bx - ax*bz;
     *rz = ax*by - ay*bx;
+}
+
+static void orient_plane_toward_inside(alea_plane_data_t* p,
+                                       double x, double y, double z) {
+    if (p->a*x + p->b*y + p->c*z + p->d > 0.0) {
+        p->a = -p->a; p->b = -p->b; p->c = -p->c; p->d = -p->d;
+    }
+}
+
+static void quadric_from_matrix(const double q[3][3],
+                                double cx, double cy, double cz,
+                                alea_quadric_data_t* out) {
+    const double c[3] = {cx, cy, cz};
+    double qc[3] = {0.0, 0.0, 0.0};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            qc[i] += q[i][j] * c[j];
+
+    out->coeffs[0] = q[0][0];
+    out->coeffs[1] = q[1][1];
+    out->coeffs[2] = q[2][2];
+    out->coeffs[3] = 2.0 * q[0][1];
+    out->coeffs[4] = 2.0 * q[1][2];
+    out->coeffs[5] = 2.0 * q[0][2];
+    out->coeffs[6] = -2.0 * qc[0];
+    out->coeffs[7] = -2.0 * qc[1];
+    out->coeffs[8] = -2.0 * qc[2];
+    out->coeffs[9] = cx*qc[0] + cy*qc[1] + cz*qc[2] - 1.0;
+}
+
+static bool ell_to_quadric(const alea_ell_data_t* ell,
+                           alea_quadric_data_t* out) {
+    double cx, cy, cz, ux, uy, uz, a, b_sq;
+    if (ell->major_axis_len < 0.0) {
+        cx = ell->v1_x; cy = ell->v1_y; cz = ell->v1_z;
+        ux = ell->v2_x; uy = ell->v2_y; uz = ell->v2_z;
+        a = sqrt(ux*ux + uy*uy + uz*uz);
+        b_sq = ell->major_axis_len * ell->major_axis_len;
+    } else {
+        cx = 0.5 * (ell->v1_x + ell->v2_x);
+        cy = 0.5 * (ell->v1_y + ell->v2_y);
+        cz = 0.5 * (ell->v1_z + ell->v2_z);
+        ux = 0.5 * (ell->v2_x - ell->v1_x);
+        uy = 0.5 * (ell->v2_y - ell->v1_y);
+        uz = 0.5 * (ell->v2_z - ell->v1_z);
+        a = 0.5 * ell->major_axis_len;
+        const double focal_sq = ux*ux + uy*uy + uz*uz;
+        b_sq = a*a - focal_sq;
+    }
+    const double axial_sq = ux*ux + uy*uy + uz*uz;
+    const double a_sq = a * a;
+    if (!(a > 0.0) || !(b_sq > 1e-20) || !isfinite(b_sq)) return false;
+
+    double q[3][3] = {{0}};
+    if (axial_sq <= 1e-20) {
+        q[0][0] = q[1][1] = q[2][2] = 1.0 / a_sq;
+    } else {
+        const double inv_focal = 1.0 / sqrt(axial_sq);
+        ux *= inv_focal; uy *= inv_focal; uz *= inv_focal;
+        const double u[3] = {ux, uy, uz};
+        const double inv_b_sq = 1.0 / b_sq;
+        const double axial_delta = 1.0 / a_sq - inv_b_sq;
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                q[i][j] = (i == j ? inv_b_sq : 0.0) +
+                          axial_delta * u[i] * u[j];
+            }
+        }
+    }
+    quadric_from_matrix(q, cx, cy, cz, out);
+    return true;
+}
+
+static bool rec_to_quadric(const alea_rec_data_t* rec,
+                           alea_quadric_data_t* out) {
+    const double a[3] = {rec->axis1_x, rec->axis1_y, rec->axis1_z};
+    const double b[3] = {rec->axis2_x, rec->axis2_y, rec->axis2_z};
+    const double h[3] = {rec->height_x, rec->height_y, rec->height_z};
+    const double a_sq = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
+    const double b_sq = b[0]*b[0] + b[1]*b[1] + b[2]*b[2];
+    const double h_sq = h[0]*h[0] + h[1]*h[1] + h[2]*h[2];
+    if (a_sq <= 1e-20 || b_sq <= 1e-20 || h_sq <= 1e-20) return false;
+
+    /* REC requires mutually perpendicular semi-axis and height vectors. */
+    const double scale_ab = sqrt(a_sq * b_sq);
+    const double scale_ah = sqrt(a_sq * h_sq);
+    const double scale_bh = sqrt(b_sq * h_sq);
+    const double dot_ab = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    const double dot_ah = a[0]*h[0] + a[1]*h[1] + a[2]*h[2];
+    const double dot_bh = b[0]*h[0] + b[1]*h[1] + b[2]*h[2];
+    if (fabs(dot_ab) > 1e-9*scale_ab ||
+        fabs(dot_ah) > 1e-9*scale_ah ||
+        fabs(dot_bh) > 1e-9*scale_bh) return false;
+
+    double q[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            q[i][j] = a[i]*a[j]/(a_sq*a_sq) + b[i]*b[j]/(b_sq*b_sq);
+    quadric_from_matrix(q, rec->base_x, rec->base_y, rec->base_z, out);
+    return true;
 }
 
 
@@ -209,52 +310,52 @@ static alea_node_id_t expand_box(alea_system_t* sys, const alea_box_data_t* box,
 
     /* Create 6 axis-aligned planes */
 
-    /* Plane 1: x = min_x (normal +x), interior has x > min_x */
+    /* x >= min_x -> -x + min_x <= 0 */
     memset(&data, 0, sizeof(data));
-    data.plane.a = 1.0;
-    data.plane.b = 0.0;
-    data.plane.c = 0.0;
-    data.plane.d = -box->min_x;
-    alea_node_id_t p1 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
-    result = p1;
-
-    /* Plane 2: x = max_x (normal -x), interior has x < max_x */
     data.plane.a = -1.0;
     data.plane.b = 0.0;
     data.plane.c = 0.0;
-    data.plane.d = box->max_x;
+    data.plane.d = box->min_x;
+    alea_node_id_t p1 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
+    result = p1;
+
+    /* x <= max_x -> x - max_x <= 0 */
+    data.plane.a = 1.0;
+    data.plane.b = 0.0;
+    data.plane.c = 0.0;
+    data.plane.d = -box->max_x;
     alea_node_id_t p2 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p2);
 
     /* Plane 3: y = min_y (normal +y), interior has y > min_y */
     data.plane.a = 0.0;
-    data.plane.b = 1.0;
+    data.plane.b = -1.0;
     data.plane.c = 0.0;
-    data.plane.d = -box->min_y;
+    data.plane.d = box->min_y;
     alea_node_id_t p3 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p3);
 
     /* Plane 4: y = max_y (normal -y), interior has y < max_y */
     data.plane.a = 0.0;
-    data.plane.b = -1.0;
+    data.plane.b = 1.0;
     data.plane.c = 0.0;
-    data.plane.d = box->max_y;
+    data.plane.d = -box->max_y;
     alea_node_id_t p4 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p4);
 
     /* Plane 5: z = min_z (normal +z), interior has z > min_z */
     data.plane.a = 0.0;
     data.plane.b = 0.0;
-    data.plane.c = 1.0;
-    data.plane.d = -box->min_z;
+    data.plane.c = -1.0;
+    data.plane.d = box->min_z;
     alea_node_id_t p5 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p5);
 
     /* Plane 6: z = max_z (normal -z), interior has z < max_z */
     data.plane.a = 0.0;
     data.plane.b = 0.0;
-    data.plane.c = -1.0;
-    data.plane.d = box->max_z;
+    data.plane.c = 1.0;
+    data.plane.d = -box->max_z;
     alea_node_id_t p6 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p6);
 
@@ -342,19 +443,19 @@ static alea_node_id_t expand_rcc(alea_system_t* sys, const alea_rcc_data_t* rcc,
     /* Base plane: ax*x + ay*y + az*z = ax*bx + ay*by + az*bz */
     double d_base = ax*rcc->base_x + ay*rcc->base_y + az*rcc->base_z;
     memset(&data, 0, sizeof(data));
-    data.plane.a = ax;
-    data.plane.b = ay;
-    data.plane.c = az;
-    data.plane.d = -d_base;
+    data.plane.a = -ax;
+    data.plane.b = -ay;
+    data.plane.c = -az;
+    data.plane.d = d_base;
     alea_node_id_t plane_base = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
 
     /* Top plane */
     double tx = rcc->base_x + hx, ty = rcc->base_y + hy, tz = rcc->base_z + hz;
     double d_top = ax*tx + ay*ty + az*tz;
-    data.plane.a = -ax;  /* Opposite normal */
-    data.plane.b = -ay;
-    data.plane.c = -az;
-    data.plane.d = d_top;
+    data.plane.a = ax;
+    data.plane.b = ay;
+    data.plane.c = az;
+    data.plane.d = -d_top;
     alea_node_id_t plane_top = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
 
     /* Build intersection: cylinder ∩ base_plane ∩ top_plane */
@@ -374,6 +475,9 @@ static alea_node_id_t expand_box_general(alea_system_t* sys, const alea_box_gene
     double v1x = box->v1_x, v1y = box->v1_y, v1z = box->v1_z;
     double v2x = box->v2_x, v2y = box->v2_y, v2z = box->v2_z;
     double v3x = box->v3_x, v3y = box->v3_y, v3z = box->v3_z;
+    const double ix = cx + 0.5*(v1x + v2x + v3x);
+    const double iy = cy + 0.5*(v1y + v2y + v3y);
+    const double iz = cz + 0.5*(v1z + v2z + v3z);
 
     /* Compute face normals (cross products) */
     double n1x, n1y, n1z;  /* v2 x v3 */
@@ -384,6 +488,11 @@ static alea_node_id_t expand_box_general(alea_system_t* sys, const alea_box_gene
     vec3_cross(v3x, v3y, v3z, v1x, v1y, v1z, &n2x, &n2y, &n2z);
     vec3_cross(v1x, v1y, v1z, v2x, v2y, v2z, &n3x, &n3y, &n3z);
 
+    if (vec3_len(n1x, n1y, n1z) < 1e-20 ||
+        vec3_len(n2x, n2y, n2z) < 1e-20 ||
+        vec3_len(n3x, n3y, n3z) < 1e-20)
+        return ALEA_NODE_ID_INVALID;
+
     vec3_normalize(&n1x, &n1y, &n1z);
     vec3_normalize(&n2x, &n2y, &n2z);
     vec3_normalize(&n3x, &n3y, &n3z);
@@ -391,39 +500,45 @@ static alea_node_id_t expand_box_general(alea_system_t* sys, const alea_box_gene
     /* Six planes, two for each normal direction */
     /* Plane 1: n1 . (p - corner) >= 0 */
     memset(&data, 0, sizeof(data));
-    data.plane.a = n1x; data.plane.b = n1y; data.plane.c = n1z;
-    data.plane.d = -(n1x*cx + n1y*cy + n1z*cz);
+    data.plane.a = -n1x; data.plane.b = -n1y; data.plane.c = -n1z;
+    data.plane.d = n1x*cx + n1y*cy + n1z*cz;
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p1 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = p1;
 
     /* Plane 2: -n1 . (p - corner - v1) >= 0 */
     double ox = cx + v1x, oy = cy + v1y, oz = cz + v1z;
-    data.plane.a = -n1x; data.plane.b = -n1y; data.plane.c = -n1z;
-    data.plane.d = (n1x*ox + n1y*oy + n1z*oz);
+    data.plane.a = n1x; data.plane.b = n1y; data.plane.c = n1z;
+    data.plane.d = -(n1x*ox + n1y*oy + n1z*oz);
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p2 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p2);
 
     /* Planes 3,4 for n2 direction */
-    data.plane.a = n2x; data.plane.b = n2y; data.plane.c = n2z;
-    data.plane.d = -(n2x*cx + n2y*cy + n2z*cz);
+    data.plane.a = -n2x; data.plane.b = -n2y; data.plane.c = -n2z;
+    data.plane.d = n2x*cx + n2y*cy + n2z*cz;
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p3 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p3);
 
     ox = cx + v2x; oy = cy + v2y; oz = cz + v2z;
-    data.plane.a = -n2x; data.plane.b = -n2y; data.plane.c = -n2z;
-    data.plane.d = (n2x*ox + n2y*oy + n2z*oz);
+    data.plane.a = n2x; data.plane.b = n2y; data.plane.c = n2z;
+    data.plane.d = -(n2x*ox + n2y*oy + n2z*oz);
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p4 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p4);
 
     /* Planes 5,6 for n3 direction */
-    data.plane.a = n3x; data.plane.b = n3y; data.plane.c = n3z;
-    data.plane.d = -(n3x*cx + n3y*cy + n3z*cz);
+    data.plane.a = -n3x; data.plane.b = -n3y; data.plane.c = -n3z;
+    data.plane.d = n3x*cx + n3y*cy + n3z*cz;
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p5 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p5);
 
     ox = cx + v3x; oy = cy + v3y; oz = cz + v3z;
-    data.plane.a = -n3x; data.plane.b = -n3y; data.plane.c = -n3z;
-    data.plane.d = (n3x*ox + n3y*oy + n3z*oz);
+    data.plane.a = n3x; data.plane.b = n3y; data.plane.c = n3z;
+    data.plane.d = -(n3x*ox + n3y*oy + n3z*oz);
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p6 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p6);
 
@@ -542,12 +657,12 @@ static alea_node_id_t expand_trc(alea_system_t* sys, const alea_trc_data_t* trc,
              */
             double px = apex_x, py = apex_y, pz = apex_z;
 
-            double A = ax*ax - t2;
-            double B = ay*ay - t2;
-            double C = az*az - t2;
-            double D = 2.0 * ax * ay;
-            double E = 2.0 * ay * az;
-            double F = 2.0 * ax * az;
+            double A = 1.0 - (1.0 + t2)*ax*ax;
+            double B = 1.0 - (1.0 + t2)*ay*ay;
+            double C = 1.0 - (1.0 + t2)*az*az;
+            double D = -2.0 * (1.0 + t2) * ax * ay;
+            double E = -2.0 * (1.0 + t2) * ay * az;
+            double F = -2.0 * (1.0 + t2) * ax * az;
 
             /* Linear terms from expanding (x-px)², etc */
             double G = -2.0*A*px - D*py - F*pz;
@@ -577,19 +692,19 @@ static alea_node_id_t expand_trc(alea_system_t* sys, const alea_trc_data_t* trc,
     /* Base plane */
     double d_base = ax*trc->base_x + ay*trc->base_y + az*trc->base_z;
     memset(&data, 0, sizeof(data));
-    data.plane.a = ax;
-    data.plane.b = ay;
-    data.plane.c = az;
-    data.plane.d = -d_base;
+    data.plane.a = -ax;
+    data.plane.b = -ay;
+    data.plane.c = -az;
+    data.plane.d = d_base;
     alea_node_id_t plane_base = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
 
     /* Top plane */
     double tx = trc->base_x + hx, ty = trc->base_y + hy, tz = trc->base_z + hz;
     double d_top = ax*tx + ay*ty + az*tz;
-    data.plane.a = -ax;
-    data.plane.b = -ay;
-    data.plane.c = -az;
-    data.plane.d = d_top;
+    data.plane.a = ax;
+    data.plane.b = ay;
+    data.plane.c = az;
+    data.plane.d = -d_top;
     alea_node_id_t plane_top = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
 
     /* Build intersection */
@@ -597,6 +712,56 @@ static alea_node_id_t expand_trc(alea_system_t* sys, const alea_trc_data_t* trc,
     result = create_intersection(sys, result, plane_top);
 
     return result;
+}
+
+/* ELL: focal ellipsoid -> one equivalent general quadric */
+static alea_node_id_t expand_ell(alea_system_t* sys, const alea_ell_data_t* ell,
+                                 int8_t sense) {
+    alea_primitive_data_t data;
+    memset(&data, 0, sizeof(data));
+    if (!ell_to_quadric(ell, &data.quadric)) return ALEA_NODE_ID_INVALID;
+    return create_primitive_node_internal(sys, ALEA_PRIMITIVE_QUADRIC, &data, sense);
+}
+
+/* REC: elliptical-cylinder quadric clipped by its two end planes */
+static alea_node_id_t expand_rec(alea_system_t* sys, const alea_rec_data_t* rec,
+                                 int8_t sense) {
+    alea_primitive_data_t data;
+    memset(&data, 0, sizeof(data));
+    if (!rec_to_quadric(rec, &data.quadric)) return ALEA_NODE_ID_INVALID;
+
+    alea_node_id_t side = create_primitive_node_internal(
+        sys, ALEA_PRIMITIVE_QUADRIC, &data, sense);
+    if (side == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+
+    const double h_len = vec3_len(rec->height_x, rec->height_y, rec->height_z);
+    const double ax = rec->height_x / h_len;
+    const double ay = rec->height_y / h_len;
+    const double az = rec->height_z / h_len;
+
+    /* Interior is above the base: -axis . (X - base) <= 0. */
+    memset(&data, 0, sizeof(data));
+    data.plane.a = -ax;
+    data.plane.b = -ay;
+    data.plane.c = -az;
+    data.plane.d = ax*rec->base_x + ay*rec->base_y + az*rec->base_z;
+    alea_node_id_t base = create_primitive_node_internal(
+        sys, ALEA_PRIMITIVE_PLANE, &data, sense);
+    if (base == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+
+    /* Interior is below the top: axis . (X - top) <= 0. */
+    const double tx = rec->base_x + rec->height_x;
+    const double ty = rec->base_y + rec->height_y;
+    const double tz = rec->base_z + rec->height_z;
+    data.plane.a = ax;
+    data.plane.b = ay;
+    data.plane.c = az;
+    data.plane.d = -(ax*tx + ay*ty + az*tz);
+    alea_node_id_t top = create_primitive_node_internal(
+        sys, ALEA_PRIMITIVE_PLANE, &data, sense);
+    if (top == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
+
+    return create_intersection(sys, create_intersection(sys, side, base), top);
 }
 
 /* WED: Wedge -> 5 planes */
@@ -608,41 +773,51 @@ static alea_node_id_t expand_wed(alea_system_t* sys, const alea_wed_data_t* wed,
     double v1x = wed->v1_x, v1y = wed->v1_y, v1z = wed->v1_z;
     double v2x = wed->v2_x, v2y = wed->v2_y, v2z = wed->v2_z;
     double v3x = wed->v3_x, v3y = wed->v3_y, v3z = wed->v3_z;
+    const double ix = vx + (v1x + v2x)/3.0 + 0.5*v3x;
+    const double iy = vy + (v1y + v2y)/3.0 + 0.5*v3y;
+    const double iz = vz + (v1z + v2z)/3.0 + 0.5*v3z;
 
     /* Base normal (v1 x v2) - points into the solid */
     double nb_x, nb_y, nb_z;
     vec3_cross(v1x, v1y, v1z, v2x, v2y, v2z, &nb_x, &nb_y, &nb_z);
+    if (vec3_len(nb_x, nb_y, nb_z) < 1e-20) return ALEA_NODE_ID_INVALID;
     vec3_normalize(&nb_x, &nb_y, &nb_z);
 
     /* Plane 1: Base plane */
     memset(&data, 0, sizeof(data));
-    data.plane.a = nb_x; data.plane.b = nb_y; data.plane.c = nb_z;
-    data.plane.d = -(nb_x*vx + nb_y*vy + nb_z*vz);
+    data.plane.a = -nb_x; data.plane.b = -nb_y; data.plane.c = -nb_z;
+    data.plane.d = nb_x*vx + nb_y*vy + nb_z*vz;
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p1 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = p1;
 
     /* Plane 2: Top plane (at vertex + v3) */
     double ox = vx + v3x, oy = vy + v3y, oz = vz + v3z;
-    data.plane.a = -nb_x; data.plane.b = -nb_y; data.plane.c = -nb_z;
-    data.plane.d = (nb_x*ox + nb_y*oy + nb_z*oz);
+    data.plane.a = nb_x; data.plane.b = nb_y; data.plane.c = nb_z;
+    data.plane.d = -(nb_x*ox + nb_y*oy + nb_z*oz);
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p2 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p2);
 
     /* Plane 3: v1 side (normal = v3 x v1) */
     double n3x, n3y, n3z;
     vec3_cross(v3x, v3y, v3z, v1x, v1y, v1z, &n3x, &n3y, &n3z);
+    if (vec3_len(n3x, n3y, n3z) < 1e-20) return ALEA_NODE_ID_INVALID;
     vec3_normalize(&n3x, &n3y, &n3z);
-    data.plane.a = n3x; data.plane.b = n3y; data.plane.c = n3z;
-    data.plane.d = -(n3x*vx + n3y*vy + n3z*vz);
+    data.plane.a = -n3x; data.plane.b = -n3y; data.plane.c = -n3z;
+    data.plane.d = n3x*vx + n3y*vy + n3z*vz;
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p3 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p3);
 
     /* Plane 4: v2 side (normal = v2 x v3) */
     double n4x, n4y, n4z;
     vec3_cross(v2x, v2y, v2z, v3x, v3y, v3z, &n4x, &n4y, &n4z);
+    if (vec3_len(n4x, n4y, n4z) < 1e-20) return ALEA_NODE_ID_INVALID;
     vec3_normalize(&n4x, &n4y, &n4z);
-    data.plane.a = n4x; data.plane.b = n4y; data.plane.c = n4z;
-    data.plane.d = -(n4x*vx + n4y*vy + n4z*vz);
+    data.plane.a = -n4x; data.plane.b = -n4y; data.plane.c = -n4z;
+    data.plane.d = n4x*vx + n4y*vy + n4z*vz;
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p4 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p4);
 
@@ -651,10 +826,12 @@ static alea_node_id_t expand_wed(alea_system_t* sys, const alea_wed_data_t* wed,
     double dx = v2x - v1x, dy = v2y - v1y, dz = v2z - v1z;
     double n5x, n5y, n5z;
     vec3_cross(dx, dy, dz, v3x, v3y, v3z, &n5x, &n5y, &n5z);
+    if (vec3_len(n5x, n5y, n5z) < 1e-20) return ALEA_NODE_ID_INVALID;
     vec3_normalize(&n5x, &n5y, &n5z);
     ox = vx + v1x; oy = vy + v1y; oz = vz + v1z;
     data.plane.a = n5x; data.plane.b = n5y; data.plane.c = n5z;
     data.plane.d = -(n5x*ox + n5y*oy + n5z*oz);
+    orient_plane_toward_inside(&data.plane, ix, iy, iz);
     alea_node_id_t p5 = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, p5);
 
@@ -675,61 +852,62 @@ static alea_node_id_t expand_rhp(alea_system_t* sys, const alea_rhp_data_t* rhp,
 
     /* Base cap plane */
     memset(&data, 0, sizeof(data));
-    data.plane.a = ax; data.plane.b = ay; data.plane.c = az;
-    data.plane.d = -(ax*bx + ay*by + az*bz);
+    data.plane.a = -ax; data.plane.b = -ay; data.plane.c = -az;
+    data.plane.d = ax*bx + ay*by + az*bz;
     alea_node_id_t cap_base = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = cap_base;
 
     /* Top cap plane */
     double tx = bx + hx, ty = by + hy, tz = bz + hz;
-    data.plane.a = -ax; data.plane.b = -ay; data.plane.c = -az;
-    data.plane.d = (ax*tx + ay*ty + az*tz);
+    data.plane.a = ax; data.plane.b = ay; data.plane.c = az;
+    data.plane.d = -(ax*tx + ay*ty + az*tz);
     alea_node_id_t cap_top = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, cap_top);
 
     /* 6 hex faces - each r_i direction gives 2 parallel planes */
-    double r1x = rhp->r1_x, r1y = rhp->r1_y, r1z = rhp->r1_z;
-    double r2x = rhp->r2_x, r2y = rhp->r2_y, r2z = rhp->r2_z;
-    double r3x = rhp->r3_x, r3y = rhp->r3_y, r3z = rhp->r3_z;
+    double radial[3][3];
+    if (!alea_rhp_resolve_radials(rhp, radial)) return ALEA_NODE_ID_INVALID;
+    double r1x = radial[0][0], r1y = radial[0][1], r1z = radial[0][2];
+    double r2x = radial[1][0], r2y = radial[1][1], r2z = radial[1][2];
+    double r3x = radial[2][0], r3y = radial[2][1], r3z = radial[2][2];
 
     double r1_len = vec3_len(r1x, r1y, r1z);
     double r2_len = vec3_len(r2x, r2y, r2z);
     double r3_len = vec3_len(r3x, r3y, r3z);
-
     /* r1 direction planes */
     double n1x = r1x/r1_len, n1y = r1y/r1_len, n1z = r1z/r1_len;
     data.plane.a = n1x; data.plane.b = n1y; data.plane.c = n1z;
     data.plane.d = -(n1x*(bx+r1x) + n1y*(by+r1y) + n1z*(bz+r1z));
-    alea_node_id_t h1p = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, -sense);
+    alea_node_id_t h1p = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, h1p);
 
     data.plane.a = -n1x; data.plane.b = -n1y; data.plane.c = -n1z;
     data.plane.d = (n1x*(bx-r1x) + n1y*(by-r1y) + n1z*(bz-r1z));
-    alea_node_id_t h1n = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, -sense);
+    alea_node_id_t h1n = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, h1n);
 
     /* r2 direction planes */
     double n2x = r2x/r2_len, n2y = r2y/r2_len, n2z = r2z/r2_len;
     data.plane.a = n2x; data.plane.b = n2y; data.plane.c = n2z;
     data.plane.d = -(n2x*(bx+r2x) + n2y*(by+r2y) + n2z*(bz+r2z));
-    alea_node_id_t h2p = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, -sense);
+    alea_node_id_t h2p = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, h2p);
 
     data.plane.a = -n2x; data.plane.b = -n2y; data.plane.c = -n2z;
     data.plane.d = (n2x*(bx-r2x) + n2y*(by-r2y) + n2z*(bz-r2z));
-    alea_node_id_t h2n = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, -sense);
+    alea_node_id_t h2n = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, h2n);
 
     /* r3 direction planes */
     double n3x = r3x/r3_len, n3y = r3y/r3_len, n3z = r3z/r3_len;
     data.plane.a = n3x; data.plane.b = n3y; data.plane.c = n3z;
     data.plane.d = -(n3x*(bx+r3x) + n3y*(by+r3y) + n3z*(bz+r3z));
-    alea_node_id_t h3p = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, -sense);
+    alea_node_id_t h3p = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, h3p);
 
     data.plane.a = -n3x; data.plane.b = -n3y; data.plane.c = -n3z;
     data.plane.d = (n3x*(bx-r3x) + n3y*(by-r3y) + n3z*(bz-r3z));
-    alea_node_id_t h3n = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, -sense);
+    alea_node_id_t h3n = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
     result = create_intersection(sys, result, h3n);
 
     return result;
@@ -737,10 +915,19 @@ static alea_node_id_t expand_rhp(alea_system_t* sys, const alea_rhp_data_t* rhp,
 
 /* ARB: Arbitrary Polyhedron -> N face planes */
 static alea_node_id_t expand_arb(alea_system_t* sys, const alea_arb_data_t* arb, int8_t sense) {
-    if (arb->num_faces < 4) return ALEA_NODE_ID_INVALID;
+    if (arb->num_faces < 4 || arb->num_faces > 6 ||
+        arb->num_corners < 4 || arb->num_corners > 8)
+        return ALEA_NODE_ID_INVALID;
 
     alea_node_id_t result = ALEA_NODE_ID_INVALID;
     alea_primitive_data_t data;
+    double ix = 0.0, iy = 0.0, iz = 0.0;
+    for (int i = 0; i < arb->num_corners; i++) {
+        ix += arb->corners[i][0];
+        iy += arb->corners[i][1];
+        iz += arb->corners[i][2];
+    }
+    ix /= arb->num_corners; iy /= arb->num_corners; iz /= arb->num_corners;
 
     for (int f = 0; f < arb->num_faces; f++) {
         int i0 = arb->faces[f][0] - 1;
@@ -749,7 +936,7 @@ static alea_node_id_t expand_arb(alea_system_t* sys, const alea_arb_data_t* arb,
 
         if (i0 < 0 || i1 < 0 || i2 < 0 ||
             i0 >= arb->num_corners || i1 >= arb->num_corners || i2 >= arb->num_corners) {
-            continue;
+            return ALEA_NODE_ID_INVALID;
         }
 
         double x0 = arb->corners[i0][0], y0 = arb->corners[i0][1], z0 = arb->corners[i0][2];
@@ -762,7 +949,7 @@ static alea_node_id_t expand_arb(alea_system_t* sys, const alea_arb_data_t* arb,
         double nx, ny, nz;
         vec3_cross(e1x, e1y, e1z, e2x, e2y, e2z, &nx, &ny, &nz);
         double nlen = vec3_len(nx, ny, nz);
-        if (nlen < 1e-20) continue;
+        if (nlen < 1e-20) return ALEA_NODE_ID_INVALID;
         nx /= nlen; ny /= nlen; nz /= nlen;
 
         memset(&data, 0, sizeof(data));
@@ -770,12 +957,52 @@ static alea_node_id_t expand_arb(alea_system_t* sys, const alea_arb_data_t* arb,
         data.plane.b = ny;
         data.plane.c = nz;
         data.plane.d = -(nx*x0 + ny*y0 + nz*z0);
+        orient_plane_toward_inside(&data.plane, ix, iy, iz);
 
         alea_node_id_t plane_node = create_primitive_node_internal(sys, ALEA_PRIMITIVE_PLANE, &data, sense);
         result = create_intersection(sys, result, plane_node);
     }
 
     return result;
+}
+
+/* Single source of truth for macrobody-to-primitive decomposition. */
+static alea_node_id_t expand_macrobody_interior(
+    alea_system_t* sys, alea_primitive_type_t type,
+    const alea_primitive_data_t* data) {
+    const int8_t sense = -1;
+    switch (type) {
+        case ALEA_PRIMITIVE_RCC:
+            return expand_rcc(sys, &data->rcc, sense);
+        case ALEA_PRIMITIVE_RPP:
+            return expand_box(sys, &data->box, sense);
+        case ALEA_PRIMITIVE_BOX:
+            return expand_box_general(sys, &data->box_general, sense);
+        case ALEA_PRIMITIVE_SPH: {
+            alea_primitive_data_t sphere_data;
+            memset(&sphere_data, 0, sizeof(sphere_data));
+            sphere_data.sphere.center_x = data->sph.center_x;
+            sphere_data.sphere.center_y = data->sph.center_y;
+            sphere_data.sphere.center_z = data->sph.center_z;
+            sphere_data.sphere.radius = data->sph.radius;
+            return create_primitive_node_internal(
+                sys, ALEA_PRIMITIVE_SPHERE, &sphere_data, sense);
+        }
+        case ALEA_PRIMITIVE_TRC:
+            return expand_trc(sys, &data->trc, sense);
+        case ALEA_PRIMITIVE_ELL:
+            return expand_ell(sys, &data->ell, sense);
+        case ALEA_PRIMITIVE_REC:
+            return expand_rec(sys, &data->rec, sense);
+        case ALEA_PRIMITIVE_WED:
+            return expand_wed(sys, &data->wed, sense);
+        case ALEA_PRIMITIVE_RHP:
+            return expand_rhp(sys, &data->rhp, sense);
+        case ALEA_PRIMITIVE_ARB:
+            return expand_arb(sys, &data->arb, sense);
+        default:
+            return ALEA_NODE_ID_INVALID;
+    }
 }
 
 /* ============================================================================
@@ -932,56 +1159,7 @@ static alea_node_id_t expand_macrobody_cached(alea_system_t* sys, alea_node_id_t
         alea_primitive_data_t data;
         if (!alea_primitive_copy_data(sys, prim_id, &data)) return ALEA_NODE_ID_INVALID;
 
-        /* Always expand with sense=-1 (interior representation) */
-        switch (type) {
-            case ALEA_PRIMITIVE_RCC:
-                neg_node = expand_rcc(sys, &data.rcc, -1);
-                break;
-
-            case ALEA_PRIMITIVE_RPP:
-                neg_node = expand_box(sys, &data.box, -1);
-                break;
-
-            case ALEA_PRIMITIVE_BOX:
-                neg_node = expand_box_general(sys, &data.box_general, -1);
-                break;
-
-            case ALEA_PRIMITIVE_TRC:
-                neg_node = expand_trc(sys, &data.trc, -1);
-                break;
-
-            case ALEA_PRIMITIVE_WED:
-                neg_node = expand_wed(sys, &data.wed, -1);
-                break;
-
-            case ALEA_PRIMITIVE_RHP:
-                neg_node = expand_rhp(sys, &data.rhp, -1);
-                break;
-
-            case ALEA_PRIMITIVE_ARB:
-                neg_node = expand_arb(sys, &data.arb, -1);
-                break;
-
-            case ALEA_PRIMITIVE_SPH: {
-                /* SPH is just a sphere - create equivalent sphere primitive */
-                alea_primitive_data_t sphere_data;
-                memset(&sphere_data, 0, sizeof(sphere_data));
-                sphere_data.sphere.center_x = data.sph.center_x;
-                sphere_data.sphere.center_y = data.sph.center_y;
-                sphere_data.sphere.center_z = data.sph.center_z;
-                sphere_data.sphere.radius = data.sph.radius;
-                neg_node = create_primitive_node_internal(sys, ALEA_PRIMITIVE_SPHERE, &sphere_data, -1);
-                break;
-            }
-
-            case ALEA_PRIMITIVE_ELL:
-            case ALEA_PRIMITIVE_REC:
-                /* These stay as-is - no expansion */
-                return node_id;
-
-            default:
-                return ALEA_NODE_ID_INVALID;
-        }
+        neg_node = expand_macrobody_interior(sys, type, &data);
     } else {
         /* Not a macrobody or 1-sheet cone */
         return node_id;
@@ -1139,56 +1317,7 @@ int alea_expand_macrobody_immediate(alea_system_t* sys,
 
     alea_node_id_t neg_node = ALEA_NODE_ID_INVALID;
 
-    /* Expand based on macrobody type - always create interior (sense=-1) first */
-    switch (type) {
-        case ALEA_PRIMITIVE_RCC:
-            neg_node = expand_rcc(sys, &data->rcc, -1);
-            break;
-
-        case ALEA_PRIMITIVE_RPP:
-            neg_node = expand_box(sys, &data->box, -1);
-            break;
-
-        case ALEA_PRIMITIVE_BOX:
-            neg_node = expand_box_general(sys, &data->box_general, -1);
-            break;
-
-        case ALEA_PRIMITIVE_TRC:
-            neg_node = expand_trc(sys, &data->trc, -1);
-            break;
-
-        case ALEA_PRIMITIVE_WED:
-            neg_node = expand_wed(sys, &data->wed, -1);
-            break;
-
-        case ALEA_PRIMITIVE_RHP:
-            neg_node = expand_rhp(sys, &data->rhp, -1);
-            break;
-
-        case ALEA_PRIMITIVE_ARB:
-            neg_node = expand_arb(sys, &data->arb, -1);
-            break;
-
-        case ALEA_PRIMITIVE_SPH: {
-            /* SPH is just a sphere - create equivalent sphere primitive */
-            alea_primitive_data_t sphere_data;
-            memset(&sphere_data, 0, sizeof(sphere_data));
-            sphere_data.sphere.center_x = data->sph.center_x;
-            sphere_data.sphere.center_y = data->sph.center_y;
-            sphere_data.sphere.center_z = data->sph.center_z;
-            sphere_data.sphere.radius = data->sph.radius;
-            neg_node = create_primitive_node_internal(sys, ALEA_PRIMITIVE_SPHERE, &sphere_data, -1);
-            break;
-        }
-
-        case ALEA_PRIMITIVE_ELL:
-        case ALEA_PRIMITIVE_REC:
-            /* These don't expand - return error, caller should handle directly */
-            return -1;
-
-        default:
-            return -1;
-    }
+    neg_node = expand_macrobody_interior(sys, type, data);
 
     if (neg_node == ALEA_NODE_ID_INVALID) {
         return -1;

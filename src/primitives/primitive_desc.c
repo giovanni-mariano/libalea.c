@@ -250,19 +250,47 @@ static double eval_trc_typed(const alea_trc_data_t* trc, double x, double y, dou
     return fmax(radial_sdf, axial_dist);
 }
 
-/* ELL - Ellipsoid defined by two foci and major axis length */
+static bool ell_parameters(const alea_ell_data_t* ell, double center[3],
+                           double axis[3], double* semi_axis,
+                           double* transverse_axis) {
+    double axial_len;
+    if (ell->major_axis_len < 0.0) {
+        center[0]=ell->v1_x; center[1]=ell->v1_y; center[2]=ell->v1_z;
+        axis[0]=ell->v2_x; axis[1]=ell->v2_y; axis[2]=ell->v2_z;
+        axial_len=sqrt(axis[0]*axis[0]+axis[1]*axis[1]+axis[2]*axis[2]);
+        *semi_axis=axial_len;
+        *transverse_axis=-ell->major_axis_len;
+    } else {
+        center[0]=0.5*(ell->v1_x+ell->v2_x);
+        center[1]=0.5*(ell->v1_y+ell->v2_y);
+        center[2]=0.5*(ell->v1_z+ell->v2_z);
+        axis[0]=0.5*(ell->v2_x-ell->v1_x);
+        axis[1]=0.5*(ell->v2_y-ell->v1_y);
+        axis[2]=0.5*(ell->v2_z-ell->v1_z);
+        axial_len=sqrt(axis[0]*axis[0]+axis[1]*axis[1]+axis[2]*axis[2]);
+        *semi_axis=0.5*ell->major_axis_len;
+        const double b2=(*semi_axis)*(*semi_axis)-axial_len*axial_len;
+        if (b2<=1e-20) return false;
+        *transverse_axis=sqrt(b2);
+    }
+    if (axial_len<=1e-20) {
+        axis[0]=0;axis[1]=0;axis[2]=1;
+    } else {
+        axis[0]/=axial_len;axis[1]/=axial_len;axis[2]/=axial_len;
+    }
+    return *semi_axis>0 && *transverse_axis>0 &&
+           isfinite(*semi_axis) && isfinite(*transverse_axis);
+}
+
+/* ELL - Ellipsoid in either MCNP focal or center/vector form */
 static double eval_ell_typed(const alea_ell_data_t* ell, double x, double y, double z) {
-
-    /* Distance to both foci */
-    double d1 = sqrt((x - ell->v1_x)*(x - ell->v1_x) +
-                     (y - ell->v1_y)*(y - ell->v1_y) +
-                     (z - ell->v1_z)*(z - ell->v1_z));
-    double d2 = sqrt((x - ell->v2_x)*(x - ell->v2_x) +
-                     (y - ell->v2_y)*(y - ell->v2_y) +
-                     (z - ell->v2_z)*(z - ell->v2_z));
-
-    /* Ellipsoid: sum of distances to foci = major axis length */
-    return d1 + d2 - ell->major_axis_len;
+    double c[3],u[3],a,b;
+    if (!ell_parameters(ell,c,u,&a,&b)) return 1.0;
+    const double d[3]={x-c[0],y-c[1],z-c[2]};
+    const double axial=d[0]*u[0]+d[1]*u[1]+d[2]*u[2];
+    double radial2=d[0]*d[0]+d[1]*d[1]+d[2]*d[2]-axial*axial;
+    if (radial2<0 && radial2>-1e-12) radial2=0;
+    return axial*axial/(a*a)+radial2/(b*b)-1.0;
 }
 
 /* BOX_GENERAL - Oriented box defined by corner and 3 edge vectors */
@@ -390,6 +418,38 @@ static double eval_wed_typed(const alea_wed_data_t* wed, double x, double y, dou
     return MAX(MAX(d1, d2), MAX(d3, diag_dist));
 }
 
+bool alea_rhp_resolve_radials(const alea_rhp_data_t* rhp, double radial[3][3]) {
+    const double h[3] = {rhp->height_x, rhp->height_y, rhp->height_z};
+    const double hlen = sqrt(h[0]*h[0] + h[1]*h[1] + h[2]*h[2]);
+    radial[0][0]=rhp->r1_x; radial[0][1]=rhp->r1_y; radial[0][2]=rhp->r1_z;
+    radial[1][0]=rhp->r2_x; radial[1][1]=rhp->r2_y; radial[1][2]=rhp->r2_z;
+    radial[2][0]=rhp->r3_x; radial[2][1]=rhp->r3_y; radial[2][2]=rhp->r3_z;
+    double len[3];
+    for (int i=0;i<3;i++)
+        len[i]=sqrt(radial[i][0]*radial[i][0]+radial[i][1]*radial[i][1]+radial[i][2]*radial[i][2]);
+    if (hlen < 1e-20 || len[0] < 1e-20) return false;
+    if (len[1] < 1e-20 && len[2] < 1e-20) {
+        const double axis[3]={h[0]/hlen,h[1]/hlen,h[2]/hlen};
+        const double cross[3]={axis[1]*radial[0][2]-axis[2]*radial[0][1],
+                               axis[2]*radial[0][0]-axis[0]*radial[0][2],
+                               axis[0]*radial[0][1]-axis[1]*radial[0][0]};
+        const double axial=axis[0]*radial[0][0]+axis[1]*radial[0][1]+axis[2]*radial[0][2];
+        const double k=0.5, s=0.86602540378443864676;
+        for (int j=0;j<3;j++) {
+            radial[1][j]=k*radial[0][j]+s*cross[j]+k*axial*axis[j];
+            radial[2][j]=k*radial[0][j]-s*cross[j]+k*axial*axis[j];
+        }
+        len[1]=len[2]=len[0];
+    } else if (len[1] < 1e-20 || len[2] < 1e-20) {
+        return false;
+    }
+    for (int i=0;i<3;i++) {
+        const double dot=h[0]*radial[i][0]+h[1]*radial[i][1]+h[2]*radial[i][2];
+        if (fabs(dot) > 1e-8*hlen*len[i]) return false;
+    }
+    return true;
+}
+
 /* RHP - Right Hexagonal Prism */
 static double eval_rhp_typed(const alea_rhp_data_t* rhp, double x, double y, double z) {
 
@@ -416,16 +476,16 @@ static double eval_rhp_typed(const alea_rhp_data_t* rhp, double x, double y, dou
     double qz = pz - t * hz;
 
     /* Distances to each pair of hex faces (normal is along r_i direction) */
-    double r1_len = sqrt(rhp->r1_x*rhp->r1_x + rhp->r1_y*rhp->r1_y + rhp->r1_z*rhp->r1_z);
-    double r2_len = sqrt(rhp->r2_x*rhp->r2_x + rhp->r2_y*rhp->r2_y + rhp->r2_z*rhp->r2_z);
-    double r3_len = sqrt(rhp->r3_x*rhp->r3_x + rhp->r3_y*rhp->r3_y + rhp->r3_z*rhp->r3_z);
-
-    if (r1_len < 1e-20 || r2_len < 1e-20 || r3_len < 1e-20) return 1.0;
+    double radial[3][3];
+    if (!alea_rhp_resolve_radials(rhp, radial)) return 1.0;
+    double r1_len = sqrt(radial[0][0]*radial[0][0]+radial[0][1]*radial[0][1]+radial[0][2]*radial[0][2]);
+    double r2_len = sqrt(radial[1][0]*radial[1][0]+radial[1][1]*radial[1][1]+radial[1][2]*radial[1][2]);
+    double r3_len = sqrt(radial[2][0]*radial[2][0]+radial[2][1]*radial[2][1]+radial[2][2]*radial[2][2]);
 
     /* Project onto each direction and check bounds [-len, +len] */
-    double p1 = qx*rhp->r1_x/r1_len + qy*rhp->r1_y/r1_len + qz*rhp->r1_z/r1_len;
-    double p2 = qx*rhp->r2_x/r2_len + qy*rhp->r2_y/r2_len + qz*rhp->r2_z/r2_len;
-    double p3 = qx*rhp->r3_x/r3_len + qy*rhp->r3_y/r3_len + qz*rhp->r3_z/r3_len;
+    double p1 = qx*radial[0][0]/r1_len + qy*radial[0][1]/r1_len + qz*radial[0][2]/r1_len;
+    double p2 = qx*radial[1][0]/r2_len + qy*radial[1][1]/r2_len + qz*radial[1][2]/r2_len;
+    double p3 = qx*radial[2][0]/r3_len + qy*radial[2][1]/r3_len + qz*radial[2][2]/r3_len;
 
     double d1 = fabs(p1) - r1_len;
     double d2 = fabs(p2) - r2_len;
@@ -872,16 +932,19 @@ static alea_interval_t interval_trc(const alea_primitive_data_t* data, const ale
 /* ELL interval - use bounding sphere */
 static alea_interval_t interval_ell(const alea_primitive_data_t* data, const alea_bbox_t* box) {
     const alea_ell_data_t* ell = &data->ell;
-    double cx = (ell->v1_x + ell->v2_x) * 0.5;
-    double cy = (ell->v1_y + ell->v2_y) * 0.5;
-    double cz = (ell->v1_z + ell->v2_z) * 0.5;
-    double a = ell->major_axis_len * 0.5;
-
-    alea_interval_t dx = alea_iv_sub(alea_iv_make(box->min_x, box->max_x), alea_iv_make(cx, cx));
-    alea_interval_t dy = alea_iv_sub(alea_iv_make(box->min_y, box->max_y), alea_iv_make(cy, cy));
-    alea_interval_t dz = alea_iv_sub(alea_iv_make(box->min_z, box->max_z), alea_iv_make(cz, cz));
+    double center[3],axis[3],a,b;
+    if (!ell_parameters(ell,center,axis,&a,&b))
+        return alea_iv_make(-INFINITY,INFINITY);
+    alea_interval_t dx = alea_iv_sub(alea_iv_make(box->min_x, box->max_x), alea_iv_make(center[0],center[0]));
+    alea_interval_t dy = alea_iv_sub(alea_iv_make(box->min_y, box->max_y), alea_iv_make(center[1],center[1]));
+    alea_interval_t dz = alea_iv_sub(alea_iv_make(box->min_z, box->max_z), alea_iv_make(center[2],center[2]));
+    alea_interval_t axial=alea_iv_add(alea_iv_add(alea_iv_mul_scalar(dx,axis[0]),alea_iv_mul_scalar(dy,axis[1])),alea_iv_mul_scalar(dz,axis[2]));
+    alea_interval_t axial2=alea_iv_sqr(axial);
     alea_interval_t d2 = alea_iv_add(alea_iv_add(alea_iv_sqr(dx), alea_iv_sqr(dy)), alea_iv_sqr(dz));
-    return alea_iv_sub(d2, alea_iv_make(a*a, a*a));
+    alea_interval_t radial2=alea_iv_sub(d2,axial2);
+    return alea_iv_sub(alea_iv_add(alea_iv_mul_scalar(axial2,1.0/(a*a)),
+                                   alea_iv_mul_scalar(radial2,1.0/(b*b))),
+                       alea_iv_make(1.0,1.0));
 }
 
 /* BOX_GENERAL interval - conservative box bound */
@@ -1259,19 +1322,15 @@ static alea_bbox_t bbox_trc(const alea_primitive_data_t* data) {
 
 static alea_bbox_t bbox_ell(const alea_primitive_data_t* data) {
     const alea_ell_data_t* ell = &data->ell;
-    /* Center is midpoint of foci */
-    double cx = (ell->v1_x + ell->v2_x) * 0.5;
-    double cy = (ell->v1_y + ell->v2_y) * 0.5;
-    double cz = (ell->v1_z + ell->v2_z) * 0.5;
-
-    /* Semi-major axis is half the major axis length */
-    double a = ell->major_axis_len * 0.5;
-
-    /* Conservative: sphere with radius = semi-major axis */
+    double c[3],u[3],a,b;
+    if (!ell_parameters(ell,c,u,&a,&b))
+        return (alea_bbox_t){-BBOX_LARGE,BBOX_LARGE,-BBOX_LARGE,BBOX_LARGE,-BBOX_LARGE,BBOX_LARGE};
+    const double a2=a*a,b2=b*b;
+    const double ex=sqrt(a2*u[0]*u[0]+b2*(1.0-u[0]*u[0]));
+    const double ey=sqrt(a2*u[1]*u[1]+b2*(1.0-u[1]*u[1]));
+    const double ez=sqrt(a2*u[2]*u[2]+b2*(1.0-u[2]*u[2]));
     return (alea_bbox_t){
-        cx - a, cx + a,
-        cy - a, cy + a,
-        cz - a, cz + a
+        c[0]-ex,c[0]+ex,c[1]-ey,c[1]+ey,c[2]-ez,c[2]+ez
     };
 }
 
@@ -1941,7 +2000,10 @@ static bool xform_ell(const alea_primitive_data_t* in, const double* mat,
     *out_type = ALEA_PRIMITIVE_ELL;
     out->ell = in->ell;
     xform_point(mat, &out->ell.v1_x, &out->ell.v1_y, &out->ell.v1_z);
-    xform_point(mat, &out->ell.v2_x, &out->ell.v2_y, &out->ell.v2_z);
+    if (in->ell.major_axis_len < 0.0)
+        xform_vector(mat, &out->ell.v2_x, &out->ell.v2_y, &out->ell.v2_z);
+    else
+        xform_point(mat, &out->ell.v2_x, &out->ell.v2_y, &out->ell.v2_z);
     return true;
 }
 

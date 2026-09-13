@@ -20,6 +20,7 @@
 
 #include <math.h>
 #include <float.h>
+#include <string.h>
 
 #define EPS 1e-6
 
@@ -407,6 +408,78 @@ TEST(cylinder_z_asymmetric_center) {
     ASSERT_EQ(count, 2);
     ASSERT_NEAR(t[0], -12.0 - half_chord + 100.0, EPS);
     ASSERT_NEAR(t[1], -12.0 + half_chord + 100.0, EPS);
+}
+
+TEST(ellipsoid_macrobody_ray_intersection) {
+    alea_ell_data_t ell = {0};
+    ell.v1_z = -3.0;
+    ell.v2_z = 3.0;
+    ell.major_axis_len = 10.0;
+    alea_ray_t ray;
+    alea_ray_init(&ray, 0, 0, -10, 0, 0, 1);
+    double t[2];
+    int count = ray_intersect_ell(&ray, &ell, t);
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], 5.0, EPS);
+    ASSERT_NEAR(t[1], 15.0, EPS);
+}
+
+TEST(elliptical_cylinder_macrobody_ray_side_and_caps) {
+    alea_rec_data_t rec = {0};
+    rec.height_z = 10.0;
+    rec.axis1_x = 3.0;
+    rec.axis2_y = 2.0;
+    alea_ray_t ray;
+    double t[2];
+
+    alea_ray_init(&ray, -5, 0, 5, 1, 0, 0);
+    int count = ray_intersect_rec(&ray, &rec, t);
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], 2.0, EPS);
+    ASSERT_NEAR(t[1], 8.0, EPS);
+
+    alea_ray_init(&ray, 0, 0, -5, 0, 0, 1);
+    count = ray_intersect_rec(&ray, &rec, t);
+    ASSERT_EQ(count, 2);
+    ASSERT_NEAR(t[0], 5.0, EPS);
+    ASSERT_NEAR(t[1], 15.0, EPS);
+}
+
+TEST(polyhedral_macrobody_ray_intersections) {
+    alea_primitive_data_t d = {0};
+    alea_ray_t ray;
+    double t[2];
+
+    d.box_general.v1_x=2; d.box_general.v2_y=3; d.box_general.v3_z=4;
+    alea_ray_init(&ray,1,1,-1,0,0,1);
+    ASSERT_EQ(ray_intersect_primitive(&ray,ALEA_PRIMITIVE_BOX,&d,t),2);
+    ASSERT_NEAR(t[0],1,EPS); ASSERT_NEAR(t[1],5,EPS);
+
+    memset(&d,0,sizeof(d));
+    d.wed.v1_x=4; d.wed.v2_y=4; d.wed.v3_z=4;
+    alea_ray_init(&ray,0.5,0.5,-1,0,0,1);
+    ASSERT_EQ(ray_intersect_primitive(&ray,ALEA_PRIMITIVE_WED,&d,t),2);
+    ASSERT_NEAR(t[0],1,EPS); ASSERT_NEAR(t[1],5,EPS);
+
+    memset(&d,0,sizeof(d));
+    d.rhp.height_z=4; d.rhp.r1_x=2;
+    d.rhp.r2_x=-1; d.rhp.r2_y=1.7320508075688772;
+    d.rhp.r3_x=-1; d.rhp.r3_y=-1.7320508075688772;
+    alea_ray_init(&ray,0,0,-1,0,0,1);
+    ASSERT_EQ(ray_intersect_primitive(&ray,ALEA_PRIMITIVE_RHP,&d,t),2);
+    ASSERT_NEAR(t[0],1,EPS); ASSERT_NEAR(t[1],5,EPS);
+
+    memset(&d,0,sizeof(d));
+    const double corners[8][3]={{0,0,0},{1,0,0},{1,1,0},{0,1,0},
+                                {0,0,1},{1,0,1},{1,1,1},{0,1,1}};
+    memcpy(d.arb.corners,corners,sizeof(corners));
+    const int faces[6][4]={{1,2,3,4},{5,8,7,6},{1,5,6,2},
+                           {2,6,7,3},{3,7,8,4},{4,8,5,1}};
+    memcpy(d.arb.faces,faces,sizeof(faces));
+    d.arb.num_corners=8; d.arb.num_faces=6;
+    alea_ray_init(&ray,0.5,0.5,-1,0,0,1);
+    ASSERT_EQ(ray_intersect_primitive(&ray,ALEA_PRIMITIVE_ARB,&d,t),2);
+    ASSERT_NEAR(t[0],1,EPS); ASSERT_NEAR(t[1],2,EPS);
 }
 
 TEST_MAIN()

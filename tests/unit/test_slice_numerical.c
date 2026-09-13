@@ -728,4 +728,70 @@ TEST(rcc_perpendicular_circle) {
     ASSERT_NEAR(curve.data.circle.radius, 3.0, 1e-6);
 }
 
+TEST(ell_macrobody_slice_is_ellipse) {
+    alea_primitive_data_t data = {0};
+    data.ell.v1_z = -3.0;
+    data.ell.v2_z = 3.0;
+    data.ell.major_axis_len = 10.0;
+    alea_slice_plane_t plane;
+    make_axis_plane(&plane, 2, 0.0);
+    alea_curve_2d_t curve;
+    ASSERT(alea_intersect_primitive_plane(ALEA_PRIMITIVE_ELL, &data, &plane, &curve));
+    ASSERT(curve.type == ALEA_CURVE_ELLIPSE || curve.type == ALEA_CURVE_CIRCLE);
+}
+
+TEST(rec_macrobody_slice_has_elliptical_side_curve) {
+    alea_primitive_data_t data = {0};
+    data.rec.height_z = 10.0;
+    data.rec.axis1_x = 3.0;
+    data.rec.axis2_y = 2.0;
+    alea_slice_plane_t plane;
+    make_axis_plane(&plane, 2, 5.0);
+    alea_curve_2d_t curve;
+    ASSERT(alea_intersect_primitive_plane(ALEA_PRIMITIVE_REC, &data, &plane, &curve));
+    ASSERT(curve.type == ALEA_CURVE_ELLIPSE || curve.type == ALEA_CURVE_CIRCLE);
+}
+
+TEST(polyhedral_macrobodies_slice_to_polygons) {
+    alea_slice_plane_t plane;
+    make_axis_plane(&plane,2,2.0);
+    alea_curve_2d_t curve;
+    alea_primitive_data_t d={0};
+    d.box_general.v1_x=2;d.box_general.v2_y=3;d.box_general.v3_z=4;
+    ASSERT(alea_intersect_primitive_plane(ALEA_PRIMITIVE_BOX,&d,&plane,&curve));
+    ASSERT_EQ(curve.type,ALEA_CURVE_POLYGON);
+    ASSERT_EQ(curve.data.polygon.vertex_count,4);
+
+    memset(&d,0,sizeof(d));d.wed.v1_x=4;d.wed.v2_y=4;d.wed.v3_z=4;
+    ASSERT(alea_intersect_primitive_plane(ALEA_PRIMITIVE_WED,&d,&plane,&curve));
+    ASSERT_EQ(curve.type,ALEA_CURVE_POLYGON);
+    ASSERT_EQ(curve.data.polygon.vertex_count,3);
+
+    memset(&d,0,sizeof(d));d.rhp.height_z=4;d.rhp.r1_x=2;
+    d.rhp.r2_x=-1;d.rhp.r2_y=1.7320508075688772;
+    d.rhp.r3_x=-1;d.rhp.r3_y=-1.7320508075688772;
+    ASSERT(alea_intersect_primitive_plane(ALEA_PRIMITIVE_RHP,&d,&plane,&curve));
+    ASSERT_EQ(curve.type,ALEA_CURVE_POLYGON);
+    ASSERT_EQ(curve.data.polygon.vertex_count,6);
+    double max_radius=0;
+    for(int i=0;i<curve.data.polygon.vertex_count;i++) {
+        const double u=curve.data.polygon.vertices[i][0],v=curve.data.polygon.vertices[i][1];
+        max_radius=fmax(max_radius,hypot(u,v));
+    }
+    /* r1/r2/r3 are facet-center vectors (apothem 2), not vertices. */
+    ASSERT_NEAR(max_radius,2.0/sqrt(0.75),1e-8);
+
+    memset(&d,0,sizeof(d));
+    const double corners[8][3]={{0,0,0},{1,0,0},{1,1,0},{0,1,0},
+                                {0,0,1},{1,0,1},{1,1,1},{0,1,1}};
+    const int faces[6][4]={{1,2,3,4},{5,8,7,6},{1,5,6,2},
+                           {2,6,7,3},{3,7,8,4},{4,8,5,1}};
+    memcpy(d.arb.corners,corners,sizeof(corners));memcpy(d.arb.faces,faces,sizeof(faces));
+    d.arb.num_corners=8;d.arb.num_faces=6;
+    make_axis_plane(&plane,2,0.5);
+    ASSERT(alea_intersect_primitive_plane(ALEA_PRIMITIVE_ARB,&d,&plane,&curve));
+    ASSERT_EQ(curve.type,ALEA_CURVE_POLYGON);
+    ASSERT_EQ(curve.data.polygon.vertex_count,4);
+}
+
 TEST_MAIN()

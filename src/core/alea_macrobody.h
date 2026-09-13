@@ -49,10 +49,10 @@ bool alea_is_1sheet_cone(const alea_system_t* sys, alea_node_id_t node_id);
  * - RCC -> cylinder ∩ plane(base) ∩ plane(top)
  * - BOX -> 6 planes
  * - TRC -> cone ∩ plane(base) ∩ plane(top)
- * - SPH -> sphere (no expansion, returns same)
+ * - SPH -> sphere
  * - WED -> 5 planes
  * - RHP -> 8 planes
- * - ELL -> quadric (no expansion, returns same)
+ * - ELL -> quadric
  * - REC -> quadric ∩ 2 planes
  * - ARB -> N planes
  *

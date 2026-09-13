@@ -185,7 +185,7 @@ for each type's parameters:
 | ELL        | v1_x/y/z, v2_x/y/z, major_axis_len              |
 | REC        | base_x/y/z, height_x/y/z, axis1_x/y/z, axis2_x/y/z |
 | WED        | vertex_x/y/z, v1/v2/v3 (3×3)                    |
-| RHP        | vertex_x/y/z, height_x/y/z, side1/2/3 (3×3)     |
+| RHP        | base_x/y/z, height_x/y/z, facet vectors r1/r2/r3 (3×3) |
 | ARB        | num_corners, num_faces, all corners, face indices |
 
 ### Hash table structure

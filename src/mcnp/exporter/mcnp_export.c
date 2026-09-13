@@ -925,10 +925,11 @@ static int write_mcnp_surface(FILE* out,
 
         case ALEA_PRIMITIVE_ELL: {
             /* ELL has two parametrizations:
-             *   - Foci form: V1 (focus 1), V2 (focus 2), RM > 0 (major axis length)
-             *   - Semi-axes form: V1 (center), V2 (semi-axis lengths), RM < 0
-             * libalea stores both fields raw; the sign on major_axis_len
-             * selects the form. We preserve that sign on export. */
+             *   - Foci form: V1/V2 are foci, RM > 0 is the major radius
+             *   - Center form: V1 is center, V2 is the major-axis vector,
+             *     and |RM| is the minor radius
+             * Internally the positive form stores the full major-axis length,
+             * so convert it back to MCNP's radius on export. */
             const alea_ell_data_t* e = &data->ell;
             mcnp_str_puts(&s, "ELL ");
             mcnp_str_double(&s, e->v1_x, 16); mcnp_str_putc(&s, ' ');
@@ -937,7 +938,9 @@ static int write_mcnp_surface(FILE* out,
             mcnp_str_double(&s, e->v2_x, 16); mcnp_str_putc(&s, ' ');
             mcnp_str_double(&s, e->v2_y, 16); mcnp_str_putc(&s, ' ');
             mcnp_str_double(&s, e->v2_z, 16); mcnp_str_putc(&s, ' ');
-            mcnp_str_double(&s, e->major_axis_len, 16);
+            mcnp_str_double(&s, e->major_axis_len > 0.0
+                                   ? 0.5*e->major_axis_len
+                                   : e->major_axis_len, 16);
             break;
         }
 
@@ -977,17 +980,18 @@ static int write_mcnp_surface(FILE* out,
         }
 
         case ALEA_PRIMITIVE_RHP: {
-            /* RHP: base center + height vector + three semi-vertex vectors
-             * (r1, r2, r3). MCNP also accepts a short form with only r1
-             * when the hex is regular; we always emit the full 15-value
-             * form (matches HEX alias which is the same primitive). */
+            /* RHP: base center + height vector + three facet-center vectors.
+             * Resolve MCNP's regular-hex short form before emitting the full
+             * 15-value representation. */
             const alea_rhp_data_t* h = &data->rhp;
+            double radial[3][3];
+            if (!alea_rhp_resolve_radials(h, radial)) break;
             const double v[15] = {
                 h->base_x, h->base_y, h->base_z,
                 h->height_x, h->height_y, h->height_z,
-                h->r1_x, h->r1_y, h->r1_z,
-                h->r2_x, h->r2_y, h->r2_z,
-                h->r3_x, h->r3_y, h->r3_z,
+                radial[0][0], radial[0][1], radial[0][2],
+                radial[1][0], radial[1][1], radial[1][2],
+                radial[2][0], radial[2][1], radial[2][2],
             };
             mcnp_str_puts(&s, "RHP ");
             for (int i = 0; i < 15; i++) {
@@ -1051,14 +1055,6 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
     mcnp_str_write(&cs, ctx->out);
     mcnp_str_reset(&cs);
 
-    /* Assign surface IDs to primitives from expanded macrobodies */
-    alea_assign_missing_surface_ids(sys, ctx);
-
-    /* Build canonical surface map if deduplicating */
-    if (ctx->deduplicate) {
-        alea_build_canonical_surface_map(ctx, sys);
-    }
-
     /* Macrobody expansion when ALEA_EMIT_SURFACES policy is set */
     if (ctx->surface_policy == ALEA_EMIT_SURFACES) {
         int expanded = alea_expand_macrobodies_tree_level(sys, ctx);
@@ -1066,6 +1062,15 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
             ALEA_LOG_ERROR("Tree-level macrobody expansion failed");
             return -1;
         }
+    }
+
+    /* Expansion exposes the component leaves; assign their synthetic IDs
+     * only after the cell roots reference those leaves. */
+    alea_assign_missing_surface_ids(sys, ctx);
+
+    /* Build canonical surface map after synthetic entries have been added. */
+    if (ctx->deduplicate) {
+        alea_build_canonical_surface_map(ctx, sys);
     }
 
     /* Build flatten info: collapse 1x1x1 LAT cells whose content universe is a

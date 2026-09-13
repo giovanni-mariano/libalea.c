@@ -634,16 +634,26 @@ TEST(roundtrip_trc) {
 }
 
 TEST(roundtrip_ell) {
-    /* Ellipsoid: foci at (0,0,-3) and (0,0,3), major axis len = 10 */
+    /* Ellipsoid: foci at (0,0,-3)/(0,0,3), MCNP major radius = 5 */
     const char* input =
         "Test ELL\n"
         "1 1 -1.0 -1\n"
         "2 0 1\n"
         "\n"
-        "1 ELL 0.0 0.0 -3.0 0.0 0.0 3.0 10.0\n"
+        "1 ELL 0.0 0.0 -3.0 0.0 0.0 3.0 5.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
     ASSERT(parse_and_eval_surface(input, "ELL", 0, 0, 0, 0, 0, 7.0));
+}
+
+TEST(roundtrip_ell_negative_radius_form) {
+    const char* input =
+        "Test ELL negative form\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n\n"
+        "1 ELL 0 0 0 0 0 3 -2\n\n"
+        "M1 92235.80c 1.0\n";
+    ASSERT(roundtrip_surface(input,"ELL negative",0,0,2.5,2.5,0,0));
 }
 
 TEST(roundtrip_rec) {
@@ -657,6 +667,29 @@ TEST(roundtrip_rec) {
         "\n"
         "M1 92235.80c 1.0\n";
     ASSERT(parse_and_eval_surface(input, "REC", 0, 0, 5.0, 5.0, 0, 5.0));
+}
+
+
+TEST(force_primitives_expands_ell_and_rec) {
+    const char* input =
+        "ELL REC primitive export\n"
+        "1 1 -1.0 -1\n"
+        "2 0 1\n\n"
+        "1 ELL 0 0 -3 0 0 3 5\n"
+        "2 REC 0 0 0 0 0 10 3 0 0 0 2 0\n\n"
+        "M1 92235.80c 1.0\n";
+    mcnp_model_t* model=mcnp_load_string(input,strlen(input));
+    ASSERT_NOT_NULL(model);
+    model->export_config.surface_policy=ALEA_EMIT_SURFACES;
+    const char* path="test_ell_rec_expand_tmp.mcnp";
+    ASSERT_EQ(mcnp_export(model,path),0);
+    FILE* f=fopen(path,"rb");ASSERT_NOT_NULL(f);
+    char text[8192];size_t n=fread(text,1,sizeof(text)-1,f);text[n]='\0';fclose(f);
+    ASSERT(strstr(text," ELL ")==NULL);
+    ASSERT(strstr(text," REC ")==NULL);
+    ASSERT(strstr(text," GQ ")!=NULL);
+    remove(path);
+    mcnp_model_destroy(model);
 }
 
 TEST(roundtrip_wed) {
@@ -674,14 +707,13 @@ TEST(roundtrip_wed) {
 }
 
 TEST(roundtrip_rhp) {
-    /* Right Hexagonal Prism */
+    /* Regular right hexagonal prism using MCNP's short (r1-only) form. */
     const char* input =
         "Test RHP\n"
         "1 1 -1.0 -1\n"
         "2 0 1\n"
         "\n"
-        "1 RHP 0.0 0.0 0.0 0.0 0.0 10.0"
-        " 2.0 0.0 0.0 -1.0 1.732050808 0.0 -1.0 -1.732050808 0.0\n"
+        "1 RHP 0.0 0.0 0.0 0.0 0.0 10.0 2.0 0.0 0.0\n"
         "\n"
         "M1 92235.80c 1.0\n";
     ASSERT(parse_and_eval_surface(input, "RHP", 0, 0, 5.0, 5.0, 0, 5.0));

@@ -527,12 +527,12 @@ typedef struct {
  * @brief Ellipsoid (ELL macrobody)
  *
  * MCNP ELL: defined by two foci (V1, V2) and the length of the major axis.
- * OR by center point and three semi-axes.
+ * OR by center point, major-axis vector, and negative minor radius.
  */
 typedef struct {
-    double v1_x, v1_y, v1_z;    // First focus (or center if semi_a/b/c form)
-    double v2_x, v2_y, v2_z;    // Second focus (or semi-axis lengths)
-    double major_axis_len;       // Length of major axis (2a)
+    double v1_x, v1_y, v1_z;    // First focus, or center when major_axis_len < 0
+    double v2_x, v2_y, v2_z;    // Second focus, or major-axis vector when negative
+    double major_axis_len;       // Positive: full length 2a; negative: -minor radius
 } alea_ell_data_t;
 
 /**
@@ -563,15 +563,16 @@ typedef struct {
 /**
  * @brief Right Hexagonal Prism (RHP macrobody)
  *
- * MCNP RHP/HEX: base center, height vector, and three vectors to hex vertices.
- * Vertices are at ±v1, ±v2, ±v3 from center, forming regular hexagon cross-section.
+ * MCNP RHP/HEX: base center, height vector, and up to three vectors from the
+ * axis to the centers of opposite facet pairs.  For a regular hexagon, only
+ * r1 need be supplied; r2 and r3 may be zero and are derived from r1.
  */
 typedef struct {
     double base_x, base_y, base_z;          // Base center
     double height_x, height_y, height_z;    // Height vector
-    double r1_x, r1_y, r1_z;                // Vector to first vertex pair
-    double r2_x, r2_y, r2_z;                // Vector to second vertex pair
-    double r3_x, r3_y, r3_z;                // Vector to third vertex pair
+    double r1_x, r1_y, r1_z;                // Axis-to-facet-center vector
+    double r2_x, r2_y, r2_z;                // Second facet-pair vector (optional)
+    double r3_x, r3_y, r3_z;                // Third facet-pair vector (optional)
 } alea_rhp_data_t;
 
 /**

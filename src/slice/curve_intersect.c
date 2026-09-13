@@ -673,6 +673,138 @@ static bool intersect_box(const alea_box_data_t* box,
     return true;
 }
 
+static bool intersect_polyhedron_edges(const double vertices[][3],
+                                       const int edges[][2], int edge_count,
+                                       const alea_slice_plane_t* slice,
+                                       alea_curve_2d_t* curve) {
+    double points[ALEA_MAX_POLYGON_VERTICES][2];
+    int count=0;
+    for(int i=0;i<edge_count;i++) {
+        const double* p0=vertices[edges[i][0]];
+        const double* p1=vertices[edges[i][1]];
+        const double d[3]={p1[0]-p0[0],p1[1]-p0[1],p1[2]-p0[2]};
+        const double w[3]={p0[0]-slice->origin[0],p0[1]-slice->origin[1],p0[2]-slice->origin[2]};
+        const double denom=v3arr_dot(d,slice->normal);
+        if(fabs(denom)<EPSILON) continue;
+        const double t=-v3arr_dot(w,slice->normal)/denom;
+        if(t < -EPSILON || t > 1.0+EPSILON) continue;
+        double u,v;
+        alea_plane_to_2d(slice,p0[0]+t*d[0],p0[1]+t*d[1],p0[2]+t*d[2],&u,&v);
+        bool duplicate=false;
+        for(int j=0;j<count;j++)
+            if(fabs(points[j][0]-u)<EPSILON && fabs(points[j][1]-v)<EPSILON) duplicate=true;
+        if(!duplicate && count<ALEA_MAX_POLYGON_VERTICES) {
+            points[count][0]=u;points[count][1]=v;count++;
+        }
+    }
+    if(count<3) return false;
+    double cu=0,cv=0;
+    for(int i=0;i<count;i++){cu+=points[i][0];cv+=points[i][1];}
+    cu/=count;cv/=count;
+    for(int i=1;i<count;i++) {
+        double u=points[i][0],v=points[i][1],angle=atan2(v-cv,u-cu);
+        int j=i;
+        while(j>0 && atan2(points[j-1][1]-cv,points[j-1][0]-cu)>angle) {
+            points[j][0]=points[j-1][0];points[j][1]=points[j-1][1];j--;
+        }
+        points[j][0]=u;points[j][1]=v;
+    }
+    curve->type=ALEA_CURVE_POLYGON;
+    curve->data.polygon.vertex_count=count;
+    curve->data.polygon.closed=true;
+    for(int i=0;i<count;i++) {
+        curve->data.polygon.vertices[i][0]=points[i][0];
+        curve->data.polygon.vertices[i][1]=points[i][1];
+    }
+    return true;
+}
+
+typedef struct { double a,b,c,d; } slice_halfspace_t;
+
+static bool intersect_convex_halfspaces(const slice_halfspace_t* planes, int plane_count,
+                                        const alea_slice_plane_t* slice,
+                                        alea_curve_2d_t* curve) {
+    double line[8][3];
+    for(int i=0;i<plane_count;i++) {
+        line[i][0]=planes[i].a*slice->u_axis[0]+planes[i].b*slice->u_axis[1]+planes[i].c*slice->u_axis[2];
+        line[i][1]=planes[i].a*slice->v_axis[0]+planes[i].b*slice->v_axis[1]+planes[i].c*slice->v_axis[2];
+        line[i][2]=planes[i].a*slice->origin[0]+planes[i].b*slice->origin[1]+planes[i].c*slice->origin[2]+planes[i].d;
+    }
+    double points[ALEA_MAX_POLYGON_VERTICES][2];int count=0;
+    for(int i=0;i<plane_count;i++) for(int j=i+1;j<plane_count;j++) {
+        const double det=line[i][0]*line[j][1]-line[j][0]*line[i][1];
+        if(fabs(det)<EPSILON)continue;
+        const double u=(line[i][1]*line[j][2]-line[j][1]*line[i][2])/det;
+        const double v=(line[j][0]*line[i][2]-line[i][0]*line[j][2])/det;
+        bool inside=true;
+        for(int k=0;k<plane_count;k++)
+            if(line[k][0]*u+line[k][1]*v+line[k][2]>EPSILON){inside=false;break;}
+        if(!inside)continue;
+        bool duplicate=false;
+        for(int k=0;k<count;k++)if(fabs(points[k][0]-u)<EPSILON&&fabs(points[k][1]-v)<EPSILON)duplicate=true;
+        if(!duplicate&&count<ALEA_MAX_POLYGON_VERTICES){points[count][0]=u;points[count][1]=v;count++;}
+    }
+    if(count<3)return false;
+    double cu=0,cv=0;for(int i=0;i<count;i++){cu+=points[i][0];cv+=points[i][1];}cu/=count;cv/=count;
+    for(int i=1;i<count;i++){double u=points[i][0],v=points[i][1],angle=atan2(v-cv,u-cu);int j=i;
+        while(j>0&&atan2(points[j-1][1]-cv,points[j-1][0]-cu)>angle){points[j][0]=points[j-1][0];points[j][1]=points[j-1][1];j--;}
+        points[j][0]=u;points[j][1]=v;}
+    curve->type=ALEA_CURVE_POLYGON;curve->data.polygon.vertex_count=count;curve->data.polygon.closed=true;
+    for(int i=0;i<count;i++){curve->data.polygon.vertices[i][0]=points[i][0];curve->data.polygon.vertices[i][1]=points[i][1];}
+    return true;
+}
+
+static bool intersect_box_general(const alea_box_general_data_t* b,
+                                  const alea_slice_plane_t* slice,
+                                  alea_curve_2d_t* curve) {
+    double v[8][3];
+    const double c[3]={b->corner_x,b->corner_y,b->corner_z};
+    const double e[3][3]={{b->v1_x,b->v1_y,b->v1_z},{b->v2_x,b->v2_y,b->v2_z},{b->v3_x,b->v3_y,b->v3_z}};
+    for(int mask=0;mask<8;mask++) for(int k=0;k<3;k++)
+        v[mask][k]=c[k]+((mask&1)?e[0][k]:0)+((mask&2)?e[1][k]:0)+((mask&4)?e[2][k]:0);
+    const int edges[12][2]={{0,1},{0,2},{0,4},{1,3},{1,5},{2,3},{2,6},{3,7},{4,5},{4,6},{5,7},{6,7}};
+    return intersect_polyhedron_edges(v,edges,12,slice,curve);
+}
+
+static bool intersect_wed(const alea_wed_data_t* w,const alea_slice_plane_t* slice,
+                          alea_curve_2d_t* curve) {
+    const double c[3]={w->vertex_x,w->vertex_y,w->vertex_z};
+    const double a[3]={w->v1_x,w->v1_y,w->v1_z},b[3]={w->v2_x,w->v2_y,w->v2_z},h[3]={w->v3_x,w->v3_y,w->v3_z};
+    double v[6][3];
+    for(int k=0;k<3;k++){v[0][k]=c[k];v[1][k]=c[k]+a[k];v[2][k]=c[k]+b[k];for(int i=0;i<3;i++)v[i+3][k]=v[i][k]+h[k];}
+    const int edges[9][2]={{0,1},{1,2},{2,0},{3,4},{4,5},{5,3},{0,3},{1,4},{2,5}};
+    return intersect_polyhedron_edges(v,edges,9,slice,curve);
+}
+
+static bool intersect_rhp(const alea_rhp_data_t* r,const alea_slice_plane_t* slice,
+                          alea_curve_2d_t* curve) {
+    const double c[3]={r->base_x,r->base_y,r->base_z},h[3]={r->height_x,r->height_y,r->height_z};
+    double axis[3]={h[0],h[1],h[2]};if(v3arr_length(axis)<EPSILON)return false;v3arr_normalize(axis);
+    double radial[3][3];if(!alea_rhp_resolve_radials(r,radial))return false;
+    slice_halfspace_t p[8]={{-axis[0],-axis[1],-axis[2],v3arr_dot(axis,c)},
+      {axis[0],axis[1],axis[2],-(axis[0]*(c[0]+h[0])+axis[1]*(c[1]+h[1])+axis[2]*(c[2]+h[2]))}};
+    for(int i=0;i<3;i++){
+        const double len=v3arr_length(radial[i]);
+        const double nx=radial[i][0]/len,ny=radial[i][1]/len,nz=radial[i][2]/len;
+        p[2+2*i]=(slice_halfspace_t){nx,ny,nz,-(nx*c[0]+ny*c[1]+nz*c[2])-len};
+        p[3+2*i]=(slice_halfspace_t){-nx,-ny,-nz,nx*c[0]+ny*c[1]+nz*c[2]-len};
+    }
+    return intersect_convex_halfspaces(p,8,slice,curve);
+}
+
+static bool intersect_arb(const alea_arb_data_t* a,const alea_slice_plane_t* slice,
+                          alea_curve_2d_t* curve) {
+    if(a->num_corners<4||a->num_corners>8||a->num_faces<4||a->num_faces>6)return false;
+    int edges[24][2],n=0;
+    for(int f=0;f<a->num_faces;f++)for(int k=0;k<4;k++){
+        int i=a->faces[f][k]-1,j=a->faces[f][(k+1)%4]-1;
+        if(i<0||j<0||i>=a->num_corners||j>=a->num_corners||i==j)continue;
+        if(i>j){int t=i;i=j;j=t;}bool seen=false;for(int q=0;q<n;q++)if(edges[q][0]==i&&edges[q][1]==j)seen=true;
+        if(!seen&&n<24){edges[n][0]=i;edges[n++][1]=j;}
+    }
+    return intersect_polyhedron_edges(a->corners,edges,n,slice,curve);
+}
+
 /**
  * @brief Intersect general quadric with slice plane
  *
@@ -1345,6 +1477,62 @@ static bool intersect_torus(const alea_torus_data_t* torus,
  * MAIN DISPATCH FUNCTION
  * ============================================================================ */
 
+static void slice_quadric_from_matrix(const double q[3][3], const double c[3],
+                                      alea_quadric_data_t* out) {
+    double qc[3] = {0};
+    for (int i=0;i<3;i++) for (int j=0;j<3;j++) qc[i] += q[i][j]*c[j];
+    out->coeffs[0]=q[0][0]; out->coeffs[1]=q[1][1]; out->coeffs[2]=q[2][2];
+    out->coeffs[3]=2*q[0][1]; out->coeffs[4]=2*q[1][2]; out->coeffs[5]=2*q[0][2];
+    out->coeffs[6]=-2*qc[0]; out->coeffs[7]=-2*qc[1]; out->coeffs[8]=-2*qc[2];
+    out->coeffs[9]=c[0]*qc[0]+c[1]*qc[1]+c[2]*qc[2]-1.0;
+}
+
+static bool intersect_ell(const alea_ell_data_t* ell,
+                          const alea_slice_plane_t* plane,
+                          alea_curve_2d_t* curve) {
+    double c[3],u[3],a,b2;
+    if(ell->major_axis_len<0) {
+        c[0]=ell->v1_x;c[1]=ell->v1_y;c[2]=ell->v1_z;
+        u[0]=ell->v2_x;u[1]=ell->v2_y;u[2]=ell->v2_z;
+        a=sqrt(v3arr_dot(u,u)); b2=ell->major_axis_len*ell->major_axis_len;
+    } else {
+        c[0]=0.5*(ell->v1_x+ell->v2_x);c[1]=0.5*(ell->v1_y+ell->v2_y);c[2]=0.5*(ell->v1_z+ell->v2_z);
+        u[0]=0.5*(ell->v2_x-ell->v1_x);u[1]=0.5*(ell->v2_y-ell->v1_y);u[2]=0.5*(ell->v2_z-ell->v1_z);
+        a=0.5*ell->major_axis_len; b2=a*a-v3arr_dot(u,u);
+    }
+    const double axial2=v3arr_dot(u,u), a2=a*a;
+    if (!(a>0) || !(b2>1e-20)) return false;
+    double q[3][3]={{0}};
+    if (axial2<=1e-20) q[0][0]=q[1][1]=q[2][2]=1.0/a2;
+    else {
+        const double invc=1.0/sqrt(axial2), invb2=1.0/b2, delta=1.0/a2-invb2;
+        for(int i=0;i<3;i++) u[i]*=invc;
+        for(int i=0;i<3;i++) for(int j=0;j<3;j++)
+            q[i][j]=(i==j?invb2:0.0)+delta*u[i]*u[j];
+    }
+    alea_quadric_data_t quadric;
+    slice_quadric_from_matrix(q,c,&quadric);
+    return intersect_quadric(&quadric,plane,curve);
+}
+
+static bool intersect_rec(const alea_rec_data_t* rec,
+                          const alea_slice_plane_t* plane,
+                          alea_curve_2d_t* curve) {
+    const double a[3]={rec->axis1_x,rec->axis1_y,rec->axis1_z};
+    const double b[3]={rec->axis2_x,rec->axis2_y,rec->axis2_z};
+    const double a2=v3arr_dot(a,a), b2=v3arr_dot(b,b);
+    if (a2<=1e-20 || b2<=1e-20) return false;
+    double q[3][3];
+    for(int i=0;i<3;i++) for(int j=0;j<3;j++)
+        q[i][j]=a[i]*a[j]/(a2*a2)+b[i]*b[j]/(b2*b2);
+    const double c[3]={rec->base_x,rec->base_y,rec->base_z};
+    alea_quadric_data_t quadric;
+    slice_quadric_from_matrix(q,c,&quadric);
+    /* As with RCC/TRC, the returned analytical curve describes the lateral
+     * surface; cell clipping supplies the finite cap restrictions. */
+    return intersect_quadric(&quadric,plane,curve);
+}
+
 bool alea_intersect_primitive_plane(alea_primitive_type_t type,
                                    const alea_primitive_data_t* data,
                                    const alea_slice_plane_t* plane,
@@ -1390,6 +1578,9 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
         case ALEA_PRIMITIVE_RPP:
             return intersect_box(&data->box, plane, curve);
 
+        case ALEA_PRIMITIVE_BOX:
+            return intersect_box_general(&data->box_general, plane, curve);
+
         case ALEA_PRIMITIVE_QUADRIC:
             return intersect_quadric(&data->quadric, plane, curve);
 
@@ -1398,6 +1589,21 @@ bool alea_intersect_primitive_plane(alea_primitive_type_t type,
 
         case ALEA_PRIMITIVE_TRC:
             return intersect_trc(&data->trc, plane, curve);
+
+        case ALEA_PRIMITIVE_ELL:
+            return intersect_ell(&data->ell, plane, curve);
+
+        case ALEA_PRIMITIVE_REC:
+            return intersect_rec(&data->rec, plane, curve);
+
+        case ALEA_PRIMITIVE_WED:
+            return intersect_wed(&data->wed, plane, curve);
+
+        case ALEA_PRIMITIVE_RHP:
+            return intersect_rhp(&data->rhp, plane, curve);
+
+        case ALEA_PRIMITIVE_ARB:
+            return intersect_arb(&data->arb, plane, curve);
 
         case ALEA_PRIMITIVE_TORUS_X:
         case ALEA_PRIMITIVE_TORUS_Y:
