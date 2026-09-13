@@ -1123,7 +1123,16 @@ static uint64_t tag_bytes(uint64_t tag, const void* data, size_t size) {
 static uint64_t evaluation_tag(const alea_nuc_evaluation_t* evaluation) {
     uint64_t tag = UINT64_C(1469598103934665603);
     tag = tag_bytes(tag, &evaluation->prepared, sizeof(evaluation->prepared));
-    tag = tag_bytes(tag, &evaluation->incident, sizeof(evaluation->incident));
+    tag = tag_bytes(tag, &evaluation->incident.type,
+                    sizeof(evaluation->incident.type));
+    tag = tag_bytes(tag, &evaluation->incident.energy,
+                    sizeof(evaluation->incident.energy));
+    tag = tag_bytes(tag, evaluation->incident.direction,
+                    sizeof(evaluation->incident.direction));
+    tag = tag_bytes(tag, &evaluation->incident.weight,
+                    sizeof(evaluation->incident.weight));
+    tag = tag_bytes(tag, &evaluation->incident.time,
+                    sizeof(evaluation->incident.time));
     tag = tag_bytes(tag, &evaluation->macro_total,
                     sizeof(evaluation->macro_total));
     tag = tag_bytes(tag, &evaluation->macro_elastic,
@@ -1141,9 +1150,14 @@ static uint64_t evaluation_tag(const alea_nuc_evaluation_t* evaluation) {
                         sizeof(workspace->components));
         tag = tag_bytes(tag, &workspace->capacity, sizeof(workspace->capacity));
         size_t count = (size_t)evaluation->prepared->n_components;
-        if (workspace->components && workspace->capacity >= count)
-            tag = tag_bytes(tag, workspace->components,
-                            count * sizeof(*workspace->components));
+        if (workspace->components && workspace->capacity >= count) {
+            for (size_t i = 0; i < count; i++) {
+                tag = tag_bytes(tag, &workspace->components[i].active,
+                                sizeof(workspace->components[i].active));
+                tag = tag_bytes(tag, workspace->components[i].factors,
+                                sizeof(workspace->components[i].factors));
+            }
+        }
         tag = tag_bytes(tag, &workspace->component_total,
                         sizeof(workspace->component_total));
         tag = tag_bytes(tag, &workspace->component_elastic,
