@@ -595,6 +595,22 @@ int alea_cell_set_mixture(alea_system_t* sys, int cell_index, int mixture_id);
 int alea_cell_set_density(alea_system_t* sys, int cell_index, double density);
 
 /**
+ * @brief Set cell temperature
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param temperature_K Finite, positive temperature in Kelvin
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_set_temperature(alea_system_t* sys, int cell_index,
+                              double temperature_K);
+
+/**
+ * @brief Clear an explicitly set cell temperature
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @return 0 on success, -1 on error
+ */
+int alea_cell_clear_temperature(alea_system_t* sys, int cell_index);
+
+/**
  * @brief Set cell universe membership
  * @param cell_index Cell index (0 to alea_cell_count-1)
  * @param universe_id Universe ID (0 = base universe)

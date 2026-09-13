@@ -9,6 +9,8 @@
 #include "alea_test.h"
 #include "alea.h"
 
+#include <math.h>
+
 /* Helper: create a system with one material (id=1) and one cell */
 static alea_system_t* make_simple_system(void) {
     alea_system_t* sys = alea_create();
@@ -130,6 +132,68 @@ TEST(set_density_invalid_cell) {
     ASSERT_EQ(alea_cell_set_density(sys, -1, 1.0), -1);
     ASSERT_EQ(alea_cell_set_density(sys, 100, 1.0), -1);
     ASSERT_EQ(alea_cell_set_density(NULL, 0, 1.0), -1);
+
+    alea_destroy(sys);
+}
+
+/* ========================================================================= */
+/* alea_cell_set_temperature / alea_cell_clear_temperature                   */
+/* ========================================================================= */
+
+TEST(set_and_clear_temperature) {
+    alea_system_t* sys = make_simple_system();
+    ASSERT_NOT_NULL(sys);
+
+    alea_cell_info_t info;
+    ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+    ASSERT_FALSE(info.has_temperature);
+    ASSERT_NEAR(info.temperature, 0.0, 0.0);
+
+    ASSERT_EQ(alea_cell_set_temperature(sys, 0, 293.15), 0);
+    ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+    ASSERT_TRUE(info.has_temperature);
+    ASSERT_NEAR(info.temperature, 293.15, 1e-12);
+
+    ASSERT_EQ(alea_cell_clear_temperature(sys, 0), 0);
+    ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+    ASSERT_FALSE(info.has_temperature);
+    ASSERT_NEAR(info.temperature, 0.0, 0.0);
+
+    /* Clearing an unset temperature is idempotent. */
+    ASSERT_EQ(alea_cell_clear_temperature(sys, 0), 0);
+
+    alea_destroy(sys);
+}
+
+TEST(set_temperature_rejects_invalid_values) {
+    alea_system_t* sys = make_simple_system();
+    ASSERT_NOT_NULL(sys);
+
+    ASSERT_EQ(alea_cell_set_temperature(sys, 0, 600.0), 0);
+    ASSERT_EQ(alea_cell_set_temperature(sys, 0, 0.0), -1);
+    ASSERT_EQ(alea_cell_set_temperature(sys, 0, -1.0), -1);
+    ASSERT_EQ(alea_cell_set_temperature(sys, 0, NAN), -1);
+    ASSERT_EQ(alea_cell_set_temperature(sys, 0, INFINITY), -1);
+
+    /* A rejected update must leave the previous value intact. */
+    alea_cell_info_t info;
+    ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+    ASSERT_TRUE(info.has_temperature);
+    ASSERT_NEAR(info.temperature, 600.0, 1e-12);
+
+    alea_destroy(sys);
+}
+
+TEST(temperature_setters_reject_invalid_cells) {
+    alea_system_t* sys = make_simple_system();
+    ASSERT_NOT_NULL(sys);
+
+    ASSERT_EQ(alea_cell_set_temperature(sys, -1, 300.0), -1);
+    ASSERT_EQ(alea_cell_set_temperature(sys, 100, 300.0), -1);
+    ASSERT_EQ(alea_cell_set_temperature(NULL, 0, 300.0), -1);
+    ASSERT_EQ(alea_cell_clear_temperature(sys, -1), -1);
+    ASSERT_EQ(alea_cell_clear_temperature(sys, 100), -1);
+    ASSERT_EQ(alea_cell_clear_temperature(NULL, 0), -1);
 
     alea_destroy(sys);
 }

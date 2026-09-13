@@ -708,6 +708,27 @@ int alea_cell_set_density(alea_system_t* sys, int cell_index, double density);
 
 Set cell density. Signed convention: negative = g/cm3, positive = atoms/b-cm, 0 = void.
 
+### alea_cell_set_temperature
+
+```c
+int alea_cell_set_temperature(alea_system_t* sys, int cell_index,
+                              double temperature_K);
+```
+
+Set a cell's explicit temperature in Kelvin. The temperature must be finite and
+strictly positive. Returns 0 on success or -1 for an invalid system, cell
+index, or temperature.
+
+### alea_cell_clear_temperature
+
+```c
+int alea_cell_clear_temperature(alea_system_t* sys, int cell_index);
+```
+
+Clear a cell's explicit temperature. The cell will report
+`has_temperature == false` and `temperature == 0.0` through
+`alea_cell_get_info()`. Clearing an already unset temperature succeeds.
+
 ### alea_cell_set_universe
 
 ```c

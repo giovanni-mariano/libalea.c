@@ -1112,6 +1112,33 @@ int alea_cell_set_density(alea_system_t* sys, int cell_index, double density) {
     return 0;
 }
 
+int alea_cell_set_temperature(alea_system_t* sys, int cell_index,
+                              double temperature_K) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    if (!isfinite(temperature_K) || temperature_K <= 0.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+            "alea_cell_set_temperature: temperature must be finite and positive");
+        return -1;
+    }
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    cell->temperature = temperature_K;
+    cell->has_temperature = 1;
+    return 0;
+}
+
+int alea_cell_clear_temperature(alea_system_t* sys, int cell_index) {
+    if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
+        return -1;
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    cell->temperature = 0.0;
+    cell->has_temperature = 0;
+    return 0;
+}
+
 int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id) {
     if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
         return -1;
