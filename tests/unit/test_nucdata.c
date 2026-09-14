@@ -3977,6 +3977,91 @@ TEST(thermal_continuous_clamps_only_roundoff_negative_pdf) {
     ASSERT_NULL(thermal);
 }
 
+TEST(photon_production_audit_distinguishes_unavailable_and_consistent) {
+    double energy[] = {1.0, 2.0, 3.0};
+    double parent_xs[] = {2.0, 4.0, 6.0};
+    double yield[] = {0.5, 1.0, 1.5};
+    double direct_xs[] = {0.5, 1.0};
+    double gpd[] = {1.0, 4.5, 10.0};
+    alea_nuc_reaction_t reaction = {
+        .mt = 102, .threshold_index = 1, .n_energies = 3, .xs = parent_xs
+    };
+    alea_nuc_photon_production_t productions[] = {
+        {
+            .mt = 102001, .parent_mt = 102, .mf = 12,
+            .n_energies = 3, .energy = energy, .values = yield
+        },
+        {
+            .mt = 102002, .parent_mt = 102, .mf = 13,
+            .production_xs = true, .threshold_index = 2,
+            .n_energies = 2, .values = direct_xs
+        }
+    };
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON;
+    nuc.n_energies = 3;
+    nuc.energy = energy;
+    nuc.n_reactions = 1;
+    nuc.reactions = &reaction;
+    nuc.n_photon_productions = 2;
+    nuc.photon_productions = productions;
+
+    alea_nuc_photon_production_audit_t report;
+    memset(&report, 0xff, sizeof(report));
+    ASSERT_EQ(alea_nuc_photon_production_audit(
+                  &nuc, 0.0, 0.0, &report), ALEA_OK);
+    ASSERT_FALSE(report.aggregate_available);
+    ASSERT_FALSE(report.native_grid_consistent);
+    ASSERT_EQ(report.worst_energy_index, -1);
+
+    nuc.total_photon_production_xs = gpd;
+    ASSERT_EQ(alea_nuc_photon_production_audit(
+                  &nuc, 0.0, 0.0, &report), ALEA_OK);
+    ASSERT_TRUE(report.aggregate_available);
+    ASSERT_TRUE(report.native_grid_consistent);
+    ASSERT_NEAR(report.maximum_absolute_difference, 0.0, 0.0);
+    ASSERT_NEAR(report.maximum_relative_difference, 0.0, 0.0);
+    ASSERT_EQ(report.worst_energy_index, 0);
+    ASSERT_NEAR(report.worst_energy, 1.0, 0.0);
+}
+
+TEST(photon_production_audit_reports_native_grid_mismatch) {
+    double energy[] = {1.0, 2.0};
+    double values[] = {1.0, 4.0};
+    double gpd[] = {1.0, 5.0};
+    alea_nuc_photon_production_t production = {
+        .mt = 102001, .parent_mt = 102, .mf = 13,
+        .production_xs = true, .threshold_index = 1,
+        .n_energies = 2, .values = values
+    };
+    alea_nuc_nuclide_t nuc;
+    memset(&nuc, 0, sizeof(nuc));
+    nuc.particle = ALEA_NUC_PARTICLE_NEUTRON;
+    nuc.n_energies = 2;
+    nuc.energy = energy;
+    nuc.n_photon_productions = 1;
+    nuc.photon_productions = &production;
+    nuc.total_photon_production_xs = gpd;
+
+    alea_nuc_photon_production_audit_t report;
+    ASSERT_EQ(alea_nuc_photon_production_audit(
+                  &nuc, 0.09, 0.0, &report), ALEA_OK);
+    ASSERT_FALSE(report.native_grid_consistent);
+    ASSERT_NEAR(report.maximum_absolute_difference, 1.0, 0.0);
+    ASSERT_NEAR(report.maximum_relative_difference, 0.2, 1e-15);
+    ASSERT_EQ(report.worst_energy_index, 1);
+    ASSERT_NEAR(report.worst_energy, 2.0, 0.0);
+
+    ASSERT_EQ(alea_nuc_photon_production_audit(
+                  &nuc, 0.2, 0.0, &report), ALEA_OK);
+    ASSERT_TRUE(report.native_grid_consistent);
+    ASSERT_EQ(alea_nuc_photon_production_audit(
+                  &nuc, -1.0, 0.0, &report), ALEA_ERR_INVALID_ARG);
+    ASSERT_EQ(alea_nuc_photon_production_audit(
+                  &nuc, 0.0, 0.0, NULL), ALEA_ERR_NULL_ARG);
+}
+
 static alea_nuc_nuclide_t* photon_production_allocation_fixture(void) {
     static const double values[] = {
         102001,                 /* MTRP */

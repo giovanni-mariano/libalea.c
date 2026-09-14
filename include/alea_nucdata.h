@@ -525,6 +525,23 @@ double alea_nuc_photon_production_yield(
 double alea_nuc_xs_photon_production_total(
     const alea_nuc_nuclide_t* nuc, double energy);
 
+/**
+ * Compare the ACE GPD aggregate with decoded production channels at every
+ * point on the nuclide's native neutron-energy grid.
+ *
+ * A point is consistent when
+ * |GPD - decoded| <= absolute_tolerance + relative_tolerance *
+ * max(|GPD|, |decoded|).  The worst-energy fields identify the point with
+ * the largest absolute difference.  If GPD is absent, the call succeeds with
+ * aggregate_available and native_grid_consistent both false and the worst
+ * index set to -1.
+ */
+alea_error_t alea_nuc_photon_production_audit(
+    const alea_nuc_nuclide_t* nuc,
+    double relative_tolerance,
+    double absolute_tolerance,
+    alea_nuc_photon_production_audit_t* report);
+
 /** Sample one photon from a decoded production channel without allocation. */
 alea_error_t alea_nuc_sample_photon_production(
     const alea_nuc_nuclide_t* nuc,

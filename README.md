@@ -384,6 +384,7 @@ The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea
 | `alea_nuc_evaluate_urr` / `alea_nuc_urr_factors` | Coordinated evaluation or standalone unresolved-resonance factors |
 | `alea_nuc_sample_photon_collision` | Coherent, bound-electron Compton, photoelectric, or pair interaction on one element |
 | `alea_nuc_xs_photon_production_total` | Aggregate neutron-induced photon-production cross section |
+| `alea_nuc_photon_production_audit` | Native-grid GPD versus decoded-channel consistency report |
 | `alea_nuc_sample_thermal_collision` | Discrete ACE bound thermal elastic or inelastic collision |
 | `alea_nuc_mg_sample_scatter` | Outgoing multigroup scatter group |
 | `alea_mesh_sample` / `alea_mesh_visit` | Fixed structured-grid composition estimates |

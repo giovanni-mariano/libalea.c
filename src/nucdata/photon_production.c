@@ -230,6 +230,87 @@ static double photon_production_xs_value(
     return production_xs;
 }
 
+static alea_error_t photon_production_native_response(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production,
+    int energy_index, double* response) {
+    if (production->production_xs) {
+        int local = energy_index - (production->threshold_index - 1);
+        if (!production->values || production->threshold_index < 1 ||
+            production->n_energies <= 0 ||
+            production->n_energies >
+                nuc->n_energies - production->threshold_index + 1)
+            return ALEA_ERR_INVALID_STATE;
+        *response = local >= 0 && local < production->n_energies
+            ? production->values[local] : 0.0;
+    } else {
+        double yield;
+        if (alea_nuc_interp_eval(
+                production->energy, production->values,
+                production->n_energies, production->nbt,
+                production->interp, production->n_regions,
+                nuc->energy[energy_index], &yield) != ALEA_OK)
+            return ALEA_ERR_INVALID_STATE;
+        *response = yield * alea_nuc_xs_reaction(
+            nuc, production->parent_mt, nuc->energy[energy_index]);
+    }
+    return isfinite(*response) && *response >= 0.0
+        ? ALEA_OK : ALEA_ERR_INVALID_STATE;
+}
+
+alea_error_t alea_nuc_photon_production_audit(
+    const alea_nuc_nuclide_t* nuc, double relative_tolerance,
+    double absolute_tolerance,
+    alea_nuc_photon_production_audit_t* report) {
+    if (!report) return ALEA_ERR_NULL_ARG;
+    *report = (alea_nuc_photon_production_audit_t){0};
+    report->worst_energy_index = -1;
+    if (!nuc) return ALEA_ERR_NULL_ARG;
+    if (!isfinite(relative_tolerance) || relative_tolerance < 0.0 ||
+        !isfinite(absolute_tolerance) || absolute_tolerance < 0.0)
+        return ALEA_ERR_INVALID_ARG;
+    if (nuc->particle != ALEA_NUC_PARTICLE_NEUTRON)
+        return ALEA_ERR_INVALID_ARG;
+    if (!nuc->total_photon_production_xs) return ALEA_OK;
+    if (nuc->n_energies <= 0 || !nuc->energy ||
+        nuc->n_photon_productions < 0 ||
+        (nuc->n_photon_productions > 0 && !nuc->photon_productions))
+        return ALEA_ERR_INVALID_STATE;
+
+    report->aggregate_available = true;
+    report->native_grid_consistent = true;
+    for (int ie = 0; ie < nuc->n_energies; ie++) {
+        double aggregate = nuc->total_photon_production_xs[ie];
+        if (!isfinite(nuc->energy[ie]) || !isfinite(aggregate) ||
+            aggregate < 0.0)
+            return ALEA_ERR_INVALID_STATE;
+        double decoded = 0.0;
+        for (int ip = 0; ip < nuc->n_photon_productions; ip++) {
+            double response;
+            alea_error_t err = photon_production_native_response(
+                nuc, &nuc->photon_productions[ip], ie, &response);
+            if (err != ALEA_OK) return err;
+            decoded += response;
+            if (!isfinite(decoded)) return ALEA_ERR_INVALID_STATE;
+        }
+
+        double difference = fabs(aggregate - decoded);
+        double scale = fmax(fabs(aggregate), fabs(decoded));
+        double relative_difference = scale > 0.0 ? difference / scale : 0.0;
+        if (report->worst_energy_index < 0 ||
+            difference > report->maximum_absolute_difference) {
+            report->maximum_absolute_difference = difference;
+            report->worst_energy = nuc->energy[ie];
+            report->worst_energy_index = ie;
+        }
+        if (relative_difference > report->maximum_relative_difference)
+            report->maximum_relative_difference = relative_difference;
+        if (difference > absolute_tolerance + relative_tolerance * scale)
+            report->native_grid_consistent = false;
+    }
+    return ALEA_OK;
+}
+
 double alea_nuc_photon_production_yield(
     const alea_nuc_nuclide_t* nuc,
     const alea_nuc_photon_production_t* production,

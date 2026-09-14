@@ -289,6 +289,16 @@ typedef struct {
     alea_nuc_energy_dist_t* spectrum;
 } alea_nuc_photon_production_t;
 
+/** Native-grid comparison of GPD with decoded photon-production channels. */
+typedef struct {
+    bool aggregate_available;          /* GPD aggregate was decoded */
+    bool native_grid_consistent;       /* every native point met tolerance */
+    double maximum_absolute_difference;
+    double maximum_relative_difference;
+    double worst_energy;               /* energy of maximum absolute difference */
+    int worst_energy_index;            /* native-grid index, or -1 if unavailable */
+} alea_nuc_photon_production_audit_t;
+
 /* ============================================================================
  * FISSION DATA
  * ============================================================================ */
