@@ -3072,6 +3072,35 @@ TEST(delayed_ace_blocks_decode_group_probability_and_spectrum) {
     alea_nuc_nuclide_free(nuc);
 }
 
+TEST(delayed_ace_nubar_accepts_right_continuous_repeated_energy) {
+    double encoded[] = {
+        2, 0, 4, 7.0, 20.0, 20.0, 150.0, 0.10, 0.20, 0.40, 0.50,
+        2.0e-8, 0, 1, 1.0, 1.0,
+        1,
+        0, 3, 8, 0, 0, 0, 0, 0.0, 0.5
+    };
+    alea_nuc_nuclide_t* nuc = calloc(1, sizeof(*nuc));
+    ASSERT_NOT_NULL(nuc);
+    nuc->awr = 235.0;
+    nuc->raw.awr = 235.0;
+    nuc->raw.xss_length = (int)(sizeof(encoded) / sizeof(encoded[0]));
+    nuc->raw.xss = malloc(sizeof(encoded));
+    ASSERT_NOT_NULL(nuc->raw.xss);
+    memcpy(nuc->raw.xss, encoded, sizeof(encoded));
+    nuc->raw.nxs[7] = 1;
+    nuc->raw.jxs[23] = 1;
+    nuc->raw.jxs[24] = 12;
+    nuc->raw.jxs[25] = 17;
+    nuc->raw.jxs[26] = 18;
+
+    ASSERT_EQ(alea_nuc_decode_delayed_neutrons(nuc, &nuc->raw), ALEA_OK);
+    ASSERT_NOT_NULL(nuc->fission->delayed);
+    ASSERT_NEAR(alea_nuc_delayed_nu_bar(nuc, 20.0), 0.40, 1e-12);
+    ASSERT_NEAR(alea_nuc_delayed_nu_bar(nuc, 30.0),
+                0.40 + (10.0 / 130.0) * 0.10, 1e-12);
+    alea_nuc_nuclide_free(nuc);
+}
+
 TEST(delayed_ace_decode_cleans_every_injected_allocation_failure) {
     const double encoded[] = {
         2, 0, 1, 1.0, 0.1,

@@ -430,7 +430,7 @@ static alea_nuc_nu_bar_t* decode_nu_block(const alea_nuc_ace_table_t* t, int loc
         for (int i = 0; i < nu->n_energies; i++) {
             if (!isfinite(nu->energy[i]) || !isfinite(nu->nu[i]) ||
                 nu->nu[i] < 0.0 ||
-                (i > 0 && nu->energy[i] <= nu->energy[i - 1])) {
+                (i > 0 && nu->energy[i] < nu->energy[i - 1])) {
                 xss_mark_corrupt(t);
                 free(nu->nbt); free(nu->interp);
                 free(nu->energy); free(nu->nu); free(nu);

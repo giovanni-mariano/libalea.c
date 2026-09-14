@@ -48,7 +48,7 @@ NJOY_TEST59_DIR = njoy-test59
 NJOY_TEST25_DIR = njoy-test25
 
 # Test binaries
-TESTS = test_endfb80 test_fendl32c test_eprdata12 test_eprdata14 test_eprdata25 test_photon_xs test_nucdata_integration test_thermal test_photon_production test_production_photon_angles test_production_urr test_urr_matrix test_temperature_mix test_photoatomic_relaxation
+TESTS = test_endfb80 test_fendl32c test_fendl_delayed_nubar test_eprdata12 test_eprdata14 test_eprdata25 test_photon_xs test_nucdata_integration test_thermal test_photon_production test_production_photon_angles test_production_urr test_urr_matrix test_temperature_mix test_photoatomic_relaxation
 BENCH = bench_load bench_transport
 
 # ============================================================================
@@ -213,6 +213,9 @@ bench_transport: bench_transport.c $(LIBS)
 	$(CC) $(BENCH_CFLAGS) $(INCLUDES) -I../../src -o $@ $< $(LIBS)
 
 test_fendl32c: test_fendl32c.c $(LIBS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
+
+test_fendl_delayed_nubar: test_fendl_delayed_nubar.c $(LIBS)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS)
 
 test_endfb80: test_endfb80.c $(LIBS)
