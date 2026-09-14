@@ -1263,6 +1263,13 @@ alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) 
                         return NULL;
                     }
                 }
+                if (cell->lat_outer_universe > 0 &&
+                    extract_universe_list_add(&reachable, &reachable_count,
+                                              &reachable_capacity,
+                                              cell->lat_outer_universe) != 0) {
+                    free(reachable);
+                    return NULL;
+                }
             }
         }
     }
@@ -1857,7 +1864,6 @@ static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (ni <= 0 || nj <= 0 || nk <= 0) return -1;
 
-    int oi, oj, ok;
     int i, j, k;
     if (cell->lat_type == 2) {
         double p = cell->lat_pitch[0];
@@ -1889,47 +1895,34 @@ static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
         k = (nk == 1 && !cell->lat_fill_repeating) ? cell->lat_fill_dims[4]
                       : cell->lat_fill_dims[4] +
                         (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]);
-        oi = i - cell->lat_fill_dims[0];
-        oj = j - cell->lat_fill_dims[2];
-        ok = k - cell->lat_fill_dims[4];
-        *ox = ri * p + rk * p * 0.5;
-        *oy = rk * p * sqrt(3.0) * 0.5;
-        *oz = cell->lat_fill_zero_element_coords
-            ? k * cell->lat_pitch[2]
-            : ((nk == 1 && !cell->lat_fill_repeating) ? 0.0
-               : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
     } else {
-        oi = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
-        oj = (cell->lat_fill_repeating || nj > 1)
+        if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 ||
+            (nk > 1 && cell->lat_pitch[2] <= 0.0)) return -1;
+        int oi = (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
+        int oj = (cell->lat_fill_repeating || nj > 1)
             ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
-        ok = (cell->lat_fill_repeating || nk > 1)
+        int ok = (nk > 1 ||
+                  (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0))
             ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
         i = cell->lat_fill_dims[0] + oi;
         j = cell->lat_fill_dims[2] + oj;
         k = cell->lat_fill_dims[4] + ok;
-        if (cell->lat_fill_zero_element_coords) {
-            *ox = i * cell->lat_pitch[0];
-            *oy = j * cell->lat_pitch[1];
-            *oz = k * cell->lat_pitch[2];
-        } else {
-            *ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-            *oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-            *oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
-        }
     }
 
-    if (!cell->lat_fill_repeating &&
-        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)) return -1;
-    size_t linear = cell->lat_fill_repeating
-        ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
-    if (linear >= cell->lat_fill_count) return -1;
+    alea_lattice_location_t location;
+    if (alea_lattice_location_from_indices(cell, i, j, k, &location) != 1)
+        return -1;
+    *ox = location.ox;
+    *oy = location.oy;
+    *oz = location.oz;
 
     step->lattice_cell_index = -1;
-    step->fill_universe = cell->lat_fill[linear];
+    step->fill_universe = location.fill_universe;
     step->i = i;
     step->j = j;
     step->k = k;
-    step->linear_index = (int)linear;
+    step->linear_index = location.linear_index == SIZE_MAX
+        ? -1 : (int)location.linear_index;
     return step->fill_universe;
 }
 
@@ -2157,46 +2150,23 @@ int alea_volume_path_id_from_hier_path(
             return 0;
 
         const alea_cell_entry_t* cell = &sys->cells.data[entry->cell_index];
-        const int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
-        const int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
-        const int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
-        const int oi = entry->lat_i - cell->lat_fill_dims[0];
-        const int oj = entry->lat_j - cell->lat_fill_dims[2];
-        const int ok = entry->lat_k - cell->lat_fill_dims[4];
-        if (ni <= 0 || nj <= 0 || nk <= 0 || oi < 0 || oj < 0 || ok < 0 ||
-            (!cell->lat_fill_repeating &&
-             (oi >= ni || oj >= nj || ok >= nk))) {
-            return 0;
-        }
-
-        size_t linear = 0;
-        if (!cell->lat_fill_repeating) {
-            const size_t s_oi = (size_t)oi;
-            const size_t s_oj = (size_t)oj;
-            const size_t s_ok = (size_t)ok;
-            const size_t s_nj = (size_t)nj;
-            const size_t s_nk = (size_t)nk;
-            if (s_oi > (SIZE_MAX / s_nj) ||
-                s_oi * s_nj > (SIZE_MAX - s_oj) ||
-                s_oi * s_nj + s_oj > (SIZE_MAX / s_nk) ||
-                (s_oi * s_nj + s_oj) * s_nk > (SIZE_MAX - s_ok)) {
-                return 0;
-            }
-            linear = (s_oi * s_nj + s_oj) * s_nk + s_ok;
-        }
-        if (!cell->lat_fill || linear >= cell->lat_fill_count ||
-            linear > (size_t)INT_MAX) {
-            return 0;
-        }
+        alea_lattice_location_t location;
+        if (alea_lattice_location_from_indices(
+                cell, entry->lat_i, entry->lat_j, entry->lat_k,
+                &location) != 1 ||
+            location.fill_universe != entry->lat_fill_universe) return 0;
+        if (location.linear_index != SIZE_MAX &&
+            location.linear_index > (size_t)INT_MAX) return 0;
 
         alea_volume_lattice_step_t* step =
             &structural.lattice_steps[structural.lattice_step_count++];
         step->lattice_cell_index = (int)entry->cell_index;
-        step->fill_universe = cell->lat_fill[linear];
+        step->fill_universe = location.fill_universe;
         step->i = entry->lat_i;
         step->j = entry->lat_j;
         step->k = entry->lat_k;
-        step->linear_index = (int)linear;
+        step->linear_index = location.linear_index == SIZE_MAX
+            ? -1 : (int)location.linear_index;
     }
 
     const alea_volume_path_t* canonical =
@@ -2395,7 +2365,8 @@ static int volume_path_visit_target_cell(void* opaque, uint32_t raw_cell_index) 
             .i = location.i,
             .j = location.j,
             .k = location.k,
-            .linear_index = (int)location.linear_index,
+            .linear_index = location.linear_index == SIZE_MAX
+                ? -1 : (int)location.linear_index,
         };
         volume_path_builder_t child = *visit->builder;
         volume_path_push_ancestor(&child, cell_index, cell->universe_id);
@@ -3389,6 +3360,7 @@ int alea_cell_get_info(const alea_system_t* sys, size_t index, alea_cell_info_t*
     memcpy(info->lat_fill_dims, c->lat_fill_dims, sizeof(info->lat_fill_dims));
     info->lat_fill = c->lat_fill;
     info->lat_fill_count = c->lat_fill_count;
+    info->lat_outer_universe = c->lat_outer_universe;
     info->lat_fill_repeating = (int)c->lat_fill_repeating;
     info->lat_fill_zero_element_coords = (int)c->lat_fill_zero_element_coords;
     memcpy(info->lat_pitch, c->lat_pitch, sizeof(info->lat_pitch));

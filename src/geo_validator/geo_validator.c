@@ -1413,7 +1413,7 @@ static int validate_one_ray(alea_system_t* sys,
                 depth_options.universe_depth = previous_cov.depth;
                 sampling_options = &depth_options;
             }
-            point_coverage_t after_cov;
+            point_coverage_t after_cov = previous_cov;
             double sample_point[3];
             double offset = 0.0;
             int ambiguous = 0;
@@ -1453,7 +1453,7 @@ static int validate_one_ray(alea_system_t* sys,
         double crossing[3];
         alea_ray_point_at(ray, t, &crossing[0], &crossing[1], &crossing[2]);
         double direction[3] = { ray->dx, ray->dy, ray->dz };
-        point_coverage_t after_cov;
+        point_coverage_t after_cov = previous_cov;
         alea_geom_validator_options_t depth_options;
         const alea_geom_validator_options_t* crossing_options = options;
         if (options->universe_depth < 0 && previous_cov.klass == COVERAGE_ONE) {

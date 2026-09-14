@@ -220,8 +220,10 @@ static void batch_result_free_buffers(alea_raycast_batch_result_t* result) {
 }
 
 static void* batch_alloc_array(size_t count, size_t element_size) {
-    if (count != 0 && element_size > SIZE_MAX / count) return NULL;
-    return malloc(count ? count * element_size : 1);
+    if (element_size != 0 &&
+        count > (size_t)PTRDIFF_MAX / element_size) return NULL;
+    size_t bytes = count * element_size;
+    return malloc(bytes ? bytes : 1);
 }
 
 static int batch_add_output_bytes(size_t* total, size_t count, size_t element_size) {

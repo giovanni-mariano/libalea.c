@@ -363,7 +363,7 @@ alea_node_id_t alea_clone_tree_to_system(alea_system_t* dst,
 
 /* Canonical lattice element mapping. Coordinates are logical lattice indices
  * (the values declared in lat_fill_dims); linear_index is the position in
- * lat_fill (zero for a repeating lattice). */
+ * lat_fill, zero for a repeating lattice, or SIZE_MAX for an outer element. */
 struct alea_cell_entry;
 typedef struct {
     int fill_universe;
@@ -376,8 +376,8 @@ typedef struct {
     double oz;
 } alea_lattice_location_t;
 
-/* Returns 1 on success, 0 for an out-of-range finite lattice element, and
- * -1 for invalid lattice metadata. */
+/* Returns 1 for a declared/repeating/outer element, 0 for an out-of-range
+ * finite lattice without an outer universe, and -1 for invalid metadata. */
 int alea_lattice_location_from_indices(const struct alea_cell_entry* cell,
                                        int i, int j, int k,
                                        alea_lattice_location_t* out);

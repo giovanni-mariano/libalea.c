@@ -457,7 +457,7 @@ static int local_cell_bbox_is_trusted_conservative(alea_system_t* sys,
 }
 
 static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
-    if (cell->lat_fill_repeating) {
+    if (cell->lat_fill_repeating || cell->lat_outer_universe > 0) {
         const double inf = 1e30;
         return (alea_bbox_t){-inf, inf, -inf, inf, -inf, inf};
     }
@@ -470,8 +470,10 @@ static alea_bbox_t lattice_container_bbox(const alea_cell_entry_t* cell) {
             cell->lat_lower_left[0] + (double)ni * cell->lat_pitch[0],
             cell->lat_lower_left[1],
             cell->lat_lower_left[1] + (double)nj * cell->lat_pitch[1],
-            cell->lat_lower_left[2],
-            cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2]
+            nk == 1 && cell->lat_pitch[2] <= 0.0 ? -1e30
+                                                  : cell->lat_lower_left[2],
+            nk == 1 && cell->lat_pitch[2] <= 0.0 ? 1e30
+                : cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2]
         };
     }
 
@@ -999,7 +1001,7 @@ static int collect_placements_recursive(alea_system_t* sys,
             alea_bbox_t placement_bbox = world_bbox;
             if (support_bbox_trusted && support_bbox &&
                 alea_bbox_is_valid(support_bbox)) {
-                if (cell->lat_fill_repeating) {
+                if (cell->lat_fill_repeating || cell->lat_outer_universe > 0) {
                     placement_bbox = *support_bbox;
                 } else {
                     alea_bbox_t clipped = alea_bbox_intersection(
@@ -4233,23 +4235,49 @@ static int query_lattice_cell_direct(alea_system_t* sys,
 
     if (cell->lat_type == 1) {
         if (cell->lat_pitch[0] == 0.0 || cell->lat_pitch[1] == 0.0 ||
-            cell->lat_pitch[2] == 0.0) {
+            (nk > 1 && cell->lat_pitch[2] == 0.0)) {
             return 0;
         }
         i0 = (int)floor((local_query->min_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
         i1 = (int)floor((local_query->max_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
         j0 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
         j1 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
-        k0 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
-        k1 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
+        k0 = (nk > 1 || (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0)) ? (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
+        k1 = (nk > 1 || (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0)) ? (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
 
-        if (!cell->lat_fill_repeating) {
+        if (!cell->lat_fill_repeating && cell->lat_outer_universe <= 0) {
             if (i0 < 0) i0 = 0;
             if (j0 < 0) j0 = 0;
             if (k0 < 0) k0 = 0;
             if (i1 >= ni) i1 = ni - 1;
             if (j1 >= nj) j1 = nj - 1;
             if (k1 >= nk) k1 = nk - 1;
+        }
+    } else if (cell->lat_type == 2 && cell->lat_outer_universe > 0) {
+        const double p = cell->lat_pitch[0];
+        if (p <= 0.0 || (nk > 1 && cell->lat_pitch[2] <= 0.0)) return 0;
+        const double rk0 = local_query->min_y / (p * M_SQRT3 * 0.5);
+        const double rk1 = local_query->max_y / (p * M_SQRT3 * 0.5);
+        j0 = (int)floor(fmin(rk0, rk1)) - 1 - cell->lat_fill_dims[2];
+        j1 = (int)floor(fmax(rk0, rk1)) + 1 - cell->lat_fill_dims[2];
+        const double ri_values[4] = {
+            local_query->min_x / p - 0.5 * rk0,
+            local_query->max_x / p - 0.5 * rk0,
+            local_query->min_x / p - 0.5 * rk1,
+            local_query->max_x / p - 0.5 * rk1
+        };
+        double ri_min = ri_values[0], ri_max = ri_values[0];
+        for (int q = 1; q < 4; q++) {
+            if (ri_values[q] < ri_min) ri_min = ri_values[q];
+            if (ri_values[q] > ri_max) ri_max = ri_values[q];
+        }
+        i0 = (int)floor(ri_min) - 1 - cell->lat_fill_dims[0];
+        i1 = (int)floor(ri_max) + 1 - cell->lat_fill_dims[0];
+        if (nk > 1) {
+            k0 = (int)floor((local_query->min_z - cell->lat_lower_left[2]) /
+                            cell->lat_pitch[2]);
+            k1 = (int)floor((local_query->max_z - cell->lat_lower_left[2]) /
+                            cell->lat_pitch[2]);
         }
     }
 
@@ -4258,34 +4286,16 @@ static int query_lattice_cell_direct(alea_system_t* sys,
     for (int i = i0; i <= i1; i++) {
         for (int j = j0; j <= j1; j++) {
             for (int k = k0; k <= k1; k++) {
-                size_t fill_index = cell->lat_fill_repeating
-                    ? 0 : (size_t)(i * nj * nk + j * nk + k);
-                if (fill_index >= cell->lat_fill_count) continue;
-
-                int fill_universe = cell->lat_fill[fill_index];
-                if (fill_universe < 0) continue;
-
-                double ox, oy, oz;
-                if (cell->lat_type == 2) {
-                    int ri = i + cell->lat_fill_dims[0];
-                    int rk = j + cell->lat_fill_dims[2];
-                    double p = cell->lat_pitch[0] > 0.0 ? cell->lat_pitch[0] : 1.0;
-                    ox = ri * p + rk * p * 0.5;
-                    oy = rk * p * M_SQRT3 * 0.5;
-                    oz = cell->lat_fill_zero_element_coords
-                       ? (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2]
-                       : ((nk == 1) ? 0.0 : cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2]);
-                } else {
-                    if (cell->lat_fill_zero_element_coords) {
-                        ox = (i + cell->lat_fill_dims[0]) * cell->lat_pitch[0];
-                        oy = (j + cell->lat_fill_dims[2]) * cell->lat_pitch[1];
-                        oz = (k + cell->lat_fill_dims[4]) * cell->lat_pitch[2];
-                    } else {
-                        ox = cell->lat_lower_left[0] + (i + 0.5) * cell->lat_pitch[0];
-                        oy = cell->lat_lower_left[1] + (j + 0.5) * cell->lat_pitch[1];
-                        oz = cell->lat_lower_left[2] + (k + 0.5) * cell->lat_pitch[2];
-                    }
-                }
+                alea_lattice_location_t location;
+                if (alea_lattice_location_from_indices(
+                        cell, i + cell->lat_fill_dims[0],
+                        j + cell->lat_fill_dims[2],
+                        k + cell->lat_fill_dims[4], &location) != 1 ||
+                    location.fill_universe <= 0) continue;
+                int fill_universe = location.fill_universe;
+                double ox = location.ox;
+                double oy = location.oy;
+                double oz = location.oz;
 
                 alea_matrix_t element_translation;
                 translation_matrix(&element_translation, ox, oy, oz);
@@ -4594,7 +4604,7 @@ static int query_lattice_cell_chain(alea_system_t* sys,
 
     if (cell->lat_type == 1) {
         if (cell->lat_pitch[0] == 0.0 || cell->lat_pitch[1] == 0.0 ||
-            cell->lat_pitch[2] == 0.0) {
+            (nk > 1 && cell->lat_pitch[2] == 0.0)) {
             return chain->include_containers
                 ? ALEA_HIER_REGION_CHAIN_UNSUPPORTED : 0;
         }
@@ -4602,16 +4612,44 @@ static int query_lattice_cell_chain(alea_system_t* sys,
         i1 = (int)floor((local_query->max_x - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
         j0 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->min_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
         j1 = (cell->lat_fill_repeating || nj > 1) ? (int)floor((local_query->max_y - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0;
-        k0 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
-        k1 = (cell->lat_fill_repeating || nk > 1) ? (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
+        k0 = (nk > 1 || (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0)) ? (int)floor((local_query->min_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
+        k1 = (nk > 1 || (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0)) ? (int)floor((local_query->max_z - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0;
 
-        if (!cell->lat_fill_repeating) {
+        if (!cell->lat_fill_repeating && cell->lat_outer_universe <= 0) {
             if (i0 < 0) i0 = 0;
             if (j0 < 0) j0 = 0;
             if (k0 < 0) k0 = 0;
             if (i1 >= ni) i1 = ni - 1;
             if (j1 >= nj) j1 = nj - 1;
             if (k1 >= nk) k1 = nk - 1;
+        }
+    } else if (cell->lat_type == 2 && cell->lat_outer_universe > 0) {
+        const double p = cell->lat_pitch[0];
+        if (p <= 0.0 || (nk > 1 && cell->lat_pitch[2] <= 0.0))
+            return chain->include_containers
+                ? ALEA_HIER_REGION_CHAIN_UNSUPPORTED : 0;
+        const double rk0 = local_query->min_y / (p * M_SQRT3 * 0.5);
+        const double rk1 = local_query->max_y / (p * M_SQRT3 * 0.5);
+        j0 = (int)floor(fmin(rk0, rk1)) - 1 - cell->lat_fill_dims[2];
+        j1 = (int)floor(fmax(rk0, rk1)) + 1 - cell->lat_fill_dims[2];
+        const double ri_values[4] = {
+            local_query->min_x / p - 0.5 * rk0,
+            local_query->max_x / p - 0.5 * rk0,
+            local_query->min_x / p - 0.5 * rk1,
+            local_query->max_x / p - 0.5 * rk1
+        };
+        double ri_min = ri_values[0], ri_max = ri_values[0];
+        for (int q = 1; q < 4; q++) {
+            if (ri_values[q] < ri_min) ri_min = ri_values[q];
+            if (ri_values[q] > ri_max) ri_max = ri_values[q];
+        }
+        i0 = (int)floor(ri_min) - 1 - cell->lat_fill_dims[0];
+        i1 = (int)floor(ri_max) + 1 - cell->lat_fill_dims[0];
+        if (nk > 1) {
+            k0 = (int)floor((local_query->min_z - cell->lat_lower_left[2]) /
+                            cell->lat_pitch[2]);
+            k1 = (int)floor((local_query->max_z - cell->lat_lower_left[2]) /
+                            cell->lat_pitch[2]);
         }
     }
 

@@ -8,11 +8,13 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_raycast.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "core/alea_universe.h"
+#include "raycast/raycast.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -52,6 +54,14 @@ TEST(openmc_parse_lattice_rect) {
     if (!omc) SKIP("Test data file not found");
 
     ASSERT(alea_cell_count(omc->sys) > 0);
+    alea_build_universe_index(omc->sys);
+
+    /* The fixture is a 2D lattice: no Z pitch is present. Point lookup must
+     * leave Z unchanged and still descend into the first tile. */
+    int cell_id = -1, material = -1;
+    ASSERT_EQ(alea_find_cell_lazy(omc->sys, -1.0, -1.0, 0.0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(material, 1);
     openmc_model_destroy(omc);
 }
 
@@ -266,6 +276,93 @@ TEST(openmc_fill_universe) {
     int cell_id, material;
     ASSERT_EQ(alea_find_cell_lazy(sys, 0, 0, 0, &cell_id, &material, NULL), 0);
     ASSERT_EQ(material, 1);
+
+    openmc_model_destroy(omc);
+}
+
+TEST(openmc_rect_lattice_outer_universe) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<geometry>\n"
+        " <surface id='1' type='z-cylinder' coeffs='0 0 0.25'/>\n"
+        " <surface id='2' type='z-plane' coeffs='-5'/>\n"
+        " <surface id='3' type='z-plane' coeffs='5'/>\n"
+        " <cell id='1' material='1' region='-1' universe='1'/>\n"
+        " <cell id='2' material='2' region='1' universe='1'/>\n"
+        " <cell id='3' material='3' region='-1' universe='2'/>\n"
+        " <cell id='4' material='4' region='1' universe='2'/>\n"
+        " <cell id='100' fill='10' region='2 -3'/>\n"
+        " <lattice id='10'>\n"
+        "  <pitch>1 1</pitch><dimension>1 1</dimension>\n"
+        "  <lower_left>-0.5 -0.5</lower_left>\n"
+        "  <outer>2</outer><universes>1</universes>\n"
+        " </lattice>\n"
+        "</geometry>\n";
+    openmc_model_t* omc = openmc_load_string(xml, strlen(xml));
+    ASSERT_NOT_NULL(omc);
+    alea_build_universe_index(omc->sys);
+
+    int cell_id = -1, material = -1;
+    ASSERT_EQ(alea_find_cell_lazy(omc->sys, 0.0, 0.0, 0.0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(material, 1);
+    /* x=2 is outside the declared 1x1 array, but at the center of an outer
+     * tile. OpenMC translates into that tile before entering universe 2. */
+    ASSERT_EQ(alea_find_cell_lazy(omc->sys, 2.0, 0.0, 0.0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(material, 3);
+
+    int found_lattice = 0;
+    for (size_t i = 0; i < alea_cell_count(omc->sys); i++) {
+        alea_cell_info_t info;
+        ASSERT_EQ(alea_cell_get_info(omc->sys, i, &info), 0);
+        if (info.lat_type == 1) {
+            found_lattice = 1;
+            ASSERT_EQ(info.lat_outer_universe, 2);
+            ASSERT_NEAR(info.lat_pitch[2], 0.0, 1e-12);
+        }
+    }
+    ASSERT(found_lattice);
+
+    ASSERT_EQ(alea_prepare_query_acceleration(omc->sys), 0);
+    alea_cell_hit_t hit;
+    ASSERT_EQ(alea_find_deepest_cell_hit_at_point(
+                  omc->sys, 2.0, 0.0, 0.0, &hit), 0);
+    ASSERT_EQ(hit.material_id, 3);
+
+    alea_volume_path_t path;
+    ASSERT_EQ(alea_volume_path_resolve_at_point(
+                  omc->sys, 2.0, 0.0, 0.0, &path), 1);
+    ASSERT_EQ(path.material_id, 3);
+    ASSERT_EQ(path.lattice_step_count, 1);
+    ASSERT_EQ(path.lattice_steps[0].fill_universe, 2);
+    ASSERT_EQ(path.lattice_steps[0].linear_index, -1);
+
+    alea_raycast_result_t trace;
+    alea_raycast_result_init(&trace);
+    ASSERT_EQ(alea_raycast(omc->sys, -0.4, 0.0, 0.0,
+                           1.0, 0.0, 0.0, 3.0, &trace), 0);
+    int saw_inner = 0, saw_outer = 0;
+    for (size_t i = 0; i < trace.segments.count; i++) {
+        if (trace.segments.data[i].material_id == 1) saw_inner = 1;
+        if (trace.segments.data[i].material_id == 3) saw_outer = 1;
+    }
+    ASSERT(saw_inner);
+    ASSERT(saw_outer);
+    alea_raycast_result_free(&trace);
+
+    /* Export and re-import: outer remains a child element and the lattice
+     * remains 2D rather than acquiring a synthetic Z pitch. */
+    const char* tmpfile = "test_rect_outer_rt_tmp.xml";
+    ASSERT_EQ(openmc_export_system(omc->sys, tmpfile), 0);
+    openmc_model_t* roundtrip = openmc_load(tmpfile);
+    ASSERT_NOT_NULL(roundtrip);
+    alea_build_universe_index(roundtrip->sys);
+    ASSERT_EQ(alea_find_cell_lazy(roundtrip->sys, 2.0, 0.0, 0.0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(material, 3);
+    openmc_model_destroy(roundtrip);
+    remove(tmpfile);
 
     openmc_model_destroy(omc);
 }
@@ -618,6 +715,10 @@ TEST(openmc_hex_lattice_roundtrip) {
     /* Element (1,0): center at (2,0) → univ 3 → mat 3 */
     ASSERT_EQ(alea_find_cell_lazy(omc2->sys, 2, 0, 0, &cell_id, &mat, NULL), 0);
     ASSERT_EQ(mat, 3);
+
+    /* The outer universe must also survive the OpenMC roundtrip. */
+    ASSERT_EQ(alea_find_cell_lazy(omc2->sys, 4, 0, 0, &cell_id, &mat, NULL), 0);
+    ASSERT_EQ(mat, 1);
 
     openmc_model_destroy(omc2);
     remove(tmpfile);

@@ -994,6 +994,7 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         const alea_cell_entry_t* c = &sys->cells.data[i];
         if (c->universe_id > max_id) max_id = c->universe_id;
         if (c->fill_universe > max_id) max_id = c->fill_universe;
+        if (c->lat_outer_universe > max_id) max_id = c->lat_outer_universe;
         if (c->mc_cell_id > max_id) max_id = c->mc_cell_id;
         for (size_t u = 0; u < c->lat_fill_count; u++) {
             if (c->lat_fill[u] > max_id) max_id = c->lat_fill[u];
@@ -1023,6 +1024,12 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
                         alea_bitset_set(&reachable, uid);
                         changed = true;
                     }
+                }
+                int outer = c->lat_outer_universe;
+                if (outer > 0 && outer <= max_id &&
+                    !alea_bitset_test(&reachable, outer)) {
+                    alea_bitset_set(&reachable, outer);
+                    changed = true;
                 }
             }
         }
@@ -1130,6 +1137,10 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         double pitch_x = cell->lat_pitch[0];
         double pitch_y = cell->lat_pitch[1];
         double pitch_z = cell->lat_pitch[2];
+        /* OpenMC 2D lattices intentionally have no axial pitch. Preserve that
+         * distinction before choosing harmless fallback values for formatting
+         * and center calculations below. */
+        int is_3d = nk > 1 || (pitch_z > 0.0 && pitch_z < 1e8);
         if (pitch_x <= 0) pitch_x = 1.0;
         if (pitch_y <= 0) pitch_y = 1.0;
         if (pitch_z <= 0) pitch_z = 1.0;
@@ -1137,9 +1148,6 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
         double ll_x = cell->lat_lower_left[0];
         double ll_y = cell->lat_lower_left[1];
         double ll_z = cell->lat_lower_left[2];
-
-        /* 3D if z-pitch is finite (cell has z-bounding surfaces) */
-        int is_3d = (pitch_z > 0 && pitch_z < 1e8);
 
         /* Compute element center from bbox (midpoint of bounding surfaces).
          * If non-zero, fill universes need translation = -center so that
@@ -1195,6 +1203,35 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
                     wrapper_count++;
                 }
             }
+            if (cell->lat_outer_universe > 0) {
+                int uid = cell->lat_outer_universe;
+                int found = 0;
+                for (int m = 0; m < univ_map_count; m++) {
+                    if (univ_map_orig[m] == uid) { found = 1; break; }
+                }
+                if (!found && univ_map_count < 256) {
+                    int wrapper_univ = next_id++;
+                    int wrapper_cell = next_id++;
+                    univ_map_orig[univ_map_count] = uid;
+                    univ_map_wrap[univ_map_count] = wrapper_univ;
+                    univ_map_count++;
+                    if (wrapper_count >= wrapper_cap) {
+                        wrapper_cap *= 2;
+                        wrapper_cell_t* new_w = (wrapper_cell_t*)arena_alloc(
+                            arena, wrapper_cap * sizeof(wrapper_cell_t));
+                        memcpy(new_w, wrappers,
+                               wrapper_count * sizeof(wrapper_cell_t));
+                        wrappers = new_w;
+                    }
+                    wrappers[wrapper_count].wrapper_univ_id = wrapper_univ;
+                    wrappers[wrapper_count].original_univ_id = uid;
+                    wrappers[wrapper_count].wrapper_cell_id = wrapper_cell;
+                    wrappers[wrapper_count].translation[0] = -center[0];
+                    wrappers[wrapper_count].translation[1] = -center[1];
+                    wrappers[wrapper_count].translation[2] = -center[2];
+                    wrapper_count++;
+                }
+            }
         }
 
         /* Helper: map a fill universe through the wrapper table */
@@ -1209,8 +1246,10 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
 
         /* A simple MCNP FILL=N repeats outside the stored fundamental
          * element; OpenMC represents that behavior with an outer universe. */
-        int outer_universe = -1;
-        if (cell->lat_fill_repeating && cell->lat_fill_count == 1) {
+        int outer_universe = cell->lat_outer_universe > 0
+            ? MAP_UNIV(cell->lat_outer_universe) : -1;
+        if (outer_universe < 0 && cell->lat_fill_repeating &&
+            cell->lat_fill_count == 1) {
             outer_universe = MAP_UNIV(cell->lat_fill[0]);
         }
 
@@ -1428,10 +1467,17 @@ static bool write_geometry_section(const alea_system_t* sys, export_context_t* c
             if (le->is_3d) {
                 if (!openmc_xml_attribute_i(xml, "n_axial", le->dims[2])) return false;
             }
-            if (le->outer_universe >= 0) {
-                if (!openmc_xml_attribute_i(xml, "outer", le->outer_universe)) return false;
-            }
             if (!openmc_xml_end_start_tag(xml, false)) return false;
+
+            if (le->outer_universe >= 0) {
+                if (!openmc_xml_start_element(xml, "outer")) return false;
+                {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%d", le->outer_universe);
+                    if (!openmc_xml_text(xml, buf)) return false;
+                }
+                if (!openmc_xml_end_element(xml, "outer")) return false;
+            }
 
             /* <center> */
             if (!openmc_xml_start_element(xml, "center")) return false;

@@ -1294,7 +1294,7 @@ static void raycast_add_fill_hits(alea_system_t* sys,
 static int lattice_rect_bounds(const alea_cell_entry_t* cell,
                                alea_bbox_t* out_bounds) {
     if (!cell || !out_bounds || cell->lat_pitch[0] <= 0.0 ||
-        cell->lat_pitch[1] <= 0.0 || cell->lat_pitch[2] <= 0.0) {
+        cell->lat_pitch[1] <= 0.0) {
         return -1;
     }
     const int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
@@ -1306,8 +1306,10 @@ static int lattice_rect_bounds(const alea_cell_entry_t* cell,
         .max_x = cell->lat_lower_left[0] + ni * cell->lat_pitch[0],
         .min_y = cell->lat_lower_left[1],
         .max_y = cell->lat_lower_left[1] + nj * cell->lat_pitch[1],
-        .min_z = cell->lat_lower_left[2],
-        .max_z = cell->lat_lower_left[2] + nk * cell->lat_pitch[2]
+        .min_z = nk == 1 && cell->lat_pitch[2] <= 0.0 ? -1e30
+                                                      : cell->lat_lower_left[2],
+        .max_z = nk == 1 && cell->lat_pitch[2] <= 0.0 ? 1e30
+            : cell->lat_lower_left[2] + nk * cell->lat_pitch[2]
     };
     return 0;
 }
@@ -1407,9 +1409,10 @@ static int lattice_raycast_interval(const alea_ray_t* ray,
     alea_bbox_t bounds;
     if (cell->lat_type == 1) {
         if (lattice_rect_bounds(cell, &bounds) != 0) return -1;
-        if (cell->lat_fill_repeating) return 0;
+        if (cell->lat_fill_repeating || cell->lat_outer_universe > 0) return 0;
     } else if (cell->lat_type == 2) {
         if (lattice_hex_bounds(cell, &bounds) != 0) return -1;
+        if (cell->lat_outer_universe > 0) return 0;
     } else {
         return -1;
     }
@@ -1424,13 +1427,30 @@ static int lattice_raycast_step_limit(const alea_ray_t* ray,
     const int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
     const int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (ni <= 0 || nj <= 0 || nk <= 0) return 0;
-    if (cell->lat_type == 1 && cell->lat_fill_repeating) {
+    const int unbounded = cell->lat_fill_repeating ||
+                          cell->lat_outer_universe > 0;
+    if (cell->lat_type == 1 && unbounded) {
         const double span = t_exit - t_enter;
         const double crossings = fabs(ray->dx) * span / cell->lat_pitch[0]
             + fabs(ray->dy) * span / cell->lat_pitch[1]
-            + fabs(ray->dz) * span / cell->lat_pitch[2];
+            + ((cell->lat_pitch[2] > 0.0 &&
+                (nk > 1 || cell->lat_fill_repeating))
+                ? fabs(ray->dz) * span / cell->lat_pitch[2] : 0.0);
         return crossings < (double)INT_MAX - 8.0
             ? (int)ceil(crossings) + 8 : INT_MAX;
+    }
+    if (cell->lat_type == 2 && unbounded) {
+        const double span = t_exit - t_enter;
+        const double p = cell->lat_pitch[0];
+        if (p <= 0.0) return 0;
+        const double dq = fabs(ray->dx / p - ray->dy / (p * M_SQRT3));
+        const double dr = fabs(2.0 * ray->dy / (p * M_SQRT3));
+        const double ds = fabs(-ray->dx / p - ray->dy / (p * M_SQRT3));
+        const double dz = (nk > 1 && cell->lat_pitch[2] > 0.0)
+            ? fabs(ray->dz) / cell->lat_pitch[2] : 0.0;
+        const double crossings = (dq + dr + ds + dz) * span;
+        return crossings < (double)INT_MAX - 12.0
+            ? (int)ceil(crossings) + 12 : INT_MAX;
     }
     return cell->lat_type == 1 ? 2 * (ni + nj + nk) + 4
                                : 3 * (ni + nj + nk) + 10;
@@ -3209,13 +3229,15 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
     double pz = lat_cell->lat_pitch[2];
     const double* ll = lat_cell->lat_lower_left;
 
-    if (px <= 0.0 || py <= 0.0 || pz <= 0.0) return t_max;
+    if (px <= 0.0 || py <= 0.0 || (nk > 1 && pz <= 0.0)) return t_max;
 
     alea_bbox_t lat_bbox;
     if (lattice_rect_bounds(lat_cell, &lat_bbox) != 0) return t_max;
 
     double t_enter = 0.0, t_exit = t_max;
-    if (!lat_cell->lat_fill_repeating &&
+    const int unbounded = lat_cell->lat_fill_repeating ||
+                          lat_cell->lat_outer_universe > 0;
+    if (!unbounded &&
         !ray_bbox_slab_enter_exit(ray, &lat_bbox, 0.0, t_max,
                                   &t_enter, &t_exit)) return t_max;
 
@@ -3227,10 +3249,12 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
     int i = (int)floor((sx - ll[0]) / px);
     int j = (lat_cell->lat_fill_repeating || nj > 1)
         ? (int)floor((sy - ll[1]) / py) : 0;
-    int k = (lat_cell->lat_fill_repeating || nk > 1)
+    const int axial_tiling = nk > 1 ||
+        (lat_cell->lat_fill_repeating && pz > 0.0);
+    int k = axial_tiling
         ? (int)floor((sz - ll[2]) / pz) : 0;
 
-    if (!lat_cell->lat_fill_repeating) {
+    if (!unbounded) {
         if (i < 0) i = 0;
         if (i >= ni) i = ni - 1;
         if (j < 0) j = 0;
@@ -3253,7 +3277,7 @@ static double lattice_rect_next_boundary(const alea_ray_t* ray,
         double t = (boundary - ray->oy) / ray->dy;
         if (t > t_min + RAY_EPSILON && t < t_next) t_next = t;
     }
-    if ((lat_cell->lat_fill_repeating || nk > 1) &&
+    if (axial_tiling &&
         fabs(ray->dz) > RAY_EPSILON) {
         double boundary = ll[2] + ((ray->dz > 0.0) ? (k + 1) : k) * pz;
         double t = (boundary - ray->oz) / ray->dz;
@@ -3274,7 +3298,8 @@ static double lattice_hex_next_boundary(const alea_ray_t* ray,
     if (lattice_hex_bounds(lat_cell, &lat_bbox) != 0) return t_max;
 
     double t_enter, t_exit;
-    if (!ray_bbox_slab_enter_exit(ray, &lat_bbox, 0.0, t_max,
+    if (lat_cell->lat_outer_universe <= 0 &&
+        !ray_bbox_slab_enter_exit(ray, &lat_bbox, 0.0, t_max,
                                   &t_enter, &t_exit)) {
         return t_max;
     }

@@ -1781,8 +1781,9 @@ alea_node_id_t alea_clone_tree_transformed(alea_system_t* sys,
 
 /**
  * Look up which universe a point maps to in a rectangular lattice.
- * Returns the universe ID, or -1 if the point is outside the lattice bounds.
- * Writes the element origin into ox, oy, oz for coordinate translation.
+ * Returns 1 and populates @p out for a declared element or an OpenMC outer
+ * element, 0 outside a finite lattice without an outer universe, and -1 for
+ * malformed lattice data.
  */
 int alea_lattice_location_from_indices(const alea_cell_entry_t* cell,
                                        int i, int j, int k,
@@ -1796,16 +1797,36 @@ int alea_lattice_location_from_indices(const alea_cell_entry_t* cell,
     int oi = i - cell->lat_fill_dims[0];
     int oj = j - cell->lat_fill_dims[2];
     int ok = k - cell->lat_fill_dims[4];
-    if (!cell->lat_fill_repeating &&
-        (oi < 0 || oi >= ni || oj < 0 || oj >= nj || ok < 0 || ok >= nk)) return 0;
-    size_t idx = cell->lat_fill_repeating ? 0 : (size_t)(oi * nj * nk + oj * nk + ok);
-    if (idx >= cell->lat_fill_count) return -1;
+    const int outside = oi < 0 || oi >= ni || oj < 0 || oj >= nj ||
+                        ok < 0 || ok >= nk;
+    size_t idx = 0;
+    int fill_universe;
+    if (cell->lat_fill_repeating) {
+        fill_universe = cell->lat_fill[0];
+    } else if (outside) {
+        if (cell->lat_outer_universe <= 0) return 0;
+        fill_universe = cell->lat_outer_universe;
+        idx = SIZE_MAX;
+    } else {
+        idx = (size_t)(oi * nj * nk + oj * nk + ok);
+        if (idx >= cell->lat_fill_count) return -1;
+        fill_universe = cell->lat_fill[idx];
+        /* The rectangular backing array for a hex lattice contains slots
+         * outside the actual hexagonal rings. Those slots are outer space. */
+        if (cell->lat_type == 2 && fill_universe <= 0 &&
+            cell->lat_outer_universe > 0) {
+            fill_universe = cell->lat_outer_universe;
+            idx = SIZE_MAX;
+        }
+    }
 
-    out->fill_universe = cell->lat_fill[idx];
+    out->fill_universe = fill_universe;
     out->i = i; out->j = j; out->k = k; out->linear_index = idx;
     if (cell->lat_type == 1) {
+        const int axial_tiling = nk > 1 ||
+            (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0);
         if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 ||
-            cell->lat_pitch[2] <= 0.0) return -1;
+            (axial_tiling && cell->lat_pitch[2] <= 0.0)) return -1;
         if (cell->lat_fill_zero_element_coords) {
             out->ox = i * cell->lat_pitch[0];
             out->oy = j * cell->lat_pitch[1];
@@ -1813,7 +1834,8 @@ int alea_lattice_location_from_indices(const alea_cell_entry_t* cell,
         } else {
             out->ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
             out->oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-            out->oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
+            out->oz = !axial_tiling ? 0.0
+                : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
         }
     } else {
         double p = cell->lat_pitch[0];
@@ -1836,11 +1858,14 @@ static int lattice_location_from_point_unchecked(const alea_cell_entry_t* cell,
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (ni <= 0 || nj <= 0 || nk <= 0) return -1;
     if (cell->lat_type == 1) {
-        if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 || cell->lat_pitch[2] <= 0.0) return -1;
+        const int axial_tiling = nk > 1 ||
+            (cell->lat_fill_repeating && cell->lat_pitch[2] > 0.0);
+        if (cell->lat_pitch[0] <= 0.0 || cell->lat_pitch[1] <= 0.0 ||
+            (axial_tiling && cell->lat_pitch[2] <= 0.0)) return -1;
         int i = cell->lat_fill_dims[0] + (int)floor((px - cell->lat_lower_left[0]) / cell->lat_pitch[0]);
         int j = cell->lat_fill_dims[2] + ((cell->lat_fill_repeating || nj > 1)
             ? (int)floor((py - cell->lat_lower_left[1]) / cell->lat_pitch[1]) : 0);
-        int k = cell->lat_fill_dims[4] + ((cell->lat_fill_repeating || nk > 1)
+        int k = cell->lat_fill_dims[4] + (axial_tiling
             ? (int)floor((pz - cell->lat_lower_left[2]) / cell->lat_pitch[2]) : 0);
         return alea_lattice_location_from_indices(cell, i, j, k, out);
     }
@@ -1881,7 +1906,7 @@ int lattice_hex_lookup(const alea_cell_entry_t* cell,
     return location.fill_universe;
 }
 
-/* A lattice element lookup alone is not containment: axes with a single
+/* A finite lattice element lookup alone is not containment: axes with a single
  * declared element skip their bound check entirely (e.g. any z maps onto a
  * single-layer lattice), so points far outside the lattice's extent can
  * still resolve to a "valid" element. This gate adds the missing bound
@@ -1891,12 +1916,13 @@ int lattice_hex_lookup(const alea_cell_entry_t* cell,
  * accepted identically to the lookups (no numerical cliffs at element
  * boundaries). Multi-element axes are already bound-checked by the lookups.
  * For hex lattices only the axial (z) axis applies; the transverse plane
- * uses hex indexing with its own bound check. */
+ * uses hex indexing with its own bound check. Repeating lattices and OpenMC
+ * lattices with an outer universe are defined at every computed index. */
 int alea_lattice_cell_contains(const alea_system_t* sys,
                                const alea_cell_entry_t* cell,
                                double lx, double ly, double lz) {
     if (!sys || !cell) return 0;
-    if (cell->lat_fill_repeating) return 1;
+    if (cell->lat_fill_repeating || cell->lat_outer_universe > 0) return 1;
 
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (nk == 1 && cell->lat_pitch[2] > 0.0) {
@@ -2358,6 +2384,10 @@ static alea_node_id_t clone_tree_to_system_transformed(alea_system_t* dst,
  * element's region for MCNP LAT cells).
  */
 static alea_bbox_t flatten_lattice_container_bbox(const alea_cell_entry_t* cell) {
+    if (cell->lat_fill_repeating || cell->lat_outer_universe > 0) {
+        const double inf = 1e30;
+        return (alea_bbox_t){-inf, inf, -inf, inf, -inf, inf};
+    }
     if (cell->lat_type == 1) {
         int ni = cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1;
         int nj = cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1;
@@ -2367,8 +2397,10 @@ static alea_bbox_t flatten_lattice_container_bbox(const alea_cell_entry_t* cell)
             cell->lat_lower_left[0] + (double)ni * cell->lat_pitch[0],
             cell->lat_lower_left[1],
             cell->lat_lower_left[1] + (double)nj * cell->lat_pitch[1],
-            cell->lat_lower_left[2],
-            cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2]
+            nk == 1 && cell->lat_pitch[2] <= 0.0 ? -1e30
+                                                  : cell->lat_lower_left[2],
+            nk == 1 && cell->lat_pitch[2] <= 0.0 ? 1e30
+                : cell->lat_lower_left[2] + (double)nk * cell->lat_pitch[2]
         };
     }
     /* Hex lattice. */
@@ -2458,6 +2490,12 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
     int nk = cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1;
     if (ni <= 0 || nj <= 0 || nk <= 0) return;
     if (!cell->lat_fill || cell->lat_fill_count == 0) return;
+    if (cell->lat_outer_universe > 0 && !ctx->config->clip_active) {
+        ALEA_LOG_ERROR("Cannot flatten lattice cell %d with an outer universe "
+                       "without a finite clip region", cell->mc_cell_id);
+        ctx->error = -1;
+        return;
+    }
 
     /* Compute clipped index range. Defaults: full sweep. */
     int oi_lo = 0, oi_hi = ni - 1;
@@ -2494,12 +2532,18 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
             int k_hi = (nk == 1) ? 0
                 : (int)floor((local_clip.max_z - ll[2]) / pp[2]) + 1;
 
-            if (i_lo > oi_lo) oi_lo = i_lo;
-            if (i_hi < oi_hi) oi_hi = i_hi;
-            if (j_lo > oj_lo) oj_lo = j_lo;
-            if (j_hi < oj_hi) oj_hi = j_hi;
-            if (k_lo > ok_lo) ok_lo = k_lo;
-            if (k_hi < ok_hi) ok_hi = k_hi;
+            if (cell->lat_outer_universe > 0) {
+                oi_lo = i_lo; oi_hi = i_hi;
+                oj_lo = j_lo; oj_hi = j_hi;
+                ok_lo = k_lo; ok_hi = k_hi;
+            } else {
+                if (i_lo > oi_lo) oi_lo = i_lo;
+                if (i_hi < oi_hi) oi_hi = i_hi;
+                if (j_lo > oj_lo) oj_lo = j_lo;
+                if (j_hi < oj_hi) oj_hi = j_hi;
+                if (k_lo > ok_lo) ok_lo = k_lo;
+                if (k_hi < ok_hi) ok_hi = k_hi;
+            }
         } else if (cell->lat_type == 2) {
             /* Hex: derive a conservative (ri, rk) range from the cartesian
              * corners of the local clip box.
@@ -2535,29 +2579,41 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
                 int new_oj_lo = rk_lo_idx - cell->lat_fill_dims[2];
                 int new_oj_hi = rk_hi_idx - cell->lat_fill_dims[2];
 
-                if (new_oi_lo > oi_lo) oi_lo = new_oi_lo;
-                if (new_oi_hi < oi_hi) oi_hi = new_oi_hi;
-                if (new_oj_lo > oj_lo) oj_lo = new_oj_lo;
-                if (new_oj_hi < oj_hi) oj_hi = new_oj_hi;
+                if (cell->lat_outer_universe > 0) {
+                    oi_lo = new_oi_lo; oi_hi = new_oi_hi;
+                    oj_lo = new_oj_lo; oj_hi = new_oj_hi;
+                } else {
+                    if (new_oi_lo > oi_lo) oi_lo = new_oi_lo;
+                    if (new_oi_hi < oi_hi) oi_hi = new_oi_hi;
+                    if (new_oj_lo > oj_lo) oj_lo = new_oj_lo;
+                    if (new_oj_hi < oj_hi) oj_hi = new_oj_hi;
+                }
 
                 if (nk > 1) {
                     int k_lo = (int)floor((local_clip.min_z - cell->lat_lower_left[2])
                                           / cell->lat_pitch[2]) - 1;
                     int k_hi = (int)floor((local_clip.max_z - cell->lat_lower_left[2])
                                           / cell->lat_pitch[2]) + 1;
-                    if (k_lo > ok_lo) ok_lo = k_lo;
-                    if (k_hi < ok_hi) ok_hi = k_hi;
+                    if (cell->lat_outer_universe > 0) {
+                        ok_lo = k_lo; ok_hi = k_hi;
+                    } else {
+                        if (k_lo > ok_lo) ok_lo = k_lo;
+                        if (k_hi < ok_hi) ok_hi = k_hi;
+                    }
                 }
             }
         }
 
-        /* Clamp to valid range. */
-        if (oi_lo < 0) oi_lo = 0;
-        if (oj_lo < 0) oj_lo = 0;
-        if (ok_lo < 0) ok_lo = 0;
-        if (oi_hi >= ni) oi_hi = ni - 1;
-        if (oj_hi >= nj) oj_hi = nj - 1;
-        if (ok_hi >= nk) ok_hi = nk - 1;
+        /* A lattice with an outer universe extends beyond its declared array;
+         * otherwise restrict expansion to the finite fill array. */
+        if (cell->lat_outer_universe <= 0) {
+            if (oi_lo < 0) oi_lo = 0;
+            if (oj_lo < 0) oj_lo = 0;
+            if (ok_lo < 0) ok_lo = 0;
+            if (oi_hi >= ni) oi_hi = ni - 1;
+            if (oj_hi >= nj) oj_hi = nj - 1;
+            if (ok_hi >= nk) ok_hi = nk - 1;
+        }
         if (oi_lo > oi_hi || oj_lo > oj_hi || ok_lo > ok_hi) return;
     }
 
@@ -2590,39 +2646,21 @@ static void flatten_lattice_expand(flatten_context_t* ctx,
     parent_geom_t* old_stack = ctx->parent_stack;
     ctx->parent_stack = &parent_node;
 
-    const double p = cell->lat_pitch[0];
-
     for (int oi = oi_lo; oi <= oi_hi; oi++) {
         for (int oj = oj_lo; oj <= oj_hi; oj++) {
             for (int ok = ok_lo; ok <= ok_hi; ok++) {
-                size_t idx = (size_t)oi * (size_t)nj * (size_t)nk
-                           + (size_t)oj * (size_t)nk + (size_t)ok;
-                if (idx >= cell->lat_fill_count) continue;
-                int fill_univ = cell->lat_fill[idx];
-                if (fill_univ <= 0) continue;
+                alea_lattice_location_t location;
+                if (alea_lattice_location_from_indices(
+                        cell, cell->lat_fill_dims[0] + oi,
+                        cell->lat_fill_dims[2] + oj,
+                        cell->lat_fill_dims[4] + ok, &location) != 1 ||
+                    location.fill_universe <= 0) continue;
+                int fill_univ = location.fill_universe;
 
                 /* Lattice-local translation into the filling universe. */
-                double ox, oy, oz;
-                if (cell->lat_type == 1) {
-                    if (cell->lat_fill_zero_element_coords) {
-                        ox = (cell->lat_fill_dims[0] + oi) * cell->lat_pitch[0];
-                        oy = (cell->lat_fill_dims[2] + oj) * cell->lat_pitch[1];
-                        oz = (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2];
-                    } else {
-                        ox = cell->lat_lower_left[0] + (oi + 0.5) * cell->lat_pitch[0];
-                        oy = cell->lat_lower_left[1] + (oj + 0.5) * cell->lat_pitch[1];
-                        oz = cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2];
-                    }
-                } else {
-                    int ri = oi + cell->lat_fill_dims[0];
-                    int rk = oj + cell->lat_fill_dims[2];
-                    ox = ri * p + rk * p * 0.5;
-                    oy = rk * p * M_SQRT3 * 0.5;
-                    oz = cell->lat_fill_zero_element_coords
-                       ? (cell->lat_fill_dims[4] + ok) * cell->lat_pitch[2]
-                       : ((nk == 1) ? 0.0
-                          : cell->lat_lower_left[2] + (ok + 0.5) * cell->lat_pitch[2]);
-                }
+                double ox = location.ox;
+                double oy = location.oy;
+                double oz = location.oz;
 
                 /* Element translation: element-local -> lattice-local.
                  * alea_matrix_identity sets has_inverse=true with inv = identity;

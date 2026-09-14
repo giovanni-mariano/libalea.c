@@ -1814,6 +1814,12 @@ TEST(lattice_hex_eval) {
     ASSERT_EQ(alea_find_cell_lazy(sys, 0.5, 0.5, 0, &cell_id, &material, NULL), 0);
     ASSERT_EQ(material, 2);
 
+    /* The fixture declares outer="1". Outside the two explicit rings, the
+     * outer universe is evaluated in the local coordinates of each tile. */
+    ASSERT_EQ(alea_find_cell_lazy(sys, 4.0, 0.0, 0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(material, 1);
+
     openmc_model_destroy(omc);
 }
 

@@ -559,6 +559,7 @@ typedef struct {
     int dims[6];            /* imin, imax, jmin, jmax, kmin, kmax */
     int* universes;         /* Array of universe IDs */
     size_t universe_count;
+    int outer_universe;     /* Universe used for indices outside finite bounds */
     double pitch[3];
     double lower_left[3];
 } openmc_lattice_t;
@@ -578,6 +579,7 @@ static openmc_lattice_t* parse_lattice(openmc_xml_element_t* lat_elem, arena_t* 
     memset(lat, 0, sizeof(*lat));
     lat->id = id;
     lat->lat_type = 1;  /* Default to rectangular */
+    lat->outer_universe = -1;
 
     /* Check for hex lattice type */
     const char* type_str = openmc_xml_get_attr(lat_elem, "type");
@@ -609,6 +611,17 @@ static openmc_lattice_t* parse_lattice(openmc_xml_element_t* lat_elem, arena_t* 
     openmc_xml_element_t* ll_elem = openmc_xml_find_child(lat_elem, "lower_left");
     if (ll_elem && ll_elem->text_content) {
         openmc_parse_doubles(ll_elem->text_content, lat->lower_left, 3);
+    }
+
+    /* OpenMC writes rectangular-lattice outer as a child element.  Accept an
+     * attribute as well for compatibility with older/generated inputs. */
+    openmc_xml_element_t* outer_elem = openmc_xml_find_child(lat_elem, "outer");
+    if (outer_elem && outer_elem->text_content) {
+        int value = -1;
+        if (openmc_parse_ints(outer_elem->text_content, &value, 1) == 1)
+            lat->outer_universe = value;
+    } else {
+        lat->outer_universe = openmc_xml_get_attr_int(lat_elem, "outer", -1);
     }
 
     /* Parse <universes> */
@@ -756,6 +769,7 @@ static openmc_lattice_t* parse_hex_lattice(openmc_xml_element_t* lat_elem, arena
     memset(lat, 0, sizeof(*lat));
     lat->id = id;
     lat->lat_type = 2;
+    lat->outer_universe = -1;
 
     /* Grid dims: symmetric around origin */
     lat->dims[0] = -(n_rings - 1);  /* imin */
@@ -811,9 +825,16 @@ static openmc_lattice_t* parse_hex_lattice(openmc_xml_element_t* lat_elem, arena
         lat->universe_count = grid_size;
     }
 
-    /* Parse outer universe */
-    int outer = openmc_xml_get_attr_int(lat_elem, "outer", -1);
-    (void)outer; /* Stored at cell level if needed */
+    /* Current OpenMC XML uses a child element; retain attribute support for
+     * legacy files such as early libalea fixtures. */
+    openmc_xml_element_t* outer_elem = openmc_xml_find_child(lat_elem, "outer");
+    if (outer_elem && outer_elem->text_content) {
+        int value = -1;
+        if (openmc_parse_ints(outer_elem->text_content, &value, 1) == 1)
+            lat->outer_universe = value;
+    } else {
+        lat->outer_universe = openmc_xml_get_attr_int(lat_elem, "outer", -1);
+    }
 
     ALEA_LOG_DEBUG("Parsed hex_lattice %d: n_rings=%d, n_axial=%d, "
                  "dims=[%d:%d %d:%d %d:%d], %zu grid entries",
@@ -822,46 +843,6 @@ static openmc_lattice_t* parse_hex_lattice(openmc_xml_element_t* lat_elem, arena
                  lat->dims[4], lat->dims[5], lat->universe_count);
 
     return lat;
-}
-
-/**
- * @brief Find lattice by ID in array
- */
-static openmc_lattice_t* find_lattice(openmc_lattice_t** lattices, size_t count, int id) {
-    for (size_t i = 0; i < count; i++) {
-        if (lattices[i] && lattices[i]->id == id) {
-            return lattices[i];
-        }
-    }
-    return NULL;
-}
-
-/**
- * @brief Apply lattice data to a cell
- */
-static void apply_lattice_to_cell(alea_cell_entry_t* cell, const openmc_lattice_t* lat) {
-    if (!cell || !lat) return;
-
-    cell->lat_type = lat->lat_type;
-    for (int i = 0; i < 6; i++) {
-        cell->lat_fill_dims[i] = lat->dims[i];
-    }
-
-    if (lat->universes && lat->universe_count > 0) {
-        cell->lat_fill = (int*)malloc(lat->universe_count * sizeof(int));
-        if (cell->lat_fill) {
-            memcpy(cell->lat_fill, lat->universes, lat->universe_count * sizeof(int));
-            cell->lat_fill_count = lat->universe_count;
-        }
-    }
-
-    for (int i = 0; i < 3; i++) {
-        cell->lat_pitch[i] = lat->pitch[i];
-        cell->lat_lower_left[i] = lat->lower_left[i];
-    }
-
-    /* Clear fill_universe since we're using lattice fill */
-    cell->fill_universe = 0;
 }
 
 /* ============================================================================
@@ -1229,6 +1210,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             }
             alea_cell_entry_t* sc = &sys->cells.data[idx];
             sc->lat_type = lat->lat_type;
+            sc->lat_outer_universe = lat->outer_universe;
             memcpy(sc->lat_fill_dims, lat->dims, sizeof(lat->dims));
             if (lat->universes && lat->universe_count > 0) {
                 sc->lat_fill = malloc(lat->universe_count * sizeof(int));

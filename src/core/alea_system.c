@@ -1436,6 +1436,7 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
         return -1;
     }
     memset(cell, 0, sizeof(*cell));
+    cell->lat_outer_universe = -1;
 
     cell->mc_cell_id = cell_id;
     cell->root_node_id = root_node;
@@ -1525,6 +1526,7 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
         return -1;
     }
     memset(cell, 0, sizeof(*cell));
+    cell->lat_outer_universe = -1;
 
     cell->mc_cell_id = final_cell_id;
     cell->root_node_id = root_node;
