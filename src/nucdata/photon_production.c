@@ -403,24 +403,58 @@ double alea_nuc_photon_production_event_yield(
            parent_xs / event_xs;
 }
 
-alea_error_t alea_nuc_sample_photon_production(
+alea_error_t alea_nuc_prepare_photon_production(
     const alea_nuc_nuclide_t* nuc,
     const alea_nuc_photon_production_t* production,
-    const alea_nuc_particle_state_t* incident,
-    alea_nuc_random_fn random, void* random_context,
-    alea_nuc_particle_state_t* photon) {
-    if (!nuc || !production || !incident || !random || !photon)
-        return ALEA_ERR_NULL_ARG;
+    alea_nuc_prepared_photon_production_t* prepared) {
+    if (!prepared) return ALEA_ERR_NULL_ARG;
+    *prepared = (alea_nuc_prepared_photon_production_t){0};
+    if (!nuc || !production) return ALEA_ERR_NULL_ARG;
     if (nuc->particle != ALEA_NUC_PARTICLE_NEUTRON ||
-        incident->type != ALEA_NUC_PARTICLE_NEUTRON ||
         !production->spectrum)
         return ALEA_ERR_INVALID_ARG;
     int owned = 0;
     for (int i = 0; i < nuc->n_photon_productions; i++)
         if (&nuc->photon_productions[i] == production) owned = 1;
-    if (!owned) return ALEA_ERR_INVALID_ARG;
-    if (!alea_nuc_validate_angular_internal(production->angular) ||
+    if (!owned || !photon_production_channel_valid(nuc, production) ||
+        !alea_nuc_validate_angular_internal(production->angular) ||
         alea_nuc_energy_dist_validate(production->spectrum, NULL) != ALEA_OK)
+        return ALEA_ERR_INVALID_ARG;
+    prepared->nuclide = nuc;
+    prepared->production = production;
+    return ALEA_OK;
+}
+
+double alea_nuc_prepared_photon_production_response(
+    const alea_nuc_prepared_photon_production_t* prepared,
+    double energy) {
+    if (!prepared || !prepared->nuclide || !prepared->production ||
+        !isfinite(energy))
+        return 0.0;
+    const alea_nuc_nuclide_t* nuc = prepared->nuclide;
+    const alea_nuc_photon_production_t* production = prepared->production;
+    if (production->production_xs)
+        return photon_production_xs_value(nuc, production, energy);
+    double yield;
+    if (photon_production_yield_trusted(production, energy, &yield) != ALEA_OK)
+        return 0.0;
+    return yield * alea_nuc_xs_reaction(
+        nuc, production->parent_mt, energy);
+}
+
+alea_error_t alea_nuc_sample_prepared_photon_production(
+    const alea_nuc_prepared_photon_production_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_particle_state_t* photon) {
+    if (!prepared || !incident || !random || !photon)
+        return ALEA_ERR_NULL_ARG;
+    const alea_nuc_nuclide_t* nuc = prepared->nuclide;
+    const alea_nuc_photon_production_t* production = prepared->production;
+    if (!nuc || !production ||
+        nuc->particle != ALEA_NUC_PARTICLE_NEUTRON ||
+        incident->type != ALEA_NUC_PARTICLE_NEUTRON ||
+        !production->spectrum)
         return ALEA_ERR_INVALID_ARG;
 
     double energy, mu = 0.0;
@@ -448,4 +482,20 @@ alea_error_t alea_nuc_sample_photon_production(
         candidate.direction);
     *photon = candidate;
     return ALEA_OK;
+}
+
+alea_error_t alea_nuc_sample_photon_production(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random, void* random_context,
+    alea_nuc_particle_state_t* photon) {
+    if (!nuc || !production || !incident || !random || !photon)
+        return ALEA_ERR_NULL_ARG;
+    alea_nuc_prepared_photon_production_t prepared;
+    alea_error_t err = alea_nuc_prepare_photon_production(
+        nuc, production, &prepared);
+    if (err != ALEA_OK) return err;
+    return alea_nuc_sample_prepared_photon_production(
+        &prepared, incident, random, random_context, photon);
 }

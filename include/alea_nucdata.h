@@ -551,6 +551,25 @@ alea_error_t alea_nuc_sample_photon_production(
     void* random_context,
     alea_nuc_particle_state_t* photon);
 
+/** Validate a photon-production channel once for repeated sampling. */
+alea_error_t alea_nuc_prepare_photon_production(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production,
+    alea_nuc_prepared_photon_production_t* prepared);
+
+/** Evaluate the validated channel's photon-production cross section. */
+double alea_nuc_prepared_photon_production_response(
+    const alea_nuc_prepared_photon_production_t* prepared,
+    double energy);
+
+/** Sample without rescanning ownership or revalidating distributions. */
+alea_error_t alea_nuc_sample_prepared_photon_production(
+    const alea_nuc_prepared_photon_production_t* prepared,
+    const alea_nuc_particle_state_t* incident,
+    alea_nuc_random_fn random,
+    void* random_context,
+    alea_nuc_particle_state_t* photon);
+
 /* ============================================================================
  * PHOTON CROSS SECTIONS
  * ============================================================================ */

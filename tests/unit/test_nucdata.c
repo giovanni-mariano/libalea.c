@@ -4228,6 +4228,21 @@ TEST(photon_production_decodes_yield_and_cross_section_forms) {
     ASSERT_NEAR(photon.weight, 0.75, 1e-14);
     ASSERT_NEAR(photon.time, 2.0, 1e-14);
 
+    alea_nuc_prepared_photon_production_t prepared_photon;
+    ASSERT_EQ(alea_nuc_prepare_photon_production(
+                  nuc, &nuc->photon_productions[0], &prepared_photon),
+              ALEA_OK);
+    ASSERT_NEAR(alea_nuc_prepared_photon_production_response(
+                    &prepared_photon, 1.5), 3.0, 1e-14);
+    photon_draws.position = 0;
+    photon = (alea_nuc_particle_state_t){0};
+    ASSERT_EQ(alea_nuc_sample_prepared_photon_production(
+                  &prepared_photon, &incident,
+                  sequence_rng, &photon_draws, &photon), ALEA_OK);
+    ASSERT_EQ(photon.type, ALEA_NUC_PARTICLE_PHOTON);
+    ASSERT_NEAR(photon.energy, 1.9, 1e-14);
+    ASSERT_NEAR(photon.direction[2], 0.5, 1e-14);
+
     incident.energy = 1.5;
     alea_nuc_mat_component_t component = {nuc, 0.1};
     alea_nuc_material_t material = {&component, 1, 1, NULL};

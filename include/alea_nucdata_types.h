@@ -289,6 +289,14 @@ typedef struct {
     alea_nuc_energy_dist_t* spectrum;
 } alea_nuc_photon_production_t;
 
+struct alea_nuc_nuclide;
+
+/** Validated view of one channel for repeated allocation-free sampling. */
+typedef struct {
+    const struct alea_nuc_nuclide* nuclide;
+    const alea_nuc_photon_production_t* production;
+} alea_nuc_prepared_photon_production_t;
+
 /** Native-grid comparison of GPD with decoded photon-production channels. */
 typedef struct {
     bool aggregate_available;          /* GPD aggregate was decoded */
@@ -488,7 +496,7 @@ typedef struct {
  * NUCLIDE — fully decoded ACE table
  * ============================================================================ */
 
-typedef struct {
+typedef struct alea_nuc_nuclide {
     char zaid[24];
     int Z, A, metastable;
     alea_nuc_particle_t particle;
