@@ -297,7 +297,7 @@ TEST(void_parallel_classification_matches_serial_exactly) {
     alea_destroy(sys);
 }
 
-#ifdef ALEA_USE_TINYPAR
+#ifdef ALEA_TINYPAR_THREADED
 typedef struct nested_void_context {
     alea_system_t* sys;
     alea_bbox_t bounds;

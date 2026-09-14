@@ -86,13 +86,13 @@ single-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
 		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
 		BUILD_DIR=$(SINGLE_BUILD_DIR) BIN_DIR=$(SINGLE_BIN_DIR) \
-		RELEASE=1 PORTABLE=1 USE_TINYPAR=0 lib-core $(SINGLE_BIN_DIR)/libalea_mcnp.a
+		RELEASE=1 PORTABLE=1 TINYPAR_BACKEND=serial lib-core $(SINGLE_BIN_DIR)/libalea_mcnp.a
 
 threaded-lib:
 	$(MAKE) -C $(LIBALEA_ROOT) AR=$(EMAR) \
 		CC="$(EMCC) $(WASM_SIMD_FLAGS)" \
 		BUILD_DIR=$(THREADED_BUILD_DIR) BIN_DIR=$(THREADED_BIN_DIR) \
-		RELEASE=1 PORTABLE=1 USE_TINYPAR=1 lib-core $(THREADED_BIN_DIR)/libalea_mcnp.a
+		RELEASE=1 PORTABLE=1 TINYPAR_BACKEND=native lib-core $(THREADED_BIN_DIR)/libalea_mcnp.a
 
 $(OUT_DIR):
 	mkdir -p $@
@@ -113,7 +113,7 @@ $(OUT_DIR)/alea-threaded.js: Makefile alea_wasm.c alea_wasm.h threaded-lib | $(O
 		$(LIBALEA_ROOT)/$(THREADED_BIN_DIR)/libalea.a -lm -o $@
 
 test-native:
-	$(MAKE) -C $(LIBALEA_ROOT) USE_TINYPAR=0 lib-core bin/libalea_mcnp.a
+	$(MAKE) -C $(LIBALEA_ROOT) TINYPAR_BACKEND=serial lib-core bin/libalea_mcnp.a
 	$(NATIVE_CC) -O2 -std=c11 -Wall -Wextra -Werror \
 		-I. -I$(LIBALEA_ROOT)/include -I$(LIBALEA_ROOT)/src \
 		alea_wasm.c tests/test_wasm_binding.c \

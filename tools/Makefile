@@ -22,12 +22,14 @@ else
 endif
 
 # Match the library default; only the POSIX backend requires pthread linkage.
-USE_TINYPAR ?= 1
+TINYPAR_BACKEND ?= native
 THREAD_FLAGS =
-ifeq ($(USE_TINYPAR),1)
+ifeq ($(TINYPAR_BACKEND),native)
   ifneq ($(WINDOWS_GNU),1)
     THREAD_FLAGS = -pthread
   endif
+else ifneq ($(TINYPAR_BACKEND),serial)
+  $(error TINYPAR_BACKEND must be native or serial)
 endif
 
 # Release build (set RELEASE=1)

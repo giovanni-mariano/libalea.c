@@ -45,7 +45,7 @@ TEST(parallel_backend_capabilities) {
     ASSERT_EQ(alea_parallel_set_threads(2), 0);
     const int workers = alea_parallel_max_threads();
     ASSERT_EQ(workers, enabled ? 2 : 1);
-#ifdef ALEA_USE_TINYPAR
+#ifdef ALEA_TINYPAR_THREADED
     ASSERT_TRUE(enabled);
 #else
     ASSERT_FALSE(enabled);

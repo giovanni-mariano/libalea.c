@@ -20,7 +20,7 @@
 .EXAMPLE
     ./build-msvc.ps1 full
     ./build-msvc.ps1 test
-    ./build-msvc.ps1 USE_TINYPAR=1 RELEASE=1 full
+    ./build-msvc.ps1 TINYPAR_BACKEND=native RELEASE=1 full
 #>
 [CmdletBinding()]
 param(

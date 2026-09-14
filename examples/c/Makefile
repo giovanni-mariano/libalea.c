@@ -9,11 +9,14 @@ MPICC ?= mpicc
 CFLAGS = -Wall -Wextra -g -std=c11
 INCLUDES = -I../../include
 
-# Threaded library support (pass USE_TINYPAR=1 when linking a threaded build)
-ifdef USE_TINYPAR
+# Match the library default; only the POSIX native backend needs pthread linkage.
+TINYPAR_BACKEND ?= native
+ifeq ($(TINYPAR_BACKEND),native)
   THREAD_FLAGS = -pthread
-else
+else ifeq ($(TINYPAR_BACKEND),serial)
   THREAD_FLAGS =
+else
+  $(error TINYPAR_BACKEND must be native or serial)
 endif
 
 # Libraries

@@ -52,18 +52,18 @@ DOCDIR ?= $(PREFIX)/share/doc/libalea
 # Automatic dependency generation
 DEPFLAGS = -MMD -MP
 
-# Native TinyPar threads are the default. Set USE_TINYPAR=0 for an explicitly
-# serial build (including single-threaded WebAssembly).
-USE_TINYPAR ?= 1
+# Native TinyPar threads are the default. Select the serial backend for builds
+# that must not create worker threads (including single-threaded WebAssembly).
+TINYPAR_BACKEND ?= native
 USE_MPI ?= 0
 
-# TinyPar backend. USE_TINYPAR=1 enables native worker threads; USE_TINYPAR=0
-# selects TinyPar's dependency-free serial backend.
+# TinyPar backend. The native backend uses POSIX or Win32 worker threads;
+# the serial backend is dependency-free and executes work on the caller.
 TINYPAR_DIR = vendor/tinypar
 TINYPAR_SRC_DIR = $(TINYPAR_DIR)/src
 TINYPAR_INCLUDE_DIR = $(TINYPAR_DIR)/include
-ifeq ($(USE_TINYPAR),1)
-  CFLAGS += -DALEA_USE_TINYPAR=1
+ifeq ($(TINYPAR_BACKEND),native)
+  CFLAGS += -DALEA_TINYPAR_THREADED=1
   ifeq ($(WINDOWS_GNU),1)
     TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_win32.c
   else
@@ -71,11 +71,11 @@ ifeq ($(USE_TINYPAR),1)
     CFLAGS += -pthread
     LDFLAGS += -pthread
   endif
-else ifeq ($(USE_TINYPAR),0)
+else ifeq ($(TINYPAR_BACKEND),serial)
   TINYPAR_PLATFORM_SRC = $(TINYPAR_SRC_DIR)/tinypar_serial.c
   CFLAGS += -DTINYPAR_NO_THREADS
 else
-  $(error USE_TINYPAR must be 0 or 1)
+  $(error TINYPAR_BACKEND must be native or serial)
 endif
 
 # Release build (set RELEASE=1)
@@ -1020,7 +1020,7 @@ help:
 	@echo "  BINDIR=$(BINDIR)"
 	@echo "  LIBDIR=$(LIBDIR)"
 	@echo "  INCLUDEDIR=$(INCLUDEDIR)"
-	@echo "  USE_TINYPAR=1    - Enable native tinypar worker threads"
+	@echo "  TINYPAR_BACKEND=native - Select native or serial TinyPar backend"
 	@echo "  USE_MPI=0        - Select local (0) or MPI (1) cluster backend"
 	@echo "  MPICC=$(MPICC)"
 	@echo "  MPIEXEC=$(MPIEXEC)"

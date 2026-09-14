@@ -62,9 +62,8 @@ the function returns zero on success. Once the persistent executor
 has been created, attempts to resize it return an error so queued operations
 cannot race with pool replacement. Nested calls and operations with one
 effective worker execute directly without initializing the pool. Current
-public headers expose only the `alea_parallel_*` names; archive filenames that
-still contain `openmp` are packaging compatibility names, not an OpenMP API or
-runtime dependency.
+public headers expose only the `alea_parallel_*` names. TinyPar uses native
+platform threads and does not require an OpenMP runtime.
 
 ---
 
@@ -2213,7 +2212,7 @@ diagnostics as `$ElementData`; VTK writes cell scalar arrays.
 instead of retaining per-voxel result arrays. Fraction pointers passed to the
 callback are valid only for that call.
 
-When built with `USE_TINYPAR=1`, `workers > 1` parallelizes fixed, non-adaptive
+When built with `TINYPAR_BACKEND=native`, `workers > 1` parallelizes fixed, non-adaptive
 sampling when sparse fractions and callbacks are disabled. The implementation
 uses per-worker scratch and a deterministic material-table merge. Requests that
 need ordered callbacks, packed sparse fractions, adaptive whole-run budgets, or

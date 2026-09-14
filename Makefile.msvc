@@ -11,7 +11,7 @@
 #     nmake /f Makefile.msvc                 # build all static libraries
 #     nmake /f Makefile.msvc test            # build + run unit & integration tests
 #     nmake /f Makefile.msvc RELEASE=1       # optimized build (default is /Od /Zi)
-#     nmake /f Makefile.msvc USE_TINYPAR=1   # enable native tinypar threads
+#     nmake /f Makefile.msvc TINYPAR_BACKEND=native # native TinyPar threads
 #     nmake /f Makefile.msvc CONDA_CLANG=1   # use clang-cl/llvm-lib (needs Windows SDK/MSVC headers)
 #     nmake /f Makefile.msvc clean
 #
@@ -82,18 +82,18 @@ LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 # /utf-8        - source/exec charset (files contain UTF-8 box-drawing in comments)
 # _CRT_SECURE_NO_WARNINGS / _CRT_NONSTDC_NO_WARNINGS - silence strdup/strcpy noise
 
-!IFNDEF USE_TINYPAR
-USE_TINYPAR = 1
+!IFNDEF TINYPAR_BACKEND
+TINYPAR_BACKEND = native
 !ENDIF
 
-!IF "$(USE_TINYPAR)" == "1"
-PARALLEL_DEFINES = /DALEA_USE_TINYPAR=1
+!IF "$(TINYPAR_BACKEND)" == "native"
+PARALLEL_DEFINES = /DALEA_TINYPAR_THREADED=1
 TINYPAR_PLATFORM_OBJ = $(BUILD)\vendor\tinypar\tinypar_win32.obj
-!ELSEIF "$(USE_TINYPAR)" == "0"
+!ELSEIF "$(TINYPAR_BACKEND)" == "serial"
 PARALLEL_DEFINES = /DTINYPAR_NO_THREADS
 TINYPAR_PLATFORM_OBJ = $(BUILD)\vendor\tinypar\tinypar_serial.obj
 !ELSE
-!ERROR USE_TINYPAR must be 0 or 1
+!ERROR TINYPAR_BACKEND must be native or serial
 !ENDIF
 
 CFLAGS = /nologo /std:c11 /W3 /utf-8 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS $(PARALLEL_DEFINES)

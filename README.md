@@ -65,20 +65,17 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Platform | Archive |
 |----------|---------|
 | Linux x64 | `alea-linux-x64.tar.gz` |
-| Linux x64 (threaded; legacy archive name) | `alea-linux-conda-openmp-x64.tar.gz` |
 | Linux ARM64 | `alea-linux-arm64.tar.gz` |
 | macOS Intel | `alea-macos-x64.tar.gz` |
 | macOS Apple Silicon | `alea-macos-arm64.tar.gz` |
 | Windows x64 (MinGW/UCRT) | `alea-windows-x64.zip` |
 | Windows x64 (MSVC) | `alea-windows-msvc-x64.zip` |
-| Windows x64 (MSVC, threaded; legacy archive name) | `alea-windows-msvc-openmp-x64.zip` |
 
 The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
 `mc_convert`, `mc_plotter`, `nuc_plot`, `nuc_inventory`, `large_model_probe`, static libraries,
 and headers. The MSVC archives package the `.lib` static libraries and headers.
-The two archives retaining `openmp` in their names are compatibility artifacts;
-current releases use the vendored tinypar backend and have no OpenMP runtime
-dependency.
+All builds use the vendored TinyPar backend by default and have no OpenMP
+runtime dependency.
 
 ### Building from Source
 
@@ -108,9 +105,9 @@ make install      # Install libraries, headers, CLI, tools, and docs
 
 ### Build Options by Platform
 
-The default build uses tinypar native worker threads (POSIX threads on
-Linux/macOS, Win32 threads on Windows). Set `USE_TINYPAR=0` for an explicitly
-serial build. Add `RELEASE=1` for an optimized build.
+The default build uses the TinyPar `native` backend (POSIX threads on
+Linux/macOS, Win32 threads on Windows). Set `TINYPAR_BACKEND=serial` for an
+explicitly serial build. Add `RELEASE=1` for an optimized build.
 
 Threaded builds reuse a process-wide TinyPar executor across parallel library
 operations. Set `ALEA_NUM_THREADS=n`, or call
@@ -141,7 +138,7 @@ meaning. Use `PORTABLE=1` for binaries distributed to other CPU types.
 make CC=clang full cli tools                  # Select compiler
 make PREFIX=/opt/libalea install             # Install prefix
 make DESTDIR=/tmp/pkg PREFIX=/usr install    # Package/stage install
-make USE_TINYPAR=1 RELEASE=1 full cli tools   # Enable worker threads
+make TINYPAR_BACKEND=native RELEASE=1 full cli tools
 make cluster USE_MPI=1                        # Optional MPI cluster module
 make test-cluster USE_MPI=1                   # Two-rank cluster test
 ```
@@ -178,7 +175,7 @@ sphere that encloses the finite instances of interest:
 
 ```bash
 make cluster modules USE_MPI=1
-make -C examples/c cluster_volumes USE_TINYPAR=1
+make -C examples/c cluster_volumes TINYPAR_BACKEND=native
 mpiexec -n 4 examples/c/cluster_volumes \
     --rays 1000000 --radius 250 --center 0 0 0 model.inp
 mpiexec -n 4 examples/c/cluster_volumes \
@@ -203,8 +200,8 @@ Threaded build with GCC or Clang:
 
 ```bash
 make clean
-make USE_TINYPAR=1 RELEASE=1 full cli tools
-make USE_TINYPAR=1 test
+make TINYPAR_BACKEND=native RELEASE=1 full cli tools
+make TINYPAR_BACKEND=native test
 ```
 
 #### macOS
@@ -220,8 +217,8 @@ Threaded build:
 
 ```bash
 make clean
-make USE_TINYPAR=1 RELEASE=1 full cli tools
-make USE_TINYPAR=1 test
+make TINYPAR_BACKEND=native RELEASE=1 full cli tools
+make TINYPAR_BACKEND=native test
 ```
 
 #### Windows with MinGW/UCRT
@@ -249,8 +246,8 @@ Threaded build:
 
 ```bash
 make clean
-make USE_TINYPAR=1 RELEASE=1 full cli tools
-make USE_TINYPAR=1 test-unit test-integration
+make TINYPAR_BACKEND=native RELEASE=1 full cli tools
+make TINYPAR_BACKEND=native test-unit test-integration
 ```
 
 #### Windows with conda clang-cl
@@ -264,8 +261,8 @@ still targets the MSVC ABI.
 conda create -n libalea-clang -c conda-forge clang_win-64 jom
 conda activate libalea-clang
 
-jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 full
-jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 test
+jom /J 1 /f Makefile.msvc CONDA_CLANG=1 TINYPAR_BACKEND=native full
+jom /J 1 /f Makefile.msvc CONDA_CLANG=1 TINYPAR_BACKEND=native test
 ```
 
 If `clang-cl` reports missing headers such as `vcruntime.h` or `windows.h`, the
@@ -288,8 +285,8 @@ conda activate libalea-ucrt
 
 $cc = (Get-Command x86_64-w64-mingw32-gcc).Source
 $ar = & $cc -print-prog-name=ar
-make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_TINYPAR=1 full cli tools
-make WINDOWS_GNU=1 CC="$cc" AR="$ar" USE_TINYPAR=1 test-unit test-integration test-lua
+make WINDOWS_GNU=1 CC="$cc" AR="$ar" TINYPAR_BACKEND=native full cli tools
+make WINDOWS_GNU=1 CC="$cc" AR="$ar" TINYPAR_BACKEND=native test-unit test-integration test-lua
 ```
 
 #### Windows with MSVC
@@ -309,15 +306,15 @@ Portable serial build from PowerShell:
 Threaded build from PowerShell:
 
 ```powershell
-.\build-msvc.ps1 USE_TINYPAR=1 RELEASE=1 full
-.\build-msvc.ps1 USE_TINYPAR=1 test
+.\build-msvc.ps1 TINYPAR_BACKEND=native RELEASE=1 full
+.\build-msvc.ps1 TINYPAR_BACKEND=native test
 ```
 
 The same commands are available from `cmd.exe`:
 
 ```bat
 build-msvc.bat full
-build-msvc.bat USE_TINYPAR=1 RELEASE=1 full
+build-msvc.bat TINYPAR_BACKEND=native RELEASE=1 full
 ```
 
 No separate threading runtime is required.
@@ -432,7 +429,7 @@ The tracked public sampling API is in `include/alea_nucdata.h` and `include/alea
 | `alea_mesh_sample` / `alea_mesh_visit` | Fixed structured-grid composition estimates |
 | `alea_adaptive_grid_sample` | Nonconforming adaptive octree voxels |
 
-Build `make mesh-benchmark` (or `make USE_TINYPAR=1 mesh-benchmark`) to measure
+Build `make mesh-benchmark` (or `make TINYPAR_BACKEND=native mesh-benchmark`) to measure
 uniform, interface, and many-material grids across center, regular subcell, and
 stratified modes. The benchmark also reports retained bytes per voxel for
 material-only, diagnostic, and complete result masks.

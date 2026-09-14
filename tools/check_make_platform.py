@@ -33,9 +33,10 @@ def main():
     for key in (*names, "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "PORTABLE", "RELEASE"):
         env.pop(key, None)
     for uname, system, override, threads, windows in cases:
+        tinypar_backend = "native" if threads else "serial"
         args = ["make", "--no-print-directory", "-s", "-f", "Makefile",
                 "-f", "-", "platform_probe", "UNAME_S=" + uname,
-                "OS=" + system, "USE_TINYPAR=" + str(threads)]
+                "OS=" + system, "TINYPAR_BACKEND=" + tinypar_backend]
         if override is not None:
             args.append("WINDOWS_GNU=" + str(override))
         result = subprocess.run(args, input=probe, text=True, cwd=root,
