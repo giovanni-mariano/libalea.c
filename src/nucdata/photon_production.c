@@ -230,27 +230,74 @@ static double photon_production_xs_value(
     return production_xs;
 }
 
+static bool photon_production_channel_valid(
+    const alea_nuc_nuclide_t* nuc,
+    const alea_nuc_photon_production_t* production) {
+    if (production->production_xs) {
+        if (!production->values || production->threshold_index < 1 ||
+            production->n_energies <= 0 ||
+            production->n_energies >
+                nuc->n_energies - production->threshold_index + 1)
+            return false;
+        for (int i = 0; i < production->n_energies; i++)
+            if (!isfinite(production->values[i]) ||
+                production->values[i] < 0.0)
+                return false;
+        return true;
+    }
+    if (production->parent_mt <= 0 || !production->energy ||
+        !production->values || production->n_energies <= 0 ||
+        !alea_nuc_interp_regions_valid(
+            production->nbt, production->interp,
+            production->n_regions, production->n_energies))
+        return false;
+    for (int i = 0; i < production->n_energies; i++)
+        if (!isfinite(production->energy[i]) ||
+            !isfinite(production->values[i]) ||
+            production->values[i] < 0.0 ||
+            (i > 0 && production->energy[i] < production->energy[i - 1]))
+            return false;
+    return true;
+}
+
+/* The channel is validated once before the native-grid sweep.  Calling the
+ * public evaluator here would rescan its complete tabulation at every point. */
+static alea_error_t photon_production_yield_trusted(
+    const alea_nuc_photon_production_t* production,
+    double energy, double* value) {
+    if (production->n_energies == 1 || energy <= production->energy[0]) {
+        *value = production->values[0];
+        return ALEA_OK;
+    }
+    if (energy >= production->energy[production->n_energies - 1]) {
+        *value = production->values[production->n_energies - 1];
+        return ALEA_OK;
+    }
+    double ignored;
+    int interval = alea_nuc_energy_lookup_trusted(
+        production->energy, production->n_energies, energy, &ignored);
+    int interpolation = alea_nuc_interp_code_for_interval(
+        production->nbt, production->interp,
+        production->n_regions, interval);
+    return alea_nuc_interp_pair(
+        production->energy[interval], production->energy[interval + 1],
+        production->values[interval], production->values[interval + 1],
+        energy, interpolation, value);
+}
+
 static alea_error_t photon_production_native_response(
     const alea_nuc_nuclide_t* nuc,
     const alea_nuc_photon_production_t* production,
     int energy_index, double* response) {
     if (production->production_xs) {
         int local = energy_index - (production->threshold_index - 1);
-        if (!production->values || production->threshold_index < 1 ||
-            production->n_energies <= 0 ||
-            production->n_energies >
-                nuc->n_energies - production->threshold_index + 1)
-            return ALEA_ERR_INVALID_STATE;
         *response = local >= 0 && local < production->n_energies
             ? production->values[local] : 0.0;
     } else {
         double yield;
-        if (alea_nuc_interp_eval(
-                production->energy, production->values,
-                production->n_energies, production->nbt,
-                production->interp, production->n_regions,
-                nuc->energy[energy_index], &yield) != ALEA_OK)
-            return ALEA_ERR_INVALID_STATE;
+        alea_error_t err = photon_production_yield_trusted(
+            production, nuc->energy[energy_index], &yield);
+        if (err != ALEA_OK) return ALEA_ERR_INVALID_STATE;
         *response = yield * alea_nuc_xs_reaction(
             nuc, production->parent_mt, nuc->energy[energy_index]);
     }
@@ -277,13 +324,21 @@ alea_error_t alea_nuc_photon_production_audit(
         (nuc->n_photon_productions > 0 && !nuc->photon_productions))
         return ALEA_ERR_INVALID_STATE;
 
+    for (int ie = 0; ie < nuc->n_energies; ie++)
+        if (!isfinite(nuc->energy[ie]) ||
+            (ie > 0 && !(nuc->energy[ie] > nuc->energy[ie - 1])) ||
+            !isfinite(nuc->total_photon_production_xs[ie]) ||
+            nuc->total_photon_production_xs[ie] < 0.0)
+            return ALEA_ERR_INVALID_STATE;
+    for (int ip = 0; ip < nuc->n_photon_productions; ip++)
+        if (!photon_production_channel_valid(
+                nuc, &nuc->photon_productions[ip]))
+            return ALEA_ERR_INVALID_STATE;
+
     report->aggregate_available = true;
     report->native_grid_consistent = true;
     for (int ie = 0; ie < nuc->n_energies; ie++) {
         double aggregate = nuc->total_photon_production_xs[ie];
-        if (!isfinite(nuc->energy[ie]) || !isfinite(aggregate) ||
-            aggregate < 0.0)
-            return ALEA_ERR_INVALID_STATE;
         double decoded = 0.0;
         for (int ip = 0; ip < nuc->n_photon_productions; ip++) {
             double response;
