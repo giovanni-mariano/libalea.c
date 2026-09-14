@@ -22,6 +22,7 @@
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
 #include "bvh.h"
+#include "volume_internal.h"
 #include "core/alea_system.h"
 #include "rng/alea_rng.h"
 #include "primitives/bbox.h"
@@ -2787,9 +2788,9 @@ int alea_generate_cauchy_crofton_rays(double cx, double cy, double cz,
  * Compute relative errors from raw sum_L (volumes before scaling) and sum_L^2.
  * Called before volumes[] are multiplied by scale.
  */
-static void compute_volume_errors(const double* volumes, const double* sum_l2,
-                                  double* rel_errors, size_t count,
-                                  size_t n_rays) {
+void alea_volume_compute_errors(const double* volumes, const double* sum_l2,
+                                double* rel_errors, size_t count,
+                                size_t n_rays) {
     for (size_t i = 0; i < count; i++) {
         double mean_l = volumes[i] / (double)n_rays;
         if (mean_l > 0.0) {
@@ -3010,12 +3011,22 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
     return 0;
 }
 
-static int volume_estimate_ray_batch(
-        alea_system_t* sys, size_t n_paths, size_t ray_begin, size_t ray_end,
+int alea_volume_accumulate_ray_range(
+        alea_system_t* sys, const alea_volume_problem_t* problem,
+        size_t ray_begin, size_t ray_end,
         alea_rng_algorithm_t rng_algorithm, uint64_t seed,
         size_t requested_workers,
-        double cx, double cy, double cz, double radius,
         double* sum_l, double* sum_l2, size_t* out_actual_workers) {
+    if (!sys || !problem || !sum_l || ray_end < ray_begin) return -1;
+    const size_t n_paths = problem->path_count;
+    const double cx = problem->cx;
+    const double cy = problem->cy;
+    const double cz = problem->cz;
+    const double radius = problem->radius;
+    if (ray_begin == ray_end) {
+        if (out_actual_workers) *out_actual_workers = 0;
+        return 0;
+    }
     atomic_int error_flag;
     atomic_init(&error_flag, 0);
     size_t actual_workers = 1;
@@ -3063,6 +3074,35 @@ static int volume_estimate_ray_batch(
     return atomic_load(&error_flag) ? -1 : 0;
 }
 
+int alea_volume_problem_prepare(alea_system_t* sys,
+                                const alea_volume_estimate_options_t* options,
+                                alea_volume_problem_t* problem) {
+    if (!sys || !options || !problem) return -1;
+    memset(problem, 0, sizeof(*problem));
+    problem->path_count = alea_volume_path_count(sys);
+    if (problem->path_count == 0)
+        return alea_error_code() == (int)ALEA_OK ? 0 : -1;
+    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
+    if (options->use_sampling_sphere) {
+        problem->cx = options->sampling_center[0];
+        problem->cy = options->sampling_center[1];
+        problem->cz = options->sampling_center[2];
+        problem->radius = options->sampling_radius;
+        return 0;
+    }
+    if (compute_path_bounding_sphere(
+            sys, problem->path_count, &problem->cx, &problem->cy,
+            &problem->cz, &problem->radius) != 0 || problem->radius <= 0.0) {
+        if (alea_compute_bounding_sphere(
+                sys, 1.0, &problem->cx, &problem->cy, &problem->cz,
+                &problem->radius) != 0 || problem->radius <= 0.0) {
+            return -1;
+        }
+    }
+    problem->radius *= 1.01;
+    return 0;
+}
+
 static double volume_maximum_relative_error(
         const double* errors, size_t count) {
     double maximum = 0.0;
@@ -3086,27 +3126,23 @@ int alea_estimate_volumes_ex(
          supplied->rng_algorithm != ALEA_RNG_LEGACY_LCG) ||
         !isfinite(supplied->target_rel_error) ||
         supplied->target_rel_error < 0.0 ||
-        supplied->target_rel_error > 1.0) {
+        supplied->target_rel_error > 1.0 ||
+        (supplied->use_sampling_sphere &&
+         (!isfinite(supplied->sampling_center[0]) ||
+          !isfinite(supplied->sampling_center[1]) ||
+          !isfinite(supplied->sampling_center[2]) ||
+          !isfinite(supplied->sampling_radius) ||
+          supplied->sampling_radius <= 0.0))) {
         alea_set_error_detail(ALEA_ERR_INVALID_ARG,
                               "invalid volume-estimation options");
         return -1;
     }
 
     alea_error_clear();
-    const size_t n_paths = alea_volume_path_count(sys);
-    if (n_paths == 0 && alea_error_code() != (int)ALEA_OK) return -1;
+    alea_volume_problem_t problem;
+    if (alea_volume_problem_prepare(sys, supplied, &problem) != 0) return -1;
+    const size_t n_paths = problem.path_count;
     if (n_paths == 0) return 0;
-    if (alea_raycast_ensure_hier_caches(sys) != 0) return -1;
-
-    double cx, cy, cz, radius;
-    if (compute_path_bounding_sphere(
-            sys, n_paths, &cx, &cy, &cz, &radius) != 0 || radius <= 0.0) {
-        if (alea_compute_bounding_sphere(
-                sys, 1.0, &cx, &cy, &cz, &radius) != 0 || radius <= 0.0) {
-            return -1;
-        }
-    }
-    radius *= 1.01;
 
     const int need_errors = rel_errors != NULL ||
         supplied->target_rel_error > 0.0 || supplied->progress != NULL;
@@ -3137,10 +3173,9 @@ int alea_estimate_volumes_ex(
         size_t batch_end = completed + batch_size;
         if (batch_end < completed || batch_end > supplied->max_rays)
             batch_end = supplied->max_rays;
-        if (volume_estimate_ray_batch(
-                sys, n_paths, completed, batch_end, supplied->rng_algorithm,
-                supplied->seed,
-                supplied->requested_workers, cx, cy, cz, radius,
+        if (alea_volume_accumulate_ray_range(
+                sys, &problem, completed, batch_end, supplied->rng_algorithm,
+                supplied->seed, supplied->requested_workers,
                 volumes, sum_l2, &actual_workers) != 0) {
             free(sum_l2);
             if (work_errors != rel_errors) free(work_errors);
@@ -3151,7 +3186,7 @@ int alea_estimate_volumes_ex(
         completed = batch_end;
 
         if (need_errors) {
-            compute_volume_errors(
+            alea_volume_compute_errors(
                 volumes, sum_l2, work_errors, n_paths, completed);
             maximum_error = volume_maximum_relative_error(work_errors, n_paths);
         }
@@ -3167,7 +3202,8 @@ int alea_estimate_volumes_ex(
         if (converged || cancelled) break;
     }
 
-    const double scale = M_PI * radius * radius / (double)completed;
+    const double scale = M_PI * problem.radius * problem.radius /
+                         (double)completed;
     for (size_t i = 0; i < n_paths; i++) volumes[i] *= scale;
     if (out_stats) {
         out_stats->rays_completed = completed;

@@ -1,0 +1,335 @@
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+//
+// SPDX-License-Identifier: MPL-2.0
+
+/* Estimate every concrete cell-instance volume in an MCNP or OpenMC model. */
+
+#include "alea.h"
+#include "alea_cluster.h"
+#include "alea_mcnp.h"
+#include "alea_openmc.h"
+
+#include <errno.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef enum { FORMAT_AUTO, FORMAT_MCNP, FORMAT_OPENMC } input_format_t;
+
+typedef struct {
+    const char* input_path;
+    const char* output_path;
+    input_format_t format;
+    size_t rays;
+    size_t batch_size;
+    size_t workers;
+    uint64_t seed;
+    double target_rel_error;
+    double center[3];
+    double radius;
+    int csv;
+} arguments_t;
+
+static void usage(FILE* stream, const char* program) {
+    fprintf(stream,
+        "Usage: %s [options] INPUT\n"
+        "\nEstimate every concrete cell-instance volume in MCNP or OpenMC input.\n"
+        "Run directly for one rank or with mpiexec for distributed execution.\n"
+        "\nOptions:\n"
+        "  --format auto|mcnp|openmc  Input format (default: extension)\n"
+        "  --rays N                   Maximum global rays (required)\n"
+        "  --radius R                 Sampling-sphere radius (required)\n"
+        "  --center X Y Z             Sampling-sphere center (default: 0 0 0)\n"
+        "  --batch N                  Global rays per reduction (default: 10000)\n"
+        "  --workers N                TinyPar workers per rank (default: automatic)\n"
+        "  --seed N                   Sampling seed (default: 42)\n"
+        "  --target-rel-error X       Stop when every path reaches X (default: off)\n"
+        "  --csv                      Write machine-readable CSV\n"
+        "  -o, --output FILE          Write rank-zero output to FILE\n"
+        "  -h, --help                 Show this help\n", program);
+}
+
+static int ends_with(const char* text, const char* suffix) {
+    size_t text_length = strlen(text), suffix_length = strlen(suffix);
+    return text_length >= suffix_length &&
+        strcmp(text + text_length - suffix_length, suffix) == 0;
+}
+
+static int parse_size(const char* text, int allow_zero, size_t* output) {
+    char* end = NULL;
+    errno = 0;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (errno || end == text || *end || (!allow_zero && value == 0) ||
+        value > (unsigned long long)SIZE_MAX) return -1;
+    *output = (size_t)value;
+    return 0;
+}
+
+static int parse_u64(const char* text, uint64_t* output) {
+    char* end = NULL;
+    errno = 0;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (errno || end == text || *end) return -1;
+    *output = (uint64_t)value;
+    return 0;
+}
+
+static int parse_double(const char* text, double* output) {
+    char* end = NULL;
+    errno = 0;
+    double value = strtod(text, &end);
+    if (errno || end == text || *end || !isfinite(value)) return -1;
+    *output = value;
+    return 0;
+}
+
+static int parse_arguments(int argc, char** argv, arguments_t* arguments) {
+    *arguments = (arguments_t){
+        .format = FORMAT_AUTO, .batch_size = 10000, .seed = 42
+    };
+    for (int i = 1; i < argc; ++i) {
+        const char* option = argv[i];
+        if (!strcmp(option, "-h") || !strcmp(option, "--help")) return 1;
+        if (!strcmp(option, "--csv")) { arguments->csv = 1; continue; }
+        if (!strcmp(option, "--center")) {
+            if (i + 3 >= argc || parse_double(argv[i + 1], &arguments->center[0]) ||
+                parse_double(argv[i + 2], &arguments->center[1]) ||
+                parse_double(argv[i + 3], &arguments->center[2])) return -1;
+            i += 3;
+            continue;
+        }
+        if (!strcmp(option, "--format")) {
+            if (++i >= argc) return -1;
+            if (!strcmp(argv[i], "auto")) arguments->format = FORMAT_AUTO;
+            else if (!strcmp(argv[i], "mcnp")) arguments->format = FORMAT_MCNP;
+            else if (!strcmp(argv[i], "openmc")) arguments->format = FORMAT_OPENMC;
+            else return -1;
+            continue;
+        }
+        if (!strcmp(option, "--rays") || !strcmp(option, "--radius") ||
+            !strcmp(option, "--batch") ||
+            !strcmp(option, "--workers") || !strcmp(option, "--seed") ||
+            !strcmp(option, "--target-rel-error") || !strcmp(option, "-o") ||
+            !strcmp(option, "--output")) {
+            if (++i >= argc) return -1;
+            if (!strcmp(option, "--rays") &&
+                parse_size(argv[i], 0, &arguments->rays)) return -1;
+            if (!strcmp(option, "--radius") &&
+                (parse_double(argv[i], &arguments->radius) ||
+                 arguments->radius <= 0.0)) return -1;
+            if (!strcmp(option, "--batch") &&
+                parse_size(argv[i], 0, &arguments->batch_size)) return -1;
+            if (!strcmp(option, "--workers") &&
+                parse_size(argv[i], 1, &arguments->workers)) return -1;
+            if (!strcmp(option, "--seed") &&
+                parse_u64(argv[i], &arguments->seed)) return -1;
+            if (!strcmp(option, "--target-rel-error") &&
+                (parse_double(argv[i], &arguments->target_rel_error) ||
+                 arguments->target_rel_error < 0.0 ||
+                 arguments->target_rel_error > 1.0)) return -1;
+            if (!strcmp(option, "-o") || !strcmp(option, "--output"))
+                arguments->output_path = argv[i];
+            continue;
+        }
+        if (option[0] == '-' || arguments->input_path) return -1;
+        arguments->input_path = option;
+    }
+    if (!arguments->input_path || arguments->rays == 0 ||
+        arguments->radius <= 0.0) return -1;
+    if (arguments->batch_size > arguments->rays)
+        arguments->batch_size = arguments->rays;
+    if (arguments->format == FORMAT_AUTO)
+        arguments->format = ends_with(arguments->input_path, ".xml")
+            ? FORMAT_OPENMC : FORMAT_MCNP;
+    return 0;
+}
+
+static int cell_id_from_index(const alea_system_t* sys, int cell_index) {
+    alea_cell_info_t info;
+    if (cell_index < 0 ||
+        alea_cell_get_info(sys, (size_t)cell_index, &info) != 0) return -1;
+    return info.cell_id;
+}
+
+static void print_instance(FILE* output, const alea_system_t* sys,
+                           const alea_volume_path_t* path) {
+    fputs("root", output);
+    for (size_t i = 0; i < path->ancestor_count; ++i) {
+        int cell_id = cell_id_from_index(sys, path->ancestor_cell_indices[i]);
+        if (cell_id >= 0)
+            fprintf(output, "/u%d:c%d", path->ancestor_universe_ids[i], cell_id);
+        else
+            fprintf(output, "/u%d:cidx%d", path->ancestor_universe_ids[i],
+                    path->ancestor_cell_indices[i]);
+    }
+    for (size_t i = 0; i < path->lattice_step_count; ++i) {
+        const alea_volume_lattice_step_t* step = &path->lattice_steps[i];
+        int cell_id = cell_id_from_index(sys, step->lattice_cell_index);
+        fprintf(output, "/lat-c%d[%d:%d:%d]=>u%d",
+                cell_id >= 0 ? cell_id : step->lattice_cell_index,
+                step->i, step->j, step->k, step->fill_universe);
+    }
+    fprintf(output, "/u%d:c%d", path->universe_id, path->terminal_cell_id);
+}
+
+static void write_report(FILE* output, int csv,
+                         const alea_system_t* sys,
+                         const alea_volume_path_t* paths,
+                         const double* volumes, const double* errors,
+                         size_t count) {
+    if (csv) {
+        fputs("path_id,cell_id,material_id,universe_id,depth,instance,"
+              "world_to_local_tx,world_to_local_ty,world_to_local_tz,"
+              "volume,relative_error\n", output);
+        for (size_t i = 0; i < count; ++i) {
+            fprintf(output, "%llu,%d,%d,%d,%d,\"",
+                    (unsigned long long)paths[i].path_id,
+                    paths[i].terminal_cell_id, paths[i].material_id,
+                    paths[i].universe_id, paths[i].depth);
+            print_instance(output, sys, &paths[i]);
+            fprintf(output, "\",%.17g,%.17g,%.17g,%.17g,",
+                    paths[i].world_to_local[3], paths[i].world_to_local[7],
+                    paths[i].world_to_local[11], volumes[i]);
+            if (errors[i] >= 0.0) fprintf(output, "%.17g", errors[i]);
+            fputc('\n', output);
+        }
+        return;
+    }
+    fprintf(output, "%6s %8s %8s %8s %5s %16s %10s  %s\n",
+            "Path", "Cell", "Material", "Universe", "Depth", "Volume",
+            "Rel.err", "Instance");
+    for (size_t i = 0; i < count; ++i) {
+        fprintf(output, "%6llu %8d %8d %8d %5d ",
+                (unsigned long long)paths[i].path_id,
+                paths[i].terminal_cell_id, paths[i].material_id,
+                paths[i].universe_id, paths[i].depth);
+        fprintf(output, "%16.8e ", volumes[i]);
+        if (errors[i] >= 0.0) fprintf(output, "%10.4g  ", errors[i]);
+        else fprintf(output, "%10s  ", "-");
+        print_instance(output, sys, &paths[i]);
+        fputc('\n', output);
+    }
+}
+
+int main(int argc, char** argv) {
+    int result = 1;
+    mcnp_model_t* mcnp_model = NULL;
+    openmc_model_t* openmc_model = NULL;
+    alea_cluster_t* cluster = NULL;
+    alea_volume_path_t* paths = NULL;
+    double* volumes = NULL;
+    double* errors = NULL;
+    FILE* output = NULL;
+
+    alea_cluster_status_t status = alea_cluster_initialize(&argc, &argv);
+    if (status != ALEA_CLUSTER_OK) {
+        fprintf(stderr, "cluster initialization: %s\n",
+                alea_cluster_status_string(status));
+        return 1;
+    }
+    cluster = alea_cluster_create();
+    if (!cluster) { fprintf(stderr, "cluster context creation failed\n"); goto done; }
+    int rank = alea_cluster_rank(cluster);
+
+    arguments_t arguments;
+    int parsed = parse_arguments(argc, argv, &arguments);
+    if (parsed != 0) {
+        if (rank == 0) usage(parsed > 0 ? stdout : stderr, argv[0]);
+        result = parsed > 0 ? 0 : 2;
+        goto done;
+    }
+
+    alea_system_t* sys = NULL;
+    if (arguments.format == FORMAT_OPENMC) {
+        openmc_model = openmc_load(arguments.input_path);
+        if (openmc_model) sys = openmc_model_system(openmc_model);
+    } else {
+        mcnp_model = mcnp_load(arguments.input_path);
+        if (mcnp_model) sys = mcnp_model_system(mcnp_model);
+    }
+    if (!sys) {
+        fprintf(stderr, "rank %d: cannot load %s: %s\n", rank,
+                arguments.input_path, alea_error());
+        goto done;
+    }
+
+    size_t path_count = alea_volume_path_count(sys);
+    if (path_count == 0) {
+        fprintf(stderr, "rank %d: model has no concrete volume paths: %s\n",
+                rank, alea_error());
+        goto done;
+    }
+    paths = calloc(path_count, sizeof(*paths));
+    volumes = calloc(path_count, sizeof(*volumes));
+    errors = calloc(path_count, sizeof(*errors));
+    if (!paths || !volumes || !errors ||
+        alea_volume_paths_get(sys, paths, path_count) != path_count) {
+        fprintf(stderr, "rank %d: cannot allocate/enumerate volume paths\n", rank);
+        goto done;
+    }
+
+    alea_volume_estimate_options_t options;
+    alea_volume_estimate_options_init(&options);
+    options.max_rays = arguments.rays;
+    options.batch_size = arguments.batch_size;
+    options.requested_workers = arguments.workers;
+    options.seed = arguments.seed;
+    options.target_rel_error = arguments.target_rel_error;
+    options.use_sampling_sphere = true;
+    options.sampling_center[0] = arguments.center[0];
+    options.sampling_center[1] = arguments.center[1];
+    options.sampling_center[2] = arguments.center[2];
+    options.sampling_radius = arguments.radius;
+    alea_cluster_volume_stats_t stats;
+    status = alea_cluster_estimate_volumes(
+        cluster, sys, &options, volumes, errors, &stats);
+    if (status != ALEA_CLUSTER_OK) {
+        if (rank == 0) fprintf(stderr, "volume estimation: %s\n",
+                               alea_cluster_status_string(status));
+        goto done;
+    }
+
+    if (rank == 0) {
+        output = stdout;
+        if (arguments.output_path) {
+            output = fopen(arguments.output_path, "w");
+            if (!output) {
+                fprintf(stderr, "cannot open %s: %s\n", arguments.output_path,
+                        strerror(errno));
+                goto done;
+            }
+        }
+        if (!arguments.csv)
+            fprintf(output, "# backend=%s ranks=%d rays=%zu paths=%zu seed=%llu "
+                    "sphere=(%.9g,%.9g,%.9g; %.9g)%s\n",
+                    alea_cluster_backend(cluster), stats.rank_count,
+                    stats.volume.rays_completed, path_count,
+                    (unsigned long long)stats.volume.seed,
+                    arguments.center[0], arguments.center[1], arguments.center[2],
+                    arguments.radius,
+                    stats.volume.converged ? " converged" : "");
+        write_report(output, arguments.csv, sys, paths, volumes, errors,
+                     path_count);
+        if (ferror(output)) { fprintf(stderr, "error writing report\n"); goto done; }
+        if (output != stdout && fclose(output) != 0) {
+            output = NULL;
+            fprintf(stderr, "error closing volume report\n");
+            goto done;
+        }
+        output = NULL;
+    }
+    result = 0;
+
+done:
+    if (output && output != stdout) fclose(output);
+    free(paths);
+    free(volumes);
+    free(errors);
+    openmc_model_destroy(openmc_model);
+    mcnp_model_destroy(mcnp_model);
+    alea_cluster_destroy(cluster);
+    if (alea_cluster_finalize() != ALEA_CLUSTER_OK) result = 1;
+    return result;
+}

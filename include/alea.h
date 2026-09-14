@@ -968,6 +968,10 @@ typedef struct {
     double target_rel_error;      /**< 0 disables early convergence. */
     alea_volume_progress_fn progress;
     void* progress_user_data;
+    bool use_sampling_sphere;     /**< Use the explicit sphere below. */
+    double sampling_center[3];    /**< World-space center of explicit sphere. */
+    /** Positive radius; every finite instance being estimated must be inside. */
+    double sampling_radius;
 } alea_volume_estimate_options_t;
 
 /** Execution receipt for a volume-estimation run. */
@@ -986,7 +990,12 @@ typedef struct {
 
 void alea_volume_estimate_options_init(alea_volume_estimate_options_t* options);
 
-/** Extended volume estimator. Output arrays use alea_volume_path_count(). */
+/**
+ * Extended volume estimator. Output arrays use alea_volume_path_count().
+ * By default the sampling sphere is derived from finite path bounds. When
+ * use_sampling_sphere is true, the caller-provided sphere is used as-is and
+ * must enclose every finite instance whose volume is to be estimated.
+ */
 int alea_estimate_volumes_ex(
     alea_system_t* sys,
     const alea_volume_estimate_options_t* options,

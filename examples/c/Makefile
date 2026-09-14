@@ -5,6 +5,7 @@
 # Examples Makefile
 
 CC = gcc
+MPICC ?= mpicc
 CFLAGS = -Wall -Wextra -g -std=c11
 INCLUDES = -I../../include
 
@@ -44,7 +45,11 @@ void_demo: void_demo.c
 slab_transport: slab_transport.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_NUCDATA)
 
+cluster_volumes: cluster_volumes.c
+	$(MPICC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< \
+		../../bin/libalea_cluster.a $(LIBS_ALL)
+
 clean:
-	rm -f $(EXAMPLES) slab_transport *.inp *.ppm *.bmp *.png
+	rm -f $(EXAMPLES) slab_transport cluster_volumes *.inp *.ppm *.bmp *.png
 
 .PHONY: all clean

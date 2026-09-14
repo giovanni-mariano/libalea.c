@@ -142,11 +142,53 @@ make CC=clang full cli tools                  # Select compiler
 make PREFIX=/opt/libalea install             # Install prefix
 make DESTDIR=/tmp/pkg PREFIX=/usr install    # Package/stage install
 make USE_TINYPAR=1 RELEASE=1 full cli tools   # Enable worker threads
+make cluster USE_MPI=1                        # Optional MPI cluster module
+make test-cluster USE_MPI=1                   # Two-rank cluster test
 ```
 
 `make install` builds and installs the static libraries, public headers, `alea`
 CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
 `install-tools` to install only one part.
+
+### Optional cluster module
+
+`libalea_cluster.a` distributes volume-estimation ray batches across fixed MPI
+ranks and reduces raw track-length moments in memory. The core library has no
+MPI dependency. Each rank constructs or loads the same model, calls the same
+collective operation, and receives the final volumes and uncertainties.
+
+```bash
+make cluster USE_MPI=1 MPICC=mpicc
+mpicc program.c -Iinclude bin/libalea_cluster.a bin/libalea.a -lm -pthread
+mpiexec -n 4 ./a.out
+```
+
+Programs include `alea_cluster.h`, call `alea_cluster_initialize()` and
+`alea_cluster_create()`, then call `alea_cluster_estimate_volumes()`
+collectively. Destroy the context before `alea_cluster_finalize()`. All MPI
+calls run on the initialization thread; TinyPar handles local work between
+collectives. Set `ALEA_NUM_THREADS` to the CPUs allocated per rank before the
+first parallel operation. `make cluster USE_MPI=0` provides a one-rank local
+backend for development. See `docs/PLAN_CLUSTER.md` for the contract, current
+scope, and planned extensions.
+
+The `cluster_volumes` example loads MCNP or OpenMC input and reports every
+concrete cell instance. The user supplies the global ray count and a sampling
+sphere that encloses the finite instances of interest:
+
+```bash
+make cluster modules USE_MPI=1
+make -C examples/c cluster_volumes USE_TINYPAR=1
+mpiexec -n 4 examples/c/cluster_volumes \
+    --rays 1000000 --radius 250 --center 0 0 0 model.inp
+mpiexec -n 4 examples/c/cluster_volumes \
+    --rays 1000000 --radius 250 --csv -o volumes.csv geometry.xml
+```
+
+The report distinguishes repeated fill and lattice instances through their
+volume-path identities. The program intentionally does not filter cells based
+on bounding-box heuristics; selecting a sphere appropriate for the cells being
+measured remains the caller's responsibility.
 
 #### Linux
 
