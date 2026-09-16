@@ -414,10 +414,14 @@ modules: structure $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
 cluster: lib-core structure $(LIB_CLUSTER)
 
 CLUSTER_TEST = $(BIN_DIR)/tests/cluster/test_cluster$(EXEEXT)
+ifeq ($(USE_MPI),1)
+CLUSTER_GROUP_TEST = $(BIN_DIR)/tests/cluster/test_cluster_mpi_groups$(EXEEXT)
+endif
 
-test-cluster: cluster $(CLUSTER_TEST)
+test-cluster: cluster $(CLUSTER_TEST) $(CLUSTER_GROUP_TEST)
 	@if [ "$(USE_MPI)" = "1" ]; then \
-		$(MPIEXEC) -n 2 $(CLUSTER_TEST); \
+		$(MPIEXEC) -n 2 $(CLUSTER_TEST) && \
+		$(MPIEXEC) -n 4 $(CLUSTER_GROUP_TEST); \
 	else \
 		$(CLUSTER_TEST); \
 	fi
@@ -704,6 +708,10 @@ $(BUILD_DIR)/cluster/mpi/cluster_mpi.o: $(CLUSTER_DIR)/cluster_mpi.c | $(BUILD_D
 
 ifeq ($(USE_MPI),1)
 $(CLUSTER_TEST): $(TEST_DIR)/cluster/test_cluster.c $(LIB_CLUSTER) $(LIB_CORE) | $(BIN_DIR)/tests/cluster
+	@echo "MPICC  $<"
+	@$(MPICC) $(CFLAGS) $(INCLUDES) $< $(LIB_CLUSTER) $(LIB_CORE) $(LDFLAGS) -o $@
+
+$(CLUSTER_GROUP_TEST): $(TEST_DIR)/cluster/test_cluster_mpi_groups.c $(LIB_CLUSTER) $(LIB_CORE) | $(BIN_DIR)/tests/cluster
 	@echo "MPICC  $<"
 	@$(MPICC) $(CFLAGS) $(INCLUDES) $< $(LIB_CLUSTER) $(LIB_CORE) $(LDFLAGS) -o $@
 else

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "cluster_internal.h"
+#include "alea_cluster_mpi.h"
 
 #include <limits.h>
 #include <mpi.h>
@@ -44,12 +45,26 @@ int alea_cluster_backend_finalize(void) {
     return MPI_Finalize() == MPI_SUCCESS ? 0 : -1;
 }
 
-int alea_cluster_backend_create(void** out, int* rank, int* size) {
-    if (!out || !rank || !size) return -1;
+static int create_mpi_backend(void** out, int* rank, int* size,
+                              MPI_Comm communicator, int ready) {
+    if (!out || !rank || !size || communicator == MPI_COMM_NULL) return -1;
+    int intercommunicator = 0;
+    if (MPI_Comm_test_inter(communicator, &intercommunicator) != MPI_SUCCESS ||
+        intercommunicator) return -1;
+    *out = NULL;
+    int local_ready = ready != 0, all_ready = 0;
+    if (MPI_Allreduce(&local_ready, &all_ready, 1, MPI_INT, MPI_MIN,
+                      communicator) != MPI_SUCCESS || !all_ready)
+        return -1;
     alea_cluster_mpi_state_t* state = calloc(1, sizeof(*state));
-    if (!state) return -1;
+    local_ready = state != NULL;
+    if (MPI_Allreduce(&local_ready, &all_ready, 1, MPI_INT, MPI_MIN,
+                      communicator) != MPI_SUCCESS || !all_ready) {
+        free(state);
+        return -1;
+    }
     state->communicator = MPI_COMM_NULL;
-    if (MPI_Comm_dup(MPI_COMM_WORLD, &state->communicator) != MPI_SUCCESS ||
+    if (MPI_Comm_dup(communicator, &state->communicator) != MPI_SUCCESS ||
         MPI_Comm_set_errhandler(state->communicator, MPI_ERRORS_RETURN) !=
             MPI_SUCCESS ||
         MPI_Comm_rank(state->communicator, rank) != MPI_SUCCESS ||
@@ -61,6 +76,22 @@ int alea_cluster_backend_create(void** out, int* rank, int* size) {
     }
     *out = state;
     return 0;
+}
+
+int alea_cluster_backend_create(void** out, int* rank, int* size, int ready) {
+    return create_mpi_backend(out, rank, size, MPI_COMM_WORLD, ready);
+}
+
+static int create_supplied_backend(void** out, int* rank, int* size,
+                                   void* user_data, int ready) {
+    return create_mpi_backend(out, rank, size,
+        *(const MPI_Comm*)user_data, ready);
+}
+
+alea_cluster_t* alea_cluster_create_mpi(MPI_Comm communicator) {
+    if (communicator == MPI_COMM_NULL) return NULL;
+    return alea_cluster_create_with_backend(create_supplied_backend,
+        &communicator);
 }
 
 void alea_cluster_backend_destroy(void* opaque) {

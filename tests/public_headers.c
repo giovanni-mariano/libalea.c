@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /*
- * Compile-only check: every installed header must resolve with -Iinclude and
- * without src/ on the include path. Keep this list in sync with include/.
+ * Compile-only check: non-MPI headers must resolve with -Iinclude and without
+ * src/ on the include path. The MPI-specific header is checked by
+ * test_cluster_mpi_groups.c under mpicc.
  */
 #include "alea.h"
 #include "alea_cluster_base.h"

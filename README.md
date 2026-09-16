@@ -157,9 +157,17 @@ include `alea_cluster_volume.h` for the volume API or
 `alea_cluster_raycast.h` for ray and coverage APIs without including render or
 mesh declarations. Render, slice, mesh, and validation have corresponding
 `alea_cluster_*.h` headers; `alea_cluster.h` remains the umbrella header. The
-common runtime and collective input APIs are in `alea_cluster_base.h`. Applications can
-call `alea_cluster_read_file()` so rank zero reads an input file and broadcasts
-its bytes for parsing on every rank. Each rank frees the returned buffer.
+common runtime and collective input APIs are in `alea_cluster_base.h`.
+In an MPI build, `alea_cluster_create()` duplicates `MPI_COMM_WORLD`.
+Applications that split ranks into independent groups can include
+`alea_cluster_mpi.h` and call `alea_cluster_create_mpi(comm)` instead. Creation,
+operations, and destruction are collective only within that group. Libalea
+owns and frees its duplicate; the caller keeps ownership of `comm`. Destroying
+a context does not finalize MPI. Only the MPI-specific header requires MPI
+headers.
+Applications can call `alea_cluster_read_file()` so rank zero reads an input
+file and broadcasts its bytes for parsing on every rank. Each rank frees the
+returned buffer.
 For MCNP inputs with `READ FILE=` cards, `alea_cluster_read_mcnp_input()`
 resolves nested paths relative to their containing file on rank zero and
 broadcasts the expanded text. The OpenMC geometry loader currently reads a

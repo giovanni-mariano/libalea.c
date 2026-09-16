@@ -26,8 +26,9 @@ int alea_cluster_backend_initialize(int* argc, char*** argv) {
     (void)argc; (void)argv; return 0;
 }
 int alea_cluster_backend_finalize(void) { return 0; }
-int alea_cluster_backend_create(void** state, int* rank, int* size) {
-    if (!state || !rank || !size) return -1;
+int alea_cluster_backend_create(void** state, int* rank, int* size,
+                                int ready) {
+    if (!state || !rank || !size || !ready) return -1;
     *state = (void*)1; *rank = 0; *size = 1; return 0;
 }
 void alea_cluster_backend_destroy(void* state) { (void)state; }
@@ -449,17 +450,35 @@ alea_cluster_status_t alea_cluster_finalize(void) {
     return ALEA_CLUSTER_OK;
 }
 
-alea_cluster_t* alea_cluster_create(void) {
-    if (!g_initialized || g_context_count != 0) return NULL;
-    alea_cluster_t* cluster = calloc(1, sizeof(*cluster));
-    if (!cluster) return NULL;
-    if (alea_cluster_backend_create(&cluster->backend, &cluster->rank,
-                                    &cluster->size) != 0) {
-        free(cluster); return NULL;
+alea_cluster_t* alea_cluster_create_with_backend(
+        alea_cluster_backend_factory_t factory, void* user_data) {
+    if (!g_initialized || !factory) return NULL;
+    alea_cluster_t* cluster = g_context_count == 0
+        ? calloc(1, sizeof(*cluster)) : NULL;
+    void* backend = NULL;
+    int rank = -1, size = 0;
+    if (factory(&backend, &rank, &size, user_data, cluster != NULL) != 0 ||
+        !cluster) {
+        if (backend) alea_cluster_backend_destroy(backend);
+        free(cluster);
+        return NULL;
     }
+    cluster->backend = backend;
+    cluster->rank = rank;
+    cluster->size = size;
     cluster->usable = 1;
     g_context_count = 1;
     return cluster;
+}
+
+static int create_world_backend(void** state, int* rank, int* size,
+                                void* user_data, int ready) {
+    (void)user_data;
+    return alea_cluster_backend_create(state, rank, size, ready);
+}
+
+alea_cluster_t* alea_cluster_create(void) {
+    return alea_cluster_create_with_backend(create_world_backend, NULL);
 }
 
 void alea_cluster_destroy(alea_cluster_t* cluster) {

@@ -32,8 +32,13 @@ typedef enum {
 alea_cluster_status_t alea_cluster_initialize(int* argc, char*** argv);
 /** Finalize a runtime initialized by Alea after destroying all contexts. */
 alea_cluster_status_t alea_cluster_finalize(void);
-/** V1 permits one live context per process. */
+/** Collectively create a context on MPI_COMM_WORLD in an MPI build, or a
+ * one-rank local context otherwise. The MPI backend duplicates the world
+ * communicator, so library messages do not share the caller's context.
+ * One live cluster context is permitted per process. */
 alea_cluster_t* alea_cluster_create(void);
+/** Destroy the context collectively on its MPI group. This frees libalea's
+ * duplicate communicator, but does not finalize MPI. */
 void alea_cluster_destroy(alea_cluster_t* cluster);
 
 int alea_cluster_rank(const alea_cluster_t* cluster);

@@ -27,7 +27,12 @@ alea_cluster_status_t alea_cluster_broadcast_owned_bytes(
 
 int alea_cluster_backend_initialize(int* argc, char*** argv);
 int alea_cluster_backend_finalize(void);
-int alea_cluster_backend_create(void** state, int* rank, int* size);
+int alea_cluster_backend_create(void** state, int* rank, int* size,
+                                int ready);
+typedef int (*alea_cluster_backend_factory_t)(void** state, int* rank,
+    int* size, void* user_data, int ready);
+alea_cluster_t* alea_cluster_create_with_backend(
+    alea_cluster_backend_factory_t factory, void* user_data);
 void alea_cluster_backend_destroy(void* state);
 const char* alea_cluster_backend_name(void);
 int alea_cluster_backend_agree_status(void* state, int local, int* global);
