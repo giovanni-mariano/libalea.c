@@ -221,6 +221,8 @@ int main(int argc, char** argv) {
     alea_volume_path_t* paths = NULL;
     double* volumes = NULL;
     double* errors = NULL;
+    char* input_data = NULL;
+    size_t input_length = 0;
     FILE* output = NULL;
 
     alea_cluster_status_t status = alea_cluster_initialize(&argc, &argv);
@@ -241,32 +243,55 @@ int main(int argc, char** argv) {
         goto done;
     }
 
+    status = arguments.format == FORMAT_OPENMC
+        ? alea_cluster_read_file(cluster, arguments.input_path,
+                                 &input_data, &input_length)
+        : alea_cluster_read_mcnp_input(cluster, arguments.input_path,
+                                       &input_data, &input_length);
+    if (status != ALEA_CLUSTER_OK) {
+        if (rank == 0)
+            fprintf(stderr, "cannot read %s: %s\n", arguments.input_path,
+                    alea_cluster_status_string(status));
+        goto done;
+    }
+
     alea_system_t* sys = NULL;
     if (arguments.format == FORMAT_OPENMC) {
-        openmc_model = openmc_load(arguments.input_path);
+        openmc_model = openmc_load_string(input_data, input_length);
         if (openmc_model) sys = openmc_model_system(openmc_model);
     } else {
-        mcnp_model = mcnp_load(arguments.input_path);
+        mcnp_model = mcnp_load_string(input_data, input_length);
         if (mcnp_model) sys = mcnp_model_system(mcnp_model);
     }
+    free(input_data);
+    input_data = NULL;
+    status = alea_cluster_agree(cluster, sys ? ALEA_CLUSTER_OK
+                                           : ALEA_CLUSTER_COMPUTE_ERROR);
     if (!sys) {
         fprintf(stderr, "rank %d: cannot load %s: %s\n", rank,
                 arguments.input_path, alea_error());
+    }
+    if (status != ALEA_CLUSTER_OK) {
+        if (rank == 0 && sys)
+            fprintf(stderr, "model parsing failed on another rank\n");
         goto done;
     }
 
     size_t path_count = alea_volume_path_count(sys);
-    if (path_count == 0) {
-        fprintf(stderr, "rank %d: model has no concrete volume paths: %s\n",
-                rank, alea_error());
-        goto done;
+    if (path_count) {
+        paths = calloc(path_count, sizeof(*paths));
+        volumes = calloc(path_count, sizeof(*volumes));
+        errors = calloc(path_count, sizeof(*errors));
     }
-    paths = calloc(path_count, sizeof(*paths));
-    volumes = calloc(path_count, sizeof(*volumes));
-    errors = calloc(path_count, sizeof(*errors));
-    if (!paths || !volumes || !errors ||
-        alea_volume_paths_get(sys, paths, path_count) != path_count) {
-        fprintf(stderr, "rank %d: cannot allocate/enumerate volume paths\n", rank);
+    status = alea_cluster_agree(cluster,
+        path_count == 0 ? ALEA_CLUSTER_COMPUTE_ERROR :
+        (!paths || !volumes || !errors) ? ALEA_CLUSTER_OUT_OF_MEMORY :
+        alea_volume_paths_get(sys, paths, path_count) != path_count
+            ? ALEA_CLUSTER_COMPUTE_ERROR : ALEA_CLUSTER_OK);
+    if (status != ALEA_CLUSTER_OK) {
+        if (rank == 0)
+            fprintf(stderr, "cannot enumerate volume paths: %s\n",
+                    alea_cluster_status_string(status));
         goto done;
     }
 
@@ -323,6 +348,7 @@ int main(int argc, char** argv) {
     result = 0;
 
 done:
+    free(input_data);
     if (output && output != stdout) fclose(output);
     free(paths);
     free(volumes);

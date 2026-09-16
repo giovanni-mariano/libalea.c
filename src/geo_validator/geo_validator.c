@@ -1547,6 +1547,65 @@ static int merge_validator_ray_result(
     return 0;
 }
 
+int alea_validator_cluster_source_init(alea_system_t* sys,
+        const alea_geom_validator_options_t* supplied,
+        alea_geom_validator_options_t* prepared,
+        double bounds_out[6], double* t_max, uint64_t* rng) {
+    if (!sys || !prepared || !bounds_out || !t_max || !rng ||
+        prepare_validator(sys, prepared, supplied) != 0) return -1;
+    alea_bbox_t bounds = validator_bounds(sys);
+    bounds_out[0] = bounds.min_x; bounds_out[1] = bounds.max_x;
+    bounds_out[2] = bounds.min_y; bounds_out[3] = bounds.max_y;
+    bounds_out[4] = bounds.min_z; bounds_out[5] = bounds.max_z;
+    const double bx = bounds.max_x - bounds.min_x;
+    const double by = bounds.max_y - bounds.min_y;
+    const double bz = bounds.max_z - bounds.min_z;
+    double diag = sqrt(bx * bx + by * by + bz * bz);
+    if (diag <= 0.0 || !isfinite(diag)) diag = 20.0;
+    *t_max = prepared->t_max > 0.0 ? prepared->t_max : 3.0 * diag;
+    *rng = prepared->seed ? prepared->seed : UINT64_C(42);
+    return 0;
+}
+
+void alea_validator_cluster_next_ray(uint64_t* rng,
+        const double bounds_in[6], double origin[3], double direction[3]) {
+    alea_bbox_t bounds = {
+        .min_x = bounds_in[0], .max_x = bounds_in[1],
+        .min_y = bounds_in[2], .max_y = bounds_in[3],
+        .min_z = bounds_in[4], .max_z = bounds_in[5]
+    };
+    alea_ray_t ray;
+    generate_validation_ray(rng, &bounds, &ray);
+    origin[0] = ray.ox; origin[1] = ray.oy; origin[2] = ray.oz;
+    direction[0] = ray.dx; direction[1] = ray.dy; direction[2] = ray.dz;
+}
+
+int alea_validator_cluster_merge_one(alea_system_t* sys,
+        const double origin[3], const double direction[3], double t_max,
+        const alea_geom_validator_options_t* options,
+        alea_geom_validator_result_t* result,
+        const alea_geom_validator_result_t* candidate) {
+    if (!sys || !origin || !direction || !options || !result || !candidate)
+        return -1;
+    if (result->truncated) return 0;
+    size_t max_crossings = options->max_crossings
+        ? options->max_crossings : VALIDATOR_DEFAULT_MAX_CROSSINGS;
+    size_t max_errors = options->max_errors
+        ? options->max_errors : VALIDATOR_DEFAULT_MAX_ERRORS;
+    if (result->crossings_checked > max_crossings ||
+        candidate->crossings_checked >
+            max_crossings - result->crossings_checked ||
+        result->error_count > max_errors ||
+        candidate->error_count > max_errors - result->error_count) {
+        alea_ray_t ray;
+        if (alea_ray_init(&ray, origin[0], origin[1], origin[2],
+                          direction[0], direction[1], direction[2]) != 0)
+            return -1;
+        return validate_one_ray(sys, &ray, t_max, options, result);
+    }
+    return merge_validator_ray_result(result, candidate, options);
+}
+
 int alea_validate_geometry(alea_system_t* sys,
                            const alea_geom_validator_options_t* options,
                            alea_geom_validator_result_t* result) {

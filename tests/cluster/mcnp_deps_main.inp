@@ -1,0 +1,6 @@
+Cluster dependency test
+1 1 -1 -1
+
+READ FILE=mcnp_deps_surface.inc
+
+READ FILE=mcnp_deps_nested/data.inc

@@ -151,8 +151,67 @@ CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
 
 `libalea_cluster.a` distributes volume-estimation ray batches across fixed MPI
 ranks and reduces raw track-length moments in memory. The core library has no
-MPI dependency. Each rank constructs or loads the same model, calls the same
-collective operation, and receives the final volumes and uncertainties.
+MPI dependency. Each rank constructs the same model, calls the same collective
+operation, and receives the final volumes and uncertainties. Applications can
+call `alea_cluster_read_file()` so rank zero reads an input file and broadcasts
+its bytes for parsing on every rank. Each rank frees the returned buffer.
+For MCNP inputs with `READ FILE=` cards, `alea_cluster_read_mcnp_input()`
+resolves nested paths relative to their containing file on rank zero and
+broadcasts the expanded text. The OpenMC geometry loader currently reads a
+single self-contained XML document and has no external-file references.
+`alea_cluster_raycast_first_segments()` distributes packed ray origins and
+directions from rank zero and returns the first concrete-cell segment for each
+ray on rank zero. It processes rays in bounded batches and preserves input order.
+`alea_cluster_raycast_batch()` returns the full compact raycast result on rank
+zero, including requested material, surface, projected-owner, and hierarchy-path
+fields. Create the output with `alea_raycast_batch_result_create()` and destroy
+it with `alea_raycast_batch_result_destroy()`. Only rank zero supplies rays and
+options; every rank supplies an equivalent geometry system and calls the
+operation collectively. Segment, path-entry, and output-byte limits apply to
+the assembled result.
+`alea_cluster_raycast_batch_stream()` instead calls a rank-zero consumer for
+each completed batch of at most 1024 rays. Its batch result is borrowed until
+the callback returns; CSR offsets start at zero, and the callback receives the
+first global input-ray index. Output limits apply per batch. A nonzero callback
+return stops the operation collectively with `ALEA_CLUSTER_INTERRUPTED`.
+`alea_cluster_raycast_batch_shards()` calls a consumer on each rank for its
+contiguous ray shard. It never assembles a root result, so consumers can write
+rank-specific output files. The callback receives the global first-ray index;
+limits apply to each shard and callback cancellation is collective.
+`alea_cluster_render_scene()` renders static tile ranges on each rank and
+assembles color, cell IDs, and optional material/depth/normal maps on rank zero.
+Every rank supplies the same render config and prepared camera, while only rank
+zero supplies the framebuffer. When edges are enabled, darkening runs after
+assembly. The `examples/c/cluster_render` program writes a root-only PPM.
+`alea_cluster_slice_raster()` assigns contiguous rows of one slice view to
+ranks and gathers requested raster fields on root. Its trace segment and byte
+limits are checked for the complete slice before output is gathered.
+`alea_cluster_slice_stack_stream()` processes a sequence of views into one
+reusable root raster and invokes a callback after each completed plane.
+`alea_cluster_coverage_shards()` assigns fixed complete-coverage rows to ranks
+and calls a rank-local consumer with each packed interval/owner result. It
+retains results on the computing rank and preserves global input-row indices;
+adaptive coverage refinement remains local.
+`alea_cluster_coverage_stream()` gathers bounded batches of fixed rows on rank
+zero, rebases their interval and owner offsets, and invokes a root callback.
+Coverage limits apply to each assembled batch.
+`alea_cluster_mesh_sample()` partitions fixed point/subcell sampling into Z
+slabs and assembles voxel labels, diagnostics, and packed material/cell fractions
+on rank zero. It accepts explicit or inferred bounds and custom nodes. Seeded
+stratified and adaptive sampling preserve global voxel identities across Z
+slabs. Adaptive mode requires an unlimited total-sample budget; directional-ray
+mesh sampling supports X/Y rays with an unlimited total-sample budget. Z rays
+remain local because they cross Z slabs.
+`alea_cluster_mesh_sample_shards()` passes each rank's slab to a rank-local
+callback with its global first Z index, allowing output without a full root
+mesh. The slab is borrowed until the callback returns.
+`alea_cluster_mesh_visit_root()` invokes a voxel callback on rank zero in
+global Z/Y/X order after assembling a full mesh; it supports callback
+cancellation but requires root memory for the result.
+`alea_cluster_validate_geometry()` distributes the existing seeded random-ray
+sequence and merges findings on rank zero in serial ray order. It preserves
+signature sampling, counters, and global truncation decisions. A ray producing
+more than 4096 intermediate findings returns `ALEA_CLUSTER_OUTPUT_LIMIT`.
 
 ```bash
 make cluster USE_MPI=1 MPICC=mpicc
@@ -166,11 +225,11 @@ collectively. Destroy the context before `alea_cluster_finalize()`. All MPI
 calls run on the initialization thread; TinyPar handles local work between
 collectives. Set `ALEA_NUM_THREADS` to the CPUs allocated per rank before the
 first parallel operation. `make cluster USE_MPI=0` provides a one-rank local
-backend for development. See `docs/PLAN_CLUSTER.md` for the contract, current
-scope, and planned extensions.
+backend for development.
 
-The `cluster_volumes` example loads MCNP or OpenMC input and reports every
-concrete cell instance. The user supplies the global ray count and a sampling
+The `cluster_volumes` example reads MCNP or OpenMC input on rank zero, parses it
+on every rank, and reports every concrete cell instance. The user supplies the
+global ray count and a sampling
 sphere that encloses the finite instances of interest:
 
 ```bash

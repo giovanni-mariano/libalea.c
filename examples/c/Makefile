@@ -48,11 +48,17 @@ void_demo: void_demo.c
 slab_transport: slab_transport.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_NUCDATA)
 
-cluster_volumes: cluster_volumes.c
+cluster_volumes: cluster_volumes.c ../../bin/libalea_cluster.a \
+		../../bin/libalea.a ../../bin/libalea_mcnp.a ../../bin/libalea_openmc.a
+	$(MPICC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< \
+		../../bin/libalea_cluster.a $(LIBS_ALL)
+
+cluster_render: cluster_render.c ../../bin/libalea_cluster.a \
+		../../bin/libalea.a ../../bin/libalea_mcnp.a ../../bin/libalea_openmc.a
 	$(MPICC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< \
 		../../bin/libalea_cluster.a $(LIBS_ALL)
 
 clean:
-	rm -f $(EXAMPLES) slab_transport cluster_volumes *.inp *.ppm *.bmp *.png
+	rm -f $(EXAMPLES) slab_transport cluster_volumes cluster_render *.inp *.ppm *.bmp *.png
 
 .PHONY: all clean

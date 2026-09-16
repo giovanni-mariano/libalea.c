@@ -12,6 +12,7 @@
 
 #define _USE_MATH_DEFINES
 #include "render3d.h"
+#include "render_tiles_internal.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
 #include "core/alea_system.h"
@@ -957,6 +958,8 @@ typedef struct {
     int tile, tiles_x;
     int aa;
     atomic_int* progress_done;
+    size_t first_tile;
+    int compact;
 } render_scene_parallel_context_t;
 
 static int render_scene_tile_range(void* opaque, size_t worker,
@@ -971,8 +974,9 @@ static int render_scene_tile_range(void* opaque, size_t worker,
     alea_raycast_result_init(&result);
     alea_raycast_result_reserve(&result, 64, 32);
     for (size_t tile_index = begin; tile_index < end; tile_index++) {
-        const int tx = (int)tile_index % context->tiles_x;
-        const int ty = (int)tile_index / context->tiles_x;
+        const size_t global_tile = context->first_tile + tile_index;
+        const int tx = (int)(global_tile % (size_t)context->tiles_x);
+        const int ty = (int)(global_tile / (size_t)context->tiles_x);
         const int x0 = tx * context->tile;
         const int y0 = ty * context->tile;
         const int x1 = x0 + context->tile < width
@@ -981,7 +985,10 @@ static int render_scene_tile_range(void* opaque, size_t worker,
             ? y0 + context->tile : height;
         for (int y = y0; y < y1; y++) {
             for (int x = x0; x < x1; x++) {
-                const size_t pixel = (size_t)y * width + x;
+                const size_t pixel = context->compact
+                    ? tile_index * (size_t)context->tile * context->tile +
+                      (size_t)(y - y0) * context->tile + (size_t)(x - x0)
+                    : (size_t)y * width + x;
                 if (aa <= 1) {
                     float color[3];
                     int cell_id = -1, material_id = 0;
@@ -1056,7 +1063,8 @@ static int render_scene_tile_range(void* opaque, size_t worker,
                 }
             }
         }
-        atomic_fetch_add(context->progress_done, 1);
+        if (context->progress_done)
+            atomic_fetch_add(context->progress_done, 1);
     }
     alea_raycast_result_free(&result);
     return 0;
@@ -1098,7 +1106,7 @@ int render_scene(alea_system_t* sys,
     atomic_int progress_done;
     atomic_init(&progress_done, 0);
     render_scene_parallel_context_t parallel_context = {
-        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done
+        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done, 0, 0
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         (size_t)n_tiles, 1, worker_count, ALEA_PARALLEL_DYNAMIC,
@@ -1109,6 +1117,32 @@ int render_scene(alea_system_t* sys,
         fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
 
     return 0;
+}
+
+int alea_render_scene_tile_span(alea_system_t* sys,
+        const render_config_t* cfg, const render_camera_t* cam,
+        size_t first_tile, size_t tile_count,
+        render_framebuffer_t* compact) {
+    if (!sys || !cfg || !cam || !compact || !compact->color ||
+        !compact->cell_id || cfg->width <= 0 || cfg->height <= 0)
+        return -1;
+    const int tile = cfg->tile_size > 0 ? cfg->tile_size : RENDER_DEFAULT_TILE;
+    const size_t tiles_x = ((size_t)cfg->width + tile - 1) / tile;
+    const size_t tiles_y = ((size_t)cfg->height + tile - 1) / tile;
+    if (!tiles_x || tiles_y > SIZE_MAX / tiles_x ||
+        first_tile > tiles_x * tiles_y ||
+        tile_count > tiles_x * tiles_y - first_tile) return -1;
+    if (!tile_count) return 0;
+    if (alea_raycast_ensure_caches(sys) != 0) return -1;
+    render_scene_parallel_context_t context = {
+        sys, cfg, cam, compact, cfg->width, cfg->height, tile,
+        (int)tiles_x, cfg->aa_samples > 0 ? cfg->aa_samples : 1,
+        NULL, first_tile, 1
+    };
+    return alea_parallel_for(tile_count, 1,
+        cfg->threads > 0 ? (size_t)cfg->threads : 0,
+        ALEA_PARALLEL_DYNAMIC, render_scene_tile_range, &context, NULL)
+        == ALEA_PARALLEL_OK ? 0 : -1;
 }
 
 /* ============================================================================

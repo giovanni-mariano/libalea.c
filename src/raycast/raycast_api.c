@@ -19,6 +19,7 @@
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "raycast.h"
+#include "batch_internal.h"
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
 #include "bvh.h"
@@ -127,50 +128,6 @@ int alea_surface_project_along(const alea_system_t* sys, int surface_id,
 #define ALEA_RAYCAST_DEPRECATED_CALL_END
 #endif
 
-struct alea_raycast_batch_result {
-    size_t ray_count;
-    size_t segment_count;
-    uint32_t fields;
-    uint64_t* ray_offsets;
-    double* t_enter;
-    double* t_exit;
-    int32_t* cell_ids;
-    int32_t* material_ids;
-    double* densities;
-    int32_t* enter_surface_ids;
-    int32_t* exit_surface_ids;
-    uint8_t* resolution_flags;
-    int32_t* projected_cell_ids;
-    int32_t* projected_material_ids;
-    int32_t* projected_universe_ids;
-    int32_t* projected_fill_universes;
-    int32_t* projected_depths;
-    uint8_t* projected_is_lattice;
-    uint64_t* projected_occurrence_keys;
-    size_t path_entry_count;
-    uint64_t* segment_path_offsets;
-    int32_t* path_cell_ids;
-    int32_t* path_material_ids;
-    int32_t* path_universe_ids;
-    int32_t* path_fill_universes;
-    int32_t* path_depths;
-    uint8_t* path_is_lattice;
-    double* path_lattice_origins_xyz;
-    uint64_t* path_occurrence_keys;
-    struct {
-        uint8_t valid;
-        uint64_t system_id;
-        uint64_t geometry_generation;
-        double origin[3];
-        double u_axis[3];
-        double v_axis[3];
-        double u_min, u_max, v_min, v_max;
-        size_t row_count;
-        int projected_depth;
-    } fast_slice_cache;
-    alea_raycast_batch_work_stats_t work_stats;
-};
-
 typedef struct {
     alea_raycast_result_t trace;
     int status;
@@ -217,6 +174,15 @@ static void batch_result_free_buffers(alea_raycast_batch_result_t* result) {
     free(result->path_lattice_origins_xyz);
     free(result->path_occurrence_keys);
     memset(result, 0, sizeof(*result));
+}
+
+void alea_raycast_batch_result_replace_internal(
+        alea_raycast_batch_result_t* destination,
+        alea_raycast_batch_result_t* source) {
+    if (!destination || !source || destination == source) return;
+    batch_result_free_buffers(destination);
+    *destination = *source;
+    memset(source, 0, sizeof(*source));
 }
 
 static void* batch_alloc_array(size_t count, size_t element_size) {

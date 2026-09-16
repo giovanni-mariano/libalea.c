@@ -11,6 +11,7 @@
  */
 
 #include "alea_mesh.h"
+#include "mesh_cluster_internal.h"
 #include "alea.h"
 #include "core/alea_system.h"
 #include "core/alea_universe.h"
@@ -457,7 +458,8 @@ static int mesh_sample_voxel_materials(alea_system_t *sys,
                                        const double *xn,
                                        const double *yn,
                                        const double *zn,
-                                       int i, int j, int k, int n,
+                                       int i, int j, int k, int z_index_offset,
+                                       int n,
                                        int *materials,
                                        int *counts,
                                        int *out_num_materials,
@@ -491,11 +493,14 @@ static int mesh_sample_voxel_materials(alea_system_t *sys,
                     fz = (kk == 0) ? eps : 1.0 - eps;
                 } else if (cfg->sampling_mode == ALEA_MESH_SAMPLE_STRATIFIED ||
                            cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE) {
-                    fx = ((double)ii + mesh_jitter(cfg, i, j, k, ii, jj, kk, n)) /
+                    fx = ((double)ii + mesh_jitter(cfg, i, j,
+                        k + z_index_offset, ii, jj, kk, n)) /
                          (double)n;
-                    fy = ((double)jj + mesh_jitter(cfg, i, j, k, jj, kk, ii,
+                    fy = ((double)jj + mesh_jitter(cfg, i, j,
+                        k + z_index_offset, jj, kk, ii,
                                                    n ^ 0x155)) / (double)n;
-                    fz = ((double)kk + mesh_jitter(cfg, i, j, k, kk, ii, jj,
+                    fz = ((double)kk + mesh_jitter(cfg, i, j,
+                        k + z_index_offset, kk, ii, jj,
                                                    n ^ 0x2aa)) / (double)n;
                 } else {
                     fx = ((double)ii + 0.5) / (double)n;
@@ -821,6 +826,7 @@ typedef struct {
     int axis;
     int along_count;
     int u_count;
+    int z_index_offset;
     uint32_t origin_count;
     mesh_ray_voxel_accum_t *accums;
     atomic_int *failed;
@@ -837,7 +843,11 @@ static int mesh_ray_trace_range(void *opaque, size_t worker,
         alea_raycast_result_init(&trace);
         for (uint32_t sample = 0; sample < context->origin_count; sample++) {
             double unit_u, unit_v;
-            mesh_ray_origin_uv(context->cfg, context->axis, column, sample,
+            const size_t global_column = context->axis == 2 ? column :
+                column + (size_t)context->z_index_offset *
+                         (size_t)context->u_count;
+            mesh_ray_origin_uv(context->cfg, context->axis,
+                               global_column, sample,
                                &unit_u, &unit_v);
             const double u = context->u_nodes[a] + unit_u *
                 (context->u_nodes[a + 1] - context->u_nodes[a]);
@@ -888,6 +898,7 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
                                     const alea_mesh_config_t *cfg,
                                     const double *xn, const double *yn,
                                     const double *zn, int axis,
+                                    int z_index_offset,
                                     mesh_ray_voxel_accum_t *accums) {
     const double *along_nodes = axis == 0 ? xn : axis == 1 ? yn : zn;
     const double *u_nodes = axis == 0 ? yn : xn;
@@ -901,7 +912,7 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
     atomic_init(&failed, 0);
     mesh_ray_parallel_context_t parallel_context = {
         sys, cfg, along_nodes, u_nodes, v_nodes, axis, along_count, u_count,
-        origin_count, accums, &failed
+        z_index_offset, origin_count, accums, &failed
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         column_count, 1, cfg->workers > 0 ? (size_t)cfg->workers : 0,
@@ -923,7 +934,8 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
 static alea_mesh_result_t *mesh_sample_rays(
     alea_system_t *sys, const alea_mesh_config_t *cfg,
     double *xn, double *yn, double *zn, size_t ncells,
-    alea_mesh_bounds_source_t bounds_source, double bounds_padding) {
+    alea_mesh_bounds_source_t bounds_source, double bounds_padding,
+    int z_index_offset) {
     alea_mesh_result_t *res = NULL;
     mesh_ray_voxel_accum_t *accums = calloc(ncells, sizeof(*accums));
     int *mat_ids = NULL, *cell_ids = NULL, *unique_mats = NULL;
@@ -961,11 +973,14 @@ static alea_mesh_result_t *mesh_sample_rays(
             sys, ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_CELL_SURFACES) != 0)
         goto fail;
     if ((directions & ALEA_MESH_RAY_X) &&
-        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 0, accums) != 0) goto fail;
+        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 0,
+                                 z_index_offset, accums) != 0) goto fail;
     if ((directions & ALEA_MESH_RAY_Y) &&
-        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 1, accums) != 0) goto fail;
+        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 1,
+                                 z_index_offset, accums) != 0) goto fail;
     if ((directions & ALEA_MESH_RAY_Z) &&
-        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 2, accums) != 0) goto fail;
+        mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 2,
+                                 z_index_offset, accums) != 0) goto fail;
 
     size_t max_components = 1;
     for (size_t v = 0; v < ncells; v++) {
@@ -1153,6 +1168,7 @@ typedef struct {
     int nx, ny;
     size_t nxy, scratch_count;
     int sample_axis;
+    int z_index_offset;
     int *scratch_materials, *scratch_counts;
     int *scratch_owner_materials, *scratch_owner_cells, *scratch_owner_counts;
     int *material_ids, *cell_ids;
@@ -1188,7 +1204,8 @@ static int mesh_sample_parallel_range(void *opaque, size_t worker,
         double dominant = 1.0;
         mesh_sample_voxel_materials(
             context->sys, context->cfg, context->x_nodes, context->y_nodes,
-            context->z_nodes, i, j, k, context->sample_axis, materials, counts,
+            context->z_nodes, i, j, k, context->z_index_offset,
+            context->sample_axis, materials, counts,
             &n_materials, owner_materials, owner_cells, owner_counts,
             &n_owners, &n_samples);
         mesh_fraction_stats(
@@ -1216,8 +1233,8 @@ static int mesh_sample_parallel_range(void *opaque, size_t worker,
     return 0;
 }
 
-alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
-                                             const alea_mesh_config_t *cfg) {
+alea_mesh_result_t *alea_mesh_sample_with_z_offset(alea_system_t *sys,
+        const alea_mesh_config_t *cfg, int z_index_offset) {
     if (!sys) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh system is NULL");
         return NULL;
@@ -1286,7 +1303,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
 
     if (cfg->sampling_mode == ALEA_MESH_SAMPLE_RAY)
         return mesh_sample_rays(sys, cfg, xn, yn, zn, ncells, bounds_source,
-                                auto_bounds ? cfg->auto_pad : 0.0);
+                                auto_bounds ? cfg->auto_pad : 0.0,
+                                z_index_offset);
 
     int *mat_ids = (cfg->fields & ALEA_MESH_FIELD_MATERIAL_ID) ?
         mesh_alloc_array(ncells, sizeof(int), 0) : NULL;
@@ -1472,7 +1490,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
         } else {
             mesh_sample_parallel_context_t parallel_context = {
                 sys, cfg, xn, yn, zn, nx, ny, nxy, scratch_count,
-                sample_axis, scratch_materials, scratch_counts,
+                sample_axis, z_index_offset, scratch_materials, scratch_counts,
                 scratch_owner_materials, scratch_owner_cells,
                 scratch_owner_counts, mat_ids, cell_ids, mixed_flags,
                 dominant_fractions, sample_counts, tie_flags,
@@ -1534,7 +1552,7 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                 uint32_t voxel_sample_work = base_samples;
 
                 mesh_sample_voxel_materials(sys, cfg, xn, yn, zn, i, j, k,
-                                            sample_axis,
+                                            z_index_offset, sample_axis,
                                             materials, counts,
                                             &n_materials, owner_materials,
                                             owner_cells, owner_counts,
@@ -1564,7 +1582,8 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                         }
                         axis *= 2;
                         mesh_sample_voxel_materials(sys, cfg, xn, yn, zn,
-                                                    i, j, k, axis,
+                                                    i, j, k, z_index_offset,
+                                                    axis,
                                                     materials, counts,
                                                     &n_materials,
                                                     owner_materials,
@@ -1813,6 +1832,11 @@ alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
     return res;
 }
 
+alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
+                                     const alea_mesh_config_t *cfg) {
+    return alea_mesh_sample_with_z_offset(sys, cfg, 0);
+}
+
 int alea_mesh_visit(alea_system_t *sys, const alea_mesh_config_t *cfg,
                     alea_mesh_voxel_visit_fn visit, void *user_data) {
     if (!cfg || !visit) {
@@ -1900,6 +1924,20 @@ static int mesh_root_world_aabb(const alea_system_t *sys, alea_bbox_t *out) {
                               "mesh auto-bounds found no bounded root-universe cell");
         return -1;
     }
+    return 0;
+}
+
+int alea_mesh_cluster_auto_bounds(const alea_system_t* sys,
+        const alea_mesh_config_t* config, double bounds[6]) {
+    if (!sys || !config || !bounds) return -1;
+    alea_bbox_t root;
+    if (mesh_root_world_aabb(sys, &root) != 0) return -1;
+    const double xpad = (root.max_x - root.min_x) * config->auto_pad;
+    const double ypad = (root.max_y - root.min_y) * config->auto_pad;
+    const double zpad = (root.max_z - root.min_z) * config->auto_pad;
+    bounds[0] = root.min_x - xpad; bounds[1] = root.max_x + xpad;
+    bounds[2] = root.min_y - ypad; bounds[3] = root.max_y + ypad;
+    bounds[4] = root.min_z - zpad; bounds[5] = root.max_z + zpad;
     return 0;
 }
 

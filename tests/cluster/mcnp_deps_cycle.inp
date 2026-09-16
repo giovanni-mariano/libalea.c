@@ -1,0 +1,2 @@
+Cluster cyclic dependency test
+READ FILE=mcnp_deps_cycle.inp

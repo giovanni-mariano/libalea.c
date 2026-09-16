@@ -11,6 +11,9 @@ tools/mc_plotter
 # Test temp files
 *_tmp.*
 plans/*
+docs/PLAN_CLUSTER_EXTENSIONS.md
+examples/c/cluster_volumes
+examples/c/cluster_render
 tests/nucdata/endfb71-tsl/
 tests/nucdata/endfb71-tsl.tar.gz
 tests/nucdata/njoy-test74/
