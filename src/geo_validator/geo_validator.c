@@ -1898,11 +1898,12 @@ static int slice_sample_is_on_viewport_edge(const alea_slice_view_t* view,
            fabs(v - view->v_max) <= tolerance;
 }
 
-int alea_validate_geometry_slice(alea_system_t* sys,
+int alea_validator_cluster_slice_range(alea_system_t* sys,
                                  const alea_slice_view_t* view,
                                  const alea_slice_curves_t* curves,
                                  const alea_geom_validator_options_t* options,
-                                 alea_geom_validator_result_t* result) {
+                                 alea_geom_validator_result_t* result,
+                                 size_t first_curve, size_t end_curve) {
     if (!sys || !view || !curves || !result) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG,
                               "alea_validate_geometry_slice: NULL argument");
@@ -1929,7 +1930,8 @@ int alea_validate_geometry_slice(alea_system_t* sys,
     const double* v_axis = view->plane.v_axis;
 
     int rc = 0;
-    for (size_t ci = 0; ci < ncurves; ci++) {
+    if (end_curve > ncurves) end_curve = ncurves;
+    for (size_t ci = first_curve; ci < end_curve; ci++) {
         if (g_alea_interrupted) {
             alea_set_error_detail(ALEA_ERR_INTERRUPTED,
                                   "geometry slice validation interrupted");
@@ -2027,4 +2029,36 @@ int alea_validate_geometry_slice(alea_system_t* sys,
         if (rc != 0) break;
     }
     return rc;
+}
+
+int alea_validate_geometry_slice(alea_system_t* sys,
+                                 const alea_slice_view_t* view,
+                                 const alea_slice_curves_t* curves,
+                                 const alea_geom_validator_options_t* options,
+                                 alea_geom_validator_result_t* result) {
+    return alea_validator_cluster_slice_range(sys, view, curves, options,
+                                               result, 0, SIZE_MAX);
+}
+
+int alea_validator_cluster_merge_curve_one(alea_system_t* sys,
+        const alea_slice_view_t* view, const alea_slice_curves_t* curves,
+        const alea_geom_validator_options_t* options,
+        alea_geom_validator_result_t* result,
+        const alea_geom_validator_result_t* candidate, size_t curve_index) {
+    if (!sys || !view || !curves || !options || !result || !candidate)
+        return -1;
+    if (result->truncated) return 0;
+    size_t max_crossings = options->max_crossings
+        ? options->max_crossings : VALIDATOR_DEFAULT_MAX_CROSSINGS;
+    size_t max_errors = options->max_errors
+        ? options->max_errors : VALIDATOR_DEFAULT_MAX_ERRORS;
+    if (result->crossings_checked >= max_crossings ||
+        candidate->crossings_checked >
+            max_crossings - result->crossings_checked ||
+        result->error_count > max_errors ||
+        candidate->error_count > max_errors - result->error_count)
+        return alea_validator_cluster_slice_range(sys, view, curves, options,
+                                                   result, curve_index,
+                                                   curve_index + 1);
+    return merge_validator_ray_result(result, candidate, options);
 }

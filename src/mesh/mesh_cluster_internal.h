@@ -13,6 +13,8 @@ int alea_mesh_cluster_auto_bounds(const alea_system_t* sys,
 
 /* Keep seeded voxel samples tied to global Z indices in a cluster slab. */
 alea_mesh_result_t* alea_mesh_sample_with_z_offset(alea_system_t* sys,
-    const alea_mesh_config_t* config, int z_index_offset);
+    const alea_mesh_config_t* config, int z_index_offset,
+    double ray_global_z_min, double ray_global_z_max,
+    uint64_t initial_sample_work, uint64_t* final_sample_work);
 
 #endif

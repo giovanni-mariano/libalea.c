@@ -17,6 +17,8 @@ struct alea_cluster {
 uint64_t alea_cluster_system_fingerprint(const alea_system_t* sys);
 int alea_cluster_fingerprints_match(alea_cluster_t* cluster,
                                     uint64_t fingerprint);
+uint64_t alea_cluster_validator_options_fingerprint(
+    const alea_geom_validator_options_t* options);
 alea_cluster_status_t alea_cluster_read_path_root(
     const char* path, char** data, size_t* length);
 alea_cluster_status_t alea_cluster_broadcast_owned_bytes(

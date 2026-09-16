@@ -827,6 +827,7 @@ typedef struct {
     int along_count;
     int u_count;
     int z_index_offset;
+    double trace_min, trace_max;
     uint32_t origin_count;
     mesh_ray_voxel_accum_t *accums;
     atomic_int *failed;
@@ -855,7 +856,7 @@ static int mesh_ray_trace_range(void *opaque, size_t worker,
                 (context->v_nodes[b + 1] - context->v_nodes[b]);
             double origin[3] = {0.0, 0.0, 0.0};
             double direction[3] = {0.0, 0.0, 0.0};
-            origin[context->axis] = nextafter(context->along_nodes[0],
+            origin[context->axis] = nextafter(context->trace_min,
                                                -INFINITY);
             if (context->axis == 0) { origin[1] = u; origin[2] = v; }
             else if (context->axis == 1) { origin[0] = u; origin[2] = v; }
@@ -867,7 +868,7 @@ static int mesh_ray_trace_range(void *opaque, size_t worker,
                               direction[0], direction[1], direction[2]) != 0 ||
                 alea_raycast_hier_segments_nocache(
                     context->sys, &ray,
-                    context->along_nodes[context->along_count] -
+                    context->trace_max -
                         origin[context->axis], &trace) != 0) {
                 atomic_store(context->failed, 1);
                 continue;
@@ -899,6 +900,8 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
                                     const double *xn, const double *yn,
                                     const double *zn, int axis,
                                     int z_index_offset,
+                                    double global_z_min,
+                                    double global_z_max,
                                     mesh_ray_voxel_accum_t *accums) {
     const double *along_nodes = axis == 0 ? xn : axis == 1 ? yn : zn;
     const double *u_nodes = axis == 0 ? yn : xn;
@@ -912,7 +915,10 @@ static int mesh_ray_trace_direction(alea_system_t *sys,
     atomic_init(&failed, 0);
     mesh_ray_parallel_context_t parallel_context = {
         sys, cfg, along_nodes, u_nodes, v_nodes, axis, along_count, u_count,
-        z_index_offset, origin_count, accums, &failed
+        z_index_offset,
+        axis == 2 ? global_z_min : along_nodes[0],
+        axis == 2 ? global_z_max : along_nodes[along_count],
+        origin_count, accums, &failed
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         column_count, 1, cfg->workers > 0 ? (size_t)cfg->workers : 0,
@@ -935,7 +941,7 @@ static alea_mesh_result_t *mesh_sample_rays(
     alea_system_t *sys, const alea_mesh_config_t *cfg,
     double *xn, double *yn, double *zn, size_t ncells,
     alea_mesh_bounds_source_t bounds_source, double bounds_padding,
-    int z_index_offset) {
+    int z_index_offset, double global_z_min, double global_z_max) {
     alea_mesh_result_t *res = NULL;
     mesh_ray_voxel_accum_t *accums = calloc(ncells, sizeof(*accums));
     int *mat_ids = NULL, *cell_ids = NULL, *unique_mats = NULL;
@@ -974,13 +980,16 @@ static alea_mesh_result_t *mesh_sample_rays(
         goto fail;
     if ((directions & ALEA_MESH_RAY_X) &&
         mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 0,
-                                 z_index_offset, accums) != 0) goto fail;
+                                 z_index_offset, global_z_min,
+                                 global_z_max, accums) != 0) goto fail;
     if ((directions & ALEA_MESH_RAY_Y) &&
         mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 1,
-                                 z_index_offset, accums) != 0) goto fail;
+                                 z_index_offset, global_z_min,
+                                 global_z_max, accums) != 0) goto fail;
     if ((directions & ALEA_MESH_RAY_Z) &&
         mesh_ray_trace_direction(sys, cfg, xn, yn, zn, 2,
-                                 z_index_offset, accums) != 0) goto fail;
+                                 z_index_offset, global_z_min,
+                                 global_z_max, accums) != 0) goto fail;
 
     size_t max_components = 1;
     for (size_t v = 0; v < ncells; v++) {
@@ -1234,7 +1243,9 @@ static int mesh_sample_parallel_range(void *opaque, size_t worker,
 }
 
 alea_mesh_result_t *alea_mesh_sample_with_z_offset(alea_system_t *sys,
-        const alea_mesh_config_t *cfg, int z_index_offset) {
+        const alea_mesh_config_t *cfg, int z_index_offset,
+        double ray_global_z_min, double ray_global_z_max,
+        uint64_t initial_sample_work, uint64_t* final_sample_work) {
     if (!sys) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG, "mesh system is NULL");
         return NULL;
@@ -1304,7 +1315,9 @@ alea_mesh_result_t *alea_mesh_sample_with_z_offset(alea_system_t *sys,
     if (cfg->sampling_mode == ALEA_MESH_SAMPLE_RAY)
         return mesh_sample_rays(sys, cfg, xn, yn, zn, ncells, bounds_source,
                                 auto_bounds ? cfg->auto_pad : 0.0,
-                                z_index_offset);
+                                z_index_offset,
+                                isfinite(ray_global_z_min) ? ray_global_z_min : zn[0],
+                                isfinite(ray_global_z_max) ? ray_global_z_max : zn[nz]);
 
     int *mat_ids = (cfg->fields & ALEA_MESH_FIELD_MATERIAL_ID) ?
         mesh_alloc_array(ncells, sizeof(int), 0) : NULL;
@@ -1475,7 +1488,7 @@ alea_mesh_result_t *alea_mesh_sample_with_z_offset(alea_system_t *sys,
     /* Sample voxel composition and coherent dominant cell/material IDs. */
     size_t nxy = (size_t)nx * (size_t)ny;
     int mixed_count = 0;
-    uint64_t total_sample_work = 0;
+    uint64_t total_sample_work = initial_sample_work;
     mesh_int_set_t material_set = {0};
 
     if (parallel_sampling) {
@@ -1575,8 +1588,9 @@ alea_mesh_result_t *alea_mesh_sample_with_z_offset(alea_system_t *sys,
                             voxel_sample_work + (uint64_t)next_samples >
                                 cfg->max_samples_per_voxel ||
                             (cfg->max_total_samples != 0 &&
-                             total_sample_work + next_samples >
-                                cfg->max_total_samples)) {
+                             (total_sample_work > cfg->max_total_samples ||
+                              next_samples > cfg->max_total_samples -
+                                  total_sample_work))) {
                             refinement |= ALEA_MESH_REFINEMENT_LIMIT_REACHED;
                             break;
                         }
@@ -1829,12 +1843,13 @@ alea_mesh_result_t *alea_mesh_sample_with_z_offset(alea_system_t *sys,
     res->cell_fraction_spans = cell_fraction_spans;
     res->cell_fractions = cell_fractions;
     res->cell_fraction_count = cell_fraction_count;
+    if (final_sample_work) *final_sample_work = total_sample_work;
     return res;
 }
 
 alea_mesh_result_t *alea_mesh_sample(alea_system_t *sys,
                                      const alea_mesh_config_t *cfg) {
-    return alea_mesh_sample_with_z_offset(sys, cfg, 0);
+    return alea_mesh_sample_with_z_offset(sys, cfg, 0, NAN, NAN, 0, NULL);
 }
 
 int alea_mesh_visit(alea_system_t *sys, const alea_mesh_config_t *cfg,

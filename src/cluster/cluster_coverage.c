@@ -60,7 +60,8 @@ static alea_cluster_status_t assemble_coverage_batch(
         alea_ray_coverage_slice_result_t* staged,
         uint64_t* row_counts, uint64_t* interval_counts,
         uint64_t* owner_counts, size_t* rank_bytes,
-        alea_cluster_coverage_shard_callback_t callback, void* user_data) {
+        alea_cluster_coverage_shard_callback_t callback, void* user_data,
+        alea_ray_coverage_slice_result_t* capture) {
     uint64_t local_rows = (uint64_t)local_row_count;
     uint64_t local_intervals = local_row_count
         ? (uint64_t)shard->interval_count : 0;
@@ -174,8 +175,15 @@ static alea_cluster_status_t assemble_coverage_batch(
            owner_counts, uint64_t);
     GATHER(owner_resolution_flags, local_owners, owner_counts, uint8_t);
 #undef GATHER
-    local = cluster->rank == 0 && callback(first_row, staged, user_data)
-        ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
+    local = ALEA_CLUSTER_OK;
+    if (cluster->rank == 0) {
+        if (capture) {
+            *capture = *staged;
+            alea_ray_coverage_slice_result_init(staged);
+        } else if (callback(first_row, staged, user_data)) {
+            local = ALEA_CLUSTER_INTERRUPTED;
+        }
+    }
     return alea_cluster_agree(cluster, local);
 }
 
@@ -186,10 +194,10 @@ static alea_cluster_status_t coverage_impl(
         const double* transverse_coordinates,
         const alea_ray_coverage_slice_options_t* options,
         alea_cluster_coverage_shard_callback_t callback, void* user_data,
-        int root_stream) {
+        int root_stream, int whole_result) {
     if (!cluster) return ALEA_CLUSTER_INVALID_ARGUMENT;
     alea_cluster_status_t local = sys &&
-        (root_stream ? (cluster->rank != 0 || callback != NULL)
+        (root_stream ? (cluster->rank != 0 || callback != NULL || whole_result)
                      : callback != NULL)
         ? ALEA_CLUSTER_OK : ALEA_CLUSTER_INVALID_ARGUMENT;
     uint64_t count_wire = 0;
@@ -245,11 +253,21 @@ static alea_cluster_status_t coverage_impl(
     if (match < 0) return ALEA_CLUSTER_BACKEND_ERROR;
     if (!match) return ALEA_CLUSTER_MODEL_MISMATCH;
 
-    double* local_origins = malloc(3 * COVERAGE_BATCH_ROWS * sizeof(double));
-    double* local_directions = malloc(3 * COVERAGE_BATCH_ROWS * sizeof(double));
-    uint8_t* local_tags = has_tags ? malloc(COVERAGE_BATCH_ROWS) : NULL;
+    const size_t batch_rows = whole_result ? (size_t)count_wire
+                                            : COVERAGE_BATCH_ROWS;
+    const size_t capacity = whole_result
+        ? rank_count(batch_rows, (size_t)cluster->rank, (size_t)cluster->size)
+        : batch_rows;
+    local = capacity <= SIZE_MAX / (3 * sizeof(double))
+        ? ALEA_CLUSTER_OK : ALEA_CLUSTER_OUTPUT_LIMIT;
+    status = alea_cluster_agree(cluster, local);
+    if (status != ALEA_CLUSTER_OK) return status;
+    const size_t alloc_count = capacity ? capacity : 1;
+    double* local_origins = malloc(3 * alloc_count * sizeof(double));
+    double* local_directions = malloc(3 * alloc_count * sizeof(double));
+    uint8_t* local_tags = has_tags ? malloc(alloc_count) : NULL;
     double* local_coordinates = has_coordinates
-        ? malloc(COVERAGE_BATCH_ROWS * sizeof(double)) : NULL;
+        ? malloc(alloc_count * sizeof(double)) : NULL;
     alea_ray_coverage_slice_result_t* shard =
         alea_ray_coverage_slice_result_create();
     const size_t rank_total = (size_t)cluster->size;
@@ -276,8 +294,8 @@ static alea_cluster_status_t coverage_impl(
     const size_t rank = (size_t)cluster->rank;
     const size_t total = (size_t)count_wire;
     for (size_t base = 0; base < total; ) {
-        const size_t count = total - base < COVERAGE_BATCH_ROWS
-            ? total - base : COVERAGE_BATCH_ROWS;
+        const size_t count = total - base < batch_rows
+            ? total - base : batch_rows;
         const size_t mine = rank_count(count, rank, ranks);
         const size_t first = rank_first(count, rank, ranks);
         int transfer_error =
@@ -314,7 +332,9 @@ static alea_cluster_status_t coverage_impl(
         if (root_stream)
             status = assemble_coverage_batch(cluster, shard, base, count, mine,
                 &wire_options, staged, row_counts, interval_counts,
-                owner_counts, rank_bytes, callback, user_data);
+                owner_counts, rank_bytes, callback, user_data,
+                whole_result && cluster->rank == 0
+                    ? (alea_ray_coverage_slice_result_t*)user_data : NULL);
         else {
             local = mine && callback(base + first, shard, user_data)
                 ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
@@ -343,7 +363,7 @@ alea_cluster_status_t alea_cluster_coverage_shards(
         alea_cluster_coverage_shard_callback_t callback, void* user_data) {
     return coverage_impl(cluster, sys, origins_xyz, directions_xyz,
         row_count, direction_tags, transverse_coordinates, options,
-        callback, user_data, 0);
+        callback, user_data, 0, 0);
 }
 
 alea_cluster_status_t alea_cluster_coverage_stream(
@@ -355,5 +375,48 @@ alea_cluster_status_t alea_cluster_coverage_stream(
         alea_cluster_coverage_shard_callback_t callback, void* user_data) {
     return coverage_impl(cluster, sys, origins_xyz, directions_xyz,
         row_count, direction_tags, transverse_coordinates, options,
-        callback, user_data, 1);
+        callback, user_data, 1, 0);
+}
+
+alea_cluster_status_t alea_cluster_coverage(
+        alea_cluster_t* cluster, alea_system_t* sys,
+        const double* origins_xyz, const double* directions_xyz,
+        size_t row_count, const uint8_t* direction_tags,
+        const double* transverse_coordinates,
+        const alea_ray_coverage_slice_options_t* options,
+        alea_ray_coverage_slice_result_t* root_result) {
+    if (!cluster) return ALEA_CLUSTER_INVALID_ARGUMENT;
+    alea_cluster_status_t local = cluster->rank != 0 || root_result
+        ? ALEA_CLUSTER_OK : ALEA_CLUSTER_INVALID_ARGUMENT;
+    alea_cluster_status_t status = alea_cluster_agree(cluster, local);
+    if (status != ALEA_CLUSTER_OK) return status;
+    alea_ray_coverage_slice_result_t captured;
+    alea_ray_coverage_slice_result_init(&captured);
+    status = coverage_impl(cluster, sys, origins_xyz, directions_xyz,
+        row_count, direction_tags, transverse_coordinates, options,
+        NULL, &captured, 1, 1);
+    if (status == ALEA_CLUSTER_OK) {
+        local = ALEA_CLUSTER_OK;
+        if (cluster->rank == 0 && !captured.row_offsets) {
+            size_t bytes = 0;
+            if (coverage_bytes(0, 0, 0, &bytes) ||
+                (options->max_output_bytes &&
+                 bytes > options->max_output_bytes)) {
+                local = ALEA_CLUSTER_OUTPUT_LIMIT;
+            } else {
+                captured.row_offsets = calloc(1, sizeof(size_t));
+                captured.owner_offsets = calloc(1, sizeof(size_t));
+                if (!captured.row_offsets || !captured.owner_offsets)
+                    local = ALEA_CLUSTER_OUT_OF_MEMORY;
+            }
+        }
+        status = alea_cluster_agree(cluster, local);
+    }
+    if (status == ALEA_CLUSTER_OK && cluster->rank == 0) {
+        alea_ray_coverage_slice_result_free(root_result);
+        *root_result = captured;
+        alea_ray_coverage_slice_result_init(&captured);
+    }
+    alea_ray_coverage_slice_result_free(&captured);
+    return status;
 }

@@ -580,16 +580,38 @@ static int check_mesh_visit(const alea_mesh_voxel_sample_t* sample,
     if (sample->i != (int)i || sample->j != (int)j ||
         sample->k != (int)k ||
         sample->x_min != full->x_nodes[i] ||
+        sample->x_max != full->x_nodes[i + 1] ||
         sample->y_min != full->y_nodes[j] ||
+        sample->y_max != full->y_nodes[j + 1] ||
         sample->z_min != full->z_nodes[k] ||
+        sample->z_max != full->z_nodes[k + 1] ||
         sample->material_id != full->material_ids[index] ||
         sample->cell_id != full->cell_ids[index] ||
+        sample->mixed != full->mixed_flags[index] ||
+        sample->tie_flags != full->tie_flags[index] ||
+        sample->dominant_fraction != full->dominant_fractions[index] ||
         sample->sample_count != full->sample_counts[index] ||
         sample->estimated_error != full->estimated_errors[index] ||
         sample->refinement_flags != full->refinement_flags[index] ||
         sample->fraction_count != full->fraction_spans[index].count ||
         sample->cell_fraction_count != full->cell_fraction_spans[index].count)
         check->mismatch = 1;
+    const alea_mesh_fraction_span_t materials = full->fraction_spans[index];
+    for (uint32_t p = 0; p < sample->fraction_count && !check->mismatch; ++p)
+        if (sample->fractions[p].material_id !=
+                full->fractions[materials.offset + p].material_id ||
+            sample->fractions[p].fraction !=
+                full->fractions[materials.offset + p].fraction)
+            check->mismatch = 1;
+    const alea_mesh_fraction_span_t cells = full->cell_fraction_spans[index];
+    for (uint32_t p = 0; p < sample->cell_fraction_count && !check->mismatch; ++p)
+        if (sample->cell_fractions[p].cell_id !=
+                full->cell_fractions[cells.offset + p].cell_id ||
+            sample->cell_fractions[p].material_id !=
+                full->cell_fractions[cells.offset + p].material_id ||
+            sample->cell_fractions[p].fraction !=
+                full->cell_fractions[cells.offset + p].fraction)
+            check->mismatch = 1;
     ++check->next;
     return check->mismatch ||
         (check->stop_after && check->next == check->stop_after);
@@ -610,9 +632,14 @@ static int test_mesh(alea_cluster_t* cluster, alea_system_t* sys,
         mode == ALEA_MESH_SAMPLE_ADAPTIVE || mode == ALEA_MESH_SAMPLE_RAY ? 0 :
         (uint64_t)cfg.nx * cfg.ny * cfg.nz * 8;
     if (mode == ALEA_MESH_SAMPLE_ADAPTIVE) cfg.max_refine_depth = 2;
+    if (mode == ALEA_MESH_SAMPLE_ADAPTIVE &&
+        (custom_nodes == 9 || custom_nodes == 10))
+        cfg.max_total_samples = (uint64_t)cfg.nx * cfg.ny * cfg.nz * 8 + 64;
     if (mode == ALEA_MESH_SAMPLE_RAY) {
         cfg.ray_directions = custom_nodes == 3 ? ALEA_MESH_RAY_X :
             custom_nodes == 4 ? ALEA_MESH_RAY_Y :
+            (custom_nodes == 5 || custom_nodes == 7) ? ALEA_MESH_RAY_Z :
+            (custom_nodes == 6 || custom_nodes == 8) ? ALEA_MESH_RAY_XYZ :
             ALEA_MESH_RAY_X | ALEA_MESH_RAY_Y;
         cfg.ray_origin_mode = ALEA_MESH_RAY_ORIGINS_SOBOL;
         cfg.ray_samples = 4;
@@ -625,9 +652,10 @@ static int test_mesh(alea_cluster_t* cluster, alea_system_t* sys,
     const double xn[6] = {-1.5, -1.0, -0.2, 0.2, 1.0, 1.5};
     const double yn[5] = {-1.5, -0.5, 0.0, 0.7, 1.5};
     const double zn[4] = {-1.5, -0.3, 0.6, 1.5};
-    if (custom_nodes == 1) {
+    if (custom_nodes == 1 || custom_nodes == 7) {
         cfg.x_nodes = xn; cfg.y_nodes = yn; cfg.z_nodes = zn;
-    } else if (custom_nodes == 2) {
+    } else if (custom_nodes == 2 || custom_nodes == 8 ||
+               custom_nodes == 10) {
         cfg.bounds_mode = ALEA_MESH_BOUNDS_AUTO;
         cfg.x_min = cfg.x_max = cfg.y_min = cfg.y_max = 0.0;
         cfg.z_min = cfg.z_max = 0.0;
@@ -646,7 +674,9 @@ static int test_mesh(alea_cluster_t* cluster, alea_system_t* sys,
     status = alea_cluster_agree(cluster,
         bad ? ALEA_CLUSTER_COMPUTE_ERROR : ALEA_CLUSTER_OK);
     alea_mesh_result_free(gathered);
-    if (status == ALEA_CLUSTER_OK && custom_nodes == 2 &&
+    if (status == ALEA_CLUSTER_OK &&
+        (custom_nodes == 2 || custom_nodes == 8 ||
+         custom_nodes == 10) &&
         (mode == ALEA_MESH_SAMPLE_STRATIFIED ||
          mode == ALEA_MESH_SAMPLE_ADAPTIVE ||
          mode == ALEA_MESH_SAMPLE_RAY)) {
@@ -688,6 +718,31 @@ static int test_mesh(alea_cluster_t* cluster, alea_system_t* sys,
                            visit.next != (size_t)cfg.nx * cfg.ny * cfg.nz)))
             return fail(rank, "ordered root mesh visitor differs from serial");
         visit.next = 0;
+        prepared = alea_cluster_mesh_stream_root(cluster, sys, &cfg,
+            rank == 0 ? check_mesh_visit : NULL,
+            rank == 0 ? &visit : NULL);
+        if (prepared != ALEA_CLUSTER_OK ||
+            (rank == 0 && (visit.mismatch ||
+                           visit.next != (size_t)cfg.nx * cfg.ny * cfg.nz)))
+            return fail(rank, "streamed root mesh differs from serial");
+        if (ranks > 1) {
+            prepared = alea_cluster_mesh_stream_root(cluster, sys, &cfg,
+                NULL, rank == 0 ? &visit : NULL);
+            if (prepared != ALEA_CLUSTER_INVALID_ARGUMENT)
+                return fail(rank, "root mesh stream callback failure was not agreed");
+        }
+        visit.next = 0;
+        visit.stop_after = ranks > 1
+            ? ((size_t)cfg.nz / ranks + (0u < (size_t)cfg.nz % ranks)) *
+                (size_t)cfg.nx * cfg.ny + 1
+            : 3;
+        prepared = alea_cluster_mesh_stream_root(cluster, sys, &cfg,
+            rank == 0 ? check_mesh_visit : NULL,
+            rank == 0 ? &visit : NULL);
+        if (prepared != ALEA_CLUSTER_INTERRUPTED ||
+            (rank == 0 && visit.next != visit.stop_after))
+            return fail(rank, "root mesh stream cancellation failed");
+        visit.next = 0;
         visit.stop_after = 3;
         prepared = alea_cluster_mesh_visit_root(cluster, sys, &cfg,
             rank == 0 ? check_mesh_visit : NULL,
@@ -718,13 +773,75 @@ static int same_validation(const alea_geom_validator_result_t* a,
             x->previous_cell_id != y->previous_cell_id ||
             x->found_cell_id != y->found_cell_id ||
             x->surface_id != y->surface_id || x->flags != y->flags ||
-            x->t != y->t ||
+            x->t != y->t || x->curve_index != y->curve_index ||
+            x->component_index != y->component_index ||
+            memcmp(x->uv, y->uv, sizeof(x->uv)) != 0 ||
             memcmp(x->crossing_point, y->crossing_point,
                    sizeof(x->crossing_point)) != 0 ||
             memcmp(x->sample_point, y->sample_point,
                    sizeof(x->sample_point)) != 0) return 0;
     }
     return 1;
+}
+
+static int test_slice_validator(alea_cluster_t* cluster, alea_system_t* sys,
+                                 int rank, size_t max_crossings) {
+    alea_slice_view_t view = {0};
+    view.plane.normal[2] = 1.0;
+    view.plane.u_axis[0] = 1.0;
+    view.plane.v_axis[1] = 1.0;
+    view.u_min = view.v_min = -1.5;
+    view.u_max = view.v_max = 1.5;
+    alea_slice_curves_t* curves = alea_get_slice_curves(sys, &view);
+    alea_cluster_status_t status = alea_cluster_agree(cluster,
+        curves && alea_slice_curves_count(curves) >
+            (max_crossings == 17 ? 4u : 0u)
+            ? ALEA_CLUSTER_OK : ALEA_CLUSTER_COMPUTE_ERROR);
+    if (status != ALEA_CLUSTER_OK)
+        return fail(rank, "slice validation curve setup failed");
+    alea_geom_validator_options_t options;
+    alea_geom_validator_options_init(&options);
+    options.max_samples_per_curve = 16;
+    options.max_samples_per_signature = 2;
+    options.max_crossings = max_crossings;
+    options.max_errors = 5;
+    alea_geom_validator_result_t gathered;
+    alea_geom_validator_result_init(&gathered);
+    status = alea_cluster_validate_slice_curves(cluster, sys, &view, curves,
+        &options, rank == 0 ? &gathered : NULL);
+    if (status != ALEA_CLUSTER_OK)
+        return fail(rank, "cluster slice validation failed");
+    int bad = 0;
+    if (rank == 0) {
+        alea_geom_validator_result_t serial;
+        alea_geom_validator_result_init(&serial);
+        bad = alea_validate_geometry_slice(sys, &view, curves,
+            &options, &serial) != 0 || !same_validation(&gathered, &serial);
+        alea_geom_validator_result_free(&serial);
+    }
+    status = alea_cluster_agree(cluster,
+        bad ? ALEA_CLUSTER_COMPUTE_ERROR : ALEA_CLUSTER_OK);
+    if (status == ALEA_CLUSTER_OK && alea_cluster_size(cluster) > 1 &&
+        max_crossings == 0) {
+        alea_geom_validator_options_t changed = options;
+        if (rank == 1) changed.max_samples_per_curve++;
+        alea_cluster_status_t mismatch = alea_cluster_validate_slice_curves(
+            cluster, sys, &view, curves, &changed,
+            rank == 0 ? &gathered : NULL);
+        if (mismatch != ALEA_CLUSTER_INVALID_ARGUMENT)
+            status = ALEA_CLUSTER_COMPUTE_ERROR;
+        alea_slice_view_t changed_view = view;
+        if (rank == 1) changed_view.u_max += 0.1;
+        mismatch = alea_cluster_validate_slice_curves(cluster, sys,
+            &changed_view, curves, &options,
+            rank == 0 ? &gathered : NULL);
+        if (mismatch != ALEA_CLUSTER_INVALID_ARGUMENT)
+            status = ALEA_CLUSTER_COMPUTE_ERROR;
+    }
+    alea_geom_validator_result_free(&gathered);
+    alea_slice_curves_free(curves);
+    return status == ALEA_CLUSTER_OK ? 0
+        : fail(rank, "cluster slice validation differs from serial");
 }
 
 static int test_validator(alea_cluster_t* cluster, alea_system_t* sys,
@@ -872,14 +989,22 @@ int main(int argc, char** argv) {
         test_mesh(cluster, sys, rank, 2, ALEA_MESH_SAMPLE_STRATIFIED) ||
         test_mesh(cluster, sys, rank, 0, ALEA_MESH_SAMPLE_ADAPTIVE) ||
         test_mesh(cluster, sys, rank, 2, ALEA_MESH_SAMPLE_ADAPTIVE) ||
+        test_mesh(cluster, sys, rank, 9, ALEA_MESH_SAMPLE_ADAPTIVE) ||
+        test_mesh(cluster, sys, rank, 10, ALEA_MESH_SAMPLE_ADAPTIVE) ||
         test_mesh(cluster, sys, rank, 0, ALEA_MESH_SAMPLE_RAY) ||
         test_mesh(cluster, sys, rank, 2, ALEA_MESH_SAMPLE_RAY) ||
         test_mesh(cluster, sys, rank, 3, ALEA_MESH_SAMPLE_RAY) ||
-        test_mesh(cluster, sys, rank, 4, ALEA_MESH_SAMPLE_RAY))
+        test_mesh(cluster, sys, rank, 4, ALEA_MESH_SAMPLE_RAY) ||
+        test_mesh(cluster, sys, rank, 5, ALEA_MESH_SAMPLE_RAY) ||
+        test_mesh(cluster, sys, rank, 6, ALEA_MESH_SAMPLE_RAY) ||
+        test_mesh(cluster, sys, rank, 7, ALEA_MESH_SAMPLE_RAY) ||
+        test_mesh(cluster, sys, rank, 8, ALEA_MESH_SAMPLE_RAY))
         return 1;
     if (test_validator(cluster, sys, rank, 0, 0) ||
         test_validator(cluster, sys, rank, 8, 0) ||
-        test_validator(cluster, sys, rank, 0, 1))
+        test_validator(cluster, sys, rank, 0, 1) ||
+        test_slice_validator(cluster, sys, rank, 0) ||
+        test_slice_validator(cluster, sys, rank, 8))
         return 1;
     alea_system_t* overlap = alea_create();
     if (!overlap) return fail(rank, "overlap model creation failed");
@@ -894,9 +1019,27 @@ int main(int argc, char** argv) {
             alea_halfspace(overlap, overlap_b, -1),
             overlap_material, 1.0, 0) < 0)
         return fail(rank, "overlap model setup failed");
-    int overlap_bad = test_validator(cluster, overlap, rank, 0, 1);
+    int overlap_bad = test_validator(cluster, overlap, rank, 0, 1) ||
+        test_slice_validator(cluster, overlap, rank, 0) ||
+        test_slice_validator(cluster, overlap, rank, 8);
     alea_destroy(overlap);
     if (overlap_bad) return 1;
+    alea_system_t* many_curves = alea_create();
+    if (!many_curves) return fail(rank, "multi-curve model creation failed");
+    int curve_material = alea_add_material(many_curves, 1);
+    for (int i = 0; i < 6; ++i) {
+        int sid = alea_sphere_surface(many_curves, 20 + i,
+            -1.0 + 0.4 * i, 0.0, 0.0, 0.35);
+        if (curve_material < 0 || sid < 0 ||
+            alea_add_cell(many_curves, 20 + i,
+                alea_halfspace(many_curves, sid, -1),
+                curve_material, 1.0, 0) < 0)
+            return fail(rank, "multi-curve model setup failed");
+    }
+    int curves_bad = test_slice_validator(cluster, many_curves, rank, 0) ||
+        test_slice_validator(cluster, many_curves, rank, 17);
+    alea_destroy(many_curves);
+    if (curves_bad) return 1;
     if (alea_cluster_size(cluster) > 1) {
         render_config_t mismatched_cfg;
         render_config_init(&mismatched_cfg);
@@ -1234,6 +1377,52 @@ int main(int argc, char** argv) {
                        coverage_check.calls != 2 ||
                        coverage_check.rays_seen != COVERAGE_ROWS)))
         return fail(rank, "root coverage stream differs from serial");
+    alea_ray_coverage_slice_result_t* whole = rank == 0
+        ? alea_ray_coverage_slice_result_create() : NULL;
+    alea_ray_coverage_slice_result_t* expected = rank == 0
+        ? alea_ray_coverage_slice_result_create() : NULL;
+    if (rank == 0 && (!whole || !expected))
+        return fail(rank, "whole coverage result allocation failed");
+    status = alea_cluster_coverage(cluster, sys,
+        coverage_origins, coverage_directions,
+        rank == 0 ? COVERAGE_ROWS : 0,
+        coverage_tags, coverage_coordinates,
+        rank == 0 ? &coverage_check.options : NULL, whole);
+    if (status != ALEA_CLUSTER_OK ||
+        (rank == 0 &&
+         (alea_ray_coverage_slice_query(sys, coverage_origins,
+             coverage_directions, COVERAGE_ROWS, coverage_tags,
+             coverage_coordinates, &coverage_check.options, expected) != 0 ||
+          !same_coverage(whole, expected))))
+        return fail(rank, "whole coverage differs from serial");
+    coverage_check.options.max_rows = COVERAGE_ROWS - 1;
+    status = alea_cluster_coverage(cluster, sys,
+        coverage_origins, coverage_directions,
+        rank == 0 ? COVERAGE_ROWS : 0,
+        coverage_tags, coverage_coordinates,
+        rank == 0 ? &coverage_check.options : NULL, whole);
+    if (status != ALEA_CLUSTER_OUTPUT_LIMIT ||
+        (rank == 0 && !same_coverage(whole, expected)))
+        return fail(rank, "whole coverage global limit failed");
+    coverage_check.options.max_rows = 0;
+    status = alea_cluster_coverage(cluster, sys, NULL, NULL, 0,
+        NULL, NULL, rank == 0 ? &coverage_check.options : NULL, whole);
+    if (status != ALEA_CLUSTER_OK ||
+        (rank == 0 && (alea_ray_coverage_slice_row_count(whole) != 0 ||
+                       !alea_ray_coverage_slice_row_offsets(whole) ||
+                       !alea_ray_coverage_slice_owner_offsets(whole) ||
+                       alea_ray_coverage_slice_row_offsets(whole)[0] != 0 ||
+                       alea_ray_coverage_slice_owner_offsets(whole)[0] != 0)))
+        return fail(rank, "empty whole coverage failed");
+    coverage_check.options.max_output_bytes = 1;
+    status = alea_cluster_coverage(cluster, sys, NULL, NULL, 0,
+        NULL, NULL, rank == 0 ? &coverage_check.options : NULL, whole);
+    if (status != ALEA_CLUSTER_OUTPUT_LIMIT ||
+        (rank == 0 && !alea_ray_coverage_slice_row_offsets(whole)))
+        return fail(rank, "empty whole coverage byte limit failed");
+    coverage_check.options.max_output_bytes = 0;
+    alea_ray_coverage_slice_result_destroy(whole);
+    alea_ray_coverage_slice_result_destroy(expected);
     coverage_check.options.max_rows = 130;
     status = alea_cluster_coverage_stream(cluster, sys,
         coverage_origins, coverage_directions,

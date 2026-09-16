@@ -334,10 +334,10 @@ MESH_OBJS = $(MESH_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 GEO_VALIDATOR_OBJS = $(GEO_VALIDATOR_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 ifeq ($(USE_MPI),1)
   CLUSTER_BUILD_DIR = $(BUILD_DIR)/cluster/mpi
-  CLUSTER_OBJS = $(CLUSTER_BUILD_DIR)/cluster.o $(CLUSTER_BUILD_DIR)/cluster_input.o $(CLUSTER_BUILD_DIR)/cluster_raycast.o $(CLUSTER_BUILD_DIR)/cluster_coverage.o $(CLUSTER_BUILD_DIR)/cluster_render.o $(CLUSTER_BUILD_DIR)/cluster_slice.o $(CLUSTER_BUILD_DIR)/cluster_mesh.o $(CLUSTER_BUILD_DIR)/cluster_validator.o $(CLUSTER_BUILD_DIR)/cluster_mpi.o
+  CLUSTER_OBJS = $(CLUSTER_BUILD_DIR)/cluster.o $(CLUSTER_BUILD_DIR)/cluster_input.o $(CLUSTER_BUILD_DIR)/cluster_raycast.o $(CLUSTER_BUILD_DIR)/cluster_coverage.o $(CLUSTER_BUILD_DIR)/cluster_render.o $(CLUSTER_BUILD_DIR)/cluster_slice.o $(CLUSTER_BUILD_DIR)/cluster_mesh.o $(CLUSTER_BUILD_DIR)/cluster_validator.o $(CLUSTER_BUILD_DIR)/cluster_validator_slice.o $(CLUSTER_BUILD_DIR)/cluster_mpi.o
 else ifeq ($(USE_MPI),0)
   CLUSTER_BUILD_DIR = $(BUILD_DIR)/cluster/local
-  CLUSTER_OBJS = $(CLUSTER_BUILD_DIR)/cluster.o $(CLUSTER_BUILD_DIR)/cluster_input.o $(CLUSTER_BUILD_DIR)/cluster_raycast.o $(CLUSTER_BUILD_DIR)/cluster_coverage.o $(CLUSTER_BUILD_DIR)/cluster_render.o $(CLUSTER_BUILD_DIR)/cluster_slice.o $(CLUSTER_BUILD_DIR)/cluster_mesh.o $(CLUSTER_BUILD_DIR)/cluster_validator.o
+  CLUSTER_OBJS = $(CLUSTER_BUILD_DIR)/cluster.o $(CLUSTER_BUILD_DIR)/cluster_input.o $(CLUSTER_BUILD_DIR)/cluster_raycast.o $(CLUSTER_BUILD_DIR)/cluster_coverage.o $(CLUSTER_BUILD_DIR)/cluster_render.o $(CLUSTER_BUILD_DIR)/cluster_slice.o $(CLUSTER_BUILD_DIR)/cluster_mesh.o $(CLUSTER_BUILD_DIR)/cluster_validator.o $(CLUSTER_BUILD_DIR)/cluster_validator_slice.o
 else
   $(error USE_MPI must be 0 or 1)
 endif
@@ -658,6 +658,10 @@ $(BUILD_DIR)/cluster/local/cluster_validator.o: $(CLUSTER_DIR)/cluster_validator
 	@echo "CC  $< (local cluster validator)"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
+$(BUILD_DIR)/cluster/local/cluster_validator_slice.o: $(CLUSTER_DIR)/cluster_validator_slice.c | $(BUILD_DIR)/cluster/local
+	@echo "CC  $< (local cluster slice validator)"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
 $(BUILD_DIR)/cluster/mpi/cluster.o: $(CLUSTER_DIR)/cluster.c | $(BUILD_DIR)/cluster/mpi
 	@echo "CC  $< (MPI cluster)"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DALEA_CLUSTER_USE_MPI=1 -c $< -o $@
@@ -688,6 +692,10 @@ $(BUILD_DIR)/cluster/mpi/cluster_mesh.o: $(CLUSTER_DIR)/cluster_mesh.c | $(BUILD
 
 $(BUILD_DIR)/cluster/mpi/cluster_validator.o: $(CLUSTER_DIR)/cluster_validator.c | $(BUILD_DIR)/cluster/mpi
 	@echo "CC  $< (MPI cluster validator)"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DALEA_CLUSTER_USE_MPI=1 -c $< -o $@
+
+$(BUILD_DIR)/cluster/mpi/cluster_validator_slice.o: $(CLUSTER_DIR)/cluster_validator_slice.c | $(BUILD_DIR)/cluster/mpi
+	@echo "CC  $< (MPI cluster slice validator)"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DALEA_CLUSTER_USE_MPI=1 -c $< -o $@
 
 $(BUILD_DIR)/cluster/mpi/cluster_mpi.o: $(CLUSTER_DIR)/cluster_mpi.c | $(BUILD_DIR)/cluster/mpi
@@ -963,7 +971,7 @@ install-libs: full
 install-cluster: cluster
 	@$(MKDIR_P) "$(DESTDIR)$(LIBDIR)" "$(DESTDIR)$(INCLUDEDIR)"
 	@$(INSTALL_DATA) $(LIB_CLUSTER) "$(DESTDIR)$(LIBDIR)/"
-	@$(INSTALL_DATA) $(INCLUDE_DIR)/alea_cluster.h "$(DESTDIR)$(INCLUDEDIR)/"
+	@$(INSTALL_DATA) $(INCLUDE_DIR)/alea_cluster*.h "$(DESTDIR)$(INCLUDEDIR)/"
 
 install-cli: cli
 	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"

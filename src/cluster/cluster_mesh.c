@@ -72,6 +72,41 @@ static int compare_ints(const void* left, const void* right) {
     return (a > b) - (a < b);
 }
 
+static alea_cluster_status_t sample_local_slab(
+        alea_cluster_t* cluster, alea_system_t* sys,
+        const alea_mesh_config_t* part_config, size_t slices, size_t first,
+        double global_z_min, double global_z_max, int ordered_budget,
+        alea_mesh_result_t** output) {
+    *output = NULL;
+    const size_t ranks = (size_t)cluster->size;
+    const size_t rank = (size_t)cluster->rank;
+    uint64_t cumulative = 0;
+    const size_t passes = ordered_budget ? ranks : 1;
+    for (size_t peer = 0; peer < passes; ++peer) {
+        const int active = slices && (!ordered_budget || rank == peer);
+        uint64_t next = cumulative;
+        if (active)
+            *output = alea_mesh_sample_with_z_offset(sys, part_config,
+                (int)first, global_z_min, global_z_max,
+                cumulative, &next);
+        alea_cluster_status_t local = !active || *output
+            ? ALEA_CLUSTER_OK
+            : alea_interrupted() ? ALEA_CLUSTER_INTERRUPTED
+                                 : ALEA_CLUSTER_COMPUTE_ERROR;
+        alea_cluster_status_t status = alea_cluster_agree(cluster, local);
+        if (status != ALEA_CLUSTER_OK) return status;
+        if (ordered_budget) {
+            if (alea_cluster_backend_broadcast_u64(cluster->backend,
+                    &next, (int)peer)) {
+                cluster->usable = 0;
+                return ALEA_CLUSTER_BACKEND_ERROR;
+            }
+            cumulative = next;
+        }
+    }
+    return ALEA_CLUSTER_OK;
+}
+
 alea_cluster_status_t alea_cluster_mesh_sample(
         alea_cluster_t* cluster, alea_system_t* sys,
         const alea_mesh_config_t* cfg,
@@ -86,11 +121,8 @@ alea_cluster_status_t alea_cluster_mesh_sample(
          cfg->sampling_mode != ALEA_MESH_SAMPLE_STRATIFIED &&
          cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE &&
          cfg->sampling_mode != ALEA_MESH_SAMPLE_RAY) ||
-        (cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE &&
-         cfg->max_total_samples != 0) ||
         (cfg->sampling_mode == ALEA_MESH_SAMPLE_RAY &&
-         ((cfg->ray_directions & ALEA_MESH_RAY_Z) ||
-          !(cfg->ray_directions & (ALEA_MESH_RAY_X | ALEA_MESH_RAY_Y)) ||
+         (!(cfg->ray_directions & ALEA_MESH_RAY_XYZ) ||
           cfg->max_total_samples != 0 ||
           (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_CUSTOM &&
            (uint64_t)cfg->ray_point_count * 2u * sizeof(double) >
@@ -180,18 +212,19 @@ alea_cluster_status_t alea_cluster_mesh_sample(
             z_nodes[k] = resolved.z_min + (double)k * step;
     }
     alea_mesh_result_t* partial = NULL;
+    alea_mesh_config_t part_cfg = resolved;
     if (slices) {
-        alea_mesh_config_t part_cfg = resolved;
         part_cfg.nz = (int)slices;
         part_cfg.z_nodes = z_nodes + first;
         part_cfg.z_min = z_nodes[first];
         part_cfg.z_max = z_nodes[first + slices];
         part_cfg.bounds_mode = ALEA_MESH_BOUNDS_EXPLICIT;
-        partial = alea_mesh_sample_with_z_offset(sys, &part_cfg, (int)first);
     }
-    local = !slices || partial ? ALEA_CLUSTER_OK :
-        alea_interrupted() ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_COMPUTE_ERROR;
-    status = alea_cluster_agree(cluster, local);
+    status = sample_local_slab(cluster, sys, &part_cfg, slices, first,
+        z_nodes[0], z_nodes[nz],
+        cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE &&
+            cfg->max_total_samples != 0,
+        &partial);
     if (status != ALEA_CLUSTER_OK) goto cleanup;
     if (partial) {
         for (size_t i = 0; i < partial->fraction_count; ++i) {
@@ -407,13 +440,178 @@ cleanup:
     return status;
 }
 
-alea_cluster_status_t alea_cluster_mesh_sample_shards(
+static int visit_mesh_slab(const alea_mesh_result_t* mesh, size_t first_z,
+        alea_mesh_voxel_visit_fn callback, void* user_data) {
+    const size_t nx = (size_t)mesh->nx, ny = (size_t)mesh->ny;
+    for (size_t k = 0; k < (size_t)mesh->nz; ++k)
+        for (size_t j = 0; j < ny; ++j)
+            for (size_t i = 0; i < nx; ++i) {
+                const size_t index = (k * ny + j) * nx + i;
+                const alea_mesh_fraction_span_t material_span =
+                    mesh->fraction_spans[index];
+                const alea_mesh_fraction_span_t cell_span =
+                    mesh->cell_fraction_spans[index];
+                alea_mesh_voxel_sample_t sample = {
+                    .i = (int)i, .j = (int)j, .k = (int)(first_z + k),
+                    .x_min = mesh->x_nodes[i], .x_max = mesh->x_nodes[i + 1],
+                    .y_min = mesh->y_nodes[j], .y_max = mesh->y_nodes[j + 1],
+                    .z_min = mesh->z_nodes[k], .z_max = mesh->z_nodes[k + 1],
+                    .material_id = mesh->material_ids[index],
+                    .cell_id = mesh->cell_ids[index],
+                    .mixed = mesh->mixed_flags[index],
+                    .tie_flags = mesh->tie_flags[index],
+                    .dominant_fraction = mesh->dominant_fractions[index],
+                    .estimated_error = mesh->estimated_errors[index],
+                    .sample_count = mesh->sample_counts[index],
+                    .refinement_flags = mesh->refinement_flags[index],
+                    .fractions = material_span.count
+                        ? mesh->fractions + material_span.offset : NULL,
+                    .fraction_count = material_span.count,
+                    .cell_fractions = cell_span.count
+                        ? mesh->cell_fractions + cell_span.offset : NULL,
+                    .cell_fraction_count = cell_span.count
+                };
+                if (callback(&sample, user_data)) return -1;
+            }
+    return 0;
+}
+
+static alea_cluster_status_t mesh_stream_root_slabs(
+        alea_cluster_t* cluster, const alea_mesh_result_t* local_slab,
+        const alea_mesh_config_t* cfg,
+        alea_mesh_voxel_visit_fn callback, void* user_data) {
+    const size_t ranks = (size_t)cluster->size;
+    const size_t nz = (size_t)cfg->nz;
+    const size_t nx = (size_t)cfg->nx, ny = (size_t)cfg->ny;
+    size_t* rank_bytes = cluster->rank == 0
+        ? calloc(ranks, sizeof(size_t)) : NULL;
+    alea_cluster_status_t local = cluster->rank != 0 || rank_bytes
+        ? ALEA_CLUSTER_OK : ALEA_CLUSTER_OUT_OF_MEMORY;
+    alea_cluster_status_t status = alea_cluster_agree(cluster, local);
+    if (status != ALEA_CLUSTER_OK) { free(rank_bytes); return status; }
+    alea_mesh_result_t* received = NULL;
+    for (size_t peer = 0; peer < ranks; ++peer) {
+        const size_t slices = slab_count(nz, peer, ranks);
+        if (!slices) continue;
+        const size_t first = slab_first(nz, peer, ranks);
+        if (peer == 0) {
+            local = cluster->rank == 0 &&
+                visit_mesh_slab(local_slab, first, callback, user_data)
+                    ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
+            status = alea_cluster_agree(cluster, local);
+            if (status != ALEA_CLUSTER_OK) goto cleanup;
+            continue;
+        }
+        uint64_t counts[2] = {0, 0};
+        if ((size_t)cluster->rank == peer) {
+            counts[0] = (uint64_t)local_slab->fraction_count;
+            counts[1] = (uint64_t)local_slab->cell_fraction_count;
+        }
+        if (alea_cluster_backend_broadcast_bytes(cluster->backend, counts,
+                sizeof(counts), (int)peer)) {
+            cluster->usable = 0;
+            status = ALEA_CLUSTER_BACKEND_ERROR;
+            goto cleanup;
+        }
+        const size_t cells = nx * ny * slices;
+        local = ALEA_CLUSTER_OK;
+        if (cluster->rank == 0) {
+            if (counts[0] > UINT32_MAX || counts[1] > UINT32_MAX) {
+                local = ALEA_CLUSTER_OUTPUT_LIMIT;
+            } else {
+                received = calloc(1, sizeof(*received));
+                if (!received) local = ALEA_CLUSTER_OUT_OF_MEMORY;
+            }
+            if (received) {
+                received->nx = cfg->nx;
+                received->ny = cfg->ny;
+                received->nz = (int)slices;
+                received->fields = MESH_FIELDS;
+                received->fraction_count = (size_t)counts[0];
+                received->cell_fraction_count = (size_t)counts[1];
+#define ALLOC(member, count, type) do { \
+    size_t n = (count); \
+    if (n > SIZE_MAX / sizeof(type)) local = ALEA_CLUSTER_OUTPUT_LIMIT; \
+    else if (!(received->member = malloc((n ? n : 1) * sizeof(type)))) \
+        local = ALEA_CLUSTER_OUT_OF_MEMORY; \
+} while (0)
+                ALLOC(x_nodes, nx + 1, double);
+                ALLOC(y_nodes, ny + 1, double);
+                ALLOC(z_nodes, slices + 1, double);
+                ALLOC(material_ids, cells, int);
+                ALLOC(cell_ids, cells, int);
+                ALLOC(mixed_flags, cells, unsigned char);
+                ALLOC(dominant_fractions, cells, double);
+                ALLOC(estimated_errors, cells, double);
+                ALLOC(sample_counts, cells, uint32_t);
+                ALLOC(tie_flags, cells, uint8_t);
+                ALLOC(refinement_flags, cells, uint8_t);
+                ALLOC(fraction_spans, cells, alea_mesh_fraction_span_t);
+                ALLOC(cell_fraction_spans, cells, alea_mesh_fraction_span_t);
+                ALLOC(fractions, received->fraction_count,
+                    alea_mesh_material_fraction_t);
+                ALLOC(cell_fractions, received->cell_fraction_count,
+                    alea_mesh_cell_fraction_t);
+#undef ALLOC
+            }
+        }
+        status = alea_cluster_agree(cluster, local);
+        if (status != ALEA_CLUSTER_OK) goto cleanup;
+#define TRANSFER(member, count, type) do { \
+    const size_t bytes = (count) * sizeof(type); \
+    if (cluster->rank == 0) rank_bytes[peer] = bytes; \
+    const void* source = (size_t)cluster->rank == peer \
+        ? local_slab->member : NULL; \
+    if (alea_cluster_backend_gather_bytes(cluster->backend, source, \
+            (size_t)cluster->rank == peer ? bytes : 0, \
+            cluster->rank == 0 ? received->member : NULL, rank_bytes, 0)) { \
+        cluster->usable = 0; status = ALEA_CLUSTER_BACKEND_ERROR; \
+        goto cleanup; \
+    } \
+    if (cluster->rank == 0) rank_bytes[peer] = 0; \
+} while (0)
+        TRANSFER(x_nodes, nx + 1, double);
+        TRANSFER(y_nodes, ny + 1, double);
+        TRANSFER(z_nodes, slices + 1, double);
+        TRANSFER(material_ids, cells, int);
+        TRANSFER(cell_ids, cells, int);
+        TRANSFER(mixed_flags, cells, unsigned char);
+        TRANSFER(dominant_fractions, cells, double);
+        TRANSFER(estimated_errors, cells, double);
+        TRANSFER(sample_counts, cells, uint32_t);
+        TRANSFER(tie_flags, cells, uint8_t);
+        TRANSFER(refinement_flags, cells, uint8_t);
+        TRANSFER(fraction_spans, cells, alea_mesh_fraction_span_t);
+        TRANSFER(cell_fraction_spans, cells, alea_mesh_fraction_span_t);
+        TRANSFER(fractions, (size_t)counts[0],
+            alea_mesh_material_fraction_t);
+        TRANSFER(cell_fractions, (size_t)counts[1],
+            alea_mesh_cell_fraction_t);
+#undef TRANSFER
+        local = cluster->rank == 0 &&
+            visit_mesh_slab(received, first, callback, user_data)
+                ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
+        status = alea_cluster_agree(cluster, local);
+        alea_mesh_result_free(received);
+        received = NULL;
+        if (status != ALEA_CLUSTER_OK) goto cleanup;
+    }
+cleanup:
+    alea_mesh_result_free(received);
+    free(rank_bytes);
+    return status;
+}
+
+static alea_cluster_status_t mesh_sample_shards_impl(
         alea_cluster_t* cluster, alea_system_t* sys,
         const alea_mesh_config_t* cfg,
-        alea_cluster_mesh_slab_callback_t callback, void* user_data) {
+        alea_cluster_mesh_slab_callback_t callback, void* user_data,
+        alea_mesh_voxel_visit_fn root_visitor, int root_stream) {
     if (!cluster) return ALEA_CLUSTER_INVALID_ARGUMENT;
     alea_cluster_status_t local = ALEA_CLUSTER_OK;
-    if (!sys || !cfg || !callback || cfg->nx <= 0 || cfg->ny <= 0 ||
+    if (!sys || !cfg ||
+        (root_stream ? (cluster->rank == 0 && !root_visitor) : !callback) ||
+        cfg->nx <= 0 || cfg->ny <= 0 ||
         cfg->nz <= 0 || cfg->visit || cfg->progress ||
         (cfg->fields & ~MESH_FIELDS) ||
         (cfg->sampling_mode != ALEA_MESH_SAMPLE_CENTER &&
@@ -422,11 +620,8 @@ alea_cluster_status_t alea_cluster_mesh_sample_shards(
          cfg->sampling_mode != ALEA_MESH_SAMPLE_STRATIFIED &&
          cfg->sampling_mode != ALEA_MESH_SAMPLE_ADAPTIVE &&
          cfg->sampling_mode != ALEA_MESH_SAMPLE_RAY) ||
-        (cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE &&
-         cfg->max_total_samples != 0) ||
         (cfg->sampling_mode == ALEA_MESH_SAMPLE_RAY &&
-         ((cfg->ray_directions & ALEA_MESH_RAY_Z) ||
-          !(cfg->ray_directions & (ALEA_MESH_RAY_X | ALEA_MESH_RAY_Y)) ||
+         (!(cfg->ray_directions & ALEA_MESH_RAY_XYZ) ||
           cfg->max_total_samples != 0 ||
           (cfg->ray_origin_mode == ALEA_MESH_RAY_ORIGINS_CUSTOM &&
            (uint64_t)cfg->ray_point_count * 2u * sizeof(double) >
@@ -504,6 +699,12 @@ alea_cluster_status_t alea_cluster_mesh_sample_shards(
     status = alea_cluster_agree(cluster, local);
     if (status != ALEA_CLUSTER_OK) { free(local_nodes); return status; }
     alea_mesh_result_t* slab = NULL;
+    alea_mesh_config_t part = resolved;
+    double global_z_min = cfg->z_nodes ? cfg->z_nodes[0] : resolved.z_min;
+    double global_z_max = cfg->z_nodes
+        ? cfg->z_nodes[nz]
+        : resolved.z_min + (double)nz *
+            ((resolved.z_max - resolved.z_min) / cfg->nz);
     if (slices) {
         if (cfg->z_nodes)
             memcpy(local_nodes, cfg->z_nodes + first,
@@ -513,32 +714,60 @@ alea_cluster_status_t alea_cluster_mesh_sample_shards(
             for (size_t k = 0; k <= slices; ++k)
                 local_nodes[k] = resolved.z_min + (double)(first + k) * step;
         }
-        alea_mesh_config_t part = resolved;
         part.nz = (int)slices;
         part.z_nodes = local_nodes;
         part.z_min = local_nodes[0];
         part.z_max = local_nodes[slices];
         part.bounds_mode = ALEA_MESH_BOUNDS_EXPLICIT;
-        slab = alea_mesh_sample_with_z_offset(sys, &part, (int)first);
-        if (slab) {
-            slab->bounds_source = cfg->x_nodes && cfg->y_nodes && cfg->z_nodes
-                ? ALEA_MESH_BOUNDS_SOURCE_CUSTOM_NODES
-                : inferred ? ALEA_MESH_BOUNDS_SOURCE_INFERRED_ROOT_AABB
-                           : ALEA_MESH_BOUNDS_SOURCE_EXPLICIT;
-            slab->bounds_padding = inferred ? cfg->auto_pad : 0.0;
-        }
     }
-    local = !slices || slab ? ALEA_CLUSTER_OK :
-        alea_interrupted() ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_COMPUTE_ERROR;
-    status = alea_cluster_agree(cluster, local);
+    status = sample_local_slab(cluster, sys, &part, slices, first,
+        global_z_min, global_z_max,
+        cfg->sampling_mode == ALEA_MESH_SAMPLE_ADAPTIVE &&
+            cfg->max_total_samples != 0,
+        &slab);
+    if (slab) {
+        slab->bounds_source = cfg->x_nodes && cfg->y_nodes && cfg->z_nodes
+            ? ALEA_MESH_BOUNDS_SOURCE_CUSTOM_NODES
+            : inferred ? ALEA_MESH_BOUNDS_SOURCE_INFERRED_ROOT_AABB
+                       : ALEA_MESH_BOUNDS_SOURCE_EXPLICIT;
+        slab->bounds_padding = inferred ? cfg->auto_pad : 0.0;
+    }
     if (status == ALEA_CLUSTER_OK) {
-        local = slices && callback(first, slab, user_data)
-            ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
-        status = alea_cluster_agree(cluster, local);
+        if (root_stream)
+            status = mesh_stream_root_slabs(cluster, slab, cfg,
+                root_visitor, user_data);
+        else {
+            local = slices && callback(first, slab, user_data)
+                ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
+            status = alea_cluster_agree(cluster, local);
+        }
     }
     alea_mesh_result_free(slab);
     free(local_nodes);
     return status;
+}
+
+alea_cluster_status_t alea_cluster_mesh_sample_shards(
+        alea_cluster_t* cluster, alea_system_t* sys,
+        const alea_mesh_config_t* cfg,
+        alea_cluster_mesh_slab_callback_t callback, void* user_data) {
+    return mesh_sample_shards_impl(cluster, sys, cfg, callback, user_data,
+        NULL, 0);
+}
+
+alea_cluster_status_t alea_cluster_mesh_stream_root(
+        alea_cluster_t* cluster, alea_system_t* sys,
+        const alea_mesh_config_t* cfg,
+        alea_mesh_voxel_visit_fn callback, void* user_data) {
+    if (!cluster) return ALEA_CLUSTER_INVALID_ARGUMENT;
+    alea_cluster_status_t local = cfg
+        ? ALEA_CLUSTER_OK : ALEA_CLUSTER_INVALID_ARGUMENT;
+    alea_cluster_status_t status = alea_cluster_agree(cluster, local);
+    if (status != ALEA_CLUSTER_OK) return status;
+    alea_mesh_config_t full_config = *cfg;
+    full_config.fields = MESH_FIELDS;
+    return mesh_sample_shards_impl(cluster, sys, &full_config,
+        NULL, user_data, callback, 1);
 }
 
 alea_cluster_status_t alea_cluster_mesh_visit_root(
@@ -558,47 +787,9 @@ alea_cluster_status_t alea_cluster_mesh_visit_root(
         cluster->rank == 0 ? &result : NULL);
     if (status != ALEA_CLUSTER_OK) return status;
     local = ALEA_CLUSTER_OK;
-    if (cluster->rank == 0) {
-        const size_t nx = (size_t)result->nx;
-        const size_t ny = (size_t)result->ny;
-        const size_t nz = (size_t)result->nz;
-        for (size_t k = 0; k < nz && local == ALEA_CLUSTER_OK; ++k)
-            for (size_t j = 0; j < ny && local == ALEA_CLUSTER_OK; ++j)
-                for (size_t i = 0; i < nx; ++i) {
-                    const size_t index = (k * ny + j) * nx + i;
-                    const alea_mesh_fraction_span_t material_span =
-                        result->fraction_spans[index];
-                    const alea_mesh_fraction_span_t cell_span =
-                        result->cell_fraction_spans[index];
-                    alea_mesh_voxel_sample_t sample = {
-                        .i = (int)i, .j = (int)j, .k = (int)k,
-                        .x_min = result->x_nodes[i],
-                        .x_max = result->x_nodes[i + 1],
-                        .y_min = result->y_nodes[j],
-                        .y_max = result->y_nodes[j + 1],
-                        .z_min = result->z_nodes[k],
-                        .z_max = result->z_nodes[k + 1],
-                        .material_id = result->material_ids[index],
-                        .cell_id = result->cell_ids[index],
-                        .mixed = result->mixed_flags[index],
-                        .tie_flags = result->tie_flags[index],
-                        .dominant_fraction =
-                            result->dominant_fractions[index],
-                        .estimated_error = result->estimated_errors[index],
-                        .sample_count = result->sample_counts[index],
-                        .refinement_flags = result->refinement_flags[index],
-                        .fractions = result->fractions + material_span.offset,
-                        .fraction_count = material_span.count,
-                        .cell_fractions =
-                            result->cell_fractions + cell_span.offset,
-                        .cell_fraction_count = cell_span.count
-                    };
-                    if (callback(&sample, user_data)) {
-                        local = ALEA_CLUSTER_INTERRUPTED;
-                        break;
-                    }
-                }
-    }
+    if (cluster->rank == 0 &&
+        visit_mesh_slab(result, 0, callback, user_data))
+        local = ALEA_CLUSTER_INTERRUPTED;
     status = alea_cluster_agree(cluster, local);
     alea_mesh_result_free(result);
     return status;

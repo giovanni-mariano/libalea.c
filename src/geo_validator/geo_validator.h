@@ -18,5 +18,15 @@ int alea_validator_cluster_merge_one(alea_system_t* sys,
     const alea_geom_validator_options_t* options,
     alea_geom_validator_result_t* result,
     const alea_geom_validator_result_t* candidate);
+int alea_validator_cluster_slice_range(alea_system_t* sys,
+    const alea_slice_view_t* view, const alea_slice_curves_t* curves,
+    const alea_geom_validator_options_t* options,
+    alea_geom_validator_result_t* result, size_t first_curve,
+    size_t end_curve);
+int alea_validator_cluster_merge_curve_one(alea_system_t* sys,
+    const alea_slice_view_t* view, const alea_slice_curves_t* curves,
+    const alea_geom_validator_options_t* options,
+    alea_geom_validator_result_t* result,
+    const alea_geom_validator_result_t* candidate, size_t curve_index);
 
 #endif /* ALEA_GEO_VALIDATOR_INTERNAL_H */

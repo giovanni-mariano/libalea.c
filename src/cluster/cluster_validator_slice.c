@@ -5,12 +5,13 @@
 #include "cluster_internal.h"
 #include "geo_validator/geo_validator.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define VALIDATOR_BATCH_RAYS 64u
-#define VALIDATOR_RAY_ERROR_LIMIT 4096u
+#define VALIDATOR_BATCH_CURVES 64u
+#define VALIDATOR_CURVE_ERROR_LIMIT 4096u
 #define VALIDATOR_META_FIELDS 8u
 
 static size_t rank_count(size_t total, size_t rank, size_t ranks) {
@@ -21,8 +22,8 @@ static size_t rank_first(size_t total, size_t rank, size_t ranks) {
     return rank * (total / ranks) + (rank < total % ranks ? rank : total % ranks);
 }
 
-uint64_t alea_cluster_validator_options_fingerprint(
-        const alea_geom_validator_options_t* options) {
+static uint64_t slice_fingerprint(const alea_slice_view_t* view,
+                                  const alea_slice_curves_t* curves) {
     uint64_t hash = UINT64_C(1469598103934665603);
 #define HASH(value) do { \
     const unsigned char* bytes = (const unsigned char*)&(value); \
@@ -30,23 +31,79 @@ uint64_t alea_cluster_validator_options_fingerprint(
         hash ^= bytes[i]; hash *= UINT64_C(1099511628211); \
     } \
 } while (0)
-    HASH(options->flags); HASH(options->universe_depth);
-    HASH(options->max_errors); HASH(options->max_samples_per_signature);
-    HASH(options->max_samples_per_curve); HASH(options->max_crossings);
-    HASH(options->sample_offset); HASH(options->t_max);
-    HASH(options->seed); HASH(options->ray_count);
-    for (size_t i = 0; i < 6; ++i) HASH(options->validation_bounds[i]);
+    for (size_t i = 0; i < 3; ++i) {
+        HASH(view->plane.origin[i]); HASH(view->plane.normal[i]);
+        HASH(view->plane.u_axis[i]); HASH(view->plane.v_axis[i]);
+    }
+    HASH(view->u_min); HASH(view->u_max);
+    HASH(view->v_min); HASH(view->v_max);
+    size_t count = alea_slice_curves_count(curves);
+    HASH(count);
+    for (size_t i = 0; i < count; ++i) {
+        alea_curve_t curve;
+        if (alea_slice_curves_get(curves, i, &curve) != 0) return 0;
+        HASH(curve.type); HASH(curve.surface_id);
+        HASH(curve.primitive_id); HASH(curve.t_min); HASH(curve.t_max);
+        switch (curve.type) {
+        case ALEA_CURVE_LINE:
+        case ALEA_CURVE_LINE_SEGMENT:
+        case ALEA_CURVE_RAY:
+            for (size_t j = 0; j < 2; ++j) {
+                HASH(curve.data.line.point[j]);
+                HASH(curve.data.line.direction[j]);
+            }
+            break;
+        case ALEA_CURVE_CIRCLE:
+        case ALEA_CURVE_ARC:
+            for (size_t j = 0; j < 2; ++j)
+                HASH(curve.data.circle.center[j]);
+            HASH(curve.data.circle.radius);
+            break;
+        case ALEA_CURVE_ELLIPSE:
+        case ALEA_CURVE_ELLIPSE_ARC:
+            for (size_t j = 0; j < 2; ++j)
+                HASH(curve.data.ellipse.center[j]);
+            HASH(curve.data.ellipse.semi_a);
+            HASH(curve.data.ellipse.semi_b);
+            HASH(curve.data.ellipse.angle);
+            break;
+        case ALEA_CURVE_POLYGON:
+            HASH(curve.data.polygon.count);
+            HASH(curve.data.polygon.closed);
+            if (curve.data.polygon.count < 0 ||
+                curve.data.polygon.count > 16) return 0;
+            for (int j = 0; j < curve.data.polygon.count; ++j) {
+                HASH(curve.data.polygon.vertices[j][0]);
+                HASH(curve.data.polygon.vertices[j][1]);
+            }
+            break;
+        case ALEA_CURVE_PARALLEL_LINES:
+            for (size_t j = 0; j < 2; ++j) {
+                HASH(curve.data.parallel_lines.point1[j]);
+                HASH(curve.data.parallel_lines.point2[j]);
+                HASH(curve.data.parallel_lines.direction[j]);
+            }
+            break;
+        default:
+            break;
+        }
+    }
 #undef HASH
     return hash ? hash : 1;
 }
 
-alea_cluster_status_t alea_cluster_validate_geometry(
+alea_cluster_status_t alea_cluster_validate_slice_curves(
         alea_cluster_t* cluster, alea_system_t* sys,
+        const alea_slice_view_t* view,
+        const alea_slice_curves_t* curves,
         const alea_geom_validator_options_t* options,
         alea_geom_validator_result_t* root_result) {
     if (!cluster) return ALEA_CLUSTER_INVALID_ARGUMENT;
-    alea_cluster_status_t local = sys ? ALEA_CLUSTER_OK
-                                      : ALEA_CLUSTER_INVALID_ARGUMENT;
+    alea_cluster_status_t local = sys && view && curves &&
+        isfinite(view->u_min) && isfinite(view->u_max) &&
+        isfinite(view->v_min) && isfinite(view->v_max) &&
+        view->u_min < view->u_max && view->v_min < view->v_max
+        ? ALEA_CLUSTER_OK : ALEA_CLUSTER_INVALID_ARGUMENT;
     if (cluster->rank == 0 && !root_result)
         local = ALEA_CLUSTER_INVALID_ARGUMENT;
     alea_cluster_status_t status = alea_cluster_agree(cluster, local);
@@ -70,20 +127,26 @@ alea_cluster_status_t alea_cluster_validate_geometry(
         alea_cluster_validator_options_fingerprint(&prepared));
     if (match < 0) return ALEA_CLUSTER_BACKEND_ERROR;
     if (!match) return ALEA_CLUSTER_INVALID_ARGUMENT;
+    uint64_t slice = slice_fingerprint(view, curves);
+    local = slice ? ALEA_CLUSTER_OK : ALEA_CLUSTER_COMPUTE_ERROR;
+    status = alea_cluster_agree(cluster, local);
+    if (status != ALEA_CLUSTER_OK) return status;
+    match = alea_cluster_fingerprints_match(cluster, slice);
+    if (match < 0) return ALEA_CLUSTER_BACKEND_ERROR;
+    if (!match) return ALEA_CLUSTER_INVALID_ARGUMENT;
     int skip = cluster->rank == 0 && root_result->truncated;
     if (alea_cluster_backend_broadcast_int(cluster->backend, &skip, 0)) {
         cluster->usable = 0;
         return ALEA_CLUSTER_BACKEND_ERROR;
     }
-    if (!(prepared.flags & ALEA_GEOM_VALIDATE_RAYS) || skip)
+    if (skip)
         return ALEA_CLUSTER_OK;
 
     const size_t ranks = (size_t)cluster->size;
-    double rays[VALIDATOR_BATCH_RAYS * 6];
-    uint64_t local_meta[VALIDATOR_BATCH_RAYS * VALIDATOR_META_FIELDS];
-    alea_geom_validator_result_t per_ray[VALIDATOR_BATCH_RAYS];
+    uint64_t local_meta[VALIDATOR_BATCH_CURVES * VALIDATOR_META_FIELDS];
+    alea_geom_validator_result_t per_curve[VALIDATOR_BATCH_CURVES];
     uint64_t* all_meta = cluster->rank == 0
-        ? malloc(VALIDATOR_BATCH_RAYS * VALIDATOR_META_FIELDS *
+        ? malloc(VALIDATOR_BATCH_CURVES * VALIDATOR_META_FIELDS *
                  sizeof(uint64_t)) : NULL;
     uint64_t* error_counts = cluster->rank == 0
         ? malloc(ranks * sizeof(uint64_t)) : NULL;
@@ -94,35 +157,24 @@ alea_cluster_status_t alea_cluster_validate_geometry(
     status = alea_cluster_agree(cluster, local);
     if (status != ALEA_CLUSTER_OK) goto cleanup;
     alea_geom_validator_options_t worker_options = prepared;
-    worker_options.max_errors = VALIDATOR_RAY_ERROR_LIMIT;
+    worker_options.max_errors = VALIDATOR_CURVE_ERROR_LIMIT;
     worker_options.max_samples_per_signature = 0;
     worker_options.max_crossings = SIZE_MAX;
-    const size_t total = (size_t)prepared.ray_count;
+    const size_t total = alea_slice_curves_count(curves);
     for (size_t base = 0; base < total; ) {
-        size_t count = total - base < VALIDATOR_BATCH_RAYS
-            ? total - base : VALIDATOR_BATCH_RAYS;
-        if (cluster->rank == 0)
-            for (size_t i = 0; i < count; ++i)
-                alea_validator_cluster_next_ray(&rng, bounds,
-                    rays + 6 * i, rays + 6 * i + 3);
-        if (alea_cluster_backend_broadcast_bytes(cluster->backend, rays,
-                count * 6 * sizeof(double), 0)) {
-            cluster->usable = 0;
-            status = ALEA_CLUSTER_BACKEND_ERROR;
-            goto cleanup;
-        }
+        size_t count = total - base < VALIDATOR_BATCH_CURVES
+            ? total - base : VALIDATOR_BATCH_CURVES;
         for (size_t i = 0; i < count; ++i)
-            alea_geom_validator_result_init(&per_ray[i]);
+            alea_geom_validator_result_init(&per_curve[i]);
         size_t mine = rank_count(count, (size_t)cluster->rank, ranks);
         size_t first = rank_first(count, (size_t)cluster->rank, ranks);
         local = ALEA_CLUSTER_OK;
         size_t local_errors = 0;
         for (size_t i = 0; i < mine; ++i) {
-            const double* ray = rays + 6 * (first + i);
-            alea_geom_validator_result_t* current = &per_ray[i];
-            if (alea_validate_geometry_ray(sys, &worker_options,
-                    ray[0], ray[1], ray[2], ray[3], ray[4], ray[5],
-                    t_max, current) != 0) {
+            alea_geom_validator_result_t* current = &per_curve[i];
+            if (alea_validator_cluster_slice_range(sys, view, curves,
+                    &worker_options, current, base + first + i,
+                    base + first + i + 1) != 0) {
                 local = ALEA_CLUSTER_COMPUTE_ERROR;
                 break;
             }
@@ -153,8 +205,8 @@ alea_cluster_status_t alea_cluster_validate_geometry(
         if (status != ALEA_CLUSTER_OK) { free(local_errors_flat); goto free_batch; }
         size_t copied = 0;
         for (size_t i = 0; i < mine; ++i) {
-            size_t n = per_ray[i].error_count;
-            if (n) memcpy(local_errors_flat + copied, per_ray[i].errors,
+            size_t n = per_curve[i].error_count;
+            if (n) memcpy(local_errors_flat + copied, per_curve[i].errors,
                           n * sizeof(alea_geom_error_t));
             copied += n;
         }
@@ -228,9 +280,8 @@ alea_cluster_status_t alea_cluster_validate_geometry(
                 candidate.suppressed_samples = (size_t)meta[5];
                 candidate.sample_limited_curves = (size_t)meta[6];
                 candidate.truncated = (int)meta[7];
-                const double* ray = rays + 6 * i;
-                if (alea_validator_cluster_merge_one(sys, ray, ray + 3,
-                        t_max, &prepared, root_result, &candidate) != 0) {
+                if (alea_validator_cluster_merge_curve_one(sys, view, curves,
+                        &prepared, root_result, &candidate, base + i) != 0) {
                     local = ALEA_CLUSTER_COMPUTE_ERROR;
                     break;
                 }
@@ -248,14 +299,14 @@ alea_cluster_status_t alea_cluster_validate_geometry(
             goto free_batch;
         }
         for (size_t i = 0; i < count; ++i)
-            alea_geom_validator_result_free(&per_ray[i]);
+            alea_geom_validator_result_free(&per_curve[i]);
         if (stopped) break;
         base += count;
         continue;
 
 free_batch:
         for (size_t i = 0; i < count; ++i)
-            alea_geom_validator_result_free(&per_ray[i]);
+            alea_geom_validator_result_free(&per_curve[i]);
         goto cleanup;
     }
     status = ALEA_CLUSTER_OK;

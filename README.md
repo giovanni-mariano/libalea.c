@@ -153,6 +153,11 @@ CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
 ranks and reduces raw track-length moments in memory. The core library has no
 MPI dependency. Each rank constructs the same model, calls the same collective
 operation, and receives the final volumes and uncertainties. Applications can
+include `alea_cluster_volume.h` for the volume API or
+`alea_cluster_raycast.h` for ray and coverage APIs without including render or
+mesh declarations. Render, slice, mesh, and validation have corresponding
+`alea_cluster_*.h` headers; `alea_cluster.h` remains the umbrella header. The
+common runtime and collective input APIs are in `alea_cluster_base.h`. Applications can
 call `alea_cluster_read_file()` so rank zero reads an input file and broadcasts
 its bytes for parsing on every rank. Each rank frees the returned buffer.
 For MCNP inputs with `READ FILE=` cards, `alea_cluster_read_mcnp_input()`
@@ -195,23 +200,37 @@ adaptive coverage refinement remains local.
 `alea_cluster_coverage_stream()` gathers bounded batches of fixed rows on rank
 zero, rebases their interval and owner offsets, and invokes a root callback.
 Coverage limits apply to each assembled batch.
+`alea_cluster_coverage()` assembles all fixed rows into one root-owned result
+for random access. Its row, interval, owner, and byte limits apply to the
+complete result, which requires root memory proportional to the output.
 `alea_cluster_mesh_sample()` partitions fixed point/subcell sampling into Z
 slabs and assembles voxel labels, diagnostics, and packed material/cell fractions
 on rank zero. It accepts explicit or inferred bounds and custom nodes. Seeded
 stratified and adaptive sampling preserve global voxel identities across Z
-slabs. Adaptive mode requires an unlimited total-sample budget; directional-ray
-mesh sampling supports X/Y rays with an unlimited total-sample budget. Z rays
-remain local because they cross Z slabs.
+slabs. A nonzero adaptive total-sample budget executes slabs in rank order to
+preserve serial refinement decisions; unlimited-budget slabs run concurrently.
+Directional-ray mode requires an unlimited total-sample budget. Z-directed
+rays retrace the full columns on each rank and retain only
+the local slab contributions, preserving serial results at a communication-free
+but duplicated tracing cost.
 `alea_cluster_mesh_sample_shards()` passes each rank's slab to a rank-local
 callback with its global first Z index, allowing output without a full root
 mesh. The slab is borrowed until the callback returns.
 `alea_cluster_mesh_visit_root()` invokes a voxel callback on rank zero in
 global Z/Y/X order after assembling a full mesh; it supports callback
 cancellation but requires root memory for the result.
+`alea_cluster_mesh_stream_root()` visits voxels in the same order while
+transferring one rank-owned Z slab at a time. Rank zero retains its own slab
+and at most one transferred slab, so it can write a single ordered output
+without assembling the full mesh. Callback cancellation is collective.
 `alea_cluster_validate_geometry()` distributes the existing seeded random-ray
 sequence and merges findings on rank zero in serial ray order. It preserves
 signature sampling, counters, and global truncation decisions. A ray producing
 more than 4096 intermediate findings returns `ALEA_CLUSTER_OUTPUT_LIMIT`.
+`alea_cluster_validate_slice_curves()` partitions a slice's curves in bounded
+batches and merges their findings on rank zero in serial curve order. Every
+rank supplies equivalent view, curves, model, and options. The result belongs
+to rank zero; the same 4096-finding intermediate limit applies per curve.
 
 ```bash
 make cluster USE_MPI=1 MPICC=mpicc

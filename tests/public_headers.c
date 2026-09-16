@@ -7,6 +7,14 @@
  * without src/ on the include path. Keep this list in sync with include/.
  */
 #include "alea.h"
+#include "alea_cluster_base.h"
+#include "alea_cluster_volume.h"
+#include "alea_cluster_raycast.h"
+#include "alea_cluster_render.h"
+#include "alea_cluster_slice.h"
+#include "alea_cluster_mesh.h"
+#include "alea_cluster_validator.h"
+#include "alea_cluster.h"
 #include "alea_geo_validator.h"
 #include "alea_log.h"
 #include "alea_mcnp.h"
