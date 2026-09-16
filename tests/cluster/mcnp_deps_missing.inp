@@ -1,4 +1,6 @@
 Cluster missing dependency test
+c SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+c SPDX-License-Identifier: MPL-2.0
 1 1 -1 -1
 
 READ FILE=does_not_exist.inc
