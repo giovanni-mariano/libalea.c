@@ -17,8 +17,10 @@ extern "C" {
  * The caller retains and must eventually free its communicator. Every
  * member must create, call operations, and destroy in matching order within
  * this group; ranks outside the group do not participate. A process may
- * have one live cluster context. MPI must first be initialized through
- * alea_cluster_initialize() or by the application with MPI_THREAD_FUNNELED.
+ * have one live cluster context. Call alea_cluster_initialize() before
+ * creating a context, even when the application already initialized MPI.
+ * In that case, initialization attaches without taking ownership and
+ * requires an MPI thread level of at least MPI_THREAD_FUNNELED.
  * Returns NULL on failure or for MPI_COMM_NULL. */
 alea_cluster_t* alea_cluster_create_mpi(MPI_Comm communicator);
 

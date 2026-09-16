@@ -160,11 +160,13 @@ mesh declarations. Render, slice, mesh, and validation have corresponding
 common runtime and collective input APIs are in `alea_cluster_base.h`.
 In an MPI build, `alea_cluster_create()` duplicates `MPI_COMM_WORLD`.
 Applications that split ranks into independent groups can include
-`alea_cluster_mpi.h` and call `alea_cluster_create_mpi(comm)` instead. Creation,
+`alea_cluster_mpi.h` and call `alea_cluster_create_mpi(comm)` instead. Call
+`alea_cluster_initialize()` first even if the application initialized MPI;
+it attaches to existing MPI without taking ownership. Creation,
 operations, and destruction are collective only within that group. Libalea
 owns and frees its duplicate; the caller keeps ownership of `comm`. Destroying
-a context does not finalize MPI. Only the MPI-specific header requires MPI
-headers.
+a context does not finalize MPI. `alea_cluster_finalize()` finalizes MPI only
+when libalea initialized it. Only the MPI-specific header requires MPI headers.
 Applications can call `alea_cluster_read_file()` so rank zero reads an input
 file and broadcasts its bytes for parsing on every rank. Each rank frees the
 returned buffer.

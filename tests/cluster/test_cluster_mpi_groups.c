@@ -21,8 +21,18 @@ static void require(int condition, const char* message) {
 }
 
 int main(int argc, char** argv) {
+    int provided = MPI_THREAD_SINGLE;
+    if (MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided) !=
+            MPI_SUCCESS) {
+        fputs("application MPI initialization failed\n", stderr);
+        return 1;
+    }
+    require(provided >= MPI_THREAD_FUNNELED,
+        "application MPI thread level is insufficient");
+    require(alea_cluster_create_mpi(MPI_COMM_WORLD) == NULL,
+        "context creation worked before libalea initialization");
     require(alea_cluster_initialize(&argc, &argv) == ALEA_CLUSTER_OK,
-        "cluster initialization failed");
+        "libalea did not attach to application MPI");
     int world_rank = -1, world_size = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
@@ -122,6 +132,10 @@ int main(int argc, char** argv) {
         "caller communicator cleanup failed");
     require(alea_cluster_finalize() == ALEA_CLUSTER_OK,
         "cluster finalization failed");
+    int finalized = 1;
+    require(MPI_Finalized(&finalized) == MPI_SUCCESS && !finalized,
+        "libalea finalized application-owned MPI");
     if (world_rank == 0) puts("independent MPI groups passed");
+    if (MPI_Finalize() != MPI_SUCCESS) return 1;
     return 0;
 }

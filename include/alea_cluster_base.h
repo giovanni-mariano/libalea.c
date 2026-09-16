@@ -26,11 +26,13 @@ typedef enum {
     ALEA_CLUSTER_OUTPUT_LIMIT
 } alea_cluster_status_t;
 
-/** Initialize the process-wide local or MPI runtime. MPI calls must use the
- * initializing thread; the MPI build attaches to MPI_COMM_WORLD and requests
- * MPI_THREAD_FUNNELED when it initializes MPI. */
+/** Initialize the process-wide local or MPI runtime before creating a context.
+ * MPI calls must use the initializing thread. If MPI is already initialized,
+ * libalea attaches without taking ownership and requires at least
+ * MPI_THREAD_FUNNELED; otherwise it initializes MPI with that thread level. */
 alea_cluster_status_t alea_cluster_initialize(int* argc, char*** argv);
-/** Finalize a runtime initialized by Alea after destroying all contexts. */
+/** Close the libalea runtime after destroying all contexts. MPI is finalized
+ * only when libalea initialized it; application-owned MPI remains active. */
 alea_cluster_status_t alea_cluster_finalize(void);
 /** Collectively create a context on MPI_COMM_WORLD in an MPI build, or a
  * one-rank local context otherwise. The MPI backend duplicates the world
