@@ -12,6 +12,8 @@
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <limits.h>
 
 #include "util/compat.h"  /* alea_mapped_file_t, alea_file_map/unmap */
 
@@ -38,6 +40,37 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len);
 static int parse_surface_card(mcnp_context_t* ctx, const char* line, size_t len);
 static int parse_material_card(mcnp_context_t* ctx, const char* line, size_t len);
 static int parse_transform_card(mcnp_context_t* ctx, const char* line, size_t len);
+
+/* MCNP cards are ASCII-oriented, but copied decks may use UTF-8 U+3000
+ * (ideographic space) for indentation. Count one U+3000 as one blank. */
+static size_t card_space_width(const char* p, const char* end) {
+    if (p >= end) return 0;
+    if (isspace((unsigned char)*p)) return 1;
+    if (end - p >= 3 && (unsigned char)p[0] == 0xE3 &&
+        (unsigned char)p[1] == 0x80 && (unsigned char)p[2] == 0x80)
+        return 3;
+    return 0;
+}
+
+/* Normalize U+3000 only in card text; leave titles and comments intact. */
+static void write_card_text(str_builder_t* sb, const char* data, size_t len) {
+    const char* p = data;
+    const char* end = data + len;
+    while (p < end) {
+        const char* wide = memchr(p, 0xE3, (size_t)(end - p));
+        if (!wide) break;
+        if (end - wide >= 3 && (unsigned char)wide[1] == 0x80 &&
+            (unsigned char)wide[2] == 0x80) {
+            str_builder_write(sb, p, (size_t)(wide - p));
+            str_builder_putc(sb, ' ');
+            p = wide + 3;
+        } else {
+            str_builder_write(sb, p, (size_t)(wide - p + 1));
+            p = wide + 1;
+        }
+    }
+    str_builder_write(sb, p, (size_t)(end - p));
+}
 
 /* ========================================================================== */
 /* DYNAMIC ARRAY MANAGEMENT (USING THE ARENA)                                 */
@@ -172,9 +205,9 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
 
 
         const char* trimmed_start = line_start;
-        while (trimmed_start < line_end && isspace((unsigned char)*trimmed_start)) {
-            trimmed_start++;
-        }
+        size_t space_width;
+        while ((space_width = card_space_width(trimmed_start, line_end)) != 0)
+            trimmed_start += space_width;
 
         int is_blank = (trimmed_start == line_end);
         int is_comment = (trimmed_start < line_end && tolower((unsigned char)*trimmed_start) == 'c' && isspace((unsigned char)*(trimmed_start + 1)));
@@ -229,7 +262,7 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
         }
 
         str_builder_reset(&line_sb);
-        str_builder_write(&line_sb, line_start, initial_len);
+        write_card_text(&line_sb, line_start, initial_len);
         
         const char* peek_pos = line_end + 1;
 
@@ -240,9 +273,8 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
 
             // Classify the peeked line
             const char* peek_trimmed_start = next_line_start;
-            while(peek_trimmed_start < next_line_end && isspace((unsigned char)*peek_trimmed_start)) {
-                peek_trimmed_start++;
-            }
+            while ((space_width = card_space_width(peek_trimmed_start, next_line_end)) != 0)
+                peek_trimmed_start += space_width;
             (void)(peek_trimmed_start == next_line_end);  /* peek_is_blank - reserved for future use */
             int peek_is_comment = (peek_trimmed_start < next_line_end && tolower((unsigned char)*peek_trimmed_start) == 'c' && isspace((unsigned char)*(peek_trimmed_start+1)));
 
@@ -269,8 +301,9 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
 
             int indent = 0;
             const char* p = next_line_start;
-            while(indent < 5 && p < next_line_end && isspace((unsigned char)*p)) {
-                indent++; p++;
+            while (indent < 5 && (space_width = card_space_width(p, next_line_end)) != 0) {
+                indent++;
+                p += space_width;
             }
             int is_continuation = (indent == 5);
 
@@ -300,7 +333,8 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
 
                 // Find start of actual content on the continued line
                 const char* content_start = next_line_start;
-                while(content_start < next_line_end && isspace((unsigned char)*content_start)) content_start++;
+                while ((space_width = card_space_width(content_start, next_line_end)) != 0)
+                    content_start += space_width;
                 continuation_len = next_line_end - content_start;
 
                 // Re-check if comment marker appears after leading whitespace
@@ -311,7 +345,7 @@ int mcnp_parse_buffer(const char* input, size_t len, const char* source_name,
                     }
                 }
 
-                str_builder_write(&line_sb, content_start, continuation_len);
+                write_card_text(&line_sb, content_start, continuation_len);
 
                 peek_pos = next_line_end + 1;
                 line_num++;
@@ -507,7 +541,17 @@ static int parse_cell_card(mcnp_context_t* ctx, const char* line, size_t len) {
     if (token_len == 0) { ALEA_LOG_ERROR("Truncated cell card: no cell ID"); return 0; }
     if (token_len >= sizeof(token_buf)) { ALEA_LOG_WARN("Cell card: token too long (%zu)", token_len); return 0; }
     memcpy(token_buf, token_start, token_len); token_buf[token_len] = '\0';
-    cell->cell_id = strtol(token_buf, NULL, 10);
+    char* id_end = NULL;
+    errno = 0;
+    long cell_id = strtol(token_buf, &id_end, 10);
+    if (id_end == token_buf || *id_end != '\0' || errno == ERANGE ||
+        cell_id <= 0 || cell_id > INT_MAX) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                              "Invalid cell ID '%.64s'", token_buf);
+        ALEA_LOG_ERROR("Invalid cell ID '%.64s'", token_buf);
+        return 0;
+    }
+    cell->cell_id = (int)cell_id;
 
     token_len = mcnp_lexer_get_next_token(&cursor, &token_start);
     if (token_len == 0) { ALEA_LOG_ERROR("Cell %d: missing material ID", cell->cell_id); return 0; }

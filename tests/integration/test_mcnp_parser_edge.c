@@ -13,6 +13,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "core/alea_system.h"
+#include "mcnp/parser/mcnp_parser.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -305,6 +306,35 @@ TEST(transform_card_angles) {
     mcnp_model_destroy(model);
 }
 
+TEST(continuation_full_width_spaces) {
+    const char* input =
+        "Full-width indentation\n"
+        "1 1 -1.0\n"
+        "\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80"
+        "\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80" "-1\n"
+        "    \xE3\x80\x80" "imp:n=1\n"
+        "2 0 1\n"
+        "\n"
+        "1 SO 5.0\n"
+        "\n"
+        "M1\n"
+        "\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80\xE3\x80\x80" "1001.80c 1.0\n";
+    mcnp_context_t* ctx = NULL;
+    ASSERT_TRUE(mcnp_parse_buffer(input, strlen(input), "<memory>", &ctx));
+    ASSERT_NOT_NULL(ctx);
+    ASSERT_EQ(ctx->cell_count, 2);
+    ASSERT_NOT_NULL(strstr(ctx->cells[0]->parameters, "imp:n=1"));
+    ASSERT_EQ(ctx->materials[0]->material_id, 1);
+    ASSERT_NOT_NULL(strstr(ctx->materials[0]->definition, "1001.80c 1.0"));
+    mcnp_context_destroy(ctx);
+
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), 2);
+    ASSERT_EQ(alea_cell_find(model->sys, 0), -1);
+    mcnp_model_destroy(model);
+}
+
 TEST(transform_card_m_flag_identity) {
     const char* input =
         "Test TR m flag\n"
@@ -432,6 +462,26 @@ TEST(invalid_density_sets_detailed_error) {
     ASSERT_NULL(model);
     ASSERT_EQ(alea_error_code(), (int)ALEA_ERR_PARSE_ERROR);
     ASSERT_NOT_NULL(strstr(alea_error(), "Cell 17 has invalid density"));
+}
+
+TEST(invalid_cell_id_sets_detailed_error) {
+    const char* invalid_ids[] = {
+        "abc",
+        "123abc",
+        "0",
+        "2147483648"
+    };
+    for (size_t i = 0; i < sizeof(invalid_ids) / sizeof(invalid_ids[0]); i++) {
+        char input[256];
+        snprintf(input, sizeof(input),
+                 "Invalid cell ID\n1 0 -1\n%s 0 -1\n\n1 SO 5\n\n",
+                 invalid_ids[i]);
+        alea_error_clear();
+        mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+        ASSERT_NULL(model);
+        ASSERT_EQ(alea_error_code(), (int)ALEA_ERR_PARSE_ERROR);
+        ASSERT_NOT_NULL(strstr(alea_error(), "Invalid cell ID"));
+    }
 }
 
 TEST(parse_empty_string) {
