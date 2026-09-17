@@ -340,17 +340,22 @@ make TINYPAR_BACKEND=native test-unit test-integration
 
 #### Windows with conda clang-cl
 
-Use this path when users can install conda packages without admin rights and the
-machine already has Windows SDK/MSVC headers and import libraries available.
-The compiler, archive tool, and `jom` are supplied by conda, but `clang-cl`
-still targets the MSVC ABI.
+Use this path when users can install conda packages and the machine has
+Visual Studio 2019+ or Build Tools with the C++ x64 toolset and a Windows SDK.
+Open an x64 Native Tools Command Prompt for VS before activating conda; it
+sets the include and library paths for the MSVC/CRT and SDK files. Conda
+provides the compiler, archive tool, and `jom`, but `clang-cl` still targets
+the MSVC ABI.
 
 ```powershell
 conda create -n libalea-clang -c conda-forge clang_win-64 jom
 conda activate libalea-clang
+where.exe clang-cl
+where.exe llvm-lib
+where.exe jom
 
-jom /J 1 /f Makefile.msvc CONDA_CLANG=1 TINYPAR_BACKEND=native full
-jom /J 1 /f Makefile.msvc CONDA_CLANG=1 TINYPAR_BACKEND=native test
+jom /J 1 /f Makefile.msvc WINDOWS_CLANG_CL=1 TINYPAR_BACKEND=native full
+jom /J 1 /f Makefile.msvc WINDOWS_CLANG_CL=1 TINYPAR_BACKEND=native test
 ```
 
 If `clang-cl` reports missing headers such as `vcruntime.h` or `windows.h`, the

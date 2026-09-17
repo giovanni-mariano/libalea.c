@@ -12,7 +12,7 @@
 #     nmake /f Makefile.msvc test            # build + run unit & integration tests
 #     nmake /f Makefile.msvc RELEASE=1       # optimized build (default is /Od /Zi)
 #     nmake /f Makefile.msvc TINYPAR_BACKEND=native # native TinyPar threads
-#     nmake /f Makefile.msvc CONDA_CLANG=1   # use clang-cl/llvm-lib (needs Windows SDK/MSVC headers)
+#     nmake /f Makefile.msvc WINDOWS_CLANG_CL=1 # use clang-cl/llvm-lib (needs Windows SDK/MSVC headers)
 #     nmake /f Makefile.msvc clean
 #
 # This is the MSVC counterpart to the GNU `Makefile`. It deliberately mirrors
@@ -39,12 +39,12 @@
 # dev environment, cl/lib aren't on PATH and the build fails deep inside with a
 # cryptic "vcruntime.h not found" — turn that into one clear line. The wrapper
 # (build-msvc.ps1) sets this up automatically; bare nmake needs vcvarsall x64.
-# CONDA_CLANG=1 selects clang-cl/llvm-lib from conda when those tools are on
+# WINDOWS_CLANG_CL=1 selects clang-cl/llvm-lib when those tools are on
 # PATH, but clang-cl still uses the MSVC ABI and needs Windows SDK/MSVC CRT
 # headers and import libraries. GitHub's windows-latest image has those already;
 # a locked-down machine without SDK headers should use the GNU/UCRT Makefile
 # path instead (`make WINDOWS_GNU=1 ...` with conda-forge mingw-w64-ucrt tools).
-!IFNDEF CONDA_CLANG
+!IF "$(WINDOWS_CLANG_CL)" != "1"
 !IFNDEF VCINSTALLDIR
 !ERROR No VS x64 dev environment (VCINSTALLDIR unset). Use build-msvc.ps1, or run `vcvarsall.bat x64` first.
 !ENDIF
@@ -53,7 +53,7 @@
 # ----------------------------------------------------------------------------
 # Toolchain
 # ----------------------------------------------------------------------------
-!IFDEF CONDA_CLANG
+!IF "$(WINDOWS_CLANG_CL)" == "1"
 CC   = clang-cl
 AR   = llvm-lib
 !ELSE

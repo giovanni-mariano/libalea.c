@@ -204,11 +204,11 @@ jobs:
         shell: pwsh
         # /J 1 keeps the build serial so the `dirs` target creates the output
         # directories before the inference rules write .obj into them.
-        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 full
+        run: jom /J 1 /f Makefile.msvc WINDOWS_CLANG_CL=1 USE_TINYPAR=1 full
 
       - name: Run tests (conda clang-cl + jom + tinypar)
         shell: pwsh
-        run: jom /J 1 /f Makefile.msvc CONDA_CLANG=1 USE_TINYPAR=1 test
+        run: jom /J 1 /f Makefile.msvc WINDOWS_CLANG_CL=1 USE_TINYPAR=1 test
 
   build-windows-msvc:
     # Native MSVC (cl.exe) build via the self-contained wrapper, which locates VS
