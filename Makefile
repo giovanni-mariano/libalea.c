@@ -8,7 +8,12 @@
 # Compiler Configuration
 # ============================================================================
 
+# Keep gcc as the default without overriding a compiler selected by the
+# environment (for example, an activated conda toolchain).
+ifeq ($(origin CC),default)
 CC = gcc
+endif
+CC ?= gcc
 MPICC ?= mpicc
 MPIEXEC ?= mpiexec
 AR ?= ar
