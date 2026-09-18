@@ -562,6 +562,25 @@ double alea_nuc_prepared_photon_production_response(
     const alea_nuc_prepared_photon_production_t* prepared,
     double energy);
 
+/**
+ * Evaluate photon-energy bin probabilities for a prepared production channel.
+ *
+ * The caller owns `probabilities`, which must hold `n_edges - 1` doubles.
+ * Photon bins are left-closed/right-open except that the final upper edge is
+ * included. Probabilities outside the supplied edges are omitted, without
+ * renormalization. The prepared channel must have been validated by
+ * alea_nuc_prepare_photon_production().
+ *
+ * Returns ALEA_ERR_UNSUPPORTED for an active law that requires sampling.
+ * On any error, the output buffer is unspecified.
+ */
+alea_error_t alea_nuc_prepared_photon_bin_probabilities(
+    const alea_nuc_prepared_photon_production_t* prepared,
+    double incident_energy,
+    const double* edges,
+    size_t n_edges,
+    double* probabilities);
+
 /** Sample without rescanning ownership or revalidating distributions. */
 alea_error_t alea_nuc_sample_prepared_photon_production(
     const alea_nuc_prepared_photon_production_t* prepared,

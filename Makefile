@@ -223,6 +223,7 @@ NUCDATA_SRCS = \
 	$(NUCDATA_DIR)/thermal.c \
 	$(NUCDATA_DIR)/photon_sample.c \
 	$(NUCDATA_DIR)/photon_production.c \
+	$(NUCDATA_DIR)/photon_bin_probability.c \
 	$(NUCDATA_DIR)/collision.c \
 	$(NUCDATA_DIR)/reaction.c \
 	$(NUCDATA_DIR)/angular.c \
