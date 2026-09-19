@@ -2140,6 +2140,35 @@ TEST(energy_sampler_code22_interpolates_discrete_line_energy) {
     ASSERT_NEAR(sampled, 6.0, 1e-14);
 }
 
+TEST(energy_sampler_handles_continuum_at_one_incident_endpoint) {
+    int ein_nbt[] = {2}, ein_interp[] = {2};
+    double ein[] = {1.0, 3.0};
+    int outgoing_interp[] = {1, 1};
+    int n_discrete[] = {1, 1};
+    int n_eout[] = {1, 3};
+    double eout0[] = {1.0}, eout1[] = {1.0, 2.0, 4.0};
+    double pdf0[] = {0.0}, pdf1[] = {0.0, 0.2, 0.2};
+    double cdf0[] = {1.0}, cdf1[] = {0.6, 0.6, 1.0};
+    double* eout[] = {eout0, eout1};
+    double* pdf[] = {pdf0, pdf1};
+    double* cdf[] = {cdf0, cdf1};
+    alea_nuc_energy_dist_t law = {0};
+    law.law = ALEA_NUC_ELAW_CONT_TABULAR;
+    law.tab.n_ein = 2; law.tab.n_regions = 1;
+    law.tab.nbt = ein_nbt; law.tab.interp = ein_interp; law.tab.ein = ein;
+    law.tab.interpolation = outgoing_interp;
+    law.tab.n_discrete = n_discrete; law.tab.n_eout = n_eout;
+    law.tab.eout = eout; law.tab.pdf = pdf; law.tab.cdf = cdf;
+    /* Select the upper incident table, then its continuum midpoint. */
+    double draws[] = {0.25, 0.8};
+    sequence_rng_t rng = {draws, 2, 0};
+    double sampled = -1.0;
+    ASSERT_EQ(alea_nuc_energy_dist_validate(&law, NULL), ALEA_OK);
+    ASSERT_EQ(alea_nuc_sample_energy_distribution(
+                  &law, 2.0, sequence_rng, &rng, &sampled), ALEA_OK);
+    ASSERT_NEAR(sampled, 3.0, 1e-14);
+}
+
 TEST(general_evaporation_sampler_interpolates_temperature_and_bin) {
     int nbt[] = {2}, interp[] = {2};
     double incident[] = {1.0, 3.0}, temperature[] = {2.0, 4.0};

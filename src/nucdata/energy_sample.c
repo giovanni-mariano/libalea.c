@@ -352,8 +352,14 @@ static alea_error_t sample_continuous_tabular_details(
     }
 
     if (law->tab.n_discrete[lower] >= law->tab.n_eout[lower] ||
-        law->tab.n_discrete[upper] >= law->tab.n_eout[upper])
-        return ALEA_ERR_UNSUPPORTED;
+        law->tab.n_discrete[upper] >= law->tab.n_eout[upper]) {
+        /* A continuum can appear at only one endpoint. Table selection
+         * already gives that endpoint's contribution the correct incident-
+         * energy weight; without a second continuum there is no unit-base
+         * range to interpolate against. */
+        *energy = sampled;
+        return ALEA_OK;
+    }
     const double selected_min =
         law->tab.eout[selected][selected_discrete];
     const double selected_max = law->tab.eout[selected][n - 1];

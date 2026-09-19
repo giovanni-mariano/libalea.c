@@ -14,6 +14,7 @@ typedef struct {
     double fraction;
     double mapped_min;
     double mapped_max;
+    int map_continuum;
 } photon_tabular_context_t;
 
 /* Reproduce the tabular sampler's incident table selection and unit-base
@@ -50,10 +51,9 @@ static int photon_tabular_prepare(const alea_nuc_energy_dist_t* law,
     ctx->fraction = f;
     ctx->mapped_min = 0.0;
     ctx->mapped_max = 0.0;
-    if (lower != upper &&
-        (dl < law->tab.n_eout[lower] || du < law->tab.n_eout[upper])) {
-        if (dl >= law->tab.n_eout[lower] ||
-            du >= law->tab.n_eout[upper]) return 0;
+    ctx->map_continuum = 0;
+    if (lower != upper && dl < law->tab.n_eout[lower] &&
+        du < law->tab.n_eout[upper]) {
         ctx->mapped_min = law->tab.eout[lower][dl] + f *
             (law->tab.eout[upper][du] - law->tab.eout[lower][dl]);
         ctx->mapped_max =
@@ -61,6 +61,7 @@ static int photon_tabular_prepare(const alea_nuc_energy_dist_t* law,
             (law->tab.eout[upper][law->tab.n_eout[upper] - 1] -
              law->tab.eout[lower][law->tab.n_eout[lower] - 1]);
         if (!(ctx->mapped_max > ctx->mapped_min)) return 0;
+        ctx->map_continuum = 1;
     }
     if (lower != upper && dl != du) return 0;
     return 1;
@@ -120,7 +121,7 @@ static double photon_tabular_bin_probability(
         if (d < n) {
             double raw_low = low;
             double raw_high = high;
-            if (ctx->lower != ctx->upper) {
+            if (ctx->map_continuum) {
                 double raw_min = out[d];
                 double scale = (out[n - 1] - raw_min) /
                     (ctx->mapped_max - ctx->mapped_min);

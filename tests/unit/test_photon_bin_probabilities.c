@@ -149,6 +149,36 @@ int main(void) {
         &prepared, 2.0, chain_edges, 2, &chain_probability) ==
         ALEA_ERR_UNSUPPORTED);
     law.next = NULL;
+
+    double endpoint_lower[] = {1.0};
+    double endpoint_upper[] = {1.0, 2.0, 4.0};
+    double endpoint_lower_pdf[] = {0.0};
+    double endpoint_upper_pdf[] = {0.0, 0.2, 0.2};
+    double endpoint_lower_cdf[] = {1.0};
+    double endpoint_upper_cdf[] = {0.6, 0.6, 1.0};
+    double* endpoint_out[] = {endpoint_lower, endpoint_upper};
+    double* endpoint_pdf[] = {endpoint_lower_pdf, endpoint_upper_pdf};
+    double* endpoint_cdf[] = {endpoint_lower_cdf, endpoint_upper_cdf};
+    int endpoint_interp[] = {1, 1};
+    int endpoint_discrete[] = {1, 1};
+    int endpoint_count[] = {1, 3};
+    int endpoint_nbt[] = {2}, endpoint_incident_interp[] = {2};
+    law.law = ALEA_NUC_ELAW_CONT_TABULAR;
+    law.tab.n_ein = 2; law.tab.ein = incident_two;
+    law.tab.n_regions = 1; law.tab.nbt = endpoint_nbt;
+    law.tab.interp = endpoint_incident_interp;
+    law.tab.interpolation = endpoint_interp;
+    law.tab.n_discrete = endpoint_discrete;
+    law.tab.n_eout = endpoint_count; law.tab.eout = endpoint_out;
+    law.tab.pdf = endpoint_pdf; law.tab.cdf = endpoint_cdf;
+    double endpoint_edges[] = {0.0, 2.0, 4.0};
+    double endpoint_probabilities[2];
+    assert(alea_nuc_prepared_photon_bin_probabilities(
+        &prepared, 2.0, endpoint_edges, 3, endpoint_probabilities) ==
+        ALEA_OK);
+    close_to(endpoint_probabilities[0], 0.8);
+    close_to(endpoint_probabilities[1], 0.2);
+
     law.law = ALEA_NUC_ELAW_DISCRETE_PHOTON;
     law.discrete_photon_energy = 1.0;
     law.discrete_photon_primary = 2;
