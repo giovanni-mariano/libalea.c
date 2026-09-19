@@ -78,10 +78,11 @@ alea_node_id_t alea_record_cell_complement(alea_system_t* sys,
     node->operation.right = ALEA_NODE_ID_INVALID;
     node->material_id = ALEA_MATERIAL_NONE;
 
-    /* Set bbox to infinite - will be updated when resolved */
-    node->bbox.min_x = -1e30; node->bbox.max_x = 1e30;
-    node->bbox.min_y = -1e30; node->bbox.max_y = 1e30;
-    node->bbox.min_z = -1e30; node->bbox.max_z = 1e30;
+    /* Set bbox to effectively infinite - will be updated when resolved. */
+    const alea_bbox_t placeholder_bbox = {
+        -1e30, 1e30, -1e30, 1e30, -1e30, 1e30
+    };
+    alea_node_bbox_set(&node->bbox, &placeholder_bbox);
 
     /* Record the reference for later resolution */
     alea_cell_ref_t* ref = alea_vec_push_uninit(&sys->cell_refs, alea_cell_ref_t);
@@ -145,18 +146,14 @@ int alea_resolve_cell_complements(alea_system_t* sys) {
         alea_node_t* node = &sys->nodes.data[ref->placeholder_node];
         node->operation.left = cell_root;
         
-        /* Update bounding box (complement has infinite extent conceptually,
-         * but we use the original cell's bbox for culling) */
+        /* A complement has infinite extent conceptually, so use a broad,
+         * conservative extent for spatial culling. */
         if (cell_root < alea_vec_count(&sys->nodes)) {
-            node->bbox = sys->nodes.data[cell_root].bbox;
-            /* Expand slightly since complement is "everything outside" */
-            double expand = 1e10;
-            node->bbox.min_x = -expand;
-            node->bbox.max_x = expand;
-            node->bbox.min_y = -expand;
-            node->bbox.max_y = expand;
-            node->bbox.min_z = -expand;
-            node->bbox.max_z = expand;
+            /* Use a broad culling box since complement is "everything outside". */
+            const alea_bbox_t complement_bbox = {
+                -1e10, 1e10, -1e10, 1e10, -1e10, 1e10
+            };
+            alea_node_bbox_set(&node->bbox, &complement_bbox);
         }
         
         ALEA_LOG_INFO("Resolved cell complement: #%d -> node %u (complement of node %u)",

@@ -1792,8 +1792,12 @@ static int volume_paths_enumerate_universe(alea_system_t* sys,
     if (!univ) return 0;
 
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
-        int cell_index = univ->cell_indices.data[i];
-        if (cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells)) continue;
+        const size_t raw_cell_index = univ->cell_indices.data[i];
+        if (raw_cell_index > (size_t)INT_MAX ||
+            raw_cell_index >= alea_vec_count(&sys->cells)) {
+            continue;
+        }
+        const int cell_index = (int)raw_cell_index;
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
 
         if (cell->lat_type != 0 && cell->lat_fill) {
@@ -2195,8 +2199,12 @@ static int volume_path_lookup_universe(alea_system_t* sys,
     if (!univ) return -1;
 
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
-        int cell_index = univ->cell_indices.data[i];
-        if (cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells)) continue;
+        const size_t raw_cell_index = univ->cell_indices.data[i];
+        if (raw_cell_index > (size_t)INT_MAX ||
+            raw_cell_index >= alea_vec_count(&sys->cells)) {
+            continue;
+        }
+        const int cell_index = (int)raw_cell_index;
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
         if (cell->lat_type != 0 && cell->lat_fill) {
             alea_volume_lattice_step_t step;

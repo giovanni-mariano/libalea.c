@@ -231,6 +231,7 @@ NUCDATA_OBJS = \
 	$(BUILD)\nucdata\thermal.obj \
 	$(BUILD)\nucdata\photon_sample.obj \
 	$(BUILD)\nucdata\photon_production.obj \
+	$(BUILD)\nucdata\photon_bin_probability.obj \
 	$(BUILD)\nucdata\collision.obj \
 	$(BUILD)\nucdata\reaction.obj \
 	$(BUILD)\nucdata\angular.obj \
@@ -693,6 +694,9 @@ $(BUILD)\nucdata\photon_sample.obj: $(SRC)\nucdata\photon_sample.c dirs
 
 $(BUILD)\nucdata\photon_production.obj: $(SRC)\nucdata\photon_production.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\photon_production.c
+
+$(BUILD)\nucdata\photon_bin_probability.obj: $(SRC)\nucdata\photon_bin_probability.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\photon_bin_probability.c
 
 $(BUILD)\nucdata\collision.obj: $(SRC)\nucdata\collision.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\collision.c
