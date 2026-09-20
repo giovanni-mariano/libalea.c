@@ -481,7 +481,25 @@ int alea_cone_z_surface(alea_system_t* sys, int surface_id,
                         double cx, double cy, double cz, double t_squared);
 ```
 
-Axis-aligned cones. `t_squared` is tan^2(half-angle).
+Axis-aligned cones. `t_squared` is tan^2(half-angle). These constructors create
+both sheets, equivalent to `sheet_selection = 0` in the following variants:
+
+```c
+int alea_cone_x_surface_sheet(alea_system_t* sys, int surface_id,
+                             double cx, double cy, double cz,
+                             double t_squared, int sheet_selection);
+int alea_cone_y_surface_sheet(alea_system_t* sys, int surface_id,
+                             double cx, double cy, double cz,
+                             double t_squared, int sheet_selection);
+int alea_cone_z_surface_sheet(alea_system_t* sys, int surface_id,
+                             double cx, double cy, double cz,
+                             double t_squared, int sheet_selection);
+```
+
+`sheet_selection` is `-1` for the sheet extending in the negative axis direction
+from the apex, `1` for the positive direction, or `0` for both. The functions
+return the registered surface index, or `-1` on failure, including an invalid
+sheet selection.
 
 ```c
 int alea_torus_x_surface(alea_system_t* sys, int surface_id,
@@ -1054,7 +1072,9 @@ union member must match `type`. On success, `out_value` receives the signed
 implicit value: negative and positive values identify the two halfspaces and
 zero identifies the boundary. The magnitude is not generally Euclidean
 distance. Invalid geometry, non-finite input, and unsupported types return an
-error and leave `out_value` unchanged.
+error and leave `out_value` unchanged. A non-finite computed result also leaves
+the output unchanged and returns `ALEA_ERR_INVALID_STATE`. Successful
+evaluation returns `ALEA_OK`.
 
 ### alea_node_sense
 

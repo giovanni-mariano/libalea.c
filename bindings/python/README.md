@@ -125,8 +125,11 @@ value = pyalea.primitive_evaluate(
 The result is a signed implicit value, with negative values on the primitive's
 interior side and zero on its boundary. Its magnitude is not generally a
 Euclidean distance. Parameter sequence lengths follow the corresponding
-public `alea_primitive_data_t` geometry fields; malformed or degenerate input
-raises `ValueError`.
+public `alea_primitive_data_t` geometry fields. Incorrect sequence lengths,
+degenerate geometry, non-finite parameters or point coordinates, and unsupported
+primitive types raise `ValueError`. Non-sequence inputs or elements that cannot
+be converted to numbers raise `TypeError`. If finite inputs produce a non-finite
+native result, evaluation raises `ArithmeticError`.
 
 The accepted parameter layouts are:
 
@@ -152,3 +155,20 @@ The accepted parameter layouts are:
 Cone `sheet` is `-1`, `0`, or `1`. RHP permits the regular-hex shorthand in
 which r2 and r3 are zero vectors. `PRIMITIVE_ARB` is not accepted by this
 sequence interface.
+
+The registered cone constructors also accept an optional final positional
+argument `sheet`, defaulting to `0`:
+
+```python
+surface_index, positive_node, negative_node = system.cone_z_surface(
+    10, 0.0, 0.0, 0.0, 1.0, 1,
+)
+```
+
+The arguments are `surface_id, apex_x, apex_y, apex_z, tan_angle_sq, sheet`;
+`cone_x_surface()` and `cone_y_surface()` use the same layout. A sheet of `1`
+selects the positive axis direction from the apex, `-1` the negative direction,
+and `0` both sheets. Omitting the final argument preserves the two-sheet
+behavior. These constructors return the surface index and its positive and
+negative halfspace node IDs, and raise `RuntimeError` if native surface creation
+fails, including an invalid sheet selection.
