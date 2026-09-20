@@ -32,10 +32,22 @@ typedef struct {
     int height;
     int config_initialized;
     int initialized;
+    int picking_enabled;
+    int frame_ready;
+    int pick_cell_id;
+    int pick_material_id;
+    double pick_depth;
 } alea_wasm_state_t;
 
 static alea_wasm_state_t state;
 static char last_error[256];
+
+static void clear_pick(void) {
+    state.frame_ready = 0;
+    state.pick_cell_id = -1;
+    state.pick_material_id = -1;
+    state.pick_depth = NAN;
+}
 
 #if defined(__EMSCRIPTEN_PTHREADS__)
 #ifndef ALEA_WASM_THREAD_COUNT
@@ -113,6 +125,7 @@ ALEA_WASM_EXPORT int alea_wasm_init(int width, int height) {
         return -1;
     }
     state.initialized = 1;
+    clear_pick();
     return 0;
 }
 
@@ -128,7 +141,8 @@ ALEA_WASM_EXPORT int alea_wasm_resize(int width, int height) {
     if (width == state.width && height == state.height) return 0;
 
     const size_t pixels = (size_t)width * (size_t)height;
-    render_framebuffer_t* framebuffer = render_framebuffer_create(width, height, 0);
+    render_framebuffer_t* framebuffer = render_framebuffer_create(
+        width, height, state.picking_enabled);
     uint8_t* rgb = malloc(pixels * 3);
     uint8_t* rgba = malloc(pixels * 4);
     if (!framebuffer || !rgb || !rgba) {
@@ -149,6 +163,7 @@ ALEA_WASM_EXPORT int alea_wasm_resize(int width, int height) {
     state.height = height;
     state.config.width = width;
     state.config.height = height;
+    clear_pick();
     return 0;
 }
 
@@ -188,6 +203,7 @@ ALEA_WASM_EXPORT int alea_wasm_load_mcnp(const char* input, int length) {
     state.center[2] = cz;
     memcpy(state.target, state.center, sizeof(state.target));
     state.radius = radius;
+    clear_pick();
     last_error[0] = '\0';
     return 0;
 }
@@ -195,6 +211,7 @@ ALEA_WASM_EXPORT int alea_wasm_load_mcnp(const char* input, int length) {
 ALEA_WASM_EXPORT int alea_wasm_render(double azimuth, double elevation,
                                       double distance_scale,
                                       double clip_fraction, int edges) {
+    clear_pick();
     if (!state.initialized || !state.system) {
         set_error("load an MCNP model before rendering");
         return -1;
@@ -236,9 +253,31 @@ ALEA_WASM_EXPORT int alea_wasm_render(double azimuth, double elevation,
         state.rgba[i * 4 + 2] = state.rgb[i * 3 + 2];
         state.rgba[i * 4 + 3] = 255;
     }
+    state.frame_ready = 1;
     return 0;
 }
 
+ALEA_WASM_EXPORT int alea_wasm_set_picking_enabled(int enabled) {
+    if (!state.initialized) {
+        set_error("renderer is not initialized");
+        return -1;
+    }
+    enabled = enabled != 0;
+    if (enabled == state.picking_enabled) return 0;
+    render_framebuffer_t* framebuffer = render_framebuffer_create(
+        state.width, state.height, enabled);
+    if (!framebuffer) {
+        set_error("failed to allocate the picking framebuffer");
+        return -1;
+    }
+    render_framebuffer_free(state.framebuffer);
+    state.framebuffer = framebuffer;
+    state.picking_enabled = enabled;
+    clear_pick();
+    return 0;
+}
+
+ALEA_WASM_EXPORT const char* alea_wasm_version(void) { return alea_version(); }
 ALEA_WASM_EXPORT const uint8_t* alea_wasm_pixels(void) { return state.rgba; }
 ALEA_WASM_EXPORT int alea_wasm_pixel_bytes(void) {
     return state.initialized ? state.width * state.height * 4 : 0;
@@ -255,6 +294,35 @@ ALEA_WASM_EXPORT double alea_wasm_center_x(void) { return state.center[0]; }
 ALEA_WASM_EXPORT double alea_wasm_center_y(void) { return state.center[1]; }
 ALEA_WASM_EXPORT double alea_wasm_center_z(void) { return state.center[2]; }
 ALEA_WASM_EXPORT double alea_wasm_radius(void) { return state.radius; }
+ALEA_WASM_EXPORT int alea_wasm_pick(int x, int y) {
+    if (!state.picking_enabled) {
+        set_error("enable picking before rendering");
+        return -1;
+    }
+    if (!state.frame_ready) {
+        set_error("render a frame before picking");
+        return -1;
+    }
+    if (x < 0 || x >= state.width || y < 0 || y >= state.height) {
+        set_error("pick coordinates are outside the rendered frame");
+        return -1;
+    }
+    size_t index = (size_t)y * (size_t)state.width + (size_t)x;
+    state.pick_cell_id = state.framebuffer->cell_id[index];
+    state.pick_material_id = state.framebuffer->material_id[index];
+    state.pick_depth = state.framebuffer->depth[index];
+    last_error[0] = '\0';
+    return state.pick_cell_id >= 0 ? 1 : 0;
+}
+ALEA_WASM_EXPORT int alea_wasm_pick_cell_id(void) {
+    return state.pick_cell_id;
+}
+ALEA_WASM_EXPORT int alea_wasm_pick_material_id(void) {
+    return state.pick_material_id;
+}
+ALEA_WASM_EXPORT double alea_wasm_pick_depth(void) {
+    return state.pick_depth;
+}
 ALEA_WASM_EXPORT int alea_wasm_set_target(double x, double y, double z) {
     if (!state.system) {
         set_error("load an MCNP model before setting the camera target");

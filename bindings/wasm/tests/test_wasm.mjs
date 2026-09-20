@@ -20,6 +20,12 @@ function errorMessage() {
   return new TextDecoder().decode(module.HEAPU8.subarray(pointer, end));
 }
 
+function cString(pointer) {
+  let end = pointer;
+  while (module.HEAPU8[end]) end += 1;
+  return new TextDecoder().decode(module.HEAPU8.subarray(pointer, end));
+}
+
 function loadMcnp(bytes) {
   const pointer = module._malloc(bytes.length);
   module.HEAPU8.set(bytes, pointer);
@@ -39,8 +45,12 @@ if (largeInputMb > 0) {
   deck = Buffer.concat([input, padding]);
 }
 
-if (module._alea_wasm_init(160, 90) !== 0 || loadMcnp(deck) !== 0) {
+if (module._alea_wasm_init(160, 90) !== 0 ||
+    module._alea_wasm_set_picking_enabled(1) !== 0 || loadMcnp(deck) !== 0) {
   throw new Error(`WASM MCNP load failed: ${errorMessage()}`);
+}
+if (!cString(module._alea_wasm_version())) {
+  throw new Error("WASM binding returned no libalea version");
 }
 if (module._alea_wasm_set_target(1.0, 2.0, 3.0) !== 0 ||
     module._alea_wasm_resize(80, 45) !== 0 ||
@@ -60,6 +70,20 @@ if (length !== 160 * 90 * 4 || colors.size < 4 ||
     module._alea_wasm_cell_count() !== 9 || module._alea_wasm_surface_count() !== 13) {
   throw new Error(`invalid MCNP render: ${length} bytes, ${colors.size} colors`);
 }
+let picked = false;
+for (let y = 0; y < 90 && !picked; y += 1) {
+  for (let x = 0; x < 160; x += 1) {
+    const hit = module._alea_wasm_pick(x, y);
+    if (hit < 0) throw new Error(`WASM pick failed: ${errorMessage()}`);
+    if (hit) {
+      picked = module._alea_wasm_pick_cell_id() > 0 &&
+        module._alea_wasm_pick_material_id() > 0 &&
+        module._alea_wasm_pick_depth() > 0;
+      break;
+    }
+  }
+}
+if (!picked) throw new Error("WASM render had no pickable model pixel");
 const mode = threaded ? `${module._alea_wasm_parallel_max_threads()} worker threads` : "single thread";
 const inputDescription = largeInputMb > 0 ? `, ${largeInputMb} MiB input` : "";
 console.log(`WASM MCNP smoke test: ${length} bytes, ${colors.size} colors, ${mode}${inputDescription}`);

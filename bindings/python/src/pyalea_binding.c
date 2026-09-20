@@ -631,12 +631,20 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "  deduplicate: Deduplicate surfaces (default True)\n"
      "  universe_depth: Universe filter (-1=all, 0=base only, N=N levels deep)\n"
      "  fill_depth: FILL expansion (0=none, N=N levels, -1=full flatten)"},
+    {"export_mcnp_string", (PyCFunction)PyAleaSystem_export_mcnp_string,
+     METH_VARARGS | METH_KEYWORDS,
+     "export_mcnp_string(deduplicate=True, universe_depth=-1, fill_depth=0) -> str\n\n"
+     "Export MCNP text in memory."},
     {"export_openmc", (PyCFunction)PyAleaSystem_export_openmc,
      METH_VARARGS | METH_KEYWORDS,
      "export_openmc(filename)\n\nExport to OpenMC XML format."},
+    {"export_openmc_string", (PyCFunction)PyAleaSystem_export_openmc_string,
+     METH_NOARGS, "export_openmc_string() -> str\n\nExport OpenMC XML in memory."},
     {"export_serpent", (PyCFunction)PyAleaSystem_export_serpent,
      METH_VARARGS | METH_KEYWORDS,
      "export_serpent(filename)\n\nExport to Serpent input format."},
+    {"export_serpent_string", (PyCFunction)PyAleaSystem_export_serpent_string,
+     METH_NOARGS, "export_serpent_string() -> str\n\nExport Serpent text in memory."},
 
     /* Merge */
     {"merge", (PyCFunction)PyAleaSystem_merge, METH_VARARGS | METH_KEYWORDS,

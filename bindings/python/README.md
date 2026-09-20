@@ -14,7 +14,9 @@ complete libalea archive.
 The release archives are intended for applications to bundle inside their
 platform-specific distributions. They are tied to a CPython ABI,
 operating system, architecture, and the platform baseline used by the release
-builder. Installing NumPy is still required at runtime.
+builder. Installing NumPy is still required at runtime. The package includes a
+`py.typed` marker and a public type stub; native names remain available through
+`pyalea._alea`, while `pyalea.__all__` is explicitly maintained.
 
 One archive is released per CPython ABI and platform, covering CPython
 3.10–3.14. Separate archives are not needed for each NumPy minor release. The
@@ -45,6 +47,14 @@ inline_id = system.add_inline_transform(
 Set `degrees=True` when rotation entries are MCNP angles instead of direction
 cosines. Transform sequences use the MCNP displacement, optional rotation, and
 optional trailing direction flag accepted by libalea.
+
+Models can also be exported without a temporary path:
+
+```python
+mcnp_text = system.export_mcnp_string()
+openmc_xml = system.export_openmc_string()
+serpent_text = system.export_serpent_string()
+```
 
 ## Unix development build
 

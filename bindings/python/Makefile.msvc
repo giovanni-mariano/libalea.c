@@ -54,8 +54,10 @@ $(LIBALEA): dirs
 $(OBJECT): $(BINDING_SOURCES) $(COMPILE_RSP)
 	cl /nologo /O2 /MD /std:c11 /c @$(COMPILE_RSP) /Fo$(OBJECT) src\pyalea_binding.c
 
-$(MODULE): $(OBJECT) $(LIBALEA) $(LINK_RSP) package\pyalea\__init__.py
+$(MODULE): $(OBJECT) $(LIBALEA) $(LINK_RSP) package\pyalea\__init__.py package\pyalea\__init__.pyi package\pyalea\py.typed
 	copy /Y package\pyalea\__init__.py $(PACKAGE)\__init__.py >NUL
+	copy /Y package\pyalea\__init__.pyi $(PACKAGE)\__init__.pyi >NUL
+	copy /Y package\pyalea\py.typed $(PACKAGE)\py.typed >NUL
 	link /nologo /DLL /OUT:$(MODULE) $(OBJECT) /WHOLEARCHIVE:$(LIBALEA) @$(LINK_RSP)
 
 test: all

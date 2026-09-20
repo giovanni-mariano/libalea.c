@@ -13,6 +13,40 @@
  * PyAleaSystem Methods - Export
  * ============================================================================ */
 
+static PyObject* export_stream_to_string(FILE* stream) {
+    if (fflush(stream) != 0 || fseek(stream, 0, SEEK_END) != 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+    long length = ftell(stream);
+    if (length < 0 || fseek(stream, 0, SEEK_SET) != 0) {
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+    if ((unsigned long)length > (unsigned long)PY_SSIZE_T_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "exported text is too large for Python");
+        return NULL;
+    }
+    char* text = PyMem_Malloc((size_t)length + 1);
+    if (!text) return PyErr_NoMemory();
+    size_t read = fread(text, 1, (size_t)length, stream);
+    if (read != (size_t)length) {
+        PyMem_Free(text);
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
+    text[length] = '\0';
+    PyObject* result = PyUnicode_DecodeUTF8(text, (Py_ssize_t)length, "strict");
+    PyMem_Free(text);
+    return result;
+}
+
+static FILE* open_export_stream(void) {
+    FILE* stream = tmpfile();
+    if (!stream) PyErr_SetFromErrno(PyExc_OSError);
+    return stream;
+}
+
 static PyObject* PyAleaSystem_export_mcnp(PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
     const char* filename;
     int deduplicate = 1;
@@ -59,6 +93,54 @@ static PyObject* PyAleaSystem_export_mcnp(PyAleaSystemObject* self, PyObject* ar
     Py_RETURN_NONE;
 }
 
+static PyObject* PyAleaSystem_export_mcnp_string(
+        PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    int deduplicate = 1;
+    int universe_depth = -1;
+    int fill_depth = 0;
+    static char* kwlist[] = {
+        "deduplicate", "universe_depth", "fill_depth", NULL
+    };
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|pii", kwlist,
+                                     &deduplicate, &universe_depth, &fill_depth))
+        return NULL;
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+    FILE* stream = open_export_stream();
+    if (!stream) return NULL;
+
+    alea_config_t original = alea_get_config(self->sys);
+    alea_config_t config = original;
+    config.dedup = deduplicate;
+    config.universe_depth = universe_depth;
+    config.fill_depth = fill_depth;
+    alea_set_config(self->sys, &config);
+
+    int rc;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    rc = self->mcnp_model
+        ? mcnp_export_stream(self->mcnp_model, stream)
+        : mcnp_export_system_stream(self->sys, stream);
+    Py_END_ALLOW_THREADS
+    alea_set_config(self->sys, &original);
+
+    if (restore_sigint(old_sigint)) {
+        fclose(stream);
+        return NULL;
+    }
+    if (rc != 0) {
+        fclose(stream);
+        PyErr_Format(PyExc_RuntimeError, "MCNP export failed: %s", alea_error());
+        return NULL;
+    }
+    PyObject* result = export_stream_to_string(stream);
+    fclose(stream);
+    return result;
+}
+
 static PyObject* PyAleaSystem_export_openmc(PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
     const char* filename;
     static char* kwlist[] = {"filename", NULL};
@@ -87,6 +169,33 @@ static PyObject* PyAleaSystem_export_openmc(PyAleaSystemObject* self, PyObject* 
     Py_RETURN_NONE;
 }
 
+static PyObject* PyAleaSystem_export_openmc_string(
+        PyAleaSystemObject* self, PyObject* Py_UNUSED(ignored)) {
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+    FILE* stream = open_export_stream();
+    if (!stream) return NULL;
+    int rc;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    rc = openmc_export_system_stream(self->sys, stream);
+    Py_END_ALLOW_THREADS
+    if (restore_sigint(old_sigint)) {
+        fclose(stream);
+        return NULL;
+    }
+    if (rc != 0) {
+        fclose(stream);
+        PyErr_Format(PyExc_RuntimeError, "OpenMC export failed: %s", alea_error());
+        return NULL;
+    }
+    PyObject* result = export_stream_to_string(stream);
+    fclose(stream);
+    return result;
+}
+
 static PyObject* PyAleaSystem_export_serpent(PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
     const char* filename;
     static char* kwlist[] = {"filename", NULL};
@@ -113,6 +222,33 @@ static PyObject* PyAleaSystem_export_serpent(PyAleaSystemObject* self, PyObject*
     }
 
     Py_RETURN_NONE;
+}
+
+static PyObject* PyAleaSystem_export_serpent_string(
+        PyAleaSystemObject* self, PyObject* Py_UNUSED(ignored)) {
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+    FILE* stream = open_export_stream();
+    if (!stream) return NULL;
+    int rc;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    rc = serpent_export_system_stream(self->sys, stream);
+    Py_END_ALLOW_THREADS
+    if (restore_sigint(old_sigint)) {
+        fclose(stream);
+        return NULL;
+    }
+    if (rc != 0) {
+        fclose(stream);
+        PyErr_Format(PyExc_RuntimeError, "Serpent export failed: %s", alea_error());
+        return NULL;
+    }
+    PyObject* result = export_stream_to_string(stream);
+    fclose(stream);
+    return result;
 }
 
 /* ============================================================================

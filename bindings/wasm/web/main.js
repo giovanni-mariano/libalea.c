@@ -32,6 +32,10 @@ let elevation = 0.42;
 let distance = 2.7;
 let dragging = false;
 let previousPointer = null;
+let pointerStart = null;
+let pointerMoved = false;
+let frameWidth = WIDTH;
+let frameHeight = HEIGHT;
 let previousTime = performance.now();
 let modelCenter = [0, 0, 0];
 let interactionUntil = 0;
@@ -62,7 +66,7 @@ worker.onmessage = ({data}) => {
   if (data.type === "ready") {
     ready = true;
     const mode = data.threaded ? `tinypar · ${data.threads} workers` : "single thread";
-    status.textContent = `Ready · ${mode}`;
+    status.textContent = `Ready · libalea ${data.version} · ${mode}`;
     showModel("pin-cluster.mcnp", data.model);
     dirty = true;
   } else if (data.type === "loaded") {
@@ -74,6 +78,8 @@ worker.onmessage = ({data}) => {
     status.textContent = `Target · ${data.target.map((value) => value.toPrecision(6)).join(", ")}`;
     dirty = true;
   } else if (data.type === "frame") {
+    frameWidth = data.width;
+    frameHeight = data.height;
     const image = new ImageData(
       new Uint8ClampedArray(data.pixels), data.width, data.height);
     if (data.preview) {
@@ -89,6 +95,10 @@ worker.onmessage = ({data}) => {
     document.querySelector("#render-time").textContent =
       `${data.renderMs.toFixed(1)} ms · ${quality}`;
     renderPending = false;
+  } else if (data.type === "picked") {
+    status.textContent = data.hit
+      ? `Cell ${data.cellId} · material ${data.materialId} · depth ${data.depth.toPrecision(6)}`
+      : "Background";
   } else if (data.type === "error") {
     status.textContent = `Error · ${data.message}`;
     renderPending = false;
@@ -132,19 +142,33 @@ function animate(now) {
 canvas.addEventListener("pointerdown", (event) => {
   dragging = true;
   previousPointer = event;
+  pointerStart = event;
+  pointerMoved = false;
   canvas.setPointerCapture(event.pointerId);
   markInteraction();
 });
 canvas.addEventListener("pointermove", (event) => {
   if (!dragging) return;
+  if (Math.abs(event.clientX - pointerStart.clientX) > 2 ||
+      Math.abs(event.clientY - pointerStart.clientY) > 2) {
+    pointerMoved = true;
+  }
   azimuth -= (event.clientX - previousPointer.clientX) * 0.012;
   elevation = Math.max(-1.35, Math.min(1.35,
     elevation + (event.clientY - previousPointer.clientY) * 0.012));
   previousPointer = event;
   markInteraction();
 });
-canvas.addEventListener("pointerup", () => {
+canvas.addEventListener("pointerup", (event) => {
   dragging = false;
+  if (!pointerMoved && ready && !renderPending) {
+    const bounds = canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(frameWidth - 1,
+      Math.floor((event.clientX - bounds.left) * frameWidth / bounds.width)));
+    const y = Math.max(0, Math.min(frameHeight - 1,
+      Math.floor((event.clientY - bounds.top) * frameHeight / bounds.height)));
+    worker.postMessage({type: "pick", x, y});
+  }
   markInteraction();
 });
 canvas.addEventListener("wheel", (event) => {

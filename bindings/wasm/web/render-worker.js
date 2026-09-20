@@ -64,6 +64,9 @@ async function createModule(wantThreads) {
   if (module._alea_wasm_init(WIDTH, HEIGHT) !== 0) {
     throw new Error(readCString(module._alea_wasm_last_error()));
   }
+  if (module._alea_wasm_set_picking_enabled(1) !== 0) {
+    throw new Error(readCString(module._alea_wasm_last_error()));
+  }
 }
 
 self.onmessage = async ({data}) => {
@@ -73,7 +76,13 @@ self.onmessage = async ({data}) => {
       const response = await fetch("models/pin-cluster.mcnp");
       if (!response.ok) throw new Error(`could not load default MCNP model (${response.status})`);
       const model = loadMcnp(await response.arrayBuffer());
-      postMessage({type: "ready", threaded, threads: module._alea_wasm_parallel_max_threads(), model});
+      postMessage({
+        type: "ready",
+        threaded,
+        threads: module._alea_wasm_parallel_max_threads(),
+        version: readCString(module._alea_wasm_version()),
+        model,
+      });
       return;
     }
     if (data.type === "load" && module) {
@@ -111,6 +120,18 @@ self.onmessage = async ({data}) => {
         height,
         preview: data.preview,
       }, [pixels.buffer]);
+      return;
+    }
+    if (data.type === "pick" && module) {
+      const hit = module._alea_wasm_pick(data.x, data.y);
+      if (hit < 0) throw new Error(readCString(module._alea_wasm_last_error()));
+      postMessage({
+        type: "picked",
+        hit: hit !== 0,
+        cellId: module._alea_wasm_pick_cell_id(),
+        materialId: module._alea_wasm_pick_material_id(),
+        depth: module._alea_wasm_pick_depth(),
+      });
     }
   } catch (error) {
     postMessage({type: "error", message: error?.message ?? String(error)});

@@ -32,6 +32,10 @@ def test_native_module_is_private_package_member():
 def test_public_names_are_forwarded():
     assert "System" in pyalea.__all__
     assert pyalea.System is pyalea._alea.System
+    assert "_alea" not in pyalea.__all__
+    assert set(pyalea.__all__) == {
+        name for name in dir(pyalea._alea) if not name.startswith("_")
+    }
 
 
 def test_parallel_runtime_value_stays_synchronized():
@@ -52,6 +56,8 @@ def test_packaged_build_metadata_when_present():
     assert metadata["libalea_version"] == pyalea.version()
     assert len(metadata["libalea_commit"]) == 40
     assert set(metadata["libalea_commit"]) <= set("0123456789abcdef")
+    assert Path(pyalea.__file__).with_name("__init__.pyi").is_file()
+    assert Path(pyalea.__file__).with_name("py.typed").is_file()
 
 
 def test_numpy_grid_arrays_have_stable_layout_and_dtypes(populated_system):
@@ -174,6 +180,29 @@ def test_transform_values_are_validated():
         system.add_transform(1, (1.0, 2.0))
     with pytest.raises(ValueError, match="rotation"):
         system.add_inline_transform((0.0, 0.0, 0.0, 0.5))
+
+
+def test_in_memory_exports(populated_system):
+    mcnp = populated_system.export_mcnp_string()
+    openmc = populated_system.export_openmc_string()
+    serpent = populated_system.export_serpent_string()
+
+    assert "Exported by CSG Library" in mcnp
+    assert "<geometry>" in openmc
+    assert "exported by Alea" in serpent
+
+
+def test_compact_validation_reports_trace_reuse(populated_system):
+    result = populated_system.validate_ray_slice_compact(
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 1.0, 0.0),
+        -3.0, 3.0, -3.0, 3.0, 8,
+    )
+
+    assert isinstance(result["executed_trace_mask"], int)
+    assert isinstance(result["reused_trace_mask"], int)
+    assert result["executed_trace_mask"] != 0
 
 
 def test_numpy_buffers_survive_repeated_allocation_and_collection():

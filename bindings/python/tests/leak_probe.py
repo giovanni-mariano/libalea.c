@@ -26,6 +26,9 @@ for _ in range(250):
         (1.0, 2.0, 3.0), cell_id=101, role="fill",
     )
     assert system.add_inline_transform((1.0, 2.0, 3.0)) == inline_id
+    system.export_mcnp_string()
+    system.export_openmc_string()
+    system.export_serpent_string()
     system.find_cells_grid_z(
         0.0, -3.0, 3.0, -3.0, 3.0, 16, 12,
         error_mode="fast", _as_buffers=True,

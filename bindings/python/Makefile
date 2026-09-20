@@ -25,6 +25,7 @@ LIB_BIN_DIR := $(abspath $(BUILD_ROOT)/libalea-bin)
 LIBALEA := $(LIB_BIN_DIR)/libalea_full.a
 PACKAGE_ROOT := $(abspath $(BUILD_ROOT)/package)
 PACKAGE_DIR := $(PACKAGE_ROOT)/pyalea
+PACKAGE_SOURCES := package/pyalea/__init__.py package/pyalea/__init__.pyi package/pyalea/py.typed
 OBJECT := $(abspath $(BUILD_ROOT)/pyalea_binding.o)
 MODULE := $(PACKAGE_DIR)/_alea$(EXT_SUFFIX)
 DIST_DIR ?= $(abspath dist)
@@ -52,8 +53,10 @@ $(LIBALEA): FORCE
 $(OBJECT): $(BINDING_SOURCES) $(PUBLIC_HEADERS) | $(BUILD_ROOT)
 	$(CC) $(CPPFLAGS) $(BINDING_CFLAGS) -c src/pyalea_binding.c -o $@
 
-$(MODULE): $(OBJECT) $(LIBALEA) package/pyalea/__init__.py | $(PACKAGE_DIR)
+$(MODULE): $(OBJECT) $(LIBALEA) $(PACKAGE_SOURCES) | $(PACKAGE_DIR)
 	cp package/pyalea/__init__.py $(PACKAGE_DIR)/__init__.py
+	cp package/pyalea/__init__.pyi $(PACKAGE_DIR)/__init__.pyi
+	cp package/pyalea/py.typed $(PACKAGE_DIR)/py.typed
 	$(CC) -o $@ $(OBJECT) $(MODULE_LDFLAGS)
 
 $(BUILD_ROOT) $(PACKAGE_DIR):

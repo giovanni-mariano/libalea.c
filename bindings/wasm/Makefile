@@ -23,6 +23,8 @@ EXPORTED_FUNCTIONS := [\
 "_alea_wasm_resize",\
 "_alea_wasm_load_mcnp",\
 "_alea_wasm_render",\
+"_alea_wasm_set_picking_enabled",\
+"_alea_wasm_version",\
 "_alea_wasm_pixels",\
 "_alea_wasm_pixel_bytes",\
 "_alea_wasm_width",\
@@ -33,6 +35,10 @@ EXPORTED_FUNCTIONS := [\
 "_alea_wasm_center_y",\
 "_alea_wasm_center_z",\
 "_alea_wasm_radius",\
+"_alea_wasm_pick",\
+"_alea_wasm_pick_cell_id",\
+"_alea_wasm_pick_material_id",\
+"_alea_wasm_pick_depth",\
 "_alea_wasm_set_target",\
 "_alea_wasm_parallel_enabled",\
 "_alea_wasm_parallel_max_threads",\

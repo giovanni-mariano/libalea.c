@@ -47,6 +47,7 @@ python3 serve.py
 The viewer uses `alea-threaded.js` when the page is cross-origin isolated and
 falls back to `alea.js`. `serve.py` sends the COOP/COEP headers required for
 `SharedArrayBuffer`; production hosting must do the same for all assets.
+Clicking a rendered cell reports its cell ID, material ID, and camera depth.
 
 Both builds use a growable WASM heap with a 2 GiB ceiling. The threaded build
 starts at 256 MiB so large MCNP inputs can be parsed without an immediate heap
@@ -70,6 +71,9 @@ input as the browser.
 
 The facade owns one parsed `mcnp_model_t` and framebuffer. Its main operations
 are `alea_wasm_init`, `alea_wasm_load_mcnp`, and `alea_wasm_render`. It also
-exports pixels, dimensions, model counts/bounds, parallel capabilities, error
-reporting, and destruction. JavaScript copies UTF-8 MCNP text into WASM memory
+exports pixels, dimensions, model counts/bounds, pixel picking, the libalea
+version, parallel capabilities, error reporting, and destruction. JavaScript copies UTF-8 MCNP text into WASM memory
 with the exported `malloc`/`free` functions before calling the loader.
+Picking is opt-in through `alea_wasm_set_picking_enabled(1)`, so consumers that
+only need RGBA frames do not allocate or write the auxiliary material, depth,
+and normal buffers.

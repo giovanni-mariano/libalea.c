@@ -2053,6 +2053,10 @@ static PyObject* PyAleaSystem_validate_ray_slice_compact(PyAleaSystemObject* sel
      * validation row count is independent of the render's ray count. */
     size_t validation_rows = alea_ray_slice_validation_row_count(validation);
     uint32_t validation_fields = alea_ray_slice_validation_fields(validation);
+    uint32_t executed_trace_mask =
+        alea_ray_slice_validation_executed_trace_mask(validation);
+    uint32_t reused_trace_mask =
+        alea_ray_slice_validation_reused_trace_mask(validation);
     PyObject *out = PyDict_New(), *render = PyDict_New();
     if (!out || !render) { Py_XDECREF(out); Py_XDECREF(render); goto failed; }
     if (compact_dict_add_array(render, "row_offsets", alea_raycast_batch_ray_offsets(forward), rays + 1, NPY_UINT64) ||
@@ -2089,6 +2093,10 @@ static PyObject* PyAleaSystem_validate_ray_slice_compact(PyAleaSystemObject* sel
         compact_dict_add_size(out, "interval_count", intervals) ||
         compact_dict_add_size(out, "row_count", validation_rows) ||
         compact_dict_add_size(out, "fields", (size_t)validation_fields) ||
+        compact_dict_add_size(out, "executed_trace_mask",
+                              (size_t)executed_trace_mask) ||
+        compact_dict_add_size(out, "reused_trace_mask",
+                              (size_t)reused_trace_mask) ||
         PyDict_SetItemString(out, "render", render) != 0) { Py_DECREF(render); Py_DECREF(out); goto failed; }
     if (PyDict_SetItemString(out, "used_directional_cache", cache ? Py_True : Py_False) != 0) {
         Py_DECREF(render); Py_DECREF(out); goto failed;
