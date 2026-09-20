@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+# SPDX-License-Identifier: MPL-2.0
+
+build/
+dist/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.py[cod]

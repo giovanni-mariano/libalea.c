@@ -77,6 +77,14 @@ and headers. The MSVC archives package the `.lib` static libraries and headers.
 All builds use the vendored TinyPar backend by default and have no OpenMP
 runtime dependency.
 
+Release pages also contain the native Python bindings as `pyalea` archives for
+CPython 3.10–3.14 on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows
+x86_64. Each archive is specific to its Python ABI and platform and includes a
+matching `.sha256` file. Applications can bundle the contained `pyalea/`
+directory and use `import pyalea`; see
+[`bindings/python/README.md`](bindings/python/README.md) for the artifact layout
+and local build commands.
+
 ### Building from Source
 
 ```bash
@@ -101,6 +109,7 @@ make tools        # Build command-line conversion, plotting, and inspection tool
 make test         # Build and run tests
 make test-lua     # Build the CLI and run Lua tests
 make install      # Install libraries, headers, CLI, tools, and docs
+make -C bindings/python test PYTHON=python3  # Build and test pyAlea
 ```
 
 ### Build Options by Platform

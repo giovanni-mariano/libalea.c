@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2026 F4E
-// SPDX-License-Identifier: EUPL-1.2
+// SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+// SPDX-License-Identifier: MPL-2.0
 
 #include "alea_nucdata.h"
 #include <assert.h>

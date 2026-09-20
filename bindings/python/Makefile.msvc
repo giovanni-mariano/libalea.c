@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 Giovanni MARIANO
+#
+# SPDX-License-Identifier: MPL-2.0
+
+# Run from an x64 Native Tools Command Prompt:
+#   nmake /f Makefile.msvc PYTHON=C:\path\to\python.exe
+
+ROOT = ..\..
+PYTHON = python
+BUILD = build\msvc
+LIB_BUILD_REPO = bindings\python\$(BUILD)\libalea-obj
+LIB_BIN_REPO = bindings\python\$(BUILD)\libalea-bin
+LIB_BUILD = $(BUILD)\libalea-obj
+LIB_BIN = $(BUILD)\libalea-bin
+LIBALEA = $(LIB_BIN)\libalea_full.lib
+PACKAGE_ROOT = $(BUILD)\package
+PACKAGE = $(PACKAGE_ROOT)\pyalea
+MODULE = $(PACKAGE)\_alea.pyd
+OBJECT = $(BUILD)\pyalea_binding.obj
+COMPILE_RSP = $(BUILD)\python-compile.rsp
+LINK_RSP = $(BUILD)\python-link.rsp
+DIST = dist
+BINDING_SOURCES = \
+	src\pyalea_binding.c \
+	src\_bind_cluster.c \
+	src\_bind_core.c \
+	src\_bind_geo_validator.c \
+	src\_bind_geometry.c \
+	src\_bind_inspect.c \
+	src\_bind_io.c \
+	src\_bind_mesh.c \
+	src\_bind_module.c \
+	src\_bind_nucdata.c \
+	src\_bind_raycast.c \
+	src\_bind_render.c \
+	src\_bind_slice.c \
+	src\_bind_util.c \
+	src\_bind_void.c
+
+all: $(MODULE)
+
+dirs:
+	@if not exist "$(BUILD)" mkdir "$(BUILD)"
+	@if not exist "$(PACKAGE)" mkdir "$(PACKAGE)"
+
+$(COMPILE_RSP): dirs scripts\config.py
+	$(PYTHON) scripts\config.py write-msvc-responses --compile $(COMPILE_RSP) --link $(LINK_RSP) --root $(ROOT)
+
+$(LINK_RSP): $(COMPILE_RSP)
+
+$(LIBALEA): dirs
+	@cd /d $(ROOT) && nmake /nologo /f Makefile.msvc RELEASE=1 TINYPAR_BACKEND=native BUILD=$(LIB_BUILD_REPO) BIN=$(LIB_BIN_REPO) full
+
+$(OBJECT): $(BINDING_SOURCES) $(COMPILE_RSP)
+	cl /nologo /O2 /MD /std:c11 /c @$(COMPILE_RSP) /Fo$(OBJECT) src\pyalea_binding.c
+
+$(MODULE): $(OBJECT) $(LIBALEA) $(LINK_RSP) package\pyalea\__init__.py
+	copy /Y package\pyalea\__init__.py $(PACKAGE)\__init__.py >NUL
+	link /nologo /DLL /OUT:$(MODULE) $(OBJECT) /WHOLEARCHIVE:$(LIBALEA) @$(LINK_RSP)
+
+test: all
+	set PYTHONPATH=$(PACKAGE_ROOT)&& $(PYTHON) -m pytest -p no:cacheprovider tests -v
+
+# This target must never depend on `all`: release jobs use it after replacing
+# NumPy to prove that the same .pyd works with another runtime.
+test-runtime:
+	@if not exist "$(MODULE)" (echo Missing prebuilt extension: $(MODULE) & exit /B 1)
+	set PYTHONPATH=$(PACKAGE_ROOT)&& $(PYTHON) -m pytest -p no:cacheprovider tests -v
+
+package: test
+	$(PYTHON) scripts\package.py --package-dir $(PACKAGE) --output-dir $(DIST) --root $(ROOT)
+	set PYTHONPATH=$(PACKAGE_ROOT)&& $(PYTHON) -m pytest -p no:cacheprovider tests -v
+
+clean:
+	@if exist "$(BUILD)" rmdir /S /Q "$(BUILD)"
+	@if exist "$(DIST)" rmdir /S /Q "$(DIST)"
+	@if exist ".pytest_cache" rmdir /S /Q ".pytest_cache"
+	@if exist "tests\__pycache__" rmdir /S /Q "tests\__pycache__"
+	@if exist "scripts\__pycache__" rmdir /S /Q "scripts\__pycache__"
+	@if exist "package\pyalea\__pycache__" rmdir /S /Q "package\pyalea\__pycache__"
+
+help:
+	@echo pyAlea native binding: all, test, test-runtime, package, clean

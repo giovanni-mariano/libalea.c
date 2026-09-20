@@ -216,8 +216,153 @@ jobs:
           name: alea-windows-msvc-x64
           path: dist/alea-windows-msvc-x64.zip
 
+  build-pyalea-linux:
+    name: pyAlea Linux ${{ matrix.arch }} cp${{ matrix.python-abi }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64, runner: ubuntu-24.04, image: quay.io/pypa/manylinux_2_28_x86_64, python-abi: "310", numpy: "2.0.2"}
+          - {arch: x86_64, runner: ubuntu-24.04, image: quay.io/pypa/manylinux_2_28_x86_64, python-abi: "311", numpy: "2.0.2"}
+          - {arch: x86_64, runner: ubuntu-24.04, image: quay.io/pypa/manylinux_2_28_x86_64, python-abi: "312", numpy: "2.0.2"}
+          - {arch: x86_64, runner: ubuntu-24.04, image: quay.io/pypa/manylinux_2_28_x86_64, python-abi: "313", numpy: "2.1.3"}
+          - {arch: x86_64, runner: ubuntu-24.04, image: quay.io/pypa/manylinux_2_28_x86_64, python-abi: "314", numpy: "2.3.3"}
+          - {arch: aarch64, runner: ubuntu-24.04-arm, image: quay.io/pypa/manylinux_2_28_aarch64, python-abi: "310", numpy: "2.0.2"}
+          - {arch: aarch64, runner: ubuntu-24.04-arm, image: quay.io/pypa/manylinux_2_28_aarch64, python-abi: "311", numpy: "2.0.2"}
+          - {arch: aarch64, runner: ubuntu-24.04-arm, image: quay.io/pypa/manylinux_2_28_aarch64, python-abi: "312", numpy: "2.0.2"}
+          - {arch: aarch64, runner: ubuntu-24.04-arm, image: quay.io/pypa/manylinux_2_28_aarch64, python-abi: "313", numpy: "2.1.3"}
+          - {arch: aarch64, runner: ubuntu-24.04-arm, image: quay.io/pypa/manylinux_2_28_aarch64, python-abi: "314", numpy: "2.3.3"}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Build and test in manylinux_2_28
+        run: |
+          docker run --rm \
+            -v "$PWD:/project" \
+            -w /project \
+            "${{ matrix.image }}" \
+            bash -c 'set -e; \
+              git config --global --add safe.directory /project; \
+              python_bin=/opt/python/cp${{ matrix.python-abi }}-cp${{ matrix.python-abi }}/bin/python; \
+              "$python_bin" -m pip install "numpy==${{ matrix.numpy }}" pytest; \
+              make -C bindings/python package \
+                PYTHON="$python_bin" PLATFORM_TAG=manylinux_2_28_${{ matrix.arch }}; \
+              if [ "${{ matrix.python-abi }}" -le 312 ]; then \
+                "$python_bin" -m pip install --force-reinstall "numpy==1.26.4"; \
+                make -C bindings/python test-runtime \
+                  PYTHON="$python_bin" PLATFORM_TAG=manylinux_2_28_${{ matrix.arch }}; \
+              fi; \
+              "$python_bin" -m pip install --upgrade --force-reinstall "numpy>=2,<3"; \
+              make -C bindings/python test-runtime \
+                PYTHON="$python_bin" PLATFORM_TAG=manylinux_2_28_${{ matrix.arch }}'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pyalea-linux-${{ matrix.arch }}-cp${{ matrix.python-abi }}
+          path: bindings/python/dist/*
+          if-no-files-found: error
+
+  build-pyalea-macos:
+    name: pyAlea ${{ matrix.os }} Python ${{ matrix.python.version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python:
+          - {version: "3.10", numpy: "2.0.2", numpy1: true}
+          - {version: "3.11", numpy: "2.0.2", numpy1: true}
+          - {version: "3.12", numpy: "2.0.2", numpy1: true}
+          - {version: "3.13", numpy: "2.1.3", numpy1: false}
+          - {version: "3.14", numpy: "2.3.3", numpy1: false}
+        os: [macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python.version }}
+
+      - name: Install binding build dependency
+        run: python -m pip install "numpy==${{ matrix.python.numpy }}" pytest
+
+      - name: Build, test, and package pyAlea
+        run: make -C bindings/python package PYTHON=python3
+
+      - name: Test existing binary with NumPy 1.26.4
+        if: matrix.python.numpy1
+        run: |
+          python -m pip install --force-reinstall "numpy==1.26.4"
+          make -C bindings/python test-runtime PYTHON=python3
+
+      - name: Test existing binary with latest compatible NumPy 2.x
+        run: |
+          python -m pip install --upgrade --force-reinstall "numpy>=2,<3"
+          make -C bindings/python test-runtime PYTHON=python3
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pyalea-${{ matrix.os }}-cp${{ matrix.python.version }}
+          path: bindings/python/dist/*
+          if-no-files-found: error
+
+  build-pyalea-windows:
+    name: pyAlea Windows x64 Python ${{ matrix.python.version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python:
+          - {version: "3.10", numpy: "2.0.2", numpy1: true}
+          - {version: "3.11", numpy: "2.0.2", numpy1: true}
+          - {version: "3.12", numpy: "2.0.2", numpy1: true}
+          - {version: "3.13", numpy: "2.1.3", numpy1: false}
+          - {version: "3.14", numpy: "2.3.3", numpy1: false}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python.version }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install binding build dependency
+        run: python -m pip install "numpy==${{ matrix.python.numpy }}" pytest
+
+      - name: Build, test, and package pyAlea
+        working-directory: bindings/python
+        run: nmake /nologo /f Makefile.msvc PYTHON=python package
+
+      - name: Test existing binary with NumPy 1.26.4
+        if: matrix.python.numpy1
+        working-directory: bindings/python
+        run: |
+          python -m pip install --force-reinstall "numpy==1.26.4"
+          nmake /nologo /f Makefile.msvc PYTHON=python test-runtime
+
+      - name: Test existing binary with latest compatible NumPy 2.x
+        working-directory: bindings/python
+        run: |
+          python -m pip install --upgrade --force-reinstall "numpy>=2,<3"
+          nmake /nologo /f Makefile.msvc PYTHON=python test-runtime
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pyalea-windows-x64-cp${{ matrix.python.version }}
+          path: bindings/python/dist/*
+          if-no-files-found: error
+
   create-release:
-    needs: [build-linux-x64, build-linux-arm64, build-macos-x64, build-macos-arm64, build-windows-x64, build-windows-msvc-x64]
+    needs: [build-linux-x64, build-linux-arm64, build-macos-x64, build-macos-arm64, build-windows-x64, build-windows-msvc-x64, build-pyalea-linux, build-pyalea-macos, build-pyalea-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -228,6 +373,9 @@ jobs:
 
       - name: List artifacts
         run: find artifacts -type f
+
+      - name: Build pyAlea asset manifest
+        run: python bindings/python/scripts/release_manifest.py artifacts pyalea-manifest.json
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
@@ -240,3 +388,5 @@ jobs:
             artifacts/alea-macos-arm64/alea-macos-arm64.tar.gz
             artifacts/alea-windows-x64/alea-windows-x64.zip
             artifacts/alea-windows-msvc-x64/alea-windows-msvc-x64.zip
+            artifacts/pyalea-*/*
+            pyalea-manifest.json
