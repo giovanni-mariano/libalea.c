@@ -4,6 +4,8 @@ build/*
 /bindings/python/dist/
 /bindings/python/tests/__pycache__/
 /bindings/python/scripts/__pycache__/
+/tools/__pycache__/
+
 *.o
 .vscode/*
 vendor/*.tar.gz
