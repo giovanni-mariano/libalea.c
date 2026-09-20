@@ -12,39 +12,39 @@
 /* Inline curve geometry into an error-segment dict so Python can render
  * analytical error lines without re-fetching the curve list. */
 static void inline_curve_into_dict(PyObject* dict, const alea_curve_t* c) {
-    PyDict_SetItemString(dict, "curve_type",
+    dict_set_new(dict, "curve_type",
                          PyUnicode_FromString(curve_type_to_string(c->type)));
     switch (c->type) {
         case ALEA_CURVE_LINE:
         case ALEA_CURVE_LINE_SEGMENT:
-            PyDict_SetItemString(dict, "point",
+            dict_set_new(dict, "point",
                 Py_BuildValue("(dd)", c->data.line.point[0], c->data.line.point[1]));
-            PyDict_SetItemString(dict, "direction",
+            dict_set_new(dict, "direction",
                 Py_BuildValue("(dd)", c->data.line.direction[0], c->data.line.direction[1]));
             break;
         case ALEA_CURVE_CIRCLE:
         case ALEA_CURVE_ARC:
-            PyDict_SetItemString(dict, "center",
+            dict_set_new(dict, "center",
                 Py_BuildValue("(dd)", c->data.circle.center[0], c->data.circle.center[1]));
-            PyDict_SetItemString(dict, "radius",
+            dict_set_new(dict, "radius",
                 PyFloat_FromDouble(c->data.circle.radius));
             break;
         case ALEA_CURVE_ELLIPSE:
         case ALEA_CURVE_ELLIPSE_ARC:
-            PyDict_SetItemString(dict, "center",
+            dict_set_new(dict, "center",
                 Py_BuildValue("(dd)", c->data.ellipse.center[0], c->data.ellipse.center[1]));
-            PyDict_SetItemString(dict, "semi_a", PyFloat_FromDouble(c->data.ellipse.semi_a));
-            PyDict_SetItemString(dict, "semi_b", PyFloat_FromDouble(c->data.ellipse.semi_b));
-            PyDict_SetItemString(dict, "angle", PyFloat_FromDouble(c->data.ellipse.angle));
+            dict_set_new(dict, "semi_a", PyFloat_FromDouble(c->data.ellipse.semi_a));
+            dict_set_new(dict, "semi_b", PyFloat_FromDouble(c->data.ellipse.semi_b));
+            dict_set_new(dict, "angle", PyFloat_FromDouble(c->data.ellipse.angle));
             break;
         case ALEA_CURVE_PARALLEL_LINES:
-            PyDict_SetItemString(dict, "point1",
+            dict_set_new(dict, "point1",
                 Py_BuildValue("(dd)", c->data.parallel_lines.point1[0],
                               c->data.parallel_lines.point1[1]));
-            PyDict_SetItemString(dict, "point2",
+            dict_set_new(dict, "point2",
                 Py_BuildValue("(dd)", c->data.parallel_lines.point2[0],
                               c->data.parallel_lines.point2[1]));
-            PyDict_SetItemString(dict, "direction",
+            dict_set_new(dict, "direction",
                 Py_BuildValue("(dd)", c->data.parallel_lines.direction[0],
                               c->data.parallel_lines.direction[1]));
             break;
@@ -55,8 +55,8 @@ static void inline_curve_into_dict(PyObject* dict, const alea_curve_t* c) {
                     c->data.polygon.vertices[j][0],
                     c->data.polygon.vertices[j][1]));
             }
-            PyDict_SetItemString(dict, "vertices", verts);
-            PyDict_SetItemString(dict, "closed",
+            dict_set_new(dict, "vertices", verts);
+            dict_set_new(dict, "closed",
                 PyBool_FromLong(c->data.polygon.closed));
             break;
         }
@@ -86,13 +86,13 @@ static PyObject* build_error_components(const int* cell_ids,
         const char* kind = "undefined";
         if (c->kind == ALEA_PLOT_ERR_PARTIAL_OVERLAP) kind = "partial_overlap";
         else if (c->kind == ALEA_PLOT_ERR_TOTAL_OVERLAP) kind = "total_overlap";
-        PyDict_SetItemString(d, "kind", PyUnicode_FromString(kind));
-        PyDict_SetItemString(d, "primary_cell_id", PyLong_FromLong(c->primary_cell_id));
-        PyDict_SetItemString(d, "secondary_cell_id", PyLong_FromLong(c->secondary_cell_id));
-        PyDict_SetItemString(d, "pixel_count", PyLong_FromLong(c->pixel_count));
-        PyDict_SetItemString(d, "bounds",
+        dict_set_new(d, "kind", PyUnicode_FromString(kind));
+        dict_set_new(d, "primary_cell_id", PyLong_FromLong(c->primary_cell_id));
+        dict_set_new(d, "secondary_cell_id", PyLong_FromLong(c->secondary_cell_id));
+        dict_set_new(d, "pixel_count", PyLong_FromLong(c->pixel_count));
+        dict_set_new(d, "bounds",
             Py_BuildValue("(iiii)", c->min_i, c->min_j, c->max_i, c->max_j));
-        PyDict_SetItemString(d, "representative_pixel",
+        dict_set_new(d, "representative_pixel",
             Py_BuildValue("(ii)", c->representative_i, c->representative_j));
         PyList_SET_ITEM(list, i, d);
     }
@@ -116,11 +116,11 @@ static PyObject* build_component_list_from_result(
         if (c->kind == ALEA_PLOT_ERR_PARTIAL_OVERLAP) kind = "partial_overlap";
         else if (c->kind == ALEA_PLOT_ERR_TOTAL_OVERLAP) kind = "total_overlap";
         if (!d ||
-            PyDict_SetItemString(d, "kind", PyUnicode_FromString(kind)) < 0 ||
-            PyDict_SetItemString(d, "primary_cell_id", PyLong_FromLong(c->primary_cell_id)) < 0 ||
-            PyDict_SetItemString(d, "secondary_cell_id", PyLong_FromLong(c->secondary_cell_id)) < 0 ||
-            PyDict_SetItemString(d, "pixel_count", PyLong_FromLong(c->pixel_count)) < 0 ||
-            PyDict_SetItemString(d, "bounds",
+            dict_set_new(d, "kind", PyUnicode_FromString(kind)) < 0 ||
+            dict_set_new(d, "primary_cell_id", PyLong_FromLong(c->primary_cell_id)) < 0 ||
+            dict_set_new(d, "secondary_cell_id", PyLong_FromLong(c->secondary_cell_id)) < 0 ||
+            dict_set_new(d, "pixel_count", PyLong_FromLong(c->pixel_count)) < 0 ||
+            dict_set_new(d, "bounds",
                                  Py_BuildValue("(iiii)", c->min_i, c->min_j,
                                                c->max_i, c->max_j)) < 0) {
             Py_XDECREF(d);
@@ -128,7 +128,7 @@ static PyObject* build_component_list_from_result(
             alea_plot_error_components_free(comps);
             return NULL;
         }
-        if (PyDict_SetItemString(d, "representative_pixel",
+        if (dict_set_new(d, "representative_pixel",
                                  Py_BuildValue("(ii)", c->representative_i,
                                                c->representative_j)) < 0) {
             Py_DECREF(d);
@@ -218,11 +218,11 @@ static PyObject* PyAleaSystem_find_local_coverage_components(
         "contains_tests", (Py_ssize_t)stats.point_coverage.contains_tests);
     if (!result || !point_stats ||
         PyDict_SetItemString(result, "components", component_list) < 0 ||
-        PyDict_SetItemString(result, "pixels", PyLong_FromSize_t(stats.pixels)) < 0 ||
-        PyDict_SetItemString(result, "scratch_bytes", PyLong_FromSize_t(stats.scratch_bytes)) < 0 ||
-        PyDict_SetItemString(result, "incomplete_points",
+        dict_set_new(result, "pixels", PyLong_FromSize_t(stats.pixels)) < 0 ||
+        dict_set_new(result, "scratch_bytes", PyLong_FromSize_t(stats.scratch_bytes)) < 0 ||
+        dict_set_new(result, "incomplete_points",
                             PyLong_FromSize_t(stats.incomplete_points)) < 0 ||
-        PyDict_SetItemString(result, "worker_limit", PyLong_FromLong(stats.worker_limit)) < 0 ||
+        dict_set_new(result, "worker_limit", PyLong_FromLong(stats.worker_limit)) < 0 ||
         PyDict_SetItemString(result, "point_coverage", point_stats) < 0) {
         Py_XDECREF(result); Py_XDECREF(point_stats); Py_DECREF(component_list);
         return NULL;
@@ -283,9 +283,8 @@ static PyObject* grid_array_from_owned_data(void* values, Py_ssize_t count,
         return NULL;
     }
     if (PyArray_SetBaseObject((PyArrayObject*)array, capsule) < 0) {
-        Py_DECREF(capsule);
+        /* PyArray_SetBaseObject steals the capsule reference even on error. */
         Py_DECREF(array);
-        free(values);
         return NULL;
     }
     return array;
@@ -421,10 +420,10 @@ static PyObject* compute_error_lines(alea_system_t* sys,
             PyObject* d = PyDict_New();
             const char* etype = (e->type == ALEA_SLICE_ERR_OVERLAP)
                                 ? "overlap" : "gap";
-            PyDict_SetItemString(d, "type", PyUnicode_FromString(etype));
-            PyDict_SetItemString(d, "surface_id", PyLong_FromLong(e->surface_id));
-            PyDict_SetItemString(d, "t_start", PyFloat_FromDouble(e->t_start));
-            PyDict_SetItemString(d, "t_end", PyFloat_FromDouble(e->t_end));
+            dict_set_new(d, "type", PyUnicode_FromString(etype));
+            dict_set_new(d, "surface_id", PyLong_FromLong(e->surface_id));
+            dict_set_new(d, "t_start", PyFloat_FromDouble(e->t_start));
+            dict_set_new(d, "t_end", PyFloat_FromDouble(e->t_end));
             inline_curve_into_dict(d, &c);
             PyList_Append(py_list, d);
             Py_DECREF(d);
@@ -482,39 +481,39 @@ static PyObject* PyAleaSystem_get_slice_curves_z(PyAleaSystemObject* self, PyObj
         alea_slice_curves_get(curves, i, &c);
 
         PyObject* dict = PyDict_New();
-        PyDict_SetItemString(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
-        PyDict_SetItemString(dict, "surface_id", PyLong_FromLong(c.surface_id));
+        dict_set_new(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
+        dict_set_new(dict, "surface_id", PyLong_FromLong(c.surface_id));
 
         switch (c.type) {
             case ALEA_CURVE_LINE:
             case ALEA_CURVE_LINE_SEGMENT:
-                PyDict_SetItemString(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
+                dict_set_new(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
                 if (c.type == ALEA_CURVE_LINE_SEGMENT) {
-                    PyDict_SetItemString(dict, "t_min", PyFloat_FromDouble(c.t_min));
-                    PyDict_SetItemString(dict, "t_max", PyFloat_FromDouble(c.t_max));
+                    dict_set_new(dict, "t_min", PyFloat_FromDouble(c.t_min));
+                    dict_set_new(dict, "t_max", PyFloat_FromDouble(c.t_max));
                 }
                 break;
 
             case ALEA_CURVE_CIRCLE:
             case ALEA_CURVE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
-                PyDict_SetItemString(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
+                dict_set_new(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
                 if (c.type == ALEA_CURVE_ARC) {
-                    PyDict_SetItemString(dict, "theta_start", PyFloat_FromDouble(c.t_min));
-                    PyDict_SetItemString(dict, "theta_end", PyFloat_FromDouble(c.t_max));
+                    dict_set_new(dict, "theta_start", PyFloat_FromDouble(c.t_min));
+                    dict_set_new(dict, "theta_end", PyFloat_FromDouble(c.t_max));
                 }
                 break;
 
             case ALEA_CURVE_ELLIPSE:
             case ALEA_CURVE_ELLIPSE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
-                PyDict_SetItemString(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
-                PyDict_SetItemString(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
-                PyDict_SetItemString(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
+                dict_set_new(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
+                dict_set_new(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
+                dict_set_new(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
                 if (c.type == ALEA_CURVE_ELLIPSE_ARC) {
-                    PyDict_SetItemString(dict, "theta_start", PyFloat_FromDouble(c.t_min));
-                    PyDict_SetItemString(dict, "theta_end", PyFloat_FromDouble(c.t_max));
+                    dict_set_new(dict, "theta_start", PyFloat_FromDouble(c.t_min));
+                    dict_set_new(dict, "theta_end", PyFloat_FromDouble(c.t_max));
                 }
                 break;
 
@@ -524,15 +523,15 @@ static PyObject* PyAleaSystem_get_slice_curves_z(PyAleaSystemObject* self, PyObj
                     PyList_SET_ITEM(verts, j, Py_BuildValue("(dd)",
                         c.data.polygon.vertices[j][0], c.data.polygon.vertices[j][1]));
                 }
-                PyDict_SetItemString(dict, "vertices", verts);
-                PyDict_SetItemString(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
+                dict_set_new(dict, "vertices", verts);
+                dict_set_new(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
                 break;
             }
 
             case ALEA_CURVE_PARALLEL_LINES:
-                PyDict_SetItemString(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
-                PyDict_SetItemString(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
+                dict_set_new(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
+                dict_set_new(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
                 break;
 
             default:
@@ -547,15 +546,15 @@ static PyObject* PyAleaSystem_get_slice_curves_z(PyAleaSystemObject* self, PyObj
     alea_slice_curves_bounds(curves, &u_min, &u_max, &v_min, &v_max);
 
     PyObject* result = PyDict_New();
-    PyDict_SetItemString(result, "curves", list);
-    PyDict_SetItemString(result, "u_min", PyFloat_FromDouble(u_min));
-    PyDict_SetItemString(result, "u_max", PyFloat_FromDouble(u_max));
-    PyDict_SetItemString(result, "v_min", PyFloat_FromDouble(v_min));
-    PyDict_SetItemString(result, "v_max", PyFloat_FromDouble(v_max));
-    PyDict_SetItemString(result, "x_min", PyFloat_FromDouble(x_min));
-    PyDict_SetItemString(result, "x_max", PyFloat_FromDouble(x_max));
-    PyDict_SetItemString(result, "y_min", PyFloat_FromDouble(y_min));
-    PyDict_SetItemString(result, "y_max", PyFloat_FromDouble(y_max));
+    dict_set_new(result, "curves", list);
+    dict_set_new(result, "u_min", PyFloat_FromDouble(u_min));
+    dict_set_new(result, "u_max", PyFloat_FromDouble(u_max));
+    dict_set_new(result, "v_min", PyFloat_FromDouble(v_min));
+    dict_set_new(result, "v_max", PyFloat_FromDouble(v_max));
+    dict_set_new(result, "x_min", PyFloat_FromDouble(x_min));
+    dict_set_new(result, "x_max", PyFloat_FromDouble(x_max));
+    dict_set_new(result, "y_min", PyFloat_FromDouble(y_min));
+    dict_set_new(result, "y_max", PyFloat_FromDouble(y_max));
     alea_slice_curves_free(curves);
     return result;
 }
@@ -592,26 +591,26 @@ static PyObject* PyAleaSystem_get_slice_curves_y(PyAleaSystemObject* self, PyObj
         alea_slice_curves_get(curves, i, &c);
 
         PyObject* dict = PyDict_New();
-        PyDict_SetItemString(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
-        PyDict_SetItemString(dict, "surface_id", PyLong_FromLong(c.surface_id));
+        dict_set_new(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
+        dict_set_new(dict, "surface_id", PyLong_FromLong(c.surface_id));
 
         switch (c.type) {
             case ALEA_CURVE_LINE:
             case ALEA_CURVE_LINE_SEGMENT:
-                PyDict_SetItemString(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
+                dict_set_new(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
                 break;
             case ALEA_CURVE_CIRCLE:
             case ALEA_CURVE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
-                PyDict_SetItemString(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
+                dict_set_new(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
                 break;
             case ALEA_CURVE_ELLIPSE:
             case ALEA_CURVE_ELLIPSE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
-                PyDict_SetItemString(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
-                PyDict_SetItemString(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
-                PyDict_SetItemString(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
+                dict_set_new(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
+                dict_set_new(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
+                dict_set_new(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
                 break;
             case ALEA_CURVE_POLYGON: {
                 PyObject* verts = PyList_New(c.data.polygon.count);
@@ -619,14 +618,14 @@ static PyObject* PyAleaSystem_get_slice_curves_y(PyAleaSystemObject* self, PyObj
                     PyList_SET_ITEM(verts, j, Py_BuildValue("(dd)",
                         c.data.polygon.vertices[j][0], c.data.polygon.vertices[j][1]));
                 }
-                PyDict_SetItemString(dict, "vertices", verts);
-                PyDict_SetItemString(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
+                dict_set_new(dict, "vertices", verts);
+                dict_set_new(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
                 break;
             }
             case ALEA_CURVE_PARALLEL_LINES:
-                PyDict_SetItemString(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
-                PyDict_SetItemString(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
+                dict_set_new(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
+                dict_set_new(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
                 break;
             default:
                 break;
@@ -638,16 +637,16 @@ static PyObject* PyAleaSystem_get_slice_curves_y(PyAleaSystemObject* self, PyObj
     alea_slice_curves_bounds(curves, &u_min, &u_max, &v_min, &v_max);
 
     PyObject* result = PyDict_New();
-    PyDict_SetItemString(result, "curves", list);
-    PyDict_SetItemString(result, "u_min", PyFloat_FromDouble(u_min));
-    PyDict_SetItemString(result, "u_max", PyFloat_FromDouble(u_max));
-    PyDict_SetItemString(result, "v_min", PyFloat_FromDouble(v_min));
-    PyDict_SetItemString(result, "v_max", PyFloat_FromDouble(v_max));
+    dict_set_new(result, "curves", list);
+    dict_set_new(result, "u_min", PyFloat_FromDouble(u_min));
+    dict_set_new(result, "u_max", PyFloat_FromDouble(u_max));
+    dict_set_new(result, "v_min", PyFloat_FromDouble(v_min));
+    dict_set_new(result, "v_max", PyFloat_FromDouble(v_max));
     /* Viewport bounds for XZ plane (Y slice) */
-    PyDict_SetItemString(result, "x_min", PyFloat_FromDouble(x_min));
-    PyDict_SetItemString(result, "x_max", PyFloat_FromDouble(x_max));
-    PyDict_SetItemString(result, "z_min", PyFloat_FromDouble(z_min));
-    PyDict_SetItemString(result, "z_max", PyFloat_FromDouble(z_max));
+    dict_set_new(result, "x_min", PyFloat_FromDouble(x_min));
+    dict_set_new(result, "x_max", PyFloat_FromDouble(x_max));
+    dict_set_new(result, "z_min", PyFloat_FromDouble(z_min));
+    dict_set_new(result, "z_max", PyFloat_FromDouble(z_max));
     alea_slice_curves_free(curves);
     return result;
 }
@@ -683,26 +682,26 @@ static PyObject* PyAleaSystem_get_slice_curves_x(PyAleaSystemObject* self, PyObj
         alea_slice_curves_get(curves, i, &c);
 
         PyObject* dict = PyDict_New();
-        PyDict_SetItemString(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
-        PyDict_SetItemString(dict, "surface_id", PyLong_FromLong(c.surface_id));
+        dict_set_new(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
+        dict_set_new(dict, "surface_id", PyLong_FromLong(c.surface_id));
 
         switch (c.type) {
             case ALEA_CURVE_LINE:
             case ALEA_CURVE_LINE_SEGMENT:
-                PyDict_SetItemString(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
+                dict_set_new(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
                 break;
             case ALEA_CURVE_CIRCLE:
             case ALEA_CURVE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
-                PyDict_SetItemString(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
+                dict_set_new(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
                 break;
             case ALEA_CURVE_ELLIPSE:
             case ALEA_CURVE_ELLIPSE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
-                PyDict_SetItemString(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
-                PyDict_SetItemString(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
-                PyDict_SetItemString(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
+                dict_set_new(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
+                dict_set_new(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
+                dict_set_new(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
                 break;
             case ALEA_CURVE_POLYGON: {
                 PyObject* verts = PyList_New(c.data.polygon.count);
@@ -710,14 +709,14 @@ static PyObject* PyAleaSystem_get_slice_curves_x(PyAleaSystemObject* self, PyObj
                     PyList_SET_ITEM(verts, j, Py_BuildValue("(dd)",
                         c.data.polygon.vertices[j][0], c.data.polygon.vertices[j][1]));
                 }
-                PyDict_SetItemString(dict, "vertices", verts);
-                PyDict_SetItemString(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
+                dict_set_new(dict, "vertices", verts);
+                dict_set_new(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
                 break;
             }
             case ALEA_CURVE_PARALLEL_LINES:
-                PyDict_SetItemString(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
-                PyDict_SetItemString(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
+                dict_set_new(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
+                dict_set_new(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
                 break;
             default:
                 break;
@@ -729,16 +728,16 @@ static PyObject* PyAleaSystem_get_slice_curves_x(PyAleaSystemObject* self, PyObj
     alea_slice_curves_bounds(curves, &u_min, &u_max, &v_min, &v_max);
 
     PyObject* result = PyDict_New();
-    PyDict_SetItemString(result, "curves", list);
-    PyDict_SetItemString(result, "u_min", PyFloat_FromDouble(u_min));
-    PyDict_SetItemString(result, "u_max", PyFloat_FromDouble(u_max));
-    PyDict_SetItemString(result, "v_min", PyFloat_FromDouble(v_min));
-    PyDict_SetItemString(result, "v_max", PyFloat_FromDouble(v_max));
+    dict_set_new(result, "curves", list);
+    dict_set_new(result, "u_min", PyFloat_FromDouble(u_min));
+    dict_set_new(result, "u_max", PyFloat_FromDouble(u_max));
+    dict_set_new(result, "v_min", PyFloat_FromDouble(v_min));
+    dict_set_new(result, "v_max", PyFloat_FromDouble(v_max));
     /* Viewport bounds for YZ plane (X slice) */
-    PyDict_SetItemString(result, "y_min", PyFloat_FromDouble(y_min));
-    PyDict_SetItemString(result, "y_max", PyFloat_FromDouble(y_max));
-    PyDict_SetItemString(result, "z_min", PyFloat_FromDouble(z_min));
-    PyDict_SetItemString(result, "z_max", PyFloat_FromDouble(z_max));
+    dict_set_new(result, "y_min", PyFloat_FromDouble(y_min));
+    dict_set_new(result, "y_max", PyFloat_FromDouble(y_max));
+    dict_set_new(result, "z_min", PyFloat_FromDouble(z_min));
+    dict_set_new(result, "z_max", PyFloat_FromDouble(z_max));
     alea_slice_curves_free(curves);
     return result;
 }
@@ -799,33 +798,33 @@ static PyObject* PyAleaSystem_get_slice_curves(PyAleaSystemObject* self, PyObjec
         alea_slice_curves_get(curves, i, &c);
 
         PyObject* dict = PyDict_New();
-        PyDict_SetItemString(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
-        PyDict_SetItemString(dict, "surface_id", PyLong_FromLong(c.surface_id));
+        dict_set_new(dict, "type", PyUnicode_FromString(curve_type_to_string(c.type)));
+        dict_set_new(dict, "surface_id", PyLong_FromLong(c.surface_id));
 
         switch (c.type) {
             case ALEA_CURVE_LINE:
             case ALEA_CURVE_LINE_SEGMENT:
-                PyDict_SetItemString(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
+                dict_set_new(dict, "point", Py_BuildValue("(dd)", c.data.line.point[0], c.data.line.point[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.line.direction[0], c.data.line.direction[1]));
                 break;
             case ALEA_CURVE_CIRCLE:
             case ALEA_CURVE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
-                PyDict_SetItemString(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.circle.center[0], c.data.circle.center[1]));
+                dict_set_new(dict, "radius", PyFloat_FromDouble(c.data.circle.radius));
                 if (c.type == ALEA_CURVE_ARC) {
-                    PyDict_SetItemString(dict, "theta_start", PyFloat_FromDouble(c.t_min));
-                    PyDict_SetItemString(dict, "theta_end", PyFloat_FromDouble(c.t_max));
+                    dict_set_new(dict, "theta_start", PyFloat_FromDouble(c.t_min));
+                    dict_set_new(dict, "theta_end", PyFloat_FromDouble(c.t_max));
                 }
                 break;
             case ALEA_CURVE_ELLIPSE:
             case ALEA_CURVE_ELLIPSE_ARC:
-                PyDict_SetItemString(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
-                PyDict_SetItemString(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
-                PyDict_SetItemString(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
-                PyDict_SetItemString(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
+                dict_set_new(dict, "center", Py_BuildValue("(dd)", c.data.ellipse.center[0], c.data.ellipse.center[1]));
+                dict_set_new(dict, "semi_a", PyFloat_FromDouble(c.data.ellipse.semi_a));
+                dict_set_new(dict, "semi_b", PyFloat_FromDouble(c.data.ellipse.semi_b));
+                dict_set_new(dict, "angle", PyFloat_FromDouble(c.data.ellipse.angle));
                 if (c.type == ALEA_CURVE_ELLIPSE_ARC) {
-                    PyDict_SetItemString(dict, "theta_start", PyFloat_FromDouble(c.t_min));
-                    PyDict_SetItemString(dict, "theta_end", PyFloat_FromDouble(c.t_max));
+                    dict_set_new(dict, "theta_start", PyFloat_FromDouble(c.t_min));
+                    dict_set_new(dict, "theta_end", PyFloat_FromDouble(c.t_max));
                 }
                 break;
             case ALEA_CURVE_POLYGON: {
@@ -834,14 +833,14 @@ static PyObject* PyAleaSystem_get_slice_curves(PyAleaSystemObject* self, PyObjec
                     PyList_SET_ITEM(verts, j, Py_BuildValue("(dd)",
                         c.data.polygon.vertices[j][0], c.data.polygon.vertices[j][1]));
                 }
-                PyDict_SetItemString(dict, "vertices", verts);
-                PyDict_SetItemString(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
+                dict_set_new(dict, "vertices", verts);
+                dict_set_new(dict, "closed", PyBool_FromLong(c.data.polygon.closed));
                 break;
             }
             case ALEA_CURVE_PARALLEL_LINES:
-                PyDict_SetItemString(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
-                PyDict_SetItemString(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
-                PyDict_SetItemString(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
+                dict_set_new(dict, "point1", Py_BuildValue("(dd)", c.data.parallel_lines.point1[0], c.data.parallel_lines.point1[1]));
+                dict_set_new(dict, "point2", Py_BuildValue("(dd)", c.data.parallel_lines.point2[0], c.data.parallel_lines.point2[1]));
+                dict_set_new(dict, "direction", Py_BuildValue("(dd)", c.data.parallel_lines.direction[0], c.data.parallel_lines.direction[1]));
                 break;
             default:
                 break;
@@ -853,16 +852,16 @@ static PyObject* PyAleaSystem_get_slice_curves(PyAleaSystemObject* self, PyObjec
     alea_slice_curves_bounds(curves, &cu_min, &cu_max, &cv_min, &cv_max);
 
     PyObject* result = PyDict_New();
-    PyDict_SetItemString(result, "curves", list);
-    PyDict_SetItemString(result, "u_min", PyFloat_FromDouble(cu_min));
-    PyDict_SetItemString(result, "u_max", PyFloat_FromDouble(cu_max));
-    PyDict_SetItemString(result, "v_min", PyFloat_FromDouble(cv_min));
-    PyDict_SetItemString(result, "v_max", PyFloat_FromDouble(cv_max));
+    dict_set_new(result, "curves", list);
+    dict_set_new(result, "u_min", PyFloat_FromDouble(cu_min));
+    dict_set_new(result, "u_max", PyFloat_FromDouble(cu_max));
+    dict_set_new(result, "v_min", PyFloat_FromDouble(cv_min));
+    dict_set_new(result, "v_max", PyFloat_FromDouble(cv_max));
     /* Viewport bounds */
-    PyDict_SetItemString(result, "view_u_min", PyFloat_FromDouble(u_min));
-    PyDict_SetItemString(result, "view_u_max", PyFloat_FromDouble(u_max));
-    PyDict_SetItemString(result, "view_v_min", PyFloat_FromDouble(v_min));
-    PyDict_SetItemString(result, "view_v_max", PyFloat_FromDouble(v_max));
+    dict_set_new(result, "view_u_min", PyFloat_FromDouble(u_min));
+    dict_set_new(result, "view_u_max", PyFloat_FromDouble(u_max));
+    dict_set_new(result, "view_v_min", PyFloat_FromDouble(v_min));
+    dict_set_new(result, "view_v_max", PyFloat_FromDouble(v_max));
 
     alea_slice_curves_free(curves);
     return result;
@@ -1031,6 +1030,12 @@ static PyObject* PyAleaSystem_find_cells_grid(PyAleaSystemObject* self, PyObject
     }
 
     PyObject* result = PyDict_New();
+    if (!result) {
+        Py_XDECREF(cell_list); Py_XDECREF(mat_list); Py_XDECREF(error_list);
+        Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+        Py_XDECREF(component_list); Py_XDECREF(error_lines_list);
+        return NULL;
+    }
     PyDict_SetItemString(result, "cell_ids", cell_list);
     PyDict_SetItemString(result, "material_ids", mat_list);
     if (error_list) {
@@ -1049,13 +1054,17 @@ static PyObject* PyAleaSystem_find_cells_grid(PyAleaSystemObject* self, PyObject
         PyDict_SetItemString(result, "error_lines", error_lines_list);
         Py_DECREF(error_lines_list);
     }
-    PyDict_SetItemString(result, "nu", PyLong_FromLong(nu));
-    PyDict_SetItemString(result, "nv", PyLong_FromLong(nv));
-    PyDict_SetItemString(result, "u_min", PyFloat_FromDouble(u_min));
-    PyDict_SetItemString(result, "u_max", PyFloat_FromDouble(u_max));
-    PyDict_SetItemString(result, "v_min", PyFloat_FromDouble(v_min));
-    PyDict_SetItemString(result, "v_max", PyFloat_FromDouble(v_max));
-    PyDict_SetItemString(result, "universe_depth", PyLong_FromLong(universe_depth));
+    dict_set_new(result, "nu", PyLong_FromLong(nu));
+    dict_set_new(result, "nv", PyLong_FromLong(nv));
+    dict_set_new(result, "u_min", PyFloat_FromDouble(u_min));
+    dict_set_new(result, "u_max", PyFloat_FromDouble(u_max));
+    dict_set_new(result, "v_min", PyFloat_FromDouble(v_min));
+    dict_set_new(result, "v_max", PyFloat_FromDouble(v_max));
+    dict_set_new(result, "universe_depth", PyLong_FromLong(universe_depth));
+
+    Py_DECREF(cell_list); Py_DECREF(mat_list); Py_XDECREF(error_list);
+    Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+    Py_XDECREF(component_list);
 
     return result;
 }
@@ -1200,6 +1209,12 @@ static PyObject* PyAleaSystem_find_cells_grid_z(PyAleaSystemObject* self, PyObje
     }
 
     PyObject* result = PyDict_New();
+    if (!result) {
+        Py_XDECREF(cell_list); Py_XDECREF(mat_list); Py_XDECREF(error_list);
+        Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+        Py_XDECREF(component_list); Py_XDECREF(error_lines_list);
+        return NULL;
+    }
     PyDict_SetItemString(result, "cell_ids", cell_list);
     PyDict_SetItemString(result, "material_ids", mat_list);
     if (error_list) {
@@ -1218,13 +1233,17 @@ static PyObject* PyAleaSystem_find_cells_grid_z(PyAleaSystemObject* self, PyObje
         PyDict_SetItemString(result, "error_lines", error_lines_list);
         Py_DECREF(error_lines_list);
     }
-    PyDict_SetItemString(result, "nx", PyLong_FromLong(nx));
-    PyDict_SetItemString(result, "ny", PyLong_FromLong(ny));
-    PyDict_SetItemString(result, "x_min", PyFloat_FromDouble(x_min));
-    PyDict_SetItemString(result, "x_max", PyFloat_FromDouble(x_max));
-    PyDict_SetItemString(result, "y_min", PyFloat_FromDouble(y_min));
-    PyDict_SetItemString(result, "y_max", PyFloat_FromDouble(y_max));
-    PyDict_SetItemString(result, "universe_depth", PyLong_FromLong(universe_depth));
+    dict_set_new(result, "nx", PyLong_FromLong(nx));
+    dict_set_new(result, "ny", PyLong_FromLong(ny));
+    dict_set_new(result, "x_min", PyFloat_FromDouble(x_min));
+    dict_set_new(result, "x_max", PyFloat_FromDouble(x_max));
+    dict_set_new(result, "y_min", PyFloat_FromDouble(y_min));
+    dict_set_new(result, "y_max", PyFloat_FromDouble(y_max));
+    dict_set_new(result, "universe_depth", PyLong_FromLong(universe_depth));
+
+    Py_DECREF(cell_list); Py_DECREF(mat_list); Py_XDECREF(error_list);
+    Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+    Py_XDECREF(component_list);
 
     return result;
 }
@@ -1350,6 +1369,12 @@ static PyObject* PyAleaSystem_find_cells_grid_y(PyAleaSystemObject* self, PyObje
     }
 
     PyObject* result = PyDict_New();
+    if (!result) {
+        Py_XDECREF(cell_list); Py_XDECREF(mat_list); Py_XDECREF(error_list);
+        Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+        Py_XDECREF(component_list); Py_XDECREF(error_lines_list);
+        return NULL;
+    }
     PyDict_SetItemString(result, "cell_ids", cell_list);
     PyDict_SetItemString(result, "material_ids", mat_list);
     if (error_list) {
@@ -1368,13 +1393,17 @@ static PyObject* PyAleaSystem_find_cells_grid_y(PyAleaSystemObject* self, PyObje
         PyDict_SetItemString(result, "error_lines", error_lines_list);
         Py_DECREF(error_lines_list);
     }
-    PyDict_SetItemString(result, "nx", PyLong_FromLong(nx));
-    PyDict_SetItemString(result, "nz", PyLong_FromLong(nz));
-    PyDict_SetItemString(result, "x_min", PyFloat_FromDouble(x_min));
-    PyDict_SetItemString(result, "x_max", PyFloat_FromDouble(x_max));
-    PyDict_SetItemString(result, "z_min", PyFloat_FromDouble(z_min));
-    PyDict_SetItemString(result, "z_max", PyFloat_FromDouble(z_max));
-    PyDict_SetItemString(result, "universe_depth", PyLong_FromLong(universe_depth));
+    dict_set_new(result, "nx", PyLong_FromLong(nx));
+    dict_set_new(result, "nz", PyLong_FromLong(nz));
+    dict_set_new(result, "x_min", PyFloat_FromDouble(x_min));
+    dict_set_new(result, "x_max", PyFloat_FromDouble(x_max));
+    dict_set_new(result, "z_min", PyFloat_FromDouble(z_min));
+    dict_set_new(result, "z_max", PyFloat_FromDouble(z_max));
+    dict_set_new(result, "universe_depth", PyLong_FromLong(universe_depth));
+
+    Py_DECREF(cell_list); Py_DECREF(mat_list); Py_XDECREF(error_list);
+    Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+    Py_XDECREF(component_list);
 
     return result;
 }
@@ -1500,6 +1529,12 @@ static PyObject* PyAleaSystem_find_cells_grid_x(PyAleaSystemObject* self, PyObje
     }
 
     PyObject* result = PyDict_New();
+    if (!result) {
+        Py_XDECREF(cell_list); Py_XDECREF(mat_list); Py_XDECREF(error_list);
+        Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+        Py_XDECREF(component_list); Py_XDECREF(error_lines_list);
+        return NULL;
+    }
     PyDict_SetItemString(result, "cell_ids", cell_list);
     PyDict_SetItemString(result, "material_ids", mat_list);
     if (error_list) {
@@ -1518,13 +1553,17 @@ static PyObject* PyAleaSystem_find_cells_grid_x(PyAleaSystemObject* self, PyObje
         PyDict_SetItemString(result, "error_lines", error_lines_list);
         Py_DECREF(error_lines_list);
     }
-    PyDict_SetItemString(result, "ny", PyLong_FromLong(ny));
-    PyDict_SetItemString(result, "nz", PyLong_FromLong(nz));
-    PyDict_SetItemString(result, "y_min", PyFloat_FromDouble(y_min));
-    PyDict_SetItemString(result, "y_max", PyFloat_FromDouble(y_max));
-    PyDict_SetItemString(result, "z_min", PyFloat_FromDouble(z_min));
-    PyDict_SetItemString(result, "z_max", PyFloat_FromDouble(z_max));
-    PyDict_SetItemString(result, "universe_depth", PyLong_FromLong(universe_depth));
+    dict_set_new(result, "ny", PyLong_FromLong(ny));
+    dict_set_new(result, "nz", PyLong_FromLong(nz));
+    dict_set_new(result, "y_min", PyFloat_FromDouble(y_min));
+    dict_set_new(result, "y_max", PyFloat_FromDouble(y_max));
+    dict_set_new(result, "z_min", PyFloat_FromDouble(z_min));
+    dict_set_new(result, "z_max", PyFloat_FromDouble(z_max));
+    dict_set_new(result, "universe_depth", PyLong_FromLong(universe_depth));
+
+    Py_DECREF(cell_list); Py_DECREF(mat_list); Py_XDECREF(error_list);
+    Py_XDECREF(coverage_list); Py_XDECREF(secondary_list);
+    Py_XDECREF(component_list);
 
     return result;
 }
@@ -1568,10 +1607,10 @@ static PyObject* PyAleaSystem_find_label_positions(PyAleaSystemObject* self, PyO
     PyObject* result = PyList_New(count);
     for (int i = 0; i < count; i++) {
         PyObject* label_dict = PyDict_New();
-        PyDict_SetItemString(label_dict, "id", PyLong_FromLong(labels[i].id));
-        PyDict_SetItemString(label_dict, "px", PyLong_FromLong(labels[i].px));
-        PyDict_SetItemString(label_dict, "py", PyLong_FromLong(labels[i].py));
-        PyDict_SetItemString(label_dict, "pixel_count", PyLong_FromLong(labels[i].pixel_count));
+        dict_set_new(label_dict, "id", PyLong_FromLong(labels[i].id));
+        dict_set_new(label_dict, "px", PyLong_FromLong(labels[i].px));
+        dict_set_new(label_dict, "py", PyLong_FromLong(labels[i].py));
+        dict_set_new(label_dict, "pixel_count", PyLong_FromLong(labels[i].pixel_count));
         PyList_SET_ITEM(result, i, label_dict);
     }
 
@@ -2131,9 +2170,9 @@ static PyObject* PyAleaSystem_find_surface_label_positions(PyAleaSystemObject* s
     PyObject* result = PyList_New(count);
     for (int i = 0; i < count; i++) {
         PyObject* d = PyDict_New();
-        PyDict_SetItemString(d, "id", PyLong_FromLong(labels[i].id));
-        PyDict_SetItemString(d, "px", PyLong_FromLong(labels[i].px));
-        PyDict_SetItemString(d, "py", PyLong_FromLong(labels[i].py));
+        dict_set_new(d, "id", PyLong_FromLong(labels[i].id));
+        dict_set_new(d, "px", PyLong_FromLong(labels[i].px));
+        dict_set_new(d, "py", PyLong_FromLong(labels[i].py));
         if (labels[i].provenance_group >= 0) {
             PyObject* key = PyUnicode_FromFormat(
                 "%d:%d:%d:%d", labels[i].provenance_orientation,
@@ -2238,10 +2277,10 @@ static PyObject* PyAleaSystem_find_surface_labels_on_boundary_map(
     }
     for (int i = 0; i < count; i++) {
         PyObject* d = PyDict_New();
-        PyDict_SetItemString(d, "id", PyLong_FromLong(labels[i].id));
-        PyDict_SetItemString(d, "px", PyLong_FromLong(labels[i].px));
-        PyDict_SetItemString(d, "py", PyLong_FromLong(labels[i].py));
-        PyDict_SetItemString(d, "edge_count", PyLong_FromLong(labels[i].pixel_count));
+        dict_set_new(d, "id", PyLong_FromLong(labels[i].id));
+        dict_set_new(d, "px", PyLong_FromLong(labels[i].px));
+        dict_set_new(d, "py", PyLong_FromLong(labels[i].py));
+        dict_set_new(d, "edge_count", PyLong_FromLong(labels[i].pixel_count));
         /* Only an explicit physical crossing group may request presentation
          * stacking.  Sharing the integer label pixel is insufficient: two
          * distinct dense contours can quantize there independently. */
@@ -2378,10 +2417,10 @@ static PyObject* PyAleaSystem_find_surface_labels_sparse_on_grid(
             free(labels);
             return NULL;
         }
-        PyDict_SetItemString(d, "id", PyLong_FromLong(labels[i].id));
-        PyDict_SetItemString(d, "px", PyLong_FromLong(labels[i].px));
-        PyDict_SetItemString(d, "py", PyLong_FromLong(labels[i].py));
-        PyDict_SetItemString(d, "edge_count",
+        dict_set_new(d, "id", PyLong_FromLong(labels[i].id));
+        dict_set_new(d, "px", PyLong_FromLong(labels[i].px));
+        dict_set_new(d, "py", PyLong_FromLong(labels[i].py));
+        dict_set_new(d, "edge_count",
                              PyLong_FromLong(labels[i].pixel_count));
         if (labels[i].provenance_group >= 0) {
             PyObject* key = PyUnicode_FromFormat(

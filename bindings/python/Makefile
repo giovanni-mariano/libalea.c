@@ -41,7 +41,7 @@ else
 MODULE_LDFLAGS := -shared -Wl,--whole-archive $(LIBALEA) -Wl,--no-whole-archive -lm -pthread
 endif
 
-.PHONY: all clean help package test test-runtime FORCE
+.PHONY: all clean help package test test-runtime test-valgrind FORCE
 
 all: $(MODULE)
 
@@ -69,6 +69,13 @@ test-runtime:
 	@test -f "$(MODULE)" || { echo "Missing prebuilt extension: $(MODULE)"; exit 1; }
 	PYTHONPATH=$(PACKAGE_ROOT) $(PYTHON) -m pytest -p no:cacheprovider tests -v
 
+test-valgrind: all
+	PYTHONPATH=$(PACKAGE_ROOT) PYTHONMALLOC=malloc valgrind \
+		--leak-check=full --show-leak-kinds=definite --num-callers=30 \
+		--log-file=$(BUILD_ROOT)/valgrind.log \
+		$(PYTHON) tests/leak_probe.py
+	$(PYTHON) scripts/check_valgrind.py $(BUILD_ROOT)/valgrind.log
+
 package: test
 	$(PYTHON) scripts/package.py \
 		--package-dir $(PACKAGE_DIR) --output-dir $(DIST_DIR) --root $(ROOT) \
@@ -83,6 +90,7 @@ help:
 	@echo "  make                 Build pyalea._alea for PYTHON"
 	@echo "  make test            Run standalone binding tests"
 	@echo "  make test-runtime    Test the existing binary without rebuilding"
+	@echo "  make test-valgrind   Check repeated binding calls for native leaks"
 	@echo "  make package         Create a release archive and checksum"
 	@echo "  make clean           Remove bindings/python build outputs"
 	@echo "Variables: PYTHON, CC, BUILD_ROOT, DIST_DIR, BINDING_CFLAGS"

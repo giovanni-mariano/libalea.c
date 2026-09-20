@@ -244,8 +244,14 @@ jobs:
       - name: Install binding build dependency
         run: python -m pip install "numpy>=2.0,<3" pytest
 
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
       - name: Build, test, and package pyAlea
         run: make -C bindings/python package PYTHON=python
+
+      - name: Check pyAlea native ownership under Valgrind
+        run: make -C bindings/python test-valgrind PYTHON=python
 
       - name: Test the extracted release archive
         run: |

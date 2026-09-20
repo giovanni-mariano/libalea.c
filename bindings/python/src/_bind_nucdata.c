@@ -48,7 +48,7 @@ static PyObject* PyAleaXsDir_entry_dict(
         "temperature", entry->temperature);
 }
 
-static void PyAleaXsDir_dealloc(PyAleaXsDirObject* self) {
+static void PyAleaXsDir_clear(PyAleaXsDirObject* self) {
     while (self->photon_audits) {
         PyAleaPhotonAuditCacheEntry* next = self->photon_audits->next;
         free(self->photon_audits);
@@ -56,7 +56,12 @@ static void PyAleaXsDir_dealloc(PyAleaXsDirObject* self) {
     }
     if (self->xsdir) {
         alea_nuc_xsdir_free(self->xsdir);
+        self->xsdir = NULL;
     }
+}
+
+static void PyAleaXsDir_dealloc(PyAleaXsDirObject* self) {
+    PyAleaXsDir_clear(self);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -78,17 +83,23 @@ static int PyAleaXsDir_init(PyAleaXsDirObject* self, PyObject* args, PyObject* k
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "s|p", kwlist, &path, &directory))
         return -1;
 
-    if (directory) {
-        self->xsdir = alea_nuc_xsdir_load_dir(path);
-    } else {
-        self->xsdir = alea_nuc_xsdir_load(path);
+    /* Cached Nuclide objects borrow entries owned by this directory. Replacing
+     * it in place would invalidate those objects, so reject explicit re-init. */
+    if (self->xsdir) {
+        PyErr_SetString(PyExc_RuntimeError, "XsDir is already initialized");
+        return -1;
     }
 
-    if (!self->xsdir) {
+    alea_nuc_xsdir_t* xsdir = directory
+        ? alea_nuc_xsdir_load_dir(path)
+        : alea_nuc_xsdir_load(path);
+
+    if (!xsdir) {
         PyErr_Format(PyExc_IOError, "Failed to load xsdir from '%s'", path);
         return -1;
     }
 
+    self->xsdir = xsdir;
     return 0;
 }
 
@@ -255,27 +266,37 @@ static int PyAleaNuclide_init(PyAleaNuclideObject* self, PyObject* args, PyObjec
         return -1;
     }
 
+    alea_nuc_nuclide_t* nuc;
+    int owned;
+    PyObject* xsdir_ref = NULL;
     if (cached) {
         /* Borrowed from xsdir cache */
-        self->nuc = alea_nuc_xsdir_get_nuclide(xsdir_obj->xsdir, zaid);
-        if (!self->nuc) {
+        nuc = alea_nuc_xsdir_get_nuclide(xsdir_obj->xsdir, zaid);
+        if (!nuc) {
             PyErr_Format(PyExc_ValueError, "Failed to load nuclide '%s'", zaid);
             return -1;
         }
-        self->owned = 0;
-        self->xsdir_ref = (PyObject*)xsdir_obj;
-        Py_INCREF(self->xsdir_ref);
+        owned = 0;
+        xsdir_ref = (PyObject*)xsdir_obj;
+        Py_INCREF(xsdir_ref);
     } else {
         /* Owned copy */
-        self->nuc = alea_nuc_load_nuclide(xsdir_obj->xsdir, zaid);
-        if (!self->nuc) {
+        nuc = alea_nuc_load_nuclide(xsdir_obj->xsdir, zaid);
+        if (!nuc) {
             PyErr_Format(PyExc_ValueError, "Failed to load nuclide '%s'", zaid);
             return -1;
         }
-        self->owned = 1;
-        self->xsdir_ref = NULL;
+        owned = 1;
     }
 
+    if (self->nuc && self->owned) alea_nuc_nuclide_free(self->nuc);
+    Py_XDECREF(self->xsdir_ref);
+    self->nuc = nuc;
+    self->owned = owned;
+    self->xsdir_ref = xsdir_ref;
+    self->default_photon_audit_cached = 0;
+    self->default_photon_audit_error = ALEA_OK;
+    self->default_photon_audit = (alea_nuc_photon_production_audit_t){0};
     return 0;
 }
 
@@ -805,13 +826,21 @@ static int PyAleaThermal_init(PyAleaThermalObject* self, PyObject* args, PyObjec
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!s", kwlist,
                                      &PyAleaXsDirType, &xsdir_obj, &zaid))
         return -1;
-    self->thermal = alea_nuc_load_thermal(xsdir_obj->xsdir, zaid);
-    if (!self->thermal) {
+    if (!xsdir_obj->xsdir) {
+        PyErr_SetString(PyExc_RuntimeError, "XsDir not initialized");
+        return -1;
+    }
+    alea_nuc_thermal_t* thermal = alea_nuc_load_thermal(xsdir_obj->xsdir, zaid);
+    if (!thermal) {
         PyErr_Format(PyExc_ValueError, "Failed to load thermal scattering table '%s'", zaid);
         return -1;
     }
-    self->xsdir_ref = (PyObject*)xsdir_obj;
-    Py_INCREF(self->xsdir_ref);
+    PyObject* xsdir_ref = (PyObject*)xsdir_obj;
+    Py_INCREF(xsdir_ref);
+    if (self->thermal) alea_nuc_thermal_free(self->thermal);
+    Py_XDECREF(self->xsdir_ref);
+    self->thermal = thermal;
+    self->xsdir_ref = xsdir_ref;
     return 0;
 }
 
@@ -937,17 +966,20 @@ static PyObject* PyAleaNucMaterial_new(PyTypeObject* type, PyObject* args, PyObj
 
 static int PyAleaNucMaterial_init(PyAleaNucMaterialObject* self, PyObject* args, PyObject* kwds) {
     (void)args; (void)kwds;
-    self->mat = alea_nuc_material_create();
-    if (!self->mat) {
+    alea_nuc_material_t* mat = alea_nuc_material_create();
+    if (!mat) {
         PyErr_SetString(PyExc_MemoryError, "Failed to create nuclear material");
         return -1;
     }
-    self->refs = PyList_New(0);
-    if (!self->refs) {
-        alea_nuc_material_destroy(self->mat);
-        self->mat = NULL;
+    PyObject* refs = PyList_New(0);
+    if (!refs) {
+        alea_nuc_material_destroy(mat);
         return -1;
     }
+    if (self->mat) alea_nuc_material_destroy(self->mat);
+    Py_XDECREF(self->refs);
+    self->mat = mat;
+    self->refs = refs;
     return 0;
 }
 
@@ -1682,14 +1714,17 @@ static int PyAleaMultigroup_init(PyAleaMultigroupObject* self, PyObject* args, P
     Py_DECREF(bounds_seq);
 
     int n_groups = (int)(n - 1);
-    self->mg = alea_nuc_mg_create(n_groups, bounds);
+    alea_nuc_multigroup_t* mg = alea_nuc_mg_create(n_groups, bounds);
     free(bounds);
 
-    if (!self->mg) {
+    if (!mg) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to create multigroup structure");
         return -1;
     }
 
+    if (self->mg) alea_nuc_mg_destroy(self->mg);
+    Py_CLEAR(self->spectrum_callable);
+    self->mg = mg;
     return 0;
 }
 
@@ -1794,7 +1829,7 @@ static PyObject* PyAleaMultigroup_get_data(PyAleaMultigroupObject* self, PyObjec
 
     #undef MG_LIST
 
-    PyDict_SetItemString(result, "n_groups", PyLong_FromLong(ng));
+    dict_set_new(result, "n_groups", PyLong_FromLong(ng));
 
     return result;
 }

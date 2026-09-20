@@ -157,15 +157,6 @@ static const char* geom_source_name(alea_geom_event_source_t source) {
     }
 }
 
-/* Set a dict item to a new reference, decrementing the value afterwards.
- * Returns 0 on success, -1 on failure (caller should DECREF the dict). */
-static int dict_set_new(PyObject* d, const char* key, PyObject* value) {
-    if (!value) return -1;
-    int rc = PyDict_SetItemString(d, key, value);
-    Py_DECREF(value);
-    return rc;
-}
-
 static PyObject* build_error_dict(const alea_geom_error_t* e) {
     PyObject* flag_names = geom_flag_names(e->flags);
     if (!flag_names) return NULL;

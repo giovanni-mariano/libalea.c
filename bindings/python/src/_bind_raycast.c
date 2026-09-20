@@ -1708,9 +1708,8 @@ static PyObject* ray_slice_raster_array_from_owned_data(void* values,
         return NULL;
     }
     if (PyArray_SetBaseObject((PyArrayObject*)array, capsule) < 0) {
-        Py_DECREF(capsule);
+        /* PyArray_SetBaseObject steals the capsule reference even on error. */
         Py_DECREF(array);
-        free(values);
         return NULL;
     }
     return array;

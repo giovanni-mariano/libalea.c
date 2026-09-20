@@ -4,6 +4,7 @@
 
 import gc
 import json
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -93,6 +94,34 @@ def test_numpy_arrays_own_native_storage_after_system_destruction(populated_syst
     np.testing.assert_array_equal(cells, expected)
     cells[0] = 12345
     assert cells[0] == 12345
+
+
+def test_numpy_grid_releases_all_arrays_with_result(populated_system):
+    grid = populated_system.find_cells_grid_z(
+        0.0, -3.0, 3.0, -3.0, 3.0, 8, 6,
+        error_mode="fast", _as_buffers=True,
+    )
+    references = [weakref.ref(value) for value in grid.values()
+                  if isinstance(value, np.ndarray)]
+    assert references
+
+    del grid
+    gc.collect()
+
+    assert all(reference() is None for reference in references)
+
+
+def test_reinitializing_owned_types_replaces_native_state():
+    system = pyalea.System()
+    system.__init__()
+    assert system.cell_count == 0
+
+    material = pyalea.NucMaterial()
+    material.__init__()
+
+    multigroup = pyalea.Multigroup([10.0, 1.0, 0.1])
+    multigroup.__init__([20.0, 2.0])
+    assert multigroup.n_groups == 1
 
 
 def test_numpy_buffers_survive_repeated_allocation_and_collection():

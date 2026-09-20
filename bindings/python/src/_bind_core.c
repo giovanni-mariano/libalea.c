@@ -13,13 +13,20 @@
  * Type Lifecycle
  * ============================================================================ */
 
-static void PyAleaSystem_dealloc(PyAleaSystemObject* self) {
+static void PyAleaSystem_clear(PyAleaSystemObject* self) {
     int model_owns_sys = self->mcnp_model && self->mcnp_model->owns_sys;
     if (self->mcnp_model)
         mcnp_model_destroy(self->mcnp_model);
     if (self->sys && self->owns_sys && !model_owns_sys) {
         alea_destroy(self->sys);
     }
+    self->sys = NULL;
+    self->mcnp_model = NULL;
+    self->owns_sys = 1;
+}
+
+static void PyAleaSystem_dealloc(PyAleaSystemObject* self) {
+    PyAleaSystem_clear(self);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -40,11 +47,13 @@ static int PyAleaSystem_init(PyAleaSystemObject* self, PyObject* args, PyObject*
         return -1;
     }
 
-    self->sys = alea_create();
-    if (!self->sys) {
+    alea_system_t* sys = alea_create();
+    if (!sys) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to create CSG system");
         return -1;
     }
+    PyAleaSystem_clear(self);
+    self->sys = sys;
     self->owns_sys = 1;
     return 0;
 }

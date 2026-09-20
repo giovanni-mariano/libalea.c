@@ -100,6 +100,19 @@ typedef struct {
  * Shared Helpers
  * ============================================================================ */
 
+/* Set a dict item from a new reference and always release the caller's
+ * reference. PyDict_SetItemString() retains its own reference on success. */
+static int dict_set_new(PyObject* dict, const char* key, PyObject* value) {
+    if (!value) return -1;
+    if (!dict) {
+        Py_DECREF(value);
+        return -1;
+    }
+    int rc = PyDict_SetItemString(dict, key, value);
+    Py_DECREF(value);
+    return rc;
+}
+
 /* Helper: add lattice fields to an existing cell dict.
  * Only adds keys when lat_type != 0 to avoid clutter for non-lattice cells.
  * Returns 0 on success, -1 on failure (with Python exception set). */
@@ -107,7 +120,7 @@ static int add_lattice_fields(PyObject* dict, const alea_cell_info_t* info) {
     if (info->lat_type == 0)
         return 0;
 
-    if (PyDict_SetItemString(dict, "lat_type",
+    if (dict_set_new(dict, "lat_type",
             PyLong_FromLong(info->lat_type)) < 0)
         return -1;
 

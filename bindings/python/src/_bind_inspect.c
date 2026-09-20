@@ -1315,8 +1315,8 @@ static PyObject* PyAleaSystem_cell_surface_ids(
     }
     PyMem_Free(stack); PyMem_Free(seen);
     PyDict_SetItemString(result, "surface_ids", ids);
-    PyDict_SetItemString(result, "visited_nodes", PyLong_FromSsize_t(visited));
-    PyDict_SetItemString(result, "truncated", PyBool_FromLong(truncated));
+    dict_set_new(result, "visited_nodes", PyLong_FromSsize_t(visited));
+    dict_set_new(result, "truncated", PyBool_FromLong(truncated));
     Py_DECREF(ids);
     return result;
 }

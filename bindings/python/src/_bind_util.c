@@ -145,25 +145,25 @@ static PyObject* PyAleaSystem_get_config(PyAleaSystemObject* self, PyObject* Py_
     alea_config_t cfg = alea_get_config(self->sys);
 
     PyObject* dict = PyDict_New();
-    PyDict_SetItemString(dict, "abs_tol", PyFloat_FromDouble(cfg.abs_tol));
-    PyDict_SetItemString(dict, "rel_tol", PyFloat_FromDouble(cfg.rel_tol));
-    PyDict_SetItemString(dict, "zero_threshold", PyFloat_FromDouble(cfg.zero_threshold));
-    PyDict_SetItemString(dict, "dedup", PyBool_FromLong(cfg.dedup));
-    PyDict_SetItemString(dict, "log_level", PyLong_FromLong(cfg.log_level));
-    PyDict_SetItemString(dict, "export_materials", PyBool_FromLong(cfg.export_materials));
-    PyDict_SetItemString(dict, "export_transforms", PyBool_FromLong(cfg.export_transforms));
-    PyDict_SetItemString(dict, "universe_depth", PyLong_FromLong(cfg.universe_depth));
-    PyDict_SetItemString(dict, "fill_depth", PyLong_FromLong(cfg.fill_depth));
-    PyDict_SetItemString(dict, "void_max_depth", PyLong_FromLong(cfg.void_max_depth));
-    PyDict_SetItemString(dict, "void_min_size", PyFloat_FromDouble(cfg.void_min_size));
-    PyDict_SetItemString(dict, "void_probes_per_axis", PyLong_FromLong(cfg.void_probes_per_axis));
-    PyDict_SetItemString(dict, "merge_cell_weight", PyFloat_FromDouble(cfg.merge_cell_weight));
-    PyDict_SetItemString(dict, "merge_surface_weight", PyFloat_FromDouble(cfg.merge_surface_weight));
-    PyDict_SetItemString(dict, "merge_max_surfaces", PyLong_FromLong(cfg.merge_max_surfaces));
-    PyDict_SetItemString(dict, "merge_min_cells", PyLong_FromLong(cfg.merge_min_cells));
-    PyDict_SetItemString(dict, "merge_use_greedy", PyBool_FromLong(cfg.merge_use_greedy));
-    PyDict_SetItemString(dict, "void_consolidate", PyLong_FromLong(cfg.void_consolidate));
-    PyDict_SetItemString(dict, "flatten_max_depth", PyLong_FromLong(cfg.flatten_max_depth));
+    dict_set_new(dict, "abs_tol", PyFloat_FromDouble(cfg.abs_tol));
+    dict_set_new(dict, "rel_tol", PyFloat_FromDouble(cfg.rel_tol));
+    dict_set_new(dict, "zero_threshold", PyFloat_FromDouble(cfg.zero_threshold));
+    dict_set_new(dict, "dedup", PyBool_FromLong(cfg.dedup));
+    dict_set_new(dict, "log_level", PyLong_FromLong(cfg.log_level));
+    dict_set_new(dict, "export_materials", PyBool_FromLong(cfg.export_materials));
+    dict_set_new(dict, "export_transforms", PyBool_FromLong(cfg.export_transforms));
+    dict_set_new(dict, "universe_depth", PyLong_FromLong(cfg.universe_depth));
+    dict_set_new(dict, "fill_depth", PyLong_FromLong(cfg.fill_depth));
+    dict_set_new(dict, "void_max_depth", PyLong_FromLong(cfg.void_max_depth));
+    dict_set_new(dict, "void_min_size", PyFloat_FromDouble(cfg.void_min_size));
+    dict_set_new(dict, "void_probes_per_axis", PyLong_FromLong(cfg.void_probes_per_axis));
+    dict_set_new(dict, "merge_cell_weight", PyFloat_FromDouble(cfg.merge_cell_weight));
+    dict_set_new(dict, "merge_surface_weight", PyFloat_FromDouble(cfg.merge_surface_weight));
+    dict_set_new(dict, "merge_max_surfaces", PyLong_FromLong(cfg.merge_max_surfaces));
+    dict_set_new(dict, "merge_min_cells", PyLong_FromLong(cfg.merge_min_cells));
+    dict_set_new(dict, "merge_use_greedy", PyBool_FromLong(cfg.merge_use_greedy));
+    dict_set_new(dict, "void_consolidate", PyLong_FromLong(cfg.void_consolidate));
+    dict_set_new(dict, "flatten_max_depth", PyLong_FromLong(cfg.flatten_max_depth));
     return dict;
 }
 
