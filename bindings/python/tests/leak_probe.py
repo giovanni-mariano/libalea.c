@@ -21,6 +21,11 @@ def populated_system():
 for _ in range(250):
     system = populated_system()
     system.get_config()
+    assert system.add_transform(17, (1.0, 2.0, 3.0)) == 17
+    inline_id = system.add_inline_transform(
+        (1.0, 2.0, 3.0), cell_id=101, role="fill",
+    )
+    assert system.add_inline_transform((1.0, 2.0, 3.0)) == inline_id
     system.find_cells_grid_z(
         0.0, -3.0, 3.0, -3.0, 3.0, 16, 12,
         error_mode="fast", _as_buffers=True,

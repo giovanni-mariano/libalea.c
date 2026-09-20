@@ -215,6 +215,95 @@ static PyObject* PyAleaSystem_find_all_cells_coverage(
 }
 
 /* ============================================================================
+ * PyAleaSystem Methods - Transforms
+ * ============================================================================ */
+
+static int parse_transform_values(PyObject* object, double values[13],
+                                  int* value_count) {
+    PyObject* sequence = PySequence_Fast(
+        object, "values must be a sequence of MCNP transform values");
+    if (!sequence) return -1;
+
+    Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
+    if (count < 3 || count > 13) {
+        Py_DECREF(sequence);
+        PyErr_SetString(
+            PyExc_ValueError,
+            "values must contain between 3 and 13 MCNP transform values");
+        return -1;
+    }
+
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        values[i] = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(sequence, i));
+        if (PyErr_Occurred()) {
+            Py_DECREF(sequence);
+            return -1;
+        }
+    }
+    Py_DECREF(sequence);
+    *value_count = (int)count;
+    return 0;
+}
+
+static PyObject* PyAleaSystem_add_transform(
+        PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    int transform_id;
+    PyObject* values_object;
+    int degrees = 0;
+    static char* kwlist[] = {
+        "transform_id", "values", "degrees", NULL
+    };
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iO|p", kwlist,
+                                     &transform_id, &values_object, &degrees))
+        return NULL;
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+
+    double values[13];
+    int value_count;
+    if (parse_transform_values(values_object, values, &value_count) < 0)
+        return NULL;
+    if (alea_add_transform(self->sys, transform_id, values,
+                           value_count, degrees) != 0) {
+        PyErr_SetString(PyExc_ValueError, alea_error());
+        return NULL;
+    }
+    return PyLong_FromLong(transform_id);
+}
+
+static PyObject* PyAleaSystem_add_inline_transform(
+        PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    PyObject* values_object;
+    int degrees = 0;
+    int cell_id = 0;
+    const char* role = "fill";
+    static char* kwlist[] = {
+        "values", "degrees", "cell_id", "role", NULL
+    };
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|piz", kwlist,
+                                     &values_object, &degrees, &cell_id, &role))
+        return NULL;
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+
+    double values[13];
+    int value_count;
+    if (parse_transform_values(values_object, values, &value_count) < 0)
+        return NULL;
+    int transform_id = alea_add_inline_transform(
+        self->sys, values, value_count, degrees, cell_id, role);
+    if (transform_id < 0) {
+        PyErr_SetString(PyExc_ValueError, alea_error());
+        return NULL;
+    }
+    return PyLong_FromLong(transform_id);
+}
+
+/* ============================================================================
  * PyAleaSystem Methods - Set Fill
  * ============================================================================ */
 

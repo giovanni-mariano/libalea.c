@@ -839,6 +839,16 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "Returns: Assigned material ID"},
 
     /* Cell fill / ID operations */
+    {"add_transform", (PyCFunction)PyAleaSystem_add_transform,
+     METH_VARARGS | METH_KEYWORDS,
+     "add_transform(transform_id, values, degrees=False) -> int\n\n"
+     "Add or replace a named MCNP transform and return transform_id. "
+     "values accepts a translation or full/partial MCNP transform sequence."},
+    {"add_inline_transform", (PyCFunction)PyAleaSystem_add_inline_transform,
+     METH_VARARGS | METH_KEYWORDS,
+     "add_inline_transform(values, degrees=False, cell_id=0, role='fill') -> int\n\n"
+     "Add a deduplicated inline MCNP transform and return its assigned ID. "
+     "cell_id and role provide diagnostic source context."},
     {"set_fill", (PyCFunction)PyAleaSystem_set_fill, METH_VARARGS,
      "set_fill(cell_index, fill_universe, transform=0)\n\nSet fill universe for a cell."},
     {"set_comment", (PyCFunction)PyAleaSystem_set_comment, METH_VARARGS,

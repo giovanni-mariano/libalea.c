@@ -124,6 +124,58 @@ def test_reinitializing_owned_types_replaces_native_state():
     assert multigroup.n_groups == 1
 
 
+def transformed_fill_system(transform_factory):
+    system = pyalea.System()
+    _, _, sphere = system.sphere_surface(1, 0.0, 0.0, 0.0, 1.5)
+    _, _, container_region = system.box_surface(
+        2, -50.0, 50.0, -50.0, 50.0, -50.0, 50.0,
+    )
+    material = system.add_material(7)
+    system.add_cell(10, sphere, material, -1.0, universe_id=1)
+    container = system.add_cell(1, container_region)
+    transform_id = transform_factory(system)
+    system.set_fill(container, 1, transform_id)
+    system.build_universe_index()
+    return system, transform_id
+
+
+def test_named_transform_positions_programmatic_fill():
+    system, transform_id = transformed_fill_system(
+        lambda system: system.add_transform(41, (10.0, 0.0, 0.0)),
+    )
+
+    assert transform_id == 41
+    assert system.material_at(10.0, 0.0, 0.0) == 7
+
+    assert system.add_transform(41, (-10.0, 0.0, 0.0)) == 41
+    assert system.material_at(-10.0, 0.0, 0.0) == 7
+
+
+def test_inline_transform_deduplicates_and_positions_programmatic_fill():
+    def add_inline(system):
+        first = system.add_inline_transform(
+            (10.0, 0.0, 0.0), cell_id=1, role="fill",
+        )
+        duplicate = system.add_inline_transform(
+            (10.0, 0.0, 0.0), cell_id=2, role="fill",
+        )
+        assert duplicate == first
+        return first
+
+    system, transform_id = transformed_fill_system(add_inline)
+
+    assert transform_id > 0
+    assert system.material_at(10.0, 0.0, 0.0) == 7
+
+
+def test_transform_values_are_validated():
+    system = pyalea.System()
+    with pytest.raises(ValueError, match="between 3 and 13"):
+        system.add_transform(1, (1.0, 2.0))
+    with pytest.raises(ValueError, match="rotation"):
+        system.add_inline_transform((0.0, 0.0, 0.0, 0.5))
+
+
 def test_numpy_buffers_survive_repeated_allocation_and_collection():
     retained = []
     for size in range(2, 10):

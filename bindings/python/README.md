@@ -27,6 +27,25 @@ Consumers should currently declare `numpy>=1.26.4,<3`; Python's package
 resolver will select a newer NumPy where an older release does not support that
 Python version.
 
+## Programmatic fill transforms
+
+Named and inline transforms are separate because named transforms replace a
+caller-selected ID, while inline transforms are deduplicated and receive an
+automatically assigned ID. Both return the ID accepted by `System.set_fill()`:
+
+```python
+transform_id = system.add_transform(10, (5.0, 0.0, 0.0))
+system.set_fill(cell_index, universe_id, transform=transform_id)
+
+inline_id = system.add_inline_transform(
+    (5.0, 0.0, 0.0), cell_id=cell_id, role="fill"
+)
+```
+
+Set `degrees=True` when rotation entries are MCNP angles instead of direction
+cosines. Transform sequences use the MCNP displacement, optional rotation, and
+optional trailing direction flag accepted by libalea.
+
 ## Unix development build
 
 Install NumPy and pytest for the selected interpreter, then run:
