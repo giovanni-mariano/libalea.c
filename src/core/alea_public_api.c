@@ -20,6 +20,7 @@
 #include "core/alea_spatial_hier.h"
 #include "core/alea_simplify.h"
 #include "primitives/primitive_create.h"
+#include "primitives/primitive_eval.h"
 #include "primitives/bbox.h"
 #include "util/alea_log.h"
 #include "util/alea_parallel.h"
@@ -40,6 +41,188 @@
     STRINGIFY(ALEA_VERSION_MAJOR) "." \
     STRINGIFY(ALEA_VERSION_MINOR) "." \
     STRINGIFY(ALEA_VERSION_PATCH)
+
+static double vec3_norm_sq(double x, double y, double z) {
+    return x*x + y*y + z*z;
+}
+
+static int finite_values(const double* values, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        if (!isfinite(values[i])) return 0;
+    return 1;
+}
+
+static int perpendicular_vectors(const double a[3], const double b[3]) {
+    const double aa = vec3_norm_sq(a[0], a[1], a[2]);
+    const double bb = vec3_norm_sq(b[0], b[1], b[2]);
+    const double dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    return aa > 0.0 && bb > 0.0 && fabs(dot) <= 1e-9 * sqrt(aa * bb);
+}
+
+static int primitive_data_valid(alea_primitive_type_t type,
+                                const alea_primitive_data_t* data) {
+    const double* values = (const double*)data;
+    size_t count = 0;
+    switch (type) {
+        case ALEA_PRIMITIVE_PLANE:
+            count = 4;
+            if (!finite_values(values, count)) return 0;
+            return vec3_norm_sq(data->plane.a, data->plane.b,
+                                data->plane.c) > 0.0;
+        case ALEA_PRIMITIVE_SPHERE:
+        case ALEA_PRIMITIVE_SPH:
+            count = 4;
+            if (!finite_values(values, count)) return 0;
+            return (type == ALEA_PRIMITIVE_SPHERE ? data->sphere.radius
+                                                   : data->sph.radius) > 0.0;
+        case ALEA_PRIMITIVE_CYLINDER_X:
+            count = 3;
+            return finite_values(values, count) && data->cyl_x.radius > 0.0;
+        case ALEA_PRIMITIVE_CYLINDER_Y:
+            count = 3;
+            return finite_values(values, count) && data->cyl_y.radius > 0.0;
+        case ALEA_PRIMITIVE_CYLINDER_Z:
+            count = 3;
+            return finite_values(values, count) && data->cyl_z.radius > 0.0;
+        case ALEA_PRIMITIVE_CONE_X:
+            count = 4;
+            return finite_values(values, count) &&
+                   data->cone_x.tan_angle_sq >= 0.0 &&
+                   data->cone_x.sheet_selection >= -1 &&
+                   data->cone_x.sheet_selection <= 1;
+        case ALEA_PRIMITIVE_CONE_Y:
+            count = 4;
+            return finite_values(values, count) &&
+                   data->cone_y.tan_angle_sq >= 0.0 &&
+                   data->cone_y.sheet_selection >= -1 &&
+                   data->cone_y.sheet_selection <= 1;
+        case ALEA_PRIMITIVE_CONE_Z:
+            count = 4;
+            return finite_values(values, count) &&
+                   data->cone_z.tan_angle_sq >= 0.0 &&
+                   data->cone_z.sheet_selection >= -1 &&
+                   data->cone_z.sheet_selection <= 1;
+        case ALEA_PRIMITIVE_RPP:
+            count = 6;
+            return finite_values(values, count) &&
+                   data->box.min_x < data->box.max_x &&
+                   data->box.min_y < data->box.max_y &&
+                   data->box.min_z < data->box.max_z;
+        case ALEA_PRIMITIVE_QUADRIC: {
+            if (!finite_values(data->quadric.coeffs, 10)) return 0;
+            for (size_t i = 0; i < 10; i++)
+                if (data->quadric.coeffs[i] != 0.0) return 1;
+            return 0;
+        }
+        case ALEA_PRIMITIVE_TORUS_X:
+        case ALEA_PRIMITIVE_TORUS_Y:
+        case ALEA_PRIMITIVE_TORUS_Z:
+            count = 6; /* axis is an enum before these six doubles */
+            return finite_values(&data->torus.center_x, count) &&
+                   data->torus.major_radius > 0.0 &&
+                   data->torus.minor_radius > 0.0 &&
+                   data->torus.axial_semiwidth_B > 0.0;
+        case ALEA_PRIMITIVE_RCC:
+            count = 7;
+            return finite_values(values, count) && data->rcc.radius > 0.0 &&
+                   vec3_norm_sq(data->rcc.height_x, data->rcc.height_y,
+                                data->rcc.height_z) > 0.0;
+        case ALEA_PRIMITIVE_BOX: {
+            count = 12;
+            if (!finite_values(values, count)) return 0;
+            const double a[3] = {data->box_general.v1_x,
+                                 data->box_general.v1_y,
+                                 data->box_general.v1_z};
+            const double b[3] = {data->box_general.v2_x,
+                                 data->box_general.v2_y,
+                                 data->box_general.v2_z};
+            const double c[3] = {data->box_general.v3_x,
+                                 data->box_general.v3_y,
+                                 data->box_general.v3_z};
+            return perpendicular_vectors(a, b) && perpendicular_vectors(a, c) &&
+                   perpendicular_vectors(b, c);
+        }
+        case ALEA_PRIMITIVE_TRC:
+            count = 8;
+            return finite_values(values, count) &&
+                   vec3_norm_sq(data->trc.height_x, data->trc.height_y,
+                                data->trc.height_z) > 0.0 &&
+                   data->trc.base_radius >= 0.0 &&
+                   data->trc.top_radius >= 0.0 &&
+                   (data->trc.base_radius > 0.0 || data->trc.top_radius > 0.0);
+        case ALEA_PRIMITIVE_ELL: {
+            count = 7;
+            if (!finite_values(values, count)) return 0;
+            if (data->ell.major_axis_len < 0.0)
+                return -data->ell.major_axis_len > 0.0 &&
+                       vec3_norm_sq(data->ell.v2_x, data->ell.v2_y,
+                                    data->ell.v2_z) > 0.0;
+            const double dx = data->ell.v2_x - data->ell.v1_x;
+            const double dy = data->ell.v2_y - data->ell.v1_y;
+            const double dz = data->ell.v2_z - data->ell.v1_z;
+            return data->ell.major_axis_len > sqrt(dx*dx + dy*dy + dz*dz);
+        }
+        case ALEA_PRIMITIVE_REC: {
+            count = 12;
+            if (!finite_values(values, count)) return 0;
+            const double h[3] = {data->rec.height_x, data->rec.height_y,
+                                 data->rec.height_z};
+            const double a[3] = {data->rec.axis1_x, data->rec.axis1_y,
+                                 data->rec.axis1_z};
+            const double b[3] = {data->rec.axis2_x, data->rec.axis2_y,
+                                 data->rec.axis2_z};
+            return perpendicular_vectors(h, a) && perpendicular_vectors(h, b) &&
+                   perpendicular_vectors(a, b);
+        }
+        case ALEA_PRIMITIVE_WED: {
+            count = 12;
+            if (!finite_values(values, count)) return 0;
+            const double a[3] = {data->wed.v1_x, data->wed.v1_y, data->wed.v1_z};
+            const double b[3] = {data->wed.v2_x, data->wed.v2_y, data->wed.v2_z};
+            const double c[3] = {data->wed.v3_x, data->wed.v3_y, data->wed.v3_z};
+            return perpendicular_vectors(a, b) && perpendicular_vectors(a, c) &&
+                   perpendicular_vectors(b, c);
+        }
+        case ALEA_PRIMITIVE_RHP: {
+            count = 15;
+            if (!finite_values(values, count)) return 0;
+            double radial[3][3];
+            return alea_rhp_resolve_radials(&data->rhp, radial);
+        }
+        default:
+            return 0;
+    }
+}
+
+alea_error_t alea_primitive_evaluate_checked(
+    alea_primitive_type_t type, const alea_primitive_data_t* data,
+    double x, double y, double z, double* out_value) {
+    if (!data || !out_value) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,
+                              "primitive data and output are required");
+        return ALEA_ERR_NULL_ARG;
+    }
+    if (!isfinite(x) || !isfinite(y) || !isfinite(z)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "evaluation point must be finite");
+        return ALEA_ERR_INVALID_ARG;
+    }
+    if (!primitive_data_valid(type, data)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,
+                              "invalid or unsupported primitive data for type %d",
+                              (int)type);
+        return ALEA_ERR_INVALID_ARG;
+    }
+    const double result = alea_primitive_eval(type, data, x, y, z);
+    if (!isfinite(result)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "primitive evaluation produced a non-finite result");
+        return ALEA_ERR_INVALID_STATE;
+    }
+    *out_value = result;
+    alea_clear_error_detail();
+    return ALEA_OK;
+}
 
 /* ============================================================================
  * VERSION
@@ -737,33 +920,60 @@ int alea_box_surface(alea_system_t* sys, int surface_id,
 int alea_cone_z_surface(alea_system_t* sys, int surface_id,
                                               double cx, double cy, double cz,
                                               double t_squared) {
+    return alea_cone_z_surface_sheet(
+        sys, surface_id, cx, cy, cz, t_squared, 0);
+}
+
+int alea_cone_z_surface_sheet(alea_system_t* sys, int surface_id,
+                              double cx, double cy, double cz,
+                              double t_squared, int sheet_selection) {
+    if (sheet_selection < -1 || sheet_selection > 1) return -1;
     alea_primitive_data_t data = {0};
     data.cone_z.apex_x = cx;
     data.cone_z.apex_y = cy;
     data.cone_z.apex_z = cz;
     data.cone_z.tan_angle_sq = t_squared;
+    data.cone_z.sheet_selection = sheet_selection;
     return create_surface_entry(sys, surface_id, ALEA_PRIMITIVE_CONE_Z, &data);
 }
 
 int alea_cone_x_surface(alea_system_t* sys, int surface_id,
                                               double cx, double cy, double cz,
                                               double t_squared) {
+    return alea_cone_x_surface_sheet(
+        sys, surface_id, cx, cy, cz, t_squared, 0);
+}
+
+int alea_cone_x_surface_sheet(alea_system_t* sys, int surface_id,
+                              double cx, double cy, double cz,
+                              double t_squared, int sheet_selection) {
+    if (sheet_selection < -1 || sheet_selection > 1) return -1;
     alea_primitive_data_t data = {0};
     data.cone_x.apex_x = cx;
     data.cone_x.apex_y = cy;
     data.cone_x.apex_z = cz;
     data.cone_x.tan_angle_sq = t_squared;
+    data.cone_x.sheet_selection = sheet_selection;
     return create_surface_entry(sys, surface_id, ALEA_PRIMITIVE_CONE_X, &data);
 }
 
 int alea_cone_y_surface(alea_system_t* sys, int surface_id,
                                               double cx, double cy, double cz,
                                               double t_squared) {
+    return alea_cone_y_surface_sheet(
+        sys, surface_id, cx, cy, cz, t_squared, 0);
+}
+
+int alea_cone_y_surface_sheet(alea_system_t* sys, int surface_id,
+                              double cx, double cy, double cz,
+                              double t_squared, int sheet_selection) {
+    if (sheet_selection < -1 || sheet_selection > 1) return -1;
     alea_primitive_data_t data = {0};
     data.cone_y.apex_x = cx;
     data.cone_y.apex_y = cy;
     data.cone_y.apex_z = cz;
     data.cone_y.tan_angle_sq = t_squared;
+    data.cone_y.sheet_selection = sheet_selection;
     return create_surface_entry(sys, surface_id, ALEA_PRIMITIVE_CONE_Y, &data);
 }
 

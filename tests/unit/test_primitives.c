@@ -446,6 +446,68 @@ TEST(eval_with_sense) {
     ASSERT(v > 0);
 }
 
+TEST(checked_primitive_evaluation_reports_errors) {
+    alea_primitive_data_t d = {0};
+    d.sphere.radius = 2.0;
+    double value = 123.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_SPHERE, &d, 0.0, 0.0, 0.0, &value), ALEA_OK);
+    ASSERT_NEAR(value, -4.0, 1e-12);
+
+    value = 123.0;
+    d.sphere.radius = 0.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_SPHERE, &d, 0.0, 0.0, 0.0, &value),
+        ALEA_ERR_INVALID_ARG);
+    ASSERT_NEAR(value, 123.0, 0.0);
+
+    d.sphere.radius = 2.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_SPHERE, &d, NAN, 0.0, 0.0, &value),
+        ALEA_ERR_INVALID_ARG);
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_SPHERE, NULL, 0.0, 0.0, 0.0, &value),
+        ALEA_ERR_NULL_ARG);
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_SPHERE, &d, 0.0, 0.0, 0.0, NULL),
+        ALEA_ERR_NULL_ARG);
+}
+
+TEST(checked_primitive_evaluation_supports_macrobodies) {
+    alea_primitive_data_t d = {0};
+    double value;
+
+    d.box_general.v1_x = 2.0;
+    d.box_general.v2_y = 3.0;
+    d.box_general.v3_z = 4.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_BOX, &d, 1.0, 1.0, 1.0, &value), ALEA_OK);
+    ASSERT(value < 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.rec.height_z = 4.0;
+    d.rec.axis1_x = 2.0;
+    d.rec.axis2_y = 1.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_REC, &d, 0.0, 0.0, 2.0, &value), ALEA_OK);
+    ASSERT(value < 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.wed.v1_x = 2.0;
+    d.wed.v2_y = 3.0;
+    d.wed.v3_z = 4.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_WED, &d, 0.25, 0.25, 1.0, &value), ALEA_OK);
+    ASSERT(value < 0.0);
+
+    memset(&d, 0, sizeof(d));
+    d.rhp.height_z = 4.0;
+    d.rhp.r1_x = 2.0;
+    ASSERT_EQ(alea_primitive_evaluate_checked(
+        ALEA_PRIMITIVE_RHP, &d, 0.0, 0.0, 2.0, &value), ALEA_OK);
+    ASSERT(value < 0.0);
+}
+
 /* ========================================================================= */
 /* Compact primitive payload storage                                          */
 /* ========================================================================= */

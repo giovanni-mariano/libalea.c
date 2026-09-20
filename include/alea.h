@@ -75,6 +75,20 @@ const char* alea_error(void);
 int alea_error_code(void);
 void alea_error_clear(void);
 
+/**
+ * Evaluate a primitive's signed implicit function at a point.
+ *
+ * Negative and positive results identify the primitive's two halfspaces and
+ * zero identifies its boundary.  The magnitude is not generally a Euclidean
+ * distance.  The primitive data must match type.
+ *
+ * @return ALEA_OK on success, otherwise an error code.  out_value is not
+ *         modified on failure.
+ */
+alea_error_t alea_primitive_evaluate_checked(
+    alea_primitive_type_t type, const alea_primitive_data_t* data,
+    double x, double y, double z, double* out_value);
+
 /* ============================================================================
  * INTERRUPT SUPPORT
  *
@@ -397,6 +411,9 @@ int alea_box_surface(alea_system_t* sys, int surface_id,
 int alea_cone_z_surface(alea_system_t* sys, int surface_id,
                             double cx, double cy, double cz,
                             double t_squared);
+int alea_cone_z_surface_sheet(alea_system_t* sys, int surface_id,
+                                  double cx, double cy, double cz,
+                                  double t_squared, int sheet_selection);
 
 /**
  * @brief Create an X-axis cone surface with automatic registration
@@ -404,6 +421,9 @@ int alea_cone_z_surface(alea_system_t* sys, int surface_id,
 int alea_cone_x_surface(alea_system_t* sys, int surface_id,
                             double cx, double cy, double cz,
                             double t_squared);
+int alea_cone_x_surface_sheet(alea_system_t* sys, int surface_id,
+                                  double cx, double cy, double cz,
+                                  double t_squared, int sheet_selection);
 
 /**
  * @brief Create a Y-axis cone surface with automatic registration
@@ -411,6 +431,9 @@ int alea_cone_x_surface(alea_system_t* sys, int surface_id,
 int alea_cone_y_surface(alea_system_t* sys, int surface_id,
                             double cx, double cy, double cz,
                             double t_squared);
+int alea_cone_y_surface_sheet(alea_system_t* sys, int surface_id,
+                                  double cx, double cy, double cz,
+                                  double t_squared, int sheet_selection);
 
 /**
  * @brief Create a Z-axis torus surface with automatic registration

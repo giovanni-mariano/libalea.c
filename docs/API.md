@@ -1039,6 +1039,23 @@ int alea_node_primitive_data(const alea_system_t* sys, alea_node_id_t node,
 
 Get primitive geometric data (the union type `alea_primitive_data_t` — access the field matching the primitive type).
 
+### alea_primitive_evaluate_checked
+
+```c
+alea_error_t alea_primitive_evaluate_checked(
+    alea_primitive_type_t type,
+    const alea_primitive_data_t* data,
+    double x, double y, double z,
+    double* out_value);
+```
+
+Evaluate a standalone primitive without creating an `alea_system_t`. The data
+union member must match `type`. On success, `out_value` receives the signed
+implicit value: negative and positive values identify the two halfspaces and
+zero identifies the boundary. The magnitude is not generally Euclidean
+distance. Invalid geometry, non-finite input, and unsupported types return an
+error and leave `out_value` unchanged.
+
 ### alea_node_sense
 
 ```c

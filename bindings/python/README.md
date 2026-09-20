@@ -111,3 +111,44 @@ import pyalea
 
 system = pyalea.System("example")
 ```
+
+Standalone primitives can be evaluated without creating a `System`:
+
+```python
+value = pyalea.primitive_evaluate(
+    pyalea.PRIMITIVE_SPHERE,
+    (0.0, 0.0, 0.0, 2.0),
+    (1.0, 0.0, 0.0),
+)
+```
+
+The result is a signed implicit value, with negative values on the primitive's
+interior side and zero on its boundary. Its magnitude is not generally a
+Euclidean distance. Parameter sequence lengths follow the corresponding
+public `alea_primitive_data_t` geometry fields; malformed or degenerate input
+raises `ValueError`.
+
+The accepted parameter layouts are:
+
+| Primitive constants | Parameters |
+|---|---|
+| `PRIMITIVE_PLANE` | `a, b, c, d` for `ax + by + cz + d = 0` |
+| `PRIMITIVE_SPHERE`, `PRIMITIVE_SPH` | `cx, cy, cz, radius` |
+| `PRIMITIVE_CYLINDER_X` | `center_y, center_z, radius` |
+| `PRIMITIVE_CYLINDER_Y` | `center_x, center_z, radius` |
+| `PRIMITIVE_CYLINDER_Z` | `center_x, center_y, radius` |
+| `PRIMITIVE_CONE_X/Y/Z` | `apex_x, apex_y, apex_z, tan_angle_sq, sheet` |
+| `PRIMITIVE_RPP` | `xmin, xmax, ymin, ymax, zmin, zmax` |
+| `PRIMITIVE_QUADRIC` | `A, B, C, D, E, F, G, H, I, J` |
+| `PRIMITIVE_TORUS_X/Y/Z` | `cx, cy, cz, major_radius, minor_radius` |
+| `PRIMITIVE_RCC` | base (3), height (3), radius |
+| `PRIMITIVE_BOX` | corner (3), then edge vectors v1, v2, v3 (3 each) |
+| `PRIMITIVE_TRC` | base (3), height (3), base radius, top radius |
+| `PRIMITIVE_ELL` | first focus (3), second focus (3), full major-axis length |
+| `PRIMITIVE_REC` | base (3), height (3), ellipse axes a1 and a2 (3 each) |
+| `PRIMITIVE_WED` | vertex (3), then edge vectors v1, v2, v3 (3 each) |
+| `PRIMITIVE_RHP` | base (3), height (3), radial vectors r1, r2, r3 (3 each) |
+
+Cone `sheet` is `-1`, `0`, or `1`. RHP permits the regular-hex shorthand in
+which r2 and r3 are zero vectors. `PRIMITIVE_ARB` is not accepted by this
+sequence interface.

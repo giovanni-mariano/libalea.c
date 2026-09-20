@@ -17,6 +17,7 @@ _PUBLIC_NAMES = {
     "load_mcnp", "load_mcnp_string", "load_openmc", "load_openmc_string",
     "generate_void", "version", "parallel_max_threads", "set_parallel_threads",
     "get_error", "clear_error", "set_log_level", "get_log_level",
+    "primitive_evaluate",
     "enable_logging", "disable_logging", "parse_zaid", "reaction_classify",
     "NODE_INVALID", "MATERIAL_NONE", "PARALLEL_BACKEND", "PARALLEL_MAX_THREADS",
     "VERSION_MAJOR", "VERSION_MINOR", "VERSION_PATCH",

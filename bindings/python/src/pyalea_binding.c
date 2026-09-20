@@ -514,13 +514,13 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "cylinder_y_surface(surface_id, cx, cz, radius) -> (index, pos_node, neg_node)\n\n"
      "Create Y-cylinder surface with both halfspace nodes registered for raycast."},
     {"cone_z_surface", (PyCFunction)PyAleaSystem_cone_z_surface, METH_VARARGS,
-     "cone_z_surface(surface_id, cx, cy, cz, t_squared) -> (index, pos_node, neg_node)\n\n"
+     "cone_z_surface(surface_id, cx, cy, cz, t_squared, sheet=0) -> (index, pos_node, neg_node)\n\n"
      "Create Z-cone surface with both halfspace nodes registered for raycast."},
     {"cone_x_surface", (PyCFunction)PyAleaSystem_cone_x_surface, METH_VARARGS,
-     "cone_x_surface(surface_id, cx, cy, cz, t_squared) -> (index, pos_node, neg_node)\n\n"
+     "cone_x_surface(surface_id, cx, cy, cz, t_squared, sheet=0) -> (index, pos_node, neg_node)\n\n"
      "Create X-cone surface with both halfspace nodes registered for raycast."},
     {"cone_y_surface", (PyCFunction)PyAleaSystem_cone_y_surface, METH_VARARGS,
-     "cone_y_surface(surface_id, cx, cy, cz, t_squared) -> (index, pos_node, neg_node)\n\n"
+     "cone_y_surface(surface_id, cx, cy, cz, t_squared, sheet=0) -> (index, pos_node, neg_node)\n\n"
      "Create Y-cone surface with both halfspace nodes registered for raycast."},
     {"torus_z_surface", (PyCFunction)PyAleaSystem_torus_z_surface, METH_VARARGS,
      "torus_z_surface(surface_id, cx, cy, cz, major_radius, minor_radius) -> (index, pos_node, neg_node)\n\n"

@@ -54,6 +54,40 @@ def test_surface_boundary_metadata_round_trip():
     assert system.surface_get_boundary(1) == "reflective"
 
 
+@pytest.mark.parametrize(
+    ("primitive_type", "parameters", "inside", "outside"),
+    [
+        (pyalea.PRIMITIVE_SPHERE, (0, 0, 0, 2), (0, 0, 0), (3, 0, 0)),
+        (pyalea.PRIMITIVE_BOX,
+         (0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4),
+         (1, 1, 1), (3, 1, 1)),
+        (pyalea.PRIMITIVE_REC,
+         (0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 1, 0),
+         (0, 0, 2), (3, 0, 2)),
+        (pyalea.PRIMITIVE_WED,
+         (0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 4),
+         (0.25, 0.25, 2), (2, 2, 2)),
+        (pyalea.PRIMITIVE_RHP,
+         (0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0),
+         (0, 0, 2), (3, 0, 2)),
+    ],
+)
+def test_standalone_primitive_evaluation(
+        primitive_type, parameters, inside, outside):
+    assert pyalea.primitive_evaluate(primitive_type, parameters, inside) < 0
+    assert pyalea.primitive_evaluate(primitive_type, parameters, outside) > 0
+
+
+def test_standalone_primitive_evaluation_validates_inputs():
+    with pytest.raises(ValueError, match="exactly 4"):
+        pyalea.primitive_evaluate(pyalea.PRIMITIVE_SPHERE, (0, 0, 0), (0, 0, 0))
+    with pytest.raises(ValueError, match="invalid or unsupported"):
+        pyalea.primitive_evaluate(pyalea.PRIMITIVE_SPHERE, (0, 0, 0, 0), (0, 0, 0))
+    with pytest.raises(ValueError, match="finite"):
+        pyalea.primitive_evaluate(
+            pyalea.PRIMITIVE_SPHERE, (0, 0, 0, 2), (float("nan"), 0, 0))
+
+
 def test_parallel_runtime_value_stays_synchronized():
     original = pyalea.parallel_max_threads()
     try:

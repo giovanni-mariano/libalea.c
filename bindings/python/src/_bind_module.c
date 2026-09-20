@@ -229,6 +229,152 @@ static PyObject* mod_clear_error(PyObject* self, PyObject* Py_UNUSED(ignored)) {
     Py_RETURN_NONE;
 }
 
+static int parse_finite_doubles(PyObject* object, const char* name,
+                                double* values, Py_ssize_t expected) {
+    PyObject* sequence = PySequence_Fast(object, "parameters and point must be sequences");
+    if (!sequence) return -1;
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
+    if (count != expected) {
+        PyErr_Format(PyExc_ValueError, "%s must contain exactly %zd values",
+                     name, expected);
+        Py_DECREF(sequence);
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < count; i++) {
+        values[i] = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(sequence, i));
+        if (PyErr_Occurred()) {
+            Py_DECREF(sequence);
+            return -1;
+        }
+        if (!isfinite(values[i])) {
+            PyErr_Format(PyExc_ValueError, "%s values must be finite", name);
+            Py_DECREF(sequence);
+            return -1;
+        }
+    }
+    Py_DECREF(sequence);
+    return 0;
+}
+
+static int primitive_parameter_count(int type) {
+    switch ((alea_primitive_type_t)type) {
+        case ALEA_PRIMITIVE_PLANE:
+        case ALEA_PRIMITIVE_SPHERE:
+        case ALEA_PRIMITIVE_SPH: return 4;
+        case ALEA_PRIMITIVE_CYLINDER_X:
+        case ALEA_PRIMITIVE_CYLINDER_Y:
+        case ALEA_PRIMITIVE_CYLINDER_Z: return 3;
+        case ALEA_PRIMITIVE_CONE_X:
+        case ALEA_PRIMITIVE_CONE_Y:
+        case ALEA_PRIMITIVE_CONE_Z:
+        case ALEA_PRIMITIVE_TORUS_X:
+        case ALEA_PRIMITIVE_TORUS_Y:
+        case ALEA_PRIMITIVE_TORUS_Z: return 5;
+        case ALEA_PRIMITIVE_RPP: return 6;
+        case ALEA_PRIMITIVE_QUADRIC: return 10;
+        case ALEA_PRIMITIVE_RCC:
+        case ALEA_PRIMITIVE_ELL: return 7;
+        case ALEA_PRIMITIVE_TRC: return 8;
+        case ALEA_PRIMITIVE_BOX:
+        case ALEA_PRIMITIVE_REC:
+        case ALEA_PRIMITIVE_WED: return 12;
+        case ALEA_PRIMITIVE_RHP: return 15;
+        default: return -1;
+    }
+}
+
+static PyObject* mod_primitive_evaluate(PyObject* self, PyObject* args) {
+    (void)self;
+    int type;
+    PyObject* parameters;
+    PyObject* point;
+    if (!PyArg_ParseTuple(args, "iOO", &type, &parameters, &point)) return NULL;
+
+    const int parameter_count = primitive_parameter_count(type);
+    if (parameter_count < 0) {
+        PyErr_SetString(PyExc_ValueError, "unsupported primitive type");
+        return NULL;
+    }
+    double p[15];
+    double xyz[3];
+    if (parse_finite_doubles(parameters, "parameters", p, parameter_count) < 0 ||
+        parse_finite_doubles(point, "point", xyz, 3) < 0) return NULL;
+
+    alea_primitive_data_t data = {0};
+#define COPY_FIELDS(member, field_count) \
+    memcpy(&(member), p, (field_count) * sizeof(double))
+    switch ((alea_primitive_type_t)type) {
+        case ALEA_PRIMITIVE_PLANE: COPY_FIELDS(data.plane, 4); break;
+        case ALEA_PRIMITIVE_SPHERE: COPY_FIELDS(data.sphere, 4); break;
+        case ALEA_PRIMITIVE_SPH: COPY_FIELDS(data.sph, 4); break;
+        case ALEA_PRIMITIVE_CYLINDER_X: COPY_FIELDS(data.cyl_x, 3); break;
+        case ALEA_PRIMITIVE_CYLINDER_Y: COPY_FIELDS(data.cyl_y, 3); break;
+        case ALEA_PRIMITIVE_CYLINDER_Z: COPY_FIELDS(data.cyl_z, 3); break;
+        case ALEA_PRIMITIVE_CONE_X:
+            COPY_FIELDS(data.cone_x, 4);
+            if (p[4] != -1.0 && p[4] != 0.0 && p[4] != 1.0) {
+                PyErr_SetString(PyExc_ValueError, "cone sheet must be -1, 0, or 1");
+                return NULL;
+            }
+            data.cone_x.sheet_selection = (int)p[4];
+            break;
+        case ALEA_PRIMITIVE_CONE_Y:
+            COPY_FIELDS(data.cone_y, 4);
+            if (p[4] != -1.0 && p[4] != 0.0 && p[4] != 1.0) {
+                PyErr_SetString(PyExc_ValueError, "cone sheet must be -1, 0, or 1");
+                return NULL;
+            }
+            data.cone_y.sheet_selection = (int)p[4];
+            break;
+        case ALEA_PRIMITIVE_CONE_Z:
+            COPY_FIELDS(data.cone_z, 4);
+            if (p[4] != -1.0 && p[4] != 0.0 && p[4] != 1.0) {
+                PyErr_SetString(PyExc_ValueError, "cone sheet must be -1, 0, or 1");
+                return NULL;
+            }
+            data.cone_z.sheet_selection = (int)p[4];
+            break;
+        case ALEA_PRIMITIVE_RPP: COPY_FIELDS(data.box, 6); break;
+        case ALEA_PRIMITIVE_QUADRIC:
+            memcpy(data.quadric.coeffs, p, 10 * sizeof(double));
+            break;
+        case ALEA_PRIMITIVE_TORUS_X:
+        case ALEA_PRIMITIVE_TORUS_Y:
+        case ALEA_PRIMITIVE_TORUS_Z:
+            data.torus.axis = type == ALEA_PRIMITIVE_TORUS_X ? ALEA_AXIS_X :
+                              type == ALEA_PRIMITIVE_TORUS_Y ? ALEA_AXIS_Y : ALEA_AXIS_Z;
+            data.torus.center_x = p[0]; data.torus.center_y = p[1];
+            data.torus.center_z = p[2]; data.torus.major_radius = p[3];
+            data.torus.minor_radius = p[4];
+            data.torus.axial_semiwidth_B = p[4];
+            break;
+        case ALEA_PRIMITIVE_RCC: COPY_FIELDS(data.rcc, 7); break;
+        case ALEA_PRIMITIVE_BOX: COPY_FIELDS(data.box_general, 12); break;
+        case ALEA_PRIMITIVE_TRC: COPY_FIELDS(data.trc, 8); break;
+        case ALEA_PRIMITIVE_ELL: COPY_FIELDS(data.ell, 7); break;
+        case ALEA_PRIMITIVE_REC: COPY_FIELDS(data.rec, 12); break;
+        case ALEA_PRIMITIVE_WED: COPY_FIELDS(data.wed, 12); break;
+        case ALEA_PRIMITIVE_RHP: COPY_FIELDS(data.rhp, 15); break;
+        default:
+            PyErr_SetString(PyExc_ValueError, "unsupported primitive type");
+            return NULL;
+    }
+#undef COPY_FIELDS
+
+    double result;
+    const alea_error_t error = alea_primitive_evaluate_checked(
+        (alea_primitive_type_t)type, &data, xyz[0], xyz[1], xyz[2], &result);
+    if (error != ALEA_OK) {
+        const char* message = alea_error();
+        if (error == ALEA_ERR_INVALID_ARG || error == ALEA_ERR_NULL_ARG)
+            PyErr_SetString(PyExc_ValueError, message);
+        else
+            PyErr_SetString(PyExc_ArithmeticError, message);
+        return NULL;
+    }
+    return PyFloat_FromDouble(result);
+}
+
 /* ============================================================================
  * Logging Integration with Python's logging module
  * ============================================================================ */
@@ -441,6 +587,9 @@ static PyMethodDef mod_methods[] = {
      "get_error() -> str or None\n\nGet last error message."},
     {"clear_error", mod_clear_error, METH_NOARGS,
      "clear_error()\n\nClear error state."},
+    {"primitive_evaluate", mod_primitive_evaluate, METH_VARARGS,
+     "primitive_evaluate(type, parameters, point) -> float\n\n"
+     "Evaluate a primitive's signed implicit function at a 3D point."},
     /* Logging */
     {"set_log_level", mod_set_log_level, METH_VARARGS,
      "set_log_level(level)\n\n"

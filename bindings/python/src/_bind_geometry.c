@@ -330,11 +330,14 @@ static PyObject* PyAleaSystem_cylinder_y_surface(PyAleaSystemObject* self, PyObj
 
 static PyObject* PyAleaSystem_cone_z_surface(PyAleaSystemObject* self, PyObject* args) {
     int surface_id;
+    int sheet = 0;
     double cx, cy, cz, t_squared;
-    if (!PyArg_ParseTuple(args, "idddd", &surface_id, &cx, &cy, &cz, &t_squared)) return NULL;
+    if (!PyArg_ParseTuple(args, "idddd|i", &surface_id, &cx, &cy, &cz,
+                          &t_squared, &sheet)) return NULL;
     if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
 
-    int idx = alea_cone_z_surface(self->sys, surface_id, cx, cy, cz, t_squared);
+    int idx = alea_cone_z_surface_sheet(
+        self->sys, surface_id, cx, cy, cz, t_squared, sheet);
     if (idx < 0) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to create cone surface");
         return NULL;
@@ -347,11 +350,14 @@ static PyObject* PyAleaSystem_cone_z_surface(PyAleaSystemObject* self, PyObject*
 
 static PyObject* PyAleaSystem_cone_x_surface(PyAleaSystemObject* self, PyObject* args) {
     int surface_id;
+    int sheet = 0;
     double cx, cy, cz, t_squared;
-    if (!PyArg_ParseTuple(args, "idddd", &surface_id, &cx, &cy, &cz, &t_squared)) return NULL;
+    if (!PyArg_ParseTuple(args, "idddd|i", &surface_id, &cx, &cy, &cz,
+                          &t_squared, &sheet)) return NULL;
     if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
 
-    int idx = alea_cone_x_surface(self->sys, surface_id, cx, cy, cz, t_squared);
+    int idx = alea_cone_x_surface_sheet(
+        self->sys, surface_id, cx, cy, cz, t_squared, sheet);
     if (idx < 0) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to create cone surface");
         return NULL;
@@ -364,11 +370,14 @@ static PyObject* PyAleaSystem_cone_x_surface(PyAleaSystemObject* self, PyObject*
 
 static PyObject* PyAleaSystem_cone_y_surface(PyAleaSystemObject* self, PyObject* args) {
     int surface_id;
+    int sheet = 0;
     double cx, cy, cz, t_squared;
-    if (!PyArg_ParseTuple(args, "idddd", &surface_id, &cx, &cy, &cz, &t_squared)) return NULL;
+    if (!PyArg_ParseTuple(args, "idddd|i", &surface_id, &cx, &cy, &cz,
+                          &t_squared, &sheet)) return NULL;
     if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
 
-    int idx = alea_cone_y_surface(self->sys, surface_id, cx, cy, cz, t_squared);
+    int idx = alea_cone_y_surface_sheet(
+        self->sys, surface_id, cx, cy, cz, t_squared, sheet);
     if (idx < 0) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to create cone surface");
         return NULL;
