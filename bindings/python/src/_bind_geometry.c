@@ -596,7 +596,7 @@ static PyObject* PyAleaSystem_rhp_surface(PyAleaSystemObject* self, PyObject* ar
     int surface_id;
     double base_x, base_y, base_z, height_x, height_y, height_z;
     double r1_x, r1_y, r1_z, r2_x, r2_y, r2_z, r3_x, r3_y, r3_z;
-    if (!PyArg_ParseTuple(args, "idddddddddddddddd", &surface_id,
+    if (!PyArg_ParseTuple(args, "iddddddddddddddd", &surface_id,
                           &base_x, &base_y, &base_z,
                           &height_x, &height_y, &height_z,
                           &r1_x, &r1_y, &r1_z,
@@ -617,6 +617,46 @@ static PyObject* PyAleaSystem_rhp_surface(PyAleaSystemObject* self, PyObject* ar
     alea_node_id_t pos_node, neg_node;
     alea_surface_get(self->sys, idx, NULL, NULL, &pos_node, &neg_node, NULL);
     return Py_BuildValue("(ikk)", idx, (unsigned long)pos_node, (unsigned long)neg_node);
+}
+
+static PyObject* PyAleaSystem_surface_set_boundary(PyAleaSystemObject* self,
+                                                    PyObject* args) {
+    int surface_id;
+    const char* name;
+    if (!PyArg_ParseTuple(args, "is", &surface_id, &name)) return NULL;
+    alea_boundary_type_t boundary;
+    if (strcmp(name, "transmissive") == 0) boundary = ALEA_BOUNDARY_TRANSMISSIVE;
+    else if (strcmp(name, "reflective") == 0) boundary = ALEA_BOUNDARY_REFLECTIVE;
+    else if (strcmp(name, "vacuum") == 0) boundary = ALEA_BOUNDARY_VACUUM;
+    else {
+        PyErr_SetString(PyExc_ValueError,
+                        "boundary must be transmissive, reflective, or vacuum");
+        return NULL;
+    }
+    if (alea_surface_set_boundary(self->sys, surface_id, boundary) != 0) {
+        PyErr_SetString(PyExc_KeyError, "surface ID not found");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* PyAleaSystem_surface_get_boundary(PyAleaSystemObject* self,
+                                                    PyObject* args) {
+    int surface_id;
+    if (!PyArg_ParseTuple(args, "i", &surface_id)) return NULL;
+    int index = alea_surface_find(self->sys, surface_id);
+    alea_boundary_type_t boundary;
+    if (index < 0 || alea_surface_get(self->sys, (size_t)index, NULL, NULL,
+                                     NULL, NULL, &boundary) != 0) {
+        PyErr_SetString(PyExc_KeyError, "surface ID not found");
+        return NULL;
+    }
+    const char* name = "transmissive";
+    if (boundary == ALEA_BOUNDARY_REFLECTIVE) name = "reflective";
+    else if (boundary == ALEA_BOUNDARY_VACUUM) name = "vacuum";
+    else if (boundary == ALEA_BOUNDARY_WHITE) name = "white";
+    else if (boundary == ALEA_BOUNDARY_PERIODIC) name = "periodic";
+    return PyUnicode_FromString(name);
 }
 
 static PyObject* PyAleaSystem_get_surface_nodes(PyAleaSystemObject* self, PyObject* args) {

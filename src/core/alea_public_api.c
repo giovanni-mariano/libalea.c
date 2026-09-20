@@ -3424,6 +3424,16 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
     return 0;
 }
 
+int alea_surface_set_boundary(alea_system_t* sys, int surface_id,
+                              alea_boundary_type_t boundary_type) {
+    if (!sys || surface_id <= 0 || boundary_type < ALEA_BOUNDARY_TRANSMISSIVE ||
+        boundary_type > ALEA_BOUNDARY_VACUUM) return -1;
+    int index = alea_surface_find(sys, surface_id);
+    if (index < 0) return -1;
+    sys->surfaces.data[index].boundary_type = boundary_type;
+    return 0;
+}
+
 int alea_surface_find(const alea_system_t* sys, int surface_id) {
     if (!sys) return -1;
     /* Fast path: O(1) direct-address table (built after surface conversion) */
@@ -3539,9 +3549,22 @@ int alea_renumber_cells(alea_system_t* sys, int start_id) {
 int alea_renumber_surfaces(alea_system_t* sys, int start_id) {
     if (!sys) return -1;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        int periodic_id = sys->surfaces.data[i].periodic_surface_id;
+        if (periodic_id == 0) continue;
+        for (size_t j = 0; j < alea_vec_count(&sys->surfaces); j++) {
+            if (sys->surfaces.data[j].mc_surface_id == periodic_id) {
+                sys->surfaces.data[i].periodic_surface_id = start_id + (int)j;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         sys->surfaces.data[i].mc_surface_id = start_id + (int)i;
     }
     sys->next_auto_surface_id = start_id + (int)alea_vec_count(&sys->surfaces);
+    free(sys->mc_id_to_surface);
+    sys->mc_id_to_surface = NULL;
+    sys->mc_id_to_surface_size = 0;
     return 0;
 }
 
@@ -3564,8 +3587,13 @@ int alea_offset_surface_ids(alea_system_t* sys, int offset) {
     if (!sys) return -1;
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         sys->surfaces.data[i].mc_surface_id += offset;
+        if (sys->surfaces.data[i].periodic_surface_id != 0)
+            sys->surfaces.data[i].periodic_surface_id += offset;
     }
     sys->next_auto_surface_id += offset;
+    free(sys->mc_id_to_surface);
+    sys->mc_id_to_surface = NULL;
+    sys->mc_id_to_surface_size = 0;
     return 0;
 }
 
@@ -3579,6 +3607,15 @@ int alea_offset_material_ids(alea_system_t* sys, int offset) {
     for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
         if (sys->materials.data[i].material_id != 0) {
             sys->materials.data[i].material_id += offset;
+        }
+    }
+    for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
+        alea_mixture_t* mixture = &sys->mixtures.data[i];
+        if (mixture->mixture_id != 0) mixture->mixture_id += offset;
+        if (mixture->mc_material_id != 0) mixture->mc_material_id += offset;
+        for (size_t j = 0; j < alea_vec_count(&mixture->components); j++) {
+            if (mixture->components.data[j].material_id != 0)
+                mixture->components.data[j].material_id += offset;
         }
     }
     return 0;

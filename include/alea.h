@@ -1602,6 +1602,10 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
                           alea_node_id_t* pos_node, alea_node_id_t* neg_node,
                           alea_boundary_type_t* boundary_type);
 
+/** Set the boundary condition of an existing surface identified by MCNP ID. */
+int alea_surface_set_boundary(alea_system_t* sys, int surface_id,
+                              alea_boundary_type_t boundary_type);
+
 int alea_surface_find(const alea_system_t* sys, int surface_id);
 
 /**

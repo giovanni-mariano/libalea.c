@@ -38,6 +38,22 @@ def test_public_names_are_forwarded():
     }
 
 
+def test_rhp_constructor_accepts_documented_arity():
+    system = pyalea.System()
+    index, positive, negative = system.rhp_surface(
+        17, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0,
+        2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    assert index == 0
+    assert positive != negative
+
+
+def test_surface_boundary_metadata_round_trip():
+    system = pyalea.System()
+    system.sphere_surface(1, 0.0, 0.0, 0.0, 2.0)
+    system.surface_set_boundary(1, "reflective")
+    assert system.surface_get_boundary(1) == "reflective"
+
+
 def test_parallel_runtime_value_stays_synchronized():
     original = pyalea.parallel_max_threads()
     try:

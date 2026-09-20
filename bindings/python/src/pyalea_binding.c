@@ -558,6 +558,13 @@ static PyMethodDef PyAleaSystem_methods[] = {
     {"rhp_surface", (PyCFunction)PyAleaSystem_rhp_surface, METH_VARARGS,
      "rhp_surface(surface_id, base_x, base_y, base_z, height_x, height_y, height_z, r1_x, r1_y, r1_z, r2_x, r2_y, r2_z, r3_x, r3_y, r3_z) -> (index, pos_node, neg_node)\n\n"
      "Create RHP (Right Hexagonal Prism) macrobody surface."},
+    {"surface_set_boundary", (PyCFunction)PyAleaSystem_surface_set_boundary,
+     METH_VARARGS,
+     "surface_set_boundary(surface_id, boundary) -> None\n\n"
+     "Set transmissive, reflective, or vacuum boundary metadata."},
+    {"surface_get_boundary", (PyCFunction)PyAleaSystem_surface_get_boundary,
+     METH_VARARGS,
+     "surface_get_boundary(surface_id) -> str\n\nReturn boundary metadata."},
     {"get_surface_nodes", (PyCFunction)PyAleaSystem_get_surface_nodes, METH_VARARGS,
      "get_surface_nodes(surface_index) -> (pos_node, neg_node)\n\n"
      "Get halfspace nodes for a registered surface."},
