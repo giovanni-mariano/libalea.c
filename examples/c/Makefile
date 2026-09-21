@@ -26,7 +26,7 @@ LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-arch
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 LIBS_NUCDATA = ../../bin/libalea_nucdata.a $(LIBS_CORE)
 
-EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo
+EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo fusion_fixed_source
 
 all: $(EXAMPLES)
 
@@ -47,6 +47,9 @@ void_demo: void_demo.c
 
 slab_transport: slab_transport.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_NUCDATA)
+
+fusion_fixed_source: fusion_fixed_source.c ../../bin/libalea_full.a
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< ../../bin/libalea_full.a $(THREAD_FLAGS) -lm
 
 cluster_volumes: cluster_volumes.c ../../bin/libalea_cluster.a \
 		../../bin/libalea.a ../../bin/libalea_mcnp.a ../../bin/libalea_openmc.a

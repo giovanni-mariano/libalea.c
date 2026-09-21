@@ -5704,6 +5704,133 @@ TEST(fixed_neutron_transport_banks_n2n_descendants_per_source_history) {
     remove(path);
 }
 
+static alea_error_t failing_source_sampler(void* context, uint64_t seed,
+    uint32_t history_id, alea_transport_source_t* output) {
+    (void)context;
+    (void)seed;
+    (void)output;
+    return history_id == 4 ? ALEA_ERR_NOT_FOUND : ALEA_ERR_INVALID_ARG;
+}
+
+static alea_error_t alternating_source_sampler(void* context, uint64_t seed,
+    uint32_t history_id, alea_transport_source_t* output) {
+    (void)context;
+    (void)seed;
+    *output = (alea_transport_source_t){
+        .position = {0, 0, 0},
+        .particle = {
+            .type = ALEA_NUC_PARTICLE_NEUTRON,
+            .energy = history_id % 2 ? 2.0 : 1.0,
+            .direction = {1, 0, 0},
+            .weight = history_id % 2 ? 2.0 : 1.0,
+            .time = 0
+        }
+    };
+    return ALEA_OK;
+}
+
+TEST(sampled_source_is_reproducible_across_history_batches) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 3);
+    ASSERT_TRUE(sphere >= 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+        ALEA_MATERIAL_VOID, 0, 0), 0);
+    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    ASSERT_NOT_NULL(xsdir);
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
+        ALEA_NUC_BIND_NEUTRON, NULL, NULL, &binding), ALEA_OK);
+    alea_transport_box_source_t box = {
+        .lower = {-1, -1, -1}, .upper = {1, 1, 1},
+        .particle_type = ALEA_NUC_PARTICLE_NEUTRON,
+        .energy = 14.1, .weight = 1, .time = 0
+    };
+    alea_transport_source_t first = {0}, replay = {0}, other = {0};
+    ASSERT_EQ(alea_transport_sample_box_isotropic(&box, 123, 5, &first),
+              ALEA_OK);
+    ASSERT_EQ(alea_transport_sample_box_isotropic(&box, 123, 5, &replay),
+              ALEA_OK);
+    ASSERT_EQ(memcmp(&first, &replay, sizeof(first)), 0);
+    ASSERT_EQ(alea_transport_sample_box_isotropic(&box, 123, 6, &other),
+              ALEA_OK);
+    ASSERT_TRUE(memcmp(&first, &other, sizeof(first)) != 0);
+    for (int i = 0; i < 3; ++i)
+        ASSERT_TRUE(first.position[i] >= -1 && first.position[i] <= 1);
+    double norm = 0;
+    for (int i = 0; i < 3; ++i)
+        norm += first.particle.direction[i] * first.particle.direction[i];
+    ASSERT_NEAR(norm, 1.0, 1e-14);
+
+    alea_transport_options_t options = {
+        .histories = 30, .seed = 123, .max_events_per_history = 10,
+        .max_segment_distance = 10
+    };
+    alea_transport_result_t full = {0}, left = {0}, right = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
+        alea_transport_sample_box_isotropic, &box, &options,
+        &full, &failure), ALEA_OK);
+    options.histories = 12;
+    ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
+        alea_transport_sample_box_isotropic, &box, &options,
+        &left, &failure), ALEA_OK);
+    options.histories = 18;
+    options.history_offset = 12;
+    ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
+        alea_transport_sample_box_isotropic, &box, &options,
+        &right, &failure), ALEA_OK);
+    ASSERT_EQ(full.leaked, 30);
+    ASSERT_EQ(left.leaked + right.leaked, full.leaked);
+    ASSERT_NEAR(full.track_length[0],
+        left.track_length[0] + right.track_length[0], 1e-12);
+    ASSERT_NEAR(full.track_length_squared[0],
+        left.track_length_squared[0] + right.track_length_squared[0], 1e-12);
+    alea_transport_result_free(&right);
+    options.history_offset = 4;
+    ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
+        failing_source_sampler, NULL, &options, &right, &failure),
+        ALEA_ERR_NOT_FOUND);
+    ASSERT_EQ(failure.history_id, 4);
+    ASSERT_EQ(failure.particle_ordinal, 0);
+    ASSERT_NULL(right.track_length);
+    options.history_offset = UINT32_MAX;
+    ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
+        alea_transport_sample_box_isotropic, &box, &options,
+        &right, &failure), ALEA_ERR_OVERFLOW);
+
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    double edges[] = {0, 1.5, 3};
+    alea_tally_spec_t spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH, .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_NEUTRON,
+        .energy_edges = edges, .energy_group_count = 2
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    options.histories = 4;
+    options.history_offset = 0;
+    options.tally_plan = plan;
+    ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
+        alternating_source_sampler, NULL, &options, &right, &failure),
+        ALEA_OK);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(right.tallies, 0, &view), ALEA_OK);
+    ASSERT_EQ(view.histories, 4);
+    ASSERT_NEAR(view.sum[0], 6.0, 1e-12);
+    ASSERT_NEAR(view.sum[1], 12.0, 1e-12);
+    ASSERT_NEAR(view.sum_squared[0], 18.0, 1e-12);
+    ASSERT_NEAR(view.sum_squared[1], 72.0, 1e-12);
+    alea_transport_result_free(&right);
+    alea_tally_plan_free(plan);
+    alea_transport_result_free(&full);
+    alea_transport_result_free(&left);
+    alea_nuc_cell_bindings_free(binding);
+    alea_nuc_xsdir_free(xsdir);
+    alea_destroy(sys);
+}
+
 TEST(error_string_ok) {
     const char* s = alea_error_string(ALEA_OK);
     ASSERT_NOT_NULL(s);

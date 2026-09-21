@@ -365,6 +365,11 @@ emitted neutrons and photons in one source history. A photon source can use
 `alea_transport_run_fixed_source()` directly. `max_events_per_history` bounds
 the full family and `max_pending_particles` bounds the shared bank (zero
 selects 1024). The legacy per-cell path arrays retain neutron-only scores.
+`alea_transport_run_sampled_source()` samples a new source particle for every
+history; `alea_transport_sample_box_isotropic()` provides a reproducible
+uniform-box, isotropic monoenergetic source. `history_offset` allows
+reproducible nonoverlapping batches. A runnable MCNP/ACE example and result
+normalization are in [the fixed-source workflow](docs/FIXED_SOURCE_WORKFLOW.md).
 Optional tally plans can be attached through `alea_transport_options_t.tally_plan`.
 `alea_tally.h` defines cell, terminal-universe, and world-space Cartesian mesh
 bins. The scores are weighted track length, collision count, sampled reaction

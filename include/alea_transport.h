@@ -114,6 +114,30 @@ typedef struct {
     alea_nuc_particle_state_t particle;
 } alea_transport_source_t;
 
+/** Sample one independent source particle for a global history ID. The
+ * callback must initialize every output field and return an error if it
+ * cannot sample. seed and history_id permit reproducible batch splitting.
+ * The context is borrowed and the callback runs synchronously. */
+typedef alea_error_t (*alea_transport_source_sampler_fn)(
+    void* context, uint64_t seed, uint32_t history_id,
+    alea_transport_source_t* output);
+
+/** Uniform position in an axis-aligned box, isotropic direction, fixed
+ * energy, weight, and time. Equal lower/upper coordinates are allowed.
+ * Pass this to alea_transport_run_sampled_source with the box as context. */
+typedef struct {
+    double lower[3];
+    double upper[3];
+    alea_nuc_particle_t particle_type;
+    double energy; /* MeV */
+    double weight;
+    double time; /* seconds */
+} alea_transport_box_source_t;
+
+alea_error_t alea_transport_sample_box_isotropic(
+    void* context, uint64_t seed, uint32_t history_id,
+    alea_transport_source_t* output);
+
 typedef struct {
     uint32_t histories;
     uint64_t seed;
@@ -121,6 +145,7 @@ typedef struct {
     double max_segment_distance; /* finite cm; distance-limit events continue */
     size_t max_pending_particles; /* zero uses a 1024-particle default */
     const alea_tally_plan_t* tally_plan; /* NULL disables configured tallies */
+    uint32_t history_offset; /* first global history ID; zero by default */
 } alea_transport_options_t;
 
 typedef struct {
@@ -181,6 +206,19 @@ alea_error_t alea_transport_run_fixed_source(
     alea_system_t* sys,
     const alea_nuc_cell_bindings_t* bindings,
     const alea_transport_source_t* source,
+    const alea_transport_options_t* options,
+    alea_transport_result_t* output,
+    alea_transport_failure_t* failure);
+
+/** Run independently sampled neutron or photon source histories. Each
+ * callback result is validated before transport. history_offset permits
+ * reproducible nonoverlapping batches, up to UINT32_MAX as the last ID.
+ * A callback failure identifies its history and leaves output zeroed. */
+alea_error_t alea_transport_run_sampled_source(
+    alea_system_t* sys,
+    const alea_nuc_cell_bindings_t* bindings,
+    alea_transport_source_sampler_fn sampler,
+    void* source_context,
     const alea_transport_options_t* options,
     alea_transport_result_t* output,
     alea_transport_failure_t* failure);

@@ -27,6 +27,38 @@ static mcnp_model_t* parse_mcnp(const char* input) {
     return model;
 }
 
+TEST(mcnp_graveyard_marks_vacuum_before_query_index_exists) {
+    const char* input =
+        "Imported graveyard\n"
+        "1 0 -1 imp:n=1\n"
+        "99 0 1 imp:n=0\n"
+        "\n"
+        "1 s 0 0 0 3\n"
+        "\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(sys->cells.count, 2);
+    ASSERT_EQ(sys->surfaces.count, 1);
+    ASSERT_EQ(sys->surfaces.data[0].boundary_type, ALEA_BOUNDARY_VACUUM);
+
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(nav);
+    double position[3] = {0, 0, 0};
+    double direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(nav, position, direction,
+                                         &location), 0);
+    ASSERT_EQ(location.cell_id, 1);
+    ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 10, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_VACUUM);
+    ASSERT_NEAR(event.distance, 3.0, 1e-10);
+    ASSERT_EQ(event.after.kind, ALEA_NAV_LEAKED);
+    alea_ray_navigator_destroy(nav);
+    mcnp_model_destroy(model);
+}
+
 /* ========================================================================= */
 /* Ray-torus tests                                                           */
 /* ========================================================================= */

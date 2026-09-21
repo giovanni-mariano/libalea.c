@@ -3,7 +3,8 @@
 `alea_tally.h` defines an optional tally plan for a transport run. Create the
 plan after geometry is built, add score specifications, and set
 `alea_transport_options_t.tally_plan` before calling
-`alea_transport_run_fixed_neutron()` or `alea_transport_run_fixed_source()`.
+`alea_transport_run_fixed_neutron()`, `alea_transport_run_fixed_source()`, or
+`alea_transport_run_sampled_source()`.
 The geometry and plan must remain alive
 and unchanged for the run. The result owns its tally arrays, so the plan may be
 freed after the run.

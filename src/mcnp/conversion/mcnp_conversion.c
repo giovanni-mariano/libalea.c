@@ -15,6 +15,7 @@
 #include "surface_conv.h"
 #include "cell_conv.h"
 #include "core/alea_cell_complement.h"
+#include "core/alea_eval.h"
 #include "core/alea_universe.h"
 #include "core/alea_materials.h"
 #include "util/compat.h"
@@ -207,6 +208,20 @@ static int parse_transform_definition(double* values, int* value_count,
 // VACUUM BOUNDARY DETECTION
 // ============================================================================
 
+/* Conversion has not built the universe index required by
+ * alea_identify_cell_at_point(). The graveyard is a root-universe cell, so
+ * test root CSG expressions directly at the probe point. */
+static int root_cell_at_point_during_conversion(
+    const alea_system_t* sys, double x, double y, double z) {
+    for (size_t i = 0; i < alea_vec_count(&sys->cells); ++i) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if (cell->universe_id == 0 &&
+            alea_contains_point(sys, cell->root_node_id, x, y, z))
+            return (int)i;
+    }
+    return -1;
+}
+
 /**
  * @brief Detect and mark vacuum boundary surfaces
  *
@@ -235,12 +250,10 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
     int graveyard_cell_id = -1;
     int graveyard_cell_idx = -1;
 
-    /* Use alea_identify_cell_at_point which works correctly */
+    /* Identify the root cell without requiring prepared query acceleration. */
     for (int i = 0; i < 6 && graveyard_cell_idx < 0; i++) {
-        int cell_idx = alea_identify_cell_at_point(sys,
-                                                   test_points[i][0],
-                                                   test_points[i][1],
-                                                   test_points[i][2]);
+        int cell_idx = root_cell_at_point_during_conversion(sys,
+            test_points[i][0], test_points[i][1], test_points[i][2]);
 
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
             alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
@@ -257,10 +270,8 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
     /* Second pass: if no explicit IMP:N=0, use any void cell at infinity */
     if (graveyard_cell_idx < 0) {
         for (int i = 0; i < 6 && graveyard_cell_idx < 0; i++) {
-            int cell_idx = alea_identify_cell_at_point(sys,
-                                                       test_points[i][0],
-                                                       test_points[i][1],
-                                                       test_points[i][2]);
+            int cell_idx = root_cell_at_point_during_conversion(sys,
+                test_points[i][0], test_points[i][1], test_points[i][2]);
 
             if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells)) {
                 alea_cell_entry_t* cell = &sys->cells.data[cell_idx];

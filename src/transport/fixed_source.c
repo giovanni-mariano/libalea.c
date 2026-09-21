@@ -5,6 +5,7 @@
 #include "alea_transport.h"
 #include "tally_internal.h"
 #include "alea.h"
+#include "../rng/alea_rng.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,61 @@ static int normalize_direction(double direction[3]) {
     direction[1] = y / length;
     direction[2] = z / length;
     return 0;
+}
+
+static int valid_source(const alea_transport_source_t* source) {
+    return source &&
+        (source->particle.type == ALEA_NUC_PARTICLE_NEUTRON ||
+         source->particle.type == ALEA_NUC_PARTICLE_PHOTON) &&
+        isfinite(source->particle.energy) && source->particle.energy > 0.0 &&
+        isfinite(source->particle.weight) && source->particle.weight > 0.0 &&
+        isfinite(source->particle.time) &&
+        isfinite(source->position[0]) &&
+        isfinite(source->position[1]) &&
+        isfinite(source->position[2]);
+}
+
+alea_error_t alea_transport_sample_box_isotropic(
+    void* context, uint64_t seed, uint32_t history_id,
+    alea_transport_source_t* output) {
+    if (!context || !output) return ALEA_ERR_NULL_ARG;
+    const alea_transport_box_source_t* box = context;
+    if ((box->particle_type != ALEA_NUC_PARTICLE_NEUTRON &&
+         box->particle_type != ALEA_NUC_PARTICLE_PHOTON) ||
+        !isfinite(box->energy) || box->energy <= 0.0 ||
+        !isfinite(box->weight) || box->weight <= 0.0 ||
+        !isfinite(box->time)) return ALEA_ERR_INVALID_ARG;
+    alea_transport_source_t sample = {0};
+    for (int i = 0; i < 3; ++i) {
+        if (!isfinite(box->lower[i]) || !isfinite(box->upper[i]) ||
+            box->upper[i] < box->lower[i]) return ALEA_ERR_INVALID_ARG;
+        double u;
+        if (alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
+                ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_POSITION, history_id,
+                (uint64_t)i, &u) != 0) return ALEA_ERR_INVALID_STATE;
+        sample.position[i] = box->lower[i] +
+            u * (box->upper[i] - box->lower[i]);
+        if (!isfinite(sample.position[i])) return ALEA_ERR_OVERFLOW;
+    }
+    double u, v;
+    if (alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
+            ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_DIRECTION, history_id,
+            0, &u) != 0 ||
+        alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
+            ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_DIRECTION, history_id,
+            1, &v) != 0) return ALEA_ERR_INVALID_STATE;
+    double mu = 2.0 * u - 1.0;
+    double phi = 6.2831853071795864769 * v;
+    double transverse = sqrt(fmax(0.0, 1.0 - mu * mu));
+    sample.particle.type = box->particle_type;
+    sample.particle.energy = box->energy;
+    sample.particle.weight = box->weight;
+    sample.particle.time = box->time;
+    sample.particle.direction[0] = transverse * cos(phi);
+    sample.particle.direction[1] = transverse * sin(phi);
+    sample.particle.direction[2] = mu;
+    *output = sample;
+    return ALEA_OK;
 }
 
 static double neutron_speed(double energy) {
@@ -79,16 +135,16 @@ static alea_error_t fail_transport(alea_transport_failure_t* failure,
     return error;
 }
 
-alea_error_t alea_transport_run_fixed_source(
+alea_error_t alea_transport_run_sampled_source(
     alea_system_t* sys, const alea_nuc_cell_bindings_t* bindings,
-    const alea_transport_source_t* source,
+    alea_transport_source_sampler_fn sampler, void* source_context,
     const alea_transport_options_t* options,
     alea_transport_result_t* output,
     alea_transport_failure_t* failure) {
     if (!output) return ALEA_ERR_NULL_ARG;
     memset(output, 0, sizeof(*output));
     if (failure) memset(failure, 0, sizeof(*failure));
-    if (!sys || !bindings || !source || !options) return ALEA_ERR_NULL_ARG;
+    if (!sys || !bindings || !sampler || !options) return ALEA_ERR_NULL_ARG;
     if (!alea_nuc_cell_bindings_matches_geometry(bindings, sys))
         return ALEA_ERR_INVALID_STATE;
     if (options->tally_plan &&
@@ -96,16 +152,10 @@ alea_error_t alea_transport_run_fixed_source(
         return ALEA_ERR_INVALID_STATE;
     if (options->histories == 0 || options->max_events_per_history == 0 ||
         !isfinite(options->max_segment_distance) ||
-        options->max_segment_distance <= 0.0 ||
-        (source->particle.type != ALEA_NUC_PARTICLE_NEUTRON &&
-         source->particle.type != ALEA_NUC_PARTICLE_PHOTON) ||
-        !isfinite(source->particle.energy) || source->particle.energy <= 0.0 ||
-        !isfinite(source->particle.weight) || source->particle.weight <= 0.0 ||
-        !isfinite(source->particle.time) ||
-        !isfinite(source->position[0]) ||
-        !isfinite(source->position[1]) ||
-        !isfinite(source->position[2]))
+        options->max_segment_distance <= 0.0)
         return ALEA_ERR_INVALID_ARG;
+    if (options->histories - 1 > UINT32_MAX - options->history_offset)
+        return ALEA_ERR_OVERFLOW;
 
     const size_t cell_count = alea_cell_count(sys);
     const size_t bank_capacity = options->max_pending_particles ?
@@ -139,22 +189,28 @@ alea_error_t alea_transport_run_fixed_source(
         .tallies = tallies
     };
     alea_error_t err = ALEA_OK;
-    for (uint32_t h = 0; h < options->histories; ++h) {
+    for (uint64_t local_h = 0; local_h < options->histories; ++local_h) {
+        uint32_t h = options->history_offset + (uint32_t)local_h;
         memset(history_path, 0, cell_count * sizeof(double));
-        bank[0].particle = source->particle;
-        if (normalize_direction(bank[0].particle.direction) != 0) {
-            err = ALEA_ERR_INVALID_ARG;
+        alea_transport_source_t source = {0};
+        err = sampler(source_context, options->seed, h, &source);
+        if (err != ALEA_OK || !valid_source(&source) ||
+            normalize_direction(source.particle.direction) != 0) {
+            if (err == ALEA_OK) err = ALEA_ERR_INVALID_ARG;
+            fail_transport(failure, h, 0, NULL, source.position,
+                           source.particle.energy, err);
             break;
         }
-        memcpy(bank[0].position, source->position, sizeof(bank[0].position));
+        bank[0].particle = source.particle;
+        memcpy(bank[0].position, source.position, sizeof(bank[0].position));
         bank[0].ordinal = 0;
         size_t bank_count = 1;
         uint64_t next_ordinal = 1;
         uint32_t events = 0;
         alea_nav_location_t last_location = {0};
         double last_position[3];
-        memcpy(last_position, source->position, sizeof(last_position));
-        double last_energy = source->particle.energy;
+        memcpy(last_position, source.position, sizeof(last_position));
+        double last_energy = source.particle.energy;
         uint32_t last_ordinal = 0;
         while (bank_count && err == ALEA_OK) {
             pending_particle_t current = bank[--bank_count];
@@ -520,6 +576,35 @@ alea_error_t alea_transport_run_fixed_source(
     alea_tally_results_finalize(tallies);
     *output = result;
     return ALEA_OK;
+}
+
+static alea_error_t sample_fixed_source(void* context, uint64_t seed,
+    uint32_t history_id, alea_transport_source_t* output) {
+    (void)seed;
+    (void)history_id;
+    *output = *(const alea_transport_source_t*)context;
+    return ALEA_OK;
+}
+
+alea_error_t alea_transport_run_fixed_source(
+    alea_system_t* sys, const alea_nuc_cell_bindings_t* bindings,
+    const alea_transport_source_t* source,
+    const alea_transport_options_t* options,
+    alea_transport_result_t* output,
+    alea_transport_failure_t* failure) {
+    if (!output) return ALEA_ERR_NULL_ARG;
+    if (!source) {
+        memset(output, 0, sizeof(*output));
+        if (failure) memset(failure, 0, sizeof(*failure));
+        return ALEA_ERR_NULL_ARG;
+    }
+    if (!valid_source(source)) {
+        memset(output, 0, sizeof(*output));
+        if (failure) memset(failure, 0, sizeof(*failure));
+        return ALEA_ERR_INVALID_ARG;
+    }
+    return alea_transport_run_sampled_source(sys, bindings,
+        sample_fixed_source, (void*)source, options, output, failure);
 }
 
 alea_error_t alea_transport_run_fixed_neutron(
