@@ -5,6 +5,11 @@ local v = alea.version()
 assert(type(v) == "string", "version should be a string")
 print("  version: " .. v)
 
+-- Parallel runtime configuration is available before the first parallel call.
+assert(type(alea.parallel_enabled()) == "boolean", "parallel capability is boolean")
+assert(alea.parallel_max_threads() >= 1, "parallel worker count is positive")
+assert(alea.set_parallel_threads(1) == 1, "parallel worker count can be configured")
+
 -- Create empty system
 local sys = alea.create()
 assert(sys, "create should return a system")

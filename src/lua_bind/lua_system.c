@@ -5,6 +5,7 @@
 #include "alea_lua.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
+#include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -121,6 +122,33 @@ static int l_error_clear(lua_State* L) {
     return 0;
 }
 
+static int l_parallel_enabled(lua_State* L) {
+    lua_pushboolean(L, alea_parallel_enabled());
+    return 1;
+}
+
+static int l_parallel_max_threads(lua_State* L) {
+    lua_pushinteger(L, alea_parallel_max_threads());
+    return 1;
+}
+
+static int l_set_parallel_threads(lua_State* L) {
+    lua_Integer threads = luaL_checkinteger(L, 1);
+    if (threads < 0 || threads > INT_MAX)
+        return luaL_argerror(L, 1, "threads must be between 0 and INT_MAX");
+    if (alea_parallel_set_threads((int)threads) != 0)
+        return luaL_error(L,
+            "set_parallel_threads: worker count must be set before the first parallel operation");
+    lua_pushinteger(L, alea_parallel_max_threads());
+    return 1;
+}
+
+static int l_interrupt(lua_State* L) {
+    (void)L;
+    alea_interrupt();
+    return 0;
+}
+
 static int l_set_debug_trace(lua_State* L) {
     int enable = lua_toboolean(L, 1);
     alea_set_debug_trace(enable);
@@ -220,6 +248,10 @@ static const luaL_Reg alea_funcs[] = {
     {"error",           l_error},
     {"error_code",      l_error_code},
     {"error_clear",     l_error_clear},
+    {"parallel_enabled", l_parallel_enabled},
+    {"parallel_max_threads", l_parallel_max_threads},
+    {"set_parallel_threads", l_set_parallel_threads},
+    {"interrupt",       l_interrupt},
     {"set_debug_trace", l_set_debug_trace},
     {NULL, NULL}
 };

@@ -8,6 +8,20 @@ Run scripts with:
 bin/alea script.lua
 ```
 
+To use Alea from a normal Lua 5.5 interpreter, build and install the loadable
+module:
+
+```bash
+make lua-module test-lua-module
+make install-lua-module PREFIX=/usr/local
+```
+
+Then load it in the usual way:
+
+```lua
+local alea = require("alea")
+```
+
 Pass arguments after the script name; access them via `alea.arg[1]`, `alea.arg[2]`, etc.
 
 ## 1. Getting Started
@@ -112,10 +126,52 @@ sys:cylinder_z(id, cx, cy, r)                  -- infinite along Z
 sys:cylinder_x(id, cy, cz, r)                  -- infinite along X
 sys:cylinder_y(id, cx, cz, r)                  -- infinite along Y
 sys:box(id, xmin, xmax, ymin, ymax, zmin, zmax)
-sys:cone_z(id, cx, cy, cz, t2)                 -- t2 = tan^2(half-angle)
+sys:cone_x(id, cx, cy, cz, t2[, sheet])        -- sheet is -1, 0, or 1
+sys:cone_y(id, cx, cy, cz, t2[, sheet])
+sys:cone_z(id, cx, cy, cz, t2[, sheet])        -- t2 = tan^2(half-angle)
+sys:torus_x(id, cx, cy, cz, major_r, minor_r)
+sys:torus_y(id, cx, cy, cz, major_r, minor_r)
+sys:torus_z(id, cx, cy, cz, major_r, minor_r)
+sys:quadric(id, A, B, C, D, E, F, G, H, I, J)
+
+-- MCNP macrobodies
+sys:rcc(id, bx, by, bz, hx, hy, hz, r)
+sys:sph(id, cx, cy, cz, r)
+sys:trc(id, bx, by, bz, hx, hy, hz, r1, r2)
+sys:ell(id, v1x, v1y, v1z, v2x, v2y, v2z, major_len)
+sys:rec(id, bx, by, bz, hx, hy, hz, a1x, a1y, a1z, a2x, a2y, a2z)
+sys:wed(id, vx, vy, vz, v1x, v1y, v1z, v2x, v2y, v2z, v3x, v3y, v3z)
+sys:box_general(id, cx, cy, cz, v1x, v1y, v1z, v2x, v2y, v2z, v3x, v3y, v3z)
+sys:rhp(id, bx, by, bz, hx, hy, hz, r1x, r1y, r1z, r2x, r2y, r2z,
+        r3x, r3y, r3z)
 ```
 
 Pass `id=0` for automatic surface ID assignment.
+
+The optional cone `sheet` selects both sheets (`0`), the positive-axis sheet
+(`1`), or the negative-axis sheet (`-1`). Boundary conditions are addressed by
+surface ID:
+
+```lua
+sys:surface_set_boundary(10, "reflective")
+print(sys:surface_get_boundary(10)) -- reflective
+```
+
+Accepted boundary names are `transmissive`, `reflective`, `white`, `periodic`,
+and `vacuum`.
+
+Standalone primitive evaluation does not require a `System`. It returns the
+signed implicit function value; negative and positive values identify the two
+halfspaces, and zero is the surface boundary. The magnitude is generally not a
+distance:
+
+```lua
+local value = alea.primitive_evaluate(
+    alea.PRIMITIVE_SPHERE,
+    {0, 0, 0, 2}, -- center and radius
+    {1, 0, 0})    -- evaluation point
+assert(value == -3)
+```
 
 `sys:material(id)` returns a zero-based material index. The `material` field of
 `sys:cell{...}` expects that index, not the external material ID. Omit the
@@ -588,6 +644,15 @@ for _, event in ipairs(events) do
 end
 ```
 
+To recover an exact point on a rounded surface along a chosen direction:
+
+```lua
+local projection = sys:surface_project_along(1, {-4.999999, 0, 0}, {1, 0, 0})
+if projection then
+    print(projection.parameter, table.unpack(projection.point))
+end
+```
+
 ## 13. 2D Slicing
 
 Create 2D cross-sections of your geometry for visualization.
@@ -934,7 +999,49 @@ print("mean free path (cm):", mat:mean_free_path(energy))
 local from_geometry = alea.nuc_material_from_cell(sys, 0, xsdir)
 ```
 
-## 17. Error Handling and Logging
+## 17. Optional cluster execution
+
+The cluster binding is a separate module so ordinary Lua use has no MPI
+dependency. Build the one-process backend for development, or the MPI backend
+for multiple processes:
+
+```bash
+make test-lua-cluster USE_MPI=0
+make test-lua-cluster USE_MPI=1 MPIEXEC=mpiexec
+```
+
+Cluster contexts have an explicit collective lifecycle. Every rank must call
+operations in the same order, and `close()` must not be left to garbage
+collection:
+
+```lua
+local cluster = require("alea_cluster")
+local alea = require("alea") -- provided by the same cluster-enabled module
+
+cluster.initialize()
+local context = cluster.create()
+print(context:rank(), context:size(), context:backend())
+
+local input = context:read_mcnp_input(
+    context:is_root() and "model.inp" or nil)
+local sys = alea.load_mcnp_string(input)
+local volumes = context:estimate_volumes(sys, {
+    max_rays = 100000,
+    seed = 17,
+    workers = 0,
+    target_rel_error = 0.01,
+})
+
+context:close()
+sys:destroy()
+cluster.finalize()
+```
+
+`raycast_first_segments(system, rays, t_max)` accepts root-owned ray tables and
+returns root-owned hit tables. A miss is `false`; non-root ranks receive `nil`.
+The local and MPI builds use the same Lua API.
+
+## 18. Error Handling and Logging
 
 ### Error state
 

@@ -105,9 +105,12 @@ make              # Build core library (bin/libalea.a)
 make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a, libalea_serpent.a, libalea_nucdata.a)
 make full         # Build everything into libalea_full.a
 make cli          # Build the alea CLI tool
+make lua-module   # Build the Lua 5.5 require("alea") module
 make tools        # Build command-line conversion, plotting, and inspection tools
 make test         # Build and run tests
 make test-lua     # Build the CLI and run Lua tests
+make test-lua-module   # Test the module in a plain Lua host
+make test-lua-cluster  # Test the optional one-process cluster binding
 make install      # Install libraries, headers, CLI, tools, and docs
 make -C bindings/python test PYTHON=python3  # Build and test pyAlea
 ```
@@ -158,131 +161,34 @@ CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
 
 ### Optional cluster module
 
-`libalea_cluster.a` distributes volume-estimation ray batches across fixed MPI
-ranks and reduces raw track-length moments in memory. The core library has no
-MPI dependency. Each rank constructs the same model, calls the same collective
-operation, and receives the final volumes and uncertainties. Applications can
-include `alea_cluster_volume.h` for the volume API or
-`alea_cluster_raycast.h` for ray and coverage APIs without including render or
-mesh declarations. Render, slice, mesh, and validation have corresponding
-`alea_cluster_*.h` headers; `alea_cluster.h` remains the umbrella header. The
-common runtime and collective input APIs are in `alea_cluster_base.h`.
-In an MPI build, `alea_cluster_create()` duplicates `MPI_COMM_WORLD`.
-Applications that split ranks into independent groups can include
-`alea_cluster_mpi.h` and call `alea_cluster_create_mpi(comm)` instead. Call
-`alea_cluster_initialize()` first even if the application initialized MPI;
-it attaches to existing MPI without taking ownership. Creation,
-operations, and destruction are collective only within that group. Libalea
-owns and frees its duplicate; the caller keeps ownership of `comm`. Destroying
-a context does not finalize MPI. `alea_cluster_finalize()` finalizes MPI only
-when libalea initialized it. Only the MPI-specific header requires MPI headers.
-Applications can call `alea_cluster_read_file()` so rank zero reads an input
-file and broadcasts its bytes for parsing on every rank. Each rank frees the
-returned buffer.
-For MCNP inputs with `READ FILE=` cards, `alea_cluster_read_mcnp_input()`
-resolves nested paths relative to their containing file on rank zero and
-broadcasts the expanded text. The OpenMC geometry loader currently reads a
-single self-contained XML document and has no external-file references.
-`alea_cluster_raycast_first_segments()` distributes packed ray origins and
-directions from rank zero and returns the first concrete-cell segment for each
-ray on rank zero. It processes rays in bounded batches and preserves input order.
-`alea_cluster_raycast_batch()` returns the full compact raycast result on rank
-zero, including requested material, surface, projected-owner, and hierarchy-path
-fields. Create the output with `alea_raycast_batch_result_create()` and destroy
-it with `alea_raycast_batch_result_destroy()`. Only rank zero supplies rays and
-options; every rank supplies an equivalent geometry system and calls the
-operation collectively. Segment, path-entry, and output-byte limits apply to
-the assembled result.
-`alea_cluster_raycast_batch_stream()` instead calls a rank-zero consumer for
-each completed batch of at most 1024 rays. Its batch result is borrowed until
-the callback returns; CSR offsets start at zero, and the callback receives the
-first global input-ray index. Output limits apply per batch. A nonzero callback
-return stops the operation collectively with `ALEA_CLUSTER_INTERRUPTED`.
-`alea_cluster_raycast_batch_shards()` calls a consumer on each rank for its
-contiguous ray shard. It never assembles a root result, so consumers can write
-rank-specific output files. The callback receives the global first-ray index;
-limits apply to each shard and callback cancellation is collective.
-`alea_cluster_render_scene()` renders static tile ranges on each rank and
-assembles color, cell IDs, and optional material/depth/normal maps on rank zero.
-Every rank supplies the same render config and prepared camera, while only rank
-zero supplies the framebuffer. When edges are enabled, darkening runs after
-assembly. The `examples/c/cluster_render` program writes a root-only PPM.
-`alea_cluster_slice_raster()` assigns contiguous rows of one slice view to
-ranks and gathers requested raster fields on root. Its trace segment and byte
-limits are checked for the complete slice before output is gathered.
-`alea_cluster_slice_stack_stream()` processes a sequence of views into one
-reusable root raster and invokes a callback after each completed plane.
-`alea_cluster_coverage_shards()` assigns fixed complete-coverage rows to ranks
-and calls a rank-local consumer with each packed interval/owner result. It
-retains results on the computing rank and preserves global input-row indices;
-adaptive coverage refinement remains local.
-`alea_cluster_coverage_stream()` gathers bounded batches of fixed rows on rank
-zero, rebases their interval and owner offsets, and invokes a root callback.
-Coverage limits apply to each assembled batch.
-`alea_cluster_coverage()` assembles all fixed rows into one root-owned result
-for random access. Its row, interval, owner, and byte limits apply to the
-complete result, which requires root memory proportional to the output.
-`alea_cluster_mesh_sample()` partitions fixed point/subcell sampling into Z
-slabs and assembles voxel labels, diagnostics, and packed material/cell fractions
-on rank zero. It accepts explicit or inferred bounds and custom nodes. Seeded
-stratified and adaptive sampling preserve global voxel identities across Z
-slabs. A nonzero adaptive total-sample budget executes slabs in rank order to
-preserve serial refinement decisions; unlimited-budget slabs run concurrently.
-Directional-ray mode requires an unlimited total-sample budget. Z-directed
-rays retrace the full columns on each rank and retain only
-the local slab contributions, preserving serial results at a communication-free
-but duplicated tracing cost.
-`alea_cluster_mesh_sample_shards()` passes each rank's slab to a rank-local
-callback with its global first Z index, allowing output without a full root
-mesh. The slab is borrowed until the callback returns.
-`alea_cluster_mesh_visit_root()` invokes a voxel callback on rank zero in
-global Z/Y/X order after assembling a full mesh; it supports callback
-cancellation but requires root memory for the result.
-`alea_cluster_mesh_stream_root()` visits voxels in the same order while
-transferring one rank-owned Z slab at a time. Rank zero retains its own slab
-and at most one transferred slab, so it can write a single ordered output
-without assembling the full mesh. Callback cancellation is collective.
-`alea_cluster_validate_geometry()` distributes the existing seeded random-ray
-sequence and merges findings on rank zero in serial ray order. It preserves
-signature sampling, counters, and global truncation decisions. A ray producing
-more than 4096 intermediate findings returns `ALEA_CLUSTER_OUTPUT_LIMIT`.
-`alea_cluster_validate_slice_curves()` partitions a slice's curves in bounded
-batches and merges their findings on rank zero in serial curve order. Every
-rank supplies equivalent view, curves, model, and options. The result belongs
-to rank zero; the same 4096-finding intermediate limit applies per curve.
+The cluster module splits work across multiple processes, on one computer or
+several, using MPI. It supports volume estimation, ray tracing, rendering,
+slices, mesh sampling, and geometry checks. It is optional: the rest of libalea
+works without MPI.
 
-```bash
-make cluster USE_MPI=1 MPICC=mpicc
-mpicc program.c -Iinclude bin/libalea_cluster.a bin/libalea.a -lm -pthread
-mpiexec -n 4 ./a.out
-```
-
-Programs include `alea_cluster.h`, call `alea_cluster_initialize()` and
-`alea_cluster_create()`, then call `alea_cluster_estimate_volumes()`
-collectively. Destroy the context before `alea_cluster_finalize()`. All MPI
-calls run on the initialization thread; TinyPar handles local work between
-collectives. Set `ALEA_NUM_THREADS` to the CPUs allocated per rank before the
-first parallel operation. `make cluster USE_MPI=0` provides a one-rank local
-backend for development.
-
-The `cluster_volumes` example reads MCNP or OpenMC input on rank zero, parses it
-on every rank, and reports every concrete cell instance. The user supplies the
-global ray count and a sampling
-sphere that encloses the finite instances of interest:
+To try it, install MPI with `mpicc` and `mpiexec` available, then build and run
+the volume example with four processes:
 
 ```bash
 make cluster modules USE_MPI=1
-make -C examples/c cluster_volumes TINYPAR_BACKEND=native
+make -C examples/c cluster_volumes
 mpiexec -n 4 examples/c/cluster_volumes \
     --rays 1000000 --radius 250 --center 0 0 0 model.inp
-mpiexec -n 4 examples/c/cluster_volumes \
-    --rays 1000000 --radius 250 --csv -o volumes.csv geometry.xml
 ```
 
-The report distinguishes repeated fill and lattice instances through their
-volume-path identities. The program intentionally does not filter cells based
-on bounding-box heuristics; selecting a sphere appropriate for the cells being
-measured remains the caller's responsibility.
+Replace `model.inp` with your MCNP input or OpenMC geometry XML file. `--rays`
+sets the total number of sampling rays shared by all processes. Set `--center`
+and `--radius` so the sampling sphere encloses the cells you want to measure.
+Add `--csv -o volumes.csv` to save the results as CSV.
+
+For your own C program, include [`alea_cluster.h`](include/alea_cluster.h) and
+link `bin/libalea_cluster.a` with the core library. Each process loads the same
+model and calls the cluster operations in the same order. See
+[`cluster_volumes.c`](examples/c/cluster_volumes.c) for a complete example and
+the included headers for API details.
+
+Set `ALEA_NUM_THREADS` to the number of CPU threads available per process.
+For local development without MPI, build with `make cluster USE_MPI=0`.
 
 #### Linux
 
@@ -467,6 +373,11 @@ bin/alea                           # Interactive REPL
 bin/alea script.lua                # Run a Lua script
 bin/alea script.lua arg1 arg2      # Pass arguments to script
 ```
+
+For a standard Lua 5.5 interpreter, build `make lua-module` and use
+`local alea = require("alea")`. The optional `alea_cluster` module has both a
+one-process development backend and an MPI backend; build and test it with
+`make test-lua-cluster USE_MPI=0` or `USE_MPI=1`.
 
 Example session:
 

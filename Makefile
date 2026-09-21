@@ -53,6 +53,7 @@ BINDIR ?= $(EXEC_PREFIX)/bin
 LIBDIR ?= $(EXEC_PREFIX)/lib
 INCLUDEDIR ?= $(PREFIX)/include
 DOCDIR ?= $(PREFIX)/share/doc/libalea
+LUACMODDIR ?= $(LIBDIR)/lua/5.5
 
 # Automatic dependency generation
 DEPFLAGS = -MMD -MP
@@ -312,8 +313,9 @@ LUA_SRCS = $(filter-out $(LUA_DIR)/lua.c $(LUA_DIR)/luac.c $(LUA_DIR)/onelua.c, 
 LUA_OBJS = $(patsubst $(LUA_DIR)/%.c,$(BUILD_DIR)/lua/%.o,$(LUA_SRCS))
 
 # Lua bindings
-LUA_BIND_SRCS = $(filter-out $(LUA_BIND_DIR)/lua_main.c, $(wildcard $(LUA_BIND_DIR)/*.c))
+LUA_BIND_SRCS = $(filter-out $(LUA_BIND_DIR)/lua_main.c $(LUA_BIND_DIR)/lua_cluster.c, $(wildcard $(LUA_BIND_DIR)/*.c))
 LUA_BIND_OBJS = $(LUA_BIND_SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
+LUA_CLUSTER_BIND_OBJ = $(BUILD_DIR)/lua_cluster_bind/lua_cluster.o
 
 # ============================================================================
 # Object Files
@@ -404,7 +406,7 @@ ALL_TEST_BINS = $(UNIT_TEST_BINS) $(INTEGRATION_TEST_BINS)
 # Main Targets
 # ============================================================================
 
-.PHONY: all clean full lib-core modules cluster test-cluster test-cluster-mpi tests structure help test cli test-lua tools mesh-benchmark wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded install install-libs install-cluster install-cli install-tools install-doc uninstall check-public-headers FORCE
+.PHONY: all clean full lib-core modules cluster test-cluster test-cluster-mpi tests structure help test cli lua-module lua-cluster-module test-lua test-lua-module test-lua-cluster tools mesh-benchmark wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded install install-libs install-cluster install-cli install-lua-module install-lua-cluster-module install-tools install-doc uninstall check-public-headers FORCE
 
 # Default target: core library only
 all: lib-core
@@ -441,6 +443,14 @@ full: lib-core modules $(LIB)
 # CLI binary
 ALEA_CLI = $(BIN_DIR)/alea$(EXEEXT)
 cli: lib-core modules $(ALEA_CLI)
+
+# Loadable module for a host Lua 5.5 interpreter. It deliberately does not
+# link the vendored Lua runtime; Lua symbols are resolved by the host process.
+LUA_CMODULE = $(BIN_DIR)/lua/alea.so
+LUA_CLUSTER_CMODULE = $(BIN_DIR)/lua_cluster/alea_cluster.so
+LUA_HOST = $(BIN_DIR)/lua-host$(EXEEXT)
+lua-module: lib-core modules $(LUA_CMODULE)
+lua-cluster-module: cluster modules $(LUA_CLUSTER_CMODULE)
 
 # Build tools (mc_convert, mc_plotter)
 tools: lib-core modules
@@ -485,9 +495,9 @@ BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
 	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
 	$(BUILD_DIR)/geo_validator \
 	$(BUILD_DIR)/cluster/local $(BUILD_DIR)/cluster/mpi \
-	$(BUILD_DIR)/vendor/tinypar \
+	$(BUILD_DIR)/vendor/tinypar $(BUILD_DIR)/lua_cluster_bind \
 	$(BUILD_DIR)/lua $(BUILD_DIR)/lua_bind $(BUILD_DIR)/linenoise \
-	$(BIN_DIR) $(BIN_DIR)/tests/unit $(BIN_DIR)/tests/integration \
+	$(BIN_DIR) $(BIN_DIR)/lua $(BIN_DIR)/lua_cluster $(BIN_DIR)/tests/unit $(BIN_DIR)/tests/integration \
 	$(BIN_DIR)/tests/cluster
 
 $(BUILD_DIRS):
@@ -727,11 +737,19 @@ $(CLUSTER_TEST): $(TEST_DIR)/cluster/test_cluster.c $(LIB_CLUSTER) $(LIB_CORE) |
 endif
 
 # Lua 5.5 (vendored) - suppress warnings with -w
-# Use LUA_USE_POSIX on Unix, LUA_USE_WINDOWS on Windows
+# Enable the platform loader so a plain interpreter can require C modules.
 ifeq ($(WINDOWS_GNU),1)
   LUA_PLAT_FLAGS = -DLUA_USE_WINDOWS
+  LUA_HOST_LDFLAGS =
+else ifeq ($(UNAME_S),Darwin)
+  LUA_PLAT_FLAGS = -DLUA_USE_MACOSX
+  LUA_HOST_LDFLAGS =
+else ifeq ($(UNAME_S),Linux)
+  LUA_PLAT_FLAGS = -DLUA_USE_LINUX
+  LUA_HOST_LDFLAGS = -Wl,-E -ldl
 else
   LUA_PLAT_FLAGS = -DLUA_USE_POSIX
+  LUA_HOST_LDFLAGS =
 endif
 
 $(BUILD_DIR)/lua/%.o: $(LUA_DIR)/%.c | $(BUILD_DIR)/lua
@@ -742,6 +760,16 @@ $(BUILD_DIR)/lua/%.o: $(LUA_DIR)/%.c | $(BUILD_DIR)/lua
 $(BUILD_DIR)/lua_bind/%.o: $(LUA_BIND_DIR)/%.c | $(BUILD_DIR)/lua_bind
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -I$(LUA_DIR) -I$(LINENOISE_DIR) -c $< -o $@
+
+ifeq ($(USE_MPI),1)
+  LUA_CLUSTER_CC = $(MPICC)
+else
+  LUA_CLUSTER_CC = $(CC)
+endif
+
+$(LUA_CLUSTER_BIND_OBJ): $(LUA_BIND_DIR)/lua_cluster.c | $(BUILD_DIR)/lua_cluster_bind
+	@echo "CC  $< ($(if $(filter 1,$(USE_MPI)),MPI,local) Lua cluster)"
+	@$(LUA_CLUSTER_CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -I$(LUA_DIR) -c $< -o $@
 
 # Linenoise (POSIX only - provides line editing in REPL)
 # Windows uses fgets fallback in lua_main.c
@@ -772,6 +800,27 @@ $(ALEA_CLI): $(LUA_BIND_DIR)/lua_main.c $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_
 	@echo "LD  $@"
 	@$(CC) $(CFLAGS) $(INCLUDES) -I$(LUA_DIR) $(LINENOISE_INC) $< $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) \
 		$(CLI_LIBS) $(CLI_LDFLAGS) -o $@
+
+ifeq ($(CLI_UNAME_S),Darwin)
+  LUA_MODULE_LINK = -bundle -undefined dynamic_lookup
+else
+  LUA_MODULE_LINK = -shared
+endif
+
+$(LUA_CMODULE): $(LUA_BIND_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/lua
+	@echo "LD  $@"
+	@$(CC) $(LUA_MODULE_LINK) $(LUA_BIND_OBJS) $(CLI_LIBS) $(LDFLAGS) -o $@
+
+$(LUA_CLUSTER_CMODULE): $(LUA_CLUSTER_BIND_OBJ) $(LUA_BIND_OBJS) $(LIB_CLUSTER) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/lua_cluster
+	@echo "LD  $@"
+	@$(LUA_CLUSTER_CC) $(LUA_MODULE_LINK) $(LUA_CLUSTER_BIND_OBJ) $(LUA_BIND_OBJS) \
+		$(LIB_CLUSTER) $(CLI_LIBS) $(LDFLAGS) -o $@
+
+# A plain Lua interpreter used only to verify that the module is genuinely
+# host-loadable. The module itself is not linked to these vendored objects.
+$(LUA_HOST): $(LUA_DIR)/lua.c $(LUA_OBJS) | $(BIN_DIR)
+	@echo "LD  $@"
+	@$(CC) -std=gnu11 -O2 $(LUA_PLAT_FLAGS) -I$(LUA_DIR) $< $(LUA_OBJS) $(LDFLAGS) $(LUA_HOST_LDFLAGS) -o $@
 
 # ============================================================================
 # Test Build Rules
@@ -875,6 +924,22 @@ test-lua: cli
 	done
 	@echo ""
 	@echo "✓ All Lua tests passed!"
+
+test-lua-module: lua-module $(LUA_HOST)
+	@echo ""
+	@echo "=== Testing loadable Lua module ==="
+	@LUA_CPATH="$(abspath $(BIN_DIR)/lua)/?.so;;" $(LUA_HOST) tests/lua/test_require.lua
+	@echo "✓ Loadable Lua module passed!"
+
+test-lua-cluster: lua-cluster-module $(LUA_HOST)
+	@echo ""
+	@echo "=== Testing Lua cluster module ($(if $(filter 1,$(USE_MPI)),MPI,local)) ==="
+	@if [ "$(USE_MPI)" = "1" ]; then \
+		LUA_CPATH="$(abspath $(BIN_DIR)/lua_cluster)/?.so;;" $(MPIEXEC) -n 2 $(LUA_HOST) tests/lua/cluster_test.lua; \
+	else \
+		LUA_CPATH="$(abspath $(BIN_DIR)/lua_cluster)/?.so;;" $(LUA_HOST) tests/lua/cluster_test.lua; \
+	fi
+	@echo "✓ Lua cluster module passed!"
 
 # ============================================================================
 # Valgrind (memory leak and error detection)
@@ -991,6 +1056,14 @@ install-cli: cli
 	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"
 	@$(INSTALL_PROGRAM) $(ALEA_CLI) "$(DESTDIR)$(BINDIR)/"
 
+install-lua-module: lua-module
+	@$(MKDIR_P) "$(DESTDIR)$(LUACMODDIR)"
+	@$(INSTALL_PROGRAM) $(LUA_CMODULE) "$(DESTDIR)$(LUACMODDIR)/alea.so"
+
+install-lua-cluster-module: lua-cluster-module
+	@$(MKDIR_P) "$(DESTDIR)$(LUACMODDIR)"
+	@$(INSTALL_PROGRAM) $(LUA_CLUSTER_CMODULE) "$(DESTDIR)$(LUACMODDIR)/alea_cluster.so"
+
 install-tools: tools
 	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_convert$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
@@ -1007,6 +1080,8 @@ install-doc:
 uninstall:
 	@rm -f "$(DESTDIR)$(BINDIR)/alea"
 	@rm -f "$(DESTDIR)$(BINDIR)/alea.exe"
+	@rm -f "$(DESTDIR)$(LUACMODDIR)/alea.so"
+	@rm -f "$(DESTDIR)$(LUACMODDIR)/alea_cluster.so"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_plotter"
@@ -1067,6 +1142,8 @@ help:
 	@echo "  cluster          - Build optional cluster module (USE_MPI=0 or 1)"
 	@echo "  full             - Build full library (core + all modules)"
 	@echo "  cli              - Build alea CLI"
+	@echo "  lua-module       - Build loadable Lua 5.5 module"
+	@echo "  lua-cluster-module - Build Lua module with local/MPI cluster support"
 	@echo "  tools            - Build conversion, plotting, and inspection tools"
 	@echo "  wasm             - Build single-threaded Emscripten binding"
 	@echo "  wasm-threaded    - Build threaded TinyPar Emscripten binding"
@@ -1077,6 +1154,8 @@ help:
 	@echo "  install-libs     - Install static libraries and public headers"
 	@echo "  install-cluster  - Install optional cluster archive and header"
 	@echo "  install-cli      - Install alea CLI"
+	@echo "  install-lua-module - Install loadable Lua 5.5 module"
+	@echo "  install-lua-cluster-module - Install optional Lua cluster module"
 	@echo "  install-tools    - Install command-line tools"
 	@echo "  uninstall        - Remove installed libalea files"
 	@echo "  tests            - Build all tests"
@@ -1085,6 +1164,8 @@ help:
 	@echo "  test-integration - Run only integration tests"
 	@echo "  test-cluster     - Run cluster test (two ranks with USE_MPI=1)"
 	@echo "  test-lua         - Run Lua tests"
+	@echo "  test-lua-module  - Test require('alea') in a plain Lua host"
+	@echo "  test-lua-cluster - Test Lua cluster module (USE_MPI=0 or 1)"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  distclean        - Deep clean (all generated files)"
 	@echo "  tree             - Show project structure"
@@ -1097,6 +1178,7 @@ help:
 	@echo "  DESTDIR=$(DESTDIR)"
 	@echo "  BINDIR=$(BINDIR)"
 	@echo "  LIBDIR=$(LIBDIR)"
+	@echo "  LUACMODDIR=$(LUACMODDIR)"
 	@echo "  INCLUDEDIR=$(INCLUDEDIR)"
 	@echo "  TINYPAR_BACKEND=native - Select native or serial TinyPar backend"
 	@echo "  USE_MPI=0        - Select local (0) or MPI (1) cluster backend"
@@ -1135,4 +1217,4 @@ help:
 # Include generated dependency files (ignore if they don't exist yet)
 -include $(ALL_DEPS)
 
-.PHONY: all full lib-core modules cluster test-cluster test-cluster-mpi cli tools wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded tests test test-unit test-integration test-lua test-valgrind install install-libs install-cluster install-cli install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz FORCE
+.PHONY: all full lib-core modules cluster test-cluster test-cluster-mpi cli lua-module lua-cluster-module tools wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded tests test test-unit test-integration test-lua test-lua-module test-lua-cluster test-valgrind install install-libs install-cluster install-cli install-lua-module install-lua-cluster-module install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz FORCE

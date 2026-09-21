@@ -96,6 +96,45 @@ static int l_xsdir_find(lua_State* L) {
     return 1;
 }
 
+static void push_xsdir_entry(lua_State* L, const alea_nuc_xsdir_entry_t* entry) {
+    if (!entry) { lua_pushnil(L); return; }
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, entry->zaid); lua_setfield(L, -2, "zaid");
+    lua_pushnumber(L, entry->awr); lua_setfield(L, -2, "awr");
+    lua_pushnumber(L, entry->temperature); lua_setfield(L, -2, "temperature");
+    lua_pushstring(L, entry->filename); lua_setfield(L, -2, "filename");
+}
+
+static int l_xsdir_find_temperature(lua_State* L) {
+    alea_nuc_xsdir_t* xsdir = check_xsdir(L, 1);
+    const alea_nuc_xsdir_entry_t* entry = NULL;
+    alea_error_t error = alea_nuc_xsdir_find_temperature(
+        xsdir, luaL_checkstring(L, 2), luaL_checknumber(L, 3),
+        luaL_optnumber(L, 4, 0.0), &entry);
+    if (error != ALEA_OK)
+        return luaL_error(L, "find_temperature: %s", alea_error_string(error));
+    push_xsdir_entry(L, entry);
+    return 1;
+}
+
+static int l_xsdir_find_temperature_bracket(lua_State* L) {
+    alea_nuc_xsdir_t* xsdir = check_xsdir(L, 1);
+    const alea_nuc_xsdir_entry_t* lower = NULL;
+    const alea_nuc_xsdir_entry_t* upper = NULL;
+    double fraction = 0.0;
+    alea_error_t error = alea_nuc_xsdir_find_temperature_bracket(
+        xsdir, luaL_checkstring(L, 2), luaL_checknumber(L, 3),
+        &lower, &upper, &fraction);
+    if (error != ALEA_OK)
+        return luaL_error(L, "find_temperature_bracket: %s", alea_error_string(error));
+    if (!lower || !upper) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 3);
+    push_xsdir_entry(L, lower); lua_setfield(L, -2, "lower");
+    push_xsdir_entry(L, upper); lua_setfield(L, -2, "upper");
+    lua_pushnumber(L, fraction); lua_setfield(L, -2, "upper_fraction");
+    return 1;
+}
+
 /* xsdir:load_nuclide(zaid) -> Nuclide (cached in xsdir)
  *
  * Returns a shared, cached pointer. Multiple calls with the same ZAID
@@ -231,6 +270,58 @@ static int l_nuclide_nu_bar(lua_State* L) {
     alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
     double E = luaL_checknumber(L, 2);
     lua_pushnumber(L, alea_nuc_nu_bar(nuc, E));
+    return 1;
+}
+
+static int l_nuclide_prompt_nu_bar(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    lua_pushnumber(L, alea_nuc_prompt_nu_bar(nuc, luaL_checknumber(L, 2)));
+    return 1;
+}
+
+static int l_nuclide_delayed_nu_bar(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    lua_pushnumber(L, alea_nuc_delayed_nu_bar(nuc, luaL_checknumber(L, 2)));
+    return 1;
+}
+
+static int l_nuclide_heating_per_collision(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    lua_pushnumber(L, alea_nuc_heating_per_collision(
+        nuc, luaL_checknumber(L, 2)));
+    return 1;
+}
+
+static int l_nuclide_urr_factors(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    double factors[5];
+    if (!alea_nuc_urr_factors(nuc, luaL_checknumber(L, 2),
+                              luaL_checknumber(L, 3), factors)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    static const char* names[5] = {
+        "total", "elastic", "fission", "capture", "heating"
+    };
+    lua_createtable(L, 0, 5);
+    for (int i = 0; i < 5; ++i) {
+        lua_pushnumber(L, factors[i]);
+        lua_setfield(L, -2, names[i]);
+    }
+    return 1;
+}
+
+static int l_nuclide_reaction_yield(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    lua_pushnumber(L, alea_nuc_reaction_yield(
+        nuc, (int)luaL_checkinteger(L, 2), luaL_checknumber(L, 3)));
+    return 1;
+}
+
+static int l_nuclide_photon_production_xs(lua_State* L) {
+    alea_nuc_nuclide_t* nuc = check_nuclide(L, 1);
+    lua_pushnumber(L, alea_nuc_xs_photon_production_total(
+        nuc, luaL_checknumber(L, 2)));
     return 1;
 }
 
@@ -744,6 +835,57 @@ static int l_mg_scatter_adjoint(lua_State* L) {
     return 1;
 }
 
+static int l_mg_sample_scatter(lua_State* L) {
+    alea_nuc_multigroup_t* mg = check_mg(L, 1);
+    int group = (int)luaL_checkinteger(L, 2) - 1;
+    double xi = luaL_checknumber(L, 3);
+    int adjoint = lua_toboolean(L, 4);
+    if (group < 0 || group >= mg->n_groups)
+        return luaL_error(L, "group index out of range");
+    if (!(xi >= 0.0 && xi < 1.0))
+        return luaL_argerror(L, 3, "xi must be in [0, 1)");
+    int outgoing = alea_nuc_mg_sample_scatter(mg, group, xi, adjoint);
+    if (outgoing < 0) return luaL_error(L, "sample_scatter failed");
+    lua_pushinteger(L, outgoing + 1);
+    return 1;
+}
+
+static int l_parse_zaid(lua_State* L) {
+    const char* zaid = luaL_checkstring(L, 1);
+    int Z, A, metastable;
+    alea_nuc_table_type_t type;
+    alea_error_t error = alea_nuc_parse_zaid(zaid, &Z, &A, &metastable, &type);
+    if (error != ALEA_OK)
+        return luaL_error(L, "parse_zaid: %s", alea_error_string(error));
+    const char* type_name = "unknown";
+    switch (type) {
+        case ALEA_NUC_TABLE_CONTINUOUS_NEUTRON: type_name = "continuous_neutron"; break;
+        case ALEA_NUC_TABLE_PHOTOATOMIC: type_name = "photoatomic"; break;
+        case ALEA_NUC_TABLE_PHOTONUCLEAR: type_name = "photonuclear"; break;
+        case ALEA_NUC_TABLE_THERMAL_SAB: type_name = "thermal_sab"; break;
+        case ALEA_NUC_TABLE_ELECTRON: type_name = "electron"; break;
+        default: break;
+    }
+    lua_createtable(L, 0, 4);
+    lua_pushinteger(L, Z); lua_setfield(L, -2, "Z");
+    lua_pushinteger(L, A); lua_setfield(L, -2, "A");
+    lua_pushinteger(L, metastable); lua_setfield(L, -2, "metastable");
+    lua_pushstring(L, type_name); lua_setfield(L, -2, "type");
+    return 1;
+}
+
+static int l_reaction_classify(lua_State* L) {
+    const char* name = "unknown";
+    switch (alea_nuc_reaction_classify((int)luaL_checkinteger(L, 1))) {
+        case ALEA_NUC_RXN_ABSORPTION: name = "absorption"; break;
+        case ALEA_NUC_RXN_SCATTER: name = "scatter"; break;
+        case ALEA_NUC_RXN_MULTIPLY: name = "multiply"; break;
+        default: break;
+    }
+    lua_pushstring(L, name);
+    return 1;
+}
+
 /* mg:n_groups() -> int */
 static int l_mg_n_groups(lua_State* L) {
     alea_nuc_multigroup_t* mg = check_mg(L, 1);
@@ -765,6 +907,8 @@ static const luaL_Reg xsdir_methods[] = {
     {"count",         l_xsdir_count},
     {"find",          l_xsdir_find},
     {"load_nuclide",  l_xsdir_load_nuclide},
+    {"find_temperature", l_xsdir_find_temperature},
+    {"find_temperature_bracket", l_xsdir_find_temperature_bracket},
     {NULL, NULL}
 };
 
@@ -792,6 +936,12 @@ static const luaL_Reg nuclide_methods[] = {
     {"xs_reaction",     l_nuclide_xs_reaction},
     {"xs_heating",      l_nuclide_xs_heating},
     {"nu_bar",          l_nuclide_nu_bar},
+    {"prompt_nu_bar",   l_nuclide_prompt_nu_bar},
+    {"delayed_nu_bar",  l_nuclide_delayed_nu_bar},
+    {"heating_per_collision", l_nuclide_heating_per_collision},
+    {"urr_factors",     l_nuclide_urr_factors},
+    {"reaction_yield",  l_nuclide_reaction_yield},
+    {"photon_production_xs", l_nuclide_photon_production_xs},
     {"broadened",       l_nuclide_broadened},
     {"energy_range",    l_nuclide_energy_range},
     {"reactions",       l_nuclide_reactions},
@@ -831,6 +981,7 @@ static const luaL_Reg mg_methods[] = {
     {"chi",              l_mg_chi},
     {"scatter",          l_mg_scatter},
     {"scatter_adjoint",  l_mg_scatter_adjoint},
+    {"sample_scatter",   l_mg_sample_scatter},
     {"n_groups",         l_mg_n_groups},
     {NULL, NULL}
 };
@@ -872,6 +1023,12 @@ int luaopen_alea_nucdata(lua_State* L) {
 
     lua_pushcfunction(L, l_nuc_material_from_cell);
     lua_setfield(L, -2, "nuc_material_from_cell");
+
+    lua_pushcfunction(L, l_parse_zaid);
+    lua_setfield(L, -2, "parse_zaid");
+
+    lua_pushcfunction(L, l_reaction_classify);
+    lua_setfield(L, -2, "reaction_classify");
 
     return 0;
 }

@@ -117,6 +117,48 @@ static int l_ray_first_cell(lua_State* L) {
     return 2;
 }
 
+/* sys:surface_project_along(surface_id, point, direction) -> table or nil */
+static int l_surface_project_along(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int surface_id = (int)luaL_checkinteger(L, 2);
+    double point[3], direction[3], projected[3], parameter;
+    alea_primitive_type_t primitive_type;
+
+    luaL_checktype(L, 3, LUA_TTABLE);
+    luaL_checktype(L, 4, LUA_TTABLE);
+    for (int i = 0; i < 3; ++i) {
+        lua_geti(L, 3, i + 1);
+        point[i] = luaL_checknumber(L, -1);
+        lua_pop(L, 1);
+        lua_geti(L, 4, i + 1);
+        direction[i] = luaL_checknumber(L, -1);
+        lua_pop(L, 1);
+    }
+
+    int rc = alea_surface_project_along(sys, surface_id, point, direction,
+                                         &parameter, projected,
+                                         &primitive_type);
+    if (rc < 0)
+        return luaL_error(L, "surface_project_along failed: %s", alea_error());
+    if (rc == 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_createtable(L, 0, 3);
+    lua_pushnumber(L, parameter);
+    lua_setfield(L, -2, "parameter");
+    lua_pushinteger(L, (lua_Integer)primitive_type);
+    lua_setfield(L, -2, "primitive_type");
+    lua_createtable(L, 3, 0);
+    for (int i = 0; i < 3; ++i) {
+        lua_pushnumber(L, projected[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+    lua_setfield(L, -2, "point");
+    return 1;
+}
+
 /* ============================================================================
  * Result methods
  * ============================================================================ */
@@ -313,6 +355,7 @@ static const luaL_Reg raycast_system_methods[] = {
     {"raycast",            l_raycast},
     {"raycast_cell_aware", l_raycast_cell_aware},
     {"ray_first_cell",     l_ray_first_cell},
+    {"surface_project_along", l_surface_project_along},
     {"first_visible",      l_first_visible},
     {"boundary_events",    l_boundary_events},
     {NULL, NULL}

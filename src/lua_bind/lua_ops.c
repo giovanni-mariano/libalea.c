@@ -3,6 +3,142 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_lua.h"
+#include <math.h>
+
+static int read_transform_values(lua_State* L, int index, double values[13]) {
+    luaL_checktype(L, index, LUA_TTABLE);
+    lua_Integer count = luaL_len(L, index);
+    if (count < 3 || count > 13)
+        luaL_argerror(L, index,
+            "values must contain between 3 and 13 MCNP transform values");
+    for (lua_Integer i = 1; i <= count; ++i) {
+        lua_geti(L, index, i);
+        values[i - 1] = luaL_checknumber(L, -1);
+        lua_pop(L, 1);
+        if (!isfinite(values[i - 1]))
+            luaL_argerror(L, index, "transform values must be finite");
+    }
+    return (int)count;
+}
+
+static int option_boolean(lua_State* L, int table, const char* field,
+                          int default_value) {
+    if (lua_isnoneornil(L, table)) return default_value;
+    luaL_checktype(L, table, LUA_TTABLE);
+    lua_getfield(L, table, field);
+    int result = lua_isnil(L, -1) ? default_value : lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    return result;
+}
+
+/* sys:add_transform(id, values[, options]) -> id */
+static int l_system_add_transform(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int transform_id = (int)luaL_checkinteger(L, 2);
+    double values[13];
+    int count = read_transform_values(L, 3, values);
+    int degrees = option_boolean(L, 4, "degrees", 0);
+    if (alea_add_transform(sys, transform_id, values, count, degrees) != 0)
+        return luaL_error(L, "add_transform: %s", alea_error());
+    lua_pushinteger(L, transform_id);
+    return 1;
+}
+
+/* sys:add_inline_transform(values[, options]) -> assigned id */
+static int l_system_add_inline_transform(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    double values[13];
+    int count = read_transform_values(L, 2, values);
+    int degrees = option_boolean(L, 3, "degrees", 0);
+    int cell_id = 0;
+    const char* role = "fill";
+    if (!lua_isnoneornil(L, 3)) {
+        lua_getfield(L, 3, "cell_id");
+        if (!lua_isnil(L, -1)) cell_id = (int)luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "role");
+        if (!lua_isnil(L, -1)) role = luaL_checkstring(L, -1);
+        lua_pop(L, 1);
+    }
+    int transform_id = alea_add_inline_transform(
+        sys, values, count, degrees, cell_id, role);
+    if (transform_id < 0)
+        return luaL_error(L, "add_inline_transform: %s", alea_error());
+    lua_pushinteger(L, transform_id);
+    return 1;
+}
+
+static int l_system_set_comment(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    const char* value = luaL_optstring(L, 3, NULL);
+    if (alea_cell_set_comment(sys, cell, value) != 0)
+        return luaL_error(L, "set_comment: invalid cell index %d", cell);
+    return 0;
+}
+
+static int l_system_set_inline_comment(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    const char* value = luaL_optstring(L, 3, NULL);
+    if (alea_cell_set_inline_comment(sys, cell, value) != 0)
+        return luaL_error(L, "set_inline_comment: invalid cell index %d", cell);
+    return 0;
+}
+
+static int l_system_cell_set_material(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    int material = (int)luaL_checkinteger(L, 3);
+    if (alea_cell_set_material(sys, cell, material) != 0)
+        return luaL_error(L, "cell_set_material: invalid cell or material index");
+    return 0;
+}
+
+static int l_system_cell_set_density(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    double density = luaL_checknumber(L, 3);
+    if (!isfinite(density)) return luaL_argerror(L, 3, "density must be finite");
+    if (alea_cell_set_density(sys, cell, density) != 0)
+        return luaL_error(L, "cell_set_density: invalid cell index %d", cell);
+    return 0;
+}
+
+static int l_system_cell_set_temperature(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    double temperature = luaL_checknumber(L, 3);
+    if (alea_cell_set_temperature(sys, cell, temperature) != 0)
+        return luaL_error(L,
+            "cell_set_temperature: temperature must be finite and positive and the cell must exist");
+    return 0;
+}
+
+static int l_system_cell_clear_temperature(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    if (alea_cell_clear_temperature(sys, cell) != 0)
+        return luaL_error(L, "cell_clear_temperature: invalid cell index %d", cell);
+    return 0;
+}
+
+static int l_system_cell_set_universe(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    int universe = (int)luaL_checkinteger(L, 3);
+    if (alea_cell_set_universe(sys, cell, universe) != 0)
+        return luaL_error(L, "cell_set_universe: invalid cell index %d", cell);
+    return 0;
+}
+
+static int l_system_cell_remove(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int cell = (int)luaL_checkinteger(L, 2);
+    if (alea_cell_remove(sys, cell) != 0)
+        return luaL_error(L, "cell_remove: invalid cell index %d", cell);
+    return 0;
+}
 
 /* ============================================================================
  * Node operators
@@ -260,6 +396,16 @@ static const luaL_Reg system_ops_methods[] = {
     {"material", l_system_material},
     {"cell",     l_system_cell},
     {"set_fill", l_system_set_fill},
+    {"add_transform", l_system_add_transform},
+    {"add_inline_transform", l_system_add_inline_transform},
+    {"set_comment", l_system_set_comment},
+    {"set_inline_comment", l_system_set_inline_comment},
+    {"cell_set_material", l_system_cell_set_material},
+    {"cell_set_density", l_system_cell_set_density},
+    {"cell_set_temperature", l_system_cell_set_temperature},
+    {"cell_clear_temperature", l_system_cell_clear_temperature},
+    {"cell_set_universe", l_system_cell_set_universe},
+    {"cell_remove", l_system_cell_remove},
     {NULL, NULL}
 };
 

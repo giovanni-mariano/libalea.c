@@ -56,6 +56,14 @@ local fc, ft = sys:ray_first_cell(-10, 0, 0, 1, 0, 0, 100)
 assert(fc ~= nil, "should find a first cell")
 assert(ft ~= nil, "should have a distance")
 
+local projection = sys:surface_project_along(1, {-4.999999, 0, 0}, {1, 0, 0})
+assert(projection ~= nil, "surface projection should find the sphere")
+assert(math.abs(projection.point[1] + 5.0) < 1e-10,
+    "surface projection should recover the exact boundary")
+assert(math.abs(projection.parameter + 0.000001) < 1e-9,
+    "surface projection should return a signed parameter")
+assert(type(projection.primitive_type) == "number", "projection should report primitive type")
+
 local visible = sys:first_visible(-10, 0, 0, 1, 0, 0, 100)
 assert(visible ~= nil, "first_visible should hit the sphere")
 assert(visible.cell_id == 1, "first_visible should select the material cell")

@@ -9,6 +9,13 @@ assert(type(alea.nuc_load_xsdir_dir) == "function", "nuc_load_xsdir_dir should b
 assert(type(alea.nuc_material) == "function", "nuc_material should be a function")
 assert(type(alea.nuc_mg_create) == "function", "nuc_mg_create should be a function")
 
+local zaid = alea.parse_zaid("92235.80c")
+assert(zaid.Z == 92 and zaid.A == 235 and zaid.metastable == 0,
+       "ZAID parsing")
+assert(zaid.type == "continuous_neutron", "ZAID table type")
+assert(alea.reaction_classify(2) == "scatter", "elastic is scattering")
+assert(alea.reaction_classify(102) == "absorption", "capture is absorption")
+
 -- SVG plot factory
 assert(type(alea.svg_plot) == "function", "svg_plot should be a function")
 

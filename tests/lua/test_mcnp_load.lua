@@ -38,6 +38,20 @@ end
 local cfg = sys:get_config()
 print(string.format("\nConfig: dedup=%s abs_tol=%g", tostring(cfg.dedup), cfg.abs_tol))
 
+-- In-memory exports avoid temporary application files.
+local mcnp_text = sys:export_mcnp_string()
+assert(type(mcnp_text) == "string" and #mcnp_text > 0, "MCNP string export")
+local from_mcnp_text = alea.load_mcnp_string(mcnp_text)
+assert(from_mcnp_text:cell_count() == nc, "MCNP string round-trip")
+
+local openmc_text = sys:export_openmc_string()
+assert(type(openmc_text) == "string" and #openmc_text > 0, "OpenMC string export")
+local from_openmc_text = alea.load_openmc_string(openmc_text)
+assert(from_openmc_text:cell_count() == nc, "OpenMC string round-trip")
+
+local serpent_text = sys:export_serpent_string()
+assert(type(serpent_text) == "string" and #serpent_text > 0, "Serpent string export")
+
 -- Export round-trip
 local function join_path(dir, name)
     local sep = package.config and package.config:sub(1, 1) or "/"

@@ -47,6 +47,19 @@ assert(sf == 0, "surface 1 should be at index 0")
 local sf2 = sys:surface_find(999)
 assert(sf2 == nil, "surface 999 should not be found")
 
+assert(sys:surface_id_at(0) == 1, "surface_id_at should return the external ID")
+local surface_ids = sys:surface_ids()
+assert(#surface_ids == 2 and surface_ids[1] == 1 and surface_ids[2] == 2,
+    "surface_ids should preserve surface order")
+assert(sys:surface_node(1, -1) ~= nil, "surface_node should return the negative half-space")
+assert(sys:surface_node(999, 1) == nil, "unknown surface should have no node")
+
+local expr = sys:cell_expr(0)
+assert(type(expr) == "string" and #expr > 0, "cell_expr should serialize a cell region")
+local openmc_expr = sys:cell_expr(1, {union = " | ", intersection = " ", complement = "~"})
+assert(type(openmc_expr) == "string" and #openmc_expr > 0,
+    "cell_expr should accept custom operators")
+
 -- universe_info
 local ui = sys:universe_info(0)
 assert(ui.universe_id == 0, "universe_id should be 0")
@@ -85,6 +98,8 @@ local qstats = sys:query_acceleration_stats()
 assert(type(qstats) == "table", "query_acceleration_stats should return a table")
 assert(qstats.built == false, "query acceleration should not be built yet")
 assert(type(qstats.hier_universe_count) == "number", "hier_universe_count should be a number")
+
+assert(sys:volume_path_count() >= 3, "volume_path_count should include physical cell paths")
 
 -- stats
 local st = sys:stats()

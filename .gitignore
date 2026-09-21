@@ -18,6 +18,7 @@ tools/mc_plotter
 *_tmp.*
 plans/*
 docs/PLAN_CLUSTER_EXTENSIONS.md
+docs/PLAN_LUA_IMPLEMENTATION.md
 examples/c/cluster_volumes
 examples/c/cluster_render
 tests/nucdata/endfb71-tsl/

@@ -202,6 +202,7 @@ static int l_cell_info(lua_State* L) {
     lua_pushinteger(L, info.cell_id);        lua_setfield(L, -2, "cell_id");
     lua_pushinteger(L, info.material_id);    lua_setfield(L, -2, "material_id");
     lua_pushnumber(L, info.density);         lua_setfield(L, -2, "density");
+    lua_pushboolean(L, info.is_mass_density);lua_setfield(L, -2, "is_mass_density");
     lua_pushinteger(L, info.universe_id);    lua_setfield(L, -2, "universe_id");
     lua_pushinteger(L, info.fill_universe);  lua_setfield(L, -2, "fill_universe");
     lua_pushinteger(L, info.fill_transform); lua_setfield(L, -2, "fill_transform");
@@ -375,6 +376,7 @@ static int l_cell_find_info(lua_State* L) {
     lua_pushinteger(L, info.cell_id);        lua_setfield(L, -2, "cell_id");
     lua_pushinteger(L, info.material_id);    lua_setfield(L, -2, "material_id");
     lua_pushnumber(L, info.density);         lua_setfield(L, -2, "density");
+    lua_pushboolean(L, info.is_mass_density);lua_setfield(L, -2, "is_mass_density");
     lua_pushinteger(L, info.universe_id);    lua_setfield(L, -2, "universe_id");
     lua_pushinteger(L, info.fill_universe);  lua_setfield(L, -2, "fill_universe");
     lua_pushinteger(L, info.fill_transform); lua_setfield(L, -2, "fill_transform");
@@ -453,6 +455,78 @@ static int l_surface_find(lua_State* L) {
         lua_pushnil(L);
     else
         lua_pushinteger(L, idx);
+    return 1;
+}
+
+static int l_surface_id_at(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    lua_Integer index = luaL_checkinteger(L, 2);
+    if (index < 0) return luaL_argerror(L, 2, "surface index must be non-negative");
+    int id = alea_surface_id_at(sys, (size_t)index);
+    if (id < 0) return luaL_error(L, "surface_id_at: index out of range");
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+static int l_surface_ids(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    size_t count = alea_surface_count(sys);
+    lua_createtable(L, (int)count, 0);
+    for (size_t i = 0; i < count; ++i) {
+        lua_pushinteger(L, alea_surface_id_at(sys, i));
+        lua_rawseti(L, -2, (lua_Integer)i + 1);
+    }
+    return 1;
+}
+
+static int l_surface_node(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int surface_id = (int)luaL_checkinteger(L, 2);
+    int sense = (int)luaL_checkinteger(L, 3);
+    if (sense != -1 && sense != 1)
+        return luaL_argerror(L, 3, "sense must be -1 or 1");
+    int index = alea_surface_find(sys, surface_id);
+    if (index < 0) { lua_pushnil(L); return 1; }
+    alea_node_id_t positive, negative;
+    if (alea_surface_get(sys, (size_t)index, NULL, NULL, &positive, &negative,
+                         NULL) != 0)
+        return luaL_error(L, "surface_node: could not inspect surface");
+    alea_push_node(L, 1, sense > 0 ? positive : negative);
+    return 1;
+}
+
+static int l_cell_expr(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    lua_Integer index = luaL_checkinteger(L, 2);
+    if (index < 0) return luaL_argerror(L, 2, "cell index must be non-negative");
+    const char* union_op = ":";
+    const char* intersection_op = " ";
+    const char* complement_op = "#";
+    if (!lua_isnoneornil(L, 3)) {
+        luaL_checktype(L, 3, LUA_TTABLE);
+#define READ_OPERATOR(field, target) do { \
+    lua_getfield(L, 3, field); \
+    if (!lua_isnil(L, -1)) target = luaL_checkstring(L, -1); \
+    lua_pop(L, 1); \
+} while (0)
+        READ_OPERATOR("union", union_op);
+        READ_OPERATOR("intersection", intersection_op);
+        READ_OPERATOR("complement", complement_op);
+#undef READ_OPERATOR
+    }
+    alea_lua_free_guard_t* guard = alea_lua_push_free_guard(L);
+    guard->ptr = alea_cell_expr(sys, (size_t)index, union_op, intersection_op,
+                                complement_op);
+    if (!guard->ptr) return luaL_error(L, "cell_expr: %s", alea_error());
+    lua_pushstring(L, (const char*)guard->ptr);
+    free(guard->ptr);
+    guard->ptr = NULL;
+    lua_remove(L, -2);
+    return 1;
+}
+
+static int l_volume_path_count(lua_State* L) {
+    lua_pushinteger(L, (lua_Integer)alea_volume_path_count(alea_get_sys(L, 1)));
     return 1;
 }
 
@@ -671,6 +745,11 @@ static const luaL_Reg query_methods[] = {
     {"cells_in_universe",       l_cells_in_universe},
     {"surface_info",            l_surface_info},
     {"surface_find",            l_surface_find},
+    {"surface_id_at",           l_surface_id_at},
+    {"surface_ids",             l_surface_ids},
+    {"surface_node",            l_surface_node},
+    {"cell_expr",               l_cell_expr},
+    {"volume_path_count",       l_volume_path_count},
     {"universe_info",           l_universe_info},
     {"universe_find",           l_universe_find},
     {"node_primitive_type",     l_node_primitive_type},
