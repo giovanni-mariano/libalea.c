@@ -40,12 +40,13 @@ typedef struct alea_ray_coverage_slice_result
  * its geometry must not be mutated while a navigator is in use. */
 typedef struct alea_ray_navigator alea_ray_navigator_t;
 
-/** STRICT checks competing owners at one interior point per interval. FAST
- * trusts the selected hierarchy path after geometry has been validated. Both
- * modes keep traversal progress and resource-failure checks. */
+/** STRICT checks one interior point per selected interval. INTERVAL checks
+ * every geometric subinterval of each finite flight before publishing it.
+ * FAST trusts the selected hierarchy path after geometry validation. */
 typedef enum {
     ALEA_NAV_VALIDATE_STRICT = 0,
-    ALEA_NAV_VALIDATE_FAST = 1
+    ALEA_NAV_VALIDATE_FAST = 1,
+    ALEA_NAV_VALIDATE_INTERVAL = 2
 } alea_nav_validation_mode_t;
 
 #define ALEA_NAV_EVENT_NORMAL (1u << 0)
@@ -98,6 +99,10 @@ void alea_ray_navigator_destroy(alea_ray_navigator_t* navigator);
  * Switching to STRICT verifies the current interval before returning. */
 int alea_ray_navigator_set_validation_mode(
     alea_ray_navigator_t* navigator, alea_nav_validation_mode_t mode);
+/** Maximum raw geometric breakpoints checked per finite INTERVAL advance.
+ * Defaults to 8192; exceeding it fails the advance. */
+int alea_ray_navigator_set_interval_budget(
+    alea_ray_navigator_t* navigator, size_t max_breakpoints);
 int alea_ray_navigator_set_event_fields(
     alea_ray_navigator_t* navigator, uint32_t fields);
 
@@ -105,9 +110,9 @@ int alea_ray_navigator_set_event_fields(
  * normalized. Returns -1 for invalid inputs, cache failures, or a traversal
  * failure. Unowned gaps, overlaps, and undefined locations are reported by
  * kind; advance refuses to silently treat them as a transport material.
- * Ownership verification samples each selected open interval. It does not
- * certify that an entire interval is free of sub-interval overlaps/gaps;
- * validate input geometry independently before running transport. */
+ * STRICT ownership verification samples each selected open interval.
+ * INTERVAL validates every representable subinterval of each finite advance,
+ * subject to a bounded work budget and the geometry intersection numerics. */
 int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
                                const double position[3],
                                const double direction[3],

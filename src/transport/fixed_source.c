@@ -8,6 +8,7 @@
 #include "../rng/alea_rng.h"
 #include "../rng/alea_rng_distribution.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -143,6 +144,23 @@ static alea_error_t fail_transport(alea_transport_failure_t* failure,
     return error;
 }
 
+static alea_error_t fail_transport_navigation(
+    alea_transport_failure_t* failure, uint32_t history,
+    uint32_t event_index, const alea_nav_location_t* location,
+    const double position[3], double energy) {
+    alea_error_t error = alea_get_last_error();
+    if (error == ALEA_OK) error = ALEA_ERR_INVALID_STATE;
+    char navigation_detail[256];
+    snprintf(navigation_detail, sizeof(navigation_detail), "%s",
+             alea_get_error_detail());
+    fail_transport(failure, history, event_index, location,
+                   position, energy, error);
+    alea_set_error_detail(error,
+        "transport history %u event %u: %s", history, event_index,
+        navigation_detail);
+    return error;
+}
+
 alea_error_t alea_transport_run_sampled_source(
     alea_system_t* sys, const alea_nuc_cell_bindings_t* bindings,
     alea_transport_source_sampler_fn sampler, void* source_context,
@@ -160,7 +178,10 @@ alea_error_t alea_transport_run_sampled_source(
         return ALEA_ERR_INVALID_STATE;
     if (options->histories == 0 || options->max_events_per_history == 0 ||
         !isfinite(options->max_segment_distance) ||
-        options->max_segment_distance <= 0.0)
+        options->max_segment_distance <= 0.0 ||
+        (options->navigation_validation != ALEA_NAV_VALIDATE_STRICT &&
+         options->navigation_validation != ALEA_NAV_VALIDATE_FAST &&
+         options->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL))
         return ALEA_ERR_INVALID_ARG;
     if (options->histories - 1 > UINT32_MAX - options->history_offset)
         return ALEA_ERR_OVERFLOW;
@@ -227,6 +248,11 @@ alea_error_t alea_transport_run_sampled_source(
         alea_ray_navigator_destroy(navigator);
         return ALEA_ERR_OUT_OF_MEMORY;
     }
+    alea_ray_navigator_set_validation_mode(
+        navigator, options->navigation_validation);
+    if (options->max_navigation_breakpoints)
+        alea_ray_navigator_set_interval_budget(
+            navigator, options->max_navigation_breakpoints);
     alea_transport_result_t result = {
         .cell_count = cell_count, .histories = options->histories,
         .track_length = path_sum, .track_length_squared = path_sum_squared,
@@ -374,8 +400,8 @@ alea_error_t alea_transport_run_sampled_source(
                         break;
                     } else if (alea_ray_navigator_advance(navigator, distance,
                             options->max_segment_distance, &event) != 0) {
-                        err = fail_transport(failure, h, events, &location, position,
-                                             particle.energy, ALEA_ERR_INVALID_STATE);
+                        err = fail_transport_navigation(failure, h, events,
+                            &location, position, particle.energy);
                         break;
                     }
                 }

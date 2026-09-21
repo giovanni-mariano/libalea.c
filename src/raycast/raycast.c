@@ -223,8 +223,28 @@ static void record_result_buffer_growth(alea_raycast_result_t* result,
 }
 
 static int add_hit(alea_raycast_result_t* result, const alea_ray_hit_t* hit) {
+    if (result->breakpoint_hit_limit &&
+        (!isfinite(hit->t) || hit->t < 0.0)) {
+        result->breakpoint_failed = 1;
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "particle interval breakpoint is not finite");
+        return -1;
+    }
+    if (result->breakpoint_hit_limit &&
+        result->hits.count >= result->breakpoint_hit_limit) {
+        result->breakpoint_failed = 1;
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                              "particle interval breakpoint budget exceeded");
+        return -1;
+    }
     size_t old_capacity = result->hits.capacity;
     int res = alea_vec_push(&result->hits, *hit, alea_ray_hit_t);
+    if (res != 0) {
+        result->breakpoint_failed = 1;
+        if (result->breakpoint_hit_limit)
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                  "failed to store particle interval breakpoint");
+    }
     record_result_buffer_growth(result, old_capacity, result->hits.capacity,
                                 sizeof(alea_ray_hit_t));
     return res != 0 ? -1 : 0;
@@ -489,8 +509,9 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
                                    &hit.nx, &hit.ny, &hit.nz);
 
                 if (add_hit(ctx->result, &hit) != 0) {
-                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
-                                          "failed to store BVH surface hit");
+                    if (!ctx->result->breakpoint_hit_limit)
+                        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                              "failed to store BVH surface hit");
                     ctx->failed = true;
                     return;
                 }
@@ -530,8 +551,9 @@ static int raycast_surfaces_linear(alea_system_t* sys,
                                    &hit.nx, &hit.ny, &hit.nz);
 
                 if (add_hit(result, &hit) != 0) {
-                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
-                                          "failed to store linear surface hit");
+                    if (!result->breakpoint_hit_limit)
+                        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                              "failed to store linear surface hit");
                     return -1;
                 }
             }
@@ -575,7 +597,7 @@ static int raycast_surfaces_impl(alea_system_t* sys,
     sort_hits(result->hits.data, result->hits.count);
 
     /* Remove duplicate hits (same t AND same surface_id within epsilon) */
-    if (result->hits.count > 1) {
+    if (!result->breakpoint_hit_limit && result->hits.count > 1) {
         size_t write = 1;
         for (size_t read = 1; read < result->hits.count; read++) {
             int same_t = fabs(result->hits.data[read].t - result->hits.data[write - 1].t) <= DEDUP_EPSILON;
@@ -937,16 +959,26 @@ static void raycast_tree_primitives(alea_system_t* sys,
                                     double t_min, double t_max,
                                     alea_raycast_result_t* result,
                                     const alea_matrix_t* local_to_world) {
-    if (node_id >= alea_vec_count(&sys->nodes)) return;
+    if (node_id >= alea_vec_count(&sys->nodes)) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+        return;
+    }
     const alea_node_t* node = &sys->nodes.data[node_id];
     alea_operation_t op = ALEA_GET_OPERATION(node);
 
     if (op == ALEA_OP_PRIMITIVE) {
+        if (node->primitive.primitive_id >= alea_vec_count(&sys->primitives)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+            return;
+        }
         const alea_primitive_entry_t* prim =
             &sys->primitives.data[node->primitive.primitive_id];
         alea_primitive_data_t prim_data;
         if (!raycast_primitive_copy_payload(sys, node->primitive.primitive_id,
-                                            prim->type, &prim_data)) return;
+                                            prim->type, &prim_data)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+            return;
+        }
         double t[4];
         result->surfaces_tested++;
         int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
@@ -1000,16 +1032,23 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
 
     for (size_t i = 0; i < cell->surface_index_count; i++) {
         uint32_t surf_idx = cell->surface_indices[i];
-        if (surf_idx >= alea_vec_count(&sys->surfaces)) continue;
+        if (surf_idx >= alea_vec_count(&sys->surfaces)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+            continue;
+        }
 
         const alea_surface_entry_t* surf = &sys->surfaces.data[surf_idx];
-        if (surf->primitive_id >= alea_vec_count(&sys->primitives)) continue;
+        if (surf->primitive_id >= alea_vec_count(&sys->primitives)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+            continue;
+        }
 
         const alea_primitive_entry_t* prim =
             &sys->primitives.data[surf->primitive_id];
         alea_primitive_data_t prim_data;
         if (!raycast_primitive_copy_payload(sys, surf->primitive_id,
                                             prim->type, &prim_data)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             continue;
         }
 
@@ -1052,10 +1091,17 @@ static void raycast_universe_surfaces(alea_system_t* sys,
                                       alea_raycast_result_t* result,
                                       const alea_matrix_t* local_to_world) {
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
-    if (!univ) return;
+    if (!univ) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+        return;
+    }
 
     for (size_t c = 0; c < univ->cell_indices.count; c++) {
         size_t cell_idx = univ->cell_indices.data[c];
+        if (cell_idx >= alea_vec_count(&sys->cells)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+            continue;
+        }
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
         raycast_tree_primitives(sys, local_ray, cell->root_node_id,
                                 t_min, t_max, result, local_to_world);
@@ -1267,20 +1313,26 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
                                                  alea_raycast_result_t* result) {
     if (!sys || !global_ray || !accumulated || !result)
         return;
-    if (depth >= MAX_FILL_RAYCAST_DEPTH)
+    if (depth >= MAX_FILL_RAYCAST_DEPTH) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
         return;
+    }
 
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
-    if (!univ)
+    if (!univ) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
         return;
+    }
 
     alea_ray_t parent_local_ray;
     transform_ray_inverse(accumulated, global_ray, &parent_local_ray);
 
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
         size_t cell_idx = univ->cell_indices.data[i];
-        if (cell_idx >= alea_vec_count(&sys->cells))
+        if (cell_idx >= alea_vec_count(&sys->cells)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             continue;
+        }
 
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
 
@@ -1311,6 +1363,7 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
             if (!tr ||
                 !alea_matrix_from_mcnp(&fill_transform, tr->cosines,
                                        tr->value_count, false)) {
+                if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
                 continue;
             }
         } else {
@@ -1319,8 +1372,10 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
 
         alea_matrix_t fill_accumulated;
         alea_matrix_multiply(&fill_accumulated, accumulated, &fill_transform);
-        if (!fill_accumulated.has_inverse && !alea_matrix_invert(&fill_accumulated))
+        if (!fill_accumulated.has_inverse && !alea_matrix_invert(&fill_accumulated)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             continue;
+        }
 
         alea_ray_t fill_local_ray;
         transform_ray_inverse(&fill_accumulated, global_ray, &fill_local_ray);
@@ -1525,22 +1580,39 @@ static void raycast_lattice_walk(alea_system_t* sys,
     double t_enter, t_exit;
     const int interval = lattice_raycast_interval(ray, cell, t_min, t_max,
                                                   &t_enter, &t_exit);
-    if (interval != 0 || t_exit <= t_enter) return;
+    if (interval != 0 || t_exit <= t_enter) {
+        if (interval < 0 && result->breakpoint_hit_limit)
+            result->breakpoint_failed = 1;
+        return;
+    }
 
     const int max_steps = lattice_raycast_step_limit(ray, cell, t_enter, t_exit);
+    if (max_steps <= 0) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+        return;
+    }
     alea_lattice_location_t previous = {0};
     int have_previous = 0;
     double t_current = t_enter;
-    if (t_enter > t_min + RAY_EPSILON &&
-        !raycast_has_hit_at(result, t_enter)) {
+    if (t_enter > (result->breakpoint_hit_limit ? t_min :
+                   t_min + RAY_EPSILON) &&
+        (result->breakpoint_hit_limit ||
+         !raycast_has_hit_at(result, t_enter))) {
         if (raycast_lattice_element_step(sys, ray, NULL, t_enter, t_enter,
                                          true, depth, result,
                                          frame_to_world) != 0) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             return;
         }
     }
     for (int step = 0; step < max_steps && t_current < t_exit; step++) {
         double t_next = lattice_next_boundary(ray, cell, t_current, t_exit);
+        if (result->breakpoint_hit_limit &&
+            t_next > t_current && t_next <= t_current + RAY_EPSILON &&
+            t_next < t_exit) {
+            result->breakpoint_failed = 1;
+            return;
+        }
         if (t_next <= t_current + RAY_EPSILON || t_next > t_exit)
             t_next = t_exit;
         const double t_sample = t_current +
@@ -1548,19 +1620,26 @@ static void raycast_lattice_walk(alea_system_t* sys,
         double x, y, z;
         alea_ray_point_at(ray, t_sample, &x, &y, &z);
         alea_lattice_location_t location;
-        const int has_location = alea_lattice_locate_point(
-            sys, cell, x, y, z, &location) == 1;
+        const int locate_status = alea_lattice_locate_point(
+            sys, cell, x, y, z, &location);
+        if (locate_status < 0 && result->breakpoint_hit_limit) {
+            result->breakpoint_failed = 1;
+            return;
+        }
+        const int has_location = locate_status == 1;
 
         const bool changed = !have_previous || !has_location ||
             location.i != previous.i || location.j != previous.j ||
             location.k != previous.k ||
             location.fill_universe != previous.fill_universe;
         const bool emit_synthetic = step > 0 &&
-            t_current > t_enter + RAY_EPSILON && changed;
+            t_current > (result->breakpoint_hit_limit ? t_enter :
+                         t_enter + RAY_EPSILON) && changed;
         if (raycast_lattice_element_step(
                 sys, ray, has_location ? &location : NULL,
                 t_current, t_next, emit_synthetic, depth, result,
                 frame_to_world) != 0) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             return;
         }
         if (has_location) {
@@ -1571,11 +1650,17 @@ static void raycast_lattice_walk(alea_system_t* sys,
         }
         t_current = t_next;
     }
-    if (t_exit < t_max - RAY_EPSILON &&
-        !raycast_has_hit_at(result, t_exit)) {
-        (void)raycast_lattice_element_step(sys, ray, NULL, t_exit, t_exit,
-                                           true, depth, result,
-                                           frame_to_world);
+    if (t_current < t_exit && result->breakpoint_hit_limit)
+        result->breakpoint_failed = 1;
+    if (t_exit < (result->breakpoint_hit_limit ? t_max :
+                  t_max - RAY_EPSILON) &&
+        (result->breakpoint_hit_limit ||
+         !raycast_has_hit_at(result, t_exit))) {
+        if (raycast_lattice_element_step(sys, ray, NULL, t_exit, t_exit,
+                                         true, depth, result,
+                                         frame_to_world) != 0 &&
+            result->breakpoint_hit_limit)
+            result->breakpoint_failed = 1;
     }
 }
 
@@ -1611,13 +1696,22 @@ static void raycast_lattice_universe_hits_recursive(
     alea_system_t* sys, const alea_ray_t* ray, int universe_id,
     double t_min, double t_max, int depth, alea_raycast_result_t* result,
     const alea_matrix_t* frame_to_world) {
-    if (!sys || !ray || !result || depth >= MAX_FILL_RAYCAST_DEPTH)
+    if (!sys || !ray || !result) return;
+    if (depth >= MAX_FILL_RAYCAST_DEPTH) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
         return;
+    }
     const alea_universe_t* universe = alea_get_universe(sys, universe_id);
-    if (!universe) return;
+    if (!universe) {
+        if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+        return;
+    }
     for (size_t i = 0; i < universe->cell_indices.count; i++) {
         const size_t cell_index = universe->cell_indices.data[i];
-        if (cell_index >= alea_vec_count(&sys->cells)) continue;
+        if (cell_index >= alea_vec_count(&sys->cells)) {
+            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+            continue;
+        }
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
         if (cell->lat_type == 1 && cell->lat_fill) {
             raycast_lattice_rect(sys, ray, cell, t_min, t_max, depth, result,
@@ -1748,6 +1842,28 @@ int alea_raycast_global_breakpoints_reuse_nocache(
         raycast_add_lattice_hits(sys, ray, 0, effective_t_max, result);
     dedup_sorted_hits(result);
     return 0;
+}
+
+int alea_raycast_validation_breakpoints_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    size_t hit_limit, alea_raycast_result_t* result) {
+    if (!sys || !ray || !result || !(t_max > t_min) || t_min < 0.0 ||
+        !isfinite(t_max) || hit_limit == 0) return -1;
+    alea_clear_error_detail();
+    result->breakpoint_hit_limit = hit_limit;
+    result->breakpoint_failed = 0;
+    int rc = raycast_surfaces_impl(sys, ray, t_min, t_max, result);
+    if (rc == 0 && system_has_fill_cells(sys))
+        raycast_add_fill_hits(sys, ray, t_min, t_max, result);
+    if (rc == 0 && system_has_lattice_cells(sys))
+        raycast_add_lattice_hits(sys, ray, t_min, t_max, result);
+    if (result->breakpoint_failed) rc = -1;
+    if (rc == 0) sort_hits(result->hits.data, result->hits.count);
+    result->breakpoint_hit_limit = 0;
+    if (rc != 0 && alea_get_last_error() == ALEA_OK)
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "particle interval breakpoint enumeration incomplete");
+    return rc;
 }
 
 void alea_ray_boundary_event_result_init(alea_ray_boundary_event_result_t* result) {
@@ -4719,11 +4835,13 @@ static int alea_ray_walk_next_selected(
 struct alea_ray_navigator {
     alea_system_t* sys;
     alea_nav_validation_mode_t validation_mode;
+    size_t max_interval_breakpoints;
     uint32_t event_fields;
     alea_ray_t ray;
     alea_ray_walk_t walk;
     alea_ray_selected_interval_t pending;
     alea_raycast_result_t scratch;
+    alea_raycast_result_t validation_scratch;
     double current_t;
     alea_nav_location_t location;
     bool initialized;
@@ -4755,15 +4873,9 @@ static alea_nav_location_t navigator_interval_location(
 }
 
 #define ALEA_NAV_OWNER_CAPACITY 64
-static alea_nav_location_kind_t navigator_verify_interval(
-    const alea_ray_navigator_t* navigator) {
+static alea_nav_location_kind_t navigator_verify_point(
+    const alea_ray_navigator_t* navigator, double sample) {
     const alea_ray_selected_interval_t* interval = &navigator->pending;
-    if (!isfinite(interval->t_enter)) return ALEA_NAV_UNRESOLVED;
-    /* An interior point avoids treating the exact boundary's floating-point
-     * sign as ownership. Large open intervals only need a nearby probe. */
-    const double span = interval->t_exit - interval->t_enter;
-    const double sample = interval->t_enter +
-        0.381966011250105 * fmin(span, 1.0);
     double x, y, z;
     alea_ray_point_at(&navigator->ray, sample, &x, &y, &z);
     if (!isfinite(x) || !isfinite(y) || !isfinite(z))
@@ -4807,11 +4919,71 @@ static alea_nav_location_kind_t navigator_verify_interval(
     return ALEA_NAV_UNRESOLVED;
 }
 
+static alea_nav_location_kind_t navigator_verify_interval(
+    const alea_ray_navigator_t* navigator) {
+    const alea_ray_selected_interval_t* interval = &navigator->pending;
+    if (!isfinite(interval->t_enter)) return ALEA_NAV_UNRESOLVED;
+    const double span = interval->t_exit - interval->t_enter;
+    return navigator_verify_point(navigator, interval->t_enter +
+        0.381966011250105 * fmin(span, 1.0));
+}
+
+#define ALEA_NAV_DEFAULT_FLIGHT_BREAKPOINTS 8192
+static int navigator_validate_flight(alea_ray_navigator_t* navigator,
+                                     double t_end) {
+    alea_raycast_result_t* scratch = &navigator->validation_scratch;
+    if (!(t_end > navigator->current_t) || !isfinite(t_end)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "particle interval endpoint cannot advance");
+        return -1;
+    }
+    if (alea_raycast_validation_breakpoints_reuse_nocache(
+            navigator->sys, &navigator->ray, navigator->current_t, t_end,
+            navigator->max_interval_breakpoints, scratch) != 0) return -1;
+    double left = navigator->current_t;
+    size_t intervals = 0;
+    for (size_t i = 0; i <= scratch->hits.count; i++) {
+        double right = i == scratch->hits.count ? t_end
+            : scratch->hits.data[i].t;
+        if (right <= left) continue;
+        if (right > t_end) right = t_end;
+        if (!(right > left)) continue;
+        if (++intervals > navigator->max_interval_breakpoints) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                  "particle interval validation budget exceeded");
+            return -1;
+        }
+        double sample = left + 0.5 * (right - left);
+        if (!(sample > left && sample < right)) {
+            sample = nextafter(left, right);
+            if (!(sample < right)) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                    "particle interval has no representable interior point");
+                return -1;
+            }
+        }
+        alea_nav_location_kind_t kind = navigator_verify_point(navigator,
+                                                                 sample);
+        if (kind != navigator->location.kind) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                "particle interval ownership differs at t=%.17g: selected "
+                "cell=%d occurrence=%llu kind=%d, observed kind=%d",
+                sample, navigator->pending.cell_id,
+                (unsigned long long)navigator->pending.owner_occurrence_key,
+                (int)navigator->location.kind, (int)kind);
+            return -1;
+        }
+        left = right;
+        if (left >= t_end) break;
+    }
+    return 0;
+}
+
 static int navigator_load_interval(alea_ray_navigator_t* navigator) {
     const int rc = alea_ray_walk_next_selected_mode(
         navigator->sys, &navigator->ray, DBL_MAX, &navigator->scratch,
         &navigator->walk, &navigator->pending,
-        navigator->validation_mode == ALEA_NAV_VALIDATE_STRICT);
+        navigator->validation_mode != ALEA_NAV_VALIDATE_FAST);
     if (rc < 0) return -1;
     if (rc == 2) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
@@ -4820,7 +4992,7 @@ static int navigator_load_interval(alea_ray_navigator_t* navigator) {
     }
     navigator->have_pending = true;
     navigator->location = navigator_interval_location(&navigator->pending);
-    if (navigator->validation_mode == ALEA_NAV_VALIDATE_STRICT)
+    if (navigator->validation_mode != ALEA_NAV_VALIDATE_FAST)
         navigator->location.kind = navigator_verify_interval(navigator);
     return 0;
 }
@@ -4831,27 +5003,38 @@ alea_ray_navigator_t* alea_ray_navigator_create(alea_system_t* sys) {
     if (!navigator) return NULL;
     navigator->sys = sys;
     navigator->validation_mode = ALEA_NAV_VALIDATE_STRICT;
+    navigator->max_interval_breakpoints = ALEA_NAV_DEFAULT_FLIGHT_BREAKPOINTS;
     navigator->event_fields = ALEA_NAV_EVENT_NORMAL;
     alea_raycast_result_init(&navigator->scratch);
+    alea_raycast_result_init(&navigator->validation_scratch);
     return navigator;
 }
 
 void alea_ray_navigator_destroy(alea_ray_navigator_t* navigator) {
     if (!navigator) return;
     alea_raycast_result_free(&navigator->scratch);
+    alea_raycast_result_free(&navigator->validation_scratch);
     free(navigator);
 }
 
 int alea_ray_navigator_set_validation_mode(
     alea_ray_navigator_t* navigator, alea_nav_validation_mode_t mode) {
     if (!navigator || (mode != ALEA_NAV_VALIDATE_FAST &&
-                       mode != ALEA_NAV_VALIDATE_STRICT)) return -1;
+                       mode != ALEA_NAV_VALIDATE_STRICT &&
+                       mode != ALEA_NAV_VALIDATE_INTERVAL)) return -1;
     navigator->validation_mode = mode;
     if (navigator->initialized && navigator->have_pending) {
         navigator->location = navigator_interval_location(&navigator->pending);
-        if (mode == ALEA_NAV_VALIDATE_STRICT)
+        if (mode != ALEA_NAV_VALIDATE_FAST)
             navigator->location.kind = navigator_verify_interval(navigator);
     }
+    return 0;
+}
+
+int alea_ray_navigator_set_interval_budget(
+    alea_ray_navigator_t* navigator, size_t max_breakpoints) {
+    if (!navigator || max_breakpoints == 0) return -1;
+    navigator->max_interval_breakpoints = max_breakpoints;
     return 0;
 }
 
@@ -4897,6 +5080,7 @@ alea_ray_navigator_t* alea_ray_navigator_clone(
     if (!copy) return NULL;
     *copy = *navigator;
     alea_raycast_result_init(&copy->scratch);
+    alea_raycast_result_init(&copy->validation_scratch);
     copy->scratch.ray = copy->ray;
     if (copy->have_pending) copy->pending.path = &copy->walk.current_path;
     return copy;
@@ -4983,6 +5167,13 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "particle navigator boundary did not advance");
         return -1;
+    }
+    if (navigator->validation_mode == ALEA_NAV_VALIDATE_INTERVAL) {
+        const double flight = fmin(boundary_distance,
+                                   fmin(collision_distance, max_distance));
+        if (navigator_validate_flight(navigator,
+                                      navigator->current_t + flight) != 0)
+            return -1;
     }
     alea_nav_event_t next = {0};
     next.before = navigator->location;

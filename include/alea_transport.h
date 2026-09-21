@@ -130,6 +130,8 @@ typedef struct {
     size_t max_pending_particles; /* zero uses a 1024-particle default */
     const alea_tally_plan_t* tally_plan; /* NULL disables configured tallies */
     uint32_t history_offset; /* first global history ID; zero by default */
+    alea_nav_validation_mode_t navigation_validation; /* zero: sampled STRICT */
+    size_t max_navigation_breakpoints; /* zero: navigator default */
 } alea_transport_options_t;
 
 typedef struct {

@@ -271,6 +271,9 @@ struct alea_raycast_result {
     atomic_uint_fast64_t* path_entry_counter;
     uint64_t path_entry_limit;
     uint8_t path_entry_limit_exceeded;
+    /* Fail-closed geometric breakpoint collection for particle validation. */
+    size_t breakpoint_hit_limit;
+    uint8_t breakpoint_failed;
     int surfaces_tested;
     int bbox_culled;
     int point_lookups;
@@ -880,6 +883,9 @@ int alea_raycast_global_reuse_nocache(alea_system_t* sys,
 int alea_raycast_global_breakpoints_reuse_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     alea_raycast_result_t* result);
+int alea_raycast_validation_breakpoints_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    size_t hit_limit, alea_raycast_result_t* result);
 
 /**
  * Complete-coverage diagnostic sweep behind the legacy public interval

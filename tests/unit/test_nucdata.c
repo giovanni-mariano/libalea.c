@@ -5955,7 +5955,8 @@ TEST(sampled_source_is_reproducible_across_history_batches) {
 
     alea_transport_options_t options = {
         .histories = 30, .seed = 123, .max_events_per_history = 10,
-        .max_segment_distance = 10
+        .max_segment_distance = 10,
+        .navigation_validation = ALEA_NAV_VALIDATE_INTERVAL
     };
     alea_transport_result_t full = {0}, left = {0}, right = {0};
     alea_transport_failure_t failure = {0};
