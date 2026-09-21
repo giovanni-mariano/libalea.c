@@ -82,6 +82,11 @@ Python, or `{type = "lines", values = {2.45, 14.1}, weights = {1, 3}}` in Lua.
 Weights are nonnegative probability masses; the sampler normalizes them and
 requires a positive total. Source history weight remains separate from line
 selection probability.
+For a continuous spectrum, use `{"type": "tabulated", "values": [1, 3],
+"pdf": [1, 1], "interpolation": "linear"}`. `values` are increasing energy
+knots in MeV; `pdf` is density per MeV. `histogram` uses each left-bin height,
+while `linear` interpolates between adjacent densities. The table is
+normalized when the source is prepared.
 Angular examples in Python are `{"type": "cone", "direction": [0, 0, 1],
 "half_angle": 0.2}` (radians), `{"type": "cosine", "direction": [0, 0, 1]}`,
 and `{"type": "tabulated_mu", "direction": [0, 0, 1], "mu": [0, 1],
@@ -93,6 +98,50 @@ Tabulated `pdf` is density per unit `mu = cos(theta)`, with uniform azimuth;
 origin toward each sampled position; `inward=True` reverses it. A sample
 exactly at the origin has undefined radial direction and fails. Lua uses the
 same field names in tables.
+For an axisymmetric plasma, `space` can be `tokamak_rz`. It takes increasing
+`r_edges` (nonnegative cm), increasing `z_edges` (cm), and a two-dimensional
+`emissivity` array with one row per R bin and one value per Z bin. Each value
+is a nonnegative emission density per cm³ within its bin. For example:
+
+```python
+source = pyalea.Source({
+    "space": {"type": "tokamak_rz", "r_edges": [100, 110, 120],
+              "z_edges": [-10, 0, 10],
+              "emissivity": [[1, 0], [2, 1]]},
+    "angle": {"type": "isotropic"}, "energy": 14.1,
+})
+rate = source.integrated_emissivity
+```
+
+The default toroidal range is a full turn. `phi_min` and `phi_max` can select
+a sector in radians, with a span at most 2π. Bin probabilities follow
+emissivity times cylindrical volume; radius is sampled uniformly in R² within
+the selected bin. Zero-emissivity bins are never selected. The sampler
+normalizes probabilities without modifying particle history weight.
+`integrated_emissivity` is the sector integral in the input units (particles/s
+if emissivity is particles/cm³/s). Multiply a per-source tally mean by this
+rate to get a physical rate. In Lua, call
+`alea.source_integrated_emissivity(source)` on a prepared source; C uses
+`alea_source_integrated_emissivity()`.
+Multiple complete sources can be mixed with physical strengths:
+
+```python
+mixed = pyalea.Source({
+    "type": "mixture",
+    "components": [
+        {"strength": 3, "source": plasma_description},
+        {"strength": 1, "source": calibration_source_description},
+    ],
+})
+```
+
+Component selection follows the normalized strengths. If strengths are
+absolute emission rates, their sum is the mixture's total physical rate;
+otherwise only their ratios matter. Selection does not multiply the history
+weight. Components may differ in particle species and can themselves be
+mixtures. Lua uses the same table layout. In C,
+`alea_source_mixture_prepare()` takes ownership of prepared components on
+success and leaves ownership with the caller on failure.
 The C interface is in `alea_source.h`. A preview does not start transport or
 read any ACE tables. Python returns `particle` as 0 for neutron and 1 for
 photon; Lua uses the same codes.

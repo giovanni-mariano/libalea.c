@@ -368,6 +368,8 @@ selects 1024). The legacy per-cell path arrays retain neutron-only scores.
 `alea_transport_run_sampled_source()` samples a new source particle for every
 history; `alea_source_prepare()` and `alea_source_sample()` provide reusable
 component-based sources, including uniform boxes with isotropic direction.
+An axisymmetric `tokamak_rz` source samples a piecewise-constant plasma
+emissivity grid by cylindrical volume and exposes its integrated emission rate.
 `history_offset` allows
 reproducible nonoverlapping batches. A runnable MCNP/ACE example and result
 normalization are in [the fixed-source workflow](docs/FIXED_SOURCE_WORKFLOW.md).

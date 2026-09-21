@@ -69,6 +69,63 @@ local radial = alea.source_prepare({
     energy = 14.1,
 })
 assert(alea.sample_source(radial, 1, 19).direction[1][1] == -1)
+local tokamak = alea.source_prepare({
+    space = {type = "tokamak_rz", r_edges = {0, 1, 2}, z_edges = {0, 1, 2},
+             emissivity = {{1, 0}, {1, 1}}, phi_min = 0,
+             phi_max = math.pi / 2},
+    angle = {type = "isotropic"}, energy = 14.1,
+})
+assert(math.abs(alea.source_integrated_emissivity(tokamak) - 1.75*math.pi) < 1e-12)
+local plasma = alea.sample_source(tokamak, 1000, 73)
+local outer = 0
+for _, point in ipairs(plasma.position) do
+    local r2 = point[1]^2 + point[2]^2
+    assert(point[1] >= -1e-14 and point[2] >= -1e-14)
+    assert(not (r2 < 1 and point[3] >= 1))
+    if r2 >= 1 then outer = outer + 1 end
+end
+assert(math.abs(outer / 1000 - 6 / 7) < 0.05)
+assert(not pcall(alea.source_prepare, {
+    space = {type = "tokamak_rz", r_edges = {0, 1}, z_edges = {0, 1, 2},
+             emissivity = {{1}}},
+    angle = {type = "isotropic"}, energy = 14.1,
+}))
+collectgarbage("collect")
+local energy_pdf = alea.source_prepare({
+    space = {type = "point", position = {0, 0, 0}},
+    angle = {type = "isotropic"},
+    energy = {type = "tabulated", values = {1, 3},
+              pdf = {1, 1}, interpolation = "linear"},
+})
+local sampled_energy = alea.sample_source(energy_pdf, 100, 42).energy
+for _, value in ipairs(sampled_energy) do
+    assert(value >= 1 and value <= 3)
+end
+local mixture = alea.source_prepare({
+    type = "mixture", components = {
+        {strength = 1, source = {
+            particle = "neutron", space = {type = "point", position = {0, 0, 0}},
+            angle = {type = "isotropic"}, energy = 2}},
+        {strength = 3, source = {
+            particle = "photon", space = {type = "point", position = {1, 0, 0}},
+            angle = {type = "isotropic"}, energy = 3}},
+    },
+})
+local mixed = alea.sample_source(mixture, 1000, 17)
+local photons = 0
+for i, particle in ipairs(mixed.particle) do
+    if particle == 1 then
+        photons = photons + 1
+        assert(mixed.position[i][1] == 1)
+    end
+    assert(mixed.weight[i] == 1)
+end
+assert(math.abs(photons / 1000 - 0.75) < 0.05)
+local mixed_result = alea.transport_run(system, xsdir, {
+    histories = 8, source = mixture,
+    tallies = {{score = "track_length", particle = "all"}},
+})
+assert(mixed_result.leaked == 8)
 local replay = alea.sample_source(prepared, 1, 17, 8)
 assert(replay.direction[1][1] == preview.direction[3][1])
 local prepared_result = alea.transport_run(system, xsdir, {

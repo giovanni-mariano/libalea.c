@@ -12,6 +12,26 @@
 
 #define TRANSPORT_GUARD_MT "alea.TransportGuard"
 #define SOURCE_MT "alea.Source"
+#define SOURCE_BUFFERS_MT "alea.SourceBuffers"
+
+typedef struct {
+    double *angle_mu, *angle_pdf, *energy_values, *energy_weights;
+    double *r_edges, *z_edges, *emissivity;
+} source_buffers_t;
+
+static void source_buffers_release(source_buffers_t* buffers) {
+    free(buffers->angle_mu); free(buffers->angle_pdf);
+    free(buffers->energy_values); free(buffers->energy_weights);
+    free(buffers->r_edges); free(buffers->z_edges);
+    free(buffers->emissivity);
+    memset(buffers, 0, sizeof(*buffers));
+}
+
+static int source_buffers_gc(lua_State* L) {
+    source_buffers_t* buffers = luaL_checkudata(L, 1, SOURCE_BUFFERS_MT);
+    source_buffers_release(buffers);
+    return 0;
+}
 
 typedef struct {
     alea_tally_plan_t* plan;
@@ -69,6 +89,28 @@ static void vec3_field(lua_State* L, int table, const char* key,
     lua_pop(L, 1);
 }
 
+static double* source_number_array(lua_State* L, int table, const char* key,
+                                   size_t* count) {
+    lua_getfield(L, table, key);
+    luaL_checktype(L, -1, LUA_TTABLE);
+    size_t n = lua_rawlen(L, -1);
+    if (n < 2 || n > UINT32_MAX || n > SIZE_MAX / sizeof(double))
+        luaL_error(L, "%s needs at least two values", key);
+    double* values = malloc(n * sizeof(double));
+    if (!values) luaL_error(L, "out of memory");
+    for (size_t i = 0; i < n; ++i) {
+        lua_rawgeti(L, -1, (lua_Integer)i + 1);
+        if (!lua_isnumber(L, -1)) {
+            free(values); luaL_error(L, "%s values must be numeric", key);
+        }
+        values[i] = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    *count = n;
+    return values;
+}
+
 static void set_integer(lua_State* L, const char* key, lua_Integer value) {
     lua_pushinteger(L, value); lua_setfield(L, -2, key);
 }
@@ -100,11 +142,75 @@ static int has_field(lua_State* L, int table, const char* key) {
     return present;
 }
 
-static alea_source_t* source_from_table(lua_State* L, int idx) {
+static alea_source_t* source_from_table_depth(lua_State* L, int idx,
+                                               unsigned depth);
+
+static alea_source_t* source_mixture_from_table(lua_State* L, int idx,
+                                                 unsigned depth) {
+    lua_getfield(L, idx, "components");
+    luaL_checktype(L, -1, LUA_TTABLE);
+    int list = lua_absindex(L, -1);
+    size_t count = lua_rawlen(L, list);
+    if (!count || count > UINT32_MAX ||
+        count > SIZE_MAX / sizeof(alea_source_t*) ||
+        count > SIZE_MAX / sizeof(double))
+        luaL_error(L, "mixture needs at least one component");
+    lua_newtable(L);
+    int guards = lua_absindex(L, -1);
+    alea_source_t** parts = lua_newuserdatauv(L,
+        count*sizeof(alea_source_t*), 0);
+    double* strengths = lua_newuserdatauv(L, count*sizeof(double), 0);
+    for (size_t i = 0; i < count; ++i) {
+        lua_rawgeti(L, list, (lua_Integer)i + 1);
+        luaL_checktype(L, -1, LUA_TTABLE);
+        int component = lua_absindex(L, -1);
+        lua_getfield(L, component, "strength");
+        strengths[i] = luaL_checknumber(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, component, "source");
+        luaL_checktype(L, -1, LUA_TTABLE);
+        alea_source_t** guard = lua_newuserdatauv(L, sizeof(*guard), 0);
+        *guard = NULL;
+        luaL_setmetatable(L, SOURCE_MT);
+        *guard = source_from_table_depth(L, lua_absindex(L, -2), depth + 1);
+        parts[i] = *guard;
+        lua_rawseti(L, guards, (lua_Integer)i + 1);
+        lua_pop(L, 2);
+    }
+    alea_source_t* mixture = NULL;
+    alea_error_t err = alea_source_mixture_prepare(parts, strengths, count,
+                                                   &mixture);
+    if (err != ALEA_OK)
+        luaL_error(L, "invalid source mixture: %s", alea_error_string(err));
+    for (size_t i = 0; i < count; ++i) {
+        lua_rawgeti(L, guards, (lua_Integer)i + 1);
+        *(alea_source_t**)luaL_checkudata(L, -1, SOURCE_MT) = NULL;
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 4);
+    return mixture;
+}
+
+static alea_source_t* source_from_table_depth(lua_State* L, int idx,
+                                               unsigned depth) {
     idx = lua_absindex(L, idx);
     luaL_checktype(L, idx, LUA_TTABLE);
+    if (depth > 8) luaL_error(L, "source mixtures are nested too deeply");
+    lua_getfield(L, idx, "type");
+    if (!lua_isnil(L, -1)) {
+        const char* type = luaL_checkstring(L, -1);
+        if (strcmp(type, "mixture") != 0)
+            luaL_error(L, "unknown source type: %s", type);
+        lua_pop(L, 1);
+        return source_mixture_from_table(L, idx, depth);
+    }
+    lua_pop(L, 1);
+    source_buffers_t* buffers = lua_newuserdatauv(L, sizeof(*buffers), 0);
+    memset(buffers, 0, sizeof(*buffers));
+    luaL_setmetatable(L, SOURCE_BUFFERS_MT);
     alea_source_spec_t spec = {0};
     double *angle_mu = NULL, *angle_pdf = NULL;
+    double *r_edges = NULL, *z_edges = NULL, *emissivity = NULL;
     spec.weight = number_field(L, idx, "weight", 1);
     spec.particle = (alea_nuc_particle_t)enum_field(L, idx, "particle", particles, 2, 0);
     if (has_field(L, idx, "kind") || has_field(L, idx, "position") ||
@@ -114,8 +220,8 @@ static alea_source_t* source_from_table(lua_State* L, int idx) {
     {
         lua_getfield(L, idx, "space");
         luaL_checktype(L, -1, LUA_TTABLE);
-        static const char* const spaces[] = {"point", "box", "line", "sphere", "cylinder"};
-        int spatial = enum_field(L, lua_absindex(L, -1), "type", spaces, 5, -1);
+        static const char* const spaces[] = {"point", "box", "line", "sphere", "cylinder", "tokamak_rz"};
+        int spatial = enum_field(L, lua_absindex(L, -1), "type", spaces, 6, -1);
         if (spatial < 0) luaL_error(L, "space requires type");
         spec.space = (alea_source_space_t)spatial;
         if (spatial == 0) vec3_field(L, lua_absindex(L, -1), "position", spec.position, 1);
@@ -125,6 +231,9 @@ static alea_source_t* source_from_table(lua_State* L, int idx) {
         } else if (spatial == 2) {
             vec3_field(L, lua_absindex(L, -1), "start", spec.start, 1);
             vec3_field(L, lua_absindex(L, -1), "end", spec.end, 1);
+        } else if (spatial == 5) {
+            spec.phi_min = number_field(L, lua_absindex(L, -1), "phi_min", 0);
+            spec.phi_max = number_field(L, lua_absindex(L, -1), "phi_max", 0);
         } else {
             if (spatial == 3)
                 vec3_field(L, lua_absindex(L, -1), "center", spec.center, 1);
@@ -167,20 +276,18 @@ static alea_source_t* source_from_table(lua_State* L, int idx) {
                 luaL_error(L, "tabulated_mu needs equal arrays of at least two entries");
             angle_mu = malloc(count * sizeof(double));
             angle_pdf = malloc(count * sizeof(double));
-            if (!angle_mu || !angle_pdf) {
-                free(angle_mu); free(angle_pdf); luaL_error(L, "out of memory");
-            }
+            buffers->angle_mu = angle_mu;
+            buffers->angle_pdf = angle_pdf;
+            if (!angle_mu || !angle_pdf) luaL_error(L, "out of memory");
             for (size_t i = 0; i < count; ++i) {
                 lua_rawgeti(L, -2, (lua_Integer)i + 1);
                 if (!lua_isnumber(L, -1)) {
-                    free(angle_mu); free(angle_pdf);
                     luaL_error(L, "mu values must be numeric");
                 }
                 angle_mu[i] = lua_tonumber(L, -1);
                 lua_pop(L, 1);
                 lua_rawgeti(L, -1, (lua_Integer)i + 1);
                 if (!lua_isnumber(L, -1)) {
-                    free(angle_mu); free(angle_pdf);
                     luaL_error(L, "pdf values must be numeric");
                 }
                 angle_pdf[i] = lua_tonumber(L, -1);
@@ -214,8 +321,8 @@ static alea_source_t* source_from_table(lua_State* L, int idx) {
     double *values = NULL, *weights = NULL;
     lua_getfield(L, idx, "energy");
     if (lua_istable(L, -1)) {
-        static const char* const energy_types[] = {"mono", "lines"};
-        int type = enum_field(L, lua_absindex(L, -1), "type", energy_types, 2, -1);
+        static const char* const energy_types[] = {"mono", "lines", "tabulated"};
+        int type = enum_field(L, lua_absindex(L, -1), "type", energy_types, 3, -1);
         if (type < 0) luaL_error(L, "energy requires type");
         spec.energy_type = (alea_source_energy_t)type;
         if (type == 0) {
@@ -223,30 +330,35 @@ static alea_source_t* source_from_table(lua_State* L, int idx) {
             spec.energy = luaL_checknumber(L, -1);
             lua_pop(L, 1);
         } else {
+            if (type == 2) {
+                static const char* const modes[] = {"histogram", "linear"};
+                int mode = enum_field(L, lua_absindex(L, -1),
+                                      "interpolation", modes, 2, -1);
+                if (mode < 0) luaL_error(L, "tabulated energy requires interpolation");
+                spec.energy_interpolation = (alea_source_pdf_t)mode;
+            }
             lua_getfield(L, -1, "values");
             luaL_checktype(L, -1, LUA_TTABLE);
-            lua_getfield(L, -2, "weights");
+            lua_getfield(L, -2, type == 1 ? "weights" : "pdf");
             luaL_checktype(L, -1, LUA_TTABLE);
             size_t count = lua_rawlen(L, -2);
-            if (!count || count != lua_rawlen(L, -1) ||
+            if (count < (type == 1 ? 1u : 2u) || count != lua_rawlen(L, -1) ||
                 count > UINT32_MAX || count > SIZE_MAX / sizeof(double))
-                luaL_error(L, "energy lines need equal nonempty arrays");
+                luaL_error(L, "energy arrays have invalid lengths");
             values = malloc(count * sizeof(double));
             weights = malloc(count * sizeof(double));
-            if (!values || !weights) {
-                free(values); free(weights); luaL_error(L, "out of memory");
-            }
+            buffers->energy_values = values;
+            buffers->energy_weights = weights;
+            if (!values || !weights) luaL_error(L, "out of memory");
             for (size_t i = 0; i < count; ++i) {
                 lua_rawgeti(L, -2, (lua_Integer)i + 1);
                 if (!lua_isnumber(L, -1)) {
-                    free(values); free(weights);
                     luaL_error(L, "energy values must be numeric");
                 }
                 values[i] = lua_tonumber(L, -1);
                 lua_pop(L, 1);
                 lua_rawgeti(L, -1, (lua_Integer)i + 1);
                 if (!lua_isnumber(L, -1)) {
-                    free(values); free(weights);
                     luaL_error(L, "energy weights must be numeric");
                 }
                 weights[i] = lua_tonumber(L, -1);
@@ -259,14 +371,55 @@ static alea_source_t* source_from_table(lua_State* L, int idx) {
         }
     } else spec.energy = luaL_checknumber(L, -1);
     lua_pop(L, 1);
+    if (spec.space == ALEA_SOURCE_TOKAMAK_RZ) {
+        lua_getfield(L, idx, "space");
+        int space = lua_absindex(L, -1);
+        r_edges = source_number_array(L, space, "r_edges", &spec.r_edge_count);
+        buffers->r_edges = r_edges;
+        z_edges = source_number_array(L, space, "z_edges", &spec.z_edge_count);
+        buffers->z_edges = z_edges;
+        size_t nr = spec.r_edge_count - 1, nz = spec.z_edge_count - 1;
+        if (nr > SIZE_MAX / nz || nr*nz > UINT32_MAX) {
+            luaL_error(L, "tokamak_rz grid is too large");
+        }
+        lua_getfield(L, space, "emissivity");
+        luaL_checktype(L, -1, LUA_TTABLE);
+        if (lua_rawlen(L, -1) != nr) {
+            luaL_error(L, "emissivity needs one row per R bin");
+        }
+        emissivity = malloc(nr*nz*sizeof(double));
+        buffers->emissivity = emissivity;
+        if (!emissivity) luaL_error(L, "out of memory");
+        for (size_t ir = 0; ir < nr; ++ir) {
+            lua_rawgeti(L, -1, (lua_Integer)ir + 1);
+            if (!lua_istable(L, -1) || lua_rawlen(L, -1) != nz) {
+                luaL_error(L, "emissivity row needs one value per Z bin");
+            }
+            for (size_t iz = 0; iz < nz; ++iz) {
+                lua_rawgeti(L, -1, (lua_Integer)iz + 1);
+                if (!lua_isnumber(L, -1)) {
+                    luaL_error(L, "emissivity values must be numeric");
+                }
+                emissivity[ir*nz + iz] = lua_tonumber(L, -1);
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 2);
+        spec.r_edges = r_edges;
+        spec.z_edges = z_edges;
+        spec.rz_emissivity = emissivity;
+    }
     alea_source_t* source = NULL;
     alea_error_t err = alea_source_prepare(&spec, &source);
-    free(values);
-    free(weights);
-    free(angle_mu);
-    free(angle_pdf);
+    source_buffers_release(buffers);
+    lua_pop(L, 1);
     if (err != ALEA_OK) luaL_error(L, "invalid source: %s", alea_error_string(err));
     return source;
+}
+
+static alea_source_t* source_from_table(lua_State* L, int idx) {
+    return source_from_table_depth(L, idx, 0);
 }
 
 static int source_gc(lua_State* L) {
@@ -282,6 +435,15 @@ static int source_prepare(lua_State* L) {
     *source = NULL;
     luaL_setmetatable(L, SOURCE_MT);
     *source = source_from_table(L, 1);
+    return 1;
+}
+
+static int source_integrated_emissivity(lua_State* L) {
+    alea_source_t** source = luaL_checkudata(L, 1, SOURCE_MT);
+    double value;
+    if (alea_source_integrated_emissivity(*source, &value) != ALEA_OK)
+        lua_pushnil(L);
+    else lua_pushnumber(L, value);
     return 1;
 }
 
@@ -547,6 +709,9 @@ static int transport_run(lua_State* L) {
 }
 
 int luaopen_alea_transport(lua_State* L) {
+    luaL_newmetatable(L, SOURCE_BUFFERS_MT);
+    lua_pushcfunction(L, source_buffers_gc); lua_setfield(L, -2, "__gc");
+    lua_pop(L, 1);
     luaL_newmetatable(L, SOURCE_MT);
     lua_pushcfunction(L, source_gc); lua_setfield(L, -2, "__gc");
     lua_pop(L, 1);
@@ -557,6 +722,8 @@ int luaopen_alea_transport(lua_State* L) {
     lua_setfield(L, -2, "transport_run");
     lua_pushcfunction(L, source_prepare);
     lua_setfield(L, -2, "source_prepare");
+    lua_pushcfunction(L, source_integrated_emissivity);
+    lua_setfield(L, -2, "source_integrated_emissivity");
     lua_pushcfunction(L, sample_source);
     lua_setfield(L, -2, "sample_source");
     return 0;

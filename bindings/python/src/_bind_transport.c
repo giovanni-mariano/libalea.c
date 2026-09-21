@@ -121,11 +121,11 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
             "put spatial and angular fields inside space and angle");
         return -1;
     }
-    static const char* const spaces[] = {"point", "box", "line", "sphere", "cylinder"};
+    static const char* const spaces[] = {"point", "box", "line", "sphere", "cylinder", "tokamak_rz"};
     static const char* const angles[] = {
         "monodirectional", "isotropic", "cone", "cosine", "tabulated_mu", "radial"
     };
-    int spatial = tr_name(space, "type", spaces, 5, -1);
+    int spatial = tr_name(space, "type", spaces, 6, -1);
     int angular = tr_name(angle, "type", angles, 6, -1);
     if (spatial < 0 || angular < 0) {
         if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "space and angle require type");
@@ -141,6 +141,9 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
     } else if (spatial == 2) {
         if (tr_vec3(space, "start", spec->start, 1) < 0 ||
             tr_vec3(space, "end", spec->end, 1) < 0) return -1;
+    } else if (spatial == 5) {
+        if (tr_number(space, "phi_min", &spec->phi_min) < 0 ||
+            tr_number(space, "phi_max", &spec->phi_max) < 0) return -1;
     } else {
         if (spatial == 3) {
             if (tr_vec3(space, "center", spec->center, 1) < 0) return -1;
@@ -179,8 +182,8 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
     PyObject* energy = PyDict_GetItemString(config, "energy");
     if (!energy) { PyErr_SetString(PyExc_ValueError, "source requires energy in MeV"); return -1; }
     if (PyDict_Check(energy)) {
-        static const char* const types[] = {"mono", "lines"};
-        int energy_type = tr_name(energy, "type", types, 2, -1);
+        static const char* const types[] = {"mono", "lines", "tabulated"};
+        int energy_type = tr_name(energy, "type", types, 3, -1);
         if (energy_type < 0) {
             if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "energy requires type");
             return -1;
@@ -190,6 +193,15 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
             PyObject* value = PyDict_GetItemString(energy, "value");
             if (!value) { PyErr_SetString(PyExc_ValueError, "mono energy requires value"); return -1; }
             spec->energy = PyFloat_AsDouble(value);
+        } else if (energy_type == 2) {
+            static const char* const modes[] = {"histogram", "linear"};
+            int mode = tr_name(energy, "interpolation", modes, 2, -1);
+            if (mode < 0) {
+                if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError,
+                    "tabulated energy requires interpolation");
+                return -1;
+            }
+            spec->energy_interpolation = (alea_source_pdf_t)mode;
         }
     } else spec->energy = PyFloat_AsDouble(energy);
     if (PyErr_Occurred()) return -1;
@@ -210,11 +222,86 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
     return tr_number(config, "weight", &spec->weight);
 }
 
-static alea_source_t* tr_prepare_source(PyObject* config) {
+static int tr_edge_array(PyObject* raw, const char* name,
+                         double** output, size_t* count) {
+    if (!raw) {
+        PyErr_Format(PyExc_ValueError, "tokamak_rz requires %s", name);
+        return -1;
+    }
+    PyObject* seq = PySequence_Fast(raw, "grid edges must be a sequence");
+    if (!seq) return -1;
+    Py_ssize_t size = PySequence_Fast_GET_SIZE(seq);
+    if (size < 2 || (size_t)size > UINT32_MAX) {
+        PyErr_Format(PyExc_ValueError, "%s needs at least two edges", name);
+        Py_DECREF(seq); return -1;
+    }
+    double* values = PyMem_New(double, size);
+    if (!values) { PyErr_NoMemory(); Py_DECREF(seq); return -1; }
+    for (Py_ssize_t i = 0; i < size; ++i) {
+        values[i] = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(seq, i));
+        if (PyErr_Occurred()) {
+            PyMem_Free(values); Py_DECREF(seq); return -1;
+        }
+    }
+    Py_DECREF(seq);
+    *output = values;
+    *count = (size_t)size;
+    return 0;
+}
+
+static int tr_tokamak_arrays(PyObject* space, alea_source_spec_t* spec,
+                             double** r_edges, double** z_edges,
+                             double** emissivity) {
+    if (tr_edge_array(PyDict_GetItemString(space, "r_edges"), "r_edges",
+                      r_edges, &spec->r_edge_count) < 0 ||
+        tr_edge_array(PyDict_GetItemString(space, "z_edges"), "z_edges",
+                      z_edges, &spec->z_edge_count) < 0) return -1;
+    size_t nr = spec->r_edge_count - 1, nz = spec->z_edge_count - 1;
+    if (nr > SIZE_MAX / nz || nr*nz > UINT32_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "tokamak_rz grid is too large");
+        return -1;
+    }
+    PyObject* raw = PyDict_GetItemString(space, "emissivity");
+    if (!raw) {
+        PyErr_SetString(PyExc_ValueError, "tokamak_rz requires emissivity");
+        return -1;
+    }
+    PyObject* rows = PySequence_Fast(raw, "emissivity must be a 2D sequence");
+    if (!rows) return -1;
+    if (PySequence_Fast_GET_SIZE(rows) != (Py_ssize_t)nr) {
+        PyErr_SetString(PyExc_ValueError, "emissivity must have one row per R bin");
+        Py_DECREF(rows); return -1;
+    }
+    *emissivity = PyMem_New(double, nr*nz);
+    if (!*emissivity) { PyErr_NoMemory(); Py_DECREF(rows); return -1; }
+    for (size_t ir = 0; ir < nr; ++ir) {
+        PyObject* row = PySequence_Fast(PySequence_Fast_GET_ITEM(rows, ir),
+                                        "emissivity row must be a sequence");
+        if (!row) { Py_DECREF(rows); return -1; }
+        if (PySequence_Fast_GET_SIZE(row) != (Py_ssize_t)nz) {
+            PyErr_SetString(PyExc_ValueError, "emissivity row needs one value per Z bin");
+            Py_DECREF(row); Py_DECREF(rows); return -1;
+        }
+        for (size_t iz = 0; iz < nz; ++iz) {
+            (*emissivity)[ir*nz + iz] =
+                PyFloat_AsDouble(PySequence_Fast_GET_ITEM(row, iz));
+            if (PyErr_Occurred()) { Py_DECREF(row); Py_DECREF(rows); return -1; }
+        }
+        Py_DECREF(row);
+    }
+    Py_DECREF(rows);
+    spec->r_edges = *r_edges;
+    spec->z_edges = *z_edges;
+    spec->rz_emissivity = *emissivity;
+    return 0;
+}
+
+static alea_source_t* tr_prepare_single_source(PyObject* config) {
     alea_source_spec_t spec;
     if (tr_source_spec(config, &spec) < 0) return NULL;
     double *values = NULL, *weights = NULL;
     double *angle_mu = NULL, *angle_pdf = NULL;
+    double *r_edges = NULL, *z_edges = NULL, *emissivity = NULL;
     if (spec.angle == ALEA_SOURCE_TABULATED_MU) {
         PyObject* angle = PyDict_GetItemString(config, "angle");
         PyObject* raw_mu = PyDict_GetItemString(angle, "mu");
@@ -254,12 +341,14 @@ static alea_source_t* tr_prepare_source(PyObject* config) {
         spec.angle_pdf = angle_pdf;
         spec.angle_count = (size_t)count;
     }
-    if (spec.energy_type == ALEA_SOURCE_ENERGY_LINES) {
+    if (spec.energy_type != ALEA_SOURCE_ENERGY_MONO) {
         PyObject* energy = PyDict_GetItemString(config, "energy");
         PyObject* raw_values = PyDict_GetItemString(energy, "values");
-        PyObject* raw_weights = PyDict_GetItemString(energy, "weights");
+        PyObject* raw_weights = PyDict_GetItemString(energy,
+            spec.energy_type == ALEA_SOURCE_ENERGY_LINES ? "weights" : "pdf");
         if (!raw_values || !raw_weights) {
-            PyErr_SetString(PyExc_ValueError, "energy lines require values and weights");
+            PyErr_SetString(PyExc_ValueError,
+                "energy distribution requires values and weights or pdf");
             PyMem_Free(angle_mu); PyMem_Free(angle_pdf);
             return NULL;
         }
@@ -268,9 +357,10 @@ static alea_source_t* tr_prepare_source(PyObject* config) {
         PyObject* weight_seq = PySequence_Fast(raw_weights, "energy weights must be a sequence");
         if (!weight_seq) { Py_DECREF(value_seq); PyMem_Free(angle_mu); PyMem_Free(angle_pdf); return NULL; }
         Py_ssize_t count = PySequence_Fast_GET_SIZE(value_seq);
-        if (count == 0 || count != PySequence_Fast_GET_SIZE(weight_seq) ||
+        if (count < (spec.energy_type == ALEA_SOURCE_ENERGY_LINES ? 1 : 2) ||
+            count != PySequence_Fast_GET_SIZE(weight_seq) ||
             (size_t)count > UINT32_MAX) {
-            PyErr_SetString(PyExc_ValueError, "energy lines need equal nonempty arrays");
+            PyErr_SetString(PyExc_ValueError, "energy arrays have invalid lengths");
             Py_DECREF(value_seq); Py_DECREF(weight_seq);
             PyMem_Free(angle_mu); PyMem_Free(angle_pdf); return NULL;
         }
@@ -297,15 +387,107 @@ static alea_source_t* tr_prepare_source(PyObject* config) {
         spec.energy_weights = weights;
         spec.energy_count = (size_t)count;
     }
+    if (spec.space == ALEA_SOURCE_TOKAMAK_RZ) {
+        if (tr_tokamak_arrays(PyDict_GetItemString(config, "space"), &spec,
+                              &r_edges, &z_edges, &emissivity) < 0) {
+            PyMem_Free(values); PyMem_Free(weights);
+            PyMem_Free(angle_mu); PyMem_Free(angle_pdf);
+            PyMem_Free(r_edges); PyMem_Free(z_edges); PyMem_Free(emissivity);
+            return NULL;
+        }
+    }
     alea_source_t* source = NULL;
     alea_error_t err = alea_source_prepare(&spec, &source);
     PyMem_Free(values);
     PyMem_Free(weights);
     PyMem_Free(angle_mu);
     PyMem_Free(angle_pdf);
+    PyMem_Free(r_edges);
+    PyMem_Free(z_edges);
+    PyMem_Free(emissivity);
     if (err != ALEA_OK) PyErr_Format(PyExc_ValueError,
         "invalid source: %s", alea_error_string(err));
     return source;
+}
+
+static alea_source_t* tr_prepare_source_depth(PyObject* config, unsigned depth);
+
+static alea_source_t* tr_prepare_mixture(PyObject* config, unsigned depth) {
+    PyObject* raw = PyDict_GetItemString(config, "components");
+    if (!raw) {
+        PyErr_SetString(PyExc_ValueError, "mixture requires components");
+        return NULL;
+    }
+    PyObject* seq = PySequence_Fast(raw, "components must be a sequence");
+    if (!seq) return NULL;
+    Py_ssize_t count = PySequence_Fast_GET_SIZE(seq);
+    if (count <= 0 || (size_t)count > UINT32_MAX) {
+        PyErr_SetString(PyExc_ValueError, "mixture needs at least one component");
+        Py_DECREF(seq); return NULL;
+    }
+    alea_source_t** components = PyMem_New(alea_source_t*, count);
+    double* strengths = PyMem_New(double, count);
+    if (!components || !strengths) {
+        PyErr_NoMemory(); Py_DECREF(seq);
+        PyMem_Free(components); PyMem_Free(strengths); return NULL;
+    }
+    memset(components, 0, (size_t)count*sizeof(*components));
+    alea_source_t* mixture = NULL;
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject* component = PySequence_Fast_GET_ITEM(seq, i);
+        if (!PyDict_Check(component)) {
+            PyErr_SetString(PyExc_TypeError, "mixture component must be a dict");
+            goto mixture_done;
+        }
+        PyObject* strength = PyDict_GetItemString(component, "strength");
+        PyObject* description = PyDict_GetItemString(component, "source");
+        if (!strength || !description) {
+            PyErr_SetString(PyExc_ValueError, "mixture component requires strength and source");
+            goto mixture_done;
+        }
+        strengths[i] = PyFloat_AsDouble(strength);
+        if (PyErr_Occurred()) goto mixture_done;
+        components[i] = tr_prepare_source_depth(description, depth + 1);
+        if (!components[i]) goto mixture_done;
+    }
+    alea_error_t err = alea_source_mixture_prepare(components, strengths,
+                                                  (size_t)count, &mixture);
+    if (err != ALEA_OK) PyErr_Format(PyExc_ValueError,
+        "invalid source mixture: %s", alea_error_string(err));
+    else memset(components, 0, (size_t)count*sizeof(*components));
+mixture_done:
+    for (Py_ssize_t i = 0; i < count; ++i)
+        alea_source_free(components[i]);
+    PyMem_Free(components);
+    PyMem_Free(strengths);
+    Py_DECREF(seq);
+    return mixture;
+}
+
+static alea_source_t* tr_prepare_source_depth(PyObject* config, unsigned depth) {
+    if (depth > 8) {
+        PyErr_SetString(PyExc_ValueError, "source mixtures are nested too deeply");
+        return NULL;
+    }
+    if (!PyDict_Check(config)) {
+        PyErr_SetString(PyExc_TypeError, "source description must be a dict");
+        return NULL;
+    }
+    PyObject* type = PyDict_GetItemString(config, "type");
+    if (type) {
+        const char* name = PyUnicode_AsUTF8(type);
+        if (!name) return NULL;
+        if (strcmp(name, "mixture") != 0) {
+            PyErr_SetString(PyExc_ValueError, "unknown source type");
+            return NULL;
+        }
+        return tr_prepare_mixture(config, depth);
+    }
+    return tr_prepare_single_source(config);
+}
+
+static alea_source_t* tr_prepare_source(PyObject* config) {
+    return tr_prepare_source_depth(config, 0);
 }
 
 static PyObject* tr_source_new(PyTypeObject* type, PyObject* args, PyObject* kwds) {
@@ -329,6 +511,21 @@ static void tr_source_dealloc(PyAleaSourceObject* self) {
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
+static PyObject* tr_source_integrated_emissivity(PyAleaSourceObject* self,
+                                                  void* closure) {
+    (void)closure;
+    double value;
+    if (alea_source_integrated_emissivity(self->source, &value) != ALEA_OK)
+        Py_RETURN_NONE;
+    return PyFloat_FromDouble(value);
+}
+
+static PyGetSetDef tr_source_getset[] = {
+    {"integrated_emissivity", (getter)tr_source_integrated_emissivity,
+     NULL, "Integrated tokamak emissivity, or None for other sources.", NULL},
+    {NULL}
+};
+
 static PyTypeObject PyAleaSourceType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "pyalea._alea.Source",
@@ -338,6 +535,7 @@ static PyTypeObject PyAleaSourceType = {
     .tp_new = tr_source_new,
     .tp_init = (initproc)tr_source_init,
     .tp_dealloc = (destructor)tr_source_dealloc,
+    .tp_getset = tr_source_getset,
 };
 
 static PyObject* mod_sample_source(PyObject* module, PyObject* args, PyObject* kwds) {

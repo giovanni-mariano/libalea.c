@@ -77,6 +77,7 @@ class Multigroup:
 
 class Source:
     def __init__(self, config: dict[str, Any]) -> None: ...
+    integrated_emissivity: float | None
 
 def sample_source(source: Source | dict[str, Any], histories: int = 1,
                   seed: int = 1, history_offset: int = 0) -> dict[str, Any]: ...

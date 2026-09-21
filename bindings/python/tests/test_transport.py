@@ -186,3 +186,82 @@ def test_radial_direction_uses_sampled_position():
     })
     samples = pyalea.sample_source(source, 16, 19)
     np.testing.assert_allclose(samples["direction"], [[-1, 0, 0]] * 16)
+
+
+def test_tokamak_rz_emissivity_preview(tmp_path):
+    r_edges = np.array([0.0, 1.0, 2.0])
+    emissivity = np.array([[1.0, 0.0], [1.0, 1.0]])
+    source = pyalea.Source({
+        "space": {"type": "tokamak_rz", "r_edges": r_edges,
+                  "z_edges": [0, 1, 2], "emissivity": emissivity,
+                  "phi_min": 0, "phi_max": np.pi / 2},
+        "angle": {"type": "isotropic"}, "energy": 14.1,
+    })
+    assert source.integrated_emissivity == pytest.approx(1.75 * np.pi)
+    r_edges[1] = 100
+    emissivity[:] = 0
+    samples = pyalea.sample_source(source, 20000, 73)
+    points = samples["position"]
+    r2 = points[:, 0]**2 + points[:, 1]**2
+    assert np.all(points[:, 0] >= -1e-14)
+    assert np.all(points[:, 1] >= -1e-14)
+    assert not np.any((r2 < 1) & (points[:, 2] >= 1))
+    assert np.mean(r2 >= 1) == pytest.approx(6 / 7, abs=0.02)
+    np.testing.assert_array_equal(
+        pyalea.sample_source(source, 1, 73, 123)["position"][0],
+        points[123],
+    )
+    xsdir_path = tmp_path / "xsdir"
+    xsdir_path.write_text(
+        "directory\n1001.80c 1.0 dummy.ace 0 1 1 1 0 0 2.5301e-8\n"
+    )
+    inside = pyalea.Source({
+        "space": {"type": "tokamak_rz", "r_edges": [0, 0.5, 1],
+                  "z_edges": [0, 1], "emissivity": [[1], [1]]},
+        "angle": {"type": "isotropic"}, "energy": 14.1,
+    })
+    result = pyalea.transport_run(
+        pyalea.load_mcnp_string(GEOMETRY), pyalea.XsDir(str(xsdir_path)),
+        {"histories": 8, "source": inside,
+         "tallies": [{"score": "track_length"}]},
+    )
+    assert result["leaked"] == 8
+    with pytest.raises(ValueError, match="one value per Z bin"):
+        pyalea.Source({
+            "space": {"type": "tokamak_rz", "r_edges": [0, 1],
+                      "z_edges": [0, 1, 2], "emissivity": [[1]]},
+            "angle": {"type": "isotropic"}, "energy": 14.1,
+        })
+
+
+def test_tabulated_energy_preview():
+    source = pyalea.Source({
+        "space": {"type": "point", "position": [0, 0, 0]},
+        "angle": {"type": "isotropic"},
+        "energy": {"type": "tabulated", "values": [1, 3],
+                   "pdf": [1, 1], "interpolation": "linear"},
+    })
+    energy = pyalea.sample_source(source, 10000, 42)["energy"]
+    assert np.all((energy >= 1) & (energy <= 3))
+    assert np.mean(energy) == pytest.approx(2, abs=0.03)
+
+
+def test_weighted_source_mixture_preview():
+    source = pyalea.Source({
+        "type": "mixture",
+        "components": [
+            {"strength": 1, "source": {
+                "particle": "neutron", "space": {"type": "point", "position": [0, 0, 0]},
+                "angle": {"type": "isotropic"}, "energy": 2,
+            }},
+            {"strength": 3, "source": {
+                "particle": "photon", "space": {"type": "point", "position": [1, 0, 0]},
+                "angle": {"type": "isotropic"}, "energy": 3,
+            }},
+        ],
+    })
+    samples = pyalea.sample_source(source, 10000, 17)
+    photons = samples["particle"] == 1
+    assert np.mean(photons) == pytest.approx(.75, abs=.02)
+    assert np.all(samples["position"][photons, 0] == 1)
+    assert np.all(samples["weight"] == 1)

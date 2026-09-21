@@ -10,7 +10,10 @@ Status: phase 1 implemented for point/box space, isotropic/monodirectional
 angle, constant energy/time/weight, prepared source reuse, and preview in
 C/Python/Lua. Line, spherical-volume and cylindrical-volume sampling,
 cone/cosine/tabulated-polar/radial angles, and discrete energy lines from
-phase 2 are also implemented. Other phase 2 and later
+phase 2 are also implemented. The phase-3 axisymmetric tokamak `(R,Z)`
+emissivity source is implemented with cylindrical-volume bin weights and an
+integrated-emissivity accessor. Weighted source mixtures and tabulated energy
+PDFs are also implemented. Other phase 2 and later
 capabilities remain proposed. The phase descriptions below distinguish
 implemented features from the remaining work.
 
@@ -49,7 +52,7 @@ The canonical source description has these fields:
 
 | Component | Initial choices | Later choices |
 | --- | --- | --- |
-| Particle | neutron or photon | weighted mixtures of source components |
+| Particle | neutron or photon; weighted mixtures of source components | correlated multiparticle histories |
 | Space | point, line, box, sphere, cylinder; rectangle/disk/sphere/cylinder surfaces | torus, weighted mesh, tokamak emissivity, sampled CSG region |
 | Angle | monodirectional, isotropic, uniform-solid-angle cone, cosine hemisphere, tabulated polar PDF, radial from sampled position | general correlated models |
 | Energy | monoenergetic, discrete lines, tabulated PDF | position-dependent and validated fusion emission models |
@@ -157,9 +160,9 @@ cylinder side/cap surfaces as distinct spatial types. If a closed cylinder is
 requested, select its patches by area. Support arbitrary orientations through
 the shared frame. Do not accept an infinite emitting surface without bounds.
 
-Cone, cosine-hemisphere, radial, and tabulated-polar angular laws and discrete
-energy lines are implemented. Add tabulated
-energy PDFs, and constant/uniform/tabulated emission times. Reuse prepared CDF
+Cone, cosine-hemisphere, radial, and tabulated-polar angular laws, discrete
+energy lines, and tabulated energy PDFs are implemented. Add
+uniform/tabulated emission times. Reuse prepared CDF
 and alias tables. Clearly specify histogram versus linear PDF interpolation.
 The tabulated polar law uses density per unit `mu = cos(theta)` and uniform
 azimuth; it is independent of position. Radial direction is an explicit
@@ -171,12 +174,12 @@ Add matching binding examples in the same changes as the native features.
 
 ## Phase 3 — mixtures and tabulated fusion emissivity
 
-Add weighted source components and a weighted Cartesian spatial mesh. Specify
+Weighted source components are implemented. Add a weighted Cartesian spatial mesh. Specify
 whether mesh entries are emission density or integrated voxel strengths; use
 the corresponding voxel volumes when preparing selection probabilities.
 
-Prioritize axisymmetric tokamak sources represented by emissivity on an `(R,Z)`
-grid and a toroidal angle interval. Start with piecewise-constant emissivity in
+Axisymmetric tokamak sources are represented by emissivity on an `(R,Z)`
+grid and a toroidal angle interval. The implementation uses piecewise-constant emissivity in
 each bin. Prepare cell masses using cylindrical volume: for a bin, volume is
 `0.5 * (R_hi^2 - R_lo^2) * (Z_hi - Z_lo) * delta_phi`. Sample radius within a
 selected cell according to that volume measure, not uniformly in `R`.
