@@ -257,6 +257,10 @@ const char* alea_geom_error_type_name(alea_geom_error_type_t type) {
             return "ambiguous_boundary";
         case ALEA_GEOM_ERR_INTERIOR_GAP:
             return "interior_gap";
+        case ALEA_GEOM_ERR_INCOMPLETE_RAY:
+            return "incomplete_ray";
+        case ALEA_GEOM_ERR_INCOMPLETE_SLICE_SAMPLE:
+            return "incomplete_slice_sample";
         default:
             return "unknown";
     }
@@ -317,6 +321,51 @@ static int append_error(alea_geom_validator_result_t* result,
     return 0;
 }
 
+static int record_incomplete_ray(const alea_ray_t* ray,
+    const alea_geom_validator_options_t* options,
+    alea_geom_validator_result_t* result, double t) {
+    alea_geom_error_t error;
+    init_geom_error(&error);
+    error.type = ALEA_GEOM_ERR_INCOMPLETE_RAY;
+    error.source = ALEA_GEOM_EVENT_SOURCE_RAY;
+    error.cause = alea_get_last_error();
+    if (error.cause == ALEA_OK) error.cause = ALEA_ERR_INVALID_STATE;
+    error.t = t;
+    alea_ray_point_at(ray, t, &error.crossing_point[0],
+                      &error.crossing_point[1], &error.crossing_point[2]);
+    error.direction[0] = ray->dx;
+    error.direction[1] = ray->dy;
+    error.direction[2] = ray->dz;
+    result->incomplete_rays++;
+    const int rc = append_error(result, options, &error);
+    if (rc == 0) alea_clear_error_detail();
+    return rc;
+}
+
+static int record_incomplete_slice_sample(
+    const double point[3], const double direction[3], int surface_id,
+    size_t curve_index, double t, const double uv[2],
+    const alea_geom_validator_options_t* options,
+    alea_geom_validator_result_t* result) {
+    alea_geom_error_t error;
+    init_geom_error(&error);
+    error.type = ALEA_GEOM_ERR_INCOMPLETE_SLICE_SAMPLE;
+    error.source = ALEA_GEOM_EVENT_SOURCE_SLICE_CURVE;
+    error.cause = alea_get_last_error();
+    if (error.cause == ALEA_OK) error.cause = ALEA_ERR_INVALID_STATE;
+    error.surface_id = surface_id;
+    error.curve_index = curve_index;
+    error.t = t;
+    copy3(error.crossing_point, point);
+    copy3(error.direction, direction);
+    error.uv[0] = uv[0];
+    error.uv[1] = uv[1];
+    result->incomplete_slice_samples++;
+    const int rc = append_error(result, options, &error);
+    if (rc == 0) alea_clear_error_detail();
+    return rc;
+}
+
 typedef struct {
     const alea_ray_t* ray;
     const alea_geom_validator_options_t* options;
@@ -338,6 +387,8 @@ typedef struct {
     size_t count;
     size_t capacity;
     int failed;
+    int incomplete;
+    double incomplete_t;
 } ray_coverage_trace_t;
 
 /* Coverage is the diagnostic oracle for conditions a selected owner trace can
@@ -348,11 +399,12 @@ static int append_ray_coverage_finding(
     ray_coverage_finding_context_t* ctx = context;
     if (interval->kind == ALEA_RAY_COVERAGE_TRUNCATED ||
         interval->kind == ALEA_RAY_COVERAGE_UNRESOLVED) {
-        /* Complete coverage is no longer knowable after owner saturation or
-         * an unresolved ownership chain. Preserve earlier findings, but do
-         * not continue and present a partial diagnostic as exhaustive. */
-        ctx->result->truncated = 1;
-        return 1;
+        alea_set_error_detail(
+            interval->kind == ALEA_RAY_COVERAGE_TRUNCATED
+                ? ALEA_ERR_OVERFLOW : ALEA_ERR_INVALID_STATE,
+            "geometry ray ownership is incomplete at t=%.17g",
+            interval->t_enter);
+        return 2;
     }
     const int is_gap = interval->kind == ALEA_RAY_COVERAGE_GAP &&
         ctx->report_gaps;
@@ -413,6 +465,15 @@ static int append_ray_coverage_trace(
     ray_coverage_trace_t* trace = context;
     const int finding_rc = append_ray_coverage_finding(
         &trace->findings, interval);
+    if (finding_rc < 0) {
+        trace->failed = 1;
+        return 1;
+    }
+    if (finding_rc == 2) {
+        trace->incomplete = 1;
+        trace->incomplete_t = interval->t_enter;
+        return 1;
+    }
     if (finding_rc != 0) return finding_rc;
     if (interval->owner_count > VALIDATOR_HIT_CAP) {
         trace->failed = 1;
@@ -1288,6 +1349,7 @@ static int validate_one_ray(alea_system_t* sys,
                             double t_max,
                             const alea_geom_validator_options_t* options,
                             alea_geom_validator_result_t* result) {
+    alea_clear_error_detail();
     alea_raycast_result_t coverage_scratch;
     alea_raycast_result_init(&coverage_scratch);
     ray_coverage_trace_t coverage_trace = {
@@ -1300,8 +1362,15 @@ static int validate_one_ray(alea_system_t* sys,
         append_ray_coverage_trace, &coverage_trace);
     alea_raycast_result_free(&coverage_scratch);
     if (coverage_rc < 0 || coverage_trace.failed) {
+        const int trace_failed = coverage_trace.failed;
         ray_coverage_trace_free(&coverage_trace);
-        return -1;
+        return trace_failed ? -1
+            : record_incomplete_ray(ray, options, result, 0.0);
+    }
+    if (coverage_trace.incomplete) {
+        const double t = coverage_trace.incomplete_t;
+        ray_coverage_trace_free(&coverage_trace);
+        return record_incomplete_ray(ray, options, result, t);
     }
     if (result->truncated) {
         ray_coverage_trace_free(&coverage_trace);
@@ -1328,7 +1397,7 @@ static int validate_one_ray(alea_system_t* sys,
         alea_raycast_result_free(&domain_scratch);
         if (gap_rc < 0) {
             ray_coverage_trace_free(&coverage_trace);
-            return -1;
+            return record_incomplete_ray(ray, options, result, 0.0);
         }
         if (result->truncated) {
             ray_coverage_trace_free(&coverage_trace);
@@ -1352,7 +1421,7 @@ static int validate_one_ray(alea_system_t* sys,
     if (rc != 0) {
         alea_raycast_result_free(&ray_result);
         ray_coverage_trace_free(&coverage_trace);
-        return -1;
+        return record_incomplete_ray(ray, options, result, 0.0);
     }
 
     size_t max_crossings = options->max_crossings;
@@ -1547,6 +1616,8 @@ static int merge_validator_ray_result(
     result->exact_queries += ray_result->exact_queries;
     result->ambiguous_crossings += ray_result->ambiguous_crossings;
     result->sample_limited_curves += ray_result->sample_limited_curves;
+    result->incomplete_rays += ray_result->incomplete_rays;
+    result->incomplete_slice_samples += ray_result->incomplete_slice_samples;
     if (ray_result->truncated) result->truncated = 1;
     return 0;
 }
@@ -1841,10 +1912,10 @@ static int validate_surface_sample(alea_system_t* sys,
 
     if (sample_coverage_ladder(sys, p, dir, options, &cov_plus, sp_plus,
                                &off_plus, &amb_plus, &flags_plus, result) != 0)
-        return -1;
+        return 1;
     if (sample_coverage_ladder(sys, p, neg_dir, options, &cov_minus, sp_minus,
                                &off_minus, &amb_minus, &flags_minus, result) != 0)
-        return -1;
+        return 1;
 
     int ambiguous = amb_plus || amb_minus;
     uint32_t flags = flags_plus | flags_minus | event_flags;
@@ -2022,9 +2093,20 @@ int alea_validator_cluster_slice_range(alea_system_t* sys,
             double uv[2] = { u, v };
             uint32_t event_flags = slice_sample_is_on_viewport_edge(
                 view, u, v) ? ALEA_GEOM_EVENT_VIEWPORT_EDGE : 0;
-            if (validate_surface_sample(sys, pw, dirw, c.surface_id,
-                                        c.primitive_id, ci, 0, t, uv, event_flags,
-                                        &local, result) != 0) {
+            alea_clear_error_detail();
+            const int sample_rc = validate_surface_sample(
+                sys, pw, dirw, c.surface_id, c.primitive_id, ci, 0,
+                t, uv, event_flags, &local, result);
+            if (sample_rc > 0) {
+                if (record_incomplete_slice_sample(
+                        pw, dirw, c.surface_id, ci, t, uv,
+                        &local, result) != 0) {
+                    rc = -1;
+                    break;
+                }
+                continue;
+            }
+            if (sample_rc < 0) {
                 rc = -1;
                 break;
             }

@@ -29,6 +29,8 @@ static int validator_results_equal(const alea_geom_validator_result_t* first,
         first->ambiguous_crossings == second->ambiguous_crossings &&
         first->suppressed_samples == second->suppressed_samples &&
         first->sample_limited_curves == second->sample_limited_curves &&
+        first->incomplete_rays == second->incomplete_rays &&
+        first->incomplete_slice_samples == second->incomplete_slice_samples &&
         first->truncated == second->truncated &&
         (first->error_count == 0 ||
          memcmp(first->errors, second->errors,
@@ -187,7 +189,7 @@ static alea_system_t* build_dense_shared_fill_boundary_system(void) {
     if (!sys) return NULL;
 
     int x_si = alea_plane_surface(sys, 10, 1, 0, 0, 0);
-    int y_si = alea_plane_surface(sys, 11, 0, 1, 0, 10);
+    int y_si = alea_plane_surface(sys, 11, 0, 1, 0, -10);
     int box_si = alea_box_surface(sys, 20, -3, 3, -3, 3, -3, 3);
     if (x_si < 0 || y_si < 0 || box_si < 0) goto fail;
 
@@ -652,8 +654,35 @@ TEST(geo_validator_reports_sub_nanometer_coverage_and_budget_failure) {
     options.max_breakpoints = 1;
     alea_geom_validator_result_init(&result);
     ASSERT_EQ(alea_validate_geometry_ray(sys, &options,
-                  0, 0, 0, 1, 0, 0, 20, &result), -1);
-    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_OVERFLOW);
+                  0, 0, 0, 1, 0, 0, 20, &result), 0);
+    ASSERT_EQ(result.incomplete_rays, (size_t)1);
+    ASSERT_EQ(result.truncated, 0);
+    int saw_incomplete = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        if (result.errors[i].type == ALEA_GEOM_ERR_INCOMPLETE_RAY &&
+            result.errors[i].cause == ALEA_ERR_OVERFLOW)
+            saw_incomplete = 1;
+    }
+    ASSERT(saw_incomplete);
+    /* A short ray in the overlap needs no breakpoints and can still report
+     * another region under the same limit and into the same result. */
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &options,
+                  10 + 1e-10, 0, 0, 0, 1, 0, 1, &result), 0);
+    ASSERT_EQ(result.incomplete_rays, (size_t)1);
+    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) > 0);
+    options.max_breakpoints = 0;
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &options,
+                  0, 0, 0, 1, 0, 0, 20, &result), 0);
+    ASSERT_EQ(result.incomplete_rays, (size_t)1);
+    ASSERT(count_error_type(&result, ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING) > 0);
+    alea_geom_validator_result_free(&result);
+
+    options.max_breakpoints = 1;
+    options.ray_count = 32;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry(sys, &options, &result), 0);
+    ASSERT(result.incomplete_rays > 1);
+    ASSERT_EQ(result.truncated, 0);
     alea_geom_validator_result_free(&result);
     alea_destroy(sys);
 }
@@ -762,6 +791,24 @@ TEST(geo_validator_parallel_rays_match_forced_serial_receipt) {
             &parallel.errors[error], &serial.errors[error],
             sizeof(serial.errors[error])), 0);
 
+    alea_geom_validator_result_free(&parallel);
+    alea_geom_validator_result_free(&serial);
+
+    options.max_breakpoints = 1;
+    options.max_errors = 1024;
+    options.max_crossings = 100000;
+    alea_geom_validator_result_init(&serial);
+    alea_geom_validator_result_init(&parallel);
+    serial_context.result = &serial;
+    serial_context.status = -1;
+    ASSERT_EQ(alea_parallel_for(
+        1, 1, 1, ALEA_PARALLEL_STATIC_BLOCK,
+        run_validator_in_nested_region, &serial_context, NULL),
+        ALEA_PARALLEL_OK);
+    ASSERT_EQ(serial_context.status, 0);
+    ASSERT_EQ(alea_validate_geometry(sys, &options, &parallel), 0);
+    ASSERT(serial.incomplete_rays > 0);
+    ASSERT(validator_results_equal(&serial, &parallel));
     alea_geom_validator_result_free(&parallel);
     alea_geom_validator_result_free(&serial);
     alea_destroy(sys);
@@ -1124,7 +1171,7 @@ TEST(geo_validator_marks_crossing_budget_truncation) {
     alea_destroy(sys);
 }
 
-TEST(geo_validator_marks_coverage_owner_budget_truncation) {
+TEST(geo_validator_marks_coverage_owner_budget_incomplete_ray) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
     const int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
@@ -1144,7 +1191,9 @@ TEST(geo_validator_marks_coverage_owner_budget_truncation) {
     ASSERT_EQ(alea_validate_geometry_ray(sys, &opts,
                                          -2, 0, 0, 1, 0, 0, 4,
                                          &result), 0);
-    ASSERT_EQ(result.truncated, 1);
+    ASSERT_EQ(result.truncated, 0);
+    ASSERT_EQ(result.incomplete_rays, (size_t)1);
+    ASSERT_EQ(count_error_type(&result, ALEA_GEOM_ERR_INCOMPLETE_RAY), 1);
     ASSERT_EQ(result.crossings_checked, 0);
 
     alea_geom_validator_result_free(&result);

@@ -11,7 +11,7 @@
 
 #define VALIDATOR_BATCH_RAYS 64u
 #define VALIDATOR_RAY_ERROR_LIMIT 4096u
-#define VALIDATOR_META_FIELDS 8u
+#define VALIDATOR_META_FIELDS 10u
 
 static size_t rank_count(size_t total, size_t rank, size_t ranks) {
     return total / ranks + (rank < total % ranks);
@@ -33,6 +33,7 @@ uint64_t alea_cluster_validator_options_fingerprint(
     HASH(options->flags); HASH(options->universe_depth);
     HASH(options->max_errors); HASH(options->max_samples_per_signature);
     HASH(options->max_samples_per_curve); HASH(options->max_crossings);
+    HASH(options->max_breakpoints);
     HASH(options->sample_offset); HASH(options->t_max);
     HASH(options->seed); HASH(options->ray_count);
     for (size_t i = 0; i < 6; ++i) HASH(options->validation_bounds[i]);
@@ -141,6 +142,8 @@ alea_cluster_status_t alea_cluster_validate_geometry(
             meta[5] = current->suppressed_samples;
             meta[6] = current->sample_limited_curves;
             meta[7] = current->truncated;
+            meta[8] = current->incomplete_rays;
+            meta[9] = current->incomplete_slice_samples;
         }
         if (alea_interrupted()) local = ALEA_CLUSTER_INTERRUPTED;
         status = alea_cluster_agree(cluster, local);
@@ -228,6 +231,8 @@ alea_cluster_status_t alea_cluster_validate_geometry(
                 candidate.suppressed_samples = (size_t)meta[5];
                 candidate.sample_limited_curves = (size_t)meta[6];
                 candidate.truncated = (int)meta[7];
+                candidate.incomplete_rays = (size_t)meta[8];
+                candidate.incomplete_slice_samples = (size_t)meta[9];
                 const double* ray = rays + 6 * i;
                 if (alea_validator_cluster_merge_one(sys, ray, ray + 3,
                         t_max, &prepared, root_result, &candidate) != 0) {

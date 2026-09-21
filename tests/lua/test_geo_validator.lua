@@ -24,6 +24,16 @@ local clean_all = clean:validate_geometry{
     max_errors = 8
 }
 assert(clean_all:error_count() == 0, "clean whole-geometry validation should pass")
+local incomplete = clean:validate_geometry_ray(
+    -10, 0, 0, 1, 0, 0, 25,
+    {hier = true, max_breakpoints = 1}
+)
+assert(incomplete:stats().incomplete_rays == 1,
+       "a limited ray should be marked incomplete")
+assert(incomplete:error(1).type == "incomplete_ray",
+       "the incomplete ray should remain inspectable")
+assert(incomplete:error(1).cause ~= 0,
+       "the incomplete finding should expose its cause")
 clean:destroy()
 
 local undefined = alea.create()

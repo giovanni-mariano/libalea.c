@@ -765,6 +765,8 @@ static int same_validation(const alea_geom_validator_result_t* a,
         a->ambiguous_crossings != b->ambiguous_crossings ||
         a->suppressed_samples != b->suppressed_samples ||
         a->sample_limited_curves != b->sample_limited_curves ||
+        a->incomplete_rays != b->incomplete_rays ||
+        a->incomplete_slice_samples != b->incomplete_slice_samples ||
         a->truncated != b->truncated) return 0;
     for (size_t i = 0; i < a->error_count; ++i) {
         const alea_geom_error_t* x = &a->errors[i];
@@ -773,6 +775,7 @@ static int same_validation(const alea_geom_validator_result_t* a,
             x->previous_cell_id != y->previous_cell_id ||
             x->found_cell_id != y->found_cell_id ||
             x->surface_id != y->surface_id || x->flags != y->flags ||
+            x->cause != y->cause ||
             x->t != y->t || x->curve_index != y->curve_index ||
             x->component_index != y->component_index ||
             memcmp(x->uv, y->uv, sizeof(x->uv)) != 0 ||
@@ -900,6 +903,33 @@ static int test_validator(alea_cluster_t* cluster, alea_system_t* sys,
         : fail(rank, "cluster validation differs from serial");
 }
 
+static int test_validator_incomplete(alea_cluster_t* cluster,
+                                     alea_system_t* sys, int rank) {
+    alea_geom_validator_options_t options;
+    alea_geom_validator_options_init(&options);
+    options.ray_count = 32;
+    options.max_errors = 64;
+    options.max_breakpoints = 1;
+    alea_geom_validator_result_t gathered;
+    alea_geom_validator_result_init(&gathered);
+    alea_cluster_status_t status = alea_cluster_validate_geometry(
+        cluster, sys, &options, rank == 0 ? &gathered : NULL);
+    int bad = status != ALEA_CLUSTER_OK;
+    if (rank == 0 && !bad) {
+        alea_geom_validator_result_t serial;
+        alea_geom_validator_result_init(&serial);
+        bad = alea_validate_geometry(sys, &options, &serial) != 0 ||
+              serial.incomplete_rays == 0 ||
+              !same_validation(&gathered, &serial);
+        alea_geom_validator_result_free(&serial);
+    }
+    alea_geom_validator_result_free(&gathered);
+    status = alea_cluster_agree(cluster,
+        bad ? ALEA_CLUSTER_COMPUTE_ERROR : ALEA_CLUSTER_OK);
+    return status == ALEA_CLUSTER_OK ? 0
+        : fail(rank, "cluster incomplete-ray receipt differs from serial");
+}
+
 int main(int argc, char** argv) {
     alea_cluster_status_t status = alea_cluster_initialize(&argc, &argv);
     if (status != ALEA_CLUSTER_OK) return fail(-1, "cluster initialization failed");
@@ -1001,6 +1031,7 @@ int main(int argc, char** argv) {
         test_mesh(cluster, sys, rank, 8, ALEA_MESH_SAMPLE_RAY))
         return 1;
     if (test_validator(cluster, sys, rank, 0, 0) ||
+        test_validator_incomplete(cluster, sys, rank) ||
         test_validator(cluster, sys, rank, 8, 0) ||
         test_validator(cluster, sys, rank, 0, 1) ||
         test_slice_validator(cluster, sys, rank, 0) ||

@@ -99,6 +99,15 @@ static void parse_validator_options(lua_State* L,
         options->max_crossings = (size_t)luaL_checkinteger(L, -1);
     lua_pop(L, 1);
 
+    lua_getfield(L, idx, "max_breakpoints");
+    if (!lua_isnil(L, -1)) {
+        lua_Integer count = luaL_checkinteger(L, -1);
+        luaL_argcheck(L, count >= 0, idx,
+                      "max_breakpoints must be nonnegative");
+        options->max_breakpoints = (size_t)count;
+    }
+    lua_pop(L, 1);
+
     lua_getfield(L, idx, "sample_offset");
     if (!lua_isnil(L, -1))
         options->sample_offset = luaL_checknumber(L, -1);
@@ -200,6 +209,8 @@ static void push_geom_error(lua_State* L, const alea_geom_error_t* error) {
     lua_setfield(L, -2, "offset");
     lua_pushinteger(L, error->flags);
     lua_setfield(L, -2, "flags");
+    lua_pushinteger(L, error->cause);
+    lua_setfield(L, -2, "cause");
     push_vec3(L, error->crossing_point);
     lua_setfield(L, -2, "crossing_point");
     push_vec3(L, error->sample_point);
@@ -342,7 +353,7 @@ static int l_geom_stats(lua_State* L) {
     alea_lua_geom_result_t* ud = check_geom_result(L, 1);
     const alea_geom_validator_result_t* result = ud->result;
 
-    lua_createtable(L, 0, 7);
+    lua_createtable(L, 0, 9);
     lua_pushinteger(L, (lua_Integer)result->error_count);
     lua_setfield(L, -2, "error_count");
     lua_pushinteger(L, (lua_Integer)result->crossings_checked);
@@ -353,6 +364,10 @@ static int l_geom_stats(lua_State* L) {
     lua_setfield(L, -2, "exact_queries");
     lua_pushinteger(L, (lua_Integer)result->ambiguous_crossings);
     lua_setfield(L, -2, "ambiguous_crossings");
+    lua_pushinteger(L, (lua_Integer)result->incomplete_rays);
+    lua_setfield(L, -2, "incomplete_rays");
+    lua_pushinteger(L, (lua_Integer)result->incomplete_slice_samples);
+    lua_setfield(L, -2, "incomplete_slice_samples");
     lua_pushboolean(L, result->truncated);
     lua_setfield(L, -2, "truncated");
     return 1;

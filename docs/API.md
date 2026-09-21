@@ -1571,6 +1571,12 @@ as the particle navigator's `ALEA_NAV_VALIDATE_INTERVAL` mode: it preserves
 representable intervals smaller than `1e-9` and fails when breakpoint
 collection is incomplete. The validator still reports findings across chosen
 rays; the navigator checks each finite particle flight before accepting it.
+When a ray cannot collect all breakpoints, validation records an
+`incomplete_ray` finding with its cause and continues with other rays. A failed
+slice coverage probe likewise records `incomplete_slice_sample` and continues
+with the remaining curve samples. Check `incomplete_rays` and
+`incomplete_slice_samples` in the result before treating its findings as a
+complete assessment. Fatal setup or result-storage errors still return `-1`.
 Inspect `result.truncated` and the result counters before interpreting an empty
 finding list as complete. With `ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS`, unowned
 coverage inside `validation_bounds` is an interior gap; exterior void may be

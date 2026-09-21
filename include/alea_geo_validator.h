@@ -26,7 +26,9 @@ typedef enum {
     ALEA_GEOM_ERR_NON_ADJACENT_TRANSITION,
     ALEA_GEOM_ERR_MISSING_NEIGHBOR,
     ALEA_GEOM_ERR_AMBIGUOUS_BOUNDARY,
-    ALEA_GEOM_ERR_INTERIOR_GAP
+    ALEA_GEOM_ERR_INTERIOR_GAP,
+    ALEA_GEOM_ERR_INCOMPLETE_RAY,
+    ALEA_GEOM_ERR_INCOMPLETE_SLICE_SAMPLE
 } alea_geom_error_type_t;
 
 typedef enum {
@@ -102,6 +104,7 @@ typedef struct {
     uint32_t component_index;        /**< Component/edge/branch index for slice events */
     double uv[2];                    /**< Slice-plane coordinate for slice events */
     uint32_t flags;
+    alea_error_t cause;             /**< Error behind an incomplete sample */
 } alea_geom_error_t;
 
 typedef struct {
@@ -114,9 +117,11 @@ typedef struct {
     size_t ambiguous_crossings;
     size_t suppressed_samples;
     size_t sample_limited_curves;
+    size_t incomplete_rays;         /**< Rays whose coverage could not finish */
+    size_t incomplete_slice_samples; /**< Curve samples whose coverage failed */
     /* Private validator bookkeeping for bounded signature sampling. */
     void* signature_table;
-    int truncated;
+    int truncated;                  /**< Global output/work cap stopped validation */
 } alea_geom_validator_result_t;
 
 void alea_geom_validator_options_init(alea_geom_validator_options_t* options);

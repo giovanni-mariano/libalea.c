@@ -12,7 +12,7 @@
 
 #define VALIDATOR_BATCH_CURVES 64u
 #define VALIDATOR_CURVE_ERROR_LIMIT 4096u
-#define VALIDATOR_META_FIELDS 8u
+#define VALIDATOR_META_FIELDS 10u
 
 static size_t rank_count(size_t total, size_t rank, size_t ranks) {
     return total / ranks + (rank < total % ranks);
@@ -193,6 +193,8 @@ alea_cluster_status_t alea_cluster_validate_slice_curves(
             meta[5] = current->suppressed_samples;
             meta[6] = current->sample_limited_curves;
             meta[7] = current->truncated;
+            meta[8] = current->incomplete_rays;
+            meta[9] = current->incomplete_slice_samples;
         }
         if (alea_interrupted()) local = ALEA_CLUSTER_INTERRUPTED;
         status = alea_cluster_agree(cluster, local);
@@ -280,6 +282,8 @@ alea_cluster_status_t alea_cluster_validate_slice_curves(
                 candidate.suppressed_samples = (size_t)meta[5];
                 candidate.sample_limited_curves = (size_t)meta[6];
                 candidate.truncated = (int)meta[7];
+                candidate.incomplete_rays = (size_t)meta[8];
+                candidate.incomplete_slice_samples = (size_t)meta[9];
                 if (alea_validator_cluster_merge_curve_one(sys, view, curves,
                         &prepared, root_result, &candidate, base + i) != 0) {
                     local = ALEA_CLUSTER_COMPUTE_ERROR;
