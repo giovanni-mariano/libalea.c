@@ -20,6 +20,7 @@ def main():
     cases = [
         ("Linux", "", None, 1, False),
         ("Darwin", "", None, 1, False),
+        ("FreeBSD", "", None, 1, False),
         ("MINGW64_NT-10.0", "", None, 1, True),
         ("MINGW32_NT-10.0", "", None, 1, True),
         ("MSYS_NT-10.0", "", None, 1, True),
@@ -49,7 +50,12 @@ def main():
             "TINYPAR_PLATFORM_SRC": "vendor/tinypar/src/tinypar_" + backend + ".c",
             "EXEEXT": ".exe" if windows else "",
             "PICFLAGS": "" if windows else "-fPIC",
-            "LUA_PLAT_FLAGS": "-DLUA_USE_WINDOWS" if windows else "-DLUA_USE_POSIX",
+            "LUA_PLAT_FLAGS": (
+                "-DLUA_USE_WINDOWS" if windows else
+                "-DLUA_USE_MACOSX" if uname == "Darwin" else
+                "-DLUA_USE_LINUX" if uname == "Linux" else
+                "-DLUA_USE_POSIX"
+            ),
             "LINENOISE_OBJ": "" if windows else "build/linenoise/linenoise.o",
         }
         for key, value in expected.items():
