@@ -28,6 +28,7 @@
 #include "alea_serpent.h"
 #include "alea_slice.h"
 #include "alea_types.h"
+#include "alea_transport.h"
 
 #ifdef alea_surface_at
 #error "alea_surface_at must remain an internal-only helper"

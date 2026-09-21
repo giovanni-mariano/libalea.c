@@ -102,7 +102,8 @@ Build the library, CLI, and tools:
 
 ```bash
 make              # Build core library (bin/libalea.a)
-make modules      # Build format modules (libalea_mcnp.a, libalea_openmc.a, libalea_serpent.a, libalea_nucdata.a)
+make modules      # Build optional format, nuclear-data, and transport modules
+make transport    # Build transport with its geometry and nuclear-data dependencies
 make full         # Build everything into libalea_full.a
 make cli          # Build the alea CLI tool
 make lua-module   # Build the Lua 5.5 require("alea") module
@@ -343,7 +344,19 @@ No separate threading runtime is required.
 | `libalea_openmc.a` | OpenMC XML parser, converter, and exporter |
 | `libalea_serpent.a` | Serpent exporter |
 | `libalea_nucdata.a` | Nuclear data: ACE reader, cross-section lookup, free-path/nuclide/reaction sampling, Doppler broadening, multigroup collapse |
-| `libalea_full.a` | Core, MCNP, OpenMC, Serpent, and nuclear data in one archive |
+| `libalea_transport.a` | Geometry/material bindings and fixed-source neutron histories; depends on nuclear data and core geometry |
+| `libalea_full.a` | Core, MCNP, OpenMC, Serpent, nuclear data, and transport in one archive |
+
+Transport applications include `alea_transport.h` and link in dependency order:
+
+```sh
+gcc -o myapp myapp.c -Iinclude bin/libalea_transport.a bin/libalea_nucdata.a bin/libalea.a -lm -pthread
+```
+
+Cell-binding declarations live in `alea_transport.h`; their existing
+`alea_nuc_cell_bindings_*` names are preserved. Nuclear-data preparation and
+collision evaluation remain in `alea_nucdata.h`. Nuclear data is loaded only
+when a caller explicitly prepares transport bindings.
 
 Link against the core library plus the format modules you need:
 

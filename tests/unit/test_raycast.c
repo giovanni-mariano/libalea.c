@@ -506,6 +506,7 @@ TEST(raycast_preserves_sub_epsilon_source_interval) {
     ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
                                           &location), 0);
     ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    ASSERT_EQ(location.cell_index, 0);
     alea_nav_event_t event;
     ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 1, &event), 0);
     ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);

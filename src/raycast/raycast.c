@@ -4710,6 +4710,7 @@ static alea_nav_location_t navigator_interval_location(
         .kind = interval->cell_id < 0 ? ALEA_NAV_GAP
             : interval->material_id == 0 ? ALEA_NAV_VOID : ALEA_NAV_MATERIAL,
         .cell_id = interval->cell_id,
+        .cell_index = interval->cell_id < 0 ? -1 : interval->cell_index,
         .material_id = interval->material_id,
         .density = interval->density,
         .occurrence_key = interval->owner_provenance_complete

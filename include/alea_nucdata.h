@@ -431,6 +431,13 @@ alea_error_t alea_nuc_evaluate(
     const alea_nuc_particle_state_t* incident,
     alea_nuc_evaluation_t* evaluation);
 
+/** Update direction, weight, and time of a sealed evaluation after flight.
+ * Particle type and energy must be unchanged, so cached cross sections and
+ * any URR realization remain valid. The evaluation is unchanged on error. */
+alea_error_t alea_nuc_evaluation_update_incident(
+    alea_nuc_evaluation_t* evaluation,
+    const alea_nuc_particle_state_t* incident);
+
 /**
  * Evaluate without URR sampling and cache component and reaction rates in
  * caller-owned workspace arrays. The workspace must provide all rate arrays

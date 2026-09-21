@@ -1196,6 +1196,22 @@ alea_error_t alea_nuc_evaluate(
     return ALEA_OK;
 }
 
+alea_error_t alea_nuc_evaluation_update_incident(
+    alea_nuc_evaluation_t* evaluation,
+    const alea_nuc_particle_state_t* incident) {
+    if (!evaluation || !incident) return ALEA_ERR_NULL_ARG;
+    if (!evaluation_matches(evaluation)) return ALEA_ERR_INVALID_STATE;
+    if (incident->type != evaluation->incident.type ||
+        incident->energy != evaluation->incident.energy ||
+        !particle_valid(incident, evaluation->prepared->particle))
+        return ALEA_ERR_INVALID_ARG;
+    alea_nuc_evaluation_t candidate = *evaluation;
+    candidate.incident = *incident;
+    evaluation_seal(&candidate);
+    *evaluation = candidate;
+    return ALEA_OK;
+}
+
 alea_error_t alea_nuc_evaluate_with_workspace(
     const alea_nuc_prepared_material_t* prepared,
     const alea_nuc_particle_state_t* incident,

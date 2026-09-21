@@ -299,6 +299,7 @@ LIB_CORE    = $(BIN)\libalea.lib
 LIB_MCNP    = $(BIN)\libalea_mcnp.lib
 LIB_OPENMC  = $(BIN)\libalea_openmc.lib
 LIB_SERPENT = $(BIN)\libalea_serpent.lib
+LIB_TRANSPORT = $(BIN)\libalea_transport.lib
 LIB_NUCDATA = $(BIN)\libalea_nucdata.lib
 LIB_FULL    = $(BIN)\libalea_full.lib
 ALEA_CLI    = $(BIN)\alea.exe
@@ -312,7 +313,9 @@ MODULE_LINK = /link \
 	/WHOLEARCHIVE:$(LIB_SERPENT) \
 	/WHOLEARCHIVE:$(LIB_NUCDATA)
 
-ALL_OBJS = $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
+TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\material_binding.obj
+
+ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
 # ============================================================================
 # Header dependency tracking
@@ -332,6 +335,7 @@ HEADERS = \
 	include\alea_geo_validator.h \
 	include\alea_mcnp.h \
 	include\alea_mesh.h \
+	include\alea_transport.h \
 	include\alea_nucdata.h \
 	include\alea_nucdata_types.h \
 	include\alea_openmc.h \
@@ -408,7 +412,9 @@ HEADERS = \
 # ============================================================================
 # Phony-ish targets
 # ============================================================================
-all: dirs $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
+all: dirs $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) $(LIB_TRANSPORT)
+
+transport: dirs $(LIB_CORE) $(LIB_NUCDATA) $(LIB_TRANSPORT)
 
 full: all $(LIB_FULL)
 
@@ -433,6 +439,9 @@ $(LIB_SERPENT): dirs $(SERPENT_OBJS)
 
 $(LIB_NUCDATA): dirs $(NUCDATA_OBJS)
 	$(AR) /nologo /OUT:$@ $(NUCDATA_OBJS)
+
+$(LIB_TRANSPORT): dirs $(TRANSPORT_OBJS)
+	$(AR) /nologo /OUT:$@ $(TRANSPORT_OBJS)
 
 $(LIB_FULL): dirs $(ALL_OBJS)
 	$(AR) /nologo /OUT:$@ $(ALL_OBJS)
@@ -653,6 +662,12 @@ $(BUILD)\openmc\openmc_model.obj: $(SRC)\openmc\openmc_model.c dirs
 $(BUILD)\serpent\serpent_export.obj: $(SRC)\serpent\serpent_export.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\serpent\ $(SRC)\serpent\serpent_export.c
 
+$(BUILD)\transport\fixed_source.obj: $(SRC)\transport\fixed_source.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\fixed_source.c
+
+$(BUILD)\transport\material_binding.obj: $(SRC)\transport\material_binding.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\material_binding.c
+
 $(BUILD)\nucdata\alloc.obj: $(SRC)\nucdata\alloc.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\alloc.c
 
@@ -866,7 +881,7 @@ $(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB
 # ============================================================================
 # Tests
 # ============================================================================
-TEST_LINK = $(MODULE_LINK)
+TEST_LINK = $(MODULE_LINK) /WHOLEARCHIVE:$(LIB_TRANSPORT)
 
 # Build + run every tests\unit\*.c and tests\integration\*.c.
 # nmake has no $(wildcard); a cmd FOR loop discovers the sources at run time.
@@ -924,6 +939,7 @@ dirs:
 	@if not exist $(BUILD)\mcnp\exporter mkdir $(BUILD)\mcnp\exporter
 	@if not exist $(BUILD)\openmc mkdir $(BUILD)\openmc
 	@if not exist $(BUILD)\serpent mkdir $(BUILD)\serpent
+	@if not exist $(BUILD)\transport mkdir $(BUILD)\transport
 	@if not exist $(BUILD)\nucdata mkdir $(BUILD)\nucdata
 	@if not exist $(BUILD)\lua mkdir $(BUILD)\lua
 	@if not exist $(BUILD)\lua_bind mkdir $(BUILD)\lua_bind
@@ -937,6 +953,7 @@ clean:
 	@if exist $(LIB_MCNP) del /q $(LIB_MCNP)
 	@if exist $(LIB_OPENMC) del /q $(LIB_OPENMC)
 	@if exist $(LIB_SERPENT) del /q $(LIB_SERPENT)
+	@if exist $(LIB_TRANSPORT) del /q $(LIB_TRANSPORT)
 	@if exist $(LIB_NUCDATA) del /q $(LIB_NUCDATA)
 	@if exist $(LIB_FULL) del /q $(LIB_FULL)
 	@if exist $(ALEA_CLI) del /q $(ALEA_CLI)

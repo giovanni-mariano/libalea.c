@@ -63,6 +63,7 @@ typedef enum {
 typedef struct {
     alea_nav_location_kind_t kind;
     int cell_id;                 /**< -1 in unowned space */
+    int cell_index;              /**< Terminal geometry cell index, -1 if none */
     int material_id;             /**< 0 in void or unowned space */
     double density;
     uint64_t occurrence_key;    /**< Concrete lattice/fill instance, or 0 */
