@@ -405,4 +405,63 @@ TEST(nested_mixtures_use_independent_component_draws) {
     alea_source_free(outer);
 }
 
+TEST(cartesian_mesh_density_and_voxel_strength_have_distinct_measures) {
+    double x[] = {0, 1, 3}, y[] = {0, 1}, z[] = {0, 1, 2};
+    double values[] = {1, 0, 1, 1}; /* x-major, z-fast */
+    alea_source_spec_t spec = {
+        .space = ALEA_SOURCE_CARTESIAN_MESH,
+        .mesh_edges = {x, y, z}, .mesh_edge_count = {3, 2, 3},
+        .mesh_values = values, .mesh_value_mode = ALEA_SOURCE_MESH_DENSITY,
+        .angle = ALEA_SOURCE_ISOTROPIC, .energy = 14.1, .weight = 1
+    };
+    alea_source_t* source = NULL;
+    ASSERT_EQ(alea_source_prepare(&spec, &source), ALEA_OK);
+    double total;
+    ASSERT_EQ(alea_source_integrated_emissivity(source, &total), ALEA_OK);
+    ASSERT_NEAR(total, 5, 1e-14);
+    x[1] = 100; z[1] = 100; values[0] = 0;
+    int outer = 0, upper = 0;
+    double mean_x = 0;
+    for (uint32_t i = 0; i < 20000; ++i) {
+        alea_transport_source_t sample;
+        ASSERT_EQ(alea_source_sample(source, 63, i, &sample), ALEA_OK);
+        double px = sample.position[0], py = sample.position[1];
+        double pz = sample.position[2];
+        ASSERT(px >= 0 && px < 3);
+        ASSERT(py >= 0 && py < 1);
+        ASSERT(pz >= 0 && pz < 2);
+        ASSERT(!(px < 1 && pz >= 1));
+        outer += px >= 1;
+        upper += pz >= 1;
+        mean_x += px;
+    }
+    ASSERT_NEAR((double)outer / 20000, 0.8, 0.02);
+    ASSERT_NEAR((double)upper / 20000, 0.4, 0.02);
+    ASSERT_NEAR(mean_x / 20000, 1.7, 0.04);
+    alea_transport_source_t replay, batch[2];
+    ASSERT_EQ(alea_source_sample(source, 63, 19, &replay), ALEA_OK);
+    ASSERT_EQ(alea_source_sample_batch(source, 63, 19, 2, batch), ALEA_OK);
+    ASSERT_EQ(memcmp(&replay, &batch[0], sizeof(replay)), 0);
+    alea_source_free(source);
+
+    x[1] = 1; z[1] = 1; values[0] = 1;
+    spec.mesh_value_mode = ALEA_SOURCE_MESH_STRENGTH;
+    ASSERT_EQ(alea_source_prepare(&spec, &source), ALEA_OK);
+    ASSERT_EQ(alea_source_integrated_emissivity(source, &total), ALEA_OK);
+    ASSERT_NEAR(total, 3, 1e-14);
+    outer = 0;
+    for (uint32_t i = 0; i < 10000; ++i) {
+        alea_transport_source_t sample;
+        ASSERT_EQ(alea_source_sample(source, 64, i, &sample), ALEA_OK);
+        outer += sample.position[0] >= 1;
+    }
+    ASSERT_NEAR((double)outer / 10000, 2.0/3.0, 0.02);
+    alea_source_free(source);
+    values[0] = values[2] = values[3] = 0;
+    ASSERT_EQ(alea_source_prepare(&spec, &source), ALEA_ERR_INVALID_ARG);
+    values[0] = 1;
+    x[0] = 2;
+    ASSERT_EQ(alea_source_prepare(&spec, &source), ALEA_ERR_INVALID_ARG);
+}
+
 TEST_MAIN()

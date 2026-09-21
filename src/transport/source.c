@@ -29,6 +29,8 @@ struct alea_source {
     double* r_edges;
     double* z_edges;
     alea_rng_discrete_table_t* rz_table;
+    double* mesh_edges[3];
+    alea_rng_discrete_table_t* mesh_table;
     double phi_min;
     double phi_span;
     double integrated_emissivity;
@@ -119,7 +121,8 @@ alea_error_t alea_source_prepare(const alea_source_spec_t* spec,
     *output = NULL;
     if ((spec->particle != ALEA_NUC_PARTICLE_NEUTRON &&
          spec->particle != ALEA_NUC_PARTICLE_PHOTON) ||
-        (spec->space < ALEA_SOURCE_POINT || spec->space > ALEA_SOURCE_TOKAMAK_RZ) ||
+        (spec->space < ALEA_SOURCE_POINT ||
+         spec->space > ALEA_SOURCE_CARTESIAN_MESH) ||
         (spec->angle < ALEA_SOURCE_MONODIRECTIONAL ||
          spec->angle > ALEA_SOURCE_RADIAL) ||
         (spec->energy_type < ALEA_SOURCE_ENERGY_MONO ||
@@ -172,7 +175,9 @@ alea_error_t alea_source_prepare(const alea_source_spec_t* spec,
             spec->r_edge_count > SIZE_MAX / sizeof(double) ||
             spec->z_edge_count > SIZE_MAX / sizeof(double) ||
             spec->r_edge_count - 1 > SIZE_MAX / (spec->z_edge_count - 1) ||
-            (spec->r_edge_count - 1)*(spec->z_edge_count - 1) > UINT32_MAX)
+            (spec->r_edge_count - 1)*(spec->z_edge_count - 1) > UINT32_MAX ||
+            (spec->r_edge_count - 1)*(spec->z_edge_count - 1) >
+                SIZE_MAX / sizeof(double))
             return ALEA_ERR_INVALID_ARG;
         double phi_min = spec->phi_min;
         double phi_max = spec->phi_max;
@@ -195,6 +200,31 @@ alea_error_t alea_source_prepare(const alea_source_spec_t* spec,
         for (size_t i = 0; i < count; ++i)
             if (!isfinite(spec->rz_emissivity[i]) ||
                 spec->rz_emissivity[i] < 0.0) return ALEA_ERR_INVALID_ARG;
+    }
+    if (spec->space == ALEA_SOURCE_CARTESIAN_MESH) {
+        if (!spec->mesh_values ||
+            (spec->mesh_value_mode != ALEA_SOURCE_MESH_DENSITY &&
+             spec->mesh_value_mode != ALEA_SOURCE_MESH_STRENGTH))
+            return ALEA_ERR_INVALID_ARG;
+        size_t count = 1;
+        for (int axis = 0; axis < 3; ++axis) {
+            size_t edges = spec->mesh_edge_count[axis];
+            if (!spec->mesh_edges[axis] || edges < 2 || edges > UINT32_MAX ||
+                edges > SIZE_MAX / sizeof(double) ||
+                count > UINT32_MAX / (edges - 1))
+                return ALEA_ERR_INVALID_ARG;
+            count *= edges - 1;
+            for (size_t i = 0; i < edges; ++i)
+                if (!isfinite(spec->mesh_edges[axis][i]) ||
+                    fabs(spec->mesh_edges[axis][i]) > 1e100 ||
+                    (i && spec->mesh_edges[axis][i] <=
+                          spec->mesh_edges[axis][i-1]))
+                    return ALEA_ERR_INVALID_ARG;
+        }
+        if (count > SIZE_MAX / sizeof(double)) return ALEA_ERR_INVALID_ARG;
+        for (size_t i = 0; i < count; ++i)
+            if (!isfinite(spec->mesh_values[i]) || spec->mesh_values[i] < 0.0)
+                return ALEA_ERR_INVALID_ARG;
     }
     if (spec->angle == ALEA_SOURCE_CONE &&
         (!isfinite(spec->cone_half_angle) || spec->cone_half_angle < 0.0 ||
@@ -272,6 +302,59 @@ alea_error_t alea_source_prepare(const alea_source_spec_t* spec,
         source->spec.r_edges = source->r_edges;
         source->spec.z_edges = source->z_edges;
         source->spec.rz_emissivity = NULL;
+    }
+    if (spec->space == ALEA_SOURCE_CARTESIAN_MESH) {
+        size_t nx = spec->mesh_edge_count[0] - 1;
+        size_t ny = spec->mesh_edge_count[1] - 1;
+        size_t nz = spec->mesh_edge_count[2] - 1;
+        size_t count = nx*ny*nz;
+        double* masses = malloc(count*sizeof(double));
+        if (!masses) { alea_source_free(source); return ALEA_ERR_OUT_OF_MEMORY; }
+        for (int axis = 0; axis < 3; ++axis) {
+            size_t bytes = spec->mesh_edge_count[axis]*sizeof(double);
+            source->mesh_edges[axis] = malloc(bytes);
+            if (!source->mesh_edges[axis]) {
+                free(masses); alea_source_free(source);
+                return ALEA_ERR_OUT_OF_MEMORY;
+            }
+            memcpy(source->mesh_edges[axis], spec->mesh_edges[axis], bytes);
+            source->spec.mesh_edges[axis] = source->mesh_edges[axis];
+        }
+        double total = 0.0, correction = 0.0;
+        for (size_t ix = 0; ix < nx; ++ix) {
+            double dx = spec->mesh_edges[0][ix+1] - spec->mesh_edges[0][ix];
+            for (size_t iy = 0; iy < ny; ++iy) {
+                double dy = spec->mesh_edges[1][iy+1] - spec->mesh_edges[1][iy];
+                for (size_t iz = 0; iz < nz; ++iz) {
+                    double dz = spec->mesh_edges[2][iz+1] - spec->mesh_edges[2][iz];
+                    size_t index = (ix*ny + iy)*nz + iz;
+                    double value = spec->mesh_values[index];
+                    masses[index] = spec->mesh_value_mode == ALEA_SOURCE_MESH_DENSITY ?
+                        value*dx*dy*dz : value;
+                    if (!isfinite(masses[index])) {
+                        free(masses); alea_source_free(source);
+                        return ALEA_ERR_INVALID_ARG;
+                    }
+                    double adjusted = masses[index] - correction;
+                    double next = total + adjusted;
+                    correction = (next - total) - adjusted;
+                    total = next;
+                }
+            }
+        }
+        if (!isfinite(total) || total <= 0.0) {
+            free(masses); alea_source_free(source);
+            return ALEA_ERR_INVALID_ARG;
+        }
+        source->integrated_emissivity = total;
+        source->mesh_table = alea_rng_discrete_table_create(masses, count);
+        free(masses);
+        if (!source->mesh_table) {
+            alea_error_t err = (alea_error_t)alea_error_code();
+            alea_source_free(source);
+            return err == ALEA_OK ? ALEA_ERR_INVALID_ARG : err;
+        }
+        source->spec.mesh_values = NULL;
     }
     if (spec->angle == ALEA_SOURCE_TABULATED_MU) {
         source->angle_table = alea_rng_tabular_table_create(
@@ -368,9 +451,11 @@ void alea_source_free(alea_source_t* source) {
     alea_rng_tabular_table_destroy(source->energy_pdf_table);
     alea_rng_tabular_table_destroy(source->angle_table);
     alea_rng_discrete_table_destroy(source->rz_table);
+    alea_rng_discrete_table_destroy(source->mesh_table);
     free(source->energy_values);
     free(source->r_edges);
     free(source->z_edges);
+    for (int axis = 0; axis < 3; ++axis) free(source->mesh_edges[axis]);
     free(source);
 }
 
@@ -385,7 +470,8 @@ alea_error_t alea_source_integrated_emissivity(const alea_source_t* source,
                                                double* output) {
     if (!source || !output) return ALEA_ERR_NULL_ARG;
     if (source->is_mixture) return ALEA_ERR_INVALID_ARG;
-    if (source->spec.space != ALEA_SOURCE_TOKAMAK_RZ)
+    if (source->spec.space != ALEA_SOURCE_TOKAMAK_RZ &&
+        source->spec.space != ALEA_SOURCE_CARTESIAN_MESH)
         return ALEA_ERR_INVALID_ARG;
     *output = source->integrated_emissivity;
     return ALEA_OK;
@@ -464,6 +550,26 @@ static alea_error_t source_sample_inner(const alea_source_t* source,
             u_z*(spec->z_edges[iz+1] - spec->z_edges[iz]);
         for (int i = 0; i < 3; ++i)
             if (!isfinite(sample.position[i])) return ALEA_ERR_OVERFLOW;
+    } else if (spec->space == ALEA_SOURCE_CARTESIAN_MESH) {
+        alea_rng_event_t event;
+        size_t index;
+        if (alea_rng_event_init(&event, ALEA_RNG_PHILOX4X32_10, seed,
+            ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_POSITION, history_id, 0) != 0 ||
+            alea_rng_sample_discrete_alias(&event, source->mesh_table,
+                                           &index) != 0)
+            return ALEA_ERR_INVALID_STATE;
+        size_t ny = spec->mesh_edge_count[1] - 1;
+        size_t nz = spec->mesh_edge_count[2] - 1;
+        size_t bin[3] = {index / (ny*nz), (index / nz) % ny, index % nz};
+        for (int axis = 0; axis < 3; ++axis) {
+            double u;
+            if (alea_rng_event_next_uniform(&event, &u) != 0)
+                return ALEA_ERR_INVALID_STATE;
+            double lower = spec->mesh_edges[axis][bin[axis]];
+            double upper = spec->mesh_edges[axis][bin[axis] + 1];
+            sample.position[axis] = lower + u*(upper - lower);
+            if (!isfinite(sample.position[axis])) return ALEA_ERR_OVERFLOW;
+        }
     } else {
         double u[3] = {0};
         int draws = spec->space == ALEA_SOURCE_LINE ? 1 : 3;

@@ -265,3 +265,48 @@ def test_weighted_source_mixture_preview():
     assert np.mean(photons) == pytest.approx(.75, abs=.02)
     assert np.all(samples["position"][photons, 0] == 1)
     assert np.all(samples["weight"] == 1)
+
+
+def test_cartesian_source_mesh_density_and_strength(tmp_path):
+    x_edges = np.array([0.0, 1.0, 3.0])
+    values = np.array([[[1.0, 0.0]], [[1.0, 1.0]]])
+    space = {"type": "cartesian_mesh", "x_edges": x_edges,
+             "y_edges": [0, 1], "z_edges": [0, 1, 2],
+             "values": values, "value_mode": "density"}
+    source = pyalea.Source({"space": space, "angle": {"type": "isotropic"},
+                           "energy": 14.1})
+    assert source.integrated_emissivity == pytest.approx(5)
+    x_edges[1] = 100
+    values[:] = 0
+    points = pyalea.sample_source(source, 20000, 63)["position"]
+    assert not np.any((points[:, 0] < 1) & (points[:, 2] >= 1))
+    assert np.mean(points[:, 0] >= 1) == pytest.approx(.8, abs=.02)
+    strength = pyalea.Source({
+        "space": {**space, "x_edges": [0, 1, 3],
+                  "values": [[[1, 0]], [[1, 1]]], "value_mode": "strength"},
+        "angle": {"type": "isotropic"}, "energy": 14.1,
+    })
+    assert strength.integrated_emissivity == pytest.approx(3)
+    assert np.mean(pyalea.sample_source(strength, 10000, 64)["position"][:, 0] >= 1) == pytest.approx(2 / 3, abs=.02)
+    with pytest.raises(ValueError, match="one value per Z bin"):
+        pyalea.Source({
+            "space": {**space, "x_edges": [0, 1, 3],
+                      "values": [[[1]], [[1, 1]]]},
+            "angle": {"type": "isotropic"}, "energy": 14.1,
+        })
+    xsdir_path = tmp_path / "xsdir"
+    xsdir_path.write_text(
+        "directory\n1001.80c 1.0 dummy.ace 0 1 1 1 0 0 2.5301e-8\n"
+    )
+    inside = pyalea.Source({
+        "space": {"type": "cartesian_mesh", "x_edges": [0, 1],
+                  "y_edges": [0, 1], "z_edges": [0, 1],
+                  "values": [[[1]]], "value_mode": "density"},
+        "angle": {"type": "isotropic"}, "energy": 14.1,
+    })
+    result = pyalea.transport_run(
+        pyalea.load_mcnp_string(GEOMETRY), pyalea.XsDir(str(xsdir_path)),
+        {"histories": 8, "source": inside,
+         "tallies": [{"score": "track_length"}]},
+    )
+    assert result["leaked"] == 8

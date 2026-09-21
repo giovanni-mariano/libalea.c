@@ -370,6 +370,8 @@ history; `alea_source_prepare()` and `alea_source_sample()` provide reusable
 component-based sources, including uniform boxes with isotropic direction.
 An axisymmetric `tokamak_rz` source samples a piecewise-constant plasma
 emissivity grid by cylindrical volume and exposes its integrated emission rate.
+A `cartesian_mesh` source accepts a three-dimensional emission grid with
+explicit density or integrated-voxel-strength semantics.
 `history_offset` allows
 reproducible nonoverlapping batches. A runnable MCNP/ACE example and result
 normalization are in [the fixed-source workflow](docs/FIXED_SOURCE_WORKFLOW.md).

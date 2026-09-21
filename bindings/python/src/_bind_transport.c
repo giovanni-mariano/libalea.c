@@ -121,11 +121,14 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
             "put spatial and angular fields inside space and angle");
         return -1;
     }
-    static const char* const spaces[] = {"point", "box", "line", "sphere", "cylinder", "tokamak_rz"};
+    static const char* const spaces[] = {
+        "point", "box", "line", "sphere", "cylinder", "tokamak_rz",
+        "cartesian_mesh"
+    };
     static const char* const angles[] = {
         "monodirectional", "isotropic", "cone", "cosine", "tabulated_mu", "radial"
     };
-    int spatial = tr_name(space, "type", spaces, 6, -1);
+    int spatial = tr_name(space, "type", spaces, 7, -1);
     int angular = tr_name(angle, "type", angles, 6, -1);
     if (spatial < 0 || angular < 0) {
         if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError, "space and angle require type");
@@ -144,6 +147,15 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
     } else if (spatial == 5) {
         if (tr_number(space, "phi_min", &spec->phi_min) < 0 ||
             tr_number(space, "phi_max", &spec->phi_max) < 0) return -1;
+    } else if (spatial == 6) {
+        static const char* const modes[] = {"density", "strength"};
+        int mode = tr_name(space, "value_mode", modes, 2, -1);
+        if (mode < 0) {
+            if (!PyErr_Occurred()) PyErr_SetString(PyExc_ValueError,
+                "cartesian_mesh requires value_mode");
+            return -1;
+        }
+        spec->mesh_value_mode = (alea_source_mesh_values_t)mode;
     } else {
         if (spatial == 3) {
             if (tr_vec3(space, "center", spec->center, 1) < 0) return -1;
@@ -225,7 +237,7 @@ static int tr_source_spec(PyObject* config, alea_source_spec_t* spec) {
 static int tr_edge_array(PyObject* raw, const char* name,
                          double** output, size_t* count) {
     if (!raw) {
-        PyErr_Format(PyExc_ValueError, "tokamak_rz requires %s", name);
+        PyErr_Format(PyExc_ValueError, "source grid requires %s", name);
         return -1;
     }
     PyObject* seq = PySequence_Fast(raw, "grid edges must be a sequence");
@@ -257,7 +269,8 @@ static int tr_tokamak_arrays(PyObject* space, alea_source_spec_t* spec,
         tr_edge_array(PyDict_GetItemString(space, "z_edges"), "z_edges",
                       z_edges, &spec->z_edge_count) < 0) return -1;
     size_t nr = spec->r_edge_count - 1, nz = spec->z_edge_count - 1;
-    if (nr > SIZE_MAX / nz || nr*nz > UINT32_MAX) {
+    if (nr > SIZE_MAX / nz || nr*nz > UINT32_MAX ||
+        nr*nz > SIZE_MAX / sizeof(double)) {
         PyErr_SetString(PyExc_OverflowError, "tokamak_rz grid is too large");
         return -1;
     }
@@ -296,12 +309,77 @@ static int tr_tokamak_arrays(PyObject* space, alea_source_spec_t* spec,
     return 0;
 }
 
+static int tr_mesh_arrays(PyObject* space, alea_source_spec_t* spec,
+                          double* edges[3], double** values) {
+    const char* names[3] = {"x_edges", "y_edges", "z_edges"};
+    size_t bins[3];
+    size_t count = 1;
+    for (int axis = 0; axis < 3; ++axis) {
+        if (tr_edge_array(PyDict_GetItemString(space, names[axis]), names[axis],
+                          &edges[axis], &spec->mesh_edge_count[axis]) < 0)
+            return -1;
+        bins[axis] = spec->mesh_edge_count[axis] - 1;
+        if (count > UINT32_MAX / bins[axis] ||
+            count > (SIZE_MAX / sizeof(double)) / bins[axis]) {
+            PyErr_SetString(PyExc_OverflowError, "cartesian_mesh is too large");
+            return -1;
+        }
+        count *= bins[axis];
+    }
+    PyObject* raw = PyDict_GetItemString(space, "values");
+    if (!raw) {
+        PyErr_SetString(PyExc_ValueError, "cartesian_mesh requires values");
+        return -1;
+    }
+    PyObject* x_rows = PySequence_Fast(raw, "mesh values must be a 3D sequence");
+    if (!x_rows) return -1;
+    if (PySequence_Fast_GET_SIZE(x_rows) != (Py_ssize_t)bins[0]) {
+        PyErr_SetString(PyExc_ValueError, "mesh values need one slab per X bin");
+        Py_DECREF(x_rows); return -1;
+    }
+    *values = PyMem_New(double, count);
+    if (!*values) { PyErr_NoMemory(); Py_DECREF(x_rows); return -1; }
+    for (size_t ix = 0; ix < bins[0]; ++ix) {
+        PyObject* y_rows = PySequence_Fast(PySequence_Fast_GET_ITEM(x_rows, ix),
+                                           "mesh slab must be a sequence");
+        if (!y_rows) { Py_DECREF(x_rows); return -1; }
+        if (PySequence_Fast_GET_SIZE(y_rows) != (Py_ssize_t)bins[1]) {
+            PyErr_SetString(PyExc_ValueError, "mesh slab needs one row per Y bin");
+            Py_DECREF(y_rows); Py_DECREF(x_rows); return -1;
+        }
+        for (size_t iy = 0; iy < bins[1]; ++iy) {
+            PyObject* row = PySequence_Fast(PySequence_Fast_GET_ITEM(y_rows, iy),
+                                             "mesh row must be a sequence");
+            if (!row) { Py_DECREF(y_rows); Py_DECREF(x_rows); return -1; }
+            if (PySequence_Fast_GET_SIZE(row) != (Py_ssize_t)bins[2]) {
+                PyErr_SetString(PyExc_ValueError, "mesh row needs one value per Z bin");
+                Py_DECREF(row); Py_DECREF(y_rows); Py_DECREF(x_rows); return -1;
+            }
+            for (size_t iz = 0; iz < bins[2]; ++iz) {
+                (*values)[(ix*bins[1] + iy)*bins[2] + iz] =
+                    PyFloat_AsDouble(PySequence_Fast_GET_ITEM(row, iz));
+                if (PyErr_Occurred()) {
+                    Py_DECREF(row); Py_DECREF(y_rows); Py_DECREF(x_rows);
+                    return -1;
+                }
+            }
+            Py_DECREF(row);
+        }
+        Py_DECREF(y_rows);
+    }
+    Py_DECREF(x_rows);
+    for (int axis = 0; axis < 3; ++axis) spec->mesh_edges[axis] = edges[axis];
+    spec->mesh_values = *values;
+    return 0;
+}
+
 static alea_source_t* tr_prepare_single_source(PyObject* config) {
     alea_source_spec_t spec;
     if (tr_source_spec(config, &spec) < 0) return NULL;
     double *values = NULL, *weights = NULL;
     double *angle_mu = NULL, *angle_pdf = NULL;
     double *r_edges = NULL, *z_edges = NULL, *emissivity = NULL;
+    double *mesh_edges[3] = {NULL, NULL, NULL}, *mesh_values = NULL;
     if (spec.angle == ALEA_SOURCE_TABULATED_MU) {
         PyObject* angle = PyDict_GetItemString(config, "angle");
         PyObject* raw_mu = PyDict_GetItemString(angle, "mu");
@@ -395,6 +473,15 @@ static alea_source_t* tr_prepare_single_source(PyObject* config) {
             PyMem_Free(r_edges); PyMem_Free(z_edges); PyMem_Free(emissivity);
             return NULL;
         }
+    } else if (spec.space == ALEA_SOURCE_CARTESIAN_MESH) {
+        if (tr_mesh_arrays(PyDict_GetItemString(config, "space"), &spec,
+                           mesh_edges, &mesh_values) < 0) {
+            PyMem_Free(values); PyMem_Free(weights);
+            PyMem_Free(angle_mu); PyMem_Free(angle_pdf);
+            for (int axis = 0; axis < 3; ++axis) PyMem_Free(mesh_edges[axis]);
+            PyMem_Free(mesh_values);
+            return NULL;
+        }
     }
     alea_source_t* source = NULL;
     alea_error_t err = alea_source_prepare(&spec, &source);
@@ -405,6 +492,8 @@ static alea_source_t* tr_prepare_single_source(PyObject* config) {
     PyMem_Free(r_edges);
     PyMem_Free(z_edges);
     PyMem_Free(emissivity);
+    for (int axis = 0; axis < 3; ++axis) PyMem_Free(mesh_edges[axis]);
+    PyMem_Free(mesh_values);
     if (err != ALEA_OK) PyErr_Format(PyExc_ValueError,
         "invalid source: %s", alea_error_string(err));
     return source;
@@ -522,7 +611,7 @@ static PyObject* tr_source_integrated_emissivity(PyAleaSourceObject* self,
 
 static PyGetSetDef tr_source_getset[] = {
     {"integrated_emissivity", (getter)tr_source_integrated_emissivity,
-     NULL, "Integrated tokamak emissivity, or None for other sources.", NULL},
+     NULL, "Integrated tokamak or Cartesian-mesh emission strength, or None.", NULL},
     {NULL}
 };
 

@@ -123,6 +123,27 @@ if emissivity is particles/cm³/s). Multiply a per-source tally mean by this
 rate to get a physical rate. In Lua, call
 `alea.source_integrated_emissivity(source)` on a prepared source; C uses
 `alea_source_integrated_emissivity()`.
+For non-axisymmetric imported emission, use a rectilinear Cartesian source
+mesh. Supply `x_edges`, `y_edges`, and `z_edges` in cm, plus a three-dimensional
+`values` array indexed `[x_bin][y_bin][z_bin]` (Z varies fastest in C):
+
+```python
+source = pyalea.Source({
+    "space": {"type": "cartesian_mesh",
+              "x_edges": [0, 1, 3], "y_edges": [0, 1],
+              "z_edges": [0, 1, 2],
+              "values": [[[1, 0]], [[1, 1]]],
+              "value_mode": "density"},
+    "angle": {"type": "isotropic"}, "energy": 14.1,
+})
+```
+
+`value_mode` is required. With `density`, each voxel's selection mass is its
+value times its volume; values have units per cm³. With `strength`, values
+are already integrated voxel strengths and are used directly. Within a
+selected voxel, position is uniform in X, Y, and Z. Zero-strength voxels are
+never sampled. `integrated_emissivity` returns the sum of voxel masses in the
+input units. The corresponding Lua tables use the same keys and nesting.
 Multiple complete sources can be mixed with physical strengths:
 
 ```python

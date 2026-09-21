@@ -17,6 +17,8 @@
 typedef struct {
     double *angle_mu, *angle_pdf, *energy_values, *energy_weights;
     double *r_edges, *z_edges, *emissivity;
+    double* mesh_edges[3];
+    double* mesh_values;
 } source_buffers_t;
 
 static void source_buffers_release(source_buffers_t* buffers) {
@@ -24,6 +26,8 @@ static void source_buffers_release(source_buffers_t* buffers) {
     free(buffers->energy_values); free(buffers->energy_weights);
     free(buffers->r_edges); free(buffers->z_edges);
     free(buffers->emissivity);
+    for (int axis = 0; axis < 3; ++axis) free(buffers->mesh_edges[axis]);
+    free(buffers->mesh_values);
     memset(buffers, 0, sizeof(*buffers));
 }
 
@@ -220,8 +224,11 @@ static alea_source_t* source_from_table_depth(lua_State* L, int idx,
     {
         lua_getfield(L, idx, "space");
         luaL_checktype(L, -1, LUA_TTABLE);
-        static const char* const spaces[] = {"point", "box", "line", "sphere", "cylinder", "tokamak_rz"};
-        int spatial = enum_field(L, lua_absindex(L, -1), "type", spaces, 6, -1);
+        static const char* const spaces[] = {
+            "point", "box", "line", "sphere", "cylinder", "tokamak_rz",
+            "cartesian_mesh"
+        };
+        int spatial = enum_field(L, lua_absindex(L, -1), "type", spaces, 7, -1);
         if (spatial < 0) luaL_error(L, "space requires type");
         spec.space = (alea_source_space_t)spatial;
         if (spatial == 0) vec3_field(L, lua_absindex(L, -1), "position", spec.position, 1);
@@ -234,6 +241,12 @@ static alea_source_t* source_from_table_depth(lua_State* L, int idx,
         } else if (spatial == 5) {
             spec.phi_min = number_field(L, lua_absindex(L, -1), "phi_min", 0);
             spec.phi_max = number_field(L, lua_absindex(L, -1), "phi_max", 0);
+        } else if (spatial == 6) {
+            static const char* const modes[] = {"density", "strength"};
+            int mode = enum_field(L, lua_absindex(L, -1),
+                                  "value_mode", modes, 2, -1);
+            if (mode < 0) luaL_error(L, "cartesian_mesh requires value_mode");
+            spec.mesh_value_mode = (alea_source_mesh_values_t)mode;
         } else {
             if (spatial == 3)
                 vec3_field(L, lua_absindex(L, -1), "center", spec.center, 1);
@@ -379,7 +392,8 @@ static alea_source_t* source_from_table_depth(lua_State* L, int idx,
         z_edges = source_number_array(L, space, "z_edges", &spec.z_edge_count);
         buffers->z_edges = z_edges;
         size_t nr = spec.r_edge_count - 1, nz = spec.z_edge_count - 1;
-        if (nr > SIZE_MAX / nz || nr*nz > UINT32_MAX) {
+        if (nr > SIZE_MAX / nz || nr*nz > UINT32_MAX ||
+            nr*nz > SIZE_MAX / sizeof(double)) {
             luaL_error(L, "tokamak_rz grid is too large");
         }
         lua_getfield(L, space, "emissivity");
@@ -409,6 +423,49 @@ static alea_source_t* source_from_table_depth(lua_State* L, int idx,
         spec.r_edges = r_edges;
         spec.z_edges = z_edges;
         spec.rz_emissivity = emissivity;
+    } else if (spec.space == ALEA_SOURCE_CARTESIAN_MESH) {
+        lua_getfield(L, idx, "space");
+        int space = lua_absindex(L, -1);
+        const char* names[3] = {"x_edges", "y_edges", "z_edges"};
+        size_t bins[3], count = 1;
+        for (int axis = 0; axis < 3; ++axis) {
+            buffers->mesh_edges[axis] = source_number_array(L, space,
+                names[axis], &spec.mesh_edge_count[axis]);
+            spec.mesh_edges[axis] = buffers->mesh_edges[axis];
+            bins[axis] = spec.mesh_edge_count[axis] - 1;
+            if (count > UINT32_MAX / bins[axis] ||
+                count > (SIZE_MAX / sizeof(double)) / bins[axis])
+                luaL_error(L, "cartesian_mesh is too large");
+            count *= bins[axis];
+        }
+        lua_getfield(L, space, "values");
+        luaL_checktype(L, -1, LUA_TTABLE);
+        if (lua_rawlen(L, -1) != bins[0])
+            luaL_error(L, "mesh values need one slab per X bin");
+        buffers->mesh_values = malloc(count*sizeof(double));
+        if (!buffers->mesh_values) luaL_error(L, "out of memory");
+        for (size_t ix = 0; ix < bins[0]; ++ix) {
+            lua_rawgeti(L, -1, (lua_Integer)ix + 1);
+            if (!lua_istable(L, -1) || lua_rawlen(L, -1) != bins[1])
+                luaL_error(L, "mesh slab needs one row per Y bin");
+            for (size_t iy = 0; iy < bins[1]; ++iy) {
+                lua_rawgeti(L, -1, (lua_Integer)iy + 1);
+                if (!lua_istable(L, -1) || lua_rawlen(L, -1) != bins[2])
+                    luaL_error(L, "mesh row needs one value per Z bin");
+                for (size_t iz = 0; iz < bins[2]; ++iz) {
+                    lua_rawgeti(L, -1, (lua_Integer)iz + 1);
+                    if (!lua_isnumber(L, -1))
+                        luaL_error(L, "mesh values must be numeric");
+                    buffers->mesh_values[(ix*bins[1] + iy)*bins[2] + iz] =
+                        lua_tonumber(L, -1);
+                    lua_pop(L, 1);
+                }
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 2);
+        spec.mesh_values = buffers->mesh_values;
     }
     alea_source_t* source = NULL;
     alea_error_t err = alea_source_prepare(&spec, &source);

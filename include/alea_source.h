@@ -18,8 +18,11 @@ typedef struct alea_source alea_source_t;
 
 typedef enum {
     ALEA_SOURCE_POINT, ALEA_SOURCE_BOX, ALEA_SOURCE_LINE,
-    ALEA_SOURCE_SPHERE, ALEA_SOURCE_CYLINDER, ALEA_SOURCE_TOKAMAK_RZ
+    ALEA_SOURCE_SPHERE, ALEA_SOURCE_CYLINDER, ALEA_SOURCE_TOKAMAK_RZ,
+    ALEA_SOURCE_CARTESIAN_MESH
 } alea_source_space_t;
+typedef enum { ALEA_SOURCE_MESH_DENSITY, ALEA_SOURCE_MESH_STRENGTH }
+    alea_source_mesh_values_t;
 typedef enum {
     ALEA_SOURCE_MONODIRECTIONAL, ALEA_SOURCE_ISOTROPIC,
     ALEA_SOURCE_CONE, ALEA_SOURCE_COSINE, ALEA_SOURCE_TABULATED_MU,
@@ -53,6 +56,10 @@ typedef struct {
     const double* rz_emissivity; /* (R bin, Z bin), R-major, per cm^3 */
     double phi_min; /* tokamak toroidal sector, radians */
     double phi_max; /* > phi_min, span <= 2*pi; both zero means full torus */
+    const double* mesh_edges[3]; /* x,y,z edges in cm, each increasing */
+    size_t mesh_edge_count[3];
+    const double* mesh_values; /* (x bin,y bin,z bin), z fastest */
+    alea_source_mesh_values_t mesh_value_mode; /* density/cm^3 or voxel strength */
     double inner_radius; /* sphere/cylinder shell, cm; zero for full volume */
     double outer_radius; /* sphere/cylinder shell, cm */
     double direction[3]; /* mono direction or cone/cosine/tabulated axis */
@@ -85,9 +92,9 @@ alea_error_t alea_source_mixture_prepare(alea_source_t* const* components,
     const double* strengths, size_t count, alea_source_t** output);
 void alea_source_free(alea_source_t* source);
 uint32_t alea_source_particle_mask(const alea_source_t* source);
-/** Integrated tokamak emissivity over the toroidal sector. Units follow the
- * input emissivity (e.g. particles/s if input is particles/cm^3/s).
- * Returns INVALID_ARG for a non-tokamak source. */
+/** Integrated tokamak or Cartesian-mesh emission strength. Units follow the
+ * input (e.g. particles/s when density is particles/cm^3/s or voxel strengths
+ * are particles/s). Returns INVALID_ARG for other source types. */
 alea_error_t alea_source_integrated_emissivity(const alea_source_t* source,
                                                double* output);
 

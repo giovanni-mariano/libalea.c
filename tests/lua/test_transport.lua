@@ -126,6 +126,34 @@ local mixed_result = alea.transport_run(system, xsdir, {
     tallies = {{score = "track_length", particle = "all"}},
 })
 assert(mixed_result.leaked == 8)
+local mesh = alea.source_prepare({
+    space = {type = "cartesian_mesh", x_edges = {0, 1, 3},
+             y_edges = {0, 1}, z_edges = {0, 1, 2},
+             values = {{{1, 0}}, {{1, 1}}}, value_mode = "density"},
+    angle = {type = "isotropic"}, energy = 14.1,
+})
+assert(math.abs(alea.source_integrated_emissivity(mesh) - 5) < 1e-12)
+local mesh_points = alea.sample_source(mesh, 1000, 63).position
+local mesh_outer = 0
+for _, point in ipairs(mesh_points) do
+    assert(not (point[1] < 1 and point[3] >= 1))
+    if point[1] >= 1 then mesh_outer = mesh_outer + 1 end
+end
+assert(math.abs(mesh_outer / 1000 - 0.8) < 0.05)
+local mesh_strength = alea.source_prepare({
+    space = {type = "cartesian_mesh", x_edges = {0, 1, 3},
+             y_edges = {0, 1}, z_edges = {0, 1, 2},
+             values = {{{1, 0}}, {{1, 1}}}, value_mode = "strength"},
+    angle = {type = "isotropic"}, energy = 14.1,
+})
+assert(math.abs(alea.source_integrated_emissivity(mesh_strength) - 3) < 1e-12)
+assert(not pcall(alea.source_prepare, {
+    space = {type = "cartesian_mesh", x_edges = {0, 1},
+             y_edges = {0, 1}, z_edges = {0, 1, 2},
+             values = {{{1}}}, value_mode = "density"},
+    angle = {type = "isotropic"}, energy = 14.1,
+}))
+collectgarbage("collect")
 local replay = alea.sample_source(prepared, 1, 17, 8)
 assert(replay.direction[1][1] == preview.direction[3][1])
 local prepared_result = alea.transport_run(system, xsdir, {
