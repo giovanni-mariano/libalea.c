@@ -5437,6 +5437,21 @@ TEST(fixed_photon_source_scores_void_flight_and_leakage) {
     alea_destroy(sys);
 }
 
+static alea_nuc_xsdir_t* make_test_xsdir(
+    const alea_nuc_xsdir_entry_t* entries, size_t count) {
+    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    if (!xsdir) return NULL;
+    xsdir->entries = malloc(count * sizeof(*entries));
+    if (!xsdir->entries) {
+        free(xsdir);
+        return NULL;
+    }
+    memcpy(xsdir->entries, entries, count * sizeof(*entries));
+    xsdir->count = count;
+    xsdir->capacity = count;
+    return xsdir;
+}
+
 TEST(fixed_photon_source_samples_photoatomic_collisions_and_deposition) {
     const char* path = "fixed_photon_collision.tmp";
     ASSERT_TRUE(write_minimal_photoatomic_ace(path));
@@ -5445,7 +5460,8 @@ TEST(fixed_photon_source_samples_photoatomic_collisions_and_deposition) {
     snprintf(entry.filename, sizeof(entry.filename), "%s", path);
     entry.type = ALEA_NUC_TABLE_PHOTOATOMIC;
     entry.file_type = 1; entry.address = 1;
-    alea_nuc_xsdir_t xsdir = {.entries = &entry, .count = 1};
+    alea_nuc_xsdir_t* xsdir = make_test_xsdir(&entry, 1);
+    ASSERT_NOT_NULL(xsdir);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
     int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 2);
@@ -5456,7 +5472,7 @@ TEST(fixed_photon_source_samples_photoatomic_collisions_and_deposition) {
                             material, 0.5, 0), 0);
     ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
     alea_nuc_cell_bindings_t* binding = NULL;
-    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
         ALEA_NUC_BIND_PHOTON, NULL, NULL, &binding), ALEA_OK);
     alea_tally_plan_t* plan = alea_tally_plan_create(sys);
     ASSERT_NOT_NULL(plan);
@@ -5508,6 +5524,7 @@ TEST(fixed_photon_source_samples_photoatomic_collisions_and_deposition) {
     alea_tally_plan_free(plan);
     alea_nuc_cell_bindings_free(binding);
     alea_destroy(sys);
+    alea_nuc_xsdir_free(xsdir);
     remove(path);
 }
 
@@ -5519,7 +5536,8 @@ TEST(fixed_photon_source_banks_photoelectric_relaxation_photons) {
     snprintf(entry.filename, sizeof(entry.filename), "%s", path);
     entry.type = ALEA_NUC_TABLE_PHOTOATOMIC;
     entry.file_type = 1; entry.address = 1;
-    alea_nuc_xsdir_t xsdir = {.entries = &entry, .count = 1};
+    alea_nuc_xsdir_t* xsdir = make_test_xsdir(&entry, 1);
+    ASSERT_NOT_NULL(xsdir);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
     int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 4);
@@ -5530,7 +5548,7 @@ TEST(fixed_photon_source_banks_photoelectric_relaxation_photons) {
                             material, 0.2, 0), 0);
     ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
     alea_nuc_cell_bindings_t* binding = NULL;
-    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
         ALEA_NUC_BIND_PHOTON, NULL, NULL, &binding), ALEA_OK);
     alea_tally_plan_t* plan = alea_tally_plan_create(sys);
     ASSERT_NOT_NULL(plan);
@@ -5570,6 +5588,7 @@ TEST(fixed_photon_source_banks_photoelectric_relaxation_photons) {
     alea_tally_plan_free(plan);
     alea_nuc_cell_bindings_free(binding);
     alea_destroy(sys);
+    alea_nuc_xsdir_free(xsdir);
     remove(path);
 }
 
@@ -5591,7 +5610,8 @@ TEST(fixed_neutron_source_transports_produced_photons) {
              photon_path);
     entries[1].type = ALEA_NUC_TABLE_PHOTOATOMIC;
     entries[1].file_type = 1; entries[1].address = 1;
-    alea_nuc_xsdir_t xsdir = {.entries = entries, .count = 2};
+    alea_nuc_xsdir_t* xsdir = make_test_xsdir(entries, 2);
+    ASSERT_NOT_NULL(xsdir);
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
     int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 4);
@@ -5606,7 +5626,7 @@ TEST(fixed_neutron_source_transports_produced_photons) {
                                  ALEA_NUC_CAP_PHOTON_PRODUCTION
     };
     alea_nuc_cell_bindings_t* binding = NULL;
-    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
         ALEA_NUC_BIND_NEUTRON | ALEA_NUC_BIND_PHOTON,
         &req, NULL, &binding), ALEA_OK);
     alea_tally_plan_t* plan = alea_tally_plan_create(sys);
@@ -5648,7 +5668,7 @@ TEST(fixed_neutron_source_transports_produced_photons) {
     ASSERT_TRUE(view.sum[0] > 0);
     alea_transport_result_free(&result);
     alea_nuc_cell_bindings_t* neutron_only = NULL;
-    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
         ALEA_NUC_BIND_NEUTRON, &req, NULL, &neutron_only), ALEA_OK);
     ASSERT_EQ(alea_transport_run_fixed_neutron(sys, neutron_only, &source,
         &options, &result, &failure), ALEA_ERR_NOT_FOUND);
@@ -5658,6 +5678,7 @@ TEST(fixed_neutron_source_transports_produced_photons) {
     alea_tally_plan_free(plan);
     alea_nuc_cell_bindings_free(binding);
     alea_destroy(sys);
+    alea_nuc_xsdir_free(xsdir);
     remove(neutron_path);
     remove(photon_path);
 }
