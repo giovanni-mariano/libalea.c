@@ -23,6 +23,7 @@
 #include "openmc_region.h"
 #include "alea.h"
 #include "core/alea_system.h"
+#include "core/alea_eval.h"
 #include "core/alea_materials.h"
 #include "core/alea_ops.h"
 #include "primitives/primitive_create.h"
@@ -1091,15 +1092,20 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
         }
 
         if (has_vacuum) {
-            /* Check if graveyard already exists by testing point at infinity */
+            /* The universe index is built after conversion. Test the
+             * already-converted root cells directly so an explicit outside
+             * void cell is not missed before that index exists. */
             int graveyard_exists = 0;
-            int cell_idx = alea_identify_cell_at_point(sys, 9.9e5, 0, 0);
-            if (cell_idx >= 0) {
-                alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-                if (cell->material_id == 0) {
+            for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+                const alea_cell_entry_t* cell = &sys->cells.data[i];
+                if (cell->universe_id == 0 && cell->material_id == 0 &&
+                    cell->root_node_id != ALEA_NODE_ID_INVALID &&
+                    alea_contains_point(sys, cell->root_node_id,
+                                        9.9e5, 0, 0)) {
                     graveyard_exists = 1;
                     /* Graveyard already exists; no-op.
                        MCNP importances live in mcnp_model_t, not cell entries. */
+                    break;
                 }
             }
 

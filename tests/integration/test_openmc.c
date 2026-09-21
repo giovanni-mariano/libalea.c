@@ -451,6 +451,30 @@ TEST(openmc_vacuum_graveyard_uses_normal_cell_insertion) {
     openmc_model_destroy(omc);
 }
 
+TEST(openmc_explicit_outside_void_does_not_duplicate_graveyard) {
+    const char* xml =
+        "<?xml version='1.0'?>\n"
+        "<model>\n"
+        " <geometry>\n"
+        "  <surface id=\"1\" type=\"sphere\" coeffs=\"0 0 0 5\" boundary=\"vacuum\" />\n"
+        "  <cell id=\"1\" material=\"1\" region=\"-1\" />\n"
+        "  <cell id=\"2\" material=\"void\" region=\"1\" />\n"
+        " </geometry>\n"
+        " <materials>\n"
+        "  <material id=\"1\"><nuclide name=\"H1\" ao=\"1\" /></material>\n"
+        " </materials>\n"
+        "</model>\n";
+    openmc_model_t* model = openmc_load_string(xml, strlen(xml));
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_cell_count(model->sys), (size_t)2);
+    int cell_id = -1, material = -1;
+    ASSERT_EQ(alea_find_cell_lazy(model->sys, 1.0e6, 0, 0,
+                                  &cell_id, &material, NULL), 0);
+    ASSERT_EQ(cell_id, 2);
+    ASSERT_EQ(material, 0);
+    openmc_model_destroy(model);
+}
+
 TEST(openmc_vacuum_box_graveyard_does_not_overlap_domain) {
     const char* xml =
         "<?xml version='1.0'?>\n"
