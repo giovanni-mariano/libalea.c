@@ -116,6 +116,31 @@ static alea_system_t* build_single_sphere(void) {
     return sys;
 }
 
+static alea_system_t* build_rotated_fill_for_navigation(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+    int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 5);
+    int split = alea_plane_surface(sys, 2, 1, 0, 0, 0);
+    int left = alea_add_material(sys, 1);
+    int right = alea_add_material(sys, 2);
+    if (outer < 0 || split < 0 || left < 0 || right < 0) return sys;
+    int parent = alea_add_cell(sys, 1, alea_surface_at(sys, outer)->neg_node,
+                               ALEA_MATERIAL_VOID, 0, 0);
+    alea_add_cell(sys, 2, alea_surface_at(sys, split)->neg_node,
+                  left, -1, 10);
+    alea_add_cell(sys, 3, alea_surface_at(sys, split)->pos_node,
+                  right, -1, 10);
+    const double rotation[12] = {
+        0, 0, 0,
+        0, -1, 0,
+        1, 0, 0,
+        0, 0, 1
+    };
+    alea_add_transform(sys, 1, rotation, 12, 0);
+    alea_set_fill(sys, parent, 10, 1);
+    return sys;
+}
+
 /**
  * Build N concentric spherical shells.
  * Each shell is a cell: sphere[i] \ sphere[i-1].
@@ -1428,6 +1453,126 @@ TEST(perf_volume_estimation) {
 
     free(volumes);
     free(errors);
+    alea_destroy(sys);
+}
+
+/* Repeated short flights followed by direction changes represent scattering
+ * histories. Timings are informational; all three paths must agree on the
+ * collision sequence. */
+TEST(perf_navigator_scattering_strict_fast_and_relocate) {
+    const int histories = 10000;
+    alea_system_t* sys = build_single_sphere();
+    ASSERT_NOT_NULL(sys);
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(nav);
+    const double start[3] = {0, 0, 0};
+    double direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    double totals[3] = {0};
+    for (int mode = 0; mode < 3; mode++) {
+        ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav,
+            mode == 0 ? ALEA_NAV_VALIDATE_STRICT : ALEA_NAV_VALIDATE_FAST), 0);
+        ASSERT_EQ(alea_ray_navigator_set_event_fields(nav, 0), 0);
+        direction[0] = 1;
+        ASSERT_EQ(alea_ray_navigator_restart(nav, start, direction,
+                                             &location), 0);
+        BENCH_START();
+        for (int i = 0; i < histories; i++) {
+            alea_nav_event_t event;
+            ASSERT_EQ(alea_ray_navigator_advance(nav, 0.01, 1, &event), 0);
+            ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+            totals[mode] += event.distance;
+            direction[0] = -direction[0];
+            if (mode == 2)
+                ASSERT_EQ(alea_ray_navigator_restart(
+                    nav, event.position, direction, &location), 0);
+            else
+                ASSERT_EQ(alea_ray_navigator_set_direction(nav,
+                                                           direction), 0);
+        }
+        BENCH_END(mode == 0 ? "navigator strict scatter" :
+                  mode == 1 ? "navigator fast scatter" :
+                              "navigator fast full relocate", histories);
+        printf("[%.3f cm flight]  ", totals[mode]);
+    }
+    ASSERT_NEAR(totals[0], totals[1], 1e-9);
+    ASSERT_NEAR(totals[1], totals[2], 1e-9);
+    alea_ray_navigator_destroy(nav);
+    alea_destroy(sys);
+}
+
+TEST(perf_navigator_lattice_boundaries_strict_vs_fast) {
+    const int crossings = 1000;
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(nav);
+    const double start[3] = {0, 0.5, 0};
+    const double direction[3] = {1, 0, 0};
+    uint64_t checksums[2] = {0, 0};
+    for (int mode = 0; mode < 2; mode++) {
+        alea_nav_location_t location;
+        ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav,
+            mode == 0 ? ALEA_NAV_VALIDATE_STRICT : ALEA_NAV_VALIDATE_FAST), 0);
+        ASSERT_EQ(alea_ray_navigator_set_event_fields(nav, 0), 0);
+        ASSERT_EQ(alea_ray_navigator_restart(nav, start, direction,
+                                             &location), 0);
+        BENCH_START();
+        for (int i = 0; i < crossings; i++) {
+            alea_nav_event_t event;
+            int limits = 0;
+            do {
+                ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 2,
+                                                     &event), 0);
+                ASSERT(limits++ < 4);
+            } while (event.kind == ALEA_NAV_DISTANCE_LIMIT);
+            ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+            checksums[mode] ^= event.after.occurrence_key +
+                               (uint64_t)i * UINT64_C(0x9e3779b97f4a7c15);
+        }
+        BENCH_END(mode == 0 ? "navigator strict lattice crossings" :
+                              "navigator fast lattice crossings", crossings);
+        printf("[checksum=%llu]  ",
+               (unsigned long long)checksums[mode]);
+    }
+    ASSERT_EQ(checksums[0], checksums[1]);
+    alea_ray_navigator_destroy(nav);
+    mcnp_model_destroy(model);
+}
+
+TEST(perf_navigator_rotated_fill_scattering_strict_vs_fast) {
+    const int collisions = 10000;
+    alea_system_t* sys = build_rotated_fill_for_navigation();
+    ASSERT_NOT_NULL(sys);
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(nav);
+    const double start[3] = {0, -1, 0};
+    double direction[3] = {0, 1, 0};
+    double totals[2] = {0};
+    for (int mode = 0; mode < 2; mode++) {
+        alea_nav_location_t location;
+        ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav,
+            mode == 0 ? ALEA_NAV_VALIDATE_STRICT : ALEA_NAV_VALIDATE_FAST), 0);
+        ASSERT_EQ(alea_ray_navigator_set_event_fields(nav, 0), 0);
+        direction[1] = 1;
+        ASSERT_EQ(alea_ray_navigator_restart(nav, start, direction,
+                                             &location), 0);
+        ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+        BENCH_START();
+        for (int i = 0; i < collisions; i++) {
+            alea_nav_event_t event;
+            ASSERT_EQ(alea_ray_navigator_advance(nav, 0.01, 1, &event), 0);
+            ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+            totals[mode] += event.distance;
+            direction[1] = -direction[1];
+            ASSERT_EQ(alea_ray_navigator_set_direction(nav, direction), 0);
+        }
+        BENCH_END(mode == 0 ? "navigator strict rotated fill scatter" :
+                              "navigator fast rotated fill scatter", collisions);
+        printf("[%.3f cm flight]  ", totals[mode]);
+    }
+    ASSERT_NEAR(totals[0], totals[1], 1e-9);
+    alea_ray_navigator_destroy(nav);
     alea_destroy(sys);
 }
 

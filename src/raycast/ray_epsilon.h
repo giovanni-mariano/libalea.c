@@ -16,7 +16,8 @@
 /* Parallel-ray checks, hit dedup, axis-aligned direction checks */
 #define RAY_EPSILON 1e-10
 
-/* Quadratic/quartic near-tangent discriminant clamping */
+/* Legacy absolute tolerance retained for callers/tests of this internal
+ * header. Quadratic solvers use a scale-aware DBL_EPSILON bound instead. */
 #define DISCRIMINANT_TOL 1e-12
 
 /* Hit deduplication after sorting (same t AND same surface_id) */

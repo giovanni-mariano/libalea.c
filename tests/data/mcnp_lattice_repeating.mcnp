@@ -1,0 +1,17 @@
+Repeating lattice traversal regression
+c --- universe 1: one material filling each repeated element ---
+1 1 -1.0  -10      u=1 imp:n=1
+2 1 -1.0   10      u=1 imp:n=1
+c --- a simple fill repeats universe 1 in every lattice element ---
+100 0  1 -2 3 -4 5 -6 lat=1 fill=1 imp:n=1
+
+c Surfaces
+1  px -1
+2  px  1
+3  py -1
+4  py  1
+5  pz -1
+6  pz  1
+10 cz 0.3
+
+m1 1001.80c 1.0

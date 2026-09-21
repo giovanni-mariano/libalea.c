@@ -36,6 +36,109 @@ typedef struct alea_ray_boundary_event_query_result
 typedef struct alea_ray_coverage_slice_result
     alea_ray_coverage_slice_result_t;
 
+/** Persistent hierarchical particle location. The system must outlive it and
+ * its geometry must not be mutated while a navigator is in use. */
+typedef struct alea_ray_navigator alea_ray_navigator_t;
+
+/** STRICT checks competing owners at one interior point per interval. FAST
+ * trusts the selected hierarchy path after geometry has been validated. Both
+ * modes keep traversal progress and resource-failure checks. */
+typedef enum {
+    ALEA_NAV_VALIDATE_STRICT = 0,
+    ALEA_NAV_VALIDATE_FAST = 1
+} alea_nav_validation_mode_t;
+
+#define ALEA_NAV_EVENT_NORMAL (1u << 0)
+
+typedef enum {
+    ALEA_NAV_MATERIAL,
+    ALEA_NAV_VOID,
+    ALEA_NAV_GAP,               /**< No cell owns the sampled open interval */
+    ALEA_NAV_OVERLAP,           /**< Multiple terminal occurrences own it */
+    ALEA_NAV_UNDEFINED_FILL,
+    ALEA_NAV_UNRESOLVED,
+    ALEA_NAV_LEAKED
+} alea_nav_location_kind_t;
+
+typedef struct {
+    alea_nav_location_kind_t kind;
+    int cell_id;                 /**< -1 in unowned space */
+    int material_id;             /**< 0 in void or unowned space */
+    double density;
+    uint64_t occurrence_key;    /**< Concrete lattice/fill instance, or 0 */
+} alea_nav_location_t;
+
+typedef enum {
+    ALEA_NAV_COLLISION,          /**< Collision distance reached first */
+    ALEA_NAV_DISTANCE_LIMIT,     /**< max_distance reached first */
+    ALEA_NAV_BOUNDARY,           /**< Transmissive physical/lattice crossing */
+    ALEA_NAV_VACUUM,             /**< Vacuum surface reached; navigator leaked */
+    ALEA_NAV_BOUNDARY_ACTION     /**< Reflection/white/periodic requires action */
+} alea_nav_event_kind_t;
+
+typedef struct {
+    alea_nav_event_kind_t kind;
+    double distance;             /**< Distance traveled by this call */
+    double position[3];          /**< World position after traveling */
+    alea_nav_location_t before;
+    alea_nav_location_t after;
+    int surface_id;              /**< -1 no surface, 0 synthetic lattice */
+    alea_boundary_type_t boundary_type;
+    double normal[3];            /**< World normal when requested or required
+                                     by a boundary action; otherwise zero */
+} alea_nav_event_t;
+
+/** Create a reusable navigator; restart() locates its first particle.
+ * Returns NULL if sys is NULL or allocation fails. */
+alea_ray_navigator_t* alea_ray_navigator_create(alea_system_t* sys);
+void alea_ray_navigator_destroy(alea_ray_navigator_t* navigator);
+
+/** Configure navigation work. Defaults are STRICT and NORMAL for compatibility.
+ * Switching to STRICT verifies the current interval before returning. */
+int alea_ray_navigator_set_validation_mode(
+    alea_ray_navigator_t* navigator, alea_nav_validation_mode_t mode);
+int alea_ray_navigator_set_event_fields(
+    alea_ray_navigator_t* navigator, uint32_t fields);
+
+/** Locate a source and establish its initial hierarchy path. Directions are
+ * normalized. Returns -1 for invalid inputs, cache failures, or a traversal
+ * failure. Unowned gaps, overlaps, and undefined locations are reported by
+ * kind; advance refuses to silently treat them as a transport material.
+ * Ownership verification samples each selected open interval. It does not
+ * certify that an entire interval is free of sub-interval overlaps/gaps;
+ * validate input geometry independently before running transport. */
+int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
+                               const double position[3],
+                               const double direction[3],
+                               alea_nav_location_t* location);
+
+/** Copy particle location and walker state for a secondary. The returned
+ * navigator is independently movable and must be destroyed by the caller. */
+alea_ray_navigator_t* alea_ray_navigator_clone(
+    const alea_ray_navigator_t* navigator);
+
+/** Advance up to max_distance, racing a collision at collision_distance
+ * against the next geometric boundary. Both distances use world length;
+ * max_distance must be finite and positive, collision_distance must be
+ * positive or INFINITY. In void/gaps, collision_distance must be INFINITY.
+ * On a collision the caller samples physics and may
+ * change direction before the next advance. A boundary action requires a
+ * direction/position update before advance can continue. A vacuum boundary
+ * terminates the navigator. Returns 0 for an event, -1 on traversal error. */
+int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
+                               double collision_distance, double max_distance,
+                               alea_nav_event_t* event);
+
+/** Change direction at the current position after a collision or boundary
+ * action. Retains the current hierarchy path as a location hint. */
+int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
+                                     const double direction[3]);
+
+/** Apply specular reflection after a REFLECTIVE boundary action. Uses the
+ * world-space boundary normal and keeps the particle on the incident side.
+ * Returns -1 for any other state or a missing/invalid boundary normal. */
+int alea_ray_navigator_reflect_specular(alea_ray_navigator_t* navigator);
+
 #define ALEA_RAY_FIRST_VISIBLE_SURFACE_ID      (1u << 0)
 #define ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL  (1u << 1)
 

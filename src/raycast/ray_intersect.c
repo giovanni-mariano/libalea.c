@@ -25,20 +25,26 @@
  */
 static inline int solve_quadratic_stable(double a, double b, double c,
                                          double* t_out) {
-    if (fabs(a) < RAY_EPSILON) {
-        if (fabs(b) < RAY_EPSILON) return 0;
+    /* A small quadratic coefficient is not necessarily negligible: for a ray
+     * almost parallel to a cylinder/cone axis it represents a real, distant
+     * crossing.  Only reduce an actually linear equation. */
+    if (a == 0.0) {
+        if (b == 0.0) return 0;
         t_out[0] = -c / b;
         return 1;
     }
 
-    double discriminant = b * b - 4.0 * a * c;
-    if (discriminant < -DISCRIMINANT_TOL) return 0;
+    double ac4 = 4.0 * a * c;
+    double discriminant = fma(b, b, -ac4);
+    double discriminant_scale = fabs(b * b) + fabs(ac4);
+    double discriminant_tol = 16.0 * DBL_EPSILON * discriminant_scale;
+    if (discriminant < -discriminant_tol) return 0;
     if (discriminant < 0) discriminant = 0;
 
     double sqrt_disc = sqrt(discriminant);
     double q = -0.5 * (b + copysign(sqrt_disc, b));
 
-    if (fabs(q) < DISCRIMINANT_TOL) {
+    if (q == 0.0) {
         /* Double root fallback */
         t_out[0] = -b / (2.0 * a);
         t_out[1] = t_out[0];
@@ -115,25 +121,23 @@ int ray_intersect_sphere(const alea_ray_t* ray,
 
     /* a = |D|^2 = 1 (normalized), b_half = L.D, c = |L|^2 - r^2 */
     double b_half = lx * ray->dx + ly * ray->dy + lz * ray->dz;
-    double c = lx * lx + ly * ly + lz * lz - sphere->radius * sphere->radius;
+    /* r^2 - |L x D|^2 is algebraically identical to b_half^2 - c but avoids
+     * subtracting two O(|L|^2) values for distant spheres. */
+    double cx = ly * ray->dz - lz * ray->dy;
+    double cy = lz * ray->dx - lx * ray->dz;
+    double cz = lx * ray->dy - ly * ray->dx;
+    double radius_sq = sphere->radius * sphere->radius;
+    double cross_sq = cx * cx + cy * cy + cz * cz;
+    double discriminant = radius_sq - cross_sq;
+    double discriminant_tol = 16.0 * DBL_EPSILON *
+        (fabs(radius_sq) + fabs(cross_sq));
 
-    double discriminant = b_half * b_half - c;
-
-    if (discriminant < -DISCRIMINANT_TOL) return 0;
+    if (discriminant < -discriminant_tol) return 0;
     if (discriminant < 0) discriminant = 0;
 
-    /* Stable form: q = -(b_half + sign(b_half)*sqrt(disc)) */
     double sqrt_disc = sqrt(discriminant);
-    double q = -(b_half + copysign(sqrt_disc, b_half));
-
-    if (fabs(q) < DISCRIMINANT_TOL) {
-        t_out[0] = -b_half;
-        t_out[1] = -b_half;
-        return 2;
-    }
-
-    t_out[0] = q;       /* q / a where a = 1 */
-    t_out[1] = c / q;   /* Vieta: t0*t1 = c/a = c */
+    t_out[0] = -b_half - sqrt_disc;
+    t_out[1] = -b_half + sqrt_disc;
 
     if (t_out[0] > t_out[1]) {
         double tmp = t_out[0];

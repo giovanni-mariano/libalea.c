@@ -280,20 +280,33 @@ TEST(stable_quadratic_sphere_large_offset) {
     alea_sphere_data_t sphere = {0, 0, 0, 1.0};
     double t[2];
 
-    /* Ray from far away: b is large, b^2 >> 4ac.
-     * Classic formula has catastrophic cancellation in b - sqrt(b^2 - 4ac).
-     * Vieta's form avoids this.
-     *
-     * Use 1e6 (not 1e8+) because c = |L|^2 - r^2 must be exact in double:
-     * 1e12 - 1 is exact (< 2^53), but 1e16 - 1 rounds to 1e16 (ULP=2). */
-    alea_ray_init(&ray, -1e6, 0, 0, 1, 0, 0);
+    /* The geometric discriminant must retain the radius even when
+     * |origin|^2 - r^2 rounds back to |origin|^2 in double precision. */
+    alea_ray_init(&ray, -1e8, 0, 0, 1, 0, 0);
     int count = ray_intersect_sphere(&ray, &sphere, t);
 
     ASSERT_EQ(count, 2);
-    ASSERT_NEAR(t[0], 1e6 - 1.0, 1e-4);
-    ASSERT_NEAR(t[1], 1e6 + 1.0, 1e-4);
-    /* The gap should be exactly 2 (diameter) — Vieta's preserves this */
+    ASSERT_NEAR(t[0], 1e8 - 1.0, 1e-4);
+    ASSERT_NEAR(t[1], 1e8 + 1.0, 1e-4);
     ASSERT_NEAR(t[1] - t[0], 2.0, 1e-6);
+}
+
+TEST(near_axis_cylinder_retains_distant_quadratic_roots) {
+    alea_ray_t ray;
+    alea_cylinder_z_data_t cylinder = {0, 0, 1.0};
+    double t[2];
+    const double transverse = 1e-6;
+    ASSERT_EQ(alea_ray_init(&ray, 0, 0, 0, transverse, 0,
+                            sqrt(1.0 - transverse * transverse)), 0);
+    ASSERT_EQ(ray_intersect_cylinder_z(&ray, &cylinder, t), 2);
+    ASSERT_NEAR(t[0], -1e6, 1e-3);
+    ASSERT_NEAR(t[1], 1e6, 1e-3);
+
+    ASSERT_EQ(alea_ray_init(&ray, 0.5, 0, 0, transverse, 0,
+                            sqrt(1.0 - transverse * transverse)), 0);
+    ASSERT_EQ(ray_intersect_cylinder_z(&ray, &cylinder, t), 2);
+    ASSERT_NEAR(t[0], -1.5e6, 1e-3);
+    ASSERT_NEAR(t[1], 0.5e6, 1e-3);
 }
 
 /* =========================================================================

@@ -352,6 +352,26 @@ typedef struct {
     double material_lengths[2];
 } batch_selected_segment_probe_t;
 
+typedef struct {
+    size_t count;
+    double previous_exit;
+    int monotonic;
+} long_interval_probe_t;
+
+static int probe_long_interval(
+        void* context,
+        const alea_raycast_selected_interval_view_t* interval) {
+    long_interval_probe_t* probe = context;
+    if (probe->count > 0 &&
+        interval->t_enter + 1e-12 < probe->previous_exit) {
+        probe->monotonic = 0;
+    }
+    if (!(interval->t_exit > interval->t_enter)) probe->monotonic = 0;
+    probe->previous_exit = interval->t_exit;
+    probe->count++;
+    return probe->count >= 10002 ? 1 : 0;
+}
+
 static int probe_batch_selected_segment(void* context, size_t ray_index,
                                         const alea_ray_segment_t* segment) {
     batch_selected_segment_probe_t* probe = context;
@@ -451,6 +471,256 @@ TEST(raycast_selected_interval_visitor_retains_path_evidence) {
 
     alea_raycast_result_free(&scratch);
     alea_destroy(sys);
+}
+
+TEST(raycast_preserves_sub_epsilon_source_interval) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+    const int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+
+    alea_raycast_result_t trace;
+    alea_raycast_result_init(&trace);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 1.0 - 5e-11, 0, 0, 1, 0, 0, 2.0, &trace), 0);
+    ASSERT_NEAR(alea_raycast_path_length(&trace, 1), 5e-11, 1e-14);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 1.0, 0, 0, 1, 0, 0, 2.0, &trace), 0);
+    ASSERT_NEAR(alea_raycast_path_length(&trace, 1), 0.0, 1e-15);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 1.0, 0, 0, -1, 0, 0, 2.0, &trace), 0);
+    ASSERT_NEAR(alea_raycast_path_length(&trace, 1), 2.0, 1e-12);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 0, 0, 0, 1, 0, 0, 5e-11, &trace), 0);
+    ASSERT_NEAR(alea_raycast_path_length(&trace, 1), 5e-11, 1e-14);
+    ASSERT_EQ(alea_raycast_hier_fast_segments(
+                  sys, 0, 0, 0, 1, 0, 0, NAN, &trace), -1);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {1.0 - 5e-11, 0, 0};
+    const double direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                          &location), 0);
+    ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 1, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_NEAR(event.distance, 5e-11, 1e-14);
+    alea_ray_navigator_destroy(navigator);
+    alea_raycast_result_free(&trace);
+    alea_destroy(sys);
+}
+
+TEST(raycast_interval_visitor_progresses_beyond_legacy_step_limit) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    ASSERT_EQ(alea_prepare_query_acceleration(model->sys), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 0, 0.5, 0, 1, 0, 0), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    long_interval_probe_t probe = {.monotonic = 1};
+    ASSERT_EQ(alea_raycast_hier_visit_intervals_nocache(
+                  model->sys, &ray, 25000.0, &scratch,
+                  probe_long_interval, &probe), 0);
+    ASSERT_EQ(probe.count, (size_t)10002);
+    ASSERT_EQ(probe.monotonic, 1);
+    ASSERT_EQ(scratch.step_iterations, (uint64_t)10002);
+    alea_raycast_result_free(&scratch);
+    mcnp_model_destroy(model);
+}
+
+TEST(persistent_navigator_competes_collision_and_boundary_and_clones) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         material, -1.0, 0) >= 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    double position[3] = {0, 0, 0}, direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                          &location), 0);
+    ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    ASSERT_EQ(location.cell_id, 1);
+    ASSERT(location.occurrence_key != 0);
+    alea_ray_navigator_t* secondary = alea_ray_navigator_clone(navigator);
+    ASSERT_NOT_NULL(secondary);
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, 0.25, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+    ASSERT_NEAR(event.position[0], 0.25, 1e-12);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 0.25,
+                                         &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_DISTANCE_LIMIT);
+    ASSERT_NEAR(event.position[0], 0.5, 1e-12);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2,
+                                         &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_NEAR(event.distance, 0.5, 1e-12);
+    ASSERT_NEAR(event.position[0], 1, 1e-12);
+    ASSERT_EQ(event.surface_id, 1);
+    ASSERT_EQ(event.before.kind, ALEA_NAV_MATERIAL);
+    ASSERT_EQ(event.after.kind, ALEA_NAV_GAP);
+    ASSERT_NEAR(event.normal[0], 1, 1e-12);
+    ASSERT_EQ(alea_ray_navigator_advance(secondary, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_NEAR(event.distance, 1, 1e-12);
+    direction[0] = -1;
+    ASSERT_EQ(alea_ray_navigator_set_direction(navigator, direction), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, 0.5, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+    ASSERT_EQ(event.before.kind, ALEA_NAV_MATERIAL);
+    ASSERT_NEAR(event.position[0], 0.5, 1e-12);
+    alea_ray_navigator_destroy(secondary);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_vacuum_and_boundary_action) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         material, -1, 0) >= 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    double position[3] = {0, 0, 0}, direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                          &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_VACUUM);
+    ASSERT_EQ(event.after.kind, ALEA_NAV_LEAKED);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), -1);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_REFLECTIVE), 0);
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(
+                  navigator, ALEA_NAV_VALIDATE_FAST), 0);
+    ASSERT_EQ(alea_ray_navigator_set_event_fields(navigator, 0), 0);
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                          &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY_ACTION);
+    ASSERT_EQ(event.boundary_type, ALEA_BOUNDARY_REFLECTIVE);
+    ASSERT_NEAR(event.normal[0], 1.0, 1e-12);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), -1);
+    ASSERT_EQ(alea_ray_navigator_reflect_specular(navigator), 0);
+    ASSERT_EQ(alea_ray_navigator_reflect_specular(navigator), -1);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, 0.2, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+    ASSERT_EQ(event.before.kind, ALEA_NAV_MATERIAL);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_rejects_overlapping_material_owners) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface_a = alea_sphere_surface(sys, 1, 0, 0, 0, 2);
+    int surface_b = alea_sphere_surface(sys, 2, 0, 0, 0, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface_a >= 0 && surface_b >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface_a)->neg_node,
+                         material, -1, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, alea_surface_at(sys, surface_b)->neg_node,
+                         material, -1, 0) >= 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    double position[3] = {0, 0, 0}, direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                          &location), 0);
+    ASSERT_EQ(location.kind, ALEA_NAV_OVERLAP);
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, 0.1, 1, &event), -1);
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(
+                  navigator, ALEA_NAV_VALIDATE_FAST), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, 0.1, 1, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(
+                  navigator, ALEA_NAV_VALIDATE_STRICT), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, 0.1, 1, &event), -1);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_keeps_repeated_lattice_occurrences) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {0, 0.5, 0};
+    const double direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                          &location), 0);
+    ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    uint64_t first_occurrence = location.occurrence_key;
+    ASSERT(first_occurrence != 0);
+    alea_nav_event_t event;
+    int changed = 0;
+    for (int i = 0; i < 8 && !changed; i++) {
+        ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2,
+                                              &event), 0);
+        ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+        changed = event.before.occurrence_key !=
+                  event.after.occurrence_key;
+    }
+    ASSERT(changed);
+    ASSERT_EQ(event.before.cell_id, event.after.cell_id);
+    ASSERT_NE(event.after.occurrence_key, first_occurrence);
+    ASSERT_EQ(event.after.kind, ALEA_NAV_MATERIAL);
+    alea_ray_navigator_destroy(navigator);
+    mcnp_model_destroy(model);
+}
+
+TEST(persistent_navigator_fast_mode_matches_strict_lattice_track) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_ray_navigator_t* strict = alea_ray_navigator_create(model->sys);
+    alea_ray_navigator_t* fast = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(strict);
+    ASSERT_NOT_NULL(fast);
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(
+                  fast, ALEA_NAV_VALIDATE_FAST), 0);
+    ASSERT_EQ(alea_ray_navigator_set_event_fields(fast, 0), 0);
+    const double position[3] = {0, 0.5, 0};
+    const double direction[3] = {1, 0, 0};
+    alea_nav_location_t strict_location, fast_location;
+    ASSERT_EQ(alea_ray_navigator_restart(strict, position, direction,
+                                          &strict_location), 0);
+    ASSERT_EQ(alea_ray_navigator_restart(fast, position, direction,
+                                          &fast_location), 0);
+    ASSERT_EQ(strict_location.kind, fast_location.kind);
+    ASSERT_EQ(strict_location.occurrence_key, fast_location.occurrence_key);
+    for (int i = 0; i < 12; i++) {
+        alea_nav_event_t a, b;
+        ASSERT_EQ(alea_ray_navigator_advance(strict, INFINITY, 2, &a), 0);
+        ASSERT_EQ(alea_ray_navigator_advance(fast, INFINITY, 2, &b), 0);
+        ASSERT_EQ(a.kind, b.kind);
+        ASSERT_EQ(a.surface_id, b.surface_id);
+        ASSERT_EQ(a.after.kind, b.after.kind);
+        ASSERT_EQ(a.after.cell_id, b.after.cell_id);
+        ASSERT_EQ(a.after.occurrence_key, b.after.occurrence_key);
+        ASSERT_NEAR(a.distance, b.distance, 1e-12);
+        ASSERT_NEAR(b.normal[0], 0, 1e-12);
+        ASSERT_NEAR(b.normal[1], 0, 1e-12);
+        ASSERT_NEAR(b.normal[2], 0, 1e-12);
+    }
+    alea_ray_navigator_destroy(fast);
+    alea_ray_navigator_destroy(strict);
+    mcnp_model_destroy(model);
 }
 
 TEST(raycast_batch_selected_segment_visitor_preserves_ray_slots) {
@@ -2161,6 +2431,119 @@ TEST(selected_boundary_events_retain_transformed_occurrence_receipts) {
     alea_ray_boundary_event_result_free(&events);
     alea_raycast_result_free(&scratch);
     alea_destroy(sys);
+}
+
+TEST(public_boundary_normals_use_world_frame_for_rotated_fills) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int parent_surface = alea_sphere_surface(sys, 1, 0, 0, 0, 3.0);
+    const int child_surface = alea_plane_surface(sys, 2, 1, 0, 0, 0);
+    const int left_material = alea_add_material(sys, 1);
+    const int right_material = alea_add_material(sys, 2);
+    ASSERT(parent_surface >= 0 && child_surface >= 0);
+    ASSERT(left_material >= 0 && right_material >= 0);
+    const int parent = alea_add_cell(
+        sys, 1, alea_surface_at(sys, parent_surface)->neg_node,
+        ALEA_MATERIAL_VOID, 0.0, 0);
+    ASSERT(parent >= 0);
+    ASSERT(alea_add_cell(sys, 2,
+                         alea_surface_at(sys, child_surface)->neg_node,
+                         left_material, -1.0, 10) >= 0);
+    ASSERT(alea_add_cell(sys, 3,
+                         alea_surface_at(sys, child_surface)->pos_node,
+                         right_material, -1.0, 10) >= 0);
+    const double rotation[12] = {
+        0, 0, 0,
+        0, -1, 0,
+        1,  0, 0,
+        0,  0, 1
+    };
+    ASSERT_EQ(alea_add_transform(sys, 1, rotation, 12, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 10, 1), 0);
+
+    for (int provenance = 0; provenance <= 1; provenance++) {
+        alea_ray_boundary_event_options_t options;
+        alea_ray_boundary_event_options_init(&options);
+        options.fields = ALEA_RAY_BOUNDARY_EVENT_NORMAL;
+        options.t_max = 4.0;
+        options.include_occurrence_provenance = provenance;
+        alea_ray_boundary_event_query_result_t* events =
+            alea_ray_boundary_event_query_result_create();
+        ASSERT_NOT_NULL(events);
+        ASSERT_EQ(alea_ray_boundary_event_query(
+                      sys, 0, -2, 0, 0, 1, 0, &options, events), 0);
+        ASSERT_EQ(alea_ray_boundary_event_count(events), (size_t)1);
+        double nx = 0, ny = 0, nz = 0;
+        ASSERT_EQ(alea_ray_boundary_event_get(
+                      events, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                      NULL, NULL, &nx, &ny, &nz), 0);
+        ASSERT_NEAR(nx, 0.0, EPS);
+        ASSERT_NEAR(ny, -1.0, EPS);
+        ASSERT_NEAR(nz, 0.0, EPS);
+        alea_ray_boundary_event_query_result_destroy(events);
+    }
+    const double start[3] = {0, -2, 0};
+    const double forward[3] = {0, 1, 0};
+    const double reverse[3] = {0, -1, 0};
+    for (int fast = 0; fast <= 1; fast++) {
+        alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+        ASSERT_NOT_NULL(nav);
+        if (fast) {
+            ASSERT_EQ(alea_ray_navigator_set_validation_mode(
+                          nav, ALEA_NAV_VALIDATE_FAST), 0);
+            ASSERT_EQ(alea_ray_navigator_set_event_fields(nav, 0), 0);
+        }
+        alea_nav_location_t location;
+        ASSERT_EQ(alea_ray_navigator_restart(nav, start, forward,
+                                              &location), 0);
+        ASSERT_EQ(location.cell_id, 3);
+        alea_nav_event_t event;
+        ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 4,
+                                             &event), 0);
+        ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+        ASSERT_EQ(event.after.cell_id, 2);
+        ASSERT_NEAR(event.normal[1], fast ? 0.0 : -1.0, EPS);
+        ASSERT_EQ(alea_ray_navigator_set_direction(nav, reverse), 0);
+        ASSERT_EQ(alea_ray_navigator_advance(nav, 0.2, 1, &event), 0);
+        ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+        ASSERT_EQ(event.before.cell_id, 3);
+        alea_ray_navigator_destroy(nav);
+    }
+    alea_destroy(sys);
+}
+
+TEST(selected_boundary_events_report_repeated_occurrence_changes) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    ASSERT_EQ(alea_prepare_query_acceleration(model->sys), 0);
+    alea_ray_boundary_event_options_t options;
+    alea_ray_boundary_event_options_init(&options);
+    options.t_max = 8.0;
+    options.include_occurrence_provenance = 1;
+    alea_ray_boundary_event_query_result_t* events =
+        alea_ray_boundary_event_query_result_create();
+    ASSERT_NOT_NULL(events);
+    ASSERT_EQ(alea_ray_boundary_event_query(
+                  model->sys, 0, 0.5, 0, 1, 0, 0, &options, events), 0);
+    ASSERT_EQ(alea_ray_boundary_event_count(events), (size_t)4);
+    for (size_t i = 0; i < alea_ray_boundary_event_count(events); i++) {
+        int kind = -1, surface_id = -1, before = -1, after = -1;
+        ASSERT_EQ(alea_ray_boundary_event_get(
+                      events, i, NULL, &kind, &surface_id, &before, &after,
+                      NULL, NULL, NULL, NULL, NULL, NULL, NULL), 0);
+        ASSERT_EQ(kind, ALEA_RAY_EVENT_SYNTHETIC_LATTICE);
+        ASSERT_EQ(surface_id, 0);
+        ASSERT_EQ(before, after);
+        alea_ray_boundary_event_provenance_t provenance;
+        ASSERT_EQ(alea_ray_boundary_event_provenance_get(
+                      events, i, &provenance), 0);
+        ASSERT(provenance.flags & ALEA_RAY_BOUNDARY_PROVENANCE_BEFORE_OWNER);
+        ASSERT(provenance.flags & ALEA_RAY_BOUNDARY_PROVENANCE_AFTER_OWNER);
+        ASSERT_NE(provenance.before_occurrence_key,
+                  provenance.after_occurrence_key);
+    }
+    alea_ray_boundary_event_query_result_destroy(events);
+    mcnp_model_destroy(model);
 }
 
 TEST(compact_ray_slice_matches_explicit_generic_batch) {
