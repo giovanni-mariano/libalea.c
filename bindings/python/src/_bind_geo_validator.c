@@ -88,6 +88,14 @@ static int parse_validator_options(PyObject* opts, alea_geom_validator_options_t
     }
     o->max_samples_per_curve = (size_t)lv;
     lv = (long)o->max_crossings; if (geom_opt_long(opts, "max_crossings", &lv) < 0) return -1; o->max_crossings = (size_t)lv;
+    lv = (long)o->max_breakpoints;
+    if (geom_opt_long(opts, "max_breakpoints", &lv) < 0) return -1;
+    if (lv < 0) {
+        PyErr_SetString(PyExc_ValueError,
+                        "validator option 'max_breakpoints' must be non-negative");
+        return -1;
+    }
+    o->max_breakpoints = (size_t)lv;
 
     if (geom_opt_double(opts, "sample_offset", &o->sample_offset) < 0) return -1;
     if (geom_opt_double(opts, "t_max", &o->t_max) < 0) return -1;
@@ -196,6 +204,15 @@ static PyObject* build_error_dict(const alea_geom_error_t* e) {
         : PyLong_FromUnsignedLong(e->primitive_id);
     if (dict_set_new(d, "primitive_id", primitive_id) < 0) { Py_DECREF(d); return NULL; }
 
+    PyObject* cause = e->cause == ALEA_OK
+        ? (Py_INCREF(Py_None), Py_None)
+        : PyUnicode_FromString(alea_error_string(e->cause));
+    if (dict_set_new(d, "cause", cause) < 0) { Py_DECREF(d); return NULL; }
+    if (dict_set_new(d, "cause_id", PyLong_FromLong((long)e->cause)) < 0) {
+        Py_DECREF(d);
+        return NULL;
+    }
+
     return d;
 }
 
@@ -216,7 +233,7 @@ static PyObject* build_result_dict(const alea_geom_validator_result_t* r) {
         if (!item) { Py_DECREF(errors); return NULL; }
         PyList_SET_ITEM(errors, i, item); /* steals ref */
     }
-    return Py_BuildValue(
+    PyObject* result = Py_BuildValue(
         "{s:N,s:k,s:k,s:k,s:k,s:k,s:k,s:O}",
         "errors", errors,
         "crossings_checked", (unsigned long)r->crossings_checked,
@@ -226,6 +243,15 @@ static PyObject* build_result_dict(const alea_geom_validator_result_t* r) {
         "suppressed_samples", (unsigned long)r->suppressed_samples,
         "sample_limited_curves", (unsigned long)r->sample_limited_curves,
         "truncated", r->truncated ? Py_True : Py_False);
+    if (!result) return NULL;
+    if (dict_set_new(result, "incomplete_rays",
+                     PyLong_FromSize_t(r->incomplete_rays)) < 0 ||
+        dict_set_new(result, "incomplete_slice_samples",
+                     PyLong_FromSize_t(r->incomplete_slice_samples)) < 0) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    return result;
 }
 
 /* ============================================================================
