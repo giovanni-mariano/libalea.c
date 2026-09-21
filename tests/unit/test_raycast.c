@@ -686,6 +686,60 @@ TEST(persistent_navigator_keeps_repeated_lattice_occurrences) {
     mcnp_model_destroy(model);
 }
 
+TEST(persistent_navigator_reverses_repeated_lattice_track_and_restarts_on_boundary) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(navigator);
+    const double start[3] = {0.5, 0.5, 0};
+    const double forward[3] = {1, 0, 0};
+    const double backward[3] = {-1, 0, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, start, forward,
+                                          &location), 0);
+    uint64_t keys[5] = {location.occurrence_key};
+    double crossings[4];
+    int found = 0;
+    for (int step = 0; step < 24 && found < 4; ++step) {
+        ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 10,
+                                             &event), 0);
+        ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+        if (event.before.occurrence_key == event.after.occurrence_key) continue;
+        ASSERT_EQ(event.before.occurrence_key, keys[found]);
+        keys[found + 1] = event.after.occurrence_key;
+        crossings[found] = event.position[0];
+        found++;
+    }
+    ASSERT_EQ(found, 4);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 0.5,
+                                         &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_DISTANCE_LIMIT);
+    ASSERT_NEAR(event.position[0], 7.5, 1e-4);
+    ASSERT_EQ(alea_ray_navigator_set_direction(navigator, backward), 0);
+    found = 4;
+    for (int step = 0; step < 24 && found > 0; ++step) {
+        ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 10,
+                                             &event), 0);
+        ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+        if (event.before.occurrence_key == event.after.occurrence_key) continue;
+        found--;
+        ASSERT_NEAR(event.position[0], crossings[found], 1e-4);
+        ASSERT_EQ(event.before.occurrence_key, keys[found + 1]);
+        ASSERT_EQ(event.after.occurrence_key, keys[found]);
+    }
+    ASSERT_EQ(found, 0);
+    const double boundary[3] = {crossings[0], 0.5, 0};
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, boundary, forward,
+                                          &location), 0);
+    ASSERT_EQ(location.occurrence_key, keys[1]);
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, boundary, backward,
+                                          &location), 0);
+    ASSERT_EQ(location.occurrence_key, keys[0]);
+    alea_ray_navigator_destroy(navigator);
+    mcnp_model_destroy(model);
+}
+
 TEST(persistent_navigator_fast_mode_matches_strict_lattice_track) {
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
     if (!model) SKIP("Test data file not found");

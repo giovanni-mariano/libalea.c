@@ -5322,6 +5322,69 @@ TEST(fixed_neutron_transport_reflects_void_ray_then_leaks) {
     alea_destroy(sys);
 }
 
+TEST(fixed_neutron_transport_white_boundary_is_cosine_sampled_and_replayable) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int plane = alea_plane_surface(sys, 1, 1, 0, 0, 0);
+    int sphere = alea_sphere_surface(sys, 2, 0, 0, 0, 2);
+    ASSERT_TRUE(plane >= 0 && sphere >= 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_WHITE), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 2, ALEA_BOUNDARY_VACUUM), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1,
+        alea_intersection(sys, alea_halfspace(sys, plane, +1),
+            alea_halfspace(sys, sphere, -1)),
+        ALEA_MATERIAL_VOID, 0, 0), 0);
+    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    ASSERT_NOT_NULL(xsdir);
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
+        ALEA_NUC_BIND_NEUTRON, NULL, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    alea_tally_spec_t tally = {
+        .score = ALEA_TALLY_TRACK_LENGTH,
+        .domain = ALEA_TALLY_CARTESIAN_MESH,
+        .particle_mask = ALEA_TALLY_NEUTRON,
+        .lower = {1, -2, -2}, .upper = {2, 2, 2},
+        .dimensions = {1, 1, 1}
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally, NULL), ALEA_OK);
+    alea_transport_source_t source = {
+        .position = {1, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_NEUTRON, 2.0,
+                     {-1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 2000, .seed = 789,
+        .max_events_per_history = 30,
+        .max_segment_distance = 10,
+        .tally_plan = plan
+    };
+    alea_transport_result_t result[2] = {{0}, {0}};
+    for (int i = 0; i < 2; ++i) {
+        options.max_segment_distance = i == 0 ? 10 : 0.75;
+        alea_transport_failure_t failure = {0};
+        ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+            &options, &result[i], &failure), ALEA_OK);
+        ASSERT_EQ(result[i].reflections, options.histories);
+        ASSERT_EQ(result[i].leaked, options.histories);
+        ASSERT_EQ(result[i].collisions, 0);
+        ASSERT_NEAR(result[i].track_length[0],
+                    3.0 * options.histories, 1e-6);
+    }
+    alea_tally_view_t a, b;
+    ASSERT_EQ(alea_tally_results_view(result[0].tallies, 0, &a), ALEA_OK);
+    ASSERT_EQ(alea_tally_results_view(result[1].tallies, 0, &b), ALEA_OK);
+    ASSERT_NEAR(a.sum[0] / options.histories, 0.5, 0.04);
+    ASSERT_NEAR(a.sum[0], b.sum[0], 1e-7);
+    alea_transport_result_free(&result[0]);
+    alea_transport_result_free(&result[1]);
+    alea_tally_plan_free(plan);
+    alea_nuc_cell_bindings_free(binding);
+    alea_nuc_xsdir_free(xsdir);
+    alea_destroy(sys);
+}
+
 TEST(fixed_photon_source_scores_void_flight_and_leakage) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

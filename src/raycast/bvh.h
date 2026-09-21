@@ -120,7 +120,7 @@ typedef void (*alea_bvh_batch_callback)(const uint32_t* surface_indices,
  * @param t_max Maximum ray parameter
  * @param callback Function to call for each candidate surface
  * @param userdata User data passed to callback
- * @return Number of surfaces tested (callback invocations)
+ * @return Number of surfaces tested (callback invocations), or -1 on stack exhaustion
  */
 int alea_bvh_traverse(const alea_bvh_t* bvh,
                      const alea_ray_t* ray,
@@ -134,7 +134,7 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
  * Like alea_bvh_traverse but calls the callback once per leaf node
  * with all surfaces in the leaf, reducing function-call overhead.
  *
- * @return Number of surfaces tested
+ * @return Number of surfaces tested, or -1 on stack exhaustion
  */
 int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
                             const alea_ray_t* ray,

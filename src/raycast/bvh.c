@@ -478,7 +478,9 @@ int alea_bvh_traverse(const alea_bvh_t* bvh,
                     stack[sp++] = left;
                 }
             } else {
-                ALEA_LOG_WARN("BVH traversal stack overflow - results may be incomplete");
+                alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                      "BVH traversal stack exhausted");
+                return -1;
             }
         }
     }
@@ -532,7 +534,9 @@ int alea_bvh_traverse_batch(const alea_bvh_t* bvh,
                     stack[sp++] = left;
                 }
             } else {
-                ALEA_LOG_WARN("BVH traversal stack overflow - results may be incomplete");
+                alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                                      "BVH traversal stack exhausted");
+                return -1;
             }
         }
     }

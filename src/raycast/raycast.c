@@ -451,12 +451,14 @@ typedef struct {
     double t_min;
     double t_max;
     alea_raycast_result_t* result;
+    bool failed;
 } bvh_raycast_ctx_t;
 
 /* BVH batch callback: test surface intersections for a leaf node */
 static void bvh_surface_batch_callback(const uint32_t* surface_indices,
                                         uint16_t count, void* userdata) {
     bvh_raycast_ctx_t* ctx = (bvh_raycast_ctx_t*)userdata;
+    if (ctx->failed) return;
 
     for (uint16_t si = 0; si < count; si++) {
         uint32_t surface_idx = surface_indices[si];
@@ -487,7 +489,9 @@ static void bvh_surface_batch_callback(const uint32_t* surface_indices,
                                    &hit.nx, &hit.ny, &hit.nz);
 
                 if (add_hit(ctx->result, &hit) != 0) {
-                    ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                          "failed to store BVH surface hit");
+                    ctx->failed = true;
                     return;
                 }
             }
@@ -526,7 +530,8 @@ static int raycast_surfaces_linear(alea_system_t* sys,
                                    &hit.nx, &hit.ny, &hit.nz);
 
                 if (add_hit(result, &hit) != 0) {
-                    ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                          "failed to store linear surface hit");
                     return -1;
                 }
             }
@@ -552,10 +557,18 @@ static int raycast_surfaces_impl(alea_system_t* sys,
             .t_max = t_max,
             .result = result
         };
-        alea_bvh_traverse_batch(sys->surface_bvh, ray, t_min, t_max,
-                               bvh_surface_batch_callback, &ctx);
+        int traversed = alea_bvh_traverse_batch(
+            sys->surface_bvh, ray, t_min, t_max,
+            bvh_surface_batch_callback, &ctx);
+        if (traversed < 0 || ctx.failed) {
+            result->hits.count = 0;
+            return -1;
+        }
     } else {
-        raycast_surfaces_linear(sys, ray, t_min, t_max, result);
+        if (raycast_surfaces_linear(sys, ray, t_min, t_max, result) != 0) {
+            result->hits.count = 0;
+            return -1;
+        }
     }
 
     /* Sort hits by distance */
@@ -2572,6 +2585,9 @@ typedef struct {
     alea_hier_ray_path_t current_path;
     double pending_lattice_entry_sample;
     int iterations_remaining;
+    /* Particle transport must reject a containment retry that never verifies
+     * its selected owner; general ray queries retain legacy compatibility. */
+    bool fail_unverified_ownership;
 } alea_ray_walk_t;
 
 /* One verified open interval produced by the selected-owner walk.  This is
@@ -3977,12 +3993,14 @@ static void find_closest_callback(uint32_t surface_idx, void* userdata) {
 
 /**
  * Find the closest surface intersection using BVH or linear scan.
+ * Return -1 when traversal fails, leaving out_t unpublished.
  */
-static double find_closest_intersection(alea_system_t* sys,
+static int find_closest_intersection(alea_system_t* sys,
                                         const alea_ray_t* ray,
                                         double t_min, double t_max,
                                         int* out_surface_id,
-                                        uint32_t* out_primitive_id) {
+                                        uint32_t* out_primitive_id,
+                                        double* out_t) {
     *out_surface_id = -1;
     if (out_primitive_id) *out_primitive_id = ALEA_PRIMITIVE_ID_INVALID;
 
@@ -3997,11 +4015,12 @@ static double find_closest_intersection(alea_system_t* sys,
             .closest_surface_id = -1,
             .closest_primitive_id = ALEA_PRIMITIVE_ID_INVALID
         };
-        alea_bvh_traverse(sys->surface_bvh, ray, t_min, t_max,
-                         find_closest_callback, &ctx);
+        if (alea_bvh_traverse(sys->surface_bvh, ray, t_min, t_max,
+                              find_closest_callback, &ctx) < 0) return -1;
         *out_surface_id = ctx.closest_surface_id;
         if (out_primitive_id) *out_primitive_id = ctx.closest_primitive_id;
-        return ctx.closest_t;
+        *out_t = ctx.closest_t;
+        return 0;
     }
 #endif
 
@@ -4025,7 +4044,8 @@ static double find_closest_intersection(alea_system_t* sys,
             }
         }
     }
-    return closest_t;
+    *out_t = closest_t;
+    return 0;
 }
 
 static int raycast_cell_aware_resume(alea_system_t* sys,
@@ -4246,6 +4266,7 @@ resolve_cell:;
             bevent.is_synthetic_lattice_boundary = false;
             alea_matrix_identity(&bevent.transform);
         }
+        bool containment_unverified = false;
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             sys->cells.data[cell_idx].surface_indices) {
             alea_ray_t local_ray;
@@ -4400,9 +4421,9 @@ resolve_cell:;
             }
         } else {
             uint32_t void_prim_id = ALEA_PRIMITIVE_ID_INVALID;
-            t_next = find_closest_intersection(sys, ray,
-                                               nextafter(t_current, INFINITY), effective_t_max,
-                                               &hit_surface_id, &void_prim_id);
+            if (find_closest_intersection(sys, ray,
+                    nextafter(t_current, INFINITY), effective_t_max,
+                    &hit_surface_id, &void_prim_id, &t_next) != 0) return -1;
             if (need_boundary_event) {
                 /* Void-region global search runs in the world frame. */
                 bevent.t = t_next;
@@ -4537,6 +4558,7 @@ resolve_cell:;
                     bevent = saved_bevent;
                     ray_path_copy_live(current_path, &saved_path);
                 }
+                containment_unverified = true;
             }
         } else if (resolve_attempt >= 1 && saved_valid) {
             /* Retry resolved to void or a degenerate interval: keep the
@@ -4550,6 +4572,14 @@ resolve_cell:;
             next_enter_surface_id = saved_next_enter_surface_id;
             bevent = saved_bevent;
             ray_path_copy_live(current_path, &saved_path);
+            containment_unverified = true;
+        }
+
+        if (containment_unverified && state->fail_unverified_ownership) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                "ray traversal could not verify cell ownership at t=%.17g",
+                t_current);
+            return -1;
         }
 
         bevent.t = t_next;
@@ -4845,6 +4875,7 @@ int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
         alea_raycast_ensure_hier_caches(navigator->sys) != 0) return -1;
     navigator->ray = ray;
     alea_ray_walk_init(&navigator->walk);
+    navigator->walk.fail_unverified_ownership = true;
     alea_raycast_result_clear(&navigator->scratch);
     navigator->scratch.ray = ray;
     navigator->current_t = 0.0;
@@ -4891,6 +4922,7 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
     ray_path_copy_live(&path, &navigator->walk.current_path);
     navigator->ray = ray;
     alea_ray_walk_init(&navigator->walk);
+    navigator->walk.fail_unverified_ownership = true;
     ray_path_copy_live(&navigator->walk.current_path, &path);
     navigator->walk.prev_cell_idx = hinted_cell;
     navigator->scratch.ray = ray;

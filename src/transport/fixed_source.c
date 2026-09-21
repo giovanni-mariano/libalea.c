@@ -6,6 +6,7 @@
 #include "tally_internal.h"
 #include "alea.h"
 #include "../rng/alea_rng.h"
+#include "../rng/alea_rng_distribution.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #define NEUTRON_REST_MEV 939.56542052
 #define LIGHT_SPEED_CM_S 2.99792458e10
 #define DEFAULT_BANK_CAPACITY 1024u
+#define TWO_PI 6.28318530717958647693
 
 typedef struct {
     double position[3];
@@ -72,6 +74,55 @@ static alea_error_t draw_optical_depth(uint64_t seed, uint32_t history,
     if (!isfinite(u) || u < 0.0 || u >= 1.0) return ALEA_ERR_INVALID_STATE;
     *tau = -log1p(-u);
     return isfinite(*tau) && *tau >= 0.0 ? ALEA_OK : ALEA_ERR_INVALID_STATE;
+}
+
+/* A white boundary returns a cosine-distributed direction into the incident
+ * half-space. Give boundary draws their own address so distance-limit changes
+ * and collision sampling cannot alter the reflection sequence. */
+static alea_error_t sample_white_direction(
+    uint64_t seed, uint32_t history, uint32_t particle_ordinal,
+    uint32_t event_index, const double incoming[3], const double normal[3],
+    double outgoing[3]) {
+    double norm2 = normal[0]*normal[0] + normal[1]*normal[1] +
+                   normal[2]*normal[2];
+    if (!isfinite(norm2) || norm2 < 0.5 || norm2 > 1.5)
+        return ALEA_ERR_INVALID_STATE;
+    double dot = incoming[0]*normal[0] + incoming[1]*normal[1] +
+                 incoming[2]*normal[2];
+    if (!isfinite(dot) || dot == 0.0) return ALEA_ERR_INVALID_STATE;
+    double sign = dot > 0.0 ? -1.0 : 1.0;
+    double inward[3] = {
+        sign*normal[0]/sqrt(norm2), sign*normal[1]/sqrt(norm2),
+        sign*normal[2]/sqrt(norm2)
+    };
+    int axis = fabs(inward[0]) < fabs(inward[1]) ? 0 : 1;
+    if (fabs(inward[2]) < fabs(inward[axis])) axis = 2;
+    double tangent[3] = {0.0, 0.0, 0.0};
+    tangent[axis] = 1.0;
+    double projection = inward[axis];
+    for (int j = 0; j < 3; ++j) tangent[j] -= projection*inward[j];
+    if (normalize_direction(tangent) != 0) return ALEA_ERR_INVALID_STATE;
+    double bitangent[3] = {
+        inward[1]*tangent[2] - inward[2]*tangent[1],
+        inward[2]*tangent[0] - inward[0]*tangent[2],
+        inward[0]*tangent[1] - inward[1]*tangent[0]
+    };
+    double u[2];
+    uint64_t entity = alea_rng_transport_entity_id(history, particle_ordinal);
+    uint64_t address = (uint64_t)event_index << 32;
+    for (int i = 0; i < 2; ++i) {
+        if (alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
+            ALEA_RNG_DOMAIN_TRANSPORT_WHITE_BOUNDARY, entity,
+            address + 2u*(uint64_t)i, &u[i]) != 0 || !isfinite(u[i]) ||
+            u[i] < 0.0 || u[i] >= 1.0) return ALEA_ERR_INVALID_STATE;
+    }
+    double cosine = sqrt(u[0]);
+    double sine = sqrt(1.0 - u[0]);
+    double azimuth = TWO_PI*u[1];
+    for (int j = 0; j < 3; ++j)
+        outgoing[j] = cosine*inward[j] + sine*(cos(azimuth)*tangent[j] +
+                                               sin(azimuth)*bitangent[j]);
+    return normalize_direction(outgoing) == 0 ? ALEA_OK : ALEA_ERR_INVALID_STATE;
 }
 
 static alea_error_t fail_transport(alea_transport_failure_t* failure,
@@ -225,6 +276,7 @@ alea_error_t alea_transport_run_sampled_source(
             bool urr_started = false;
             int urr_material_id = 0;
             uint32_t urr_event = 0;
+            uint32_t white_events = 0;
             bool finished = false;
             uint32_t collisions = 0;
             while (!finished) {
@@ -545,6 +597,24 @@ alea_error_t alea_transport_run_sampled_source(
                         err = fail_transport(failure, h, events, &location,
                                              position, particle.energy,
                                              ALEA_ERR_INVALID_STATE);
+                        break;
+                    }
+                    result.reflections++;
+                } else if (event.kind == ALEA_NAV_BOUNDARY_ACTION &&
+                           event.boundary_type == ALEA_BOUNDARY_WHITE) {
+                    double reflected[3];
+                    err = white_events == UINT32_MAX ? ALEA_ERR_OVERFLOW :
+                        sample_white_direction(options->seed, h,
+                            particle_ordinal, white_events++, particle.direction,
+                            event.normal, reflected);
+                    if (err == ALEA_OK) {
+                        memcpy(particle.direction, reflected, sizeof(reflected));
+                        if (alea_ray_navigator_set_direction(navigator,
+                            reflected) != 0) err = ALEA_ERR_INVALID_STATE;
+                    }
+                    if (err != ALEA_OK) {
+                        err = fail_transport(failure, h, events, &location,
+                            position, particle.energy, err);
                         break;
                     }
                     result.reflections++;

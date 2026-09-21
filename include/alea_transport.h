@@ -172,7 +172,8 @@ typedef struct {
  * event limits apply to each complete source history. Produced photons are
  * tracked when photon bindings are available. Neutron URR probability tables
  * are sampled once per material and flight and retained across adjacent cells
- * of the same material. White/periodic boundaries return explicit errors.
+ * of the same material. Reflective and white boundaries return particles
+ * to the incident side; periodic boundaries return an explicit error.
  * On failure output is zeroed; failure identifies the first incomplete
  * particle when tracking has begun. */
 alea_error_t alea_transport_run_fixed_neutron(
