@@ -138,18 +138,27 @@ static void coverage_make_legacy_finding(const alea_ray_coverage_owner_t* owners
         out->kind = ALEA_INTERVAL_UNDEFINED_FILL;
 }
 
-int alea_ray_coverage_sweep_domain_reuse_nocache(
+static int coverage_sweep_domain_impl(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
     const alea_ray_coverage_domain_t* domain,
     alea_raycast_result_t* breakpoint_scratch,
-    alea_ray_coverage_interval_callback_t callback, void* context) {
-    if (!sys || !ray || !breakpoint_scratch || !callback || t_max <= 0.0)
+    alea_ray_coverage_interval_callback_t callback, void* context,
+    double t_min, size_t breakpoint_budget, int strict) {
+    if (!sys || !ray || !breakpoint_scratch || !callback ||
+        !(t_max > t_min) || t_min < 0.0 ||
+        (strict && !isfinite(t_max)))
         return -1;
     if (domain && domain->has_domain && domain->t_max < domain->t_min)
         return -1;
-    if (alea_raycast_global_breakpoints_reuse_nocache(
-            sys, ray, t_max, breakpoint_scratch) != 0)
+    const int breakpoint_rc = strict
+        ? alea_raycast_validation_breakpoints_reuse_nocache(
+              sys, ray, t_min, t_max, breakpoint_budget, breakpoint_scratch)
+        : alea_raycast_global_breakpoints_reuse_nocache(
+              sys, ray, t_max, breakpoint_scratch);
+    if (breakpoint_rc != 0)
         return -1;
+    const double minimum_interval = strict ? 0.0
+        : ALEA_RAY_COVERAGE_MIN_INTERVAL;
 
     const int has_domain = domain && domain->has_domain;
     const double domain_t_min = has_domain
@@ -167,34 +176,45 @@ int alea_ray_coverage_sweep_domain_reuse_nocache(
     alea_ray_coverage_interval_t current = {0};
     int have_current = 0;
     int total = 0;
-    double t_previous = 0.0;
+    double t_previous = t_min;
 
     size_t hit_index = 0;
     while (t_previous < t_max) {
         while (hit_index < breakpoint_scratch->hits.count &&
                breakpoint_scratch->hits.data[hit_index].t <=
-                   t_previous + ALEA_RAY_COVERAGE_MIN_INTERVAL)
+                   t_previous + minimum_interval)
             hit_index++;
         double t_current = t_max;
         if (hit_index < breakpoint_scratch->hits.count &&
             breakpoint_scratch->hits.data[hit_index].t < t_current)
             t_current = breakpoint_scratch->hits.data[hit_index].t;
-        if (has_domain && domain_t_min > t_previous +
-                              ALEA_RAY_COVERAGE_MIN_INTERVAL &&
+        if (has_domain && domain_t_min > t_previous + minimum_interval &&
             domain_t_min < t_current)
             t_current = domain_t_min;
-        if (has_domain && domain_t_max > t_previous +
-                              ALEA_RAY_COVERAGE_MIN_INTERVAL &&
+        if (has_domain && domain_t_max > t_previous + minimum_interval &&
             domain_t_max < t_current)
             t_current = domain_t_max;
-        if (t_current - t_previous <= ALEA_RAY_COVERAGE_MIN_INTERVAL) {
+        if (t_current - t_previous <= minimum_interval) {
             t_previous = t_current;
             continue;
         }
-        const double sample_t = t_previous + 0.381966011250105 *
+        double sample_t = t_previous + 0.381966011250105 *
             (t_current - t_previous);
+        if (strict && !(sample_t > t_previous && sample_t < t_current)) {
+            sample_t = nextafter(t_previous, t_current);
+            if (!(sample_t < t_current)) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                    "coverage interval has no representable interior point");
+                return -1;
+            }
+        }
         double x, y, z;
         alea_ray_point_at(ray, sample_t, &x, &y, &z);
+        if (strict && (!isfinite(x) || !isfinite(y) || !isfinite(z))) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                  "coverage sample is not finite");
+            return -1;
+        }
         alea_cell_hit_t hits[ALEA_RAY_COVERAGE_MAX_OWNERS];
         uint64_t occurrence_keys[ALEA_RAY_COVERAGE_MAX_OWNERS];
         uint64_t parent_occurrence_keys[ALEA_RAY_COVERAGE_MAX_OWNERS];
@@ -276,6 +296,25 @@ int alea_ray_coverage_sweep_domain_reuse_nocache(
         if (callback(context, &current) != 0) return total;
     }
     return total;
+}
+
+int alea_ray_coverage_sweep_domain_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    const alea_ray_coverage_domain_t* domain,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_interval_callback_t callback, void* context) {
+    return coverage_sweep_domain_impl(sys, ray, t_max, domain,
+        breakpoint_scratch, callback, context, 0.0, 0, 0);
+}
+
+int alea_ray_coverage_sweep_strict_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    size_t breakpoint_budget, const alea_ray_coverage_domain_t* domain,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_interval_callback_t callback, void* context) {
+    if (breakpoint_budget == 0) return -1;
+    return coverage_sweep_domain_impl(sys, ray, t_max, domain,
+        breakpoint_scratch, callback, context, t_min, breakpoint_budget, 1);
 }
 
 int alea_ray_coverage_sweep_reuse_nocache(

@@ -950,6 +950,14 @@ int alea_ray_coverage_sweep_domain_reuse_nocache(
     alea_raycast_result_t* breakpoint_scratch,
     alea_ray_coverage_interval_callback_t callback, void* context);
 
+/* Raw, bounded breakpoint sweep for navigation and geometry validation.
+ * Finite [t_min, t_max] intervals are never suppressed by a fixed epsilon. */
+int alea_ray_coverage_sweep_strict_reuse_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
+    size_t breakpoint_budget, const alea_ray_coverage_domain_t* domain,
+    alea_raycast_result_t* breakpoint_scratch,
+    alea_ray_coverage_interval_callback_t callback, void* context);
+
 /* One serial coverage-row specification.  direction_tag and
  * transverse_coordinate are caller-owned provenance used by slice consumers;
  * this scalar adapter preserves input row order and does not interpret them. */

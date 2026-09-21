@@ -4929,6 +4929,50 @@ static alea_nav_location_kind_t navigator_verify_interval(
 }
 
 #define ALEA_NAV_DEFAULT_FLIGHT_BREAKPOINTS 8192
+typedef struct {
+    alea_ray_navigator_t* navigator;
+    int failed;
+} alea_nav_interval_check_t;
+
+static int navigator_check_coverage_interval(
+    void* context, const alea_ray_coverage_interval_t* interval) {
+    alea_nav_interval_check_t* check = context;
+    const alea_ray_navigator_t* navigator = check->navigator;
+    alea_nav_location_kind_t observed = ALEA_NAV_UNRESOLVED;
+    const alea_ray_coverage_owner_t* owner = NULL;
+    if (interval->kind == ALEA_RAY_COVERAGE_GAP) {
+        observed = ALEA_NAV_GAP;
+    } else if (interval->kind == ALEA_RAY_COVERAGE_OVERLAP) {
+        observed = ALEA_NAV_OVERLAP;
+    } else if (interval->kind == ALEA_RAY_COVERAGE_UNDEFINED_FILL) {
+        observed = ALEA_NAV_UNDEFINED_FILL;
+    } else if (interval->kind == ALEA_RAY_COVERAGE_UNIQUE) {
+        for (size_t i = 0; i < interval->owner_count; i++) {
+            if (!owner || interval->owners[i].depth > owner->depth)
+                owner = &interval->owners[i];
+        }
+        if (owner) observed = owner->material_id == 0
+            ? ALEA_NAV_VOID : ALEA_NAV_MATERIAL;
+    }
+    if (observed != navigator->location.kind ||
+        (owner && (owner->cell_id != navigator->pending.cell_id ||
+                   owner->material_id != navigator->pending.material_id ||
+                   !navigator->pending.owner_provenance_complete ||
+                   owner->occurrence_key !=
+                       navigator->pending.owner_occurrence_key))) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "particle interval ownership differs at t=%.17g: selected "
+            "cell=%d occurrence=%llu kind=%d, observed cell=%d kind=%d",
+            interval->t_enter, navigator->pending.cell_id,
+            (unsigned long long)navigator->pending.owner_occurrence_key,
+            (int)navigator->location.kind, owner ? owner->cell_id : -1,
+            (int)observed);
+        check->failed = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static int navigator_validate_flight(alea_ray_navigator_t* navigator,
                                      double t_end) {
     alea_raycast_result_t* scratch = &navigator->validation_scratch;
@@ -4937,46 +4981,12 @@ static int navigator_validate_flight(alea_ray_navigator_t* navigator,
                               "particle interval endpoint cannot advance");
         return -1;
     }
-    if (alea_raycast_validation_breakpoints_reuse_nocache(
-            navigator->sys, &navigator->ray, navigator->current_t, t_end,
-            navigator->max_interval_breakpoints, scratch) != 0) return -1;
-    double left = navigator->current_t;
-    size_t intervals = 0;
-    for (size_t i = 0; i <= scratch->hits.count; i++) {
-        double right = i == scratch->hits.count ? t_end
-            : scratch->hits.data[i].t;
-        if (right <= left) continue;
-        if (right > t_end) right = t_end;
-        if (!(right > left)) continue;
-        if (++intervals > navigator->max_interval_breakpoints) {
-            alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                                  "particle interval validation budget exceeded");
-            return -1;
-        }
-        double sample = left + 0.5 * (right - left);
-        if (!(sample > left && sample < right)) {
-            sample = nextafter(left, right);
-            if (!(sample < right)) {
-                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                    "particle interval has no representable interior point");
-                return -1;
-            }
-        }
-        alea_nav_location_kind_t kind = navigator_verify_point(navigator,
-                                                                 sample);
-        if (kind != navigator->location.kind) {
-            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                "particle interval ownership differs at t=%.17g: selected "
-                "cell=%d occurrence=%llu kind=%d, observed kind=%d",
-                sample, navigator->pending.cell_id,
-                (unsigned long long)navigator->pending.owner_occurrence_key,
-                (int)navigator->location.kind, (int)kind);
-            return -1;
-        }
-        left = right;
-        if (left >= t_end) break;
-    }
-    return 0;
+    alea_nav_interval_check_t check = { .navigator = navigator };
+    const int count = alea_ray_coverage_sweep_strict_reuse_nocache(
+        navigator->sys, &navigator->ray, navigator->current_t, t_end,
+        navigator->max_interval_breakpoints, NULL, scratch,
+        navigator_check_coverage_interval, &check);
+    return count < 0 || check.failed ? -1 : 0;
 }
 
 static int navigator_load_interval(alea_ray_navigator_t* navigator) {

@@ -76,6 +76,9 @@ typedef struct {
     /* [min_x, max_x, min_y, max_y, min_z, max_z]; consulted only with
      * ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS. */
     double validation_bounds[6];
+    /* Raw crossings retained per ray for complete coverage. Zero uses the
+     * default of 1,000,000. Exceeding it fails the validation call. */
+    size_t max_breakpoints;
 } alea_geom_validator_options_t;
 
 typedef struct {

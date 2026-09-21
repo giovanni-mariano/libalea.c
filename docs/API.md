@@ -1565,7 +1565,12 @@ Initialize both options and result before the first call, and always free the
 result. Read findings with `alea_geom_validator_error_count()` and
 `alea_geom_validator_error_get()`; `alea_geom_error_type_name()` returns a
 stable display name. Work and output are bounded by `max_errors`,
-`max_samples_per_signature`, `max_samples_per_curve`, and `max_crossings`.
+`max_samples_per_signature`, `max_samples_per_curve`, `max_crossings`, and
+`max_breakpoints`. Ray coverage uses the same raw crossing and ownership sweep
+as the particle navigator's `ALEA_NAV_VALIDATE_INTERVAL` mode: it preserves
+representable intervals smaller than `1e-9` and fails when breakpoint
+collection is incomplete. The validator still reports findings across chosen
+rays; the navigator checks each finite particle flight before accepting it.
 Inspect `result.truncated` and the result counters before interpreting an empty
 finding list as complete. With `ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS`, unowned
 coverage inside `validation_bounds` is an interior gap; exterior void may be

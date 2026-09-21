@@ -25,6 +25,7 @@
 #define VALIDATOR_DEFAULT_RAYS 128
 #define VALIDATOR_DEFAULT_MAX_ERRORS 1024
 #define VALIDATOR_DEFAULT_MAX_CROSSINGS 100000
+#define VALIDATOR_DEFAULT_MAX_BREAKPOINTS 1000000
 #define VALIDATOR_PARALLEL_BATCH_MIN 64
 #define VALIDATOR_PARALLEL_BATCHES_PER_WORKER 8
 
@@ -1292,8 +1293,10 @@ static int validate_one_ray(alea_system_t* sys,
     ray_coverage_trace_t coverage_trace = {
         .findings = { .ray = ray, .options = options, .result = result }
     };
-    const int coverage_rc = alea_ray_coverage_sweep_reuse_nocache(
-        sys, ray, t_max, &coverage_scratch,
+    const size_t breakpoint_budget = options->max_breakpoints
+        ? options->max_breakpoints : VALIDATOR_DEFAULT_MAX_BREAKPOINTS;
+    const int coverage_rc = alea_ray_coverage_sweep_strict_reuse_nocache(
+        sys, ray, 0.0, t_max, breakpoint_budget, NULL, &coverage_scratch,
         append_ray_coverage_trace, &coverage_trace);
     alea_raycast_result_free(&coverage_scratch);
     if (coverage_rc < 0 || coverage_trace.failed) {
@@ -1318,8 +1321,9 @@ static int validate_one_ray(alea_system_t* sys,
         };
         alea_raycast_result_t domain_scratch;
         alea_raycast_result_init(&domain_scratch);
-        const int gap_rc = alea_ray_coverage_sweep_domain_reuse_nocache(
-            sys, ray, t_max, &domain, &domain_scratch,
+        const int gap_rc = alea_ray_coverage_sweep_strict_reuse_nocache(
+            sys, ray, 0.0, t_max, breakpoint_budget, &domain,
+            &domain_scratch,
             append_ray_coverage_gap_finding, &gap_findings);
         alea_raycast_result_free(&domain_scratch);
         if (gap_rc < 0) {
@@ -1343,8 +1347,8 @@ static int validate_one_ray(alea_system_t* sys,
     /* Use the diagnostic breakpoint engine rather than bare root surfaces:
      * fills and lattice transitions must participate in the same crossing
      * vocabulary as boundary provenance and coverage validation. */
-    int rc = alea_raycast_global_breakpoints_reuse_nocache(
-        sys, ray, t_max, &ray_result);
+    int rc = alea_raycast_validation_breakpoints_reuse_nocache(
+        sys, ray, 0.0, t_max, breakpoint_budget, &ray_result);
     if (rc != 0) {
         alea_raycast_result_free(&ray_result);
         ray_coverage_trace_free(&coverage_trace);
@@ -1368,7 +1372,7 @@ static int validate_one_ray(alea_system_t* sys,
         const double t = ray_result.hits.data[i].t;
         size_t group_end = i + 1;
         while (group_end < ray_result.hits.count &&
-               fabs(ray_result.hits.data[group_end].t - t) <= DEDUP_EPSILON) {
+               ray_result.hits.data[group_end].t == t) {
             group_end++;
         }
 

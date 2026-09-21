@@ -613,6 +613,91 @@ TEST(geo_validator_detects_nested_overlap_flat) {
     alea_destroy(sys);
 }
 
+TEST(geo_validator_reports_sub_nanometer_coverage_and_budget_failure) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 100);
+    int left = alea_plane_surface(sys, 2, 1, 0, 0, -10);
+    int right = alea_plane_surface(sys, 3, 1, 0, 0, -10 - 5e-10);
+    int material = alea_add_material(sys, 1);
+    ASSERT(outer >= 0 && left >= 0 && right >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, outer, -1),
+                         material, 1.0, 0) >= 0);
+    alea_node_id_t strip = alea_intersection(sys,
+        alea_halfspace(sys, left, 1),
+        alea_halfspace(sys, right, -1));
+    ASSERT_NE(strip, ALEA_NODE_ID_INVALID);
+    ASSERT(alea_add_cell(sys, 2, strip, material, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t options;
+    alea_geom_validator_options_init(&options);
+    options.flags |= ALEA_GEOM_VALIDATE_ALLOW_EXTERIOR_VOID;
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &options,
+                  0, 0, 0, 1, 0, 0, 20, &result), 0);
+    int found = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        const alea_geom_error_t* error = &result.errors[i];
+        if (error->type == ALEA_GEOM_ERR_OVERLAP_AFTER_CROSSING &&
+            error->source == ALEA_GEOM_EVENT_SOURCE_RAY &&
+            error->t >= 10 && error->t < 10 + 1e-9 &&
+            error->offset > 0 && error->offset < 1e-9)
+            found = 1;
+    }
+    ASSERT(found);
+    ASSERT_EQ(result.truncated, 0);
+    alea_geom_validator_result_free(&result);
+
+    options.max_breakpoints = 1;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &options,
+                  0, 0, 0, 1, 0, 0, 20, &result), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_OVERFLOW);
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
+TEST(geo_validator_reports_sub_nanometer_gap_in_domain) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 1, 0, 0, 0, 100);
+    int left = alea_plane_surface(sys, 2, 1, 0, 0, -10);
+    int right = alea_plane_surface(sys, 3, 1, 0, 0, -10 - 5e-10);
+    int material = alea_add_material(sys, 1);
+    ASSERT(outer >= 0 && left >= 0 && right >= 0 && material >= 0);
+    alea_node_id_t outside_slit = alea_union(sys,
+        alea_halfspace(sys, left, -1),
+        alea_halfspace(sys, right, 1));
+    ASSERT_NE(outside_slit, ALEA_NODE_ID_INVALID);
+    alea_node_id_t region = alea_intersection(sys,
+        alea_halfspace(sys, outer, -1), outside_slit);
+    ASSERT_NE(region, ALEA_NODE_ID_INVALID);
+    ASSERT(alea_add_cell(sys, 1, region, material, 1.0, 0) >= 0);
+
+    alea_geom_validator_options_t options;
+    alea_geom_validator_options_init(&options);
+    options.flags |= ALEA_GEOM_VALIDATE_DOMAIN_BOUNDS;
+    const double bounds[6] = {0, 20, -1, 1, -1, 1};
+    memcpy(options.validation_bounds, bounds, sizeof(bounds));
+    alea_geom_validator_result_t result;
+    alea_geom_validator_result_init(&result);
+    ASSERT_EQ(alea_validate_geometry_ray(sys, &options,
+                  0, 0, 0, 1, 0, 0, 20, &result), 0);
+    int found = 0;
+    for (size_t i = 0; i < result.error_count; i++) {
+        const alea_geom_error_t* error = &result.errors[i];
+        if (error->type == ALEA_GEOM_ERR_INTERIOR_GAP &&
+            error->t >= 10 && error->t < 10 + 1e-9 &&
+            error->offset > 0 && error->offset < 1e-9)
+            found = 1;
+    }
+    ASSERT(found);
+    ASSERT_EQ(result.truncated, 0);
+    alea_geom_validator_result_free(&result);
+    alea_destroy(sys);
+}
+
 typedef struct validator_serial_context {
     alea_system_t* sys;
     const alea_geom_validator_options_t* options;
