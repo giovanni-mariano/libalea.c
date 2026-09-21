@@ -237,7 +237,8 @@ NUCDATA_SRCS = \
 # Optional transport driver and geometry-to-material bindings
 TRANSPORT_SRCS = \
 	$(TRANSPORT_DIR)/material_binding.c \
-	$(TRANSPORT_DIR)/fixed_source.c
+	$(TRANSPORT_DIR)/fixed_source.c \
+	$(TRANSPORT_DIR)/tally.c
 
 OPENMC_EXPO_SRCS = \
 	$(OPENMC_DIR)/openmc_xml.c \

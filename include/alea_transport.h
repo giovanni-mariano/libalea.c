@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /** @file alea_transport.h
- * Fixed-source continuous-energy neutron transport through libalea geometry.
+ * Fixed-source continuous-energy neutron and photon transport through geometry.
  * Nuclear data is requested only by this explicit transport operation.
  */
 #ifndef ALEA_TRANSPORT_H
@@ -11,6 +11,7 @@
 
 #include "alea_nucdata.h"
 #include "alea_raycast.h"
+#include "alea_tally.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,26 +117,38 @@ typedef struct {
 typedef struct {
     uint32_t histories;
     uint64_t seed;
-    uint32_t max_events_per_history;
+    uint32_t max_events_per_history; /* shared by all descendants */
     double max_segment_distance; /* finite cm; distance-limit events continue */
+    size_t max_pending_particles; /* zero uses a 1024-particle default */
+    const alea_tally_plan_t* tally_plan; /* NULL disables configured tallies */
 } alea_transport_options_t;
 
 typedef struct {
     size_t cell_count;
     uint32_t histories;
     uint64_t absorbed;
+    uint64_t replaced; /* incident particles consumed by secondary production */
     uint64_t leaked;
     uint64_t collisions;
     uint64_t boundary_crossings;
     uint64_t reflections;
-    /* Sum and sum of squares of each source history's weighted cell path.
+    uint64_t emitted_neutrons;
+    uint64_t emitted_photons;
+    uint64_t photon_collisions;
+    uint64_t photon_absorbed;
+    uint64_t photon_replaced;
+    uint64_t photon_leaked;
+    /* Neutron-only sum and sum of squares of each source history's weighted
+     * cell path, retained for compatibility. Use tallies for photon paths.
      * Arrays have cell_count entries and are owned by this result. */
     double* track_length;
     double* track_length_squared;
+    alea_tally_results_t* tallies; /* owned result; NULL without tally_plan */
 } alea_transport_result_t;
 
 typedef struct {
     uint32_t history_id;
+    uint32_t particle_ordinal;
     uint32_t event_index;
     int cell_id;
     double position[3];
@@ -143,15 +156,28 @@ typedef struct {
     alea_error_t error;
 } alea_transport_failure_t;
 
-/** Run one fixed neutron source repeatedly. Initialize output to zero before
- * its first use and free a successful result before reusing it. The source
- * and prepared bindings
- * must be valid for every history. Supports scattering, absorption, void,
- * transmissive boundaries, vacuum leakage, and specular reflection. Fission,
- * other secondary production, white/periodic boundaries, and URR sampling
- * return an explicit error in this first driver. On failure output is zeroed;
- * failure identifies the first incomplete history when tracking has begun. */
+/** Run one fixed neutron source repeatedly, including emitted neutron
+ * descendants from reactions such as (n,2n) and fission when prepared.
+ * Initialize output to zero before its first use and free a successful result
+ * before reusing it. Bindings must be valid for every history. The bank and
+ * event limits apply to each complete source history. Produced photons are
+ * tracked when photon bindings are available. White/periodic boundaries
+ * and URR sampling return explicit errors.
+ * On failure output is zeroed; failure identifies the first incomplete
+ * particle when tracking has begun. */
 alea_error_t alea_transport_run_fixed_neutron(
+    alea_system_t* sys,
+    const alea_nuc_cell_bindings_t* bindings,
+    const alea_transport_source_t* source,
+    const alea_transport_options_t* options,
+    alea_transport_result_t* output,
+    alea_transport_failure_t* failure);
+
+/** Fixed neutron or photon source with a shared descendant bank and tallies.
+ * Material cells visited by each particle type need matching prepared
+ * bindings; void cells require none. The neutron-only entry point above is
+ * retained for existing callers. */
+alea_error_t alea_transport_run_fixed_source(
     alea_system_t* sys,
     const alea_nuc_cell_bindings_t* bindings,
     const alea_transport_source_t* source,

@@ -313,7 +313,7 @@ MODULE_LINK = /link \
 	/WHOLEARCHIVE:$(LIB_SERPENT) \
 	/WHOLEARCHIVE:$(LIB_NUCDATA)
 
-TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\material_binding.obj
+TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\material_binding.obj $(BUILD)\transport\tally.obj
 
 ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
@@ -336,6 +336,7 @@ HEADERS = \
 	include\alea_mcnp.h \
 	include\alea_mesh.h \
 	include\alea_transport.h \
+	include\alea_tally.h \
 	include\alea_nucdata.h \
 	include\alea_nucdata_types.h \
 	include\alea_openmc.h \
@@ -667,6 +668,9 @@ $(BUILD)\transport\fixed_source.obj: $(SRC)\transport\fixed_source.c dirs
 
 $(BUILD)\transport\material_binding.obj: $(SRC)\transport\material_binding.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\material_binding.c
+
+$(BUILD)\transport\tally.obj: $(SRC)\transport\tally.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\tally.c
 
 $(BUILD)\nucdata\alloc.obj: $(SRC)\nucdata\alloc.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\nucdata\ $(SRC)\nucdata\alloc.c

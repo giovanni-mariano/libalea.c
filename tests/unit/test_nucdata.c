@@ -190,6 +190,25 @@ static int write_scatter_ascii_ace(const char* path) {
     return fclose(fp) == 0;
 }
 
+/* Smooth synthetic MT=102/16 competition: MT=16 emits two children, and
+ * the cross sections sum to the total at every energy grid point. */
+static int write_multiplying_ascii_ace(const char* path) {
+    FILE* fp = fopen(path, "w");
+    if (!fp) return 0;
+    fprintf(fp, "1001.80c 1.0 2.53e-8 01/01/26\nsynthetic n,2n\n");
+    for (int row = 0; row < 4; row++)
+        fprintf(fp, "0 0.0 0 0.0 0 0.0 0 0.0\n");
+    fprintf(fp, "46 1001 3 2 0 0 0 0\n0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "1 0 16 18 20 22 24 0\n0 34 36 0 0 0 0 0\n");
+    for (int row = 2; row < 4; row++)
+        fprintf(fp, "0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "1 14 20\n10 10 10\n10 0 0\n0 0 0\n-3 -3 -3\n");
+    fprintf(fp, "102 16\n0 0\n0 2\n1 6\n");
+    fprintf(fp, "1 3 10 0 0\n1 3 0 10 10\n0 1\n");
+    fprintf(fp, "0 3 10 0 2 1 20 1 1\n-2 0.4\n");
+    return fclose(fp) == 0;
+}
+
 static int write_thermal_range_neutron_ace_table(
     const char* path, const char* zaid, double kT) {
     FILE* fp = fopen(path, "w");
@@ -210,13 +229,15 @@ static int write_thermal_range_neutron_ace(const char* path) {
     return write_thermal_range_neutron_ace_table(path, "1001.80c", 2.53e-8);
 }
 
-static int write_minimal_photoatomic_ace(const char* path) {
+static int write_minimal_photoatomic_ace_table(const char* path,
+                                               const char* zaid, int z) {
     FILE* fp = fopen(path, "w");
     if (!fp) return 0;
-    fprintf(fp, "92000.31p 235.984 0.0 01/01/26\nsynthetic photon fixture\n");
+    fprintf(fp, "%s 235.984 0.0 01/01/26\nsynthetic photon fixture\n",
+            zaid);
     for (int row = 0; row < 4; row++)
         fprintf(fp, "0 0.0 0 0.0 0 0.0 0 0.0\n");
-    fprintf(fp, "167 92 2 6 0 0 0 0\n0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "167 %d 2 6 0 0 0 0\n0 0 0 0 0 0 0 0\n", z);
     fprintf(fp, "1 11 32 142 166 0 0 0\n");
     for (int row = 1; row < 4; row++)
         fprintf(fp, "0 0 0 0 0 0 0 0\n");
@@ -246,6 +267,41 @@ static int write_minimal_photoatomic_ace(const char* path) {
     return fclose(fp) == 0;
 }
 
+static int write_minimal_photoatomic_ace(const char* path) {
+    return write_minimal_photoatomic_ace_table(path, "92000.31p", 92);
+}
+
+/* An MT=102 absorption emits one or two prompt photons at E=2 MeV. */
+static int write_neutron_gamma_ascii_ace(const char* path) {
+    FILE* fp = fopen(path, "w");
+    if (!fp) return 0;
+    fprintf(fp, "1001.80c 1.0 2.53e-8 01/01/26\nsynthetic n-gamma\n");
+    for (int row = 0; row < 4; ++row)
+        fprintf(fp, "0 0.0 0 0.0 0 0.0 0 0.0\n");
+    fprintf(fp, "58 1001 2 1 0 1 0 0\n0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "1 0 11 12 13 14 15 0\n");
+    fprintf(fp, "0 0 0 57 19 20 21 31\n");
+    fprintf(fp, "46 32 33 44 0 0 0 0\n");
+    fprintf(fp, "0 0 0 0 0 0 0 0\n");
+    const double neutron[] = {
+        1, 3, 10, 10, 10, 10, 0, 0, 0, 0,
+        102, 0, 0, 1, 1, 2, 10, 10
+    };
+    const double photon[] = {
+        102001, 1, 12, 102, 1, 2, 2, 2,
+        1.0, 2.0, 0.5, 1.5, 1, 1,
+        0, 2, 10, 0, 2, 1.0, 2.0, 1.0, 1.0,
+        2, 0.9, 1, 102, 1, 1.0, 4,
+        2, 2, -1.0, 1.0, 0.5, 0.5, 0.0, 1.0,
+        5.0, 15.0
+    };
+    for (size_t i = 0; i < sizeof(neutron)/sizeof(neutron[0]); ++i)
+        fprintf(fp, "%.17g%c", neutron[i], i % 4 == 3 ? '\n' : ' ');
+    for (size_t i = 0; i < sizeof(photon)/sizeof(photon[0]); ++i)
+        fprintf(fp, "%.17g%c", photon[i], i % 4 == 3 ? '\n' : ' ');
+    return fclose(fp) == 0;
+}
+
 static int write_minimal_epr_ace(const char* path) {
     FILE* fp = fopen(path, "w");
     if (!fp) return 0;
@@ -257,7 +313,7 @@ static int write_minimal_epr_ace(const char* path) {
     fprintf(fp, "56 59 0 0 0 0 0 0\n0 0 0 0 0 0 0 0\n");
 
     double xss[70] = {0};
-    xss[0] = log(0.1); xss[1] = log(2.0);
+    xss[0] = log(0.001); xss[1] = log(2.0);
     xss[2] = xss[3] = -HUGE_VAL;
     xss[4] = xss[5] = -HUGE_VAL;
     xss[6] = xss[7] = log(2.0);
@@ -1628,6 +1684,10 @@ TEST(urr_absolute_values_are_normalized_to_factors) {
 
     ASSERT_EQ(alea_nuc_urr_factors(&nuc, 2.0, 0.5, factors), 1);
     for (int i = 0; i < 5; i++) ASSERT_NEAR(factors[i], 2.0, 1e-12);
+    heating[0] = heating[1] = -5.0;
+    table[5] = table[11] = -10.0;
+    ASSERT_EQ(alea_nuc_urr_factors(&nuc, 2.0, 0.5, factors), 1);
+    ASSERT_NEAR(factors[4], 2.0, 1e-12);
 }
 
 TEST(urr_clamps_negative_collision_cross_sections_but_keeps_signed_heating) {
@@ -5078,6 +5138,26 @@ TEST(fixed_neutron_transport_reflects_void_ray_then_leaks) {
     alea_nuc_cell_bindings_t* binding = NULL;
     ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
         ALEA_NUC_BIND_NEUTRON, NULL, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    alea_tally_spec_t tally_spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH,
+        .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_NEUTRON,
+        .energy_min = 1.0, .energy_max = 3.0,
+        .material_id = -1
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.domain = ALEA_TALLY_UNIVERSE;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.domain = ALEA_TALLY_CARTESIAN_MESH;
+    tally_spec.lower[0] = 0; tally_spec.lower[1] = -1;
+    tally_spec.lower[2] = -1;
+    tally_spec.upper[0] = 2; tally_spec.upper[1] = 1;
+    tally_spec.upper[2] = 1;
+    tally_spec.dimensions[0] = 2;
+    tally_spec.dimensions[1] = tally_spec.dimensions[2] = 1;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
     alea_transport_source_t source = {
         .position = {1, 0, 0},
         .particle = {ALEA_NUC_PARTICLE_NEUTRON, 2.0,
@@ -5085,7 +5165,8 @@ TEST(fixed_neutron_transport_reflects_void_ray_then_leaks) {
     };
     alea_transport_options_t options = {
         .histories = 10, .seed = 789,
-        .max_events_per_history = 20, .max_segment_distance = 0.75
+        .max_events_per_history = 20, .max_segment_distance = 0.75,
+        .tally_plan = plan
     };
     alea_transport_result_t result = {0};
     alea_transport_failure_t failure = {0};
@@ -5095,10 +5176,303 @@ TEST(fixed_neutron_transport_reflects_void_ray_then_leaks) {
     ASSERT_EQ(result.leaked, options.histories);
     ASSERT_EQ(result.collisions, 0);
     ASSERT_NEAR(result.track_length[0], 30.0, 1e-10);
+    ASSERT_EQ(alea_tally_results_count(result.tallies), 3);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 0, &view), ALEA_OK);
+    ASSERT_EQ(view.bin_ids[0], 1);
+    ASSERT_EQ(view.histories, 10);
+    ASSERT_NEAR(view.sum[0], 30.0, 1e-10);
+    ASSERT_NEAR(view.sum_squared[0], 90.0, 1e-10);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 1, &view), ALEA_OK);
+    ASSERT_EQ(view.bin_count, 1);
+    ASSERT_EQ(view.bin_ids[0], 0);
+    ASSERT_NEAR(view.sum[0], 30.0, 1e-10);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 2, &view), ALEA_OK);
+    ASSERT_EQ(view.bin_count, 2);
+    ASSERT_NEAR(view.sum[0], 20.0, 1e-10);
+    ASSERT_NEAR(view.sum[1], 10.0, 1e-10);
     alea_transport_result_free(&result);
+    alea_tally_plan_free(plan);
     alea_nuc_cell_bindings_free(binding);
     alea_nuc_xsdir_free(xsdir);
     alea_destroy(sys);
+}
+
+TEST(fixed_photon_source_scores_void_flight_and_leakage) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 2);
+    ASSERT_TRUE(sphere >= 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+                            ALEA_MATERIAL_VOID, 0, 0), 0);
+    alea_nuc_xsdir_t xsdir = {0};
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+        ALEA_NUC_BIND_PHOTON, NULL, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    alea_tally_spec_t spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH, .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_PHOTON
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.particle_mask = ALEA_TALLY_NEUTRON;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    alea_transport_source_t source = {
+        .position = {0, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_PHOTON, 2.0,
+                     {1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 10, .seed = 42, .max_events_per_history = 20,
+        .max_segment_distance = 0.5, .tally_plan = plan
+    };
+    alea_transport_result_t result = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_fixed_source(sys, binding, &source,
+        &options, &result, &failure), ALEA_OK);
+    ASSERT_EQ(result.photon_leaked, 10);
+    ASSERT_EQ(result.photon_collisions, 0);
+    ASSERT_EQ(result.leaked, 10);
+    ASSERT_NEAR(result.track_length[0], 0, 1e-12);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 0, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], 20, 1e-10);
+    ASSERT_NEAR(view.sum_squared[0], 40, 1e-10);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 1, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], 0, 1e-12);
+    alea_transport_result_free(&result);
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+        &options, &result, &failure), ALEA_ERR_INVALID_ARG);
+    alea_tally_plan_free(plan);
+    alea_nuc_cell_bindings_free(binding);
+    alea_destroy(sys);
+}
+
+TEST(fixed_photon_source_samples_photoatomic_collisions_and_deposition) {
+    const char* path = "fixed_photon_collision.tmp";
+    ASSERT_TRUE(write_minimal_photoatomic_ace(path));
+    alea_nuc_xsdir_entry_t entry = {0};
+    snprintf(entry.zaid, sizeof(entry.zaid), "92000.31p");
+    snprintf(entry.filename, sizeof(entry.filename), "%s", path);
+    entry.type = ALEA_NUC_TABLE_PHOTOATOMIC;
+    entry.file_type = 1; entry.address = 1;
+    alea_nuc_xsdir_t xsdir = {.entries = &entry, .count = 1};
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 2);
+    int material = alea_add_material(sys, 1);
+    ASSERT_TRUE(sphere >= 0 && material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, material, 92235, NULL, 1), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+                            material, 0.5, 0), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+        ALEA_NUC_BIND_PHOTON, NULL, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    alea_tally_spec_t spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH, .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_PHOTON
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.score = ALEA_TALLY_COLLISION;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.score = ALEA_TALLY_LOCAL_DEPOSITION;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.reaction_mt = 522;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.score = ALEA_TALLY_TRACK_LENGTH;
+    spec.reaction_mt = 0;
+    spec.particle_mask = ALEA_TALLY_NEUTRON;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    alea_transport_source_t source = {
+        .position = {0, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_PHOTON, 2.0,
+                     {1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 200, .seed = 1234, .max_events_per_history = 1000,
+        .max_segment_distance = 0.2, .tally_plan = plan
+    };
+    alea_transport_result_t result = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_fixed_source(sys, binding, &source,
+        &options, &result, &failure), ALEA_OK);
+    ASSERT_TRUE(result.photon_collisions > 0);
+    ASSERT_EQ(result.photon_collisions, result.collisions);
+    ASSERT_EQ(result.photon_absorbed + result.photon_leaked, options.histories);
+    ASSERT_EQ(result.emitted_neutrons, 0);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 0, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 1, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], (double)result.photon_collisions, 1e-9);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 2, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0 && view.sum[0] <= 400);
+    double deposited = view.sum[0];
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 3, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0 && view.sum[0] <= deposited);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 4, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], 0, 1e-12);
+    alea_transport_result_free(&result);
+    alea_tally_plan_free(plan);
+    alea_nuc_cell_bindings_free(binding);
+    alea_destroy(sys);
+    remove(path);
+}
+
+TEST(fixed_photon_source_banks_photoelectric_relaxation_photons) {
+    const char* path = "fixed_photon_epr.tmp";
+    ASSERT_TRUE(write_minimal_epr_ace(path));
+    alea_nuc_xsdir_entry_t entry = {0};
+    snprintf(entry.zaid, sizeof(entry.zaid), "82000.14p");
+    snprintf(entry.filename, sizeof(entry.filename), "%s", path);
+    entry.type = ALEA_NUC_TABLE_PHOTOATOMIC;
+    entry.file_type = 1; entry.address = 1;
+    alea_nuc_xsdir_t xsdir = {.entries = &entry, .count = 1};
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 4);
+    int material = alea_add_material(sys, 1);
+    ASSERT_TRUE(sphere >= 0 && material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, material, 82208, NULL, 1), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+                            material, 0.2, 0), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+        ALEA_NUC_BIND_PHOTON, NULL, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    double edges[] = {0, 0.05, 0.1, 2.1};
+    alea_tally_spec_t spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH, .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_PHOTON,
+        .energy_edges = edges, .energy_group_count = 3
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    alea_transport_source_t source = {
+        .position = {0, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_PHOTON, 1.0,
+                     {1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 100, .seed = 323, .max_events_per_history = 200,
+        .max_segment_distance = 2, .max_pending_particles = 16,
+        .tally_plan = plan
+    };
+    alea_transport_result_t result = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_fixed_source(sys, binding, &source,
+        &options, &result, &failure), ALEA_OK);
+    ASSERT_TRUE(result.emitted_photons > 0);
+    ASSERT_EQ(result.emitted_neutrons, 0);
+    ASSERT_EQ(result.photon_absorbed + result.photon_leaked +
+              result.photon_replaced,
+              options.histories + result.emitted_photons);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 0, &view), ALEA_OK);
+    ASSERT_EQ(view.bin_count, 3);
+    ASSERT_TRUE(view.sum[0] > 0);
+    ASSERT_TRUE(view.sum[1] > 0);
+    ASSERT_TRUE(view.sum[2] > 0);
+    alea_transport_result_free(&result);
+    alea_tally_plan_free(plan);
+    alea_nuc_cell_bindings_free(binding);
+    alea_destroy(sys);
+    remove(path);
+}
+
+TEST(fixed_neutron_source_transports_produced_photons) {
+    const char* neutron_path = "fixed_neutron_gamma.tmp";
+    const char* photon_path = "fixed_hydrogen_photoatomic.tmp";
+    ASSERT_TRUE(write_neutron_gamma_ascii_ace(neutron_path));
+    ASSERT_TRUE(write_minimal_photoatomic_ace_table(
+        photon_path, "1000.31p", 1));
+    alea_nuc_xsdir_entry_t entries[2];
+    memset(entries, 0, sizeof(entries));
+    snprintf(entries[0].zaid, sizeof(entries[0].zaid), "1001.80c");
+    snprintf(entries[0].filename, sizeof(entries[0].filename), "%s",
+             neutron_path);
+    entries[0].type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON;
+    entries[0].file_type = 1; entries[0].address = 1;
+    snprintf(entries[1].zaid, sizeof(entries[1].zaid), "1000.31p");
+    snprintf(entries[1].filename, sizeof(entries[1].filename), "%s",
+             photon_path);
+    entries[1].type = ALEA_NUC_TABLE_PHOTOATOMIC;
+    entries[1].file_type = 1; entries[1].address = 1;
+    alea_nuc_xsdir_t xsdir = {.entries = entries, .count = 2};
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 4);
+    int material = alea_add_material(sys, 1);
+    ASSERT_TRUE(sphere >= 0 && material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, material, 1001, NULL, 1), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+                            material, 0.2, 0), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    alea_nuc_prepare_requirements_t req = {
+        .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
+                                 ALEA_NUC_CAP_PHOTON_PRODUCTION
+    };
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+        ALEA_NUC_BIND_NEUTRON | ALEA_NUC_BIND_PHOTON,
+        &req, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    alea_tally_spec_t spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH, .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_NEUTRON
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.particle_mask = ALEA_TALLY_PHOTON;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    spec.score = ALEA_TALLY_LOCAL_DEPOSITION;
+    ASSERT_EQ(alea_tally_plan_add(plan, &spec, NULL), ALEA_OK);
+    alea_transport_source_t source = {
+        .position = {0, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_NEUTRON, 2.0,
+                     {1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 100, .seed = 742, .max_events_per_history = 300,
+        .max_segment_distance = 2, .max_pending_particles = 16,
+        .tally_plan = plan
+    };
+    alea_transport_result_t result = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+        &options, &result, &failure), ALEA_OK);
+    ASSERT_TRUE(result.emitted_photons > 0);
+    ASSERT_EQ(result.emitted_neutrons, 0);
+    ASSERT_TRUE(result.photon_collisions > 0);
+    ASSERT_EQ(result.absorbed + result.leaked + result.replaced,
+              options.histories + result.emitted_photons);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 0, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], result.track_length[0], 1e-9);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 1, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0);
+    ASSERT_EQ(alea_tally_results_view(result.tallies, 2, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0);
+    alea_transport_result_free(&result);
+    alea_nuc_cell_bindings_t* neutron_only = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, &xsdir,
+        ALEA_NUC_BIND_NEUTRON, &req, NULL, &neutron_only), ALEA_OK);
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, neutron_only, &source,
+        &options, &result, &failure), ALEA_ERR_NOT_FOUND);
+    ASSERT_TRUE(failure.particle_ordinal > 0);
+    ASSERT_NULL(result.tallies);
+    alea_nuc_cell_bindings_free(neutron_only);
+    alea_tally_plan_free(plan);
+    alea_nuc_cell_bindings_free(binding);
+    alea_destroy(sys);
+    remove(neutron_path);
+    remove(photon_path);
 }
 
 TEST(fixed_neutron_transport_scattering_replays_across_distance_limits) {
@@ -5155,6 +5529,175 @@ TEST(fixed_neutron_transport_scattering_replays_across_distance_limits) {
     ASSERT_NEAR(direct.track_length[0], segmented.track_length[0], 1e-7);
     alea_transport_result_free(&direct);
     alea_transport_result_free(&segmented);
+    alea_nuc_cell_bindings_free(binding);
+    alea_destroy(sys);
+    alea_nuc_xsdir_free(xsdir);
+    remove(path);
+}
+
+TEST(fixed_neutron_transport_banks_n2n_descendants_per_source_history) {
+    const char* path = "fixed_neutron_n2n.tmp";
+    ASSERT_TRUE(write_multiplying_ascii_ace(path));
+    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    ASSERT_NOT_NULL(xsdir);
+    xsdir->entries = calloc(1, sizeof(*xsdir->entries));
+    ASSERT_NOT_NULL(xsdir->entries);
+    xsdir->count = 1;
+    snprintf(xsdir->entries[0].zaid, sizeof(xsdir->entries[0].zaid),
+             "1001.80c");
+    snprintf(xsdir->entries[0].filename,
+             sizeof(xsdir->entries[0].filename), "%s", path);
+    xsdir->entries[0].type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON;
+    xsdir->entries[0].file_type = 1;
+    xsdir->entries[0].address = 1;
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 2);
+    int material = alea_add_material(sys, 1);
+    ASSERT_TRUE(sphere >= 0 && material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, material, 1001, ".80c", 1), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+                            material, 0.02, 0), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    alea_nuc_prepare_requirements_t req = {
+        .required_capabilities = ALEA_NUC_CAP_CONTINUOUS_NEUTRON
+    };
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
+        ALEA_NUC_BIND_NEUTRON, &req, NULL, &binding), ALEA_OK);
+    alea_tally_plan_t* plan = alea_tally_plan_create(sys);
+    ASSERT_NOT_NULL(plan);
+    alea_tally_spec_t tally_spec = {
+        .score = ALEA_TALLY_TRACK_LENGTH, .domain = ALEA_TALLY_CELL,
+        .particle_mask = ALEA_TALLY_NEUTRON
+    };
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.score = ALEA_TALLY_COLLISION;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.score = ALEA_TALLY_REACTION_EVENT;
+    tally_spec.reaction_mt = 16;
+    tally_spec.material_id = 1;
+    tally_spec.nuclide_zaid = 1001;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.energy_min = 13; tally_spec.energy_max = 15;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.score = ALEA_TALLY_REACTION_RATE;
+    tally_spec.reaction_mt = 0;
+    tally_spec.energy_min = tally_spec.energy_max = 0;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.reaction_mt = 16;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    tally_spec.score = ALEA_TALLY_HEATING;
+    tally_spec.reaction_mt = 0;
+    ASSERT_EQ(alea_tally_plan_add(plan, &tally_spec, NULL), ALEA_OK);
+    alea_transport_source_t source = {
+        .position = {0, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_NEUTRON, 14.0,
+                     {1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 500, .seed = 4219,
+        .max_events_per_history = 200,
+        .max_segment_distance = 10,
+        .max_pending_particles = 8,
+        .tally_plan = plan
+    };
+    const alea_nuc_prepared_material_t* prepared =
+        alea_nuc_cell_bindings_get(binding, 0, ALEA_NUC_PARTICLE_NEUTRON);
+    ASSERT_NOT_NULL(prepared);
+    alea_nuc_evaluation_t evaluation;
+    ASSERT_EQ(alea_nuc_evaluate(prepared, &source.particle, &evaluation),
+              ALEA_OK);
+    double total_rate = 0, n2n_rate = 0, missing_rate = -1;
+    double heating_rate = 0;
+    ASSERT_EQ(alea_nuc_evaluation_macro_reaction_rate(
+        &evaluation, 0, 1001, &total_rate), ALEA_OK);
+    ASSERT_NEAR(total_rate, evaluation.macro_total, 1e-12);
+    ASSERT_EQ(alea_nuc_evaluation_macro_reaction_rate(
+        &evaluation, 16, 1001, &n2n_rate), ALEA_OK);
+    ASSERT_TRUE(n2n_rate > 0 && n2n_rate <= total_rate);
+    ASSERT_EQ(alea_nuc_evaluation_macro_reaction_rate(
+        &evaluation, 16, 3006, &missing_rate), ALEA_OK);
+    ASSERT_EQ(missing_rate, 0);
+    ASSERT_EQ(alea_nuc_evaluation_macro_heating(
+        &evaluation, 1001, &heating_rate), ALEA_OK);
+    ASSERT_NEAR(heating_rate, -3.0 * total_rate, 1e-12);
+    alea_transport_result_t direct = {0}, segmented = {0};
+    alea_transport_result_t subdivided = {0}, limited = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+        &options, &direct, &failure), ALEA_OK);
+    ASSERT_TRUE(direct.emitted_neutrons > 0);
+    ASSERT_EQ(direct.emitted_neutrons % 2, 0);
+    ASSERT_EQ(direct.absorbed + direct.leaked,
+              options.histories + direct.emitted_neutrons / 2);
+    ASSERT_TRUE(direct.track_length[0] > 0);
+    alea_tally_view_t view;
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 0, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], direct.track_length[0], 1e-7);
+    ASSERT_NEAR(view.sum_squared[0], direct.track_length_squared[0], 1e-7);
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 1, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], (double)direct.collisions, 1e-9);
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 2, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], (double)direct.emitted_neutrons / 2, 1e-9);
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 3, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0);
+    ASSERT_TRUE(view.sum[0] < (double)direct.emitted_neutrons / 2);
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 4, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], total_rate * direct.track_length[0], 1e-7);
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 5, &view), ALEA_OK);
+    ASSERT_TRUE(view.sum[0] > 0);
+    ASSERT_TRUE(view.sum[0] < total_rate * direct.track_length[0]);
+    ASSERT_EQ(alea_tally_results_view(direct.tallies, 6, &view), ALEA_OK);
+    ASSERT_NEAR(view.sum[0], heating_rate * direct.track_length[0], 1e-7);
+    ASSERT_TRUE(view.sum[0] < 0 && view.sum_squared[0] > 0);
+    options.max_segment_distance = 0.25;
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+        &options, &segmented, &failure), ALEA_OK);
+    ASSERT_EQ(direct.emitted_neutrons, segmented.emitted_neutrons);
+    ASSERT_EQ(direct.absorbed, segmented.absorbed);
+    ASSERT_EQ(direct.leaked, segmented.leaked);
+    ASSERT_NEAR(direct.track_length[0], segmented.track_length[0], 1e-7);
+    ASSERT_NEAR(direct.track_length_squared[0],
+                segmented.track_length_squared[0], 1e-7);
+    alea_system_t* split = alea_create();
+    ASSERT_NOT_NULL(split);
+    int split_sphere = alea_sphere_surface(split, 1, 0, 0, 0, 1);
+    int split_outer = alea_sphere_surface(split, 2, 0, 0, 0, 2);
+    int split_material = alea_add_material(split, 1);
+    ASSERT_TRUE(split_sphere >= 0 && split_outer >= 0 && split_material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(split, split_material,
+                                       1001, ".80c", 1), 0);
+    ASSERT_EQ(alea_add_cell(split, 1,
+        alea_halfspace(split, split_sphere, -1), split_material, 0.02, 0), 0);
+    ASSERT_EQ(alea_add_cell(split, 2,
+        alea_intersection(split, alea_halfspace(split, split_sphere, +1),
+            alea_halfspace(split, split_outer, -1)),
+        split_material, 0.02, 0), 1);
+    ASSERT_EQ(alea_surface_set_boundary(split, 2, ALEA_BOUNDARY_VACUUM), 0);
+    alea_nuc_cell_bindings_t* split_binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(split, xsdir,
+        ALEA_NUC_BIND_NEUTRON, &req, NULL, &split_binding), ALEA_OK);
+    options.tally_plan = NULL;
+    ASSERT_EQ(alea_transport_run_fixed_neutron(split, split_binding, &source,
+        &options, &subdivided, &failure), ALEA_OK);
+    ASSERT_EQ(segmented.emitted_neutrons, subdivided.emitted_neutrons);
+    ASSERT_EQ(segmented.absorbed, subdivided.absorbed);
+    ASSERT_EQ(segmented.leaked, subdivided.leaked);
+    ASSERT_NEAR(segmented.track_length[0],
+        subdivided.track_length[0] + subdivided.track_length[1], 1e-7);
+    alea_transport_result_free(&subdivided);
+    alea_nuc_cell_bindings_free(split_binding);
+    alea_destroy(split);
+    options.tally_plan = plan;
+    options.max_pending_particles = 1;
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+        &options, &limited, &failure), ALEA_ERR_OVERFLOW);
+    ASSERT_EQ(failure.particle_ordinal, 0);
+    ASSERT_NULL(limited.track_length);
+    alea_transport_result_free(&direct);
+    alea_transport_result_free(&segmented);
+    alea_tally_plan_free(plan);
     alea_nuc_cell_bindings_free(binding);
     alea_destroy(sys);
     alea_nuc_xsdir_free(xsdir);

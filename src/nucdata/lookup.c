@@ -194,7 +194,8 @@ double alea_nuc_photon_xs_photoelectric_subshell(
         (ph->n_subshells > 0 && !ph->subshells)) return 0.0;
     for (int i = 0; i < ph->n_subshells; i++) {
         const alea_nuc_atomic_subshell_t* shell = &ph->subshells[i];
-        if (shell->designator != designator || !shell->ln_photoelectric_xs)
+        if (shell->designator != designator || !shell->ln_photoelectric_xs ||
+            energy < shell->binding_energy)
             continue;
         return interp_photon_ll(ph->ln_energy, shell->ln_photoelectric_xs,
                                 ph->n_energies, log(energy));
@@ -355,7 +356,8 @@ normalize:
         smooth[3] = alea_nuc_xs_reaction(nuc, 102, energy);
         smooth[4] = alea_nuc_xs_heating(nuc, energy);
         for (int q = 0; q < 5; q++)
-            factors[q] = smooth[q] > 0.0 ? factors[q] / smooth[q] : 0.0;
+            factors[q] = (q == 4 ? smooth[q] != 0.0 : smooth[q] > 0.0)
+                ? factors[q] / smooth[q] : 0.0;
     }
 
     return 1;

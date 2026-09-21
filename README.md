@@ -357,6 +357,30 @@ Cell-binding declarations live in `alea_transport.h`; their existing
 `alea_nuc_cell_bindings_*` names are preserved. Nuclear-data preparation and
 collision evaluation remain in `alea_nucdata.h`. Nuclear data is loaded only
 when a caller explicitly prepares transport bindings.
+For neutron multiplication, prepare bindings with
+`ALEA_NUC_CAP_CONTINUOUS_NEUTRON`. For coupled neutron-photon transport,
+also request `ALEA_NUC_CAP_PHOTON_PRODUCTION` and bind both
+`ALEA_NUC_BIND_NEUTRON | ALEA_NUC_BIND_PHOTON`. The fixed-source driver follows
+emitted neutrons and photons in one source history. A photon source can use
+`alea_transport_run_fixed_source()` directly. `max_events_per_history` bounds
+the full family and `max_pending_particles` bounds the shared bank (zero
+selects 1024). The legacy per-cell path arrays retain neutron-only scores.
+Optional tally plans can be attached through `alea_transport_options_t.tally_plan`.
+`alea_tally.h` defines cell, terminal-universe, and world-space Cartesian mesh
+bins. The scores are weighted track length, collision count, sampled reaction
+count, track-length reaction rate, ACE neutron heating, and photon local
+deposition. Each tally can filter particle type, incident energy, time, and
+material. Event, rate, and local-deposition scores can select a reaction
+MT and target nuclide. Zero particle mask or both energy or time bounds zero
+select all; intervals are half-open. Results retain
+the sum and sum of squares of each *source history's* bin score, including all
+neutron and photon descendants. An optional energy axis stores compact spectra with
+spatial bins fastest. Mesh bins flatten with x fastest. A universe tally
+combines all occurrences of terminal cells with that universe ID.
+Ancestor-universe scoring remains future work;
+see [transport tally semantics](docs/TRANSPORT_TALLIES.md).
+See [transport tallies](docs/TRANSPORT_TALLIES.md) for score definitions,
+bin ordering, filter semantics, and source-history statistics.
 
 Link against the core library plus the format modules you need:
 

@@ -438,6 +438,24 @@ alea_error_t alea_nuc_evaluation_update_incident(
     alea_nuc_evaluation_t* evaluation,
     const alea_nuc_particle_state_t* incident);
 
+/** Return 1000*Z+A for a sampled component of a sealed evaluation. */
+alea_error_t alea_nuc_evaluation_component_zaid(
+    const alea_nuc_evaluation_t* evaluation,
+    int component_index, int* zaid);
+
+/** Macroscopic sampled-reaction rate in cm^-1 from a sealed neutron
+ * evaluation. MT 0 selects the total; ZAID 0 selects every target. MT 2 and
+ * 4 include the corresponding thermal-scattering channels when active. */
+alea_error_t alea_nuc_evaluation_macro_reaction_rate(
+    const alea_nuc_evaluation_t* evaluation,
+    int mt, int nuclide_zaid, double* macro_rate);
+
+/** ACE neutron heating response in MeV/cm for the selected target ZAID.
+ * ZAID 0 includes all components. Heating can be signed. */
+alea_error_t alea_nuc_evaluation_macro_heating(
+    const alea_nuc_evaluation_t* evaluation,
+    int nuclide_zaid, double* macro_heating);
+
 /**
  * Evaluate without URR sampling and cache component and reaction rates in
  * caller-owned workspace arrays. The workspace must provide all rate arrays

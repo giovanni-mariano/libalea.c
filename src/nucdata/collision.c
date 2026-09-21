@@ -11,6 +11,7 @@
 #include "core/alea_materials.h"
 
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1212,6 +1213,22 @@ alea_error_t alea_nuc_evaluation_update_incident(
     return ALEA_OK;
 }
 
+alea_error_t alea_nuc_evaluation_component_zaid(
+    const alea_nuc_evaluation_t* evaluation,
+    int component_index, int* zaid) {
+    if (!evaluation || !zaid) return ALEA_ERR_NULL_ARG;
+    if (!evaluation_matches(evaluation) || component_index < 0 ||
+        component_index >= evaluation->prepared->n_components)
+        return ALEA_ERR_INVALID_ARG;
+    const alea_nuc_nuclide_t* nuclide =
+        evaluation->prepared->components[component_index].source->nuclide;
+    if (!nuclide || nuclide->Z < 0 || nuclide->A < 0 ||
+        nuclide->Z > (INT_MAX - nuclide->A) / 1000)
+        return ALEA_ERR_INVALID_STATE;
+    *zaid = nuclide->Z * 1000 + nuclide->A;
+    return ALEA_OK;
+}
+
 alea_error_t alea_nuc_evaluate_with_workspace(
     const alea_nuc_prepared_material_t* prepared,
     const alea_nuc_particle_state_t* incident,
@@ -1492,6 +1509,87 @@ static double evaluated_reaction_xs(const alea_nuc_evaluation_t* evaluation,
     return sampled_reaction_xs(
         nuc, &nuc->reactions[reaction_index], main_index, main_fraction,
         urr, &competition);
+}
+
+static int component_matches_zaid(const alea_nuc_nuclide_t* nuc,
+                                  int nuclide_zaid) {
+    if (!nuclide_zaid) return 1;
+    return nuc->Z >= 0 && nuc->A >= 0 &&
+        nuc->Z <= (INT_MAX - nuc->A) / 1000 &&
+        nuc->Z * 1000 + nuc->A == nuclide_zaid;
+}
+
+alea_error_t alea_nuc_evaluation_macro_reaction_rate(
+    const alea_nuc_evaluation_t* evaluation,
+    int mt, int nuclide_zaid, double* macro_rate) {
+    if (!evaluation || !macro_rate) return ALEA_ERR_NULL_ARG;
+    if (!evaluation_matches(evaluation) ||
+        evaluation->prepared->particle != ALEA_NUC_PARTICLE_NEUTRON)
+        return ALEA_ERR_INVALID_STATE;
+    if (mt < 0 || nuclide_zaid < 0) return ALEA_ERR_INVALID_ARG;
+    if (mt == 0 && nuclide_zaid == 0) {
+        *macro_rate = evaluation->macro_total;
+        return ALEA_OK;
+    }
+    double result = 0.0;
+    for (int i = 0; i < evaluation->prepared->n_components; ++i) {
+        const prepared_component_t* component =
+            &evaluation->prepared->components[i];
+        const alea_nuc_mat_component_t* source = component->source;
+        const alea_nuc_nuclide_t* nuc = source->nuclide;
+        if (!component_matches_zaid(nuc, nuclide_zaid)) continue;
+        double total, elastic, thermal;
+        evaluated_component_xs(evaluation, i, &total, &elastic, &thermal);
+        double microscopic = 0.0;
+        if (mt == 0) microscopic = total;
+        else {
+            if (mt == 2) {
+                microscopic = elastic;
+                if (thermal > 0.0)
+                    microscopic += alea_nuc_thermal_xs_elastic(
+                        component->thermal, evaluation->incident.energy);
+            } else if (mt == 4 && thermal > 0.0)
+                microscopic = alea_nuc_thermal_xs_inelastic(
+                    component->thermal, evaluation->incident.energy);
+            for (int j = 0; j < component->n_event_reactions; ++j) {
+                const alea_nuc_reaction_t* reaction =
+                    &nuc->reactions[component->event_reactions[j]];
+                if (reaction->mt == mt)
+                    microscopic += evaluated_reaction_xs(evaluation, i, j);
+            }
+        }
+        result += source->number_density * microscopic;
+    }
+    if (!isfinite(result) || result < 0.0) return ALEA_ERR_INVALID_STATE;
+    *macro_rate = result;
+    return ALEA_OK;
+}
+
+alea_error_t alea_nuc_evaluation_macro_heating(
+    const alea_nuc_evaluation_t* evaluation,
+    int nuclide_zaid, double* macro_heating) {
+    if (!evaluation || !macro_heating) return ALEA_ERR_NULL_ARG;
+    if (!evaluation_matches(evaluation) ||
+        evaluation->prepared->particle != ALEA_NUC_PARTICLE_NEUTRON)
+        return ALEA_ERR_INVALID_STATE;
+    if (nuclide_zaid < 0) return ALEA_ERR_INVALID_ARG;
+    double result = 0.0;
+    for (int i = 0; i < evaluation->prepared->n_components; ++i) {
+        const alea_nuc_mat_component_t* source =
+            evaluation->prepared->components[i].source;
+        const alea_nuc_nuclide_t* nuc = source->nuclide;
+        if (!component_matches_zaid(nuc, nuclide_zaid)) continue;
+        if (!nuc->heating) return ALEA_ERR_NOT_FOUND;
+        double heating = alea_nuc_xs_heating(nuc,
+                                             evaluation->incident.energy);
+        const alea_nuc_urr_sample_t* urr = component_urr(
+            evaluation->workspace, i);
+        if (urr && urr->active) heating *= urr->factors[4];
+        result += source->number_density * heating;
+    }
+    if (!isfinite(result)) return ALEA_ERR_INVALID_STATE;
+    *macro_heating = result;
+    return ALEA_OK;
 }
 
 static alea_error_t sample_prepared_elastic(
