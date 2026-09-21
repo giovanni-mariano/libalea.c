@@ -177,6 +177,23 @@ static int write_absorber_ascii_ace(const char* path) {
     return fclose(fp) == 0;
 }
 
+/* Two equally likely URR bands scale capture from 10 barns to 5 or 15. */
+static int write_urr_absorber_ascii_ace(const char* path) {
+    FILE* fp = fopen(path, "w");
+    if (!fp) return 0;
+    fprintf(fp, "1001.80c 1.0 2.53e-8 01/01/26\nsynthetic URR absorber\n");
+    for (int row = 0; row < 4; row++)
+        fprintf(fp, "0 0.0 0 0.0 0 0.0 0 0.0\n");
+    fprintf(fp, "50 1001 2 1 0 0 0 0\n0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "1 0 11 12 13 14 15 0\n0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "0 0 0 0 0 0 19 0\n0 0 0 0 0 0 0 0\n");
+    fprintf(fp, "1 3 10 10\n10 10 0 0\n3 3 102 0\n0 1 1 2\n10 10\n");
+    fprintf(fp, "2 2 2 0 0 1 1 3\n");
+    for (int row = 0; row < 2; row++)
+        fprintf(fp, "0.5 1 0.5 1.5 0 0 0 0 0.5 1.5 1 1\n");
+    return fclose(fp) == 0;
+}
+
 static int write_scatter_ascii_ace(const char* path) {
     FILE* fp = fopen(path, "w");
     if (!fp) return 0;
@@ -4886,6 +4903,7 @@ TEST(transport_binding_associates_thermal_law_and_rejects_missing_data) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
     int surface = alea_sphere_surface(sys, 1, 0.0, 0.0, 0.0, 1.0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
     alea_node_id_t root = alea_halfspace(sys, surface, -1);
     int material = alea_add_material(sys, 1);
     ASSERT_EQ(alea_material_add_nuclide(sys, material, 1001, ".80c", 1.0), 0);
@@ -4923,6 +4941,20 @@ TEST(transport_binding_associates_thermal_law_and_rejects_missing_data) {
     ASSERT_EQ(alea_nuc_evaluate(alea_nuc_cell_bindings_get(binding, 0,
         ALEA_NUC_PARTICLE_NEUTRON), &incident, &evaluation), ALEA_OK);
     ASSERT_TRUE(evaluation.macro_thermal > 0.0);
+    alea_transport_source_t source = {
+        .position = {0, 0, 0}, .particle = incident
+    };
+    alea_transport_options_t options = {
+        .histories = 100, .seed = 17,
+        .max_events_per_history = 100, .max_segment_distance = 2.0
+    };
+    alea_transport_result_t result = {0};
+    alea_transport_failure_t failure = {0};
+    ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+        &options, &result, &failure), ALEA_OK);
+    ASSERT_TRUE(result.collisions > 0);
+    ASSERT_TRUE(result.leaked > 0);
+    alea_transport_result_free(&result);
     alea_nuc_cell_bindings_free(binding);
 
     free(law->identifier);
@@ -5118,6 +5150,97 @@ TEST(fixed_neutron_transport_preserves_optical_depth_across_cells_and_void) {
     ASSERT_NEAR(results[0].track_length[2], results[1].track_length[3], 1e-7);
     alea_transport_result_free(&results[0]);
     alea_transport_result_free(&results[1]);
+    alea_nuc_xsdir_free(xsdir);
+    remove(path);
+}
+
+static alea_system_t* make_urr_absorber(int split) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return NULL;
+    int material = alea_add_material(sys, 1);
+    if (material < 0 || alea_material_add_nuclide(sys, material,
+            1001, ".80c", 1.0) != 0) goto fail;
+    int outer = alea_sphere_surface(sys, 2, 0, 0, 0, 3.0);
+    if (outer < 0 ||
+        alea_surface_set_boundary(sys, 2, ALEA_BOUNDARY_VACUUM) != 0)
+        goto fail;
+    if (split) {
+        int inner = alea_sphere_surface(sys, 1, 0, 0, 0, 1.0);
+        if (inner < 0 || alea_add_cell(sys, 11,
+            alea_halfspace(sys, inner, -1), material, 0.02, 0) < 0 ||
+            alea_add_cell(sys, 12,
+                alea_intersection(sys, alea_halfspace(sys, inner, +1),
+                    alea_halfspace(sys, outer, -1)), material, 0.02, 0) < 0)
+            goto fail;
+    } else if (alea_add_cell(sys, 11,
+        alea_halfspace(sys, outer, -1), material, 0.02, 0) < 0)
+        goto fail;
+    return sys;
+fail:
+    alea_destroy(sys);
+    return NULL;
+}
+
+TEST(fixed_neutron_transport_samples_urr_across_same_material_cells) {
+    const char* path = "fixed_neutron_urr_absorber.tmp";
+    ASSERT_TRUE(write_urr_absorber_ascii_ace(path));
+    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    ASSERT_NOT_NULL(xsdir);
+    xsdir->entries = calloc(1, sizeof(*xsdir->entries));
+    ASSERT_NOT_NULL(xsdir->entries);
+    xsdir->count = 1;
+    snprintf(xsdir->entries[0].zaid, sizeof(xsdir->entries[0].zaid),
+             "1001.80c");
+    snprintf(xsdir->entries[0].filename,
+             sizeof(xsdir->entries[0].filename), "%s", path);
+    xsdir->entries[0].type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON;
+    xsdir->entries[0].file_type = 1;
+    xsdir->entries[0].address = 1;
+    alea_nuc_prepare_requirements_t req = {
+        .required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON |
+            ALEA_NUC_CAP_URR
+    };
+    alea_transport_source_t source = {
+        .position = {0, 0, 0},
+        .particle = {ALEA_NUC_PARTICLE_NEUTRON, 2.0,
+                     {1, 0, 0}, 1.0, 0.0}
+    };
+    alea_transport_options_t options = {
+        .histories = 20000, .seed = 451,
+        .max_events_per_history = 100,
+        .max_segment_distance = 0.4
+    };
+    alea_transport_result_t results[3] = {{0}, {0}, {0}};
+    for (int case_index = 0; case_index < 3; ++case_index) {
+        int split = case_index == 2;
+        options.max_segment_distance = case_index == 0 ? 100.0 : 0.4;
+        alea_system_t* sys = make_urr_absorber(split);
+        ASSERT_NOT_NULL(sys);
+        alea_nuc_cell_bindings_t* binding = NULL;
+        ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
+            ALEA_NUC_BIND_NEUTRON, &req, NULL, &binding), ALEA_OK);
+        alea_transport_failure_t failure = {0};
+        ASSERT_EQ(alea_transport_run_fixed_neutron(sys, binding, &source,
+            &options, &results[case_index], &failure), ALEA_OK);
+        ASSERT_EQ(results[case_index].absorbed + results[case_index].leaked,
+                  options.histories);
+        ASSERT_EQ(results[case_index].collisions, results[case_index].absorbed);
+        ASSERT_NEAR((double)results[case_index].leaked / options.histories,
+                    0.5 * (exp(-0.3) + exp(-0.9)), 0.02);
+        alea_nuc_cell_bindings_free(binding);
+        alea_destroy(sys);
+    }
+    ASSERT_EQ(results[0].leaked, results[1].leaked);
+    ASSERT_EQ(results[0].leaked, results[2].leaked);
+    ASSERT_EQ(results[0].absorbed, results[1].absorbed);
+    ASSERT_EQ(results[0].absorbed, results[2].absorbed);
+    ASSERT_NEAR(results[0].track_length[0],
+        results[1].track_length[0], 1e-7);
+    ASSERT_NEAR(results[0].track_length[0],
+        results[2].track_length[0] + results[2].track_length[1], 1e-7);
+    alea_transport_result_free(&results[0]);
+    alea_transport_result_free(&results[1]);
+    alea_transport_result_free(&results[2]);
     alea_nuc_xsdir_free(xsdir);
     remove(path);
 }

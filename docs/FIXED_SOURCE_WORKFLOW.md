@@ -25,6 +25,65 @@ their local-deposition score in the CSV. Data preparation fails explicitly
 when required tables are unavailable. The example is a starting point for a
 fusion calculation, not a built-in model of a plasma or source spectrum.
 
+For an analytic attenuation check with a layered shield, run
+[`examples/python/sandwich_slab_transport.py`](../examples/python/sandwich_slab_transport.py)
+with a neutron ACE directory containing FENDL-3.2c `26056.32c` and
+`13027.32c`:
+
+```sh
+python3 examples/python/sandwich_slab_transport.py /path/to/neutron/ace
+```
+
+A 14.1 MeV pencil beam crosses vacuum, Fe-56, vacuum, Al-27, vacuum, Fe-56,
+and a downstream 1 cm void detector. For each material slab, the script
+computes its macroscopic total cross section as atomic density times the ACE
+total cross section. If the survival probability on entry is `S`, the
+uncollided track length is `S * (1 - exp(-Sigma*d)) / Sigma`; a void slab gives
+`S*d`. The final survival probability is `exp(-sum(Sigma*d))`, equal to the
+uncollided track length in the downstream 1 cm detector. A narrow source-energy
+filter selects this first-flight contribution because collisions almost surely
+change the neutron energy. The script first checks exact slab lengths with all
+materials replaced by void, then checks each material-run tally within five
+reported standard errors of the analytic result. It also prints the unfiltered
+track length, which includes scattered neutrons and has no simple exponential
+formula. The default run uses 20,000 source histories and a fixed seed.
+
+For lower-energy neutron transport in the unresolved-resonance range, run
+[`examples/python/urr_u238_transport.py`](../examples/python/urr_u238_transport.py)
+with the Lib80x xsdir containing `92238.00c`:
+
+```sh
+python3 examples/python/urr_u238_transport.py /path/to/Lib80x/xsdir
+```
+
+This sends 50 keV neutrons through a U-238 sphere, then repeats the same
+calculation with the material divided into two adjacent cells. The second
+geometry has no physical interface: collision and leakage counts, total
+track length, and MT=102 capture-rate tally must match for the fixed seed.
+Transport samples one coordinated URR probability-table realization for each
+neutron material/flight encounter. It retains that realization when crossing
+adjacent cells of the same material or a distance-limit segment, and draws a
+new one after a collision or on entering a different material. Nuclear-data
+tables without URR data use their ordinary continuous-energy cross sections.
+
+For a reproducible neutron calculation with the Python binding, run
+[`examples/python/fusion_mesh_source.py`](../examples/python/fusion_mesh_source.py)
+with a neutron ACE directory containing FENDL-3.2c `26056.32c`:
+
+```sh
+python3 examples/python/fusion_mesh_source.py /path/to/neutron/ace --histories 5000
+```
+
+The script sends 14.1 MeV neutrons from a weighted Cartesian source mesh into
+a 2–8 cm Fe-56 spherical shell. It first replaces the iron with void and
+checks both cell track-length tallies against independently calculated ray
+intersections. It then restores Fe-56 at 7.87 g/cm³ and reports collisions,
+leakage, and cell track lengths with standard errors. The check uses a fixed
+seed and requires NumPy and an importable `pyalea` package. A leaked-particle
+count above the source-history count can occur when neutron reactions produce
+additional particles. Track length is in cm per source neutron; divide by
+cell volume to obtain volume-averaged flux per source neutron.
+
 Python and Lua expose the same `transport_run(system, xsdir, config)` call for
 small experiments. Preparation happens inside the call; reading or plotting a
 geometry never needs an xsdir. Both return a dictionary/table with history
@@ -69,9 +128,9 @@ local samples = alea.sample_source(source, 1000, 1)
 Pass `source` as the value of `config["source"]` in Python or
 `config.source` in Lua. A source description dictionary/table may also be
 passed directly. The current prepared source supports point, line, uniform box,
-spherical-volume, and cylindrical-volume space; monodirectional, isotropic,
-cone, cosine-hemisphere, tabulated-polar, or radial angle; constant energy,
-time and weight; and neutron or photon identity. A line
+spherical-volume, cylindrical-volume, tokamak RZ, and Cartesian-mesh space;
+monodirectional, isotropic, cone, cosine-hemisphere, tabulated-polar, or radial
+angle; constant energy, time and weight; and neutron or photon identity. A line
 uses `start` and `end`. A sphere uses `center`, `outer_radius`, and optional
 `inner_radius`. A cylinder uses `base`, a base-to-top `axis` vector,
 `outer_radius`, and optional `inner_radius`. Both radii describe uniform volume
@@ -256,5 +315,5 @@ deposition.
 
 The current driver supports fixed-source neutron/photon transport, sampled
 secondaries, vacuum and specular-reflective boundaries, and cell/mesh/terminal-
-universe tallies. It does not sample URR probability tables or support
-white/periodic boundaries. It does not solve a criticality eigenvalue problem.
+universe tallies and neutron URR probability-table sampling. White/periodic
+boundaries and criticality eigenvalue calculations remain unsupported.

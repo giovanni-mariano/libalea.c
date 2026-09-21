@@ -119,9 +119,24 @@ alea_error_t alea_transport_run_sampled_source(
         options->max_pending_particles : DEFAULT_BANK_CAPACITY;
     const size_t scratch_capacity = bank_capacity > DEFAULT_BANK_CAPACITY ?
         bank_capacity : DEFAULT_BANK_CAPACITY;
+    size_t component_capacity = 0, reaction_capacity = 0;
+    for (size_t i = 0; i < cell_count; ++i) {
+        const alea_nuc_prepared_material_t* prepared =
+            alea_nuc_cell_bindings_get(bindings, i, ALEA_NUC_PARTICLE_NEUTRON);
+        if (!prepared) continue;
+        size_t components, reactions;
+        alea_error_t size_err = alea_nuc_evaluation_workspace_sizes(prepared,
+            &components, &reactions);
+        if (size_err != ALEA_OK) return size_err;
+        if (components > component_capacity) component_capacity = components;
+        if (reactions > reaction_capacity) reaction_capacity = reactions;
+    }
     if (cell_count > SIZE_MAX / sizeof(double) ||
         bank_capacity > SIZE_MAX / sizeof(pending_particle_t) ||
-        scratch_capacity > SIZE_MAX / sizeof(alea_nuc_particle_state_t))
+        scratch_capacity > SIZE_MAX / sizeof(alea_nuc_particle_state_t) ||
+        component_capacity > SIZE_MAX / sizeof(alea_nuc_urr_sample_t) ||
+        component_capacity > SIZE_MAX / sizeof(double) ||
+        reaction_capacity > SIZE_MAX / sizeof(double))
         return ALEA_ERR_OVERFLOW;
     double* path_sum = calloc(cell_count ? cell_count : 1, sizeof(double));
     double* path_sum_squared = calloc(cell_count ? cell_count : 1, sizeof(double));
@@ -129,13 +144,34 @@ alea_error_t alea_transport_run_sampled_source(
     pending_particle_t* bank = calloc(bank_capacity, sizeof(*bank));
     alea_nuc_particle_state_t* emitted = calloc(scratch_capacity,
                                                 sizeof(*emitted));
+    alea_nuc_evaluation_workspace_t workspace = {
+        .components = calloc(component_capacity ? component_capacity : 1,
+                             sizeof(*workspace.components)),
+        .capacity = component_capacity,
+        .component_total = calloc(component_capacity ? component_capacity : 1,
+                                  sizeof(*workspace.component_total)),
+        .component_elastic = calloc(component_capacity ? component_capacity : 1,
+                                    sizeof(*workspace.component_elastic)),
+        .component_thermal = calloc(component_capacity ? component_capacity : 1,
+                                    sizeof(*workspace.component_thermal)),
+        .component_rate_capacity = component_capacity,
+        .reaction_rates = calloc(reaction_capacity ? reaction_capacity : 1,
+                                 sizeof(*workspace.reaction_rates)),
+        .reaction_rate_capacity = reaction_capacity
+    };
     alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
     alea_tally_results_t* tallies = options->tally_plan ?
         alea_tally_results_create(options->tally_plan) : NULL;
     if (!path_sum || !path_sum_squared || !history_path || !bank || !emitted ||
+        !workspace.components || !workspace.component_total ||
+        !workspace.component_elastic || !workspace.component_thermal ||
+        !workspace.reaction_rates ||
         !navigator || (options->tally_plan && !tallies)) {
         free(path_sum); free(path_sum_squared); free(history_path);
         free(bank); free(emitted);
+        free(workspace.components); free(workspace.component_total);
+        free(workspace.component_elastic); free(workspace.component_thermal);
+        free(workspace.reaction_rates);
         alea_tally_results_free(tallies);
         alea_ray_navigator_destroy(navigator);
         return ALEA_ERR_OUT_OF_MEMORY;
@@ -185,6 +221,10 @@ alea_error_t alea_transport_run_sampled_source(
             }
             double remaining_tau = 0.0;
             bool new_flight = true;
+            bool new_urr_realization = true;
+            bool urr_started = false;
+            int urr_material_id = 0;
+            uint32_t urr_event = 0;
             bool finished = false;
             uint32_t collisions = 0;
             while (!finished) {
@@ -210,6 +250,7 @@ alea_error_t alea_transport_run_sampled_source(
                         break;
                     }
                     new_flight = false;
+                    new_urr_realization = true;
                 }
                 alea_nuc_evaluation_t evaluation;
                 double sigma = 0.0;
@@ -222,8 +263,32 @@ alea_error_t alea_transport_run_sampled_source(
                             alea_nuc_cell_bindings_get(bindings,
                                 (size_t)location.cell_index,
                                 particle.type);
-                        err = prepared ? alea_nuc_evaluate(prepared, &particle,
-                            &evaluation) : ALEA_ERR_NOT_FOUND;
+                        if (!prepared) err = ALEA_ERR_NOT_FOUND;
+                        else if (particle.type == ALEA_NUC_PARTICLE_NEUTRON) {
+                            if (new_urr_realization ||
+                                location.material_id != urr_material_id) {
+                                /* Reuse the event's quantiles across adjacent
+                                 * cells of one material and one flight. The
+                                 * address counts material/flight realizations,
+                                 * not geometry-boundary events. */
+                                if (urr_started && urr_event == UINT32_MAX)
+                                    err = ALEA_ERR_OVERFLOW;
+                                else if (urr_started) ++urr_event;
+                                urr_started = true;
+                                urr_material_id = location.material_id;
+                                new_urr_realization = false;
+                            }
+                            alea_nuc_rng_t urr_rng;
+                            if (err == ALEA_OK)
+                                err = alea_nuc_rng_init(&urr_rng, options->seed,
+                                    h, particle_ordinal, urr_event,
+                                    ALEA_NUC_RNG_URR);
+                            if (err == ALEA_OK)
+                                err = alea_nuc_evaluate_urr(prepared, &particle,
+                                    alea_nuc_rng_uniform, &urr_rng, &workspace,
+                                    &evaluation);
+                        } else err = alea_nuc_evaluate(prepared, &particle,
+                            &evaluation);
                         if (err == ALEA_OK) sigma = evaluation.macro_total;
                     }
                     if (err != ALEA_OK || sigma < 0.0 || !isfinite(sigma)) {
@@ -232,7 +297,7 @@ alea_error_t alea_transport_run_sampled_source(
                             err == ALEA_OK ? ALEA_ERR_INVALID_STATE : err);
                         break;
                     }
-                }
+                } else new_urr_realization = true;
 
                 bool collision_now = location.kind == ALEA_NAV_MATERIAL &&
                                      sigma > 0.0 && remaining_tau == 0.0;
@@ -526,6 +591,11 @@ alea_error_t alea_transport_run_sampled_source(
     free(history_path);
     free(bank);
     free(emitted);
+    free(workspace.components);
+    free(workspace.component_total);
+    free(workspace.component_elastic);
+    free(workspace.component_thermal);
+    free(workspace.reaction_rates);
     if (err != ALEA_OK) {
         alea_transport_result_free(&result);
         return err;

@@ -170,8 +170,9 @@ typedef struct {
  * Initialize output to zero before its first use and free a successful result
  * before reusing it. Bindings must be valid for every history. The bank and
  * event limits apply to each complete source history. Produced photons are
- * tracked when photon bindings are available. White/periodic boundaries
- * and URR sampling return explicit errors.
+ * tracked when photon bindings are available. Neutron URR probability tables
+ * are sampled once per material and flight and retained across adjacent cells
+ * of the same material. White/periodic boundaries return explicit errors.
  * On failure output is zeroed; failure identifies the first incomplete
  * particle when tracking has begun. */
 alea_error_t alea_transport_run_fixed_neutron(
