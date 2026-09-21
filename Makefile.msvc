@@ -280,6 +280,7 @@ LUA_BIND_OBJS = \
 		$(BUILD)\lua_bind\lua_materials.obj \
 		$(BUILD)\lua_bind\lua_mesh.obj \
 		$(BUILD)\lua_bind\lua_nucdata.obj \
+		$(BUILD)\lua_bind\lua_transport.obj \
 		$(BUILD)\lua_bind\lua_ops.obj \
 		$(BUILD)\lua_bind\lua_query.obj \
 		$(BUILD)\lua_bind\lua_raycast.obj \
@@ -311,9 +312,10 @@ MODULE_LINK = /link \
 	/WHOLEARCHIVE:$(LIB_MCNP) \
 	/WHOLEARCHIVE:$(LIB_OPENMC) \
 	/WHOLEARCHIVE:$(LIB_SERPENT) \
+	/WHOLEARCHIVE:$(LIB_TRANSPORT) \
 	/WHOLEARCHIVE:$(LIB_NUCDATA)
 
-TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\material_binding.obj $(BUILD)\transport\tally.obj
+TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\material_binding.obj $(BUILD)\transport\source.obj $(BUILD)\transport\tally.obj
 
 ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
@@ -336,6 +338,7 @@ HEADERS = \
 	include\alea_mcnp.h \
 	include\alea_mesh.h \
 	include\alea_transport.h \
+	include\alea_source.h \
 	include\alea_tally.h \
 	include\alea_nucdata.h \
 	include\alea_nucdata_types.h \
@@ -669,6 +672,9 @@ $(BUILD)\transport\fixed_source.obj: $(SRC)\transport\fixed_source.c dirs
 $(BUILD)\transport\material_binding.obj: $(SRC)\transport\material_binding.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\material_binding.c
 
+$(BUILD)\transport\source.obj: $(SRC)\transport\source.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\source.c
+
 $(BUILD)\transport\tally.obj: $(SRC)\transport\tally.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\tally.c
 
@@ -849,6 +855,9 @@ $(BUILD)\lua_bind\lua_mesh.obj: $(SRC)\lua_bind\lua_mesh.c dirs
 $(BUILD)\lua_bind\lua_nucdata.obj: $(SRC)\lua_bind\lua_nucdata.c dirs
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_nucdata.c
 
+$(BUILD)\lua_bind\lua_transport.obj: $(SRC)\lua_bind\lua_transport.c dirs
+	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_transport.c
+
 $(BUILD)\lua_bind\lua_ops.obj: $(SRC)\lua_bind\lua_ops.c dirs
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_ops.c
 
@@ -879,13 +888,13 @@ $(BUILD)\lua_bind\lua_util.obj: $(SRC)\lua_bind\lua_util.c dirs
 $(BUILD)\lua_bind\lua_main.obj: $(SRC)\lua_bind\lua_main.c dirs
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_main.c
 
-$(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA)
+$(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA)
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(MODULE_LINK)
 
 # ============================================================================
 # Tests
 # ============================================================================
-TEST_LINK = $(MODULE_LINK) /WHOLEARCHIVE:$(LIB_TRANSPORT)
+TEST_LINK = $(MODULE_LINK)
 
 # Build + run every tests\unit\*.c and tests\integration\*.c.
 # nmake has no $(wildcard); a cmd FOR loop discovers the sources at run time.

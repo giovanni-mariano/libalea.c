@@ -29,6 +29,7 @@
 #include "alea_slice.h"
 #include "alea_types.h"
 #include "alea_transport.h"
+#include "alea_source.h"
 #include "alea_tally.h"
 
 #ifdef alea_surface_at

@@ -39,6 +39,8 @@
 #include "alea_geo_validator.h"
 #include "alea_mesh.h"
 #include "alea_nucdata.h"
+#include "alea_transport.h"
+#include "alea_source.h"
 
 #include <signal.h>
 
@@ -1234,4 +1236,5 @@ static PyTypeObject PyAleaSystemType = {
 
 #include "_bind_void.c"
 #include "_bind_nucdata.c"
+#include "_bind_transport.c"
 #include "_bind_module.c"

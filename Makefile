@@ -238,6 +238,7 @@ NUCDATA_SRCS = \
 TRANSPORT_SRCS = \
 	$(TRANSPORT_DIR)/material_binding.c \
 	$(TRANSPORT_DIR)/fixed_source.c \
+	$(TRANSPORT_DIR)/source.c \
 	$(TRANSPORT_DIR)/tally.c
 
 OPENMC_EXPO_SRCS = \
@@ -815,12 +816,12 @@ $(BUILD_DIR)/linenoise/linenoise.o: $(LINENOISE_DIR)/linenoise.c | $(BUILD_DIR)/
 # Platform-specific whole-archive flags for format modules
 CLI_UNAME_S := $(shell uname -s)
 ifeq ($(CLI_UNAME_S),Darwin)
-  CLI_LIBS = -Wl,-force_load,$(LIB_MCNP) -Wl,-force_load,$(LIB_OPENMC) -Wl,-force_load,$(LIB_SERPENT) -Wl,-force_load,$(LIB_NUCDATA) $(LIB_CORE)
+  CLI_LIBS = -Wl,-force_load,$(LIB_MCNP) -Wl,-force_load,$(LIB_OPENMC) -Wl,-force_load,$(LIB_SERPENT) -Wl,-force_load,$(LIB_TRANSPORT) -Wl,-force_load,$(LIB_NUCDATA) $(LIB_CORE)
 else
-  CLI_LIBS = -Wl,--whole-archive $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) -Wl,--no-whole-archive $(LIB_CORE)
+  CLI_LIBS = -Wl,--whole-archive $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA) -Wl,--no-whole-archive $(LIB_CORE)
 endif
 
-$(ALEA_CLI): $(LUA_BIND_DIR)/lua_main.c $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)
+$(ALEA_CLI): $(LUA_BIND_DIR)/lua_main.c $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA) | $(BIN_DIR)
 	@echo "LD  $@"
 	@$(CC) $(CFLAGS) $(INCLUDES) -I$(LUA_DIR) $(LINENOISE_INC) $< $(LUA_BIND_OBJS) $(LINENOISE_OBJ) $(LUA_OBJS) \
 		$(CLI_LIBS) $(CLI_LDFLAGS) -o $@
@@ -831,11 +832,11 @@ else
   LUA_MODULE_LINK = -shared
 endif
 
-$(LUA_CMODULE): $(LUA_BIND_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/lua
+$(LUA_CMODULE): $(LUA_BIND_OBJS) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA) | $(BIN_DIR)/lua
 	@echo "LD  $@"
 	@$(CC) $(LUA_MODULE_LINK) $(LUA_BIND_OBJS) $(CLI_LIBS) $(LDFLAGS) -o $@
 
-$(LUA_CLUSTER_CMODULE): $(LUA_CLUSTER_BIND_OBJ) $(LUA_BIND_OBJS) $(LIB_CLUSTER) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) | $(BIN_DIR)/lua_cluster
+$(LUA_CLUSTER_CMODULE): $(LUA_CLUSTER_BIND_OBJ) $(LUA_BIND_OBJS) $(LIB_CLUSTER) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA) | $(BIN_DIR)/lua_cluster
 	@echo "LD  $@"
 	@$(LUA_CLUSTER_CC) $(LUA_MODULE_LINK) $(LUA_CLUSTER_BIND_OBJ) $(LUA_BIND_OBJS) \
 		$(LIB_CLUSTER) $(CLI_LIBS) $(LDFLAGS) -o $@

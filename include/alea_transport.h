@@ -122,22 +122,6 @@ typedef alea_error_t (*alea_transport_source_sampler_fn)(
     void* context, uint64_t seed, uint32_t history_id,
     alea_transport_source_t* output);
 
-/** Uniform position in an axis-aligned box, isotropic direction, fixed
- * energy, weight, and time. Equal lower/upper coordinates are allowed.
- * Pass this to alea_transport_run_sampled_source with the box as context. */
-typedef struct {
-    double lower[3];
-    double upper[3];
-    alea_nuc_particle_t particle_type;
-    double energy; /* MeV */
-    double weight;
-    double time; /* seconds */
-} alea_transport_box_source_t;
-
-alea_error_t alea_transport_sample_box_isotropic(
-    void* context, uint64_t seed, uint32_t history_id,
-    alea_transport_source_t* output);
-
 typedef struct {
     uint32_t histories;
     uint64_t seed;

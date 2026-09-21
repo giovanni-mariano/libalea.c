@@ -165,6 +165,7 @@ int luaopen_alea_render(lua_State* L);
 int luaopen_alea_mesh(lua_State* L);
 int luaopen_alea_materials(lua_State* L);
 int luaopen_alea_nucdata(lua_State* L);
+int luaopen_alea_transport(lua_State* L);
 int luaopen_alea_svg(lua_State* L);
 
 /* The main module opener (called from lua_main.c) */

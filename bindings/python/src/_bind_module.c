@@ -559,6 +559,10 @@ static PyObject* mod_enable_logging(PyObject* self, PyObject* Py_UNUSED(ignored)
  * ============================================================================ */
 
 static PyMethodDef mod_methods[] = {
+    {"sample_source", (PyCFunction)mod_sample_source, METH_VARARGS | METH_KEYWORDS,
+     "sample_source(source, histories=1, seed=1, history_offset=0) -> dict of NumPy arrays."},
+    {"transport_run", (PyCFunction)mod_transport_run, METH_VARARGS | METH_KEYWORDS,
+     "transport_run(system, xsdir, config) -> dict\n\nRun fixed-source transport with optional tallies."},
 #ifdef PYALEA_USE_MPI
     {"cluster_initialize", mod_cluster_initialize, METH_NOARGS, NULL},
     {"cluster_finalize", mod_cluster_finalize, METH_NOARGS, NULL},
@@ -648,6 +652,7 @@ PyMODINIT_FUNC PyInit__alea(void) {
     if (PyType_Ready(&PyAleaThermalType) < 0) return NULL;
     if (PyType_Ready(&PyAleaNucMaterialType) < 0) return NULL;
     if (PyType_Ready(&PyAleaMultigroupType) < 0) return NULL;
+    if (PyType_Ready(&PyAleaSourceType) < 0) return NULL;
 
     /* Create module */
     PyObject* m = PyModule_Create(&mod_module);
@@ -677,6 +682,10 @@ PyMODINIT_FUNC PyInit__alea(void) {
     }
 
     /* Nuclear data types */
+    Py_INCREF(&PyAleaSourceType);
+    if (PyModule_AddObject(m, "Source", (PyObject*)&PyAleaSourceType) < 0) {
+        Py_DECREF(&PyAleaSourceType); Py_DECREF(m); return NULL;
+    }
     Py_INCREF(&PyAleaXsDirType);
     if (PyModule_AddObject(m, "XsDir", (PyObject*)&PyAleaXsDirType) < 0) {
         Py_DECREF(&PyAleaXsDirType);

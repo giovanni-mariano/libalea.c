@@ -55,49 +55,6 @@ static int valid_source(const alea_transport_source_t* source) {
         isfinite(source->position[2]);
 }
 
-alea_error_t alea_transport_sample_box_isotropic(
-    void* context, uint64_t seed, uint32_t history_id,
-    alea_transport_source_t* output) {
-    if (!context || !output) return ALEA_ERR_NULL_ARG;
-    const alea_transport_box_source_t* box = context;
-    if ((box->particle_type != ALEA_NUC_PARTICLE_NEUTRON &&
-         box->particle_type != ALEA_NUC_PARTICLE_PHOTON) ||
-        !isfinite(box->energy) || box->energy <= 0.0 ||
-        !isfinite(box->weight) || box->weight <= 0.0 ||
-        !isfinite(box->time)) return ALEA_ERR_INVALID_ARG;
-    alea_transport_source_t sample = {0};
-    for (int i = 0; i < 3; ++i) {
-        if (!isfinite(box->lower[i]) || !isfinite(box->upper[i]) ||
-            box->upper[i] < box->lower[i]) return ALEA_ERR_INVALID_ARG;
-        double u;
-        if (alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
-                ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_POSITION, history_id,
-                (uint64_t)i, &u) != 0) return ALEA_ERR_INVALID_STATE;
-        sample.position[i] = box->lower[i] +
-            u * (box->upper[i] - box->lower[i]);
-        if (!isfinite(sample.position[i])) return ALEA_ERR_OVERFLOW;
-    }
-    double u, v;
-    if (alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
-            ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_DIRECTION, history_id,
-            0, &u) != 0 ||
-        alea_rng_uniform53_at(ALEA_RNG_PHILOX4X32_10, seed,
-            ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_DIRECTION, history_id,
-            1, &v) != 0) return ALEA_ERR_INVALID_STATE;
-    double mu = 2.0 * u - 1.0;
-    double phi = 6.2831853071795864769 * v;
-    double transverse = sqrt(fmax(0.0, 1.0 - mu * mu));
-    sample.particle.type = box->particle_type;
-    sample.particle.energy = box->energy;
-    sample.particle.weight = box->weight;
-    sample.particle.time = box->time;
-    sample.particle.direction[0] = transverse * cos(phi);
-    sample.particle.direction[1] = transverse * sin(phi);
-    sample.particle.direction[2] = mu;
-    *output = sample;
-    return ALEA_OK;
-}
-
 static double neutron_speed(double energy) {
     const double mass = NEUTRON_REST_MEV;
     return LIGHT_SPEED_CM_S * sqrt(energy * (energy + 2.0 * mass)) /

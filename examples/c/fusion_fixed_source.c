@@ -8,6 +8,7 @@
  * photoatomic ACE tables available for the geometry materials. */
 
 #include "alea_mcnp.h"
+#include "alea_source.h"
 #include "alea_transport.h"
 
 #include <errno.h>
@@ -76,34 +77,44 @@ int main(int argc, char** argv) {
     }
     uint32_t histories;
     double energy;
-    alea_transport_box_source_t source = {
-        .particle_type = ALEA_NUC_PARTICLE_NEUTRON, .weight = 1.0
+    alea_source_spec_t source_spec = {
+        .particle = ALEA_NUC_PARTICLE_NEUTRON,
+        .space = ALEA_SOURCE_BOX, .angle = ALEA_SOURCE_ISOTROPIC,
+        .weight = 1.0
     };
     if (!parse_histories(argv[3], &histories) ||
         !parse_double(argv[4], &energy) || energy <= 0.0 ||
-        !parse_double(argv[5], &source.lower[0]) ||
-        !parse_double(argv[6], &source.upper[0]) ||
-        !parse_double(argv[7], &source.lower[1]) ||
-        !parse_double(argv[8], &source.upper[1]) ||
-        !parse_double(argv[9], &source.lower[2]) ||
-        !parse_double(argv[10], &source.upper[2])) {
+        !parse_double(argv[5], &source_spec.lower[0]) ||
+        !parse_double(argv[6], &source_spec.upper[0]) ||
+        !parse_double(argv[7], &source_spec.lower[1]) ||
+        !parse_double(argv[8], &source_spec.upper[1]) ||
+        !parse_double(argv[9], &source_spec.lower[2]) ||
+        !parse_double(argv[10], &source_spec.upper[2])) {
         fprintf(stderr, "Invalid history count, energy, or source box\n");
         return 2;
     }
     for (int axis = 0; axis < 3; ++axis) {
-        if (source.upper[axis] < source.lower[axis]) {
+        if (source_spec.upper[axis] < source_spec.lower[axis]) {
             fprintf(stderr, "Source box upper bound is below lower bound\n");
             return 2;
         }
     }
-    source.energy = energy;
+    source_spec.energy = energy;
     int status = 1;
+    alea_source_t* source = NULL;
     mcnp_model_t* model = NULL;
     alea_nuc_xsdir_t* xsdir = NULL;
     alea_nuc_cell_bindings_t* bindings = NULL;
     alea_tally_plan_t* plan = NULL;
     alea_transport_result_t result = {0};
     FILE* csv = NULL;
+
+    alea_error_t err = alea_source_prepare(&source_spec, &source);
+    if (err != ALEA_OK) {
+        fprintf(stderr, "Source preparation failed: %s\n",
+                alea_error_string(err));
+        goto done;
+    }
 
     model = mcnp_load(argv[1]);
     if (!model) {
@@ -127,7 +138,7 @@ int main(int argc, char** argv) {
     };
     uint32_t particles = ALEA_NUC_BIND_NEUTRON |
         (coupled ? ALEA_NUC_BIND_PHOTON : 0);
-    alea_error_t err = alea_nuc_cell_bindings_prepare(model->sys, xsdir,
+    err = alea_nuc_cell_bindings_prepare(model->sys, xsdir,
         particles, &requirements, NULL, &bindings);
     if (err != ALEA_OK) {
         fprintf(stderr, "Nuclear-data binding failed: %s\n",
@@ -162,7 +173,7 @@ int main(int argc, char** argv) {
     };
     alea_transport_failure_t failure = {0};
     err = alea_transport_run_sampled_source(model->sys, bindings,
-        alea_transport_sample_box_isotropic, &source, &options,
+        alea_source_sample, source, &options,
         &result, &failure);
     if (err != ALEA_OK) {
         fprintf(stderr, "Transport failed: %s, history %u, cell %d, "
@@ -201,6 +212,7 @@ int main(int argc, char** argv) {
 done:
     if (csv && fclose(csv) != 0) status = 1;
     alea_transport_result_free(&result);
+    alea_source_free(source);
     alea_tally_plan_free(plan);
     alea_nuc_cell_bindings_free(bindings);
     alea_nuc_xsdir_free(xsdir);

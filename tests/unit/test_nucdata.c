@@ -9,6 +9,7 @@
 
 #include "alea_nucdata.h"
 #include "alea_transport.h"
+#include "alea_source.h"
 #include "alea.h"
 #include "core/alea_system.h"
 #include "rng/alea_rng_distribution.h"
@@ -5742,18 +5743,21 @@ TEST(sampled_source_is_reproducible_across_history_batches) {
     alea_nuc_cell_bindings_t* binding = NULL;
     ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir,
         ALEA_NUC_BIND_NEUTRON, NULL, NULL, &binding), ALEA_OK);
-    alea_transport_box_source_t box = {
+    alea_source_spec_t box_spec = {
         .lower = {-1, -1, -1}, .upper = {1, 1, 1},
-        .particle_type = ALEA_NUC_PARTICLE_NEUTRON,
+        .space = ALEA_SOURCE_BOX, .angle = ALEA_SOURCE_ISOTROPIC,
+        .particle = ALEA_NUC_PARTICLE_NEUTRON,
         .energy = 14.1, .weight = 1, .time = 0
     };
+    alea_source_t* box = NULL;
+    ASSERT_EQ(alea_source_prepare(&box_spec, &box), ALEA_OK);
     alea_transport_source_t first = {0}, replay = {0}, other = {0};
-    ASSERT_EQ(alea_transport_sample_box_isotropic(&box, 123, 5, &first),
+    ASSERT_EQ(alea_source_sample(box, 123, 5, &first),
               ALEA_OK);
-    ASSERT_EQ(alea_transport_sample_box_isotropic(&box, 123, 5, &replay),
+    ASSERT_EQ(alea_source_sample(box, 123, 5, &replay),
               ALEA_OK);
     ASSERT_EQ(memcmp(&first, &replay, sizeof(first)), 0);
-    ASSERT_EQ(alea_transport_sample_box_isotropic(&box, 123, 6, &other),
+    ASSERT_EQ(alea_source_sample(box, 123, 6, &other),
               ALEA_OK);
     ASSERT_TRUE(memcmp(&first, &other, sizeof(first)) != 0);
     for (int i = 0; i < 3; ++i)
@@ -5770,16 +5774,16 @@ TEST(sampled_source_is_reproducible_across_history_batches) {
     alea_transport_result_t full = {0}, left = {0}, right = {0};
     alea_transport_failure_t failure = {0};
     ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
-        alea_transport_sample_box_isotropic, &box, &options,
+        alea_source_sample, box, &options,
         &full, &failure), ALEA_OK);
     options.histories = 12;
     ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
-        alea_transport_sample_box_isotropic, &box, &options,
+        alea_source_sample, box, &options,
         &left, &failure), ALEA_OK);
     options.histories = 18;
     options.history_offset = 12;
     ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
-        alea_transport_sample_box_isotropic, &box, &options,
+        alea_source_sample, box, &options,
         &right, &failure), ALEA_OK);
     ASSERT_EQ(full.leaked, 30);
     ASSERT_EQ(left.leaked + right.leaked, full.leaked);
@@ -5797,7 +5801,7 @@ TEST(sampled_source_is_reproducible_across_history_batches) {
     ASSERT_NULL(right.track_length);
     options.history_offset = UINT32_MAX;
     ASSERT_EQ(alea_transport_run_sampled_source(sys, binding,
-        alea_transport_sample_box_isotropic, &box, &options,
+        alea_source_sample, box, &options,
         &right, &failure), ALEA_ERR_OVERFLOW);
 
     alea_tally_plan_t* plan = alea_tally_plan_create(sys);
@@ -5824,6 +5828,7 @@ TEST(sampled_source_is_reproducible_across_history_batches) {
     ASSERT_NEAR(view.sum_squared[1], 72.0, 1e-12);
     alea_transport_result_free(&right);
     alea_tally_plan_free(plan);
+    alea_source_free(box);
     alea_transport_result_free(&full);
     alea_transport_result_free(&left);
     alea_nuc_cell_bindings_free(binding);

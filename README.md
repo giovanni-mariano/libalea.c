@@ -347,7 +347,7 @@ No separate threading runtime is required.
 | `libalea_transport.a` | Geometry/material bindings and fixed-source neutron histories; depends on nuclear data and core geometry |
 | `libalea_full.a` | Core, MCNP, OpenMC, Serpent, nuclear data, and transport in one archive |
 
-Transport applications include `alea_transport.h` and link in dependency order:
+Transport applications include `alea_transport.h` and `alea_source.h` and link in dependency order:
 
 ```sh
 gcc -o myapp myapp.c -Iinclude bin/libalea_transport.a bin/libalea_nucdata.a bin/libalea.a -lm -pthread
@@ -366,8 +366,9 @@ emitted neutrons and photons in one source history. A photon source can use
 the full family and `max_pending_particles` bounds the shared bank (zero
 selects 1024). The legacy per-cell path arrays retain neutron-only scores.
 `alea_transport_run_sampled_source()` samples a new source particle for every
-history; `alea_transport_sample_box_isotropic()` provides a reproducible
-uniform-box, isotropic monoenergetic source. `history_offset` allows
+history; `alea_source_prepare()` and `alea_source_sample()` provide reusable
+component-based sources, including uniform boxes with isotropic direction.
+`history_offset` allows
 reproducible nonoverlapping batches. A runnable MCNP/ACE example and result
 normalization are in [the fixed-source workflow](docs/FIXED_SOURCE_WORKFLOW.md).
 Optional tally plans can be attached through `alea_transport_options_t.tally_plan`.

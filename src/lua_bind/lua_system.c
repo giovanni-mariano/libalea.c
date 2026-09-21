@@ -293,6 +293,7 @@ int luaopen_alea(lua_State* L) {
     luaopen_alea_mesh(L);
     luaopen_alea_materials(L);
     luaopen_alea_nucdata(L);
+    luaopen_alea_transport(L);
     luaopen_alea_svg(L);
 
     /* Set as global */

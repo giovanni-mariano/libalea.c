@@ -13,9 +13,9 @@ __version__ = _alea.version()
 # no longer publishes it accidentally through ``from pyalea import *``.
 _PUBLIC_NAMES = {
     "System", "VoidResult", "XsDir", "Nuclide", "ThermalScattering",
-    "NucMaterial", "Multigroup",
+    "NucMaterial", "Multigroup", "Source", "sample_source",
     "load_mcnp", "load_mcnp_string", "load_openmc", "load_openmc_string",
-    "generate_void", "version", "parallel_max_threads", "set_parallel_threads",
+    "generate_void", "transport_run", "version", "parallel_max_threads", "set_parallel_threads",
     "get_error", "clear_error", "set_log_level", "get_log_level",
     "primitive_evaluate",
     "enable_logging", "disable_logging", "parse_zaid", "reaction_classify",
