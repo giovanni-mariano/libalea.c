@@ -737,13 +737,29 @@ int alea_transition_slice_stats(
  * upper edges belong to the neighboring tile; the domain's outer upper edge
  * belongs to the final tile. Support overlap is not part of core ownership.
  *
- * A verified result currently requires every root cell that may affect the
- * core tile to consist entirely of vertical X/Y planes, or at most two
- * vertical planes when one is oblique. A two-plane case requires parallel
- * oblique normals or a line intersection separated from the core boundary.
- * The XY slice axes
- * may be reversed or swapped. Distant cells are excluded only by
- * conservative analytic bounds;
+ * A verified result currently requires a coordinate-aligned slice. Root
+ * cells made from world-axis planes can be classified in XY, XZ, or YZ;
+ * planes parallel to the slice must have a sign separated from zero. These
+ * slices also support projected plane lines. Small one- and two-line cases
+ * use dedicated proofs; larger arrangements of at most 63 lines split the
+ * tile into convex faces under the caller's work and scratch budgets. The
+ * dedicated two-line band
+ * proof uses matching or reversed world normals. Lines and intersections
+ * must be numerically separated from ambiguous vertices and tile corners.
+ * Planes with a constant, separated sign across the slice may also participate.
+ * Spheres and SPH macrobodies participate only when the entire tile has a
+ * conservatively separated inside or outside sign. Tiles crossed or touched
+ * by a curved boundary remain unresolved except for an isolated sphere cell
+ * whose circular section is contained or crosses page edges transversely,
+ * without corner coincidences.
+ * Such sections use a separate circle record with inside/outside ownership;
+ * verified intervals are always straight.
+ * Two simple inside-sphere cells with fully contained, transverse circles
+ * are split into verified arc records at their two intersections. Strictly
+ * nested circles use two complete-circle records. Tangent, coincident, or
+ * page-clipped circle pairs remain unresolved.
+ * Slice axes may be reversed or swapped. Distant cells are excluded only
+ * by conservative analytic bounds;
  * uncertain bounds retain the cell and may leave the tile unresolved. The
  * critical scan also retains contextual findings; its candidate counts are
  * diagnostic only. */
@@ -755,14 +771,19 @@ typedef enum {
     ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING = 1,
     ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT,
     ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY,
-    ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL
+    ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL,
+    ALEA_SLICE_ERROR_UNRESOLVED_SLICE_FRAME,
+    ALEA_SLICE_ERROR_UNRESOLVED_PRIMITIVE,
+    ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE,
+    ALEA_SLICE_ERROR_UNRESOLVED_PLANAR_ARRANGEMENT,
+    ALEA_SLICE_ERROR_UNRESOLVED_COINCIDENT_SURFACES
 } alea_slice_error_unresolved_reason_t;
 
 #define ALEA_SLICE_ERROR_OWNER_CAPACITY 16
 #define ALEA_SLICE_ERROR_POLYGON_CAPACITY 8
 
-/* A face of the partition inside the required domain. Region records are
- * emitted for gaps and overlaps, including a defect filling the whole tile. */
+/* A convex part of a defective face inside the required domain. A face with
+ * more vertices than the fixed polygon capacity is emitted as triangles. */
 typedef struct {
     double uv_min[2], uv_max[2];
     double uv_min_uncertainty[2], uv_max_uncertainty[2];
@@ -795,6 +816,23 @@ typedef struct {
     int positive_owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
 } alea_slice_error_interval_t;
 
+/* A sphere's analytic circular boundary piece and its two adjacent faces.
+ * Angles increase counterclockwise; end_angle may exceed 2*pi for a wrapped
+ * arc. A complete circle uses [0, 2*pi]. Drawing clips each piece to the
+ * receipt's core bounds and tessellates it with an explicit error bound. */
+typedef struct {
+    int surface_id;
+    uint32_t primitive_id;
+    double center_uv[2];
+    double radius;
+    double geometry_uncertainty;
+    double start_angle, end_angle;
+    alea_point_coverage_kind_t inside_kind, outside_kind;
+    size_t inside_owner_count, outside_owner_count;
+    int inside_owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    int outside_owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+} alea_slice_error_circle_t;
+
 typedef struct {
     size_t struct_size;
     alea_slice_view_t view;
@@ -825,6 +863,7 @@ typedef struct {
     size_t omitted_contextual_findings;
     size_t omitted_contextual_boundary_evidence;
     size_t verified_interval_count;
+    size_t verified_circle_count;
     size_t region_count;
     alea_transition_slice_critical_stop_reason_t scan_stop_reason;
     /* Applies to the entire core rectangle. No subregion is certified. */
@@ -832,8 +871,8 @@ typedef struct {
     /* The existing critical scan finished; this is not candidate-discovery
      * certification or a clean geometry verdict. */
     int requested_work_complete;
-    /* True only after every face and adjacent physical line in the core has
-     * been classified under the supported proof path. */
+    /* True only after every face and adjacent physical boundary in the core
+     * has been classified under the supported proof path. */
     int scope_classified;
     /* All findings found by the executed scan were retained. */
     int output_complete;
@@ -863,6 +902,10 @@ size_t alea_slice_error_page_interval_count(const alea_slice_error_page_t* page)
 int alea_slice_error_page_interval_get(const alea_slice_error_page_t* page,
                                        size_t index,
                                        alea_slice_error_interval_t* out_interval);
+size_t alea_slice_error_page_circle_count(const alea_slice_error_page_t* page);
+int alea_slice_error_page_circle_get(const alea_slice_error_page_t* page,
+                                    size_t index,
+                                    alea_slice_error_circle_t* out_circle);
 size_t alea_slice_error_page_region_count(const alea_slice_error_page_t* page);
 int alea_slice_error_page_region_get(const alea_slice_error_page_t* page,
                                      size_t index,

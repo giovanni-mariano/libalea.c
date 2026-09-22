@@ -87,8 +87,102 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     sphere.add_cell(2, inside)
     unresolved = sphere.slice_error_page(*args)
     assert unresolved["receipt"]["scope_classified"] is False
+    assert unresolved["receipt"]["unresolved_reason"] == "unsupported_primitive"
+    assert unresolved["unresolved"][0]["reason"] == "unsupported_primitive"
     assert unresolved["intervals"] == []
     assert unresolved["unresolved"]
+
+
+def test_slice_error_page_keeps_plane_boundary_with_separated_sphere():
+    system = pyalea.System()
+    _, _, sphere_inside = system.sphere_surface(1060, 0, 0, 0, 10)
+    _, _, plane_negative = system.plane_surface(1061, 1, 0, 0, 0)
+    system.add_cell(1060, system.create_intersection(
+        sphere_inside, plane_negative))
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1))
+    assert page["receipt"]["scope_classified"] is True
+    assert page["unresolved"] == []
+    assert len(page["intervals"]) == 1
+    assert page["intervals"][0]["surface_id"] == 1061
+    assert page["regions"][0]["kind"] == "gap"
+
+
+def test_slice_error_page_reports_verified_isolated_circle():
+    system = pyalea.System()
+    _, _, inside = system.sphere_surface(1063, 0, 0, 0, 0.5)
+    system.add_cell(1063, inside)
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1))
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["verified_circle_count"] == 1
+    assert page["intervals"] == []
+    assert page["regions"] == []
+    circle, = page["circles"]
+    assert circle["surface_id"] == 1063
+    assert circle["center_uv"] == (0.0, 0.0)
+    assert circle["radius"] == pytest.approx(0.5)
+    assert circle["inside_kind"] == "unique"
+    assert circle["outside_kind"] == "gap"
+
+
+def test_slice_error_page_reports_transverse_circle_arcs():
+    system = pyalea.System()
+    _, _, left = system.sphere_surface(1070, -0.3, 0, 0, 0.6)
+    _, _, right = system.sphere_surface(1071, 0.3, 0, 0, 0.6)
+    system.add_cell(1070, left)
+    system.add_cell(1071, right)
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1))
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["verified_circle_count"] == 4
+    assert sum(arc["inside_kind"] == "overlap"
+               for arc in page["circles"]) == 2
+    assert sum(arc["outside_kind"] == "gap"
+               for arc in page["circles"]) == 2
+    assert all(arc["start_angle"] < arc["end_angle"]
+               for arc in page["circles"])
+
+
+def test_slice_error_page_reports_nested_circle_faces():
+    system = pyalea.System()
+    _, _, outer = system.sphere_surface(1072, 0, 0, 0, 0.8)
+    _, _, inner = system.sphere_surface(1073, 0, 0, 0, 0.3)
+    system.add_cell(1072, outer)
+    system.add_cell(1073, inner)
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-2, 2, -2, 2), (-2, 2, -2, 2))
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["verified_circle_count"] == 2
+    assert [arc["inside_kind"] for arc in page["circles"]] == [
+        "unique", "overlap"]
+    assert [arc["outside_kind"] for arc in page["circles"]] == [
+        "gap", "unique"]
+
+
+def test_slice_error_page_exposes_three_line_gap():
+    system = pyalea.System()
+    _, x_positive, x_negative = system.plane_surface(1170, 1, 0, 0, 0)
+    _, y_positive, y_negative = system.plane_surface(1171, 0, 1, 0, 0)
+    _, diagonal_positive, _ = system.plane_surface(1172, 1, 1, 0, -0.8)
+    system.add_cell(1170, x_negative)
+    system.add_cell(1171, system.create_intersection(x_positive, y_negative))
+    system.add_cell(1172, system.create_intersection(
+        system.create_intersection(x_positive, y_positive),
+        diagonal_positive))
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1))
+    assert page["receipt"]["scope_classified"] is True
+    assert len(page["regions"]) == 1
+    assert page["regions"][0]["kind"] == "gap"
+    assert len(page["intervals"]) == 3
+    assert {interval["surface_id"] for interval in page["intervals"]} == {
+        1170, 1171, 1172}
 
 
 def test_slice_error_page_exposes_verified_oblique_polygon():

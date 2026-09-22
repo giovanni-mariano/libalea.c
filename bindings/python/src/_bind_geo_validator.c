@@ -1809,6 +1809,16 @@ static const char* slice_error_reason_name(
         return "unsupported_geometry";
     case ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL:
         return "numerical_unresolved";
+    case ALEA_SLICE_ERROR_UNRESOLVED_SLICE_FRAME:
+        return "unsupported_slice_frame";
+    case ALEA_SLICE_ERROR_UNRESOLVED_PRIMITIVE:
+        return "unsupported_primitive";
+    case ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE:
+        return "unsupported_occurrence";
+    case ALEA_SLICE_ERROR_UNRESOLVED_PLANAR_ARRANGEMENT:
+        return "unsupported_planar_arrangement";
+    case ALEA_SLICE_ERROR_UNRESOLVED_COINCIDENT_SURFACES:
+        return "coincident_surfaces";
     }
     return "unknown";
 }
@@ -1848,6 +1858,8 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
              PyLong_FromSize_t(receipt.omitted_contextual_boundary_evidence));
     PAGE_SET("verified_interval_count",
              PyLong_FromSize_t(receipt.verified_interval_count));
+    PAGE_SET("verified_circle_count",
+             PyLong_FromSize_t(receipt.verified_circle_count));
     PAGE_SET("region_count", PyLong_FromSize_t(receipt.region_count));
     PAGE_SET("scan_stop_reason", PyUnicode_FromString(
              alea_transition_slice_critical_stop_reason_name(
@@ -1906,6 +1918,47 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
         PyList_SET_ITEM(intervals, i, item);
     }
     if (dict_set_new(out, "intervals", intervals) < 0) goto failed;
+
+    PyObject* circles = PyList_New(
+        (Py_ssize_t)alea_slice_error_page_circle_count(page));
+    if (!circles) goto failed;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(circles); ++i) {
+        alea_slice_error_circle_t circle;
+        if (alea_slice_error_page_circle_get(page, (size_t)i, &circle)) {
+            Py_DECREF(circles); goto failed;
+        }
+        PyObject* item = PyDict_New();
+        if (!item) { Py_DECREF(circles); goto failed; }
+#define CIRCLE_SET(KEY, VALUE) \
+        if (dict_set_new(item, KEY, VALUE) < 0) { \
+            Py_DECREF(item); Py_DECREF(circles); goto failed; \
+        }
+        CIRCLE_SET("evidence_scope",
+                   PyUnicode_FromString("verified_circle"));
+        CIRCLE_SET("surface_id", PyLong_FromLong(circle.surface_id));
+        CIRCLE_SET("primitive_id",
+                   PyLong_FromUnsignedLong(circle.primitive_id));
+        CIRCLE_SET("center_uv", Py_BuildValue("(dd)",
+                   circle.center_uv[0], circle.center_uv[1]));
+        CIRCLE_SET("radius", PyFloat_FromDouble(circle.radius));
+        CIRCLE_SET("geometry_uncertainty",
+                   PyFloat_FromDouble(circle.geometry_uncertainty));
+        CIRCLE_SET("start_angle", PyFloat_FromDouble(circle.start_angle));
+        CIRCLE_SET("end_angle", PyFloat_FromDouble(circle.end_angle));
+        CIRCLE_SET("inside_kind", PyUnicode_FromString(
+                   point_coverage_kind_name(circle.inside_kind)));
+        CIRCLE_SET("outside_kind", PyUnicode_FromString(
+                   point_coverage_kind_name(circle.outside_kind)));
+        CIRCLE_SET("inside_owner_cell_ids", slice_error_owner_ids(
+                   circle.inside_owner_cell_ids,
+                   circle.inside_owner_count));
+        CIRCLE_SET("outside_owner_cell_ids", slice_error_owner_ids(
+                   circle.outside_owner_cell_ids,
+                   circle.outside_owner_count));
+#undef CIRCLE_SET
+        PyList_SET_ITEM(circles, i, item);
+    }
+    if (dict_set_new(out, "circles", circles) < 0) goto failed;
 
     PyObject* regions = PyList_New(
         (Py_ssize_t)alea_slice_error_page_region_count(page));
