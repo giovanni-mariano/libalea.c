@@ -2013,6 +2013,201 @@ failed:
     return NULL;
 }
 
+static int slice_error_python_options(
+    PyAleaSystemObject* self, PyObject* origin_obj, PyObject* normal_obj,
+    PyObject* up_obj, PyObject* view_obj, PyObject* domain_obj,
+    Py_ssize_t columns, Py_ssize_t rows, PyObject* opts,
+    Py_ssize_t max_index_bytes, alea_slice_error_query_options_t* options) {
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return -1;
+    }
+    if (columns <= 0 || rows <= 0 || max_index_bytes < 0 ||
+        (size_t)columns > SIZE_MAX / (size_t)rows) {
+        PyErr_SetString(PyExc_ValueError,
+                        "tile counts must be positive and index budget non-negative");
+        return -1;
+    }
+    double origin[3], normal[3], up[3], view_bounds[4], domain[4];
+    if (transition_parse_vec3(origin_obj, "origin", origin) < 0 ||
+        transition_parse_vec3(normal_obj, "normal", normal) < 0 ||
+        transition_parse_vec3(up_obj, "up", up) < 0 ||
+        slice_error_parse_bounds4(view_obj, "view_bounds", view_bounds) < 0 ||
+        slice_error_parse_bounds4(domain_obj, "required_bounds", domain) < 0)
+        return -1;
+    alea_slice_error_query_options_init(options);
+    alea_slice_view_init(&options->view, origin[0], origin[1], origin[2],
+                         normal[0], normal[1], normal[2],
+                         up[0], up[1], up[2],
+                         view_bounds[0], view_bounds[1],
+                         view_bounds[2], view_bounds[3]);
+    options->required_uv_min[0] = domain[0];
+    options->required_uv_max[0] = domain[1];
+    options->required_uv_min[1] = domain[2];
+    options->required_uv_max[1] = domain[3];
+    options->tile_columns = (size_t)columns;
+    options->tile_rows = (size_t)rows;
+    if (max_index_bytes)
+        options->max_index_bytes = (size_t)max_index_bytes;
+    if (parse_transition_slice_options(opts, &options->scan_options) < 0)
+        return -1;
+    return ensure_query_acceleration(self);
+}
+
+typedef struct {
+    PyObject_HEAD
+    alea_slice_error_query_t* query;
+    PyAleaSystemObject* system;
+    alea_system_t* source_sys;
+} PyAleaSliceErrorQueryObject;
+
+static PyTypeObject PyAleaSliceErrorQueryType;
+
+static void PyAleaSliceErrorQuery_dealloc(PyAleaSliceErrorQueryObject* self) {
+    alea_slice_error_query_destroy(self->query);
+    Py_XDECREF(self->system);
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
+static PyObject* PyAleaSliceErrorQuery_close(
+    PyAleaSliceErrorQueryObject* self, PyObject* ignored) {
+    (void)ignored;
+    alea_slice_error_query_destroy(self->query);
+    self->query = NULL;
+    Py_CLEAR(self->system);
+    self->source_sys = NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject* PyAleaSliceErrorQuery_enter(
+    PyAleaSliceErrorQueryObject* self, PyObject* ignored) {
+    (void)ignored;
+    if (!self->query) {
+        PyErr_SetString(PyExc_RuntimeError, "slice error query is closed");
+        return NULL;
+    }
+    return Py_NewRef(self);
+}
+
+static PyObject* PyAleaSliceErrorQuery_exit(
+    PyAleaSliceErrorQueryObject* self, PyObject* args) {
+    (void)args;
+    alea_slice_error_query_destroy(self->query);
+    self->query = NULL;
+    Py_CLEAR(self->system);
+    self->source_sys = NULL;
+    Py_RETURN_FALSE;
+}
+
+static PyObject* PyAleaSliceErrorQuery_run_page(
+    PyAleaSliceErrorQueryObject* self, PyObject* args) {
+    Py_ssize_t page_index;
+    if (!PyArg_ParseTuple(args, "n", &page_index)) return NULL;
+    if (!self->query || !self->system ||
+        self->system->sys != self->source_sys) {
+        PyErr_SetString(PyExc_RuntimeError, "slice error query is closed or its system was replaced");
+        return NULL;
+    }
+    if (page_index < 0 ||
+        (size_t)page_index >= alea_slice_error_query_page_count(self->query)) {
+        PyErr_SetString(PyExc_IndexError, "slice error page index out of range");
+        return NULL;
+    }
+    alea_slice_error_page_t* page = alea_slice_error_page_create();
+    if (!page) return PyErr_NoMemory();
+    /* Keep the GIL while the native query runs: close(), System.__init__(),
+     * and other Python mutations must not free its borrowed system. */
+    sighandler_func old_sigint = install_sigint();
+    const int rc = alea_slice_error_query_run_page(
+        self->query, (size_t)page_index, page);
+    if (restore_sigint(old_sigint)) {
+        alea_slice_error_page_destroy(page);
+        return NULL;
+    }
+    if (rc != 0) {
+        alea_slice_error_page_destroy(page);
+        PyErr_SetString(PyExc_RuntimeError, alea_error());
+        return NULL;
+    }
+    PyObject* result = slice_error_page_to_py(page);
+    alea_slice_error_page_destroy(page);
+    return result;
+}
+
+static PyObject* PyAleaSliceErrorQuery_get_page_count(
+    PyAleaSliceErrorQueryObject* self, void* ignored) {
+    (void)ignored;
+    if (!self->query) {
+        PyErr_SetString(PyExc_RuntimeError, "slice error query is closed");
+        return NULL;
+    }
+    return PyLong_FromSize_t(alea_slice_error_query_page_count(self->query));
+}
+
+static PyMethodDef PyAleaSliceErrorQuery_methods[] = {
+    {"run_page", (PyCFunction)PyAleaSliceErrorQuery_run_page, METH_VARARGS,
+     "run_page(index) -> dict: classify one page with the retained query."},
+    {"close", (PyCFunction)PyAleaSliceErrorQuery_close, METH_NOARGS,
+     "Release the native query and its system reference."},
+    {"__enter__", (PyCFunction)PyAleaSliceErrorQuery_enter, METH_NOARGS,
+     "Enter a slice error query context."},
+    {"__exit__", (PyCFunction)PyAleaSliceErrorQuery_exit, METH_VARARGS,
+     "Close a slice error query when leaving its context."},
+    {NULL}
+};
+
+static PyGetSetDef PyAleaSliceErrorQuery_getset[] = {
+    {"page_count", (getter)PyAleaSliceErrorQuery_get_page_count, NULL,
+     "Number of pages in the required domain.", NULL},
+    {NULL}
+};
+
+static PyTypeObject PyAleaSliceErrorQueryType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "pyalea._alea.SliceErrorQuery",
+    .tp_doc = PyDoc_STR("Reusable bounded slice error query."),
+    .tp_basicsize = sizeof(PyAleaSliceErrorQueryObject),
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_dealloc = (destructor)PyAleaSliceErrorQuery_dealloc,
+    .tp_methods = PyAleaSliceErrorQuery_methods,
+    .tp_getset = PyAleaSliceErrorQuery_getset,
+};
+
+static PyObject* PyAleaSystem_slice_error_query(
+    PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    PyObject *origin_obj, *normal_obj, *up_obj, *view_obj, *domain_obj;
+    PyObject* opts = NULL;
+    Py_ssize_t columns = 1, rows = 1, max_index_bytes = 0;
+    static char* kwlist[] = {
+        "origin", "normal", "up", "view_bounds", "required_bounds",
+        "tile_columns", "tile_rows", "options", "max_index_bytes", NULL
+    };
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOOOO|nnOn", kwlist,
+            &origin_obj, &normal_obj, &up_obj, &view_obj, &domain_obj,
+            &columns, &rows, &opts, &max_index_bytes)) return NULL;
+    alea_slice_error_query_options_t options;
+    if (slice_error_python_options(self, origin_obj, normal_obj, up_obj,
+            view_obj, domain_obj, columns, rows, opts, max_index_bytes,
+            &options) < 0) return NULL;
+    alea_slice_error_query_t* query =
+        alea_slice_error_query_create(self->sys, &options);
+    if (!query) {
+        PyErr_SetString(PyExc_ValueError, "invalid slice error query");
+        return NULL;
+    }
+    PyAleaSliceErrorQueryObject* result =
+        (PyAleaSliceErrorQueryObject*)PyAleaSliceErrorQueryType.tp_alloc(
+            &PyAleaSliceErrorQueryType, 0);
+    if (!result) {
+        alea_slice_error_query_destroy(query);
+        return NULL;
+    }
+    result->query = query;
+    result->system = (PyAleaSystemObject*)Py_NewRef(self);
+    result->source_sys = self->sys;
+    return (PyObject*)result;
+}
+
 static PyObject* PyAleaSystem_slice_error_page(
     PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
     PyObject *origin_obj, *normal_obj, *up_obj;
@@ -2027,41 +2222,14 @@ static PyObject* PyAleaSystem_slice_error_page(
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOOOO|nnnOn", kwlist,
             &origin_obj, &normal_obj, &up_obj, &view_obj, &domain_obj,
             &columns, &rows, &page_index, &opts, &max_index_bytes)) return NULL;
-    if (!self->sys) {
-        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+    if (page_index < 0) {
+        PyErr_SetString(PyExc_ValueError, "page index must be non-negative");
         return NULL;
     }
-    if (columns <= 0 || rows <= 0 || page_index < 0 ||
-        max_index_bytes < 0) {
-        PyErr_SetString(PyExc_ValueError,
-                        "tile counts must be positive and page/index budgets non-negative");
-        return NULL;
-    }
-    double origin[3], normal[3], up[3], view_bounds[4], domain[4];
-    if (transition_parse_vec3(origin_obj, "origin", origin) < 0 ||
-        transition_parse_vec3(normal_obj, "normal", normal) < 0 ||
-        transition_parse_vec3(up_obj, "up", up) < 0 ||
-        slice_error_parse_bounds4(view_obj, "view_bounds", view_bounds) < 0 ||
-        slice_error_parse_bounds4(domain_obj, "required_bounds", domain) < 0)
-        return NULL;
     alea_slice_error_query_options_t options;
-    alea_slice_error_query_options_init(&options);
-    alea_slice_view_init(&options.view, origin[0], origin[1], origin[2],
-                         normal[0], normal[1], normal[2],
-                         up[0], up[1], up[2],
-                         view_bounds[0], view_bounds[1],
-                         view_bounds[2], view_bounds[3]);
-    options.required_uv_min[0] = domain[0];
-    options.required_uv_max[0] = domain[1];
-    options.required_uv_min[1] = domain[2];
-    options.required_uv_max[1] = domain[3];
-    options.tile_columns = (size_t)columns;
-    options.tile_rows = (size_t)rows;
-    if (max_index_bytes)
-        options.max_index_bytes = (size_t)max_index_bytes;
-    if (parse_transition_slice_options(opts, &options.scan_options) < 0)
-        return NULL;
-    if (ensure_query_acceleration(self) < 0) return NULL;
+    if (slice_error_python_options(self, origin_obj, normal_obj, up_obj,
+            view_obj, domain_obj, columns, rows, opts, max_index_bytes,
+            &options) < 0) return NULL;
     alea_slice_error_query_t* query =
         alea_slice_error_query_create(self->sys, &options);
     if (!query) {

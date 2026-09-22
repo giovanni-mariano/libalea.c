@@ -34,6 +34,11 @@ for _ in range(250):
         error_mode="fast", _as_buffers=True,
     )
     system.__init__()
+    with system.slice_error_query(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1),
+    ) as query:
+        assert query.run_page(0)["receipt"]["scope_classified"]
 
     material = pyalea.NucMaterial()
     material.__init__()

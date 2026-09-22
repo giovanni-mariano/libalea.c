@@ -56,6 +56,29 @@ openmc_xml = system.export_openmc_string()
 serpent_text = system.export_serpent_string()
 ```
 
+## Paged slice error analysis
+
+Use one native query for all pages of a required validation rectangle:
+
+```python
+with system.slice_error_query(
+    origin, normal, up, view_bounds, required_bounds,
+    tile_columns=8, tile_rows=8,
+) as query:
+    for index in range(query.page_count):
+        page = query.run_page(index)
+        consume(page["receipt"], page["intervals"],
+                page["regions"], page["unresolved"])
+```
+
+Pages may be requested in any order. Their receipts share a process-local
+`query_id`; each result remains a Python-owned snapshot after the query closes.
+The query keeps the system alive and rejects pages after a geometry change.
+Keep the system unchanged while a page is running. The query holds Python's
+GIL during each bounded page call to prevent concurrent Python mutation.
+`System.slice_error_page()` remains a convenience call for one page and creates
+a fresh native query each time.
+
 ## Unix development build
 
 Install NumPy and pytest for the selected interpreter, then run:

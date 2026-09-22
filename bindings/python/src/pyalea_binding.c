@@ -1124,6 +1124,12 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "max_index_bytes=0) -> dict\n\n"
      "Return verified intervals and defect regions for a supported slice tile, "
      "or an unresolved tile with its receipt."},
+    {"slice_error_query", (PyCFunction)PyAleaSystem_slice_error_query,
+     METH_VARARGS | METH_KEYWORDS,
+     "slice_error_query(origin, normal, up, view_bounds, required_bounds, "
+     "tile_columns=1, tile_rows=1, options=None, max_index_bytes=0) "
+     "-> SliceErrorQuery\n\n"
+     "Retain the native query and its candidate index across page calls."},
 
     /* Grid overlap check */
     {"check_grid_overlaps", (PyCFunction)PyAleaSystem_check_grid_overlaps,

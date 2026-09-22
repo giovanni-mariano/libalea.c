@@ -646,6 +646,7 @@ PyMODINIT_FUNC PyInit__alea(void) {
 #endif
     /* Initialize types */
     if (PyType_Ready(&PyAleaSystemType) < 0) return NULL;
+    if (PyType_Ready(&PyAleaSliceErrorQueryType) < 0) return NULL;
     if (PyType_Ready(&PyAleaVoidResultType) < 0) return NULL;
     if (PyType_Ready(&PyAleaXsDirType) < 0) return NULL;
     if (PyType_Ready(&PyAleaNuclideType) < 0) return NULL;
@@ -670,6 +671,14 @@ PyMODINIT_FUNC PyInit__alea(void) {
     Py_INCREF(&PyAleaSystemType);
     if (PyModule_AddObject(m, "System", (PyObject*)&PyAleaSystemType) < 0) {
         Py_DECREF(&PyAleaSystemType);
+        Py_DECREF(m);
+        return NULL;
+    }
+
+    Py_INCREF(&PyAleaSliceErrorQueryType);
+    if (PyModule_AddObject(m, "SliceErrorQuery",
+                           (PyObject*)&PyAleaSliceErrorQueryType) < 0) {
+        Py_DECREF(&PyAleaSliceErrorQueryType);
         Py_DECREF(m);
         return NULL;
     }

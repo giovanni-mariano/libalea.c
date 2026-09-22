@@ -12,7 +12,7 @@ __version__ = _alea.version()
 # extension attributes for compatibility, but adding an internal native name
 # no longer publishes it accidentally through ``from pyalea import *``.
 _PUBLIC_NAMES = {
-    "System", "VoidResult", "XsDir", "Nuclide", "ThermalScattering",
+    "System", "SliceErrorQuery", "VoidResult", "XsDir", "Nuclide", "ThermalScattering",
     "NucMaterial", "Multigroup", "Source", "sample_source",
     "load_mcnp", "load_mcnp_string", "load_openmc", "load_openmc_string",
     "generate_void", "transport_run", "version", "parallel_max_threads", "set_parallel_threads",

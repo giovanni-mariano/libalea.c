@@ -149,6 +149,58 @@ def test_slice_error_page_exposes_verified_oblique_polygon():
     assert len(quadrant["regions"][0]["polygon_uv"]) == 4
 
 
+def test_slice_error_query_reuses_identity_and_survives_partial_pages():
+    system = pyalea.System()
+    _, _, negative = system.plane_surface(20, 1.0, 0.0, 0.0, 0.0)
+    system.add_cell(20, negative)
+    args = ((0, 0, 0), (0, 0, 1), (0, 1, 0),
+            (-1, 1, -1, 1), (-1, 1, -1, 1))
+    query = system.slice_error_query(*args, tile_columns=2, tile_rows=2)
+    assert query.page_count == 4
+    pages = [query.run_page(i) for i in (2, 0, 3, 1)]
+    assert {page["receipt"]["page_index"] for page in pages} == {0, 1, 2, 3}
+    assert len({page["receipt"]["query_id"] for page in pages}) == 1
+    assert all(page["receipt"]["scope_classified"] for page in pages)
+    assert query.run_page(0) == pages[1]
+    with pytest.raises(IndexError):
+        query.run_page(4)
+    with pytest.raises(IndexError):
+        query.run_page(-1)
+    query.close()
+    query.close()
+    with pytest.raises(RuntimeError):
+        query.run_page(0)
+
+
+def test_slice_error_query_retains_system_and_rejects_replacement():
+    system = pyalea.System()
+    args = ((0, 0, 0), (0, 0, 1), (0, 1, 0),
+            (-1, 1, -1, 1), (-1, 1, -1, 1))
+    query = system.slice_error_query(*args)
+    del system
+    gc.collect()
+    assert query.run_page(0)["receipt"]["scope_classified"] is True
+    query.close()
+
+    system = pyalea.System()
+    query = system.slice_error_query(*args)
+    system.__init__()
+    with pytest.raises(RuntimeError, match="replaced"):
+        query.run_page(0)
+    query.close()
+
+    query = system.slice_error_query(*args)
+    system.plane_surface(21, 1.0, 0.0, 0.0, 0.0)
+    with pytest.raises(RuntimeError):
+        query.run_page(0)
+    query.close()
+
+    with system.slice_error_query(*args) as query:
+        assert query.run_page(0)["receipt"]["scope_classified"] is True
+    with pytest.raises(RuntimeError):
+        query.run_page(0)
+
+
 @pytest.mark.parametrize(
     ("primitive_type", "parameters", "inside", "outside"),
     [
