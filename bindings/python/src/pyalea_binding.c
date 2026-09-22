@@ -1117,6 +1117,12 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "transition_slice_screen_batch(origin, normal, up, bounds, options=None, "
      "requested_workers=0, max_parallel_scratch_bytes=0) -> dict\n\n"
      "Screen bounded page views with deterministic parallel ordinal output."},
+    {"slice_error_page", (PyCFunction)PyAleaSystem_slice_error_page,
+     METH_VARARGS | METH_KEYWORDS,
+     "slice_error_page(origin, normal, up, view_bounds, required_bounds, "
+     "tile_columns=1, tile_rows=1, page_index=0, options=None) -> dict\n\n"
+     "Return verified intervals and defect regions for a supported slice tile, "
+     "or an unresolved tile with its receipt."},
 
     /* Grid overlap check */
     {"check_grid_overlaps", (PyCFunction)PyAleaSystem_check_grid_overlaps,

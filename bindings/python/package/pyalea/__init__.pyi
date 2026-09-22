@@ -50,6 +50,13 @@ class System:
     def validate_ray_slice_compact(
         self, *args: Any, **kwargs: Any
     ) -> dict[str, Any]: ...
+    def slice_error_page(
+        self, origin: Sequence[float], normal: Sequence[float],
+        up: Sequence[float], view_bounds: Sequence[float],
+        required_bounds: Sequence[float], tile_columns: int = 1,
+        tile_rows: int = 1, page_index: int = 0,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
     def __getattr__(self, name: str) -> Any: ...
 
 class VoidResult:

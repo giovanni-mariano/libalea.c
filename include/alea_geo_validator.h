@@ -728,7 +728,8 @@ int alea_transition_slice_stats(
     alea_transition_slice_stats_t* out_stats);
 
 /* Bounded slice-error analysis pages. The required rectangle is a geometry
- * validation domain in slice coordinates, not a plotting viewport. The query
+ * validation domain in slice coordinates, independent of the plotting
+ * viewport in view. The query
  * borrows sys; callers must keep it alive and must not mutate it during a
  * page call. A generation change invalidates all remaining pages. Pages are
  * addressed by ordinal, so completed results survive a later page failure.
@@ -736,18 +737,49 @@ int alea_transition_slice_stats(
  * upper edges belong to the neighboring tile; the domain's outer upper edge
  * belongs to the final tile. Support overlap is not part of core ownership.
  *
- * This initial page contract runs exhaustive occurrence/critical candidate
- * collection. It publishes no verified intervals or clean verdicts yet:
- * every page has an unresolved classification until the interval and face
- * classifier is implemented. Candidate counts are diagnostic only. */
+ * A verified result currently requires root cells composed entirely of
+ * vertical X/Y planes in an axis-aligned XY slice. Other geometry remains
+ * unresolved. The critical scan also retains contextual findings; its
+ * candidate counts are diagnostic only. */
 typedef struct alea_slice_error_query alea_slice_error_query_t;
 typedef struct alea_slice_error_page alea_slice_error_page_t;
 
 typedef enum {
+    ALEA_SLICE_ERROR_RESOLVED = 0,
     ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING = 1,
     ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT,
-    ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY
+    ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY,
+    ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL
 } alea_slice_error_unresolved_reason_t;
+
+#define ALEA_SLICE_ERROR_OWNER_CAPACITY 16
+
+/* A face of the partition inside the required domain. Region records are
+ * emitted for gaps and overlaps, including a defect filling the whole tile. */
+typedef struct {
+    double uv_min[2], uv_max[2];
+    double uv_min_uncertainty[2], uv_max_uncertainty[2];
+    alea_point_coverage_kind_t kind;
+    size_t owner_count;
+    int owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+} alea_slice_error_region_t;
+
+/* A supported physical line between a defective and a uniquely owned face.
+ * Endpoints may be clipped by the page core; the uncertainty is in slice units.
+ * LEFT/RIGHT refer to the negative/positive coordinate side of axis. */
+typedef struct {
+    alea_slice_boundary_evidence_scope_t evidence_scope;
+    int surface_id;
+    uint32_t primitive_id;
+    int axis; /* 0: constant U, 1: constant V */
+    double uv_start[2], uv_end[2];
+    double endpoint_uncertainty[2];
+    alea_point_coverage_kind_t negative_side_kind;
+    alea_point_coverage_kind_t positive_side_kind;
+    size_t negative_owner_count, positive_owner_count;
+    int negative_owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    int positive_owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+} alea_slice_error_interval_t;
 
 typedef struct {
     size_t struct_size;
@@ -772,13 +804,18 @@ typedef struct {
     size_t candidate_pairs_tested;
     size_t peak_scratch_bytes;
     size_t contextual_finding_count;
+    size_t omitted_contextual_findings;
+    size_t omitted_contextual_boundary_evidence;
+    size_t verified_interval_count;
+    size_t region_count;
     alea_transition_slice_critical_stop_reason_t scan_stop_reason;
     /* Applies to the entire core rectangle. No subregion is certified. */
     alea_slice_error_unresolved_reason_t unresolved_reason;
     /* The existing critical scan finished; this is not candidate-discovery
      * certification or a clean geometry verdict. */
     int requested_work_complete;
-    /* Remains false until partition and adjacent-face proof are implemented. */
+    /* True only after every face and adjacent physical line in the core has
+     * been classified under the supported proof path. */
     int scope_classified;
     /* All findings found by the executed scan were retained. */
     int output_complete;
@@ -804,6 +841,14 @@ size_t alea_slice_error_page_context_finding_count(
 int alea_slice_error_page_context_finding_get(
     const alea_slice_error_page_t* page, size_t index,
     alea_transition_slice_critical_finding_t* out_finding);
+size_t alea_slice_error_page_interval_count(const alea_slice_error_page_t* page);
+int alea_slice_error_page_interval_get(const alea_slice_error_page_t* page,
+                                       size_t index,
+                                       alea_slice_error_interval_t* out_interval);
+size_t alea_slice_error_page_region_count(const alea_slice_error_page_t* page);
+int alea_slice_error_page_region_get(const alea_slice_error_page_t* page,
+                                     size_t index,
+                                     alea_slice_error_region_t* out_region);
 
 /* ==========================================================================
  * COMPACT RAY-SLICE DIRECTIONAL VALIDATION

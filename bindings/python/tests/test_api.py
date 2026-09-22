@@ -54,6 +54,37 @@ def test_surface_boundary_metadata_round_trip():
     assert system.surface_get_boundary(1) == "reflective"
 
 
+def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
+    system = pyalea.System()
+    _, _, negative = system.plane_surface(10, 1.0, 0.0, 0.0, 0.0)
+    system.add_cell(1, negative)
+    args = ((0, 0, 0), (0, 0, 1), (0, 1, 0),
+            (-0.25, 0.25, -0.25, 0.25), (-1, 1, -1, 1))
+
+    page = system.slice_error_page(*args)
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["output_complete"] is True
+    assert page["receipt"]["core_uv_min"] == (-1, -1)
+    assert page["receipt"]["core_uv_max"] == (1, 1)
+    assert len(page["context_findings"]) == page["receipt"]["contextual_finding_count"]
+    assert all(finding["evidence_scope"] == "context"
+               for finding in page["context_findings"])
+    assert page["unresolved"] == []
+    assert len(page["intervals"]) == 1
+    assert page["intervals"][0]["surface_id"] == 10
+    assert page["intervals"][0]["negative_owner_cell_ids"] == [1]
+    assert page["intervals"][0]["positive_side_kind"] == "gap"
+    assert page["regions"][0]["kind"] == "gap"
+
+    sphere = pyalea.System()
+    _, _, inside = sphere.sphere_surface(2, 0, 0, 0, 1)
+    sphere.add_cell(2, inside)
+    unresolved = sphere.slice_error_page(*args)
+    assert unresolved["receipt"]["scope_classified"] is False
+    assert unresolved["intervals"] == []
+    assert unresolved["unresolved"]
+
+
 @pytest.mark.parametrize(
     ("primitive_type", "parameters", "inside", "outside"),
     [

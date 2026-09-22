@@ -1768,3 +1768,296 @@ static PyObject* PyAleaSystem_check_transition(
 
     return build_transition_dict(&result);
 }
+
+static int slice_error_parse_bounds4(PyObject* obj, const char* name,
+                                      double bounds[4]) {
+    PyObject* seq = PySequence_Fast(obj, "bounds must contain four numbers");
+    if (!seq) return -1;
+    if (PySequence_Fast_GET_SIZE(seq) != 4) {
+        Py_DECREF(seq);
+        PyErr_Format(PyExc_ValueError, "%s must contain four numbers", name);
+        return -1;
+    }
+    for (int i = 0; i < 4; ++i) {
+        bounds[i] = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(seq, i));
+        if (PyErr_Occurred()) { Py_DECREF(seq); return -1; }
+    }
+    Py_DECREF(seq);
+    return 0;
+}
+
+static PyObject* slice_error_owner_ids(const int* ids, size_t count) {
+    PyObject* out = PyList_New((Py_ssize_t)count);
+    if (!out) return NULL;
+    for (size_t i = 0; i < count; ++i) {
+        PyObject* id = PyLong_FromLong(ids[i]);
+        if (!id) { Py_DECREF(out); return NULL; }
+        PyList_SET_ITEM(out, (Py_ssize_t)i, id);
+    }
+    return out;
+}
+
+static const char* slice_error_reason_name(
+    alea_slice_error_unresolved_reason_t reason) {
+    switch (reason) {
+    case ALEA_SLICE_ERROR_RESOLVED: return "resolved";
+    case ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING:
+        return "classifier_pending";
+    case ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT:
+        return "candidate_limit";
+    case ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY:
+        return "unsupported_geometry";
+    case ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL:
+        return "numerical_unresolved";
+    }
+    return "unknown";
+}
+
+static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
+    alea_slice_error_page_receipt_t receipt;
+    if (alea_slice_error_page_receipt(page, &receipt) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "slice error page has no receipt");
+        return NULL;
+    }
+    PyObject* out = PyDict_New();
+    PyObject* receipt_dict = PyDict_New();
+    if (!out || !receipt_dict) goto failed;
+#define PAGE_SET(KEY, VALUE) \
+    if (dict_set_new(receipt_dict, KEY, VALUE) < 0) goto failed
+    PAGE_SET("query_id", PyLong_FromUnsignedLongLong(receipt.query_id));
+    PAGE_SET("geometry_generation",
+             PyLong_FromUnsignedLongLong(receipt.geometry_generation));
+    PAGE_SET("page_index", PyLong_FromSize_t(receipt.page_index));
+    PAGE_SET("core_uv_min", Py_BuildValue("(dd)",
+             receipt.core_uv_min[0], receipt.core_uv_min[1]));
+    PAGE_SET("core_uv_max", Py_BuildValue("(dd)",
+             receipt.core_uv_max[0], receipt.core_uv_max[1]));
+    PAGE_SET("occurrence_paths", PyLong_FromSize_t(receipt.occurrence_paths));
+    PAGE_SET("candidate_curves", PyLong_FromSize_t(receipt.candidate_curves));
+    PAGE_SET("candidate_pairs_tested",
+             PyLong_FromSize_t(receipt.candidate_pairs_tested));
+    PAGE_SET("peak_scratch_bytes",
+             PyLong_FromSize_t(receipt.peak_scratch_bytes));
+    PAGE_SET("contextual_finding_count",
+             PyLong_FromSize_t(receipt.contextual_finding_count));
+    PAGE_SET("omitted_contextual_findings",
+             PyLong_FromSize_t(receipt.omitted_contextual_findings));
+    PAGE_SET("omitted_contextual_boundary_evidence",
+             PyLong_FromSize_t(receipt.omitted_contextual_boundary_evidence));
+    PAGE_SET("verified_interval_count",
+             PyLong_FromSize_t(receipt.verified_interval_count));
+    PAGE_SET("region_count", PyLong_FromSize_t(receipt.region_count));
+    PAGE_SET("scan_stop_reason", PyUnicode_FromString(
+             alea_transition_slice_critical_stop_reason_name(
+                 receipt.scan_stop_reason)));
+    PAGE_SET("unresolved_reason", PyUnicode_FromString(
+             slice_error_reason_name(receipt.unresolved_reason)));
+    PAGE_SET("requested_work_complete",
+             PyBool_FromLong(receipt.requested_work_complete));
+    PAGE_SET("scope_classified", PyBool_FromLong(receipt.scope_classified));
+    PAGE_SET("output_complete", PyBool_FromLong(receipt.output_complete));
+#undef PAGE_SET
+    if (dict_set_new(out, "receipt", receipt_dict) < 0) {
+        receipt_dict = NULL;
+        goto failed;
+    }
+    receipt_dict = NULL;
+
+    PyObject* intervals = PyList_New(
+        (Py_ssize_t)alea_slice_error_page_interval_count(page));
+    if (!intervals) goto failed;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(intervals); ++i) {
+        alea_slice_error_interval_t interval;
+        if (alea_slice_error_page_interval_get(page, (size_t)i, &interval)) {
+            Py_DECREF(intervals); goto failed;
+        }
+        PyObject* item = PyDict_New();
+        if (!item) { Py_DECREF(intervals); goto failed; }
+#define INTERVAL_SET(KEY, VALUE) \
+        if (dict_set_new(item, KEY, VALUE) < 0) { \
+            Py_DECREF(item); Py_DECREF(intervals); goto failed; \
+        }
+        INTERVAL_SET("evidence_scope",
+                     PyUnicode_FromString("verified_interval"));
+        INTERVAL_SET("surface_id", PyLong_FromLong(interval.surface_id));
+        INTERVAL_SET("primitive_id",
+                     PyLong_FromUnsignedLong(interval.primitive_id));
+        INTERVAL_SET("axis", PyLong_FromLong(interval.axis));
+        INTERVAL_SET("uv_start", Py_BuildValue("(dd)",
+                     interval.uv_start[0], interval.uv_start[1]));
+        INTERVAL_SET("uv_end", Py_BuildValue("(dd)",
+                     interval.uv_end[0], interval.uv_end[1]));
+        INTERVAL_SET("endpoint_uncertainty", Py_BuildValue("(dd)",
+                     interval.endpoint_uncertainty[0],
+                     interval.endpoint_uncertainty[1]));
+        INTERVAL_SET("negative_side_kind", PyUnicode_FromString(
+                     point_coverage_kind_name(interval.negative_side_kind)));
+        INTERVAL_SET("positive_side_kind", PyUnicode_FromString(
+                     point_coverage_kind_name(interval.positive_side_kind)));
+        INTERVAL_SET("negative_owner_cell_ids", slice_error_owner_ids(
+                     interval.negative_owner_cell_ids,
+                     interval.negative_owner_count));
+        INTERVAL_SET("positive_owner_cell_ids", slice_error_owner_ids(
+                     interval.positive_owner_cell_ids,
+                     interval.positive_owner_count));
+#undef INTERVAL_SET
+        PyList_SET_ITEM(intervals, i, item);
+    }
+    if (dict_set_new(out, "intervals", intervals) < 0) goto failed;
+
+    PyObject* regions = PyList_New(
+        (Py_ssize_t)alea_slice_error_page_region_count(page));
+    if (!regions) goto failed;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(regions); ++i) {
+        alea_slice_error_region_t region;
+        if (alea_slice_error_page_region_get(page, (size_t)i, &region)) {
+            Py_DECREF(regions); goto failed;
+        }
+        PyObject* item = PyDict_New();
+        if (!item) { Py_DECREF(regions); goto failed; }
+#define REGION_SET(KEY, VALUE) \
+        if (dict_set_new(item, KEY, VALUE) < 0) { \
+            Py_DECREF(item); Py_DECREF(regions); goto failed; \
+        }
+        REGION_SET("uv_min", Py_BuildValue("(dd)",
+                   region.uv_min[0], region.uv_min[1]));
+        REGION_SET("uv_max", Py_BuildValue("(dd)",
+                   region.uv_max[0], region.uv_max[1]));
+        REGION_SET("uv_min_uncertainty", Py_BuildValue("(dd)",
+                   region.uv_min_uncertainty[0],
+                   region.uv_min_uncertainty[1]));
+        REGION_SET("uv_max_uncertainty", Py_BuildValue("(dd)",
+                   region.uv_max_uncertainty[0],
+                   region.uv_max_uncertainty[1]));
+        REGION_SET("kind", PyUnicode_FromString(
+                   point_coverage_kind_name(region.kind)));
+        REGION_SET("owner_cell_ids", slice_error_owner_ids(
+                   region.owner_cell_ids, region.owner_count));
+#undef REGION_SET
+        PyList_SET_ITEM(regions, i, item);
+    }
+    if (dict_set_new(out, "regions", regions) < 0) goto failed;
+
+    PyObject* unresolved = PyList_New(receipt.scope_classified ? 0 : 1);
+    if (!unresolved) goto failed;
+    if (!receipt.scope_classified) {
+        PyObject* item = Py_BuildValue(
+            "{s:N,s:N,s:s}",
+            "uv_min", Py_BuildValue("(dd)", receipt.core_uv_min[0],
+                                      receipt.core_uv_min[1]),
+            "uv_max", Py_BuildValue("(dd)", receipt.core_uv_max[0],
+                                      receipt.core_uv_max[1]),
+            "reason", slice_error_reason_name(receipt.unresolved_reason));
+        if (!item) { Py_DECREF(unresolved); goto failed; }
+        PyList_SET_ITEM(unresolved, 0, item);
+    }
+    if (dict_set_new(out, "unresolved", unresolved) < 0) goto failed;
+
+    PyObject* context = PyList_New(
+        (Py_ssize_t)alea_slice_error_page_context_finding_count(page));
+    if (!context) goto failed;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(context); ++i) {
+        alea_transition_slice_critical_finding_t finding;
+        if (alea_slice_error_page_context_finding_get(
+                page, (size_t)i, &finding) != 0) {
+            Py_DECREF(context);
+            PyErr_SetString(PyExc_RuntimeError,
+                            "failed to read contextual finding");
+            goto failed;
+        }
+        PyObject* item = build_transition_dict(&finding.transition);
+        if (!item) { Py_DECREF(context); goto failed; }
+        if (dict_set_new(item, "uv", Py_BuildValue("(dd)",
+                finding.uv[0], finding.uv[1])) < 0 ||
+            dict_set_new(item, "source_cell_id",
+                PyLong_FromLong(finding.source_cell_id)) < 0 ||
+            dict_set_new(item, "source_surface_id",
+                PyLong_FromLong(finding.source_surface_id)) < 0 ||
+            dict_set_new(item, "evidence_scope",
+                PyUnicode_FromString("context")) < 0) {
+            Py_DECREF(item); Py_DECREF(context); goto failed;
+        }
+        PyList_SET_ITEM(context, i, item);
+    }
+    if (dict_set_new(out, "context_findings", context) < 0) goto failed;
+    return out;
+failed:
+    Py_XDECREF(receipt_dict);
+    Py_XDECREF(out);
+    return NULL;
+}
+
+static PyObject* PyAleaSystem_slice_error_page(
+    PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    PyObject *origin_obj, *normal_obj, *up_obj;
+    PyObject *view_obj, *domain_obj, *opts = NULL;
+    Py_ssize_t columns = 1, rows = 1, page_index = 0;
+    static char* kwlist[] = {
+        "origin", "normal", "up", "view_bounds", "required_bounds",
+        "tile_columns", "tile_rows", "page_index", "options", NULL
+    };
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOOOO|nnnO", kwlist,
+            &origin_obj, &normal_obj, &up_obj, &view_obj, &domain_obj,
+            &columns, &rows, &page_index, &opts)) return NULL;
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+    if (columns <= 0 || rows <= 0 || page_index < 0) {
+        PyErr_SetString(PyExc_ValueError,
+                        "tile counts must be positive and page_index non-negative");
+        return NULL;
+    }
+    double origin[3], normal[3], up[3], view_bounds[4], domain[4];
+    if (transition_parse_vec3(origin_obj, "origin", origin) < 0 ||
+        transition_parse_vec3(normal_obj, "normal", normal) < 0 ||
+        transition_parse_vec3(up_obj, "up", up) < 0 ||
+        slice_error_parse_bounds4(view_obj, "view_bounds", view_bounds) < 0 ||
+        slice_error_parse_bounds4(domain_obj, "required_bounds", domain) < 0)
+        return NULL;
+    alea_slice_error_query_options_t options;
+    alea_slice_error_query_options_init(&options);
+    alea_slice_view_init(&options.view, origin[0], origin[1], origin[2],
+                         normal[0], normal[1], normal[2],
+                         up[0], up[1], up[2],
+                         view_bounds[0], view_bounds[1],
+                         view_bounds[2], view_bounds[3]);
+    options.required_uv_min[0] = domain[0];
+    options.required_uv_max[0] = domain[1];
+    options.required_uv_min[1] = domain[2];
+    options.required_uv_max[1] = domain[3];
+    options.tile_columns = (size_t)columns;
+    options.tile_rows = (size_t)rows;
+    if (parse_transition_slice_options(opts, &options.scan_options) < 0)
+        return NULL;
+    if (ensure_query_acceleration(self) < 0) return NULL;
+    alea_slice_error_query_t* query =
+        alea_slice_error_query_create(self->sys, &options);
+    if (!query) {
+        PyErr_SetString(PyExc_ValueError, "invalid slice error query");
+        return NULL;
+    }
+    alea_slice_error_page_t* page = alea_slice_error_page_create();
+    if (!page) {
+        alea_slice_error_query_destroy(query);
+        return PyErr_NoMemory();
+    }
+    int rc;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    rc = alea_slice_error_query_run_page(query, (size_t)page_index, page);
+    Py_END_ALLOW_THREADS
+    alea_slice_error_query_destroy(query);
+    if (restore_sigint(old_sigint)) {
+        alea_slice_error_page_destroy(page);
+        return NULL;
+    }
+    if (rc != 0) {
+        alea_slice_error_page_destroy(page);
+        PyErr_SetString(PyExc_RuntimeError, alea_error());
+        return NULL;
+    }
+    PyObject* result = slice_error_page_to_py(page);
+    alea_slice_error_page_destroy(page);
+    return result;
+}
