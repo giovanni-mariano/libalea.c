@@ -392,6 +392,21 @@ see [transport tally semantics](docs/TRANSPORT_TALLIES.md).
 See [transport tallies](docs/TRANSPORT_TALLIES.md) for score definitions,
 bin ordering, filter semantics, and source-history statistics.
 
+For detector-driven multigroup calculations, include `alea_adjoint.h` and call
+`alea_adjoint_run()`. The detector sampler launches adjoint histories; the
+piecewise-constant `physical_source` array is scored along their tracks.
+`alea_adjoint_sample_box_detector()` samples a uniform isotropic detector box
+and includes its volume and angular normalization in each history weight.
+Supply macroscopic total cross sections and forward group-to-group expected
+production for each material cell. The solver transposes that production
+matrix and reports the detector response and standard error per detector
+history. The current kernel is steady-state and isotropic, supports separate
+neutron or photon runs, and accepts vacuum and specular boundaries. Group data
+must be prepared and validated by the caller; the existing neutron collapse
+contains approximations, and the photon collapse path is not yet implemented.
+Neutron-photon adjoint coupling and continuous-energy adjoint sampling remain
+future extensions.
+
 Link against the core library plus the format modules you need:
 
 ```bash
