@@ -147,6 +147,24 @@ def test_slice_error_page_reports_transverse_circle_arcs():
                for arc in page["circles"])
 
 
+def test_slice_error_page_reports_mixed_plane_circle_boundaries():
+    system = pyalea.System()
+    _, _, plane_negative = system.plane_surface(1074, 1, 0, 0, 0)
+    _, _, sphere_inside = system.sphere_surface(1075, 0, 0, 0, 0.6)
+    system.add_cell(1074, plane_negative)
+    system.add_cell(1075, sphere_inside)
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1))
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["verified_interval_count"] == 3
+    assert page["receipt"]["verified_circle_count"] == 2
+    assert {interval["surface_id"] for interval in page["intervals"]} == {1074}
+    assert {arc["surface_id"] for arc in page["circles"]} == {1075}
+    assert {arc["inside_kind"] for arc in page["circles"]} == {
+        "unique", "overlap"}
+
+
 def test_slice_error_page_reports_nested_circle_faces():
     system = pyalea.System()
     _, _, outer = system.sphere_surface(1072, 0, 0, 0, 0.8)

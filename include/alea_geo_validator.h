@@ -758,6 +758,13 @@ int alea_transition_slice_stats(
  * are split into verified arc records at their two intersections. Strictly
  * nested circles use two complete-circle records. Tangent, coincident, or
  * page-clipped circle pairs remain unresolved.
+ * One simple plane cell and one simple sphere cell admit complete line/circle
+ * partitioning when the sphere section is supported. Zero or two well-
+ * separated global crossings produce one or two circle records; crossings
+ * inside the page split its visible line interval. If the plane misses the
+ * page, the circle still carries the adjacent owner classifications. The
+ * circle may cross page edges. Near-tangent crossings and crossings on page
+ * edges remain unresolved.
  * Slice axes may be reversed or swapped. Distant cells are excluded only
  * by conservative analytic bounds;
  * uncertain bounds retain the cell and may leave the tile unresolved. The

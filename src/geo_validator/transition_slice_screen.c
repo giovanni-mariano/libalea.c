@@ -1145,6 +1145,357 @@ static int slice_error_world_point(const alea_slice_plane_t* frame,
     return 1;
 }
 
+static void slice_error_mixed_owners(
+    const alea_cell_entry_t* plane_cell,
+    const alea_cell_entry_t* sphere_cell,
+    int plane_owned, int sphere_owned,
+    alea_point_coverage_kind_t* kind, size_t* count, int ids[2]) {
+    *count = 0;
+    if (plane_owned) ids[(*count)++] = plane_cell->mc_cell_id;
+    if (sphere_owned) ids[(*count)++] = sphere_cell->mc_cell_id;
+    *kind = *count == 0 ? ALEA_POINT_COVERAGE_GAP
+        : *count == 1 ? ALEA_POINT_COVERAGE_UNIQUE
+        : ALEA_POINT_COVERAGE_OVERLAP;
+}
+
+/* A line and a circle have at most two intersections. Both crossings must be
+ * safely inside the page. The circular arcs may cross the page edge and are
+ * clipped by the consumer to the receipt's core rectangle. */
+static int slice_error_classify_mixed_line_circle(
+    const alea_system_t* sys, const alea_slice_view_t* view,
+    const alea_transition_slice_critical_tile_t* tile,
+    const size_t cells[2], size_t scratch_available, size_t* scratch_used,
+    size_t contextual_bytes, size_t output_limit,
+    alea_slice_error_page_t* out) {
+    const long double tau = 6.283185307179586476925286766559005768L;
+    *scratch_used = 0;
+    const alea_cell_entry_t* cell[2] = {
+        &sys->cells.data[cells[0]], &sys->cells.data[cells[1]]
+    };
+    const alea_node_t* node[2];
+    const alea_primitive_entry_t* primitive[2];
+    int sphere_index = -1, plane_index = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (cell[i]->fill_universe > 0 || cell[i]->lat_type != 0 ||
+            cell[i]->original_root_node_id != ALEA_NODE_ID_INVALID ||
+            cell[i]->root_node_id >= sys->nodes.count) return 0;
+        node[i] = &sys->nodes.data[cell[i]->root_node_id];
+        if (ALEA_GET_OPERATION(node[i]) != ALEA_OP_PRIMITIVE ||
+            node[i]->primitive.primitive_id >= sys->primitives.count)
+            return 0;
+        primitive[i] = &sys->primitives.data[
+            node[i]->primitive.primitive_id];
+        if (primitive[i]->type == ALEA_PRIMITIVE_SPHERE ||
+            primitive[i]->type == ALEA_PRIMITIVE_SPH) {
+            if (sphere_index >= 0) return 0;
+            sphere_index = i;
+        } else if (primitive[i]->type == ALEA_PRIMITIVE_PLANE &&
+                   primitive[i]->payload_index <
+                       sys->primitive_planes.count) {
+            if (plane_index >= 0) return 0;
+            plane_index = i;
+        } else return 0;
+    }
+    if (sphere_index < 0 || plane_index < 0) return 0;
+    if (scratch_available < sizeof(alea_slice_error_circle_t)) return 3;
+    const alea_cell_entry_t* scell = cell[sphere_index];
+    const alea_cell_entry_t* pcell = cell[plane_index];
+    alea_slice_error_page_t source = {0};
+    int status = slice_error_classify_isolated_circle(
+        sys, view, tile, cells[sphere_index], 0, SIZE_MAX, &source);
+    if (status != 1) return status < 0 ? -1 : 0;
+    status = 0;
+    *scratch_used = sizeof(alea_slice_error_circle_t);
+    const alea_slice_error_circle_t* circle = source.circles;
+    long double a, b, c;
+    const alea_plane_data_t* p = &sys->primitive_planes.data[
+        primitive[plane_index]->payload_index];
+    slice_error_project_plane(p, &view->plane, &a, &b, &c);
+    const long double norm = sqrtl(a * a + b * b);
+    if (!(norm > 0.0L) || !isfinite(norm)) goto done;
+    a /= norm; b /= norm; c /= norm;
+    int surface_id = 0;
+    for (size_t i = 0; i < sys->surfaces.count; ++i) {
+        if (sys->surfaces.data[i].primitive_id !=
+            node[plane_index]->primitive.primitive_id) continue;
+        if (surface_id || sys->surfaces.data[i].mc_surface_id <= 0)
+            goto done;
+        surface_id = sys->surfaces.data[i].mc_surface_id;
+    }
+    if (!surface_id) goto done;
+    const long double scale = 1.0L + fabsl(c) +
+        fmaxl(fabsl(tile->uv_min[0]), fabsl(tile->uv_max[0])) +
+        fmaxl(fabsl(tile->uv_min[1]), fabsl(tile->uv_max[1])) +
+        circle->radius;
+    const long double margin = 4096.0L * DBL_EPSILON * scale +
+        32.0L * circle->geometry_uncertainty;
+    if (!isfinite(margin) || !(margin < circle->radius / 64.0L))
+        goto done;
+    const long double corner[4][2] = {
+        {tile->uv_min[0], tile->uv_min[1]},
+        {tile->uv_max[0], tile->uv_min[1]},
+        {tile->uv_max[0], tile->uv_max[1]},
+        {tile->uv_min[0], tile->uv_max[1]}
+    };
+    long double endpoint[2][2];
+    int endpoint_count = 0;
+    int first_corner_negative = -1;
+    for (int i = 0; i < 4; ++i) {
+        const int j = (i + 1) % 4;
+        const long double s0 = a * corner[i][0] + b * corner[i][1] + c;
+        const long double s1 = a * corner[j][0] + b * corner[j][1] + c;
+        if (!isfinite(s0) || !isfinite(s1) ||
+            fabsl(s0) <= margin || fabsl(s1) <= margin) goto done;
+        if (first_corner_negative < 0)
+            first_corner_negative = s0 < 0.0L;
+        if ((s0 < 0.0L) == (s1 < 0.0L)) continue;
+        if (endpoint_count == 2) goto done;
+        const long double t = s0 / (s0 - s1);
+        for (int axis = 0; axis < 2; ++axis)
+            endpoint[endpoint_count][axis] = corner[i][axis] +
+                t * (corner[j][axis] - corner[i][axis]);
+        ++endpoint_count;
+    }
+    if (endpoint_count != 0 && endpoint_count != 2) goto done;
+    const int line_visible = endpoint_count == 2;
+    if (!line_visible) {
+        for (int i = 0; i < 4; ++i)
+            if ((a * corner[i][0] + b * corner[i][1] + c < 0.0L) !=
+                first_corner_negative) goto done;
+        endpoint[0][0] = -c * a + b;
+        endpoint[0][1] = -c * b - a;
+        endpoint[1][0] = -c * a - b;
+        endpoint[1][1] = -c * b + a;
+    }
+    const long double center_u = circle->center_uv[0];
+    const long double center_v = circle->center_uv[1];
+    const long double signed_distance = a * center_u + b * center_v + c;
+    const long double radius = circle->radius;
+    if (!isfinite(signed_distance) ||
+        !(fabsl(fabsl(signed_distance) - radius) >
+          64.0L * margin)) goto done;
+    const int intersection_count =
+        fabsl(signed_distance) < radius ? 2 : 0;
+    long double crossing[2][2] = {{0.0L, 0.0L}, {0.0L, 0.0L}};
+    long double crossing_error = 64.0L * margin;
+    if (intersection_count) {
+        const long double height2 = radius * radius -
+            signed_distance * signed_distance;
+        const long double height = sqrtl(height2);
+        if (!(height > 64.0L * margin) || !isfinite(height))
+            goto done;
+        crossing_error *= 1.0L + radius / height;
+        if (!(crossing_error < height / 16.0L) ||
+            !isfinite(crossing_error)) goto done;
+        const long double foot[2] = {
+            center_u - signed_distance * a,
+            center_v - signed_distance * b
+        };
+        const long double tangent[2] = {-b, a};
+        for (int i = 0; i < 2; ++i)
+            for (int axis = 0; axis < 2; ++axis)
+                crossing[i][axis] = foot[axis] +
+                    (i ? height : -height) * tangent[axis];
+    }
+    const long double direction[2] = {
+        endpoint[1][0] - endpoint[0][0],
+        endpoint[1][1] - endpoint[0][1]
+    };
+    const long double length2 = direction[0] * direction[0] +
+        direction[1] * direction[1];
+    if (!(length2 > 0.0L) || !isfinite(length2)) goto done;
+    long double crossing_t[2] = {0.0L, 0.0L};
+    long double angle[2] = {0.0L, 0.0L};
+    int visible_crossing_count = 0;
+    long double visible_t[2];
+    long double visible_crossing[2][2];
+    for (int i = 0; i < intersection_count; ++i) {
+        crossing_t[i] = ((crossing[i][0] - endpoint[0][0]) *
+                         direction[0] +
+                         (crossing[i][1] - endpoint[0][1]) *
+                         direction[1]) / length2;
+        const long double parameter_margin =
+            crossing_error / sqrtl(length2);
+        if (!isfinite(crossing_t[i]) ||
+            (line_visible &&
+             (fabsl(crossing_t[i]) <= parameter_margin ||
+              fabsl(crossing_t[i] - 1.0L) <= parameter_margin)))
+            goto done;
+        angle[i] = atan2l(crossing[i][1] - center_v,
+                          crossing[i][0] - center_u);
+        if (angle[i] < 0.0L) angle[i] += tau;
+        if (line_visible && crossing_t[i] > 0.0L &&
+            crossing_t[i] < 1.0L) {
+            for (int axis = 0; axis < 2; ++axis)
+                if (!(crossing[i][axis] > tile->uv_min[axis] +
+                          crossing_error) ||
+                    !(crossing[i][axis] < tile->uv_max[axis] -
+                          crossing_error)) goto done;
+            visible_t[visible_crossing_count] = crossing_t[i];
+            memcpy(visible_crossing[visible_crossing_count], crossing[i],
+                   sizeof(crossing[i]));
+            ++visible_crossing_count;
+        }
+    }
+    if (visible_crossing_count == 2 && visible_t[0] > visible_t[1]) {
+        const long double t = visible_t[0];
+        visible_t[0] = visible_t[1]; visible_t[1] = t;
+        for (int axis = 0; axis < 2; ++axis) {
+            const long double x = visible_crossing[0][axis];
+            visible_crossing[0][axis] = visible_crossing[1][axis];
+            visible_crossing[1][axis] = x;
+        }
+    }
+    if (intersection_count && angle[0] > angle[1]) {
+        const long double t = angle[0];
+        angle[0] = angle[1]; angle[1] = t;
+    }
+    if (visible_crossing_count == 2 &&
+        !(visible_t[1] - visible_t[0] >
+          16.0L * crossing_error / sqrtl(length2))) goto done;
+    if (intersection_count &&
+        (!(angle[1] - angle[0] >
+           16.0L * crossing_error / radius) ||
+         !(tau - angle[1] + angle[0] >
+           16.0L * crossing_error / radius))) goto done;
+    const size_t arc_count = intersection_count ? 2u : 1u;
+    const size_t interval_count = line_visible
+        ? (size_t)visible_crossing_count + 1u : 0u;
+    if (contextual_bytes > output_limit ||
+        arc_count * sizeof(alea_slice_error_circle_t) +
+        interval_count * sizeof(alea_slice_error_interval_t) >
+            output_limit - contextual_bytes) {
+        status = 2;
+        goto done;
+    }
+    out->circles = calloc(arc_count, sizeof(*out->circles));
+    out->intervals = interval_count
+        ? calloc(interval_count, sizeof(*out->intervals)) : NULL;
+    if (!out->circles || (interval_count && !out->intervals)) {
+        status = -1;
+        goto done;
+    }
+    const int plane_negative_owned =
+        !((node[plane_index]->primitive.sense > 0) !=
+          (node[plane_index]->primitive.inverted != 0));
+    const int sphere_inside_owned =
+        circle->inside_owner_count == 1;
+    for (size_t part = 0; part < arc_count; ++part) {
+        const long double start = !intersection_count ? 0.0L
+            : part == 0 ? angle[0] : angle[1];
+        const long double end = !intersection_count ? tau
+            : part == 0 ? angle[1] : angle[0] + tau;
+        const long double middle = (start + end) * 0.5L;
+        const long double u = center_u + radius * cosl(middle);
+        const long double v = center_v + radius * sinl(middle);
+        const long double line_distance = a * u + b * v + c;
+        if (!(fabsl(line_distance) > 16.0L * margin)) goto done;
+        const int plane_owned = (line_distance < 0.0L) ==
+            plane_negative_owned;
+        alea_slice_error_circle_t* arc = &out->circles[part];
+        *arc = *circle;
+        arc->start_angle = (double)start;
+        arc->end_angle = (double)end;
+        arc->geometry_uncertainty = (double)crossing_error;
+        int ids[2];
+        slice_error_mixed_owners(pcell, scell, plane_owned,
+            sphere_inside_owned, &arc->inside_kind,
+            &arc->inside_owner_count, ids);
+        memcpy(arc->inside_owner_cell_ids, ids,
+               arc->inside_owner_count * sizeof(int));
+        slice_error_mixed_owners(pcell, scell, plane_owned,
+            !sphere_inside_owned, &arc->outside_kind,
+            &arc->outside_owner_count, ids);
+        memcpy(arc->outside_owner_cell_ids, ids,
+               arc->outside_owner_count * sizeof(int));
+        for (int side = 0; side < 2; ++side) {
+            const long double radial = radius +
+                (side ? 32.0L * margin : -32.0L * margin);
+            double world[3];
+            if (!slice_error_world_point(&view->plane,
+                    (double)(center_u + radial * cosl(middle)),
+                    (double)(center_v + radial * sinl(middle)),
+                    world) ||
+                alea_point_inside(sys, scell->root_node_id,
+                    world[0], world[1], world[2]) !=
+                    (side ? !sphere_inside_owned : sphere_inside_owned) ||
+                alea_point_inside(sys, pcell->root_node_id,
+                    world[0], world[1], world[2]) != plane_owned)
+                goto done;
+        }
+    }
+    long double t[4] = {0.0L, 0.0L, 0.0L, 0.0L};
+    for (int i = 0; i < visible_crossing_count; ++i)
+        t[i + 1] = visible_t[i];
+    if (interval_count) t[interval_count] = 1.0L;
+    for (size_t part = 0; part < interval_count; ++part) {
+        const long double middle = (t[part] + t[part + 1]) * 0.5L;
+        const long double u = endpoint[0][0] + middle * direction[0];
+        const long double v = endpoint[0][1] + middle * direction[1];
+        const long double sphere_distance =
+            sqrtl((u - center_u) * (u - center_u) +
+                  (v - center_v) * (v - center_v));
+        if (!(fabsl(sphere_distance - radius) > 16.0L * margin))
+            goto done;
+        const int sphere_owned = (sphere_distance < radius) ==
+            sphere_inside_owned;
+        alea_slice_error_interval_t* interval = &out->intervals[part];
+        interval->evidence_scope =
+            ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL;
+        interval->surface_id = surface_id;
+        interval->primitive_id = node[plane_index]->primitive.primitive_id;
+        interval->axis = -1;
+        const long double* first = part == 0 ? endpoint[0] :
+            visible_crossing[part - 1];
+        const long double* last = part + 1 == interval_count
+            ? endpoint[1] : visible_crossing[part];
+        for (int axis = 0; axis < 2; ++axis) {
+            interval->uv_start[axis] = (double)first[axis];
+            interval->uv_end[axis] = (double)last[axis];
+        }
+        interval->endpoint_uncertainty[0] =
+            (double)(part == 0 ? margin : crossing_error);
+        interval->endpoint_uncertainty[1] =
+            (double)(part + 1 == interval_count ? margin : crossing_error);
+        int ids[2];
+        slice_error_mixed_owners(pcell, scell, plane_negative_owned,
+            sphere_owned, &interval->negative_side_kind,
+            &interval->negative_owner_count, ids);
+        memcpy(interval->negative_owner_cell_ids, ids,
+               interval->negative_owner_count * sizeof(int));
+        slice_error_mixed_owners(pcell, scell, !plane_negative_owned,
+            sphere_owned, &interval->positive_side_kind,
+            &interval->positive_owner_count, ids);
+        memcpy(interval->positive_owner_cell_ids, ids,
+               interval->positive_owner_count * sizeof(int));
+        for (int side = 0; side < 2; ++side) {
+            double world[3];
+            const long double offset = side ? 32.0L * margin
+                                            : -32.0L * margin;
+            if (!slice_error_world_point(&view->plane,
+                    (double)(u + offset * a),
+                    (double)(v + offset * b), world) ||
+                alea_point_inside(sys, pcell->root_node_id,
+                    world[0], world[1], world[2]) !=
+                    (side ? !plane_negative_owned :
+                            plane_negative_owned) ||
+                alea_point_inside(sys, scell->root_node_id,
+                    world[0], world[1], world[2]) != sphere_owned)
+                goto done;
+        }
+    }
+    out->circle_count = arc_count;
+    out->interval_count = interval_count;
+    status = 1;
+done:
+    if (status != 1) {
+        free(out->circles); out->circles = NULL;
+        free(out->intervals); out->intervals = NULL;
+    }
+    free(source.circles);
+    return status;
+}
+
 /* A single oblique line partitions a rectangular core into two convex faces.
  * This deliberately excludes line corners and multiple-line arrangements. */
 static int slice_error_classify_single_oblique_tile(
@@ -2749,6 +3100,32 @@ static int slice_error_classify_axis_tile(
         if (status < 0) goto selection_done;
     }
     if (cell_count == 2) {
+        size_t mixed_scratch = 0;
+        status = slice_error_classify_mixed_line_circle(
+            sys, &options->view, tile, cells,
+            scratch_limit - *peak_scratch, &mixed_scratch, contextual_bytes,
+            options->scan_options.max_output_bytes, out);
+        *peak_scratch += mixed_scratch;
+        if (status == 1) {
+            *reason = ALEA_SLICE_ERROR_RESOLVED;
+            goto selection_done;
+        }
+        if (status == 2) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+            *output_omitted = 1;
+            status = 0;
+            goto selection_done;
+        }
+        if (status == 3) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+            status = 0;
+            goto selection_done;
+        }
+        if (status < 0) goto selection_done;
+        if (mixed_scratch) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_PLANAR_ARRANGEMENT;
+            goto selection_done;
+        }
         size_t pair_scratch = 0;
         status = slice_error_classify_crossing_circles(
             sys, &options->view, tile, cells,
