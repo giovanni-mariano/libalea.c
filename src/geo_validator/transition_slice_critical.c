@@ -52,10 +52,13 @@ typedef struct {
 typedef struct {
     double uv[2];
     size_t curve_index;
+    uint8_t probe_enabled;
 } critical_point_t;
 
 typedef struct {
     int64_t qu, qv;
+    size_t curve_index;
+    size_t point_index;
     uint8_t occupied;
 } critical_point_slot_t;
 
@@ -272,30 +275,68 @@ static size_t hash_capacity(size_t max_curves) {
     return capacity < wanted ? 0 : capacity;
 }
 
+int alea_transition_slice_quantize_point_for_tile(
+    const alea_transition_slice_critical_tile_t* tile,
+    double tolerance, double u, double v,
+    int64_t* qu, int64_t* qv) {
+    if (!tile || !qu || !qv || !(tolerance > 0.0) ||
+        !isfinite(tolerance) || !isfinite(u) || !isfinite(v) ||
+        !isfinite(tile->uv_min[0]) || !isfinite(tile->uv_min[1]))
+        return -1;
+    const long double scaled_u =
+        ((long double)u - tile->uv_min[0]) / tolerance;
+    const long double scaled_v =
+        ((long double)v - tile->uv_min[1]) / tolerance;
+    if (!isfinite(scaled_u) || !isfinite(scaled_v) ||
+        scaled_u < (long double)INT64_MIN + 1.0L ||
+        scaled_u > (long double)INT64_MAX - 1.0L ||
+        scaled_v < (long double)INT64_MIN + 1.0L ||
+        scaled_v > (long double)INT64_MAX - 1.0L) return -1;
+    *qu = (int64_t)llroundl(scaled_u);
+    *qv = (int64_t)llroundl(scaled_v);
+    return 0;
+}
+
 static int point_insert(critical_point_t* points, size_t* count,
                         size_t capacity, critical_point_slot_t* slots,
                         size_t slot_capacity, double tolerance,
+                        const alea_transition_slice_critical_tile_t* tile,
                         double u, double v, size_t curve_index,
                         alea_transition_slice_stats_t* stats) {
-    if (!isfinite(u) || !isfinite(v)) return 0;
+    if (!isfinite(u) || !isfinite(v)) return -1;
     stats->critical_point_candidates++;
-    const int64_t qu = (int64_t)llround(u / tolerance);
-    const int64_t qv = (int64_t)llround(v / tolerance);
+    /* Quantize in tile-local coordinates. Absolute coordinates divided by a
+     * small tolerance can overflow llround even for a narrow valid tile far
+     * from the origin. Reject an invalid quotient before integer conversion. */
+    int64_t qu, qv;
+    if (alea_transition_slice_quantize_point_for_tile(
+            tile, tolerance, u, v, &qu, &qv) != 0) return -1;
     size_t slot = (size_t)alea_occurrence_mix(
         (uint64_t)qu, (uint64_t)qv) & (slot_capacity - 1);
+    int already_probed_here = 0;
     for (size_t probe = 0; probe < slot_capacity; probe++) {
         critical_point_slot_t* entry = &slots[slot];
         if (!entry->occupied) {
             if (*count == capacity) return -1;
             entry->occupied = 1; entry->qu = qu; entry->qv = qv;
+            entry->curve_index = curve_index;
+            entry->point_index = *count;
             points[*count].uv[0] = u; points[*count].uv[1] = v;
             points[*count].curve_index = curve_index;
+            points[*count].probe_enabled = !already_probed_here;
             (*count)++;
             return 1;
         }
-        if (entry->qu == qu && entry->qv == qv) {
-            stats->critical_duplicate_points++;
-            return 0;
+        /* Quantization is only a hash bucket. Distinct nearby events must
+         * remain distinct, and an intersection belongs to both curves. */
+        if (entry->qu == qu && entry->qv == qv &&
+            points[entry->point_index].uv[0] == u &&
+            points[entry->point_index].uv[1] == v) {
+            if (entry->curve_index == curve_index) {
+                stats->critical_duplicate_points++;
+                return 0;
+            }
+            already_probed_here = 1;
         }
         slot = (slot + 1) & (slot_capacity - 1);
     }
@@ -329,7 +370,7 @@ static int append_line_box_points(
         }
         if (!point_in_tile(tile, u, v, tolerance)) continue;
         if (point_insert(points, point_count, point_capacity, slots,
-                         slot_capacity, tolerance, u, v, curve_index,
+                         slot_capacity, tolerance, tile, u, v, curve_index,
                          stats) < 0) return -1;
     }
     return 0;
@@ -346,7 +387,7 @@ static int generate_single_curve_points(
     const double pu_ = (U), pv_ = (V); \
     if (point_in_tile(tile, pu_, pv_, tolerance) && \
         point_insert(points, point_count, point_capacity, slots, \
-                     slot_capacity, tolerance, pu_, pv_, curve_index, \
+                     slot_capacity, tolerance, tile, pu_, pv_, curve_index, \
                      stats) < 0) return -1; \
 } while (0)
     if (item->has_active_point)
@@ -840,11 +881,31 @@ static int add_pair_point(
             return 0;
         }
     }
-    const int rc = point_insert(points, point_count, point_capacity, slots,
-                                slot_capacity, tolerance, u, v, first_curve,
-                                stats);
-    if (rc > 0) stats->critical_pair_intersection_points++;
-    return rc < 0 ? -1 : 0;
+    /* The solver receives both items from the same curves array. The second
+     * pair scan may pass them in either index order. Keep the incidence on
+     * each curve so a later per-curve partition cannot lose a crossing. */
+    const ptrdiff_t curve_delta = second_item - first_item;
+    size_t second_curve;
+    if (curve_delta < 0) {
+        const size_t magnitude = (size_t)(-curve_delta);
+        if (magnitude > first_curve) return -1;
+        second_curve = first_curve - magnitude;
+    } else {
+        if (curve_delta == 0 ||
+            (size_t)curve_delta > SIZE_MAX - first_curve) return -1;
+        second_curve = first_curve + (size_t)curve_delta;
+    }
+    const int first_rc = point_insert(
+        points, point_count, point_capacity, slots, slot_capacity,
+        tolerance, tile, u, v, first_curve, stats);
+    if (first_rc < 0) return -1;
+    const int second_rc = point_insert(
+        points, point_count, point_capacity, slots, slot_capacity,
+        tolerance, tile, u, v, second_curve, stats);
+    if (second_rc < 0) return -1;
+    if (first_rc > 0 || second_rc > 0)
+        stats->critical_pair_intersection_points++;
+    return 0;
 }
 
 /* Intersect two circles/ellipses by parameterizing the first curve and
@@ -2185,6 +2246,17 @@ static size_t compact_sorted_breakpoints(double* values, size_t count) {
     size_t kept = 1;
     for (size_t i = 1; i < count; i++) {
         if (fabs(values[i] - values[kept - 1]) > 1e-10)
+            values[kept++] = values[i];
+    }
+    return kept;
+}
+
+static size_t compact_sorted_line_breakpoints(double* values, size_t count) {
+    if (!count) return 0;
+    size_t kept = 1;
+    for (size_t i = 1; i < count; i++) {
+        /* Straight-curve intersections can bound a real thin strip. */
+        if (values[i] != values[kept - 1])
             values[kept++] = values[i];
     }
     return kept;
@@ -3869,8 +3941,18 @@ static int emit_cell_implicit_conic_pieces(
     return emitted;
 }
 
-/* Return 0 when inactive, 1 after publishing all proven active segments, and
- * 2 when the caller must conservatively retain the whole analytical curve. */
+static int numerical_line_unresolved(critical_region_visit_t* ctx) {
+    if (ctx->stats->critical_stop_reason ==
+            ALEA_TRANSITION_SLICE_CRITICAL_DISABLED ||
+        ctx->stats->critical_stop_reason ==
+            ALEA_TRANSITION_SLICE_CRITICAL_NONE)
+        ctx->stats->critical_stop_reason =
+            ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED;
+    return 3;
+}
+
+/* Return 0 when inactive, 1 after publishing active segments, 2 for a
+ * conservative fallback, and 3 for a numerically unresolved whole curve. */
 static int emit_cell_line_segments(
     critical_region_visit_t* ctx, const alea_cell_entry_t* cell,
     size_t curve_index, size_t cell_curve_count,
@@ -3893,7 +3975,7 @@ static int emit_cell_line_segments(
             return 2;
     }
     qsort(ctx->breakpoints, break_count, sizeof(double), double_compare);
-    break_count = compact_sorted_breakpoints(ctx->breakpoints, break_count);
+    break_count = compact_sorted_line_breakpoints(ctx->breakpoints, break_count);
     const alea_line_2d_t* line = &curve->data.line;
     const double normal[2] = {-line->direction[1], line->direction[0]};
     const double tile_scale = fmax(1.0, fmax(
@@ -3903,7 +3985,9 @@ static int emit_cell_line_segments(
     double active_min = 0.0, active_max = 0.0;
     for (size_t i = 1; i < break_count; i++) {
         const double span = ctx->breakpoints[i] - ctx->breakpoints[i - 1];
-        if (!(span > 1e-12 * tile_scale)) continue;
+        if (span > 0.0 && !(span > 1e-12 * tile_scale))
+            return numerical_line_unresolved(ctx);
+        if (!(span > 0.0)) continue;
         const double mid = 0.5 * (ctx->breakpoints[i - 1] +
                                   ctx->breakpoints[i]);
         double radius = 1e-6 * tile_scale;
@@ -3913,6 +3997,31 @@ static int emit_cell_line_segments(
         }
         if (!(radius > 64.0 * RAY_EPSILON)) radius = 64.0 * RAY_EPSILON;
         if (radius > 0.125 * span) radius = 0.125 * span;
+        /* A side probe must not jump across a neighboring straight boundary.
+         * The along-curve span alone cannot protect a thin parallel strip. */
+        const double mid_u = line->point[0] + mid*line->direction[0];
+        const double mid_v = line->point[1] + mid*line->direction[1];
+        for (size_t other_index = 0; other_index < cell_curve_count;
+             other_index++) {
+            if (other_index == curve_index) continue;
+            const alea_curve_2d_t* other =
+                &ctx->cell_curves[other_index].curve;
+            if (!curve_is_line(other->type)) continue;
+            if (ctx->stats->critical_active_boundary_tests >=
+                ctx->max_active_boundary_tests) return 2;
+            ctx->stats->critical_active_boundary_tests++;
+            const alea_line_2d_t* other_line = &other->data.line;
+            const double normal_length = hypot(other_line->a, other_line->b);
+            if (!(normal_length > 0.0)) continue;
+            const double separation = fabs(other_line->a*mid_u +
+                other_line->b*mid_v + other_line->c) / normal_length;
+            if (separation > 0.0 && separation < 4.0*radius)
+                radius = 0.25*separation;
+        }
+        const double coordinate_scale = fmax(1.0,
+            fmax(fabs(mid_u), fabs(mid_v)));
+        if (!(radius > 64.0*DBL_EPSILON*coordinate_scale))
+            return numerical_line_unresolved(ctx);
         int contains[2];
         for (int side = 0; side < 2; side++) {
             const double sign = side ? 1.0 : -1.0;
@@ -4338,6 +4447,13 @@ static int collect_cell_curves(critical_region_visit_t* ctx,
         if (activity == 1) continue;
         if (activity == 0) {
             ctx->stats->critical_curves_culled++;
+            continue;
+        }
+        if (activity == 3) {
+            ctx->stats->critical_active_boundary_fallbacks++;
+            ctx->stats->critical_whole_curve_fallbacks++;
+            retain_ranked_curve(ctx, item, occurrence_key,
+                                universe_occurrence_key);
             continue;
         }
         ctx->stats->critical_active_boundary_fallbacks++;
@@ -4840,6 +4956,7 @@ static void retain_boundary_evidence(
             &finding->boundary_pieces[finding->boundary_piece_count];
         piece->surface_id = surface_id;
         piece->role_flags = roles[role];
+        piece->evidence_scope = ALEA_SLICE_BOUNDARY_EVIDENCE_CONTEXT;
         if (!sample_boundary_piece(curve, piece)) {
             memset(piece, 0, sizeof(*piece));
             finding->boundary_evidence_truncated = 1;
@@ -5204,6 +5321,7 @@ static int transition_slice_enumerate_critical_tiles_reuse(
         stats->critical_points += point_count;
 
         for (size_t pi = 0; pi < point_count; pi++) {
+            if (!points[pi].probe_enabled) continue;
             if (options->max_critical_probes && stats->critical_probes >=
                     options->max_critical_probes) {
                 set_saturated(stats,

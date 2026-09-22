@@ -19,4 +19,10 @@ int alea_transition_slice_enumerate_critical_tiles(
     void* finding_sink_userdata,
     alea_transition_slice_stats_t* stats);
 
+/* Internal tile-local key conversion used by critical point deduplication. */
+int alea_transition_slice_quantize_point_for_tile(
+    const alea_transition_slice_critical_tile_t* tile,
+    double tolerance, double u, double v,
+    int64_t* qu, int64_t* qv);
+
 #endif

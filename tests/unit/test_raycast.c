@@ -1793,6 +1793,8 @@ TEST(transition_slice_screen_refines_changed_event_signatures) {
         const alea_transition_slice_boundary_piece_t* piece =
             &critical_finding.boundary_pieces[0];
         ASSERT_EQ(piece->surface_id, critical_finding.source_surface_id);
+        ASSERT_EQ(piece->evidence_scope,
+                  ALEA_SLICE_BOUNDARY_EVIDENCE_CONTEXT);
         ASSERT(piece->role_flags &
                ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_SOURCE);
         ASSERT_EQ(piece->point_count,
@@ -1968,6 +1970,22 @@ TEST(transition_slice_critical_enumeration_preserves_transformed_occurrences) {
     ASSERT(alea_transition_slice_component_count(result) >= (size_t)2);
     alea_transition_slice_result_destroy(result);
     alea_destroy(sys);
+}
+
+TEST(transition_slice_critical_point_keys_use_tile_local_coordinates) {
+    const double x = 1.0e12;
+    alea_transition_slice_critical_tile_t tile = {0};
+    tile.uv_min[0] = x - 2.0;
+    tile.uv_max[0] = x + 2.0;
+    tile.uv_min[1] = -1.0;
+    tile.uv_max[1] = 1.0;
+    int64_t qu = 0, qv = 0;
+    ASSERT_EQ(alea_transition_slice_quantize_point_for_tile(
+                  &tile, 4.0e-10, x, 0.0, &qu, &qv), 0);
+    ASSERT_EQ(qu, INT64_C(5000000000));
+    ASSERT_EQ(qv, INT64_C(2500000000));
+    ASSERT_EQ(alea_transition_slice_quantize_point_for_tile(
+                  &tile, 1.0e-30, x, 0.0, &qu, &qv), -1);
 }
 
 TEST(transition_slice_critical_enumeration_preserves_lattice_occurrences) {
@@ -3967,6 +3985,81 @@ TEST(transition_slice_active_boundary_filter_partitions_narrow_regions) {
     ASSERT_EQ(stats.critical_curves_culled, (size_t)0);
     ASSERT_EQ(stats.critical_active_segments, (size_t)3);
 
+    /* These two crossings are closer than the critical point hash's former
+     * 4e-10 tile bucket. They must remain separate curve incidences. */
+    for (int width_case = 0; width_case < 2; width_case++) {
+        alea_system_t* thin = alea_create();
+        ASSERT_NOT_NULL(thin);
+        const double strip_width = width_case ? 5e-13 : 5e-11;
+        const int tx = alea_plane_surface(thin, 817, 1, 0, 0, 0);
+        const int ty0 = alea_plane_surface(thin, 818, 0, 1, 0, 0);
+        const int tyd = alea_plane_surface(thin, 819, 0, 1, 0, -strip_width);
+        const int txlo = alea_plane_surface(thin, 820, 1, 0, 0, 3);
+        const int tzlo = alea_plane_surface(thin, 8210, 0, 0, 1, 1);
+        const int tzhi = alea_plane_surface(thin, 8211, 0, 0, 1, -1);
+        ASSERT(tx >= 0 && ty0 >= 0 && tyd >= 0 && txlo >= 0 &&
+               tzlo >= 0 && tzhi >= 0);
+        const alea_node_id_t thin_strip = alea_intersection(
+            thin, alea_halfspace(thin, tx, -1),
+            alea_intersection(thin,
+                alea_halfspace(thin, ty0, 1),
+                alea_halfspace(thin, tyd, -1)));
+        const alea_node_id_t thin_nodes[] = {
+            thin_strip,
+            alea_halfspace(thin, txlo, 1),
+            alea_halfspace(thin, tzlo, 1),
+            alea_halfspace(thin, tzhi, -1)
+        };
+        region = alea_intersection_n(
+            thin, thin_nodes, sizeof(thin_nodes) / sizeof(thin_nodes[0]));
+        ASSERT(alea_add_cell(thin, 817, region,
+                             ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+        ASSERT_EQ(alea_prepare_query_acceleration(thin), 0);
+        memset(&stats, 0, sizeof(stats));
+        ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                      thin, &view, &options, &tile, 1, NULL, NULL, &stats), 0);
+        if (!width_case) {
+            ASSERT_EQ(stats.critical_curves, (size_t)3);
+            ASSERT_EQ(stats.critical_curves_culled, (size_t)0);
+            ASSERT(stats.critical_pair_algebraic_points >= (size_t)2);
+            /* Both near crossings are endpoints on both curves. */
+            ASSERT(stats.critical_points >= (size_t)9);
+            alea_transition_slice_options_t limited = options;
+            limited.max_active_boundary_tests = 1;
+            memset(&stats, 0, sizeof(stats));
+            ASSERT_EQ(alea_transition_slice_enumerate_critical_tiles(
+                          thin, &view, &limited, &tile, 1,
+                          NULL, NULL, &stats), 0);
+            ASSERT(stats.critical_active_test_budget_fallbacks > 0);
+            ASSERT(stats.critical_whole_curve_fallbacks > 0);
+        } else {
+            ASSERT_EQ(stats.critical_stop_reason,
+                      ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED);
+            ASSERT(stats.critical_whole_curve_fallbacks > 0);
+            ASSERT_EQ(strcmp(alea_transition_slice_critical_stop_reason_name(
+                          stats.critical_stop_reason), "numerical_unresolved"),
+                      0);
+            alea_transition_slice_options_t screen_options = options;
+            screen_options.horizontal_rays = 2;
+            screen_options.vertical_rays = 0;
+            screen_options.enable_critical_refinement = 1;
+            screen_options.critical_full_view = 1;
+            alea_transition_slice_result_t* screen_result =
+                alea_transition_slice_result_create();
+            ASSERT_NOT_NULL(screen_result);
+            ASSERT_EQ(alea_transition_slice_screen(
+                          thin, &view, &screen_options, screen_result), 0);
+            alea_transition_slice_stats_t screen_stats;
+            ASSERT_EQ(alea_transition_slice_stats(
+                          screen_result, &screen_stats), 0);
+            ASSERT_EQ(screen_stats.critical_stop_reason,
+                      ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED);
+            ASSERT(!screen_stats.critical_complete);
+            alea_transition_slice_result_destroy(screen_result);
+        }
+        alea_destroy(thin);
+    }
+
     /* One exact card can contribute multiple disconnected active patches.  It
      * must be charged as two segments, not collapsed back to one whole line. */
     alea_system_t* disjoint = alea_create();
@@ -4274,6 +4367,9 @@ TEST(transition_slice_active_boundary_filter_partitions_narrow_regions) {
     ASSERT(stats.critical_active_segments >= (size_t)1);
     ASSERT(stats.critical_curve_pairs_tested > (size_t)0);
     ASSERT(stats.critical_pair_intersection_points >= (size_t)2);
+    /* Each crossing is retained on both participating curve occurrences. */
+    ASSERT(stats.critical_points >=
+           2 * stats.critical_pair_intersection_points);
     ASSERT_EQ(stats.critical_active_unsupported_parabola_fallbacks,
               (size_t)0);
     ASSERT_EQ(stats.critical_whole_curve_fallbacks, (size_t)0);

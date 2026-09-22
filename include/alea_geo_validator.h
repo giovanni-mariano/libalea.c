@@ -341,11 +341,26 @@ typedef struct {
 #define ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_PRIMARY    (1u << 1)
 #define ALEA_TRANSITION_SLICE_BOUNDARY_ROLE_CONNECTING (1u << 2)
 
+/* Scope of a drawable slice-boundary record. A contextual curve has a
+ * classified witness nearby, but its full parameter range is not classified.
+ * Consumers must reserve a verified error-contour claim for intervals carrying
+ * ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL. */
+typedef enum {
+    ALEA_SLICE_BOUNDARY_EVIDENCE_CONTEXT = 0,
+    ALEA_SLICE_BOUNDARY_EVIDENCE_SAMPLED = 1,
+    ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL = 2,
+    ALEA_SLICE_BOUNDARY_EVIDENCE_UNRESOLVED = 3
+} alea_slice_boundary_evidence_scope_t;
+
 typedef struct {
     int surface_id;
     uint32_t role_flags;
     size_t point_count;
+    /* Context for a retained witness: these points sample the involved active
+     * curve piece.  The transition is classified at the witness only.  No
+     * claim is made that the full piece bounds a defective region. */
     double uv[ALEA_TRANSITION_SLICE_BOUNDARY_POINT_CAPACITY][2];
+    alea_slice_boundary_evidence_scope_t evidence_scope;
 } alea_transition_slice_boundary_piece_t;
 
 typedef struct {
@@ -447,7 +462,8 @@ typedef enum {
     ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVE_PAIRS,
     ALEA_TRANSITION_SLICE_CRITICAL_MAX_SECTOR_WITNESSES,
     ALEA_TRANSITION_SLICE_CRITICAL_MAX_OCCURRENCE_HITS,
-    ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL
+    ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL,
+    ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED
 } alea_transition_slice_critical_stop_reason_t;
 
 typedef enum {
@@ -576,7 +592,7 @@ typedef struct {
     size_t critical_whole_curve_fallbacks;
     size_t peak_critical_curves;
     size_t critical_point_candidates;
-    size_t critical_points;
+    size_t critical_points; /* Retained curve incidences; UV may repeat. */
     size_t critical_duplicate_points;
     size_t critical_unsupported_curves;
     size_t critical_unsupported_parabola_curves;
@@ -602,14 +618,17 @@ typedef struct {
     size_t critical_unsupported_other_pairs;
     size_t critical_pair_algebraic_points;
     size_t critical_pair_domain_rejections;
-    /* Pair points newly inserted into the unique critical-point set.  A
-     * valid pair point may already have been emitted by single-curve logic. */
+    /* Pair locations that added at least one curve incidence. A valid pair
+     * location may already have both incidences from single-curve logic. */
     size_t critical_pair_intersection_points;
     size_t critical_sector_witnesses;
     size_t critical_sector_gap_witnesses;
     size_t critical_sector_overlap_witnesses;
     size_t critical_sector_unresolved_witnesses;
     int critical_enabled;
+    /* Requested critical curve/probe pass finished within its budgets. This
+     * does not certify every open region or the length of any retained
+     * boundary piece. */
     int critical_complete;
     alea_transition_slice_critical_stop_reason_t critical_stop_reason;
     size_t critical_boundary_evidence;

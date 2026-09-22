@@ -134,6 +134,8 @@ const char* alea_transition_slice_critical_stop_reason_name(
         return "max_exhaustive_occurrence_hits";
     case ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL:
         return "unsupported_occurrence_traversal";
+    case ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED:
+        return "numerical_unresolved";
     }
     return "unknown";
 }

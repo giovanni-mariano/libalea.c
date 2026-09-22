@@ -1421,11 +1421,26 @@ static PyObject* transition_slice_result_to_py(
                     PyList_SET_ITEM(points, (Py_ssize_t)point_index, point);
                 }
                 if (!out) break;
+                const char* evidence_scope = "unresolved";
+                switch (piece->evidence_scope) {
+                    case ALEA_SLICE_BOUNDARY_EVIDENCE_CONTEXT:
+                        evidence_scope = "context";
+                        break;
+                    case ALEA_SLICE_BOUNDARY_EVIDENCE_SAMPLED:
+                        evidence_scope = "sampled";
+                        break;
+                    case ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL:
+                        evidence_scope = "verified_interval";
+                        break;
+                    case ALEA_SLICE_BOUNDARY_EVIDENCE_UNRESOLVED:
+                        break;
+                }
                 PyObject* piece_item = Py_BuildValue(
-                    "{s:i,s:I,s:N}",
+                    "{s:i,s:I,s:N,s:s}",
                     "surface_id", piece->surface_id,
                     "role_flags", piece->role_flags,
-                    "uv_points", points);
+                    "uv_points", points,
+                    "evidence_scope", evidence_scope);
                 if (!piece_item) {
                     Py_DECREF(boundary_pieces); Py_XDECREF(item);
                     Py_DECREF(critical_findings); Py_DECREF(out); out = NULL;
