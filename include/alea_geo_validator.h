@@ -738,9 +738,10 @@ int alea_transition_slice_stats(
  * belongs to the final tile. Support overlap is not part of core ownership.
  *
  * A verified result currently requires every root cell that may affect the
- * core tile to consist entirely of vertical X/Y planes, or a single shared
- * vertical oblique plane, in an XY slice whose axes may be reversed or
- * swapped. Distant cells are excluded only by conservative analytic bounds;
+ * core tile to consist entirely of vertical X/Y planes, or at most two
+ * parallel vertical oblique planes with matching stored normals, in an XY
+ * slice whose axes may be reversed or swapped. Distant cells are excluded
+ * only by conservative analytic bounds;
  * uncertain bounds retain the cell and may leave the tile unresolved. The
  * critical scan also retains contextual findings; its candidate counts are
  * diagnostic only. */
@@ -776,7 +777,8 @@ typedef struct {
 /* A supported physical line between a defective and a uniquely owned face.
  * Endpoints may be clipped by the page core; the uncertainty is in slice units.
  * For axis 0/1 the sides are negative/positive coordinate sides. Axis -1
- * denotes a general line; sides then follow the sign of its plane equation. */
+ * denotes a general line; sides then follow the sign of the stored primitive
+ * plane equation (which may be canonicalized from the input surface). */
 typedef struct {
     alea_slice_boundary_evidence_scope_t evidence_scope;
     int surface_id;

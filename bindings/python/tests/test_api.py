@@ -113,6 +113,21 @@ def test_slice_error_page_exposes_verified_oblique_polygon():
     assert interval["negative_side_kind"] == "unique"
     assert interval["positive_side_kind"] == "gap"
 
+    slab = pyalea.System()
+    _, _, left = slab.plane_surface(1060, 1.0, 1.0, 0.0, 0.2)
+    _, right, _ = slab.plane_surface(1061, 1.0, 1.0, 0.0, -0.2)
+    slab.add_cell(1060, left)
+    slab.add_cell(1061, right)
+    band = slab.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1),
+    )
+    assert band["receipt"]["scope_classified"] is True
+    assert band["receipt"]["region_count"] == 1
+    assert band["receipt"]["verified_interval_count"] == 2
+    assert band["regions"][0]["kind"] == "gap"
+    assert len(band["regions"][0]["polygon_uv"]) == 6
+
 
 @pytest.mark.parametrize(
     ("primitive_type", "parameters", "inside", "outside"),

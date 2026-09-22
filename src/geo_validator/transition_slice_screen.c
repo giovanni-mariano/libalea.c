@@ -558,33 +558,38 @@ typedef struct {
     double uncertainty[ALEA_SLICE_ERROR_POLYGON_CAPACITY][2];
 } slice_error_polygon_t;
 
-static int slice_error_single_plane_inside(
-    const alea_system_t* sys, alea_node_id_t id, uint32_t primitive_id,
-    int raw_negative, size_t depth, size_t* work, int* inside) {
+static int slice_error_oblique_node_inside(
+    const alea_system_t* sys, alea_node_id_t id,
+    const uint32_t* primitive_ids, const int* raw_negative,
+    size_t plane_count, size_t depth, size_t* work, int* inside) {
     if (!*work || depth > 128 || id >= sys->nodes.count) return 0;
     --*work;
     const alea_node_t* node = &sys->nodes.data[id];
     const alea_operation_t op = ALEA_GET_OPERATION(node);
     if (op == ALEA_OP_PRIMITIVE) {
-        if (node->primitive.primitive_id != primitive_id) return 0;
+        size_t plane = 0;
+        while (plane < plane_count &&
+               primitive_ids[plane] != node->primitive.primitive_id)
+            ++plane;
+        if (plane == plane_count) return 0;
         const int flip = (node->primitive.sense > 0) !=
                          (node->primitive.inverted != 0);
-        *inside = raw_negative != flip;
+        *inside = raw_negative[plane] != flip;
         return 1;
     }
     if (op != ALEA_OP_UNION && op != ALEA_OP_INTERSECTION &&
         op != ALEA_OP_DIFFERENCE && op != ALEA_OP_COMPLEMENT) return 0;
     int left = 0, right = 0;
-    if (!slice_error_single_plane_inside(
-            sys, node->operation.left, primitive_id, raw_negative,
-            depth + 1, work, &left)) return 0;
+    if (!slice_error_oblique_node_inside(
+            sys, node->operation.left, primitive_ids, raw_negative,
+            plane_count, depth + 1, work, &left)) return 0;
     if (op == ALEA_OP_COMPLEMENT) {
         *inside = !left;
         return 1;
     }
-    if (!slice_error_single_plane_inside(
-            sys, node->operation.right, primitive_id, raw_negative,
-            depth + 1, work, &right)) return 0;
+    if (!slice_error_oblique_node_inside(
+            sys, node->operation.right, primitive_ids, raw_negative,
+            plane_count, depth + 1, work, &right)) return 0;
     *inside = op == ALEA_OP_UNION ? left || right
         : op == ALEA_OP_INTERSECTION ? left && right
         : left && !right;
@@ -739,9 +744,10 @@ static int slice_error_classify_single_oblique_tile(
         for (size_t ci = 0; ci < cell_count; ++ci) {
             const alea_cell_entry_t* cell = &sys->cells.data[cells[ci]];
             int inside = 0;
-            if (!slice_error_single_plane_inside(sys, cell->root_node_id,
-                    selected->primitive_id, side == 0, 0, work,
-                    &inside)) {
+            const uint32_t primitive_id = selected->primitive_id;
+            const int raw_negative = side == 0;
+            if (!slice_error_oblique_node_inside(sys, cell->root_node_id,
+                    &primitive_id, &raw_negative, 1, 0, work, &inside)) {
                 *reason = *work == 0
                     ? ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT
                     : ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY;
@@ -850,6 +856,321 @@ static int slice_error_classify_single_oblique_tile(
         memcpy(interval->positive_owner_cell_ids, face[1].owner_cell_ids,
                face[1].owner_count * sizeof(int));
         out->interval_count = 1;
+    }
+    *reason = ALEA_SLICE_ERROR_RESOLVED;
+    return 1;
+}
+
+/* Two parallel oblique planes divide the core into at most three convex
+ * bands. The primitive signs are fixed in each band, including a thin band
+ * between the lines. Nonparallel or nearly coincident lines remain
+ * unresolved. */
+static int slice_error_classify_parallel_oblique_tile(
+    const alea_slice_error_query_t* query,
+    const alea_transition_slice_critical_tile_t* tile,
+    const size_t* cells, size_t cell_count,
+    const slice_error_axis_plane_t selected[2],
+    size_t contextual_bytes, size_t* work,
+    alea_slice_error_page_t* out,
+    alea_slice_error_unresolved_reason_t* reason,
+    int* output_omitted) {
+    const alea_slice_error_query_options_t* o = &query->options;
+    const alea_system_t* sys = query->sys;
+    const alea_slice_plane_t* frame = &o->view.plane;
+    long double coefficient[2][2], threshold[2];
+    double normal[2][2];
+    int orientation[2] = {1, 0};
+    uint32_t primitive_ids[2];
+    for (int i = 0; i < 2; ++i) {
+        if (selected[i].surface_id <= 0) return 0;
+        primitive_ids[i] = selected[i].primitive_id;
+        const alea_primitive_entry_t* primitive =
+            &sys->primitives.data[primitive_ids[i]];
+        if (primitive->type != ALEA_PRIMITIVE_PLANE ||
+            primitive->payload_index >= sys->primitive_planes.count)
+            return 0;
+        const alea_plane_data_t* p =
+            &sys->primitive_planes.data[primitive->payload_index];
+        if (!isfinite(p->a) || !isfinite(p->b) || !isfinite(p->c) ||
+            !isfinite(p->d) || p->a == 0.0 || p->b == 0.0 ||
+            p->c != 0.0) return 0;
+        normal[i][0] = p->a;
+        normal[i][1] = p->b;
+        const long double a = (long double)p->a * frame->u_axis[0] +
+                              (long double)p->b * frame->u_axis[1];
+        const long double b = (long double)p->a * frame->v_axis[0] +
+                              (long double)p->b * frame->v_axis[1];
+        const long double c = (long double)p->a * frame->origin[0] +
+                              (long double)p->b * frame->origin[1] +
+                              (long double)p->d;
+        const long double norm = fmaxl(fabsl(a), fabsl(b));
+        if (!(norm > 0.0L) || !isfinite(norm)) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+        coefficient[i][0] = a / norm;
+        coefficient[i][1] = b / norm;
+        threshold[i] = -c / norm;
+        if (!isfinite(threshold[i])) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+    }
+    /* Exact matching normals avoid treating two nearly parallel lines as
+     * disjoint bands when their intersection is hidden inside the tile. */
+    if (normal[1][0] == normal[0][0] &&
+        normal[1][1] == normal[0][1])
+        orientation[1] = 1;
+    else if (normal[1][0] == -normal[0][0] &&
+             normal[1][1] == -normal[0][1]) {
+        orientation[1] = -1;
+        threshold[1] = -threshold[1];
+    } else return 0;
+    const int line[2] = {
+        threshold[0] < threshold[1] ? 0 : 1,
+        threshold[0] < threshold[1] ? 1 : 0
+    };
+    const long double bound[2] = {
+        threshold[line[0]], threshold[line[1]]
+    };
+    const double corner[4][2] = {
+        {tile->uv_min[0], tile->uv_min[1]},
+        {tile->uv_max[0], tile->uv_min[1]},
+        {tile->uv_max[0], tile->uv_max[1]},
+        {tile->uv_min[0], tile->uv_max[1]}
+    };
+    long double value[4];
+    const long double a = coefficient[0][0], b = coefficient[0][1];
+    const long double scale = 1.0L +
+        fmaxl(fabsl(bound[0]), fabsl(bound[1])) +
+        fabsl(a) * fmaxl(fabsl(tile->uv_min[0]),
+                         fabsl(tile->uv_max[0])) +
+        fabsl(b) * fmaxl(fabsl(tile->uv_min[1]),
+                         fabsl(tile->uv_max[1]));
+    const long double tolerance = scale *
+        (128.0L * LDBL_EPSILON + 16.0L * DBL_EPSILON);
+    if (!isfinite(tolerance) || !(bound[1] - bound[0] >
+                                  8.0L * tolerance)) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+        return 0;
+    }
+    for (int i = 0; i < 4; ++i) {
+        value[i] = a * corner[i][0] + b * corner[i][1];
+        if (!isfinite(value[i]) ||
+            fabsl(value[i] - bound[0]) <= tolerance ||
+            fabsl(value[i] - bound[1]) <= tolerance) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+    }
+    slice_error_polygon_t polygon[3] = {{0}, {0}, {0}};
+    slice_error_polygon_t crossings[2] = {{0}, {0}};
+    for (int i = 0; i < 4; ++i) {
+        const int next = (i + 1) & 3;
+        const int band = value[i] < bound[0] ? 0
+            : value[i] < bound[1] ? 1 : 2;
+        if (!slice_error_polygon_add(&polygon[band],
+                corner[i][0], corner[i][1], 0.0)) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+            return 0;
+        }
+        const int increasing = value[next] > value[i];
+        for (int step = 0; step < 2; ++step) {
+            const int k = increasing ? step : 1 - step;
+            if ((value[i] < bound[k]) == (value[next] < bound[k]))
+                continue;
+            const long double t =
+                (bound[k] - value[i]) / (value[next] - value[i]);
+            const long double du_edge =
+                (long double)corner[next][0] - corner[i][0];
+            const long double dv_edge =
+                (long double)corner[next][1] - corner[i][1];
+            const long double u = (long double)corner[i][0] + t * du_edge;
+            const long double v = (long double)corner[i][1] + t * dv_edge;
+            const double du = (double)u, dv = (double)v;
+            const long double edge_length =
+                fmaxl(fabsl(du_edge), fabsl(dv_edge));
+            const double uncertainty = (double)(
+                4.0L * tolerance / fabsl(value[next] - value[i]) *
+                    edge_length +
+                8.0L * DBL_EPSILON *
+                    fmaxl(1.0L, fmaxl(fabsl(u), fabsl(v))));
+            const long double corner_distance =
+                fminl(t, 1.0L - t) * edge_length;
+            if (!(t > 0.0L && t < 1.0L) || !isfinite(du) ||
+                !isfinite(dv) || !isfinite(uncertainty) ||
+                !((long double)uncertainty * 4.0L < corner_distance) ||
+                !slice_error_polygon_add(&crossings[k], du, dv,
+                                         uncertainty) ||
+                !slice_error_polygon_add(&polygon[k], du, dv,
+                                         uncertainty) ||
+                !slice_error_polygon_add(&polygon[k + 1], du, dv,
+                                         uncertainty)) {
+                *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+                return 0;
+            }
+        }
+    }
+    for (int k = 0; k < 2; ++k)
+        if (crossings[k].count != 0 && crossings[k].count != 2) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+    slice_error_face_t face[3] = {{0}, {0}, {0}};
+    for (int band = 0; band < 3; ++band) {
+        if (!polygon[band].count) continue;
+        if (polygon[band].count < 3) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+        double u = 0.0, v = 0.0;
+        for (size_t j = 0; j < polygon[band].count; ++j) {
+            u += polygon[band].uv[j][0] / polygon[band].count;
+            v += polygon[band].uv[j][1] / polygon[band].count;
+        }
+        const long double s = a * (long double)u + b * (long double)v;
+        if (!isfinite(u) || !isfinite(v) ||
+            (band > 0 && !(s - bound[band - 1] > tolerance)) ||
+            (band < 2 && !(bound[band] - s > tolerance))) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+        const double wx = frame->origin[0] + frame->u_axis[0] * u +
+                          frame->v_axis[0] * v;
+        const double wy = frame->origin[1] + frame->u_axis[1] * u +
+                          frame->v_axis[1] * v;
+        if (!isfinite(wx) || !isfinite(wy)) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 0;
+        }
+        int raw_negative[2];
+        for (int i = 0; i < 2; ++i)
+            raw_negative[i] = orientation[i] > 0
+                ? s < threshold[i] : s > threshold[i];
+        for (size_t ci = 0; ci < cell_count; ++ci) {
+            const alea_cell_entry_t* cell = &sys->cells.data[cells[ci]];
+            int inside = 0;
+            if (!slice_error_oblique_node_inside(sys,
+                    cell->root_node_id, primitive_ids, raw_negative,
+                    2, 0, work, &inside)) {
+                *reason = *work == 0
+                    ? ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT
+                    : ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY;
+                return 0;
+            }
+            if (inside != alea_point_inside(sys, cell->root_node_id,
+                                            wx, wy, frame->origin[2])) {
+                *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+                return 0;
+            }
+            if (inside) {
+                if (face[band].owner_count ==
+                    ALEA_SLICE_ERROR_OWNER_CAPACITY) {
+                    *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+                    return 0;
+                }
+                face[band].owner_cell_ids[face[band].owner_count++] =
+                    cell->mc_cell_id;
+            }
+        }
+        face[band].kind = face[band].owner_count == 0
+            ? ALEA_POINT_COVERAGE_GAP
+            : face[band].owner_count == 1
+                ? ALEA_POINT_COVERAGE_UNIQUE
+                : ALEA_POINT_COVERAGE_OVERLAP;
+    }
+    size_t region_count = 0, interval_count = 0;
+    for (int band = 0; band < 3; ++band)
+        if (polygon[band].count &&
+            slice_error_axis_is_defect(face[band].kind)) ++region_count;
+    for (int k = 0; k < 2; ++k)
+        if (crossings[k].count == 2 &&
+            slice_error_axis_is_defect(face[k].kind) !=
+            slice_error_axis_is_defect(face[k + 1].kind)) ++interval_count;
+    const size_t output_limit = o->scan_options.max_output_bytes;
+    if (contextual_bytes > output_limit ||
+        region_count > (output_limit - contextual_bytes) /
+            sizeof(alea_slice_error_region_t) ||
+        interval_count > (output_limit - contextual_bytes -
+            region_count * sizeof(alea_slice_error_region_t)) /
+            sizeof(alea_slice_error_interval_t)) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+        *output_omitted = 1;
+        return 0;
+    }
+    out->regions = region_count
+        ? calloc(region_count, sizeof(*out->regions)) : NULL;
+    out->intervals = interval_count
+        ? calloc(interval_count, sizeof(*out->intervals)) : NULL;
+    if ((region_count && !out->regions) ||
+        (interval_count && !out->intervals)) return -1;
+    for (int band = 0; band < 3; ++band) {
+        if (!polygon[band].count ||
+            !slice_error_axis_is_defect(face[band].kind)) continue;
+        alea_slice_error_region_t* region =
+            &out->regions[out->region_count++];
+        region->kind = face[band].kind;
+        region->owner_count = face[band].owner_count;
+        memcpy(region->owner_cell_ids, face[band].owner_cell_ids,
+               region->owner_count * sizeof(int));
+        region->polygon_vertex_count = polygon[band].count;
+        region->uv_min[0] = region->uv_min[1] = INFINITY;
+        region->uv_max[0] = region->uv_max[1] = -INFINITY;
+        for (size_t j = 0; j < polygon[band].count; ++j)
+            for (int axis = 0; axis < 2; ++axis) {
+                const double coordinate = polygon[band].uv[j][axis];
+                const double uncertainty =
+                    polygon[band].uncertainty[j][axis];
+                region->polygon_uv[j][axis] = coordinate;
+                region->polygon_uv_uncertainty[j][axis] = uncertainty;
+                region->uv_min[axis] =
+                    fmin(region->uv_min[axis], coordinate);
+                region->uv_max[axis] =
+                    fmax(region->uv_max[axis], coordinate);
+                if (region->uv_min[axis] == coordinate)
+                    region->uv_min_uncertainty[axis] = fmax(
+                        region->uv_min_uncertainty[axis], uncertainty);
+                if (region->uv_max[axis] == coordinate)
+                    region->uv_max_uncertainty[axis] = fmax(
+                        region->uv_max_uncertainty[axis], uncertainty);
+            }
+    }
+    for (int k = 0; k < 2; ++k) {
+        if (crossings[k].count != 2 ||
+            slice_error_axis_is_defect(face[k].kind) ==
+            slice_error_axis_is_defect(face[k + 1].kind)) continue;
+        const int plane = line[k];
+        const slice_error_face_t* negative = orientation[plane] > 0
+            ? &face[k] : &face[k + 1];
+        const slice_error_face_t* positive = orientation[plane] > 0
+            ? &face[k + 1] : &face[k];
+        alea_slice_error_interval_t* interval =
+            &out->intervals[out->interval_count++];
+        interval->evidence_scope =
+            ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL;
+        interval->surface_id = selected[plane].surface_id;
+        interval->primitive_id = primitive_ids[plane];
+        interval->axis = -1;
+        const int reverse = crossings[k].uv[0][0] > crossings[k].uv[1][0] ||
+            (crossings[k].uv[0][0] == crossings[k].uv[1][0] &&
+             crossings[k].uv[0][1] > crossings[k].uv[1][1]);
+        const int first = reverse ? 1 : 0, last = reverse ? 0 : 1;
+        memcpy(interval->uv_start, crossings[k].uv[first],
+               sizeof(interval->uv_start));
+        memcpy(interval->uv_end, crossings[k].uv[last],
+               sizeof(interval->uv_end));
+        interval->endpoint_uncertainty[0] =
+            crossings[k].uncertainty[first][0];
+        interval->endpoint_uncertainty[1] =
+            crossings[k].uncertainty[last][0];
+        interval->negative_side_kind = negative->kind;
+        interval->positive_side_kind = positive->kind;
+        interval->negative_owner_count = negative->owner_count;
+        interval->positive_owner_count = positive->owner_count;
+        memcpy(interval->negative_owner_cell_ids, negative->owner_cell_ids,
+               negative->owner_count * sizeof(int));
+        memcpy(interval->positive_owner_cell_ids, positive->owner_cell_ids,
+               positive->owner_count * sizeof(int));
     }
     *reason = ALEA_SLICE_ERROR_RESOLVED;
     return 1;
@@ -1035,6 +1356,31 @@ static int slice_error_classify_axis_tile(
                     output_omitted);
                 goto done;
             }
+        }
+    }
+    if (primitive_count == 2) {
+        int oblique = 1;
+        for (size_t pi = 0; pi < 2; ++pi) {
+            const alea_primitive_entry_t* primitive =
+                &sys->primitives.data[planes[pi].primitive_id];
+            if (primitive->type != ALEA_PRIMITIVE_PLANE ||
+                primitive->payload_index >= sys->primitive_planes.count) {
+                oblique = 0;
+                break;
+            }
+            const alea_plane_data_t* p =
+                &sys->primitive_planes.data[primitive->payload_index];
+            if (p->a == 0.0 || p->b == 0.0 || p->c != 0.0) {
+                oblique = 0;
+                break;
+            }
+        }
+        if (oblique) {
+            status = slice_error_classify_parallel_oblique_tile(
+                query, tile, cells, cell_count, planes,
+                contextual_bytes, &discovery_work, out, reason,
+                output_omitted);
+            goto done;
         }
     }
     for (size_t pi = 0; pi < primitive_count; ++pi) {
