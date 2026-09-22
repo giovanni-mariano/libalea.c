@@ -3166,6 +3166,38 @@ static void boundary_event_collect_local_group(
     if (event->local_surface_count == 0) event->local_surface_complete = 0;
 }
 
+/* The incident path is empty for a ray entering from exterior space. The
+ * global walker searches world-space surfaces there, so use the same frame to
+ * retain every physical surface tied at its chosen crossing distance. */
+static void boundary_event_collect_global_group(
+    alea_system_t* sys, const alea_ray_t* ray,
+    alea_raycast_boundary_event_t* event) {
+    event->local_surface_count = 0;
+    event->local_surface_complete = 1;
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        const alea_surface_entry_t* surface = &sys->surfaces.data[i];
+        if (surface->primitive_id >= alea_vec_count(&sys->primitives)) {
+            event->local_surface_complete = 0;
+            continue;
+        }
+        const alea_primitive_entry_t* primitive =
+            &sys->primitives.data[surface->primitive_id];
+        alea_primitive_data_t data;
+        if (!raycast_primitive_copy_payload(sys, surface->primitive_id,
+                                            primitive->type, &data)) {
+            event->local_surface_complete = 0;
+            continue;
+        }
+        double hits[4];
+        const int count = ray_intersect_primitive(ray, primitive->type,
+                                                  &data, hits);
+        for (int hit = 0; hit < count; hit++)
+            if (fabs(hits[hit] - event->t) <= RAY_EPSILON)
+                boundary_event_add_local_surface(event, surface->mc_surface_id);
+    }
+    if (event->local_surface_count == 0) event->local_surface_complete = 0;
+}
+
 /* A selected ownership transition is only a useful shortcut when both open
  * sides have unambiguous coverage.  The selected walker deliberately picks
  * one deck-precedence owner; it therefore cannot, by itself, expose a second
@@ -5149,6 +5181,106 @@ int alea_ray_navigator_reflect_specular(alea_ray_navigator_t* navigator) {
     return alea_ray_navigator_set_direction(navigator, direction);
 }
 
+/* Resolve conditions from the incident path, including physical surfaces
+ * coincident with a synthetic lattice crossing. Multiple physical actions
+ * leave the action normal or destination ambiguous, so stop before moving. */
+static int navigator_boundary_condition(
+    alea_ray_navigator_t* navigator,
+    const alea_raycast_boundary_event_t* crossing,
+    alea_boundary_type_t* out_type) {
+    alea_raycast_boundary_event_t group = *crossing;
+    if (!navigator->pending.path || navigator->pending.path->count == 0) {
+        boundary_event_collect_global_group(navigator->sys, &navigator->ray,
+                                            &group);
+    } else if (navigator->validation_mode == ALEA_NAV_VALIDATE_FAST ||
+        crossing->is_synthetic_lattice_boundary ||
+        !crossing->has_physical_surface) {
+        group.has_physical_surface = true;
+        group.is_synthetic_lattice_boundary = false;
+        boundary_event_collect_local_group(navigator->sys, &navigator->ray,
+            navigator->pending.path, &group);
+    }
+    if (crossing->surface_id > 0 &&
+        (!group.local_surface_complete || group.local_surface_count == 0)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "particle boundary surface group is incomplete at t=%.17g",
+            crossing->t);
+        return -1;
+    }
+    if (crossing->surface_id <= 0 && group.local_surface_count > 0 &&
+        !group.local_surface_complete) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "particle lattice crossing has an incomplete physical surface group");
+        return -1;
+    }
+    *out_type = ALEA_BOUNDARY_TRANSMISSIVE;
+    int contains_selected = crossing->surface_id <= 0;
+    for (size_t i = 0; i < group.local_surface_count; i++) {
+        const int id = group.local_surface_ids[i];
+        if (id == crossing->surface_id) contains_selected = 1;
+        const int index = alea_surface_find(navigator->sys, id);
+        alea_boundary_type_t type;
+        if (index < 0 || alea_surface_get(navigator->sys, (size_t)index,
+                NULL, NULL, NULL, NULL, &type) != 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                "particle boundary surface %d is unavailable", id);
+            return -1;
+        }
+        if (type != ALEA_BOUNDARY_TRANSMISSIVE) {
+            if (crossing->surface_id <= 0 ||
+                group.local_surface_count != 1 ||
+                !group.local_surface_complete) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                    "particle boundary action is ambiguous at t=%.17g",
+                    crossing->t);
+                return -1;
+            }
+            *out_type = type;
+        }
+    }
+    if (!contains_selected) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "selected particle boundary is absent from its surface group");
+        return -1;
+    }
+    return 0;
+}
+
+/* An RPP has one surface ID for all six faces. Its normal routine chooses the
+ * first nearest face, which cannot define a reflection or periodic map at an
+ * edge or corner. Count incident faces before accepting a directional action. */
+static int navigator_rpp_action_face_unique(
+    const alea_ray_navigator_t* navigator,
+    const alea_raycast_boundary_event_t* crossing) {
+    if (crossing->primitive_id >=
+        alea_vec_count(&navigator->sys->primitives)) return 0;
+    const alea_primitive_entry_t* primitive =
+        &navigator->sys->primitives.data[crossing->primitive_id];
+    if (primitive->type != ALEA_PRIMITIVE_RPP) return 1;
+    alea_primitive_data_t data;
+    if (!raycast_primitive_copy_payload(navigator->sys, crossing->primitive_id,
+                                        primitive->type, &data)) return 0;
+    alea_ray_t local_ray;
+    transform_ray_inverse(&crossing->transform, &navigator->ray, &local_ray);
+    double p[3];
+    alea_ray_point_at(&local_ray, crossing->t, &p[0], &p[1], &p[2]);
+    const double mins[3] = {
+        data.box.min_x, data.box.min_y, data.box.min_z
+    };
+    const double maxs[3] = {
+        data.box.max_x, data.box.max_y, data.box.max_z
+    };
+    int faces = 0;
+    for (int axis = 0; axis < 3; axis++) {
+        const double scale = fmax(1.0,
+            fmax(fabs(p[axis]), fmax(fabs(mins[axis]), fabs(maxs[axis]))));
+        const double tolerance = RAY_EPSILON + 64.0 * DBL_EPSILON * scale;
+        if (fabs(p[axis] - mins[axis]) <= tolerance) faces++;
+        if (fabs(p[axis] - maxs[axis]) <= tolerance) faces++;
+    }
+    return faces == 1;
+}
+
 int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
                                double collision_distance, double max_distance,
                                alea_nav_event_t* event) {
@@ -5197,11 +5329,18 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
         const alea_raycast_boundary_event_t* crossing =
             &navigator->pending.exit_event;
         next.surface_id = crossing->surface_id;
+        if (navigator_boundary_condition(navigator, crossing,
+                &next.boundary_type) != 0) return -1;
+        if (next.surface_id > 0 &&
+            next.boundary_type != ALEA_BOUNDARY_TRANSMISSIVE &&
+            next.boundary_type != ALEA_BOUNDARY_VACUUM &&
+            !navigator_rpp_action_face_unique(navigator, crossing)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                "particle boundary action has no unique face normal at t=%.17g",
+                crossing->t);
+            return -1;
+        }
         if (next.surface_id > 0) {
-            const int index = alea_surface_find(navigator->sys,
-                                                next.surface_id);
-            if (index < 0 || alea_surface_get(navigator->sys, (size_t)index,
-                NULL, NULL, NULL, NULL, &next.boundary_type) != 0) return -1;
             if (next.boundary_type == ALEA_BOUNDARY_VACUUM)
                 next.kind = ALEA_NAV_VACUUM;
             else if (next.boundary_type != ALEA_BOUNDARY_TRANSMISSIVE)

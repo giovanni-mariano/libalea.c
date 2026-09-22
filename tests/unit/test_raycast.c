@@ -625,6 +625,151 @@ TEST(persistent_navigator_vacuum_and_boundary_action) {
     alea_destroy(sys);
 }
 
+TEST(persistent_navigator_rejects_competing_corner_conditions) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int x = alea_plane_surface(sys, 1, 1, 0, 0, -1);
+    int y = alea_plane_surface(sys, 2, 0, 1, 0, -1);
+    int box = alea_box_surface(sys, 3, -2, 2, -2, 2, -2, 2);
+    int material = alea_add_material(sys, 1);
+    ASSERT(x >= 0 && y >= 0 && box >= 0 && material >= 0);
+    alea_node_id_t xy = alea_intersection(sys,
+        alea_halfspace(sys, x, -1), alea_halfspace(sys, y, -1));
+    ASSERT_NE(xy, ALEA_NODE_ID_INVALID);
+    ASSERT(alea_add_cell(sys, 1, alea_intersection(sys, xy,
+        alea_halfspace(sys, box, -1)), material, -1, 0) >= 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_REFLECTIVE), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 2, ALEA_BOUNDARY_WHITE), 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {0, 0, 0};
+    const double diagonal[3] = {1, 1, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    const alea_nav_validation_mode_t modes[] = {
+        ALEA_NAV_VALIDATE_FAST, ALEA_NAV_VALIDATE_STRICT,
+        ALEA_NAV_VALIDATE_INTERVAL
+    };
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        ASSERT_EQ(alea_ray_navigator_set_validation_mode(navigator, modes[i]), 0);
+        ASSERT_EQ(alea_ray_navigator_restart(navigator, position, diagonal,
+                                               &location), 0);
+        ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 3,
+                                             &event), -1);
+        ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INVALID_STATE);
+    }
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_TRANSMISSIVE), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 2, ALEA_BOUNDARY_TRANSMISSIVE), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 3, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_transmits_synthetic_lattice_corner) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    if (!model) SKIP("Test data file not found");
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(navigator);
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(navigator,
+                  ALEA_NAV_VALIDATE_INTERVAL), 0);
+    const double position[3] = {0.5, 0.5, 0};
+    const double diagonal[3] = {1, 1, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, diagonal,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_EQ(event.boundary_type, ALEA_BOUNDARY_TRANSMISSIVE);
+    ASSERT_EQ(alea_surface_set_boundary(model->sys, 2,
+                                        ALEA_BOUNDARY_REFLECTIVE), 0);
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, diagonal,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INVALID_STATE);
+    alea_ray_navigator_destroy(navigator);
+    mcnp_model_destroy(model);
+}
+
+TEST(persistent_navigator_enters_material_from_exterior) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(sphere >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, sphere, -1),
+                         material, -1, 0) >= 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {-2, 0, 0};
+    const double direction[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+    ASSERT_EQ(event.after.kind, ALEA_NAV_MATERIAL);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_rejects_competing_conditions_on_entry) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int x = alea_plane_surface(sys, 1, 1, 0, 0, -1);
+    int y = alea_plane_surface(sys, 2, 0, 1, 0, -1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(x >= 0 && y >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_intersection(sys,
+        alea_halfspace(sys, x, 1), alea_halfspace(sys, y, 1)),
+        material, -1, 0) >= 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_VACUUM), 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 2, ALEA_BOUNDARY_REFLECTIVE), 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {0, 0, 0};
+    const double diagonal[3] = {1, 1, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, diagonal,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 3, &event), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INVALID_STATE);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_rejects_reflective_box_corner) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int box = alea_box_surface(sys, 1, -1, 1, -1, 1, -1, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(box >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, box, -1),
+                         material, -1, 0) >= 0);
+    ASSERT_EQ(alea_surface_set_boundary(sys, 1, ALEA_BOUNDARY_REFLECTIVE), 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {0, 0, 0};
+    const double diagonal[3] = {1, 1, 0};
+    const double axis[3] = {1, 0, 0};
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, diagonal,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INVALID_STATE);
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, axis,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY_ACTION);
+    ASSERT_EQ(event.boundary_type, ALEA_BOUNDARY_REFLECTIVE);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
 TEST(persistent_navigator_rejects_overlapping_material_owners) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

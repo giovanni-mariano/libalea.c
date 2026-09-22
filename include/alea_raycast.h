@@ -130,7 +130,11 @@ alea_ray_navigator_t* alea_ray_navigator_clone(
  * On a collision the caller samples physics and may
  * change direction before the next advance. A boundary action requires a
  * direction/position update before advance can continue. A vacuum boundary
- * terminates the navigator. Returns 0 for an event, -1 on traversal error. */
+ * terminates the navigator. Coincident physical surfaces may all transmit;
+ * an action is accepted only when it is the sole physical surface in the
+ * incident crossing group. Other action combinations fail before advancing.
+ * A synthetic lattice corner transmits when no physical action applies.
+ * Returns 0 for an event, -1 on traversal error or ambiguous action. */
 int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
                                double collision_distance, double max_distance,
                                alea_nav_event_t* event);
