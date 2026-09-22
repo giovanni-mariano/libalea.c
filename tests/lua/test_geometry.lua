@@ -30,6 +30,11 @@ local missing_boundary = pcall(function()
     sys:surface_set_boundary(9999, "vacuum")
 end)
 assert(not missing_boundary, "missing surface ID rejected")
+sys:surface_set_periodic_pair(3, 4)
+assert(sys:surface_get_boundary(3) == "periodic" and
+       sys:surface_get_boundary(4) == "periodic", "periodic pair")
+assert(not pcall(function() sys:surface_set_periodic_pair(1, 3) end),
+       "nonplane periodic pair rejected")
 
 -- Standalone primitives use the same checked evaluator as the public C and
 -- Python APIs.

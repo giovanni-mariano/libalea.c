@@ -314,6 +314,8 @@ and the caveat about combining ACE neutron heating with transported-photon
 deposition.
 
 The current driver supports fixed-source neutron/photon transport, sampled
-secondaries, vacuum and specular-reflective boundaries, and cell/mesh/terminal-
-universe tallies and neutron URR probability-table sampling. White/periodic
-boundaries and criticality eigenvalue calculations remain unsupported.
+secondaries, vacuum, specular-reflective, white, and translational periodic
+plane boundaries, plus cell/mesh/terminal-universe tallies and neutron URR
+probability-table sampling. Periodic boundaries require a distinct parallel
+plane partner at the root geometry level. Rotational periodic mappings and
+criticality eigenvalue calculations remain unsupported.

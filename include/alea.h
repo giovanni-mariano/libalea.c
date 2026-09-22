@@ -1629,6 +1629,12 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
 int alea_surface_set_boundary(alea_system_t* sys, int surface_id,
                               alea_boundary_type_t boundary_type);
 
+/** Pair two distinct plane surfaces for translational periodic transport.
+ * Sets both boundary types and reciprocal partner IDs. Returns -1 if either
+ * surface is missing, is not a plane, or already has a different partner. */
+int alea_surface_set_periodic_pair(alea_system_t* sys,
+                                   int first_surface_id, int second_surface_id);
+
 int alea_surface_find(const alea_system_t* sys, int surface_id);
 
 /**

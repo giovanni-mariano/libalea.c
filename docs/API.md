@@ -966,6 +966,12 @@ int alea_surface_get(const alea_system_t* sys, size_t index,
 
 Get surface info by index. Any output pointer can be NULL.
 
+`alea_surface_set_periodic_pair(sys, first_id, second_id)` pairs two plane
+surfaces, sets both to periodic, and stores reciprocal partner IDs. Particle
+navigation supports translation between distinct parallel planes at the root
+geometry level. Unsupported pair geometries and coincident physical boundary
+actions return an error.
+
 ### alea_surface_find
 
 ```c

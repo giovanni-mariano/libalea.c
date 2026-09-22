@@ -644,6 +644,16 @@ alea_error_t alea_transport_run_sampled_source(
                         break;
                     }
                     result.reflections++;
+                } else if (event.kind == ALEA_NAV_BOUNDARY_ACTION &&
+                           event.boundary_type == ALEA_BOUNDARY_PERIODIC) {
+                    if (alea_ray_navigator_apply_periodic(navigator, position,
+                                                          &location) != 0) {
+                        err = fail_transport_navigation(failure, h, events,
+                            &location, position, particle.energy);
+                        break;
+                    }
+                    result.boundary_crossings++;
+                    result.periodic_crossings++;
                 } else if (event.kind == ALEA_NAV_DISTANCE_LIMIT) {
                     /* Continue with the same optical-depth draw. */
                 } else {

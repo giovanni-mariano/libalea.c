@@ -3644,6 +3644,30 @@ int alea_surface_set_boundary(alea_system_t* sys, int surface_id,
     return 0;
 }
 
+int alea_surface_set_periodic_pair(alea_system_t* sys,
+                                   int first_surface_id, int second_surface_id) {
+    if (!sys || first_surface_id <= 0 || second_surface_id <= 0 ||
+        first_surface_id == second_surface_id) return -1;
+    const int first = alea_surface_find(sys, first_surface_id);
+    const int second = alea_surface_find(sys, second_surface_id);
+    if (first < 0 || second < 0) return -1;
+    alea_surface_entry_t* a = &sys->surfaces.data[first];
+    alea_surface_entry_t* b = &sys->surfaces.data[second];
+    if (a->primitive_id >= alea_vec_count(&sys->primitives) ||
+        b->primitive_id >= alea_vec_count(&sys->primitives) ||
+        sys->primitives.data[a->primitive_id].type != ALEA_PRIMITIVE_PLANE ||
+        sys->primitives.data[b->primitive_id].type != ALEA_PRIMITIVE_PLANE ||
+        (a->periodic_surface_id > 0 &&
+         a->periodic_surface_id != second_surface_id) ||
+        (b->periodic_surface_id > 0 &&
+         b->periodic_surface_id != first_surface_id)) return -1;
+    a->boundary_type = ALEA_BOUNDARY_PERIODIC;
+    b->boundary_type = ALEA_BOUNDARY_PERIODIC;
+    a->periodic_surface_id = second_surface_id;
+    b->periodic_surface_id = first_surface_id;
+    return 0;
+}
+
 int alea_surface_find(const alea_system_t* sys, int surface_id) {
     if (!sys) return -1;
     /* Fast path: O(1) direct-address table (built after surface conversion) */

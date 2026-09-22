@@ -506,6 +506,23 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
         }
     }
     alea_bitset_destroy(&surf_seen);
+    /* MCNP permits the periodic partner to be named on one surface card.
+     * Make the destination periodic in both directions when its own card has
+     * no competing boundary condition or partner. */
+    for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+        alea_surface_entry_t* source = &sys->surfaces.data[i];
+        if (source->boundary_type != ALEA_BOUNDARY_PERIODIC ||
+            source->periodic_surface_id <= 0) continue;
+        for (size_t j = 0; j < alea_vec_count(&sys->surfaces); j++) {
+            alea_surface_entry_t* partner = &sys->surfaces.data[j];
+            if (partner->mc_surface_id != source->periodic_surface_id ||
+                partner->boundary_type != ALEA_BOUNDARY_TRANSMISSIVE ||
+                partner->periodic_surface_id != 0) continue;
+            partner->boundary_type = ALEA_BOUNDARY_PERIODIC;
+            partner->periodic_surface_id = source->mc_surface_id;
+            break;
+        }
+    }
     t1 = alea_monotonic_seconds();
     load_profile_stage("convert_surfaces", t0, t1);
 

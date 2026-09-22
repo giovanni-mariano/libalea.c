@@ -163,6 +163,17 @@ static int l_surface_set_boundary(lua_State* L) {
     return 0;
 }
 
+/* sys:surface_set_periodic_pair(first_surface_id, second_surface_id) */
+static int l_surface_set_periodic_pair(lua_State* L) {
+    alea_system_t* sys = alea_get_sys(L, 1);
+    int first = (int)luaL_checkinteger(L, 2);
+    int second = (int)luaL_checkinteger(L, 3);
+    if (alea_surface_set_periodic_pair(sys, first, second) != 0)
+        return luaL_error(L,
+            "surface_set_periodic_pair: expected two unpaired plane surfaces");
+    return 0;
+}
+
 /* sys:surface_get_boundary(surface_id) -> name */
 static int l_surface_get_boundary(lua_State* L) {
     alea_system_t* sys = alea_get_sys(L, 1);
@@ -568,6 +579,7 @@ static const luaL_Reg surface_methods[] = {
     {"box_general", l_box_general},
     {"rhp",         l_rhp},
     {"surface_set_boundary", l_surface_set_boundary},
+    {"surface_set_periodic_pair", l_surface_set_periodic_pair},
     {"surface_get_boundary", l_surface_get_boundary},
     {NULL, NULL}
 };

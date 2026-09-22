@@ -770,6 +770,130 @@ TEST(persistent_navigator_rejects_reflective_box_corner) {
     alea_destroy(sys);
 }
 
+TEST(persistent_navigator_translates_parallel_periodic_planes) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int left = alea_plane_surface(sys, 1, 1, 0, 0, 0);
+    int right = alea_plane_surface(sys, 2, 1, 0, 0, -10);
+    int material = alea_add_material(sys, 1);
+    ASSERT(left >= 0 && right >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_intersection(sys,
+        alea_halfspace(sys, left, 1), alea_halfspace(sys, right, -1)),
+        material, -1, 0) >= 0);
+    ASSERT_EQ(alea_surface_set_periodic_pair(sys, 1, 2), 0);
+    ASSERT_EQ(alea_surface_set_periodic_pair(sys, 1, 1), -1);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    ASSERT_EQ(alea_ray_navigator_set_validation_mode(navigator,
+                  ALEA_NAV_VALIDATE_INTERVAL), 0);
+    const double position[3] = {5, 0, 0};
+    const double forward[3] = {1, 0, 0};
+    const double backward[3] = {-1, 0, 0};
+    double mapped[3];
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, forward,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 6, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY_ACTION);
+    ASSERT_EQ(event.boundary_type, ALEA_BOUNDARY_PERIODIC);
+    ASSERT_EQ(event.surface_id, 2);
+    ASSERT_NEAR(event.distance, 5, 1e-10);
+    ASSERT_EQ(alea_ray_navigator_apply_periodic(navigator, mapped,
+                                                 &location), 0);
+    ASSERT_NEAR(mapped[0], 0, 1e-10);
+    ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 11, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY_ACTION);
+    ASSERT_NEAR(event.distance, 10, 1e-9);
+    ASSERT_EQ(alea_ray_navigator_apply_periodic(navigator, mapped,
+                                                 &location), 0);
+    ASSERT_NEAR(mapped[0], 0, 1e-10);
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, backward,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 6, &event), 0);
+    ASSERT_EQ(event.surface_id, 1);
+    ASSERT_EQ(alea_ray_navigator_apply_periodic(navigator, mapped,
+                                                 &location), 0);
+    ASSERT_NEAR(mapped[0], 10, 1e-10);
+    ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    const double oblique[3] = {1, 0.5, 0};
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, oblique,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 7, &event), 0);
+    ASSERT_EQ(alea_ray_navigator_apply_periodic(navigator, mapped,
+                                                 &location), 0);
+    ASSERT_NEAR(mapped[0], 0, 1e-10);
+    ASSERT_NEAR(mapped[1], 2.5, 1e-10);
+    ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_rejects_nonparallel_periodic_pair) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int x = alea_plane_surface(sys, 1, 1, 0, 0, 0);
+    int y = alea_plane_surface(sys, 2, 0, 1, 0, 0);
+    int material = alea_add_material(sys, 1);
+    ASSERT(x >= 0 && y >= 0 && material >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_intersection(sys,
+        alea_halfspace(sys, x, 1), alea_halfspace(sys, y, 1)),
+        material, -1, 0) >= 0);
+    ASSERT_EQ(alea_surface_set_periodic_pair(sys, 1, 2), 0);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {1, 1, 0};
+    const double direction[3] = {-1, 0, 0};
+    double mapped[3];
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 2, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY_ACTION);
+    ASSERT_EQ(alea_ray_navigator_apply_periodic(navigator, mapped,
+                                                 &location), -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_UNSUPPORTED);
+    alea_ray_navigator_destroy(navigator);
+    alea_destroy(sys);
+}
+
+TEST(persistent_navigator_uses_one_sided_mcnp_periodic_pair) {
+    const char* input =
+        "Periodic slab\n"
+        "1 1 -0.02 1 -2 imp:n=1\n"
+        "\n"
+        "1 -2 px 0\n"
+        "2 px 10\n"
+        "\n"
+        "m1 1001.80c 1\n";
+    mcnp_model_t* model = mcnp_load_string(input, strlen(input));
+    ASSERT_NOT_NULL(model);
+    const int right_index = alea_surface_find(model->sys, 2);
+    ASSERT(right_index >= 0);
+    alea_boundary_type_t boundary;
+    ASSERT_EQ(alea_surface_get(model->sys, (size_t)right_index,
+        NULL, NULL, NULL, NULL, &boundary), 0);
+    ASSERT_EQ(boundary, ALEA_BOUNDARY_PERIODIC);
+    alea_ray_navigator_t* navigator = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(navigator);
+    const double position[3] = {5, 0, 0};
+    const double direction[3] = {1, 0, 0};
+    double mapped[3];
+    alea_nav_location_t location;
+    alea_nav_event_t event;
+    ASSERT_EQ(alea_ray_navigator_restart(navigator, position, direction,
+                                           &location), 0);
+    ASSERT_EQ(alea_ray_navigator_advance(navigator, INFINITY, 6, &event), 0);
+    ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY_ACTION);
+    ASSERT_EQ(alea_ray_navigator_apply_periodic(navigator, mapped,
+                                                 &location), 0);
+    ASSERT_NEAR(mapped[0], 0, 1e-10);
+    alea_ray_navigator_destroy(navigator);
+    mcnp_model_destroy(model);
+}
+
 TEST(persistent_navigator_rejects_overlapping_material_owners) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

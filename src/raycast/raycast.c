@@ -4881,6 +4881,7 @@ struct alea_ray_navigator {
     bool awaiting_action;
     bool leaked;
     alea_boundary_type_t action_type;
+    int action_surface_id;
     double action_normal[3];
 };
 
@@ -5108,6 +5109,7 @@ int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
     navigator->awaiting_action = false;
     navigator->leaked = false;
     navigator->action_type = ALEA_BOUNDARY_TRANSMISSIVE;
+    navigator->action_surface_id = -1;
     navigator->initialized = false;
     if (navigator_load_interval(navigator) != 0) return -1;
     navigator->initialized = true;
@@ -5156,6 +5158,7 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
     navigator->have_pending = false;
     navigator->awaiting_action = false;
     navigator->action_type = ALEA_BOUNDARY_TRANSMISSIVE;
+    navigator->action_surface_id = -1;
     navigator->initialized = false;
     if (navigator_load_interval(navigator) != 0) return -1;
     navigator->initialized = true;
@@ -5179,6 +5182,134 @@ int alea_ray_navigator_reflect_specular(alea_ray_navigator_t* navigator) {
         navigator->ray.dz - 2.0 * dot * normal[2] / norm2
     };
     return alea_ray_navigator_set_direction(navigator, direction);
+}
+
+static const alea_surface_entry_t* navigator_periodic_partner(
+    const alea_system_t* sys, int source_id) {
+    const int source_index = alea_surface_find(sys, source_id);
+    if (source_index < 0) return NULL;
+    const alea_surface_entry_t* source = &sys->surfaces.data[source_index];
+    int partner_id = source->periodic_surface_id;
+    if (partner_id == 0) {
+        for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
+            const alea_surface_entry_t* candidate = &sys->surfaces.data[i];
+            if (candidate->periodic_surface_id != source_id) continue;
+            if (partner_id != 0) return NULL;
+            partner_id = candidate->mc_surface_id;
+        }
+    }
+    if (partner_id <= 0 || partner_id == source_id) return NULL;
+    const int partner_index = alea_surface_find(sys, partner_id);
+    if (partner_index < 0) return NULL;
+    const alea_surface_entry_t* partner = &sys->surfaces.data[partner_index];
+    if (partner->boundary_type != ALEA_BOUNDARY_PERIODIC ||
+        (partner->periodic_surface_id != 0 &&
+         partner->periodic_surface_id != source_id)) return NULL;
+    if (partner->periodic_surface_id == 0) {
+        size_t references = 0;
+        for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++)
+            if (sys->surfaces.data[i].periodic_surface_id == partner_id)
+                references++;
+        if (references != 1) return NULL;
+    }
+    return partner;
+}
+
+int alea_ray_navigator_apply_periodic(alea_ray_navigator_t* navigator,
+                                      double out_position[3],
+                                      alea_nav_location_t* out_location) {
+    if (!navigator || !out_position || !out_location ||
+        !navigator->initialized || !navigator->awaiting_action ||
+        navigator->action_type != ALEA_BOUNDARY_PERIODIC ||
+        navigator->action_surface_id <= 0) return -1;
+    if (navigator->pending.path && navigator->pending.path->count > 1) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+            "periodic mapping inside a nested occurrence is unsupported");
+        return -1;
+    }
+    const int source_index = alea_surface_find(navigator->sys,
+                                               navigator->action_surface_id);
+    const alea_surface_entry_t* partner = navigator_periodic_partner(
+        navigator->sys, navigator->action_surface_id);
+    if (source_index < 0 || !partner) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "periodic boundary has no unique paired surface");
+        return -1;
+    }
+    const alea_surface_entry_t* source =
+        &navigator->sys->surfaces.data[source_index];
+    if (source->primitive_id >= alea_vec_count(&navigator->sys->primitives) ||
+        partner->primitive_id >= alea_vec_count(&navigator->sys->primitives) ||
+        navigator->sys->primitives.data[source->primitive_id].type !=
+            ALEA_PRIMITIVE_PLANE ||
+        navigator->sys->primitives.data[partner->primitive_id].type !=
+            ALEA_PRIMITIVE_PLANE) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+            "periodic transport requires a pair of planes");
+        return -1;
+    }
+    alea_primitive_data_t first, second;
+    if (!raycast_primitive_copy_payload(navigator->sys, source->primitive_id,
+            ALEA_PRIMITIVE_PLANE, &first) ||
+        !raycast_primitive_copy_payload(navigator->sys, partner->primitive_id,
+            ALEA_PRIMITIVE_PLANE, &second)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "periodic plane data is unavailable");
+        return -1;
+    }
+    const double a[3] = {first.plane.a, first.plane.b, first.plane.c};
+    const double b[3] = {second.plane.a, second.plane.b, second.plane.c};
+    const double an = sqrt(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+    const double bn = sqrt(b[0]*b[0] + b[1]*b[1] + b[2]*b[2]);
+    const double dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    if (!(an > 0.0) || !(bn > 0.0) ||
+        !isfinite(an) || !isfinite(bn) ||
+        !isfinite(dot) || !isfinite(an * bn) ||
+        fabs(fabs(dot / (an * bn)) - 1.0) > 1e-10) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+            "periodic transport requires parallel planes");
+        return -1;
+    }
+    double position[3];
+    alea_ray_point_at(&navigator->ray, navigator->current_t,
+                      &position[0], &position[1], &position[2]);
+    const double distance = -(
+        b[0]*position[0] + b[1]*position[1] + b[2]*position[2] +
+        second.plane.d) * an / dot;
+    if (!isfinite(distance) || distance == 0.0) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "periodic planes have no distinct finite translation");
+        return -1;
+    }
+    double mapped[3];
+    for (int i = 0; i < 3; i++)
+        mapped[i] = position[i] + distance * a[i] / an;
+    if (!isfinite(mapped[0]) || !isfinite(mapped[1]) || !isfinite(mapped[2])) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,
+            "periodic mapping produced a nonfinite position");
+        return -1;
+    }
+    if (mapped[0] == position[0] && mapped[1] == position[1] &&
+        mapped[2] == position[2]) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "periodic translation cannot advance the position");
+        return -1;
+    }
+    alea_nav_location_t location;
+    const double direction[3] = {
+        navigator->ray.dx, navigator->ray.dy, navigator->ray.dz
+    };
+    if (alea_ray_navigator_restart(navigator, mapped, direction,
+                                   &location) != 0) return -1;
+    if (location.kind != ALEA_NAV_MATERIAL &&
+        location.kind != ALEA_NAV_VOID) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "periodic destination has no unique material or void owner");
+        return -1;
+    }
+    memcpy(out_position, mapped, sizeof(mapped));
+    *out_location = location;
+    return 0;
 }
 
 /* Resolve conditions from the incident path, including physical surfaces
@@ -5365,6 +5496,7 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
         } else if (next.kind == ALEA_NAV_BOUNDARY_ACTION) {
             navigator->awaiting_action = true;
             navigator->action_type = next.boundary_type;
+            navigator->action_surface_id = next.surface_id;
             memcpy(navigator->action_normal, next.normal,
                    sizeof(navigator->action_normal));
         } else if (navigator_load_interval(navigator) != 0) {

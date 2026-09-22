@@ -149,6 +149,15 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
  * Returns -1 for any other state or a missing/invalid boundary normal. */
 int alea_ray_navigator_reflect_specular(alea_ray_navigator_t* navigator);
 
+/** Map a pending PERIODIC boundary action to its paired plane and restart at
+ * the mapped world position with unchanged direction. Supports translation
+ * between distinct parallel planes at the root geometry level; other pair
+ * geometries and nested occurrences return -1. Both output pointers are
+ * required. A failed relocation may require restart(). */
+int alea_ray_navigator_apply_periodic(alea_ray_navigator_t* navigator,
+                                      double out_position[3],
+                                      alea_nav_location_t* out_location);
+
 #define ALEA_RAY_FIRST_VISIBLE_SURFACE_ID      (1u << 0)
 #define ALEA_RAY_FIRST_VISIBLE_SURFACE_NORMAL  (1u << 1)
 

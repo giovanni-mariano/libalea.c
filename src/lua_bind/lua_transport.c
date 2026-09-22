@@ -626,6 +626,7 @@ static void push_result(lua_State* L, const alea_transport_result_t* result) {
     set_integer(L, "collisions", result->collisions);
     set_integer(L, "boundary_crossings", result->boundary_crossings);
     set_integer(L, "reflections", result->reflections);
+    set_integer(L, "periodic_crossings", result->periodic_crossings);
     set_integer(L, "emitted_neutrons", result->emitted_neutrons);
     set_integer(L, "emitted_photons", result->emitted_photons);
     set_integer(L, "photon_collisions", result->photon_collisions);

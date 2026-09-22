@@ -143,6 +143,7 @@ typedef struct {
     uint64_t collisions;
     uint64_t boundary_crossings;
     uint64_t reflections;
+    uint64_t periodic_crossings;
     uint64_t emitted_neutrons;
     uint64_t emitted_photons;
     uint64_t photon_collisions;
@@ -175,7 +176,8 @@ typedef struct {
  * tracked when photon bindings are available. Neutron URR probability tables
  * are sampled once per material and flight and retained across adjacent cells
  * of the same material. Reflective and white boundaries return particles
- * to the incident side; periodic boundaries return an explicit error.
+ * to the incident side. Paired parallel periodic planes translate particles
+ * to the partner surface without changing direction or optical depth.
  * On failure output is zeroed; failure identifies the first incomplete
  * particle when tracking has begun. */
 alea_error_t alea_transport_run_fixed_neutron(
