@@ -149,6 +149,34 @@ def test_slice_error_page_exposes_verified_oblique_polygon():
     assert len(quadrant["regions"][0]["polygon_uv"]) == 4
 
 
+def test_slice_error_page_classifies_axis_and_oblique_crossing():
+    system = pyalea.System()
+    _, axis_pos, axis_neg = system.plane_surface(
+        1090, 1.0, 0.0, 0.0, -0.2)
+    _, oblique_pos, oblique_neg = system.plane_surface(
+        1091, 1.0, 1.0, 0.0, -0.3)
+    system.add_cell(1090, system.create_intersection(axis_neg, oblique_neg))
+    system.add_cell(1091, system.create_intersection(axis_pos, oblique_neg))
+    system.add_cell(1092, system.create_intersection(axis_neg, oblique_pos))
+    with system.slice_error_query(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1),
+        tile_columns=2, tile_rows=2,
+    ) as query:
+        assert query.page_count == 4
+        assert all(query.run_page(i)["receipt"]["scope_classified"]
+                   for i in range(query.page_count))
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1),
+    )
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["region_count"] == 1
+    assert page["receipt"]["verified_interval_count"] == 2
+    assert page["regions"][0]["kind"] == "gap"
+    assert len(page["regions"][0]["polygon_uv"]) >= 3
+
+
 def test_slice_error_query_reuses_identity_and_survives_partial_pages():
     system = pyalea.System()
     _, _, negative = system.plane_surface(20, 1.0, 0.0, 0.0, 0.0)

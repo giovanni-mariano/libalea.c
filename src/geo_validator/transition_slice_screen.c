@@ -1219,7 +1219,7 @@ static int slice_error_classify_parallel_oblique_tile(
         contextual_bytes, out, reason, output_omitted);
 }
 
-/* Two nonparallel lines partition a rectangular core into at most four convex
+/* Two nonparallel vertical lines partition a rectangular core into at most four convex
  * faces. An interior crossing is a vertex of all four faces. A crossing well
  * outside the core has no face vertex. Boundary or poorly conditioned
  * crossings are withheld. */
@@ -1255,7 +1255,7 @@ static int slice_error_classify_crossing_oblique_tile(
         const alea_plane_data_t* p =
             &sys->primitive_planes.data[primitive->payload_index];
         if (!isfinite(p->a) || !isfinite(p->b) || !isfinite(p->c) ||
-            !isfinite(p->d) || p->a == 0.0 || p->b == 0.0 ||
+            !isfinite(p->d) || (p->a == 0.0 && p->b == 0.0) ||
             p->c != 0.0) return 0;
         a[i] = (long double)p->a * frame->u_axis[0] +
                (long double)p->b * frame->u_axis[1];
@@ -1732,29 +1732,33 @@ static int slice_error_classify_axis_tile(
         }
     }
     if (primitive_count == 2) {
-        int oblique = 1;
+        int vertical = 1, oblique = 0;
         for (size_t pi = 0; pi < 2; ++pi) {
             const alea_primitive_entry_t* primitive =
                 &sys->primitives.data[planes[pi].primitive_id];
             if (primitive->type != ALEA_PRIMITIVE_PLANE ||
                 primitive->payload_index >= sys->primitive_planes.count) {
-                oblique = 0;
+                vertical = 0;
                 break;
             }
             const alea_plane_data_t* p =
                 &sys->primitive_planes.data[primitive->payload_index];
-            if (p->a == 0.0 || p->b == 0.0 || p->c != 0.0) {
-                oblique = 0;
+            if ((p->a == 0.0 && p->b == 0.0) || p->c != 0.0) {
+                vertical = 0;
                 break;
             }
+            oblique += p->a != 0.0 && p->b != 0.0;
         }
-        if (oblique) {
-            status = slice_error_classify_parallel_oblique_tile(
-                query, tile, cells, cell_count, planes,
-                contextual_bytes, &discovery_work, out, reason,
-                output_omitted);
-            if (status == 0 && *reason ==
-                ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY)
+        if (vertical && oblique) {
+            if (oblique == 2) {
+                status = slice_error_classify_parallel_oblique_tile(
+                    query, tile, cells, cell_count, planes,
+                    contextual_bytes, &discovery_work, out, reason,
+                    output_omitted);
+            }
+            if (oblique == 1 ||
+                (status == 0 && *reason ==
+                 ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY))
                 status = slice_error_classify_crossing_oblique_tile(
                     query, tile, cells, cell_count, planes,
                     contextual_bytes, &discovery_work, out, reason,
