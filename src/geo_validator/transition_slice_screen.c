@@ -8,11 +8,252 @@
 
 #include "raycast/raycast.h"
 #include "raycast/ray_epsilon.h"
+#include "core/alea_system.h"
 #include "util/alea_parallel.h"
 
 #include <math.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+struct alea_slice_error_query {
+    alea_system_t* sys;
+    alea_slice_error_query_options_t options;
+    uint64_t query_id;
+    uint64_t geometry_generation;
+    size_t page_count;
+};
+
+struct alea_slice_error_page {
+    alea_slice_error_page_receipt_t receipt;
+    alea_transition_slice_critical_finding_t* findings;
+    size_t finding_count;
+    size_t finding_capacity;
+    int populated;
+};
+
+static atomic_uint_fast64_t slice_error_next_query_id = 1;
+
+void alea_slice_error_query_options_init(
+    alea_slice_error_query_options_t* options) {
+    if (!options) return;
+    memset(options, 0, sizeof(*options));
+    options->struct_size = sizeof(*options);
+    options->tile_columns = 1;
+    options->tile_rows = 1;
+    alea_transition_slice_options_init(&options->scan_options);
+    options->scan_options.occurrence_discovery =
+        ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE;
+}
+
+static int slice_error_finite_view(const alea_slice_view_t* view) {
+    for (size_t i = 0; i < 3; ++i) {
+        if (!isfinite(view->plane.origin[i]) ||
+            !isfinite(view->plane.normal[i]) ||
+            !isfinite(view->plane.u_axis[i]) ||
+            !isfinite(view->plane.v_axis[i])) return 0;
+    }
+    return isfinite(view->u_min) && isfinite(view->u_max) &&
+        isfinite(view->v_min) && isfinite(view->v_max) &&
+        view->u_min < view->u_max && view->v_min < view->v_max;
+}
+
+alea_slice_error_query_t* alea_slice_error_query_create(
+    alea_system_t* sys, const alea_slice_error_query_options_t* input) {
+    if (!sys || !input || input->struct_size <
+            offsetof(alea_slice_error_query_options_t, scan_options))
+        return NULL;
+    alea_slice_error_query_options_t options;
+    alea_slice_error_query_options_init(&options);
+    const size_t copy_size = input->struct_size < sizeof(options)
+        ? input->struct_size : sizeof(options);
+    memcpy(&options, input, copy_size);
+    const alea_slice_view_t* view = &options.view;
+    if (!slice_error_finite_view(view) ||
+        !isfinite(options.required_uv_min[0]) ||
+        !isfinite(options.required_uv_min[1]) ||
+        !isfinite(options.required_uv_max[0]) ||
+        !isfinite(options.required_uv_max[1]) ||
+        options.required_uv_min[0] < view->u_min ||
+        options.required_uv_max[0] > view->u_max ||
+        options.required_uv_min[1] < view->v_min ||
+        options.required_uv_max[1] > view->v_max ||
+        !(options.required_uv_max[0] > options.required_uv_min[0]) ||
+        !(options.required_uv_max[1] > options.required_uv_min[1]) ||
+        !options.tile_columns || !options.tile_rows ||
+        options.tile_columns > SIZE_MAX / options.tile_rows)
+        return NULL;
+    /* A candidate scan may use the existing critical machinery, but its
+     * sampled discovery mode cannot establish exhaustive occurrence coverage. */
+    options.scan_options.occurrence_discovery =
+        ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE;
+    if (!options.scan_options.max_curves_per_tile ||
+        !options.scan_options.max_critical_points ||
+        !options.scan_options.max_coverage_hits ||
+        !options.scan_options.max_exhaustive_occurrence_hits ||
+        !options.scan_options.max_critical_scratch_bytes ||
+        !options.scan_options.max_critical_findings ||
+        !options.scan_options.max_output_bytes)
+        return NULL;
+    alea_slice_error_query_t* query = calloc(1, sizeof(*query));
+    if (!query) return NULL;
+    query->sys = sys;
+    query->options = options;
+    query->query_id = atomic_fetch_add(&slice_error_next_query_id, 1);
+    query->geometry_generation = alea_system_geometry_generation(sys);
+    query->page_count = options.tile_columns * options.tile_rows;
+    return query;
+}
+
+void alea_slice_error_query_destroy(alea_slice_error_query_t* query) {
+    free(query);
+}
+
+size_t alea_slice_error_query_page_count(const alea_slice_error_query_t* query) {
+    return query ? query->page_count : 0;
+}
+
+uint64_t alea_slice_error_query_id(const alea_slice_error_query_t* query) {
+    return query ? query->query_id : 0;
+}
+
+alea_slice_error_page_t* alea_slice_error_page_create(void) {
+    return calloc(1, sizeof(alea_slice_error_page_t));
+}
+
+void alea_slice_error_page_destroy(alea_slice_error_page_t* page) {
+    if (!page) return;
+    free(page->findings);
+    free(page);
+}
+
+int alea_slice_error_page_receipt(const alea_slice_error_page_t* page,
+                                  alea_slice_error_page_receipt_t* out_receipt) {
+    if (!page || !out_receipt || !page->populated) return -1;
+    *out_receipt = page->receipt;
+    return 0;
+}
+
+size_t alea_slice_error_page_context_finding_count(
+    const alea_slice_error_page_t* page) {
+    return page && page->populated ? page->finding_count : 0;
+}
+
+int alea_slice_error_page_context_finding_get(
+    const alea_slice_error_page_t* page, size_t index,
+    alea_transition_slice_critical_finding_t* out_finding) {
+    if (!page || !page->populated || !out_finding ||
+        index >= page->finding_count) return -1;
+    *out_finding = page->findings[index];
+    return 0;
+}
+
+typedef struct {
+    alea_slice_error_page_t* page;
+    size_t max_findings;
+    size_t max_output_bytes;
+} slice_error_finding_sink_t;
+
+static int slice_error_retain_finding(
+    const alea_transition_slice_critical_finding_t* finding, void* userdata) {
+    slice_error_finding_sink_t* sink = userdata;
+    alea_slice_error_page_t* page = sink->page;
+    if (page->finding_count >= sink->max_findings ||
+        page->finding_count >=
+            sink->max_output_bytes / sizeof(*page->findings)) return 1;
+    if (page->finding_count == page->finding_capacity) {
+        size_t capacity = page->finding_capacity
+            ? (page->finding_capacity > SIZE_MAX / 2u
+                ? SIZE_MAX : page->finding_capacity * 2u) : 4u;
+        if (capacity > sink->max_findings) capacity = sink->max_findings;
+        const size_t byte_capacity =
+            sink->max_output_bytes / sizeof(*page->findings);
+        if (capacity > byte_capacity) capacity = byte_capacity;
+        void* next = realloc(page->findings,
+                             capacity * sizeof(*page->findings));
+        if (!next) return -1;
+        page->findings = next;
+        page->finding_capacity = capacity;
+    }
+    page->findings[page->finding_count++] = *finding;
+    return 0;
+}
+
+int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
+                                    size_t page_index,
+                                    alea_slice_error_page_t* page) {
+    if (!query || !page || page_index >= query->page_count ||
+        alea_system_geometry_generation(query->sys) !=
+            query->geometry_generation) return -1;
+    const alea_slice_error_query_options_t* options = &query->options;
+    const size_t col = page_index % options->tile_columns;
+    const size_t row = page_index / options->tile_columns;
+    alea_transition_slice_critical_tile_t tile = {0};
+    for (size_t axis = 0; axis < 2; ++axis) {
+        const size_t index = axis == 0 ? col : row;
+        const size_t count = axis == 0
+            ? options->tile_columns : options->tile_rows;
+        const double lo = options->required_uv_min[axis];
+        const double hi = options->required_uv_max[axis];
+        const double width = hi - lo;
+        if (!isfinite(width)) return -1;
+        tile.uv_min[axis] = index == 0 ? lo : lo + width *
+            ((double)index / (double)count);
+        tile.uv_max[axis] = index + 1 == count ? hi : lo + width *
+            ((double)(index + 1) / (double)count);
+        if (!(tile.uv_max[axis] > tile.uv_min[axis])) return -1;
+    }
+    if (alea_raycast_ensure_hier_caches(query->sys) != 0) return -1;
+    alea_transition_slice_stats_t stats = {0};
+    stats.critical_stop_reason = ALEA_TRANSITION_SLICE_CRITICAL_NONE;
+    alea_slice_error_page_t candidate = {0};
+    slice_error_finding_sink_t sink = {
+        &candidate, options->scan_options.max_critical_findings,
+        options->scan_options.max_output_bytes
+    };
+    if (alea_transition_slice_enumerate_critical_tiles(
+            query->sys, &options->view, &options->scan_options,
+            &tile, 1, slice_error_retain_finding, &sink, &stats) != 0 ||
+        alea_system_geometry_generation(query->sys) !=
+            query->geometry_generation) {
+        free(candidate.findings);
+        return -1;
+    }
+    alea_slice_error_page_receipt_t receipt = {0};
+    receipt.query_id = query->query_id;
+    receipt.geometry_generation = query->geometry_generation;
+    receipt.page_index = page_index;
+    memcpy(receipt.core_uv_min, tile.uv_min, sizeof(tile.uv_min));
+    memcpy(receipt.core_uv_max, tile.uv_max, sizeof(tile.uv_max));
+    receipt.occurrence_paths = stats.critical_occurrence_paths;
+    receipt.candidate_curves = stats.critical_curves;
+    receipt.candidate_pairs_tested = stats.critical_curve_pairs_tested;
+    receipt.peak_scratch_bytes = stats.peak_critical_scratch_bytes;
+    receipt.contextual_finding_count = candidate.finding_count;
+    receipt.scan_stop_reason = stats.critical_stop_reason;
+    receipt.unresolved_reason = stats.critical_stop_reason ==
+            ALEA_TRANSITION_SLICE_CRITICAL_NONE
+        ? ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING
+        : stats.critical_stop_reason ==
+            ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE ||
+          stats.critical_stop_reason ==
+            ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL
+        ? ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY
+        : ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+    receipt.requested_work_complete = stats.critical_stop_reason ==
+        ALEA_TRANSITION_SLICE_CRITICAL_NONE;
+    receipt.scope_classified = 0;
+    receipt.output_complete = stats.critical_stop_reason !=
+        ALEA_TRANSITION_SLICE_CRITICAL_MAX_FINDINGS &&
+        stats.critical_stop_reason !=
+        ALEA_TRANSITION_SLICE_CRITICAL_MAX_OUTPUT_BYTES;
+    candidate.receipt = receipt;
+    candidate.populated = 1;
+    free(page->findings);
+    *page = candidate;
+    return 0;
+}
 
 struct alea_transition_slice_result {
     alea_transition_slice_finding_t* findings;

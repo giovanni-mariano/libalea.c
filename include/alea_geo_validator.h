@@ -727,6 +727,84 @@ int alea_transition_slice_stats(
     const alea_transition_slice_result_t* result,
     alea_transition_slice_stats_t* out_stats);
 
+/* Bounded slice-error analysis pages. The required rectangle is a geometry
+ * validation domain in slice coordinates, not a plotting viewport. The query
+ * borrows sys; callers must keep it alive and must not mutate it during a
+ * page call. A generation change invalidates all remaining pages. Pages are
+ * addressed by ordinal, so completed results survive a later page failure.
+ * Core tiles partition the required rectangle in row-major order. Interior
+ * upper edges belong to the neighboring tile; the domain's outer upper edge
+ * belongs to the final tile. Support overlap is not part of core ownership.
+ *
+ * This initial page contract runs exhaustive occurrence/critical candidate
+ * collection. It publishes no verified intervals or clean verdicts yet:
+ * every page has an unresolved classification until the interval and face
+ * classifier is implemented. Candidate counts are diagnostic only. */
+typedef struct alea_slice_error_query alea_slice_error_query_t;
+typedef struct alea_slice_error_page alea_slice_error_page_t;
+
+typedef enum {
+    ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING = 1,
+    ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT,
+    ALEA_SLICE_ERROR_UNRESOLVED_UNSUPPORTED_GEOMETRY
+} alea_slice_error_unresolved_reason_t;
+
+typedef struct {
+    size_t struct_size;
+    alea_slice_view_t view;
+    double required_uv_min[2];
+    double required_uv_max[2];
+    size_t tile_columns;
+    size_t tile_rows;
+    alea_transition_slice_options_t scan_options;
+} alea_slice_error_query_options_t;
+
+typedef struct {
+    /* Process-local query identity; retain the query for page continuation.
+     * This is not a persistent model fingerprint for cross-process caches. */
+    uint64_t query_id;
+    uint64_t geometry_generation;
+    size_t page_index;
+    double core_uv_min[2];
+    double core_uv_max[2];
+    size_t occurrence_paths;
+    size_t candidate_curves;
+    size_t candidate_pairs_tested;
+    size_t peak_scratch_bytes;
+    size_t contextual_finding_count;
+    alea_transition_slice_critical_stop_reason_t scan_stop_reason;
+    /* Applies to the entire core rectangle. No subregion is certified. */
+    alea_slice_error_unresolved_reason_t unresolved_reason;
+    /* The existing critical scan finished; this is not candidate-discovery
+     * certification or a clean geometry verdict. */
+    int requested_work_complete;
+    /* Remains false until partition and adjacent-face proof are implemented. */
+    int scope_classified;
+    /* All findings found by the executed scan were retained. */
+    int output_complete;
+} alea_slice_error_page_receipt_t;
+
+void alea_slice_error_query_options_init(alea_slice_error_query_options_t* options);
+alea_slice_error_query_t* alea_slice_error_query_create(
+    alea_system_t* sys, const alea_slice_error_query_options_t* options);
+void alea_slice_error_query_destroy(alea_slice_error_query_t* query);
+size_t alea_slice_error_query_page_count(const alea_slice_error_query_t* query);
+uint64_t alea_slice_error_query_id(const alea_slice_error_query_t* query);
+alea_slice_error_page_t* alea_slice_error_page_create(void);
+void alea_slice_error_page_destroy(alea_slice_error_page_t* page);
+/* Replaces page only after successful execution. On failure the caller can
+ * retry the same ordinal and previously completed pages remain valid. */
+int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
+                                    size_t page_index,
+                                    alea_slice_error_page_t* page);
+int alea_slice_error_page_receipt(const alea_slice_error_page_t* page,
+                                  alea_slice_error_page_receipt_t* out_receipt);
+size_t alea_slice_error_page_context_finding_count(
+    const alea_slice_error_page_t* page);
+int alea_slice_error_page_context_finding_get(
+    const alea_slice_error_page_t* page, size_t index,
+    alea_transition_slice_critical_finding_t* out_finding);
+
 /* ==========================================================================
  * COMPACT RAY-SLICE DIRECTIONAL VALIDATION
  * ==========================================================================
