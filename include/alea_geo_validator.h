@@ -737,10 +737,13 @@ int alea_transition_slice_stats(
  * upper edges belong to the neighboring tile; the domain's outer upper edge
  * belongs to the final tile. Support overlap is not part of core ownership.
  *
- * A verified result currently requires root cells composed entirely of
- * vertical X/Y planes in an axis-aligned XY slice. Other geometry remains
- * unresolved. The critical scan also retains contextual findings; its
- * candidate counts are diagnostic only. */
+ * A verified result currently requires every root cell that may affect the
+ * core tile to consist entirely of vertical X/Y planes, or a single shared
+ * vertical oblique plane, in an XY slice whose axes may be reversed or
+ * swapped. Distant cells are excluded only by conservative analytic bounds;
+ * uncertain bounds retain the cell and may leave the tile unresolved. The
+ * critical scan also retains contextual findings; its candidate counts are
+ * diagnostic only. */
 typedef struct alea_slice_error_query alea_slice_error_query_t;
 typedef struct alea_slice_error_page alea_slice_error_page_t;
 
@@ -753,6 +756,7 @@ typedef enum {
 } alea_slice_error_unresolved_reason_t;
 
 #define ALEA_SLICE_ERROR_OWNER_CAPACITY 16
+#define ALEA_SLICE_ERROR_POLYGON_CAPACITY 8
 
 /* A face of the partition inside the required domain. Region records are
  * emitted for gaps and overlaps, including a defect filling the whole tile. */
@@ -762,16 +766,22 @@ typedef struct {
     alea_point_coverage_kind_t kind;
     size_t owner_count;
     int owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    /* Convex boundary in slice coordinates. Zero denotes the uv_min/uv_max
+     * rectangle for older axis-plane results. */
+    size_t polygon_vertex_count;
+    double polygon_uv[ALEA_SLICE_ERROR_POLYGON_CAPACITY][2];
+    double polygon_uv_uncertainty[ALEA_SLICE_ERROR_POLYGON_CAPACITY][2];
 } alea_slice_error_region_t;
 
 /* A supported physical line between a defective and a uniquely owned face.
  * Endpoints may be clipped by the page core; the uncertainty is in slice units.
- * LEFT/RIGHT refer to the negative/positive coordinate side of axis. */
+ * For axis 0/1 the sides are negative/positive coordinate sides. Axis -1
+ * denotes a general line; sides then follow the sign of its plane equation. */
 typedef struct {
     alea_slice_boundary_evidence_scope_t evidence_scope;
     int surface_id;
     uint32_t primitive_id;
-    int axis; /* 0: constant U, 1: constant V */
+    int axis; /* 0: constant U, 1: constant V, -1: oblique line */
     double uv_start[2], uv_end[2];
     double endpoint_uncertainty[2];
     alea_point_coverage_kind_t negative_side_kind;
@@ -789,6 +799,9 @@ typedef struct {
     size_t tile_columns;
     size_t tile_rows;
     alea_transition_slice_options_t scan_options;
+    /* Query-lifetime cache for conservative root-cell bounds. Cells beyond
+     * this budget use bounded per-page discovery. Zero uses the default. */
+    size_t max_index_bytes;
 } alea_slice_error_query_options_t;
 
 typedef struct {
@@ -803,6 +816,7 @@ typedef struct {
     size_t candidate_curves;
     size_t candidate_pairs_tested;
     size_t peak_scratch_bytes;
+    size_t query_index_bytes;
     size_t contextual_finding_count;
     size_t omitted_contextual_findings;
     size_t omitted_contextual_boundary_evidence;

@@ -1120,7 +1120,8 @@ static PyMethodDef PyAleaSystem_methods[] = {
     {"slice_error_page", (PyCFunction)PyAleaSystem_slice_error_page,
      METH_VARARGS | METH_KEYWORDS,
      "slice_error_page(origin, normal, up, view_bounds, required_bounds, "
-     "tile_columns=1, tile_rows=1, page_index=0, options=None) -> dict\n\n"
+     "tile_columns=1, tile_rows=1, page_index=0, options=None, "
+     "max_index_bytes=0) -> dict\n\n"
      "Return verified intervals and defect regions for a supported slice tile, "
      "or an unresolved tile with its receipt."},
 

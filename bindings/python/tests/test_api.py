@@ -64,6 +64,7 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     page = system.slice_error_page(*args)
     assert page["receipt"]["scope_classified"] is True
     assert page["receipt"]["output_complete"] is True
+    assert page["receipt"]["query_index_bytes"] > 0
     assert page["receipt"]["core_uv_min"] == (-1, -1)
     assert page["receipt"]["core_uv_max"] == (1, 1)
     assert len(page["context_findings"]) == page["receipt"]["contextual_finding_count"]
@@ -76,6 +77,11 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     assert page["intervals"][0]["positive_side_kind"] == "gap"
     assert page["regions"][0]["kind"] == "gap"
 
+    without_index = system.slice_error_page(*args, max_index_bytes=1)
+    assert without_index["receipt"]["scope_classified"] is True
+    assert without_index["receipt"]["query_index_bytes"] == 0
+    assert without_index["intervals"] == page["intervals"]
+
     sphere = pyalea.System()
     _, _, inside = sphere.sphere_surface(2, 0, 0, 0, 1)
     sphere.add_cell(2, inside)
@@ -83,6 +89,29 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     assert unresolved["receipt"]["scope_classified"] is False
     assert unresolved["intervals"] == []
     assert unresolved["unresolved"]
+
+
+def test_slice_error_page_exposes_verified_oblique_polygon():
+    system = pyalea.System()
+    _, _, negative = system.plane_surface(1050, 1.0, 1.0, 0.0, -0.2)
+    system.add_cell(1050, negative)
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1),
+    )
+    assert page["receipt"]["scope_classified"] is True
+    assert page["receipt"]["region_count"] == 1
+    assert page["receipt"]["verified_interval_count"] == 1
+    region = page["regions"][0]
+    assert region["kind"] == "gap"
+    assert len(region["polygon_uv"]) == 3
+    assert len(region["polygon_uv_uncertainty"]) == 3
+    assert region["uv_min"] == pytest.approx((-0.8, -0.8))
+    assert region["uv_max"] == pytest.approx((1.0, 1.0))
+    interval = page["intervals"][0]
+    assert interval["axis"] == -1
+    assert interval["negative_side_kind"] == "unique"
+    assert interval["positive_side_kind"] == "gap"
 
 
 @pytest.mark.parametrize(

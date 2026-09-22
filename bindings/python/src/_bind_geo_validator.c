@@ -1838,6 +1838,8 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
              PyLong_FromSize_t(receipt.candidate_pairs_tested));
     PAGE_SET("peak_scratch_bytes",
              PyLong_FromSize_t(receipt.peak_scratch_bytes));
+    PAGE_SET("query_index_bytes",
+             PyLong_FromSize_t(receipt.query_index_bytes));
     PAGE_SET("contextual_finding_count",
              PyLong_FromSize_t(receipt.contextual_finding_count));
     PAGE_SET("omitted_contextual_findings",
@@ -1933,6 +1935,30 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
                    point_coverage_kind_name(region.kind)));
         REGION_SET("owner_cell_ids", slice_error_owner_ids(
                    region.owner_cell_ids, region.owner_count));
+        PyObject* polygon = PyList_New((Py_ssize_t)region.polygon_vertex_count);
+        PyObject* polygon_uncertainty =
+            PyList_New((Py_ssize_t)region.polygon_vertex_count);
+        if (!polygon || !polygon_uncertainty) {
+            Py_XDECREF(polygon); Py_XDECREF(polygon_uncertainty);
+            Py_DECREF(item); Py_DECREF(regions); goto failed;
+        }
+        for (size_t j = 0; j < region.polygon_vertex_count; ++j) {
+            PyObject* point = Py_BuildValue("(dd)",
+                region.polygon_uv[j][0], region.polygon_uv[j][1]);
+            PyObject* uncertainty = Py_BuildValue("(dd)",
+                region.polygon_uv_uncertainty[j][0],
+                region.polygon_uv_uncertainty[j][1]);
+            if (!point || !uncertainty) {
+                Py_XDECREF(point); Py_XDECREF(uncertainty);
+                Py_DECREF(polygon); Py_DECREF(polygon_uncertainty);
+                Py_DECREF(item); Py_DECREF(regions); goto failed;
+            }
+            PyList_SET_ITEM(polygon, (Py_ssize_t)j, point);
+            PyList_SET_ITEM(polygon_uncertainty, (Py_ssize_t)j,
+                            uncertainty);
+        }
+        REGION_SET("polygon_uv", polygon);
+        REGION_SET("polygon_uv_uncertainty", polygon_uncertainty);
 #undef REGION_SET
         PyList_SET_ITEM(regions, i, item);
     }
@@ -1992,20 +2018,23 @@ static PyObject* PyAleaSystem_slice_error_page(
     PyObject *origin_obj, *normal_obj, *up_obj;
     PyObject *view_obj, *domain_obj, *opts = NULL;
     Py_ssize_t columns = 1, rows = 1, page_index = 0;
+    Py_ssize_t max_index_bytes = 0;
     static char* kwlist[] = {
         "origin", "normal", "up", "view_bounds", "required_bounds",
-        "tile_columns", "tile_rows", "page_index", "options", NULL
+        "tile_columns", "tile_rows", "page_index", "options",
+        "max_index_bytes", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOOOO|nnnO", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OOOOO|nnnOn", kwlist,
             &origin_obj, &normal_obj, &up_obj, &view_obj, &domain_obj,
-            &columns, &rows, &page_index, &opts)) return NULL;
+            &columns, &rows, &page_index, &opts, &max_index_bytes)) return NULL;
     if (!self->sys) {
         PyErr_SetString(PyExc_RuntimeError, "System not initialized");
         return NULL;
     }
-    if (columns <= 0 || rows <= 0 || page_index < 0) {
+    if (columns <= 0 || rows <= 0 || page_index < 0 ||
+        max_index_bytes < 0) {
         PyErr_SetString(PyExc_ValueError,
-                        "tile counts must be positive and page_index non-negative");
+                        "tile counts must be positive and page/index budgets non-negative");
         return NULL;
     }
     double origin[3], normal[3], up[3], view_bounds[4], domain[4];
@@ -2028,6 +2057,8 @@ static PyObject* PyAleaSystem_slice_error_page(
     options.required_uv_max[1] = domain[3];
     options.tile_columns = (size_t)columns;
     options.tile_rows = (size_t)rows;
+    if (max_index_bytes)
+        options.max_index_bytes = (size_t)max_index_bytes;
     if (parse_transition_slice_options(opts, &options.scan_options) < 0)
         return NULL;
     if (ensure_query_acceleration(self) < 0) return NULL;

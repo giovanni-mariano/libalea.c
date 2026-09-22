@@ -4169,6 +4169,138 @@ TEST(slice_error_axis_reports_full_tile_overlap_without_contour) {
     alea_destroy(sys);
 }
 
+TEST(slice_error_single_oblique_line_proves_polygon_gap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int line = alea_plane_surface(sys, 1050, 1, 1, 0, -0.2);
+    ASSERT(line >= 0);
+    ASSERT(alea_add_cell(sys, 1050, alea_halfspace(sys, line, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_slice_error_query_options_t options;
+    alea_slice_error_query_options_init(&options);
+    alea_slice_view_init(&options.view, 0, 0, 0,
+                         0, 0, 1, 0, 1, 0, -1, 1, -1, 1);
+    options.required_uv_min[0] = options.required_uv_min[1] = -1;
+    options.required_uv_max[0] = options.required_uv_max[1] = 1;
+    alea_slice_error_query_t* query =
+        alea_slice_error_query_create(sys, &options);
+    alea_slice_error_page_t* page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    alea_slice_error_page_receipt_t receipt;
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 1);
+    ASSERT_EQ(receipt.unresolved_reason, ALEA_SLICE_ERROR_RESOLVED);
+    ASSERT_EQ(receipt.region_count, (size_t)1);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)1);
+    alea_slice_error_region_t region;
+    ASSERT_EQ(alea_slice_error_page_region_get(page, 0, &region), 0);
+    ASSERT_EQ(region.kind, ALEA_POINT_COVERAGE_GAP);
+    ASSERT_EQ(region.polygon_vertex_count, (size_t)3);
+    ASSERT_NEAR(region.uv_min[0], -0.8, EPS);
+    ASSERT_NEAR(region.uv_min[1], -0.8, EPS);
+    ASSERT_NEAR(region.uv_max[0], 1.0, EPS);
+    ASSERT_NEAR(region.uv_max[1], 1.0, EPS);
+    alea_slice_error_interval_t interval;
+    ASSERT_EQ(alea_slice_error_page_interval_get(page, 0, &interval), 0);
+    ASSERT_EQ(interval.axis, -1);
+    ASSERT_EQ(interval.surface_id, 1050);
+    ASSERT_EQ(interval.negative_side_kind, ALEA_POINT_COVERAGE_UNIQUE);
+    ASSERT_EQ(interval.positive_side_kind, ALEA_POINT_COVERAGE_GAP);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+
+    options.tile_columns = 2;
+    query = alea_slice_error_query_create(sys, &options);
+    page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    for (size_t column = 0; column < 2; ++column) {
+        ASSERT_EQ(alea_slice_error_query_run_page(query, column, page), 0);
+        ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+        ASSERT_EQ(receipt.scope_classified, 1);
+        ASSERT_EQ(receipt.region_count, (size_t)1);
+        ASSERT_EQ(receipt.verified_interval_count, (size_t)1);
+        ASSERT_EQ(alea_slice_error_page_region_get(page, 0, &region), 0);
+        ASSERT(region.polygon_vertex_count >= (size_t)3);
+        ASSERT_EQ(alea_slice_error_page_interval_get(page, 0, &interval), 0);
+        ASSERT_EQ(interval.axis, -1);
+        ASSERT_NEAR(region.uv_min[0], column == 0 ? -0.8 : 0.0, EPS);
+        ASSERT_NEAR(region.uv_max[0], column == 0 ? 0.0 : 1.0, EPS);
+    }
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+    alea_destroy(sys);
+}
+
+TEST(slice_error_oblique_corner_remains_unresolved) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int line = alea_plane_surface(sys, 1051, 1, 1, 0, 0);
+    ASSERT(line >= 0);
+    ASSERT(alea_add_cell(sys, 1051, alea_halfspace(sys, line, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_slice_error_query_options_t options;
+    alea_slice_error_query_options_init(&options);
+    alea_slice_view_init(&options.view, 0, 0, 0,
+                         0, 0, 1, 0, 1, 0, -1, 1, -1, 1);
+    options.required_uv_min[0] = options.required_uv_min[1] = -1;
+    options.required_uv_max[0] = options.required_uv_max[1] = 1;
+    alea_slice_error_query_t* query =
+        alea_slice_error_query_create(sys, &options);
+    alea_slice_error_page_t* page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    alea_slice_error_page_receipt_t receipt;
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 0);
+    ASSERT_EQ(receipt.region_count, (size_t)0);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)0);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+    alea_destroy(sys);
+}
+
+TEST(slice_error_single_oblique_line_classifies_both_defect_sides) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int line = alea_plane_surface(sys, 1052, 1, 1, 0, -0.2);
+    ASSERT(line >= 0);
+    const alea_node_id_t negative = alea_halfspace(sys, line, -1);
+    ASSERT(alea_add_cell(sys, 1052, negative,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 1053, negative,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_slice_error_query_options_t options;
+    alea_slice_error_query_options_init(&options);
+    alea_slice_view_init(&options.view, 0, 0, 0,
+                         0, 0, 1, 0, 1, 0, -1, 1, -1, 1);
+    options.required_uv_min[0] = options.required_uv_min[1] = -1;
+    options.required_uv_max[0] = options.required_uv_max[1] = 1;
+    alea_slice_error_query_t* query =
+        alea_slice_error_query_create(sys, &options);
+    alea_slice_error_page_t* page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    alea_slice_error_page_receipt_t receipt;
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 1);
+    ASSERT_EQ(receipt.region_count, (size_t)2);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)0);
+    alea_slice_error_region_t region;
+    ASSERT_EQ(alea_slice_error_page_region_get(page, 0, &region), 0);
+    ASSERT_EQ(region.kind, ALEA_POINT_COVERAGE_OVERLAP);
+    ASSERT_EQ(region.owner_count, (size_t)2);
+    ASSERT_EQ(alea_slice_error_page_region_get(page, 1, &region), 0);
+    ASSERT_EQ(region.kind, ALEA_POINT_COVERAGE_GAP);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+    alea_destroy(sys);
+}
+
 TEST(slice_error_axis_rejects_numerically_ambiguous_gap) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -4198,6 +4330,148 @@ TEST(slice_error_axis_rejects_numerically_ambiguous_gap) {
     ASSERT_EQ(receipt.region_count, (size_t)0);
     alea_slice_error_page_destroy(page);
     alea_slice_error_query_destroy(query);
+    alea_destroy(sys);
+}
+
+TEST(slice_error_axis_ignores_proven_remote_unsupported_cells) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int line = alea_plane_surface(sys, 980, 1, 0, 0, 0);
+    ASSERT(line >= 0);
+    ASSERT(alea_add_cell(sys, 980, alea_halfspace(sys, line, -1),
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    for (int i = 0; i < 20; ++i) {
+        const int sphere = alea_sphere_surface(
+            sys, 981 + i, i == 0 ? 0.0 : 100.0 + 4.0 * i,
+            i == 0 ? 0.0 : 100.0, i == 0 ? 100.0 : 0.0, 1.0);
+        ASSERT(sphere >= 0);
+        ASSERT(alea_add_cell(sys, 981 + i,
+            alea_surface_at(sys, sphere)->neg_node,
+            ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    }
+    alea_slice_error_query_options_t options;
+    alea_slice_error_query_options_init(&options);
+    alea_slice_view_init(&options.view, 0, 0, 0,
+                         0, 0, 1, 0, 1, 0, -1, 1, -1, 1);
+    options.required_uv_min[0] = options.required_uv_min[1] = -1;
+    options.required_uv_max[0] = options.required_uv_max[1] = 1;
+    options.scan_options.max_curves_per_tile = 4;
+    alea_slice_error_query_t* query =
+        alea_slice_error_query_create(sys, &options);
+    alea_slice_error_page_t* page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    alea_slice_error_page_receipt_t receipt;
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 1);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)1);
+    ASSERT_EQ(receipt.region_count, (size_t)1);
+    ASSERT(receipt.query_index_bytes > 0);
+    alea_slice_error_interval_t interval;
+    ASSERT_EQ(alea_slice_error_page_interval_get(page, 0, &interval), 0);
+    ASSERT_EQ(interval.surface_id, 980);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+
+    options.max_index_bytes = 128;
+    query = alea_slice_error_query_create(sys, &options);
+    page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 1);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)1);
+    ASSERT(receipt.query_index_bytes > 0);
+    ASSERT(receipt.query_index_bytes <= (size_t)128);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+
+    /* The index may be disabled by budget; the bounded fallback must give
+     * the same classification after scanning the remaining cells. */
+    options.max_index_bytes = 1;
+    query = alea_slice_error_query_create(sys, &options);
+    page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 1);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)1);
+    ASSERT_EQ(receipt.query_index_bytes, (size_t)0);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+
+    /* An unsupported cell touching the tile must still block a verdict. */
+    const int nearby = alea_sphere_surface(sys, 1002, 0.5, 0, 0, 0.25);
+    ASSERT(nearby >= 0);
+    ASSERT(alea_add_cell(sys, 1002,
+        alea_surface_at(sys, nearby)->neg_node,
+        ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    query = alea_slice_error_query_create(sys, &options);
+    page = alea_slice_error_page_create();
+    ASSERT_NOT_NULL(query);
+    ASSERT_NOT_NULL(page);
+    ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+    ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+    ASSERT_EQ(receipt.scope_classified, 0);
+    ASSERT_EQ(receipt.verified_interval_count, (size_t)0);
+    alea_slice_error_page_destroy(page);
+    alea_slice_error_query_destroy(query);
+    alea_destroy(sys);
+}
+
+TEST(slice_error_axis_respects_reversed_and_swapped_slice_frames) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    const int surface = alea_plane_surface(sys, 1010, 1, 0, 0, 0);
+    ASSERT(surface >= 0);
+    ASSERT(alea_add_cell(sys, 1010,
+        alea_halfspace(sys, surface, -1),
+        ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    for (int i = 0; i < 2; ++i) {
+        const int sphere = alea_sphere_surface(
+            sys, 1011 + i, i == 0 ? 100.0 : 0.0,
+            i == 0 ? 0.0 : 100.0, 0.0, 1.0);
+        ASSERT(sphere >= 0);
+        ASSERT(alea_add_cell(sys, 1011 + i,
+            alea_surface_at(sys, sphere)->neg_node,
+            ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    }
+    for (int frame = 0; frame < 2; ++frame) {
+        alea_slice_error_query_options_t options;
+        alea_slice_error_query_options_init(&options);
+        alea_slice_view_init(&options.view, 0, 0, 0,
+            0, 0, frame == 0 ? -1 : 1,
+            frame == 0 ? 0 : 1, frame == 0 ? 1 : 0, 0,
+            -1, 1, -1, 1);
+        options.required_uv_min[0] = options.required_uv_min[1] = -1;
+        options.required_uv_max[0] = options.required_uv_max[1] = 1;
+        options.scan_options.max_curves_per_tile = 1;
+        alea_slice_error_query_t* query =
+            alea_slice_error_query_create(sys, &options);
+        alea_slice_error_page_t* page = alea_slice_error_page_create();
+        ASSERT_NOT_NULL(query);
+        ASSERT_NOT_NULL(page);
+        ASSERT_EQ(alea_slice_error_query_run_page(query, 0, page), 0);
+        alea_slice_error_page_receipt_t receipt;
+        ASSERT_EQ(alea_slice_error_page_receipt(page, &receipt), 0);
+        ASSERT_EQ(receipt.scope_classified, 1);
+        ASSERT_EQ(receipt.verified_interval_count, (size_t)1);
+        alea_slice_error_interval_t interval;
+        ASSERT_EQ(alea_slice_error_page_interval_get(page, 0, &interval), 0);
+        ASSERT_EQ(interval.surface_id, 1010);
+        ASSERT_EQ(interval.axis, frame == 0 ? 0 : 1);
+        ASSERT_EQ(interval.negative_side_kind,
+            frame == 0 ? ALEA_POINT_COVERAGE_GAP
+                       : ALEA_POINT_COVERAGE_UNIQUE);
+        ASSERT_EQ(interval.positive_side_kind,
+            frame == 0 ? ALEA_POINT_COVERAGE_UNIQUE
+                       : ALEA_POINT_COVERAGE_GAP);
+        alea_slice_error_page_destroy(page);
+        alea_slice_error_query_destroy(query);
+    }
     alea_destroy(sys);
 }
 

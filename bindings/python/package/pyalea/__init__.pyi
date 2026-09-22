@@ -56,6 +56,7 @@ class System:
         required_bounds: Sequence[float], tile_columns: int = 1,
         tile_rows: int = 1, page_index: int = 0,
         options: dict[str, Any] | None = None,
+        max_index_bytes: int = 0,
     ) -> dict[str, Any]: ...
     def __getattr__(self, name: str) -> Any: ...
 
