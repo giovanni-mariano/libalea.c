@@ -239,6 +239,7 @@ TRANSPORT_SRCS = \
 	$(TRANSPORT_DIR)/material_binding.c \
 	$(TRANSPORT_DIR)/fixed_source.c \
 	$(TRANSPORT_DIR)/adjoint.c \
+	$(TRANSPORT_DIR)/multigroup_material.c \
 	$(TRANSPORT_DIR)/source.c \
 	$(TRANSPORT_DIR)/tally.c
 

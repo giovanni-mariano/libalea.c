@@ -315,7 +315,7 @@ MODULE_LINK = /link \
 	/WHOLEARCHIVE:$(LIB_TRANSPORT) \
 	/WHOLEARCHIVE:$(LIB_NUCDATA)
 
-TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\adjoint.obj $(BUILD)\transport\material_binding.obj $(BUILD)\transport\source.obj $(BUILD)\transport\tally.obj
+TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\adjoint.obj $(BUILD)\transport\multigroup_material.obj $(BUILD)\transport\material_binding.obj $(BUILD)\transport\source.obj $(BUILD)\transport\tally.obj
 
 ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
@@ -339,6 +339,7 @@ HEADERS = \
 	include\alea_mesh.h \
 	include\alea_transport.h \
 	include\alea_adjoint.h \
+	include\alea_multigroup.h \
 	include\alea_source.h \
 	include\alea_tally.h \
 	include\alea_nucdata.h \
@@ -672,6 +673,9 @@ $(BUILD)\transport\fixed_source.obj: $(SRC)\transport\fixed_source.c dirs
 
 $(BUILD)\transport\adjoint.obj: $(SRC)\transport\adjoint.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\adjoint.c
+
+$(BUILD)\transport\multigroup_material.obj: $(SRC)\transport\multigroup_material.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\multigroup_material.c
 
 $(BUILD)\transport\material_binding.obj: $(SRC)\transport\material_binding.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\transport\ $(SRC)\transport\material_binding.c

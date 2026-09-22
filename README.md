@@ -400,9 +400,13 @@ and includes its volume and angular normalization in each history weight.
 Supply macroscopic total cross sections and forward group-to-group expected
 production for each material cell. The solver transposes that production
 matrix and reports the detector response and standard error per detector
-history. The current kernel is steady-state and isotropic, supports separate
+history. `alea_multigroup.h` provides a checked helper to combine already
+collapsed neutron nuclides by number density; it rejects fission data until
+their production matrix is supported. The standalone
+`examples/c/adjoint_neutron.c` shows a one-group setup with manufactured cross
+sections. The current kernel is steady-state and isotropic, supports separate
 neutron or photon runs, and accepts vacuum and specular boundaries. Group data
-must be prepared and validated by the caller; the existing neutron collapse
+must use the same group ordering across cells. The existing neutron collapse
 contains approximations, and the photon collapse path is not yet implemented.
 Neutron-photon adjoint coupling and continuous-energy adjoint sampling remain
 future extensions.

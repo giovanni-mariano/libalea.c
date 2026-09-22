@@ -10,17 +10,15 @@
 #ifndef ALEA_ADJOINT_H
 #define ALEA_ADJOINT_H
 
-#include "alea_transport.h"
+#include "alea_raycast.h"
+#include "alea_multigroup.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct {
-    const double* total;    /* n_groups entries; macroscopic total, 1/cm */
-    const double* transfer; /* n_groups^2; forward expected production,
-                             * transfer[incoming * n_groups + outgoing], 1/cm */
-} alea_adjoint_material_t;
+/** Compatibility name for the forward material data used by the adjoint. */
+typedef alea_mg_material_t alea_adjoint_material_t;
 
 typedef struct {
     double position[3];
@@ -49,7 +47,7 @@ typedef struct {
     alea_nuc_particle_t particle; /* neutron or photon; no coupling yet */
     size_t n_groups;
     size_t cell_count; /* must equal alea_cell_count(sys) */
-    const alea_adjoint_material_t* cell_materials; /* cell_count; NULL in void */
+    const alea_mg_material_t* cell_materials; /* cell_count; null member pointers in void */
     const double* physical_source; /* cell_count*n_groups, isotropic strength */
     alea_adjoint_detector_sampler_fn detector_sampler;
     void* detector_context;
@@ -70,8 +68,17 @@ typedef struct {
     double sum;         /* sum of independent detector-history response scores */
     double sum_squared; /* sum of squared complete history scores */
     double mean;        /* physical detector response, per physical-source second */
-    double standard_error;
+    double standard_error; /* NAN when histories == 1 */
 } alea_adjoint_result_t;
+
+typedef struct {
+    uint32_t history_id;
+    uint32_t event_index;
+    int cell_id;
+    size_t group;
+    double position[3];
+    alea_error_t error;
+} alea_adjoint_failure_t;
 
 /** Run independent detector-launched histories. On error, output is zeroed;
  * failure describes the first incomplete history. Unsupported boundaries
@@ -80,7 +87,7 @@ typedef struct {
 alea_error_t alea_adjoint_run(
     alea_system_t* sys, const alea_adjoint_problem_t* problem,
     const alea_adjoint_options_t* options, alea_adjoint_result_t* output,
-    alea_transport_failure_t* failure);
+    alea_adjoint_failure_t* failure);
 
 #ifdef __cplusplus
 }

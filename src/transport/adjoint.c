@@ -5,6 +5,7 @@
 #include "alea_adjoint.h"
 #include "../rng/alea_rng.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define ALEA_ADJOINT_TWO_PI 6.28318530717958647693
@@ -46,7 +47,9 @@ alea_error_t alea_adjoint_sample_box_detector(
         return ALEA_ERR_INVALID_ARG;
     for (uint32_t i = 0; i < 5; ++i) {
         alea_error_t err = draw(seed, history_id, 0,
-            ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_POSITION, i, &u[i]);
+            i < 3 ? ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_POSITION :
+                    ALEA_RNG_DOMAIN_TRANSPORT_SOURCE_DIRECTION,
+            i < 3 ? i : i - 3, &u[i]);
         if (err != ALEA_OK) return err;
     }
     memset(output, 0, sizeof(*output));
@@ -64,18 +67,32 @@ alea_error_t alea_adjoint_sample_box_detector(
     return ALEA_OK;
 }
 
-static alea_error_t fail(alea_transport_failure_t* failure, uint32_t history,
-    uint32_t event, const alea_nav_location_t* location, const double pos[3],
-    alea_error_t err) {
+static alea_error_t fail(alea_adjoint_failure_t* failure, uint32_t history,
+    uint32_t event, size_t group, const alea_nav_location_t* location,
+    const double pos[3], alea_error_t err) {
     if (failure) {
         failure->history_id = history;
         failure->event_index = event;
         failure->cell_id = location ? location->cell_id : -1;
+        failure->group = group;
         failure->error = err;
         memcpy(failure->position, pos, 3*sizeof(double));
     }
-    alea_set_error_detail(err, "adjoint history %u event %u cell %d",
-        history, event, location ? location->cell_id : -1);
+    alea_set_error_detail(err, "adjoint history %u event %u cell %d group %zu",
+        history, event, location ? location->cell_id : -1, group);
+    return err;
+}
+
+static alea_error_t fail_navigation(alea_adjoint_failure_t* failure,
+    uint32_t history, uint32_t event, size_t group,
+    const alea_nav_location_t* location, const double pos[3]) {
+    alea_error_t err = alea_get_last_error();
+    if (err == ALEA_OK) err = ALEA_ERR_INVALID_STATE;
+    char detail[256];
+    snprintf(detail, sizeof(detail), "%s", alea_get_error_detail());
+    fail(failure, history, event, group, location, pos, err);
+    alea_set_error_detail(err, "adjoint history %u event %u: %s",
+        history, event, detail);
     return err;
 }
 
@@ -98,7 +115,7 @@ static alea_error_t validate(const alea_system_t* sys,
     if (o->histories-1 > UINT32_MAX-o->history_offset)
         return ALEA_ERR_OVERFLOW;
     for (size_t cell = 0; cell < p->cell_count; ++cell) {
-        const alea_adjoint_material_t* m = &p->cell_materials[cell];
+        const alea_mg_material_t* m = &p->cell_materials[cell];
         if ((m->total == NULL) != (m->transfer == NULL))
             return ALEA_ERR_INVALID_ARG;
         for (size_t g = 0; g < p->n_groups; ++g) {
@@ -129,7 +146,7 @@ static alea_error_t validate(const alea_system_t* sys,
 alea_error_t alea_adjoint_run(
     alea_system_t* sys, const alea_adjoint_problem_t* p,
     const alea_adjoint_options_t* o, alea_adjoint_result_t* output,
-    alea_transport_failure_t* failure) {
+    alea_adjoint_failure_t* failure) {
     if (!output) return ALEA_ERR_NULL_ARG;
     memset(output, 0, sizeof(*output));
     if (failure) memset(failure, 0, sizeof(*failure));
@@ -142,6 +159,7 @@ alea_error_t alea_adjoint_run(
         alea_ray_navigator_set_interval_budget(nav, o->max_navigation_breakpoints);
 
     double sum = 0.0, sum_squared = 0.0;
+    double running_mean = 0.0, m2 = 0.0;
     for (uint32_t local = 0; local < o->histories; ++local) {
         uint32_t history = o->history_offset + local;
         alea_adjoint_detector_particle_t detector = {0};
@@ -156,15 +174,15 @@ alea_error_t alea_adjoint_run(
             !isfinite(detector.weight) || !(detector.weight > 0.0) ||
             !isfinite(position[0]) || !isfinite(position[1]) ||
             !isfinite(position[2]) || direction_normalize(direction) != 0) {
-            err = fail(failure, history, 0, NULL, position,
+            err = fail(failure, history, 0, detector.group, NULL, position,
                        err == ALEA_OK ? ALEA_ERR_INVALID_ARG : err);
             break;
         }
         alea_nav_location_t location;
         if (alea_ray_navigator_restart(nav, position, direction,
                                         &location) != 0) {
-            err = fail(failure, history, 0, NULL, position,
-                       ALEA_ERR_INVALID_STATE);
+            err = fail_navigation(failure, history, 0, detector.group,
+                                  NULL, position);
             break;
         }
         size_t group = detector.group;
@@ -173,14 +191,14 @@ alea_error_t alea_adjoint_run(
         uint32_t collisions = 0, events = 0;
         while (!done) {
             if (events == o->max_events_per_history) {
-                err = fail(failure, history, events, &location, position,
+                err = fail(failure, history, events, group, &location, position,
                            ALEA_ERR_OVERFLOW);
                 break;
             }
             ++events;
             if (location.kind != ALEA_NAV_MATERIAL &&
                 location.kind != ALEA_NAV_VOID) {
-                err = fail(failure, history, events, &location, position,
+                err = fail(failure, history, events, group, &location, position,
                            ALEA_ERR_INVALID_STATE);
                 break;
             }
@@ -188,23 +206,27 @@ alea_error_t alea_adjoint_run(
                 double u;
                 err = draw(o->seed, history, collisions,
                     ALEA_RNG_DOMAIN_TRANSPORT_FREE_PATH, 0, &u);
-                if (err != ALEA_OK) break;
+                if (err != ALEA_OK) {
+                    err = fail(failure, history, events, group, &location,
+                               position, err);
+                    break;
+                }
                 tau = -log1p(-u);
                 new_flight = 0;
             }
-            const alea_adjoint_material_t* m = NULL;
+            const alea_mg_material_t* m = NULL;
             double sigma = 0.0;
             if (location.cell_index >= 0 &&
                 (size_t)location.cell_index < p->cell_count) {
                 m = &p->cell_materials[location.cell_index];
                 if (location.kind == ALEA_NAV_MATERIAL && !m->total) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_INVALID_STATE);
                     break;
                 }
                 if (location.kind == ALEA_NAV_MATERIAL) sigma = m->total[group];
             } else if (location.kind == ALEA_NAV_MATERIAL) {
-                err = fail(failure, history, events, &location, position,
+                err = fail(failure, history, events, group, &location, position,
                            ALEA_ERR_INVALID_STATE);
                 break;
             }
@@ -216,12 +238,12 @@ alea_error_t alea_adjoint_run(
                 memcpy(event.position, position, sizeof(position));
             } else if (alea_ray_navigator_advance(nav, distance,
                            o->max_segment_distance, &event) != 0) {
-                err = fail(failure, history, events, &location, position,
-                           ALEA_ERR_INVALID_STATE);
+                err = fail_navigation(failure, history, events, group,
+                                      &location, position);
                 break;
             }
             if (!(event.distance >= 0.0) || !isfinite(event.distance)) {
-                err = fail(failure, history, events, &location, position,
+                err = fail(failure, history, events, group, &location, position,
                            ALEA_ERR_INVALID_STATE);
                 break;
             }
@@ -234,7 +256,7 @@ alea_error_t alea_adjoint_run(
             tau = fmax(0.0, tau - sigma*event.distance);
             memcpy(position, event.position, sizeof(position));
             if (!isfinite(score) || !isfinite(tau)) {
-                err = fail(failure, history, events, &location, position,
+                err = fail(failure, history, events, group, &location, position,
                            ALEA_ERR_OVERFLOW);
                 break;
             }
@@ -243,7 +265,7 @@ alea_error_t alea_adjoint_run(
                 for (size_t h = 0; h < p->n_groups; ++h)
                     row += m->transfer[h*p->n_groups + group];
                 if (!isfinite(row)) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_OVERFLOW);
                     break;
                 }
@@ -255,7 +277,11 @@ alea_error_t alea_adjoint_run(
                     ALEA_RNG_DOMAIN_TRANSPORT_SCATTER_ANGLE, 0, &mu);
                 if (err == ALEA_OK) err = draw(o->seed, history, collisions,
                     ALEA_RNG_DOMAIN_TRANSPORT_SCATTER_ANGLE, 1, &az);
-                if (err != ALEA_OK) break;
+                if (err != ALEA_OK) {
+                    err = fail(failure, history, events, group, &location,
+                               position, err);
+                    break;
+                }
                 double target = u*row, running = 0.0;
                 size_t selected = group;
                 for (size_t h = 0; h < p->n_groups; ++h) {
@@ -267,7 +293,7 @@ alea_error_t alea_adjoint_run(
                 }
                 weight *= row/sigma;
                 if (!isfinite(weight) || !(weight > 0.0)) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_OVERFLOW);
                     break;
                 }
@@ -278,12 +304,12 @@ alea_error_t alea_adjoint_run(
                 direction[1] = r*sin(ALEA_ADJOINT_TWO_PI*az);
                 direction[2] = z;
                 if (alea_ray_navigator_set_direction(nav, direction) != 0) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_INVALID_STATE);
                     break;
                 }
                 if (collisions == UINT32_MAX) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_OVERFLOW);
                     break;
                 }
@@ -303,19 +329,19 @@ alea_error_t alea_adjoint_run(
                     dot += direction[j]*event.normal[j];
                 }
                 if (!(nn > 0.5 && nn < 1.5)) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_INVALID_STATE);
                     break;
                 }
                 for (int j = 0; j < 3; ++j)
                     direction[j] -= 2.0*dot*event.normal[j]/nn;
                 if (alea_ray_navigator_reflect_specular(nav) != 0) {
-                    err = fail(failure, history, events, &location, position,
+                    err = fail(failure, history, events, group, &location, position,
                                ALEA_ERR_INVALID_STATE);
                     break;
                 }
             } else {
-                err = fail(failure, history, events, &location, position,
+                err = fail(failure, history, events, group, &location, position,
                            ALEA_ERR_UNSUPPORTED);
                 break;
             }
@@ -323,8 +349,12 @@ alea_error_t alea_adjoint_run(
         if (err != ALEA_OK) break;
         sum += score;
         sum_squared += score*score;
-        if (!isfinite(sum) || !isfinite(sum_squared)) {
-            err = fail(failure, history, events, &location, position,
+        double delta = score - running_mean;
+        running_mean += delta / (double)(local + 1);
+        m2 += delta * (score - running_mean);
+        if (!isfinite(sum) || !isfinite(sum_squared) ||
+            !isfinite(running_mean) || !isfinite(m2)) {
+            err = fail(failure, history, events, group, &location, position,
                        ALEA_ERR_OVERFLOW);
             break;
         }
@@ -334,12 +364,11 @@ alea_error_t alea_adjoint_run(
     output->histories = o->histories;
     output->sum = sum;
     output->sum_squared = sum_squared;
-    output->mean = sum / o->histories;
+    output->mean = running_mean;
     if (o->histories > 1) {
-        double centered = sum_squared - sum*output->mean;
-        if (centered < 0.0) centered = 0.0;
-        output->standard_error = sqrt(centered /
+        if (m2 < 0.0) m2 = 0.0;
+        output->standard_error = sqrt(m2 /
             (o->histories * (double)(o->histories-1)));
-    }
+    } else output->standard_error = NAN;
     return ALEA_OK;
 }

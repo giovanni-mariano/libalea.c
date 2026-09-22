@@ -30,6 +30,7 @@
 #include "alea_types.h"
 #include "alea_transport.h"
 #include "alea_adjoint.h"
+#include "alea_multigroup.h"
 #include "alea_source.h"
 #include "alea_tally.h"
 
