@@ -739,9 +739,10 @@ int alea_transition_slice_stats(
  *
  * A verified result currently requires every root cell that may affect the
  * core tile to consist entirely of vertical X/Y planes, or at most two
- * parallel vertical oblique planes with matching stored normals, in an XY
- * slice whose axes may be reversed or swapped. Distant cells are excluded
- * only by conservative analytic bounds;
+ * vertical oblique planes. A two-plane case requires matching stored normals
+ * or a line intersection separated from the core boundary. The XY slice axes
+ * may be reversed or swapped. Distant cells are excluded only by
+ * conservative analytic bounds;
  * uncertain bounds retain the cell and may leave the tile unresolved. The
  * critical scan also retains contextual findings; its candidate counts are
  * diagnostic only. */

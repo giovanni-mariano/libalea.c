@@ -128,6 +128,26 @@ def test_slice_error_page_exposes_verified_oblique_polygon():
     assert band["regions"][0]["kind"] == "gap"
     assert len(band["regions"][0]["polygon_uv"]) == 6
 
+    crossing = pyalea.System()
+    _, first_pos, first_neg = crossing.plane_surface(
+        1070, 1.0, 1.0, 0.0, -0.2)
+    _, second_pos, second_neg = crossing.plane_surface(
+        1071, 1.0, -1.0, 0.0, 0.1)
+    crossing.add_cell(1070, crossing.create_intersection(
+        first_neg, second_neg))
+    crossing.add_cell(1071, crossing.create_intersection(
+        first_pos, second_neg))
+    crossing.add_cell(1072, crossing.create_intersection(
+        first_neg, second_pos))
+    quadrant = crossing.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (-1, 1, -1, 1), (-1, 1, -1, 1),
+    )
+    assert quadrant["receipt"]["scope_classified"] is True
+    assert quadrant["receipt"]["region_count"] == 1
+    assert quadrant["receipt"]["verified_interval_count"] == 2
+    assert len(quadrant["regions"][0]["polygon_uv"]) == 4
+
 
 @pytest.mark.parametrize(
     ("primitive_type", "parameters", "inside", "outside"),
