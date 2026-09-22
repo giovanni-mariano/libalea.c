@@ -10,11 +10,11 @@
 #include "raycast/ray_epsilon.h"
 #include "core/alea_system.h"
 #include "primitives/bbox.h"
+#include "util/alea_atomic.h"
 #include "util/alea_parallel.h"
 
 #include <float.h>
 #include <math.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
