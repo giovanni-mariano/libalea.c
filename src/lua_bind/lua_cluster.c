@@ -171,6 +171,9 @@ static int l_cluster_estimate_volumes(lua_State* L) {
     options.seed = (uint64_t)option_size(L, 3, "seed", 1);
     options.requested_workers = option_size(L, 3, "workers", 0);
     options.batch_size = option_size(L, 3, "batch_size", 0);
+    options.max_parallel_scratch_bytes =
+        option_size(L, 3, "max_parallel_scratch_bytes",
+                    options.max_parallel_scratch_bytes);
     options.target_rel_error = option_number(L, 3, "target_rel_error", 0.0);
     if (!options.max_rays) return luaL_error(L, "max_rays must be positive");
 
@@ -217,6 +220,11 @@ static int l_cluster_estimate_volumes(lua_State* L) {
     SET_INTEGER("local_rays_completed", stats.local_rays_completed);
     SET_INTEGER("local_workers", stats.local_workers);
     SET_INTEGER("seed", stats.volume.seed);
+    SET_INTEGER("parallel_scratch_limit_bytes",
+                stats.volume.parallel_scratch_limit_bytes);
+    SET_INTEGER("parallel_scratch_bytes",
+                stats.volume.parallel_scratch_bytes);
+    SET_INTEGER("worker_scratch_bytes", stats.volume.worker_scratch_bytes);
 #undef SET_INTEGER
     lua_pushnumber(L, stats.volume.maximum_relative_error);
     lua_setfield(L, -2, "maximum_relative_error");

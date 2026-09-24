@@ -960,7 +960,8 @@ static PyMethodDef PyAleaSystem_methods[] = {
      METH_VARARGS | METH_KEYWORDS,
      "estimate_volumes(n_rays=100000, seed=42, workers=0, "
      "target_rel_error=None, max_rays=None, batch_size=10000, "
-     "progress=None, rng='philox4x32-10') -> dict\n\n"
+     "progress=None, rng='philox4x32-10', "
+     "max_parallel_scratch_bytes=0) -> dict\n\n"
      "Estimate physical volumes per concrete hierarchical placement.\n"
      "Returns dict with 'volumes', 'rel_errors'\n"
      "and 'paths' (one path-identity dict per entry)."},

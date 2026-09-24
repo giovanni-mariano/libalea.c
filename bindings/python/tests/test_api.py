@@ -702,6 +702,28 @@ def test_compact_validation_reports_trace_reuse(populated_system):
     assert result["executed_trace_mask"] != 0
 
 
+def test_volume_estimation_bounds_and_reports_worker_scratch(populated_system):
+    result = populated_system.estimate_volumes(
+        n_rays=200,
+        workers=4,
+        batch_size=100,
+        max_parallel_scratch_bytes=32,
+    )
+
+    assert len(result["volumes"]) == 1
+    assert len(result["paths"]) == 1
+    assert result["actual_workers"] == 1
+    assert result["worker_scratch_bytes"] == 32
+    assert result["parallel_scratch_bytes"] == 32
+    assert result["parallel_scratch_limit_bytes"] == 32
+
+    with pytest.raises(RuntimeError, match="scratch exceeds"):
+        populated_system.estimate_volumes(
+            n_rays=10,
+            max_parallel_scratch_bytes=31,
+        )
+
+
 def test_numpy_buffers_survive_repeated_allocation_and_collection():
     retained = []
     for size in range(2, 10):

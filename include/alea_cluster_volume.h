@@ -19,7 +19,8 @@ typedef struct {
 } alea_cluster_volume_stats_t;
 
 /** Collectively estimate physical volumes on every rank. Systems and scalar
- * options must match, except requested_workers may differ by rank. Arrays
+ * options must match, except requested_workers and max_parallel_scratch_bytes
+ * may differ by rank. Arrays
  * have alea_volume_path_count(sys) entries. Root alone receives progress
  * callbacks; final volumes and uncertainties are replicated. */
 alea_cluster_status_t alea_cluster_estimate_volumes(

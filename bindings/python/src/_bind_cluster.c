@@ -209,13 +209,11 @@ static PyObject* PyAleaCluster_estimate_volumes(PyAleaClusterObject* self,
     if (count == 0) local = ALEA_CLUSTER_INVALID_ARGUMENT;
     double* volumes = local == ALEA_CLUSTER_OK ? calloc(count, sizeof(double)) : NULL;
     double* errors = local == ALEA_CLUSTER_OK ? calloc(count, sizeof(double)) : NULL;
-    alea_volume_path_t* paths = local == ALEA_CLUSTER_OK
-        ? calloc(count, sizeof(alea_volume_path_t)) : NULL;
-    if (local == ALEA_CLUSTER_OK && (!volumes || !errors || !paths))
+    if (local == ALEA_CLUSTER_OK && (!volumes || !errors))
         local = ALEA_CLUSTER_OUT_OF_MEMORY;
     alea_cluster_status_t status = alea_cluster_agree(self->cluster, local);
     if (status != ALEA_CLUSTER_OK) {
-        free(volumes); free(errors); free(paths);
+        free(volumes); free(errors);
         PyErr_Format(PyExc_RuntimeError, "cluster volume preparation failed: %s",
                      alea_cluster_status_string(status));
         return NULL;
@@ -238,7 +236,7 @@ static PyObject* PyAleaCluster_estimate_volumes(PyAleaClusterObject* self,
                                             &options, volumes, errors, &stats);
     self->busy = 0;
     if (status != ALEA_CLUSTER_OK) {
-        free(volumes); free(errors); free(paths);
+        free(volumes); free(errors);
         PyErr_Format(PyExc_RuntimeError, "cluster volumes failed: %s",
                      alea_cluster_status_string(status));
         return NULL;
@@ -246,12 +244,12 @@ static PyObject* PyAleaCluster_estimate_volumes(PyAleaClusterObject* self,
     PyObject* vol_list = PyList_New(count);
     PyObject* err_list = PyList_New(count);
     PyObject* path_list = PyList_New(count);
-    size_t got = alea_volume_paths_get(sys->sys, paths, count);
-    if (got > count) got = count;
     for (size_t i = 0; vol_list && err_list && path_list && i < count; i++) {
         PyObject* v = PyFloat_FromDouble(volumes[i]);
         PyObject* e = PyFloat_FromDouble(errors[i]);
-        PyObject* p = i < got ? volume_path_to_dict(&paths[i]) : Py_NewRef(Py_None);
+        alea_volume_path_t path;
+        PyObject* p = alea_volume_paths_get_range(sys->sys, i, &path, 1) == 1
+            ? volume_path_to_dict(&path) : Py_NewRef(Py_None);
         if (!v || !e || !p) {
             Py_XDECREF(v); Py_XDECREF(e); Py_XDECREF(p);
             break;
@@ -260,7 +258,7 @@ static PyObject* PyAleaCluster_estimate_volumes(PyAleaClusterObject* self,
         PyList_SET_ITEM(err_list, i, e);
         PyList_SET_ITEM(path_list, i, p);
     }
-    free(volumes); free(errors); free(paths);
+    free(volumes); free(errors);
     PyObject* out = NULL;
     if (!PyErr_Occurred() && vol_list && err_list && path_list)
         out = Py_BuildValue("{s:N,s:N,s:N,s:K,s:K,s:K,s:K,s:d,s:i,s:i}",
@@ -276,6 +274,12 @@ static PyObject* PyAleaCluster_estimate_volumes(PyAleaClusterObject* self,
                 dict_set_new(out, "requested_workers", PyLong_FromSize_t(stats.volume.requested_workers)) < 0 ||
                 dict_set_new(out, "local_workers", PyLong_FromSize_t(stats.local_workers)) < 0 ||
                 dict_set_new(out, "batch_size", PyLong_FromSize_t(stats.volume.batch_size)) < 0 ||
+                dict_set_new(out, "parallel_scratch_limit_bytes", PyLong_FromUnsignedLongLong(
+                    stats.volume.parallel_scratch_limit_bytes)) < 0 ||
+                dict_set_new(out, "parallel_scratch_bytes", PyLong_FromUnsignedLongLong(
+                    stats.volume.parallel_scratch_bytes)) < 0 ||
+                dict_set_new(out, "worker_scratch_bytes", PyLong_FromUnsignedLongLong(
+                    stats.volume.worker_scratch_bytes)) < 0 ||
                 dict_set_new(out, "rng_algorithm", PyUnicode_FromString(
                     alea_rng_algorithm_name(stats.volume.rng_algorithm))) < 0 ||
                 dict_set_new(out, "rng_address_version", PyLong_FromUnsignedLong(

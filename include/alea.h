@@ -869,6 +869,18 @@ size_t alea_volume_paths_get(alea_system_t* sys,
                              size_t max_paths);
 
 /**
+ * @brief Copy a contiguous range of concrete hierarchical volume paths.
+ *
+ * Copies up to @p max_paths entries beginning at dense path ID @p first_path.
+ * Returns the number copied. This supports bounded-memory reporting of models
+ * whose complete path table is large.
+ */
+size_t alea_volume_paths_get_range(alea_system_t* sys,
+                                   size_t first_path,
+                                   alea_volume_path_t* out_paths,
+                                   size_t max_paths);
+
+/**
  * @brief Resolve a world-space point to a concrete volume path.
  *
  * Hierarchical mode only in this implementation. The returned path has the same
@@ -1002,6 +1014,8 @@ typedef struct {
     alea_rng_algorithm_t rng_algorithm; /**< Random engine selection. */
     size_t requested_workers;     /**< 0 = parallel backend maximum. */
     size_t batch_size;            /**< 0 = implementation default. */
+    /** Total dense worker scratch per rank; 0 selects the default limit. */
+    size_t max_parallel_scratch_bytes;
     double target_rel_error;      /**< 0 disables early convergence. */
     alea_volume_progress_fn progress;
     void* progress_user_data;
@@ -1017,6 +1031,9 @@ typedef struct {
     size_t requested_workers;
     size_t actual_workers;
     size_t batch_size;
+    uint64_t parallel_scratch_limit_bytes;
+    uint64_t parallel_scratch_bytes;
+    uint64_t worker_scratch_bytes;
     alea_rng_algorithm_t rng_algorithm;
     uint32_t rng_address_version;
     uint64_t seed;

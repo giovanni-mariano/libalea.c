@@ -290,35 +290,41 @@ static uint64_t problem_fingerprint(alea_system_t* sys,
     if (!model_hash) return 0;
     hash = HASH_FIELD(hash, model_hash);
     if (problem->path_count == 0) return hash;
-    alea_volume_path_t* paths = calloc(problem->path_count, sizeof(*paths));
+    enum { PATH_CHUNK = 64 };
+    alea_volume_path_t* paths = calloc(PATH_CHUNK, sizeof(*paths));
     if (!paths) return 0;
-    const size_t got = alea_volume_paths_get(sys, paths, problem->path_count);
-    if (got != problem->path_count) { free(paths); return 0; }
-    for (size_t p = 0; p < got; ++p) {
-        const alea_volume_path_t* path = &paths[p];
-        hash = HASH_FIELD(hash, path->path_id);
-        hash = HASH_FIELD(hash, path->terminal_cell_index);
-        hash = HASH_FIELD(hash, path->terminal_cell_id);
-        hash = HASH_FIELD(hash, path->material_id);
-        hash = HASH_FIELD(hash, path->universe_id);
-        hash = HASH_FIELD(hash, path->depth);
-        hash = HASH_FIELD(hash, path->ancestor_count);
-        hash = HASH_FIELD(hash, path->lattice_step_count);
-        for (size_t i = 0; i < path->ancestor_count; ++i) {
-            hash = HASH_FIELD(hash, path->ancestor_cell_indices[i]);
-            hash = HASH_FIELD(hash, path->ancestor_universe_ids[i]);
+    for (size_t base = 0; base < problem->path_count; base += PATH_CHUNK) {
+        size_t wanted = problem->path_count - base;
+        if (wanted > PATH_CHUNK) wanted = PATH_CHUNK;
+        const size_t got = alea_volume_paths_get_range(
+            sys, base, paths, wanted);
+        if (got != wanted) { free(paths); return 0; }
+        for (size_t p = 0; p < got; ++p) {
+            const alea_volume_path_t* path = &paths[p];
+            hash = HASH_FIELD(hash, path->path_id);
+            hash = HASH_FIELD(hash, path->terminal_cell_index);
+            hash = HASH_FIELD(hash, path->terminal_cell_id);
+            hash = HASH_FIELD(hash, path->material_id);
+            hash = HASH_FIELD(hash, path->universe_id);
+            hash = HASH_FIELD(hash, path->depth);
+            hash = HASH_FIELD(hash, path->ancestor_count);
+            hash = HASH_FIELD(hash, path->lattice_step_count);
+            for (size_t i = 0; i < path->ancestor_count; ++i) {
+                hash = HASH_FIELD(hash, path->ancestor_cell_indices[i]);
+                hash = HASH_FIELD(hash, path->ancestor_universe_ids[i]);
+            }
+            for (size_t i = 0; i < path->lattice_step_count; ++i) {
+                const alea_volume_lattice_step_t* step = &path->lattice_steps[i];
+                hash = HASH_FIELD(hash, step->lattice_cell_index);
+                hash = HASH_FIELD(hash, step->fill_universe);
+                hash = HASH_FIELD(hash, step->i);
+                hash = HASH_FIELD(hash, step->j);
+                hash = HASH_FIELD(hash, step->k);
+                hash = HASH_FIELD(hash, step->linear_index);
+            }
+            hash = hash_bytes(hash, path->world_to_local,
+                              sizeof(path->world_to_local));
         }
-        for (size_t i = 0; i < path->lattice_step_count; ++i) {
-            const alea_volume_lattice_step_t* step = &path->lattice_steps[i];
-            hash = HASH_FIELD(hash, step->lattice_cell_index);
-            hash = HASH_FIELD(hash, step->fill_universe);
-            hash = HASH_FIELD(hash, step->i);
-            hash = HASH_FIELD(hash, step->j);
-            hash = HASH_FIELD(hash, step->k);
-            hash = HASH_FIELD(hash, step->linear_index);
-        }
-        hash = hash_bytes(hash, path->world_to_local,
-                          sizeof(path->world_to_local));
     }
     free(paths);
     return hash;
@@ -545,12 +551,18 @@ alea_cluster_status_t alea_cluster_estimate_volumes(
     if (!matching) return ALEA_CLUSTER_MODEL_MISMATCH;
 
     const size_t count = problem.path_count;
+    local = count && alea_volume_parallel_scratch_layout(
+        count, 1, options->max_parallel_scratch_bytes,
+        options->requested_workers, 1, NULL, NULL, NULL) != 0
+        ? ALEA_CLUSTER_OUT_OF_MEMORY : ALEA_CLUSTER_OK;
+    status = agree(cluster, local);
+    if (status != ALEA_CLUSTER_OK) return status;
+
     double* local_l = count ? calloc(count, sizeof(*local_l)) : NULL;
-    double* local_l2 = count ? calloc(count, sizeof(*local_l2)) : NULL;
     double* sum_l2 = count ? calloc(count, sizeof(*sum_l2)) : NULL;
     double* errors = rel_errors;
     if (count && !errors) errors = calloc(count, sizeof(*errors));
-    local = count && (!local_l || !local_l2 || !sum_l2 || !errors)
+    local = count && (!local_l || !sum_l2 || !errors)
         ? ALEA_CLUSTER_OUT_OF_MEMORY : ALEA_CLUSTER_OK;
     status = agree(cluster, local);
     if (status != ALEA_CLUSTER_OK) goto cleanup;
@@ -591,25 +603,28 @@ alea_cluster_status_t alea_cluster_estimate_volumes(
             (rank < remainder ? rank : remainder);
 
         memset(local_l, 0, count * sizeof(*local_l));
-        memset(local_l2, 0, count * sizeof(*local_l2));
+        memset(errors, 0, count * sizeof(*errors));
         size_t actual_workers = 0;
-        local = alea_volume_accumulate_ray_range(
+        int accumulate_status = alea_volume_accumulate_ray_range(
             sys, &problem, local_begin, local_begin + local_count,
             options->rng_algorithm, options->seed, options->requested_workers,
-            local_l, local_l2, &actual_workers) == 0
-            ? ALEA_CLUSTER_OK : ALEA_CLUSTER_COMPUTE_ERROR;
+            options->max_parallel_scratch_bytes,
+            local_l, errors, &actual_workers);
+        local = accumulate_status == 0 ? ALEA_CLUSTER_OK
+            : accumulate_status == -2 ? ALEA_CLUSTER_OUT_OF_MEMORY
+            : ALEA_CLUSTER_COMPUTE_ERROR;
         if (alea_interrupted()) local = ALEA_CLUSTER_INTERRUPTED;
         status = agree(cluster, local);
         if (status == ALEA_CLUSTER_INTERRUPTED) { interrupted = 1; break; }
         if (status != ALEA_CLUSTER_OK) goto cleanup;
 
         if (alea_cluster_backend_sum_doubles(cluster->backend, local_l, count) ||
-            alea_cluster_backend_sum_doubles(cluster->backend, local_l2, count)) {
+            alea_cluster_backend_sum_doubles(cluster->backend, errors, count)) {
             cluster->usable = 0; status = ALEA_CLUSTER_BACKEND_ERROR; goto cleanup;
         }
         for (size_t i = 0; i < count; ++i) {
             volumes[i] += local_l[i];
-            sum_l2[i] += local_l2[i];
+            sum_l2[i] += errors[i];
         }
         completed = batch_end;
         local_completed += local_count;
@@ -655,6 +670,18 @@ alea_cluster_status_t alea_cluster_estimate_volumes(
         out_stats->volume.requested_workers = options->requested_workers;
         out_stats->volume.actual_workers = local_workers;
         out_stats->volume.batch_size = batch_size;
+        size_t worker_bytes = 0;
+        (void)alea_volume_parallel_scratch_layout(
+            count, 1, options->max_parallel_scratch_bytes,
+            options->requested_workers, batch_size, &worker_bytes, NULL, NULL);
+        out_stats->volume.parallel_scratch_limit_bytes =
+            options->max_parallel_scratch_bytes
+                ? options->max_parallel_scratch_bytes
+                : ALEA_VOLUME_DEFAULT_PARALLEL_SCRATCH_BYTES;
+        out_stats->volume.worker_scratch_bytes = worker_bytes;
+        out_stats->volume.parallel_scratch_bytes =
+            worker_bytes <= UINT64_MAX / (local_workers ? local_workers : 1)
+                ? (uint64_t)worker_bytes * local_workers : UINT64_MAX;
         out_stats->volume.rng_algorithm = options->rng_algorithm;
         out_stats->volume.rng_address_version = ALEA_RNG_ADDRESS_VERSION;
         out_stats->volume.seed = options->seed;
@@ -665,7 +692,7 @@ alea_cluster_status_t alea_cluster_estimate_volumes(
     status = interrupted ? ALEA_CLUSTER_INTERRUPTED : ALEA_CLUSTER_OK;
 
 cleanup:
-    free(local_l); free(local_l2); free(sum_l2);
+    free(local_l); free(sum_l2);
     if (errors != rel_errors) free(errors);
     return status;
 }

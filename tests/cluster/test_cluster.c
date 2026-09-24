@@ -1514,13 +1514,22 @@ int main(int argc, char** argv) {
     if (!(volume > exact * 0.7 && volume < exact * 1.3))
         return fail(rank, "volume estimate outside tolerance");
     if (!(error >= 0.0) || stats.volume.rays_completed != options.max_rays ||
-        stats.rank_count != alea_cluster_size(cluster))
+        stats.rank_count != alea_cluster_size(cluster) ||
+        stats.volume.worker_scratch_bytes != 32 ||
+        stats.volume.parallel_scratch_bytes != 32 * stats.local_workers)
         return fail(rank, "invalid execution statistics");
 
     if (alea_cluster_is_root(cluster))
         printf("cluster=%s ranks=%d volume=%.8g rel_error=%.5g\n",
                alea_cluster_backend(cluster), alea_cluster_size(cluster),
                volume, error);
+
+    options.max_parallel_scratch_bytes = 31;
+    status = alea_cluster_estimate_volumes(
+        cluster, sys, &options, &volume, &error, NULL);
+    if (status != ALEA_CLUSTER_OUT_OF_MEMORY)
+        return fail(rank, "volume worker scratch limit was not enforced");
+    options.max_parallel_scratch_bytes = 256u * 1024u * 1024u;
 
     int progress_calls = 0;
     options.progress = stop_volume;

@@ -27,6 +27,7 @@ typedef struct {
     size_t rays;
     size_t batch_size;
     size_t workers;
+    size_t worker_memory_mib;
     uint64_t seed;
     double target_rel_error;
     double center[3];
@@ -46,6 +47,7 @@ static void usage(FILE* stream, const char* program) {
         "  --center X Y Z             Sampling-sphere center (default: 0 0 0)\n"
         "  --batch N                  Global rays per reduction (default: 10000)\n"
         "  --workers N                TinyPar workers per rank (default: automatic)\n"
+        "  --worker-memory-mib N      Total worker scratch per rank (default: 256)\n"
         "  --seed N                   Sampling seed (default: 42)\n"
         "  --target-rel-error X       Stop when every path reaches X (default: off)\n"
         "  --csv                      Write machine-readable CSV\n"
@@ -114,7 +116,8 @@ static int parse_arguments(int argc, char** argv, arguments_t* arguments) {
         }
         if (!strcmp(option, "--rays") || !strcmp(option, "--radius") ||
             !strcmp(option, "--batch") ||
-            !strcmp(option, "--workers") || !strcmp(option, "--seed") ||
+            !strcmp(option, "--workers") ||
+            !strcmp(option, "--worker-memory-mib") || !strcmp(option, "--seed") ||
             !strcmp(option, "--target-rel-error") || !strcmp(option, "-o") ||
             !strcmp(option, "--output")) {
             if (++i >= argc) return -1;
@@ -128,6 +131,10 @@ static int parse_arguments(int argc, char** argv, arguments_t* arguments) {
             if (!strcmp(option, "--workers") &&
                 (parse_size(argv[i], 1, &arguments->workers) ||
                  arguments->workers > INT_MAX)) return -1;
+            if (!strcmp(option, "--worker-memory-mib") &&
+                (parse_size(argv[i], 0, &arguments->worker_memory_mib) ||
+                 arguments->worker_memory_mib > SIZE_MAX / (1024u * 1024u)))
+                return -1;
             if (!strcmp(option, "--seed") &&
                 parse_u64(argv[i], &arguments->seed)) return -1;
             if (!strcmp(option, "--target-rel-error") &&
@@ -153,8 +160,8 @@ static int parse_arguments(int argc, char** argv, arguments_t* arguments) {
 
 typedef struct {
     time_t started;
+    alea_system_t* sys;
     const double* errors;
-    const alea_volume_path_t* paths;
     size_t count;
 } progress_t;
 
@@ -183,10 +190,16 @@ static int report_progress(size_t completed, size_t maximum,
     else
         fputs(" max-rel-error=unavailable", stderr);
     fprintf(stderr, " unsampled=%zu/%zu", unseen, progress->count);
-    if (worst_error >= 0.0)
-        fprintf(stderr, " worst-sampled-path=%llu cell=%d rel-error=%.5g",
-                (unsigned long long)progress->paths[worst].path_id,
-                progress->paths[worst].terminal_cell_id, worst_error);
+    if (worst_error >= 0.0) {
+        alea_volume_path_t path;
+        if (alea_volume_paths_get_range(progress->sys, worst, &path, 1) == 1)
+            fprintf(stderr, " worst-sampled-path=%llu cell=%d rel-error=%.5g",
+                    (unsigned long long)path.path_id,
+                    path.terminal_cell_id, worst_error);
+        else
+            fprintf(stderr, " worst-sampled-path=%zu rel-error=%.5g",
+                    worst, worst_error);
+    }
     fputc('\n', stderr);
     fflush(stderr);
     return 0;
@@ -220,43 +233,58 @@ static void print_instance(FILE* output, const alea_system_t* sys,
     fprintf(output, "/u%d:c%d", path->universe_id, path->terminal_cell_id);
 }
 
-static void write_report(FILE* output, int csv,
-                         const alea_system_t* sys,
-                         const alea_volume_path_t* paths,
-                         const double* volumes, const double* errors,
-                         size_t count) {
+static int write_report(FILE* output, int csv,
+                        alea_system_t* sys,
+                        const double* volumes, const double* errors,
+                        size_t count) {
+    enum { PATH_CHUNK = 256 };
+    alea_volume_path_t* paths = calloc(PATH_CHUNK, sizeof(*paths));
+    if (!paths) return -1;
     if (csv) {
         fputs("path_id,cell_id,material_id,universe_id,depth,instance,"
               "world_to_local_tx,world_to_local_ty,world_to_local_tz,"
               "volume,relative_error\n", output);
-        for (size_t i = 0; i < count; ++i) {
-            fprintf(output, "%llu,%d,%d,%d,%d,\"",
-                    (unsigned long long)paths[i].path_id,
-                    paths[i].terminal_cell_id, paths[i].material_id,
-                    paths[i].universe_id, paths[i].depth);
-            print_instance(output, sys, &paths[i]);
-            fprintf(output, "\",%.17g,%.17g,%.17g,%.17g,",
-                    paths[i].world_to_local[3], paths[i].world_to_local[7],
-                    paths[i].world_to_local[11], volumes[i]);
-            if (errors[i] >= 0.0) fprintf(output, "%.17g", errors[i]);
-            fputc('\n', output);
+    } else {
+        fprintf(output, "%6s %8s %8s %8s %5s %16s %10s  %s\n",
+                "Path", "Cell", "Material", "Universe", "Depth", "Volume",
+                "Rel.err", "Instance");
+    }
+    for (size_t base = 0; base < count; base += PATH_CHUNK) {
+        size_t wanted = count - base;
+        if (wanted > PATH_CHUNK) wanted = PATH_CHUNK;
+        if (alea_volume_paths_get_range(sys, base, paths, wanted) != wanted) {
+            free(paths);
+            return -1;
         }
-        return;
+        for (size_t j = 0; j < wanted; ++j) {
+            const size_t i = base + j;
+            const alea_volume_path_t* path = &paths[j];
+            if (csv) {
+                fprintf(output, "%llu,%d,%d,%d,%d,\"",
+                        (unsigned long long)path->path_id,
+                        path->terminal_cell_id, path->material_id,
+                        path->universe_id, path->depth);
+                print_instance(output, sys, path);
+                fprintf(output, "\",%.17g,%.17g,%.17g,%.17g,",
+                        path->world_to_local[3], path->world_to_local[7],
+                        path->world_to_local[11], volumes[i]);
+                if (errors[i] >= 0.0) fprintf(output, "%.17g", errors[i]);
+                fputc('\n', output);
+            } else {
+                fprintf(output, "%6llu %8d %8d %8d %5d ",
+                        (unsigned long long)path->path_id,
+                        path->terminal_cell_id, path->material_id,
+                        path->universe_id, path->depth);
+                fprintf(output, "%16.8e ", volumes[i]);
+                if (errors[i] >= 0.0) fprintf(output, "%10.4g  ", errors[i]);
+                else fprintf(output, "%10s  ", "-");
+                print_instance(output, sys, path);
+                fputc('\n', output);
+            }
+        }
     }
-    fprintf(output, "%6s %8s %8s %8s %5s %16s %10s  %s\n",
-            "Path", "Cell", "Material", "Universe", "Depth", "Volume",
-            "Rel.err", "Instance");
-    for (size_t i = 0; i < count; ++i) {
-        fprintf(output, "%6llu %8d %8d %8d %5d ",
-                (unsigned long long)paths[i].path_id,
-                paths[i].terminal_cell_id, paths[i].material_id,
-                paths[i].universe_id, paths[i].depth);
-        fprintf(output, "%16.8e ", volumes[i]);
-        if (errors[i] >= 0.0) fprintf(output, "%10.4g  ", errors[i]);
-        else fprintf(output, "%10s  ", "-");
-        print_instance(output, sys, &paths[i]);
-        fputc('\n', output);
-    }
+    free(paths);
+    return 0;
 }
 
 int main(int argc, char** argv) {
@@ -266,7 +294,6 @@ int main(int argc, char** argv) {
     mcnp_model_t* mcnp_model = NULL;
     openmc_model_t* openmc_model = NULL;
     alea_cluster_t* cluster = NULL;
-    alea_volume_path_t* paths = NULL;
     double* volumes = NULL;
     double* errors = NULL;
     char* input_data = NULL;
@@ -336,15 +363,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[volume rank %d] enumerating physical cell instances\n", rank);
     size_t path_count = alea_volume_path_count(sys);
     if (path_count) {
-        paths = calloc(path_count, sizeof(*paths));
         volumes = calloc(path_count, sizeof(*volumes));
         errors = calloc(path_count, sizeof(*errors));
     }
     status = alea_cluster_agree(cluster,
         path_count == 0 ? ALEA_CLUSTER_COMPUTE_ERROR :
-        (!paths || !volumes || !errors) ? ALEA_CLUSTER_OUT_OF_MEMORY :
-        alea_volume_paths_get(sys, paths, path_count) != path_count
-            ? ALEA_CLUSTER_COMPUTE_ERROR : ALEA_CLUSTER_OK);
+        (!volumes || !errors) ? ALEA_CLUSTER_OUT_OF_MEMORY : ALEA_CLUSTER_OK);
     if (status != ALEA_CLUSTER_OK) {
         if (rank == 0)
             fprintf(stderr, "cannot enumerate volume paths: %s\n",
@@ -357,6 +381,9 @@ int main(int argc, char** argv) {
     options.max_rays = arguments.rays;
     options.batch_size = arguments.batch_size;
     options.requested_workers = arguments.workers;
+    if (arguments.worker_memory_mib)
+        options.max_parallel_scratch_bytes =
+            arguments.worker_memory_mib * 1024u * 1024u;
     options.seed = arguments.seed;
     options.target_rel_error = arguments.target_rel_error;
     options.use_sampling_sphere = true;
@@ -364,12 +391,33 @@ int main(int argc, char** argv) {
     options.sampling_center[1] = arguments.center[1];
     options.sampling_center[2] = arguments.center[2];
     options.sampling_radius = arguments.radius;
-    progress_t progress = {time(NULL), errors, paths, path_count};
+    progress_t progress = {time(NULL), sys, errors, path_count};
     options.progress = report_progress;
     options.progress_user_data = &progress;
     fprintf(stderr, "[volume rank %d] %zu paths; preparing caches and sampling\n",
             rank, path_count);
     if (rank == 0) {
+        const size_t worker_bytes_per_path =
+            3u * sizeof(double) + sizeof(size_t);
+        const size_t base_bytes_per_path = 4u * sizeof(double);
+        const double path_table_mib =
+            path_count <= SIZE_MAX / sizeof(alea_volume_path_t)
+                ? (double)(path_count * sizeof(alea_volume_path_t)) /
+                    (1024.0 * 1024.0) : INFINITY;
+        const double worker_mib =
+            path_count <= SIZE_MAX / worker_bytes_per_path
+                ? (double)(path_count * worker_bytes_per_path) /
+                    (1024.0 * 1024.0) : INFINITY;
+        const double base_mib = path_count <= SIZE_MAX / base_bytes_per_path
+            ? (double)(path_count * base_bytes_per_path) /
+                (1024.0 * 1024.0) : INFINITY;
+        fprintf(stderr, "[volume] path metadata table=%.1f MiB/rank; "
+                "dense rank arrays=%.1f MiB; "
+                "scratch=%.1f MiB/worker; "
+                "worker-scratch-limit=%.1f MiB/rank\n",
+                path_table_mib, base_mib, worker_mib,
+                (double)options.max_parallel_scratch_bytes /
+                    (1024.0 * 1024.0));
         fputs("[volume] progress follows each global batch, after all ranks finish; "
               "use a smaller --batch for more frequent updates\n", stderr);
         if (arguments.target_rel_error > 0.0)
@@ -392,6 +440,12 @@ int main(int argc, char** argv) {
                 stats.volume.converged ? "target reached" : "ray limit reached",
                 stats.volume.rays_completed, stats.local_workers,
                 arguments.output_path ? arguments.output_path : "stdout");
+        fprintf(stderr, "[volume] root worker scratch=%.1f MiB (%zu workers, "
+                "limit %.1f MiB)\n",
+                (double)stats.volume.parallel_scratch_bytes /
+                    (1024.0 * 1024.0), stats.local_workers,
+                (double)stats.volume.parallel_scratch_limit_bytes /
+                    (1024.0 * 1024.0));
         if (arguments.target_rel_error > 0.0 && !stats.volume.converged)
             fputs("[volume] warning: requested relative error was not reached\n", stderr);
         output = stdout;
@@ -412,8 +466,11 @@ int main(int argc, char** argv) {
                     arguments.center[0], arguments.center[1], arguments.center[2],
                     arguments.radius,
                     stats.volume.converged ? " converged" : "");
-        write_report(output, arguments.csv, sys, paths, volumes, errors,
-                     path_count);
+        if (write_report(output, arguments.csv, sys, volumes, errors,
+                         path_count) != 0) {
+            fprintf(stderr, "cannot stream volume path metadata\n");
+            goto done;
+        }
         if (ferror(output)) { fprintf(stderr, "error writing report\n"); goto done; }
         if (output != stdout && fclose(output) != 0) {
             output = NULL;
@@ -427,7 +484,6 @@ int main(int argc, char** argv) {
 done:
     free(input_data);
     if (output && output != stdout) fclose(output);
-    free(paths);
     free(volumes);
     free(errors);
     openmc_model_destroy(openmc_model);

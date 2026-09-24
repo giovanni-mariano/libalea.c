@@ -758,19 +758,26 @@ static PyObject* PyAleaSystem_estimate_volumes(
     PyObject* max_rays_obj = Py_None;
     Py_ssize_t batch_size = 10000;
     PyObject* progress_obj = Py_None;
+    unsigned long long max_parallel_scratch_bytes = 0;
     static char* kwlist[] = {
         "n_rays", "seed", "workers", "target_rel_error", "max_rays",
-        "batch_size", "progress", "rng", NULL
+        "batch_size", "progress", "rng", "max_parallel_scratch_bytes", NULL
     };
     if (!PyArg_ParseTupleAndKeywords(
-            args, kwargs, "|iKnOOnOs:estimate_volumes", kwlist,
+            args, kwargs, "|iKnOOnOsK:estimate_volumes", kwlist,
             &n_rays, &seed, &workers, &target_obj, &max_rays_obj,
-            &batch_size, &progress_obj, &rng_name)) {
+            &batch_size, &progress_obj, &rng_name,
+            &max_parallel_scratch_bytes)) {
         return NULL;
     }
     if (n_rays <= 0 || workers < 0 || batch_size < 0) {
         PyErr_SetString(PyExc_ValueError,
                         "n_rays must be positive; workers and batch_size cannot be negative");
+        return NULL;
+    }
+    if (max_parallel_scratch_bytes > (unsigned long long)SIZE_MAX) {
+        PyErr_SetString(PyExc_OverflowError,
+                        "max_parallel_scratch_bytes exceeds size_t");
         return NULL;
     }
     size_t maximum_rays = (size_t)n_rays;
@@ -807,9 +814,8 @@ static PyObject* PyAleaSystem_estimate_volumes(
 
     double* volumes = calloc(count, sizeof(double));
     double* rel_errors = calloc(count, sizeof(double));
-    alea_volume_path_t* paths = calloc(count, sizeof(alea_volume_path_t));
-    if (!volumes || !rel_errors || !paths) {
-        free(volumes); free(rel_errors); free(paths);
+    if (!volumes || !rel_errors) {
+        free(volumes); free(rel_errors);
         return PyErr_NoMemory();
     }
 
@@ -820,7 +826,7 @@ static PyObject* PyAleaSystem_estimate_volumes(
     } else if (strcmp(rng_name, "legacy-lcg32") == 0) {
         options.rng_algorithm = ALEA_RNG_LEGACY_LCG;
     } else {
-        free(volumes); free(rel_errors); free(paths);
+        free(volumes); free(rel_errors);
         PyErr_Format(PyExc_ValueError,
                      "unknown RNG '%s'; expected 'philox4x32-10' or 'legacy-lcg32'",
                      rng_name);
@@ -830,6 +836,9 @@ static PyObject* PyAleaSystem_estimate_volumes(
     options.seed = (uint64_t)seed;
     options.requested_workers = (size_t)workers;
     options.batch_size = (size_t)batch_size;
+    if (max_parallel_scratch_bytes)
+        options.max_parallel_scratch_bytes =
+            (size_t)max_parallel_scratch_bytes;
     options.target_rel_error = target_rel_error;
     volume_progress_context_t progress_context = {
         .callable = progress_obj,
@@ -847,53 +856,51 @@ static PyObject* PyAleaSystem_estimate_volumes(
         self->sys, &options, volumes, rel_errors, &stats);
     Py_END_ALLOW_THREADS
     if (restore_sigint(old_sigint)) {
-        free(volumes); free(rel_errors); free(paths);
+        free(volumes); free(rel_errors);
         return NULL;
     }
 
     if (progress_context.failed) {
-        free(volumes); free(rel_errors); free(paths);
+        free(volumes); free(rel_errors);
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, "volume progress callback failed");
         return NULL;
     }
 
     if (result < 0) {
-        free(volumes); free(rel_errors); free(paths);
+        free(volumes); free(rel_errors);
         PyErr_SetString(PyExc_RuntimeError, alea_error());
         return NULL;
     }
-
-    /* Enumerate the matching path identities so callers can map each volume to a
-     * concrete placement. The count is stable until geometry/config mutation. */
-    size_t got = alea_volume_paths_get(self->sys, paths, count);
-    if (got > count) got = count;
 
     PyObject* vol_list = PyList_New(count);
     PyObject* err_list = PyList_New(count);
     PyObject* path_list = PyList_New(count);
     if (!vol_list || !err_list || !path_list) {
         Py_XDECREF(vol_list); Py_XDECREF(err_list); Py_XDECREF(path_list);
-        free(volumes); free(rel_errors); free(paths);
+        free(volumes); free(rel_errors);
         return NULL;
     }
     for (size_t i = 0; i < count; i++) {
         PyList_SET_ITEM(vol_list, i, PyFloat_FromDouble(volumes[i]));
         PyList_SET_ITEM(err_list, i, PyFloat_FromDouble(rel_errors[i]));
-        PyObject* pd = (i < got) ? volume_path_to_dict(&paths[i]) : (Py_INCREF(Py_None), Py_None);
+        alea_volume_path_t path;
+        PyObject* pd = alea_volume_paths_get_range(
+            self->sys, i, &path, 1) == 1
+            ? volume_path_to_dict(&path) : (Py_INCREF(Py_None), Py_None);
         if (!pd) {
             Py_DECREF(vol_list); Py_DECREF(err_list); Py_DECREF(path_list);
-            free(volumes); free(rel_errors); free(paths);
+            free(volumes); free(rel_errors);
             return NULL;
         }
         PyList_SET_ITEM(path_list, i, pd);
     }
     free(volumes);
     free(rel_errors);
-    free(paths);
 
     return Py_BuildValue(
-        "{s:N,s:N,s:N,s:K,s:K,s:K,s:K,s:d,s:O,s:O,s:K,s:s,s:I}",
+        "{s:N,s:N,s:N,s:K,s:K,s:K,s:K,s:d,s:O,s:O,s:K,s:s,s:I,"
+        "s:K,s:K,s:K}",
         "volumes", vol_list,
         "rel_errors", err_list,
         "paths", path_list,
@@ -906,7 +913,13 @@ static PyObject* PyAleaSystem_estimate_volumes(
         "cancelled", stats.cancelled ? Py_True : Py_False,
         "seed", (unsigned long long)stats.seed,
         "rng_algorithm", alea_rng_algorithm_name(stats.rng_algorithm),
-        "rng_address_version", stats.rng_address_version);
+        "rng_address_version", stats.rng_address_version,
+        "parallel_scratch_limit_bytes",
+            (unsigned long long)stats.parallel_scratch_limit_bytes,
+        "parallel_scratch_bytes",
+            (unsigned long long)stats.parallel_scratch_bytes,
+        "worker_scratch_bytes",
+            (unsigned long long)stats.worker_scratch_bytes);
 }
 
 static PyObject* PyAleaSystem_volume_path_at_point(PyAleaSystemObject* self, PyObject* args) {

@@ -2078,6 +2078,22 @@ size_t alea_volume_paths_get(alea_system_t* sys,
     return count;
 }
 
+size_t alea_volume_paths_get_range(alea_system_t* sys,
+                                   size_t first_path,
+                                   alea_volume_path_t* out_paths,
+                                   size_t max_paths) {
+    if ((!out_paths && max_paths > 0) || !sys ||
+        alea_volume_path_index_ensure(sys) != 0 || !sys->volume_path_index)
+        return 0;
+    const size_t count = sys->volume_path_index->count;
+    if (first_path >= count || max_paths == 0) return 0;
+    size_t n = count - first_path;
+    if (n > max_paths) n = max_paths;
+    memcpy(out_paths, sys->volume_path_index->paths + first_path,
+           n * sizeof(*out_paths));
+    return n;
+}
+
 static int volume_lattice_lookup_step(const alea_cell_entry_t* cell,
                                       double px,
                                       double py,

@@ -2898,6 +2898,8 @@ void alea_volume_estimate_options_init(
     options->seed = 42;
     options->rng_algorithm = ALEA_RNG_PHILOX4X32_10;
     options->batch_size = 10000;
+    options->max_parallel_scratch_bytes =
+        ALEA_VOLUME_DEFAULT_PARALLEL_SCRATCH_BYTES;
 }
 
 typedef struct {
@@ -2913,6 +2915,12 @@ typedef struct {
     atomic_int* error_flag;
 } volume_estimate_parallel_context_t;
 
+static void volume_record_worker_error(atomic_int* flag, int error) {
+    int current = atomic_load(flag);
+    while (current < error &&
+           !atomic_compare_exchange_weak(flag, &current, error)) {}
+}
+
 static int volume_estimate_parallel_range(void* opaque, size_t worker,
                                           size_t begin, size_t end) {
     volume_estimate_parallel_context_t* context = opaque;
@@ -2927,7 +2935,7 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
     if (context->worker_l2) context->worker_l2[worker] = local_l2;
     if (!local_vol || (context->collect_l2 &&
         (!local_l2 || !ray_l || !touched_paths))) {
-        atomic_store(context->error_flag, 1);
+        volume_record_worker_error(context->error_flag, 2);
         free(ray_l);
         free(touched_paths);
         return 0;
@@ -2936,8 +2944,9 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
     for (size_t offset = begin; offset < end; offset++) {
-        if (atomic_load(context->error_flag) || alea_interrupted()) {
-            atomic_store(context->error_flag, 1);
+        if (atomic_load(context->error_flag)) break;
+        if (alea_interrupted()) {
+            volume_record_worker_error(context->error_flag, 1);
             break;
         }
         const size_t ray_index = context->ray_begin + offset;
@@ -2946,7 +2955,7 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
                 context->rng_algorithm, context->seed, (uint64_t)ray_index,
                 context->cx, context->cy, context->cz, context->radius,
                 &rox, &roy, &roz, &ux, &uy, &uz) != 0) {
-            atomic_store(context->error_flag, 1);
+            volume_record_worker_error(context->error_flag, 1);
             continue;
         }
         alea_ray_t ray_desc;
@@ -2966,7 +2975,7 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
                 accumulate_volume_interval, &accumulator);
         }
         if (rc != 0) {
-            atomic_store(context->error_flag, 1);
+            volume_record_worker_error(context->error_flag, 1);
             continue;
         }
         if (local_l2) {
@@ -2984,11 +2993,37 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
     return 0;
 }
 
+int alea_volume_parallel_scratch_layout(
+        size_t path_count, int collect_second_moment,
+        size_t scratch_limit, size_t requested_workers, size_t ray_count,
+        size_t* out_worker_bytes, size_t* out_worker_limit,
+        size_t* out_parallel_bytes) {
+    const size_t bytes_per_path = collect_second_moment
+        ? 3u * sizeof(double) + sizeof(size_t) : sizeof(double);
+    if (path_count > SIZE_MAX / bytes_per_path) return -1;
+    const size_t worker_bytes = path_count * bytes_per_path;
+    if (scratch_limit == 0)
+        scratch_limit = ALEA_VOLUME_DEFAULT_PARALLEL_SCRATCH_BYTES;
+    size_t worker_limit = alea_parallel_effective_workers(
+        ray_count, 1, requested_workers);
+    if (worker_bytes != 0) {
+        const size_t memory_workers = scratch_limit / worker_bytes;
+        if (memory_workers == 0) return -1;
+        if (worker_limit > memory_workers) worker_limit = memory_workers;
+    }
+    if (worker_limit == 0 ||
+        (worker_bytes && worker_limit > SIZE_MAX / worker_bytes)) return -1;
+    if (out_worker_bytes) *out_worker_bytes = worker_bytes;
+    if (out_worker_limit) *out_worker_limit = worker_limit;
+    if (out_parallel_bytes) *out_parallel_bytes = worker_bytes * worker_limit;
+    return 0;
+}
+
 int alea_volume_accumulate_ray_range(
         alea_system_t* sys, const alea_volume_problem_t* problem,
         size_t ray_begin, size_t ray_end,
         alea_rng_algorithm_t rng_algorithm, uint64_t seed,
-        size_t requested_workers,
+        size_t requested_workers, size_t max_parallel_scratch_bytes,
         double* sum_l, double* sum_l2, size_t* out_actual_workers) {
     if (!sys || !problem || !sum_l || ray_end < ray_begin) return -1;
     const size_t n_paths = problem->path_count;
@@ -3004,8 +3039,14 @@ int alea_volume_accumulate_ray_range(
     atomic_init(&error_flag, 0);
     size_t actual_workers = 1;
     const size_t ray_count = ray_end - ray_begin;
-    size_t worker_limit = alea_parallel_effective_workers(
-        ray_count, 1, requested_workers);
+    size_t worker_limit = 0;
+    if (alea_volume_parallel_scratch_layout(
+            n_paths, sum_l2 != NULL, max_parallel_scratch_bytes,
+            requested_workers, ray_count, NULL, &worker_limit, NULL) != 0) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+            "volume worker scratch exceeds the per-rank limit");
+        return -2;
+    }
     double** worker_volumes = calloc(
         worker_limit, sizeof(*worker_volumes));
     double** worker_l2 = sum_l2
@@ -3013,7 +3054,9 @@ int alea_volume_accumulate_ray_range(
     if (!worker_volumes || (sum_l2 && !worker_l2)) {
         free(worker_volumes);
         free(worker_l2);
-        return -1;
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+            "cannot allocate volume worker tables");
+        return -2;
     }
 
     volume_estimate_parallel_context_t parallel_context = {
@@ -3024,7 +3067,7 @@ int alea_volume_accumulate_ray_range(
         ray_count, 1, worker_limit, ALEA_PARALLEL_STATIC_BLOCK,
         volume_estimate_parallel_range, &parallel_context, &actual_workers);
     if (parallel_status != ALEA_PARALLEL_OK)
-        atomic_store(&error_flag, 1);
+        volume_record_worker_error(&error_flag, 1);
 
     /* Fixed worker-index order makes a repeated run bit-reproducible for the
      * same seed, batch size, and worker count. */
@@ -3044,7 +3087,13 @@ int alea_volume_accumulate_ray_range(
     free(worker_l2);
 
     if (out_actual_workers) *out_actual_workers = actual_workers;
-    return atomic_load(&error_flag) ? -1 : 0;
+    const int worker_error = atomic_load(&error_flag);
+    if (worker_error == 2) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+            "cannot allocate volume worker scratch");
+        return -2;
+    }
+    return worker_error ? -1 : 0;
 }
 
 int alea_volume_problem_prepare(alea_system_t* sys,
@@ -3119,6 +3168,13 @@ int alea_estimate_volumes_ex(
 
     const int need_errors = rel_errors != NULL ||
         supplied->target_rel_error > 0.0 || supplied->progress != NULL;
+    if (alea_volume_parallel_scratch_layout(
+            n_paths, need_errors, supplied->max_parallel_scratch_bytes,
+            supplied->requested_workers, 1, NULL, NULL, NULL) != 0) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+            "volume worker scratch exceeds the per-rank limit");
+        return -1;
+    }
     double* sum_l2 = need_errors ? calloc(n_paths, sizeof(*sum_l2)) : NULL;
     double* work_errors = rel_errors;
     if (need_errors && !work_errors)
@@ -3126,6 +3182,8 @@ int alea_estimate_volumes_ex(
     if ((need_errors && !sum_l2) || (need_errors && !work_errors)) {
         free(sum_l2);
         if (work_errors != rel_errors) free(work_errors);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "cannot allocate volume accumulators");
         return -1;
     }
 
@@ -3146,14 +3204,17 @@ int alea_estimate_volumes_ex(
         size_t batch_end = completed + batch_size;
         if (batch_end < completed || batch_end > supplied->max_rays)
             batch_end = supplied->max_rays;
-        if (alea_volume_accumulate_ray_range(
+        int accumulate_status = alea_volume_accumulate_ray_range(
                 sys, &problem, completed, batch_end, supplied->rng_algorithm,
                 supplied->seed, supplied->requested_workers,
-                volumes, sum_l2, &actual_workers) != 0) {
+                supplied->max_parallel_scratch_bytes,
+                volumes, sum_l2, &actual_workers);
+        if (accumulate_status != 0) {
             free(sum_l2);
             if (work_errors != rel_errors) free(work_errors);
-            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                                  "hierarchical volume ray traversal failed");
+            if (accumulate_status != -2)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                      "hierarchical volume ray traversal failed");
             return -1;
         }
         completed = batch_end;
@@ -3183,6 +3244,19 @@ int alea_estimate_volumes_ex(
         out_stats->requested_workers = supplied->requested_workers;
         out_stats->actual_workers = actual_workers;
         out_stats->batch_size = batch_size;
+        size_t worker_bytes = 0;
+        (void)alea_volume_parallel_scratch_layout(
+            n_paths, need_errors, supplied->max_parallel_scratch_bytes,
+            supplied->requested_workers, batch_size, &worker_bytes, NULL,
+            NULL);
+        out_stats->parallel_scratch_limit_bytes =
+            supplied->max_parallel_scratch_bytes
+                ? supplied->max_parallel_scratch_bytes
+                : ALEA_VOLUME_DEFAULT_PARALLEL_SCRATCH_BYTES;
+        out_stats->parallel_scratch_bytes =
+            worker_bytes <= UINT64_MAX / (actual_workers ? actual_workers : 1)
+                ? (uint64_t)worker_bytes * actual_workers : UINT64_MAX;
+        out_stats->worker_scratch_bytes = worker_bytes;
         out_stats->rng_algorithm = supplied->rng_algorithm;
         out_stats->rng_address_version = ALEA_RNG_ADDRESS_VERSION;
         out_stats->seed = supplied->seed;

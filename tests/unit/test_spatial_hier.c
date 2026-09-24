@@ -1544,6 +1544,11 @@ TEST(volume_path_index_reuses_and_invalidates) {
     ASSERT_EQ(alea_volume_paths_get(sys, paths, 2), 2);
     ASSERT_EQ(paths[0].path_id, 0);
     ASSERT_EQ(paths[1].path_id, 1);
+    alea_volume_path_t ranged;
+    ASSERT_EQ(alea_volume_paths_get_range(sys, 1, &ranged, 1), 1);
+    ASSERT_EQ(ranged.path_id, 1);
+    ASSERT_EQ(ranged.terminal_cell_index, c1);
+    ASSERT_EQ(alea_volume_paths_get_range(sys, 2, &ranged, 1), 0);
 
     alea_destroy(sys);
 }
@@ -2256,7 +2261,8 @@ TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
     options.max_rays = 400;
     options.batch_size = 100;
     options.seed = UINT64_C(123456789);
-    options.requested_workers = 1;
+    options.requested_workers = 4;
+    options.max_parallel_scratch_bytes = 32;
     volume_progress_probe_t progress = {.cancel_at = 200};
     options.progress = cancel_volume_progress;
     options.progress_user_data = &progress;
@@ -2273,6 +2279,11 @@ TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
     ASSERT_EQ(first_stats.rng_algorithm, ALEA_RNG_PHILOX4X32_10);
     ASSERT_EQ(first_stats.rng_address_version, ALEA_RNG_ADDRESS_VERSION);
     ASSERT_EQ(first_stats.seed, options.seed);
+    ASSERT_EQ(first_stats.actual_workers, 1);
+    ASSERT_EQ(first_stats.worker_scratch_bytes, 32);
+    ASSERT_EQ(first_stats.parallel_scratch_bytes, 32);
+    ASSERT_EQ(first_stats.parallel_scratch_limit_bytes,
+              options.max_parallel_scratch_bytes);
 
     progress.calls = 0;
     double second_volume[1], second_error[1];
@@ -2303,6 +2314,12 @@ TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
     ASSERT_EQ(legacy_stats.seed, options.seed);
     ASSERT(first_volume[0] != second_volume[0]);
 
+    options.rng_algorithm = ALEA_RNG_PHILOX4X32_10;
+    options.max_parallel_scratch_bytes = 31;
+    ASSERT_EQ(alea_estimate_volumes_ex(
+        sys, &options, second_volume, second_error, NULL), -1);
+    ASSERT_EQ(alea_error_code(), ALEA_ERR_OUT_OF_MEMORY);
+
     alea_destroy(sys);
 }
 
@@ -2332,7 +2349,8 @@ TEST(volume_uncertainty_and_interruption) {
     double sum = 0.0, sum2 = 0.0;
     alea_interrupt();
     int rc = alea_volume_accumulate_ray_range(sys, &problem, 0, 100,
-        options.rng_algorithm, options.seed, 2, &sum, &sum2, NULL);
+        options.rng_algorithm, options.seed, 2,
+        options.max_parallel_scratch_bytes, &sum, &sum2, NULL);
     alea_clear_interrupt();
     ASSERT_EQ(rc, -1);
     ASSERT_EQ(sum, 0.0);

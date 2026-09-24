@@ -1282,6 +1282,19 @@ cell under a concrete fill/lattice ancestry and has a dense `path_id` for volume
 arrays. If the return value is greater than `max_paths`, the output was
 truncated.
 
+### alea_volume_paths_get_range
+
+```c
+size_t alea_volume_paths_get_range(alea_system_t* sys,
+                                   size_t first_path,
+                                   alea_volume_path_t* out_paths,
+                                   size_t max_paths);
+```
+
+Copy a contiguous range of paths beginning at `first_path`. The return value is
+the number copied. Use this interface to stream metadata without allocating a
+second complete path table.
+
 ### alea_volume_path_at_point
 
 ```c
@@ -1346,7 +1359,12 @@ notification, and an execution receipt. Initialize the options, then set the
 required `max_rays`. Philox (`ALEA_RNG_PHILOX4X32_10`) is the production
 counter-based engine and is reproducible across worker counts; the legacy LCG
 is retained for compatibility. A progress callback returning nonzero requests
-successful cancellation, which is recorded in `out_stats`.
+successful cancellation, which is recorded in `out_stats`. Dense worker
+accumulators are capped at 256 MiB per process by default. Set
+`max_parallel_scratch_bytes` to change the total worker-scratch limit; the
+effective worker count is reduced to fit, and estimation fails if one worker
+cannot fit. The execution receipt reports the limit, bytes per worker, and
+reserved parallel bytes.
 
 ### Deterministic cell-local volume
 

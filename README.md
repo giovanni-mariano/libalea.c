@@ -205,6 +205,12 @@ model and calls the cluster operations in the same order. See
 the included headers for API details.
 
 Set `ALEA_NUM_THREADS` to the number of CPU threads available per process.
+Volume estimation limits dense worker scratch to 256 MiB per rank by default;
+use `--worker-memory-mib` to set a different per-rank limit. If one worker does
+not fit, the command fails before sampling. The effective worker count can be
+lower than `--workers` when the memory limit requires it. The command reports
+the cached path table, fixed dense rank arrays, and worker scratch before
+sampling.
 For local development without MPI, build with `make cluster USE_MPI=0`.
 
 #### Linux
