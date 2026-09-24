@@ -182,6 +182,22 @@ sets the total number of sampling rays shared by all processes. Set `--center`
 and `--radius` so the sampling sphere encloses the cells you want to measure.
 Add `--csv -o volumes.csv` to save the results as CSV.
 
+The volume command writes startup stages for each rank and progress after each
+global batch to stderr, leaving stdout/CSV for results. Progress includes elapsed
+time, rays per second, estimated time to the ray limit, unsampled instance count,
+and the largest sampled relative error. Updates wait for every rank; a slow ray
+or rank can delay them. For an initial diagnostic run, use `--rays 1000 --batch 100`
+and set `--workers` to the CPUs allocated per rank. Keep the stage messages when
+reporting a stall: they distinguish input reading, parsing, instance enumeration,
+and cache preparation/sampling. These messages are not a timed heartbeat.
+
+`--target-rel-error` requires every instance to have a measurable uncertainty.
+Unsampled instances (including unreachable or zero-volume instances) prevent
+early convergence, so the run may consume its entire ray budget. A warning is
+printed if the requested error was not reached. One ray cannot establish an
+uncertainty. The sampling sphere must enclose the intended geometry; increasing
+it unnecessarily makes small instances harder to sample.
+
 For your own C program, include [`alea_cluster.h`](include/alea_cluster.h) and
 link `bin/libalea_cluster.a` with the core library. Each process loads the same
 model and calls the cluster operations in the same order. See

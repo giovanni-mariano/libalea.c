@@ -10,11 +10,13 @@
 #include "alea_openmc.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef enum { FORMAT_AUTO, FORMAT_MCNP, FORMAT_OPENMC } input_format_t;
 
@@ -58,6 +60,7 @@ static int ends_with(const char* text, const char* suffix) {
 }
 
 static int parse_size(const char* text, int allow_zero, size_t* output) {
+    if (!*text || strspn(text, "0123456789") != strlen(text)) return -1;
     char* end = NULL;
     errno = 0;
     unsigned long long value = strtoull(text, &end, 10);
@@ -68,6 +71,7 @@ static int parse_size(const char* text, int allow_zero, size_t* output) {
 }
 
 static int parse_u64(const char* text, uint64_t* output) {
+    if (!*text || strspn(text, "0123456789") != strlen(text)) return -1;
     char* end = NULL;
     errno = 0;
     unsigned long long value = strtoull(text, &end, 10);
@@ -122,7 +126,8 @@ static int parse_arguments(int argc, char** argv, arguments_t* arguments) {
             if (!strcmp(option, "--batch") &&
                 parse_size(argv[i], 0, &arguments->batch_size)) return -1;
             if (!strcmp(option, "--workers") &&
-                parse_size(argv[i], 1, &arguments->workers)) return -1;
+                (parse_size(argv[i], 1, &arguments->workers) ||
+                 arguments->workers > INT_MAX)) return -1;
             if (!strcmp(option, "--seed") &&
                 parse_u64(argv[i], &arguments->seed)) return -1;
             if (!strcmp(option, "--target-rel-error") &&
@@ -143,6 +148,47 @@ static int parse_arguments(int argc, char** argv, arguments_t* arguments) {
     if (arguments->format == FORMAT_AUTO)
         arguments->format = ends_with(arguments->input_path, ".xml")
             ? FORMAT_OPENMC : FORMAT_MCNP;
+    return 0;
+}
+
+typedef struct {
+    time_t started;
+    const double* errors;
+    const alea_volume_path_t* paths;
+    size_t count;
+} progress_t;
+
+static int report_progress(size_t completed, size_t maximum,
+                           double maximum_error, void* opaque) {
+    const progress_t* progress = opaque;
+    double elapsed = difftime(time(NULL), progress->started);
+    size_t unseen = 0, worst = 0;
+    double worst_error = -1.0;
+    for (size_t i = 0; i < progress->count; ++i) {
+        if (progress->errors[i] < 0.0) ++unseen;
+        else if (progress->errors[i] > worst_error) {
+            worst_error = progress->errors[i];
+            worst = i;
+        }
+    }
+    fprintf(stderr, "[volume] rays=%zu/%zu (%.1f%%) elapsed=%.0fs",
+            completed, maximum, 100.0 * (double)completed / (double)maximum,
+            elapsed);
+    if (elapsed > 0.0 && completed)
+        fprintf(stderr, " rate=%.1f rays/s ETA-to-ray-limit=%.0fs",
+                (double)completed / elapsed,
+                elapsed * (double)(maximum - completed) / (double)completed);
+    if (isfinite(maximum_error))
+        fprintf(stderr, " max-rel-error=%.5g", maximum_error);
+    else
+        fputs(" max-rel-error=unavailable", stderr);
+    fprintf(stderr, " unsampled=%zu/%zu", unseen, progress->count);
+    if (worst_error >= 0.0)
+        fprintf(stderr, " worst-sampled-path=%llu cell=%d rel-error=%.5g",
+                (unsigned long long)progress->paths[worst].path_id,
+                progress->paths[worst].terminal_cell_id, worst_error);
+    fputc('\n', stderr);
+    fflush(stderr);
     return 0;
 }
 
@@ -214,6 +260,8 @@ static void write_report(FILE* output, int csv,
 }
 
 int main(int argc, char** argv) {
+    /* Batch schedulers redirect stderr; keep diagnostics immediately visible. */
+    setvbuf(stderr, NULL, _IONBF, 0);
     int result = 1;
     mcnp_model_t* mcnp_model = NULL;
     openmc_model_t* openmc_model = NULL;
@@ -243,6 +291,13 @@ int main(int argc, char** argv) {
         goto done;
     }
 
+    if (rank == 0)
+        fprintf(stderr, "[volume] backend=%s ranks=%d rays=%zu batch=%zu "
+                "requested-workers/rank=%zu (0=automatic)\n"
+                "[volume] reading %s\n",
+                alea_cluster_backend(cluster), alea_cluster_size(cluster),
+                arguments.rays, arguments.batch_size, arguments.workers,
+                arguments.input_path);
     status = arguments.format == FORMAT_OPENMC
         ? alea_cluster_read_file(cluster, arguments.input_path,
                                  &input_data, &input_length)
@@ -255,6 +310,7 @@ int main(int argc, char** argv) {
         goto done;
     }
 
+    fprintf(stderr, "[volume rank %d] parsing %zu input bytes\n", rank, input_length);
     alea_system_t* sys = NULL;
     if (arguments.format == FORMAT_OPENMC) {
         openmc_model = openmc_load_string(input_data, input_length);
@@ -277,6 +333,7 @@ int main(int argc, char** argv) {
         goto done;
     }
 
+    fprintf(stderr, "[volume rank %d] enumerating physical cell instances\n", rank);
     size_t path_count = alea_volume_path_count(sys);
     if (path_count) {
         paths = calloc(path_count, sizeof(*paths));
@@ -307,6 +364,19 @@ int main(int argc, char** argv) {
     options.sampling_center[1] = arguments.center[1];
     options.sampling_center[2] = arguments.center[2];
     options.sampling_radius = arguments.radius;
+    progress_t progress = {time(NULL), errors, paths, path_count};
+    options.progress = report_progress;
+    options.progress_user_data = &progress;
+    fprintf(stderr, "[volume rank %d] %zu paths; preparing caches and sampling\n",
+            rank, path_count);
+    if (rank == 0) {
+        fputs("[volume] progress follows each global batch, after all ranks finish; "
+              "use a smaller --batch for more frequent updates\n", stderr);
+        if (arguments.target_rel_error > 0.0)
+            fprintf(stderr, "[volume] target-rel-error=%.5g requires every path; "
+                    "unsampled paths prevent early convergence\n",
+                    arguments.target_rel_error);
+    }
     alea_cluster_volume_stats_t stats;
     status = alea_cluster_estimate_volumes(
         cluster, sys, &options, volumes, errors, &stats);
@@ -317,6 +387,13 @@ int main(int argc, char** argv) {
     }
 
     if (rank == 0) {
+        fprintf(stderr, "[volume] finished: %s; rays=%zu root-workers=%zu; "
+                "writing report to %s\n",
+                stats.volume.converged ? "target reached" : "ray limit reached",
+                stats.volume.rays_completed, stats.local_workers,
+                arguments.output_path ? arguments.output_path : "stdout");
+        if (arguments.target_rel_error > 0.0 && !stats.volume.converged)
+            fputs("[volume] warning: requested relative error was not reached\n", stderr);
         output = stdout;
         if (arguments.output_path) {
             output = fopen(arguments.output_path, "w");

@@ -2765,7 +2765,9 @@ void alea_volume_compute_errors(const double* volumes, const double* sum_l2,
             double mean_l2 = sum_l2[i] / (double)n_rays;
             double var_l = mean_l2 - mean_l * mean_l;
             if (var_l < 0.0) var_l = 0.0;
-            rel_errors[i] = sqrt(var_l) / (mean_l * sqrt((double)n_rays));
+            /* One sample cannot establish uncertainty or convergence. */
+            rel_errors[i] = n_rays < 2 ? INFINITY
+                : sqrt(var_l) / (mean_l * sqrt((double)n_rays));
         } else {
             rel_errors[i] = -1.0;
         }
@@ -2934,7 +2936,10 @@ static int volume_estimate_parallel_range(void* opaque, size_t worker,
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
     for (size_t offset = begin; offset < end; offset++) {
-        if (atomic_load(context->error_flag)) continue;
+        if (atomic_load(context->error_flag) || alea_interrupted()) {
+            atomic_store(context->error_flag, 1);
+            break;
+        }
         const size_t ray_index = context->ray_begin + offset;
         double rox, roy, roz, ux, uy, uz;
         if (generate_indexed_cauchy_crofton_ray(

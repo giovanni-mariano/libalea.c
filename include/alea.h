@@ -971,7 +971,8 @@ int alea_volume_path_resolve_cell_from_transform_evidence(
  * sized to alea_volume_path_count(sys). Each entry represents one physical
  * placement, including its fill ancestry, transform, and lattice coordinates.
  * If @p rel_errors is non-NULL, it receives the one-sigma relative statistical
- * error for each estimate, or -1 for a zero-volume path.
+ * error for each estimate, or -1 for a path with no sampled volume.
+ * A sampled path has infinite uncertainty when fewer than two rays were used.
  */
 int alea_estimate_volumes(alea_system_t* sys,
                           int n_rays,

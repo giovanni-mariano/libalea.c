@@ -4270,6 +4270,10 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
 
     while (t_current < effective_t_max && step_budget-- > 0 &&
            state->iterations_remaining-- > 0) {
+        if (alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "ray traversal interrupted");
+            return -1;
+        }
         result->step_iterations++;
         /* Cell resolution samples just past the crossing at t_current, where
          * quadric sign evaluation is numerically noisy. Midpoint verification

@@ -15,6 +15,13 @@ static int fail(int rank, const char* message) {
     return 1;
 }
 
+static int stop_volume(size_t completed, size_t maximum, double error, void* data) {
+    (void)completed; (void)maximum; (void)error;
+    int* calls = data;
+    ++*calls;
+    return 1;
+}
+
 static int same_batch(const alea_raycast_batch_result_t* a,
                       const alea_raycast_batch_result_t* b) {
     size_t rays = alea_raycast_batch_ray_count(a);
@@ -1514,6 +1521,32 @@ int main(int argc, char** argv) {
         printf("cluster=%s ranks=%d volume=%.8g rel_error=%.5g\n",
                alea_cluster_backend(cluster), alea_cluster_size(cluster),
                volume, error);
+
+    int progress_calls = 0;
+    options.progress = stop_volume;
+    options.progress_user_data = &progress_calls;
+    status = alea_cluster_estimate_volumes(
+        cluster, sys, &options, &volume, &error, &stats);
+    if (status != ALEA_CLUSTER_OK || !stats.volume.cancelled ||
+        stats.volume.rays_completed != options.batch_size ||
+        progress_calls != (rank == 0 ? 1 : 0))
+        return fail(rank, "volume progress cancellation was not coordinated");
+    options.progress = NULL;
+    options.max_rays = options.batch_size = 1;
+    options.target_rel_error = 1.0;
+    options.sampling_radius = 1.0;
+    status = alea_cluster_estimate_volumes(
+        cluster, sys, &options, &volume, &error, &stats);
+    if (status != ALEA_CLUSTER_OK || stats.volume.converged ||
+        !(volume > 0.0) || !isinf(error))
+        return fail(rank, "single ray falsely established volume uncertainty");
+    if (rank == alea_cluster_size(cluster) - 1) alea_interrupt();
+    status = alea_cluster_estimate_volumes(
+        cluster, sys, &options, &volume, &error, &stats);
+    alea_clear_interrupt();
+    if (status != ALEA_CLUSTER_INTERRUPTED || !stats.volume.cancelled ||
+        stats.volume.rays_completed != 0)
+        return fail(rank, "volume interruption was not coordinated");
 
     if (alea_cluster_size(cluster) > 1) {
         alea_system_t* mismatch = alea_create();

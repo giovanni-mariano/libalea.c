@@ -12,6 +12,7 @@
 #include "core/alea_transform.h"
 #include "core/alea_universe.h"
 #include "raycast/raycast.h"
+#include "raycast/volume_internal.h"
 
 /* This file intentionally exercises deprecated flat-spatial compatibility APIs
  * as part of the migration gate. */
@@ -2302,6 +2303,48 @@ TEST(hier_volume_estimation_options_are_reproducible_and_cancellable) {
     ASSERT_EQ(legacy_stats.seed, options.seed);
     ASSERT(first_volume[0] != second_volume[0]);
 
+    alea_destroy(sys);
+}
+
+TEST(volume_uncertainty_and_interruption) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int mat = alea_add_material(sys, 1);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         mat, 1.0, 0) >= 0);
+    alea_volume_estimate_options_t options;
+    alea_volume_estimate_options_init(&options);
+    options.max_rays = options.batch_size = 1;
+    options.target_rel_error = 1.0;
+    options.requested_workers = 1;
+    options.use_sampling_sphere = true;
+    options.sampling_radius = 1.0;
+    double volume, error;
+    alea_volume_estimate_stats_t stats;
+    ASSERT_EQ(alea_estimate_volumes_ex(sys, &options, &volume, &error, &stats), 0);
+    ASSERT(volume > 0.0);
+    ASSERT(isinf(error));
+    ASSERT(!stats.converged);
+
+    alea_volume_problem_t problem;
+    ASSERT_EQ(alea_volume_problem_prepare(sys, &options, &problem), 0);
+    double sum = 0.0, sum2 = 0.0;
+    alea_interrupt();
+    int rc = alea_volume_accumulate_ray_range(sys, &problem, 0, 100,
+        options.rng_algorithm, options.seed, 2, &sum, &sum2, NULL);
+    alea_clear_interrupt();
+    ASSERT_EQ(rc, -1);
+    ASSERT_EQ(sum, 0.0);
+
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    alea_interrupt();
+    rc = alea_raycast_hier(sys, -2, 0, 0, 1, 0, 0, 4.0, &result);
+    alea_clear_interrupt();
+    ASSERT_EQ(rc, -1);
+    ASSERT_EQ(alea_raycast_hier(sys, -2, 0, 0, 1, 0, 0, 4.0, &result), 0);
+    alea_raycast_result_free(&result);
     alea_destroy(sys);
 }
 
