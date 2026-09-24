@@ -2918,7 +2918,7 @@ typedef struct {
 static void volume_record_worker_error(atomic_int* flag, int error) {
     int current = atomic_load(flag);
     while (current < error &&
-           !atomic_compare_exchange_weak(flag, &current, error)) {}
+           !atomic_compare_exchange_strong(flag, &current, error)) {}
 }
 
 static int volume_estimate_parallel_range(void* opaque, size_t worker,
