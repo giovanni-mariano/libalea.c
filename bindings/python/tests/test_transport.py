@@ -28,6 +28,7 @@ def test_fixed_source_and_tallies(tmp_path, particle):
     config = {
         "histories": 4,
         "seed": 7,
+        "boundary_distance_tolerance": 0.0,
         "source": {
             "particle": particle,
             "energy": 2.0,

@@ -179,6 +179,9 @@ alea_error_t alea_transport_run_sampled_source(
     if (options->histories == 0 || options->max_events_per_history == 0 ||
         !isfinite(options->max_segment_distance) ||
         options->max_segment_distance <= 0.0 ||
+        (options->boundary_distance_tolerance_is_set &&
+         (!isfinite(options->boundary_distance_tolerance) ||
+          options->boundary_distance_tolerance < 0.0)) ||
         (options->navigation_validation != ALEA_NAV_VALIDATE_STRICT &&
          options->navigation_validation != ALEA_NAV_VALIDATE_FAST &&
          options->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL))
@@ -253,6 +256,9 @@ alea_error_t alea_transport_run_sampled_source(
     if (options->max_navigation_breakpoints)
         alea_ray_navigator_set_interval_budget(
             navigator, options->max_navigation_breakpoints);
+    if (options->boundary_distance_tolerance_is_set)
+        alea_ray_navigator_set_boundary_distance_tolerance(
+            navigator, options->boundary_distance_tolerance);
     alea_transport_result_t result = {
         .cell_count = cell_count, .histories = options->histories,
         .track_length = path_sum, .track_length_squared = path_sum_squared,

@@ -2704,7 +2704,38 @@ typedef struct {
     /* Particle transport must reject a containment retry that never verifies
      * its selected owner; general ray queries retain legacy compatibility. */
     bool fail_unverified_ownership;
+    /* Navigation-only policy for competing hierarchy depths. Legacy ray
+     * queries leave this zero and retain their ordinary numerical ordering. */
+    double boundary_distance_tolerance;
 } alea_ray_walk_t;
+
+#define ALEA_NAV_DEFAULT_BOUNDARY_DISTANCE_TOLERANCE 1.0e-6
+
+static bool ray_crossing_distances_near(double reference_t,
+                                        double first_t,
+                                        double second_t,
+                                        double relative_tolerance) {
+    if (!(relative_tolerance > 0.0) || !isfinite(reference_t) ||
+        !isfinite(first_t) || !isfinite(second_t)) return false;
+    const double first_distance = first_t - reference_t;
+    const double second_distance = second_t - reference_t;
+    if (!(first_distance > 0.0) || !(second_distance > 0.0)) return false;
+    const double scale = fmax(first_distance, second_distance);
+    return fabs(first_distance - second_distance) <=
+           relative_tolerance * scale;
+}
+
+static bool ray_boundaries_same_world_surface(
+    uint32_t first_primitive, const alea_matrix_t* first_transform,
+    uint32_t second_primitive, const alea_matrix_t* second_transform) {
+    if (first_primitive == ALEA_PRIMITIVE_ID_INVALID ||
+        first_primitive != second_primitive ||
+        !first_transform || !second_transform) return false;
+    for (int i = 0; i < 12; ++i) {
+        if (first_transform->m[i] != second_transform->m[i]) return false;
+    }
+    return true;
+}
 
 /* One verified open interval produced by the selected-owner walk.  This is
  * deliberately private while compatibility APIs still publish their legacy
@@ -3381,6 +3412,8 @@ static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
                                                   int already_tested_lattice_cell,
                                                   double t_min,
                                                   double t_max,
+                                                  double reference_t,
+                                                  double relative_tolerance,
                                                   alea_raycast_result_t* result,
                                                   int* out_surface_id,
                                                   uint32_t* out_primitive_id,
@@ -3426,7 +3459,16 @@ static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
             result->ancestor_unattributed_queries++;
             result->ancestor_unattributed_surface_tests += (uint64_t)tested;
         }
-        if (t < closest_t) {
+        /* Entries are visited from root to leaf. Retain the shallower
+         * crossing when distances are equal under the navigation policy. */
+        const bool same_near_boundary = ray_crossing_distances_near(
+                reference_t, t, closest_t, relative_tolerance) &&
+            ray_boundaries_same_world_surface(
+                prim_id, &entry->transform,
+                out_primitive_id ? *out_primitive_id
+                                 : ALEA_PRIMITIVE_ID_INVALID,
+                out_transform);
+        if (t < closest_t && !same_near_boundary) {
             closest_t = t;
             *out_surface_id = surface_id;
             if (out_primitive_id) *out_primitive_id = prim_id;
@@ -4549,11 +4591,21 @@ resolve_cell:;
                 double t_ancestor = raycast_hier_path_ancestor_surfaces(
                     sys, ray, current_path, (uint32_t)cell_idx,
                     lattice_cell_index, crossing_t_min,
-                    effective_t_max, result, &ancestor_surface_id,
+                    effective_t_max, t_current,
+                    state->boundary_distance_tolerance,
+                    result, &ancestor_surface_id,
                     &ancestor_prim_id, &ancestor_transform);
                 result->ancestor_surfaces_tested +=
                     result->surfaces_tested - ancestor_tested_before;
-                if (t_ancestor < t_next - RAY_EPSILON) {
+                const bool same_near_boundary = need_boundary_event &&
+                    ray_crossing_distances_near(
+                        t_current, t_ancestor, t_next,
+                        state->boundary_distance_tolerance) &&
+                    ray_boundaries_same_world_surface(
+                        ancestor_prim_id, &ancestor_transform,
+                        bevent.primitive_id, &bevent.transform);
+                if (t_ancestor < t_next - RAY_EPSILON ||
+                    same_near_boundary) {
                     t_next = t_ancestor;
                     hit_surface_id = ancestor_surface_id;
                     next_enter_surface_id = ancestor_surface_id;
@@ -4869,6 +4921,7 @@ struct alea_ray_navigator {
     alea_nav_validation_mode_t validation_mode;
     size_t max_interval_breakpoints;
     uint32_t event_fields;
+    double boundary_distance_tolerance;
     alea_ray_t ray;
     alea_ray_walk_t walk;
     alea_ray_selected_interval_t pending;
@@ -5048,6 +5101,8 @@ alea_ray_navigator_t* alea_ray_navigator_create(alea_system_t* sys) {
     navigator->validation_mode = ALEA_NAV_VALIDATE_STRICT;
     navigator->max_interval_breakpoints = ALEA_NAV_DEFAULT_FLIGHT_BREAKPOINTS;
     navigator->event_fields = ALEA_NAV_EVENT_NORMAL;
+    navigator->boundary_distance_tolerance =
+        ALEA_NAV_DEFAULT_BOUNDARY_DISTANCE_TOLERANCE;
     alea_raycast_result_init(&navigator->scratch);
     alea_raycast_result_init(&navigator->validation_scratch);
     return navigator;
@@ -5081,6 +5136,15 @@ int alea_ray_navigator_set_interval_budget(
     return 0;
 }
 
+int alea_ray_navigator_set_boundary_distance_tolerance(
+    alea_ray_navigator_t* navigator, double relative_tolerance) {
+    if (!navigator || !isfinite(relative_tolerance) ||
+        relative_tolerance < 0.0 || navigator->initialized) return -1;
+    navigator->boundary_distance_tolerance = relative_tolerance;
+    navigator->walk.boundary_distance_tolerance = relative_tolerance;
+    return 0;
+}
+
 int alea_ray_navigator_set_event_fields(
     alea_ray_navigator_t* navigator, uint32_t fields) {
     if (!navigator || (fields & ~ALEA_NAV_EVENT_NORMAL)) return -1;
@@ -5102,6 +5166,8 @@ int alea_ray_navigator_restart(alea_ray_navigator_t* navigator,
     navigator->ray = ray;
     alea_ray_walk_init(&navigator->walk);
     navigator->walk.fail_unverified_ownership = true;
+    navigator->walk.boundary_distance_tolerance =
+        navigator->boundary_distance_tolerance;
     alea_raycast_result_clear(&navigator->scratch);
     navigator->scratch.ray = ray;
     navigator->current_t = 0.0;
@@ -5151,6 +5217,8 @@ int alea_ray_navigator_set_direction(alea_ray_navigator_t* navigator,
     navigator->ray = ray;
     alea_ray_walk_init(&navigator->walk);
     navigator->walk.fail_unverified_ownership = true;
+    navigator->walk.boundary_distance_tolerance =
+        navigator->boundary_distance_tolerance;
     ray_path_copy_live(&navigator->walk.current_path, &path);
     navigator->walk.prev_cell_idx = hinted_cell;
     navigator->scratch.ray = ray;

@@ -898,6 +898,11 @@ static PyObject* mod_transport_run(PyObject* module, PyObject* args, PyObject* k
     if (n > SIZE_MAX) { PyErr_SetString(PyExc_ValueError, "max_pending_particles exceeds SIZE_MAX"); return NULL; }
     options.max_pending_particles = (size_t)n;
     if (tr_number(config, "max_segment_distance", &options.max_segment_distance) < 0) return NULL;
+    if (PyDict_GetItemString(config, "boundary_distance_tolerance")) {
+        if (tr_number(config, "boundary_distance_tolerance",
+                      &options.boundary_distance_tolerance) < 0) return NULL;
+        options.boundary_distance_tolerance_is_set = 1;
+    }
     PyObject* coupled_obj = PyDict_GetItemString(config, "coupled");
     int coupled = coupled_obj ? PyObject_IsTrue(coupled_obj) : 0;
     if (coupled < 0) return NULL;

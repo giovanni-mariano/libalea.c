@@ -42,7 +42,9 @@ else
 MODULE_LDFLAGS := -shared -Wl,--whole-archive $(LIBALEA) -Wl,--no-whole-archive -lm -pthread
 endif
 
-.PHONY: all clean help package test test-runtime test-valgrind FORCE
+.PHONY: all clean help package test test-runtime test-valgrind \
+	geometry-error-acceptance geometry-error-model-benchmark \
+	geometry-error-seeded-benchmark FORCE
 
 all: $(MODULE)
 
@@ -79,6 +81,23 @@ test-valgrind: all
 		$(PYTHON) tests/leak_probe.py
 	$(PYTHON) scripts/check_valgrind.py $(BUILD_ROOT)/valgrind.log
 
+geometry-error-acceptance: all
+	PYTHONPATH=$(PACKAGE_ROOT) $(PYTHON) ../../tools/geometry_error_acceptance.py --pretty
+
+geometry-error-model-benchmark: all
+	@test -n "$(GEOMETRY_MODEL)" || { echo "Set GEOMETRY_MODEL=/path/to/model.mcnp"; exit 1; }
+	PYTHONPATH=$(PACKAGE_ROOT) $(PYTHON) ../../tools/geometry_error_model_benchmark.py \
+		$(GEOMETRY_MODEL) --output $(or $(GEOMETRY_BENCHMARK_OUTPUT),geometry-error-benchmark.json) \
+		--pages $(or $(GEOMETRY_BENCHMARK_PAGES),0)
+
+geometry-error-seeded-benchmark: all
+	@test -n "$(GEOMETRY_MODEL)" || { echo "Set GEOMETRY_MODEL=/path/to/model.mcnp"; exit 1; }
+	@test -n "$(GEOMETRY_MUTATION)" || { echo "Set GEOMETRY_MUTATION=gap or overlap"; exit 1; }
+	PYTHONPATH=$(PACKAGE_ROOT) $(PYTHON) ../../tools/geometry_error_seeded_benchmark.py \
+		$(GEOMETRY_MODEL) --mutation $(GEOMETRY_MUTATION) \
+		--output $(or $(GEOMETRY_BENCHMARK_OUTPUT),geometry-error-seeded-benchmark.json) \
+		--page $(or $(GEOMETRY_BENCHMARK_PAGE),0)
+
 package: test
 	$(PYTHON) scripts/package.py \
 		--package-dir $(PACKAGE_DIR) --output-dir $(DIST_DIR) --root $(ROOT) \
@@ -94,6 +113,9 @@ help:
 	@echo "  make test            Run standalone binding tests"
 	@echo "  make test-runtime    Test the existing binary without rebuilding"
 	@echo "  make test-valgrind   Check repeated binding calls for native leaks"
+	@echo "  make geometry-error-acceptance  Run known-answer geometry diagnostics"
+	@echo "  make geometry-error-model-benchmark GEOMETRY_MODEL=...  Benchmark an external model"
+	@echo "  make geometry-error-seeded-benchmark GEOMETRY_MODEL=... GEOMETRY_MUTATION=gap|overlap"
 	@echo "  make package         Create a release archive and checksum"
 	@echo "  make clean           Remove bindings/python build outputs"
 	@echo "Variables: PYTHON, CC, BUILD_ROOT, DIST_DIR, BINDING_CFLAGS"

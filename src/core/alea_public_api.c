@@ -1358,6 +1358,21 @@ int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id) 
     return 0;
 }
 
+int alea_cell_set_region(alea_system_t* sys, int cell_index,
+                         alea_node_id_t region_node) {
+    if (!sys || cell_index < 0 ||
+        (size_t)cell_index >= alea_vec_count(&sys->cells) ||
+        region_node == ALEA_NODE_ID_INVALID ||
+        region_node >= alea_vec_count(&sys->nodes))
+        return -1;
+
+    alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    cell->root_node_id = region_node;
+    cell->original_root_node_id = ALEA_NODE_ID_INVALID;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
+    return 0;
+}
+
 /* ============================================================================
  * CELL REMOVAL
  * ============================================================================ */

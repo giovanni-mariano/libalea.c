@@ -642,6 +642,19 @@ int alea_cell_clear_temperature(alea_system_t* sys, int cell_index);
 int alea_cell_set_universe(alea_system_t* sys, int cell_index, int universe_id);
 
 /**
+ * @brief Replace the CSG region occupied by a cell
+ *
+ * The region node must belong to the same system. Replacing the region clears
+ * imported complement provenance and invalidates all geometry query caches.
+ *
+ * @param cell_index Cell index (0 to alea_cell_count-1)
+ * @param region_node Root node of the new CSG region
+ * @return 0 on success, -1 on invalid input
+ */
+int alea_cell_set_region(alea_system_t* sys, int cell_index,
+                         alea_node_id_t region_node);
+
+/**
  * @brief Remove a cell by index
  *
  * Frees per-cell allocations, compacts the array, and rebuilds the

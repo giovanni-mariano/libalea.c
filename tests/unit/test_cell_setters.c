@@ -232,6 +232,34 @@ TEST(set_universe_invalid_cell) {
 }
 
 /* ========================================================================= */
+/* alea_cell_set_region                                                      */
+/* ========================================================================= */
+
+TEST(set_region_replaces_geometry_and_invalidates_queries) {
+    alea_system_t* sys = make_simple_system();
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_build_universe_index(sys), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_find_cell(sys, 0, 0, 0), 0);
+
+    const int sphere = alea_sphere_surface(sys, 2, 10, 0, 0, 1.0);
+    ASSERT(sphere >= 0);
+    const alea_node_id_t replacement = alea_halfspace(sys, sphere, -1);
+    ASSERT_EQ(alea_cell_set_region(sys, 0, replacement), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_find_cell(sys, 0, 0, 0), -1);
+    ASSERT_EQ(alea_find_cell(sys, 10, 0, 0), 0);
+
+    alea_cell_info_t info;
+    ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+    ASSERT_EQ(info.root, replacement);
+    ASSERT_EQ(alea_cell_set_region(sys, -1, replacement), -1);
+    ASSERT_EQ(alea_cell_set_region(sys, 0, ALEA_NODE_ID_INVALID), -1);
+    ASSERT_EQ(alea_cell_set_region(NULL, 0, replacement), -1);
+    alea_destroy(sys);
+}
+
+/* ========================================================================= */
 /* alea_cell_remove                                                          */
 /* ========================================================================= */
 

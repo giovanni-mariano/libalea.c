@@ -4471,6 +4471,9 @@ typedef struct {
     uint8_t count;
     uint8_t truncated;
     uint8_t include_containers;
+    uint8_t occurrences_only;
+    alea_hier_spatial_occurrence_visitor_t occurrence_visitor;
+    void* occurrence_visitor_userdata;
 } hier_region_chain_t;
 
 static void hier_region_chain_push(hier_region_chain_t* chain,
@@ -4536,7 +4539,10 @@ static int append_region_chain_hit(alea_system_t* sys,
     if (!transform || !chain) return -1;
 
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
-    alea_hier_spatial_chain_hit_t* out = &out_hits[*hit_count];
+    alea_hier_spatial_chain_hit_t temporary;
+    alea_hier_spatial_chain_hit_t* out = chain->occurrence_visitor
+        ? &temporary : &out_hits[*hit_count];
+    memset(out, 0, sizeof(*out));
     out->hit.instance_index = synthetic_index;
     out->hit.cell_index = cell_index;
     out->hit.cell_id = cell->mc_cell_id;
@@ -4561,6 +4567,10 @@ static int append_region_chain_hit(alea_system_t* sys,
         out->ancestor_lattice_oz[i] = chain->lattice_oz[i];
     }
     (*hit_count)++;
+    if (chain->occurrence_visitor &&
+        chain->occurrence_visitor(
+            out, chain->occurrence_visitor_userdata) != 0)
+        return ALEA_HIER_REGION_CHAIN_VISITOR_STOPPED;
     return 0;
 }
 
@@ -4588,6 +4598,16 @@ static int query_lattice_cell_chain(alea_system_t* sys,
                                     size_t max_hits,
                                     size_t* hit_count) {
     if (!cell->lat_fill || cell->lat_fill_count == 0)
+        return chain->include_containers
+            ? ALEA_HIER_REGION_CHAIN_UNSUPPORTED : 0;
+
+    /* A simple repeating hex fill has no finite declared index range.  The
+     * rectangular case below derives that range directly from local_query;
+     * the hex case currently cannot do so without an outer universe.  Reject
+     * it only after the caller has established that this container can meet
+     * the requested region.  A remote unsupported lattice must not make an
+     * otherwise independent region query incomplete. */
+    if (cell->lat_type != 1 && cell->lat_fill_repeating)
         return chain->include_containers
             ? ALEA_HIER_REGION_CHAIN_UNSUPPORTED : 0;
 
@@ -4732,10 +4752,27 @@ static int query_region_cell_chain(alea_system_t* sys,
         return -1;
     }
     if (!bbox_intersects_local(cell_bbox, local_query)) return 0;
-    if (*hit_count >= max_hits) return 1;
+    if (!chain->occurrences_only && *hit_count >= max_hits) return 1;
 
     const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
-    if (chain->include_containers && alea_cell_entry_is_container(cell)) {
+    /* A fill or lattice cell can have an infinite conservative bbox even when
+     * its CSG is far from this region. Interval evaluation may prove a miss;
+     * INTERSECT remains conservative and is traversed normally. This avoids
+     * expanding every placement of large complement-heavy models. */
+    if (chain->occurrences_only && alea_cell_entry_is_container(cell)) {
+        alea_bbox_t proof_box = *local_query;
+        proof_box.min_x = nextafter(proof_box.min_x, -INFINITY);
+        proof_box.min_y = nextafter(proof_box.min_y, -INFINITY);
+        proof_box.min_z = nextafter(proof_box.min_z, -INFINITY);
+        proof_box.max_x = nextafter(proof_box.max_x, INFINITY);
+        proof_box.max_y = nextafter(proof_box.max_y, INFINITY);
+        proof_box.max_z = nextafter(proof_box.max_z, INFINITY);
+        if (alea_tree_box_relation(sys, cell->root_node_id, &proof_box) ==
+                ALEA_RELATION_POSITIVE)
+            return 0;
+    }
+    if (chain->include_containers && !chain->occurrences_only &&
+        alea_cell_entry_is_container(cell)) {
         const uint32_t synthetic_index =
             (uint32_t)(cell_pos + ((size_t)depth << 24));
         const int append_rc = append_region_chain_hit(
@@ -4779,6 +4816,8 @@ static int query_region_cell_chain(alea_system_t* sys,
                                            hit_count);
     }
 
+    if (chain->occurrences_only) return 0;
+
     alea_bbox_t world_bbox = alea_bbox_transform(cell_bbox, transform);
     if (!bbox_intersects_local(&world_bbox, world_query)) return 0;
 
@@ -4819,7 +4858,7 @@ static int query_region_blas_node_chain(alea_system_t* sys,
     }
 
     for (uint16_t i = 0; i < node->count; i++) {
-        if (*hit_count >= max_hits) return 1;
+        if (!chain->occurrences_only && *hit_count >= max_hits) return 1;
         uint32_t cell_pos = blas->indices[node->left_or_first + i];
         if (cell_pos >= blas->cell_count) return -1;
 
@@ -4846,8 +4885,21 @@ static int query_region_universe_chain(alea_system_t* sys,
                                        alea_hier_spatial_chain_hit_t* out_hits,
                                        size_t max_hits,
                                        size_t* hit_count) {
-    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (*hit_count >= max_hits) return 1;
+    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
+    if (!univ) return depth > 0 && chain->include_containers
+        ? ALEA_HIER_REGION_CHAIN_UNSUPPORTED : 0;
+    if (chain->occurrences_only) {
+        if (!univ->cell_indices.count) return 0;
+        const size_t representative = univ->cell_indices.data[0];
+        if (representative >= alea_vec_count(&sys->cells)) return -1;
+        const int append_rc = append_region_chain_hit(
+            sys, transform, universe_id, depth, (uint32_t)representative,
+            (uint32_t)((size_t)depth << 24), chain,
+            out_hits, max_hits, hit_count, 1);
+        if (append_rc != 0) return append_rc;
+    }
+    const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (blas && blas->built && blas->node_count > 0) {
         return query_region_blas_node_chain(sys, idx, blas, 0, universe_id,
                                             transform, depth, local_query,
@@ -4855,11 +4907,8 @@ static int query_region_universe_chain(alea_system_t* sys,
                                             out_hits, max_hits, hit_count);
     }
 
-    const alea_universe_t* univ = alea_get_universe(sys, universe_id);
-    if (!univ) return depth > 0 && chain->include_containers
-        ? ALEA_HIER_REGION_CHAIN_UNSUPPORTED : 0;
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
-        if (*hit_count >= max_hits) return 1;
+        if (!chain->occurrences_only && *hit_count >= max_hits) return 1;
         uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
         alea_bbox_t bbox = (cell->lat_type != 0 && cell->lat_fill)
@@ -5033,10 +5082,11 @@ int alea_hier_spatial_query_region_direct(alea_system_t* sys,
     return (int)hit_count;
 }
 
-int alea_hier_spatial_query_region_chain_bounded(
+static int query_region_chain_bounded_impl(
     alea_system_t* sys, const alea_bbox_t* query_bbox,
     alea_hier_spatial_chain_hit_t* out_hits, size_t max_hits,
-    int include_containers, alea_hier_region_chain_status_t* out_status) {
+    int include_containers, int occurrences_only,
+    alea_hier_region_chain_status_t* out_status) {
     if (!sys || !query_bbox || !out_hits || !out_status || !max_hits)
         return -1;
     *out_status = ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
@@ -5053,6 +5103,7 @@ int alea_hier_spatial_query_region_chain_bounded(
     hier_region_chain_t chain;
     memset(&chain, 0, sizeof(chain));
     chain.include_containers = include_containers != 0;
+    chain.occurrences_only = occurrences_only != 0;
 
     size_t hit_count = 0;
     int rc = query_region_universe_chain(sys, sys->hier_spatial_index, 0,
@@ -5090,6 +5141,85 @@ int alea_hier_spatial_query_region_chain_bounded(
     }
 
     return (int)hit_count;
+}
+
+int alea_hier_spatial_query_region_chain_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_chain_hit_t* out_hits, size_t max_hits,
+    int include_containers, alea_hier_region_chain_status_t* out_status) {
+    return query_region_chain_bounded_impl(
+        sys, query_bbox, out_hits, max_hits, include_containers, 0,
+        out_status);
+}
+
+int alea_hier_spatial_query_region_occurrences_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_chain_hit_t* out_hits, size_t max_hits,
+    alea_hier_region_chain_status_t* out_status) {
+    return query_region_chain_bounded_impl(
+        sys, query_bbox, out_hits, max_hits, 1, 1, out_status);
+}
+
+int alea_hier_spatial_visit_region_occurrences_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_occurrence_visitor_t visitor, void* userdata,
+    size_t max_occurrences, size_t* out_occurrence_count,
+    alea_hier_region_chain_status_t* out_status) {
+    if (!sys || !query_bbox || !visitor || !out_occurrence_count ||
+        !out_status || !max_occurrences)
+        return -1;
+    *out_occurrence_count = 0;
+    *out_status = ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) return -1;
+    }
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+    hier_region_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    chain.include_containers = 1;
+    chain.occurrences_only = 1;
+    chain.occurrence_visitor = visitor;
+    chain.occurrence_visitor_userdata = userdata;
+
+    const int rc = query_region_universe_chain(
+        sys, sys->hier_spatial_index, 0, &identity, 0,
+        query_bbox, query_bbox, &chain, NULL, max_occurrences,
+        out_occurrence_count);
+    if (rc < 0) return -1;
+    *out_status = (alea_hier_region_chain_status_t)rc;
+    return 0;
+}
+
+int alea_hier_spatial_visit_region_chain_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_occurrence_visitor_t visitor, void* userdata,
+    size_t max_hits, size_t* out_hit_count,
+    alea_hier_region_chain_status_t* out_status) {
+    if (!sys || !query_bbox || !visitor || !out_hit_count ||
+        !out_status || !max_hits)
+        return -1;
+    *out_hit_count = 0;
+    *out_status = ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
+    if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
+        if (alea_hier_spatial_index_build(sys) != 0) return -1;
+    }
+
+    alea_matrix_t identity;
+    alea_matrix_identity(&identity);
+    hier_region_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    chain.include_containers = 1;
+    chain.occurrence_visitor = visitor;
+    chain.occurrence_visitor_userdata = userdata;
+
+    const int rc = query_region_universe_chain(
+        sys, sys->hier_spatial_index, 0, &identity, 0,
+        query_bbox, query_bbox, &chain, NULL, max_hits, out_hit_count);
+    if (rc < 0) return -1;
+    *out_status = (alea_hier_region_chain_status_t)rc;
+    return 0;
 }
 
 int alea_hier_spatial_query_region_chain(alea_system_t* sys,

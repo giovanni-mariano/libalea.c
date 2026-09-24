@@ -9,11 +9,16 @@
 #include "raycast/raycast.h"
 #include "raycast/ray_epsilon.h"
 #include "core/alea_system.h"
+#include "core/alea_spatial_hier.h"
+#include "core/alea_universe.h"
 #include "primitives/bbox.h"
+#include "primitives/primitive_desc.h"
 #include "util/alea_atomic.h"
 #include "util/alea_parallel.h"
+#include "util/compat.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,6 +41,7 @@ struct alea_slice_error_query {
     size_t uncertain_count;
     size_t uncached_cell_begin;
     size_t index_bytes;
+    int has_hierarchy;
 };
 
 struct alea_slice_error_page {
@@ -43,6 +49,9 @@ struct alea_slice_error_page {
     alea_transition_slice_critical_finding_t* findings;
     size_t finding_count;
     size_t finding_capacity;
+    alea_slice_error_witness_t* witnesses;
+    size_t witness_count;
+    size_t witness_capacity;
     alea_slice_error_interval_t* intervals;
     size_t interval_count;
     alea_slice_error_circle_t* circles;
@@ -51,6 +60,9 @@ struct alea_slice_error_page {
     size_t region_count;
     int populated;
 };
+
+static size_t slice_error_page_output_bytes(
+    const alea_slice_error_page_t* page);
 
 static atomic_uint_fast64_t slice_error_next_query_id = 1;
 static int slice_error_build_index(alea_slice_error_query_t* query);
@@ -68,6 +80,10 @@ void alea_slice_error_query_options_init(
     options->tile_rows = 1;
     options->max_index_bytes = 32u * 1024u * 1024u;
     alea_transition_slice_options_init(&options->scan_options);
+    /* A small deterministic interior grid finds defects that do not intersect
+     * a selected boundary transition. The existing option remains zero for
+     * the general transition screen unless its caller explicitly requests it. */
+    options->scan_options.coverage_uniform_probes_per_ray = 3;
     options->scan_options.occurrence_discovery =
         ALEA_TRANSITION_SLICE_OCCURRENCE_EXHAUSTIVE;
 }
@@ -108,6 +124,9 @@ alea_slice_error_query_t* alea_slice_error_query_create(
                   options.required_uv_min[0]) ||
         !isfinite(options.required_uv_max[1] -
                   options.required_uv_min[1]) ||
+        !isfinite(options.scan_options.critical_relative_distance_tolerance) ||
+        options.scan_options.critical_relative_distance_tolerance < 0.0 ||
+        options.scan_options.coverage_uniform_probes_per_ray > 64 ||
         !options.tile_columns || !options.tile_rows ||
         options.tile_columns > SIZE_MAX / options.tile_rows)
         return NULL;
@@ -159,6 +178,7 @@ alea_slice_error_page_t* alea_slice_error_page_create(void) {
 void alea_slice_error_page_destroy(alea_slice_error_page_t* page) {
     if (!page) return;
     free(page->findings);
+    free(page->witnesses);
     free(page->intervals);
     free(page->circles);
     free(page->regions);
@@ -183,6 +203,20 @@ int alea_slice_error_page_context_finding_get(
     if (!page || !page->populated || !out_finding ||
         index >= page->finding_count) return -1;
     *out_finding = page->findings[index];
+    return 0;
+}
+
+size_t alea_slice_error_page_witness_count(
+    const alea_slice_error_page_t* page) {
+    return page && page->populated ? page->witness_count : 0;
+}
+
+int alea_slice_error_page_witness_get(
+    const alea_slice_error_page_t* page, size_t index,
+    alea_slice_error_witness_t* out_witness) {
+    if (!page || !page->populated || !out_witness ||
+        index >= page->witness_count) return -1;
+    *out_witness = page->witnesses[index];
     return 0;
 }
 
@@ -236,9 +270,10 @@ static int slice_error_retain_finding(
     const alea_transition_slice_critical_finding_t* finding, void* userdata) {
     slice_error_finding_sink_t* sink = userdata;
     alea_slice_error_page_t* page = sink->page;
+    const size_t retained = slice_error_page_output_bytes(page);
     if (page->finding_count >= sink->max_findings ||
-        page->finding_count >=
-            sink->max_output_bytes / sizeof(*page->findings)) {
+        retained > sink->max_output_bytes ||
+        sizeof(*page->findings) > sink->max_output_bytes - retained) {
         if (sink->omitted_findings < SIZE_MAX) sink->omitted_findings++;
         return 1;
     }
@@ -258,6 +293,277 @@ static int slice_error_retain_finding(
     }
     page->findings[page->finding_count++] = *finding;
     return 0;
+}
+
+typedef struct {
+    alea_slice_error_page_t* page;
+    uint8_t* localized_tiles;
+    size_t tile_count;
+    size_t max_output_bytes;
+    size_t omitted_regions;
+} slice_error_numerical_region_sink_t;
+
+static int slice_error_retain_numerical_region(
+    const alea_transition_slice_numerical_region_t* input, void* userdata) {
+    slice_error_numerical_region_sink_t* sink = userdata;
+    if (!input || !sink || input->tile_index >= sink->tile_count) return -1;
+    alea_slice_error_page_t* page = sink->page;
+    const size_t search_begin = page->region_count > 256u
+        ? page->region_count - 256u : 0u;
+    for (size_t i = page->region_count; i-- > search_begin;) {
+        alea_slice_error_region_t* existing = &page->regions[i];
+        if (existing->kind != ALEA_POINT_COVERAGE_UNRESOLVED ||
+            existing->owner_count != 0 ||
+            existing->numerical_cause != input->cause ||
+            existing->source_cell_id != input->source_cell_id ||
+            existing->source_surface_id != input->source_surface_id ||
+            existing->source_primitive_id != input->source_primitive_id ||
+            existing->source_occurrence_key !=
+                input->source_occurrence_key ||
+            existing->source_universe_occurrence_key !=
+                input->source_universe_occurrence_key) continue;
+        int existing_contains = 1;
+        int input_contains = 1;
+        for (int axis = 0; axis < 2; ++axis) {
+            const double tolerance = fmax(
+                input->uncertainty,
+                fmax(existing->uv_min_uncertainty[axis],
+                     existing->uv_max_uncertainty[axis]));
+            existing_contains &=
+                existing->uv_min[axis] <= input->uv_min[axis] + tolerance &&
+                existing->uv_max[axis] >= input->uv_max[axis] - tolerance;
+            input_contains &=
+                input->uv_min[axis] <= existing->uv_min[axis] + tolerance &&
+                input->uv_max[axis] >= existing->uv_max[axis] - tolerance;
+        }
+        if (!existing_contains && !input_contains) continue;
+        if (input_contains && !existing_contains) {
+            memcpy(existing->uv_min, input->uv_min,
+                   sizeof(existing->uv_min));
+            memcpy(existing->uv_max, input->uv_max,
+                   sizeof(existing->uv_max));
+            for (int axis = 0; axis < 2; ++axis) {
+                existing->uv_min_uncertainty[axis] = input->uncertainty;
+                existing->uv_max_uncertainty[axis] = input->uncertainty;
+            }
+        }
+        sink->localized_tiles[input->tile_index] = 1;
+        return 0;
+    }
+    const size_t retained = slice_error_page_output_bytes(page);
+    if (retained > sink->max_output_bytes ||
+        sizeof(*page->regions) > sink->max_output_bytes - retained ||
+        page->region_count >= SIZE_MAX / sizeof(*page->regions)) {
+        if (sink->omitted_regions < SIZE_MAX) sink->omitted_regions++;
+        return 1;
+    }
+    void* next = realloc(
+        page->regions, (page->region_count + 1u) * sizeof(*page->regions));
+    if (!next) return -1;
+    page->regions = next;
+    alea_slice_error_region_t* region =
+        &page->regions[page->region_count++];
+    memset(region, 0, sizeof(*region));
+    memcpy(region->uv_min, input->uv_min, sizeof(region->uv_min));
+    memcpy(region->uv_max, input->uv_max, sizeof(region->uv_max));
+    for (int axis = 0; axis < 2; ++axis) {
+        region->uv_min_uncertainty[axis] = input->uncertainty;
+        region->uv_max_uncertainty[axis] = input->uncertainty;
+    }
+    region->kind = ALEA_POINT_COVERAGE_UNRESOLVED;
+    region->numerical_cause = input->cause;
+    region->source_cell_id = input->source_cell_id;
+    region->source_surface_id = input->source_surface_id;
+    region->source_primitive_id = input->source_primitive_id;
+    region->source_occurrence_key = input->source_occurrence_key;
+    region->source_universe_occurrence_key =
+        input->source_universe_occurrence_key;
+    sink->localized_tiles[input->tile_index] = 1;
+    return 0;
+}
+
+typedef struct {
+    alea_cell_hit_t* hits;
+    uint64_t* occurrence_keys;
+    uint64_t* parent_occurrence_keys;
+    uint8_t* owner_mask;
+    size_t capacity;
+    size_t attempts;
+    size_t failures;
+    size_t confirmed_gaps;
+    size_t confirmed_overlaps;
+    size_t omitted;
+} slice_error_confirmation_t;
+
+static void slice_error_confirmation_free(slice_error_confirmation_t* scratch) {
+    if (!scratch) return;
+    free(scratch->hits);
+    free(scratch->occurrence_keys);
+    free(scratch->parent_occurrence_keys);
+    free(scratch->owner_mask);
+    memset(scratch, 0, sizeof(*scratch));
+}
+
+static int slice_error_confirmation_init(
+    slice_error_confirmation_t* scratch, size_t capacity) {
+    if (!scratch || !capacity ||
+        capacity > SIZE_MAX / sizeof(*scratch->hits) ||
+        capacity > SIZE_MAX / sizeof(*scratch->occurrence_keys) ||
+        capacity > SIZE_MAX / sizeof(*scratch->parent_occurrence_keys) ||
+        capacity > SIZE_MAX / sizeof(*scratch->owner_mask)) return -1;
+    memset(scratch, 0, sizeof(*scratch));
+    scratch->hits = calloc(capacity, sizeof(*scratch->hits));
+    scratch->occurrence_keys = calloc(
+        capacity, sizeof(*scratch->occurrence_keys));
+    scratch->parent_occurrence_keys = calloc(
+        capacity, sizeof(*scratch->parent_occurrence_keys));
+    scratch->owner_mask = calloc(capacity, sizeof(*scratch->owner_mask));
+    if (!scratch->hits || !scratch->occurrence_keys ||
+        !scratch->parent_occurrence_keys || !scratch->owner_mask) {
+        slice_error_confirmation_free(scratch);
+        return -1;
+    }
+    scratch->capacity = capacity;
+    return 0;
+}
+
+static int slice_error_append_witness(
+    alea_slice_error_page_t* page, const alea_slice_error_witness_t* witness,
+    size_t output_limit, slice_error_confirmation_t* scratch) {
+    const size_t retained = slice_error_page_output_bytes(page);
+    if (retained > output_limit ||
+        sizeof(*page->witnesses) > output_limit - retained ||
+        page->witness_count >= SIZE_MAX / sizeof(*page->witnesses)) {
+        if (scratch->omitted < SIZE_MAX) scratch->omitted++;
+        return 0;
+    }
+    if (page->witness_count == page->witness_capacity) {
+        size_t capacity = page->witness_capacity
+            ? (page->witness_capacity > SIZE_MAX / 2u
+                ? SIZE_MAX : page->witness_capacity * 2u) : 8u;
+        if (capacity > SIZE_MAX / sizeof(*page->witnesses)) {
+            if (scratch->failures < SIZE_MAX) scratch->failures++;
+            if (scratch->omitted < SIZE_MAX) scratch->omitted++;
+            return 0;
+        }
+        const size_t byte_capacity =
+            output_limit / sizeof(*page->witnesses);
+        if (capacity > byte_capacity) capacity = byte_capacity;
+        if (capacity <= page->witness_capacity) {
+            if (scratch->omitted < SIZE_MAX) scratch->omitted++;
+            return 0;
+        }
+        void* next = realloc(
+            page->witnesses, capacity * sizeof(*page->witnesses));
+        if (!next) {
+            if (scratch->failures < SIZE_MAX) scratch->failures++;
+            if (scratch->omitted < SIZE_MAX) scratch->omitted++;
+            return 0;
+        }
+        page->witnesses = next;
+        page->witness_capacity = capacity;
+    }
+    page->witnesses[page->witness_count++] = *witness;
+    if (witness->kind == ALEA_POINT_COVERAGE_GAP)
+        scratch->confirmed_gaps++;
+    else if (witness->kind == ALEA_POINT_COVERAGE_OVERLAP)
+        scratch->confirmed_overlaps++;
+    return 1;
+}
+
+static int slice_error_confirm_point(
+    const alea_slice_error_query_t* query,
+    alea_slice_error_page_t* page,
+    slice_error_confirmation_t* scratch,
+    const double uv[2], const double world[3],
+    alea_slice_error_witness_source_t source,
+    const alea_transition_slice_critical_finding_t* finding) {
+    scratch->attempts++;
+    if (!scratch->capacity) {
+        scratch->failures++;
+        return 0;
+    }
+    int hit_count =
+        alea_find_all_cells_at_point_coverage_chain_recursive(
+            query->sys, world[0], world[1], world[2], scratch->hits,
+            scratch->occurrence_keys, scratch->parent_occurrence_keys,
+            scratch->capacity);
+    if (hit_count < 0 && alea_vec_count(&query->sys->cells) == 0)
+        hit_count = 0;
+    if (hit_count < 0 || (size_t)hit_count >= scratch->capacity) {
+        scratch->failures++;
+        return 0;
+    }
+    memset(scratch->owner_mask, 0,
+           scratch->capacity * sizeof(*scratch->owner_mask));
+    alea_point_coverage_classification_t classification;
+    if (alea_classify_point_coverage_chain(
+            scratch->hits, scratch->occurrence_keys,
+            scratch->parent_occurrence_keys, (size_t)hit_count, -1,
+            scratch->owner_mask, &classification) != 0) {
+        scratch->failures++;
+        return 0;
+    }
+
+    /* A selected fill container followed by no child is an actual gap when
+     * the referenced universe exists.  Keep a genuinely missing universe as
+     * UNDEFINED_FILL: that is malformed hierarchy metadata rather than proof
+     * of empty geometric coverage. */
+    if (classification.kind == ALEA_POINT_COVERAGE_UNDEFINED_FILL) {
+        int container = -1;
+        for (int i = 0; i < hit_count; ++i) {
+            if (scratch->owner_mask[i]) {
+                container = i;
+                break;
+            }
+        }
+        if (container >= 0 && scratch->hits[container].fill_universe > 0 &&
+            alea_get_universe(query->sys,
+                              scratch->hits[container].fill_universe)) {
+            classification.kind = ALEA_POINT_COVERAGE_GAP;
+            classification.target_depth = scratch->hits[container].depth + 1;
+            classification.owner_count = 0;
+            memset(scratch->owner_mask, 0,
+                   scratch->capacity * sizeof(*scratch->owner_mask));
+        }
+    }
+    if (classification.kind != ALEA_POINT_COVERAGE_GAP &&
+        classification.kind != ALEA_POINT_COVERAGE_OVERLAP) return 0;
+    if (classification.kind == ALEA_POINT_COVERAGE_GAP &&
+        classification.target_depth < 0)
+        classification.target_depth = 0;
+
+    alea_slice_error_witness_t witness;
+    memset(&witness, 0, sizeof(witness));
+    witness.evidence_scope = ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_POINT;
+    witness.kind = classification.kind;
+    witness.source = source;
+    memcpy(witness.uv, uv, sizeof(witness.uv));
+    memcpy(witness.world_point, world, sizeof(witness.world_point));
+    witness.target_depth = classification.target_depth;
+    witness.owner_count_lower_bound = classification.owner_count;
+    for (int i = 0; i < hit_count; ++i) {
+        if (!scratch->owner_mask[i]) continue;
+        if (witness.owner_count == ALEA_SLICE_ERROR_OWNER_CAPACITY) continue;
+        const size_t owner = witness.owner_count++;
+        witness.owner_cell_ids[owner] = scratch->hits[i].cell_id;
+        witness.owner_universe_ids[owner] = scratch->hits[i].universe_id;
+        witness.owner_depths[owner] = scratch->hits[i].depth;
+        witness.owner_occurrence_keys[owner] = scratch->occurrence_keys[i];
+        witness.owner_parent_occurrence_keys[owner] =
+            scratch->parent_occurrence_keys[i];
+    }
+    witness.owners_complete =
+        witness.owner_count == classification.owner_count;
+    if (finding) {
+        witness.source_cell_id = finding->source_cell_id;
+        witness.source_surface_id = finding->source_surface_id;
+        witness.source_occurrence_key = finding->source_occurrence_key;
+        witness.source_universe_occurrence_key =
+            finding->source_universe_occurrence_key;
+    }
+    return slice_error_append_witness(
+        page, &witness, query->options.scan_options.max_output_bytes, scratch);
 }
 
 typedef struct {
@@ -336,6 +642,9 @@ static int slice_error_build_index(alea_slice_error_query_t* query) {
     size_t roots = 0;
     for (size_t i = 0; i < sys->cells.count; ++i)
         roots += sys->cells.data[i].universe_id == 0;
+    for (size_t i = 0; i < sys->cells.count; ++i)
+        query->has_hierarchy |= sys->cells.data[i].fill_universe > 0 ||
+            sys->cells.data[i].lat_type != 0;
     const size_t per_root = sizeof(*query->indexed_cells) +
         sizeof(*query->uncertain_cells);
     size_t capacity = query->options.max_index_bytes / per_root;
@@ -1026,6 +1335,377 @@ static int slice_error_axis_node_inside(
     *out_inside = op == ALEA_OP_UNION ? left || right
         : op == ALEA_OP_INTERSECTION ? left && right
         : left && !right;
+    return 1;
+}
+
+/* Bound a page in an occurrence's local frame. The extra rounding envelope
+ * covers both the view-to-world and inverse-fill affine evaluations. */
+static int slice_error_occurrence_tile_box(
+    const alea_slice_view_t* view,
+    const alea_transition_slice_critical_tile_t* tile,
+    const alea_matrix_t* transform, alea_bbox_t* box) {
+    long double low[3] = {LDBL_MAX, LDBL_MAX, LDBL_MAX};
+    long double high[3] = {-LDBL_MAX, -LDBL_MAX, -LDBL_MAX};
+    long double scale[3] = {0, 0, 0};
+    if (transform && !transform->has_inverse) return 0;
+    for (int iu = 0; iu < 2; ++iu)
+        for (int iv = 0; iv < 2; ++iv) {
+            const long double u = tile->uv_min[0] * (1 - iu) +
+                                  tile->uv_max[0] * iu;
+            const long double v = tile->uv_min[1] * (1 - iv) +
+                                  tile->uv_max[1] * iv;
+            long double world[3], world_scale[3];
+            for (int axis = 0; axis < 3; ++axis)
+                world[axis] = (long double)view->plane.origin[axis] +
+                    (long double)view->plane.u_axis[axis] * u +
+                    (long double)view->plane.v_axis[axis] * v;
+            for (int axis = 0; axis < 3; ++axis)
+                world_scale[axis] =
+                    fabsl((long double)view->plane.origin[axis]) +
+                    fabsl((long double)view->plane.u_axis[axis] * u) +
+                    fabsl((long double)view->plane.v_axis[axis] * v);
+            for (int axis = 0; axis < 3; ++axis) {
+                long double value = world[axis];
+                long double magnitude = world_scale[axis];
+                if (transform) {
+                    const double* row = &transform->inv[4 * axis];
+                    value = (long double)row[0] * world[0] +
+                        (long double)row[1] * world[1] +
+                        (long double)row[2] * world[2] + row[3];
+                    magnitude = fabsl((long double)row[0] * world[0]) +
+                        fabsl((long double)row[1] * world[1]) +
+                        fabsl((long double)row[2] * world[2]) +
+                        fabsl((long double)row[3]) +
+                        fabsl((long double)row[0]) * world_scale[0] *
+                            DBL_EPSILON +
+                        fabsl((long double)row[1]) * world_scale[1] *
+                            DBL_EPSILON +
+                        fabsl((long double)row[2]) * world_scale[2] *
+                            DBL_EPSILON;
+                }
+                if (!isfinite(value) || fabsl(value) > DBL_MAX / 2 ||
+                    !isfinite(magnitude)) return 0;
+                if (value < low[axis]) low[axis] = value;
+                if (value > high[axis]) high[axis] = value;
+                if (magnitude > scale[axis]) scale[axis] = magnitude;
+            }
+        }
+    double* bounds[6] = {&box->min_x, &box->max_x,
+                         &box->min_y, &box->max_y,
+                         &box->min_z, &box->max_z};
+    for (int axis = 0; axis < 3; ++axis) {
+        const long double margin = 1024.0L * DBL_EPSILON *
+            fmaxl(1.0L, scale[axis]);
+        if (!isfinite(margin) || margin > DBL_MAX / 4) return 0;
+        *bounds[2 * axis] = nextafter((double)(low[axis] - margin),
+                                     -INFINITY);
+        *bounds[2 * axis + 1] = nextafter((double)(high[axis] + margin),
+                                         INFINITY);
+    }
+    return 1;
+}
+
+/* -1: outside, +1: inside, 0: not constant, -2: malformed or work limit. */
+static int slice_error_occurrence_node_constant(
+    const alea_system_t* sys, alea_node_id_t id, const alea_bbox_t* box,
+    size_t depth, size_t* work) {
+    if (!*work || depth > 128 || id >= sys->nodes.count) return -2;
+    --*work;
+    const alea_node_t* node = &sys->nodes.data[id];
+    const alea_operation_t op = ALEA_GET_OPERATION(node);
+    if (op == ALEA_OP_PRIMITIVE) {
+        const uint32_t id = node->primitive.primitive_id;
+        if (id >= sys->primitives.count) return -2;
+        const alea_primitive_entry_t* primitive = &sys->primitives.data[id];
+        const alea_primitive_type_t type = primitive->type;
+        if (node->primitive.prim_type != type ||
+            (type != ALEA_PRIMITIVE_PLANE &&
+             type != ALEA_PRIMITIVE_SPHERE &&
+             type != ALEA_PRIMITIVE_SPH &&
+             type != ALEA_PRIMITIVE_CYLINDER_X &&
+             type != ALEA_PRIMITIVE_CYLINDER_Y &&
+             type != ALEA_PRIMITIVE_CYLINDER_Z &&
+             type != ALEA_PRIMITIVE_RPP)) return 0;
+        alea_primitive_data_t data;
+        if (!alea_primitive_copy_data(sys, id, &data)) return -2;
+        const alea_interval_t interval =
+            alea_primitive_interval_eval(type, &data, box);
+        long double scale = 1.0L;
+        if (type == ALEA_PRIMITIVE_PLANE) {
+            const alea_plane_data_t* p = &data.plane;
+            scale += fabsl(p->a) * fmaxl(fabsl(box->min_x), fabsl(box->max_x)) +
+                fabsl(p->b) * fmaxl(fabsl(box->min_y), fabsl(box->max_y)) +
+                fabsl(p->c) * fmaxl(fabsl(box->min_z), fabsl(box->max_z)) +
+                fabsl(p->d);
+        } else if (type == ALEA_PRIMITIVE_RPP) {
+            const alea_box_data_t* b = &data.box;
+            if (fabsl(b->min_x) + fabsl(b->max_x) > DBL_MAX / 2 ||
+                fabsl(b->min_y) + fabsl(b->max_y) > DBL_MAX / 2 ||
+                fabsl(b->min_z) + fabsl(b->max_z) > DBL_MAX / 2)
+                return 0;
+            scale += fabsl(b->min_x) + fabsl(b->max_x) +
+                fabsl(b->min_y) + fabsl(b->max_y) +
+                fabsl(b->min_z) + fabsl(b->max_z) +
+                fabsl(box->min_x) + fabsl(box->max_x) +
+                fabsl(box->min_y) + fabsl(box->max_y) +
+                fabsl(box->min_z) + fabsl(box->max_z);
+        } else {
+            double cx = 0.0, cy = 0.0, cz = 0.0, radius = 0.0;
+            if (type == ALEA_PRIMITIVE_SPHERE) {
+                cx = data.sphere.center_x;
+                cy = data.sphere.center_y;
+                cz = data.sphere.center_z;
+                radius = data.sphere.radius;
+            } else if (type == ALEA_PRIMITIVE_SPH) {
+                cx = data.sph.center_x;
+                cy = data.sph.center_y;
+                cz = data.sph.center_z;
+                radius = data.sph.radius;
+            } else if (type == ALEA_PRIMITIVE_CYLINDER_X) {
+                cy = data.cyl_x.center_y;
+                cz = data.cyl_x.center_z;
+                radius = data.cyl_x.radius;
+            } else if (type == ALEA_PRIMITIVE_CYLINDER_Y) {
+                cx = data.cyl_y.center_x;
+                cz = data.cyl_y.center_z;
+                radius = data.cyl_y.radius;
+            } else {
+                cx = data.cyl_z.center_x;
+                cy = data.cyl_z.center_y;
+                radius = data.cyl_z.radius;
+            }
+            const long double axes[3] = {
+                fmaxl(fabsl(box->min_x - cx), fabsl(box->max_x - cx)),
+                fmaxl(fabsl(box->min_y - cy), fabsl(box->max_y - cy)),
+                fmaxl(fabsl(box->min_z - cz), fabsl(box->max_z - cz))};
+            scale += axes[0] * axes[0] + axes[1] * axes[1] +
+                     axes[2] * axes[2] + (long double)radius * radius;
+        }
+        const long double margin = 1024.0L * DBL_EPSILON * scale;
+        if (!isfinite(interval.min) || !isfinite(interval.max) ||
+            !isfinite(margin)) return 0;
+        int inside = interval.max < -margin ? 1
+            : interval.min > margin ? -1 : 0;
+        if (inside && ((node->primitive.sense > 0) !=
+                       (node->primitive.inverted != 0)))
+            inside = -inside;
+        return inside;
+    }
+    if (op != ALEA_OP_UNION && op != ALEA_OP_INTERSECTION &&
+        op != ALEA_OP_DIFFERENCE && op != ALEA_OP_COMPLEMENT) return -2;
+    const int left = slice_error_occurrence_node_constant(
+        sys, node->operation.left, box, depth + 1, work);
+    if (left == -2) return -2;
+    if (op == ALEA_OP_COMPLEMENT) return -left;
+    const int right = slice_error_occurrence_node_constant(
+        sys, node->operation.right, box, depth + 1, work);
+    if (right == -2) return -2;
+    if (op == ALEA_OP_UNION)
+        return left == 1 || right == 1 ? 1
+            : left == -1 && right == -1 ? -1 : 0;
+    if (op == ALEA_OP_INTERSECTION)
+        return left == -1 || right == -1 ? -1
+            : left == 1 && right == 1 ? 1 : 0;
+    return left == -1 || right == 1 ? -1
+        : left == 1 && right == -1 ? 1 : 0;
+}
+
+/* Certify that a rectangle remains in one concrete rectangular lattice
+ * element, or that it misses the element. A crossing is indeterminate here. */
+static int slice_error_rect_element_relation(
+    const alea_cell_entry_t* cell,
+    const alea_hier_spatial_chain_hit_t* hit, size_t level,
+    const alea_bbox_t* box) {
+    if (cell->lat_type != 1) return 0;
+    const int64_t dims[3] = {
+        (int64_t)cell->lat_fill_dims[1] - cell->lat_fill_dims[0] + 1,
+        (int64_t)cell->lat_fill_dims[3] - cell->lat_fill_dims[2] + 1,
+        (int64_t)cell->lat_fill_dims[5] - cell->lat_fill_dims[4] + 1};
+    const int indices[3] = {hit->ancestor_lattice_i[level],
+                            hit->ancestor_lattice_j[level],
+                            hit->ancestor_lattice_k[level]};
+    const double box_min[3] = {box->min_x, box->min_y, box->min_z};
+    const double box_max[3] = {box->max_x, box->max_y, box->max_z};
+    for (int axis = 0; axis < 3; ++axis) {
+        if (dims[axis] <= 0) return 0;
+        const double pitch = cell->lat_pitch[axis];
+        const int tiled = axis < 2 || dims[axis] > 1 ||
+            (cell->lat_fill_repeating && pitch > 0.0);
+        if (!tiled && pitch <= 0.0) continue;
+        if (!(pitch > 0.0) || !isfinite(pitch)) return 0;
+        const long double offset = (long double)indices[axis] -
+            (long double)cell->lat_fill_dims[2 * axis];
+        const long double lo = (long double)cell->lat_lower_left[axis] +
+            offset * pitch;
+        const long double hi = lo + pitch;
+        if (!isfinite(lo) || !isfinite(hi)) return 0;
+        if ((long double)box_max[axis] < lo ||
+            (long double)box_min[axis] > hi) return -1;
+        if (!((long double)box_min[axis] > lo &&
+              (long double)box_max[axis] < hi)) return 0;
+    }
+    return 1;
+}
+
+typedef struct {
+    const alea_slice_error_query_t* query;
+    const alea_transition_slice_critical_tile_t* tile;
+    alea_slice_error_unresolved_reason_t reason;
+    size_t work;
+    int owner_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    size_t owner_count;
+} slice_error_constant_occurrence_visit_t;
+
+static int slice_error_visit_constant_occurrence(
+    const alea_hier_spatial_chain_hit_t* hit, void* userdata) {
+    slice_error_constant_occurrence_visit_t* visit = userdata;
+    if (!hit->hit.is_terminal) return 0;
+    if (hit->chain_truncated ||
+        hit->hit.cell_index >= visit->query->sys->cells.count) {
+        visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+        return 1;
+    }
+    int contained = 1;
+    for (size_t level = 0; level <= hit->ancestor_count; ++level) {
+        const uint32_t cell_index = level == hit->ancestor_count
+            ? hit->hit.cell_index : hit->ancestor_cell_indices[level];
+        if (cell_index >= visit->query->sys->cells.count) {
+            visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+            return 1;
+        }
+        const alea_cell_entry_t* cell =
+            &visit->query->sys->cells.data[cell_index];
+        if (cell->original_root_node_id != ALEA_NODE_ID_INVALID) {
+            visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+            return 1;
+        }
+        alea_bbox_t local_box;
+        const alea_matrix_t* transform = level == hit->ancestor_count
+            ? &hit->hit.transform : &hit->ancestor_transforms[level];
+        if (!slice_error_occurrence_tile_box(
+                &visit->query->options.view, visit->tile,
+                transform, &local_box)) {
+            visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+            return 1;
+        }
+        if (level < hit->ancestor_count &&
+            hit->ancestor_is_lattice[level]) {
+            const int relation = slice_error_rect_element_relation(
+                cell, hit, level, &local_box);
+            if (relation == 0) {
+                visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+                return 1;
+            }
+            if (relation < 0) { contained = 0; break; }
+            continue;
+        }
+        if (cell->lat_type != 0) {
+            visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+            return 1;
+        }
+        const int relation = slice_error_occurrence_node_constant(
+            visit->query->sys, cell->root_node_id, &local_box, 0,
+            &visit->work);
+        if (relation == -2) {
+            visit->reason = visit->work
+                ? ALEA_SLICE_ERROR_UNRESOLVED_PRIMITIVE
+                : ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+            return 1;
+        }
+        if (relation == 0) {
+            visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_PLANAR_ARRANGEMENT;
+            return 1;
+        }
+        if (relation < 0) { contained = 0; break; }
+    }
+    if (!contained) return 0;
+    if (visit->owner_count == ALEA_SLICE_ERROR_OWNER_CAPACITY) {
+        visit->reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+        return 1;
+    }
+    size_t position = visit->owner_count;
+    while (position > 0 &&
+           visit->owner_ids[position - 1] > hit->hit.cell_id) {
+        visit->owner_ids[position] = visit->owner_ids[position - 1];
+        position--;
+    }
+    visit->owner_ids[position] = hit->hit.cell_id;
+    visit->owner_count++;
+    return 0;
+}
+
+/* Certify entire pages whose relevant occurrence CSG is constant. The chain
+ * query must be complete; a single varying primitive leaves the page for the
+ * boundary classifier. Lattice element extents need their own proof. */
+static int slice_error_classify_constant_occurrences(
+    const alea_slice_error_query_t* query,
+    const alea_transition_slice_critical_tile_t* tile,
+    size_t contextual_bytes, alea_slice_error_page_t* out,
+    alea_slice_error_unresolved_reason_t* reason,
+    int* output_omitted, size_t* peak_scratch,
+    int* classified_owner_ids, size_t* classified_owner_count) {
+    const alea_slice_error_query_options_t* options = &query->options;
+    const size_t capacity =
+        options->scan_options.max_exhaustive_occurrence_hits;
+    if (!capacity) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+        return 0;
+    }
+    *peak_scratch = sizeof(slice_error_constant_occurrence_visit_t);
+    alea_bbox_t world_box;
+    if (!slice_error_occurrence_tile_box(&options->view, tile, NULL,
+                                         &world_box)) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+        return 0;
+    }
+    slice_error_constant_occurrence_visit_t visit = {
+        .query = query, .tile = tile,
+        .reason = ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE,
+        .work = options->scan_options.max_active_boundary_tests};
+    alea_hier_region_chain_status_t traversal =
+        ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
+    size_t hit_count = 0;
+    if (alea_hier_spatial_visit_region_chain_bounded(
+            query->sys, &world_box, slice_error_visit_constant_occurrence,
+            &visit, capacity, &hit_count, &traversal) != 0)
+        return -1;
+    if (traversal != ALEA_HIER_REGION_CHAIN_COMPLETE) {
+        *reason = traversal == ALEA_HIER_REGION_CHAIN_VISITOR_STOPPED
+            ? visit.reason
+            : traversal == ALEA_HIER_REGION_CHAIN_MAX_HITS
+                ? ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT
+                : ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+        return 0;
+    }
+    const size_t owner_count = visit.owner_count;
+    const int* owner_ids = visit.owner_ids;
+    if (out && owner_count != 1) {
+        if (contextual_bytes > options->scan_options.max_output_bytes ||
+            sizeof(alea_slice_error_region_t) >
+                options->scan_options.max_output_bytes - contextual_bytes) {
+            *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+            *output_omitted = 1;
+            return 0;
+        }
+        out->regions = calloc(1, sizeof(*out->regions));
+        if (!out->regions) return -1;
+        out->region_count = 1;
+        alea_slice_error_region_t* region = &out->regions[0];
+        memcpy(region->uv_min, tile->uv_min, sizeof(tile->uv_min));
+        memcpy(region->uv_max, tile->uv_max, sizeof(tile->uv_max));
+        region->kind = owner_count == 0 ? ALEA_POINT_COVERAGE_GAP
+                                         : ALEA_POINT_COVERAGE_OVERLAP;
+        region->owner_count = owner_count;
+        memcpy(region->owner_cell_ids, owner_ids,
+               owner_count * sizeof(*owner_ids));
+    }
+    if (classified_owner_count) {
+        *classified_owner_count = owner_count;
+        if (classified_owner_ids)
+            memcpy(classified_owner_ids, owner_ids,
+                   owner_count * sizeof(*owner_ids));
+    }
+    *reason = ALEA_SLICE_ERROR_RESOLVED;
     return 1;
 }
 
@@ -1949,10 +2629,12 @@ static int slice_error_classify_parallel_oblique_tile(
                          fabsl(tile->uv_max[0])) +
         fabsl(b) * fmaxl(fabsl(tile->uv_min[1]),
                          fabsl(tile->uv_max[1]));
-    const long double tolerance = scale *
+    const long double numerical_tolerance = scale *
         (128.0L * LDBL_EPSILON + 16.0L * DBL_EPSILON);
+    const long double tolerance = numerical_tolerance;
+    const long double separation_tolerance = 8.0L * numerical_tolerance;
     if (!isfinite(tolerance) || !(bound[1] - bound[0] >
-                                  8.0L * tolerance)) {
+                                  separation_tolerance)) {
         *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
         return 0;
     }
@@ -2971,6 +3653,378 @@ done:
     return status;
 }
 
+typedef struct {
+    const alea_system_t* sys;
+    const alea_slice_view_t* view;
+    const alea_transition_slice_critical_tile_t* tile;
+    int axis;
+    double coordinate;
+    double uncertainty;
+    int surface_id;
+    uint32_t primitive_id;
+    size_t* work;
+} slice_error_occurrence_line_t;
+
+static int slice_error_offer_occurrence_line(
+    slice_error_occurrence_line_t* line, const alea_plane_data_t* world,
+    int surface_id, uint32_t primitive_id) {
+    long double u, v, offset;
+    slice_error_project_plane(world, &line->view->plane, &u, &v, &offset);
+    if (u == 0.0L && v == 0.0L) {
+        const long double scale = fabsl(world->a) + fabsl(world->b) +
+            fabsl(world->c) + fabsl(world->d) +
+            fabsl((long double)world->a * line->view->plane.origin[0]) +
+            fabsl((long double)world->b * line->view->plane.origin[1]) +
+            fabsl((long double)world->c * line->view->plane.origin[2]);
+        return fabsl(offset) >
+            4096.0L * DBL_EPSILON * fmaxl(1.0L, scale);
+    }
+    const int axis = u != 0.0L && v == 0.0L ? 0
+        : v != 0.0L && u == 0.0L ? 1 : -1;
+    if (axis < 0 || !isfinite(offset)) return 0;
+    const long double slope = axis == 0 ? u : v;
+    const long double coordinate = -offset / slope;
+    if (!isfinite(coordinate) || fabsl(coordinate) > DBL_MAX / 2)
+        return 0;
+    const double rounded = (double)coordinate;
+    const long double scale = fabsl(world->a) + fabsl(world->b) +
+        fabsl(world->c) + fabsl(world->d) +
+        fabsl((long double)world->a * line->view->plane.origin[0]) +
+        fabsl((long double)world->b * line->view->plane.origin[1]) +
+        fabsl((long double)world->c * line->view->plane.origin[2]) +
+        fabsl(slope * coordinate);
+    const long double error = fabsl(coordinate - rounded) +
+        4096.0L * DBL_EPSILON * fmaxl(1.0L, scale) / fabsl(slope);
+    if (!isfinite(error) || error > DBL_MAX / 4) return 0;
+    const double uncertainty = (double)error;
+    if (!(rounded > line->tile->uv_min[axis] + uncertainty &&
+          rounded < line->tile->uv_max[axis] - uncertainty)) return 1;
+    if (line->axis >= 0) {
+        if (line->axis != axis || line->coordinate != rounded) return 0;
+        /* A lattice seam can be discovered from both adjacent elements. */
+        if (line->surface_id == 0 && surface_id == 0) return 1;
+        return line->surface_id == surface_id &&
+               line->primitive_id == primitive_id;
+    }
+    line->axis = axis;
+    line->coordinate = rounded;
+    line->uncertainty = uncertainty;
+    line->surface_id = surface_id;
+    line->primitive_id = primitive_id;
+    return 1;
+}
+
+static int slice_error_offer_local_axis_line(
+    slice_error_occurrence_line_t* line, const alea_matrix_t* transform,
+    int local_axis, double coordinate) {
+    if (!transform || !transform->has_inverse || local_axis < 0 ||
+        local_axis > 2 || !isfinite(coordinate)) return 0;
+    const double* row = &transform->inv[4 * local_axis];
+    const alea_plane_data_t world = {
+        row[0], row[1], row[2], row[3] - coordinate};
+    return slice_error_offer_occurrence_line(
+        line, &world, 0, UINT32_MAX);
+}
+
+/* Collect every boundary-capable primitive, including inactive CSG branches.
+ * Extra lines can only make this narrow proof decline a page. */
+static int slice_error_collect_occurrence_line_node(
+    slice_error_occurrence_line_t* line, alea_node_id_t id,
+    const alea_matrix_t* transform, const alea_bbox_t* local_box,
+    size_t depth) {
+    if (!*line->work || depth > 128 || id >= line->sys->nodes.count)
+        return 0;
+    --*line->work;
+    const alea_node_t* node = &line->sys->nodes.data[id];
+    const alea_operation_t op = ALEA_GET_OPERATION(node);
+    if (op != ALEA_OP_PRIMITIVE) {
+        if (op != ALEA_OP_UNION && op != ALEA_OP_INTERSECTION &&
+            op != ALEA_OP_DIFFERENCE && op != ALEA_OP_COMPLEMENT)
+            return 0;
+        if (!slice_error_collect_occurrence_line_node(
+                line, node->operation.left, transform, local_box,
+                depth + 1)) return 0;
+        return op == ALEA_OP_COMPLEMENT ||
+            slice_error_collect_occurrence_line_node(
+                line, node->operation.right, transform, local_box,
+                depth + 1);
+    }
+    size_t check_work = 2;
+    const int constant = slice_error_occurrence_node_constant(
+        line->sys, id, local_box, 0, &check_work);
+    if (constant == 1 || constant == -1) return 1;
+    const uint32_t primitive_id = node->primitive.primitive_id;
+    if (primitive_id >= line->sys->primitives.count ||
+        line->sys->primitives.data[primitive_id].type !=
+            ALEA_PRIMITIVE_PLANE || !transform->has_inverse)
+        return 0;
+    alea_primitive_data_t data;
+    if (!alea_primitive_copy_data(line->sys, primitive_id, &data)) return 0;
+    const alea_plane_data_t* p = &data.plane;
+    const double* m = transform->inv;
+    const long double a = (long double)p->a * m[0] +
+        (long double)p->b * m[4] + (long double)p->c * m[8];
+    const long double b = (long double)p->a * m[1] +
+        (long double)p->b * m[5] + (long double)p->c * m[9];
+    const long double c = (long double)p->a * m[2] +
+        (long double)p->b * m[6] + (long double)p->c * m[10];
+    const long double d = (long double)p->a * m[3] +
+        (long double)p->b * m[7] + (long double)p->c * m[11] + p->d;
+    if (!isfinite(a) || !isfinite(b) || !isfinite(c) || !isfinite(d) ||
+        fabsl(a) > DBL_MAX / 2 || fabsl(b) > DBL_MAX / 2 ||
+        fabsl(c) > DBL_MAX / 2 || fabsl(d) > DBL_MAX / 2)
+        return 0;
+    const alea_plane_data_t world = {
+        (double)a, (double)b, (double)c, (double)d};
+    int surface_id = 0;
+    for (size_t i = 0; i < line->sys->surfaces.count; ++i) {
+        const alea_surface_entry_t* surface = &line->sys->surfaces.data[i];
+        if (surface->primitive_id != primitive_id) continue;
+        if (surface_id && surface_id != surface->mc_surface_id) return 0;
+        surface_id = surface->mc_surface_id;
+    }
+    if (!surface_id) return 0;
+    return slice_error_offer_occurrence_line(
+        line, &world, surface_id, primitive_id);
+}
+
+typedef struct {
+    const alea_slice_error_query_t* query;
+    const alea_transition_slice_critical_tile_t* tile;
+    slice_error_occurrence_line_t line;
+    int complete;
+} slice_error_line_occurrence_visit_t;
+
+static int slice_error_visit_line_occurrence(
+    const alea_hier_spatial_chain_hit_t* hit, void* userdata) {
+    slice_error_line_occurrence_visit_t* visit = userdata;
+    if (!hit->hit.is_terminal) return 0;
+    if (hit->chain_truncated) {
+        visit->complete = 0;
+        return 1;
+    }
+    for (size_t level = 0; level <= hit->ancestor_count; ++level) {
+        if (level < hit->ancestor_count &&
+            hit->ancestor_is_lattice[level]) {
+            const uint32_t lattice_index =
+                hit->ancestor_cell_indices[level];
+            if (lattice_index >= visit->query->sys->cells.count) {
+                visit->complete = 0;
+                return 1;
+            }
+            const alea_cell_entry_t* lattice =
+                &visit->query->sys->cells.data[lattice_index];
+            if (lattice->lat_type != 1) {
+                visit->complete = 0;
+                return 1;
+            }
+            const int indices[3] = {
+                hit->ancestor_lattice_i[level],
+                hit->ancestor_lattice_j[level],
+                hit->ancestor_lattice_k[level]};
+            for (int axis = 0; axis < 3; ++axis) {
+                const int64_t dim =
+                    (int64_t)lattice->lat_fill_dims[2 * axis + 1] -
+                    lattice->lat_fill_dims[2 * axis] + 1;
+                const double pitch = lattice->lat_pitch[axis];
+                const int tiled = axis < 2 || dim > 1 ||
+                    (lattice->lat_fill_repeating && pitch > 0.0);
+                if (!tiled && pitch <= 0.0) continue;
+                if (dim <= 0 || !(pitch > 0.0) || !isfinite(pitch)) {
+                    visit->complete = 0;
+                    return 1;
+                }
+                const long double offset =
+                    (long double)indices[axis] -
+                    lattice->lat_fill_dims[2 * axis];
+                const long double lo =
+                    (long double)lattice->lat_lower_left[axis] +
+                    offset * pitch;
+                const long double hi_bound = lo + pitch;
+                if (!isfinite(lo) || !isfinite(hi_bound) ||
+                    fabsl(lo) > DBL_MAX / 2 ||
+                    fabsl(hi_bound) > DBL_MAX / 2 ||
+                    !slice_error_offer_local_axis_line(
+                        &visit->line, &hit->ancestor_transforms[level],
+                        axis, (double)lo) ||
+                    !slice_error_offer_local_axis_line(
+                        &visit->line, &hit->ancestor_transforms[level],
+                        axis, (double)hi_bound)) {
+                    visit->complete = 0;
+                    return 1;
+                }
+            }
+            continue;
+        }
+        const uint32_t cell_index = level == hit->ancestor_count
+            ? hit->hit.cell_index : hit->ancestor_cell_indices[level];
+        if (cell_index >= visit->query->sys->cells.count) {
+            visit->complete = 0;
+            return 1;
+        }
+        const alea_cell_entry_t* cell =
+            &visit->query->sys->cells.data[cell_index];
+        if (cell->original_root_node_id != ALEA_NODE_ID_INVALID ||
+            cell->lat_type != 0) {
+            visit->complete = 0;
+            return 1;
+        }
+        const alea_matrix_t* transform = level == hit->ancestor_count
+            ? &hit->hit.transform : &hit->ancestor_transforms[level];
+        alea_bbox_t local_box;
+        if (!slice_error_occurrence_tile_box(
+                &visit->query->options.view, visit->tile,
+                transform, &local_box) ||
+            !slice_error_collect_occurrence_line_node(
+                &visit->line, cell->root_node_id,
+                transform, &local_box, 0)) {
+            visit->complete = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int slice_error_classify_single_occurrence_line(
+    const alea_slice_error_query_t* query,
+    const alea_transition_slice_critical_tile_t* tile,
+    size_t contextual_bytes, alea_slice_error_page_t* out,
+    alea_slice_error_unresolved_reason_t* reason,
+    int* output_omitted, size_t* peak_scratch) {
+    const alea_slice_error_query_options_t* options = &query->options;
+    const size_t capacity =
+        options->scan_options.max_exhaustive_occurrence_hits;
+    if (!capacity) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+        return 0;
+    }
+    *peak_scratch = sizeof(slice_error_line_occurrence_visit_t);
+    alea_bbox_t world_box;
+    if (!slice_error_occurrence_tile_box(&options->view, tile, NULL,
+                                         &world_box)) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+        return 0;
+    }
+    size_t work = options->scan_options.max_active_boundary_tests;
+    slice_error_line_occurrence_visit_t visit = {
+        .query = query, .tile = tile,
+        .line = {.sys = query->sys, .view = &options->view, .tile = tile,
+                 .axis = -1, .work = &work},
+        .complete = 1};
+    alea_hier_region_chain_status_t traversal =
+        ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
+    size_t hit_count = 0;
+    if (alea_hier_spatial_visit_region_chain_bounded(
+            query->sys, &world_box, slice_error_visit_line_occurrence,
+            &visit, capacity, &hit_count, &traversal) != 0)
+        return -1;
+    if (traversal != ALEA_HIER_REGION_CHAIN_COMPLETE) {
+        *reason = traversal == ALEA_HIER_REGION_CHAIN_MAX_HITS ||
+                (traversal == ALEA_HIER_REGION_CHAIN_VISITOR_STOPPED && !work)
+            ? ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT
+            : ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+        return 0;
+    }
+    slice_error_occurrence_line_t line = visit.line;
+    if (!visit.complete || line.axis < 0) {
+        *reason = work ? ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE
+                       : ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+        return 0;
+    }
+    const int axis = line.axis;
+    const double separation = fmax(4.0 * line.uncertainty,
+        4096.0 * DBL_EPSILON * fmax(1.0, fabs(line.coordinate)));
+    alea_transition_slice_critical_tile_t side[2] = {*tile, *tile};
+    side[0].uv_max[axis] = line.coordinate - separation;
+    side[1].uv_min[axis] = line.coordinate + separation;
+    if (!(side[0].uv_max[axis] > tile->uv_min[axis] &&
+          side[1].uv_min[axis] < tile->uv_max[axis])) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+        return 0;
+    }
+    int owners[2][ALEA_SLICE_ERROR_OWNER_CAPACITY] = {{0}};
+    size_t counts[2] = {0, 0};
+    for (int side_index = 0; side_index < 2; ++side_index) {
+        size_t side_scratch = 0;
+        const int classified = slice_error_classify_constant_occurrences(
+            query, &side[side_index], 0, NULL, reason,
+            output_omitted, &side_scratch,
+            owners[side_index], &counts[side_index]);
+        if (*peak_scratch < side_scratch) *peak_scratch = side_scratch;
+        if (classified != 1) return classified;
+    }
+    const alea_point_coverage_kind_t kinds[2] = {
+        counts[0] == 0 ? ALEA_POINT_COVERAGE_GAP
+            : counts[0] == 1 ? ALEA_POINT_COVERAGE_UNIQUE
+            : ALEA_POINT_COVERAGE_OVERLAP,
+        counts[1] == 0 ? ALEA_POINT_COVERAGE_GAP
+            : counts[1] == 1 ? ALEA_POINT_COVERAGE_UNIQUE
+            : ALEA_POINT_COVERAGE_OVERLAP};
+    const size_t region_count =
+        slice_error_axis_is_defect(kinds[0]) +
+        slice_error_axis_is_defect(kinds[1]);
+    const size_t interval_count =
+        slice_error_axis_is_defect(kinds[0]) !=
+        slice_error_axis_is_defect(kinds[1]);
+    const size_t output_limit = options->scan_options.max_output_bytes;
+    if (contextual_bytes > output_limit ||
+        region_count * sizeof(*out->regions) >
+            output_limit - contextual_bytes ||
+        interval_count * sizeof(*out->intervals) >
+            output_limit - contextual_bytes -
+                region_count * sizeof(*out->regions)) {
+        *reason = ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+        *output_omitted = 1;
+        return 0;
+    }
+    out->regions = region_count ? calloc(region_count, sizeof(*out->regions))
+                                : NULL;
+    out->intervals = interval_count
+        ? calloc(interval_count, sizeof(*out->intervals)) : NULL;
+    if ((region_count && !out->regions) ||
+        (interval_count && !out->intervals)) return -1;
+    for (int s = 0; s < 2; ++s) {
+        if (!slice_error_axis_is_defect(kinds[s])) continue;
+        alea_slice_error_region_t* region =
+            &out->regions[out->region_count++];
+        memcpy(region->uv_min, tile->uv_min, sizeof(tile->uv_min));
+        memcpy(region->uv_max, tile->uv_max, sizeof(tile->uv_max));
+        if (s == 0) region->uv_max[axis] = line.coordinate;
+        else region->uv_min[axis] = line.coordinate;
+        if (s == 0) region->uv_max_uncertainty[axis] = line.uncertainty;
+        else region->uv_min_uncertainty[axis] = line.uncertainty;
+        region->kind = kinds[s];
+        region->owner_count = counts[s];
+        memcpy(region->owner_cell_ids, owners[s],
+               counts[s] * sizeof(*owners[s]));
+    }
+    if (interval_count) {
+        alea_slice_error_interval_t* interval = &out->intervals[0];
+        out->interval_count = 1;
+        interval->evidence_scope =
+            ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL;
+        interval->surface_id = line.surface_id;
+        interval->primitive_id = line.primitive_id;
+        interval->axis = axis;
+        interval->uv_start[axis] = interval->uv_end[axis] =
+            line.coordinate;
+        interval->uv_start[1 - axis] = tile->uv_min[1 - axis];
+        interval->uv_end[1 - axis] = tile->uv_max[1 - axis];
+        interval->endpoint_uncertainty[0] = line.uncertainty;
+        interval->endpoint_uncertainty[1] = line.uncertainty;
+        interval->negative_side_kind = kinds[0];
+        interval->positive_side_kind = kinds[1];
+        interval->negative_owner_count = counts[0];
+        interval->positive_owner_count = counts[1];
+        memcpy(interval->negative_owner_cell_ids, owners[0],
+               counts[0] * sizeof(*owners[0]));
+        memcpy(interval->positive_owner_cell_ids, owners[1],
+               counts[1] * sizeof(*owners[1]));
+    }
+    *reason = ALEA_SLICE_ERROR_RESOLVED;
+    return 1;
+}
+
 /* Returns 1 for a complete proof, 0 with a whole-tile unresolved reason for
  * unsupported/numerically uncertain work, or -1 on allocation failure. */
 static int slice_error_classify_axis_tile(
@@ -3206,8 +4260,10 @@ static int slice_error_classify_axis_tile(
         if (index < 0) continue;
         slice_error_axis_plane_t* plane = &planes[index];
         if (plane->surface_id != 0) {
-            *reason = ALEA_SLICE_ERROR_UNRESOLVED_COINCIDENT_SURFACES;
-            goto done;
+            /* Primitive deduplication defines the system's geometry
+             * equivalence. Multiple card IDs for that primitive do not add a
+             * second physical boundary to the ownership arrangement. */
+            continue;
         }
         plane->surface_id = surface->mc_surface_id;
     }
@@ -3683,12 +4739,213 @@ selection_done:
     return status;
 }
 
+typedef struct {
+    alea_system_t* sys;
+    const alea_slice_view_t* view;
+    const alea_transition_slice_critical_tile_t* tile;
+    size_t candidate_count;
+    int failed;
+} slice_error_density_count_t;
+
+static int slice_error_count_candidate(
+    const alea_spatial_hit_t* candidate, void* userdata) {
+    (void)candidate;
+    (void)userdata;
+    return 0;
+}
+
+static int slice_error_count_occurrence(
+    const alea_hier_spatial_chain_hit_t* occurrence, void* userdata) {
+    slice_error_density_count_t* count = userdata;
+    alea_bbox_t local_box;
+    if (!slice_error_occurrence_tile_box(
+            count->view, count->tile, &occurrence->hit.transform,
+            &local_box)) {
+        count->failed = 1;
+        return 1;
+    }
+    size_t visited = 0;
+    if (alea_hier_spatial_visit_universe_region(
+            count->sys, occurrence->hit.universe_id, &local_box,
+            slice_error_count_candidate, NULL, &visited) != 0 ||
+        count->candidate_count > SIZE_MAX - visited) {
+        count->failed = 1;
+        return 1;
+    }
+    count->candidate_count += visited;
+    return 0;
+}
+
+static void slice_error_uniform_critical_tiles(
+    const alea_transition_slice_critical_tile_t* page, size_t divisions,
+    alea_transition_slice_critical_tile_t* tiles) {
+    for (size_t j = 0; j < divisions; ++j) {
+        for (size_t i = 0; i < divisions; ++i) {
+            alea_transition_slice_critical_tile_t* part =
+                &tiles[j * divisions + i];
+            const double fu0 = (double)i / (double)divisions;
+            const double fu1 = (double)(i + 1u) / (double)divisions;
+            const double fv0 = (double)j / (double)divisions;
+            const double fv1 = (double)(j + 1u) / (double)divisions;
+            part->uv_min[0] = page->uv_min[0] +
+                (page->uv_max[0] - page->uv_min[0]) * fu0;
+            part->uv_max[0] = page->uv_min[0] +
+                (page->uv_max[0] - page->uv_min[0]) * fu1;
+            part->uv_min[1] = page->uv_min[1] +
+                (page->uv_max[1] - page->uv_min[1]) * fv0;
+            part->uv_max[1] = page->uv_min[1] +
+                (page->uv_max[1] - page->uv_min[1]) * fv1;
+        }
+    }
+}
+
+static size_t slice_error_page_output_bytes(
+    const alea_slice_error_page_t* page) {
+    if (!page) return 0;
+    if (page->finding_count > SIZE_MAX / sizeof(*page->findings) ||
+        page->witness_count > SIZE_MAX / sizeof(*page->witnesses) ||
+        page->interval_count > SIZE_MAX / sizeof(*page->intervals) ||
+        page->circle_count > SIZE_MAX / sizeof(*page->circles) ||
+        page->region_count > SIZE_MAX / sizeof(*page->regions))
+        return SIZE_MAX;
+    size_t bytes = page->finding_count * sizeof(*page->findings);
+    const size_t witness_bytes =
+        page->witness_count * sizeof(*page->witnesses);
+    const size_t interval_bytes =
+        page->interval_count * sizeof(*page->intervals);
+    const size_t circle_bytes = page->circle_count * sizeof(*page->circles);
+    const size_t region_bytes = page->region_count * sizeof(*page->regions);
+    if (bytes > SIZE_MAX - witness_bytes) return SIZE_MAX;
+    bytes += witness_bytes;
+    if (bytes > SIZE_MAX - interval_bytes) return SIZE_MAX;
+    bytes += interval_bytes;
+    if (bytes > SIZE_MAX - circle_bytes) return SIZE_MAX;
+    bytes += circle_bytes;
+    if (bytes > SIZE_MAX - region_bytes) return SIZE_MAX;
+    return bytes + region_bytes;
+}
+
+/* Append a classifier's independently allocated products. Return zero when
+ * the caller's output budget cannot retain the complete set. */
+static int slice_error_append_products(
+    alea_slice_error_page_t* destination,
+    const alea_slice_error_page_t* source, size_t output_limit) {
+    const size_t current = slice_error_page_output_bytes(destination);
+    const size_t added = slice_error_page_output_bytes(source);
+    if (current == SIZE_MAX || added == SIZE_MAX || current > output_limit ||
+        added > output_limit - current)
+        return 0;
+#define APPEND_SLICE_PRODUCTS(member, count_member) do {                  \
+        if (source->count_member) {                                       \
+            if (destination->count_member >                               \
+                    SIZE_MAX - source->count_member) return -1;            \
+            const size_t total = destination->count_member +              \
+                source->count_member;                                     \
+            if (total > SIZE_MAX / sizeof(*destination->member))          \
+                return -1;                                                \
+            void* next = realloc(destination->member,                     \
+                                 total * sizeof(*destination->member));    \
+            if (!next) return -1;                                         \
+            destination->member = next;                                   \
+            memcpy(destination->member + destination->count_member,       \
+                   source->member,                                        \
+                   source->count_member * sizeof(*source->member));       \
+            destination->count_member = total;                            \
+        }                                                                 \
+    } while (0)
+    APPEND_SLICE_PRODUCTS(intervals, interval_count);
+    APPEND_SLICE_PRODUCTS(circles, circle_count);
+    APPEND_SLICE_PRODUCTS(regions, region_count);
+#undef APPEND_SLICE_PRODUCTS
+    return 1;
+}
+
+static int slice_error_append_unresolved_region(
+    alea_slice_error_page_t* page,
+    const alea_transition_slice_critical_tile_t* tile,
+    size_t output_limit) {
+    alea_slice_error_page_t unresolved = {0};
+    alea_slice_error_region_t region = {0};
+    memcpy(region.uv_min, tile->uv_min, sizeof(region.uv_min));
+    memcpy(region.uv_max, tile->uv_max, sizeof(region.uv_max));
+    region.kind = ALEA_POINT_COVERAGE_UNRESOLVED;
+    unresolved.regions = &region;
+    unresolved.region_count = 1;
+    return slice_error_append_products(page, &unresolved, output_limit);
+}
+
+static alea_slice_error_unresolved_reason_t
+slice_error_reason_from_critical_stop(
+    alea_transition_slice_critical_stop_reason_t reason) {
+    switch (reason) {
+    case ALEA_TRANSITION_SLICE_CRITICAL_NONE:
+        return ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING;
+    case ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE:
+        return ALEA_SLICE_ERROR_UNRESOLVED_PRIMITIVE;
+    case ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL:
+    case ALEA_TRANSITION_SLICE_CRITICAL_CHAIN_TRUNCATED:
+        return ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE;
+    case ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED:
+        return ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL;
+    default:
+        return ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+    }
+}
+
+static int slice_error_classify_verified_tile(
+    const alea_slice_error_query_t* query,
+    const alea_transition_slice_critical_tile_t* tile,
+    size_t contextual_bytes, alea_slice_error_page_t* out,
+    alea_slice_error_unresolved_reason_t* reason,
+    int* output_omitted, size_t* peak_scratch) {
+    int verified = 0;
+    *output_omitted = 0;
+    *peak_scratch = 0;
+    if (query->has_hierarchy &&
+        slice_error_axis_view_supported(&query->options.view))
+        verified = slice_error_classify_constant_occurrences(
+            query, tile, contextual_bytes, out, reason,
+            output_omitted, peak_scratch, NULL, NULL);
+    if (query->has_hierarchy && verified == 0 && !*output_omitted &&
+        slice_error_axis_view_supported(&query->options.view)) {
+        size_t line_peak = 0;
+        verified = slice_error_classify_single_occurrence_line(
+            query, tile, contextual_bytes, out, reason,
+            output_omitted, &line_peak);
+        if (*peak_scratch < line_peak) *peak_scratch = line_peak;
+    }
+    if (verified == 0 && !*output_omitted) {
+        const alea_slice_error_unresolved_reason_t occurrence_reason =
+            *reason;
+        size_t axis_peak = 0;
+        verified = slice_error_classify_axis_tile(
+            query, tile, contextual_bytes, out, reason,
+            output_omitted, &axis_peak);
+        if (*peak_scratch < axis_peak) *peak_scratch = axis_peak;
+        if (verified == 0 &&
+            *reason == ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE &&
+            (occurrence_reason ==
+                 ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT ||
+             occurrence_reason == ALEA_SLICE_ERROR_UNRESOLVED_NUMERICAL))
+            *reason = occurrence_reason;
+        else if (verified == 0 &&
+                 *reason == ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT &&
+                 occurrence_reason !=
+                     ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING &&
+                 occurrence_reason !=
+                     ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT)
+            *reason = occurrence_reason;
+    }
+    return verified;
+}
+
 int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
                                     size_t page_index,
                                     alea_slice_error_page_t* page) {
     if (!query || !page || page_index >= query->page_count ||
         alea_system_geometry_generation(query->sys) !=
             query->geometry_generation) return -1;
+    const double page_started = alea_monotonic_seconds();
     const alea_slice_error_query_options_t* options = &query->options;
     const size_t col = page_index % options->tile_columns;
     const size_t row = page_index / options->tile_columns;
@@ -3708,6 +4965,54 @@ int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
         if (!(tile.uv_max[axis] > tile.uv_min[axis])) return -1;
     }
     if (alea_raycast_ensure_hier_caches(query->sys) != 0) return -1;
+    alea_transition_slice_critical_tile_t* critical_tiles = &tile;
+    size_t critical_tile_count = 1;
+    alea_transition_slice_critical_tile_t* allocated_tiles = NULL;
+    size_t critical_divisions = 1;
+    size_t max_critical_divisions = 1;
+    while (max_critical_divisions + 1u <=
+               options->scan_options.max_critical_tiles /
+                   (max_critical_divisions + 1u))
+        max_critical_divisions++;
+    if (query->has_hierarchy) {
+        alea_bbox_t world_box;
+        if (!slice_error_occurrence_tile_box(
+                &options->view, &tile, NULL, &world_box))
+            return -1;
+        size_t occurrence_count = 0;
+        slice_error_density_count_t density = {
+            .sys = query->sys, .view = &options->view, .tile = &tile};
+        alea_hier_region_chain_status_t occurrence_status =
+            ALEA_HIER_REGION_CHAIN_UNSUPPORTED;
+        if (alea_hier_spatial_visit_region_occurrences_bounded(
+                query->sys, &world_box, slice_error_count_occurrence, &density,
+                options->scan_options.max_exhaustive_occurrence_hits,
+                &occurrence_count, &occurrence_status) != 0)
+            return -1;
+        if (density.failed) return -1;
+        if (occurrence_status == ALEA_HIER_REGION_CHAIN_COMPLETE) {
+            size_t target = options->scan_options.max_curves_per_tile / 8u;
+            if (target < 64u) target = 64u;
+            const size_t density_count = density.candidate_count >
+                    occurrence_count
+                ? density.candidate_count : occurrence_count;
+            const size_t tile_goal = density_count > target
+                ? (density_count + target - 1u) / target : 1u;
+            while (critical_divisions < max_critical_divisions &&
+                   critical_divisions * critical_divisions < tile_goal)
+                critical_divisions++;
+            if (critical_divisions > 1) {
+                critical_tile_count =
+                    critical_divisions * critical_divisions;
+                allocated_tiles = calloc(
+                    critical_tile_count, sizeof(*allocated_tiles));
+                if (!allocated_tiles) return -1;
+                slice_error_uniform_critical_tiles(
+                    &tile, critical_divisions, allocated_tiles);
+                critical_tiles = allocated_tiles;
+            }
+        }
+    }
     alea_transition_slice_stats_t stats = {0};
     stats.critical_stop_reason = ALEA_TRANSITION_SLICE_CRITICAL_NONE;
     alea_slice_error_page_t candidate = {0};
@@ -3721,17 +5026,139 @@ int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
     analysis_view.u_max = options->required_uv_max[0];
     analysis_view.v_min = options->required_uv_min[1];
     analysis_view.v_max = options->required_uv_max[1];
-    if (alea_transition_slice_enumerate_critical_tiles(
+    int critical_rc = 0;
+    alea_transition_slice_critical_stop_reason_t* tile_stop_reasons = NULL;
+    uint8_t* localized_tiles = NULL;
+    slice_error_numerical_region_sink_t numerical_sink = {0};
+    for (;;) {
+        tile_stop_reasons = calloc(
+            critical_tile_count, sizeof(*tile_stop_reasons));
+        localized_tiles = calloc(critical_tile_count, sizeof(*localized_tiles));
+        if (!tile_stop_reasons || !localized_tiles) {
+            free(tile_stop_reasons);
+            free(localized_tiles);
+            free(allocated_tiles);
+            free(candidate.findings);
+            free(candidate.regions);
+            return -1;
+        }
+        numerical_sink = (slice_error_numerical_region_sink_t){
+            .page = &candidate,
+            .localized_tiles = localized_tiles,
+            .tile_count = critical_tile_count,
+            .max_output_bytes = options->scan_options.max_output_bytes
+        };
+        critical_rc = alea_transition_slice_enumerate_critical_tiles_with_regions(
             query->sys, &analysis_view, &options->scan_options,
-            &tile, 1, slice_error_retain_finding, &sink, &stats) != 0 ||
+            critical_tiles, critical_tile_count,
+            slice_error_retain_finding, &sink, &stats,
+            tile_stop_reasons, critical_tile_count,
+            slice_error_retain_numerical_region, &numerical_sink);
+        if (critical_rc != 0 ||
+            stats.critical_stop_reason !=
+                ALEA_TRANSITION_SLICE_CRITICAL_MAX_CURVES ||
+            critical_divisions >= max_critical_divisions)
+            break;
+
+        free(candidate.findings);
+        free(candidate.regions);
+        memset(&candidate, 0, sizeof(candidate));
+        sink.page = &candidate;
+        sink.omitted_findings = 0;
+        memset(&stats, 0, sizeof(stats));
+        stats.critical_stop_reason = ALEA_TRANSITION_SLICE_CRITICAL_NONE;
+        free(tile_stop_reasons);
+        tile_stop_reasons = NULL;
+        free(localized_tiles);
+        localized_tiles = NULL;
+        free(allocated_tiles);
+        allocated_tiles = NULL;
+        size_t next = critical_divisions <= max_critical_divisions / 2u
+            ? critical_divisions * 2u : max_critical_divisions;
+        if (next <= critical_divisions) break;
+        critical_divisions = next;
+        critical_tile_count = critical_divisions * critical_divisions;
+        allocated_tiles = calloc(
+            critical_tile_count, sizeof(*allocated_tiles));
+        if (!allocated_tiles) return -1;
+        slice_error_uniform_critical_tiles(
+            &tile, critical_divisions, allocated_tiles);
+        critical_tiles = allocated_tiles;
+    }
+    if (critical_rc != 0 ||
         alea_system_geometry_generation(query->sys) !=
             query->geometry_generation) {
+        free(tile_stop_reasons);
+        free(localized_tiles);
+        free(allocated_tiles);
         free(candidate.findings);
+        free(candidate.regions);
         return -1;
     }
+
+    slice_error_confirmation_t confirmation = {0};
+    (void)slice_error_confirmation_init(
+        &confirmation, options->scan_options.max_coverage_hits);
+    const double confirmation_started = alea_monotonic_seconds();
+    const size_t interior_axis_count =
+        options->scan_options.coverage_uniform_probes_per_ray;
+    size_t interior_probe_count = 0;
+    for (size_t row = 0; row < interior_axis_count; ++row) {
+        for (size_t column = 0; column < interior_axis_count; ++column) {
+            double uv[2] = {
+                tile.uv_min[0] + (tile.uv_max[0] - tile.uv_min[0]) *
+                    ((double)column + 0.5) / (double)interior_axis_count,
+                tile.uv_min[1] + (tile.uv_max[1] - tile.uv_min[1]) *
+                    ((double)row + 0.5) / (double)interior_axis_count};
+            double world[3];
+            for (int axis = 0; axis < 3; ++axis)
+                world[axis] = options->view.plane.origin[axis] +
+                    uv[0] * options->view.plane.u_axis[axis] +
+                    uv[1] * options->view.plane.v_axis[axis];
+            (void)slice_error_confirm_point(
+                query, &candidate, &confirmation, uv, world,
+                ALEA_SLICE_ERROR_WITNESS_INTERIOR_PROBE, NULL);
+            interior_probe_count++;
+        }
+    }
+    for (size_t i = 0; i < candidate.finding_count; ++i) {
+        const alea_transition_slice_critical_finding_t* finding =
+            &candidate.findings[i];
+        if (finding->transition.kind != ALEA_TRANSITION_GAP &&
+            finding->transition.kind != ALEA_TRANSITION_OVERLAP) continue;
+        double uv[2] = {finding->uv[0], finding->uv[1]};
+        double world[3];
+        memcpy(world, finding->world_point, sizeof(world));
+        int displaced = 0;
+        for (int axis = 0; axis < 3; ++axis)
+            displaced |= finding->transition.before_point[axis] !=
+                         finding->transition.after_point[axis];
+        if (displaced) {
+            const double distance = finding->transition.probe_distance;
+            for (int axis = 0; axis < 3; ++axis)
+                world[axis] += distance * finding->direction[axis];
+            for (int axis = 0; axis < 3; ++axis) {
+                uv[0] += distance * finding->direction[axis] *
+                         options->view.plane.u_axis[axis];
+                uv[1] += distance * finding->direction[axis] *
+                         options->view.plane.v_axis[axis];
+            }
+        }
+        if (uv[0] < tile.uv_min[0] || uv[0] > tile.uv_max[0] ||
+            uv[1] < tile.uv_min[1] || uv[1] > tile.uv_max[1]) continue;
+        (void)slice_error_confirm_point(
+            query, &candidate, &confirmation, uv, world,
+            ALEA_SLICE_ERROR_WITNESS_BOUNDARY_PROBE, finding);
+    }
+    const double confirmation_seconds =
+        alea_monotonic_seconds() - confirmation_started;
     alea_slice_error_page_receipt_t receipt = {0};
     receipt.query_id = query->query_id;
     receipt.geometry_generation = query->geometry_generation;
+    receipt.boundary_analysis_policy_version =
+        ALEA_SLICE_ERROR_BOUNDARY_ANALYSIS_POLICY_VERSION;
+    receipt.close_crossing_relative_tolerance = query->options.scan_options
+        .critical_relative_distance_tolerance;
     receipt.page_index = page_index;
     memcpy(receipt.core_uv_min, tile.uv_min, sizeof(tile.uv_min));
     memcpy(receipt.core_uv_max, tile.uv_max, sizeof(tile.uv_max));
@@ -3739,58 +5166,274 @@ int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
     receipt.candidate_curves = stats.critical_curves;
     receipt.candidate_pairs_tested = stats.critical_curve_pairs_tested;
     receipt.peak_scratch_bytes = stats.peak_critical_scratch_bytes;
+    receipt.close_crossing_observations =
+        stats.critical_close_crossing_observations;
+    receipt.symbolic_one_sided_intervals =
+        stats.critical_symbolic_one_sided_intervals;
+    receipt.numerical_unsafe_probe_intervals =
+        stats.critical_numerical_unsafe_probe_intervals;
+    receipt.numerical_unrepresentable_probe_intervals =
+        stats.critical_numerical_unrepresentable_probe_intervals;
+    receipt.numerical_inconsistent_probe_intervals =
+        stats.critical_numerical_inconsistent_probe_intervals;
     receipt.query_index_bytes = query->index_bytes;
     receipt.contextual_finding_count = candidate.finding_count;
     receipt.omitted_contextual_findings = sink.omitted_findings;
     receipt.omitted_contextual_boundary_evidence =
         stats.omitted_critical_boundary_evidence;
+    receipt.interior_probe_count = interior_probe_count;
+    receipt.confirmation_attempt_count = confirmation.attempts;
+    receipt.confirmation_failure_count = confirmation.failures;
+    receipt.confirmed_gap_witness_count = confirmation.confirmed_gaps;
+    receipt.confirmed_overlap_witness_count =
+        confirmation.confirmed_overlaps;
+    receipt.omitted_confirmed_witnesses = confirmation.omitted;
+    receipt.confirmation_seconds = confirmation_seconds;
     receipt.scan_stop_reason = stats.critical_stop_reason;
-    receipt.unresolved_reason = stats.critical_stop_reason ==
-            ALEA_TRANSITION_SLICE_CRITICAL_NONE
-        ? ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING
-        : stats.critical_stop_reason ==
-            ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_CURVE
-        ? ALEA_SLICE_ERROR_UNRESOLVED_PRIMITIVE
-        : stats.critical_stop_reason ==
-            ALEA_TRANSITION_SLICE_CRITICAL_UNSUPPORTED_OCCURRENCE_TRAVERSAL
-        ? ALEA_SLICE_ERROR_UNRESOLVED_OCCURRENCE
-        : ALEA_SLICE_ERROR_UNRESOLVED_CANDIDATE_LIMIT;
+    receipt.unresolved_reason = slice_error_reason_from_critical_stop(
+        stats.critical_stop_reason);
     receipt.requested_work_complete = stats.critical_stop_reason ==
         ALEA_TRANSITION_SLICE_CRITICAL_NONE && !sink.omitted_findings;
     receipt.scope_classified = 0;
     receipt.output_complete = sink.omitted_findings == 0 &&
-        stats.omitted_critical_boundary_evidence == 0;
+        stats.omitted_critical_boundary_evidence == 0 &&
+        numerical_sink.omitted_regions == 0 && confirmation.omitted == 0;
     if (receipt.requested_work_complete) {
-        int verified_output_omitted = 0;
-        size_t classifier_peak_scratch = 0;
-        const int verified = slice_error_classify_axis_tile(
-            query, &tile,
-            candidate.finding_count * sizeof(*candidate.findings),
-            &candidate, &receipt.unresolved_reason,
-            &verified_output_omitted, &classifier_peak_scratch);
-        if (receipt.peak_scratch_bytes < classifier_peak_scratch)
-            receipt.peak_scratch_bytes = classifier_peak_scratch;
-        if (verified < 0) {
-            free(candidate.findings);
-            free(candidate.intervals);
-            free(candidate.circles);
-            free(candidate.regions);
-            return -1;
+        size_t classified_tiles = 0;
+        for (size_t ti = 0; ti < critical_tile_count; ++ti) {
+            alea_slice_error_page_t classified = {0};
+            alea_slice_error_unresolved_reason_t tile_reason =
+                ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING;
+            int output_omitted = 0;
+            size_t classifier_peak = 0;
+            const int verified = slice_error_classify_verified_tile(
+                query, &critical_tiles[ti],
+                slice_error_page_output_bytes(&candidate), &classified,
+                &tile_reason, &output_omitted, &classifier_peak);
+            if (receipt.peak_scratch_bytes < classifier_peak)
+                receipt.peak_scratch_bytes = classifier_peak;
+            if (verified < 0) {
+                free(classified.intervals);
+                free(classified.circles);
+                free(classified.regions);
+                goto page_failed;
+            }
+            if (verified > 0) {
+                const int appended = slice_error_append_products(
+                    &candidate, &classified,
+                    options->scan_options.max_output_bytes);
+                if (appended < 0) {
+                    free(classified.intervals);
+                    free(classified.circles);
+                    free(classified.regions);
+                    goto page_failed;
+                }
+                if (appended == 0) receipt.output_complete = 0;
+                classified_tiles++;
+            } else {
+                const int appended = slice_error_append_unresolved_region(
+                    &candidate, &critical_tiles[ti],
+                    options->scan_options.max_output_bytes);
+                if (appended < 0) {
+                    free(classified.intervals);
+                    free(classified.circles);
+                    free(classified.regions);
+                    goto page_failed;
+                }
+                if (appended == 0 || output_omitted)
+                    receipt.output_complete = 0;
+                if (receipt.unresolved_reason ==
+                        ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING)
+                    receipt.unresolved_reason = tile_reason;
+            }
+            free(classified.intervals);
+            free(classified.circles);
+            free(classified.regions);
         }
-        if (verified > 0) receipt.scope_classified = 1;
-        if (verified_output_omitted) receipt.output_complete = 0;
+        receipt.scope_classified = classified_tiles == critical_tile_count;
+        if (receipt.scope_classified)
+            receipt.unresolved_reason = ALEA_SLICE_ERROR_RESOLVED;
+    } else {
+        size_t classified_tiles = 0;
+        for (size_t ti = 0; ti < critical_tile_count; ++ti) {
+            if (tile_stop_reasons[ti] !=
+                    ALEA_TRANSITION_SLICE_CRITICAL_NONE) {
+                if (tile_stop_reasons[ti] !=
+                        ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED ||
+                    !localized_tiles[ti]) {
+                    const int appended = slice_error_append_unresolved_region(
+                        &candidate, &critical_tiles[ti],
+                        options->scan_options.max_output_bytes);
+                    if (appended < 0) goto page_failed;
+                    if (appended == 0) receipt.output_complete = 0;
+                }
+                continue;
+            }
+            alea_slice_error_page_t classified = {0};
+            alea_slice_error_unresolved_reason_t tile_reason =
+                ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING;
+            int output_omitted = 0;
+            size_t classifier_peak = 0;
+            const int verified = slice_error_classify_verified_tile(
+                query, &critical_tiles[ti],
+                slice_error_page_output_bytes(&candidate), &classified,
+                &tile_reason, &output_omitted, &classifier_peak);
+            if (receipt.peak_scratch_bytes < classifier_peak)
+                receipt.peak_scratch_bytes = classifier_peak;
+            if (verified < 0) {
+                free(classified.intervals);
+                free(classified.circles);
+                free(classified.regions);
+                goto page_failed;
+            }
+            if (verified > 0) {
+                const int appended = slice_error_append_products(
+                    &candidate, &classified,
+                    options->scan_options.max_output_bytes);
+                if (appended < 0) {
+                    free(classified.intervals);
+                    free(classified.circles);
+                    free(classified.regions);
+                    goto page_failed;
+                }
+                if (appended == 0) receipt.output_complete = 0;
+                else classified_tiles++;
+            } else {
+                const int appended = slice_error_append_unresolved_region(
+                    &candidate, &critical_tiles[ti],
+                    options->scan_options.max_output_bytes);
+                if (appended < 0) {
+                    free(classified.intervals);
+                    free(classified.circles);
+                    free(classified.regions);
+                    goto page_failed;
+                }
+                if (appended == 0 || output_omitted)
+                    receipt.output_complete = 0;
+                if (receipt.unresolved_reason ==
+                        ALEA_SLICE_ERROR_UNRESOLVED_CLASSIFIER_PENDING)
+                    receipt.unresolved_reason = tile_reason;
+            }
+            free(classified.intervals);
+            free(classified.circles);
+            free(classified.regions);
+        }
+        /* A partial page intentionally remains unclassified as a whole. The
+         * retained verified products and UNRESOLVED rectangles identify what
+         * is actionable and what still needs refinement. */
+        (void)classified_tiles;
     }
+    free(tile_stop_reasons);
+    free(localized_tiles);
+    free(allocated_tiles);
     receipt.verified_interval_count = candidate.interval_count;
     receipt.verified_circle_count = candidate.circle_count;
     receipt.region_count = candidate.region_count;
+    receipt.elapsed_seconds = alea_monotonic_seconds() - page_started;
     candidate.receipt = receipt;
     candidate.populated = 1;
     free(page->findings);
+    free(page->witnesses);
     free(page->intervals);
     free(page->circles);
     free(page->regions);
     *page = candidate;
+    slice_error_confirmation_free(&confirmation);
     return 0;
+
+page_failed:
+    slice_error_confirmation_free(&confirmation);
+    free(tile_stop_reasons);
+    free(localized_tiles);
+    free(allocated_tiles);
+    free(candidate.findings);
+    free(candidate.witnesses);
+    free(candidate.intervals);
+    free(candidate.circles);
+    free(candidate.regions);
+    return -1;
+}
+
+typedef struct {
+    alea_slice_error_query_t* query;
+    const size_t* page_indices;
+    alea_slice_error_page_t* const* pages;
+    int* statuses;
+} slice_error_batch_context_t;
+
+static int slice_error_batch_run(
+    void* opaque, size_t worker_index, size_t begin, size_t end) {
+    (void)worker_index;
+    slice_error_batch_context_t* context = opaque;
+    for (size_t i = begin; i < end; ++i)
+        context->statuses[i] = alea_slice_error_query_run_page(
+            context->query, context->page_indices[i], context->pages[i]);
+    return 0;
+}
+
+int alea_slice_error_query_run_pages(
+    alea_slice_error_query_t* query, const size_t* page_indices,
+    size_t page_count, size_t requested_workers,
+    uint64_t max_parallel_scratch_bytes,
+    alea_slice_error_page_t* const* pages,
+    alea_transition_slice_batch_stats_t* out_stats) {
+    if (!query || (!page_indices && page_count) || (!pages && page_count) ||
+        !out_stats) return -1;
+    memset(out_stats, 0, sizeof(*out_stats));
+    out_stats->page_count = page_count;
+    out_stats->requested_workers = requested_workers;
+    if (!page_count) return 0;
+    for (size_t i = 0; i < page_count; ++i) {
+        if (!pages[i] || page_indices[i] >= query->page_count) return -1;
+        for (size_t j = 0; j < i; ++j)
+            if (pages[i] == pages[j]) return -1;
+    }
+    if (alea_system_geometry_generation(query->sys) !=
+            query->geometry_generation ||
+        alea_raycast_ensure_hier_caches(query->sys) != 0)
+        return -1;
+
+    uint64_t worker_scratch =
+        query->options.scan_options.max_critical_scratch_bytes;
+    if (!worker_scratch) worker_scratch = 1;
+    out_stats->reserved_scratch_bytes_per_worker = worker_scratch;
+    size_t workers = alea_parallel_effective_workers(
+        page_count, 1, requested_workers);
+    if (!max_parallel_scratch_bytes) {
+        workers = 1;
+    } else {
+        uint64_t budget_workers =
+            max_parallel_scratch_bytes / worker_scratch;
+        if (!budget_workers) budget_workers = 1;
+        if ((uint64_t)workers > budget_workers)
+            workers = (size_t)budget_workers;
+    }
+    if (!workers) workers = 1;
+    if (workers > UINT64_MAX / worker_scratch) return -1;
+    out_stats->reserved_parallel_scratch_bytes =
+        (uint64_t)workers * worker_scratch;
+
+    int* statuses = calloc(page_count, sizeof(*statuses));
+    if (!statuses) return -1;
+    slice_error_batch_context_t context = {
+        .query = query, .page_indices = page_indices,
+        .pages = pages, .statuses = statuses};
+    size_t actual_workers = 1;
+    const alea_parallel_status_t parallel_status = alea_parallel_for(
+        page_count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+        slice_error_batch_run, &context, &actual_workers);
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        free(statuses);
+        return -1;
+    }
+    out_stats->actual_workers = actual_workers;
+    int failed = 0;
+    for (size_t i = 0; i < page_count; ++i) {
+        if (statuses[i] == 0) out_stats->completed_page_count++;
+        else failed = 1;
+    }
+    free(statuses);
+    return failed ? -1 : 0;
 }
 
 struct alea_transition_slice_result {
@@ -3866,7 +5509,7 @@ void alea_transition_slice_options_init(
     options->max_critical_tiles = 256;
     options->max_critical_tile_sources = 1024;
     options->max_critical_scratch_bytes = 4u * 1024u * 1024u;
-    options->max_curves_per_tile = 1024;
+    options->max_curves_per_tile = 2048;
     options->max_critical_points = 2048;
     options->max_active_boundary_tests = 100000;
     options->max_critical_probes = 4096;
@@ -3874,8 +5517,11 @@ void alea_transition_slice_options_init(
     options->max_critical_boundary_evidence = 1024;
     options->max_curve_pairs = 100000;
     options->max_critical_sector_witnesses = 8192;
+    options->critical_relative_distance_tolerance = 1e-6;
     options->occurrence_discovery = ALEA_TRANSITION_SLICE_OCCURRENCE_SAMPLED;
-    options->max_exhaustive_occurrence_hits = 256;
+    /* Occurrence receipts are streamed, so this bounds traversal work without
+     * increasing the fixed critical scratch allocation. */
+    options->max_exhaustive_occurrence_hits = 65536;
 }
 
 const char* alea_transition_slice_critical_stop_reason_name(
@@ -3915,6 +5561,22 @@ const char* alea_transition_slice_critical_stop_reason_name(
         return "unsupported_occurrence_traversal";
     case ALEA_TRANSITION_SLICE_CRITICAL_NUMERICAL_UNRESOLVED:
         return "numerical_unresolved";
+    }
+    return "unknown";
+}
+
+const char* alea_slice_error_numerical_cause_name(
+    alea_slice_error_numerical_cause_t cause) {
+    switch (cause) {
+    case ALEA_SLICE_ERROR_NUMERICAL_NONE: return "none";
+    case ALEA_SLICE_ERROR_NUMERICAL_CLOSE_BREAKPOINTS:
+        return "close_breakpoints";
+    case ALEA_SLICE_ERROR_NUMERICAL_INVALID_PROBE_RADIUS:
+        return "invalid_probe_radius";
+    case ALEA_SLICE_ERROR_NUMERICAL_UNREPRESENTABLE_PROBES:
+        return "unrepresentable_probes";
+    case ALEA_SLICE_ERROR_NUMERICAL_INCONSISTENT_CLASSIFICATION:
+        return "inconsistent_classification";
     }
     return "unknown";
 }
@@ -5869,6 +7531,8 @@ int alea_transition_slice_screen(
         options.min_transverse_spacing < 0.0 ||
         !isfinite(options.critical_tile_padding) ||
         options.critical_tile_padding < 0.0 ||
+        !isfinite(options.critical_relative_distance_tolerance) ||
+        options.critical_relative_distance_tolerance < 0.0 ||
         options.occurrence_discovery <
             ALEA_TRANSITION_SLICE_OCCURRENCE_SAMPLED ||
         options.occurrence_discovery >

@@ -331,7 +331,18 @@ typedef struct {
     double critical_probe_radius;
     uint64_t max_critical_boundary_evidence;
     alea_transition_slice_occurrence_discovery_t occurrence_discovery;
+    /* Maximum universe occurrences traversed per critical tile in exhaustive
+     * mode. Occurrences are streamed; this is a work bound, not an array
+     * allocation size. */
     size_t max_exhaustive_occurrence_hits;
+    /** Relative proximity threshold for reporting close candidate crossings.
+     * Distinct, numerically ordered boundaries remain distinct below this
+     * threshold; it is not a minimum geometry thickness. Defaults to 1e-6,
+     * the MCNP DBCN(9) default value. This remains a diagnostic threshold;
+     * transport navigation has its separate boundary-distance setting in
+     * alea_ray_navigator_set_boundary_distance_tolerance(). Independent of
+     * primitive deduplication and critical_probe_radius. */
+    double critical_relative_distance_tolerance;
 } alea_transition_slice_options_t;
 
 #define ALEA_TRANSITION_SLICE_BOUNDARY_PIECE_CAPACITY 3
@@ -349,7 +360,8 @@ typedef enum {
     ALEA_SLICE_BOUNDARY_EVIDENCE_CONTEXT = 0,
     ALEA_SLICE_BOUNDARY_EVIDENCE_SAMPLED = 1,
     ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL = 2,
-    ALEA_SLICE_BOUNDARY_EVIDENCE_UNRESOLVED = 3
+    ALEA_SLICE_BOUNDARY_EVIDENCE_UNRESOLVED = 3,
+    ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_POINT = 4
 } alea_slice_boundary_evidence_scope_t;
 
 typedef struct {
@@ -571,6 +583,15 @@ typedef struct {
     size_t critical_curves_culled;
     size_t critical_ranked_curves_omitted;
     size_t critical_active_boundary_tests;
+    /* Close breakpoint intervals record proximity observations that were
+     * still evaluated. Symbolic intervals were resolved without displaced
+     * floating-point probes. The final three counters are numerically
+     * unresolved probe failures, split by cause. */
+    size_t critical_close_crossing_observations;
+    size_t critical_symbolic_one_sided_intervals;
+    size_t critical_numerical_unsafe_probe_intervals;
+    size_t critical_numerical_unrepresentable_probe_intervals;
+    size_t critical_numerical_inconsistent_probe_intervals;
     size_t critical_active_boundary_fallbacks;
     size_t critical_active_capacity_fallbacks;
     size_t critical_active_test_budget_fallbacks;
@@ -670,7 +691,7 @@ int alea_transition_slice_screen(
  * maximum; a zero parallel scratch budget selects the serial path. The actual
  * worker count never exceeds page count or
  * `max_parallel_scratch_bytes / reserved_scratch_bytes_per_worker`. Nested
- * Parallel execution is disabled by falling back to one worker.
+ * parallel execution is disabled by falling back to one worker.
  */
 int alea_transition_slice_screen_batch(
     alea_system_t* sys, const alea_slice_view_t* views, size_t page_count,
@@ -737,8 +758,21 @@ int alea_transition_slice_stats(
  * upper edges belong to the neighboring tile; the domain's outer upper edge
  * belongs to the final tile. Support overlap is not part of core ownership.
  *
- * A verified result currently requires a coordinate-aligned slice. Root
- * cells made from world-axis planes can be classified in XY, XZ, or YZ;
+ * A verified result currently requires a coordinate-aligned slice. Pages
+ * with a complete hierarchy occurrence query may be certified when every
+ * relevant terminal cell and enclosing fill has a constant CSG value over
+ * the whole page. Transformed fills and rectangular lattice elements fully
+ * separated from their element edges participate in this constant-page
+ * proof. A single axis-aligned plane line crossing a transformed fill page,
+ * or a single rectangular lattice seam, can also be verified when all other
+ * relevant primitive signs are constant. A lattice-seam interval has
+ * surface_id 0 and primitive_id UINT32_MAX because the seam is not an input
+ * surface.
+ * More complex occurrence boundary arrangements and hexagonal lattice
+ * elements remain unresolved. A full-page gap or overlap is emitted
+ * as one region; repeated occurrences of the same cell retain separate
+ * owner entries, which can therefore contain the same cell ID twice.
+ * Root cells made from world-axis planes can be classified in XY, XZ, or YZ;
  * planes parallel to the slice must have a sign separated from zero. These
  * slices also support projected plane lines. Small one- and two-line cases
  * use dedicated proofs; larger arrangements of at most 63 lines split the
@@ -786,11 +820,54 @@ typedef enum {
     ALEA_SLICE_ERROR_UNRESOLVED_COINCIDENT_SURFACES
 } alea_slice_error_unresolved_reason_t;
 
+typedef enum {
+    ALEA_SLICE_ERROR_NUMERICAL_NONE = 0,
+    ALEA_SLICE_ERROR_NUMERICAL_CLOSE_BREAKPOINTS,
+    ALEA_SLICE_ERROR_NUMERICAL_INVALID_PROBE_RADIUS,
+    ALEA_SLICE_ERROR_NUMERICAL_UNREPRESENTABLE_PROBES,
+    ALEA_SLICE_ERROR_NUMERICAL_INCONSISTENT_CLASSIFICATION
+} alea_slice_error_numerical_cause_t;
+
+const char* alea_slice_error_numerical_cause_name(
+    alea_slice_error_numerical_cause_t cause);
+
 #define ALEA_SLICE_ERROR_OWNER_CAPACITY 16
 #define ALEA_SLICE_ERROR_POLYGON_CAPACITY 8
 
+typedef enum {
+    ALEA_SLICE_ERROR_WITNESS_INTERIOR_PROBE = 0,
+    ALEA_SLICE_ERROR_WITNESS_BOUNDARY_PROBE = 1
+} alea_slice_error_witness_source_t;
+
+/* A locally confirmed point defect. Candidate enumeration completed at this
+ * point, so GAP means no terminal owner and OVERLAP means at least two
+ * competing terminal occurrences after hierarchy clipping. This record makes
+ * no claim about the surrounding area or the extent of a drawable contour. */
+typedef struct {
+    alea_slice_boundary_evidence_scope_t evidence_scope;
+    alea_point_coverage_kind_t kind;
+    alea_slice_error_witness_source_t source;
+    double uv[2];
+    double world_point[3];
+    int target_depth;
+    size_t owner_count;
+    size_t owner_count_lower_bound;
+    int owners_complete;
+    int owner_cell_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    int owner_universe_ids[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    int owner_depths[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    uint64_t owner_occurrence_keys[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    uint64_t owner_parent_occurrence_keys[ALEA_SLICE_ERROR_OWNER_CAPACITY];
+    int source_cell_id;
+    int source_surface_id;
+    uint64_t source_occurrence_key;
+    uint64_t source_universe_occurrence_key;
+} alea_slice_error_witness_t;
+
 /* A convex part of a defective face inside the required domain. A face with
- * more vertices than the fixed polygon capacity is emitted as triangles. */
+ * more vertices than the fixed polygon capacity is emitted as triangles.
+ * UNRESOLVED with no owners denotes a rectangle whose scan or proof did not
+ * complete; other retained regions in the same page remain actionable. */
 typedef struct {
     double uv_min[2], uv_max[2];
     double uv_min_uncertainty[2], uv_max_uncertainty[2];
@@ -802,6 +879,14 @@ typedef struct {
     size_t polygon_vertex_count;
     double polygon_uv[ALEA_SLICE_ERROR_POLYGON_CAPACITY][2];
     double polygon_uv_uncertainty[ALEA_SLICE_ERROR_POLYGON_CAPACITY][2];
+    /* Source provenance for a localized numerical UNRESOLVED rectangle.
+     * These fields are meaningful only when numerical_cause is not NONE. */
+    alea_slice_error_numerical_cause_t numerical_cause;
+    int source_cell_id;
+    int source_surface_id;
+    uint32_t source_primitive_id;
+    uint64_t source_occurrence_key;
+    uint64_t source_universe_occurrence_key;
 } alea_slice_error_region_t;
 
 /* A supported physical line between a defective and a uniquely owned face.
@@ -811,8 +896,8 @@ typedef struct {
  * plane equation (which may be canonicalized from the input surface). */
 typedef struct {
     alea_slice_boundary_evidence_scope_t evidence_scope;
-    int surface_id;
-    uint32_t primitive_id;
+    int surface_id; /* 0 for a synthetic rectangular-lattice seam */
+    uint32_t primitive_id; /* UINT32_MAX for that synthetic seam */
     int axis; /* 0: constant U, 1: constant V, -1: oblique line */
     double uv_start[2], uv_end[2];
     double endpoint_uncertainty[2];
@@ -853,6 +938,10 @@ typedef struct {
     size_t max_index_bytes;
 } alea_slice_error_query_options_t;
 
+/* Version of the ownership-boundary analysis recorded in page receipts.
+ * Increment when classification or close-crossing semantics change. */
+#define ALEA_SLICE_ERROR_BOUNDARY_ANALYSIS_POLICY_VERSION 4u
+
 typedef struct {
     /* Process-local query identity; retain the query for page continuation.
      * This is not a persistent model fingerprint for cross-process caches. */
@@ -865,15 +954,37 @@ typedef struct {
     size_t candidate_curves;
     size_t candidate_pairs_tested;
     size_t peak_scratch_bytes;
+    /* Proximity observations evaluated despite falling below the configured
+     * relative threshold. This is not an error or unresolved count. */
+    size_t close_crossing_observations;
+    /* Planar intervals resolved by one-sided CSG predicates when distinct
+     * floating-point side points could not be constructed. */
+    size_t symbolic_one_sided_intervals;
+    size_t numerical_unsafe_probe_intervals;
+    size_t numerical_unrepresentable_probe_intervals;
+    size_t numerical_inconsistent_probe_intervals;
     size_t query_index_bytes;
     size_t contextual_finding_count;
     size_t omitted_contextual_findings;
     size_t omitted_contextual_boundary_evidence;
+    /* Uniform interior points attempted in this page before contextual
+     * boundary confirmations. */
+    size_t interior_probe_count;
+    /* Point confirmations are independent of whole-page proof. A failed
+     * attempt publishes no witness and does not discard other page evidence. */
+    size_t confirmation_attempt_count;
+    size_t confirmation_failure_count;
+    size_t confirmed_gap_witness_count;
+    size_t confirmed_overlap_witness_count;
+    size_t omitted_confirmed_witnesses;
+    double confirmation_seconds;
+    double elapsed_seconds;
     size_t verified_interval_count;
     size_t verified_circle_count;
     size_t region_count;
     alea_transition_slice_critical_stop_reason_t scan_stop_reason;
-    /* Applies to the entire core rectangle. No subregion is certified. */
+    /* Applies to the whole-page verdict. Region records may still localize
+     * unresolved rectangles and retain verified results from completed area. */
     alea_slice_error_unresolved_reason_t unresolved_reason;
     /* The existing critical scan finished; this is not candidate-discovery
      * certification or a clean geometry verdict. */
@@ -883,6 +994,9 @@ typedef struct {
     int scope_classified;
     /* All findings found by the executed scan were retained. */
     int output_complete;
+    /* Reproducibility metadata for the boundary-analysis semantics. */
+    uint32_t boundary_analysis_policy_version;
+    double close_crossing_relative_tolerance;
 } alea_slice_error_page_receipt_t;
 
 void alea_slice_error_query_options_init(alea_slice_error_query_options_t* options);
@@ -898,6 +1012,22 @@ void alea_slice_error_page_destroy(alea_slice_error_page_t* page);
 int alea_slice_error_query_run_page(alea_slice_error_query_t* query,
                                     size_t page_index,
                                     alea_slice_error_page_t* page);
+/**
+ * Run independent pages with bounded parallel scratch.
+ *
+ * Results correspond to page_indices in input order. Every output page must
+ * be distinct. A zero worker request uses the backend maximum; a zero scratch
+ * budget selects serial execution. Final page output is retained regardless
+ * of worker count and is not charged to the temporary scratch budget.
+ */
+int alea_slice_error_query_run_pages(
+    alea_slice_error_query_t* query,
+    const size_t* page_indices,
+    size_t page_count,
+    size_t requested_workers,
+    uint64_t max_parallel_scratch_bytes,
+    alea_slice_error_page_t* const* pages,
+    alea_transition_slice_batch_stats_t* out_stats);
 int alea_slice_error_page_receipt(const alea_slice_error_page_t* page,
                                   alea_slice_error_page_receipt_t* out_receipt);
 size_t alea_slice_error_page_context_finding_count(
@@ -905,6 +1035,11 @@ size_t alea_slice_error_page_context_finding_count(
 int alea_slice_error_page_context_finding_get(
     const alea_slice_error_page_t* page, size_t index,
     alea_transition_slice_critical_finding_t* out_finding);
+size_t alea_slice_error_page_witness_count(
+    const alea_slice_error_page_t* page);
+int alea_slice_error_page_witness_get(
+    const alea_slice_error_page_t* page, size_t index,
+    alea_slice_error_witness_t* out_witness);
 size_t alea_slice_error_page_interval_count(const alea_slice_error_page_t* page);
 int alea_slice_error_page_interval_get(const alea_slice_error_page_t* page,
                                        size_t index,

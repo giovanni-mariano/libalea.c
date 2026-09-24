@@ -722,6 +722,12 @@ static int transport_run(lua_State* L) {
     if (n < 0) return luaL_error(L, "invalid max_pending_particles");
     options.max_pending_particles = (size_t)n;
     options.max_segment_distance = number_field(L, 3, "max_segment_distance", 100);
+    lua_getfield(L, 3, "boundary_distance_tolerance");
+    if (!lua_isnil(L, -1)) {
+        options.boundary_distance_tolerance = luaL_checknumber(L, -1);
+        options.boundary_distance_tolerance_is_set = 1;
+    }
+    lua_pop(L, 1);
     lua_getfield(L, 3, "coupled");
     int coupled = lua_toboolean(L, -1); lua_pop(L, 1);
     lua_getfield(L, 3, "source");

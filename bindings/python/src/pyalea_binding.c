@@ -878,6 +878,8 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "cell_set_density(cell_index, density)\n\nSet cell density (signed: negative=g/cm3, positive=atoms/b-cm)."},
     {"cell_set_universe", (PyCFunction)PyAleaSystem_cell_set_universe, METH_VARARGS,
      "cell_set_universe(cell_index, universe_id)\n\nSet cell universe membership."},
+    {"cell_set_region", (PyCFunction)PyAleaSystem_cell_set_region, METH_VARARGS,
+     "cell_set_region(cell_index, region_node)\n\nReplace a cell's CSG region."},
     {"cell_remove", (PyCFunction)PyAleaSystem_cell_remove, METH_VARARGS,
      "cell_remove(cell_index)\n\nRemove cell by index."},
     {"get_cell_id", (PyCFunction)PyAleaSystem_get_cell_id, METH_VARARGS,

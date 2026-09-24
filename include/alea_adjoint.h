@@ -61,6 +61,9 @@ typedef struct {
     double max_segment_distance; /* finite, positive cm */
     alea_nav_validation_mode_t navigation_validation;
     size_t max_navigation_breakpoints;
+    /* See alea_transport_options_t for the crossing-policy semantics. */
+    double boundary_distance_tolerance;
+    int boundary_distance_tolerance_is_set;
 } alea_adjoint_options_t;
 
 typedef struct {

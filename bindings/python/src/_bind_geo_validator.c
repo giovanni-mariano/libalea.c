@@ -578,7 +578,9 @@ static int parse_transition_slice_options(
         geom_opt_double(opts, "critical_tile_padding",
                         &options->critical_tile_padding) < 0 ||
         geom_opt_double(opts, "critical_probe_radius",
-                        &options->critical_probe_radius) < 0)
+                        &options->critical_probe_radius) < 0 ||
+        geom_opt_double(opts, "critical_relative_distance_tolerance",
+                        &options->critical_relative_distance_tolerance) < 0)
         return -1;
     PyObject* include_void =
         PyDict_GetItemString(opts, "include_void_transitions");
@@ -1090,6 +1092,21 @@ static PyObject* transition_slice_result_to_py(
         dict_set_new(out, "critical_active_boundary_test_count",
                      PyLong_FromSize_t(
                          stats.critical_active_boundary_tests)) < 0 ||
+        dict_set_new(out, "critical_close_crossing_observations",
+                     PyLong_FromSize_t(stats.
+                         critical_close_crossing_observations)) < 0 ||
+        dict_set_new(out, "critical_symbolic_one_sided_intervals",
+                     PyLong_FromSize_t(stats.
+                         critical_symbolic_one_sided_intervals)) < 0 ||
+        dict_set_new(out, "critical_numerical_unsafe_probe_intervals",
+                     PyLong_FromSize_t(stats.
+                         critical_numerical_unsafe_probe_intervals)) < 0 ||
+        dict_set_new(out, "critical_numerical_unrepresentable_probe_intervals",
+                     PyLong_FromSize_t(stats.
+                         critical_numerical_unrepresentable_probe_intervals)) < 0 ||
+        dict_set_new(out, "critical_numerical_inconsistent_probe_intervals",
+                     PyLong_FromSize_t(stats.
+                         critical_numerical_inconsistent_probe_intervals)) < 0 ||
         dict_set_new(out, "critical_active_boundary_fallback_count",
                      PyLong_FromSize_t(
                          stats.critical_active_boundary_fallbacks)) < 0 ||
@@ -1837,6 +1854,11 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
     PAGE_SET("query_id", PyLong_FromUnsignedLongLong(receipt.query_id));
     PAGE_SET("geometry_generation",
              PyLong_FromUnsignedLongLong(receipt.geometry_generation));
+    PAGE_SET("boundary_analysis_policy_version",
+             PyLong_FromUnsignedLong(
+                 receipt.boundary_analysis_policy_version));
+    PAGE_SET("close_crossing_relative_tolerance",
+             PyFloat_FromDouble(receipt.close_crossing_relative_tolerance));
     PAGE_SET("page_index", PyLong_FromSize_t(receipt.page_index));
     PAGE_SET("core_uv_min", Py_BuildValue("(dd)",
              receipt.core_uv_min[0], receipt.core_uv_min[1]));
@@ -1848,6 +1870,18 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
              PyLong_FromSize_t(receipt.candidate_pairs_tested));
     PAGE_SET("peak_scratch_bytes",
              PyLong_FromSize_t(receipt.peak_scratch_bytes));
+    PAGE_SET("close_crossing_observations",
+             PyLong_FromSize_t(receipt.close_crossing_observations));
+    PAGE_SET("symbolic_one_sided_intervals",
+             PyLong_FromSize_t(receipt.symbolic_one_sided_intervals));
+    PAGE_SET("numerical_unsafe_probe_intervals",
+             PyLong_FromSize_t(receipt.numerical_unsafe_probe_intervals));
+    PAGE_SET("numerical_unrepresentable_probe_intervals",
+             PyLong_FromSize_t(
+                 receipt.numerical_unrepresentable_probe_intervals));
+    PAGE_SET("numerical_inconsistent_probe_intervals",
+             PyLong_FromSize_t(
+                 receipt.numerical_inconsistent_probe_intervals));
     PAGE_SET("query_index_bytes",
              PyLong_FromSize_t(receipt.query_index_bytes));
     PAGE_SET("contextual_finding_count",
@@ -1856,6 +1890,21 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
              PyLong_FromSize_t(receipt.omitted_contextual_findings));
     PAGE_SET("omitted_contextual_boundary_evidence",
              PyLong_FromSize_t(receipt.omitted_contextual_boundary_evidence));
+    PAGE_SET("interior_probe_count",
+             PyLong_FromSize_t(receipt.interior_probe_count));
+    PAGE_SET("confirmation_attempt_count",
+             PyLong_FromSize_t(receipt.confirmation_attempt_count));
+    PAGE_SET("confirmation_failure_count",
+             PyLong_FromSize_t(receipt.confirmation_failure_count));
+    PAGE_SET("confirmed_gap_witness_count",
+             PyLong_FromSize_t(receipt.confirmed_gap_witness_count));
+    PAGE_SET("confirmed_overlap_witness_count",
+             PyLong_FromSize_t(receipt.confirmed_overlap_witness_count));
+    PAGE_SET("omitted_confirmed_witnesses",
+             PyLong_FromSize_t(receipt.omitted_confirmed_witnesses));
+    PAGE_SET("confirmation_seconds",
+             PyFloat_FromDouble(receipt.confirmation_seconds));
+    PAGE_SET("elapsed_seconds", PyFloat_FromDouble(receipt.elapsed_seconds));
     PAGE_SET("verified_interval_count",
              PyLong_FromSize_t(receipt.verified_interval_count));
     PAGE_SET("verified_circle_count",
@@ -1988,6 +2037,20 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
                    point_coverage_kind_name(region.kind)));
         REGION_SET("owner_cell_ids", slice_error_owner_ids(
                    region.owner_cell_ids, region.owner_count));
+        REGION_SET("numerical_cause", PyUnicode_FromString(
+                   alea_slice_error_numerical_cause_name(
+                       region.numerical_cause)));
+        REGION_SET("source_cell_id",
+                   PyLong_FromLong(region.source_cell_id));
+        REGION_SET("source_surface_id",
+                   PyLong_FromLong(region.source_surface_id));
+        REGION_SET("source_primitive_id",
+                   PyLong_FromUnsignedLong(region.source_primitive_id));
+        REGION_SET("source_occurrence_key", PyLong_FromUnsignedLongLong(
+                   region.source_occurrence_key));
+        REGION_SET("source_universe_occurrence_key",
+                   PyLong_FromUnsignedLongLong(
+                       region.source_universe_occurrence_key));
         PyObject* polygon = PyList_New((Py_ssize_t)region.polygon_vertex_count);
         PyObject* polygon_uncertainty =
             PyList_New((Py_ssize_t)region.polygon_vertex_count);
@@ -2059,6 +2122,61 @@ static PyObject* slice_error_page_to_py(const alea_slice_error_page_t* page) {
         PyList_SET_ITEM(context, i, item);
     }
     if (dict_set_new(out, "context_findings", context) < 0) goto failed;
+
+    PyObject* witnesses = PyList_New(
+        (Py_ssize_t)alea_slice_error_page_witness_count(page));
+    if (!witnesses) goto failed;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(witnesses); ++i) {
+        alea_slice_error_witness_t witness;
+        if (alea_slice_error_page_witness_get(
+                page, (size_t)i, &witness) != 0) {
+            Py_DECREF(witnesses);
+            PyErr_SetString(PyExc_RuntimeError,
+                            "failed to read confirmed witness");
+            goto failed;
+        }
+        PyObject* owners = PyList_New((Py_ssize_t)witness.owner_count);
+        if (!owners) { Py_DECREF(witnesses); goto failed; }
+        for (size_t owner = 0; owner < witness.owner_count; ++owner) {
+            PyObject* item = Py_BuildValue(
+                "{s:i,s:i,s:i,s:K,s:K}",
+                "cell_id", witness.owner_cell_ids[owner],
+                "universe_id", witness.owner_universe_ids[owner],
+                "depth", witness.owner_depths[owner],
+                "occurrence_key", (unsigned long long)
+                    witness.owner_occurrence_keys[owner],
+                "parent_occurrence_key", (unsigned long long)
+                    witness.owner_parent_occurrence_keys[owner]);
+            if (!item) {
+                Py_DECREF(owners); Py_DECREF(witnesses); goto failed;
+            }
+            PyList_SET_ITEM(owners, (Py_ssize_t)owner, item);
+        }
+        PyObject* item = Py_BuildValue(
+            "{s:s,s:s,s:s,s:N,s:N,s:i,s:N,s:n,s:n,s:O,s:i,s:i,s:K,s:K}",
+            "evidence_scope", "verified_point",
+            "kind", point_coverage_kind_name(witness.kind),
+            "source", witness.source ==
+                ALEA_SLICE_ERROR_WITNESS_INTERIOR_PROBE
+                    ? "interior_probe" : "boundary_probe",
+            "uv", Py_BuildValue("(dd)", witness.uv[0], witness.uv[1]),
+            "world_point", geom_vec3(witness.world_point),
+            "target_depth", witness.target_depth,
+            "owners", owners,
+            "owner_count", (Py_ssize_t)witness.owner_count,
+            "owner_count_lower_bound",
+                (Py_ssize_t)witness.owner_count_lower_bound,
+            "owners_complete", witness.owners_complete ? Py_True : Py_False,
+            "source_cell_id", witness.source_cell_id,
+            "source_surface_id", witness.source_surface_id,
+            "source_occurrence_key",
+                (unsigned long long)witness.source_occurrence_key,
+            "source_universe_occurrence_key",
+                (unsigned long long)witness.source_universe_occurrence_key);
+        if (!item) { Py_DECREF(witnesses); goto failed; }
+        PyList_SET_ITEM(witnesses, i, item);
+    }
+    if (dict_set_new(out, "witnesses", witnesses) < 0) goto failed;
     return out;
 failed:
     Py_XDECREF(receipt_dict);
@@ -2104,6 +2222,31 @@ static int slice_error_python_options(
         options->max_index_bytes = (size_t)max_index_bytes;
     if (parse_transition_slice_options(opts, &options->scan_options) < 0)
         return -1;
+    /* The generic transition parser starts from transition-screen defaults,
+     * where uniform probes are opt-in. Slice-error queries use a 3x3 interior
+     * discovery grid unless the caller supplied this option explicitly. */
+    PyObject* interior_option = opts && opts != Py_None
+        ? PyDict_GetItemString(opts, "interior_probes_per_axis") : NULL;
+    if (interior_option) {
+        uint64_t value = options->scan_options.coverage_uniform_probes_per_ray;
+        if (transition_slice_opt_u64(
+                opts, "interior_probes_per_axis", &value) < 0) return -1;
+        if (value > SIZE_MAX) {
+            PyErr_SetString(PyExc_OverflowError,
+                            "interior_probes_per_axis does not fit this platform");
+            return -1;
+        }
+        if (value > 64) {
+            PyErr_SetString(PyExc_ValueError,
+                            "interior_probes_per_axis must not exceed 64");
+            return -1;
+        }
+        options->scan_options.coverage_uniform_probes_per_ray = (size_t)value;
+    } else if (!opts || opts == Py_None ||
+               !PyDict_GetItemString(
+                   opts, "coverage_uniform_probes_per_ray")) {
+        options->scan_options.coverage_uniform_probes_per_ray = 3;
+    }
     return ensure_query_acceleration(self);
 }
 
@@ -2187,6 +2330,109 @@ static PyObject* PyAleaSliceErrorQuery_run_page(
     return result;
 }
 
+static PyObject* PyAleaSliceErrorQuery_run_pages(
+    PyAleaSliceErrorQueryObject* self, PyObject* args, PyObject* kwargs) {
+    PyObject* indices_obj;
+    Py_ssize_t workers = 0;
+    unsigned long long max_parallel_scratch_bytes = 0;
+    static char* keywords[] = {
+        "indices", "workers", "max_parallel_scratch_bytes", NULL};
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kwargs, "O|nK", keywords, &indices_obj, &workers,
+            &max_parallel_scratch_bytes)) return NULL;
+    if (workers < 0) {
+        PyErr_SetString(PyExc_ValueError, "workers must be non-negative");
+        return NULL;
+    }
+    if (!self->query || !self->system ||
+        self->system->sys != self->source_sys) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "slice error query is closed or its system was replaced");
+        return NULL;
+    }
+    PyObject* sequence = PySequence_Fast(
+        indices_obj, "indices must be a finite sequence of integers");
+    if (!sequence) return NULL;
+    const Py_ssize_t count_py = PySequence_Fast_GET_SIZE(sequence);
+    const size_t count = (size_t)count_py;
+    size_t* indices = count ? calloc(count, sizeof(*indices)) : NULL;
+    alea_slice_error_page_t** pages =
+        count ? calloc(count, sizeof(*pages)) : NULL;
+    if (count && (!indices || !pages)) {
+        free(indices); free(pages); Py_DECREF(sequence);
+        return PyErr_NoMemory();
+    }
+    for (size_t i = 0; i < count; ++i) {
+        PyObject* item = PySequence_Fast_GET_ITEM(sequence, (Py_ssize_t)i);
+        if (PyBool_Check(item) || !PyLong_Check(item)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "page indices must be integers");
+            goto failed;
+        }
+        const size_t index = PyLong_AsSize_t(item);
+        if (PyErr_Occurred()) goto failed;
+        if (index >= alea_slice_error_query_page_count(self->query)) {
+            PyErr_SetString(PyExc_IndexError,
+                            "slice error page index out of range");
+            goto failed;
+        }
+        indices[i] = index;
+        pages[i] = alea_slice_error_page_create();
+        if (!pages[i]) { PyErr_NoMemory(); goto failed; }
+    }
+    alea_transition_slice_batch_stats_t stats;
+    sighandler_func old_sigint = install_sigint();
+    const int rc = alea_slice_error_query_run_pages(
+        self->query, indices, count, (size_t)workers,
+        (uint64_t)max_parallel_scratch_bytes, pages, &stats);
+    if (restore_sigint(old_sigint)) goto failed;
+    if (rc != 0) {
+        PyErr_SetString(PyExc_RuntimeError, alea_error());
+        goto failed;
+    }
+    PyObject* result_pages = PyList_New(count_py);
+    PyObject* result = PyDict_New();
+    PyObject* stats_dict = Py_BuildValue(
+        "{s:n,s:n,s:n,s:n,s:K,s:K}",
+        "page_count", (Py_ssize_t)stats.page_count,
+        "completed_page_count", (Py_ssize_t)stats.completed_page_count,
+        "requested_workers", (Py_ssize_t)stats.requested_workers,
+        "actual_workers", (Py_ssize_t)stats.actual_workers,
+        "reserved_scratch_bytes_per_worker",
+            (unsigned long long)stats.reserved_scratch_bytes_per_worker,
+        "reserved_parallel_scratch_bytes",
+            (unsigned long long)stats.reserved_parallel_scratch_bytes);
+    if (!result_pages || !result || !stats_dict) {
+        Py_XDECREF(result_pages); Py_XDECREF(result); Py_XDECREF(stats_dict);
+        goto failed;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        PyObject* page_result = slice_error_page_to_py(pages[i]);
+        if (!page_result) {
+            Py_DECREF(result_pages); Py_DECREF(result); Py_DECREF(stats_dict);
+            goto failed;
+        }
+        PyList_SET_ITEM(result_pages, (Py_ssize_t)i, page_result);
+    }
+    if (PyDict_SetItemString(result, "pages", result_pages) < 0 ||
+        PyDict_SetItemString(result, "stats", stats_dict) < 0) {
+        Py_DECREF(result_pages); Py_DECREF(stats_dict); Py_DECREF(result);
+        goto failed;
+    }
+    Py_DECREF(result_pages);
+    Py_DECREF(stats_dict);
+    for (size_t i = 0; i < count; ++i)
+        alea_slice_error_page_destroy(pages[i]);
+    free(indices); free(pages); Py_DECREF(sequence);
+    return result;
+
+failed:
+    for (size_t i = 0; i < count; ++i)
+        alea_slice_error_page_destroy(pages ? pages[i] : NULL);
+    free(indices); free(pages); Py_DECREF(sequence);
+    return NULL;
+}
+
 static PyObject* PyAleaSliceErrorQuery_get_page_count(
     PyAleaSliceErrorQueryObject* self, void* ignored) {
     (void)ignored;
@@ -2200,6 +2446,9 @@ static PyObject* PyAleaSliceErrorQuery_get_page_count(
 static PyMethodDef PyAleaSliceErrorQuery_methods[] = {
     {"run_page", (PyCFunction)PyAleaSliceErrorQuery_run_page, METH_VARARGS,
      "run_page(index) -> dict: classify one page with the retained query."},
+    {"run_pages", (PyCFunction)PyAleaSliceErrorQuery_run_pages,
+     METH_VARARGS | METH_KEYWORDS,
+     "run_pages(indices, workers=0, max_parallel_scratch_bytes=0) -> dict"},
     {"close", (PyCFunction)PyAleaSliceErrorQuery_close, METH_NOARGS,
      "Release the native query and its system reference."},
     {"__enter__", (PyCFunction)PyAleaSliceErrorQuery_enter, METH_NOARGS,

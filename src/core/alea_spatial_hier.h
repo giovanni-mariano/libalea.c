@@ -76,8 +76,12 @@ typedef struct {
 typedef enum {
     ALEA_HIER_REGION_CHAIN_COMPLETE = 0,
     ALEA_HIER_REGION_CHAIN_MAX_HITS = 1,
-    ALEA_HIER_REGION_CHAIN_UNSUPPORTED = 2
+    ALEA_HIER_REGION_CHAIN_UNSUPPORTED = 2,
+    ALEA_HIER_REGION_CHAIN_VISITOR_STOPPED = 3
 } alea_hier_region_chain_status_t;
+
+typedef int (*alea_hier_spatial_occurrence_visitor_t)(
+    const alea_hier_spatial_chain_hit_t* occurrence, void* userdata);
 
 /* A universe placement identified from two coordinate frames rather than
  * cell containment.  This is used for boundary failures where the reported
@@ -492,6 +496,29 @@ int alea_hier_spatial_query_region_chain_bounded(
     alea_system_t* sys, const alea_bbox_t* query_bbox,
     alea_hier_spatial_chain_hit_t* out_hits, size_t max_hits,
     int include_containers, alea_hier_region_chain_status_t* out_status);
+/* Return one representative per universe occurrence intersecting the region.
+ * Representatives identify placements; callers query each represented
+ * universe separately for its actual candidate cells. */
+int alea_hier_spatial_query_region_occurrences_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_chain_hit_t* out_hits, size_t max_hits,
+    alea_hier_region_chain_status_t* out_status);
+/* Stream one representative per intersecting universe occurrence. The
+ * visitor's receipt is valid only during the call. A nonzero visitor result
+ * stops traversal and reports VISITOR_STOPPED. */
+int alea_hier_spatial_visit_region_occurrences_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_occurrence_visitor_t visitor, void* userdata,
+    size_t max_occurrences, size_t* out_occurrence_count,
+    alea_hier_region_chain_status_t* out_status);
+/* Stream every intersecting container/terminal chain without retaining the
+ * large fixed-depth receipts. The visitor order is deterministic but is not
+ * the sorted order of the array-returning query. */
+int alea_hier_spatial_visit_region_chain_bounded(
+    alea_system_t* sys, const alea_bbox_t* query_bbox,
+    alea_hier_spatial_occurrence_visitor_t visitor, void* userdata,
+    size_t max_hits, size_t* out_hit_count,
+    alea_hier_region_chain_status_t* out_status);
 int alea_hier_spatial_query_slice_z(alea_system_t* sys,
                                     double z,
                                     double x_min,

@@ -271,8 +271,12 @@ Tally `score` accepts `track_length`, `collision`,
 `upper`, and `dimensions` arrays of length three. Optional tally filters are
 `particle`, `material_id`, `reaction_mt`, `nuclide_zaid`, `energy_min/max`,
 `time_min/max`, and `energy_edges`. Run options also accept `history_offset`,
-`max_events_per_history`, `max_segment_distance`, and
-`max_pending_particles`. Custom source callbacks remain available through C.
+`max_events_per_history`, `max_segment_distance`, `max_pending_particles`, and
+`boundary_distance_tolerance`. The last option defaults to `1e-6` when omitted;
+zero disables its user-sized proximity window. It applies only when competing
+hierarchy crossings are already proven aliases of the same world surface.
+It does not merge distinct close surfaces or define a minimum material-layer
+thickness. Custom source callbacks remain available through C.
 
 The geometry needs a vacuum boundary around its transport domain. If MCNP
 graveyard conversion does not mark that boundary, pass

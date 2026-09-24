@@ -320,18 +320,33 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
 
     if ((flags & ALEA_CACHE_UNIVERSE) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_UNIVERSE)) {
-        if (alea_build_universe_index(sys) != 0) goto fail;
+        if (alea_build_universe_index(sys) != 0) {
+            if (alea_get_last_error() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                      "failed to build universe query cache");
+            goto fail;
+        }
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_UNIVERSE);
     }
     if ((flags & ALEA_CACHE_CELL_SURFACES) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_CELL_SURFACES)) {
-        if (alea_build_cell_surface_index(sys) != 0) goto fail;
+        if (alea_build_cell_surface_index(sys) != 0) {
+            if (alea_get_last_error() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                      "failed to build cell-surface query cache");
+            goto fail;
+        }
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_CELL_SURFACES);
     }
 
     if ((flags & ALEA_CACHE_HIER_SPATIAL) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_HIER_SPATIAL)) {
-        if (alea_hier_spatial_index_build(sys) != 0) goto fail;
+        if (alea_hier_spatial_index_build(sys) != 0) {
+            if (alea_get_last_error() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                      "failed to build hierarchical spatial query cache");
+            goto fail;
+        }
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_HIER_SPATIAL);
     }
 
@@ -343,7 +358,12 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         }
         if (alea_vec_count(&sys->surfaces) > 0) {
             sys->surface_bvh = alea_bvh_build(sys);
-            if (!sys->surface_bvh) goto fail;
+            if (!sys->surface_bvh) {
+                if (alea_get_last_error() == ALEA_OK)
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                                          "failed to build surface BVH query cache");
+                goto fail;
+            }
         }
         sys->bvh_dirty = false;
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_SURFACE_BVH);
@@ -351,7 +371,12 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
 
     if ((flags & ALEA_CACHE_ADJACENCY) &&
         !alea_system_query_cache_ready(sys, ALEA_CACHE_ADJACENCY)) {
-        if (alea_build_cell_adjacency(sys) != 0) goto fail;
+        if (alea_build_cell_adjacency(sys) != 0) {
+            if (alea_get_last_error() == ALEA_OK)
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                                      "failed to build cell-adjacency query cache");
+            goto fail;
+        }
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_ADJACENCY);
     }
 
@@ -2097,7 +2122,19 @@ static int ensure_mc_id_to_surface_map(alea_system_t* sys) {
         return 0;  /* No valid MCNP surface IDs */
     }
 
-    size_t needed_size = (size_t)(max_mc_id + 1);
+    size_t needed_size = (size_t)max_mc_id + 1u;
+
+    /* Surface IDs are user input and need not be dense. Avoid touching a
+     * multi-gigabyte overcommitted allocation for one unusually large ID;
+     * find_surface_by_mc_id() deliberately falls back to a linear lookup when
+     * the dense map is absent. */
+    static const size_t max_dense_entries = 16u * 1024u * 1024u;
+    if (needed_size > max_dense_entries) {
+        free(sys->mc_id_to_surface);
+        sys->mc_id_to_surface = NULL;
+        sys->mc_id_to_surface_size = 0;
+        return 0;
+    }
 
     /* Check if map needs rebuilding */
     if (sys->mc_id_to_surface && sys->mc_id_to_surface_size >= needed_size) {
@@ -2112,6 +2149,8 @@ static int ensure_mc_id_to_surface_map(alea_system_t* sys) {
     /* Allocate new map */
     sys->mc_id_to_surface = malloc(needed_size * sizeof(uint32_t));
     if (!sys->mc_id_to_surface) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
+                              "failed to allocate surface-ID lookup table");
         return -1;
     }
     sys->mc_id_to_surface_size = needed_size;

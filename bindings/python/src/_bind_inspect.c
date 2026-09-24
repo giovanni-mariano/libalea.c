@@ -452,6 +452,22 @@ static PyObject* PyAleaSystem_cell_set_universe(PyAleaSystemObject* self, PyObje
     Py_RETURN_NONE;
 }
 
+static PyObject* PyAleaSystem_cell_set_region(PyAleaSystemObject* self,
+                                              PyObject* args) {
+    int cell_index;
+    unsigned int root;
+    if (!PyArg_ParseTuple(args, "iI", &cell_index, &root)) return NULL;
+    if (!self->sys) {
+        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
+        return NULL;
+    }
+    if (alea_cell_set_region(self->sys, cell_index, (alea_node_id_t)root) < 0) {
+        PyErr_SetString(PyExc_ValueError, "invalid cell index or CSG root");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject* PyAleaSystem_cell_remove(PyAleaSystemObject* self, PyObject* args) {
     int cell_index;
     if (!PyArg_ParseTuple(args, "i", &cell_index)) return NULL;

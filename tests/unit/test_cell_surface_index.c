@@ -195,6 +195,28 @@ static int test_rebuild_index(void) {
     return ok;
 }
 
+/* A sparse external surface ID must not size the dense lookup by that ID. */
+static int test_sparse_large_surface_id(void) {
+    alea_system_t* sys = alea_create();
+    if (!sys) return 0;
+
+    int surface = alea_sphere_surface(sys, 2000000000, 0, 0, 0, 1.0);
+    if (surface < 0) {
+        alea_destroy(sys);
+        return 0;
+    }
+    alea_node_id_t inside = alea_surface_at(sys, surface)->neg_node;
+    alea_add_cell(sys, 1, inside, ALEA_MATERIAL_VOID, 0.0, 0);
+
+    int rc = alea_build_cell_surface_index(sys);
+    int ok = (rc == 0 && sys->mc_id_to_surface == NULL &&
+              sys->mc_id_to_surface_size == 0 &&
+              sys->cells.data[0].surface_index_count == 1 &&
+              sys->cells.data[0].surface_indices[0] == (uint32_t)surface);
+    alea_destroy(sys);
+    return ok;
+}
+
 /* ============================================================================
  * TEST: No duplicate surfaces
  * ============================================================================ */
@@ -343,6 +365,7 @@ int main(void) {
     TEST(multiple_cells_shared_surfaces);
     TEST(complex_csg_tree);
     TEST(rebuild_index);
+    TEST(sparse_large_surface_id);
     TEST(no_duplicate_surfaces);
     TEST(raycast_cell_aware_basic);
     TEST(raycast_cell_aware_multiple);

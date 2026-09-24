@@ -65,6 +65,13 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     assert page["receipt"]["scope_classified"] is True
     assert page["receipt"]["output_complete"] is True
     assert page["receipt"]["query_index_bytes"] > 0
+    assert page["receipt"]["close_crossing_observations"] == 0
+    assert page["receipt"]["symbolic_one_sided_intervals"] == 0
+    assert page["receipt"]["boundary_analysis_policy_version"] == 4
+    assert page["receipt"]["close_crossing_relative_tolerance"] == 1e-6
+    assert page["receipt"]["numerical_unsafe_probe_intervals"] == 0
+    assert page["receipt"]["numerical_unrepresentable_probe_intervals"] == 0
+    assert page["receipt"]["numerical_inconsistent_probe_intervals"] == 0
     assert page["receipt"]["core_uv_min"] == (-1, -1)
     assert page["receipt"]["core_uv_max"] == (1, 1)
     assert len(page["context_findings"]) == page["receipt"]["contextual_finding_count"]
@@ -76,11 +83,38 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     assert page["intervals"][0]["negative_owner_cell_ids"] == [1]
     assert page["intervals"][0]["positive_side_kind"] == "gap"
     assert page["regions"][0]["kind"] == "gap"
+    assert page["receipt"]["confirmation_attempt_count"] > 0
+    assert page["receipt"]["interior_probe_count"] == 9
+    assert page["receipt"]["confirmation_failure_count"] == 0
+    assert page["receipt"]["confirmed_gap_witness_count"] > 0
+    assert page["receipt"]["confirmed_overlap_witness_count"] == 0
+    assert page["receipt"]["confirmation_seconds"] >= 0.0
+    assert page["receipt"]["elapsed_seconds"] >= (
+        page["receipt"]["confirmation_seconds"])
+    gap_witnesses = [item for item in page["witnesses"]
+                     if item["kind"] == "gap"]
+    assert gap_witnesses
+    witness = next(item for item in gap_witnesses
+                   if item["source"] == "boundary_probe")
+    assert witness["evidence_scope"] == "verified_point"
+    assert witness["source"] == "boundary_probe"
+    assert witness["target_depth"] == 0
+    assert witness["owner_count"] == 0
+    assert witness["owner_count_lower_bound"] == 0
+    assert witness["owners_complete"] is True
+    assert witness["owners"] == []
 
     without_index = system.slice_error_page(*args, max_index_bytes=1)
     assert without_index["receipt"]["scope_classified"] is True
     assert without_index["receipt"]["query_index_bytes"] == 0
     assert without_index["intervals"] == page["intervals"]
+
+    one_probe = system.slice_error_page(
+        *args, options={"interior_probes_per_axis": 1})
+    assert one_probe["receipt"]["interior_probe_count"] == 1
+    with pytest.raises(ValueError):
+        system.slice_error_page(
+            *args, options={"interior_probes_per_axis": 65})
 
     sphere = pyalea.System()
     _, _, inside = sphere.sphere_surface(2, 0, 0, 0, 1)
@@ -91,6 +125,99 @@ def test_slice_error_page_reports_verified_boundary_and_unresolved_geometry():
     assert unresolved["unresolved"][0]["reason"] == "unsupported_primitive"
     assert unresolved["intervals"] == []
     assert unresolved["unresolved"]
+
+
+def test_slice_error_page_reports_symbolic_probe_resolution_separately():
+    system = pyalea.System()
+    _, xlo_positive, _ = system.plane_surface(1310, 1, 0, 0, -999)
+    _, _, xhi_negative = system.plane_surface(1311, 1, 0, 0, -1001)
+    _, ylo_positive, _ = system.plane_surface(1312, 0, 1, 0, -1000)
+    _, _, yhi_negative = system.plane_surface(
+        1313, 0, 1, 0, -(1000 + 1e-12))
+    _, zlo_positive, _ = system.plane_surface(1314, 0, 0, 1, 1)
+    _, _, zhi_negative = system.plane_surface(1315, 0, 0, 1, -1)
+    narrow = system.create_intersection(ylo_positive, yhi_negative)
+    broad = system.create_union(narrow, xhi_negative)
+    system.add_cell(1310, system.create_intersection_many([
+        broad, xlo_positive, zlo_positive, zhi_negative]))
+
+    page = system.slice_error_page(
+        (0, 0, 0), (0, 0, 1), (0, 1, 0),
+        (999, 1001, 999, 1001), (999, 1001, 999, 1001),
+        options={"critical_relative_distance_tolerance": 1e-12})
+    assert page["receipt"]["scope_classified"] is False
+    assert page["receipt"]["scan_stop_reason"] == "numerical_unresolved"
+    assert page["receipt"]["close_crossing_observations"] > 0
+    assert page["receipt"]["symbolic_one_sided_intervals"] > 0
+    assert page["receipt"]["numerical_unrepresentable_probe_intervals"] > 0
+    assert page["regions"]
+    assert all(region["kind"] == "unresolved" and
+               region["numerical_cause"] == "unrepresentable_probes"
+               for region in page["regions"])
+
+
+def test_slice_error_proximity_tolerance_does_not_reject_a_thin_gap():
+    system = pyalea.System()
+    _, _, left = system.plane_surface(1316, 1, 0, 0, 0)
+    _, right, _ = system.plane_surface(1317, 1, 0, 0, -1e-7)
+    system.add_cell(1316, left)
+    system.add_cell(1317, right)
+    args = ((0, 0, 0), (0, 0, 1), (0, 1, 0),
+            (-0.1, 0.1, -0.1, 0.1), (-0.1, 0.1, -0.1, 0.1))
+
+    # The threshold records proximity but does not erase the distinct,
+    # representable interval or turn it into a numerical failure.
+    default = system.slice_error_page(*args)
+    assert default["receipt"]["scope_classified"] is True
+    assert default["receipt"]["unresolved_reason"] == "resolved"
+    assert default["regions"][0]["kind"] == "gap"
+
+    resolved = system.slice_error_page(
+        *args, options={"critical_relative_distance_tolerance": 1e-9})
+    assert resolved["receipt"]["scope_classified"] is True
+    assert resolved["receipt"]["unresolved_reason"] == "resolved"
+    assert resolved["regions"][0]["kind"] == "gap"
+    assert resolved["regions"][0]["uv_max"][0] - (
+        resolved["regions"][0]["uv_min"][0]) == pytest.approx(1e-7)
+
+    with pytest.raises(ValueError):
+        system.slice_error_page(
+            *args,
+            options={"critical_relative_distance_tolerance": -1e-6})
+
+
+def test_slice_error_thin_valid_layer_and_overlap_keep_their_ownership():
+    width = 1e-7
+    args = ((0, 0, 0), (0, 0, 1), (0, 1, 0),
+            (-1, 1, -1, 1), (-1, 1, -1, 1))
+
+    valid = pyalea.System()
+    _, low_positive, low_negative = valid.plane_surface(
+        1320, 1, 0, 0, -0.2)
+    _, high_positive, high_negative = valid.plane_surface(
+        1321, 1, 0, 0, -(0.2 + width))
+    valid.add_cell(1320, low_negative)
+    valid.add_cell(1321, valid.create_intersection(
+        low_positive, high_negative))
+    valid.add_cell(1322, high_positive)
+    for columns in (1, 2):
+        with valid.slice_error_query(
+                *args, tile_columns=columns) as query:
+            pages = [query.run_page(i) for i in range(query.page_count)]
+        assert all(page["receipt"]["scope_classified"] for page in pages)
+        assert not any(page["regions"] for page in pages)
+
+    overlap = pyalea.System()
+    _, low_positive, _ = overlap.plane_surface(1330, 1, 0, 0, -0.2)
+    _, _, high_negative = overlap.plane_surface(
+        1331, 1, 0, 0, -(0.2 + width))
+    overlap.add_cell(1330, high_negative)
+    overlap.add_cell(1331, low_positive)
+    page = overlap.slice_error_page(*args)
+    assert page["receipt"]["scope_classified"] is True
+    assert page["regions"][0]["kind"] == "overlap"
+    assert page["regions"][0]["uv_max"][0] - (
+        page["regions"][0]["uv_min"][0]) == pytest.approx(width)
 
 
 def test_slice_error_page_keeps_plane_boundary_with_separated_sphere():
@@ -301,7 +428,11 @@ def test_slice_error_query_reuses_identity_and_survives_partial_pages():
     assert {page["receipt"]["page_index"] for page in pages} == {0, 1, 2, 3}
     assert len({page["receipt"]["query_id"] for page in pages}) == 1
     assert all(page["receipt"]["scope_classified"] for page in pages)
-    assert query.run_page(0) == pages[1]
+    repeated = query.run_page(0)
+    for receipt in (repeated["receipt"], pages[1]["receipt"]):
+        receipt.pop("confirmation_seconds")
+        receipt.pop("elapsed_seconds")
+    assert repeated == pages[1]
     with pytest.raises(IndexError):
         query.run_page(4)
     with pytest.raises(IndexError):
@@ -383,6 +514,35 @@ def test_parallel_runtime_value_stays_synchronized():
         assert pyalea._alea.PARALLEL_MAX_THREADS == 2
     finally:
         pyalea.set_parallel_threads(original)
+
+
+def test_slice_error_query_runs_scratch_bounded_parallel_pages():
+    system = pyalea.System()
+    _, _, negative = system.plane_surface(22, 1.0, 0.0, 0.0, 0.0)
+    system.add_cell(22, negative)
+    args = ((0, 0, 0), (0, 0, 1), (0, 1, 0),
+            (-2, 2, -1, 1), (-2, 2, -1, 1))
+    with system.slice_error_query(
+            *args, tile_columns=4, tile_rows=1) as query:
+        batch = query.run_pages(
+            [3, 1, 0, 2], workers=4,
+            max_parallel_scratch_bytes=8 * 1024 * 1024)
+        assert [page["receipt"]["page_index"]
+                for page in batch["pages"]] == [3, 1, 0, 2]
+        assert batch["stats"]["page_count"] == 4
+        assert batch["stats"]["completed_page_count"] == 4
+        assert 1 <= batch["stats"]["actual_workers"] <= 2
+        assert batch["stats"]["reserved_parallel_scratch_bytes"] <= (
+            8 * 1024 * 1024)
+        serial = query.run_pages(
+            [0, 1], workers=4, max_parallel_scratch_bytes=0)
+        assert serial["stats"]["actual_workers"] == 1
+        with pytest.raises(IndexError):
+            query.run_pages([4])
+        with pytest.raises(TypeError):
+            query.run_pages([True])
+        with pytest.raises(ValueError):
+            query.run_pages([0], workers=-1)
 
 
 def test_packaged_build_metadata_when_present():

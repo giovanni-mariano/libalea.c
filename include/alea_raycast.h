@@ -103,6 +103,17 @@ int alea_ray_navigator_set_validation_mode(
  * Defaults to 8192; exceeding it fails the advance. */
 int alea_ray_navigator_set_interval_budget(
     alea_ray_navigator_t* navigator, size_t max_breakpoints);
+/** Relative tolerance used only to order competing forward crossings from
+ * different hierarchy depths. Distances are measured from the current
+ * particle position. When two candidates are within that window and are
+ * proven aliases of the same world surface, the shallower boundary wins.
+ * Distinct close surfaces retain their ordinary numerical ordering. The
+ * default is 1e-6; zero disables this user-sized proximity window while the
+ * walker's numerical safeguards remain active. Configure this before the
+ * first restart; changing an active navigator is rejected. This does not
+ * suppress thin regions or change ownership tests. */
+int alea_ray_navigator_set_boundary_distance_tolerance(
+    alea_ray_navigator_t* navigator, double relative_tolerance);
 int alea_ray_navigator_set_event_fields(
     alea_ray_navigator_t* navigator, uint32_t fields);
 

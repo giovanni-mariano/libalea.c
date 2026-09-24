@@ -108,6 +108,9 @@ static alea_error_t validate(const alea_system_t* sys,
         !o->max_events_per_history ||
         !(o->max_segment_distance > 0.0) ||
         !isfinite(o->max_segment_distance) ||
+        (o->boundary_distance_tolerance_is_set &&
+         (!isfinite(o->boundary_distance_tolerance) ||
+          o->boundary_distance_tolerance < 0.0)) ||
         (o->navigation_validation != ALEA_NAV_VALIDATE_STRICT &&
          o->navigation_validation != ALEA_NAV_VALIDATE_FAST &&
          o->navigation_validation != ALEA_NAV_VALIDATE_INTERVAL))
@@ -157,6 +160,9 @@ alea_error_t alea_adjoint_run(
     alea_ray_navigator_set_validation_mode(nav, o->navigation_validation);
     if (o->max_navigation_breakpoints)
         alea_ray_navigator_set_interval_budget(nav, o->max_navigation_breakpoints);
+    if (o->boundary_distance_tolerance_is_set)
+        alea_ray_navigator_set_boundary_distance_tolerance(
+            nav, o->boundary_distance_tolerance);
 
     double sum = 0.0, sum_squared = 0.0;
     double running_mean = 0.0, m2 = 0.0;

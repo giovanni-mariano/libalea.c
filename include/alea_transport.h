@@ -132,6 +132,11 @@ typedef struct {
     uint32_t history_offset; /* first global history ID; zero by default */
     alea_nav_validation_mode_t navigation_validation; /* zero: sampled STRICT */
     size_t max_navigation_breakpoints; /* zero: navigator default */
+    /* Relative comparison for competing hierarchy crossings. The default is
+     * 1e-6. Set boundary_distance_tolerance_is_set to apply this field,
+     * including zero to disable the user-sized proximity window. */
+    double boundary_distance_tolerance;
+    int boundary_distance_tolerance_is_set;
 } alea_transport_options_t;
 
 typedef struct {
