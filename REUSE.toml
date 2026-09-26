@@ -32,6 +32,12 @@ SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
 SPDX-License-Identifier = "MPL-2.0"
 
 [[annotations]]
+path = "tests/fuzz/corpus_alea_xml/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
 path = ".gitmodules"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
