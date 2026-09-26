@@ -10,9 +10,14 @@ from pathlib import Path
 PUBLIC_DOCUMENTS = frozenset(
     {
         "index.md",
+        "INSTALLATION.md",
         "TUTORIAL.md",
         "LUA_TUTORIAL.md",
+        "PYTHON.md",
         "CONCEPTS.md",
+        "GEOMETRY_VALIDATION.md",
+        "FIXED_SOURCE_WORKFLOW.md",
+        "TRANSPORT_TALLIES.md",
         "API.md",
         "ARCHITECTURE.md",
         "NUCDATA_CAPABILITIES.md",

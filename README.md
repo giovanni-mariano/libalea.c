@@ -10,6 +10,8 @@ A C library for building, debugging, and analyzing Constructive Solid Geometry (
 
 **The library is under active development. The API may change.**
 
+**[Read the documentation](https://giovanni-mariano.github.io/libalea.c/)**
+
 ## Hello World
 
 ```c
@@ -45,7 +47,8 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 
 - **Load** MCNP and OpenMC geometry files
 - **Query** which cell and material exists at any point
-- **Detect** overlapping cells and undefined regions
+- **Detect** overlapping cells and undefined regions with sampled diagnostics
+  or bounded, verified slice scans
 - **Trace** rays through the model and report every cell crossing
 - **Visualize** 2D cross-sections with exact analytical surface boundaries
 - **Render** 3D images with Phong shading, cutaway views, and shadow rays
@@ -60,7 +63,7 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 
 ### Pre-built Binaries
 
-Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-mariano/libalea/releases):
+Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-mariano/libalea.c/releases):
 
 | Platform | Archive |
 |----------|---------|
@@ -88,8 +91,8 @@ and local build commands.
 ### Building from Source
 
 ```bash
-git clone --recursive https://github.com/giovanni-mariano/libalea.git
-cd libalea
+git clone --recursive https://github.com/giovanni-mariano/libalea.c.git
+cd libalea.c
 ```
 
 If you already cloned without submodules, initialize the vendored Lua and linenoise sources before building the CLI:
@@ -366,7 +369,7 @@ No separate threading runtime is required.
 | `libalea_openmc.a` | OpenMC XML parser, converter, and exporter |
 | `libalea_serpent.a` | Serpent exporter |
 | `libalea_nucdata.a` | Nuclear data: ACE reader, cross-section lookup, free-path/nuclide/reaction sampling, Doppler broadening, multigroup collapse |
-| `libalea_transport.a` | Geometry/material bindings and fixed-source neutron histories; depends on nuclear data and core geometry |
+| `libalea_transport.a` | Geometry/material bindings and fixed-source neutron/photon histories; depends on nuclear data and core geometry |
 | `libalea_full.a` | Core, MCNP, OpenMC, Serpent, nuclear data, and transport in one archive |
 
 Transport applications include `alea_transport.h` and `alea_source.h` and link in dependency order:
@@ -375,63 +378,21 @@ Transport applications include `alea_transport.h` and `alea_source.h` and link i
 gcc -o myapp myapp.c -Iinclude bin/libalea_transport.a bin/libalea_nucdata.a bin/libalea.a -lm -pthread
 ```
 
-Cell-binding declarations live in `alea_transport.h`; their existing
-`alea_nuc_cell_bindings_*` names are preserved. Nuclear-data preparation and
-collision evaluation remain in `alea_nucdata.h`. Nuclear data is loaded only
-when a caller explicitly prepares transport bindings.
-For neutron multiplication, prepare bindings with
-`ALEA_NUC_CAP_CONTINUOUS_NEUTRON`. For coupled neutron-photon transport,
-also request `ALEA_NUC_CAP_PHOTON_PRODUCTION` and bind both
-`ALEA_NUC_BIND_NEUTRON | ALEA_NUC_BIND_PHOTON`. The fixed-source driver follows
-emitted neutrons and photons in one source history. A photon source can use
-`alea_transport_run_fixed_source()` directly. `max_events_per_history` bounds
-the full family and `max_pending_particles` bounds the shared bank (zero
-selects 1024). The legacy per-cell path arrays retain neutron-only scores.
-`alea_transport_run_sampled_source()` samples a new source particle for every
-history; `alea_source_prepare()` and `alea_source_sample()` provide reusable
-component-based sources, including uniform boxes with isotropic direction.
-An axisymmetric `tokamak_rz` source samples a piecewise-constant plasma
-emissivity grid by cylindrical volume and exposes its integrated emission rate.
-A `cartesian_mesh` source accepts a three-dimensional emission grid with
-explicit density or integrated-voxel-strength semantics.
-`history_offset` allows
-reproducible nonoverlapping batches. A runnable MCNP/ACE example and result
-normalization are in [the fixed-source workflow](docs/FIXED_SOURCE_WORKFLOW.md).
-Optional tally plans can be attached through `alea_transport_options_t.tally_plan`.
-`alea_tally.h` defines cell, terminal-universe, and world-space Cartesian mesh
-bins. The scores are weighted track length, collision count, sampled reaction
-count, track-length reaction rate, ACE neutron heating, and photon local
-deposition. Each tally can filter particle type, incident energy, time, and
-material. Event, rate, and local-deposition scores can select a reaction
-MT and target nuclide. Zero particle mask or both energy or time bounds zero
-select all; intervals are half-open. Results retain
-the sum and sum of squares of each *source history's* bin score, including all
-neutron and photon descendants. An optional energy axis stores compact spectra with
-spatial bins fastest. Mesh bins flatten with x fastest. A universe tally
-combines all occurrences of terminal cells with that universe ID.
-Ancestor-universe scoring remains future work;
-see [transport tally semantics](docs/TRANSPORT_TALLIES.md).
-See [transport tallies](docs/TRANSPORT_TALLIES.md) for score definitions,
-bin ordering, filter semantics, and source-history statistics.
+The transport module supports sampled fixed-source neutron and coupled
+neutron-photon histories, reusable spatial sources, and optional cell,
+terminal-universe, and Cartesian-mesh tallies. Geometry/material bindings are
+declared in `alea_transport.h`; nuclear-data preparation and collisions remain
+in `alea_nucdata.h`. See the [fixed-source workflow](docs/FIXED_SOURCE_WORKFLOW.md)
+for setup and normalization, and [transport tallies](docs/TRANSPORT_TALLIES.md)
+for scoring and filter semantics.
 
-For detector-driven multigroup calculations, include `alea_adjoint.h` and call
-`alea_adjoint_run()`. The detector sampler launches adjoint histories; the
-piecewise-constant `physical_source` array is scored along their tracks.
-`alea_adjoint_sample_box_detector()` samples a uniform isotropic detector box
-and includes its volume and angular normalization in each history weight.
-Supply macroscopic total cross sections and forward group-to-group expected
-production for each material cell. The solver transposes that production
-matrix and reports the detector response and standard error per detector
-history. `alea_multigroup.h` provides a checked helper to combine already
-collapsed neutron nuclides by number density; it rejects fission data until
-their production matrix is supported. The standalone
-`examples/c/adjoint_neutron.c` shows a one-group setup with manufactured cross
-sections. The current kernel is steady-state and isotropic, supports separate
-neutron or photon runs, and accepts vacuum and specular boundaries. Group data
-must use the same group ordering across cells. The existing neutron collapse
-contains approximations, and the photon collapse path is not yet implemented.
-Neutron-photon adjoint coupling and continuous-energy adjoint sampling remain
-future extensions.
+For detector-driven multigroup calculations, use `alea_adjoint.h` and
+`alea_adjoint_run()`. The current adjoint kernel is steady-state and isotropic,
+supports separate neutron or photon runs, and accepts vacuum and specular
+boundaries. See the one-group
+[`adjoint_neutron.c`](examples/c/adjoint_neutron.c) example. Continuous-energy
+adjoint sampling and coupled neutron-photon adjoint transport are not yet
+supported.
 
 Link against the core library plus the format modules you need:
 
@@ -603,6 +564,26 @@ for _, event in ipairs(sys:boundary_events(-10, 0, 0, 1, 0, 0,
     print(event.t, event.surface_id, event.cell_before, event.cell_after)
 end
 ```
+
+### Verified slice error scans
+
+For bounded gap and overlap analysis, `alea_slice_error_query_create()` splits
+a required slice rectangle into independently runnable pages. Each page reports
+verified defective regions and boundary intervals or circles, confirmed point
+witnesses, unresolved areas, and a receipt describing completeness and resource
+use. Pages can be run individually or in a memory-bounded parallel batch with
+`alea_slice_error_query_run_pages()`.
+
+Certification currently requires a coordinate-aligned slice and a supported
+combination of planes, spheres, rectangular-lattice seams, and hierarchy
+occurrences. Unsupported or numerically ambiguous areas are returned as
+unresolved rather than silently treated as clean. Check both `scope_classified`
+and `output_complete` in every page receipt before interpreting the absence of
+reported defects as a clean result. The Python binding exposes the same workflow
+as `System.slice_error_query()` and `System.slice_error_page()`; see the
+[`pyalea` README](bindings/python/README.md) and
+[`alea_geo_validator.h`](include/alea_geo_validator.h) for the complete API and
+evidence semantics.
 
 ## Documentation
 

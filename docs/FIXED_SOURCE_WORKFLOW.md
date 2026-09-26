@@ -26,7 +26,7 @@ when required tables are unavailable. The example is a starting point for a
 fusion calculation, not a built-in model of a plasma or source spectrum.
 
 For an analytic attenuation check with a layered shield, run
-[`examples/python/sandwich_slab_transport.py`](../examples/python/sandwich_slab_transport.py)
+[`examples/python/sandwich_slab_transport.py`](https://github.com/giovanni-mariano/libalea.c/blob/main/examples/python/sandwich_slab_transport.py)
 with a neutron ACE directory containing FENDL-3.2c `26056.32c` and
 `13027.32c`:
 
@@ -49,7 +49,7 @@ track length, which includes scattered neutrons and has no simple exponential
 formula. The default run uses 20,000 source histories and a fixed seed.
 
 For lower-energy neutron transport in the unresolved-resonance range, run
-[`examples/python/urr_u238_transport.py`](../examples/python/urr_u238_transport.py)
+[`examples/python/urr_u238_transport.py`](https://github.com/giovanni-mariano/libalea.c/blob/main/examples/python/urr_u238_transport.py)
 with the Lib80x xsdir containing `92238.00c`:
 
 ```sh
@@ -67,7 +67,7 @@ new one after a collision or on entering a different material. Nuclear-data
 tables without URR data use their ordinary continuous-energy cross sections.
 
 For a reproducible neutron calculation with the Python binding, run
-[`examples/python/fusion_mesh_source.py`](../examples/python/fusion_mesh_source.py)
+[`examples/python/fusion_mesh_source.py`](https://github.com/giovanni-mariano/libalea.c/blob/main/examples/python/fusion_mesh_source.py)
 with a neutron ACE directory containing FENDL-3.2c `26056.32c`:
 
 ```sh

@@ -37,6 +37,14 @@ visualizations, export meshes, and work with ACE nuclear data.
 
     [:octicons-arrow-right-24: Lua tutorial](LUA_TUTORIAL.md)
 
+-   :material-language-python:{ .lg .middle } **Use Python**
+
+    ---
+
+    Load models, inspect geometry, and run native analysis from Python.
+
+    [:octicons-arrow-right-24: Python bindings](PYTHON.md)
+
 -   :material-shape:{ .lg .middle } **Understand the model**
 
     ---
@@ -53,6 +61,22 @@ visualizations, export meshes, and work with ACE nuclear data.
 
     [:octicons-arrow-right-24: API reference](API.md)
 
+-   :material-download:{ .lg .middle } **Install ALEA**
+
+    ---
+
+    Use a release archive or build the libraries and tools from source.
+
+    [:octicons-arrow-right-24: Installation](INSTALLATION.md)
+
+-   :material-shield-search:{ .lg .middle } **Validate geometry**
+
+    ---
+
+    Find gaps and overlaps with sampled diagnostics or verified slice scans.
+
+    [:octicons-arrow-right-24: Geometry validation](GEOMETRY_VALIDATION.md)
+
 </div>
 
 ## Main capabilities
@@ -65,6 +89,8 @@ visualizations, export meshes, and work with ACE nuclear data.
 - Generate void regions and validate geometry transitions.
 - Read ACE nuclear data and calculate microscopic, macroscopic, and
   multigroup cross sections.
+- Run fixed-source neutron/photon transport, tallies, and multigroup adjoint
+  calculations.
 
 ## Minimal C example
 
