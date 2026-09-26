@@ -52,6 +52,7 @@ static PyObject* mod_load_mcnp(PyObject* self, PyObject* args) {
     obj->sys = sys;
     obj->owns_sys = 0;
     obj->mcnp_model = model;
+    obj->alea_model = NULL;
     return (PyObject*)obj;
 }
 
@@ -93,6 +94,7 @@ static PyObject* mod_load_openmc(PyObject* self, PyObject* args) {
     obj->sys = sys;
     obj->owns_sys = 1;
     obj->mcnp_model = NULL;
+    obj->alea_model = NULL;
     return (PyObject*)obj;
 }
 
@@ -136,6 +138,7 @@ static PyObject* mod_load_mcnp_string(PyObject* self, PyObject* args) {
     obj->sys = sys;
     obj->owns_sys = 0;
     obj->mcnp_model = model;
+    obj->alea_model = NULL;
     return (PyObject*)obj;
 }
 
@@ -179,7 +182,67 @@ static PyObject* mod_load_openmc_string(PyObject* self, PyObject* args) {
     obj->sys = sys;
     obj->owns_sys = 1;
     obj->mcnp_model = NULL;
+    obj->alea_model = NULL;
     return (PyObject*)obj;
+}
+
+static PyObject* pyalea_from_native_model(alea_model_t* model) {
+    if (!model) return NULL;
+    alea_system_t* sys = alea_model_system(model);
+    if (!sys) {
+        alea_model_destroy(model);
+        PyErr_SetString(PyExc_RuntimeError, "ALEA model did not contain a system");
+        return NULL;
+    }
+    PyAleaSystemObject* obj =
+        (PyAleaSystemObject*)PyAleaSystemType.tp_alloc(&PyAleaSystemType, 0);
+    if (!obj) { alea_model_destroy(model); return NULL; }
+    obj->sys = sys;
+    obj->owns_sys = 0;
+    obj->mcnp_model = NULL;
+    obj->alea_model = model;
+    return (PyObject*)obj;
+}
+
+static PyObject* mod_load_alea(PyObject* self, PyObject* args) {
+    (void)self;
+    const char* filename;
+    if (!PyArg_ParseTuple(args, "s", &filename)) return NULL;
+    alea_model_t* model;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    model = alea_xml_load(filename);
+    Py_END_ALLOW_THREADS
+    if (restore_sigint(old_sigint)) {
+        if (model) alea_model_destroy(model);
+        return NULL;
+    }
+    if (!model) {
+        PyErr_Format(PyExc_IOError, "Failed to load %s: %s", filename, alea_error());
+        return NULL;
+    }
+    return pyalea_from_native_model(model);
+}
+
+static PyObject* mod_load_alea_string(PyObject* self, PyObject* args) {
+    (void)self;
+    const char* input;
+    Py_ssize_t length;
+    if (!PyArg_ParseTuple(args, "s#", &input, &length)) return NULL;
+    alea_model_t* model;
+    sighandler_func old_sigint = install_sigint();
+    Py_BEGIN_ALLOW_THREADS
+    model = alea_xml_load_string(input, (size_t)length);
+    Py_END_ALLOW_THREADS
+    if (restore_sigint(old_sigint)) {
+        if (model) alea_model_destroy(model);
+        return NULL;
+    }
+    if (!model) {
+        PyErr_Format(PyExc_ValueError, "Failed to parse ALEA XML: %s", alea_error());
+        return NULL;
+    }
+    return pyalea_from_native_model(model);
 }
 
 static PyObject* mod_version(PyObject* self, PyObject* Py_UNUSED(ignored)) {
@@ -576,6 +639,10 @@ static PyMethodDef mod_methods[] = {
      "load_openmc(filename) -> System\n\nLoad OpenMC XML geometry file."},
     {"load_openmc_string", mod_load_openmc_string, METH_VARARGS,
      "load_openmc_string(input) -> System\n\nLoad OpenMC from XML string."},
+    {"load_alea", mod_load_alea, METH_VARARGS,
+     "load_alea(filename) -> System\n\nLoad a native ALEA XML model."},
+    {"load_alea_string", mod_load_alea_string, METH_VARARGS,
+     "load_alea_string(input) -> System\n\nLoad native ALEA XML from a string."},
     {"generate_void", (PyCFunction)mod_generate_void, METH_VARARGS | METH_KEYWORDS,
      "generate_void(system, bounds=None, max_depth=8, min_size=0.1, probes_per_axis=3, bounds_region=None, workers=0, max_parallel_scratch_bytes=67108864) -> VoidResult\n\n"
      "Generate void regions using octree algorithm."},

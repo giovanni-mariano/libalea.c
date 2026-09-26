@@ -122,6 +122,7 @@ CORE_OBJS = \
 	$(BUILD)\core\alea_materials.obj \
 	$(BUILD)\core\alea_elements_data.obj \
 	$(BUILD)\core\alea_error.obj \
+	$(BUILD)\core\alea_model.obj \
 	$(BUILD)\core\alea_public_api.obj \
 	$(BUILD)\core\alea_eval.obj \
 	$(BUILD)\core\alea_ops.obj \
@@ -211,6 +212,13 @@ OPENMC_OBJS = \
 	$(BUILD)\openmc\openmc_conversion.obj \
 	$(BUILD)\openmc\openmc_model.obj
 
+# --- Native ALEA XML module -----------------------------------------------
+ALEA_XML_OBJS = \
+	$(BUILD)\alea_xml\alea_xml.obj \
+	$(BUILD)\alea_xml\xml_dom.obj \
+	$(BUILD)\alea_xml\xml_writer.obj \
+	$(BUILD)\alea_xml\region.obj
+
 # --- Serpent module --------------------------------------------------------
 SERPENT_OBJS = \
 	$(BUILD)\serpent\serpent_export.obj
@@ -299,6 +307,7 @@ LUA_MAIN_OBJ = $(BUILD)\lua_bind\lua_main.obj
 LIB_CORE    = $(BIN)\libalea.lib
 LIB_MCNP    = $(BIN)\libalea_mcnp.lib
 LIB_OPENMC  = $(BIN)\libalea_openmc.lib
+LIB_ALEA_XML = $(BIN)\libalea_xml.lib
 LIB_SERPENT = $(BIN)\libalea_serpent.lib
 LIB_TRANSPORT = $(BIN)\libalea_transport.lib
 LIB_NUCDATA = $(BIN)\libalea_nucdata.lib
@@ -311,13 +320,14 @@ ALEA_CLI    = $(BIN)\alea.exe
 MODULE_LINK = /link \
 	/WHOLEARCHIVE:$(LIB_MCNP) \
 	/WHOLEARCHIVE:$(LIB_OPENMC) \
+	/WHOLEARCHIVE:$(LIB_ALEA_XML) \
 	/WHOLEARCHIVE:$(LIB_SERPENT) \
 	/WHOLEARCHIVE:$(LIB_TRANSPORT) \
 	/WHOLEARCHIVE:$(LIB_NUCDATA)
 
 TRANSPORT_OBJS = $(BUILD)\transport\fixed_source.obj $(BUILD)\transport\adjoint.obj $(BUILD)\transport\multigroup_material.obj $(BUILD)\transport\material_binding.obj $(BUILD)\transport\source.obj $(BUILD)\transport\tally.obj
 
-ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
+ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(ALEA_XML_OBJS) $(SERPENT_OBJS) $(NUCDATA_OBJS)
 
 # ============================================================================
 # Header dependency tracking
@@ -334,6 +344,8 @@ ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(SERP
 HEADERS = \
 	include\alea.h \
 	include\alea_log.h \
+	include\alea_model.h \
+	include\alea_xml.h \
 	include\alea_geo_validator.h \
 	include\alea_mcnp.h \
 	include\alea_mesh.h \
@@ -418,7 +430,7 @@ HEADERS = \
 # ============================================================================
 # Phony-ish targets
 # ============================================================================
-all: dirs $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_NUCDATA) $(LIB_TRANSPORT)
+all: dirs $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_ALEA_XML) $(LIB_SERPENT) $(LIB_NUCDATA) $(LIB_TRANSPORT)
 
 transport: dirs $(LIB_CORE) $(LIB_NUCDATA) $(LIB_TRANSPORT)
 
@@ -439,6 +451,9 @@ $(LIB_MCNP): dirs $(MCNP_OBJS)
 
 $(LIB_OPENMC): dirs $(OPENMC_OBJS)
 	$(AR) /nologo /OUT:$@ $(OPENMC_OBJS)
+
+$(LIB_ALEA_XML): dirs $(ALEA_XML_OBJS)
+	$(AR) /nologo /OUT:$@ $(ALEA_XML_OBJS)
 
 $(LIB_SERPENT): dirs $(SERPENT_OBJS)
 	$(AR) /nologo /OUT:$@ $(SERPENT_OBJS)
@@ -481,6 +496,9 @@ $(BUILD)\core\alea_error.obj: $(SRC)\core\alea_error.c dirs
 
 $(BUILD)\core\alea_public_api.obj: $(SRC)\core\alea_public_api.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_public_api.c
+
+$(BUILD)\core\alea_model.obj: $(SRC)\core\alea_model.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_model.c
 
 $(BUILD)\core\alea_eval.obj: $(SRC)\core\alea_eval.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_eval.c
@@ -664,6 +682,18 @@ $(BUILD)\openmc\openmc_conversion.obj: $(SRC)\openmc\openmc_conversion.c dirs
 
 $(BUILD)\openmc\openmc_model.obj: $(SRC)\openmc\openmc_model.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\openmc\ $(SRC)\openmc\openmc_model.c
+
+$(BUILD)\alea_xml\alea_xml.obj: $(SRC)\alea_xml\alea_xml.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\alea_xml.c
+
+$(BUILD)\alea_xml\xml_dom.obj: $(SRC)\alea_xml\xml_dom.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\xml_dom.c
+
+$(BUILD)\alea_xml\xml_writer.obj: $(SRC)\alea_xml\xml_writer.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\xml_writer.c
+
+$(BUILD)\alea_xml\region.obj: $(SRC)\alea_xml\region.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\region.c
 
 $(BUILD)\serpent\serpent_export.obj: $(SRC)\serpent\serpent_export.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\serpent\ $(SRC)\serpent\serpent_export.c
@@ -896,7 +926,7 @@ $(BUILD)\lua_bind\lua_util.obj: $(SRC)\lua_bind\lua_util.c dirs
 $(BUILD)\lua_bind\lua_main.obj: $(SRC)\lua_bind\lua_main.c dirs
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) /c /Fo$(BUILD)\lua_bind\ $(SRC)\lua_bind\lua_main.c
 
-$(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA)
+$(ALEA_CLI): dirs $(LUA_OBJS) $(LUA_BIND_OBJS) $(LUA_MAIN_OBJ) $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_ALEA_XML) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA)
 	$(CC) $(CFLAGS) $(LUA_INCLUDES) $(LUA_MAIN_OBJ) $(LUA_BIND_OBJS) $(LUA_OBJS) $(LIB_CORE) /Fe$@ $(MODULE_LINK)
 
 # ============================================================================
@@ -959,6 +989,7 @@ dirs:
 	@if not exist $(BUILD)\mcnp\conversion mkdir $(BUILD)\mcnp\conversion
 	@if not exist $(BUILD)\mcnp\exporter mkdir $(BUILD)\mcnp\exporter
 	@if not exist $(BUILD)\openmc mkdir $(BUILD)\openmc
+	@if not exist $(BUILD)\alea_xml mkdir $(BUILD)\alea_xml
 	@if not exist $(BUILD)\serpent mkdir $(BUILD)\serpent
 	@if not exist $(BUILD)\transport mkdir $(BUILD)\transport
 	@if not exist $(BUILD)\nucdata mkdir $(BUILD)\nucdata
@@ -973,6 +1004,7 @@ clean:
 	@if exist $(LIB_CORE) del /q $(LIB_CORE)
 	@if exist $(LIB_MCNP) del /q $(LIB_MCNP)
 	@if exist $(LIB_OPENMC) del /q $(LIB_OPENMC)
+	@if exist $(LIB_ALEA_XML) del /q $(LIB_ALEA_XML)
 	@if exist $(LIB_SERPENT) del /q $(LIB_SERPENT)
 	@if exist $(LIB_TRANSPORT) del /q $(LIB_TRANSPORT)
 	@if exist $(LIB_NUCDATA) del /q $(LIB_NUCDATA)

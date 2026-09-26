@@ -1098,10 +1098,12 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | **Loading** | |
 | Load MCNP | `alea.load_mcnp(file)` |
 | Load OpenMC | `alea.load_openmc(file)` |
+| Load ALEA XML | `alea.load_alea(file)` |
 | Load from string | `alea.load_mcnp_string(str)` |
 | **Export** | |
 | Export MCNP | `sys:export_mcnp(file)` |
 | Export OpenMC | `sys:export_openmc(file)` |
+| Export ALEA XML | `sys:export_alea(file)` |
 | Export Serpent | `sys:export_serpent(file)` |
 | **CSG Construction** | |
 | Inside surface | `sys:inside(surf_idx)` |

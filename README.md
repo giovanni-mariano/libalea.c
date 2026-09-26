@@ -45,7 +45,7 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 
 ## What It Does
 
-- **Load** MCNP and OpenMC geometry files
+- **Load** MCNP, OpenMC, and native ALEA XML models
 - **Query** which cell and material exists at any point
 - **Detect** overlapping cells and undefined regions with sampled diagnostics
   or bounded, verified slice scans
@@ -54,10 +54,14 @@ gcc -o hello hello.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 - **Render** 3D images with Phong shading, cutaway views, and shadow rays
 - **Sample and export** CSG onto structured rectilinear grids in Gmsh (.msh) and VTK (.vtk) formats (exp.)
 - **Generate** void regions to fill gaps in the geometry
-- **Convert** between MCNP, OpenMC, and Serpent geometry formats
+- **Convert** between MCNP, OpenMC, native ALEA XML, and Serpent formats
 - **Build** geometry programmatically with boolean operations
 - **Materials** definition with nuclide/element composition and mixture support
 - **Nuclear data** read ACE-format cross sections (neutron, photon), sample free paths, target nuclides, reaction MTs, and multigroup scattering, Doppler broaden, and collapse to multigroup constants
+
+Native `.alea.xml` files preserve geometry together with cell density, names,
+comments, importances, typed cell parameters, and per-nuclide library extensions.
+See the [ALEA XML format guide](docs/ALEA_XML_FORMAT.md).
 
 ## Installation
 
@@ -367,10 +371,11 @@ No separate threading runtime is required.
 | `libalea.a` | Core engine: CSG evaluation, primitives, raycast, slice, 3D render, mesh export |
 | `libalea_mcnp.a` | MCNP parser, converter, and exporter |
 | `libalea_openmc.a` | OpenMC XML parser, converter, and exporter |
+| `libalea_xml.a` | Native ALEA model XML importer and exporter |
 | `libalea_serpent.a` | Serpent exporter |
 | `libalea_nucdata.a` | Nuclear data: ACE reader, cross-section lookup, free-path/nuclide/reaction sampling, Doppler broadening, multigroup collapse |
 | `libalea_transport.a` | Geometry/material bindings and fixed-source neutron/photon histories; depends on nuclear data and core geometry |
-| `libalea_full.a` | Core, MCNP, OpenMC, Serpent, nuclear data, and transport in one archive |
+| `libalea_full.a` | Core, MCNP, OpenMC, ALEA XML, Serpent, nuclear data, and transport in one archive |
 
 Transport applications include `alea_transport.h` and `alea_source.h` and link in dependency order:
 
@@ -402,6 +407,9 @@ gcc -o myapp myapp.c -Iinclude bin/libalea_mcnp.a bin/libalea.a -lm
 
 # OpenMC support
 gcc -o myapp myapp.c -Iinclude bin/libalea_openmc.a bin/libalea.a -lm
+
+# Native ALEA XML model support
+gcc -o myapp myapp.c -Iinclude bin/libalea_xml.a bin/libalea.a -lm
 
 # Nuclear data
 gcc -o myapp myapp.c -Iinclude bin/libalea_nucdata.a bin/libalea.a -lm
@@ -455,7 +463,7 @@ Tools are built via `make tools`:
 
 | Tool | Description |
 |------|-------------|
-| `mc_convert` | Convert between MCNP, OpenMC, and Serpent geometry formats |
+| `mc_convert` | Convert between MCNP, OpenMC, native ALEA XML, and Serpent formats |
 | `mc_plotter` | Render 2D cross-section slices of CSG geometry to PNG/BMP |
 | `nuc_plot` | Generate SVG plots of nuclear cross sections, angular distributions, fission spectra, and more |
 | `nuc_inventory` | Report which tables in an xsdir can be decoded, evaluated, and sampled |
@@ -463,6 +471,7 @@ Tools are built via `make tools`:
 
 ```bash
 bin/mc_convert model.inp model.xml
+bin/mc_convert -if mcnp -of alea model.inp model.alea.xml
 bin/mc_convert model.inp model.serp --output-format serpent
 bin/mc_plotter model.inp Z 0 -100 100 -100 100 800x800 output.png
 bin/nuc_plot --xsdir /path/to/xsdir --zaid 92235.80c --plot xs --output u235.svg
@@ -633,6 +642,8 @@ include/               Public headers
   alea_nucdata.h       Nuclear data API
   alea_nucdata_types.h Nuclear data type definitions
   alea_mcnp.h          MCNP module API
+  alea_model.h         Format-neutral model metadata and ownership
+  alea_xml.h           Native ALEA XML model I/O
   alea_openmc.h        OpenMC module API
   alea_serpent.h       Serpent exporter API
 src/
@@ -644,6 +655,7 @@ src/
     exporter/          MCNP output formatting
   nucdata/             Nuclear data: ACE reader, XS lookup, public sampling APIs, Doppler, multigroup
   openmc/              OpenMC XML parser, converter, exporter
+  alea_xml/            Native ALEA XML parser, writer, and region parser
   serpent/             Serpent exporter
   raycast/             Ray-geometry intersection, BVH
   slice/               2D slice curves, analytical intersection

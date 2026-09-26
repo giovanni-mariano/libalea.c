@@ -406,6 +406,7 @@ typedef struct alea_system {
         ALEA_SOURCE_EMPTY = 0,       /* Created empty via alea_system_create() */
         ALEA_SOURCE_MCNP,            /* Loaded from MCNP file */
         ALEA_SOURCE_OPENMC,          /* Loaded from OpenMC file */
+        ALEA_SOURCE_ALEA_XML,        /* Loaded from native ALEA XML */
         ALEA_SOURCE_PROGRAMMATIC     /* Cells added programmatically */
     } source;
 

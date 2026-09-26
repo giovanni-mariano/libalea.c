@@ -15,13 +15,17 @@
 
 static void PyAleaSystem_clear(PyAleaSystemObject* self) {
     int model_owns_sys = self->mcnp_model && self->mcnp_model->owns_sys;
+    int alea_model_owns_sys = self->alea_model != NULL;
     if (self->mcnp_model)
         mcnp_model_destroy(self->mcnp_model);
-    if (self->sys && self->owns_sys && !model_owns_sys) {
+    if (self->alea_model)
+        alea_model_destroy(self->alea_model);
+    if (self->sys && self->owns_sys && !model_owns_sys && !alea_model_owns_sys) {
         alea_destroy(self->sys);
     }
     self->sys = NULL;
     self->mcnp_model = NULL;
+    self->alea_model = NULL;
     self->owns_sys = 1;
 }
 
@@ -37,6 +41,7 @@ static PyObject* PyAleaSystem_new(PyTypeObject* type, PyObject* args, PyObject* 
         self->sys = NULL;
         self->owns_sys = 1;
         self->mcnp_model = NULL;
+        self->alea_model = NULL;
     }
     return (PyObject*)self;
 }

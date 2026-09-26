@@ -67,6 +67,7 @@ nav:
       - Python bindings: PYTHON.md
   - User guide:
       - Core concepts: CONCEPTS.md
+      - ALEA XML format: ALEA_XML_FORMAT.md
       - Geometry validation: GEOMETRY_VALIDATION.md
       - Fixed-source transport: FIXED_SOURCE_WORKFLOW.md
       - Transport tallies: TRANSPORT_TALLIES.md

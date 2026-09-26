@@ -24,6 +24,7 @@
 #define ALEA_MCNP_H
 
 #include "alea.h"
+#include "alea_model.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -239,6 +240,12 @@ const mcnp_inline_transform_t* mcnp_model_inline_transform_const(
  * @return Model on success, NULL on failure
  */
 mcnp_model_t* mcnp_model_wrap(alea_system_t* sys);
+
+/** Clone an MCNP model into the format-neutral ALEA model representation. */
+alea_model_t* mcnp_model_to_alea_model(const mcnp_model_t* model);
+
+/** Clone an ALEA model into an owning MCNP model, preserving supported metadata. */
+mcnp_model_t* mcnp_model_from_alea_model(const alea_model_t* model);
 
 #ifdef __cplusplus
 }

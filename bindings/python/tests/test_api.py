@@ -689,6 +689,25 @@ def test_in_memory_exports(populated_system):
     assert "exported by Alea" in serpent
 
 
+def test_alea_xml_round_trip():
+    xml = """<alea version="1" length_units="cm" name="python test">
+      <materials><material id="1" fraction_basis="atom">
+        <nuclide zaid="1001" fraction="1" library="80c" />
+      </material></materials>
+      <surfaces><surface id="100000001" type="sphere" coeffs="0 0 0 2" /></surfaces>
+      <cells><cell id="1" name="inside" material="1" density="1"
+        density_units="g/cm3" region="-100000001">
+        <importance particle="neutron" value="1" />
+      </cell></cells>
+    </alea>"""
+    system = pyalea.load_alea_string(xml)
+    assert system.cell_count == 1
+    exported = system.export_alea_string()
+    assert 'library="80c"' in exported
+    assert 'particle="neutron"' in exported
+    assert pyalea.load_alea_string(exported).cell_count == 1
+
+
 def test_compact_validation_reports_trace_reuse(populated_system):
     result = populated_system.validate_ray_slice_compact(
         (0.0, 0.0, 0.0),

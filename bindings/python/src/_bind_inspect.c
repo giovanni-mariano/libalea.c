@@ -416,6 +416,29 @@ static PyObject* PyAleaSystem_cell_set_importance(
     const char* particle;
     double importance;
     if (!PyArg_ParseTuple(args, "isd", &cell_index, &particle, &importance)) return NULL;
+    if (self->alea_model) {
+        alea_model_cell_metadata_t* meta =
+            alea_model_cell_metadata_mut(self->alea_model, (size_t)cell_index);
+        if (!meta || !isfinite(importance)) {
+            PyErr_SetString(PyExc_ValueError, "invalid cell index or particle importance");
+            return NULL;
+        }
+        if (strcmp(particle, "neutron") == 0) {
+            meta->importance_neutron = importance;
+            meta->has_importance_neutron = 1;
+        } else if (strcmp(particle, "photon") == 0) {
+            meta->importance_photon = importance;
+            meta->has_importance_photon = 1;
+        } else if (strcmp(particle, "electron") == 0) {
+            meta->importance_electron = importance;
+            meta->has_importance_electron = 1;
+        } else {
+            PyErr_SetString(PyExc_ValueError,
+                            "particle must be 'neutron', 'photon', or 'electron'");
+            return NULL;
+        }
+        Py_RETURN_NONE;
+    }
     mcnp_model_t* model = ensure_mcnp_sidecar(self);
     mcnp_cell_params_t* params = model
         ? mcnp_cell_params(model, (size_t)cell_index) : NULL;

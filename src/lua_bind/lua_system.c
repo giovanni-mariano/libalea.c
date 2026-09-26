@@ -5,6 +5,7 @@
 #include "alea_lua.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
+#include "alea_model.h"
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
@@ -35,6 +36,9 @@ void alea_lua_system_release_if_pending(alea_lua_system_t* ud) {
         } else if (ud->openmc_model) {
             openmc_model_destroy((openmc_model_t*)ud->openmc_model);
             ud->openmc_model = NULL;
+        } else if (ud->alea_model) {
+            alea_model_destroy((alea_model_t*)ud->alea_model);
+            ud->alea_model = NULL;
         } else if (ud->sys) {
             alea_destroy(ud->sys);
         }

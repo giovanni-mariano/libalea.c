@@ -54,6 +54,9 @@ Models can also be exported without a temporary path:
 mcnp_text = system.export_mcnp_string()
 openmc_xml = system.export_openmc_string()
 serpent_text = system.export_serpent_string()
+alea_xml = system.export_alea_string()
+
+native_system = pyalea.load_alea("model.alea.xml")
 ```
 
 ## Paged slice error analysis

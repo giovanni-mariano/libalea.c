@@ -6,6 +6,7 @@
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_serpent.h"
+#include "alea_xml.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,6 +126,31 @@ static int l_load_openmc_string(lua_State* L) {
     return 1;
 }
 
+static int l_load_alea(lua_State* L) {
+    const char* filename = luaL_checkstring(L, 1);
+    alea_lua_system_t* ud = lua_newuserdata(L, sizeof(*ud));
+    alea_lua_system_init(ud);
+    luaL_setmetatable(L, ALEA_SYSTEM_MT);
+    alea_model_t* model = alea_xml_load(filename);
+    if (!model) return luaL_error(L, "load_alea failed: %s", alea_error());
+    ud->alea_model = model;
+    ud->sys = alea_model_system(model);
+    return 1;
+}
+
+static int l_load_alea_string(lua_State* L) {
+    size_t len;
+    const char* text = luaL_checklstring(L, 1, &len);
+    alea_lua_system_t* ud = lua_newuserdata(L, sizeof(*ud));
+    alea_lua_system_init(ud);
+    luaL_setmetatable(L, ALEA_SYSTEM_MT);
+    alea_model_t* model = alea_xml_load_string(text, len);
+    if (!model) return luaL_error(L, "load_alea_string failed: %s", alea_error());
+    ud->alea_model = model;
+    ud->sys = alea_model_system(model);
+    return 1;
+}
+
 /* ============================================================================
  * Export functions (System methods)
  * ============================================================================ */
@@ -138,6 +164,10 @@ static int l_export_mcnp(lua_State* L) {
     int rc;
     if (ud->mcnp_model) {
         rc = mcnp_export((const mcnp_model_t*)ud->mcnp_model, filename);
+    } else if (ud->alea_model) {
+        mcnp_model_t* model = mcnp_model_from_alea_model(ud->alea_model);
+        rc = model ? mcnp_export(model, filename) : -1;
+        mcnp_model_destroy(model);
     } else {
         rc = mcnp_export_system(sys, filename);
     }
@@ -174,14 +204,36 @@ static int l_export_serpent(lua_State* L) {
     return 0;
 }
 
+static int l_export_alea(lua_State* L) {
+    alea_lua_system_t* ud = alea_check_system(L, 1);
+    alea_system_t* sys = alea_get_sys(L, 1);
+    const char* filename = luaL_checkstring(L, 2);
+    int rc;
+    if (ud->alea_model) rc = alea_xml_export(ud->alea_model, filename);
+    else if (ud->mcnp_model) {
+        alea_model_t* model = mcnp_model_to_alea_model(ud->mcnp_model);
+        rc = model ? alea_xml_export(model, filename) : -1;
+        alea_model_destroy(model);
+    } else rc = alea_xml_export_system(sys, filename);
+    if (rc) return luaL_error(L, "export_alea failed: %s", alea_error());
+    return 0;
+}
+
 static int l_export_mcnp_string(lua_State* L) {
     alea_lua_system_t* ud = alea_check_system(L, 1);
     alea_system_t* sys = alea_get_sys(L, 1);
     alea_lua_free_guard_t* guard = alea_lua_push_free_guard(L);
     FILE* stream = new_export_stream(L);
-    int rc = ud->mcnp_model
-        ? mcnp_export_stream((const mcnp_model_t*)ud->mcnp_model, stream)
-        : mcnp_export_system_stream(sys, stream);
+    int rc;
+    if (ud->mcnp_model) {
+        rc = mcnp_export_stream((const mcnp_model_t*)ud->mcnp_model, stream);
+    } else if (ud->alea_model) {
+        mcnp_model_t* model = mcnp_model_from_alea_model(ud->alea_model);
+        rc = model ? mcnp_export_stream(model, stream) : -1;
+        mcnp_model_destroy(model);
+    } else {
+        rc = mcnp_export_system_stream(sys, stream);
+    }
     if (rc != 0) {
         fclose(stream);
         return luaL_error(L, "export_mcnp_string failed: %s", alea_error());
@@ -211,6 +263,26 @@ static int l_export_serpent_string(lua_State* L) {
     return push_exported_string(L, stream, guard, "export_serpent_string");
 }
 
+static int l_export_alea_string(lua_State* L) {
+    alea_lua_system_t* ud = alea_check_system(L, 1);
+    alea_system_t* sys = alea_get_sys(L, 1);
+    alea_lua_free_guard_t* guard = alea_lua_push_free_guard(L);
+    FILE* stream = new_export_stream(L);
+    alea_model_t* temporary = NULL;
+    int rc;
+    if (ud->alea_model) rc = alea_xml_export_stream(ud->alea_model, stream);
+    else if (ud->mcnp_model) {
+        temporary = mcnp_model_to_alea_model(ud->mcnp_model);
+        rc = temporary ? alea_xml_export_stream(temporary, stream) : -1;
+    } else rc = alea_xml_export_system_stream(sys, stream);
+    alea_model_destroy(temporary);
+    if (rc) {
+        fclose(stream);
+        return luaL_error(L, "export_alea_string failed: %s", alea_error());
+    }
+    return push_exported_string(L, stream, guard, "export_alea_string");
+}
+
 /* ============================================================================
  * Registration
  * ============================================================================ */
@@ -219,9 +291,11 @@ static const luaL_Reg system_io_methods[] = {
     {"export_mcnp",  l_export_mcnp},
     {"export_openmc", l_export_openmc},
     {"export_serpent", l_export_serpent},
+    {"export_alea", l_export_alea},
     {"export_mcnp_string", l_export_mcnp_string},
     {"export_openmc_string", l_export_openmc_string},
     {"export_serpent_string", l_export_serpent_string},
+    {"export_alea_string", l_export_alea_string},
     {NULL, NULL}
 };
 
@@ -241,6 +315,10 @@ int luaopen_alea_io(lua_State* L) {
     lua_setfield(L, -2, "load_openmc");
     lua_pushcfunction(L, l_load_openmc_string);
     lua_setfield(L, -2, "load_openmc_string");
+    lua_pushcfunction(L, l_load_alea);
+    lua_setfield(L, -2, "load_alea");
+    lua_pushcfunction(L, l_load_alea_string);
+    lua_setfield(L, -2, "load_alea_string");
 
     return 0;
 }

@@ -75,9 +75,12 @@ static PyObject* PyAleaSystem_export_mcnp(PyAleaSystemObject* self, PyObject* ar
     int result;
     sighandler_func old_sigint = install_sigint();
     Py_BEGIN_ALLOW_THREADS
-    result = self->mcnp_model
-        ? mcnp_export(self->mcnp_model, filename)
-        : mcnp_export_system(self->sys, filename);
+    if (self->mcnp_model) result = mcnp_export(self->mcnp_model, filename);
+    else if (self->alea_model) {
+        mcnp_model_t* model = mcnp_model_from_alea_model(self->alea_model);
+        result = model ? mcnp_export(model, filename) : -1;
+        mcnp_model_destroy(model);
+    } else result = mcnp_export_system(self->sys, filename);
     Py_END_ALLOW_THREADS
 
     /* Restore original config */
@@ -121,9 +124,12 @@ static PyObject* PyAleaSystem_export_mcnp_string(
     int rc;
     sighandler_func old_sigint = install_sigint();
     Py_BEGIN_ALLOW_THREADS
-    rc = self->mcnp_model
-        ? mcnp_export_stream(self->mcnp_model, stream)
-        : mcnp_export_system_stream(self->sys, stream);
+    if (self->mcnp_model) rc = mcnp_export_stream(self->mcnp_model, stream);
+    else if (self->alea_model) {
+        mcnp_model_t* model = mcnp_model_from_alea_model(self->alea_model);
+        rc = model ? mcnp_export_stream(model, stream) : -1;
+        mcnp_model_destroy(model);
+    } else rc = mcnp_export_system_stream(self->sys, stream);
     Py_END_ALLOW_THREADS
     alea_set_config(self->sys, &original);
 
@@ -246,6 +252,42 @@ static PyObject* PyAleaSystem_export_serpent_string(
         PyErr_Format(PyExc_RuntimeError, "Serpent export failed: %s", alea_error());
         return NULL;
     }
+    PyObject* result = export_stream_to_string(stream);
+    fclose(stream);
+    return result;
+}
+
+static PyObject* PyAleaSystem_export_alea(PyAleaSystemObject* self,
+                                          PyObject* args, PyObject* kwds) {
+    const char* filename;
+    static char* kwlist[] = {"filename", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "s", kwlist, &filename)) return NULL;
+    if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
+    int rc;
+    if (self->alea_model) rc = alea_xml_export(self->alea_model, filename);
+    else if (self->mcnp_model) {
+        alea_model_t* model = mcnp_model_to_alea_model(self->mcnp_model);
+        rc = model ? alea_xml_export(model, filename) : -1;
+        alea_model_destroy(model);
+    } else rc = alea_xml_export_system(self->sys, filename);
+    if (rc) { PyErr_Format(PyExc_IOError, "ALEA XML export failed: %s", alea_error()); return NULL; }
+    Py_RETURN_NONE;
+}
+
+static PyObject* PyAleaSystem_export_alea_string(
+        PyAleaSystemObject* self, PyObject* Py_UNUSED(ignored)) {
+    if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
+    FILE* stream = open_export_stream();
+    if (!stream) return NULL;
+    alea_model_t* temporary = NULL;
+    int rc;
+    if (self->alea_model) rc = alea_xml_export_stream(self->alea_model, stream);
+    else if (self->mcnp_model) {
+        temporary = mcnp_model_to_alea_model(self->mcnp_model);
+        rc = temporary ? alea_xml_export_stream(temporary, stream) : -1;
+    } else rc = alea_xml_export_system_stream(self->sys, stream);
+    alea_model_destroy(temporary);
+    if (rc) { fclose(stream); PyErr_Format(PyExc_RuntimeError, "ALEA XML export failed: %s", alea_error()); return NULL; }
     PyObject* result = export_stream_to_string(stream);
     fclose(stream);
     return result;

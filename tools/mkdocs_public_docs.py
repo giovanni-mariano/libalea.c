@@ -15,6 +15,7 @@ PUBLIC_DOCUMENTS = frozenset(
         "LUA_TUTORIAL.md",
         "PYTHON.md",
         "CONCEPTS.md",
+        "ALEA_XML_FORMAT.md",
         "GEOMETRY_VALIDATION.md",
         "FIXED_SOURCE_WORKFLOW.md",
         "TRANSPORT_TALLIES.md",

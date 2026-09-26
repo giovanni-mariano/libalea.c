@@ -12,6 +12,7 @@
 
 #include "mcnp_model.h"
 #include "alea.h"
+#include "alea_model.h"
 #include "core/alea_system.h"
 #include "core/alea_export.h"
 #include "util/alea_log.h"
@@ -260,6 +261,11 @@ alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
 
 mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     if (!sys) return NULL;
+    if (sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                              "system is already attached to a model wrapper");
+        return NULL;
+    }
 
     mcnp_model_t* model = calloc(1, sizeof(mcnp_model_t));
     if (!model) return NULL;
@@ -284,6 +290,70 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     mcnp_model_register_hooks(model);
 
     return model;
+}
+
+static void params_to_metadata(const mcnp_cell_params_t* p,
+                               alea_model_cell_metadata_t* m) {
+    if (!p || !m) return;
+    m->importance_neutron = p->imp_n;
+    m->importance_photon = p->imp_p;
+    m->importance_electron = p->imp_e;
+    m->has_importance_neutron = p->has_imp_n;
+    m->has_importance_photon = p->has_imp_p;
+    m->has_importance_electron = p->has_imp_e;
+    if (p->has_vol) { m->user_volume = p->vol; m->parameter_flags |= ALEA_CELL_PARAM_VOLUME; }
+    if (p->has_pwt) { m->photon_weight = p->pwt; m->parameter_flags |= ALEA_CELL_PARAM_PWT; }
+    if (p->has_nonu) { m->fission_turnoff = p->nonu; m->parameter_flags |= ALEA_CELL_PARAM_NONU; }
+    if (p->has_pd) { m->detector_contribution = p->pd; m->parameter_flags |= ALEA_CELL_PARAM_PD; }
+    if (p->has_elpt) { m->energy_cutoff = p->elpt; m->parameter_flags |= ALEA_CELL_PARAM_ELPT; }
+    if (p->has_unc) { m->uncollided_secondaries = p->unc; m->parameter_flags |= ALEA_CELL_PARAM_UNC; }
+    if (p->has_bflcl) { m->magnetic_field = p->bflcl; m->parameter_flags |= ALEA_CELL_PARAM_BFLCL; }
+}
+
+static void metadata_to_params(const alea_model_cell_metadata_t* m,
+                               mcnp_cell_params_t* p) {
+    if (!m || !p) return;
+    p->imp_n = m->importance_neutron;
+    p->imp_p = m->importance_photon;
+    p->imp_e = m->importance_electron;
+    p->has_imp_n = m->has_importance_neutron;
+    p->has_imp_p = m->has_importance_photon;
+    p->has_imp_e = m->has_importance_electron;
+    if (m->parameter_flags & ALEA_CELL_PARAM_VOLUME) { p->vol = m->user_volume; p->has_vol = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_PWT) { p->pwt = m->photon_weight; p->has_pwt = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_NONU) { p->nonu = m->fission_turnoff; p->has_nonu = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_PD) { p->pd = m->detector_contribution; p->has_pd = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_ELPT) { p->elpt = m->energy_cutoff; p->has_elpt = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_UNC) { p->unc = m->uncollided_secondaries; p->has_unc = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_BFLCL) { p->bflcl = m->magnetic_field; p->has_bflcl = 1; }
+}
+
+alea_model_t* mcnp_model_to_alea_model(const mcnp_model_t* model) {
+    if (!model || !model->sys) return NULL;
+    alea_system_t* clone = alea_clone(model->sys);
+    if (!clone) return NULL;
+    alea_model_t* result = alea_model_adopt(clone);
+    if (!result) { alea_destroy(clone); return NULL; }
+    size_t count = alea_model_cell_metadata_count(result);
+    if (count > model->cell_params_count) count = model->cell_params_count;
+    for (size_t i = 0; i < count; i++)
+        params_to_metadata(&model->cell_params[i], alea_model_cell_metadata_mut(result, i));
+    return result;
+}
+
+mcnp_model_t* mcnp_model_from_alea_model(const alea_model_t* model) {
+    if (!model || !alea_model_system_const(model)) return NULL;
+    alea_system_t* clone = alea_clone(alea_model_system_const(model));
+    if (!clone) return NULL;
+    mcnp_model_t* result = mcnp_model_wrap(clone);
+    if (!result) { alea_destroy(clone); return NULL; }
+    result->owns_sys = 1;
+    size_t count = result->cell_params_count;
+    if (count > alea_model_cell_metadata_count(model))
+        count = alea_model_cell_metadata_count(model);
+    for (size_t i = 0; i < count; i++)
+        metadata_to_params(alea_model_cell_metadata(model, i), &result->cell_params[i]);
+    return result;
 }
 
 mcnp_model_t* mcnp_load(const char* filename) {

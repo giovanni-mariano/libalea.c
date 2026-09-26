@@ -8,6 +8,8 @@
  * test_cluster_mpi_groups.c under mpicc.
  */
 #include "alea.h"
+#include "alea_model.h"
+#include "alea_xml.h"
 #include "alea_cluster_base.h"
 #include "alea_cluster_volume.h"
 #include "alea_cluster_raycast.h"

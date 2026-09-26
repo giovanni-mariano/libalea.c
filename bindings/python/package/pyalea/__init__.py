@@ -15,6 +15,7 @@ _PUBLIC_NAMES = {
     "System", "SliceErrorQuery", "VoidResult", "XsDir", "Nuclide", "ThermalScattering",
     "NucMaterial", "Multigroup", "Source", "sample_source",
     "load_mcnp", "load_mcnp_string", "load_openmc", "load_openmc_string",
+    "load_alea", "load_alea_string",
     "generate_void", "transport_run", "version", "parallel_max_threads", "set_parallel_threads",
     "get_error", "clear_error", "set_log_level", "get_log_level",
     "primitive_evaluate",

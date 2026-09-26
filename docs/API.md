@@ -18,6 +18,8 @@ temporarily differ.
 | `alea_mesh.h` | Structured sampling, streaming, and adaptive octree export |
 | `alea_mcnp.h` | MCNP load/export and model ownership |
 | `alea_openmc.h` | OpenMC XML load/export and model ownership |
+| `alea_model.h` | Format-neutral model ownership and cell metadata |
+| `alea_xml.h` | Native ALEA XML model import/export |
 | `alea_serpent.h` | Serpent export |
 | `alea_nucdata.h` / `alea_nucdata_types.h` | ACE data, cross sections, materials, and restricted collision physics |
 

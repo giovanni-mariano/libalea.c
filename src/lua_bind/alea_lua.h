@@ -34,6 +34,7 @@ typedef struct {
     alea_system_t* sys;
     void* mcnp_model;    /* mcnp_model_t* if loaded from MCNP, NULL otherwise */
     void* openmc_model;  /* openmc_model_t* if loaded from OpenMC, NULL otherwise */
+    void* alea_model;    /* alea_model_t* if loaded from ALEA XML, NULL otherwise */
     int owned;            /* 1 if we should destroy on __gc */
     int destroy_pending;  /* destroy requested while dependent userdata exists */
     int active_void_results;
@@ -61,6 +62,7 @@ static inline void alea_lua_system_init(alea_lua_system_t* ud) {
     ud->sys = NULL;
     ud->mcnp_model = NULL;
     ud->openmc_model = NULL;
+    ud->alea_model = NULL;
     ud->owned = 1;
     ud->destroy_pending = 0;
     ud->active_void_results = 0;

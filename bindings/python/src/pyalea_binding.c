@@ -33,6 +33,7 @@
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_serpent.h"
+#include "alea_xml.h"
 #include "alea_slice.h"
 #include "alea_raycast.h"
 #include "alea_render.h"
@@ -96,6 +97,7 @@ typedef struct {
     alea_system_t* sys;
     int owns_sys;
     mcnp_model_t* mcnp_model;  /* Optional MCNP-only metadata sidecar. */
+    alea_model_t* alea_model;  /* Optional native ALEA model metadata. */
 } PyAleaSystemObject;
 
 /* ============================================================================
@@ -226,13 +228,27 @@ static int add_temperature_fields(PyObject* dict,
 }
 
 static mcnp_model_t* ensure_mcnp_sidecar(PyAleaSystemObject* self) {
-    if (!self->mcnp_model && self->sys)
+    if (!self->mcnp_model && self->sys && !self->alea_model)
         self->mcnp_model = mcnp_model_wrap(self->sys);
     return self->mcnp_model;
 }
 
 static int add_importance_fields(PyAleaSystemObject* self, PyObject* dict,
                                  size_t cell_index) {
+    if (self->alea_model) {
+        const alea_model_cell_metadata_t* meta =
+            alea_model_cell_metadata(self->alea_model, cell_index);
+        if (!meta) return 0;
+        PyObject* importance = Py_BuildValue(
+            "{s:d,s:d,s:d}",
+            "neutron", meta->importance_neutron,
+            "photon", meta->importance_photon,
+            "electron", meta->importance_electron);
+        if (!importance) return -1;
+        int rc = PyDict_SetItemString(dict, "importance", importance);
+        Py_DECREF(importance);
+        return rc;
+    }
     if (!self->mcnp_model)
         return 0;
     const mcnp_cell_params_t* params = mcnp_cell_params_const(
@@ -256,6 +272,38 @@ static int add_importance_fields(PyAleaSystemObject* self, PyObject* dict,
  * or reorder cells. */
 static int copy_mcnp_importance_sidecar(PyAleaSystemObject* source,
                                         PyAleaSystemObject* target) {
+    if (source->alea_model && target->sys) {
+        alea_model_t* copied = alea_model_adopt(target->sys);
+        if (!copied) { PyErr_NoMemory(); return -1; }
+        target->alea_model = copied;
+        target->owns_sys = 0;
+        if (alea_model_set_name(copied, alea_model_name(source->alea_model)) ||
+            alea_model_set_title(copied, alea_model_title(source->alea_model)) ||
+            alea_model_set_comments(copied, alea_model_comments(source->alea_model))) {
+            PyErr_NoMemory();
+            return -1;
+        }
+        const size_t target_count = alea_cell_count(target->sys);
+        for (size_t target_index = 0; target_index < target_count; target_index++) {
+            alea_cell_info_t info;
+            if (alea_cell_get_info(target->sys, target_index, &info) < 0) continue;
+            int source_index = alea_cell_find(source->sys, info.cell_id);
+            if (source_index < 0) continue;
+            const alea_model_cell_metadata_t* from =
+                alea_model_cell_metadata(source->alea_model, (size_t)source_index);
+            alea_model_cell_metadata_t* to =
+                alea_model_cell_metadata_mut(copied, target_index);
+            if (!from || !to) continue;
+            const char* name = from->name;
+            *to = *from;
+            to->name = NULL;
+            if (alea_model_cell_set_name(copied, target_index, name)) {
+                PyErr_NoMemory();
+                return -1;
+            }
+        }
+        return 0;
+    }
     if (!source->mcnp_model || !target->sys)
         return 0;
 
@@ -654,6 +702,10 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "export_serpent(filename)\n\nExport to Serpent input format."},
     {"export_serpent_string", (PyCFunction)PyAleaSystem_export_serpent_string,
      METH_NOARGS, "export_serpent_string() -> str\n\nExport Serpent text in memory."},
+    {"export_alea", (PyCFunction)PyAleaSystem_export_alea,
+     METH_VARARGS | METH_KEYWORDS, "export_alea(filename)\n\nExport native ALEA XML."},
+    {"export_alea_string", (PyCFunction)PyAleaSystem_export_alea_string,
+     METH_NOARGS, "export_alea_string() -> str\n\nExport native ALEA XML in memory."},
 
     /* Merge */
     {"merge", (PyCFunction)PyAleaSystem_merge, METH_VARARGS | METH_KEYWORDS,

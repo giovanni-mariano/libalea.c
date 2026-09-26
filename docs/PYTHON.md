@@ -25,6 +25,18 @@ system = pyalea.load_mcnp("geometry.inp")
 system.build_universe_index()
 ```
 
+Native model XML preserves cell metadata and per-nuclide library extensions:
+
+```python
+system = pyalea.load_alea("model.alea.xml")
+xml_text = system.export_alea_string()
+system.export_alea("copy.alea.xml")
+```
+
+`load_alea_string()` loads the same format from memory. See the
+[ALEA XML format guide](ALEA_XML_FORMAT.md) for the schema and round-trip
+contract.
+
 Release archives are platform-specific application artifacts rather than
 universal wheels. Their accompanying checksum and `pyalea-manifest.json` can
 be used to verify a download.
