@@ -136,25 +136,6 @@ static int l_point_inside(lua_State* L) {
     return 1;
 }
 
-/* sys:find_overlaps() -> table of {cell_a, cell_b} pairs */
-static int l_find_overlaps(lua_State* L) {
-    alea_system_t* sys = alea_get_sys(L, 1);
-    int pairs[2048];
-    int n = alea_find_overlaps(sys, pairs, 1024);
-    if (n < 0) n = 0;
-
-    lua_createtable(L, n, 0);
-    for (int i = 0; i < n; i++) {
-        lua_createtable(L, 2, 0);
-        lua_pushinteger(L, pairs[2 * i]);
-        lua_rawseti(L, -2, 1);
-        lua_pushinteger(L, pairs[2 * i + 1]);
-        lua_rawseti(L, -2, 2);
-        lua_rawseti(L, -2, i + 1);
-    }
-    return 1;
-}
-
 /* ============================================================================
  * Information
  * ============================================================================ */
@@ -724,7 +705,6 @@ static const luaL_Reg query_methods[] = {
     {"material_at",          l_material_at},
     {"find_all_cells",       l_find_all_cells},
     {"point_inside",         l_point_inside},
-    {"find_overlaps",        l_find_overlaps},
     {"cell_count",           l_cell_count},
     {"surface_count",        l_surface_count},
     {"universe_count",       l_universe_count},

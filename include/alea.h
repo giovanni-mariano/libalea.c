@@ -340,6 +340,15 @@ bool alea_point_inside(const alea_system_t* sys, alea_node_id_t node,
 /* Legacy convenience wrapper.
  * Prefer `alea_find_cell_at()` for single-point queries. */
 int alea_material_at(alea_system_t* sys, double x, double y, double z);
+/**
+ * Return sampled positive-volume overlap pairs in the root universe.
+ * Cells that merely share a face, edge, or point are not overlaps.
+ *
+ * @deprecated This bounded heuristic can miss overlaps and cannot represent
+ * filled/lattice occurrences. Use alea_validate_geometry() or
+ * alea_validate_geometry_slice() from alea_geo_validator.h.
+ */
+ALEA_DEPRECATED("use alea_validate_geometry or alea_validate_geometry_slice")
 int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 
 /* ============================================================================

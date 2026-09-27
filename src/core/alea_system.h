@@ -558,10 +558,12 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture);
 int alea_identify_cell_at_point(alea_system_t* sys, double x, double y, double z);
 
 /**
- * @brief Find overlapping cells
+ * @brief Find sampled root-universe overlap candidates (legacy)
  *
- * Detects cells that occupy the same space (geometry errors).
- * Uses bounding box pre-filtering then point sampling.
+ * Detects cells whose interiors occupy the same space (geometry errors).
+ * Shared faces, edges, and points are not overlaps. Uses bounding box
+ * pre-filtering followed by point and local-neighborhood sampling.
+ * Public callers should use the structured geometry validator instead.
  *
  * @param sys CSG system
  * @param out_pairs Output array of cell index pairs [i1,j1,i2,j2,...]

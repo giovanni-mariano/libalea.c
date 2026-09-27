@@ -23,6 +23,11 @@
 
 #include "alea.h"
 #include "alea_mcnp.h"
+
+/* Exercise the deprecated compatibility API while it remains exported. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "alea_openmc.h"
 #include "alea_raycast.h"
 

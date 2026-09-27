@@ -12,6 +12,12 @@
 #include "alea_serpent.h"
 #include "core/alea_system.h"
 
+/* This suite deliberately retains coverage for the deprecated overlap-pair
+ * compatibility API until that ABI is removed. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
 /* ------------------------------------------------------------------------- */
 /* System Lifecycle Tests                                                     */
 /* ------------------------------------------------------------------------- */
@@ -305,6 +311,38 @@ TEST(export_serpent) {
     int rc = serpent_export_system_stream(sys, f);
     ASSERT_EQ(rc, 0);
     fclose(f);
+
+    alea_destroy(sys);
+}
+
+TEST(shared_boundary_is_not_overlap) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+
+    int sphere_si = alea_sphere_surface(sys, 1, 0, 0, 0, 10);
+    int plane_si = alea_plane_surface(sys, 2, 1, 0, 0, 0);
+    ASSERT(sphere_si >= 0);
+    ASSERT(plane_si >= 0);
+
+    alea_node_id_t inside = alea_halfspace(sys, sphere_si, -1);
+    alea_node_id_t left = alea_intersection(
+        sys, inside, alea_halfspace(sys, plane_si, -1));
+    alea_node_id_t right = alea_intersection(
+        sys, inside, alea_halfspace(sys, plane_si, 1));
+    ASSERT_NE(left, ALEA_NODE_ID_INVALID);
+    ASSERT_NE(right, ALEA_NODE_ID_INVALID);
+
+    int m1 = alea_add_material(sys, 1);
+    int m2 = alea_add_material(sys, 2);
+    ASSERT(alea_add_cell(sys, 1, left, m1, 1.0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, right, m2, 1.0, 0) >= 0);
+
+    /* Both closed half-spaces claim the shared face, but their interiors do
+     * not intersect. The pair API must not turn that into an overlap. */
+    ASSERT(alea_point_inside(sys, left, 0, 0, 0));
+    ASSERT(alea_point_inside(sys, right, 0, 0, 0));
+    int pairs[4];
+    ASSERT_EQ(alea_find_overlaps(sys, pairs, 2), 0);
 
     alea_destroy(sys);
 }

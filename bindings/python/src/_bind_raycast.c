@@ -464,54 +464,6 @@ failed:
     return NULL;
 }
 
-static PyObject* PyAleaSystem_find_overlaps(PyAleaSystemObject* self, PyObject* args) {
-    size_t max_pairs = 100;
-
-    if (!PyArg_ParseTuple(args, "|n", &max_pairs)) {
-        return NULL;
-    }
-
-    if (!self->sys) {
-        PyErr_SetString(PyExc_RuntimeError, "System not initialized");
-        return NULL;
-    }
-
-    int* pairs = malloc(max_pairs * 2 * sizeof(int));
-    if (!pairs) {
-        PyErr_NoMemory();
-        return NULL;
-    }
-
-    int n;
-    sighandler_func old_sigint = install_sigint();
-    Py_BEGIN_ALLOW_THREADS
-    n = alea_find_overlaps(self->sys, pairs, max_pairs);
-    Py_END_ALLOW_THREADS
-    if (restore_sigint(old_sigint)) {
-        free(pairs);
-        return NULL;
-    }
-
-    PyObject* list = PyList_New(n);
-    if (!list) {
-        free(pairs);
-        return NULL;
-    }
-
-    for (int i = 0; i < n; i++) {
-        PyObject* pair = Py_BuildValue("(ii)", pairs[i*2], pairs[i*2+1]);
-        if (!pair) {
-            free(pairs);
-            Py_DECREF(list);
-            return NULL;
-        }
-        PyList_SET_ITEM(list, i, pair);
-    }
-
-    free(pairs);
-    return list;
-}
-
 /* ============================================================================
  * PyAleaSystem Methods - Volume Estimation
  * ============================================================================ */

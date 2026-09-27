@@ -128,7 +128,7 @@ for (int i = 0; i < nhits; i++) {
 
 Each hit includes the local coordinates in that universe's frame (`local_x`, `local_y`, `local_z`), which is essential for debugging transform issues.
 
-### Finding overlaps
+### Legacy overlap candidate screen (deprecated)
 
 ```c
 int pairs[200];  // pairs of cell IDs: [a1, b1, a2, b2, ...]
@@ -139,16 +139,14 @@ for (int i = 0; i < noverlaps; i++) {
 }
 ```
 
-This is a cheap root-universe screen: it intersects each candidate pair's
-bounding boxes and probes the eight corners plus the center. Returned values
-are zero-based cell indices, not external cell IDs. It is deliberately bounded
-and can miss overlaps; use it for a quick hint, not as evidence that a model is
-clean.
+This compatibility API is deprecated. It is a bounded root-universe sampler,
+returns zero-based cell indices rather than external cell IDs, can miss
+overlaps, and cannot describe filled/lattice occurrences. Use the structured
+validator below in new code.
 
 ### Transport-style validation
 
-For actionable geometry diagnostics, use the occurrence-aware validator rather
-than treating `alea_find_overlaps()` as a proof that a model is valid:
+For actionable geometry diagnostics, use the occurrence-aware validator:
 
 ```c
 #include <alea_geo_validator.h>

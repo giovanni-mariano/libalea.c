@@ -24,6 +24,11 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
+
+/* Exercise the deprecated compatibility API while it remains exported. */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "alea_raycast.h"
 
 static void fuzz_check_cell_lookup(alea_system_t *sys, size_t limit) {

@@ -1811,6 +1811,41 @@ int alea_identify_cell_at_point(alea_system_t* sys, double x, double y, double z
     return hit.cell_index;
 }
 
+/* A point accepted by two closed CSG regions is not sufficient evidence of a
+ * volumetric overlap: adjacent cells intentionally share their boundary.  The
+ * legacy pair finder is sampling-based, so require a nearby witness too. */
+static bool overlap_witness_has_volume(const alea_system_t* sys,
+                                       alea_node_id_t node_a,
+                                       alea_node_id_t node_b,
+                                       const double point[3],
+                                       double max_epsilon) {
+    double scale = 1.0;
+    for (int axis = 0; axis < 3; axis++)
+        scale = fmax(scale, fabs(point[axis]));
+
+    double epsilon = fmax(32.0 * sys->config.abs_tol,
+                          32.0 * sys->config.rel_tol * scale);
+    if (max_epsilon > 0.0 && epsilon > max_epsilon)
+        epsilon = max_epsilon;
+    if (!(epsilon > 0.0) || !isfinite(epsilon))
+        return false;
+
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                double x = point[0] + (double)dx * epsilon;
+                double y = point[1] + (double)dy * epsilon;
+                double z = point[2] + (double)dz * epsilon;
+                if (alea_contains_point(sys, node_a, x, y, z) &&
+                    alea_contains_point(sys, node_b, x, y, z))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
 int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {
     if (!sys || !out_pairs || max_pairs == 0) return 0;
     
@@ -1848,6 +1883,29 @@ int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {
             double max_y = (bbox_i->max_y < bbox_j->max_y) ? bbox_i->max_y : bbox_j->max_y;
             double min_z = (bbox_i->min_z > bbox_j->min_z) ? bbox_i->min_z : bbox_j->min_z;
             double max_z = (bbox_i->max_z < bbox_j->max_z) ? bbox_i->max_z : bbox_j->max_z;
+
+            double widths[3] = {max_x - min_x, max_y - min_y, max_z - min_z};
+            double mins[3] = {min_x, min_y, min_z};
+            double maxs[3] = {max_x, max_y, max_z};
+
+            /* A zero-thickness AABB intersection can only be a shared face,
+             * edge, or point. Outward-rounded float bboxes can make that
+             * thickness tiny rather than exactly zero. */
+            bool positive_extent = true;
+            for (int axis = 0; axis < 3; axis++) {
+                double axis_scale = fmax(1.0,
+                    fmax(fabs(mins[axis]), fabs(maxs[axis])));
+                double width_tol = fmax(32.0 * sys->config.abs_tol,
+                                        32.0 * sys->config.rel_tol * axis_scale);
+                if (widths[axis] <= width_tol) {
+                    positive_extent = false;
+                    break;
+                }
+            }
+            if (!positive_extent) continue;
+
+            double max_epsilon = 0.125 * fmin(widths[0],
+                                      fmin(widths[1], widths[2]));
             
             // Sample 8 points (corners) + center
             double test_points[9][3] = {
@@ -1863,7 +1921,12 @@ int alea_find_overlaps(alea_system_t* sys, int* out_pairs, size_t max_pairs) {
                 if (alea_contains_point(sys, cell_i->root_node_id, 
                                        test_points[p][0], test_points[p][1], test_points[p][2]) &&
                     alea_contains_point(sys, cell_j->root_node_id,
-                                       test_points[p][0], test_points[p][1], test_points[p][2])) {
+                                       test_points[p][0], test_points[p][1], test_points[p][2]) &&
+                    overlap_witness_has_volume(sys,
+                                               cell_i->root_node_id,
+                                               cell_j->root_node_id,
+                                               test_points[p],
+                                               max_epsilon)) {
                     overlap_found = true;
                 }
             }

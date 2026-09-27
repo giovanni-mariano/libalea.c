@@ -396,17 +396,18 @@ Legacy convenience wrapper for single-point queries. Prefer `alea_find_cell_at()
 
 Returns material ID, `0` for void, or `-1` on error.
 
-### alea_find_overlaps
+### alea_find_overlaps (deprecated)
 
 ```c
 int alea_find_overlaps(alea_system_t* sys, int* pairs, size_t max_pairs);
 ```
 
-Perform a cheap root-universe overlap screen. Candidate pairs are selected by
-intersecting cell bounding boxes, then tested at the eight intersection-box
-corners and its center. `pairs` receives zero-based cell indices as
-`[a0, b0, a1, b1, ...]`. This bounded heuristic can miss overlaps; use the
-geometry validator for transport diagnostics.
+Deprecated compatibility API. It performs a cheap root-universe overlap
+screen using bounding-box and local-neighborhood samples. `pairs` receives
+zero-based cell indices as `[a0, b0, a1, b1, ...]`. The bounded heuristic can
+miss overlaps and cannot describe filled/lattice occurrences. New code should
+use `alea_validate_geometry()` or `alea_validate_geometry_slice()` from
+`alea_geo_validator.h`.
 
 ### alea_find_cell_at
 

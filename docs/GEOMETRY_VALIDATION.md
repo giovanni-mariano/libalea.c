@@ -11,7 +11,7 @@ claim the result must support.
 
 | Method | Best use | Interpretation |
 |---|---|---|
-| `alea_find_overlaps()` | Fast initial screen | Bounded heuristic; a clean result is not proof |
+| `alea_find_overlaps()` (deprecated) | Compatibility-only root screen | Bounded heuristic; a clean result is not proof |
 | `alea_validate_geometry()` | Broad transport-style diagnostics | Sampled rays with structured crossing findings |
 | `alea_validate_geometry_slice()` | Diagnose analytical slice boundaries | Sampled curves with slice provenance |
 | Slice error query | Certify a bounded supported 2D domain | Verified regions and boundaries, with explicit unresolved output |

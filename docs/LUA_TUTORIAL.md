@@ -303,30 +303,9 @@ local idx = sys:cell_find(cell_id)
 
 ## 5. Overlap Detection
 
-Build both indices first:
-
-```lua
-sys:prepare_query_acceleration()
-```
-
-Find overlapping cell pairs:
-
-```lua
-local overlaps = sys:find_overlaps()
-print("Found " .. #overlaps .. " overlapping pairs")
-
-for i, pair in ipairs(overlaps) do
-    local a, b = pair[1], pair[2]
-    local info_a = sys:cell_info(a)
-    local info_b = sys:cell_info(b)
-    print(string.format("Overlap: cell %d <-> cell %d",
-        info_a.cell_id, info_b.cell_id))
-end
-```
-
-The returned pair members are zero-based cell indices. This is a fast
-root-universe bounding-box/corner/center screen and can miss overlaps; use the
-transport-style validator below for diagnostic evidence.
+The former `sys:find_overlaps()` heuristic has been removed from the Lua
+binding. Use `sys:validate_geometry(options)` for occurrence-aware overlap and
+gap findings; see [Validation](#11-validation).
 
 ## 6. Volume Estimation
 
@@ -1169,7 +1148,6 @@ print("Empty cells removed: " .. stats.empty_cells_removed)
 | Cells in bbox | `sys:cells_in_bbox(bbox)` |
 | **Validation** | |
 | Validate | `sys:validate()` |
-| Find overlaps | `sys:find_overlaps()` |
 | Transport validation | `sys:validate_geometry(options)` |
 | Validate one ray | `sys:validate_geometry_ray(...[, options])` |
 | Validate slice curves | `sys:validate_geometry_slice(view, curves[, options])` |

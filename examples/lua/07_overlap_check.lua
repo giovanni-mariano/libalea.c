@@ -1,4 +1,4 @@
--- 07_overlap_check.lua: Overlap detection using find_overlaps and load_mcnp_string
+-- 07_overlap_check.lua: Overlap detection using the geometry validator
 --
 -- Standalone: partially (has inline geometry, also loads data file)
 -- Usage: bin/alea examples/lua/07_overlap_check.lua [mcnp_file]
@@ -24,15 +24,14 @@ sys1:prepare_query_acceleration()
 print(string.format("Loaded inline model: %d cells, %d surfaces",
     sys1:cell_count(), sys1:surface_count()))
 
-local overlaps1 = sys1:find_overlaps()
-print(string.format("Overlapping pairs found: %d", #overlaps1))
-for i, pair in ipairs(overlaps1) do
-    local a, b = pair[1], pair[2]
-    local info_a = sys1:cell_info(a)
-    local info_b = sys1:cell_info(b)
-    print(string.format("  Pair %d: cell %d (idx %d) <-> cell %d (idx %d)",
-        i, info_a.cell_id, a, info_b.cell_id, b))
-end
+local report1 = sys1:validate_geometry{
+    ray_count = 20000,
+    seed = 12345,
+    max_errors = 1000,
+}
+local summary1 = report1:summary()
+print(string.format("Overlap findings: %d",
+    summary1.overlap_after_crossing or 0))
 
 -- Part 2: Check overlaps in a data file
 print("\n--- Part 2: Data File Overlap Check ---")
@@ -44,19 +43,14 @@ if ok then
     sys2:build_universe_index()
     sys2:prepare_query_acceleration()
 
-    local overlaps2 = sys2:find_overlaps()
-    print(string.format("Overlapping pairs found: %d", #overlaps2))
-    for i, pair in ipairs(overlaps2) do
-        if i > 10 then
-            print(string.format("  ... and %d more", #overlaps2 - 10))
-            break
-        end
-        local a, b = pair[1], pair[2]
-        local info_a = sys2:cell_info(a)
-        local info_b = sys2:cell_info(b)
-        print(string.format("  Pair %d: cell %d <-> cell %d",
-            i, info_a.cell_id, info_b.cell_id))
-    end
+    local report2 = sys2:validate_geometry{
+        ray_count = 20000,
+        seed = 12345,
+        max_errors = 1000,
+    }
+    local summary2 = report2:summary()
+    print(string.format("Overlap findings: %d",
+        summary2.overlap_after_crossing or 0))
 else
     print("  Could not load file (skipping): " .. tostring(sys2))
 end

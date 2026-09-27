@@ -465,8 +465,6 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "point_inside(node_id, x, y, z) -> bool\n\nTest if point is inside CSG tree."},
     {"material_at", (PyCFunction)PyAleaSystem_material_at, METH_VARARGS,
      "material_at(x, y, z) -> int or None\n\nGet material ID at point."},
-    {"find_overlaps", (PyCFunction)PyAleaSystem_find_overlaps, METH_VARARGS,
-     "find_overlaps(max_pairs=100) -> list of (cell_idx, cell_idx)\n\nFind overlapping cells."},
     {"request_interrupt", (PyCFunction)PyAleaSystem_request_interrupt, METH_NOARGS,
      "request_interrupt()\n\nBroadcast cancellation to all active cooperative native operations. "
      "The interrupt flag is cleared after the final active operation returns."},
