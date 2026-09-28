@@ -48,6 +48,14 @@ static void init_default_params(mcnp_cell_params_t* p) {
     p->fill_transform_index = MCNP_INLINE_TRANSFORM_INVALID;
 }
 
+static int set_string(char** target, const char* value) {
+    char* copy = value ? alea_strdup(value) : NULL;
+    if (value && !copy) return -1;
+    free(*target);
+    *target = copy;
+    return 0;
+}
+
 /* ============================================================================
  * CELL EVENT CALLBACKS
  * ============================================================================ */
@@ -62,18 +70,24 @@ static void on_cell_copied_cb(void* ud, size_t dst_index, size_t src_index) {
     mcnp_model_t* model = (mcnp_model_t*)ud;
     if (dst_index < model->cell_params_count && src_index < model->cell_params_count) {
         model->cell_params[dst_index] = model->cell_params[src_index];
+        const char* source_name = model->cell_names[src_index];
+        (void)set_string(&model->cell_names[dst_index], source_name);
     }
 }
 
 static void on_cell_removed_cb(void* ud, size_t index) {
     mcnp_model_t* model = (mcnp_model_t*)ud;
     if (!model || index >= model->cell_params_count) return;
+    free(model->cell_names[index]);
     const size_t trailing = model->cell_params_count - index - 1;
     if (trailing > 0) {
         memmove(&model->cell_params[index], &model->cell_params[index + 1],
                 trailing * sizeof(*model->cell_params));
+        memmove(&model->cell_names[index], &model->cell_names[index + 1],
+                trailing * sizeof(*model->cell_names));
     }
     model->cell_params_count--;
+    model->cell_names[model->cell_params_count] = NULL;
 }
 
 /* ============================================================================
@@ -91,8 +105,14 @@ int mcnp_model_reserve_params(mcnp_model_t* model, size_t cap) {
     mcnp_cell_params_t* new_arr = realloc(model->cell_params,
                                            new_cap * sizeof(mcnp_cell_params_t));
     if (!new_arr) return -1;
-
     model->cell_params = new_arr;
+
+    char** new_names = realloc(model->cell_names,
+                               new_cap * sizeof(*model->cell_names));
+    if (!new_names) return -1;
+    memset(new_names + model->cell_params_capacity, 0,
+           (new_cap - model->cell_params_capacity) * sizeof(*new_names));
+    model->cell_names = new_names;
     model->cell_params_capacity = new_cap;
     return 0;
 }
@@ -107,6 +127,7 @@ int mcnp_model_add_params(mcnp_model_t* model) {
 
     size_t idx = model->cell_params_count++;
     init_default_params(&model->cell_params[idx]);
+    model->cell_names[idx] = NULL;
     return (int)idx;
 }
 
@@ -118,6 +139,41 @@ mcnp_cell_params_t* mcnp_cell_params(mcnp_model_t* m, size_t idx) {
 const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t idx) {
     if (!m || idx >= m->cell_params_count) return NULL;
     return &m->cell_params[idx];
+}
+
+const char* mcnp_model_name(const mcnp_model_t* model) {
+    return model ? model->name : NULL;
+}
+
+const char* mcnp_model_title(const mcnp_model_t* model) {
+    return model ? model->title : NULL;
+}
+
+const char* mcnp_model_comments(const mcnp_model_t* model) {
+    return model ? model->comments : NULL;
+}
+
+int mcnp_model_set_name(mcnp_model_t* model, const char* value) {
+    return model ? set_string(&model->name, value) : -1;
+}
+
+int mcnp_model_set_title(mcnp_model_t* model, const char* value) {
+    return model ? set_string(&model->title, value) : -1;
+}
+
+int mcnp_model_set_comments(mcnp_model_t* model, const char* value) {
+    return model ? set_string(&model->comments, value) : -1;
+}
+
+const char* mcnp_model_cell_name(const mcnp_model_t* model, size_t index) {
+    return model && index < model->cell_params_count
+        ? model->cell_names[index] : NULL;
+}
+
+int mcnp_model_cell_set_name(mcnp_model_t* model, size_t index,
+                             const char* value) {
+    return model && index < model->cell_params_count
+        ? set_string(&model->cell_names[index], value) : -1;
 }
 
 static int reserve_inline_transforms(mcnp_model_t* model, size_t cap) {
@@ -232,6 +288,12 @@ void mcnp_model_destroy(mcnp_model_t* model) {
         }
     }
 
+    for (size_t i = 0; i < model->cell_params_count; i++)
+        free(model->cell_names[i]);
+    free(model->cell_names);
+    free(model->name);
+    free(model->title);
+    free(model->comments);
     free(model->cell_params);
     free(model->inline_transforms);
     free(model);
@@ -334,10 +396,21 @@ alea_model_t* mcnp_model_to_alea_model(const mcnp_model_t* model) {
     if (!clone) return NULL;
     alea_model_t* result = alea_model_adopt(clone);
     if (!result) { alea_destroy(clone); return NULL; }
+    if (alea_model_set_name(result, model->name) ||
+        alea_model_set_title(result, model->title) ||
+        alea_model_set_comments(result, model->comments)) {
+        alea_model_destroy(result);
+        return NULL;
+    }
     size_t count = alea_model_cell_metadata_count(result);
     if (count > model->cell_params_count) count = model->cell_params_count;
-    for (size_t i = 0; i < count; i++)
+    for (size_t i = 0; i < count; i++) {
         params_to_metadata(&model->cell_params[i], alea_model_cell_metadata_mut(result, i));
+        if (alea_model_cell_set_name(result, i, model->cell_names[i])) {
+            alea_model_destroy(result);
+            return NULL;
+        }
+    }
     return result;
 }
 
@@ -348,11 +421,23 @@ mcnp_model_t* mcnp_model_from_alea_model(const alea_model_t* model) {
     mcnp_model_t* result = mcnp_model_wrap(clone);
     if (!result) { alea_destroy(clone); return NULL; }
     result->owns_sys = 1;
+    if (mcnp_model_set_name(result, alea_model_name(model)) ||
+        mcnp_model_set_title(result, alea_model_title(model)) ||
+        mcnp_model_set_comments(result, alea_model_comments(model))) {
+        mcnp_model_destroy(result);
+        return NULL;
+    }
     size_t count = result->cell_params_count;
     if (count > alea_model_cell_metadata_count(model))
         count = alea_model_cell_metadata_count(model);
-    for (size_t i = 0; i < count; i++)
+    for (size_t i = 0; i < count; i++) {
         metadata_to_params(alea_model_cell_metadata(model, i), &result->cell_params[i]);
+        const alea_model_cell_metadata_t* metadata = alea_model_cell_metadata(model, i);
+        if (mcnp_model_cell_set_name(result, i, metadata ? metadata->name : NULL)) {
+            mcnp_model_destroy(result);
+            return NULL;
+        }
+    }
     return result;
 }
 

@@ -1048,7 +1048,11 @@ int export_mcnp(alea_system_t* sys, export_context_t* ctx) {
     mcnp_str_init(&cs, &ctx->arena, 256, ctx->mcnp_max_col, ctx->mcnp_cont_indent);
 
     /* Header */
-    fprintf(ctx->out, "MCNP Input - Exported by CSG Library\n");
+    const mcnp_model_t* export_model =
+        (const mcnp_model_t*)ctx->module_data;
+    const char* title = mcnp_model_title(export_model);
+    fprintf(ctx->out, "%s\n",
+            title && *title ? title : "MCNP Input - Exported by CSG Library");
     mcnp_str_comment(&cs, "");
     mcnp_str_comment(&cs, "Cell Cards");
     mcnp_str_comment(&cs, "");

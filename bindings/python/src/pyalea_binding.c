@@ -233,6 +233,15 @@ static mcnp_model_t* ensure_mcnp_sidecar(PyAleaSystemObject* self) {
     return self->mcnp_model;
 }
 
+static alea_model_t* ensure_alea_sidecar(PyAleaSystemObject* self) {
+    if (!self->alea_model && self->sys) {
+        self->alea_model = alea_model_adopt(self->sys);
+        if (self->alea_model)
+            self->owns_sys = 0;
+    }
+    return self->alea_model;
+}
+
 static int add_importance_fields(PyAleaSystemObject* self, PyObject* dict,
                                  size_t cell_index) {
     if (self->alea_model) {
@@ -312,6 +321,14 @@ static int copy_mcnp_importance_sidecar(PyAleaSystemObject* source,
         PyErr_NoMemory();
         return -1;
     }
+    if (mcnp_model_set_name(copied, mcnp_model_name(source->mcnp_model)) ||
+        mcnp_model_set_title(copied, mcnp_model_title(source->mcnp_model)) ||
+        mcnp_model_set_comments(copied,
+                                mcnp_model_comments(source->mcnp_model))) {
+        mcnp_model_destroy(copied);
+        PyErr_NoMemory();
+        return -1;
+    }
 
     const size_t target_count = alea_cell_count(target->sys);
     for (size_t target_index = 0; target_index < target_count; target_index++) {
@@ -332,6 +349,14 @@ static int copy_mcnp_importance_sidecar(PyAleaSystemObject* source,
         to->has_imp_n = from->has_imp_n;
         to->has_imp_p = from->has_imp_p;
         to->has_imp_e = from->has_imp_e;
+        if (mcnp_model_cell_set_name(
+                copied, target_index,
+                mcnp_model_cell_name(source->mcnp_model,
+                                     (size_t)source_index))) {
+            mcnp_model_destroy(copied);
+            PyErr_NoMemory();
+            return -1;
+        }
     }
 
     target->mcnp_model = copied;
@@ -480,6 +505,15 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "Return unique categorical identifiers for deterministic color initialization."},
     {"cell_set_importance", (PyCFunction)PyAleaSystem_cell_set_importance,
      METH_VARARGS, "cell_set_importance(index, particle, value)"},
+    {"model_get_metadata", (PyCFunction)PyAleaSystem_model_get_metadata,
+     METH_NOARGS, "model_get_metadata() -> dict"},
+    {"model_set_metadata", (PyCFunction)PyAleaSystem_model_set_metadata,
+     METH_VARARGS | METH_KEYWORDS,
+     "model_set_metadata(name=None, title=None, comments=None)"},
+    {"cell_get_name", (PyCFunction)PyAleaSystem_cell_get_name,
+     METH_VARARGS, "cell_get_name(index) -> str or None"},
+    {"cell_set_name", (PyCFunction)PyAleaSystem_cell_set_name,
+     METH_VARARGS, "cell_set_name(index, name)"},
     {"cell_set_temperature", (PyCFunction)PyAleaSystem_cell_set_temperature,
      METH_VARARGS, "cell_set_temperature(index, temperature_K)"},
     {"cell_clear_temperature", (PyCFunction)PyAleaSystem_cell_clear_temperature,
@@ -634,6 +668,10 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "material_count() -> int\n\nGet number of materials."},
     {"material_get_id", (PyCFunction)PyAleaSystem_material_get_id, METH_VARARGS,
      "material_get_id(mat_index) -> int\n\nGet material MCNP ID by index."},
+    {"material_get_name", (PyCFunction)PyAleaSystem_material_get_name, METH_VARARGS,
+     "material_get_name(mat_index) -> str or None"},
+    {"material_set_name", (PyCFunction)PyAleaSystem_material_set_name, METH_VARARGS,
+     "material_set_name(mat_index, name)"},
     {"material_add_nuclide", (PyCFunction)PyAleaSystem_material_add_nuclide, METH_VARARGS,
      "material_add_nuclide(mat_index, zaid, library, fraction)\n\n"
      "Add a nuclide to a material. library can be None."},

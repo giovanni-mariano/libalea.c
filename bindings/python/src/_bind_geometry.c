@@ -796,6 +796,29 @@ static PyObject* PyAleaSystem_material_add_nuclide(PyAleaSystemObject* self, PyO
     Py_RETURN_NONE;
 }
 
+static PyObject* PyAleaSystem_material_get_name(
+        PyAleaSystemObject* self, PyObject* args) {
+    int mat_index;
+    if (!PyArg_ParseTuple(args, "i", &mat_index)) return NULL;
+    if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
+    const char* name = alea_material_get_name(self->sys, mat_index);
+    if (!name) Py_RETURN_NONE;
+    return PyUnicode_FromString(name);
+}
+
+static PyObject* PyAleaSystem_material_set_name(
+        PyAleaSystemObject* self, PyObject* args) {
+    int mat_index;
+    const char* name;
+    if (!PyArg_ParseTuple(args, "iz", &mat_index, &name)) return NULL;
+    if (!self->sys) { PyErr_SetString(PyExc_RuntimeError, "System not initialized"); return NULL; }
+    if (alea_material_set_name(self->sys, mat_index, name) < 0) {
+        PyErr_SetString(PyExc_IndexError, "material index out of range");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject* PyAleaSystem_material_add_element(PyAleaSystemObject* self, PyObject* args) {
     int mat_index, Z;
     const char* library = NULL;

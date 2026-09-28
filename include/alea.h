@@ -1420,6 +1420,12 @@ size_t alea_material_count(const alea_system_t* sys);
  */
 int alea_material_get_id(const alea_system_t* sys, int mat_index);
 
+/** Get a material name, or NULL when unset/invalid. Borrowed pointer. */
+const char* alea_material_get_name(const alea_system_t* sys, int mat_index);
+
+/** Set or clear a material name. */
+int alea_material_set_name(alea_system_t* sys, int mat_index, const char* name);
+
 /**
  * @brief Add a nuclide to a material
  * @param mat_index Material index from alea_add_material()

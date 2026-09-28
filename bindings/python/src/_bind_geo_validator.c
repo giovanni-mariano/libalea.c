@@ -1449,6 +1449,9 @@ static PyObject* transition_slice_result_to_py(
                     case ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_INTERVAL:
                         evidence_scope = "verified_interval";
                         break;
+                    case ALEA_SLICE_BOUNDARY_EVIDENCE_VERIFIED_POINT:
+                        evidence_scope = "verified_point";
+                        break;
                     case ALEA_SLICE_BOUNDARY_EVIDENCE_UNRESOLVED:
                         break;
                 }

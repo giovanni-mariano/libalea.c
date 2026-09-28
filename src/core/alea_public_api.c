@@ -3261,6 +3261,22 @@ int alea_material_get_id(const alea_system_t* sys, int mat_index) {
     return sys->materials.data[mat_index].material_id;
 }
 
+const char* alea_material_get_name(const alea_system_t* sys, int mat_index) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return NULL;
+    return sys->materials.data[mat_index].name;
+}
+
+int alea_material_set_name(alea_system_t* sys, int mat_index, const char* name) {
+    if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
+        return -1;
+    char* copy = name ? alea_strdup(name) : NULL;
+    if (name && !copy) return -1;
+    free(sys->materials.data[mat_index].name);
+    sys->materials.data[mat_index].name = copy;
+    return 0;
+}
+
 int alea_material_add_nuclide(alea_system_t* sys, int mat_index,
                               int zaid, const char* library, double fraction) {
     if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))

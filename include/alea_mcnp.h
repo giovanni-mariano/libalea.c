@@ -121,6 +121,10 @@ typedef struct {
 typedef struct {
     alea_system_t* sys;
     int owns_sys;                           /* 1 if destroy should free sys */
+    char* name;                             /* format-neutral model metadata */
+    char* title;
+    char* comments;
+    char** cell_names;                      /* parallel array, indexed like sys->cells */
     mcnp_cell_params_t* cell_params;        /* parallel array, indexed like sys->cells */
     size_t cell_params_count;
     size_t cell_params_capacity;
@@ -220,6 +224,17 @@ mcnp_cell_params_t* mcnp_cell_params(mcnp_model_t* m, size_t idx);
  * @brief Get cell params by index (const, bounds-checked)
  */
 const mcnp_cell_params_t* mcnp_cell_params_const(const mcnp_model_t* m, size_t idx);
+
+/** Format-neutral metadata retained by an MCNP-backed model. */
+const char* mcnp_model_name(const mcnp_model_t* model);
+const char* mcnp_model_title(const mcnp_model_t* model);
+const char* mcnp_model_comments(const mcnp_model_t* model);
+int mcnp_model_set_name(mcnp_model_t* model, const char* value);
+int mcnp_model_set_title(mcnp_model_t* model, const char* value);
+int mcnp_model_set_comments(mcnp_model_t* model, const char* value);
+const char* mcnp_model_cell_name(const mcnp_model_t* model, size_t index);
+int mcnp_model_cell_set_name(mcnp_model_t* model, size_t index,
+                             const char* value);
 
 /**
  * @brief Get an inline transform by index (bounds-checked)

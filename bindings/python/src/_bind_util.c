@@ -124,6 +124,86 @@ static PyObject* PyAleaSystem_reset(PyAleaSystemObject* self, PyObject* Py_UNUSE
     Py_RETURN_NONE;
 }
 
+static PyObject* optional_string(const char* value) {
+    if (!value) Py_RETURN_NONE;
+    return PyUnicode_FromString(value);
+}
+
+static PyObject* PyAleaSystem_model_get_metadata(
+        PyAleaSystemObject* self, PyObject* Py_UNUSED(ignored)) {
+    PyObject* result = PyDict_New();
+    if (!result) return NULL;
+    const char* name = self->alea_model ? alea_model_name(self->alea_model)
+        : mcnp_model_name(self->mcnp_model);
+    const char* title = self->alea_model ? alea_model_title(self->alea_model)
+        : mcnp_model_title(self->mcnp_model);
+    const char* comments = self->alea_model ? alea_model_comments(self->alea_model)
+        : mcnp_model_comments(self->mcnp_model);
+    if (dict_set_new(result, "name", optional_string(name)) < 0 ||
+        dict_set_new(result, "title", optional_string(title)) < 0 ||
+        dict_set_new(result, "comments", optional_string(comments)) < 0) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    return result;
+}
+
+static PyObject* PyAleaSystem_model_set_metadata(
+        PyAleaSystemObject* self, PyObject* args, PyObject* kwds) {
+    const char* name = NULL;
+    const char* title = NULL;
+    const char* comments = NULL;
+    static char* kwlist[] = {"name", "title", "comments", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|zzz", kwlist,
+                                     &name, &title, &comments)) return NULL;
+    if (self->mcnp_model) {
+        if (mcnp_model_set_name(self->mcnp_model, name) ||
+            mcnp_model_set_title(self->mcnp_model, title) ||
+            mcnp_model_set_comments(self->mcnp_model, comments))
+            return PyErr_NoMemory();
+    } else {
+        alea_model_t* model = ensure_alea_sidecar(self);
+        if (!model) return PyErr_NoMemory();
+        if (alea_model_set_name(model, name) ||
+            alea_model_set_title(model, title) ||
+            alea_model_set_comments(model, comments)) return PyErr_NoMemory();
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* PyAleaSystem_cell_get_name(
+        PyAleaSystemObject* self, PyObject* args) {
+    int index;
+    if (!PyArg_ParseTuple(args, "i", &index)) return NULL;
+    if (self->alea_model) {
+        const alea_model_cell_metadata_t* meta =
+            alea_model_cell_metadata(self->alea_model, (size_t)index);
+        return optional_string(meta ? meta->name : NULL);
+    }
+    return optional_string(mcnp_model_cell_name(self->mcnp_model,
+                                                (size_t)index));
+}
+
+static PyObject* PyAleaSystem_cell_set_name(
+        PyAleaSystemObject* self, PyObject* args) {
+    int index;
+    const char* name;
+    if (!PyArg_ParseTuple(args, "iz", &index, &name)) return NULL;
+    int rc;
+    if (self->mcnp_model)
+        rc = mcnp_model_cell_set_name(self->mcnp_model, (size_t)index, name);
+    else {
+        alea_model_t* model = ensure_alea_sidecar(self);
+        if (!model) return PyErr_NoMemory();
+        rc = alea_model_cell_set_name(model, (size_t)index, name);
+    }
+    if (rc < 0) {
+        PyErr_SetString(PyExc_IndexError, "cell index out of range");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 /* ============================================================================
  * Config
  * ============================================================================ */
