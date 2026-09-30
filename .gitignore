@@ -2,6 +2,9 @@ bin/*
 build/*
 /bindings/python/build/
 /bindings/python/dist/
+/bindings/python/package/pyalea/_alea*.so
+/bindings/python/package/pyalea/_alea*.pyd
+/bindings/python/package/pyalea/_build_info.json
 /bindings/python/tests/__pycache__/
 /bindings/python/scripts/__pycache__/
 /tools/__pycache__/
