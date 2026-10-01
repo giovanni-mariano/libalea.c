@@ -130,6 +130,8 @@ typedef struct {
     /* Resolved render-cell selection. Both filters must accept an interval. */
     render_id_filter_t material_filter;
     render_id_filter_t cell_filter;
+    double density_min;     /**< Inclusive density-magnitude lower bound. */
+    double density_max;     /**< Inclusive density-magnitude upper bound. */
 
     /* Appearance */
     render_color_mode_t color_mode;

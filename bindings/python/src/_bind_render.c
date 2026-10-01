@@ -278,6 +278,7 @@ static PyObject* PyAleaSystem_render_3d(PyAleaSystemObject* self,
     int auxiliary = 0;
     double fov = RENDER_DEFAULT_FOV, ortho_height = 0.0;
     double xray_density_scale = 0.1;
+    double density_min = 0.0, density_max = INFINITY;
     const char* color_by = "material";
     const char* mode = "solid";
     const char* clip_mode = "and";
@@ -291,15 +292,16 @@ static PyObject* PyAleaSystem_render_3d(PyAleaSystemObject* self,
         "color_by", "mode", "background", "shadows", "edges", "aa_samples",
         "auxiliary", "xray_density_scale", "custom_colors",
         "clips", "clip_mode", "material_filter_mode", "material_ids",
-        "cell_filter_mode", "cell_ids", NULL
+        "cell_filter_mode", "cell_ids", "density_min", "density_max", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|iiOOOddssOppipdOOssOsO", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|iiOOOddssOppipdOOssOsOdd", kwlist,
                                      &width, &height, &eye, &target, &up, &fov,
                                      &ortho_height, &color_by, &mode, &background,
                                      &shadows, &edges, &aa_samples,
                                      &auxiliary, &xray_density_scale, &custom_colors,
                                      &clips, &clip_mode, &material_filter_mode,
-                                     &material_ids, &cell_filter_mode, &cell_ids))
+                                     &material_ids, &cell_filter_mode, &cell_ids,
+                                     &density_min, &density_max))
         return NULL;
     if (!self->sys) {
         PyErr_SetString(PyExc_RuntimeError, "System not initialized");
@@ -315,6 +317,12 @@ static PyObject* PyAleaSystem_render_3d(PyAleaSystemObject* self,
                         "xray_density_scale must be finite and non-negative");
         return NULL;
     }
+    if (isnan(density_min) || isnan(density_max) ||
+        density_min < 0.0 || density_max < 0.0 || density_min > density_max) {
+        PyErr_SetString(PyExc_ValueError,
+                        "density bounds must be non-negative and minimum must not exceed maximum");
+        return NULL;
+    }
     if (ensure_query_acceleration(self) < 0) return NULL;
 
     render_config_t config;
@@ -328,6 +336,8 @@ static PyObject* PyAleaSystem_render_3d(PyAleaSystemObject* self,
     config.aa_samples = aa_samples;
     config.aux_output = auxiliary;
     config.xray_density_scale = (float)xray_density_scale;
+    config.density_min = density_min;
+    config.density_max = density_max;
     if (render_parse_clips(clips, &config) != 0)
         goto failed_config;
     if (render_parse_clip_mode(clip_mode, &config.clip_mode) != 0 ||

@@ -798,11 +798,13 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "          shadows=True, edges=False, aa_samples=1,\n"
      "          auxiliary=False, clips=None, clip_mode='and',\n"
      "          material_filter_mode='all', material_ids=None,\n"
-     "          cell_filter_mode='all', cell_ids=None) -> {'rgb': ndarray, ...}\n\n"
+     "          cell_filter_mode='all', cell_ids=None,\n"
+     "          density_min=0, density_max=inf) -> {'rgb': ndarray, ...}\n\n"
      "Render the CSG model with libalea's native CPU ray renderer. Set auxiliary\n"
      "to also return depth, cell_ids, material_ids, and world-space normals.\n"
      "clips contains (nx, ny, nz, d) retained half-spaces combined by clip_mode.\n"
-     "Cell and material filters also remove hidden geometry from shadows."},
+     "Cell, material, and inclusive density-magnitude filters also remove hidden\n"
+     "geometry from shadows."},
 
     /* Slice curves API (for matplotlib) */
     {"get_slice_curves_z", (PyCFunction)PyAleaSystem_get_slice_curves_z, METH_VARARGS | METH_KEYWORDS,

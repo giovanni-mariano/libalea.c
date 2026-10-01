@@ -98,6 +98,8 @@ void render_config_init(render_config_t* cfg) {
     cfg->aa_samples = 1;
     cfg->tile_size = RENDER_DEFAULT_TILE;
     cfg->xray_density_scale = 0.1f;
+    cfg->density_min = 0.0;
+    cfg->density_max = INFINITY;
     cfg->log_level = 2;
 }
 
@@ -338,9 +340,12 @@ static int render_id_filter_accepts(const render_id_filter_t* filter, int id) {
 }
 
 static int render_interval_visible(const render_config_t* cfg,
-                                   int cell_id, int material_id) {
+                                   int cell_id, int material_id,
+                                   double density) {
     if (cell_id < 0 || material_id == 0) return 0;
-    return render_id_filter_accepts(&cfg->cell_filter, cell_id) &&
+    const double magnitude = fabs(density);
+    return magnitude >= cfg->density_min && magnitude <= cfg->density_max &&
+           render_id_filter_accepts(&cfg->cell_filter, cell_id) &&
            render_id_filter_accepts(&cfg->material_filter, material_id);
 }
 
@@ -354,7 +359,7 @@ static int render_find_filtered_hit(
         const alea_raycast_selected_interval_view_t* interval) {
     render_filtered_hit_t* hit = context;
     if (!render_interval_visible(hit->cfg, interval->cell_id,
-                                 interval->material_id))
+                                 interval->material_id, interval->density))
         return 0;
     hit->visible.found = true;
     hit->visible.t = interval->t_enter > 0.0 ? interval->t_enter : 0.0;
@@ -375,7 +380,8 @@ static int render_find_filtered_occluder(
         const alea_raycast_selected_interval_view_t* interval) {
     render_filtered_occluder_t* occluder = context;
     occluder->found = render_interval_visible(
-        occluder->cfg, interval->cell_id, interval->material_id);
+        occluder->cfg, interval->cell_id, interval->material_id,
+        interval->density);
     return occluder->found;
 }
 
@@ -571,7 +577,8 @@ static int render_shadow_occluded_nocache(
         ox, oy, oz, dx, dy, dz, cfg, t_max, retained);
     const int filters_active =
         cfg->material_filter.mode != RENDER_FILTER_ALL ||
-        cfg->cell_filter.mode != RENDER_FILTER_ALL;
+        cfg->cell_filter.mode != RENDER_FILTER_ALL ||
+        cfg->density_min > 0.0 || isfinite(cfg->density_max);
     for (int region = 0; region < count; region++) {
         const double start = retained[region].t_enter;
         const double end = retained[region].t_exit;
@@ -652,7 +659,8 @@ static void render_pixel_solid(alea_system_t* sys,
     visible.surface_id = -1;
     const int filters_active =
         cfg->material_filter.mode != RENDER_FILTER_ALL ||
-        cfg->cell_filter.mode != RENDER_FILTER_ALL;
+        cfg->cell_filter.mode != RENDER_FILTER_ALL ||
+        cfg->density_min > 0.0 || isfinite(cfg->density_max);
     double t_hit = 0.0;
     int entry_plane = -1;
     int is_cross_section = 0;
@@ -792,7 +800,8 @@ static int render_xray_accumulate_interval(
     void* context, const alea_raycast_selected_interval_view_t* interval) {
     render_xray_accumulator_t* accum = context;
     if (!render_interval_visible(
-            accum->cfg, interval->cell_id, interval->material_id))
+            accum->cfg, interval->cell_id, interval->material_id,
+            interval->density))
         return 0;
     const double clipped_enter = interval->t_enter > accum->t_min
         ? interval->t_enter : accum->t_min;
@@ -1100,7 +1109,8 @@ int render_scene(alea_system_t* sys,
     if (cfg->render_mode == RENDER_MODE_XRAY && !sys->has_lattice && aa == 1 &&
         cfg->num_clips == 0 &&
         cfg->material_filter.mode == RENDER_FILTER_ALL &&
-        cfg->cell_filter.mode == RENDER_FILTER_ALL)
+        cfg->cell_filter.mode == RENDER_FILTER_ALL &&
+        cfg->density_min == 0.0 && !isfinite(cfg->density_max))
         return render_scene_xray_batched(sys, cfg, cam, fb, tile);
 
     atomic_int progress_done;

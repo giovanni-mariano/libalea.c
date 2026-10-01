@@ -68,6 +68,8 @@ TEST(config_init_defaults) {
     ASSERT_EQ(cfg.clip_mode, RENDER_CLIP_AND);
     ASSERT_EQ(cfg.material_filter.mode, RENDER_FILTER_ALL);
     ASSERT_EQ(cfg.cell_filter.mode, RENDER_FILTER_ALL);
+    ASSERT_NEAR(cfg.density_min, 0.0, EPS);
+    ASSERT(!isfinite(cfg.density_max));
     ASSERT_EQ(cfg.shadows, 0);
     ASSERT_EQ(cfg.edges, 0);
 
@@ -231,6 +233,25 @@ TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
     cfg.cell_filter.mode = RENDER_FILTER_ALL;
     cfg.cell_filter.ids = NULL;
     cfg.cell_filter.count = 0;
+
+    cfg.density_min = 3.0;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 2);
+    ASSERT_EQ(fb->material_id[0], 2);
+    cfg.density_min = 0.0;
+    cfg.density_max = 3.0;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 1);
+    cfg.density_max = INFINITY;
+
+    cfg.render_mode = RENDER_MODE_XRAY;
+    cfg.density_min = 3.0;
+    cfg.xray_density_scale = 0.01f;
+    ASSERT_EQ(render_scene(sys, &cfg, &cam, fb), 0);
+    ASSERT_EQ(fb->cell_id[0], 2);
+    cfg.render_mode = RENDER_MODE_SOLID;
+    cfg.density_min = 0.0;
+    cfg.xray_density_scale = 0.1f;
 
     cfg.num_clips = 2;
     cfg.clips[0].normal[0] = 1;
