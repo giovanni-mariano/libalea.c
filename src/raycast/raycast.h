@@ -813,7 +813,8 @@ int alea_raycast_hier_segments_nocache(alea_system_t* sys,
 typedef int (*alea_raycast_selected_segment_callback_t)(
     void* context, const alea_ray_segment_t* segment);
 
-/* Scratch-backed view of one verified selected interval.  The hierarchy path
+/* Scratch-backed view of one selected interval. Check containment_verified
+ * before using its length for numerical integration. The hierarchy path
  * remains valid only until the callback returns; consumers that need durable
  * data must copy it.  This internal contract lets volume and other native
  * consumers use exact path evidence without publishing general ray results. */
@@ -829,6 +830,7 @@ typedef struct {
     uint64_t owner_occurrence_key;
     uint64_t owner_parent_occurrence_key;
     const alea_hier_ray_path_t* path;
+    bool containment_verified;
 } alea_raycast_selected_interval_view_t;
 
 typedef int (*alea_raycast_selected_interval_callback_t)(

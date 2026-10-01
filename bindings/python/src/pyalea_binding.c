@@ -1049,8 +1049,9 @@ static PyMethodDef PyAleaSystem_methods[] = {
      "estimate_volumes(n_rays=100000, seed=42, workers=0, "
      "target_rel_error=None, max_rays=None, batch_size=10000, "
      "progress=None, rng='philox4x32-10', "
-     "max_parallel_scratch_bytes=0) -> dict\n\n"
+     "max_parallel_scratch_bytes=0, center=None, radius=0.0) -> dict\n\n"
      "Estimate physical volumes per concrete hierarchical placement.\n"
+     "Requires a positive radius enclosing all finite placements; center defaults to the origin.\n"
      "Returns dict with 'volumes', 'rel_errors'\n"
      "and 'paths' (one path-identity dict per entry)."},
     {"estimate_cell_volume", (PyCFunction)PyAleaSystem_estimate_cell_volume,

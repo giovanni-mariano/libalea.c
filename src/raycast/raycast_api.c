@@ -2853,6 +2853,8 @@ static int accumulate_volume_interval(
         const alea_raycast_selected_interval_view_t* interval) {
     volume_interval_accumulator_t* accum = context;
     if (!accum || !interval) return -1;
+    /* Never count or silently discard a span whose owner remains unverified. */
+    if (!interval->containment_verified) return -1;
     if (interval->cell_id < 0) return 0;
 
     const double length = interval->t_exit - interval->t_enter;

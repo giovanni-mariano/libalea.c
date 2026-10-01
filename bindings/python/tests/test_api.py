@@ -724,6 +724,7 @@ def test_compact_validation_reports_trace_reuse(populated_system):
 def test_volume_estimation_bounds_and_reports_worker_scratch(populated_system):
     result = populated_system.estimate_volumes(
         n_rays=200,
+        radius=10,
         workers=4,
         batch_size=100,
         max_parallel_scratch_bytes=32,
@@ -739,6 +740,7 @@ def test_volume_estimation_bounds_and_reports_worker_scratch(populated_system):
     with pytest.raises(RuntimeError, match="scratch exceeds"):
         populated_system.estimate_volumes(
             n_rays=10,
+            radius=10,
             max_parallel_scratch_bytes=31,
         )
 

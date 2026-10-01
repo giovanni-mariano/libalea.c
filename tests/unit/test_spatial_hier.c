@@ -2214,6 +2214,51 @@ TEST(hier_path_volume_estimation_no_flat_spatial_index) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+TEST(hier_volume_core_shell_preserves_crossings_when_ray_is_extended) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int core = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int outer = alea_sphere_surface(sys, 2, 0, 0, 0, 10);
+    ASSERT(core >= 0 && outer >= 0);
+    alea_node_id_t core_region = alea_surface_at(sys, core)->neg_node;
+    alea_node_id_t shell_region = alea_intersection(sys,
+        alea_surface_at(sys, outer)->neg_node,
+        alea_surface_at(sys, core)->pos_node);
+    ASSERT(alea_add_cell(sys, 1, core_region, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 2, shell_region, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT_EQ(alea_volume_path_count(sys), 2);
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(sys), 0);
+
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray,
+        29.931599940257847, 3.5818829355341513, 18.452396957964048,
+        -0.8491092823945878, -0.08152984801785687, -0.5218872583552249), 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    const double limits[] = {50.0, 70.67460115204047, 100.0};
+    for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
+        double lengths[2] = {0};
+        volume_interval_length_probe_t probe = {sys, lengths, 2};
+        ASSERT_EQ(alea_raycast_hier_visit_intervals_nocache(
+            sys, &ray, limits[i], &scratch,
+            accumulate_indexed_interval_length, &probe), 0);
+        ASSERT_NEAR(lengths[0], 1.4188701959018797, 1e-10);
+        ASSERT_NEAR(lengths[1], 18.53139778808317, 1e-10);
+    }
+    alea_raycast_result_free(&scratch);
+    alea_volume_estimate_options_t options;
+    alea_volume_estimate_options_init(&options);
+    options.max_rays = 200000;
+    options.requested_workers = 1;
+    options.use_sampling_sphere = true;
+    options.sampling_radius = 11;
+    double volumes[2], errors[2];
+    ASSERT_EQ(alea_estimate_volumes_ex(sys, &options, volumes, errors, NULL), 0);
+    ASSERT_NEAR(volumes[0], 4.1887902047863905, 0.42);
+    ASSERT_NEAR(volumes[1], 4184.601414581604, 84.0);
+    alea_destroy(sys);
+}
+
 TEST(hier_path_volume_estimation_sphere_smoke) {
     alea_setenv("ALEA_HIER_BLAS_THRESHOLD", "1", 1);
 

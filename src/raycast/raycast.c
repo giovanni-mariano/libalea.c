@@ -111,16 +111,20 @@ void alea_ray_init_normalized(alea_ray_t* ray,
     ray->inv_dz = 1.0 / dz;
 }
 
-/* Return a point just forward of t whose displacement is large enough to be
- * representable at the current world-coordinate scale, but remains far below
- * the old fixed 1e-10 offset for ordinary unit-scale geometry. */
+/* Sample beyond the rounding uncertainty of O + t D. Near a small cell,
+ * cancellation can make the resulting coordinate much smaller than either
+ * operand: scaling by that coordinate alone can leave the sample on the
+ * wrong side of the boundary, even after advancing t by one ULP. */
 static double raycast_forward_sample_t(const alea_ray_t* ray, double t) {
     double x, y, z;
     alea_ray_point_at(ray, t, &x, &y, &z);
-    const double coordinate_scale = fmax(1.0,
+    double coordinate_scale = fmax(1.0,
         fmax(fabs(x), fmax(fabs(y), fabs(z))));
     const double direction_scale = fmax(fabs(ray->dx),
         fmax(fabs(ray->dy), fabs(ray->dz)));
+    coordinate_scale = fmax(coordinate_scale,
+        fmax(fabs(ray->ox), fmax(fabs(ray->oy), fabs(ray->oz))));
+    coordinate_scale = fmax(coordinate_scale, fabs(t) * direction_scale);
     double dt = 16.0 * DBL_EPSILON * coordinate_scale / direction_scale;
     double sample = t + dt;
     if (!(sample > t)) sample = nextafter(t, INFINITY);
@@ -2757,6 +2761,7 @@ typedef struct {
     uint64_t owner_occurrence_key;
     uint64_t owner_parent_occurrence_key;
     uint8_t resolution_flags;
+    bool containment_verified;
 } alea_ray_selected_interval_t;
 
 static void alea_ray_walk_init(alea_ray_walk_t* state) {
@@ -4238,6 +4243,40 @@ static int find_closest_intersection(alea_system_t* sys,
     return 0;
 }
 
+/* A failed boundary-side lookup must be retried inside the very next
+ * geometric interval. Probing a fraction of a stale cell's proposed span can
+ * jump across other cells (or the whole model). Enumerate crossings only on
+ * this exceptional path, including transformed fills and lattice boundaries. */
+static int raycast_recovery_sample(alea_system_t* sys, const alea_ray_t* ray,
+                                   double t_current, double t_max,
+                                   double* out_sample, alea_ray_hit_t* out_hit) {
+    alea_raycast_result_t crossings;
+    alea_raycast_result_init(&crossings);
+    const int rc = alea_raycast_validation_breakpoints_reuse_nocache(
+        sys, ray, t_current, t_max, 8192, &crossings);
+    double next = t_max;
+    *out_hit = (alea_ray_hit_t){.t = t_max, .surface_id = -1,
+                               .primitive_id = ALEA_PRIMITIVE_ID_INVALID};
+    if (rc == 0) {
+        for (size_t i = 0; i < crossings.hits.count; i++) {
+            const double t = crossings.hits.data[i].t;
+            if (t > nextafter(t_current, INFINITY) && t < next) {
+                next = t;
+                *out_hit = crossings.hits.data[i];
+            }
+        }
+    }
+    alea_raycast_result_free(&crossings);
+    if (rc != 0) return -1;
+    *out_sample = t_current + 0.381966011250105 * (next - t_current);
+    if (!(*out_sample > t_current && *out_sample < next)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+            "ray boundary recovery has no representable interior sample");
+        return -1;
+    }
+    return 0;
+}
+
 static int raycast_cell_aware_resume(alea_system_t* sys,
                                      const alea_ray_t* ray,
                                      double effective_t_max,
@@ -4284,6 +4323,7 @@ static int raycast_cell_aware_resume(alea_system_t* sys,
             : raycast_forward_sample_t(ray, t_current);
         pending_lattice_entry_sample = -1.0;
         int resolve_attempt = 0;
+        alea_ray_hit_t recovery_hit = {.t = effective_t_max};
         /* Snapshot of the attempt-0 outcome. The retry is accepted only when
          * it verifies strictly better; otherwise this state is restored, so a
          * failed retry can never degrade the pre-verification answer. */
@@ -4665,6 +4705,30 @@ resolve_cell:;
             }
         }
 
+        /* A recovery probe is valid only up to its independently enumerated
+         * next crossing. In particular a lattice DDA step must not overrun a
+         * nearby physical ancestor boundary. */
+        if (resolve_attempt && recovery_hit.t < t_next) {
+            t_next = recovery_hit.t;
+            hit_surface_id = recovery_hit.surface_id;
+            next_enter_surface_id = 0;
+            if (need_boundary_event) {
+                bevent.t = t_next;
+                bevent.surface_id = hit_surface_id;
+                bevent.primitive_id = recovery_hit.primitive_id;
+                bevent.has_physical_surface = false;
+                bevent.is_synthetic_lattice_boundary = hit_surface_id == 0;
+                for (int p = current_path->count - 1; p >= 0; p--) {
+                    if (boundary_event_cell_uses_exact_surface(sys,
+                            current_path->entries[p].cell_index, hit_surface_id)) {
+                        bevent.transform = current_path->entries[p].transform;
+                        bevent.has_physical_surface = hit_surface_id > 0;
+                        break;
+                    }
+                }
+            }
+        }
+
         /* Never skip geometry to manufacture progress.  Every accepted
          * intersection is strictly beyond t_current; failure here indicates
          * a numerical or traversal defect that callers must see. */
@@ -4687,7 +4751,7 @@ resolve_cell:;
          * and on-boundary sign noise picking a coincident sibling cell. On
          * failure, redo the resolution once, sampling at the probe point. */
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
-            t_next - t_current > 1e-6) {
+            (t_next - t_current > 1e-6 || resolve_attempt > 0)) {
             /* Probe at an irrational fraction of the interval, not the exact
              * midpoint: a segment spanning lattice elements has periodic
              * internal boundaries, and its midpoint can land exactly on one,
@@ -4722,10 +4786,8 @@ resolve_cell:;
                            current_path->count >= saved_path.count;
             if (!probe_ok || !depth_ok) {
                 if (resolve_attempt < 2 && probe_ok == 0 && depth_ok) {
-                    /* Re-resolve, sampling at this interval's probe point.
-                     * A second retry handles the case where the region just
-                     * past t_current belongs to yet another cell than the
-                     * one found at the first retry's (stale) probe. */
+                    /* Re-resolve inside the next geometric interval, whose
+                     * crossings are independent of the possibly stale owner. */
                     if (!saved_valid) {
                         saved_valid = 1;
                         saved_cell_idx = cell_idx;
@@ -4742,7 +4804,8 @@ resolve_cell:;
                             (uint64_t)saved_path.count;
                     }
                     resolve_attempt++;
-                    t_sample = t_probe;
+                    if (raycast_recovery_sample(sys, ray, t_current,
+                            effective_t_max, &t_sample, &recovery_hit) != 0) return -1;
                     goto resolve_cell;
                 }
                 if (saved_valid && !depth_ok) {
@@ -4764,9 +4827,10 @@ resolve_cell:;
                 }
                 containment_unverified = true;
             }
-        } else if (resolve_attempt >= 1 && saved_valid) {
-            /* Retry resolved to void or a degenerate interval: keep the
-             * attempt-0 answer. */
+        } else if (resolve_attempt >= 1 && saved_valid && cell_idx >= 0) {
+            /* A degenerate owned interval still cannot establish ownership.
+             * Exterior void, however, is a legitimate result of the bounded
+             * recovery probe and must not restore the cell just exited. */
             cell_idx = saved_cell_idx;
             cell_id = saved_cell_id;
             material_id = saved_material_id;
@@ -4791,6 +4855,7 @@ resolve_cell:;
             boundary_event_collect_local_group(sys, ray, current_path, &bevent);
         alea_ray_selected_interval_t selected = {
             .t_enter = t_current,
+            .containment_verified = !containment_unverified,
             .t_exit = t_next,
             .cell_index = cell_idx,
             .cell_id = cell_id,
@@ -6305,6 +6370,7 @@ int alea_raycast_hier_visit_intervals_nocache(
         if (rc == 2) return 0;
         const alea_raycast_selected_interval_view_t view = {
             .t_enter = interval.t_enter,
+            .containment_verified = interval.containment_verified,
             .t_exit = interval.t_exit,
             .cell_index = interval.cell_index,
             .cell_id = interval.cell_id,

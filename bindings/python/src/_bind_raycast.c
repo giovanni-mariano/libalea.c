@@ -711,15 +711,29 @@ static PyObject* PyAleaSystem_estimate_volumes(
     Py_ssize_t batch_size = 10000;
     PyObject* progress_obj = Py_None;
     unsigned long long max_parallel_scratch_bytes = 0;
+    PyObject* center_obj = Py_None;
+    double center[3] = {0.0, 0.0, 0.0};
+    double radius = 0.0;
     static char* kwlist[] = {
         "n_rays", "seed", "workers", "target_rel_error", "max_rays",
-        "batch_size", "progress", "rng", "max_parallel_scratch_bytes", NULL
+        "batch_size", "progress", "rng", "max_parallel_scratch_bytes",
+        "center", "radius", NULL
     };
     if (!PyArg_ParseTupleAndKeywords(
-            args, kwargs, "|iKnOOnOsK:estimate_volumes", kwlist,
+            args, kwargs, "|iKnOOnOsKOd:estimate_volumes", kwlist,
             &n_rays, &seed, &workers, &target_obj, &max_rays_obj,
             &batch_size, &progress_obj, &rng_name,
-            &max_parallel_scratch_bytes)) {
+            &max_parallel_scratch_bytes, &center_obj, &radius)) {
+        return NULL;
+    }
+    if (center_obj != Py_None &&
+        !PyArg_ParseTuple(center_obj, "ddd", &center[0], &center[1], &center[2]))
+        return NULL;
+    if (!isfinite(radius) || radius <= 0.0 ||
+        !isfinite(center[0]) || !isfinite(center[1]) || !isfinite(center[2])) {
+        PyErr_SetString(PyExc_ValueError,
+            "an explicit enclosing sphere is required: radius must be finite "
+            "and positive, and center coordinates must be finite");
         return NULL;
     }
     if (n_rays <= 0 || workers < 0 || batch_size < 0) {
@@ -785,6 +799,9 @@ static PyObject* PyAleaSystem_estimate_volumes(
         return NULL;
     }
     options.max_rays = maximum_rays;
+    options.use_sampling_sphere = true;
+    memcpy(options.sampling_center, center, sizeof(center));
+    options.sampling_radius = radius;
     options.seed = (uint64_t)seed;
     options.requested_workers = (size_t)workers;
     options.batch_size = (size_t)batch_size;
