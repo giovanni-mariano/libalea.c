@@ -1379,12 +1379,49 @@ int alea_cell_estimate_volume(
     alea_cell_volume_result_t* out_result);
 ```
 
-Estimate one cell definition in its universe-local frame with an
-interval/octree method. The result reports the estimate, rigorous unresolved
-volume interval, bounds and their source, convergence, resource-limit status,
-and execution statistics. Without explicit bounds the implementation uses the
-stored cell box, plane constraints, or bounded adaptive discovery. Explicit
-bounds describe a clipped integration domain.
+Estimate one cell definition in its universe-local frame with interval
+classification and deterministic bounded refinement batches. Explicit bounds
+describe a clipped integration domain. Without them, the implementation uses
+stored CSG bounds, plane constraints, or adaptive discovery. The result retains
+all unresolved volume when a work or memory limit stops refinement.
+
+Initialize options with `alea_cell_volume_options_init()` before changing them.
+The default `split_strategy` is `ALEA_CELL_VOLUME_SPLIT_ADAPTIVE`, which selects
+axes using locally unresolved primitive boundaries and interval probes.
+`ALEA_CELL_VOLUME_SPLIT_OCTREE` always halves XYZ and
+`ALEA_CELL_VOLUME_SPLIT_LONGEST_AXIS` halves the longest eligible edge.
+Unrecognized primitive dependencies conservatively retain all axes. Known-sign
+CSG subexpressions do not introduce local refinement directions.
+
+Defaults are `max_depth=14` (previously 10), `max_evaluations=16000000`, and
+`max_memory_bytes=67108864`. Maximum depth means halvings per axis. The minimum
+memory budget is 1024 bytes. Explicit integration queue and batch allocations
+are charged to that budget; geometry storage, bounds discovery, and backend
+thread stacks are excluded. Interval evaluations include classified boxes and
+speculative axis probes; point sampling is separate. Use the parallel scratch
+budget to limit worker selection. Adaptive and longest-axis policies can keep
+refining other edges after one reaches `min_size`; conventional octree retains
+the shortest-edge stopping rule.
+
+The result reports `evaluation_limit_reached`, `memory_limit_reached`,
+`interval_evaluations`, allocated `peak_memory_bytes`, per-axis split counts,
+`max_axis_depth`, and `deepest_level` (actual subdivision path length).
+`max_depth_reached`, `min_size_reached`, and `precision_limit_reached` count
+unresolved leaves stopped by those conditions. The frontier count now measures
+peak queued unresolved boxes, rather than a whole classification level.
+
+`relative_uncertainty` is the full bound width divided by the estimated volume.
+Convergence uses the sampled estimate and requires the unresolved volume to be
+at most the larger absolute or relative target. Higher sample counts do not
+narrow the bounds. Thin shells can still need substantial refinement. Bounds
+use the existing floating-point interval arithmetic; this API does not claim a
+formal outward-rounding proof. Public option and result structures have new
+fields; rebuild C consumers and native bindings with the updated headers.
+
+The RCC, TRC, REC, and RHP interval routines bound their actual primitive
+fields. An enclosing sphere alone cannot certify their interiors. RHP domain
+bounds use radial-plane intersections because facet-center radii do not enclose
+hexagon vertices.
 
 ---
 

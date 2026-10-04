@@ -774,3 +774,16 @@ def test_numpy_grid_rejects_invalid_dimensions(populated_system):
             0.0, -1.0, 1.0, -1.0, 1.0, 0, 4,
             _as_buffers=True,
         )
+
+
+@pytest.mark.parametrize("name,value,error", [
+    ("max_evaluations", -1, OverflowError),
+    ("max_evaluations", 0, ValueError),
+    ("max_evaluations", True, TypeError),
+    ("max_memory_bytes", -1, OverflowError),
+    ("max_memory_bytes", 1000, ValueError),
+    ("max_memory_bytes", 1.5, TypeError),
+])
+def test_cell_volume_native_budget_validation(populated_system, name, value, error):
+    with pytest.raises(error):
+        populated_system.estimate_cell_volume(0, **{name: value})

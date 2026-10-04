@@ -1074,17 +1074,27 @@ typedef enum {
     ALEA_CELL_VOLUME_BOUNDS_ADAPTIVE_SEARCH = 3
 } alea_cell_volume_bounds_source_t;
 
-/** Options for deterministic, cell-local octree volume estimation. */
+/** Subdivision policy for deterministic cell-local integration. */
+typedef enum {
+    ALEA_CELL_VOLUME_SPLIT_OCTREE = 0,
+    ALEA_CELL_VOLUME_SPLIT_LONGEST_AXIS = 1,
+    ALEA_CELL_VOLUME_SPLIT_ADAPTIVE = 2
+} alea_cell_volume_split_strategy_t;
+
+/** Options for deterministic, cell-local volume estimation. */
 typedef struct {
     bool has_bounds;                       /**< Use bounds instead of discovery. */
     alea_bbox_t bounds;                    /**< Universe-local integration box. */
     double relative_tolerance;             /**< Target unresolved/estimate ratio. */
     double absolute_tolerance;             /**< Target absolute unresolved volume. */
-    int max_depth;
-    double min_size;                       /**< 0 disables the size limit. */
+    int max_depth;                         /**< Maximum halvings per axis. */
+    double min_size;                       /**< Minimum eligible edge; 0 disables. */
     int samples_per_axis;                  /**< Deterministic mixed-leaf samples. */
     size_t requested_workers;              /**< 0 = parallel backend maximum. */
     uint64_t max_parallel_scratch_bytes;   /**< 0 forces serial execution. */
+    alea_cell_volume_split_strategy_t split_strategy;
+    uint64_t max_evaluations;              /**< Includes speculative axis probes. */
+    uint64_t max_memory_bytes;             /**< Queue and batch storage budget. */
 } alea_cell_volume_options_t;
 
 /** Value-only result from cell-local octree volume estimation. */
@@ -1111,6 +1121,15 @@ typedef struct {
     size_t parallel_batch_count;
     uint64_t scratch_bytes_per_worker;
     uint64_t reserved_parallel_scratch_bytes;
+    size_t min_size_reached;               /**< Unresolved leaves stopped by size. */
+    size_t precision_limit_reached;        /**< Midpoint cannot advance. */
+    size_t deepest_level;                  /**< Maximum tree depth evaluated. */
+    size_t axis_splits[3];
+    int max_axis_depth[3];
+    uint64_t interval_evaluations;
+    uint64_t peak_memory_bytes;            /**< Explicit queue and batch storage. */
+    bool evaluation_limit_reached;
+    bool memory_limit_reached;
 } alea_cell_volume_result_t;
 
 /** Initialize cell-volume options to the public defaults. */

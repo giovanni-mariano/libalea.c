@@ -883,22 +883,50 @@ static alea_interval_t interval_torus_z(const alea_primitive_data_t* data, const
     return alea_iv_sub(alea_iv_add(radial_term, axial_term), alea_iv_make(1.0, 1.0));
 }
 
+/* Bounds for the actual capped-cylinder fields, rather than an enclosing
+ * sphere. An enclosing solid can reject an outside box but cannot certify
+ * that a box belongs to the original solid. */
+static alea_interval_t interval_linear_shifted(const alea_bbox_t* box,
+                                               const double base[3], const double coeff[3]) {
+    const double lo[3] = {box->min_x, box->min_y, box->min_z};
+    const double hi[3] = {box->max_x, box->max_y, box->max_z};
+    alea_interval_t result = alea_iv_make(0.0, 0.0);
+    for (int i = 0; i < 3; i++)
+        result = alea_iv_add(result, alea_iv_mul_scalar(
+            alea_iv_make(lo[i] - base[i], hi[i] - base[i]), coeff[i]));
+    return result;
+}
+static alea_interval_t interval_maximum(alea_interval_t a, alea_interval_t b) {
+    return alea_iv_make(fmax(a.min, b.min), fmax(a.max, b.max));
+}
+static alea_interval_t interval_axis_distance(alea_interval_t t, double length) {
+    return interval_maximum(alea_iv_mul_scalar(t, -1.0),
+                           alea_iv_sub(t, alea_iv_make(length, length)));
+}
+static alea_interval_t interval_capped_radial(const alea_bbox_t* box,
+    const double base[3], const double unit[3], alea_interval_t axial) {
+    alea_interval_t radial2 = alea_iv_make(0.0, 0.0);
+    for (int i = 0; i < 3; i++) {
+        double coeff[3];
+        for (int j = 0; j < 3; j++) coeff[j] = (i == j ? 1.0 : 0.0) - unit[i] * unit[j];
+        radial2 = alea_iv_add(radial2, alea_iv_sqr(interval_linear_shifted(box, base, coeff)));
+    }
+    /* Point evaluation uses distance to the clamped axis segment, including
+     * the axial component for points beyond either end. */
+    alea_interval_t beyond = alea_iv_make(fmax(0.0, axial.min), fmax(0.0, axial.max));
+    radial2 = alea_iv_add(radial2, alea_iv_sqr(beyond));
+    return alea_iv_make(sqrt(fmax(0.0, radial2.min)), sqrt(fmax(0.0, radial2.max)));
+}
 static alea_interval_t interval_rcc(const alea_primitive_data_t* data, const alea_bbox_t* box) {
-    const alea_rcc_data_t* rcc = &data->rcc;
-    /* RCC is complex (finite cylinder with arbitrary axis) */
-    /* Use conservative spherical bound: sphere at center with max extent */
-    double cx = rcc->base_x + rcc->height_x * 0.5;
-    double cy = rcc->base_y + rcc->height_y * 0.5;
-    double cz = rcc->base_z + rcc->height_z * 0.5;
-    double h_len = sqrt(rcc->height_x*rcc->height_x + rcc->height_y*rcc->height_y + rcc->height_z*rcc->height_z);
-    double bounding_r = sqrt(rcc->radius*rcc->radius + (h_len*0.5)*(h_len*0.5));
-
-    alea_interval_t dx = alea_iv_sub(alea_iv_make(box->min_x, box->max_x), alea_iv_make(cx, cx));
-    alea_interval_t dy = alea_iv_sub(alea_iv_make(box->min_y, box->max_y), alea_iv_make(cy, cy));
-    alea_interval_t dz = alea_iv_sub(alea_iv_make(box->min_z, box->max_z), alea_iv_make(cz, cz));
-
-    alea_interval_t d2 = alea_iv_add(alea_iv_add(alea_iv_sqr(dx), alea_iv_sqr(dy)), alea_iv_sqr(dz));
-    return alea_iv_sub(d2, alea_iv_make(bounding_r*bounding_r, bounding_r*bounding_r));
+    const alea_rcc_data_t* c = &data->rcc;
+    double length = sqrt(c->height_x*c->height_x + c->height_y*c->height_y + c->height_z*c->height_z);
+    if (length < 1e-10) return alea_iv_make(1.0, 1.0);
+    double base[3] = {c->base_x, c->base_y, c->base_z};
+    double unit[3] = {c->height_x/length, c->height_y/length, c->height_z/length};
+    alea_interval_t axial = interval_axis_distance(interval_linear_shifted(box, base, unit), length);
+    alea_interval_t radial = interval_capped_radial(box, base, unit, axial);
+    radial = alea_iv_sub(radial, alea_iv_make(c->radius, c->radius));
+    return interval_maximum(radial, axial);
 }
 
 /* SPH interval - same as sphere */
@@ -912,21 +940,20 @@ static alea_interval_t interval_sph(const alea_primitive_data_t* data, const ale
     return alea_iv_sub(d2, alea_iv_make(R2, R2));
 }
 
-/* TRC interval - use conservative spherical bound */
+/* Frustum bounds use the same clamped axis and varying radius as point eval. */
 static alea_interval_t interval_trc(const alea_primitive_data_t* data, const alea_bbox_t* box) {
-    const alea_trc_data_t* trc = &data->trc;
-    double cx = trc->base_x + trc->height_x * 0.5;
-    double cy = trc->base_y + trc->height_y * 0.5;
-    double cz = trc->base_z + trc->height_z * 0.5;
-    double h_len = sqrt(trc->height_x*trc->height_x + trc->height_y*trc->height_y + trc->height_z*trc->height_z);
-    double r_max = MAX(trc->base_radius, trc->top_radius);
-    double bounding_r = sqrt(r_max*r_max + (h_len*0.5)*(h_len*0.5));
-
-    alea_interval_t dx = alea_iv_sub(alea_iv_make(box->min_x, box->max_x), alea_iv_make(cx, cx));
-    alea_interval_t dy = alea_iv_sub(alea_iv_make(box->min_y, box->max_y), alea_iv_make(cy, cy));
-    alea_interval_t dz = alea_iv_sub(alea_iv_make(box->min_z, box->max_z), alea_iv_make(cz, cz));
-    alea_interval_t d2 = alea_iv_add(alea_iv_add(alea_iv_sqr(dx), alea_iv_sqr(dy)), alea_iv_sqr(dz));
-    return alea_iv_sub(d2, alea_iv_make(bounding_r*bounding_r, bounding_r*bounding_r));
+    const alea_trc_data_t* c = &data->trc;
+    double length = sqrt(c->height_x*c->height_x + c->height_y*c->height_y + c->height_z*c->height_z);
+    if (length < 1e-10) return alea_iv_make(1.0, 1.0);
+    double base[3] = {c->base_x, c->base_y, c->base_z};
+    double unit[3] = {c->height_x/length, c->height_y/length, c->height_z/length};
+    alea_interval_t t = interval_linear_shifted(box, base, unit);
+    alea_interval_t axial = interval_axis_distance(t, length);
+    alea_interval_t clamped = alea_iv_make(fmin(length, fmax(0.0, t.min)),
+                                          fmin(length, fmax(0.0, t.max)));
+    alea_interval_t radius = alea_iv_add(alea_iv_make(c->base_radius, c->base_radius),
+        alea_iv_mul_scalar(clamped, (c->top_radius-c->base_radius)/length));
+    return interval_maximum(alea_iv_sub(interval_capped_radial(box, base, unit, axial), radius), axial);
 }
 
 /* ELL interval - use bounding sphere */
@@ -970,23 +997,31 @@ static alea_interval_t interval_box_general(const alea_primitive_data_t* data, c
     return alea_iv_make(pos_dist, MAX(dx_max, MAX(dy_max, dz_max)));
 }
 
-/* REC interval - conservative cylindrical bound */
+/* Elliptical cylinder bounds enclose the actual ellipse and end-plane fields. */
 static alea_interval_t interval_rec(const alea_primitive_data_t* data, const alea_bbox_t* box) {
-    const alea_rec_data_t* rec = &data->rec;
-    double a_len = sqrt(rec->axis1_x*rec->axis1_x + rec->axis1_y*rec->axis1_y + rec->axis1_z*rec->axis1_z);
-    double b_len = sqrt(rec->axis2_x*rec->axis2_x + rec->axis2_y*rec->axis2_y + rec->axis2_z*rec->axis2_z);
-    double r_max = MAX(a_len, b_len);
-    double cx = rec->base_x + rec->height_x * 0.5;
-    double cy = rec->base_y + rec->height_y * 0.5;
-    double cz = rec->base_z + rec->height_z * 0.5;
-    double h_len = sqrt(rec->height_x*rec->height_x + rec->height_y*rec->height_y + rec->height_z*rec->height_z);
-    double bounding_r = sqrt(r_max*r_max + (h_len*0.5)*(h_len*0.5));
-
-    alea_interval_t dx = alea_iv_sub(alea_iv_make(box->min_x, box->max_x), alea_iv_make(cx, cx));
-    alea_interval_t dy = alea_iv_sub(alea_iv_make(box->min_y, box->max_y), alea_iv_make(cy, cy));
-    alea_interval_t dz = alea_iv_sub(alea_iv_make(box->min_z, box->max_z), alea_iv_make(cz, cz));
-    alea_interval_t d2 = alea_iv_add(alea_iv_add(alea_iv_sqr(dx), alea_iv_sqr(dy)), alea_iv_sqr(dz));
-    return alea_iv_sub(d2, alea_iv_make(bounding_r*bounding_r, bounding_r*bounding_r));
+    const alea_rec_data_t* c = &data->rec;
+    double height[3] = {c->height_x, c->height_y, c->height_z};
+    double axes[2][3] = {{c->axis1_x, c->axis1_y, c->axis1_z},
+                         {c->axis2_x, c->axis2_y, c->axis2_z}};
+    double length2 = height[0]*height[0]+height[1]*height[1]+height[2]*height[2];
+    double length = sqrt(length2);
+    if (length2 < 1e-20) return alea_iv_make(1.0, 1.0);
+    double base[3] = {c->base_x, c->base_y, c->base_z};
+    double coeff[3] = {height[0]/length2, height[1]/length2, height[2]/length2};
+    alea_interval_t t = interval_linear_shifted(box, base, coeff);
+    alea_interval_t clamped = alea_iv_make(fmin(1.0, fmax(0.0, t.min)),
+                                          fmin(1.0, fmax(0.0, t.max)));
+    alea_interval_t ellipse = alea_iv_make(-1.0, -1.0);
+    for (int i = 0; i < 2; i++) {
+        double norm2 = 0.0, dot_height = 0.0;
+        for (int j = 0; j < 3; j++) { norm2 += axes[i][j]*axes[i][j]; dot_height += axes[i][j]*height[j]; }
+        if (norm2 < 1e-40) return alea_iv_make(1.0, 1.0);
+        for (int j = 0; j < 3; j++) coeff[j] = axes[i][j]/norm2;
+        alea_interval_t projection = alea_iv_sub(interval_linear_shifted(box, base, coeff),
+                                                 alea_iv_mul_scalar(clamped, dot_height/norm2));
+        ellipse = alea_iv_add(ellipse, alea_iv_sqr(projection));
+    }
+    return interval_maximum(ellipse, interval_axis_distance(alea_iv_mul_scalar(t, length), length));
 }
 
 /* WED interval - use bbox-based bound */
@@ -1011,24 +1046,27 @@ static alea_interval_t interval_wed(const alea_primitive_data_t* data, const ale
     return alea_iv_make(pos_dist, MAX(dx_max, MAX(dy_max, dz_max)));
 }
 
-/* RHP interval - use bounding cylinder */
+/* Hexagonal-prism intervals bound all six radial planes and both caps. */
 static alea_interval_t interval_rhp(const alea_primitive_data_t* data, const alea_bbox_t* box) {
-    const alea_rhp_data_t* rhp = &data->rhp;
-    double r1 = sqrt(rhp->r1_x*rhp->r1_x + rhp->r1_y*rhp->r1_y + rhp->r1_z*rhp->r1_z);
-    double r2 = sqrt(rhp->r2_x*rhp->r2_x + rhp->r2_y*rhp->r2_y + rhp->r2_z*rhp->r2_z);
-    double r3 = sqrt(rhp->r3_x*rhp->r3_x + rhp->r3_y*rhp->r3_y + rhp->r3_z*rhp->r3_z);
-    double r_max = MAX(r1, MAX(r2, r3));
-    double cx = rhp->base_x + rhp->height_x * 0.5;
-    double cy = rhp->base_y + rhp->height_y * 0.5;
-    double cz = rhp->base_z + rhp->height_z * 0.5;
-    double h_len = sqrt(rhp->height_x*rhp->height_x + rhp->height_y*rhp->height_y + rhp->height_z*rhp->height_z);
-    double bounding_r = sqrt(r_max*r_max + (h_len*0.5)*(h_len*0.5));
-
-    alea_interval_t dx = alea_iv_sub(alea_iv_make(box->min_x, box->max_x), alea_iv_make(cx, cx));
-    alea_interval_t dy = alea_iv_sub(alea_iv_make(box->min_y, box->max_y), alea_iv_make(cy, cy));
-    alea_interval_t dz = alea_iv_sub(alea_iv_make(box->min_z, box->max_z), alea_iv_make(cz, cz));
-    alea_interval_t d2 = alea_iv_add(alea_iv_add(alea_iv_sqr(dx), alea_iv_sqr(dy)), alea_iv_sqr(dz));
-    return alea_iv_sub(d2, alea_iv_make(bounding_r*bounding_r, bounding_r*bounding_r));
+    const alea_rhp_data_t* c = &data->rhp;
+    double length = sqrt(c->height_x*c->height_x+c->height_y*c->height_y+c->height_z*c->height_z);
+    if (length < 1e-10) return alea_iv_make(1.0, 1.0);
+    double base[3] = {c->base_x, c->base_y, c->base_z};
+    double unit[3] = {c->height_x/length, c->height_y/length, c->height_z/length};
+    double radials[3][3];
+    if (!alea_rhp_resolve_radials(c, radials)) return alea_iv_make(1.0, 1.0);
+    alea_interval_t result = interval_axis_distance(interval_linear_shifted(box, base, unit), length);
+    for (int i = 0; i < 3; i++) {
+        double norm = sqrt(radials[i][0]*radials[i][0]+radials[i][1]*radials[i][1]+radials[i][2]*radials[i][2]);
+        if (norm <= 0.0) return alea_iv_make(-INFINITY, INFINITY);
+        double dot_unit = 0.0, coeff[3];
+        for (int j = 0; j < 3; j++) dot_unit += unit[j]*radials[i][j]/norm;
+        for (int j = 0; j < 3; j++) coeff[j] = radials[i][j]/norm - dot_unit*unit[j];
+        alea_interval_t v = interval_linear_shifted(box, base, coeff);
+        double near = v.min <= 0.0 && v.max >= 0.0 ? 0.0 : fmin(fabs(v.min),fabs(v.max));
+        result = interval_maximum(result, alea_iv_make(near-norm, fmax(fabs(v.min),fabs(v.max))-norm));
+    }
+    return result;
 }
 
 /* ARB interval - use bbox-based bound */
@@ -1409,24 +1447,55 @@ static alea_bbox_t bbox_wed(const alea_primitive_data_t* data) {
 }
 
 static alea_bbox_t bbox_rhp(const alea_primitive_data_t* data) {
-    const alea_rhp_data_t* rhp = &data->rhp;
-
-    /* Maximum radial extent */
-    double r1 = sqrt(rhp->r1_x*rhp->r1_x + rhp->r1_y*rhp->r1_y + rhp->r1_z*rhp->r1_z);
-    double r2 = sqrt(rhp->r2_x*rhp->r2_x + rhp->r2_y*rhp->r2_y + rhp->r2_z*rhp->r2_z);
-    double r3 = sqrt(rhp->r3_x*rhp->r3_x + rhp->r3_y*rhp->r3_y + rhp->r3_z*rhp->r3_z);
-    double r_max = MAX(r1, MAX(r2, r3));
-
-    /* Top center */
-    double tx = rhp->base_x + rhp->height_x;
-    double ty = rhp->base_y + rhp->height_y;
-    double tz = rhp->base_z + rhp->height_z;
-
-    return (alea_bbox_t){
-        MIN(rhp->base_x, tx) - r_max, MAX(rhp->base_x, tx) + r_max,
-        MIN(rhp->base_y, ty) - r_max, MAX(rhp->base_y, ty) + r_max,
-        MIN(rhp->base_z, tz) - r_max, MAX(rhp->base_z, tz) + r_max
-    };
+    const alea_rhp_data_t* c = &data->rhp;
+    alea_bbox_t unknown = {-BBOX_LARGE, BBOX_LARGE, -BBOX_LARGE, BBOX_LARGE,
+                           -BBOX_LARGE, BBOX_LARGE};
+    double radial[3][3];
+    if (!alea_rhp_resolve_radials(c, radial)) return unknown;
+    double height[3] = {c->height_x, c->height_y, c->height_z};
+    double base[3] = {c->base_x, c->base_y, c->base_z};
+    double hlen = sqrt(height[0]*height[0]+height[1]*height[1]+height[2]*height[2]);
+    double normals[3][3], radii[3];
+    for (int i = 0; i < 3; i++) {
+        radii[i] = sqrt(radial[i][0]*radial[i][0]+radial[i][1]*radial[i][1]+radial[i][2]*radial[i][2]);
+        double dot = 0.0;
+        for (int j = 0; j < 3; j++) dot += radial[i][j]*height[j]/(radii[i]*hlen);
+        for (int j = 0; j < 3; j++) normals[i][j] = radial[i][j]/radii[i] - dot*height[j]/hlen;
+    }
+    double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
+    bool found = false;
+    /* Facet-center radii are apothems, not vertex radii. Enumerate intersections
+     * of radial planes and retain those satisfying the third pair of planes. */
+    for (int i = 0; i < 3; i++) for (int j = i+1; j < 3; j++) {
+        double aa = 0.0, bb = 0.0, ab = 0.0;
+        for (int k = 0; k < 3; k++) {
+            aa += normals[i][k]*normals[i][k]; bb += normals[j][k]*normals[j][k];
+            ab += normals[i][k]*normals[j][k];
+        }
+        double det = aa*bb-ab*ab;
+        if (det <= 1e-12) return unknown; /* Ill-conditioned bounds require discovery. */
+        for (int si = -1; si <= 1; si += 2) for (int sj = -1; sj <= 1; sj += 2) {
+            double ai = (si*radii[i]*bb - sj*radii[j]*ab)/det;
+            double aj = (sj*radii[j]*aa - si*radii[i]*ab)/det;
+            double vertex[3];
+            for (int k = 0; k < 3; k++) vertex[k] = ai*normals[i][k] + aj*normals[j][k];
+            bool feasible = true;
+            for (int k = 0; k < 3; k++) {
+                double dot = 0.0;
+                for (int d = 0; d < 3; d++) dot += normals[k][d]*vertex[d];
+                if (fabs(dot) > radii[k] + 1e-10*fmax(1.0, radii[k])) feasible = false;
+            }
+            if (!feasible) continue;
+            found = true;
+            for (int k = 0; k < 3; k++) for (int end = 0; end < 2; end++) {
+                double v = base[k]+vertex[k]+end*height[k];
+                double pad = 128*DBL_EPSILON*fmax(1.0, fabs(base[k])+fabs(vertex[k])+fabs(height[k]));
+                lo[k] = fmin(lo[k], v-pad); hi[k] = fmax(hi[k], v+pad);
+            }
+        }
+    }
+    if (!found) return unknown;
+    return (alea_bbox_t){lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]};
 }
 
 static alea_bbox_t bbox_arb(const alea_primitive_data_t* data) {

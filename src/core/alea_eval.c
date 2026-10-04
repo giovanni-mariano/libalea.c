@@ -360,58 +360,73 @@ static alea_interval_t eval_primitive_interval(
     return iv;
 }
 
-alea_interval_t alea_evaluate_interval(
-    const alea_system_t* sys,
-    alea_node_id_t node_id,
-    const alea_bbox_t* box
-) {
-    /* Default: assume anything is possible */
-    alea_interval_t unknown = alea_iv_make(-1e30, 1e30);
-
-    if (!sys || node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes)) {
-        return alea_iv_make(1.0, 1e30);  /* Outside */
+/* Volume subdivision needs only the axes of locally unresolved boundaries.
+ * Known-sign subexpressions do not introduce a boundary inside this box.
+ * Unknown primitive types conservatively retain all three axes. */
+static unsigned primitive_boundary_axes(const alea_system_t* sys, const alea_node_t* node) {
+    if (node->primitive.primitive_id >= alea_vec_count(&sys->primitives)) return 7;
+    const alea_primitive_entry_t* prim = &sys->primitives.data[node->primitive.primitive_id];
+    switch (prim->type) {
+        case ALEA_PRIMITIVE_CYLINDER_X: return 6;
+        case ALEA_PRIMITIVE_CYLINDER_Y: return 5;
+        case ALEA_PRIMITIVE_CYLINDER_Z: return 3;
+        case ALEA_PRIMITIVE_PLANE: {
+            alea_primitive_data_t data;
+            if (!alea_primitive_copy_data(sys, node->primitive.primitive_id, &data)) return 7;
+            return (data.plane.a != 0.0 ? 1u : 0u) |
+                   (data.plane.b != 0.0 ? 2u : 0u) |
+                   (data.plane.c != 0.0 ? 4u : 0u);
+        }
+        default: return 7;
     }
+}
 
+static alea_interval_t evaluate_interval_impl(
+    const alea_system_t* sys, alea_node_id_t node_id,
+    const alea_bbox_t* box, unsigned* axes) {
+    alea_interval_t unknown = alea_iv_make(-1e30, 1e30);
+    if (axes) *axes = 0;
+    if (!sys || node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
+        return alea_iv_make(1.0, 1e30);
     const alea_node_t* node = &sys->nodes.data[node_id];
-
-    /* Early bbox test: if query box doesn't intersect node bbox, definitely outside */
     if (box->max_x < node->bbox.min_x || box->min_x > node->bbox.max_x ||
         box->max_y < node->bbox.min_y || box->min_y > node->bbox.max_y ||
-        box->max_z < node->bbox.min_z || box->min_z > node->bbox.max_z) {
-        return alea_iv_make(1.0, 1e30);  /* Positive = outside */
-    }
-
+        box->max_z < node->bbox.min_z || box->min_z > node->bbox.max_z)
+        return alea_iv_make(1.0, 1e30);
     alea_operation_t op = ALEA_GET_OPERATION(node);
-
-    /* Base case: primitive */
+    alea_interval_t result;
     if (op == ALEA_OP_PRIMITIVE) {
-        return eval_primitive_interval(sys, node, box);
+        result = eval_primitive_interval(sys, node, box);
+        if (axes) *axes = primitive_boundary_axes(sys, node);
+    } else if (op == ALEA_OP_COMPLEMENT) {
+        result = iv_negate(evaluate_interval_impl(sys, node->operation.left, box, axes));
+    } else {
+        unsigned left_axes = 0, right_axes = 0;
+        alea_interval_t left = evaluate_interval_impl(sys, node->operation.left, box,
+                                                     axes ? &left_axes : NULL);
+        alea_interval_t right = evaluate_interval_impl(sys, node->operation.right, box,
+                                                      axes ? &right_axes : NULL);
+        if (axes) *axes = left_axes | right_axes;
+        switch (op) {
+            case ALEA_OP_UNION: result = iv_min(left, right); break;
+            case ALEA_OP_INTERSECTION: result = iv_max(left, right); break;
+            case ALEA_OP_DIFFERENCE: result = iv_max(left, iv_negate(right)); break;
+            default: result = unknown; if (axes) *axes = 7; break;
+        }
     }
+    if (axes && (result.max <= 0.0 || result.min >= 0.0)) *axes = 0;
+    return result;
+}
 
-    /* Unary complement */
-    if (op == ALEA_OP_COMPLEMENT) {
-        alea_interval_t child = alea_evaluate_interval(sys, node->operation.left, box);
-        return iv_negate(child);
-    }
+alea_interval_t alea_evaluate_interval(
+    const alea_system_t* sys, alea_node_id_t node_id, const alea_bbox_t* box) {
+    return evaluate_interval_impl(sys, node_id, box, NULL);
+}
 
-    /* Binary operations */
-    alea_interval_t left = alea_evaluate_interval(sys, node->operation.left, box);
-    alea_interval_t right = alea_evaluate_interval(sys, node->operation.right, box);
-
-    switch (op) {
-        case ALEA_OP_UNION:
-            return iv_min(left, right);
-
-        case ALEA_OP_INTERSECTION:
-            return iv_max(left, right);
-
-        case ALEA_OP_DIFFERENCE:
-            /* difference(A, B) = intersection(A, complement(B)) */
-            return iv_max(left, iv_negate(right));
-
-        default:
-            return unknown;
-    }
+alea_interval_t alea_evaluate_interval_axes(
+    const alea_system_t* sys, alea_node_id_t node_id, const alea_bbox_t* box,
+    unsigned* axes) {
+    return evaluate_interval_impl(sys, node_id, box, axes);
 }
 
 alea_box_relation_t alea_tree_box_relation(

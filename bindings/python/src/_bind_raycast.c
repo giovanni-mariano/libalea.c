@@ -523,17 +523,20 @@ static PyObject* PyAleaSystem_estimate_cell_volume(
     Py_ssize_t cell_index, workers = 0;
     PyObject* bounds_obj = Py_None;
     double relative_tolerance = 1e-3, absolute_tolerance = 0.0, min_size = 0.0;
-    int max_depth = 10, samples_per_axis = 2;
+    int max_depth = 14, samples_per_axis = 2;
     unsigned long long max_parallel_scratch_bytes = 64u * 1024u * 1024u;
+    const char* split_strategy = "adaptive";
+    unsigned long long max_evaluations = 16000000, max_memory_bytes = 64u * 1024u * 1024u;
+    PyObject* budget_objects[2] = {NULL, NULL};
     static char* kwlist[] = {
         "cell_index", "bounds", "relative_tolerance", "absolute_tolerance",
         "max_depth", "min_size", "samples_per_axis", "workers",
-        "max_parallel_scratch_bytes", NULL
+        "max_parallel_scratch_bytes", "split_strategy", "max_evaluations", "max_memory_bytes", NULL
     };
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "n|OddidinK", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "n|OddidinKsOO", kwlist,
             &cell_index, &bounds_obj, &relative_tolerance, &absolute_tolerance,
             &max_depth, &min_size, &samples_per_axis, &workers,
-            &max_parallel_scratch_bytes)) return NULL;
+            &max_parallel_scratch_bytes, &split_strategy, &budget_objects[0], &budget_objects[1])) return NULL;
     if (!self->sys) {
         PyErr_SetString(PyExc_RuntimeError, "System not initialized");
         return NULL;
@@ -543,8 +546,36 @@ static PyObject* PyAleaSystem_estimate_cell_volume(
         return NULL;
     }
 
+    unsigned long long* budgets[2] = {&max_evaluations, &max_memory_bytes};
+    const char* budget_names[2] = {"max_evaluations", "max_memory_bytes"};
+    const unsigned long long minima[2] = {1, 1024};
+    for (int i = 0; i < 2; i++) if (budget_objects[i]) {
+        if (!PyLong_Check(budget_objects[i]) || PyBool_Check(budget_objects[i])) {
+            PyErr_Format(PyExc_TypeError, "%s must be an integer", budget_names[i]);
+            return NULL;
+        }
+        *budgets[i] = PyLong_AsUnsignedLongLong(budget_objects[i]);
+        if (PyErr_Occurred()) return NULL;
+        if (*budgets[i] < minima[i]) {
+            PyErr_Format(PyExc_ValueError, "%s must be at least %llu", budget_names[i], minima[i]);
+            return NULL;
+        }
+    }
+
     alea_cell_volume_options_t options;
     alea_cell_volume_options_init(&options);
+    if (strcmp(split_strategy, "octree") == 0)
+        options.split_strategy = ALEA_CELL_VOLUME_SPLIT_OCTREE;
+    else if (strcmp(split_strategy, "longest_axis") == 0)
+        options.split_strategy = ALEA_CELL_VOLUME_SPLIT_LONGEST_AXIS;
+    else if (strcmp(split_strategy, "adaptive") == 0)
+        options.split_strategy = ALEA_CELL_VOLUME_SPLIT_ADAPTIVE;
+    else {
+        PyErr_SetString(PyExc_ValueError, "split_strategy must be 'octree', 'longest_axis', or 'adaptive'");
+        return NULL;
+    }
+    options.max_evaluations = (uint64_t)max_evaluations;
+    options.max_memory_bytes = (uint64_t)max_memory_bytes;
     options.relative_tolerance = relative_tolerance;
     options.absolute_tolerance = absolute_tolerance;
     options.max_depth = max_depth;
@@ -570,7 +601,7 @@ static PyObject* PyAleaSystem_estimate_cell_volume(
     }
 
     PyObject* stats = Py_BuildValue(
-        "{s:n,s:n,s:n,s:n,s:n,s:n,s:K,s:K}",
+        "{s:n,s:n,s:n,s:n,s:n,s:n,s:K,s:K,s:n,s:n,s:n,s:(nnn),s:K,s:K,s:n,s:(iii)}",
         "total_nodes", (Py_ssize_t)result.total_nodes,
         "inside_nodes", (Py_ssize_t)result.inside_nodes,
         "outside_nodes", (Py_ssize_t)result.outside_nodes,
@@ -579,10 +610,19 @@ static PyObject* PyAleaSystem_estimate_cell_volume(
         "frontier_task_count", (Py_ssize_t)result.frontier_task_count,
         "scratch_bytes_per_worker", (unsigned long long)result.scratch_bytes_per_worker,
         "reserved_parallel_scratch_bytes",
-            (unsigned long long)result.reserved_parallel_scratch_bytes);
+            (unsigned long long)result.reserved_parallel_scratch_bytes,
+        "min_size_reached", (Py_ssize_t)result.min_size_reached,
+        "precision_limit_reached", (Py_ssize_t)result.precision_limit_reached,
+        "deepest_level", (Py_ssize_t)result.deepest_level,
+        "axis_splits", (Py_ssize_t)result.axis_splits[0],
+                       (Py_ssize_t)result.axis_splits[1], (Py_ssize_t)result.axis_splits[2],
+        "interval_evaluations", (unsigned long long)result.interval_evaluations,
+        "peak_memory_bytes", (unsigned long long)result.peak_memory_bytes,
+        "parallel_batch_count", (Py_ssize_t)result.parallel_batch_count,
+        "max_axis_depth", result.max_axis_depth[0], result.max_axis_depth[1], result.max_axis_depth[2]);
     if (!stats) return NULL;
     return Py_BuildValue(
-        "{s:d,s:d,s:d,s:d,s:d,s:(dddddd),s:s,s:O,s:O,s:O,s:n,s:n,s:n,s:N}",
+        "{s:d,s:d,s:d,s:d,s:d,s:(dddddd),s:s,s:O,s:O,s:O,s:n,s:n,s:n,s:N,s:s,s:O,s:O}",
         "volume", result.volume,
         "lower_bound", result.lower_bound,
         "upper_bound", result.upper_bound,
@@ -598,7 +638,10 @@ static PyObject* PyAleaSystem_estimate_cell_volume(
         "bounds_search_expansions", (Py_ssize_t)result.bounds_search_expansions,
         "requested_workers", (Py_ssize_t)result.requested_workers,
         "actual_workers", (Py_ssize_t)result.actual_workers,
-        "stats", stats);
+        "stats", stats,
+        "split_strategy", split_strategy,
+        "evaluation_limit_reached", result.evaluation_limit_reached ? Py_True : Py_False,
+        "memory_limit_reached", result.memory_limit_reached ? Py_True : Py_False);
 }
 
 /* Convert a concrete hierarchical volume path to a Python dict describing its

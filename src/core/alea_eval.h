@@ -173,6 +173,12 @@ alea_interval_t alea_evaluate_interval(
     const alea_bbox_t* box
 );
 
+/** Interval evaluation plus axes of unresolved primitive boundaries (bit XYZ).
+ * Internal refinement hint; unrecognized primitives retain all axes. */
+alea_interval_t alea_evaluate_interval_axes(
+    const alea_system_t* sys, alea_node_id_t node_id, const alea_bbox_t* box,
+    unsigned* axes);
+
 /**
  * @brief Classify a bounding box against a CSG tree
  *

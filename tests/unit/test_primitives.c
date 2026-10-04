@@ -359,6 +359,48 @@ TEST(bbox_box) {
     ASSERT_NEAR(bb.max_z, 2.0, 1e-6);
 }
 
+TEST(capped_macrobody_intervals_enclose_point_fields) {
+    const alea_primitive_type_t types[4] = {ALEA_PRIMITIVE_RCC, ALEA_PRIMITIVE_TRC,
+                                           ALEA_PRIMITIVE_REC, ALEA_PRIMITIVE_RHP};
+    alea_primitive_data_t data[4];
+    memset(data, 0, sizeof(data));
+    data[0].rcc.height_x = 2; data[0].rcc.height_y = 3; data[0].rcc.height_z = 4;
+    data[0].rcc.radius = 1;
+    data[1].trc.height_x = 2; data[1].trc.height_y = 3; data[1].trc.height_z = 4;
+    data[1].trc.base_radius = 1; data[1].trc.top_radius = .5;
+    data[2].rec.height_z = 3; data[2].rec.axis1_x = 2; data[2].rec.axis2_y = .5;
+    data[3].rhp.height_z = 3; data[3].rhp.r1_x = 1;
+    for (int type = 0; type < 4; type++) {
+        const alea_primitive_desc_t* desc = alea_primitive_get_desc(types[type]);
+        for (int ix = -3; ix <= 3; ix++) for (int iy = -3; iy <= 3; iy++)
+        for (int iz = -2; iz <= 5; iz++) {
+            alea_bbox_t b = {ix*.7-.23, ix*.7+.31, iy*.7-.41, iy*.7+.19,
+                             iz*.8-.17, iz*.8+.37};
+            alea_interval_t iv = desc->interval_eval(&data[type], &b);
+            for (int x = 0; x < 3; x++) for (int y = 0; y < 3; y++) for (int z = 0; z < 3; z++) {
+                double value = desc->eval(&data[type],
+                    b.min_x+(b.max_x-b.min_x)*x*.5,
+                    b.min_y+(b.max_y-b.min_y)*y*.5,
+                    b.min_z+(b.max_z-b.min_z)*z*.5);
+                ASSERT(value >= iv.min - 1e-10);
+                ASSERT(value <= iv.max + 1e-10);
+            }
+        }
+    }
+}
+
+TEST(hexagonal_prism_bbox_contains_facet_intersections) {
+    alea_primitive_data_t data;
+    memset(&data, 0, sizeof(data));
+    data.rhp.height_z = 3; data.rhp.r1_x = 1;
+    const alea_primitive_desc_t* desc = alea_primitive_get_desc(ALEA_PRIMITIVE_RHP);
+    alea_bbox_t b = desc->bbox(&data);
+    ASSERT(b.min_y <= -2.0/sqrt(3.0));
+    ASSERT(b.max_y >= 2.0/sqrt(3.0));
+    ASSERT(b.min_x <= -1.0 && b.max_x >= 1.0);
+    ASSERT(b.min_z <= 0.0 && b.max_z >= 3.0);
+}
+
 TEST(bbox_rcc) {
     alea_primitive_data_t d;
     memset(&d, 0, sizeof(d));

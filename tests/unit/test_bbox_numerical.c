@@ -467,6 +467,54 @@ TEST(cell_volume_sphere_bounds_and_parallel_determinism) {
     alea_destroy(sys);
 }
 
+TEST(cell_volume_budgets_keep_complete_partition) {
+    alea_system_t* sys = alea_create();
+    int surface = alea_sphere_surface(sys, 0, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(surface >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.relative_tolerance = 0.0;
+    options.max_evaluations = 1;
+    alea_cell_volume_result_t result;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT_EQ(result.interval_evaluations, 1);
+    ASSERT(result.evaluation_limit_reached);
+    ASSERT(result.lower_bound <= 4.0 * 3.14159265358979323846 / 3.0);
+    ASSERT(result.upper_bound >= 4.0 * 3.14159265358979323846 / 3.0);
+    ASSERT_EQ(result.unresolved_volume, 8.0);
+    options.max_evaluations = 100000;
+    options.max_memory_bytes = 1024;
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT(result.memory_limit_reached);
+    ASSERT(result.peak_memory_bytes <= options.max_memory_bytes);
+    ASSERT(result.lower_bound <= 4.0 * 3.14159265358979323846 / 3.0);
+    ASSERT(result.upper_bound >= 4.0 * 3.14159265358979323846 / 3.0);
+    options.max_evaluations = 0;
+    ASSERT(alea_cell_estimate_volume(sys, 0, &options, &result) != 0);
+    alea_destroy(sys);
+}
+
+TEST(cell_volume_interruption_returns_no_partial_success) {
+    alea_system_t* sys = alea_create();
+    int surface = alea_sphere_surface(sys, 0, 0.0, 0.0, 0.0, 1.0);
+    ASSERT(surface >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, surface)->neg_node,
+                         ALEA_MATERIAL_VOID, 0.0, 0) >= 0);
+    alea_cell_volume_options_t options;
+    alea_cell_volume_options_init(&options);
+    options.max_evaluations = 1;
+    alea_cell_volume_result_t result;
+    alea_interrupt();
+    int rc = alea_cell_estimate_volume(sys, 0, &options, &result);
+    alea_clear_interrupt();
+    ASSERT_EQ(rc, -1);
+    ASSERT_EQ(alea_cell_estimate_volume(sys, 0, &options, &result), 0);
+    ASSERT(result.evaluation_limit_reached);
+    alea_destroy(sys);
+}
+
 TEST(cell_volume_explicit_bounds_clip_unbounded_cell) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);

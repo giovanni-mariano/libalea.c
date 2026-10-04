@@ -11,6 +11,7 @@
 #include "primitives/bbox.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -19,16 +20,21 @@
 #define CELL_VOLUME_UNBOUNDED_EXTENT 9e5
 #define CELL_VOLUME_DISCOVERY_DEPTH 6
 #define CELL_VOLUME_DISCOVERY_EXPANSIONS 24
-#define CELL_VOLUME_MAX_FRONTIER ((size_t)1024 * 1024)
+#define CELL_VOLUME_BATCH_PARENTS 64
+#define CELL_VOLUME_BATCH_CHILDREN (8 * CELL_VOLUME_BATCH_PARENTS)
 
 typedef struct {
     alea_bbox_t bbox;
-    int depth;
+    int level;
+    int axis_depth[3];
+    unsigned active_axes;
+    double interval_width;
 } cell_volume_task_t;
 
 typedef struct {
+    unsigned active_axes;
     uint8_t relation; /* 0 outside, 1 inside, 2 mixed */
-    double sample_fraction;
+    double interval_width;
 } cell_volume_classification_t;
 
 typedef struct {
@@ -103,6 +109,7 @@ static double cell_volume_sample_fraction(const alea_system_t* sys,
     double dy = (b->max_y - b->min_y) / (double)n;
     double dz = (b->max_z - b->min_z) / (double)n;
     for (int k = 0; k < n; k++) {
+        if (alea_interrupted()) return 0.0;
         double z = b->min_z + ((double)k + 0.5) * dz;
         for (int j = 0; j < n; j++) {
             double y = b->min_y + ((double)j + 0.5) * dy;
@@ -229,6 +236,10 @@ static size_t cell_volume_select_workers(size_t requested, size_t tasks,
     if (budget == 0 || tasks < 2) return 1;
     if (workers < 1) workers = 1;
     if (workers > tasks) workers = tasks;
+    /* Small fixed batches should not wake hundreds of backend threads. */
+    size_t useful_workers = tasks / 64;
+    if (useful_workers < 1) useful_workers = 1;
+    if (workers > useful_workers) workers = useful_workers;
     if (scratch_per_worker != 0) {
         uint64_t by_budget = budget / scratch_per_worker;
         if (by_budget == 0) return 1;
@@ -237,28 +248,164 @@ static size_t cell_volume_select_workers(size_t requested, size_t tasks,
     return workers ? workers : 1;
 }
 
-typedef struct cell_volume_parallel_context {
+/* The heap prefers the largest unresolved volume, then uses box coordinates
+ * for a stable order independent of worker scheduling. */
+static bool task_precedes(const cell_volume_task_t* a, const cell_volume_task_t* b) {
+    double va = cell_volume_box_volume(&a->bbox), vb = cell_volume_box_volume(&b->bbox);
+    if (va != vb) return va > vb;
+    const double ca[] = {a->bbox.min_x, a->bbox.min_y, a->bbox.min_z,
+                         a->bbox.max_x, a->bbox.max_y, a->bbox.max_z};
+    const double cb[] = {b->bbox.min_x, b->bbox.min_y, b->bbox.min_z,
+                         b->bbox.max_x, b->bbox.max_y, b->bbox.max_z};
+    for (int i = 0; i < 6; i++) if (ca[i] != cb[i]) return ca[i] < cb[i];
+    return false;
+}
+
+static void heap_push(cell_volume_task_t* heap, size_t* count, cell_volume_task_t t) {
+    size_t i = (*count)++;
+    while (i && task_precedes(&t, &heap[(i-1)/2])) {
+        heap[i] = heap[(i-1)/2]; i = (i-1)/2;
+    }
+    heap[i] = t;
+}
+
+static cell_volume_task_t heap_pop(cell_volume_task_t* heap, size_t* count) {
+    cell_volume_task_t result = heap[0], tail = heap[--(*count)];
+    if (*count == 0) return result;
+    size_t i = 0;
+    while (2*i+1 < *count) {
+        size_t j = 2*i+1;
+        if (j+1 < *count && task_precedes(&heap[j+1], &heap[j])) j++;
+        if (!task_precedes(&heap[j], &tail)) break;
+        heap[i] = heap[j]; i = j;
+    }
+    heap[i] = tail;
+    return result;
+}
+
+static double axis_min(const alea_bbox_t* b, int a) {
+    return a == 0 ? b->min_x : a == 1 ? b->min_y : b->min_z;
+}
+static double axis_max(const alea_bbox_t* b, int a) {
+    return a == 0 ? b->max_x : a == 1 ? b->max_y : b->max_z;
+}
+static double axis_mid(const alea_bbox_t* b, int a) {
+    /* Avoid overflow when finite endpoints have the same large sign. */
+    return axis_min(b, a) * 0.5 + axis_max(b, a) * 0.5;
+}
+static alea_bbox_t split_bbox(alea_bbox_t b, int mask, int child) {
+    for (int a = 0; a < 3; a++) if (mask & (1 << a)) {
+        double mid = axis_mid(&b, a);
+        if (a == 0) { if (child & 1) b.min_x = mid; else b.max_x = mid; }
+        if (a == 1) { if (child & 2) b.min_y = mid; else b.max_y = mid; }
+        if (a == 2) { if (child & 4) b.min_z = mid; else b.max_z = mid; }
+    }
+    return b;
+}
+static uint8_t interval_relation(alea_interval_t iv) {
+    return iv.max <= 0.0 ? 1 : iv.min >= 0.0 ? 0 : 2;
+}
+static int eligible_axes(const cell_volume_task_t* t,
+                         const alea_cell_volume_options_t* o) {
+    int mask = 0;
+    for (int a = 0; a < 3; a++) {
+        double lo = axis_min(&t->bbox, a), hi = axis_max(&t->bbox, a);
+        double mid = axis_mid(&t->bbox, a);
+        if ((o->split_strategy != ALEA_CELL_VOLUME_SPLIT_ADAPTIVE ||
+             (t->active_axes & (1u << a))) && t->axis_depth[a] < o->max_depth &&
+            (o->min_size == 0.0 || hi-lo > o->min_size) && mid > lo && mid < hi)
+            mask |= 1 << a;
+    }
+    /* Octree retains the existing rule: all axes must be eligible. */
+    if (o->split_strategy == ALEA_CELL_VOLUME_SPLIT_OCTREE && mask != 7) return 0;
+    return mask;
+}
+
+static int select_axes(const alea_system_t* sys, alea_node_id_t root,
+                        const cell_volume_task_t* t, int eligible,
+                        const alea_cell_volume_options_t* o,
+                        alea_cell_volume_result_t* out) {
+    if (o->split_strategy == ALEA_CELL_VOLUME_SPLIT_OCTREE) return 7;
+    int longest = -1;
+    for (int a = 0; a < 3; a++) if (eligible & (1 << a)) {
+        if (longest < 0 || axis_max(&t->bbox,a)-axis_min(&t->bbox,a) >
+                           axis_max(&t->bbox,longest)-axis_min(&t->bbox,longest))
+            longest = a;
+    }
+    if (o->split_strategy == ALEA_CELL_VOLUME_SPLIT_LONGEST_AXIS) return 1 << longest;
+    double scores[3] = {0}, best = 0.0;
+    for (int a = 0; a < 3; a++) if (eligible & (1 << a)) {
+        double width = 0.0, resolved = 0.0;
+        for (int side = 0; side < 2; side++) {
+            alea_bbox_t child = split_bbox(t->bbox, 1 << a, side << a);
+            alea_interval_t iv = alea_evaluate_interval(sys, root, &child);
+            out->interval_evaluations++;
+            if (interval_relation(iv) != 2) resolved += 0.5;
+            width += 0.5 * (iv.max - iv.min);
+        }
+        /* A split through a symmetric extremum (e.g. [-1,1]^2) can leave
+         * both child widths unchanged. Probe the central half as well, so
+         * such an axis is not starved by a greedy one-step score. */
+        alea_bbox_t central = t->bbox;
+        double lo = axis_min(&central, a), hi = axis_max(&central, a);
+        double qlo = lo * 0.75 + hi * 0.25, qhi = lo * 0.25 + hi * 0.75;
+        if (a == 0) { central.min_x = qlo; central.max_x = qhi; }
+        if (a == 1) { central.min_y = qlo; central.max_y = qhi; }
+        if (a == 2) { central.min_z = qlo; central.max_z = qhi; }
+        alea_interval_t civ = alea_evaluate_interval(sys, root, &central);
+        out->interval_evaluations++;
+        width = fmin(width, civ.max - civ.min);
+        double reduction = 0.0;
+        if (isfinite(t->interval_width) && t->interval_width > 0.0 && isfinite(width))
+            reduction = fmax(0.0, 1.0 - width / t->interval_width);
+        scores[a] = resolved + reduction;
+        if (scores[a] > best) best = scores[a];
+    }
+    if (best > 1e-12) {
+        int mask = 0;
+        /* Refine equally useful axes together (XY for an aligned cylinder,
+         * XYZ for a symmetric sphere). Probes are included in the work budget. */
+        for (int a = 0; a < 3; a++)
+            if ((eligible & (1 << a)) && scores[a] >= best * 0.75) mask |= 1 << a;
+        return mask;
+    }
+    /* Zero-gain ties are common before a boundary is resolved. Fair axis
+     * counts prevent repeatedly bisecting one unproductive direction. */
+    int fair = longest;
+    for (int a = 0; a < 3; a++) if ((eligible & (1 << a)) &&
+            t->axis_depth[a] < t->axis_depth[fair]) fair = a;
+    return 1 << fair;
+}
+
+typedef struct {
     const alea_system_t* sys;
     alea_node_id_t root;
-    const cell_volume_task_t* frontier;
+    const cell_volume_task_t* tasks;
     cell_volume_classification_t* classes;
-    int samples_per_axis;
 } cell_volume_parallel_context_t;
 
 static int cell_volume_parallel_range(void* opaque, size_t worker,
                                       size_t begin, size_t end) {
-    cell_volume_parallel_context_t* context = opaque;
+    cell_volume_parallel_context_t* c = opaque;
     (void)worker;
     for (size_t i = begin; i < end; i++) {
-        context->classes[i].relation = cell_volume_relation(
-            context->sys, context->root, &context->frontier[i].bbox);
-        if (context->classes[i].relation == 2) {
-            context->classes[i].sample_fraction = cell_volume_sample_fraction(
-                context->sys, context->root, &context->frontier[i].bbox,
-                context->samples_per_axis);
-        }
+        alea_interval_t iv = alea_evaluate_interval_axes(c->sys, c->root,
+            &c->tasks[i].bbox, &c->classes[i].active_axes);
+        c->classes[i].relation = interval_relation(iv);
+        c->classes[i].interval_width = iv.max - iv.min;
     }
     return 0;
+}
+
+static long double sample_pending(const alea_system_t* sys, alea_node_id_t root,
+                                  const cell_volume_task_t* heap, size_t count, int n) {
+    long double estimate = 0.0L;
+    for (size_t i = 0; i < count; i++) {
+        if ((i & 1023) == 0 && alea_interrupted()) break;
+        estimate += (long double)cell_volume_sample_fraction(sys, root, &heap[i].bbox, n) *
+                    cell_volume_box_volume(&heap[i].bbox);
+    }
+    return estimate;
 }
 
 void alea_cell_volume_options_init(alea_cell_volume_options_t* options) {
@@ -268,20 +415,26 @@ void alea_cell_volume_options_init(alea_cell_volume_options_t* options) {
         .bounds = {0},
         .relative_tolerance = 1e-3,
         .absolute_tolerance = 0.0,
-        .max_depth = 10,
+        .max_depth = 14,
         .min_size = 0.0,
         .samples_per_axis = 2,
         .requested_workers = 0,
         .max_parallel_scratch_bytes = 64u * 1024u * 1024u,
+        .split_strategy = ALEA_CELL_VOLUME_SPLIT_ADAPTIVE,
+        .max_evaluations = 16000000,
+        .max_memory_bytes = 64u * 1024u * 1024u,
     };
 }
 
 static int cell_volume_options_valid(const alea_cell_volume_options_t* o) {
     return o && isfinite(o->relative_tolerance) &&
         o->relative_tolerance >= 0.0 && isfinite(o->absolute_tolerance) &&
-        o->absolute_tolerance >= 0.0 && o->max_depth >= 0 &&
+        o->absolute_tolerance >= 0.0 && o->max_depth >= 0 && o->max_depth <= INT_MAX / 3 &&
         isfinite(o->min_size) && o->min_size >= 0.0 &&
         o->samples_per_axis >= 1 && o->samples_per_axis <= 32 &&
+        o->split_strategy >= ALEA_CELL_VOLUME_SPLIT_OCTREE &&
+        o->split_strategy <= ALEA_CELL_VOLUME_SPLIT_ADAPTIVE &&
+        o->max_evaluations >= 1 && o->max_memory_bytes >= 1024 &&
         (!o->has_bounds || cell_volume_bbox_valid(&o->bounds));
 }
 
@@ -343,163 +496,167 @@ int alea_cell_estimate_volume(
         return -1;
     }
 
-    cell_volume_task_t* frontier = malloc(sizeof(*frontier));
-    if (!frontier) {
-        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
-                              "failed to allocate cell volume frontier");
+    /* All explicit integration storage is charged to the memory budget.
+     * Use fixed batch storage and a fixed-capacity heap: no hidden queue growth. */
+    size_t batch_capacity = CELL_VOLUME_BATCH_CHILDREN;
+    uint64_t per_batch = sizeof(cell_volume_task_t) + sizeof(cell_volume_classification_t);
+    while (batch_capacity > 1 &&
+           batch_capacity * per_batch + sizeof(cell_volume_task_t) > options->max_memory_bytes)
+        batch_capacity /= 2;
+    uint64_t batch_bytes = batch_capacity * per_batch;
+    uint64_t capacity64 = (options->max_memory_bytes - batch_bytes) / sizeof(cell_volume_task_t);
+    /* There can never be more queued leaves than classified boxes. */
+    if (capacity64 > options->max_evaluations) capacity64 = options->max_evaluations;
+    if (capacity64 > SIZE_MAX / sizeof(cell_volume_task_t))
+        capacity64 = SIZE_MAX / sizeof(cell_volume_task_t);
+    size_t capacity = (size_t)capacity64;
+    cell_volume_task_t* heap = malloc(capacity * sizeof(*heap));
+    cell_volume_task_t* children = malloc(batch_capacity * sizeof(*children));
+    cell_volume_classification_t* classes = calloc(batch_capacity, sizeof(*classes));
+    if (!heap || !children || !classes) {
+        free(heap); free(children); free(classes);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "failed to allocate cell volume storage");
         return -1;
     }
-    frontier[0] = (cell_volume_task_t){out->bounds, 0};
-    size_t frontier_count = 1;
-    double lower = 0.0, terminal_gap = 0.0, terminal_estimate = 0.0;
-
-    while (frontier_count != 0) {
-        if (alea_interrupted()) {
-            free(frontier);
-            alea_set_error_detail(ALEA_ERR_INTERRUPTED,
-                                  "cell volume estimation interrupted");
+    out->peak_memory_bytes = capacity * sizeof(*heap) + batch_bytes;
+    size_t count = 0;
+    long double lower = 0.0L, terminal_gap = 0.0L, terminal_estimate = 0.0L;
+    long double pending_gap = 0.0L;
+    children[0] = (cell_volume_task_t){.bbox = out->bounds};
+    size_t child_count = 1;
+    bool stop = false;
+    while (true) {
+        if (alea_interrupted()) goto interrupted;
+        size_t workers = cell_volume_select_workers(options->requested_workers,
+            child_count, options->max_parallel_scratch_bytes, sizeof(*classes));
+        size_t actual = 1;
+        cell_volume_parallel_context_t context = {sys, cell->root_node_id, children, classes};
+        if (alea_parallel_for(child_count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
+                              cell_volume_parallel_range, &context, &actual) != ALEA_PARALLEL_OK) {
+            free(heap); free(children); free(classes);
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "cell volume parallel execution failed");
             return -1;
         }
-        if (frontier_count > out->frontier_task_count)
-            out->frontier_task_count = frontier_count;
-        if (frontier_count > SIZE_MAX / sizeof(cell_volume_classification_t)) {
-            free(frontier);
-            alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                                  "cell volume classification allocation overflows");
-            return -1;
-        }
-        cell_volume_classification_t* classes =
-            calloc(frontier_count, sizeof(*classes));
-        if (!classes) {
-            free(frontier);
-            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
-                                  "failed to allocate cell volume classifications");
-            return -1;
-        }
-        size_t workers = cell_volume_select_workers(
-            options->requested_workers, frontier_count,
-            options->max_parallel_scratch_bytes,
-            sizeof(cell_volume_classification_t));
-        size_t actual_workers = 1;
-        cell_volume_parallel_context_t parallel_context = {
-            sys, cell->root_node_id, frontier, classes,
-            options->samples_per_axis
-        };
-        alea_parallel_status_t parallel_status = alea_parallel_for(
-            frontier_count, 1, workers, ALEA_PARALLEL_STATIC_BLOCK,
-            cell_volume_parallel_range, &parallel_context, &actual_workers);
-        if (parallel_status != ALEA_PARALLEL_OK) {
-            free(classes);
-            free(frontier);
-            alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                                   "cell volume parallel execution failed: %s",
-                                   alea_parallel_status_string(parallel_status));
-            return -1;
-        }
-        if (actual_workers > out->actual_workers) out->actual_workers = actual_workers;
-        if (actual_workers > 1) out->parallel_batch_count++;
-        uint64_t reserved = (uint64_t)workers * sizeof(*classes);
-        if (reserved > out->reserved_parallel_scratch_bytes)
-            out->reserved_parallel_scratch_bytes = reserved;
-
-        size_t expandable = 0;
-        double pending_gap = 0.0, pending_estimate = 0.0;
-        out->total_nodes += frontier_count;
-        for (size_t i = 0; i < frontier_count; i++) {
-            double box_volume = cell_volume_box_volume(&frontier[i].bbox);
-            if (classes[i].relation == 1) {
-                lower += box_volume;
-                out->inside_nodes++;
-            } else if (classes[i].relation == 0) {
-                out->outside_nodes++;
-            } else {
-                bool depth_stop = frontier[i].depth >= options->max_depth;
-                bool size_stop = options->min_size > 0.0 &&
-                    cell_volume_min_extent(&frontier[i].bbox) <= options->min_size;
-                if (depth_stop || size_stop) {
-                    terminal_gap += box_volume;
-                    terminal_estimate += classes[i].sample_fraction * box_volume;
-                    out->unresolved_leaf_nodes++;
-                    if (depth_stop) out->max_depth_reached++;
+        if (actual > out->actual_workers) out->actual_workers = actual;
+        if (actual > 1) out->parallel_batch_count++;
+        uint64_t scratch = workers * sizeof(*classes);
+        if (scratch > out->reserved_parallel_scratch_bytes)
+            out->reserved_parallel_scratch_bytes = scratch;
+        out->total_nodes += child_count;
+        out->interval_evaluations += child_count;
+        for (size_t i = 0; i < child_count; i++) {
+            double volume = cell_volume_box_volume(&children[i].bbox);
+            size_t level = (size_t)children[i].level;
+            if (level > out->deepest_level) out->deepest_level = level;
+            for (int a = 0; a < 3; a++)
+                if (children[i].axis_depth[a] > out->max_axis_depth[a])
+                    out->max_axis_depth[a] = children[i].axis_depth[a];
+            if (classes[i].relation == 1) { lower += volume; out->inside_nodes++; }
+            else if (classes[i].relation == 0) out->outside_nodes++;
+            else {
+                children[i].active_axes = classes[i].active_axes;
+                if (eligible_axes(&children[i], options)) {
+                    children[i].interval_width = classes[i].interval_width;
+                    heap_push(heap, &count, children[i]);
+                    pending_gap += volume;
                 } else {
-                    expandable++;
-                    pending_gap += box_volume;
-                    pending_estimate += classes[i].sample_fraction * box_volume;
+                    terminal_gap += volume;
+                    terminal_estimate += (long double)volume * cell_volume_sample_fraction(
+                        sys, cell->root_node_id, &children[i].bbox, options->samples_per_axis);
+                    out->unresolved_leaf_nodes++;
+                    bool depth = false, size = false;
+                    for (int a = 0; a < 3; a++) {
+                        if (options->split_strategy == ALEA_CELL_VOLUME_SPLIT_ADAPTIVE &&
+                            !(children[i].active_axes & (1u << a))) continue;
+                        depth |= children[i].axis_depth[a] >= options->max_depth;
+                        size |= options->min_size > 0.0 && axis_max(&children[i].bbox,a)-
+                                axis_min(&children[i].bbox,a) <= options->min_size;
+                    }
+                    if (depth) out->max_depth_reached++;
+                    if (size) out->min_size_reached++;
+                    if (!depth && !size) out->precision_limit_reached++;
                 }
             }
         }
-
-        double estimate = lower + terminal_estimate + pending_estimate;
-        double gap = terminal_gap + pending_gap;
+        if (count == 0) pending_gap = 0.0L;
+        if (count > out->frontier_task_count) out->frontier_task_count = count;
+        long double gap = terminal_gap + pending_gap;
+        /* Delay point samples until they can affect stopping or final output.
+         * The midpoint estimate is only a trigger; actual samples confirm the
+         * existing tolerance formula before convergence is declared. */
+        double provisional = (double)(lower + terminal_estimate + pending_gap * 0.5L);
         double target = fmax(options->absolute_tolerance,
-                             options->relative_tolerance * fabs(estimate));
-        bool converged = gap <= target;
-        if (converged || expandable == 0) {
-            if (converged) out->unresolved_leaf_nodes += expandable;
-            out->converged = converged;
-            out->volume = estimate;
-            out->lower_bound = lower;
-            out->unresolved_volume = gap;
-            out->upper_bound = lower + gap;
-            free(classes);
-            free(frontier);
-            frontier = NULL;
-            frontier_count = 0;
-            break;
-        }
-
-        if (expandable > CELL_VOLUME_MAX_FRONTIER / 8 ||
-            expandable > SIZE_MAX / (8 * sizeof(cell_volume_task_t))) {
-            out->resource_limit_reached = true;
-            out->unresolved_leaf_nodes += expandable;
-            out->converged = false;
-            out->volume = estimate;
-            out->lower_bound = lower;
-            out->unresolved_volume = gap;
-            out->upper_bound = lower + gap;
-            free(classes);
-            free(frontier);
-            frontier = NULL;
-            frontier_count = 0;
-            break;
-        }
-        size_t next_count = expandable * 8;
-        cell_volume_task_t* next = malloc(next_count * sizeof(*next));
-        if (!next) {
-            free(classes);
-            free(frontier);
-            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,
-                                  "failed to grow cell volume frontier");
-            return -1;
-        }
-        size_t write = 0;
-        for (size_t i = 0; i < frontier_count; i++) {
-            if (classes[i].relation != 2 ||
-                frontier[i].depth >= options->max_depth ||
-                (options->min_size > 0.0 &&
-                 cell_volume_min_extent(&frontier[i].bbox) <= options->min_size))
-                continue;
-            for (int child = 0; child < 8; child++) {
-                next[write++] = (cell_volume_task_t){
-                    cell_volume_child_bbox(&frontier[i].bbox, child),
-                    frontier[i].depth + 1};
+                             options->relative_tolerance * fabs(provisional));
+        if (stop || count == 0 || gap <= target) {
+            long double pending_estimate = sample_pending(sys, cell->root_node_id,
+                heap, count, options->samples_per_axis);
+            if (alea_interrupted()) goto interrupted;
+            double estimate = (double)(lower + terminal_estimate + pending_estimate);
+            target = fmax(options->absolute_tolerance, options->relative_tolerance * fabs(estimate));
+            if (stop || count == 0 || gap <= target) {
+                out->volume = estimate;
+                out->lower_bound = (double)lower;
+                out->unresolved_volume = (double)gap;
+                out->upper_bound = (double)(lower + gap);
+                out->unresolved_leaf_nodes += count;
+                break;
             }
         }
-        free(classes);
-        free(frontier);
-        frontier = next;
-        frontier_count = write;
+        child_count = 0;
+        /* Reserve both worst-case child storage and evaluation work before
+         * removing a parent. An incomplete replacement never loses volume. */
+        size_t reserve_children = options->split_strategy == ALEA_CELL_VOLUME_SPLIT_LONGEST_AXIS ? 2 : 8;
+        while (count && child_count + reserve_children <= batch_capacity) {
+            int eligible = eligible_axes(&heap[0], options);
+            uint64_t probes = 0;
+            if (options->split_strategy == ALEA_CELL_VOLUME_SPLIT_ADAPTIVE)
+                for (int a = 0; a < 3; a++) if (eligible & (1 << a)) probes += 3;
+            if (child_count + probes + reserve_children > options->max_evaluations - out->interval_evaluations) {
+                out->evaluation_limit_reached = true; stop = true; break;
+            }
+            int mask = select_axes(sys, cell->root_node_id, &heap[0], eligible, options, out);
+            size_t replacements = 1;
+            for (int a = 0; a < 3; a++) if (mask & (1 << a)) replacements *= 2;
+            if (count + child_count + replacements - 1 > capacity) {
+                out->memory_limit_reached = true; stop = true; break;
+            }
+            cell_volume_task_t parent = heap_pop(heap, &count);
+            for (int a = 0; a < 3; a++) if (mask & (1 << a)) out->axis_splits[a]++;
+            pending_gap -= cell_volume_box_volume(&parent.bbox);
+            for (int child = 0; child < 8; child++) {
+                if (child & ~mask) continue;
+                cell_volume_task_t next = parent;
+                next.bbox = split_bbox(parent.bbox, mask, child);
+                next.level++;
+                for (int a = 0; a < 3; a++) if (mask & (1 << a)) next.axis_depth[a]++;
+                children[child_count++] = next;
+            }
+        }
+        if (child_count == 0 && !stop) {
+            out->memory_limit_reached = true; stop = true;
+        }
+        /* If stop was set after building a partial batch, classify that batch
+         * first. Its parents have already been removed from pending volume. */
     }
-
-    if (!isfinite(out->volume) || !isfinite(out->lower_bound) ||
-        !isfinite(out->upper_bound)) {
-        alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                              "cell volume accumulation is not finite");
+    free(heap); free(children); free(classes);
+    if (alea_interrupted()) {
+        alea_set_error_detail(ALEA_ERR_INTERRUPTED, "cell volume estimation interrupted");
+        return -1;
+    }
+    if (!isfinite(out->volume) || !isfinite(out->lower_bound) || !isfinite(out->upper_bound)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "cell volume accumulation is not finite");
         return -1;
     }
     if (out->volume < out->lower_bound) out->volume = out->lower_bound;
     if (out->volume > out->upper_bound) out->volume = out->upper_bound;
     out->relative_uncertainty = out->unresolved_volume == 0.0 ? 0.0 :
         out->unresolved_volume / fmax(fabs(out->volume), DBL_MIN);
+    out->converged = out->unresolved_volume <= fmax(options->absolute_tolerance,
+                        options->relative_tolerance * fabs(out->volume));
+    out->resource_limit_reached = out->evaluation_limit_reached || out->memory_limit_reached;
     return 0;
+interrupted:
+    free(heap); free(children); free(classes);
+    alea_set_error_detail(ALEA_ERR_INTERRUPTED, "cell volume estimation interrupted");
+    return -1;
 }

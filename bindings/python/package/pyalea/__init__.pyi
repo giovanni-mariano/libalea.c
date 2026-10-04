@@ -27,6 +27,14 @@ class System:
         self, x: float, y: float, z: float, max_hits: int = 256,
         universe_id: int = 0, universe_depth: int = -1,
     ) -> dict[str, Any]: ...
+    def estimate_cell_volume(
+        self, cell_index: int, bounds: Sequence[float] | None = None,
+        relative_tolerance: float = 1e-3, absolute_tolerance: float = 0.0,
+        max_depth: int = 14, min_size: float = 0.0, samples_per_axis: int = 2,
+        workers: int = 0, max_parallel_scratch_bytes: int = 67108864,
+        split_strategy: str = "adaptive", max_evaluations: int = 16000000,
+        max_memory_bytes: int = 67108864,
+    ) -> dict[str, Any]: ...
     def point_inside(self, node_id: int, x: float, y: float, z: float) -> bool: ...
     def add_transform(
         self, transform_id: int, values: Sequence[float], degrees: bool = False
