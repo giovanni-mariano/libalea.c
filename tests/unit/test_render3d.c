@@ -11,6 +11,7 @@
 #include "alea_mcnp.h"
 #include "render/render3d.h"
 #include "core/alea_system.h"
+#include "raycast/raycast.h"
 #include "core/alea_universe.h"
 
 #include <string.h>
@@ -860,6 +861,175 @@ TEST(palette_returns_distinct_colors) {
     ASSERT(diff > 0.001f);
 
     render_config_free(&cfg);
+}
+
+
+static int accept_render_cell(void* context, int cell, int material, double density) {
+    (void)material;
+    (void)density;
+    return cell == *(int*)context;
+}
+
+TEST(render_first_hit_filters_keep_distance_and_normal_in_one_walk) {
+    alea_system_t* sys = create_test_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_ray_t ray;
+    alea_ray_init(&ray, -10, 0, 0, 1, 0, 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_result_t hit;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 40, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 1);
+    ASSERT_NEAR(hit.t, 5, 1e-10);
+    ASSERT_NEAR(hit.nx, -1, 1e-10);
+    int target = 2;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 40, 1, accept_render_cell, &target, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_NEAR(hit.t, 20, 1e-10);
+    ASSERT_NEAR(hit.nx, -1, 1e-10);
+    ASSERT_EQ(scratch.boundary_event_enrichments, 0);
+    ASSERT_EQ(scratch.hits.capacity, 0);
+    ASSERT_EQ(scratch.segments.capacity, 0);
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 19, 0, accept_render_cell, &target, &scratch, &hit), 0);
+    ASSERT(!hit.found);
+    alea_ray_init(&ray, 12, 0, 0, 1, 0, 0);
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 10, 1, accept_render_cell, &target, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_NEAR(hit.t, 0, 1e-10);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+TEST(render_first_hit_does_not_skip_thin_cell_after_distant_boundary) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    alea_config_t config = alea_get_config(sys);
+    config.dedup = false;
+    alea_set_config(sys, &config);
+    int s = alea_box_surface(sys, 1, 0, 1e-7, -1, 1, -1, 1);
+    int mat = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, s)->neg_node,
+                         mat, 1, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_ray_t ray;
+    alea_ray_init(&ray, -1e8, 0, 0, 1, 0, 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_result_t hit;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 1e8 + 1, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 1);
+    ASSERT_NEAR(hit.t, 1e8, 1e-8);
+    ASSERT_NEAR(hit.nx, -1, 1e-10);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+TEST(render_first_hit_through_void_shell_matches_analytic_core_entry) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int core = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int outer = alea_sphere_surface(sys, 2, 0, 0, 0, 10);
+    int mat = alea_add_material(sys, 1);
+    ASSERT(alea_add_cell(sys, 1, alea_surface_at(sys, core)->neg_node,
+                         mat, 1, 0) >= 0);
+    alea_node_id_t shell = alea_intersection(sys,
+        alea_surface_at(sys, outer)->neg_node,
+        alea_surface_at(sys, core)->pos_node);
+    ASSERT(alea_add_cell(sys, 2, shell, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_ray_t ray;
+    alea_ray_init(&ray,
+        29.931599940257847, 3.5818829355341513, 18.452396957964048,
+        -0.8491092823945878, -0.08152984801785687, -0.5218872583552249);
+    const double b = ray.ox * ray.dx + ray.oy * ray.dy + ray.oz * ray.dz;
+    const double c = ray.ox * ray.ox + ray.oy * ray.oy + ray.oz * ray.oz - 1;
+    const double expected = -b - sqrt(b * b - c);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_result_t hit;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 100, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 1);
+    ASSERT_NEAR(hit.t, expected, 1e-10);
+    ASSERT_NEAR(hit.nx, ray.ox + hit.t * ray.dx, 1e-10);
+    ASSERT_NEAR(hit.ny, ray.oy + hit.t * ray.dy, 1e-10);
+    ASSERT_NEAR(hit.nz, ray.oz + hit.t * ray.dz, 1e-10);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+TEST(render_first_hit_through_translated_fill) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 1, 5, 0, 0, 2);
+    int core = alea_sphere_surface(sys, 2, 0, 0, 0, 1);
+    int mat = alea_add_material(sys, 1);
+    int parent = alea_add_cell(sys, 1, alea_surface_at(sys, outer)->neg_node,
+                               ALEA_MATERIAL_VOID, 0, 0);
+    ASSERT(alea_add_cell(sys, 2, alea_surface_at(sys, core)->neg_node,
+                         mat, 1, 10) >= 0);
+    ASSERT(alea_add_cell(sys, 3, alea_surface_at(sys, core)->pos_node,
+                         ALEA_MATERIAL_VOID, 0, 10) >= 0);
+    const double translation[] = {5, 0, 0};
+    ASSERT_EQ(alea_add_transform(sys, 1, translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 10, 1), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_ray_t ray;
+    alea_ray_init(&ray, 0, 0, 0, 1, 0, 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_result_t hit;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 10, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_NEAR(hit.t, 4, 1e-10);
+    ASSERT_NEAR(hit.nx, -1, 1e-10);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+
+TEST(render_first_hit_lattice_matches_verified_walk) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_prepare_query_acceleration(model->sys), 0);
+    alea_raycast_result_t reference, scratch;
+    alea_raycast_result_init(&reference);
+    alea_raycast_result_init(&scratch);
+    for (int direction = -1; direction <= 1; direction += 2) {
+        for (int i = -8; i <= 24; i++) {
+            alea_ray_t ray;
+            alea_ray_init(&ray, -10 * direction, i * 0.25, 0,
+                          direction, 0, 0);
+            alea_ray_first_visible_result_t expected, actual;
+            ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
+                model->sys, &ray, 0, 20, -1, 1, &reference, &expected), 0);
+            ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+                model->sys, &ray, 20, 1, NULL, NULL, &scratch, &actual), 0);
+            ASSERT_EQ(actual.found, expected.found);
+            if (!actual.found) continue;
+            ASSERT_EQ(actual.cell_id, expected.cell_id);
+            ASSERT_EQ(actual.material_id, expected.material_id);
+            ASSERT_NEAR(actual.t, expected.t, 1e-9);
+            ASSERT_NEAR(actual.nx, expected.nx, 1e-9);
+            ASSERT_NEAR(actual.ny, expected.ny, 1e-9);
+            ASSERT_NEAR(actual.nz, expected.nz, 1e-9);
+        }
+    }
+    alea_raycast_result_free(&reference);
+    alea_raycast_result_free(&scratch);
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

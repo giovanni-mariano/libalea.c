@@ -272,6 +272,9 @@ struct alea_raycast_result {
     uint64_t path_entry_limit;
     uint8_t path_entry_limit_exceeded;
     /* Fail-closed geometric breakpoint collection for particle validation. */
+    /* Recovery retains only the nearest crossing strictly after this t. */
+    uint8_t breakpoint_nearest_only;
+    double breakpoint_t_min;
     size_t breakpoint_hit_limit;
     uint8_t breakpoint_failed;
     int surfaces_tested;
@@ -779,6 +782,19 @@ int alea_raycast_hier_with_hits_nocache(alea_system_t* sys,
 int alea_raycast_hier_first_visible_nocache(
     alea_system_t* sys, const alea_ray_t* ray, double t_min, double t_max,
     int material_filter, int include_normal, alea_raycast_result_t* scratch,
+    alea_ray_first_visible_result_t* out_visible);
+
+/* Opaque rendering: walk locally resolved crossings and stop at the first
+ * accepted non-void owner. No full-interval verification or boundary-group
+ * enrichment. The optional predicate handles cell/material/density filters
+ * in the same traversal that supplies the surface normal. */
+typedef int (*alea_raycast_render_accept_t)(
+    void* context, int cell_id, int material_id, double density);
+
+int alea_raycast_render_first_visible_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    int include_normal, alea_raycast_render_accept_t accept, void* context,
+    alea_raycast_result_t* scratch,
     alea_ray_first_visible_result_t* out_visible);
 
 /* Resolve the first owned cell interval without materializing hits or

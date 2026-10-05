@@ -349,40 +349,11 @@ static int render_interval_visible(const render_config_t* cfg,
            render_id_filter_accepts(&cfg->material_filter, material_id);
 }
 
-typedef struct {
-    const render_config_t* cfg;
-    alea_ray_first_visible_result_t visible;
-} render_filtered_hit_t;
-
-static int render_find_filtered_hit(
-        void* context,
-        const alea_raycast_selected_interval_view_t* interval) {
-    render_filtered_hit_t* hit = context;
-    if (!render_interval_visible(hit->cfg, interval->cell_id,
-                                 interval->material_id, interval->density))
-        return 0;
-    hit->visible.found = true;
-    hit->visible.t = interval->t_enter > 0.0 ? interval->t_enter : 0.0;
-    hit->visible.cell_id = interval->cell_id;
-    hit->visible.material_id = interval->material_id;
-    hit->visible.density = interval->density;
-    hit->visible.resolution_flags = interval->resolution_flags;
-    return 1;
-}
-
-typedef struct {
-    const render_config_t* cfg;
-    int found;
-} render_filtered_occluder_t;
-
-static int render_find_filtered_occluder(
-        void* context,
-        const alea_raycast_selected_interval_view_t* interval) {
-    render_filtered_occluder_t* occluder = context;
-    occluder->found = render_interval_visible(
-        occluder->cfg, interval->cell_id, interval->material_id,
-        interval->density);
-    return occluder->found;
+/* Apply render filters before accepting a hit, so its normal is obtained
+ * from the same walk instead of tracing the ray a second time. */
+static int render_accept_hit(void* context, int cell_id, int material_id,
+                             double density) {
+    return render_interval_visible(context, cell_id, material_id, density);
 }
 
 /* ============================================================================
@@ -575,10 +546,6 @@ static int render_shadow_occluded_nocache(
     render_clip_interval_t retained[RENDER_MAX_CLIPS];
     const int count = clip_intervals(
         ox, oy, oz, dx, dy, dz, cfg, t_max, retained);
-    const int filters_active =
-        cfg->material_filter.mode != RENDER_FILTER_ALL ||
-        cfg->cell_filter.mode != RENDER_FILTER_ALL ||
-        cfg->density_min > 0.0 || isfinite(cfg->density_max);
     for (int region = 0; region < count; region++) {
         const double start = retained[region].t_enter;
         const double end = retained[region].t_exit;
@@ -587,21 +554,12 @@ static int render_shadow_occluded_nocache(
         if (alea_ray_init(&ray, ox + start * dx, oy + start * dy,
                           oz + start * dz, dx, dy, dz) != 0)
             return 0;
-        if (!filters_active) {
-            int occluded = 0;
-            if (alea_raycast_hier_any_hit_nocache(
-                    sys, &ray, 0.0, end - start, -1,
-                    scratch, &occluded) != 0)
-                return 0;
-            if (occluded) return 1;
-        } else {
-            render_filtered_occluder_t occluder = {.cfg = cfg};
-            if (alea_raycast_hier_visit_intervals_nocache(
-                    sys, &ray, end - start, scratch,
-                    render_find_filtered_occluder, &occluder) != 0)
-                return 0;
-            if (occluder.found) return 1;
-        }
+        alea_ray_first_visible_result_t visible;
+        if (alea_raycast_render_first_visible_nocache(
+                sys, &ray, end - start, 0, render_accept_hit, (void*)cfg,
+                scratch, &visible) != 0)
+            return 0;
+        if (visible.found) return 1;
     }
     return 0;
 }
@@ -657,10 +615,6 @@ static void render_pixel_solid(alea_system_t* sys,
     memset(&visible, 0, sizeof(visible));
     visible.cell_id = -1;
     visible.surface_id = -1;
-    const int filters_active =
-        cfg->material_filter.mode != RENDER_FILTER_ALL ||
-        cfg->cell_filter.mode != RENDER_FILTER_ALL ||
-        cfg->density_min > 0.0 || isfinite(cfg->density_max);
     double t_hit = 0.0;
     int entry_plane = -1;
     int is_cross_section = 0;
@@ -680,31 +634,10 @@ static void render_pixel_solid(alea_system_t* sys,
         alea_ray_t ray;
         alea_ray_init_normalized(
             &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
-        if (!filters_active) {
-            if (alea_raycast_hier_first_visible_nocache(
-                    sys, &ray, 0.0, trace_t_max, -1, 1,
-                    result, &visible) != 0)
-                return;
-        } else {
-            render_filtered_hit_t hit = {.cfg = cfg};
-            hit.visible.cell_id = -1;
-            hit.visible.surface_id = -1;
-            if (alea_raycast_hier_visit_intervals_nocache(
-                    sys, &ray, trace_t_max, result,
-                    render_find_filtered_hit, &hit) != 0)
-                return;
-            visible = hit.visible;
-            if (visible.found && visible.t > 1e-8) {
-                alea_ray_first_visible_result_t with_normal;
-                if (alea_raycast_hier_first_visible_nocache(
-                        sys, &ray, visible.t, trace_t_max,
-                        visible.material_id, 1, result, &with_normal) != 0)
-                    return;
-                if (with_normal.found &&
-                    with_normal.cell_id == visible.cell_id)
-                    visible = with_normal;
-            }
-        }
+        if (alea_raycast_render_first_visible_nocache(
+                sys, &ray, trace_t_max, 1, render_accept_hit, (void*)cfg,
+                result, &visible) != 0)
+            return;
         if (visible.found) {
             t_hit = ray_start + visible.t;
             if (entry_plane >= 0 && bias > 0.0 && visible.t < 1e-6) {

@@ -227,12 +227,21 @@ static void record_result_buffer_growth(alea_raycast_result_t* result,
 }
 
 static int add_hit(alea_raycast_result_t* result, const alea_ray_hit_t* hit) {
+    /* Preserve the first bounded-enumeration error while unwinding. */
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return -1;
     if (result->breakpoint_hit_limit &&
         (!isfinite(hit->t) || hit->t < 0.0)) {
         result->breakpoint_failed = 1;
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "particle interval breakpoint is not finite");
         return -1;
+    }
+    if (result->breakpoint_nearest_only) {
+        if (hit->t <= nextafter(result->breakpoint_t_min, INFINITY)) return 0;
+        if (result->hits.count) {
+            if (hit->t < result->hits.data[0].t) result->hits.data[0] = *hit;
+            return 0;
+        }
     }
     if (result->breakpoint_hit_limit &&
         result->hits.count >= result->breakpoint_hit_limit) {
@@ -963,6 +972,9 @@ static void raycast_tree_primitives(alea_system_t* sys,
                                     double t_min, double t_max,
                                     alea_raycast_result_t* result,
                                     const alea_matrix_t* local_to_world) {
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     if (node_id >= alea_vec_count(&sys->nodes)) {
         if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
         return;
@@ -1002,7 +1014,8 @@ static void raycast_tree_primitives(alea_system_t* sys,
                         &hit.nx, &hit.ny, &hit.nz);
                 }
                 if (add_hit(result, &hit) != 0) {
-                    ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
+                    if (!result->breakpoint_hit_limit)
+                        ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
                     return;
                 }
             }
@@ -1028,6 +1041,9 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
                                               double t_max,
                                               alea_raycast_result_t* result,
                                               const alea_matrix_t* local_to_world) {
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     if (!cell->surface_indices || cell->surface_index_count == 0) {
         raycast_tree_primitives(sys, ray, cell->root_node_id,
                                 t_min, t_max, result, local_to_world);
@@ -1035,6 +1051,7 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
     }
 
     for (size_t i = 0; i < cell->surface_index_count; i++) {
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
         uint32_t surf_idx = cell->surface_indices[i];
         if (surf_idx >= alea_vec_count(&sys->surfaces)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1075,7 +1092,8 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
                         &hit.nx, &hit.ny, &hit.nz);
                 }
                 if (add_hit(result, &hit) != 0) {
-                    ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
+                    if (!result->breakpoint_hit_limit)
+                        ALEA_LOG_WARN("add_hit failed (out of memory) - raycast results may be incomplete");
                     return;
                 }
             }
@@ -1094,6 +1112,9 @@ static void raycast_universe_surfaces(alea_system_t* sys,
                                       double t_min, double t_max,
                                       alea_raycast_result_t* result,
                                       const alea_matrix_t* local_to_world) {
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) {
         if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1101,6 +1122,7 @@ static void raycast_universe_surfaces(alea_system_t* sys,
     }
 
     for (size_t c = 0; c < univ->cell_indices.count; c++) {
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
         size_t cell_idx = univ->cell_indices.data[c];
         if (cell_idx >= alea_vec_count(&sys->cells)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1317,6 +1339,9 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
                                                  alea_raycast_result_t* result) {
     if (!sys || !global_ray || !accumulated || !result)
         return;
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     if (depth >= MAX_FILL_RAYCAST_DEPTH) {
         if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
         return;
@@ -1332,6 +1357,7 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
     transform_ray_inverse(accumulated, global_ray, &parent_local_ray);
 
     for (size_t i = 0; i < univ->cell_indices.count; i++) {
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
         size_t cell_idx = univ->cell_indices.data[i];
         if (cell_idx >= alea_vec_count(&sys->cells)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1482,7 +1508,8 @@ static int raycast_lattice_element_step(
             .primitive_id = ALEA_PRIMITIVE_ID_INVALID
         };
         if (add_hit(result, &boundary) != 0) {
-            ALEA_LOG_WARN("add_hit failed (out of memory) - lattice raycast incomplete");
+            if (!result->breakpoint_hit_limit)
+                ALEA_LOG_WARN("add_hit failed (out of memory) - lattice raycast incomplete");
             return -1;
         }
     }
@@ -1497,7 +1524,7 @@ static int raycast_lattice_element_step(
     raycast_lattice_universe_hits_recursive(
         sys, &local_ray, location->fill_universe, t_enter, t_exit,
         depth + 1, result, frame_to_world);
-    return 0;
+    return result->breakpoint_hit_limit && result->breakpoint_failed ? -1 : 0;
 }
 
 static bool raycast_has_hit_at(const alea_raycast_result_t* result, double t) {
@@ -1581,6 +1608,9 @@ static void raycast_lattice_walk(alea_system_t* sys,
                                  double t_min, double t_max, int depth,
                                  alea_raycast_result_t* result,
                                  const alea_matrix_t* frame_to_world) {
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     double t_enter, t_exit;
     const int interval = lattice_raycast_interval(ray, cell, t_min, t_max,
                                                   &t_enter, &t_exit);
@@ -1610,6 +1640,11 @@ static void raycast_lattice_walk(alea_system_t* sys,
         }
     }
     for (int step = 0; step < max_steps && t_current < t_exit; step++) {
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+        if (result->breakpoint_nearest_only && result->hits.count) {
+            t_exit = fmin(t_exit, result->hits.data[0].t);
+            if (t_current >= t_exit) return;
+        }
         double t_next = lattice_next_boundary(ray, cell, t_current, t_exit);
         if (result->breakpoint_hit_limit &&
             t_next > t_current && t_next <= t_current + RAY_EPSILON &&
@@ -1701,6 +1736,9 @@ static void raycast_lattice_universe_hits_recursive(
     double t_min, double t_max, int depth, alea_raycast_result_t* result,
     const alea_matrix_t* frame_to_world) {
     if (!sys || !ray || !result) return;
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     if (depth >= MAX_FILL_RAYCAST_DEPTH) {
         if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
         return;
@@ -1711,6 +1749,7 @@ static void raycast_lattice_universe_hits_recursive(
         return;
     }
     for (size_t i = 0; i < universe->cell_indices.count; i++) {
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
         const size_t cell_index = universe->cell_indices.data[i];
         if (cell_index >= alea_vec_count(&sys->cells)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1734,9 +1773,13 @@ static void raycast_add_lattice_hits(alea_system_t* sys,
                                      const alea_ray_t* ray,
                                      double t_min, double t_max,
                                      alea_raycast_result_t* result) {
+    if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+    if (result->breakpoint_nearest_only && result->hits.count)
+        t_max = fmin(t_max, result->hits.data[0].t);
     alea_matrix_t identity;
     alea_matrix_identity(&identity);
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
         const alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->lat_type == 0 || !cell->lat_fill) continue;
 
@@ -1857,9 +1900,9 @@ int alea_raycast_validation_breakpoints_reuse_nocache(
     result->breakpoint_hit_limit = hit_limit;
     result->breakpoint_failed = 0;
     int rc = raycast_surfaces_impl(sys, ray, t_min, t_max, result);
-    if (rc == 0 && system_has_fill_cells(sys))
+    if (rc == 0 && !result->breakpoint_failed && system_has_fill_cells(sys))
         raycast_add_fill_hits(sys, ray, t_min, t_max, result);
-    if (rc == 0 && system_has_lattice_cells(sys))
+    if (rc == 0 && !result->breakpoint_failed && system_has_lattice_cells(sys))
         raycast_add_lattice_hits(sys, ray, t_min, t_max, result);
     if (result->breakpoint_failed) rc = -1;
     if (rc == 0) sort_hits(result->hits.data, result->hits.count);
@@ -2708,6 +2751,9 @@ typedef struct {
     /* Particle transport must reject a containment retry that never verifies
      * its selected owner; general ray queries retain legacy compatibility. */
     bool fail_unverified_ownership;
+    /* Opaque rendering resolves ownership just inside each crossing. It does
+     * not certify the rest of an interval for integration or diagnostics. */
+    bool entry_only;
     /* Navigation-only policy for competing hierarchy depths. Legacy ray
      * queries leave this zero and retain their ordinary numerical ordering. */
     double boundary_distance_tolerance;
@@ -4245,15 +4291,19 @@ static int find_closest_intersection(alea_system_t* sys,
 
 /* A failed boundary-side lookup must be retried inside the very next
  * geometric interval. Probing a fraction of a stale cell's proposed span can
- * jump across other cells (or the whole model). Enumerate crossings only on
- * this exceptional path, including transformed fills and lattice boundaries. */
+ * jump across other cells (or the whole model). Find only the nearest crossing
+ * on this exceptional path, including transformed fills and lattice boundaries.
+ * Retaining all later hits would make first-visible rendering depend on the
+ * complexity of geometry behind the visible surface. */
 static int raycast_recovery_sample(alea_system_t* sys, const alea_ray_t* ray,
                                    double t_current, double t_max,
                                    double* out_sample, alea_ray_hit_t* out_hit) {
     alea_raycast_result_t crossings;
     alea_raycast_result_init(&crossings);
+    crossings.breakpoint_nearest_only = 1;
+    crossings.breakpoint_t_min = t_current;
     const int rc = alea_raycast_validation_breakpoints_reuse_nocache(
-        sys, ray, t_current, t_max, 8192, &crossings);
+        sys, ray, t_current, t_max, 1, &crossings);
     double next = t_max;
     *out_hit = (alea_ray_hit_t){.t = t_max, .surface_id = -1,
                                .primitive_id = ALEA_PRIMITIVE_ID_INVALID};
@@ -4500,7 +4550,7 @@ resolve_cell:;
             bevent.is_synthetic_lattice_boundary = false;
             alea_matrix_identity(&bevent.transform);
         }
-        bool containment_unverified = false;
+        bool containment_unverified = state->entry_only;
         if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             sys->cells.data[cell_idx].surface_indices) {
             alea_ray_t local_ray;
@@ -4743,6 +4793,25 @@ resolve_cell:;
          * clamp so the terminal segment stops at the user's max_distance. */
         if (t_next > effective_t_max) t_next = effective_t_max;
 
+        /* A rounding-safe boundary sample can overrun a very thin interval.
+         * Re-resolve inside its known next crossing, without searching the
+         * rest of the model or moving the entry distance forward. */
+        if (state->entry_only && t_sample >= t_next) {
+            const double sample = t_current + 0.5 * (t_next - t_current);
+            if (resolve_attempt >= 2 ||
+                !(sample > t_current && sample < t_next)) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE,
+                    "render crossing has no stable interior sample");
+                return -1;
+            }
+            recovery_hit.t = t_next;
+            recovery_hit.surface_id = hit_surface_id;
+            recovery_hit.primitive_id = bevent.primitive_id;
+            t_sample = sample;
+            resolve_attempt++;
+            goto resolve_cell;
+        }
+
         /* Verify the resolved cell actually owns this segment. No surface of
          * the chosen cell lies inside the open interval, so containment is
          * constant across it: probing an interior point — well away from the
@@ -4750,7 +4819,8 @@ resolve_cell:;
          * transitions (non-convex cells re-entered across their own surface)
          * and on-boundary sign noise picking a coincident sibling cell. On
          * failure, redo the resolution once, sampling at the probe point. */
-        if (cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
+        if (!state->entry_only &&
+            cell_idx >= 0 && (size_t)cell_idx < alea_vec_count(&sys->cells) &&
             (t_next - t_current > 1e-6 || resolve_attempt > 0)) {
             /* Probe at an irrational fraction of the interval, not the exact
              * midpoint: a segment spanning lattice elements has periodic
@@ -6279,6 +6349,39 @@ int alea_raycast_hier_first_visible_nocache(
         if (ray_selected_interval_first_visible(
                 sys, ray, &interval, t_min, material_filter,
                 include_normal != 0, out_visible))
+            return 0;
+        if (rc == 0) return 0;
+    }
+}
+
+int alea_raycast_render_first_visible_nocache(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    int include_normal, alea_raycast_render_accept_t accept, void* context,
+    alea_raycast_result_t* scratch,
+    alea_ray_first_visible_result_t* out_visible) {
+    if (!sys || !ray || !scratch || !out_visible) return -1;
+    alea_raycast_result_clear(scratch);
+    memset(out_visible, 0, sizeof(*out_visible));
+    out_visible->cell_id = -1;
+    out_visible->surface_id = -1;
+    out_visible->primitive_id = UINT32_MAX;
+    scratch->ray = *ray;
+    const double effective_t_max = t_max <= 0 ? DBL_MAX : t_max;
+    alea_ray_walk_t walk;
+    alea_ray_walk_init(&walk);
+    walk.entry_only = true;
+    for (;;) {
+        alea_ray_selected_interval_t interval;
+        const int rc = alea_ray_walk_next_selected_mode(
+            sys, ray, effective_t_max, scratch, &walk, &interval, false);
+        if (rc < 0) return -1;
+        if (rc == 2) return 0;
+        if (interval.cell_id >= 0 && interval.material_id != 0 &&
+            (!accept || accept(context, interval.cell_id,
+                                interval.material_id, interval.density)) &&
+            ray_selected_interval_first_visible(
+                sys, ray, &interval, 0.0, -1, include_normal != 0,
+                out_visible))
             return 0;
         if (rc == 0) return 0;
     }

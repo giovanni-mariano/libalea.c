@@ -11,6 +11,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "alea_raycast.h"
+#include "alea_log.h"
 #include "core/alea_system.h"
 #include "raycast/raycast.h"
 #include <string.h>
@@ -460,6 +461,136 @@ TEST(ray_first_cell) {
     ASSERT(cell >= 0);
     ASSERT_NEAR(t, 0.0, 0.1);
 
+    mcnp_model_destroy(model);
+}
+
+
+/* Bounded recovery must preserve overflow, stop enumerating filled cells,
+ * and leave the reusable result usable on the next ray. */
+static void count_breakpoint_warnings(alea_log_level_t level, const char* file,
+                                      int line, const char* message, void* data) {
+    (void)file;
+    (void)line;
+    if (level == ALEA_LOG_LEVEL_WARN && strstr(message, "add_hit failed"))
+        (*(int*)data)++;
+}
+
+TEST(ray_fill_breakpoint_budget_stops_without_oom_warning) {
+    const char* input =
+        "Bounded filled sphere\n"
+        "1 0 -1 fill=1\n"
+        "2 0 1\n"
+        "10 0 -2 u=1\n"
+        "11 0 2 -1 u=1\n"
+        "\n"
+        "1 SO 10\n"
+        "2 SO 5\n"
+        "\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_ray_t ray;
+    alea_ray_init(&ray, -20, 0, 0, 1, 0, 0);
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    int warnings = 0;
+    const alea_log_level_t saved_level = alea_log_get_level();
+    alea_log_set_level(ALEA_LOG_LEVEL_WARN);
+    alea_log_set_callback(count_breakpoint_warnings, &warnings);
+    int rc = alea_raycast_validation_breakpoints_reuse_nocache(
+        model->sys, &ray, 0, 40, 4, &result);
+    const int error = alea_get_last_error();
+    alea_log_set_callback(NULL, NULL);
+    alea_log_set_level(saved_level);
+    ASSERT_EQ(rc, -1);
+    ASSERT_EQ(error, ALEA_ERR_OVERFLOW);
+    ASSERT_EQ(warnings, 0);
+    ASSERT_EQ(result.hits.count, 4);
+    /* Two global surfaces plus the first filled-cell surface. */
+    ASSERT_EQ(result.surfaces_tested, 3);
+    ASSERT_EQ(result.breakpoint_hit_limit, 0);
+    ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+        model->sys, &ray, 0, 40, 64, &result), 0);
+    ASSERT_EQ(alea_get_last_error(), ALEA_OK);
+    ASSERT(result.hits.count > 4);
+    alea_raycast_result_free(&result);
+    mcnp_model_destroy(model);
+}
+
+
+TEST(ray_nearest_breakpoint_retains_one_hit_and_matches_full_fill_scan) {
+    const char* input =
+        "Nearest filled sphere\n"
+        "1 0 -1 fill=1\n"
+        "2 0 1\n"
+        "10 0 -2 u=1\n"
+        "11 0 2 -1 u=1\n"
+        "\n"
+        "1 SO 10\n"
+        "2 SO 5\n"
+        "\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_ray_t ray;
+    alea_ray_init(&ray, -20, 0, 0, 1, 0, 0);
+    alea_raycast_result_t full, nearest;
+    alea_raycast_result_init(&full);
+    alea_raycast_result_init(&nearest);
+    const double starts[] = {0.0, 10.0, 16.0, 30.0};
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+            model->sys, &ray, starts[i], 40, 64, &full), 0);
+        double expected = 40;
+        for (size_t j = 0; j < full.hits.count; j++) {
+            if (full.hits.data[j].t > nextafter(starts[i], INFINITY)) {
+                expected = full.hits.data[j].t;
+                break;
+            }
+        }
+        nearest.breakpoint_nearest_only = 1;
+        nearest.breakpoint_t_min = starts[i];
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+            model->sys, &ray, starts[i], 40, 1, &nearest), 0);
+        ASSERT_EQ(nearest.hits.count, expected < 40 ? 1 : 0);
+        if (nearest.hits.count) {
+            ASSERT_NEAR(nearest.hits.data[0].t, expected, 1e-12);
+            ASSERT_EQ(nearest.hits.capacity, 1);
+        }
+    }
+    alea_raycast_result_free(&full);
+    alea_raycast_result_free(&nearest);
+    mcnp_model_destroy(model);
+}
+
+
+TEST(ray_nearest_lattice_breakpoint_matches_full_scan) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_raycast_ensure_hier_caches(model->sys), 0);
+    alea_ray_t ray;
+    alea_ray_init(&ray, -10, 0, 0, 1, 0, 0);
+    alea_raycast_result_t full, nearest;
+    alea_raycast_result_init(&full);
+    alea_raycast_result_init(&nearest);
+    for (double start = 0; start < 18; start += 0.25) {
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+            model->sys, &ray, start, 20, 4096, &full), 0);
+        double expected = 20;
+        for (size_t j = 0; j < full.hits.count; j++) {
+            if (full.hits.data[j].t > nextafter(start, INFINITY)) {
+                expected = full.hits.data[j].t;
+                break;
+            }
+        }
+        nearest.breakpoint_nearest_only = 1;
+        nearest.breakpoint_t_min = start;
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+            model->sys, &ray, start, 20, 1, &nearest), 0);
+        ASSERT_EQ(nearest.hits.count, expected < 20 ? 1 : 0);
+        if (nearest.hits.count)
+            ASSERT_NEAR(nearest.hits.data[0].t, expected, 1e-12);
+    }
+    alea_raycast_result_free(&full);
+    alea_raycast_result_free(&nearest);
     mcnp_model_destroy(model);
 }
 
