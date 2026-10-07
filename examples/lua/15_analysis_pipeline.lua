@@ -13,7 +13,10 @@
 --   Cell 4: moderator   (mat 4)  0.48 <= r < 0.63 cm (pitch/2)
 --   Cell 5: void        (mat 0)  r >= 0.63 cm
 --
--- Output files: /tmp/alea_pipeline_*
+-- Output files: ./alea_pipeline_*
+
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
 
 print("=== Analysis Pipeline ===\n")
 
@@ -22,6 +25,12 @@ print("=== Analysis Pipeline ===\n")
 -- ---------------------------------------------------------------
 print("--- 1. Build Geometry ---")
 local sys = alea.create()
+
+-- Cell definitions take registered material indices, not material IDs.
+local mat1 = sys:material(1)
+local mat2 = sys:material(2)
+local mat3 = sys:material(3)
+local mat4 = sys:material(4)
 
 local r_fuel = 0.4
 local r_gap  = 0.42
@@ -33,13 +42,14 @@ local s2 = sys:sphere(2, 0, 0, 0, r_gap)
 local s3 = sys:sphere(3, 0, 0, 0, r_clad)
 local s4 = sys:sphere(4, 0, 0, 0, pitch / 2)
 
-sys:cell{id = 1, region = sys:inside(s1),                            material = 1, density = 10.97}
-sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2),          material = 2, density = 0.001}
-sys:cell{id = 3, region = sys:outside(s2) * sys:inside(s3),          material = 3, density = 6.56}
-sys:cell{id = 4, region = sys:outside(s3) * sys:inside(s4),          material = 4, density = 1.0}
-sys:cell{id = 5, region = sys:outside(s4),                           material = 0, density = 0.0}
+sys:cell{id = 1, region = sys:inside(s1),                            material = mat1, density = 10.97}
+sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2),          material = mat2, density = 0.001}
+sys:cell{id = 3, region = sys:outside(s2) * sys:inside(s3),          material = mat3, density = 6.56}
+sys:cell{id = 4, region = sys:outside(s3) * sys:inside(s4),          material = mat4, density = 1.0}
+sys:cell{id = 5, region = sys:outside(s4),                           density = 0.0}
 
 sys:build_universe_index()
+sys:prepare_query_acceleration()
 
 local nc = sys:cell_count()
 local ns = sys:surface_count()
@@ -145,8 +155,8 @@ local fb = sys:render{
     edges   = 1,
 }
 fb:edge_darken()
-fb:write_ppm("/tmp/alea_pipeline_render.ppm")
-print(string.format("  Rendered: %dx%d -> /tmp/alea_pipeline_render.ppm", fb:width(), fb:height()))
+fb:write_ppm(outdir .. "/alea_pipeline_render.ppm")
+print(string.format("  Rendered: %dx%d -> %s/alea_pipeline_render.ppm", fb:width(), fb:height(), outdir))
 
 -- Clipped render showing internal structure
 local fb2 = sys:render{
@@ -158,8 +168,8 @@ local fb2 = sys:render{
     clips  = {{0, -1, 0, 0}},  -- clip y > 0 to show cross-section
 }
 fb2:edge_darken()
-fb2:write_ppm("/tmp/alea_pipeline_render_cut.ppm")
-print("  Clipped:  /tmp/alea_pipeline_render_cut.ppm")
+fb2:write_ppm(outdir .. "/alea_pipeline_render_cut.ppm")
+print("  Clipped:  " .. outdir .. "/alea_pipeline_render_cut.ppm")
 
 -- ---------------------------------------------------------------
 -- 6. Mesh export
@@ -170,10 +180,10 @@ local mi = mesh:info()
 print(string.format("  Mesh: %dx%dx%d = %d voxels", mi.nx, mi.ny, mi.nz, mi.nx * mi.ny * mi.nz))
 print(string.format("  Materials: %d unique", mi.num_materials))
 
-mesh:export(0, "/tmp/alea_pipeline_mesh.msh")
-mesh:export(1, "/tmp/alea_pipeline_mesh.vtk")
-print("  Gmsh: /tmp/alea_pipeline_mesh.msh")
-print("  VTK:  /tmp/alea_pipeline_mesh.vtk")
+mesh:export(0, outdir .. "/alea_pipeline_mesh.msh")
+mesh:export(1, outdir .. "/alea_pipeline_mesh.vtk")
+print("  Gmsh: " .. outdir .. "/alea_pipeline_mesh.msh")
+print("  VTK:  " .. outdir .. "/alea_pipeline_mesh.vtk")
 
 -- Material distribution
 local mids = mesh:material_ids()

@@ -6,6 +6,9 @@
 -- Standalone: yes (no data files needed)
 -- Usage: bin/alea examples/lua/17_build_with_comments.lua
 
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
+
 print("=== Build Geometry with Comments ===\n")
 
 local sys = alea.create()
@@ -82,7 +85,7 @@ for i = 0, sys:cell_count() - 1 do
 end
 
 -- Export to MCNP
-local outfile = "/tmp/alea_commented_model.i"
+local outfile = outdir .. "/alea_commented_model.i"
 sys:export_mcnp(outfile)
 print("\nExported to: " .. outfile)
 

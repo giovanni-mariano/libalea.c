@@ -12,15 +12,20 @@ print("=== Ray Tracing ===\n")
 
 local sys = alea.create()
 
+-- Cell definitions take registered material indices, not material IDs.
+local mat1 = sys:material(1)
+local mat2 = sys:material(2)
+
 -- Build concentric spheres
 local s1 = sys:sphere(1, 0, 0, 0, 5)
 local s2 = sys:sphere(2, 0, 0, 0, 10)
 
-sys:cell{id = 1, region = sys:inside(s1), material = 1, density = 10.0}
-sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = 2, density = 1.0}
-sys:cell{id = 3, region = sys:outside(s2), material = 0, density = 0.0}
+sys:cell{id = 1, region = sys:inside(s1), material = mat1, density = 10.0}
+sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = mat2, density = 1.0}
+sys:cell{id = 3, region = sys:outside(s2), density = 0.0}
 
 sys:build_universe_index()
+sys:prepare_query_acceleration()
 
 -- Cast a ray along the X axis through the center
 print("--- Basic Raycast ---")

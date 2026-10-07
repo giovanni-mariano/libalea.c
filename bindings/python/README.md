@@ -126,6 +126,10 @@ pyalea-<version>-<python>-<abi>-<platform>/
         _build_info.json
     LICENSES/
     README.md
+    examples/
+        01_geometry.py
+        02_visualization.py
+        ...
 ```
 
 Add the extracted top-level directory to `PYTHONPATH`, or copy its `pyalea/`
@@ -135,8 +139,14 @@ the public package:
 ```python
 import pyalea
 
-system = pyalea.System("example")
+system = pyalea.System()
 ```
+
+From an extracted archive, run `python examples/01_geometry.py output` to
+build, query, export, and reload a model, or
+`python examples/02_visualization.py output` to save slice and cutaway images.
+Both need only pyalea and NumPy. The transport examples require external ACE
+nuclear data and describe their inputs in their module docstrings.
 
 Standalone primitives can be evaluated without creating a `System`:
 

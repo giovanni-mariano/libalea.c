@@ -79,10 +79,13 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Windows x64 (MSVC) | `alea-windows-msvc-x64.zip` |
 
 The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
-`mc_convert`, `mc_plotter`, `nuc_plot`, `nuc_inventory`, `large_model_probe`, static libraries,
+`mc_convert`, `mc_plotter`, `render3d`, `nuc_plot`, `nuc_inventory`, `large_model_probe`, static libraries,
 and headers. The MSVC archives package the `.lib` static libraries and headers.
 All builds use the vendored TinyPar backend by default and have no OpenMP
 runtime dependency.
+
+The native CLI archives include `examples/lua` and `examples/python`.
+Python binding archives include the Python scripts under `examples/`.
 
 Release pages also contain the native Python bindings as `pyalea` archives for
 CPython 3.10–3.14 on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows
@@ -166,6 +169,105 @@ make test-cluster USE_MPI=1                   # Two-rank cluster test
 `make install` builds and installs the static libraries, public headers, `alea`
 CLI, tools, README, and license files. Use `install-libs`, `install-cli`, or
 `install-tools` to install only one part.
+
+### Interactive plotting and rendering
+
+Build the optional viewers with SDL2 support:
+
+```bash
+make tools USE_SDL=1
+bin/mc_plotter model.i Z 0 -20 20 -20 20 800 slice.png --interactive
+bin/render3d model.i --width 800 --height 600 -o render.png --interactive
+```
+
+The build uses installed SDL2 development files found through `pkg-config`
+or `sdl2-config`.
+Otherwise, `USE_SDL=1` automatically downloads SDL2 2.32.10 from
+[SDL's release server](https://www.libsdl.org/release/), verifies its SHA-256,
+and builds a static copy under `build/deps`. The fallback requires Python 3,
+CMake, and the platform's compiler and window-system development headers.
+It installs locally without administrator access and reuses the cached build.
+Set `FETCH_SDL=0` to require an installed SDL2 without downloading anything;
+`SDL_JOBS=4` controls parallelism for the SDL build. The default `USE_SDL=0`
+keeps the library, tools, and examples independent of SDL.
+
+For performance comparisons, use an optimized library as well as optimized
+tools. If you previously built the default debug library, force a rebuild:
+
+```bash
+make -B tools RELEASE=1 PORTABLE=1 USE_SDL=1
+```
+
+Normal slices query cell/material IDs without overlap analysis. Enable
+`--errors` when you want geometry diagnostics. `--method=ray` uses native
+ray-row tracing and rasterization at the requested resolution; it can be much
+faster for some models, but grid sampling remains the default because ray
+tracing can be slower for others. In the slice viewer, **Ray** / **M** switches
+methods. Diagnostic views use grid coverage regardless of this selection.
+Batch lines also accept `method=grid` or `method=ray`.
+
+Both tools accept MCNP input and OpenMC geometry XML. A classic gray toolbar
+provides clickable, beveled buttons for navigation, saving, and display options.
+Enabled toggles stay pressed. **Tab** selects a button and **Enter** or **Space**
+activates it. Press **H** for controls,
+**S** to save the current image to the output path, **R** to reset, and **Q** or
+**Esc** to quit. Saving replaces an existing file at that path.
+
+| Control | Slice plotter | 3D renderer |
+|---------|---------------|-------------|
+| Left drag | Pan | Orbit |
+| Right/middle drag | — | Pan |
+| Wheel or +/− | Zoom | Zoom |
+| Arrow keys | Pan | Orbit |
+| X / Y / Z | Change slice axis | — |
+| Page Up / Down | Move slice by 5% of visible height | — |
+| C | Cell/material colors | Cycle material/cell/universe/density colors |
+| E | Error overlay | Cell edges |
+| L | Cell labels | Shadows |
+| T | Coordinate ticks | — |
+
+Rendering and saving run on a worker thread. The window keeps handling input
+and repainting while a frame is being computed. Navigation changes are
+coalesced into the latest view, and outdated frames are discarded. Save records
+the view selected when you click it; a status strip reports rendering and save
+results. Closing hides the window immediately and lets an in-flight render or
+requested save finish before releasing the model. Smaller images still render
+faster on large models. Resizing the window scales the display;
+the requested image resolution determines rendering and export size. Existing
+clipping and appearance arguments also apply to interactive 3D views.
+
+SDL is optional and is linked only into the two viewer tools. Ordinary builds
+and the release workflow produce batch tools without SDL; rebuild with
+`USE_SDL=1` to enable `--interactive`. Omit `--interactive` for image output
+without a window. Slice batch files remain available through `--batch`.
+
+### Try the scripting examples
+
+Start with `examples/lua/01_hello.lua` and `02_build_geometry.lua` using
+`bin/alea`. Examples 01, 02, 10–15, 17, and 18 need no input files; examples
+03–09 and 16 accept an MCNP path, such as the `alea_shielded_sphere.i` written
+by example 02. Lua output defaults to the current directory; set
+`ALEA_EXAMPLE_OUTPUT` to an existing directory to change it. Examples 19 and 20
+require external ACE nuclear data.
+
+With `pyalea` on `PYTHONPATH`, these Python examples need no external data:
+
+```bash
+python3 examples/python/01_geometry.py output
+python3 examples/python/02_visualization.py output
+```
+
+They cover geometry construction, material registration, point queries,
+ray tracing, MCNP export/reload, slice images, and 3D cutaways. Images use PPM
+so no plotting package is required. The other Python examples demonstrate
+transport and require ACE data; see each script's usage text.
+
+Run the examples and optional viewer checks from a source checkout:
+
+```bash
+python3 tools/check_examples.py --lua bin/alea --python
+python3 tools/check_sdl_viewers.py  # SDL2, C compiler, built format/core libraries
+```
 
 ### Optional cluster module
 

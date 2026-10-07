@@ -8,19 +8,26 @@
 --   Cell 2: moderator (mat 2)  5 <= r < 10
 --   Cell 3: void      (mat 0)  r >= 10
 --
--- Writes images to /tmp/alea_example_render_*.{ppm,bmp}
+-- Writes images to ./alea_example_render_*.{ppm,bmp}
+
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
 
 print("=== 3D Rendering ===\n")
 
 local sys = alea.create()
 
+-- Cell definitions take registered material indices, not material IDs.
+local mat1 = sys:material(1)
+local mat2 = sys:material(2)
+
 -- Build concentric spheres
 local s1 = sys:sphere(1, 0, 0, 0, 5)
 local s2 = sys:sphere(2, 0, 0, 0, 10)
 
-sys:cell{id = 1, region = sys:inside(s1), material = 1, density = 10.0}
-sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = 2, density = 1.0}
-sys:cell{id = 3, region = sys:outside(s2), material = 0, density = 0.0}
+sys:cell{id = 1, region = sys:inside(s1), material = mat1, density = 10.0}
+sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = mat2, density = 1.0}
+sys:cell{id = 3, region = sys:outside(s2), density = 0.0}
 
 sys:build_universe_index()
 
@@ -45,8 +52,8 @@ local fb = sys:render{width = 64, height = 64}
 print(string.format("  Framebuffer: %dx%d", fb:width(), fb:height()))
 
 fb:edge_darken()
-fb:write_ppm("/tmp/alea_example_render_basic.ppm")
-print("  Written: /tmp/alea_example_render_basic.ppm")
+fb:write_ppm(outdir .. "/alea_example_render_basic.ppm")
+print("  Written: " .. outdir .. "/alea_example_render_basic.ppm")
 
 -- Render with explicit camera position
 print("\n--- Custom Camera ---")
@@ -60,9 +67,9 @@ local fb2 = sys:render{
     edges   = 1,
 }
 fb2:edge_darken()
-fb2:write_bmp("/tmp/alea_example_render_custom.bmp")
+fb2:write_bmp(outdir .. "/alea_example_render_custom.bmp")
 print(string.format("  Framebuffer: %dx%d", fb2:width(), fb2:height()))
-print("  Written: /tmp/alea_example_render_custom.bmp")
+print("  Written: " .. outdir .. "/alea_example_render_custom.bmp")
 
 -- Render with clipping plane (cut away top half)
 print("\n--- Clipping Plane (z < 0 visible) ---")
@@ -75,14 +82,14 @@ local fb3 = sys:render{
     clips  = {{0, 0, -1, 0}},  -- visible where -z + 0 > 0, i.e. z < 0
 }
 fb3:edge_darken()
-fb3:write_ppm("/tmp/alea_example_render_clipped.ppm")
-print("  Written: /tmp/alea_example_render_clipped.ppm")
+fb3:write_ppm(outdir .. "/alea_example_render_clipped.ppm")
+print("  Written: " .. outdir .. "/alea_example_render_clipped.ppm")
 
 -- Multiple output formats
 print("\n--- Output Formats ---")
-fb:write_ppm("/tmp/alea_example_render.ppm")
-fb:write_bmp("/tmp/alea_example_render.bmp")
-print("  PPM: /tmp/alea_example_render.ppm")
-print("  BMP: /tmp/alea_example_render.bmp")
+fb:write_ppm(outdir .. "/alea_example_render.ppm")
+fb:write_bmp(outdir .. "/alea_example_render.bmp")
+print("  PPM: " .. outdir .. "/alea_example_render.ppm")
+print("  BMP: " .. outdir .. "/alea_example_render.bmp")
 
 print("\n13_render: OK")

@@ -88,6 +88,9 @@ static double get_time_ms(void) {
 #include "alea_openmc.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
 #include "alea_geo_validator.h"
+#ifdef ALEA_USE_SDL
+#include "sdl_view.h"
+#endif
 
 typedef struct {
     alea_system_t* sys;
@@ -824,6 +827,7 @@ typedef struct {
     contour_mode_t contour_mode;
     int show_ticks;         /* Draw axis tick labels */
     int show_errors;        /* Draw analytical error lines (overlaps/gaps) */
+    int ray_method;         /* Ray-row rasterization for non-diagnostic views */
 
     /* For arbitrary planes */
     double origin[3];
@@ -1020,7 +1024,9 @@ static void draw_validator_error_dots(uint8_t* pixels, int width, int height,
 }
 
 /* Render a single plot and save to file */
-static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) {
+static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
+                       uint8_t** image) {
+    if (image) *image = NULL;
     double t0, t1;
     const char* axis_names[] = {"Z", "Y", "X", "Plane"};
 
@@ -1038,17 +1044,30 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         }
     }
 
+    int selective_exact_coverage = getenv("ALEA_PLOT_EXACT_COVERAGE") != NULL;
+    int full_exact_coverage = getenv("ALEA_PLOT_FULL_EXACT_COVERAGE") != NULL;
+    int tile_exact_coverage = getenv("ALEA_PLOT_TILE_COVERAGE") != NULL;
+    int path_exact_coverage = getenv("ALEA_PLOT_PATH_COVERAGE") != NULL;
+    int plot_error_stats = getenv("ALEA_PLOT_ERROR_STATS") != NULL;
+    const char* verify_env = getenv("ALEA_PLOT_ERROR_VERIFY");
+    int verify_interval = (verify_env && atoi(verify_env) > 0)
+        ? atoi(verify_env) : 0;
+    int need_coverage = p->show_errors || selective_exact_coverage ||
+        full_exact_coverage || tile_exact_coverage || path_exact_coverage ||
+        plot_error_stats || verify_interval > 0;
+
     int num_pixels = p->width * p->height;
     int* cell_ids = malloc(num_pixels * sizeof(int));
     int* material_ids = malloc(num_pixels * sizeof(int));
     int* secondary_ids = NULL;
     uint32_t* path_ids = NULL;
     alea_slice_path_table_t path_table = {0};
-    uint8_t* errors = malloc(num_pixels);
-    uint8_t* coverage = malloc(num_pixels);
+    uint8_t* errors = need_coverage ? malloc(num_pixels) : NULL;
+    uint8_t* coverage = need_coverage ? malloc(num_pixels) : NULL;
     uint8_t* pixels = malloc(num_pixels * 3);
 
-    if (!cell_ids || !material_ids || !errors || !coverage || !pixels) {
+    if (!cell_ids || !material_ids || !pixels ||
+        (need_coverage && (!errors || !coverage))) {
         fprintf(stderr, "Error: Failed to allocate buffers\n");
         free(cell_ids); free(material_ids); free(secondary_ids); free(path_ids);
         alea_slice_path_table_free(&path_table);
@@ -1064,14 +1083,6 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
 
     alea_slice_view_t view;
     build_view_from_params(p, &view);
-    int selective_exact_coverage = getenv("ALEA_PLOT_EXACT_COVERAGE") != NULL;
-    int full_exact_coverage = getenv("ALEA_PLOT_FULL_EXACT_COVERAGE") != NULL;
-    int tile_exact_coverage = getenv("ALEA_PLOT_TILE_COVERAGE") != NULL;
-    int path_exact_coverage = getenv("ALEA_PLOT_PATH_COVERAGE") != NULL;
-    int plot_error_stats = getenv("ALEA_PLOT_ERROR_STATS") != NULL;
-    const char* verify_env = getenv("ALEA_PLOT_ERROR_VERIFY");
-    int verify_interval = (verify_env && atoi(verify_env) > 0)
-        ? atoi(verify_env) : 0;
     if (plot_error_stats) {
         secondary_ids = malloc(num_pixels * sizeof(int));
         if (!secondary_ids) {
@@ -1096,7 +1107,23 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         : ALEA_GRID_COVERAGE_FAST;
     if (secondary_ids) coverage_flags |= ALEA_GRID_SECONDARY_CELL_IDS;
     if (path_exact_coverage) coverage_flags |= ALEA_GRID_PATH_IDS;
-    int rc = path_exact_coverage
+    int rc;
+    if (!need_coverage && p->ray_method) {
+        alea_slice_raster_t raster;
+        alea_slice_raster_init(&raster);
+        raster.nu = (size_t)p->width;
+        raster.nv = (size_t)p->height;
+        raster.fields = ALEA_SLICE_RASTER_CELL_ID | ALEA_SLICE_RASTER_MATERIAL_ID;
+        raster.cell_ids = cell_ids;
+        raster.material_ids = material_ids;
+        rc = alea_trace_ray_slice_raster(sys, &view, NULL, &raster);
+    } else if (!need_coverage) {
+        /* Match the Python binding's error_mode="none": supplying an error
+         * buffer triggers a second geometry pass even when no overlay is drawn. */
+        rc = alea_find_cells_grid(sys, &view, p->width, p->height, -1,
+                                  cell_ids, material_ids, NULL);
+    } else {
+        rc = path_exact_coverage
         ? alea_find_cells_grid_coverage_paths(
               sys, &view, p->width, p->height, -1, coverage_flags,
               cell_ids, material_ids, secondary_ids, coverage, errors,
@@ -1104,11 +1131,12 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
         : alea_find_cells_grid_coverage(
               sys, &view, p->width, p->height, -1, coverage_flags,
               cell_ids, material_ids, secondary_ids, coverage, errors);
+    }
 
     t1 = get_time_ms();
 
     if (rc != 0) {
-        fprintf(stderr, "Error: Grid query failed\n");
+        fprintf(stderr, "Error: Slice query failed\n");
         free(cell_ids); free(material_ids); free(secondary_ids); free(path_ids);
         alea_slice_path_table_free(&path_table);
         free(errors); free(coverage); free(pixels);
@@ -1116,8 +1144,11 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
     }
 
     if (verbose) {
-        printf("    Grid query: %.1f ms (%.2f Mpx/s)\n",
-               t1 - t0, num_pixels / (t1 - t0) / 1000.0);
+        printf("    %s query: %.1f ms (%.2f Mpx/s)\n",
+               need_coverage ? "Grid coverage" : p->ray_method ? "Ray raster" : "Grid",
+               t1 - t0, (t1 > t0) ? num_pixels / (t1 - t0) / 1000.0 : 0.0);
+        if (need_coverage && p->ray_method)
+            printf("    Diagnostics use grid coverage (ray method suspended)\n");
         if (full_exact_coverage) {
             printf("    Full exact coverage enabled via ALEA_PLOT_FULL_EXACT_COVERAGE\n");
         } else if (path_exact_coverage) {
@@ -1341,7 +1372,8 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
 
     /* Draw contours (grid is in math order, pixels in image order) */
     const int* boundary_ids = (p->contour_mode == CONTOUR_BY_MATERIAL) ? material_ids : cell_ids;
-    draw_contours_ex(pixels, boundary_ids, errors, p->width, p->height);
+    draw_contours_ex(pixels, boundary_ids, p->show_errors ? errors : NULL,
+                     p->width, p->height);
 
     /* Draw geometry-validator boundary diagnostics if requested */
     if (p->show_errors) {
@@ -1454,7 +1486,8 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose) 
     }
 
     /* Write output */
-    rc = write_image(p->output, pixels, p->width, p->height);
+    rc = image ? 0 : write_image(p->output, pixels, p->width, p->height);
+    if (image) { *image = pixels; pixels = NULL; }
 
     free(cell_ids);
     free(material_ids);
@@ -1512,7 +1545,14 @@ static void parse_resolution(const char* str, int* width, int* height) {
 }
 
 /* Parse batch line options (labels, color, ticks) */
-static void parse_options(const char* line, plot_params_t* p) {
+static int parse_options(const char* line, plot_params_t* p) {
+    const char* method_ptr = strstr(line, "method=");
+    if (method_ptr) {
+        char method[32];
+        if (sscanf(method_ptr + 7, "%31s", method) != 1) return -1;
+        if (strcmp(method, "ray") == 0) p->ray_method = 1;
+        else if (strcmp(method, "grid") != 0) return -1;
+    }
     /* Look for labels= */
     const char* labels_ptr = strstr(line, "labels=");
     if (labels_ptr) {
@@ -1557,6 +1597,7 @@ static void parse_options(const char* line, plot_params_t* p) {
     if (strstr(line, "errors")) {
         p->show_errors = 1;
     }
+    return 0;
 }
 
 /* Compute plane parameters from 3 points */
@@ -1671,7 +1712,7 @@ static int parse_batch_line(const char* line, plot_params_t* p) {
     p->output[sizeof(p->output) - 1] = '\0';
 
     /* Parse options (labels, color, ticks) from rest of line */
-    parse_options(line, p);
+    if (parse_options(line, p) != 0) return -1;
 
     return 1;  /* Valid plot line */
 }
@@ -1743,7 +1784,7 @@ static int run_batch(const char* batch_file,
         }
 
         plot_count++;
-        if (render_plot(sys, &p, 1) != 0) {
+        if (render_plot(sys, &p, 1, NULL) != 0) {
             error_count++;
         }
     }
@@ -1755,6 +1796,110 @@ static int run_batch(const char* batch_file,
     return error_count > 0 ? 1 : 0;
 }
 
+#ifdef ALEA_USE_SDL
+typedef struct {
+    alea_system_t* sys;
+    plot_params_t view, initial;
+} plot_viewer_t;
+
+static int plot_view_draw(void* state, uint8_t** pixels) {
+    plot_viewer_t* v = state;
+    return render_plot(v->sys, &v->view, 0, pixels);
+}
+
+static int plot_view_save(const void* state, const uint8_t* pixels) {
+    const plot_viewer_t* v = state;
+    int rc = write_image(v->view.output, pixels, v->view.width, v->view.height);
+    fprintf(stderr, "%s %s\n", rc == 0 ? "Saved" : "Failed to save", v->view.output);
+    return rc;
+}
+
+static int plot_view_active(const void* state, SDL_Keycode key) {
+    const plot_params_t* p = &((const plot_viewer_t*)state)->view;
+    return (key == SDLK_m && p->ray_method && !p->show_errors) ||
+           (key == SDLK_x && p->type == SLICE_X) ||
+           (key == SDLK_y && p->type == SLICE_Y) ||
+           (key == SDLK_z && p->type == SLICE_Z) ||
+           (key == SDLK_l && p->labels.show_cells) ||
+           (key == SDLK_t && p->show_ticks) || (key == SDLK_e && p->show_errors);
+}
+
+static int plot_view_input(void* state, const SDL_Event* event) {
+    plot_viewer_t* v = state;
+    plot_params_t* p = &v->view;
+    double du = p->u_max - p->u_min, dv = p->v_max - p->v_min;
+    double pan_u = 0, pan_v = 0, zoom = 1;
+    if (event->type == SDL_MOUSEWHEEL) {
+        int dy = event->wheel.y;
+        if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
+        zoom = dy > 0 ? 0.8 : dy < 0 ? 1.25 : 1;
+    } else if (event->type == SDL_MOUSEMOTION &&
+               (event->motion.state & SDL_BUTTON_LMASK)) {
+        pan_u = -event->motion.xrel * du / p->width;
+        pan_v = event->motion.yrel * dv / p->height;
+    } else if (event->type == SDL_KEYDOWN) {
+        switch (event->key.keysym.sym) {
+        case SDLK_r: *p = v->initial; return 1;
+        case SDLK_m:
+            p->ray_method = p->show_errors ? 1 : !p->ray_method;
+            p->show_errors = 0;
+            return 1;
+        case SDLK_x: p->type = SLICE_X; return 1;
+        case SDLK_y: p->type = SLICE_Y; return 1;
+        case SDLK_z: p->type = SLICE_Z; return 1;
+        case SDLK_PAGEUP: p->value += dv * 0.05; return 1;
+        case SDLK_PAGEDOWN: p->value -= dv * 0.05; return 1;
+        case SDLK_c: p->color_mode = !p->color_mode; return 1;
+        case SDLK_l: p->labels.show_cells = !p->labels.show_cells; return 1;
+        case SDLK_t: p->show_ticks = !p->show_ticks; return 1;
+        case SDLK_e: p->show_errors = !p->show_errors; return 1;
+        case SDLK_LEFT: pan_u = -0.1 * du; break;
+        case SDLK_RIGHT: pan_u = 0.1 * du; break;
+        case SDLK_UP: pan_v = 0.1 * dv; break;
+        case SDLK_DOWN: pan_v = -0.1 * dv; break;
+        case SDLK_EQUALS: case SDLK_PLUS: case SDLK_KP_PLUS: zoom = 0.8; break;
+        case SDLK_MINUS: case SDLK_KP_MINUS: zoom = 1.25; break;
+        default: return 0;
+        }
+    } else return 0;
+    /* Keep the view finite and avoid collapsing it below useful precision. */
+    if (du * zoom < 1e-10 || dv * zoom < 1e-10 ||
+        du * zoom > 1e20 || dv * zoom > 1e20) return 0;
+    double cu = (p->u_min + p->u_max) * 0.5 + pan_u;
+    double cv = (p->v_min + p->v_max) * 0.5 + pan_v;
+    p->u_min = cu - du * zoom * 0.5; p->u_max = cu + du * zoom * 0.5;
+    p->v_min = cv - dv * zoom * 0.5; p->v_max = cv + dv * zoom * 0.5;
+    return 1;
+}
+
+static int plot_interactive(alea_system_t* sys, const plot_params_t* p) {
+    if (!isfinite(p->value) || !isfinite(p->u_min) || !isfinite(p->u_max) ||
+        !isfinite(p->v_min) || !isfinite(p->v_max) ||
+        p->u_min >= p->u_max || p->v_min >= p->v_max) {
+        fprintf(stderr, "Interactive slice requires finite, increasing bounds.\n");
+        return -1;
+    }
+    plot_viewer_t state = {sys, *p, *p};
+    static const alea_view_button_t buttons[] = {
+        {"Save", SDLK_s}, {"Reset", SDLK_r}, {"Zoom +", SDLK_PLUS},
+        {"Zoom -", SDLK_MINUS}, {"Help", SDLK_h}, {"Quit", SDLK_q},
+        {"Left", SDLK_LEFT}, {"Right", SDLK_RIGHT}, {"Up", SDLK_UP},
+        {"Down", SDLK_DOWN}, {"X", SDLK_x}, {"Y", SDLK_y}, {"Z", SDLK_z},
+        {"Slice +", SDLK_PAGEUP}, {"Slice -", SDLK_PAGEDOWN},
+        {"Ray", SDLK_m}, {"Colors", SDLK_c}, {"Labels", SDLK_l}, {"Ticks", SDLK_t}, {"Errors", SDLK_e}
+    };
+    return alea_sdl_view("Alea slice",
+        "Drag / arrows: pan   Wheel / +/-: zoom\n"
+        "X / Y / Z: axis   Page Up / Down: slice\n"
+        "C: colors  L: labels  T: ticks  E: errors\n"
+        "M: ray/grid method - errors use grid\n"
+        "R: reset   S: save   H: help   Q / Esc: quit",
+        p->width, p->height, &state, sizeof(state), plot_view_draw,
+        plot_view_save, plot_view_input, plot_view_active,
+        buttons, (int)(sizeof(buttons)/sizeof(buttons[0])));
+}
+#endif
+
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s <input.i> <axis> <value> <u_min> <u_max> <v_min> <v_max> <WxH> [output.png] [options]\n", prog);
     fprintf(stderr, "       %s <input.i> --batch=<file.txt>\n", prog);
@@ -1764,6 +1909,9 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  axis = X  -> YZ plane at x=value, u=Y, v=Z\n");
     fprintf(stderr, "\nResolution: 800 (square) or 800x600 (width x height)\n");
     fprintf(stderr, "\nOptions:\n");
+    fprintf(stderr, "  --interactive           SDL viewer (build with USE_SDL=1); H for controls\n");
+    fprintf(stderr, "  --method=grid|ray       Sampling method (default: grid; errors use grid)\n");
+    fprintf(stderr, "  --errors                Enable geometry diagnostics and error contours\n");
     fprintf(stderr, "  --labels=cells          Show cell ID labels\n");
     fprintf(stderr, "  --labels=materials      Show material ID labels\n");
     fprintf(stderr, "  --labels=surfaces       Show surface ID labels\n");
@@ -1797,9 +1945,22 @@ int main(int argc, char** argv) {
 
     const char* input_file = argv[1];
 
+    int interactive = 0;
+    for (int i = 2; i < argc; ++i)
+        if (strcmp(argv[i], "--interactive") == 0) interactive = 1;
+#ifndef ALEA_USE_SDL
+    if (interactive) {
+        fprintf(stderr, "SDL support is disabled; rebuild with USE_SDL=1.\n");
+        return 1;
+    }
+#endif
     /* Check for batch mode */
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "--batch=", 8) == 0) {
+            if (interactive) {
+                fprintf(stderr, "--interactive cannot be combined with --batch.\n");
+                return 1;
+            }
             return run_batch(argv[i] + 8, input_file);
         }
     }
@@ -1847,7 +2008,14 @@ int main(int argc, char** argv) {
     int debug_curves = 0;
     int trace_px = -1, trace_py = -1;  /* Pixel to trace (-1 = none) */
     for (int i = 9; i < argc; i++) {
-        if (strncmp(argv[i], "--labels=", 9) == 0) {
+        if (strncmp(argv[i], "--method=", 9) == 0) {
+            if (strcmp(argv[i] + 9, "ray") == 0) plot.ray_method = 1;
+            else if (strcmp(argv[i] + 9, "grid") == 0) plot.ray_method = 0;
+            else {
+                fprintf(stderr, "Unknown method: %s (use grid or ray)\n", argv[i] + 9);
+                return 1;
+            }
+        } else if (strncmp(argv[i], "--labels=", 9) == 0) {
             plot.labels = parse_label_string(argv[i] + 9);
         } else if (strncmp(argv[i], "--color=", 8) == 0) {
             const char* mode = argv[i] + 8;
@@ -1963,9 +2131,16 @@ int main(int argc, char** argv) {
         printf("  Result: cell_id=%d, material_id=%d\n\n", cell_id, material_id);
     }
 
+#ifdef ALEA_USE_SDL
+    if (interactive) {
+        int rc = plot_interactive(sys, &plot);
+        destroy_model(&model);
+        return rc == 0 ? 0 : 1;
+    }
+#endif
     /* Render the plot */
     printf("Rendering...\n");
-    int rc = render_plot(sys, &plot, 1);
+    int rc = render_plot(sys, &plot, 1, NULL);
 
     destroy_model(&model);
 

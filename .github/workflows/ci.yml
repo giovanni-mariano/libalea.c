@@ -260,6 +260,33 @@ jobs:
           package_root="$(find /tmp/pyalea-release-test -mindepth 1 -maxdepth 1 -type d -print -quit)"
           PYTHONPATH="$package_root" python -c "import pyalea; assert pyalea.version() == pyalea.__version__"
 
+  sdl-viewers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install SDL2 development files
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev pkg-config
+
+      - name: Build interactive tools
+        run: make tools USE_SDL=1 RELEASE=1 PORTABLE=1
+
+      - name: Exercise SDL viewer controls without a display
+        run: python3 tools/check_sdl_viewers.py
+
+      - name: Check plotter sampling and diagnostics
+        run: python3 tools/check_mc_plotter.py
+
+      - name: Build interactive tools with the automatic SDL2 fallback
+        run: make tools USE_SDL=1 PKG_CONFIG=false SDL2_CONFIG=false RELEASE=1 PORTABLE=1
+
+      - name: Exercise viewers with the fetched static SDL2
+        env:
+          SDL_CONFIG: ${{ github.workspace }}/build/deps/SDL2-2.32.10/install/bin/sdl2-config
+        run: python3 tools/check_sdl_viewers.py
+
   reuse-lint:
     runs-on: ubuntu-latest
     steps:

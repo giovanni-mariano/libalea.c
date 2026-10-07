@@ -99,6 +99,8 @@ def main() -> None:
             for path in sorted((root / "LICENSES").glob("*")):
                 bundle.write(path, Path(archive_root) / "LICENSES" / path.name)
             bundle.write(root / "bindings" / "python" / "README.md", Path(archive_root) / "README.md")
+            for path in sorted((root / "examples" / "python").glob("*.py")):
+                bundle.write(path, Path(archive_root) / "examples" / path.name)
     else:
         archive = output_dir / f"{archive_root}.tar.gz"
         with tarfile.open(archive, "w:gz") as bundle:
@@ -107,6 +109,8 @@ def main() -> None:
                 filter=include_archive_member,
             )
             bundle.add(root / "LICENSES", arcname=str(Path(archive_root) / "LICENSES"))
+            for path in sorted((root / "examples" / "python").glob("*.py")):
+                bundle.add(path, arcname=str(Path(archive_root) / "examples" / path.name))
             bundle.add(
                 root / "bindings" / "python" / "README.md",
                 arcname=str(Path(archive_root) / "README.md"),

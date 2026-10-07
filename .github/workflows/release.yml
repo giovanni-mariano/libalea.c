@@ -21,10 +21,13 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make full cli tools RELEASE=1
+        run: make full cli tools RELEASE=1 PORTABLE=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua
+
+      - name: Smoke-test examples
+        run: python3 tools/check_examples.py --lua bin/alea
 
       - name: Package
         run: |
@@ -32,11 +35,14 @@ jobs:
           cp bin/alea dist/alea-linux-x64/
           cp bin/mc_convert dist/alea-linux-x64/
           cp bin/mc_plotter dist/alea-linux-x64/
+          cp bin/render3d dist/alea-linux-x64/
           cp bin/nuc_plot dist/alea-linux-x64/
           cp bin/nuc_inventory dist/alea-linux-x64/
           cp bin/large_model_probe dist/alea-linux-x64/
           cp bin/*.a dist/alea-linux-x64/
           cp -r include dist/alea-linux-x64/
+          mkdir -p dist/alea-linux-x64/examples
+          cp -r examples/lua examples/python dist/alea-linux-x64/examples/
           cp README.md LICENSE* dist/alea-linux-x64/ 2>/dev/null || true
           cd dist && tar -czvf alea-linux-x64.tar.gz alea-linux-x64
 
@@ -53,10 +59,13 @@ jobs:
           submodules: recursive
 
       - name: Build release
-        run: make full cli tools RELEASE=1
+        run: make full cli tools RELEASE=1 PORTABLE=1
 
       - name: Run tests
         run: make test-unit test-integration test-lua
+
+      - name: Smoke-test examples
+        run: python3 tools/check_examples.py --lua bin/alea
 
       - name: Package
         run: |
@@ -64,11 +73,14 @@ jobs:
           cp bin/alea dist/alea-linux-arm64/
           cp bin/mc_convert dist/alea-linux-arm64/
           cp bin/mc_plotter dist/alea-linux-arm64/
+          cp bin/render3d dist/alea-linux-arm64/
           cp bin/nuc_plot dist/alea-linux-arm64/
           cp bin/nuc_inventory dist/alea-linux-arm64/
           cp bin/large_model_probe dist/alea-linux-arm64/
           cp bin/*.a dist/alea-linux-arm64/
           cp -r include dist/alea-linux-arm64/
+          mkdir -p dist/alea-linux-arm64/examples
+          cp -r examples/lua examples/python dist/alea-linux-arm64/examples/
           cp README.md LICENSE* dist/alea-linux-arm64/ 2>/dev/null || true
           cd dist && tar -czvf alea-linux-arm64.tar.gz alea-linux-arm64
 
@@ -90,17 +102,23 @@ jobs:
       - name: Run tests
         run: make test-unit test-integration test-lua
 
+      - name: Smoke-test examples
+        run: python3 tools/check_examples.py --lua bin/alea
+
       - name: Package
         run: |
           mkdir -p dist/alea-macos-x64
           cp bin/alea dist/alea-macos-x64/
           cp bin/mc_convert dist/alea-macos-x64/
           cp bin/mc_plotter dist/alea-macos-x64/
+          cp bin/render3d dist/alea-macos-x64/
           cp bin/nuc_plot dist/alea-macos-x64/
           cp bin/nuc_inventory dist/alea-macos-x64/
           cp bin/large_model_probe dist/alea-macos-x64/
           cp bin/*.a dist/alea-macos-x64/
           cp -r include dist/alea-macos-x64/
+          mkdir -p dist/alea-macos-x64/examples
+          cp -r examples/lua examples/python dist/alea-macos-x64/examples/
           cp README.md LICENSE* dist/alea-macos-x64/ 2>/dev/null || true
           cd dist && tar -czvf alea-macos-x64.tar.gz alea-macos-x64
 
@@ -122,17 +140,23 @@ jobs:
       - name: Run tests
         run: make test-unit test-integration test-lua
 
+      - name: Smoke-test examples
+        run: python3 tools/check_examples.py --lua bin/alea
+
       - name: Package
         run: |
           mkdir -p dist/alea-macos-arm64
           cp bin/alea dist/alea-macos-arm64/
           cp bin/mc_convert dist/alea-macos-arm64/
           cp bin/mc_plotter dist/alea-macos-arm64/
+          cp bin/render3d dist/alea-macos-arm64/
           cp bin/nuc_plot dist/alea-macos-arm64/
           cp bin/nuc_inventory dist/alea-macos-arm64/
           cp bin/large_model_probe dist/alea-macos-arm64/
           cp bin/*.a dist/alea-macos-arm64/
           cp -r include dist/alea-macos-arm64/
+          mkdir -p dist/alea-macos-arm64/examples
+          cp -r examples/lua examples/python dist/alea-macos-arm64/examples/
           cp README.md LICENSE* dist/alea-macos-arm64/ 2>/dev/null || true
           cd dist && tar -czvf alea-macos-arm64.tar.gz alea-macos-arm64
 
@@ -173,11 +197,14 @@ jobs:
           cp bin/alea.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/alea dist/alea-windows-x64/alea.exe
           cp bin/mc_convert.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_convert dist/alea-windows-x64/mc_convert.exe
           cp bin/mc_plotter.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/mc_plotter dist/alea-windows-x64/mc_plotter.exe
+          cp bin/render3d.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/render3d dist/alea-windows-x64/render3d.exe
           cp bin/nuc_plot.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/nuc_plot dist/alea-windows-x64/nuc_plot.exe
           cp bin/nuc_inventory.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/nuc_inventory dist/alea-windows-x64/nuc_inventory.exe
           cp bin/large_model_probe.exe dist/alea-windows-x64/ 2>/dev/null || cp bin/large_model_probe dist/alea-windows-x64/large_model_probe.exe
           cp bin/*.a dist/alea-windows-x64/
           cp -r include dist/alea-windows-x64/
+          mkdir -p dist/alea-windows-x64/examples
+          cp -r examples/lua examples/python dist/alea-windows-x64/examples/
           cp README.md LICENSE* dist/alea-windows-x64/ 2>/dev/null || true
           cd dist && zip -r alea-windows-x64.zip alea-windows-x64
 

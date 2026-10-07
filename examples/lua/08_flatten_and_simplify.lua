@@ -1,11 +1,17 @@
 -- 08_flatten_and_simplify.lua: Flatten universes, tighten bboxes, remove empty cells
 --
 -- Standalone: no (loads MCNP data file)
--- Usage: bin/alea examples/lua/08_flatten_and_simplify.lua [mcnp_file]
+-- Usage: bin/alea examples/lua/08_flatten_and_simplify.lua <mcnp_file>
+
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
 
 print("=== Flatten and Simplify ===\n")
 
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading: " .. filename)
 local sys = alea.load_mcnp(filename)
 
@@ -51,7 +57,7 @@ local nc_split = sys:cell_count()
 print(string.format("After split: %d cells (was %d)", nc_split, nc_flat))
 
 -- Export the simplified model
-local outfile = "/tmp/alea_flattened.i"
+local outfile = outdir .. "/alea_flattened.i"
 sys:export_mcnp(outfile)
 print("\nExported flattened model to: " .. outfile)
 

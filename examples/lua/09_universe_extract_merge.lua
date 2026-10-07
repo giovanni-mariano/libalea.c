@@ -1,12 +1,15 @@
 -- 09_universe_extract_merge.lua: Extract universe, merge systems, renumber IDs
 --
 -- Standalone: no (loads MCNP data file)
--- Usage: bin/alea -l 0 examples/lua/09_universe_extract_merge.lua [mcnp_file]
+-- Usage: bin/alea -l 0 examples/lua/09_universe_extract_merge.lua <mcnp_file>
 -- Note: -l 0 suppresses warnings about unused surface refs during extract
 
 print("=== Universe Extract & Merge ===\n")
 
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading: " .. filename)
 local sys = alea.load_mcnp(filename)
 sys:print_summary()
@@ -64,9 +67,10 @@ print(string.format("  After merge:  %d cells", nc_post))
 -- ID offset operations
 print("\n--- ID Offset Operations ---")
 local sys2 = alea.create()
+local mat = sys2:material(1)
 local s1 = sys2:sphere(1, 0, 0, 0, 5)
-sys2:cell{id = 1, region = sys2:inside(s1), material = 1, density = 1.0}
-sys2:cell{id = 2, region = sys2:outside(s1), material = 0, density = 0.0}
+sys2:cell{id = 1, region = sys2:inside(s1), material = mat, density = 1.0}
+sys2:cell{id = 2, region = sys2:outside(s1), density = 0.0}
 
 print("  Before offset:")
 for i = 0, sys2:cell_count() - 1 do

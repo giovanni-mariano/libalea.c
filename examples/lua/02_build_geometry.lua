@@ -9,9 +9,17 @@
 --   Cell 3: moderator (mat 3)  6 <= r < 15
 --   Cell 4: void      (mat 0)  r >= 15
 
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
+
 print("=== Build Geometry from Scratch ===\n")
 
 local sys = alea.create()
+
+-- Cell definitions take registered material indices, not material IDs.
+local mat1 = sys:material(1)
+local mat2 = sys:material(2)
+local mat3 = sys:material(3)
 
 -- Create spherical surfaces
 local s1 = sys:sphere(1, 0, 0, 0, 5)   -- inner fuel boundary
@@ -33,10 +41,10 @@ local mod_region  = out_s2 * in_s3       -- 6 <= r < 15
 local void_region = out_s3              -- r >= 15
 
 -- Create cells
-sys:cell{id = 1, region = fuel_region, material = 1, density = 10.97}
-sys:cell{id = 2, region = clad_region, material = 2, density = 6.56}
-sys:cell{id = 3, region = mod_region,  material = 3, density = 1.0}
-sys:cell{id = 4, region = void_region, material = 0, density = 0.0}
+sys:cell{id = 1, region = fuel_region, material = mat1, density = 10.97}
+sys:cell{id = 2, region = clad_region, material = mat2, density = 6.56}
+sys:cell{id = 3, region = mod_region,  material = mat3, density = 1.0}
+sys:cell{id = 4, region = void_region, density = 0.0}
 
 sys:print_summary()
 
@@ -45,12 +53,12 @@ local issues = sys:validate()
 print(string.format("Validation issues: %d", issues))
 
 -- Export to MCNP
-local outfile = "/tmp/alea_shielded_sphere.i"
+local outfile = outdir .. "/alea_shielded_sphere.i"
 sys:export_mcnp(outfile)
 print("Exported MCNP to: " .. outfile)
 
 -- Also export to OpenMC
-local outxml = "/tmp/alea_shielded_sphere.xml"
+local outxml = outdir .. "/alea_shielded_sphere.xml"
 sys:export_openmc(outxml)
 print("Exported OpenMC to: " .. outxml)
 

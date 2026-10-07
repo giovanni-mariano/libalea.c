@@ -1,11 +1,14 @@
 -- 06_volume_estimation.lua: Bounding sphere, Monte Carlo volume estimation
 --
 -- Standalone: no (loads MCNP data file)
--- Usage: bin/alea examples/lua/06_volume_estimation.lua [mcnp_file]
+-- Usage: bin/alea examples/lua/06_volume_estimation.lua <mcnp_file>
 
 print("=== Volume Estimation ===\n")
 
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading: " .. filename)
 local sys = alea.load_mcnp(filename)
 sys:build_universe_index()

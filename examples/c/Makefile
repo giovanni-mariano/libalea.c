@@ -26,6 +26,9 @@ LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-arch
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 LIBS_NUCDATA = ../../bin/libalea_nucdata.a $(LIBS_CORE)
 
+.DEFAULT_GOAL := all
+include ../../tools/sdl.mk
+
 EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo fusion_fixed_source adjoint_neutron
 
 all: $(EXAMPLES)
@@ -39,8 +42,8 @@ mcnp_roundtrip: mcnp_roundtrip.c
 mcnp_volume: mcnp_volume.c
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
-render3d: render3d.c
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL)
+render3d: render3d.c ../../tools/render_view.h ../../tools/sdl_view.h viewer-config
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS)
 
 void_demo: void_demo.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)

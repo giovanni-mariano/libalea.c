@@ -1,7 +1,7 @@
 -- 07_overlap_check.lua: Overlap detection using the geometry validator
 --
 -- Standalone: partially (has inline geometry, also loads data file)
--- Usage: bin/alea examples/lua/07_overlap_check.lua [mcnp_file]
+-- Usage: bin/alea examples/lua/07_overlap_check.lua <mcnp_file>
 
 print("=== Overlap Check ===\n")
 
@@ -36,6 +36,9 @@ print(string.format("Overlap findings: %d",
 -- Part 2: Check overlaps in a data file
 print("\n--- Part 2: Data File Overlap Check ---")
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading: " .. filename)
 
 local ok, sys2 = pcall(alea.load_mcnp, filename)

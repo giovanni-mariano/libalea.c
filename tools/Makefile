@@ -65,15 +65,21 @@ else
   PROBE_LIBS =
 endif
 
-TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/nuc_inventory$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
+.DEFAULT_GOAL := all
+include sdl.mk
+
+TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/render3d$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/nuc_inventory$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
 
 all: $(TOOLS)
 
 $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
-$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
+$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c sdl_view.h viewer-config
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+
+$(BIN_DIR)/render3d$(EXEEXT): ../examples/c/render3d.c render_view.h sdl_view.h viewer-config
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
 
 $(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c \
                               $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a

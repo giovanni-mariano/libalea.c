@@ -8,19 +8,26 @@
 --   Cell 2: moderator (mat 2)  5 <= r < 10
 --   Cell 3: void      (mat 0)  r >= 10
 --
--- Writes mesh files to /tmp/alea_example_mesh_*
+-- Writes mesh files to ./alea_example_mesh_*
+
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
 
 print("=== Mesh Export ===\n")
 
 local sys = alea.create()
 
+-- Cell definitions take registered material indices, not material IDs.
+local mat1 = sys:material(1)
+local mat2 = sys:material(2)
+
 -- Build concentric spheres
 local s1 = sys:sphere(1, 0, 0, 0, 5)
 local s2 = sys:sphere(2, 0, 0, 0, 10)
 
-sys:cell{id = 1, region = sys:inside(s1), material = 1, density = 10.0}
-sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = 2, density = 1.0}
-sys:cell{id = 3, region = sys:outside(s2), material = 0, density = 0.0}
+sys:cell{id = 1, region = sys:inside(s1), material = mat1, density = 10.0}
+sys:cell{id = 2, region = sys:outside(s1) * sys:inside(s2), material = mat2, density = 1.0}
+sys:cell{id = 3, region = sys:outside(s2), density = 0.0}
 
 sys:build_universe_index()
 
@@ -62,20 +69,20 @@ end
 
 -- Export to Gmsh format
 print("\n--- Export Gmsh ---")
-mesh:export(0, "/tmp/alea_example_mesh.msh")
-print("  Written: /tmp/alea_example_mesh.msh")
+mesh:export(0, outdir .. "/alea_example_mesh.msh")
+print("  Written: " .. outdir .. "/alea_example_mesh.msh")
 
 -- Export to VTK format
 print("\n--- Export VTK ---")
-mesh:export(1, "/tmp/alea_example_mesh.vtk")
-print("  Written: /tmp/alea_example_mesh.vtk")
+mesh:export(1, outdir .. "/alea_example_mesh.vtk")
+print("  Written: " .. outdir .. "/alea_example_mesh.vtk")
 
 -- One-shot export (sample + write in one call)
 print("\n--- One-Shot Export ---")
-sys:mesh_export({nx = 8, ny = 8, nz = 8, format = 0}, "/tmp/alea_example_mesh_quick.msh")
-sys:mesh_export({nx = 8, ny = 8, nz = 8, format = 1}, "/tmp/alea_example_mesh_quick.vtk")
-print("  Written: /tmp/alea_example_mesh_quick.msh")
-print("  Written: /tmp/alea_example_mesh_quick.vtk")
+sys:mesh_export({nx = 8, ny = 8, nz = 8, format = 0}, outdir .. "/alea_example_mesh_quick.msh")
+sys:mesh_export({nx = 8, ny = 8, nz = 8, format = 1}, outdir .. "/alea_example_mesh_quick.vtk")
+print("  Written: " .. outdir .. "/alea_example_mesh_quick.msh")
+print("  Written: " .. outdir .. "/alea_example_mesh_quick.vtk")
 
 -- Mesh with explicit bounds (smaller region around the fuel)
 print("\n--- Bounded Mesh (fuel region only) ---")
@@ -99,6 +106,6 @@ local adaptive = sys:adaptive_grid_sample{
 local adaptive_info = adaptive:info()
 print(string.format("  Cells: %d total, %d leaves",
                     adaptive_info.cell_count, adaptive_info.leaf_count))
-adaptive:export(1, "/tmp/alea_example_mesh_adaptive.vtk")
+adaptive:export(1, outdir .. "/alea_example_mesh_adaptive.vtk")
 
 print("\n14_mesh: OK")

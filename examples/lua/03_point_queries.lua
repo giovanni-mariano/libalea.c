@@ -1,11 +1,14 @@
 -- 03_point_queries.lua: Point-in-cell queries, material lookup, overlap detection
 --
 -- Standalone: no (loads MCNP data file)
--- Usage: bin/alea examples/lua/03_point_queries.lua [mcnp_file]
+-- Usage: bin/alea examples/lua/03_point_queries.lua <mcnp_file>
 
 print("=== Point Queries ===\n")
 
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading: " .. filename)
 local sys = alea.load_mcnp(filename)
 sys:print_summary()

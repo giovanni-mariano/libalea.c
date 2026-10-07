@@ -1,11 +1,14 @@
 -- 04_model_inspection.lua: Cell/material/universe census, CSG tree walk
 --
 -- Standalone: no (loads MCNP data file)
--- Usage: bin/alea examples/lua/04_model_inspection.lua [mcnp_file]
+-- Usage: bin/alea examples/lua/04_model_inspection.lua <mcnp_file>
 
 print("=== Model Inspection ===\n")
 
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading: " .. filename)
 local sys = alea.load_mcnp(filename)
 sys:print_summary()

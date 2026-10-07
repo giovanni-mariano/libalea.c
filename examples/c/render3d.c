@@ -86,6 +86,7 @@ static void print_usage(const char* prog) {
 "  --ortho-height H             Ortho view height in model units\n"
 "\n"
 "IMAGE:\n"
+"  --interactive               SDL viewer (USE_SDL=1); H for controls\n"
 "  -o, --output FILE            Output file (default: render.png)\n"
 "  -w, --width N                Image width (default: 1920)\n"
 "  --height N                   Image height (default: 1080)\n"
@@ -137,6 +138,67 @@ static void add_clip_axis(render_config_t* cfg, int axis, double value, int nega
     cp->d = negative ? value : -value;
 }
 
+static void postprocess_frame(const render_config_t* cfg, render_framebuffer_t* fb) {
+    /* Post-processing */
+    if (cfg->edges) {
+        fprintf(stderr, "Post-processing: edge darkening...\n");
+        render_edge_darken(fb);
+    }
+
+    if (cfg->render_mode == RENDER_MODE_DEPTH) {
+        /* Depth mode renders with solid shading then overwrites with depth grayscale */
+        /* The depth data was collected during rendering; now convert to visual */
+        if (fb->depth) {
+            int w = fb->width, h = fb->height;
+            float d_min = 1e30f, d_max = 0;
+            for (int i = 0; i < w * h; i++) {
+                if (fb->cell_id[i] >= 0) {
+                    if (fb->depth[i] < d_min) d_min = fb->depth[i];
+                    if (fb->depth[i] > d_max) d_max = fb->depth[i];
+                }
+            }
+            float range = (d_max > d_min) ? (d_max - d_min) : 1.0f;
+            for (int i = 0; i < w * h; i++) {
+                if (fb->cell_id[i] >= 0) {
+                    float t = 1.0f - (fb->depth[i] - d_min) / range;
+                    fb->color[i * 3 + 0] = t;
+                    fb->color[i * 3 + 1] = t;
+                    fb->color[i * 3 + 2] = t;
+                }
+            }
+        }
+    } else if (cfg->render_mode == RENDER_MODE_CELLID) {
+        /* Overwrite colors with palette by cell ID */
+        int w = fb->width, h = fb->height;
+        for (int i = 0; i < w * h; i++) {
+            if (fb->cell_id[i] >= 0) {
+                float r, g, b;
+                render_get_color(fb->cell_id[i], RENDER_COLOR_CELL, cfg, &r, &g, &b);
+                fb->color[i * 3 + 0] = r;
+                fb->color[i * 3 + 1] = g;
+                fb->color[i * 3 + 2] = b;
+            }
+        }
+    } else if (cfg->render_mode == RENDER_MODE_MATID) {
+        int w = fb->width, h = fb->height;
+        for (int i = 0; i < w * h; i++) {
+            if (fb->cell_id[i] >= 0) {
+                int mid = fb->material_id ? fb->material_id[i] : 0;
+                float r, g, b;
+                render_get_color(mid, RENDER_COLOR_MATERIAL, cfg, &r, &g, &b);
+                fb->color[i * 3 + 0] = r;
+                fb->color[i * 3 + 1] = g;
+                fb->color[i * 3 + 2] = b;
+            }
+        }
+    }
+
+}
+
+#ifdef ALEA_USE_SDL
+#include "../../tools/render_view.h"
+#endif
+
 /* ============================================================================
  * MAIN
  * ============================================================================ */
@@ -152,6 +214,8 @@ int main(int argc, char** argv) {
     render_config_t cfg;
     render_config_init(&cfg);
 
+    int interactive = 0;
+
     /* Parse arguments */
     for (int i = 1; i < argc; i++) {
         const char* arg = argv[i];
@@ -161,7 +225,9 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
+        if (strcmp(arg, "--interactive") == 0) {
+            interactive = 1;
+        } else if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
             if (++i < argc) output_file = argv[i];
         } else if (strcmp(arg, "-w") == 0 || strcmp(arg, "--width") == 0) {
             if (++i < argc) cfg.width = atoi(argv[i]);
@@ -296,6 +362,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+#ifndef ALEA_USE_SDL
+    if (interactive) {
+        fprintf(stderr, "SDL support is disabled; rebuild with USE_SDL=1.\n");
+        render_config_free(&cfg);
+        return 1;
+    }
+#endif
     /* Validate */
     if (cfg.width <= 0 || cfg.height <= 0) {
         fprintf(stderr, "Error: invalid image dimensions %dx%d\n", cfg.width, cfg.height);
@@ -367,6 +440,17 @@ int main(int argc, char** argv) {
     if (cfg.num_clips > 0) {
         fprintf(stderr, "Clip planes: %d\n", cfg.num_clips);
     }
+
+#ifdef ALEA_USE_SDL
+    if (interactive) {
+        int rc = render_interactive(sys, &cfg, &cam, output_file);
+        render_config_free(&cfg);
+        if (model) mcnp_model_destroy(model);
+        else if (omc_model) openmc_model_destroy(omc_model);
+        else alea_destroy(sys);
+        return rc == 0 ? 0 : 1;
+    }
+#endif
 
     /* ====================================================================
      * PREVIEW PASS (optional)
@@ -443,59 +527,7 @@ int main(int argc, char** argv) {
 
     fprintf(stderr, "Render time: %.1f ms (%.1f s)\n", tr1 - tr0, (tr1 - tr0) / 1000.0);
 
-    /* Post-processing */
-    if (cfg.edges) {
-        fprintf(stderr, "Post-processing: edge darkening...\n");
-        render_edge_darken(fb);
-    }
-
-    if (cfg.render_mode == RENDER_MODE_DEPTH) {
-        /* Depth mode renders with solid shading then overwrites with depth grayscale */
-        /* The depth data was collected during rendering; now convert to visual */
-        if (fb->depth) {
-            int w = fb->width, h = fb->height;
-            float d_min = 1e30f, d_max = 0;
-            for (int i = 0; i < w * h; i++) {
-                if (fb->cell_id[i] >= 0) {
-                    if (fb->depth[i] < d_min) d_min = fb->depth[i];
-                    if (fb->depth[i] > d_max) d_max = fb->depth[i];
-                }
-            }
-            float range = (d_max > d_min) ? (d_max - d_min) : 1.0f;
-            for (int i = 0; i < w * h; i++) {
-                if (fb->cell_id[i] >= 0) {
-                    float t = 1.0f - (fb->depth[i] - d_min) / range;
-                    fb->color[i * 3 + 0] = t;
-                    fb->color[i * 3 + 1] = t;
-                    fb->color[i * 3 + 2] = t;
-                }
-            }
-        }
-    } else if (cfg.render_mode == RENDER_MODE_CELLID) {
-        /* Overwrite colors with palette by cell ID */
-        int w = fb->width, h = fb->height;
-        for (int i = 0; i < w * h; i++) {
-            if (fb->cell_id[i] >= 0) {
-                float r, g, b;
-                render_get_color(fb->cell_id[i], RENDER_COLOR_CELL, &cfg, &r, &g, &b);
-                fb->color[i * 3 + 0] = r;
-                fb->color[i * 3 + 1] = g;
-                fb->color[i * 3 + 2] = b;
-            }
-        }
-    } else if (cfg.render_mode == RENDER_MODE_MATID) {
-        int w = fb->width, h = fb->height;
-        for (int i = 0; i < w * h; i++) {
-            if (fb->cell_id[i] >= 0) {
-                int mid = fb->material_id ? fb->material_id[i] : 0;
-                float r, g, b;
-                render_get_color(mid, RENDER_COLOR_MATERIAL, &cfg, &r, &g, &b);
-                fb->color[i * 3 + 0] = r;
-                fb->color[i * 3 + 1] = g;
-                fb->color[i * 3 + 2] = b;
-            }
-        }
-    }
+    postprocess_frame(&cfg, fb);
 
     /* ====================================================================
      * WRITE OUTPUT

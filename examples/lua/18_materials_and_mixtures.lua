@@ -11,6 +11,9 @@
 --   - Assigning mixtures to cells
 --   - Exporting to MCNP and OpenMC
 
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
+
 print("=== Materials and Mixtures ===\n")
 
 local sys = alea.create()
@@ -112,11 +115,11 @@ print(string.format("\nAssigned mixture %d to cell index %d", 100, cell_mix))
 -- Export
 -- ============================================================================
 
-local mcnp_out = "/tmp/alea_materials_demo.i"
+local mcnp_out = outdir .. "/alea_materials_demo.i"
 sys:export_mcnp(mcnp_out)
 print("\nExported MCNP to: " .. mcnp_out)
 
-local openmc_out = "/tmp/alea_materials_demo.xml"
+local openmc_out = outdir .. "/alea_materials_demo.xml"
 sys:export_openmc(openmc_out)
 print("Exported OpenMC to: " .. openmc_out)
 

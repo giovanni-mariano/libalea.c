@@ -6,6 +6,9 @@
 -- Builds a 3x3 array of fuel pins in a moderator box.
 -- Parameters control pin radius, pitch, and height.
 
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
+
 print("=== Parametric Pin-Cell Array ===\n")
 
 -- Parameters (easily adjustable)
@@ -32,27 +35,15 @@ end
 local sys = alea.create()
 local cell_id = 1
 local surf_id = 1
+local fuel_mat = sys:material(params.fuel_mat)
+local clad_mat = sys:material(params.clad_mat)
+local mod_mat = sys:material(params.mod_mat)
 
--- Create top and bottom planes for the active region
-local pz_bot = sys:plane(surf_id, 0, 0, 1, -params.height); surf_id = surf_id + 1
-local pz_top = sys:plane(surf_id, 0, 0, 1,  params.height); surf_id = surf_id + 1
-local axial_region = sys:inside(pz_bot) * sys:outside(pz_top)
--- Note: plane(id, a, b, c, d) => inside means a*x+b*y+c*z+d >= 0
--- pz_bot: z + (-height) >= 0 => z >= height... we need to think about sense
--- Actually: inside(pz_bot) = z - height >= 0 for "z + d >= 0"
--- Let's use half() for explicit control:
--- For z >= -height: plane coeffs (0,0,1, height), inside = 0*x + 0*y + 1*z + height >= 0
--- For z <= +height: plane coeffs (0,0,1, -height), outside = NOT(z - height >= 0) = z < height
-
--- Rebuild with correct sense
-sys:destroy()
-sys = alea.create()
-surf_id = 1
-cell_id = 1
-
+-- Plane interior is a*x+b*y+c*z+d < 0.
+-- Positive bottom halfspace and negative top halfspace enclose the pins.
 local pbot = sys:plane(surf_id, 0, 0, 1, params.height); surf_id = surf_id + 1
 local ptop = sys:plane(surf_id, 0, 0, 1, -params.height); surf_id = surf_id + 1
-local in_axial = sys:inside(pbot) * sys:outside(ptop)
+local in_axial = sys:outside(pbot) * sys:inside(ptop)
 
 -- Create pins
 print(string.format("\nGenerating %dx%d pin array...", params.nx, params.ny))
@@ -75,7 +66,7 @@ for iy = 0, params.ny - 1 do
         local fuel_node = sys:inside(s_fuel) * in_axial
         sys:cell{
             id = cell_id, region = fuel_node,
-            material = params.fuel_mat, density = params.fuel_density,
+            material = fuel_mat, density = params.fuel_density,
         }
         cell_id = cell_id + 1
 
@@ -83,7 +74,7 @@ for iy = 0, params.ny - 1 do
         local clad_node = sys:outside(s_fuel) * sys:inside(s_clad) * in_axial
         sys:cell{
             id = cell_id, region = clad_node,
-            material = params.clad_mat, density = params.clad_density,
+            material = clad_mat, density = params.clad_density,
         }
         cell_id = cell_id + 1
 
@@ -107,16 +98,22 @@ end
 
 sys:cell{
     id = cell_id, region = mod_region,
-    material = params.mod_mat, density = params.mod_density,
+    material = mod_mat, density = params.mod_density,
 }
 cell_id = cell_id + 1
 
 -- Void outside the box
 sys:cell{
     id = cell_id, region = sys:outside(box_surf),
-    material = 0, density = 0.0,
+    density = 0.0,
 }
 cell_id = cell_id + 1
+
+sys:build_universe_index()
+local _, center_material = sys:find_cell_at(x0, y0, 0)
+assert(center_material == params.fuel_mat, "Pin center must contain fuel")
+local _, outside_material = sys:find_cell_at(x0, y0, 2 * params.height)
+assert(outside_material == 0, "Beyond the axial bounds must be void")
 
 sys:print_summary()
 
@@ -125,8 +122,8 @@ local issues = sys:validate()
 print(string.format("Validation issues: %d", issues))
 
 -- Export to both formats
-local mcnp_out = "/tmp/alea_pin_array.i"
-local openmc_out = "/tmp/alea_pin_array.xml"
+local mcnp_out = outdir .. "/alea_pin_array.i"
+local openmc_out = outdir .. "/alea_pin_array.xml"
 sys:export_mcnp(mcnp_out)
 sys:export_openmc(openmc_out)
 print(string.format("\nExported MCNP:  %s", mcnp_out))

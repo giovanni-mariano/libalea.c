@@ -62,6 +62,7 @@ $(MODULE): $(OBJECT) $(LIBALEA) $(LINK_RSP) package\pyalea\__init__.py package\p
 
 test: all
 	set PYTHONPATH=$(PACKAGE_ROOT)&& $(PYTHON) -m pytest -p no:cacheprovider tests -v
+	set PYTHONPATH=$(PACKAGE_ROOT)&& $(PYTHON) ..\..\tools\check_examples.py --python
 
 # This target must never depend on `all`: release jobs use it after replacing
 # NumPy to prove that the same .pyd works with another runtime.

@@ -66,6 +66,7 @@ $(BUILD_ROOT) $(PACKAGE_DIR):
 
 test: all
 	PYTHONPATH=$(PACKAGE_ROOT) $(PYTHON) -m pytest -p no:cacheprovider tests -v
+	PYTHONPATH=$(PACKAGE_ROOT) $(PYTHON) ../../tools/check_examples.py --python
 
 # Test the already-built extension against the active NumPy runtime. This
 # target deliberately has no build prerequisites: compatibility jobs must fail

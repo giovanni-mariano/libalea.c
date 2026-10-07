@@ -1,11 +1,17 @@
 -- 05_format_conversion.lua: MCNP -> OpenMC -> MCNP round-trip
 --
 -- Standalone: no (loads MCNP data file)
--- Usage: bin/alea examples/lua/05_format_conversion.lua [mcnp_file]
+-- Usage: bin/alea examples/lua/05_format_conversion.lua <mcnp_file>
+
+-- Override the existing output directory with ALEA_EXAMPLE_OUTPUT.
+local outdir = os.getenv("ALEA_EXAMPLE_OUTPUT") or "."
 
 print("=== Format Conversion (MCNP <-> OpenMC) ===\n")
 
 local filename = alea.arg and alea.arg[1]
+if not filename then
+    error("Pass an MCNP input file; try the model exported by 02_build_geometry.lua")
+end
 print("Loading MCNP: " .. filename)
 local sys = alea.load_mcnp(filename)
 
@@ -14,7 +20,7 @@ local ns1 = sys:surface_count()
 print(string.format("  Original: %d cells, %d surfaces", nc1, ns1))
 
 -- Step 1: Export to OpenMC XML
-local openmc_file = "/tmp/alea_convert.xml"
+local openmc_file = outdir .. "/alea_convert.xml"
 sys:export_openmc(openmc_file)
 print("\nExported to OpenMC: " .. openmc_file)
 
@@ -25,7 +31,7 @@ local ns2 = sys2:surface_count()
 print(string.format("  OpenMC reload: %d cells, %d surfaces", nc2, ns2))
 
 -- Step 3: Export back to MCNP
-local mcnp_file = "/tmp/alea_roundtrip.i"
+local mcnp_file = outdir .. "/alea_roundtrip.i"
 sys2:export_mcnp(mcnp_file)
 print("\nExported back to MCNP: " .. mcnp_file)
 
