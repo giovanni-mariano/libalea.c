@@ -5,6 +5,8 @@
 #include "alea_model.h"
 #include "core/alea_system.h"
 #include "util/compat.h"
+#include "util/cell_parameter.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,6 +24,7 @@ struct alea_model {
 static void cell_metadata_free(alea_model_cell_metadata_t* meta) {
     if (!meta) return;
     free(meta->name);
+    free(meta->detector_probabilities);
     memset(meta, 0, sizeof(*meta));
 }
 
@@ -30,6 +33,13 @@ static void cell_metadata_init(alea_model_cell_metadata_t* meta) {
     meta->importance_neutron = 1.0;
     meta->importance_photon = 1.0;
     meta->importance_electron = 1.0;
+    meta->photon_production.weight_basis = ALEA_PHOTON_WEIGHT_SOURCE_RELATIVE;
+    meta->photon_production.weight_threshold = 1.0;
+    meta->detector_contribution = 1.0;
+    meta->fission_mode = ALEA_FISSION_NORMAL;
+    meta->secondary_collision_state = ALEA_SECONDARY_UNCOLLIDED;
+    for (int i = 0; i < ALEA_PARTICLE_COUNT; i++)
+        meta->particle_secondary_state[i] = ALEA_SECONDARY_UNCOLLIDED;
 }
 
 static int reserve_cells(alea_model_t* model, size_t needed) {
@@ -63,9 +73,20 @@ static void model_cell_copied(void* userdata, size_t dst, size_t src) {
     if (dst >= model->cell_count) model_cell_added(userdata, dst);
     if (dst >= model->cell_count) return;
     char* name = model->cells[src].name ? alea_strdup(model->cells[src].name) : NULL;
+    alea_detector_probability_t* probabilities = alea_detector_probability_copy(
+        model->cells[src].detector_probabilities,
+        model->cells[src].detector_probability_count);
+    if ((model->cells[src].name && !name) ||
+        (model->cells[src].detector_probability_count && !probabilities)) {
+        free(name);
+        free(probabilities);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "copying cell parameters");
+        return;
+    }
     cell_metadata_free(&model->cells[dst]);
     model->cells[dst] = model->cells[src];
     model->cells[dst].name = name;
+    model->cells[dst].detector_probabilities = probabilities;
 }
 
 static void model_cell_removed(void* userdata, size_t index) {
@@ -166,4 +187,18 @@ alea_model_cell_metadata_t* alea_model_cell_metadata_mut(alea_model_t* model, si
 }
 int alea_model_cell_set_name(alea_model_t* model, size_t index, const char* name) {
     return model && index < model->cell_count ? set_string(&model->cells[index].name, name) : -1;
+}
+
+int alea_model_cell_set_detector_probability(alea_model_t* model,
+    size_t index, int tally, double probability) {
+    alea_model_cell_metadata_t* meta = alea_model_cell_metadata_mut(model, index);
+    if (!meta || tally < 0 || !isfinite(probability) ||
+        probability < 0 || probability > 1) return -1;
+    if (!tally) {
+        meta->detector_contribution = probability;
+        meta->parameter_flags |= ALEA_CELL_PARAM_DETECTOR_PROBABILITY;
+        return 0;
+    }
+    return alea_detector_probability_store(&meta->detector_probabilities,
+        &meta->detector_probability_count, tally, probability);
 }

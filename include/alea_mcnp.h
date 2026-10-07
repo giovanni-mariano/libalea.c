@@ -47,9 +47,9 @@ extern "C" {
  * Complex params (IMP:*, FILL, TRCL, LAT, U, MAT, RHO) stay manual.
  */
 #define MCNP_CELL_SIMPLE_PARAMS(X) \
-    X(vol,   double, "VOL",   6)   \
-    X(tmp,   double, "TMP",   10)  \
-    X(pwt,   double, "PWT",   4)   \
+    X(vol,   double, "VOL",   17)   \
+    X(tmp,   double, "TMP",   17)  \
+    X(pwt,   double, "PWT",   17)   \
     X(nonu,  int,    "NONU",  0)   \
     X(pd,    double, "PD",    4)   \
     X(elpt,  double, "ELPT",  6)   \
@@ -69,7 +69,17 @@ typedef struct {
 } mcnp_inline_transform_t;
 
 typedef struct {
+    double energy_cutoff[ALEA_PARTICLE_COUNT];
+    int secondary_state[ALEA_PARTICLE_COUNT];
+    uint32_t energy_cutoff_particles;
+    uint32_t secondary_state_particles;
+    alea_detector_probability_t* detector_probabilities;
+    size_t detector_probability_count;
+} mcnp_scoped_cell_params_t;
+
+typedef struct {
     double imp_n, imp_p, imp_e;
+    mcnp_scoped_cell_params_t scoped;
 
     #define X_FIELD(name, type, kw, prec) type name;
     MCNP_CELL_SIMPLE_PARAMS(X_FIELD)

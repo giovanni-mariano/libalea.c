@@ -11,7 +11,10 @@ local xml = [[
   <cells>
     <cell id="1" name="inside" universe="0" material="1"
           density="1" density_units="g/cm3" region="-100000001">
-      <importance particle="neutron" value="1" />
+      <parameters>
+        <importance particle="neutron" value="1" />
+        <volume value="33.510321638291124" />
+      </parameters>
     </cell>
   </cells>
 </alea>
@@ -24,7 +27,10 @@ assert(system:surface_count() == 1)
 local copy = system:export_alea_string()
 assert(copy:find('<alea version="1"', 1, true))
 assert(copy:find('library="80c"', 1, true))
+assert(copy:find('<parameters>', 1, true))
 assert(copy:find('particle="neutron"', 1, true))
+assert(copy:find('<volume value=', 1, true))
+assert(not copy:find('<parameter ', 1, true))
 
 local reloaded = alea.load_alea_string(copy)
 assert(reloaded:cell_count() == 1)

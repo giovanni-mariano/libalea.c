@@ -69,7 +69,15 @@ static void on_cell_added_cb(void* ud, size_t new_index) {
 static void on_cell_copied_cb(void* ud, size_t dst_index, size_t src_index) {
     mcnp_model_t* model = (mcnp_model_t*)ud;
     if (dst_index < model->cell_params_count && src_index < model->cell_params_count) {
+        if (dst_index == src_index) return;
+        mcnp_scoped_cell_params_t scoped = {0};
+        if (mcnp_scoped_params_copy(&scoped, &model->cell_params[src_index].scoped)) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "copying MCNP cell parameters");
+            return;
+        }
+        mcnp_scoped_params_free(&model->cell_params[dst_index].scoped);
         model->cell_params[dst_index] = model->cell_params[src_index];
+        model->cell_params[dst_index].scoped = scoped;
         const char* source_name = model->cell_names[src_index];
         (void)set_string(&model->cell_names[dst_index], source_name);
     }
@@ -79,6 +87,7 @@ static void on_cell_removed_cb(void* ud, size_t index) {
     mcnp_model_t* model = (mcnp_model_t*)ud;
     if (!model || index >= model->cell_params_count) return;
     free(model->cell_names[index]);
+    mcnp_scoped_params_free(&model->cell_params[index].scoped);
     const size_t trailing = model->cell_params_count - index - 1;
     if (trailing > 0) {
         memmove(&model->cell_params[index], &model->cell_params[index + 1],
@@ -88,6 +97,7 @@ static void on_cell_removed_cb(void* ud, size_t index) {
     }
     model->cell_params_count--;
     model->cell_names[model->cell_params_count] = NULL;
+    memset(&model->cell_params[model->cell_params_count], 0, sizeof(*model->cell_params));
 }
 
 /* ============================================================================
@@ -288,8 +298,10 @@ void mcnp_model_destroy(mcnp_model_t* model) {
         }
     }
 
-    for (size_t i = 0; i < model->cell_params_count; i++)
+    for (size_t i = 0; i < model->cell_params_count; i++) {
         free(model->cell_names[i]);
+        mcnp_scoped_params_free(&model->cell_params[i].scoped);
+    }
     free(model->cell_names);
     free(model->name);
     free(model->title);
@@ -354,27 +366,52 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     return model;
 }
 
-static void params_to_metadata(const mcnp_cell_params_t* p,
+static int params_to_metadata(const mcnp_cell_params_t* p,
                                alea_model_cell_metadata_t* m) {
-    if (!p || !m) return;
-    m->importance_neutron = p->imp_n;
-    m->importance_photon = p->imp_p;
-    m->importance_electron = p->imp_e;
+    if (!p || !m) return -1;
+    m->importance_neutron = p->has_imp_n ? p->imp_n : 1.0;
+    m->importance_photon = p->has_imp_p ? p->imp_p : 1.0;
+    m->importance_electron = p->has_imp_e ? p->imp_e : 1.0;
     m->has_importance_neutron = p->has_imp_n;
     m->has_importance_photon = p->has_imp_p;
     m->has_importance_electron = p->has_imp_e;
     if (p->has_vol) { m->user_volume = p->vol; m->parameter_flags |= ALEA_CELL_PARAM_VOLUME; }
-    if (p->has_pwt) { m->photon_weight = p->pwt; m->parameter_flags |= ALEA_CELL_PARAM_PWT; }
-    if (p->has_nonu) { m->fission_turnoff = p->nonu; m->parameter_flags |= ALEA_CELL_PARAM_NONU; }
+    if (p->has_pwt) {
+        if (alea_photon_production_from_mcnp(p->pwt, &m->photon_production)) return -1;
+        m->parameter_flags |= ALEA_CELL_PARAM_PHOTON_PRODUCTION;
+    }
+    if (p->has_nonu) {
+        if (alea_fission_mode_from_mcnp(p->nonu, &m->fission_mode)) return -1;
+        m->parameter_flags |= ALEA_CELL_PARAM_FISSION_MODE;
+    }
     if (p->has_pd) { m->detector_contribution = p->pd; m->parameter_flags |= ALEA_CELL_PARAM_PD; }
     if (p->has_elpt) { m->energy_cutoff = p->elpt; m->parameter_flags |= ALEA_CELL_PARAM_ELPT; }
-    if (p->has_unc) { m->uncollided_secondaries = p->unc; m->parameter_flags |= ALEA_CELL_PARAM_UNC; }
+    if (p->has_unc) { m->secondary_collision_state = (alea_secondary_collision_state_t)p->unc; m->parameter_flags |= ALEA_CELL_PARAM_UNC; }
     if (p->has_bflcl) { m->magnetic_field = p->bflcl; m->parameter_flags |= ALEA_CELL_PARAM_BFLCL; }
+    m->energy_cutoff_particles = p->scoped.energy_cutoff_particles;
+    m->secondary_state_particles = p->scoped.secondary_state_particles;
+    for (int i = 0; i < ALEA_PARTICLE_COUNT; i++) {
+        m->particle_energy_cutoff[i] = p->scoped.energy_cutoff[i];
+        m->particle_secondary_state[i] = (alea_secondary_collision_state_t)p->scoped.secondary_state[i];
+    }
+    m->detector_probabilities = alea_detector_probability_copy(
+        p->scoped.detector_probabilities, p->scoped.detector_probability_count);
+    if (p->scoped.detector_probability_count && !m->detector_probabilities) return -1;
+    m->detector_probability_count = p->scoped.detector_probability_count;
+    if (!alea_cell_parameters_valid(m)) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "MCNP cell parameters cannot be represented in ALEA");
+        return -1;
+    }
+    return 0;
 }
 
-static void metadata_to_params(const alea_model_cell_metadata_t* m,
+static int metadata_to_params(const alea_model_cell_metadata_t* m,
                                mcnp_cell_params_t* p) {
-    if (!m || !p) return;
+    if (!m || !p) return -1;
+    if (!alea_cell_parameters_valid(m)) {
+        alea_set_error_detail(ALEA_ERR_EXPORT_FAILED, "invalid ALEA cell parameters for MCNP conversion");
+        return -1;
+    }
     p->imp_n = m->importance_neutron;
     p->imp_p = m->importance_photon;
     p->imp_e = m->importance_electron;
@@ -382,12 +419,33 @@ static void metadata_to_params(const alea_model_cell_metadata_t* m,
     p->has_imp_p = m->has_importance_photon;
     p->has_imp_e = m->has_importance_electron;
     if (m->parameter_flags & ALEA_CELL_PARAM_VOLUME) { p->vol = m->user_volume; p->has_vol = 1; }
-    if (m->parameter_flags & ALEA_CELL_PARAM_PWT) { p->pwt = m->photon_weight; p->has_pwt = 1; }
-    if (m->parameter_flags & ALEA_CELL_PARAM_NONU) { p->nonu = m->fission_turnoff; p->has_nonu = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_PHOTON_PRODUCTION) {
+        if (alea_photon_production_to_mcnp(&m->photon_production, &p->pwt)) {
+            alea_set_error_detail(ALEA_ERR_EXPORT_FAILED,
+                "photon production threshold cannot be represented in MCNP");
+            return -1;
+        }
+        p->has_pwt = 1;
+    }
+    if (m->parameter_flags & ALEA_CELL_PARAM_FISSION_MODE) {
+        if (alea_fission_mode_to_mcnp(m->fission_mode, &p->nonu)) return -1;
+        p->has_nonu = 1;
+    }
     if (m->parameter_flags & ALEA_CELL_PARAM_PD) { p->pd = m->detector_contribution; p->has_pd = 1; }
     if (m->parameter_flags & ALEA_CELL_PARAM_ELPT) { p->elpt = m->energy_cutoff; p->has_elpt = 1; }
-    if (m->parameter_flags & ALEA_CELL_PARAM_UNC) { p->unc = m->uncollided_secondaries; p->has_unc = 1; }
+    if (m->parameter_flags & ALEA_CELL_PARAM_UNC) { p->unc = (int)m->secondary_collision_state; p->has_unc = 1; }
     if (m->parameter_flags & ALEA_CELL_PARAM_BFLCL) { p->bflcl = m->magnetic_field; p->has_bflcl = 1; }
+    p->scoped.energy_cutoff_particles = m->energy_cutoff_particles;
+    p->scoped.secondary_state_particles = m->secondary_state_particles;
+    for (int i = 0; i < ALEA_PARTICLE_COUNT; i++) {
+        p->scoped.energy_cutoff[i] = m->particle_energy_cutoff[i];
+        p->scoped.secondary_state[i] = (int)m->particle_secondary_state[i];
+    }
+    p->scoped.detector_probabilities = alea_detector_probability_copy(
+        m->detector_probabilities, m->detector_probability_count);
+    if (m->detector_probability_count && !p->scoped.detector_probabilities) return -1;
+    p->scoped.detector_probability_count = m->detector_probability_count;
+    return 0;
 }
 
 alea_model_t* mcnp_model_to_alea_model(const mcnp_model_t* model) {
@@ -405,7 +463,10 @@ alea_model_t* mcnp_model_to_alea_model(const mcnp_model_t* model) {
     size_t count = alea_model_cell_metadata_count(result);
     if (count > model->cell_params_count) count = model->cell_params_count;
     for (size_t i = 0; i < count; i++) {
-        params_to_metadata(&model->cell_params[i], alea_model_cell_metadata_mut(result, i));
+        if (params_to_metadata(&model->cell_params[i], alea_model_cell_metadata_mut(result, i))) {
+            alea_model_destroy(result);
+            return NULL;
+        }
         if (alea_model_cell_set_name(result, i, model->cell_names[i])) {
             alea_model_destroy(result);
             return NULL;
@@ -431,7 +492,10 @@ mcnp_model_t* mcnp_model_from_alea_model(const alea_model_t* model) {
     if (count > alea_model_cell_metadata_count(model))
         count = alea_model_cell_metadata_count(model);
     for (size_t i = 0; i < count; i++) {
-        metadata_to_params(alea_model_cell_metadata(model, i), &result->cell_params[i]);
+        if (metadata_to_params(alea_model_cell_metadata(model, i), &result->cell_params[i])) {
+            mcnp_model_destroy(result);
+            return NULL;
+        }
         const alea_model_cell_metadata_t* metadata = alea_model_cell_metadata(model, i);
         if (mcnp_model_cell_set_name(result, i, metadata ? metadata->name : NULL)) {
             mcnp_model_destroy(result);

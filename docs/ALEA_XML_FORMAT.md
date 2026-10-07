@@ -25,7 +25,10 @@ in an `alea_model_t`. The conventional suffix is `.alea.xml`.
   <cells>
     <cell id="1" name="fuel cell" universe="0" material="7"
           density="10.2" density_units="g/cm3" region="-1">
-      <importance particle="neutron" value="1" />
+      <parameters>
+        <volume value="4188.790204786391" />
+        <importance particle="photon" value="0" />
+      </parameters>
     </cell>
   </cells>
 </alea>
@@ -126,19 +129,112 @@ bounding box never clips a cell and cannot change containment.
 
 ## Cell metadata and hierarchy
 
-Cells preserve `name`, leading `comments`, `inline_comment`, temperature in
-kelvin, universe and fill IDs, and fill transforms. Importances are explicit:
+Cells preserve `name`, leading `comments`, `inline_comment`, universe and fill
+IDs, and fill transforms. Supplementary physical and transport settings belong
+in one optional `<parameters>` container:
 
 ```xml
-<importance particle="photon" value="0" />
+<cell id="1" material="0" region="-1">
+  <parameters>
+    <volume value="12.5" />
+    <temperature value="600" units="K" />
+    <importance particle="neutron" value="0" />
+    <photon_production mode="threshold" weight_threshold="0.5"
+                       weight_basis="source_relative" />
+    <fission_mode value="capture_without_photons" />
+    <detector_contribution_probability value="1" />
+    <detector_contribution_probability tally="5" value="0.1" />
+    <energy_cutoff particle="electron" value="0.001" units="MeV" />
+    <secondary_collision_state particle="photon" value="collided" />
+    <magnetic_field ref="2" />
+  </parameters>
+</cell>
 ```
 
-The supported typed parameters are `volume`, `pwt`, `nonu`, `pd`, `elpt`,
-`unc`, and `bflcl`. Presence is distinct from a zero value:
+The container may be empty or omitted. Parameter order has no meaning.
+Singleton parameters cannot be repeated; particle-specific entries must be
+unique per particle, and detector probabilities must be unique per tally.
+Unknown elements, attributes, enum values, nonfinite numbers, and duplicate
+entries are rejected. Supported particle names are `neutron`, `photon`, and
+`electron`.
 
-```xml
-<parameter name="volume" value="12.5" />
-```
+| Element | Attributes and semantics | Omitted setting |
+|---|---|---|
+| `volume` | Nonnegative `value`, in cm³; supplied volume for tally normalization, independent of computed geometry | No supplied volume |
+| `temperature` | Nonnegative `value`; optional `units="K"` | No supplied temperature |
+| `importance` | Required `particle` and nonnegative `value` | **1 for each particle** |
+| `photon_production` | Required `mode`; threshold attributes described below | Threshold 1, relative to the source neutron weight |
+| `fission_mode` | `value="normal|capture_with_photons|capture_without_photons"` | `normal` |
+| `detector_contribution_probability` | `value` in [0,1]; optional `tally` | 1, unless overridden by the all-tally default |
+| `energy_cutoff` | Nonnegative `value`; optional `particle` and `units="MeV"` | Use the global transport cutoff |
+| `secondary_collision_state` | `value="collided|uncollided"`; optional `particle` | `uncollided`, unless overridden by the all-particle default |
+| `magnetic_field` | Nonnegative integer `ref`; zero explicitly means no field | No field |
+
+An omitted importance has an effective value of 1. Explicit `value="0"`
+is retained and overrides that default. Explicit settings equal to defaults
+also retain their presence through ALEA XML round trips.
+
+Without `particle`, an energy cutoff or secondary state defines a default for
+all supported particles in the cell. A particle-specific entry overrides that
+cell default. A cell energy cutoff supplies a lower bound; the higher of the
+cell cutoff and the global transport cutoff applies. Omitting `tally` (or
+using `tally="0"`) defines the detector probability default for all tallies;
+a positive tally ID selects a specific override. References preserve external
+IDs; this format currently does not define magnetic fields or detector tallies.
+
+### Photon production
+
+`photon_production` controls neutron-induced photon production:
+
+- `mode="threshold"` requires a positive `weight_threshold` and a
+  `weight_basis="absolute|source_relative"`. Both bases include neutron
+  importance scaling between the source and collision cells; `source_relative`
+  additionally scales by the source neutron's starting weight. Photons below
+  the resulting threshold undergo Russian roulette.
+- `mode="one_per_collision"` produces one photon per neutron collision when
+  photon production is possible.
+- `mode="off"` disables neutron-induced photon production in the cell.
+
+`weight_threshold` and `weight_basis` are accepted only in threshold mode.
+The native representation uses a positive threshold and a descriptive mode,
+without MCNP's sign conventions or sentinel values.
+
+### MCNP conversion
+
+MCNP conversion maps the normalized settings as follows:
+
+| ALEA setting | MCNP |
+|---|---|
+| Photon threshold, `absolute` | Positive `PWT` |
+| Photon threshold, `source_relative` | Negative `PWT` |
+| Photon mode `one_per_collision` | `PWT=0` |
+| Photon mode `off` | `PWT=-1000000` |
+| Fission mode `normal` | `NONU=1` |
+| Fission mode `capture_with_photons` | `NONU=0` |
+| Fission mode `capture_without_photons` | `NONU=2` |
+| Detector probability | `PD0` default and `PDn` tally overrides |
+| Energy cutoff | `ELPT:N`, `ELPT:P`, or `ELPT:E` |
+| Secondary state | `UNC:N`, `UNC:P`, or `UNC:E`; collided=0, uncollided=1 |
+| Magnetic field reference | `BFLCL` |
+
+A source-relative threshold of exactly 1000000 is valid in native ALEA XML
+but cannot be converted to MCNP because it collides with the production-off
+sentinel. Conversion reports an error rather than changing its meaning.
+All-particle defaults are expanded into particle-specific MCNP entries, with
+explicit particle overrides taking precedence. MCNP cell-card imports support
+comma-separated particle designators for `ELPT` and `UNC`, and per-tally `PDn`
+entries; supported parameters also survive `LIKE/BUT` resolution.
+
+Cell parameters must use the named elements inside `<parameters>`. Direct
+`<importance>` children, generic `<parameter name="...">` entries, and the
+cell `temperature` attribute are rejected.
+
+The C model exposes `alea_photon_production_t`, `alea_fission_mode_t`, per-particle
+cutoff/state arrays with presence masks, and owned per-tally detector entries.
+Use `alea_model_cell_set_detector_probability()` to set probabilities. Cell
+copy and removal hooks maintain those owned entries. The original parameter
+flag names remain aliases for the descriptive flag names; clients accessing
+model metadata structures should rebuild against the updated header.
 
 Rectangular and hexagonal lattice cells use `lattice_type`, six integer
 `lattice_dims`, flattened `lattice_fill`, three-value `lattice_pitch` and

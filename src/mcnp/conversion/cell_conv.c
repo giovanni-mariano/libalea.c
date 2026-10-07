@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
+#include <errno.h>
 
 typedef struct {
     double geometry;
@@ -468,6 +470,50 @@ static void parse_trcl_param(const char** cursor, alea_cell_params_t* params, in
     *cursor = p;
 }
 
+void alea_cell_params_free(alea_cell_params_t* params) {
+    if (!params) return;
+    free(params->lat_fill);
+    params->lat_fill = NULL;
+    mcnp_scoped_params_free(&params->scoped);
+}
+
+static int parse_scoped_particle_parameter(const char** cursor,
+    alea_cell_params_t* params, int secondary, int cell_id) {
+    const char* p = skip_ws(*cursor);
+    uint32_t particles = 0;
+    while (*p && *p != '=' && !isspace((unsigned char)*p)) {
+        int particle;
+        switch (toupper((unsigned char)*p++)) {
+            case 'N': particle = ALEA_PARTICLE_NEUTRON; break;
+            case 'P': particle = ALEA_PARTICLE_PHOTON; break;
+            case 'E': particle = ALEA_PARTICLE_ELECTRON; break;
+            default: return -1;
+        }
+        particles |= 1u << particle;
+        if (*p != ',') break;
+        p++;
+        if (!*p || *p == '=' || isspace((unsigned char)*p)) return -1;
+    }
+    if (!particles || (*p && *p != '=' && !isspace((unsigned char)*p))) return -1;
+    int ok = 0;
+    double value = parse_double_value(&p, &ok);
+    if (!ok || (*p && !isspace((unsigned char)*p)) || !isfinite(value) ||
+        (secondary ? (value != 0 && value != 1) : value < 0)) return -1;
+    for (int i = 0; i < ALEA_PARTICLE_COUNT; i++) {
+        uint32_t bit = 1u << i;
+        if (!(particles & bit)) continue;
+        uint32_t* presence = secondary ? &params->scoped.secondary_state_particles
+                                       : &params->scoped.energy_cutoff_particles;
+        if (*presence & bit)
+            ALEA_LOG_WARN("Cell %d: scoped parameter specified multiple times, using last value", cell_id);
+        *presence |= bit;
+        if (secondary) params->scoped.secondary_state[i] = (int)value;
+        else params->scoped.energy_cutoff[i] = value;
+    }
+    *cursor = p;
+    return 0;
+}
+
 int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params,
                           int cell_id) {
     if (!out_params) return -1;
@@ -562,6 +608,39 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
             out_params->lat_type = parse_int_value(&p, &ok);
             if (!ok) ALEA_LOG_WARN("Cell %d: invalid value for LAT parameter", cell_id);
             out_params->has_lat = 1;
+        }
+        else if (match_prefix(p, "ELPT:") || match_prefix(p, "UNC:")) {
+            int secondary = match_prefix(p, "UNC:");
+            p += secondary ? 4 : 5;
+            if (parse_scoped_particle_parameter(&p, out_params, secondary, cell_id)) {
+                alea_set_error_detail(ALEA_ERR_PARSE_ERROR,
+                    "Cell %d: invalid particle-specific %s parameter", cell_id, secondary ? "UNC" : "ELPT");
+                alea_cell_params_free(out_params);
+                return -1;
+            }
+        }
+        else if (match_prefix(p, "PD") && isdigit((unsigned char)p[2])) {
+            char* end;
+            errno = 0;
+            long tally = strtol(p + 2, &end, 10);
+            int invalid_tally = errno != 0;
+            p = end;
+            double probability = parse_double_value(&p, &ok);
+            if (!ok || (*p && !isspace((unsigned char)*p)) || invalid_tally ||
+                tally < 0 || tally > INT_MAX || !isfinite(probability) ||
+                probability < 0 || probability > 1) {
+                alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "Cell %d: invalid detector probability", cell_id);
+                alea_cell_params_free(out_params);
+                return -1;
+            }
+            if (!tally) {
+                out_params->pd = probability;
+                out_params->has_pd = 1;
+            } else if (alea_detector_probability_store(&out_params->scoped.detector_probabilities,
+                &out_params->scoped.detector_probability_count, (int)tally, probability)) {
+                alea_cell_params_free(out_params);
+                return -1;
+            }
         }
         // Simple keyword=value params (VOL, TMP, PWT, NONU, PD, ELPT, UNC, BFLCL)
         #define MCNP_PARSE_double parse_double_value
@@ -667,13 +746,16 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
     // Parse cell parameters (U=, FILL=, IMP:N=, etc.)
     alea_cell_params_t params;
     if (profile) t0 = cell_profile_now();
-    parse_cell_parameters(cell->parameters, &params, cell->cell_id);
+    if (parse_cell_parameters(cell->parameters, &params, cell->cell_id)) return UINT32_MAX;
 
     // For LIKE cells, parse BUT clause parameters (override template values)
     if (is_like_cell && but_clause) {
         alea_cell_params_t but_params;
         memset(&but_params, 0, sizeof(but_params));
-        parse_cell_parameters(but_clause, &but_params, cell->cell_id);
+        if (parse_cell_parameters(but_clause, &but_params, cell->cell_id)) {
+            alea_cell_params_free(&params);
+            return UINT32_MAX;
+        }
 
         // Merge BUT parameters into params (BUT takes priority)
         if (but_params.has_mat) {
@@ -732,6 +814,21 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
             params.lat_type = but_params.lat_type;
             params.has_lat = 1;
         }
+        if (mcnp_scoped_params_merge(&params.scoped, &but_params.scoped, 1)) {
+            alea_cell_params_free(&but_params);
+            alea_cell_params_free(&params);
+            return UINT32_MAX;
+        }
+        /* Transfer any replacement lattice before releasing BUT temporaries. */
+        if (but_params.lat_fill_is_array && but_params.lat_fill) {
+            free(params.lat_fill);
+            params.lat_fill = but_params.lat_fill;
+            but_params.lat_fill = NULL;
+            params.lat_fill_count = but_params.lat_fill_count;
+            params.lat_fill_is_array = 1;
+            memcpy(params.lat_fill_dims, but_params.lat_fill_dims, sizeof(params.lat_fill_dims));
+        }
+        alea_cell_params_free(&but_params);
     }
     if (profile) {
         t1 = cell_profile_now();
@@ -762,6 +859,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                                         mat_index, density,
                                         params.universe_id);
     if (cell_idx < 0) {
+        alea_cell_params_free(&params);
         return UINT32_MAX;
     }
     if (profile) {
@@ -812,6 +910,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         } else {
             ALEA_LOG_ERROR("Cell %d: invalid inline FILL transform: %s",
                     cell->cell_id, alea_error());
+            alea_cell_params_free(&params);
             return UINT32_MAX;
         }
     }
@@ -828,7 +927,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         }
         entry->lat_fill = params.lat_fill;
         entry->lat_fill_count = params.lat_fill_count;
-        // Don't free params.lat_fill - ownership transferred
+        params.lat_fill = NULL; // ownership transferred
     }
 
     // For simple FILL=N with LAT, synthesize the single universe value and
@@ -858,6 +957,9 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
     if (model) {
         mcnp_cell_params_t* mp = mcnp_cell_params(model, (size_t)cell_idx);
         if (mp) {
+            mcnp_scoped_params_free(&mp->scoped);
+            mp->scoped = params.scoped;
+            memset(&params.scoped, 0, sizeof(params.scoped));
             // Particle importances
             mp->imp_n = params.imp_n;
             mp->imp_p = params.imp_p;
@@ -886,6 +988,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                 if (mp->fill_transform_index == MCNP_INLINE_TRANSFORM_INVALID) {
                     ALEA_LOG_ERROR("Cell %d: failed to store inline FILL transform",
                                    cell->cell_id);
+                    alea_cell_params_free(&params);
                     return UINT32_MAX;
                 }
             }
@@ -903,6 +1006,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                 if (mp->trcl_inline_index == MCNP_INLINE_TRANSFORM_INVALID) {
                     ALEA_LOG_ERROR("Cell %d: failed to store inline TRCL transform",
                                    cell->cell_id);
+                    alea_cell_params_free(&params);
                     return UINT32_MAX;
                 }
             }
@@ -915,6 +1019,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
                 } else {
                     ALEA_LOG_ERROR("Cell %d: invalid inline TRCL transform: %s",
                             cell->cell_id, alea_error());
+                    alea_cell_params_free(&params);
                     return UINT32_MAX;
                 }
             }
@@ -965,6 +1070,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
     
     // For LIKE cells, root is ALEA_NODE_ID_INVALID (pending resolution) but the
     // cell was created successfully. Return a non-error value.
+    alea_cell_params_free(&params);
     if (is_like_cell) return ALEA_NODE_ID_LIKE_PENDING;
     return root;
 }
@@ -1130,9 +1236,21 @@ int alea_resolve_like_cells(alea_system_t* sys, mcnp_model_t* model) {
             cell->density = template_cell->density;
         }
 
+        if (!cell->has_temperature && template_cell->has_temperature) {
+            cell->temperature = template_cell->temperature;
+            cell->has_temperature = 1;
+        }
+
         /* Inherit MCNP-specific parameters from template */
         const mcnp_cell_params_t* template_mp = mcnp_cell_params_const(model, (size_t)template_idx);
         if (template_mp) {
+            #define X_INHERIT(name, type, kw, prec) \
+                if (!mp->has_##name && template_mp->has_##name) { \
+                    mp->name = template_mp->name; mp->has_##name = 1; \
+                }
+            MCNP_CELL_SIMPLE_PARAMS(X_INHERIT)
+            #undef X_INHERIT
+            if (mcnp_scoped_params_merge(&mp->scoped, &template_mp->scoped, 0)) return -1;
             if (!mp->has_imp_n && template_mp->has_imp_n) {
                 mp->imp_n = template_mp->imp_n;
                 mp->has_imp_n = 1;

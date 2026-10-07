@@ -9,6 +9,7 @@
 #include "core/alea_system.h"
 #include "util/compat.h"
 #include "util/str_builder.h"
+#include "util/cell_parameter.h"
 
 #include <errno.h>
 #include <ctype.h>
@@ -36,6 +37,7 @@ static int parse_int_strict(const char* text, int* out) {
     if (!text || !*text || !out) return -1;
     errno = 0;
     value = strtol(text, &end, 10);
+    if (end == text) return -1;
     while (end && isspace((unsigned char)*end)) end++;
     if (errno || !end || *end || value < INT_MIN || value > INT_MAX) return -1;
     *out = (int)value;
@@ -48,6 +50,7 @@ static int parse_double_strict(const char* text, double* out) {
     if (!text || !*text || !out) return -1;
     errno = 0;
     value = strtod(text, &end);
+    if (end == text) return -1;
     while (end && isspace((unsigned char)*end)) end++;
     if (errno || !end || *end || !isfinite(value)) return -1;
     *out = value;
@@ -135,6 +138,21 @@ static int attr_allowed(const alea_xml_dom_element_t* e,
     if (attr_allowed((e), names, sizeof(names) / sizeof(names[0]))) return -1; \
 } while (0)
 
+static int validate_cell_parameter(const alea_xml_dom_element_t* e) {
+    if (!strcmp(e->tag_name, "importance")) VALIDATE_ATTRS(e, "particle", "value");
+    else if (!strcmp(e->tag_name, "volume")) VALIDATE_ATTRS(e, "value");
+    else if (!strcmp(e->tag_name, "temperature")) VALIDATE_ATTRS(e, "value", "units");
+    else if (!strcmp(e->tag_name, "photon_production")) VALIDATE_ATTRS(e, "mode", "weight_threshold", "weight_basis");
+    else if (!strcmp(e->tag_name, "fission_mode")) VALIDATE_ATTRS(e, "value");
+    else if (!strcmp(e->tag_name, "detector_contribution_probability")) VALIDATE_ATTRS(e, "tally", "value");
+    else if (!strcmp(e->tag_name, "energy_cutoff")) VALIDATE_ATTRS(e, "particle", "value", "units");
+    else if (!strcmp(e->tag_name, "secondary_collision_state")) VALIDATE_ATTRS(e, "particle", "value");
+    else if (!strcmp(e->tag_name, "magnetic_field")) VALIDATE_ATTRS(e, "ref");
+    else return fail_element(e, "unknown cell parameter");
+    if (e->child_count) return fail_element(e, "child elements are not allowed");
+    return 0;
+}
+
 static int validate_structure(const alea_xml_dom_element_t* root) {
     VALIDATE_ATTRS(root, "version", "length_units", "name", "title", "comments");
     int materials = 0, transforms = 0, surfaces = 0, cells = 0;
@@ -180,13 +198,17 @@ static int validate_structure(const alea_xml_dom_element_t* root) {
                 if (e->child_count) return fail_element(e, "child elements are not allowed");
             } else {
                 if (strcmp(e->tag_name, "cell")) return fail_element(e, "unknown cells child");
-                VALIDATE_ATTRS(e, "id", "name", "comments", "inline_comment", "universe", "material", "material_kind", "density", "density_units", "region", "bbox", "temperature", "fill", "fill_transform", "lattice_type", "lattice_dims", "lattice_fill", "lattice_pitch", "lattice_lower_left", "lattice_outer", "lattice_repeating", "lattice_zero_coords");
+                VALIDATE_ATTRS(e, "id", "name", "comments", "inline_comment", "universe", "material", "material_kind", "density", "density_units", "region", "bbox", "fill", "fill_transform", "lattice_type", "lattice_dims", "lattice_fill", "lattice_pitch", "lattice_lower_left", "lattice_outer", "lattice_repeating", "lattice_zero_coords");
+                int containers = 0;
                 for (size_t k = 0; k < e->child_count; k++) {
                     alea_xml_dom_element_t* c = e->children[k];
-                    if (!strcmp(c->tag_name, "importance")) VALIDATE_ATTRS(c, "particle", "value");
-                    else if (!strcmp(c->tag_name, "parameter")) VALIDATE_ATTRS(c, "name", "value");
-                    else return fail_element(c, "unknown cell child");
-                    if (c->child_count) return fail_element(c, "child elements are not allowed");
+                    if (!strcmp(c->tag_name, "parameters")) {
+                        if (++containers > 1) return fail_element(c, "duplicate parameters container");
+                        if (c->attr_count || (c->text_content && *c->text_content))
+                            return fail_element(c, "container attributes and text are not allowed");
+                        for (size_t l = 0; l < c->child_count; l++)
+                            if (validate_cell_parameter(c->children[l])) return -1;
+                    } else return fail_element(c, "cell parameters belong inside <parameters>");
                 }
             }
         }
@@ -513,17 +535,145 @@ static int parse_surfaces(alea_system_t* sys, const alea_xml_dom_element_t* root
     return 0;
 }
 
-static int set_parameter(alea_model_cell_metadata_t* m, const char* name, const char* value) {
-    double d; int v;
-    if(!name||!value)return -1;
-    if(!strcmp(name,"volume")){if(parse_double_strict(value,&d))return -1;m->user_volume=d;m->parameter_flags|=ALEA_CELL_PARAM_VOLUME;}
-    else if(!strcmp(name,"pwt")){if(parse_double_strict(value,&d))return -1;m->photon_weight=d;m->parameter_flags|=ALEA_CELL_PARAM_PWT;}
-    else if(!strcmp(name,"pd")){if(parse_double_strict(value,&d))return -1;m->detector_contribution=d;m->parameter_flags|=ALEA_CELL_PARAM_PD;}
-    else if(!strcmp(name,"elpt")){if(parse_double_strict(value,&d))return -1;m->energy_cutoff=d;m->parameter_flags|=ALEA_CELL_PARAM_ELPT;}
-    else if(!strcmp(name,"nonu")){if(parse_int_strict(value,&v))return -1;m->fission_turnoff=v;m->parameter_flags|=ALEA_CELL_PARAM_NONU;}
-    else if(!strcmp(name,"unc")){if(parse_int_strict(value,&v))return -1;m->uncollided_secondaries=v;m->parameter_flags|=ALEA_CELL_PARAM_UNC;}
-    else if(!strcmp(name,"bflcl")){if(parse_int_strict(value,&v))return -1;m->magnetic_field=v;m->parameter_flags|=ALEA_CELL_PARAM_BFLCL;}
-    else return -1;
+static int particle_index(const char* name) {
+    static const char* const names[] = {"neutron", "photon", "electron"};
+    for (int i = 0; i < ALEA_PARTICLE_COUNT; i++)
+        if (name && !strcmp(name, names[i])) return i;
+    return -1;
+}
+
+static const char* particle_name(int index) {
+    static const char* const names[] = {"neutron", "photon", "electron"};
+    return names[index];
+}
+
+static const char* fission_mode_name(alea_fission_mode_t mode) {
+    switch (mode) {
+        case ALEA_FISSION_NORMAL: return "normal";
+        case ALEA_FISSION_CAPTURE_WITH_PHOTONS: return "capture_with_photons";
+        case ALEA_FISSION_CAPTURE_WITHOUT_PHOTONS: return "capture_without_photons";
+        default: return NULL;
+    }
+}
+
+static const char* secondary_state_name(alea_secondary_collision_state_t state) {
+    if (state == ALEA_SECONDARY_COLLIDED) return "collided";
+    if (state == ALEA_SECONDARY_UNCOLLIDED) return "uncollided";
+    return NULL;
+}
+
+static int parse_cell_parameter(alea_model_t* model, size_t index,
+                               const alea_xml_dom_element_t* e) {
+    alea_model_cell_metadata_t* m = alea_model_cell_metadata_mut(model, index);
+    const char* name = e->tag_name;
+    const char* value = alea_xml_dom_get_attr(e, "value");
+    uint32_t flag = 0;
+    double d;
+    int v;
+    if (!strcmp(name, "importance")) {
+        int particle = particle_index(alea_xml_dom_get_attr(e, "particle"));
+        if (particle < 0 || parse_double_strict(value, &d) || d < 0)
+            return fail_element(e, "invalid particle or importance");
+        if ((particle == ALEA_PARTICLE_NEUTRON && m->has_importance_neutron) ||
+            (particle == ALEA_PARTICLE_PHOTON && m->has_importance_photon) ||
+            (particle == ALEA_PARTICLE_ELECTRON && m->has_importance_electron))
+            return fail_element(e, "duplicate importance for particle");
+        if (particle == ALEA_PARTICLE_NEUTRON) { m->importance_neutron = d; m->has_importance_neutron = 1; }
+        if (particle == ALEA_PARTICLE_PHOTON) { m->importance_photon = d; m->has_importance_photon = 1; }
+        if (particle == ALEA_PARTICLE_ELECTRON) { m->importance_electron = d; m->has_importance_electron = 1; }
+        return 0;
+    } else if (!strcmp(name, "temperature")) {
+        alea_cell_entry_t* cell = &alea_model_system(model)->cells.data[index];
+        const char* units = alea_xml_dom_get_attr(e, "units");
+        if (cell->has_temperature) return fail_element(e, "duplicate temperature");
+        if ((units && strcmp(units, "K")) || parse_double_strict(value, &d) || d < 0 ||
+            alea_cell_set_temperature(alea_model_system(model), (int)index, d))
+            return fail_element(e, "invalid temperature; expected kelvin");
+        return 0;
+    } else if (!strcmp(name, "volume")) {
+        flag = ALEA_CELL_PARAM_VOLUME;
+        if (parse_double_strict(value, &d) || d < 0) return fail_element(e, "invalid volume");
+        m->user_volume = d;
+    } else if (!strcmp(name, "photon_production")) {
+        flag = ALEA_CELL_PARAM_PHOTON_PRODUCTION;
+        const char* mode = alea_xml_dom_get_attr(e, "mode");
+        const char* basis = alea_xml_dom_get_attr(e, "weight_basis");
+        const char* threshold = alea_xml_dom_get_attr(e, "weight_threshold");
+        if (mode && !strcmp(mode, "threshold")) {
+            if (!basis || parse_double_strict(threshold, &d) || d <= 0)
+                return fail_element(e, "threshold mode requires positive weight_threshold and weight_basis");
+            m->photon_production.mode = ALEA_PHOTON_PRODUCTION_THRESHOLD;
+            m->photon_production.weight_threshold = d;
+            if (!strcmp(basis, "absolute")) m->photon_production.weight_basis = ALEA_PHOTON_WEIGHT_ABSOLUTE;
+            else if (!strcmp(basis, "source_relative")) m->photon_production.weight_basis = ALEA_PHOTON_WEIGHT_SOURCE_RELATIVE;
+            else return fail_element(e, "invalid weight_basis");
+        } else {
+            if (threshold || basis) return fail_element(e, "weight attributes require threshold mode");
+            if (mode && !strcmp(mode, "off")) m->photon_production.mode = ALEA_PHOTON_PRODUCTION_OFF;
+            else if (mode && !strcmp(mode, "one_per_collision")) m->photon_production.mode = ALEA_PHOTON_PRODUCTION_ONE_PER_COLLISION;
+            else return fail_element(e, "invalid photon production mode");
+            m->photon_production.weight_threshold = 0;
+            m->photon_production.weight_basis = ALEA_PHOTON_WEIGHT_ABSOLUTE;
+        }
+    } else if (!strcmp(name, "fission_mode")) {
+        flag = ALEA_CELL_PARAM_FISSION_MODE;
+        if (value && !strcmp(value, "normal")) m->fission_mode = ALEA_FISSION_NORMAL;
+        else if (value && !strcmp(value, "capture_with_photons")) m->fission_mode = ALEA_FISSION_CAPTURE_WITH_PHOTONS;
+        else if (value && !strcmp(value, "capture_without_photons")) m->fission_mode = ALEA_FISSION_CAPTURE_WITHOUT_PHOTONS;
+        else return fail_element(e, "invalid fission mode");
+    } else if (!strcmp(name, "detector_contribution_probability")) {
+        int tally = 0;
+        const char* target = alea_xml_dom_get_attr(e, "tally");
+        if ((target && (parse_int_strict(target, &tally) || tally < 0)) ||
+            parse_double_strict(value, &d) || d < 0 || d > 1)
+            return fail_element(e, "invalid tally or detector probability");
+        if (tally) {
+            for (size_t i = 0; i < m->detector_probability_count; i++)
+                if (m->detector_probabilities[i].tally == tally)
+                    return fail_element(e, "duplicate detector probability for tally");
+            if (alea_model_cell_set_detector_probability(model, index, tally, d)) return -1;
+            return 0;
+        }
+        flag = ALEA_CELL_PARAM_DETECTOR_PROBABILITY;
+        m->detector_contribution = d;
+    } else if (!strcmp(name, "energy_cutoff")) {
+        const char* particle = alea_xml_dom_get_attr(e, "particle");
+        const char* units = alea_xml_dom_get_attr(e, "units");
+        if ((units && strcmp(units, "MeV")) || parse_double_strict(value, &d) || d < 0)
+            return fail_element(e, "invalid energy cutoff; expected MeV");
+        if (particle) {
+            int pi = particle_index(particle);
+            if (pi < 0) return fail_element(e, "invalid particle");
+            if (m->energy_cutoff_particles & (1u << pi)) return fail_element(e, "duplicate energy cutoff for particle");
+            m->particle_energy_cutoff[pi] = d;
+            m->energy_cutoff_particles |= 1u << pi;
+            return 0;
+        }
+        flag = ALEA_CELL_PARAM_ENERGY_CUTOFF;
+        m->energy_cutoff = d;
+    } else if (!strcmp(name, "secondary_collision_state")) {
+        if (value && !strcmp(value, "collided")) v = ALEA_SECONDARY_COLLIDED;
+        else if (value && !strcmp(value, "uncollided")) v = ALEA_SECONDARY_UNCOLLIDED;
+        else return fail_element(e, "invalid secondary state");
+        const char* particle = alea_xml_dom_get_attr(e, "particle");
+        if (particle) {
+            int pi = particle_index(particle);
+            if (pi < 0) return fail_element(e, "invalid particle");
+            if (m->secondary_state_particles & (1u << pi)) return fail_element(e, "duplicate secondary state for particle");
+            m->particle_secondary_state[pi] = (alea_secondary_collision_state_t)v;
+            m->secondary_state_particles |= 1u << pi;
+            return 0;
+        }
+        flag = ALEA_CELL_PARAM_SECONDARY_STATE;
+        m->secondary_collision_state = (alea_secondary_collision_state_t)v;
+    } else if (!strcmp(name, "magnetic_field")) {
+        flag = ALEA_CELL_PARAM_MAGNETIC_FIELD;
+        if (parse_int_strict(alea_xml_dom_get_attr(e, "ref"), &v) || v < 0)
+            return fail_element(e, "invalid magnetic field reference");
+        m->magnetic_field = v;
+    } else return fail_element(e, "unknown parameter");
+    if (m->parameter_flags & flag) return fail_element(e, "duplicate parameter");
+    m->parameter_flags |= flag;
     return 0;
 }
 
@@ -568,7 +718,6 @@ static int parse_cells(alea_system_t* sys, const alea_xml_dom_element_t* root,
         const char* comments=alea_xml_dom_get_attr(e,"comments"); const char* inline_comment=alea_xml_dom_get_attr(e,"inline_comment");
         if(comments&&alea_cell_set_comment(sys,index,comments))return -1;
         if(inline_comment&&alea_cell_set_inline_comment(sys,index,inline_comment))return -1;
-        if(alea_xml_dom_get_attr(e,"temperature")&&alea_cell_set_temperature(sys,index,alea_xml_dom_get_attr_double(e,"temperature",0)))return fail_element(e,"invalid temperature");
         int fill=0,fill_transform=0;
         if(alea_xml_dom_get_attr(e,"fill")&&parse_int_strict(alea_xml_dom_get_attr(e,"fill"),&fill))return fail_element(e,"invalid fill");
         if(alea_xml_dom_get_attr(e,"fill_transform")&&parse_int_strict(alea_xml_dom_get_attr(e,"fill_transform"),&fill_transform))return fail_element(e,"invalid fill_transform");
@@ -595,20 +744,12 @@ static int parse_cells(alea_system_t* sys, const alea_xml_dom_element_t* root,
     *model_out=model;
     for(size_t i=0,cell_index=0;i<section->child_count;i++) {
         alea_xml_dom_element_t* e=section->children[i];if(strcmp(e->tag_name,"cell"))continue;
-        alea_model_cell_metadata_t* m=alea_model_cell_metadata_mut(model,cell_index++);
-        if(alea_model_cell_set_name(model,cell_index-1,alea_xml_dom_get_attr(e,"name"))<0)return -1;
-        for(size_t j=0;j<e->child_count;j++) {
-            alea_xml_dom_element_t* c=e->children[j];
-            if(!strcmp(c->tag_name,"importance")) {
-                const char* particle=alea_xml_dom_get_attr(c,"particle");double value;
-                if(parse_double_strict(alea_xml_dom_get_attr(c,"value"),&value)||value<0)return fail_element(c,"invalid importance");
-                if(particle&&!strcmp(particle,"neutron")){m->importance_neutron=value;m->has_importance_neutron=1;}
-                else if(particle&&!strcmp(particle,"photon")){m->importance_photon=value;m->has_importance_photon=1;}
-                else if(particle&&!strcmp(particle,"electron")){m->importance_electron=value;m->has_importance_electron=1;}
-                else return fail_element(c,"invalid particle");
-            } else if(!strcmp(c->tag_name,"parameter")&&set_parameter(m,alea_xml_dom_get_attr(c,"name"),alea_xml_dom_get_attr(c,"value"))) {
-                return fail_element(c,"unknown or invalid parameter");
-            }
+        size_t index = cell_index++;
+        if (alea_model_cell_set_name(model, index, alea_xml_dom_get_attr(e, "name"))) return -1;
+        for (size_t j = 0; j < e->child_count; j++) {
+            alea_xml_dom_element_t* c = e->children[j];
+            for (size_t k = 0; k < c->child_count; k++)
+                if (parse_cell_parameter(model, index, c->children[k])) return -1;
         }
     }
     return 0;
@@ -682,6 +823,89 @@ static int node_expr(const alea_system_t* sys,alea_node_id_t id,str_builder_t* s
 
 #define XOK(expr) do { if (!(expr)) return -1; } while (0)
 
+static int write_value_parameter(alea_xml_writer_t* x, const char* name,
+                                 const char* particle, double value) {
+    XOK(alea_xml_writer_start_element(x, name));
+    if (particle) XOK(alea_xml_writer_attribute(x, "particle", particle));
+    XOK(alea_xml_writer_attribute_f(x, "value", value, 17, false));
+    if (!strcmp(name, "energy_cutoff")) XOK(alea_xml_writer_attribute(x, "units", "MeV"));
+    if (!strcmp(name, "temperature")) XOK(alea_xml_writer_attribute(x, "units", "K"));
+    XOK(alea_xml_writer_end_start_tag(x, true));
+    return 0;
+}
+
+static int write_enum_parameter(alea_xml_writer_t* x, const char* name,
+                                const char* particle, const char* value) {
+    XOK(alea_xml_writer_start_element(x, name));
+    if (particle) XOK(alea_xml_writer_attribute(x, "particle", particle));
+    XOK(alea_xml_writer_attribute(x, "value", value));
+    XOK(alea_xml_writer_end_start_tag(x, true));
+    return 0;
+}
+
+static int has_cell_parameters(const alea_model_cell_metadata_t* m,
+                               const alea_cell_entry_t* cell) {
+    return cell->has_temperature || (m && (m->has_importance_neutron ||
+        m->has_importance_photon || m->has_importance_electron || m->parameter_flags ||
+        m->energy_cutoff_particles || m->secondary_state_particles ||
+        m->detector_probability_count));
+}
+
+static int write_cell_parameters(alea_xml_writer_t* x,
+    const alea_model_cell_metadata_t* m, const alea_cell_entry_t* cell) {
+    XOK(alea_xml_writer_start_element(x, "parameters"));
+    XOK(alea_xml_writer_end_start_tag(x, false));
+    if (cell->has_temperature && write_value_parameter(x, "temperature", NULL, cell->temperature)) return -1;
+    if (m) {
+        if (m->has_importance_neutron && write_value_parameter(x, "importance", "neutron", m->importance_neutron)) return -1;
+        if (m->has_importance_photon && write_value_parameter(x, "importance", "photon", m->importance_photon)) return -1;
+        if (m->has_importance_electron && write_value_parameter(x, "importance", "electron", m->importance_electron)) return -1;
+        if ((m->parameter_flags & ALEA_CELL_PARAM_VOLUME) && write_value_parameter(x, "volume", NULL, m->user_volume)) return -1;
+        if (m->parameter_flags & ALEA_CELL_PARAM_PHOTON_PRODUCTION) {
+            XOK(alea_xml_writer_start_element(x, "photon_production"));
+            const alea_photon_production_t* production = &m->photon_production;
+            const char* mode = production->mode == ALEA_PHOTON_PRODUCTION_THRESHOLD ? "threshold" :
+                production->mode == ALEA_PHOTON_PRODUCTION_OFF ? "off" : "one_per_collision";
+            XOK(alea_xml_writer_attribute(x, "mode", mode));
+            if (production->mode == ALEA_PHOTON_PRODUCTION_THRESHOLD) {
+                XOK(alea_xml_writer_attribute_f(x, "weight_threshold", production->weight_threshold, 17, false));
+                XOK(alea_xml_writer_attribute(x, "weight_basis",
+                    production->weight_basis == ALEA_PHOTON_WEIGHT_ABSOLUTE ? "absolute" : "source_relative"));
+            }
+            XOK(alea_xml_writer_end_start_tag(x, true));
+        }
+        if ((m->parameter_flags & ALEA_CELL_PARAM_FISSION_MODE) &&
+            write_enum_parameter(x, "fission_mode", NULL, fission_mode_name(m->fission_mode))) return -1;
+        if (m->parameter_flags & ALEA_CELL_PARAM_DETECTOR_PROBABILITY) {
+            if (write_value_parameter(x, "detector_contribution_probability", NULL, m->detector_contribution)) return -1;
+        }
+        for (size_t i = 0; i < m->detector_probability_count; i++) {
+            const alea_detector_probability_t* probability = &m->detector_probabilities[i];
+            XOK(alea_xml_writer_start_element(x, "detector_contribution_probability"));
+            XOK(alea_xml_writer_attribute_i(x, "tally", probability->tally));
+            XOK(alea_xml_writer_attribute_f(x, "value", probability->probability, 17, false));
+            XOK(alea_xml_writer_end_start_tag(x, true));
+        }
+        if ((m->parameter_flags & ALEA_CELL_PARAM_ENERGY_CUTOFF) &&
+            write_value_parameter(x, "energy_cutoff", NULL, m->energy_cutoff)) return -1;
+        if ((m->parameter_flags & ALEA_CELL_PARAM_SECONDARY_STATE) &&
+            write_enum_parameter(x, "secondary_collision_state", NULL, secondary_state_name(m->secondary_collision_state))) return -1;
+        for (int i = 0; i < ALEA_PARTICLE_COUNT; i++) {
+            if ((m->energy_cutoff_particles & (1u << i)) &&
+                write_value_parameter(x, "energy_cutoff", particle_name(i), m->particle_energy_cutoff[i])) return -1;
+            if ((m->secondary_state_particles & (1u << i)) &&
+                write_enum_parameter(x, "secondary_collision_state", particle_name(i), secondary_state_name(m->particle_secondary_state[i]))) return -1;
+        }
+        if (m->parameter_flags & ALEA_CELL_PARAM_MAGNETIC_FIELD) {
+            XOK(alea_xml_writer_start_element(x, "magnetic_field"));
+            XOK(alea_xml_writer_attribute_i(x, "ref", m->magnetic_field));
+            XOK(alea_xml_writer_end_start_tag(x, true));
+        }
+    }
+    XOK(alea_xml_writer_end_element(x, "parameters"));
+    return 0;
+}
+
 static int preflight_export(const alea_model_t* model, const alea_system_t* sys) {
     if (model && alea_model_cell_metadata_count(model) != sys->cells.count) {
         alea_set_error_detail(ALEA_ERR_EXPORT_FAILED,
@@ -719,6 +943,13 @@ static int preflight_export(const alea_model_t* model, const alea_system_t* sys)
         }
     }
     for (size_t i = 0; i < sys->cells.count; i++) {
+        const alea_cell_entry_t* cell = &sys->cells.data[i];
+        if ((cell->has_temperature && !alea_parameter_nonnegative(cell->temperature)) ||
+            !alea_cell_parameters_valid(model ? alea_model_cell_metadata(model, i) : NULL)) {
+            alea_set_error_detail(ALEA_ERR_EXPORT_FAILED,
+                "ALEA XML: cell %d has invalid parameters", cell->mc_cell_id);
+            return -1;
+        }
         if (sys->cells.data[i].root_node_id >= sys->nodes.count) {
             alea_set_error_detail(ALEA_ERR_EXPORT_FAILED,
                                   "ALEA XML: cell %d has an invalid region",
@@ -755,9 +986,15 @@ static int write_model(const alea_model_t* model,const alea_system_t* sys,FILE* 
     XOK(alea_xml_writer_end_element(&x,"surfaces"));
     XOK(alea_xml_writer_start_element(&x,"cells"));XOK(alea_xml_writer_end_start_tag(&x,false));
     for(size_t i=0;i<sys->cells.count;i++){const alea_cell_entry_t* c=&sys->cells.data[i];arena_t a;if(!arena_init(&a))return -1;str_builder_t sb;str_builder_init(&sb,&a,128);if(node_expr(sys,c->root_node_id,&sb)){arena_free(&a);return -1;}const char* region=str_builder_get(&sb);XOK(alea_xml_writer_start_element(&x,"cell"));XOK(alea_xml_writer_attribute_i(&x,"id",c->mc_cell_id));XOK(alea_xml_writer_attribute_i(&x,"universe",c->universe_id));XOK(alea_xml_writer_attribute_i(&x,"material",c->material_id));if(c->material_id>0){if(c->material_index<0&&alea_find_mixture_by_id(sys,c->material_id)>=0)XOK(alea_xml_writer_attribute(&x,"material_kind","mixture"));XOK(alea_xml_writer_attribute_f(&x,"density",c->density,17,false));XOK(alea_xml_writer_attribute(&x,"density_units",c->is_mass_density?"g/cm3":"atom/b-cm"));}XOK(alea_xml_writer_attribute(&x,"region",region));alea_bbox_t bbox=alea_node_bbox_get(&sys->nodes.data[c->root_node_id].bbox);if(isfinite(bbox.min_x)&&isfinite(bbox.max_x)&&isfinite(bbox.min_y)&&isfinite(bbox.max_y)&&isfinite(bbox.min_z)&&isfinite(bbox.max_z)&&bbox.min_x<=bbox.max_x&&bbox.min_y<=bbox.max_y&&bbox.min_z<=bbox.max_z){double bv[6]={bbox.min_x,bbox.max_x,bbox.min_y,bbox.max_y,bbox.min_z,bbox.max_z};char bbox_text[384];if(append_values(bbox_text,sizeof(bbox_text),bv,6)){arena_free(&a);return -1;}XOK(alea_xml_writer_attribute(&x,"bbox",bbox_text));}
-        const alea_model_cell_metadata_t* m=model?alea_model_cell_metadata(model,i):NULL;if(m)XOK(write_attr_optional(&x,"name",m->name));XOK(write_attr_optional(&x,"comments",c->comments));XOK(write_attr_optional(&x,"inline_comment",c->inline_comment));if(c->has_temperature)XOK(alea_xml_writer_attribute_f(&x,"temperature",c->temperature,17,false));if(c->fill_universe>0)XOK(alea_xml_writer_attribute_i(&x,"fill",c->fill_universe));if(c->fill_transform)XOK(alea_xml_writer_attribute_i(&x,"fill_transform",c->fill_transform));
+        const alea_model_cell_metadata_t* m=model?alea_model_cell_metadata(model,i):NULL;if(m)XOK(write_attr_optional(&x,"name",m->name));XOK(write_attr_optional(&x,"comments",c->comments));XOK(write_attr_optional(&x,"inline_comment",c->inline_comment));if(c->fill_universe>0)XOK(alea_xml_writer_attribute_i(&x,"fill",c->fill_universe));if(c->fill_transform)XOK(alea_xml_writer_attribute_i(&x,"fill_transform",c->fill_transform));
         if(c->lat_type){char dims[128],pitch[256],lower[256];str_builder_t fill_sb;str_builder_init(&fill_sb,&a,128);for(size_t j=0;j<c->lat_fill_count;j++){if(j&&!str_builder_putc(&fill_sb,' ')){arena_free(&a);return -1;}if(!str_builder_int(&fill_sb,c->lat_fill[j])){arena_free(&a);return -1;}}const char* fill=str_builder_get(&fill_sb);if(append_int_values(dims,sizeof(dims),c->lat_fill_dims,6)||append_values(pitch,sizeof(pitch),c->lat_pitch,3)||append_values(lower,sizeof(lower),c->lat_lower_left,3)){arena_free(&a);return -1;}XOK(alea_xml_writer_attribute_i(&x,"lattice_type",c->lat_type));XOK(alea_xml_writer_attribute(&x,"lattice_dims",dims));XOK(alea_xml_writer_attribute(&x,"lattice_fill",fill));XOK(alea_xml_writer_attribute(&x,"lattice_pitch",pitch));XOK(alea_xml_writer_attribute(&x,"lattice_lower_left",lower));if(c->lat_outer_universe>=0)XOK(alea_xml_writer_attribute_i(&x,"lattice_outer",c->lat_outer_universe));if(c->lat_fill_repeating)XOK(alea_xml_writer_attribute(&x,"lattice_repeating","true"));if(c->lat_fill_zero_element_coords)XOK(alea_xml_writer_attribute(&x,"lattice_zero_coords","true"));}
-        if(m&&(m->has_importance_neutron||m->has_importance_photon||m->has_importance_electron||m->parameter_flags)){XOK(alea_xml_writer_end_start_tag(&x,false));if(m->has_importance_neutron){XOK(alea_xml_writer_start_element(&x,"importance"));XOK(alea_xml_writer_attribute(&x,"particle","neutron"));XOK(alea_xml_writer_attribute_f(&x,"value",m->importance_neutron,17,false));XOK(alea_xml_writer_end_start_tag(&x,true));}if(m->has_importance_photon){XOK(alea_xml_writer_start_element(&x,"importance"));XOK(alea_xml_writer_attribute(&x,"particle","photon"));XOK(alea_xml_writer_attribute_f(&x,"value",m->importance_photon,17,false));XOK(alea_xml_writer_end_start_tag(&x,true));}if(m->has_importance_electron){XOK(alea_xml_writer_start_element(&x,"importance"));XOK(alea_xml_writer_attribute(&x,"particle","electron"));XOK(alea_xml_writer_attribute_f(&x,"value",m->importance_electron,17,false));XOK(alea_xml_writer_end_start_tag(&x,true));}struct {uint32_t flag;const char* name;double value;int integer;} params[]={{ALEA_CELL_PARAM_VOLUME,"volume",m->user_volume,0},{ALEA_CELL_PARAM_PWT,"pwt",m->photon_weight,0},{ALEA_CELL_PARAM_PD,"pd",m->detector_contribution,0},{ALEA_CELL_PARAM_ELPT,"elpt",m->energy_cutoff,0},{ALEA_CELL_PARAM_NONU,"nonu",m->fission_turnoff,1},{ALEA_CELL_PARAM_UNC,"unc",m->uncollided_secondaries,1},{ALEA_CELL_PARAM_BFLCL,"bflcl",m->magnetic_field,1}};for(size_t j=0;j<sizeof(params)/sizeof(params[0]);j++)if(m->parameter_flags&params[j].flag){XOK(alea_xml_writer_start_element(&x,"parameter"));XOK(alea_xml_writer_attribute(&x,"name",params[j].name));if(params[j].integer)XOK(alea_xml_writer_attribute_i(&x,"value",(int)params[j].value));else XOK(alea_xml_writer_attribute_f(&x,"value",params[j].value,17,false));XOK(alea_xml_writer_end_start_tag(&x,true));}XOK(alea_xml_writer_end_element(&x,"cell"));}else XOK(alea_xml_writer_end_start_tag(&x,true));arena_free(&a);}
+        if (has_cell_parameters(m, c)) {
+            XOK(alea_xml_writer_end_start_tag(&x, false));
+            if (write_cell_parameters(&x, m, c)) { arena_free(&a); return -1; }
+            XOK(alea_xml_writer_end_element(&x, "cell"));
+        } else XOK(alea_xml_writer_end_start_tag(&x, true));
+        arena_free(&a);
+    }
     XOK(alea_xml_writer_end_element(&x,"cells"));XOK(alea_xml_writer_end_element(&x,"alea"));
     if(!alea_xml_writer_write(&x,stream)){alea_set_error_detail(ALEA_ERR_FILE_WRITE,"ALEA XML: write failed");return -1;}return 0;
 }

@@ -52,10 +52,12 @@ int mcnp_lexer_is_parameter_keyword(const char* token, size_t len) {
     const char* keywords[] = {
         "imp:", "u=", "vol=", "fill=", "lat=", "tmp=", "pwt=",
         "ext:", "fcl=", "wwn", "dxc=", "trcl", "mat=", "rho=",
-        "nonu=", "pd=", "elpt=", "unc=", "bflcl=", "cosy="
+        "nonu=", "pd=", "elpt=", "elpt:", "unc=", "unc:", "bflcl=", "cosy="
         // NOTE: some keywords like 'imp' are followed by a colon, some by equals.
         // The comparison length handles this.
     };
+    if (len > 2 && alea_strncasecmp(token, "pd", 2) == 0 &&
+        isdigit((unsigned char)token[2])) return 1;
     int num_keywords = sizeof(keywords) / sizeof(keywords[0]);
 
     for (int i = 0; i < num_keywords; i++) {

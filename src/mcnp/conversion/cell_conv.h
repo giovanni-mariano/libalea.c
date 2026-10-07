@@ -29,6 +29,7 @@
  */
 typedef struct {
     double imp_n, imp_p, imp_e;
+    mcnp_scoped_cell_params_t scoped;
 
     #define X_FIELD(name, type, kw, prec) type name;
     MCNP_CELL_SIMPLE_PARAMS(X_FIELD)
@@ -81,6 +82,8 @@ typedef struct {
  */
 int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params,
                           int cell_id);
+/* Frees owned parse-time lattice and detector arrays. */
+void alea_cell_params_free(alea_cell_params_t* params);
 
 /**
  * @brief Convert an MCNP cell to a CSG tree

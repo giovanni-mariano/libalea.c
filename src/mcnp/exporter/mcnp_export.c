@@ -426,23 +426,24 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
 
     /* IMP:N - neutron importance (default 1.0) */
     mcnp_str_puts(&s, " IMP:N=");
-    mcnp_str_double(&s, (mp && mp->has_imp_n) ? mp->imp_n : 1.0, 4);
+    mcnp_str_double(&s, (mp && mp->has_imp_n) ? mp->imp_n : 1.0, 17);
 
     /* IMP:P - photon importance (default 1.0) */
     mcnp_str_puts(&s, " IMP:P=");
-    mcnp_str_double(&s, (mp && mp->has_imp_p) ? mp->imp_p : 1.0, 4);
+    mcnp_str_double(&s, (mp && mp->has_imp_p) ? mp->imp_p : 1.0, 17);
 
     /* IMP:E - electron importance */
     if (mp && mp->has_imp_e) {
         mcnp_str_puts(&s, " IMP:E=");
-        mcnp_str_double(&s, mp->imp_e, 4);
+        mcnp_str_double(&s, mp->imp_e, 17);
     }
 
     /* Simple keyword=value params (VOL, TMP, PWT, NONU, PD, ELPT, UNC, BFLCL) */
     #define MCNP_EXPORT_double(s, val, prec) mcnp_str_double(s, val, prec)
     #define MCNP_EXPORT_int(s, val, prec)    mcnp_str_int(s, val)
     #define X_EXPORT(name, type, kw, prec) \
-        if (mp && mp->has_##name) { \
+        if (mp && mp->has_##name && strcmp(kw, "PD") && \
+            strcmp(kw, "ELPT") && strcmp(kw, "UNC")) { \
             mcnp_str_puts(&s, " " kw "="); \
             MCNP_EXPORT_##type(&s, mp->name, prec); \
         }
@@ -450,6 +451,41 @@ static void write_mcnp_cell_line(FILE* out, const alea_cell_entry_t* cell,
     #undef X_EXPORT
     #undef MCNP_EXPORT_double
     #undef MCNP_EXPORT_int
+
+    if (cell->has_temperature && !(mp && mp->has_tmp)) {
+        mcnp_str_puts(&s, " TMP=");
+        mcnp_str_double(&s, cell->temperature * 8.617333262e-11, 17);
+    }
+    if (mp) {
+        char token[96];
+        if (mp->has_pd) {
+            snprintf(token, sizeof(token), "PD0=%.17g", mp->pd);
+            mcnp_str_putc(&s, ' ');
+            mcnp_str_token(&s, token);
+        }
+        for (size_t i = 0; i < mp->scoped.detector_probability_count; i++) {
+            const alea_detector_probability_t* probability = &mp->scoped.detector_probabilities[i];
+            snprintf(token, sizeof(token), "PD%d=%.17g", probability->tally, probability->probability);
+            mcnp_str_putc(&s, ' ');
+            mcnp_str_token(&s, token);
+        }
+        static const char* const particles[] = {"N", "P", "E"};
+        for (int i = 0; i < ALEA_PARTICLE_COUNT; i++) {
+            uint32_t bit = 1u << i;
+            if (mp->has_elpt || (mp->scoped.energy_cutoff_particles & bit)) {
+                snprintf(token, sizeof(token), "ELPT:%s=%.17g", particles[i],
+                    (mp->scoped.energy_cutoff_particles & bit) ? mp->scoped.energy_cutoff[i] : mp->elpt);
+                mcnp_str_putc(&s, ' ');
+                mcnp_str_token(&s, token);
+            }
+            if (mp->has_unc || (mp->scoped.secondary_state_particles & bit)) {
+                snprintf(token, sizeof(token), "UNC:%s=%d", particles[i],
+                    (mp->scoped.secondary_state_particles & bit) ? mp->scoped.secondary_state[i] : mp->unc);
+                mcnp_str_putc(&s, ' ');
+                mcnp_str_token(&s, token);
+            }
+        }
+    }
 
     /* U= - universe membership */
     if (cell->universe_id != 0) {
