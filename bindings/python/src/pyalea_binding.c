@@ -275,8 +275,8 @@ static int add_importance_fields(PyAleaSystemObject* self, PyObject* dict,
     return rc;
 }
 
-/* Copy only MCNP particle importance into a derived geometry object.  The
- * generic alea_system_t deliberately remains unaware of MCNP-only metadata.
+/* Copy cell metadata into a derived geometry object.  The
+ * generic alea_system_t deliberately remains unaware of model metadata.
  * Cell IDs are used instead of array indices because extraction may compact
  * or reorder cells. */
 static int copy_mcnp_importance_sidecar(PyAleaSystemObject* source,
@@ -306,6 +306,16 @@ static int copy_mcnp_importance_sidecar(PyAleaSystemObject* source,
             const char* name = from->name;
             *to = *from;
             to->name = NULL;
+            to->detector_probabilities = NULL;
+            to->detector_probability_count = 0;
+            for (size_t i = 0; i < from->detector_probability_count; i++) {
+                const alea_detector_probability_t* entry = &from->detector_probabilities[i];
+                if (alea_model_cell_set_detector_probability(
+                        copied, target_index, entry->tally, entry->probability)) {
+                    PyErr_NoMemory();
+                    return -1;
+                }
+            }
             if (alea_model_cell_set_name(copied, target_index, name)) {
                 PyErr_NoMemory();
                 return -1;
@@ -343,12 +353,21 @@ static int copy_mcnp_importance_sidecar(PyAleaSystemObject* source,
         mcnp_cell_params_t* to = mcnp_cell_params(copied, target_index);
         if (!from || !to)
             continue;
-        to->imp_n = from->imp_n;
-        to->imp_p = from->imp_p;
-        to->imp_e = from->imp_e;
-        to->has_imp_n = from->has_imp_n;
-        to->has_imp_p = from->has_imp_p;
-        to->has_imp_e = from->has_imp_e;
+        alea_detector_probability_t* probabilities = NULL;
+        const size_t count = from->scoped.detector_probability_count;
+        if (count) {
+            if (count <= SIZE_MAX / sizeof(*probabilities))
+                probabilities = malloc(count * sizeof(*probabilities));
+            if (!probabilities) {
+                mcnp_model_destroy(copied);
+                PyErr_NoMemory();
+                return -1;
+            }
+            memcpy(probabilities, from->scoped.detector_probabilities,
+                   count * sizeof(*probabilities));
+        }
+        *to = *from;
+        to->scoped.detector_probabilities = probabilities;
         if (mcnp_model_cell_set_name(
                 copied, target_index,
                 mcnp_model_cell_name(source->mcnp_model,

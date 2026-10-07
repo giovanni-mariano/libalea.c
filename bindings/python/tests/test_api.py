@@ -697,7 +697,10 @@ def test_alea_xml_round_trip():
       <surfaces><surface id="100000001" type="sphere" coeffs="0 0 0 2" /></surfaces>
       <cells><cell id="1" name="inside" material="1" density="1"
         density_units="g/cm3" region="-100000001">
-        <importance particle="neutron" value="1" />
+        <parameters>
+          <importance particle="neutron" value="1" />
+          <detector_contribution_probability tally="5" value="0.1" />
+        </parameters>
       </cell></cells>
     </alea>"""
     system = pyalea.load_alea_string(xml)
@@ -706,6 +709,10 @@ def test_alea_xml_round_trip():
     assert 'library="80c"' in exported
     assert 'particle="neutron"' in exported
     assert pyalea.load_alea_string(exported).cell_count == 1
+    cloned = system.clone()
+    assert cloned.export_alea_string() == exported
+    del cloned
+    assert system.export_alea_string() == exported
 
 
 def test_compact_validation_reports_trace_reuse(populated_system):
