@@ -27,6 +27,19 @@ PUBLIC_DOCUMENTS = frozenset(
 )
 
 
+PUBLIC_FIGURES = frozenset(
+    f"assets/figures/{name}"
+    for name in (
+        "shield-full.png",
+        "shield-cutaway.png",
+        "shield-slice.png",
+        "surface-sense.svg",
+        "boolean-operations.svg",
+        "ray-segments.svg",
+    )
+)
+
+
 def on_files(files, *, config):
     """Remove non-public files originating in docs_dir, preserving theme assets."""
 
@@ -34,6 +47,9 @@ def on_files(files, *, config):
     for file in list(files):
         if file.src_dir is None:
             continue
-        if Path(file.src_dir).resolve() == docs_dir and file.src_uri not in PUBLIC_DOCUMENTS:
+        if (
+            Path(file.src_dir).resolve() == docs_dir
+            and file.src_uri not in PUBLIC_DOCUMENTS | PUBLIC_FIGURES
+        ):
             files.remove(file)
     return files

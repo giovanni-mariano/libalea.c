@@ -39,6 +39,8 @@ ifdef RELEASE
   else
     CFLAGS += -O3 -march=native -DNDEBUG
   endif
+else
+  CFLAGS += -O0
 endif
 
 # Platform-specific whole-archive flags for format modules
@@ -76,10 +78,10 @@ $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
 $(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c sdl_view.h viewer-config
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
 
 $(BIN_DIR)/render3d$(EXEEXT): ../examples/c/render3d.c render_view.h sdl_view.h viewer-config
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
 
 $(BIN_DIR)/nuc_plot$(EXEEXT): nuc_plot.c \
                               $(BIN_DIR)/libalea_nucdata.a $(BIN_DIR)/libalea.a

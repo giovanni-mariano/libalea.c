@@ -752,6 +752,42 @@ fb:edge_darken()
 fb:write("/tmp/render.png")
 ```
 
+### Documentation figure example
+
+| Full model | Cutaway (z < 0) |
+| :---: | :---: |
+| ![Full spherical shield with a purple exterior.](assets/figures/shield-full.png) | ![Lower hemisphere of the shield exposing orange, green, and purple concentric regions.](assets/figures/shield-cutaway.png) |
+
+These images use `examples/data/doc_shield.i`: an illustrative source region
+of radius 3 cm surrounded by shells extending to 7 and 10 cm. Material IDs
+1, 2, and 4 are orange, green, and purple. Densities are placeholders;
+the example demonstrates geometry and does not define transport physics.
+
+From the repository root, reproduce all documentation figures with:
+
+```bash
+make tools
+python3 tools/generate_doc_figures.py
+```
+
+The generator supplies a shared palette, renders both views with `render3d`,
+and plots the central slice with `mc_plotter`. To explore the same views in
+Lua, save the following as a script and run it with `bin/alea` from the
+repository root (this uses the renderer's default palette):
+
+```lua
+local sys = alea.load_mcnp("examples/data/doc_shield.i")
+sys:build_universe_index()
+local cfg = {
+    width = 800, height = 640,
+    eye = {24, 28, 23}, target = {0, 0, -1}, fov = 38,
+    background = {1, 1, 1}, shadows = 1, edges = 1, aa_samples = 2,
+}
+sys:render(cfg):write_png("shield-full.png")
+cfg.clips = {{0, 0, -1, 0}} -- keep the half-space -z > 0
+sys:render(cfg):write_png("shield-cutaway.png")
+```
+
 ### Render configuration
 
 ```lua
