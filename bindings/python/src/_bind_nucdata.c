@@ -1127,27 +1127,26 @@ static int photon_response_bin(const double* edges, npy_intp n_bins,
 /* Evaluate each production channel with deterministic bin probabilities when
  * supported, or stratified energy sampling. Exact production responses weight
  * both paths, so rare reaction selection does not waste samples. */
-static PyObject* PyAleaNucMaterial_photon_response(
+static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
         PyAleaNucMaterialObject* self, PyObject* args, PyObject* kwds) {
     static char* kwlist[] = {"neutron_energies", "photon_edges",
                              "samples_per_channel", "seed", "by_channel",
-                             "deterministic_lines", "energy_offset",
+                             "energy_offset",
                              "component_filter", "parent_mt_filter",
-                             "deterministic_only", NULL};
+                             "include_lines", NULL};
     PyObject* energies_obj;
     PyObject* edges_obj;
     unsigned int samples = 2048;
     unsigned long long seed = 1;
     int by_channel = 0;
-    int deterministic_lines = 0;
     unsigned long long energy_offset = 0;
     int component_filter = -1;
     int parent_mt_filter = -1;
-    int deterministic_only = 0;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|IKppKiip", kwlist,
+    int include_lines = 1;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|IKpKiip", kwlist,
             &energies_obj, &edges_obj, &samples, &seed, &by_channel,
-            &deterministic_lines, &energy_offset,
-            &component_filter, &parent_mt_filter, &deterministic_only))
+            &energy_offset, &component_filter, &parent_mt_filter,
+            &include_lines))
         return NULL;
     if (!self->mat) {
         PyErr_SetString(PyExc_RuntimeError, "Material not initialized");
@@ -1290,6 +1289,11 @@ static PyObject* PyAleaNucMaterial_photon_response(
     npy_intp matrix_dims[2] = {n_energies, n_bins};
     npy_intp curve_dims[1] = {n_energies};
     npy_intp channel_dims[3] = {n_channels, n_energies, n_bins};
+    npy_intp line_dims[2] = {n_channels, n_energies};
+    PyArrayObject* line_energies = include_lines
+        ? (PyArrayObject*)PyArray_ZEROS(2, line_dims, NPY_DOUBLE, 0) : NULL;
+    PyArrayObject* line_values = include_lines
+        ? (PyArrayObject*)PyArray_ZEROS(2, line_dims, NPY_DOUBLE, 0) : NULL;
     PyArrayObject* values = (PyArrayObject*)PyArray_ZEROS(
         2, matrix_dims, NPY_DOUBLE, 0);
     PyArrayObject* variances = (PyArrayObject*)PyArray_ZEROS(
@@ -1310,6 +1314,7 @@ static PyObject* PyAleaNucMaterial_photon_response(
     double* probabilities = (double*)malloc((size_t)n_bins * sizeof(double));
     if (!values || !variances || !production_total || !accounted_total ||
         !collision_total || !counts || !probabilities ||
+        (include_lines && (!line_energies || !line_values)) ||
         (by_channel && (!channel_values || !channel_variances))) {
         Py_DECREF(energies);
         Py_DECREF(edges);
@@ -1320,6 +1325,8 @@ static PyObject* PyAleaNucMaterial_photon_response(
         Py_XDECREF(collision_total);
         Py_XDECREF(channel_values);
         Py_XDECREF(channel_variances);
+        Py_XDECREF(line_energies);
+        Py_XDECREF(line_values);
         free(channel_offsets);
         free(prepared);
         free(counts);
@@ -1336,6 +1343,10 @@ static PyObject* PyAleaNucMaterial_photon_response(
         ? (double*)PyArray_DATA(channel_values) : NULL;
     double* channel_variance_data = channel_variances
         ? (double*)PyArray_DATA(channel_variances) : NULL;
+    double* line_energy_data = line_energies
+        ? (double*)PyArray_DATA(line_energies) : NULL;
+    double* line_value_data = line_values
+        ? (double*)PyArray_DATA(line_values) : NULL;
     alea_error_t native_error = ALEA_OK;
     int error_component = -1, error_production = -1;
     npy_intp error_energy = -1;
@@ -1380,7 +1391,30 @@ static PyObject* PyAleaNucMaterial_photon_response(
                     break;
                 }
 
-                if (deterministic_lines) {
+                /* Retain exact single-line channels for plotting independently
+                 * of photon binning, including lines inside a continuum.
+                 * This is separate from the estimator and does not consume RNG. */
+                const alea_nuc_energy_dist_t* law = production->spectrum;
+                if (include_lines && !law->next &&
+                    (law->law == ALEA_NUC_ELAW_DISCRETE_PHOTON ||
+                     law->law == ALEA_NUC_ELAW_LEVEL)) {
+                    double line;
+                    if (law->law == ALEA_NUC_ELAW_DISCRETE_PHOTON) {
+                        line = law->discrete_photon_energy;
+                        if (law->discrete_photon_primary == 2)
+                            line += law->discrete_photon_awr /
+                                (law->discrete_photon_awr + 1.0) * incident_energy;
+                    } else {
+                        line = law->level_Q * (incident_energy - law->level_A);
+                    }
+                    if (photon_response_bin(edge_data, n_bins, line) >= 0) {
+                        npy_intp index = (channel_offsets[c] + p) * n_energies + e;
+                        line_energy_data[index] = line;
+                        line_value_data[index] = channel_response;
+                    }
+                }
+
+                {
                     alea_error_t probability_error =
                         alea_nuc_prepared_photon_bin_probabilities(
                             sampler, incident_energy, edge_data,
@@ -1400,8 +1434,7 @@ static PyObject* PyAleaNucMaterial_photon_response(
                         }
                         continue;
                     }
-                    if (probability_error != ALEA_ERR_UNSUPPORTED ||
-                        deterministic_only) {
+                    if (probability_error != ALEA_ERR_UNSUPPORTED) {
                         native_error = probability_error;
                         error_component = c;
                         error_production = p;
@@ -1411,10 +1444,6 @@ static PyObject* PyAleaNucMaterial_photon_response(
                 }
 
                 memset(counts, 0, (size_t)n_bins * sizeof(size_t));
-                const alea_nuc_particle_state_t incident = {
-                    ALEA_NUC_PARTICLE_NEUTRON, incident_energy,
-                    {0.0, 0.0, 1.0}, 1.0, 0.0
-                };
                 uint64_t stream_seed = (uint64_t)seed ^
                     photon_response_mix64((uint64_t)e +
                                           (uint64_t)energy_offset + 1) ^
@@ -1427,20 +1456,12 @@ static PyObject* PyAleaNucMaterial_photon_response(
                         ALEA_NUC_RNG_COLLISION);
                     if (native_error != ALEA_OK) break;
                     double emitted_energy;
-                    if (deterministic_lines) {
-                        double mu;
-                        bool correlated;
-                        native_error = alea_nuc_sample_energy_angle_distribution(
-                            production->spectrum, incident_energy,
-                            alea_nuc_rng_uniform, &rng, &emitted_energy,
-                            &mu, &correlated);
-                    } else {
-                        alea_nuc_particle_state_t photon;
-                        native_error = alea_nuc_sample_prepared_photon_production(
-                            sampler, &incident,
-                            alea_nuc_rng_uniform, &rng, &photon);
-                        emitted_energy = photon.energy;
-                    }
+                    double mu;
+                    bool correlated;
+                    native_error = alea_nuc_sample_energy_angle_distribution(
+                        production->spectrum, incident_energy,
+                        alea_nuc_rng_uniform, &rng, &emitted_energy,
+                        &mu, &correlated);
                     if (native_error != ALEA_OK) break;
                     int bin = photon_response_bin(edge_data, n_bins,
                                                   emitted_energy);
@@ -1493,6 +1514,8 @@ static PyObject* PyAleaNucMaterial_photon_response(
         Py_DECREF(collision_total);
         Py_XDECREF(channel_values);
         Py_XDECREF(channel_variances);
+        Py_XDECREF(line_energies);
+        Py_XDECREF(line_values);
         free(channel_offsets);
         return NULL;
     }
@@ -1506,6 +1529,8 @@ static PyObject* PyAleaNucMaterial_photon_response(
         Py_DECREF(collision_total);
         Py_XDECREF(channel_values);
         Py_XDECREF(channel_variances);
+        Py_XDECREF(line_energies);
+        Py_XDECREF(line_values);
         free(channel_offsets);
         PyErr_Format(PyExc_RuntimeError,
             "photon response evaluation failed at neutron energy index %zd, component %d, production %d: %s",
@@ -1561,6 +1586,9 @@ static PyObject* PyAleaNucMaterial_photon_response(
         PyDict_SetItemString(result, "production_total", (PyObject*)production_total) < 0 ||
         PyDict_SetItemString(result, "accounted_total", (PyObject*)accounted_total) < 0 ||
         PyDict_SetItemString(result, "collision_total", (PyObject*)collision_total) < 0 ||
+        (include_lines &&
+         (PyDict_SetItemString(result, "discrete_line_energies", (PyObject*)line_energies) < 0 ||
+          PyDict_SetItemString(result, "discrete_line_values", (PyObject*)line_values) < 0)) ||
         PyDict_SetItemString(result, "aggregate_available",
                             aggregate_available ? Py_True : Py_False) < 0 ||
         PyDict_SetItemString(result, "native_grid_consistent",
@@ -1587,6 +1615,8 @@ result_error:
     Py_DECREF(collision_total);
     Py_XDECREF(channel_values);
     Py_XDECREF(channel_variances);
+    Py_XDECREF(line_energies);
+    Py_XDECREF(line_values);
     Py_XDECREF(channel_metadata);
     free(channel_offsets);
     return result;
@@ -1611,10 +1641,10 @@ static PyMethodDef PyAleaNucMaterial_methods[] = {
      "sample_distance(energy, xi) -> float\n\nSample distance to next collision (cm). xi in [0,1)."},
     {"sample_nuclide", (PyCFunction)PyAleaNucMaterial_sample_nuclide, METH_VARARGS,
      "sample_nuclide(energy, xi) -> (index, zaid)\n\nSample which nuclide is hit. xi in [0,1)."},
-    {"photon_response", (PyCFunction)PyAleaNucMaterial_photon_response,
+    {"macroscopic_photon_production_matrix", (PyCFunction)PyAleaNucMaterial_macroscopic_photon_production_matrix,
      METH_VARARGS | METH_KEYWORDS,
-     "photon_response(neutron_energies, photon_edges, samples_per_channel=2048, seed=1, by_channel=False, deterministic_lines=False) -> dict\n\n"
-     "Estimate the macroscopic neutron-to-photon response matrix (cm^-1), "
+     "macroscopic_photon_production_matrix(neutron_energies, photon_edges, samples_per_channel=2048, seed=1, by_channel=False) -> dict\n\n"
+     "Calculate bin-integrated macroscopic photon-production cross sections (cm^-1), "
      "optionally preserving individual channel contributions."},
     {NULL}
 };
