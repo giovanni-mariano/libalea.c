@@ -35,8 +35,8 @@
  *   ./plotter input.i --batch=plots.txt
  *
  * Options:
- *   --labels=cells          Show cell ID labels at region centroids
- *   --labels=materials      Show material ID labels at region centroids
+ *   --labels=cells          Show cell ID labels inside regions
+ *   --labels=materials      Show material ID labels inside regions
  *   --labels=surfaces       Show surface ID labels along boundaries
  *   --labels=all            Show all labels
  *   --color=cells           Color by cell ID (default)
@@ -404,62 +404,55 @@ static void draw_string_centered(uint8_t* pixels, int width, int height,
  * LABEL DRAWING (uses library functions for position computation)
  * ============================================================================ */
 
-/* Draw cell labels using library's interior point algorithm */
-static void draw_cell_labels(uint8_t* pixels, int width, int height,
-                              const int* cell_ids) {
-    alea_label_position_t* labels = NULL;
-    int count = 0;
-
-    if (alea_find_label_positions(cell_ids, width, height, 100, &labels, &count) != 0) {
-        return;
-    }
-
-    for (int i = 0; i < count; i++) {
-        char label[32];
-        snprintf(label, sizeof(label), "C%d", labels[i].id);
-        int py = height - 1 - labels[i].py;  /* grid order -> image order */
-        draw_string_centered(pixels, width, height, labels[i].px, py,
-                            label, 255, 255, 255);
-    }
-
-    free(labels);
-}
-
-/* Draw material labels using library's interior point algorithm */
-static void draw_material_labels(uint8_t* pixels, int width, int height,
-                                  const int* cell_ids, const int* material_ids) {
-    /* Get cell label positions */
-    alea_label_position_t* cell_labels = NULL;
-    int cell_count = 0;
-
-    if (alea_find_label_positions(cell_ids, width, height, 100, &cell_labels, &cell_count) != 0) {
-        return;
-    }
-
-    /* Build cell-to-material map */
-    int cell_to_mat[10000];
-    memset(cell_to_mat, 0, sizeof(cell_to_mat));
-
-    for (int i = 0; i < width * height; i++) {
-        int cell = cell_ids[i];
-        if (cell >= 0 && cell < 10000) {
-            cell_to_mat[cell] = material_ids[i];
+/* Check the entire text block, with one outline pixel and one padding pixel.
+ * Coordinates here are image coordinates; IDs are stored in grid order. */
+static int label_block_fits(const int* ids, int width, int height, int id,
+                            int cx, int top, int text_width, int text_height) {
+    int left = cx - text_width / 2 - 2;
+    int right = cx - text_width / 2 + text_width + 1;
+    int bottom = top + text_height + 1;
+    top -= 2;
+    if (left < 0 || top < 0 || right >= width || bottom >= height) return 0;
+    for (int y = top; y <= bottom; y++) {
+        for (int x = left; x <= right; x++) {
+            if (ids[(height - 1 - y) * width + x] != id) return 0;
         }
     }
+    return 1;
+}
 
-    /* Draw material labels offset from cell positions */
-    for (int i = 0; i < cell_count; i++) {
-        int mat = (cell_labels[i].id < 10000) ? cell_to_mat[cell_labels[i].id] : 0;
-        char label[32];
-        snprintf(label, sizeof(label), "M%d", mat);
-        int py = height - 1 - cell_labels[i].py;  /* grid order -> image order */
-        /* Offset below cell label to avoid overlap */
-        draw_string_centered(pixels, width, height,
-                            cell_labels[i].px, py + FONT_HEIGHT + 2,
-                            label, 255, 200, 100);
+static void draw_region_labels(uint8_t* pixels, int width, int height,
+                               const int* cell_ids, const int* material_ids,
+                               int show_cells, int show_materials) {
+    const int* ids = show_cells ? cell_ids : material_ids;
+    alea_label_position_t* labels = NULL;
+    int count = 0;
+    if (alea_find_label_positions(ids, width, height, 100, &labels, &count) != 0)
+        return;
+
+    for (int i = 0; i < count; i++) {
+        char cell[32], material[32];
+        int x = labels[i].px, y = height - 1 - labels[i].py;
+        int mat = material_ids[labels[i].py * width + x];
+        snprintf(cell, sizeof(cell), "C%d", labels[i].id);
+        snprintf(material, sizeof(material), "M%d", mat);
+        int len = show_cells ? (int)strlen(cell) : (int)strlen(material);
+        if (show_materials && (int)strlen(material) > len) len = (int)strlen(material);
+        int text_width = len * (FONT_WIDTH + CHAR_SPACING) - CHAR_SPACING;
+        int text_height = FONT_HEIGHT;
+        if (show_cells && show_materials) text_height += FONT_HEIGHT + 2;
+        int top = y - text_height / 2;
+        if (!label_block_fits(ids, width, height, labels[i].id,
+                              x, top, text_width, text_height)) continue;
+        int cy = top + FONT_HEIGHT / 2;
+        if (show_cells) {
+            draw_string_centered(pixels, width, height, x, cy, cell, 255, 255, 255);
+            cy += FONT_HEIGHT + 2;
+        }
+        if (show_materials)
+            draw_string_centered(pixels, width, height, x, cy, material, 255, 200, 100);
     }
-
-    free(cell_labels);
+    free(labels);
 }
 
 /* ============================================================================
@@ -1442,11 +1435,9 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
     }
 
     /* Draw labels if requested */
-    if (p->labels.show_cells) {
-        draw_cell_labels(pixels, p->width, p->height, cell_ids);
-    }
-    if (p->labels.show_materials) {
-        draw_material_labels(pixels, p->width, p->height, cell_ids, material_ids);
+    if (p->labels.show_cells || p->labels.show_materials) {
+        draw_region_labels(pixels, p->width, p->height, cell_ids, material_ids,
+                           p->labels.show_cells, p->labels.show_materials);
     }
     if (p->labels.show_surfaces) {
         alea_slice_surface_boundary_map_t* boundary_map = NULL;

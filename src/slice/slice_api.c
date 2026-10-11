@@ -4285,102 +4285,19 @@ int alea_refine_grid_coverage_paths_exact(
  *
  * Uses connected component labeling to handle:
  * 1. Disconnected regions with same cell ID (e.g., torus -> two circles)
- * 2. Interior-only sampling to avoid placing labels on borders
+ * 2. Maximum boundary clearance, including the image edge
  * ============================================================================ */
 
-#define LABEL_MAX_SAMPLES 64   /* Sample points per region for label placement */
 #define LABEL_MAX_REGIONS 10000
 
 typedef struct {
-    int id;                   /* Cell/material ID */
-    double sum_x, sum_y;      /* For centroid approximation */
-    int pixel_count;          /* Total pixels in component */
-    int interior_count;       /* Interior pixels (for sampling probability) */
-    /* Sample points that are interior (not on any border) */
-    int sample_x[LABEL_MAX_SAMPLES];
-    int sample_y[LABEL_MAX_SAMPLES];
-    int sample_count;
-    uint32_t rng_state;       /* Per-region LCG state for reservoir sampling */
+    int id;
+    double sum_x, sum_y;
+    int pixel_count;
+    int clearance;
+    int px, py;
+    double centroid_distance;
 } label_region_t;
-
-/** @brief Fast LCG — returns value in [0, bound) */
-static inline int label_rng_bounded(uint32_t* state, int bound) {
-    *state = *state * 1664525u + 1013904223u;
-    return (int)(((uint64_t)*state * (uint64_t)bound) >> 32);
-}
-
-/**
- * @brief Check if pixel is interior (all 8 neighbors have same cell ID)
- */
-static int is_interior_pixel(const int* ids, int width, int height, int x, int y) {
-    int id = ids[y * width + x];
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            int nx = x + dx, ny = y + dy;
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) return 0;
-            if (ids[ny * width + nx] != id) return 0;
-        }
-    }
-    return 1;
-}
-
-/**
- * @brief Add an interior sample point using reservoir sampling
- */
-static void label_region_add_interior_sample(label_region_t* r, int x, int y) {
-    r->interior_count++;
-    if (r->sample_count < LABEL_MAX_SAMPLES) {
-        r->sample_x[r->sample_count] = x;
-        r->sample_y[r->sample_count] = y;
-        r->sample_count++;
-    } else {
-        /* Reservoir sampling: replace with probability LABEL_MAX_SAMPLES/interior_count */
-        int idx = label_rng_bounded(&r->rng_state, r->interior_count);
-        if (idx < LABEL_MAX_SAMPLES) {
-            r->sample_x[idx] = x;
-            r->sample_y[idx] = y;
-        }
-    }
-}
-
-/**
- * @brief Find sample point closest to centroid
- */
-static void label_find_best_position(const label_region_t* r, int* out_x, int* out_y) {
-    if (r->pixel_count == 0) {
-        *out_x = 0;
-        *out_y = 0;
-        return;
-    }
-
-    double centroid_x = r->sum_x / r->pixel_count;
-    double centroid_y = r->sum_y / r->pixel_count;
-
-    if (r->sample_count == 0) {
-        /* No interior samples - fallback to centroid (shouldn't happen for large regions) */
-        *out_x = (int)centroid_x;
-        *out_y = (int)centroid_y;
-        return;
-    }
-
-    /* Find interior sample point closest to centroid */
-    double best_dist = 1e30;
-    int best_idx = 0;
-
-    for (int i = 0; i < r->sample_count; i++) {
-        double dx = r->sample_x[i] - centroid_x;
-        double dy = r->sample_y[i] - centroid_y;
-        double dist = dx*dx + dy*dy;
-        if (dist < best_dist) {
-            best_dist = dist;
-            best_idx = i;
-        }
-    }
-
-    *out_x = r->sample_x[best_idx];
-    *out_y = r->sample_y[best_idx];
-}
 
 /**
  * @brief Iterative flood-fill to label a connected component
@@ -4440,6 +4357,9 @@ int alea_find_label_positions(
     *out_labels = NULL;
     *out_count = 0;
 
+    /* Queue indices and pixel indices use int. */
+    if (width > INT_MAX / height / 2 ||
+        (size_t)width * height > SIZE_MAX / (2 * sizeof(int))) return -1;
     int num_pixels = width * height;
 
     /* Step 1: Connected component labeling */
@@ -4475,63 +4395,92 @@ int alea_find_label_positions(
         if (next_component >= LABEL_MAX_REGIONS) break;
     }
 
-    free(queue);
-
     int num_components = next_component - 1;
     if (num_components == 0) {
+        free(queue);
         free(component_map);
         return 0;
     }
-
-    /* Step 2: Collect statistics for each component */
-    label_region_t* regions = calloc(num_components, sizeof(label_region_t));
-    if (!regions) {
+    label_region_t* regions = calloc((size_t)num_components, sizeof(*regions));
+    int* distance = malloc((size_t)num_pixels * sizeof(*distance));
+    if (!regions || !distance) {
+        free(regions);
+        free(distance);
+        free(queue);
         free(component_map);
         return -1;
     }
 
-    /* Initialize regions */
-    for (int i = 0; i < num_components; i++) {
-        regions[i].id = -1;
-        regions[i].sum_x = regions[i].sum_y = 0;
-        regions[i].pixel_count = 0;
-        regions[i].interior_count = 0;
-        regions[i].sample_count = 0;
-    }
-
-    /* Collect per-component data */
+    /* Boundary pixels seed an eight-neighbor distance transform. Distance is
+     * the radius of the largest centered square wholly inside the component.
+     * The flood-fill queue can be reused with one index per pixel. */
+    int head = 0, tail = 0;
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            int idx = y * width + x;
-            int comp = component_map[idx];
-            if (comp == 0) continue;
-
+            int idx = y * width + x, comp = component_map[idx];
+            distance[idx] = -1;
+            if (!comp) continue;
             label_region_t* r = &regions[comp - 1];
-
-            /* Store cell ID (first pixel sets it) */
-            if (r->id < 0) {
-                r->id = ids[idx];
-                r->rng_state = (uint32_t)(comp * 2654435761u);  /* seed from component ID */
-            }
-
-            /* Accumulate for centroid */
+            r->id = ids[idx];
             r->sum_x += x;
             r->sum_y += y;
             r->pixel_count++;
-
-            /* Only sample interior pixels */
-            if (is_interior_pixel(ids, width, height, x, y)) {
-                label_region_add_interior_sample(r, x, y);
+            int boundary = x == 0 || y == 0 || x == width - 1 || y == height - 1;
+            for (int dy = -1; dy <= 1 && !boundary; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (component_map[(y + dy) * width + x + dx] != comp) {
+                        boundary = 1;
+                        break;
+                    }
+                }
+            }
+            if (boundary) {
+                distance[idx] = 0;
+                queue[tail++] = idx;
+            }
+        }
+    }
+    while (head < tail) {
+        int idx = queue[head++], x = idx % width, y = idx / width;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = x + dx, ny = y + dy;
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                int next = ny * width + nx;
+                if (component_map[next] == component_map[idx] && distance[next] < 0) {
+                    distance[next] = distance[idx] + 1;
+                    queue[tail++] = next;
+                }
             }
         }
     }
 
+    /* Prefer the centroid only among equal-clearance candidates, then keep
+     * the first in grid scan order so symmetric regions remain deterministic. */
+    for (int idx = 0; idx < num_pixels; idx++) {
+        int comp = component_map[idx];
+        if (!comp || distance[idx] <= 0) continue;
+        label_region_t* r = &regions[comp - 1];
+        int x = idx % width, y = idx / width;
+        double dx = x - r->sum_x / r->pixel_count;
+        double dy = y - r->sum_y / r->pixel_count;
+        double d = dx * dx + dy * dy;
+        if (distance[idx] > r->clearance ||
+            (distance[idx] == r->clearance && d < r->centroid_distance)) {
+            r->clearance = distance[idx];
+            r->centroid_distance = d;
+            r->px = x;
+            r->py = y;
+        }
+    }
+    free(distance);
+    free(queue);
     free(component_map);
 
-    /* Step 3: Count valid components (meeting minimum size AND having interior samples) */
+    /* Step 3: Count valid components (meeting minimum size and having interior clearance) */
     int valid_count = 0;
     for (int i = 0; i < num_components; i++) {
-        if (regions[i].pixel_count >= min_pixels && regions[i].sample_count > 0) {
+        if (regions[i].pixel_count >= min_pixels && regions[i].clearance > 0) {
             valid_count++;
         }
     }
@@ -4542,7 +4491,7 @@ int alea_find_label_positions(
     }
 
     /* Step 4: Allocate and fill output array */
-    alea_label_position_t* labels = malloc(valid_count * sizeof(alea_label_position_t));
+    alea_label_position_t* labels = calloc(valid_count, sizeof(alea_label_position_t));
     if (!labels) {
         free(regions);
         return -1;
@@ -4550,10 +4499,11 @@ int alea_find_label_positions(
 
     int out_idx = 0;
     for (int i = 0; i < num_components; i++) {
-        if (regions[i].pixel_count >= min_pixels && regions[i].sample_count > 0) {
+        if (regions[i].pixel_count >= min_pixels && regions[i].clearance > 0) {
             labels[out_idx].id = regions[i].id;
             labels[out_idx].pixel_count = regions[i].pixel_count;
-            label_find_best_position(&regions[i], &labels[out_idx].px, &labels[out_idx].py);
+            labels[out_idx].px = regions[i].px;
+            labels[out_idx].py = regions[i].py;
             out_idx++;
         }
     }
