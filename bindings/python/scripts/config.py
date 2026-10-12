@@ -45,6 +45,10 @@ def write_msvc_responses(compile_path: Path, link_path: Path, root: Path) -> Non
         library_dir = str(Path(sys.base_prefix) / "libs")
     if not library:
         library = f"python{sys.version_info.major}{sys.version_info.minor}.lib"
+    elif library.lower().endswith(".dll"):
+        # Windows CPython reports the runtime DLL in LDLIBRARY. MSVC needs
+        # its matching import library, keeping any ABI/debug suffix intact.
+        library = str(Path(library).with_suffix(".lib"))
     link_path.write_text(
         f'/LIBPATH:"{Path(library_dir).resolve()}"\n{library}\n',
         encoding="utf-8",
