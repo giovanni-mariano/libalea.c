@@ -50,6 +50,12 @@ SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
 SPDX-License-Identifier = "MPL-2.0"
 
 [[annotations]]
+path = "docs/assets/figures/**.png"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
+SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
 path = "examples/data/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
