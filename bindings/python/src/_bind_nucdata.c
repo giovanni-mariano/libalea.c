@@ -1290,6 +1290,9 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
     npy_intp curve_dims[1] = {n_energies};
     npy_intp channel_dims[3] = {n_channels, n_energies, n_bins};
     npy_intp line_dims[2] = {n_channels, n_energies};
+    npy_intp fixed_dims[1] = {n_channels};
+    PyArrayObject* line_fixed = include_lines
+        ? (PyArrayObject*)PyArray_ZEROS(1, fixed_dims, NPY_BOOL, 0) : NULL;
     PyArrayObject* line_energies = include_lines
         ? (PyArrayObject*)PyArray_ZEROS(2, line_dims, NPY_DOUBLE, 0) : NULL;
     PyArrayObject* line_values = include_lines
@@ -1314,7 +1317,7 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
     double* probabilities = (double*)malloc((size_t)n_bins * sizeof(double));
     if (!values || !variances || !production_total || !accounted_total ||
         !collision_total || !counts || !probabilities ||
-        (include_lines && (!line_energies || !line_values)) ||
+        (include_lines && (!line_energies || !line_values || !line_fixed)) ||
         (by_channel && (!channel_values || !channel_variances))) {
         Py_DECREF(energies);
         Py_DECREF(edges);
@@ -1327,6 +1330,7 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
         Py_XDECREF(channel_variances);
         Py_XDECREF(line_energies);
         Py_XDECREF(line_values);
+        Py_XDECREF(line_fixed);
         free(channel_offsets);
         free(prepared);
         free(counts);
@@ -1347,6 +1351,21 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
         ? (double*)PyArray_DATA(line_energies) : NULL;
     double* line_value_data = line_values
         ? (double*)PyArray_DATA(line_values) : NULL;
+    npy_bool* line_fixed_data = line_fixed
+        ? (npy_bool*)PyArray_DATA(line_fixed) : NULL;
+    if (include_lines) {
+        /* Classify from the law even when all requested rows are below threshold. */
+        for (int c = 0; c < self->mat->n_components; c++) {
+            const alea_nuc_nuclide_t* nuc = self->mat->components[c].nuclide;
+            if (!nuc) continue;
+            for (int p = 0; p < nuc->n_photon_productions; p++) {
+                const alea_nuc_energy_dist_t* law = nuc->photon_productions[p].spectrum;
+                line_fixed_data[channel_offsets[c] + p] = law && !law->next &&
+                    law->law == ALEA_NUC_ELAW_DISCRETE_PHOTON &&
+                    law->discrete_photon_primary != 2;
+            }
+        }
+    }
     alea_error_t native_error = ALEA_OK;
     int error_component = -1, error_production = -1;
     npy_intp error_energy = -1;
@@ -1516,6 +1535,7 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
         Py_XDECREF(channel_variances);
         Py_XDECREF(line_energies);
         Py_XDECREF(line_values);
+        Py_XDECREF(line_fixed);
         free(channel_offsets);
         return NULL;
     }
@@ -1531,6 +1551,7 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
         Py_XDECREF(channel_variances);
         Py_XDECREF(line_energies);
         Py_XDECREF(line_values);
+        Py_XDECREF(line_fixed);
         free(channel_offsets);
         PyErr_Format(PyExc_RuntimeError,
             "photon response evaluation failed at neutron energy index %zd, component %d, production %d: %s",
@@ -1588,7 +1609,8 @@ static PyObject* PyAleaNucMaterial_macroscopic_photon_production_matrix(
         PyDict_SetItemString(result, "collision_total", (PyObject*)collision_total) < 0 ||
         (include_lines &&
          (PyDict_SetItemString(result, "discrete_line_energies", (PyObject*)line_energies) < 0 ||
-          PyDict_SetItemString(result, "discrete_line_values", (PyObject*)line_values) < 0)) ||
+          PyDict_SetItemString(result, "discrete_line_values", (PyObject*)line_values) < 0 ||
+          PyDict_SetItemString(result, "discrete_line_fixed", (PyObject*)line_fixed) < 0)) ||
         PyDict_SetItemString(result, "aggregate_available",
                             aggregate_available ? Py_True : Py_False) < 0 ||
         PyDict_SetItemString(result, "native_grid_consistent",
@@ -1617,6 +1639,7 @@ result_error:
     Py_XDECREF(channel_variances);
     Py_XDECREF(line_energies);
     Py_XDECREF(line_values);
+    Py_XDECREF(line_fixed);
     Py_XDECREF(channel_metadata);
     free(channel_offsets);
     return result;
