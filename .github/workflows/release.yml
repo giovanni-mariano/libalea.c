@@ -43,7 +43,8 @@ jobs:
           cp -r include dist/alea-linux-x64/
           mkdir -p dist/alea-linux-x64/examples
           cp -r examples/lua examples/python dist/alea-linux-x64/examples/
-          cp README.md LICENSE* dist/alea-linux-x64/ 2>/dev/null || true
+          cp README.md dist/alea-linux-x64/
+          cp -r LICENSES dist/alea-linux-x64/
           cd dist && tar -czvf alea-linux-x64.tar.gz alea-linux-x64
 
       - uses: actions/upload-artifact@v7
@@ -81,7 +82,8 @@ jobs:
           cp -r include dist/alea-linux-arm64/
           mkdir -p dist/alea-linux-arm64/examples
           cp -r examples/lua examples/python dist/alea-linux-arm64/examples/
-          cp README.md LICENSE* dist/alea-linux-arm64/ 2>/dev/null || true
+          cp README.md dist/alea-linux-arm64/
+          cp -r LICENSES dist/alea-linux-arm64/
           cd dist && tar -czvf alea-linux-arm64.tar.gz alea-linux-arm64
 
       - uses: actions/upload-artifact@v7
@@ -119,7 +121,8 @@ jobs:
           cp -r include dist/alea-macos-x64/
           mkdir -p dist/alea-macos-x64/examples
           cp -r examples/lua examples/python dist/alea-macos-x64/examples/
-          cp README.md LICENSE* dist/alea-macos-x64/ 2>/dev/null || true
+          cp README.md dist/alea-macos-x64/
+          cp -r LICENSES dist/alea-macos-x64/
           cd dist && tar -czvf alea-macos-x64.tar.gz alea-macos-x64
 
       - uses: actions/upload-artifact@v7
@@ -157,7 +160,8 @@ jobs:
           cp -r include dist/alea-macos-arm64/
           mkdir -p dist/alea-macos-arm64/examples
           cp -r examples/lua examples/python dist/alea-macos-arm64/examples/
-          cp README.md LICENSE* dist/alea-macos-arm64/ 2>/dev/null || true
+          cp README.md dist/alea-macos-arm64/
+          cp -r LICENSES dist/alea-macos-arm64/
           cd dist && tar -czvf alea-macos-arm64.tar.gz alea-macos-arm64
 
       - uses: actions/upload-artifact@v7
@@ -205,7 +209,8 @@ jobs:
           cp -r include dist/alea-windows-x64/
           mkdir -p dist/alea-windows-x64/examples
           cp -r examples/lua examples/python dist/alea-windows-x64/examples/
-          cp README.md LICENSE* dist/alea-windows-x64/ 2>/dev/null || true
+          cp README.md dist/alea-windows-x64/
+          cp -r LICENSES dist/alea-windows-x64/
           cd dist && zip -r alea-windows-x64.zip alea-windows-x64
 
       - uses: actions/upload-artifact@v7
