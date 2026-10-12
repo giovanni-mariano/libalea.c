@@ -38,6 +38,8 @@ Every surface divides space into two sides. In Alea (and MCNP), these sides are 
 - **Negative sense** (`sense = -1`): the inside. For a sphere, points closer to the center than the radius. For a plane, points on the side opposite to the normal vector. Written as `-S` in MCNP.
 - **Positive sense** (`sense = +1`): the outside. For a sphere, points farther from the center than the radius. Written as `+S` or just `S` in MCNP.
 
+![Sphere and plane cross-sections showing negative and positive sense, the zero boundary, and the plane normal.](assets/figures/surface-sense.svg)
+
 To build CSG trees, you create half-space nodes from surfaces:
 
 ```c
@@ -81,6 +83,8 @@ Regions are defined by combining surface half-spaces with boolean operations:
 - **Union** (`a OR b`): points that are inside a or b or both. In MCNP, written with `:` — e.g., `-1:-2`.
 - **Difference** (`a AND NOT b`): points inside a but not inside b. Equivalent to `intersection(a, complement(b))`.
 - **Complement** (`NOT a`): everything that is not inside a. In MCNP, `#` applied to a cell.
+
+![Union, intersection, and difference of two overlapping regions, with each result filled in purple.](assets/figures/boolean-operations.svg)
 
 Alea stores these as a binary tree. Each leaf is a surface half-space (primitive + sense). Each internal node is a boolean operation with left and right children.
 

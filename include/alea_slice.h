@@ -829,10 +829,12 @@ alea_point_coverage_stats_t alea_point_coverage_stats_get(void);
  *
  * For each unique region, finds a point that is:
  * 1. Guaranteed to be inside the region (not just centroid)
- * 2. Close to the region's geometric center
+ * 2. Maximizes eight-neighbor (square) clearance from boundaries/image edges
  *
  * Handles non-convex regions correctly (C-shapes, donuts, etc.)
- * Uses reservoir sampling + closest-to-centroid selection.
+ * Uses a linear-time distance transform per grid, one label per connected region.
+ * Ties prefer proximity to the centroid, then grid scan order. Negative IDs and
+ * regions without interior pixels are skipped. Callers must check text bounds.
  *
  * @param ids          ID grid (cell_ids or material_ids from alea_find_cells_grid)
  * @param width        Grid width in pixels

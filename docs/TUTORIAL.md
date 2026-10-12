@@ -194,6 +194,12 @@ Alea provides two complementary approaches to 2D visualization:
 1. **Grid queries**: sample cell/material IDs on a pixel grid (fast, gives you colors)
 2. **Analytical curves**: extract exact surface boundaries (lines, circles, ellipses — gives you contours)
 
+![Material-labeled central slice of the documentation shield, with concentric source and shielding regions.](assets/figures/shield-slice.png)
+
+A central slice of the example shield; labels identify material IDs.
+See the [rendering example](LUA_TUTORIAL.md#documentation-figure-example)
+for the input model and regeneration commands.
+
 ### Grid queries
 
 ```c
@@ -348,6 +354,13 @@ nonconforming octree grid.
 ## 4. Tracing Rays
 
 Ray tracing reports every cell the ray passes through, in order:
+
+![Ray segments through a concentric shield: cell 1 from 0 to 3 cm, cell 2 from 3 to 7 cm, and cell 3 from 7 to 10 cm.](assets/figures/ray-segments.svg)
+
+This illustration uses the documentation shield with radii 3, 7, and 10 cm,
+and a ray starting at its center. Each segment's length is `t_exit - t_enter`
+for a unit direction vector. The code below works with your loaded model
+and continues to a maximum distance of 500 cm.
 
 ```c
 #include <alea_raycast.h>

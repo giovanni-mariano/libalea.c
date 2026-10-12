@@ -933,7 +933,67 @@ static void test_boundary_map_labels_each_disconnected_arc(void) {
  * MAIN
  * ============================================================================ */
 
+/* Independent exhaustive square-clearance oracle for small test grids. */
+static int label_clearance(const int* ids, int w, int h, int x, int y) {
+    int id = ids[y * w + x];
+    for (int radius = 1; ; radius++) {
+        for (int dy = -radius; dy <= radius; dy++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                int nx = x + dx, ny = y + dy;
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h ||
+                    ids[ny * w + nx] != id) return radius - 1;
+            }
+        }
+    }
+}
+
+static void test_region_label_clearance(void) {
+    printf("  test_region_label_clearance... ");
+    enum { W = 61, H = 61 };
+    int ids[W * H];
+    for (int shape = 0; shape < 3; shape++) {
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int dx = x - 30, dy = y - 30, rr = dx * dx + dy * dy;
+                if (shape == 0) /* Disk, two annuli, and exterior material zero. */
+                    ids[y * W + x] = rr < 64 ? 1 : rr < 324 ? 2 : rr < 676 ? 4 : 0;
+                else if (shape == 1) /* Concave C with its centroid in the hole. */
+                    ids[y * W + x] = rr < 676 && rr >= 100 && !(x > 30 && abs(dy) < 10) ? 1 : -1;
+                else /* Two disconnected blocks sharing an ID, plus a thin strip. */
+                    ids[y * W + x] = y >= 10 && y <= 30 &&
+                        ((x >= 5 && x <= 20) || (x >= 40 && x <= 55)) ? 7 : y == 50 ? 9 : -1;
+            }
+        }
+        alea_label_position_t *labels = NULL, *again = NULL;
+        int count = 0, repeated = 0;
+        assert(alea_find_label_positions(ids, W, H, 1, &labels, &count) == 0);
+        assert(count == (shape == 0 ? 4 : shape == 1 ? 1 : 2));
+        assert(alea_find_label_positions(ids, W, H, 1, &again, &repeated) == 0);
+        assert(repeated == count);
+        for (int i = 0; i < count; i++) {
+            assert(labels[i].px == again[i].px && labels[i].py == again[i].py);
+            int best = 0;
+            for (int y = 0; y < H; y++) {
+                for (int x = 0; x < W; x++) {
+                    if (ids[y * W + x] != labels[i].id) continue;
+                    int d = label_clearance(ids, W, H, x, y);
+                    if (d > best) best = d;
+                }
+            }
+            assert(ids[labels[i].py * W + labels[i].px] == labels[i].id);
+            assert(label_clearance(ids, W, H, labels[i].px, labels[i].py) == best);
+            if (shape == 0 && labels[i].id == 1)
+                assert(labels[i].px == 30 && labels[i].py == 30);
+        }
+        if (shape == 2) assert(labels[0].px < 30 && labels[1].px > 30);
+        free(labels);
+        free(again);
+    }
+    puts("OK");
+}
+
 int main(void) {
+    test_region_label_clearance();
     printf("\n=== Slice Unit Tests ===\n\n");
 
     printf("Grid Query Tests:\n");
