@@ -96,7 +96,7 @@ The native CLI archives include `examples/lua` and `examples/python`.
 Python binding archives include the Python scripts under `examples/`.
 
 Release pages also contain the native Python bindings as `pyalea` archives for
-CPython 3.10–3.14 on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows
+CPython 3.12–3.14 on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows
 x86_64. Each archive is specific to its Python ABI and platform and includes a
 matching `.sha256` file. Applications can bundle the contained `pyalea/`
 directory and use `import pyalea`; see

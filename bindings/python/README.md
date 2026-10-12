@@ -19,13 +19,12 @@ builder. Installing NumPy is still required at runtime. The package includes a
 `pyalea._alea`, while `pyalea.__all__` is explicitly maintained.
 
 One archive is released per CPython ABI and platform, covering CPython
-3.10–3.14. Separate archives are not needed for each NumPy minor release. The
+3.12–3.14. Separate archives are not needed for each NumPy minor release. The
 extension is built against the oldest practical NumPy 2.x release for each
-Python version: 2.0.2 for Python 3.10–3.12, 2.1.3 for Python 3.13, and 2.3.3
-for Python 3.14. The Python 3.10–3.12 artifacts are also tested at runtime with
-NumPy 1.26.4 on every release platform. Every artifact is tested against the
+Python version: 2.0.2 for Python 3.12, 2.1.3 for Python 3.13, and 2.3.3
+for Python 3.14. Every artifact is tested against the
 latest compatible NumPy 2.x release without rebuilding the extension.
-Consumers should currently declare `numpy>=1.26.4,<3`; Python's package
+Consumers should currently declare `numpy>=2.0,<3`; Python's package
 resolver will select a newer NumPy where an older release does not support that
 Python version.
 

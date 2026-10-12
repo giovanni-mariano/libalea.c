@@ -16,7 +16,7 @@ Download the archive matching the CPython ABI, operating system, and
 architecture from [GitHub Releases](https://github.com/giovanni-mariano/libalea.c/releases).
 Extract it and either add its top-level directory to `PYTHONPATH` or bundle the
 contained `pyalea/` directory with the application. NumPy is required at
-runtime; supported releases currently use `numpy>=1.26.4,<3`.
+runtime. Release archives target CPython 3.12–3.14 and use `numpy>=2.0,<3`.
 
 ```python
 import pyalea
