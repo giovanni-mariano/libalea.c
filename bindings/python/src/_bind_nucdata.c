@@ -547,7 +547,44 @@ static PyObject* PyAleaNuclide_photon_productions(
                 return NULL;
             }
             Py_DECREF(law);
+            const alea_nuc_energy_dist_t* dist = production->spectrum;
+            if (!dist->next && (dist->law == ALEA_NUC_ELAW_DISCRETE_PHOTON ||
+                               dist->law == ALEA_NUC_ELAW_LEVEL)) {
+                double offset, slope;
+                if (dist->law == ALEA_NUC_ELAW_DISCRETE_PHOTON) {
+                    offset = dist->discrete_photon_energy;
+                    slope = dist->discrete_photon_primary == 2
+                        ? dist->discrete_photon_awr / (dist->discrete_photon_awr + 1.0)
+                        : 0.0;
+                } else {
+                    offset = -dist->level_Q * dist->level_A;
+                    slope = dist->level_Q;
+                }
+                PyObject* line = Py_BuildValue("(dd)", offset, slope);
+                if (!line || PyDict_SetItemString(item, "line_energy", line) < 0) {
+                    Py_XDECREF(line);
+                    Py_DECREF(item);
+                    Py_DECREF(result);
+                    return NULL;
+                }
+                Py_DECREF(line);
+            }
         }
+        PyObject* knots = PyList_New(0);
+        if (!knots) { Py_DECREF(item); Py_DECREF(result); return NULL; }
+        /* Yield interpolation can change at points absent from the ESZ grid. */
+        for (int k = 0; production->energy && k < production->n_energies; k++) {
+            PyObject* point = PyFloat_FromDouble(production->energy[k]);
+            if (!point || PyList_Append(knots, point) < 0) {
+                Py_XDECREF(point); Py_DECREF(knots);
+                Py_DECREF(item); Py_DECREF(result); return NULL;
+            }
+            Py_DECREF(point);
+        }
+        if (PyDict_SetItemString(item, "yield_energy_grid", knots) < 0) {
+            Py_DECREF(knots); Py_DECREF(item); Py_DECREF(result); return NULL;
+        }
+        Py_DECREF(knots);
         PyList_SET_ITEM(result, i, item);
     }
     return result;
