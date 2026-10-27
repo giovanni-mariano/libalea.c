@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "util/compat.h"
+#include "util/alea_alloc.h"
 
 static int load_profile_enabled(void) {
     const char* v = getenv("ALEA_PROFILE_LOAD");
@@ -60,27 +61,35 @@ static int set_string(char** target, const char* value) {
  * CELL EVENT CALLBACKS
  * ============================================================================ */
 
+static int on_cells_reserve_cb(void* ud, size_t count) {
+    return mcnp_model_reserve_params(ud, count);
+}
+
 static void on_cell_added_cb(void* ud, size_t new_index) {
     mcnp_model_t* model = (mcnp_model_t*)ud;
     (void)new_index;
     mcnp_model_add_params(model);
 }
 
-static void on_cell_copied_cb(void* ud, size_t dst_index, size_t src_index) {
-    mcnp_model_t* model = (mcnp_model_t*)ud;
-    if (dst_index < model->cell_params_count && src_index < model->cell_params_count) {
-        if (dst_index == src_index) return;
-        mcnp_scoped_cell_params_t scoped = {0};
-        if (mcnp_scoped_params_copy(&scoped, &model->cell_params[src_index].scoped)) {
-            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "copying MCNP cell parameters");
-            return;
-        }
-        mcnp_scoped_params_free(&model->cell_params[dst_index].scoped);
-        model->cell_params[dst_index] = model->cell_params[src_index];
-        model->cell_params[dst_index].scoped = scoped;
-        const char* source_name = model->cell_names[src_index];
-        (void)set_string(&model->cell_names[dst_index], source_name);
+static int on_cell_copied_cb(void* ud, size_t dst_index, size_t src_index) {
+    mcnp_model_t* model = ud;
+    if (dst_index >= model->cell_params_count || src_index >= model->cell_params_count) return -1;
+    if (dst_index == src_index) return 0;
+    const char* source_name = model->cell_names[src_index];
+    char* name = alea_alloc_strdup(source_name);
+    mcnp_scoped_cell_params_t scoped = {0};
+    if ((source_name && !name) ||
+        mcnp_scoped_params_copy(&scoped, &model->cell_params[src_index].scoped)) {
+        free(name);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "copying MCNP cell parameters");
+        return -1;
     }
+    mcnp_scoped_params_free(&model->cell_params[dst_index].scoped);
+    free(model->cell_names[dst_index]);
+    model->cell_params[dst_index] = model->cell_params[src_index];
+    model->cell_params[dst_index].scoped = scoped;
+    model->cell_names[dst_index] = name;
+    return 0;
 }
 
 static void on_cell_removed_cb(void* ud, size_t index) {
@@ -100,6 +109,27 @@ static void on_cell_removed_cb(void* ud, size_t index) {
     memset(&model->cell_params[model->cell_params_count], 0, sizeof(*model->cell_params));
 }
 
+static void on_cells_pruned_cb(void* ud) {
+    mcnp_model_t* model = ud;
+    size_t write = 0;
+    for (size_t i = 0; i < model->cell_params_count; i++) {
+        if (model->sys->cells.data[i].root_node_id == ALEA_NODE_ID_INVALID) {
+            free(model->cell_names[i]);
+            mcnp_scoped_params_free(&model->cell_params[i].scoped);
+        } else {
+            model->cell_names[write] = model->cell_names[i];
+            model->cell_params[write++] = model->cell_params[i];
+        }
+    }
+    if (write < model->cell_params_count) {
+        memset(model->cell_names + write, 0,
+               (model->cell_params_count - write) * sizeof(*model->cell_names));
+        memset(model->cell_params + write, 0,
+               (model->cell_params_count - write) * sizeof(*model->cell_params));
+    }
+    model->cell_params_count = write;
+}
+
 /* ============================================================================
  * PUBLIC API
  * ============================================================================ */
@@ -110,14 +140,21 @@ int mcnp_model_reserve_params(mcnp_model_t* model, size_t cap) {
 
     size_t new_cap = model->cell_params_capacity;
     if (new_cap == 0) new_cap = 64;
-    while (new_cap < cap) new_cap *= 2;
+    const size_t max_params = SIZE_MAX / sizeof(mcnp_cell_params_t);
+    const size_t max_names = SIZE_MAX / sizeof(*model->cell_names);
+    const size_t max = max_params < max_names ? max_params : max_names;
+    if (cap > max) return -1;
+    while (new_cap < cap) {
+        if (new_cap > max / 2) { new_cap = cap; break; }
+        new_cap *= 2;
+    }
 
-    mcnp_cell_params_t* new_arr = realloc(model->cell_params,
+    mcnp_cell_params_t* new_arr = alea_realloc(model->cell_params,
                                            new_cap * sizeof(mcnp_cell_params_t));
     if (!new_arr) return -1;
     model->cell_params = new_arr;
 
-    char** new_names = realloc(model->cell_names,
+    char** new_names = alea_realloc(model->cell_names,
                                new_cap * sizeof(*model->cell_names));
     if (!new_names) return -1;
     memset(new_names + model->cell_params_capacity, 0,
@@ -279,9 +316,11 @@ static mcnp_model_t* finalize_loaded_model(mcnp_model_t* model) {
 void mcnp_model_register_hooks(mcnp_model_t* model) {
     if (!model || !model->sys) return;
     model->sys->cell_hook_userdata = model;
+    model->sys->on_cells_reserve = on_cells_reserve_cb;
     model->sys->on_cell_added = on_cell_added_cb;
     model->sys->on_cell_copied = on_cell_copied_cb;
     model->sys->on_cell_removed = on_cell_removed_cb;
+    model->sys->on_cells_pruned = on_cells_pruned_cb;
 }
 
 void mcnp_model_destroy(mcnp_model_t* model) {
@@ -290,9 +329,11 @@ void mcnp_model_destroy(mcnp_model_t* model) {
     /* Unhook before destroying */
     if (model->sys) {
         model->sys->cell_hook_userdata = NULL;
+        model->sys->on_cells_reserve = NULL;
         model->sys->on_cell_added = NULL;
         model->sys->on_cell_copied = NULL;
         model->sys->on_cell_removed = NULL;
+        model->sys->on_cells_pruned = NULL;
         if (model->owns_sys) {
             alea_system_destroy(model->sys);
         }
@@ -324,9 +365,11 @@ alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
     /* The caller takes only the generic system, not this MCNP sidecar.  Do
      * not leave mutation hooks pointing at the model after it is destroyed. */
     sys->cell_hook_userdata = NULL;
+    sys->on_cells_reserve = NULL;
     sys->on_cell_added = NULL;
     sys->on_cell_copied = NULL;
     sys->on_cell_removed = NULL;
+    sys->on_cells_pruned = NULL;
 
     model->sys = NULL;
     model->owns_sys = 0;
@@ -335,7 +378,7 @@ alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
 
 mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     if (!sys) return NULL;
-    if (sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed) {
+    if (sys->on_cells_reserve || sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed || sys->on_cells_pruned) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "system is already attached to a model wrapper");
         return NULL;

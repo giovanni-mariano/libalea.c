@@ -12,11 +12,15 @@
 
 /* Only the SDL thread touches live state, windows, textures, or events. A job
  * owns a byte-copy of state and a newly allocated RGB image. Pointers inside a
- * snapshot must refer to immutable data kept alive until the worker joins.
+ * snapshot must refer to immutable data, or worker-owned resources that only
+ * the single worker accesses, kept alive until the worker joins.
  * One worker at a time also serializes access to the model's query caches. */
 typedef int (*alea_view_draw_t)(void*, unsigned char**);
 typedef int (*alea_view_save_t)(const void*, const unsigned char*);
 typedef int (*alea_view_input_t)(void*, const SDL_Event*);
+/* Optional quality hook runs on a job snapshot before dispatch. Saves always
+ * receive preview=0; preview images must still have the requested dimensions. */
+typedef void (*alea_view_prepare_t)(void*, int preview);
 typedef int (*alea_view_active_t)(const void*, SDL_Keycode);
 typedef struct { const char* label; SDL_Keycode key; } alea_view_button_t;
 
@@ -25,10 +29,25 @@ typedef struct {
     unsigned char* pixels;
     alea_view_draw_t draw;
     alea_view_save_t save;
-    SDL_atomic_t done;
+    SDL_atomic_t done, cancelled, progress;
+    SDL_mutex* publication;
+    unsigned char* partial;
     uint64_t revision;
-    int saving, result;
+    int saving, result, preview;
 } alea_view_job_t;
+
+/* Optional progressive jobs publish owned RGB snapshots through a single-slot
+ * mailbox. The UI never reads the worker's mutable framebuffer. */
+typedef void (*alea_view_bind_t)(void*, alea_view_job_t*);
+static inline int alea_view_cancelled(alea_view_job_t* job) {
+    return job && SDL_AtomicGet(&job->cancelled);
+}
+static inline void alea_view_publish(alea_view_job_t* job, unsigned char* pixels, int progress) {
+    SDL_LockMutex(job->publication);
+    free(job->partial);job->partial=pixels;
+    SDL_AtomicSet(&job->progress,progress);
+    SDL_UnlockMutex(job->publication);
+}
 
 static int alea_view_worker(void* opaque) {
     alea_view_job_t* job = opaque;
@@ -85,6 +104,10 @@ static void alea_ui_text(SDL_Renderer* renderer, int x, int y, const char* text)
         if (*text >= 'A' && *text <= 'Z') memcpy(glyph, letters[*text-'A'], 7);
         else if (*text >= 'a' && *text <= 'z') memcpy(glyph, letters[26+*text-'a'], 7);
         else if (*text >= '0' && *text <= '9') memcpy(glyph, digits[*text-'0'], 7);
+        else if (*text == '[' || *text == ']') {
+            glyph[0]=glyph[6]=14;
+            for (int i=1;i<6;++i) glyph[i]=*text=='['?8:2;
+        }
         else if (*text == '-') glyph[3] = 14;
         else if (*text == '+') { glyph[1]=4; glyph[2]=4; glyph[3]=31; glyph[4]=4; glyph[5]=4; }
         else if (*text == '.') glyph[6] = 4;
@@ -133,11 +156,12 @@ static int alea_ui_hit(const SDL_Rect* rects, int count, int x, int y) {
     return -1;
 }
 
-static int alea_sdl_view(const char* title, const char* help,
+static int alea_sdl_view_progressive(const char* title, const char* help,
                          int width, int height, void* state, size_t state_size,
                          alea_view_draw_t draw, alea_view_save_t save,
                          alea_view_input_t input, alea_view_active_t active,
-                         const alea_view_button_t* buttons, int button_count) {
+                         const alea_view_button_t* buttons, int button_count,
+                         alea_view_prepare_t prepare, alea_view_bind_t bind) {
     SDL_Window* window = NULL;
     SDL_Renderer* renderer = NULL;
     SDL_Texture* texture = NULL;
@@ -145,7 +169,8 @@ static int alea_sdl_view(const char* title, const char* help,
     alea_view_job_t job = {0};
     SDL_Rect rects[32];
     void* pending_save = NULL;
-    uint64_t revision = 1, displayed = 0, save_revision = 0;
+    uint64_t revision = 1, displayed = 0, save_revision = 0, refined = 0;
+    Uint32 last_input = 0;
     int rc = -1, closing = 0, have_image = 0, pressed = -1, focus = 0;
     int dragging = 0, show_help = 0;
     const char* notice = "Ready";
@@ -170,26 +195,45 @@ static int alea_sdl_view(const char* title, const char* help,
         SDL_TEXTUREACCESS_STREAMING, width, height);
     if (!texture) goto done;
     fprintf(stderr, "%s\n", help);
+    last_input = SDL_GetTicks();
     for (;;) {
         /* Never join a running job on the event thread. The atomic completion
          * flag is also the ownership handoff for its image and snapshot. */
+        if(worker && job.publication) {
+            SDL_LockMutex(job.publication);
+            unsigned char* partial=job.partial;job.partial=NULL;
+            SDL_UnlockMutex(job.publication);
+            if(partial && job.revision==revision && !closing) {
+                int updated=SDL_UpdateTexture(texture,NULL,partial,width*3);
+                free(partial);partial=NULL;
+                if(updated!=0)goto done;
+                have_image=1;
+            }
+            free(partial);
+        }
         if (worker && SDL_AtomicGet(&job.done)) {
             SDL_WaitThread(worker, NULL);
             worker = NULL;
-            if (job.result != -1 && job.revision == revision && !closing) {
+            int can_display = job.revision == revision ||
+                (!bind && prepare && !job.saving && job.revision >= displayed);
+            if ((job.result == 0 || job.result == -2) && can_display && !closing) {
                 if (SDL_UpdateTexture(texture, NULL, job.pixels, width*3) != 0) goto done;
                 have_image = 1;
-                displayed = revision;
+                displayed = job.revision;
+                if (!job.preview) refined = job.revision;
             }
             if (job.result == -1) {
                 notice = "Render failed - change view to retry";
-                if (job.revision == revision) displayed = revision;
+                if (job.revision == revision) displayed = refined = revision;
             } else if (job.saving) notice = job.result == -2 ? "Save failed - check output path" : "Image saved";
             free(job.pixels); job.pixels = NULL;
             free(job.snapshot); job.snapshot = NULL;
+            free(job.partial);job.partial=NULL;
+            SDL_DestroyMutex(job.publication);job.publication=NULL;
         }
         if (closing && !worker && !pending_save) break;
-        if (!worker && (pending_save || (!closing && displayed != revision))) {
+        int refining = prepare && displayed == revision && refined != revision && SDL_GetTicks()-last_input >= 150;
+        if (!worker && (pending_save || (!closing && (displayed != revision || refining)))) {
             memset(&job, 0, sizeof(job));
             job.snapshot = pending_save ? pending_save : malloc(state_size);
             if (!job.snapshot) goto done;
@@ -197,6 +241,12 @@ static int alea_sdl_view(const char* title, const char* help,
             job.revision = pending_save ? save_revision : revision;
             if (!pending_save) memcpy(job.snapshot, state, state_size);
             pending_save = NULL;
+            job.preview = prepare && !job.saving && !refining;
+            if (prepare) prepare(job.snapshot, job.preview);
+            if(bind) {
+                job.publication=SDL_CreateMutex();if(!job.publication)goto done;
+                bind(job.snapshot,&job);
+            }
             job.draw = draw; job.save = save;
             SDL_AtomicSet(&job.done, 0);
             worker = SDL_CreateThread(alea_view_worker, "alea-render", &job);
@@ -231,6 +281,11 @@ static int alea_sdl_view(const char* title, const char* help,
             alea_ui_bevel(renderer, status, 1);
             SDL_SetRenderDrawColor(renderer, 24,24,24,255);
             const char* message = worker ? (pending_save ? "Rendering - save queued" : job.saving ? "Rendering and saving" : "Rendering - controls available") : notice;
+            char progress_text[64];
+            if(worker && bind && !job.saving) {
+                snprintf(progress_text,sizeof(progress_text),"%s: %d / 100",job.preview?"Preview":"Refining",SDL_AtomicGet(&job.progress));
+                message=progress_text;
+            }
             alea_ui_text(renderer, 16,window_h-25,message);
             if (worker) {
                 SDL_SetRenderDrawColor(renderer, 0,0,128,255);
@@ -290,6 +345,7 @@ static int alea_sdl_view(const char* title, const char* help,
             } else continue;
             if (command == SDLK_q || command == SDLK_ESCAPE) {
                 closing = 1;
+                if(worker && bind && !job.saving)SDL_AtomicSet(&job.cancelled,1);
                 /* Hide promptly, then pump events while the in-flight library
                  * call finishes. Model/config resources outlive that call. */
                 SDL_HideWindow(window);
@@ -303,7 +359,10 @@ static int alea_sdl_view(const char* title, const char* help,
                 if (command) { event.type = SDL_KEYDOWN; event.key.keysym.sym = command; }
                 int changed = input(state,&event);
                 if (changed < 0) goto done;
-                if (changed) { ++revision; notice = "Ready"; }
+                if (changed) {
+                    ++revision; last_input = SDL_GetTicks(); notice = "Ready";
+                    if(worker && bind && !job.saving)SDL_AtomicSet(&job.cancelled,1);
+                }
             }
         } while (SDL_PollEvent(&event));
     }
@@ -313,15 +372,34 @@ done:
      * resources. Hide the failed window and continue pumping until it exits. */
     if (rc != 0) fprintf(stderr, "Viewer failed: %s\n", SDL_GetError());
     if (worker) {
+        if(bind && !job.saving)SDL_AtomicSet(&job.cancelled,1);
         if (window) SDL_HideWindow(window);
         while (!SDL_AtomicGet(&job.done)) { SDL_PumpEvents(); SDL_Delay(10); }
         SDL_WaitThread(worker,NULL);
     }
-    free(job.pixels); free(job.snapshot); free(pending_save);
+    free(job.pixels); free(job.snapshot); free(pending_save);free(job.partial);
+    SDL_DestroyMutex(job.publication);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
     return rc;
+}
+static inline int alea_sdl_view_ex(const char* title, const char* help,
+        int width, int height, void* state, size_t state_size,
+        alea_view_draw_t draw, alea_view_save_t save,
+        alea_view_input_t input, alea_view_active_t active,
+        const alea_view_button_t* buttons, int button_count, alea_view_prepare_t prepare) {
+    return alea_sdl_view_progressive(title,help,width,height,state,state_size,draw,save,
+        input,active,buttons,button_count,prepare,NULL);
+}
+/* Preserve the full-resolution behavior of existing viewers. */
+static inline int alea_sdl_view(const char* title, const char* help,
+        int width, int height, void* state, size_t state_size,
+        alea_view_draw_t draw, alea_view_save_t save,
+        alea_view_input_t input, alea_view_active_t active,
+        const alea_view_button_t* buttons, int button_count) {
+    return alea_sdl_view_ex(title,help,width,height,state,state_size,draw,save,
+        input,active,buttons,button_count,NULL);
 }
 #endif

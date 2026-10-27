@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
+#include "alea_alloc.h"
 #include "util/alea_log.h"
 
 /**
@@ -16,12 +18,12 @@
 
 // Helper: Create a new arena block
 static arena_block_t* arena_new_block(size_t size) {
-    arena_block_t* block = (arena_block_t*)malloc(sizeof(arena_block_t));
+    arena_block_t* block = (arena_block_t*)alea_malloc(sizeof(arena_block_t));
     if (!block) {
         return NULL;
     }
 
-    block->buffer = (unsigned char*)malloc(size);
+    block->buffer = (unsigned char*)alea_malloc(size);
     if (!block->buffer) {
         free(block);
         return NULL;
@@ -76,42 +78,41 @@ void* arena_alloc_align(arena_t* arena, size_t size, size_t align) {
         return NULL;
     }
 
-    // Try to allocate from the current block
-    size_t aligned_offset = align_forward(arena->current->current_offset, align);
-    
-    if (aligned_offset + size <= arena->current->total_size) {
-        // Allocation fits in current block
-        void* ptr = arena->current->buffer + aligned_offset;
-        arena->current->current_offset = aligned_offset + size;
-        memset(ptr, 0, size);
-        return ptr;
+    if (align == 0 || (align & (align - 1)) != 0 ||
+        align > _Alignof(max_align_t)) return NULL;
+
+    /* Reuse the existing chain after reset, without discarding smaller blocks. */
+    arena_block_t* block = arena->current;
+    for (;;) {
+        if (block->current_offset <= SIZE_MAX - (align - 1)) {
+            size_t offset = align_forward(block->current_offset, align);
+            if (offset <= block->total_size && size <= block->total_size - offset) {
+                void* ptr = block->buffer + offset;
+                block->current_offset = offset + size;
+                arena->current = block;
+                memset(ptr, 0, size);
+                return ptr;
+            }
+        }
+        if (!block->next) break;
+        block = block->next;
     }
 
-    // Current block is full - need a new one
-    // Make sure the new block is large enough for the requested size
     size_t new_block_size = arena->default_block_size;
     if (size > new_block_size) {
-        // For large allocations, allocate a bigger block
+        if (size > SIZE_MAX / 2) return NULL;
         new_block_size = size * 2;
     }
-    
     arena_block_t* new_block = arena_new_block(new_block_size);
     if (!new_block) {
-        ALEA_LOG_ERROR("Arena failed to allocate new block of %zu bytes",
-                new_block_size);
+        ALEA_LOG_ERROR("Arena failed to allocate new block of %zu bytes", new_block_size);
         return NULL;
     }
-    
-    // Link new block to chain
-    arena->current->next = new_block;
+    block->next = new_block;
     arena->current = new_block;
-
-    // Now retry allocation in the new block (guaranteed to succeed)
-    aligned_offset = align_forward(arena->current->current_offset, align);
-    void* ptr = arena->current->buffer + aligned_offset;
-    arena->current->current_offset = aligned_offset + size;
-    memset(ptr, 0, size);
-    return ptr;
+    new_block->current_offset = size;
+    memset(new_block->buffer, 0, size);
+    return new_block->buffer;
 }
 
 char* arena_strdup(arena_t* arena, const char* str) {

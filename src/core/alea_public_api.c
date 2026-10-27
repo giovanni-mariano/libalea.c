@@ -34,6 +34,7 @@
 #include "util/arena.h"
 #include "util/str_builder.h"
 #include "util/compat.h"
+#include "util/alea_alloc.h"
 
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
@@ -297,8 +298,11 @@ void alea_destroy(alea_system_t* sys) {
 #define CLONE_VEC(dst, src, type) do { \
     size_t count = alea_vec_count(&(src)); \
     if (count > 0) { \
-        int _r = alea_vec_reserve(&(dst), count, type); \
-        if (_r != 0) goto clone_error; \
+        if (count > SIZE_MAX / sizeof(type)) goto clone_error; \
+        void* data = alea_realloc((dst).data, count * sizeof(type)); \
+        if (!data) goto clone_error; \
+        (dst).data = data; \
+        (dst).capacity = count; \
         memcpy((dst).data, (src).data, count * sizeof(type)); \
         (dst).count = count; \
     } \
@@ -337,72 +341,41 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     CLONE_VEC(clone->transforms, sys->transforms, alea_transform_t);
     CLONE_VEC(clone->cell_refs, sys->cell_refs, alea_cell_ref_t);
 
-    /* Clone cells: shallow copy then fix up internal pointers */
+    /* Initialize every owned pointer before any allocation can fail. */
     CLONE_VEC(clone->cells, sys->cells, alea_cell_entry_t);
-    for (size_t i = 0; i < alea_vec_count(&clone->cells); i++) {
+    for (size_t i = 0; i < clone->cells.count; i++) {
         alea_cell_entry_t* c = &clone->cells.data[i];
-        const alea_cell_entry_t* s = &sys->cells.data[i];
-        /* Index data — rebuilt on demand, NULL out to prevent double-free */
         c->surface_indices = NULL;
         c->surface_index_count = 0;
         c->neighbors = NULL;
         c->neighbor_count = 0;
-        /* Deep-copy owned lattice fill array */
-        if (s->lat_fill && s->lat_fill_count > 0) {
-            c->lat_fill = malloc(s->lat_fill_count * sizeof(int));
+        c->lat_fill = NULL;
+        c->comments = NULL;
+        c->inline_comment = NULL;
+    }
+    for (size_t i = 0; i < clone->cells.count; i++) {
+        alea_cell_entry_t* c = &clone->cells.data[i];
+        const alea_cell_entry_t* source = &sys->cells.data[i];
+        if (source->lat_fill && source->lat_fill_count > 0) {
+            c->lat_fill = alea_calloc(source->lat_fill_count, sizeof(int));
             if (!c->lat_fill) goto clone_error;
-            memcpy(c->lat_fill, s->lat_fill, s->lat_fill_count * sizeof(int));
-        } else {
-            c->lat_fill = NULL;
+            memcpy(c->lat_fill, source->lat_fill, source->lat_fill_count * sizeof(int));
         }
-        /* Deep-copy comment strings */
-        c->comments = s->comments ? alea_strdup(s->comments) : NULL;
-        c->inline_comment = s->inline_comment ? alea_strdup(s->inline_comment) : NULL;
+        c->comments = alea_alloc_strdup(source->comments);
+        if (source->comments && !c->comments) goto clone_error;
+        c->inline_comment = alea_alloc_strdup(source->inline_comment);
+        if (source->inline_comment && !c->inline_comment) goto clone_error;
     }
 
-    /* Clone materials: shallow copy then deep-copy internal arrays */
-    CLONE_VEC(clone->materials, sys->materials, alea_material_t);
-    for (size_t i = 0; i < alea_vec_count(&clone->materials); i++) {
-        alea_material_t* m = &clone->materials.data[i];
-        const alea_material_t* s = &sys->materials.data[i];
-        /* NULL everything first so destroy is safe on partial failure */
-        alea_vec_init(&m->nuclides);
-        alea_vec_init(&m->elements);
-        alea_vec_init(&m->thermal_laws);
-        m->name = NULL;
-        m->comments = NULL;
-        /* Deep-copy nuclides */
-        if (alea_vec_count(&s->nuclides) > 0) {
-            int r = alea_vec_reserve(&m->nuclides, alea_vec_count(&s->nuclides), alea_nuclide_t);
-            if (r != 0) goto clone_error;
-            memcpy(m->nuclides.data, s->nuclides.data, alea_vec_count(&s->nuclides) * sizeof(alea_nuclide_t));
-            m->nuclides.count = alea_vec_count(&s->nuclides);
-            for (size_t j = 0; j < alea_vec_count(&s->nuclides); j++) {
-                m->nuclides.data[j].library = alea_strdup(s->nuclides.data[j].library);
-            }
+    /* A zero-initialized vector is safe to destroy at every copy boundary. */
+    if (sys->materials.count) {
+        clone->materials.data = alea_calloc(sys->materials.count, sizeof(alea_material_t));
+        if (!clone->materials.data) goto clone_error;
+        clone->materials.count = clone->materials.capacity = sys->materials.count;
+        for (size_t i = 0; i < sys->materials.count; i++) {
+            if (alea_material_copy_contents(&clone->materials.data[i], &sys->materials.data[i]))
+                goto clone_error;
         }
-        /* Deep-copy elements */
-        if (alea_vec_count(&s->elements) > 0) {
-            int r = alea_vec_reserve(&m->elements, alea_vec_count(&s->elements), alea_element_comp_t);
-            if (r != 0) goto clone_error;
-            memcpy(m->elements.data, s->elements.data, alea_vec_count(&s->elements) * sizeof(alea_element_comp_t));
-            m->elements.count = alea_vec_count(&s->elements);
-            for (size_t j = 0; j < alea_vec_count(&s->elements); j++) {
-                m->elements.data[j].library = alea_strdup(s->elements.data[j].library);
-            }
-        }
-        /* Deep-copy thermal laws */
-        if (alea_vec_count(&s->thermal_laws) > 0) {
-            int r = alea_vec_reserve(&m->thermal_laws, alea_vec_count(&s->thermal_laws), alea_thermal_law_t);
-            if (r != 0) goto clone_error;
-            memcpy(m->thermal_laws.data, s->thermal_laws.data, alea_vec_count(&s->thermal_laws) * sizeof(alea_thermal_law_t));
-            m->thermal_laws.count = alea_vec_count(&s->thermal_laws);
-            for (size_t j = 0; j < alea_vec_count(&s->thermal_laws); j++) {
-                m->thermal_laws.data[j].identifier = alea_strdup(s->thermal_laws.data[j].identifier);
-            }
-        }
-        m->name = alea_strdup(s->name);
-        m->comments = alea_strdup(s->comments);
     }
 
     /* Clone universes: shallow copy then NULL out index data */
@@ -415,27 +388,19 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         clone->universes.data[i].point_bvh_disabled = false;
     }
 
-    /* Clone mixtures: shallow copy then deep-copy internal arrays */
-    CLONE_VEC(clone->mixtures, sys->mixtures, alea_mixture_t);
-    for (size_t i = 0; i < alea_vec_count(&clone->mixtures); i++) {
-        alea_mixture_t* m = &clone->mixtures.data[i];
-        const alea_mixture_t* s = &sys->mixtures.data[i];
-        alea_vec_init(&m->components);
-        m->name = NULL;
-        m->comments = NULL;
-        if (alea_vec_count(&s->components) > 0) {
-            int r = alea_vec_reserve(&m->components, alea_vec_count(&s->components), alea_mixture_comp_t);
-            if (r != 0) goto clone_error;
-            memcpy(m->components.data, s->components.data, alea_vec_count(&s->components) * sizeof(alea_mixture_comp_t));
-            m->components.count = alea_vec_count(&s->components);
+    if (sys->mixtures.count) {
+        clone->mixtures.data = alea_calloc(sys->mixtures.count, sizeof(alea_mixture_t));
+        if (!clone->mixtures.data) goto clone_error;
+        clone->mixtures.count = clone->mixtures.capacity = sys->mixtures.count;
+        for (size_t i = 0; i < sys->mixtures.count; i++) {
+            if (alea_mixture_copy_contents(&clone->mixtures.data[i], &sys->mixtures.data[i]))
+                goto clone_error;
         }
-        m->name = alea_strdup(s->name);
-        m->comments = alea_strdup(s->comments);
     }
 
     /* Clone surface lookup if present */
     if (sys->surface_lookup && sys->surface_lookup_size > 0) {
-        clone->surface_lookup = malloc(sys->surface_lookup_size * sizeof(alea_node_id_t));
+        clone->surface_lookup = alea_malloc(sys->surface_lookup_size * sizeof(alea_node_id_t));
         if (!clone->surface_lookup) goto clone_error;
         memcpy(clone->surface_lookup, sys->surface_lookup,
                sys->surface_lookup_size * sizeof(alea_node_id_t));
@@ -444,7 +409,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
 
     /* Clone prim_to_surface if present */
     if (sys->prim_to_surface && sys->prim_to_surface_size > 0) {
-        clone->prim_to_surface = malloc(sys->prim_to_surface_size * sizeof(uint32_t));
+        clone->prim_to_surface = alea_malloc(sys->prim_to_surface_size * sizeof(uint32_t));
         if (!clone->prim_to_surface) goto clone_error;
         memcpy(clone->prim_to_surface, sys->prim_to_surface,
                sys->prim_to_surface_size * sizeof(uint32_t));
@@ -456,6 +421,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     clone->source = sys->source;
     clone->next_inline_transform_id = sys->next_inline_transform_id;
     clone->next_auto_surface_id = sys->next_auto_surface_id;
+    clone->next_auto_cell_id = sys->next_auto_cell_id;
+    clone->next_auto_material_id = sys->next_auto_material_id;
     clone->stats = sys->stats;
     /* Universe index was invalidated (cell_indices NULLed), must be rebuilt */
     clone->universe_index_built = false;
@@ -463,7 +430,8 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     /* Rebuild cell hash map for cloned system */
     cell_hashmap_clear(&clone->cell_index);
     for (size_t i = 0; i < alea_vec_count(&clone->cells); i++) {
-        cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mc_cell_id, (int)i);
+        if (!cell_hashmap_put(&clone->cell_index, clone->cells.data[i].mc_cell_id, (int)i))
+            goto clone_error;
     }
 
     /* Rebuild the primitive dedup index. The primitives vector was copied above,
@@ -485,6 +453,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
 
 clone_error:
     alea_system_destroy(clone);
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Failed to clone system");
     return NULL;
 }
 
@@ -1293,6 +1262,9 @@ int alea_cell_set_material(alea_system_t* sys, int cell_index, int material_inde
         cell->material_id = sys->materials.data[material_index].material_id;
         cell->material_index = material_index;
     }
+    alea_system_materials_changed(sys);
+    /* Coherent point/ray results also retain material IDs. */
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 
@@ -1309,6 +1281,9 @@ int alea_cell_set_mixture(alea_system_t* sys, int cell_index, int mixture_id) {
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     cell->material_id = mixture_id;
     cell->material_index = -1;  /* Not a direct material */
+    alea_system_materials_changed(sys);
+    /* Coherent point/ray results also retain material IDs. */
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 
@@ -1319,6 +1294,7 @@ int alea_cell_set_density(alea_system_t* sys, int cell_index, double density) {
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     cell->is_mass_density = (density < 0) ? 1 : 0;
     cell->density = fabs(density);
+    alea_system_materials_changed(sys);
     return 0;
 }
 
@@ -1336,6 +1312,7 @@ int alea_cell_set_temperature(alea_system_t* sys, int cell_index,
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     cell->temperature = temperature_K;
     cell->has_temperature = 1;
+    alea_system_materials_changed(sys);
     return 0;
 }
 
@@ -1346,6 +1323,7 @@ int alea_cell_clear_temperature(alea_system_t* sys, int cell_index) {
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
     cell->temperature = 0.0;
     cell->has_temperature = 0;
+    alea_system_materials_changed(sys);
     return 0;
 }
 
@@ -1534,7 +1512,83 @@ alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id) 
 }
 
 int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset) {
-    if (!target || !source) return -1;
+    if (!target || !source || target == source) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Merge requires distinct systems");
+        return -1;
+    }
+    const size_t old_cells = target->cells.count;
+    const size_t old_surfaces = target->surfaces.count;
+    const size_t old_nodes = target->nodes.count;
+    const size_t old_materials = target->materials.count;
+    const size_t old_mixtures = target->mixtures.count;
+    if (old_nodes > UINT32_MAX || old_cells > INT_MAX ||
+        source->nodes.count > UINT32_MAX - old_nodes ||
+        source->cells.count > (size_t)INT_MAX - old_cells ||
+        source->surfaces.count > SIZE_MAX - old_surfaces ||
+        old_materials > INT_MAX || source->materials.count > (size_t)INT_MAX - old_materials ||
+        source->mixtures.count > SIZE_MAX - old_mixtures) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "Merged system exceeds index limits");
+        return -1;
+    }
+    for (size_t i = 0; i < source->cells.count; i++) {
+        int64_t id = (int64_t)source->cells.data[i].mc_cell_id + id_offset;
+        const alea_cell_entry_t* cell = &source->cells.data[i];
+        int64_t mat = cell->material_id ? (int64_t)cell->material_id + id_offset : 0;
+        if (id <= 0 || id >= INT_MAX || mat < 0 || mat >= INT_MAX ||
+            cell_hashmap_get(&target->cell_index, (int)id) != NULL) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid or duplicate merged cell ID");
+            return -1;
+        }
+    }
+    for (size_t i = 0; i < source->surfaces.count; i++) {
+        int64_t id = (int64_t)source->surfaces.data[i].mc_surface_id + id_offset;
+        if (id <= 0 || id >= INT_MAX) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid merged surface ID");
+            return -1;
+        }
+    }
+
+    /* Validate definitions and references before publishing any mutation. */
+    for (size_t i = 0; i < source->materials.count; i++) {
+        int64_t id = (int64_t)source->materials.data[i].material_id + id_offset;
+        if (id <= 0 || id >= INT_MAX || alea_find_material_by_id(target, (int)id) >= 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid or duplicate merged material ID");
+            return -1;
+        }
+    }
+    for (size_t i = 0; i < source->mixtures.count; i++) {
+        const alea_mixture_t* mixture = &source->mixtures.data[i];
+        int64_t id = (int64_t)mixture->mixture_id + id_offset;
+        int64_t mc_id = mixture->mc_material_id ? (int64_t)mixture->mc_material_id + id_offset : 0;
+        if (id <= 0 || id >= INT_MAX || mc_id < 0 || mc_id >= INT_MAX ||
+            alea_find_mixture_by_id(target, (int)id) >= 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid or duplicate merged mixture ID");
+            return -1;
+        }
+        for (size_t j = 0; j < mixture->components.count; j++) {
+            if (alea_find_material_by_id(source, mixture->components.data[j].material_id) < 0) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Merged mixture references an unknown material");
+                return -1;
+            }
+        }
+    }
+    for (size_t i = 0; i < source->cells.count; i++) {
+        const alea_cell_entry_t* cell = &source->cells.data[i];
+        if (cell->material_index >= 0) {
+            if ((size_t)cell->material_index >= source->materials.count ||
+                source->materials.data[cell->material_index].material_id != cell->material_id) {
+                alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Merged cell has an invalid material index");
+                return -1;
+            }
+        } else if (cell->material_id != 0 &&
+                   alea_find_material_by_id(source, cell->material_id) < 0 &&
+                   alea_find_mixture_by_id(source, cell->material_id) < 0) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Merged cell references an unknown material");
+            return -1;
+        }
+    }
+
+    if (alea_system_reserve_cell_metadata(target, old_cells + source->cells.count)) return -1;
 
     size_t node_offset = alea_vec_count(&target->nodes);
     size_t source_prim_count = alea_vec_count(&source->primitives);
@@ -1542,13 +1596,34 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
     int8_t* prim_inverted = NULL;
 
     if (source_prim_count > 0) {
-        prim_map = malloc(source_prim_count * sizeof(uint32_t));
-        prim_inverted = calloc(source_prim_count, sizeof(int8_t));
+        prim_map = alea_malloc(source_prim_count * sizeof(uint32_t));
+        prim_inverted = alea_calloc(source_prim_count, sizeof(int8_t));
         if (!prim_map || !prim_inverted) {
-            free(prim_map);
-            free(prim_inverted);
-            return -1;
+            goto merge_error;
         }
+    }
+
+    /* Invalidate before any mutation, including a merge that later fails. */
+    alea_system_invalidate_query_caches(target, ALEA_CACHE_ALL);
+    if (alea_vec_reserve(&target->nodes, old_nodes + source->nodes.count, alea_node_t) != 0 ||
+        alea_vec_reserve(&target->cells, old_cells + source->cells.count, alea_cell_entry_t) != 0 ||
+        alea_vec_reserve(&target->surfaces, old_surfaces + source->surfaces.count, alea_surface_entry_t) != 0 ||
+        alea_vec_reserve(&target->materials, old_materials + source->materials.count, alea_material_t) != 0 ||
+        alea_vec_reserve(&target->mixtures, old_mixtures + source->mixtures.count, alea_mixture_t) != 0)
+        goto merge_error;
+
+    for (size_t i = 0; i < source->materials.count; i++) {
+        alea_material_t* material = &target->materials.data[target->materials.count++];
+        if (alea_material_copy_contents(material, &source->materials.data[i])) goto merge_error;
+        material->material_id += id_offset;
+    }
+    for (size_t i = 0; i < source->mixtures.count; i++) {
+        alea_mixture_t* mixture = &target->mixtures.data[target->mixtures.count++];
+        if (alea_mixture_copy_contents(mixture, &source->mixtures.data[i])) goto merge_error;
+        mixture->mixture_id += id_offset;
+        if (mixture->mc_material_id) mixture->mc_material_id += id_offset;
+        for (size_t j = 0; j < mixture->components.count; j++)
+            mixture->components.data[j].material_id += id_offset;
     }
 
     /* Copy primitives */
@@ -1557,16 +1632,12 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         alea_primitive_data_t data;
         int8_t inverted = 0;
         if (!alea_primitive_copy_data(source, (uint32_t)i, &data)) {
-            free(prim_map);
-            free(prim_inverted);
-            return -1;
+            goto merge_error;
         }
         uint32_t new_id = alea_get_or_create_primitive(
             target, prim->type, &data, &inverted);
         if (new_id == UINT32_MAX) {
-            free(prim_map);
-            free(prim_inverted);
-            return -1;
+            goto merge_error;
         }
         prim_map[i] = new_id;
         prim_inverted[i] = inverted;
@@ -1580,11 +1651,11 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         if (op == ALEA_OP_PRIMITIVE) {
             uint32_t old_id = node.primitive.primitive_id;
             if (old_id >= source_prim_count) {
-                free(prim_map);
-                free(prim_inverted);
-                return -1;
+                goto merge_error;
             }
             node.primitive.primitive_id = prim_map[old_id];
+            if (node.primitive.mc_surface_id > 0)
+                node.primitive.mc_surface_id += id_offset;
             if (prim_inverted[old_id]) {
                 node.primitive.inverted = !node.primitive.inverted;
             }
@@ -1594,7 +1665,7 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
                 node.operation.right += (uint32_t)node_offset;
             }
         }
-        alea_vec_push(&target->nodes, node, alea_node_t);
+        if (alea_vec_push(&target->nodes, node, alea_node_t) != 0) goto merge_error;
     }
 
     /* Copy cells with adjusted IDs and node references */
@@ -1602,12 +1673,19 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
     for (size_t i = 0; i < alea_vec_count(&source->cells); i++) {
         alea_cell_entry_t cell = source->cells.data[i];
         cell.mc_cell_id += id_offset;
+        if (cell.material_index >= 0) {
+            cell.material_index += (int)old_materials;
+        } else if (cell.material_id && alea_find_mixture_by_id(source, cell.material_id) < 0) {
+            cell.material_index = (int)old_materials + alea_find_material_by_id(source, cell.material_id);
+        }
         if (cell.root_node_id != ALEA_NODE_ID_INVALID) {
             cell.root_node_id += (uint32_t)node_offset;
         }
         if (cell.material_id != 0) {
             cell.material_id += id_offset;
         }
+        if (cell.original_root_node_id != ALEA_NODE_ID_INVALID)
+            cell.original_root_node_id += (uint32_t)node_offset;
         /* NULL out cached index data to prevent double-free */
         cell.surface_indices = NULL;
         cell.surface_index_count = 0;
@@ -1616,20 +1694,27 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         /* Deep-copy owned lattice fill array */
         if (cell.lat_fill && cell.lat_fill_count > 0) {
             const alea_cell_entry_t* src = &source->cells.data[i];
-            int* copy = malloc(src->lat_fill_count * sizeof(int));
-            if (copy) {
-                memcpy(copy, src->lat_fill, src->lat_fill_count * sizeof(int));
-            }
+            int* copy = alea_calloc(src->lat_fill_count, sizeof(int));
+            if (!copy) goto merge_error;
+            memcpy(copy, src->lat_fill, src->lat_fill_count * sizeof(int));
             cell.lat_fill = copy;
         } else {
             cell.lat_fill = NULL;
         }
         /* Deep-copy comment strings */
-        cell.comments = cell.comments ? alea_strdup(cell.comments) : NULL;
-        cell.inline_comment = cell.inline_comment ? alea_strdup(cell.inline_comment) : NULL;
+        cell.comments = alea_alloc_strdup(cell.comments);
+        cell.inline_comment = alea_alloc_strdup(cell.inline_comment);
+        if ((source->cells.data[i].comments && !cell.comments) ||
+            (source->cells.data[i].inline_comment && !cell.inline_comment)) {
+            free(cell.lat_fill); free(cell.comments); free(cell.inline_comment);
+            goto merge_error;
+        }
         int idx = (int)alea_vec_count(&target->cells);
-        alea_vec_push(&target->cells, cell, alea_cell_entry_t);
-        cell_hashmap_put(&target->cell_index, cell.mc_cell_id, idx);
+        if (alea_vec_push(&target->cells, cell, alea_cell_entry_t) != 0) {
+            free(cell.lat_fill); free(cell.comments); free(cell.inline_comment);
+            goto merge_error;
+        }
+        if (!cell_hashmap_put(&target->cell_index, cell.mc_cell_id, idx)) goto merge_error;
         cells_added++;
     }
 
@@ -1640,20 +1725,58 @@ int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset
         surf.pos_node += (uint32_t)node_offset;
         surf.neg_node += (uint32_t)node_offset;
         if (surf.primitive_id >= source_prim_count) {
-            free(prim_map);
-            free(prim_inverted);
-            return -1;
+            goto merge_error;
         }
         surf.primitive_id = prim_map[surf.primitive_id];
-        alea_vec_push(&target->surfaces, surf, alea_surface_entry_t);
+        if (surf.expanded_pos_node != ALEA_NODE_ID_INVALID)
+            surf.expanded_pos_node += (uint32_t)node_offset;
+        if (surf.expanded_neg_node != ALEA_NODE_ID_INVALID)
+            surf.expanded_neg_node += (uint32_t)node_offset;
+        if (alea_vec_push(&target->surfaces, surf, alea_surface_entry_t) != 0) goto merge_error;
     }
 
-    /* Mark universe index as needing rebuild */
-    target->universe_index_built = false;
+    for (size_t i = old_cells; i < target->cells.count; i++)
+        if (target->cells.data[i].mc_cell_id >= target->next_auto_cell_id)
+            target->next_auto_cell_id = target->cells.data[i].mc_cell_id + 1;
+    for (size_t i = old_surfaces; i < target->surfaces.count; i++)
+        if (target->surfaces.data[i].mc_surface_id >= target->next_auto_surface_id)
+            target->next_auto_surface_id = target->surfaces.data[i].mc_surface_id + 1;
 
+    for (size_t i = old_materials; i < target->materials.count; i++)
+        if (target->materials.data[i].material_id >= target->next_auto_material_id)
+            target->next_auto_material_id = target->materials.data[i].material_id + 1;
+
+    /* Sidecars were reserved before mutation, so publication cannot fail. */
+    if (target->on_cell_added) {
+        for (size_t i = old_cells; i < target->cells.count; i++)
+            target->on_cell_added(target->cell_hook_userdata, i);
+    }
     free(prim_map);
     free(prim_inverted);
     return cells_added;
+
+merge_error:
+    /* Roll back published geometry. Unreferenced deduplicated primitives may
+     * remain in the pool, but all existing cells and references remain valid. */
+    for (size_t i = old_cells; i < target->cells.count; i++) {
+        alea_cell_entry_t* cell = &target->cells.data[i];
+        cell_hashmap_remove(&target->cell_index, cell->mc_cell_id);
+        free(cell->lat_fill); free(cell->comments); free(cell->inline_comment);
+    }
+    for (size_t i = old_materials; i < target->materials.count; i++)
+        alea_material_clear(&target->materials.data[i]);
+    for (size_t i = old_mixtures; i < target->mixtures.count; i++)
+        alea_mixture_clear(&target->mixtures.data[i]);
+    target->materials.count = old_materials;
+    target->mixtures.count = old_mixtures;
+    target->cells.count = old_cells;
+    target->surfaces.count = old_surfaces;
+    target->nodes.count = old_nodes;
+    free(prim_map);
+    free(prim_inverted);
+    if (alea_get_last_error() == ALEA_OK)
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Merging geometry failed");
+    return -1;
 }
 
 /* ============================================================================
@@ -3208,6 +3331,7 @@ int alea_add_material(alea_system_t* sys, int material_id) {
 
     memset(mat, 0, sizeof(*mat));
     mat->material_id = final_id;
+    alea_system_materials_changed(sys);
     return idx;
 }
 
@@ -3281,6 +3405,7 @@ int alea_material_add_nuclide(alea_system_t* sys, int mat_index,
                               int zaid, const char* library, double fraction) {
     if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
         return -1;
+    alea_system_materials_changed(sys);
     return alea_mat_add_nuclide(&sys->materials.data[mat_index], zaid, library, fraction);
 }
 
@@ -3288,6 +3413,7 @@ int alea_material_add_element(alea_system_t* sys, int mat_index,
                               int Z, const char* library, double fraction) {
     if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
         return -1;
+    alea_system_materials_changed(sys);
     return alea_mat_add_element(&sys->materials.data[mat_index], Z, library, fraction);
 }
 
@@ -3295,6 +3421,7 @@ int alea_material_set_density(alea_system_t* sys, int mat_index, double density)
     if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
         return -1;
     alea_mat_set_density(&sys->materials.data[mat_index], density);
+    alea_system_materials_changed(sys);
     return 0;
 }
 
@@ -3302,12 +3429,15 @@ int alea_material_set_weight_fraction(alea_system_t* sys, int mat_index, bool is
     if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
         return -1;
     sys->materials.data[mat_index].is_weight_fraction = is_weight;
+    alea_system_materials_changed(sys);
     return 0;
 }
 
 int alea_material_expand_elements(alea_system_t* sys, int mat_index) {
     if (!sys || mat_index < 0 || (size_t)mat_index >= alea_vec_count(&sys->materials))
         return -1;
+    /* Expansion can modify composition before reporting an allocation failure. */
+    alea_system_materials_changed(sys);
     return alea_mat_expand_elements(&sys->materials.data[mat_index]);
 }
 
@@ -3899,6 +4029,9 @@ int alea_offset_material_ids(alea_system_t* sys, int offset) {
                 mixture->components.data[j].material_id += offset;
         }
     }
+    alea_system_materials_changed(sys);
+    /* Coherent point/ray results also retain material IDs. */
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 

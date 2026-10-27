@@ -1206,7 +1206,9 @@ static alea_node_id_t expand_all_cached(alea_system_t* sys, alea_node_id_t root_
                                         expansion_cache_t* cache) {
     if (!sys || root_id >= alea_vec_count(&sys->nodes)) return ALEA_NODE_ID_INVALID;
 
-    alea_node_t* node = &sys->nodes.data[root_id];
+    /* Expansion can grow nodes, so retain IDs rather than vector pointers. */
+    const alea_node_t snapshot = sys->nodes.data[root_id];
+    const alea_node_t* node = &snapshot;
     alea_operation_t op = ALEA_GET_OPERATION(node);
 
     if (op == ALEA_OP_PRIMITIVE) {
@@ -1217,6 +1219,7 @@ static alea_node_id_t expand_all_cached(alea_system_t* sys, alea_node_id_t root_
     if (op == ALEA_OP_COMPLEMENT) {
         /* Complement has single child in left */
         alea_node_id_t new_child = expand_all_cached(sys, node->operation.left, cache);
+        if (new_child == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
         if (new_child != node->operation.left) {
             /* Create new complement node with expanded child */
             alea_node_id_t new_node = alea_alloc_node(sys);
@@ -1233,7 +1236,10 @@ static alea_node_id_t expand_all_cached(alea_system_t* sys, alea_node_id_t root_
 
     /* Binary operation */
     alea_node_id_t new_left = expand_all_cached(sys, node->operation.left, cache);
+    if (new_left == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
     alea_node_id_t new_right = expand_all_cached(sys, node->operation.right, cache);
+
+    if (new_right == ALEA_NODE_ID_INVALID) return ALEA_NODE_ID_INVALID;
 
     if (new_left != node->operation.left || new_right != node->operation.right) {
         /* Create new operation node with expanded children */

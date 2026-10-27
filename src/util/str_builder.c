@@ -135,11 +135,7 @@ bool str_builder_int(str_builder_t* sb, int value)
 
 bool str_builder_double(str_builder_t* sb, double value, int precision)
 {
-    if (sb->error) return false;
-    char tmp[64];
-    int n = snprintf(tmp, sizeof(tmp), "%.*g", precision, value);
-    if (n <= 0) return false;
-    return str_builder_write(sb, tmp, (size_t)n);
+    return str_builder_printf(sb, "%.*g", precision, value);
 }
 
 bool str_builder_printf(str_builder_t* sb, const char* fmt, ...)

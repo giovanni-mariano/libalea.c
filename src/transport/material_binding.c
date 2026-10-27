@@ -32,6 +32,7 @@ typedef struct {
 struct alea_nuc_cell_bindings {
     const alea_system_t* system;
     uint64_t geometry_generation;
+    uint64_t material_generation;
     size_t cell_count;
     bound_cell_t* cells;
     alea_nuc_binding_notice_t* notices;
@@ -136,7 +137,8 @@ const alea_nuc_prepared_material_t* alea_nuc_cell_bindings_get(
     alea_nuc_particle_t particle) {
     if (!bindings || cell_index >= bindings->cell_count ||
         alea_system_geometry_generation(bindings->system) !=
-            bindings->geometry_generation)
+            bindings->geometry_generation ||
+        alea_system_material_generation(bindings->system) != bindings->material_generation)
         return NULL;
     const bound_cell_t* cell = &bindings->cells[cell_index];
     if (particle == ALEA_NUC_PARTICLE_NEUTRON) return cell->neutron.prepared;
@@ -148,7 +150,8 @@ bool alea_nuc_cell_bindings_matches_geometry(
     const alea_nuc_cell_bindings_t* bindings, const alea_system_t* sys) {
     return bindings && sys && bindings->system == sys &&
         bindings->cell_count == sys->cells.count &&
-        bindings->geometry_generation == alea_system_geometry_generation(sys);
+        bindings->geometry_generation == alea_system_geometry_generation(sys) &&
+        bindings->material_generation == alea_system_material_generation(sys);
 }
 
 static double isotope_mass(int zaid) {
@@ -832,6 +835,7 @@ alea_error_t alea_nuc_cell_bindings_prepare(
     if (!bindings) return ALEA_ERR_OUT_OF_MEMORY;
     bindings->system = sys;
     bindings->geometry_generation = alea_system_geometry_generation(sys);
+    bindings->material_generation = alea_system_material_generation(sys);
     bindings->cell_count = sys->cells.count;
     bindings->cells = calloc(bindings->cell_count ? bindings->cell_count : 1,
                              sizeof(*bindings->cells));
@@ -847,7 +851,7 @@ alea_error_t alea_nuc_cell_bindings_prepare(
             return err;
         }
     }
-    if (alea_system_geometry_generation(sys) != bindings->geometry_generation) {
+    if (!alea_nuc_cell_bindings_matches_geometry(bindings, sys)) {
         alea_nuc_cell_bindings_free(bindings);
         return ALEA_ERR_INVALID_STATE;
     }

@@ -69,6 +69,7 @@ BUILD = build_msvc
 BIN   = bin
 LUA   = vendor\lua\src
 TINYPAR = vendor\tinypar
+EXPAT = vendor\expat\lib
 
 INCLUDES = /I include /I $(SRC) /I $(TINYPAR)\include
 LUA_INCLUDES = $(INCLUDES) /I $(LUA)
@@ -137,6 +138,8 @@ CORE_OBJS = \
 
 UTIL_OBJS = \
 	$(BUILD)\util\arena.obj \
+	$(BUILD)\util\alea_alloc.obj \
+	$(BUILD)\util\xml_dom.obj \
 	$(BUILD)\util\alea_parallel.obj \
 	$(BUILD)\util\str_builder.obj \
 	$(BUILD)\util\alea_log.obj \
@@ -187,7 +190,9 @@ GEO_VALIDATOR_OBJS = \
 	$(BUILD)\geo_validator\transition_slice_critical.obj \
 	$(BUILD)\geo_validator\ray_slice_validation.obj
 
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(TINYPAR_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) \
+EXPAT_OBJS = $(BUILD)\vendor\expat\xmlparse.obj $(BUILD)\vendor\expat\xmlrole.obj $(BUILD)\vendor\expat\xmltok.obj $(BUILD)\vendor\expat\xcs.obj $(BUILD)\vendor\expat\random_rand_s.obj
+
+CORE_LIB_OBJS = $(EXPAT_OBJS) $(CORE_OBJS) $(UTIL_OBJS) $(TINYPAR_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) \
 	$(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS)
 
 # --- MCNP module -----------------------------------------------------------
@@ -215,7 +220,6 @@ OPENMC_OBJS = \
 # --- Native ALEA XML module -----------------------------------------------
 ALEA_XML_OBJS = \
 	$(BUILD)\alea_xml\alea_xml.obj \
-	$(BUILD)\alea_xml\xml_dom.obj \
 	$(BUILD)\alea_xml\xml_writer.obj \
 	$(BUILD)\alea_xml\region.obj
 
@@ -473,6 +477,27 @@ $(LIB_FULL): dirs $(ALL_OBJS)
 # makefile, so spell out the source for each library object. Library targets
 # depend on `dirs`, which creates the output directories before compilation.
 # ============================================================================
+$(BUILD)\util\alea_alloc.obj: $(SRC)\util\alea_alloc.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$@ $(SRC)\util\alea_alloc.c
+
+$(BUILD)\util\xml_dom.obj: $(SRC)\util\xml_dom.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /I $(EXPAT) /c /Fo$@ $(SRC)\util\xml_dom.c
+
+$(BUILD)\vendor\expat\xmlparse.obj: $(EXPAT)\xmlparse.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
+	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmlparse.c
+
+$(BUILD)\vendor\expat\xmlrole.obj: $(EXPAT)\xmlrole.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
+	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmlrole.c
+
+$(BUILD)\vendor\expat\xmltok.obj: $(EXPAT)\xmltok.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
+	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmltok.c
+
+$(BUILD)\vendor\expat\xcs.obj: $(EXPAT)\xcs.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
+	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xcs.c
+
+$(BUILD)\vendor\expat\random_rand_s.obj: $(EXPAT)\random_rand_s.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
+	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\random_rand_s.c
+
 $(BUILD)\core\alea_system.obj: $(SRC)\core\alea_system.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_system.c
 
@@ -685,9 +710,6 @@ $(BUILD)\openmc\openmc_model.obj: $(SRC)\openmc\openmc_model.c dirs
 
 $(BUILD)\alea_xml\alea_xml.obj: $(SRC)\alea_xml\alea_xml.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\alea_xml.c
-
-$(BUILD)\alea_xml\xml_dom.obj: $(SRC)\alea_xml\xml_dom.c dirs
-	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\xml_dom.c
 
 $(BUILD)\alea_xml\xml_writer.obj: $(SRC)\alea_xml\xml_writer.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\alea_xml\ $(SRC)\alea_xml\xml_writer.c
@@ -977,6 +999,7 @@ dirs:
 	@if not exist $(BUILD)\util mkdir $(BUILD)\util
 	@if not exist $(BUILD)\vendor mkdir $(BUILD)\vendor
 	@if not exist $(BUILD)\vendor\tinypar mkdir $(BUILD)\vendor\tinypar
+	@if not exist $(BUILD)\vendor\expat mkdir $(BUILD)\vendor\expat
 	@if not exist $(BUILD)\primitives mkdir $(BUILD)\primitives
 	@if not exist $(BUILD)\rng mkdir $(BUILD)\rng
 	@if not exist $(BUILD)\raycast mkdir $(BUILD)\raycast

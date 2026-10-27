@@ -16,6 +16,7 @@
  */
 
 #include "alea_simplify.h"
+#include "util/alea_alloc.h"
 #include "core/alea_system.h"
 #include "alea_ops.h"
 #include "alea_cell_complement.h"
@@ -2329,11 +2330,15 @@ void alea_simplify_and_prune_cells(
     /* Compact: remove all cells with root_node_id == ALEA_NODE_ID_INVALID.
      * After flatten these are fill-universe cells entirely outside the parent
      * cell boundary — their intersection with the parent is geometrically empty. */
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
+    if (sys->on_cells_pruned) sys->on_cells_pruned(sys->cell_hook_userdata);
     size_t write = 0;
     size_t removed = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) {
+            if (!sys->on_cells_pruned && sys->on_cell_removed)
+                sys->on_cell_removed(sys->cell_hook_userdata, write);
             free(cell->surface_indices);
             free(cell->neighbors);
             free(cell->lat_fill);
@@ -2348,6 +2353,9 @@ void alea_simplify_and_prune_cells(
         }
     }
     sys->cells.count = write;
+    cell_hashmap_clear(&sys->cell_index);
+    for (size_t i = 0; i < write; i++)
+        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     if (removed > 0) {
@@ -2365,6 +2373,12 @@ int alea_split_union_cells(alea_system_t* sys) {
 
     size_t original_count = alea_vec_count(&sys->cells);
     int new_cells_created = 0;
+    const int next_id = sys->next_auto_cell_id;
+    unsigned char* remove_original = alea_calloc(original_count ? original_count : 1, 1);
+    if (!remove_original) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Staging split cells");
+        return -1;
+    }
 
     /* Phase 1: For each cell with a top-level union, create new cells for branches
      * and mark the original for removal. */
@@ -2377,7 +2391,7 @@ int alea_split_union_cells(alea_system_t* sys) {
 
         /* Collect union branches */
         node_list_t* branches = node_list_create(16);
-        if (!branches) return -1;
+        if (!branches) goto split_error;
 
         collect_terms(sys, cell->root_node_id, ALEA_OP_UNION, branches);
 
@@ -2399,33 +2413,43 @@ int alea_split_union_cells(alea_system_t* sys) {
         for (size_t b = 0; b < branches->vec.count; b++) {
             int idx = alea_add_cell(sys, 0, branches->vec.data[b],
                                    material_index, density, universe_id);
-            if (idx >= 0) {
+            if (idx < 0) { node_list_destroy(branches); goto split_error; }
+            {
                 alea_cell_entry_t* new_cell = &sys->cells.data[idx];
                 new_cell->is_mass_density = is_mass_density;
                 new_cell->temperature = temperature;
                 new_cell->has_temperature = has_temperature;
                 /* on_cell_added callback was already fired by alea_add_cell;
                  * notify copy so module can copy params from original cell */
-                if (sys->on_cell_copied)
-                    sys->on_cell_copied(sys->cell_hook_userdata, (size_t)idx, original_idx);
+                if (sys->on_cell_copied &&
+                    sys->on_cell_copied(sys->cell_hook_userdata, (size_t)idx, original_idx)) {
+                    node_list_destroy(branches);
+                    goto split_error;
+                }
                 new_cells_created++;
             }
         }
 
         node_list_destroy(branches);
 
-        /* Mark original cell for removal.
-         * Re-fetch pointer since alea_add_cell may have reallocated. */
-        sys->cells.data[i].root_node_id = ALEA_NODE_ID_INVALID;
+        /* Publish removals only after every branch and sidecar copy succeeds. */
+        remove_original[i] = 1;
     }
 
-    if (new_cells_created == 0) return 0;
+    if (new_cells_created == 0) { free(remove_original); return 0; }
+    for (size_t i = 0; i < original_count; i++)
+        if (remove_original[i]) sys->cells.data[i].root_node_id = ALEA_NODE_ID_INVALID;
+    free(remove_original);
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     /* Phase 2: Compact — remove marked cells */
+    if (sys->on_cells_pruned) sys->on_cells_pruned(sys->cell_hook_userdata);
     size_t write = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         alea_cell_entry_t* cell = &sys->cells.data[i];
         if (cell->root_node_id == ALEA_NODE_ID_INVALID) {
+            if (!sys->on_cells_pruned && sys->on_cell_removed)
+                sys->on_cell_removed(sys->cell_hook_userdata, write);
             free(cell->surface_indices);
             free(cell->neighbors);
             free(cell->lat_fill);
@@ -2439,10 +2463,22 @@ int alea_split_union_cells(alea_system_t* sys) {
         }
     }
     sys->cells.count = write;
+    cell_hashmap_clear(&sys->cell_index);
+    for (size_t i = 0; i < write; i++)
+        cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     ALEA_LOG_INFO("Split union cells: %d new cells created", new_cells_created);
     return new_cells_created;
+
+split_error:
+    while (sys->cells.count > original_count)
+        alea_cell_remove(sys, (int)sys->cells.count - 1);
+    sys->next_auto_cell_id = next_id;
+    free(remove_original);
+    if (alea_error_code() == ALEA_OK)
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Splitting cell metadata");
+    return -1;
 }
 
 alea_node_id_t alea_tree_to_nnf(

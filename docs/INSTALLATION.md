@@ -59,6 +59,13 @@ make PREFIX=/opt/libalea install
 Windows MSVC builds use `build-msvc.ps1` or `build-msvc.bat`.
 See the platform-specific instructions below for toolchain setup.
 
+The experimental [GPU rendering and batch compute module](GPU_COMPUTE.md) is built separately:
+`make compute` for CPU, or `make compute USE_METAL=1` for CPU and Metal on macOS.
+It is not included in the default or full archives, or the pre-built releases.
+For the interactive Metal viewer, use `make tools USE_METAL=1 USE_SDL=1` and
+`bin/render3d model.i --backend metal --interactive`. See the module guide for
+supported geometry and rendering features.
+
 ## Link an application
 
 Libraries must precede their dependencies. For example, an MCNP application

@@ -131,6 +131,45 @@ TEST(str_double) {
     arena_free(&arena);
 }
 
+TEST(str_double_large_precision_preserves_the_complete_value) {
+    arena_t arena;
+    ASSERT_TRUE(arena_init(&arena));
+    str_builder_t sb;
+    str_builder_init(&sb, &arena, 8);
+    const double values[] = {1e-100, 2.2250738585072014e-308, -1.7976931348623157e308};
+    const int precisions[] = {100, 1000, -1, 0};
+    for (size_t i = 0; i < sizeof(values)/sizeof(values[0]); i++) {
+        for (size_t j = 0; j < sizeof(precisions)/sizeof(precisions[0]); j++) {
+            char expected[2048];
+            int count = snprintf(expected, sizeof(expected), "%.*g", precisions[j], values[i]);
+            ASSERT(count > 0 && (size_t)count < sizeof(expected));
+            str_builder_reset(&sb);
+            ASSERT_TRUE(str_builder_double(&sb, values[i], precisions[j]));
+            ASSERT_EQ(sb.len, count);
+            ASSERT_STR_EQ(str_builder_get(&sb), expected);
+        }
+    }
+    arena_free(&arena);
+}
+
+TEST(str_double_large_precision_streams_after_existing_text) {
+    FILE* file = tmpfile();
+    ASSERT_NOT_NULL(file);
+    str_builder_t sb;
+    str_builder_init_stream(&sb, 8, file);
+    ASSERT_TRUE(str_builder_puts(&sb, "prefix:"));
+    ASSERT_TRUE(str_builder_double(&sb, 1e-100, 100));
+    ASSERT_TRUE(str_builder_puts(&sb, ":suffix"));
+    ASSERT_TRUE(str_builder_flush(&sb));
+    rewind(file);
+    char actual[256] = {0}, expected[256];
+    ASSERT(fread(actual, 1, sizeof(actual)-1, file) > 0);
+    snprintf(expected, sizeof(expected), "prefix:%.*g:suffix", 100, 1e-100);
+    ASSERT_STR_EQ(actual, expected);
+    str_builder_destroy(&sb);
+    fclose(file);
+}
+
 TEST(str_reset) {
     arena_t arena;
     ASSERT_TRUE(arena_init(&arena));

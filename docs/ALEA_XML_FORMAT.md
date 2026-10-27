@@ -58,7 +58,9 @@ string. Stream exporters do not close the supplied stream. The convenience
 
 `alea_model_wrap()` is non-owning and `alea_model_adopt()` takes ownership of
 the system. A system can have only one model wrapper at a time because the
-wrapper tracks cell insertions, copies, and removals.
+wrapper tracks cell insertions, copies, and removals. Merge initializes appended
+cell metadata to defaults; reset clears all cell metadata. Splitting and pruning
+keep metadata aligned with the retained geometry cells.
 
 ## Document structure
 
@@ -67,9 +69,19 @@ The root must be exactly `alea` with `version="1"` and
 are `materials`, `transforms`, `surfaces`, and the required `cells` section.
 References use positive integer external IDs.
 
-The parser accepts ordinary elements, attributes, text, XML comments, the five
-predefined XML escapes, and numeric character references. DTD and entity
-declarations are rejected and no network or filesystem resource is resolved.
+ALEA and OpenMC use one Expat-backed parser. It accepts ordinary elements,
+attributes, text, XML comments, CDATA as text, the five predefined XML escapes,
+and numeric character references. Unicode is decoded by Expat. DTD and entity
+declarations and namespaces are rejected; external resources are never resolved.
+Malformed trailing content and duplicate attributes are errors.
+
+Default limits are 256 nested elements, 10 million elements, 1,024 attributes per
+element, 64 MiB of text per element, 1 GiB of input, and 1 GiB of cumulative DOM
+allocation requests (including replaced growth buffers). Parser buffers, arena
+padding, and block overhead are additional memory. Files are read in 64 KiB
+chunks. Internal callers can supply smaller limits using
+`alea_xml_dom_parse_string_with_limits()`; the shared defaults are defined in
+`src/util/xml_dom.h`. Exceeding a limit returns a parsing error.
 
 ## Materials and density
 

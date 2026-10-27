@@ -31,3 +31,17 @@ tinypar/
   License:     MPL-2.0
   Fetched:     2026-09-11
   Patches:     none
+
+expat/
+  Description: Shared XML parser for ALEA and OpenMC importers
+  Version:     2.9.0
+  Source:      https://github.com/libexpat/libexpat/releases/download/R_2_9_0/expat-2.9.0.tar.xz
+  SHA256:      1e6371862cc31999b368c3b89b49994f0677e1bab5f1b2b85ae3741f5d803051
+  Homepage:    https://libexpat.github.io/
+  License:     MIT (COPYING; also distributed as LICENSES/Expat.txt)
+  Fetched:     2026-10-27
+  Patches:     none; project configuration and symbol prefix in src/util/expat/
+  Contents:    upstream lib/ directory, COPYING, Changes
+  Updates:     verify release checksum, replace those paths unchanged, update
+               this entry, verify expat_prefix.h covers all global definitions,
+               and run the XML tests, sanitizers, and fuzz targets.

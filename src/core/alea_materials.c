@@ -11,6 +11,7 @@
 
 #include "alea_materials.h"
 #include "util/compat.h"
+#include "util/alea_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,7 +60,7 @@ alea_material_t* alea_material_create(int material_id) {
     return mat;
 }
 
-void alea_material_destroy(alea_material_t* mat) {
+void alea_material_clear(alea_material_t* mat) {
     if (!mat) return;
 
     for (size_t i = 0; i < alea_vec_count(&mat->nuclides); i++) {
@@ -79,8 +80,54 @@ void alea_material_destroy(alea_material_t* mat) {
 
     free(mat->name);
     free(mat->comments);
+    memset(mat, 0, sizeof(*mat));
+}
+
+void alea_material_destroy(alea_material_t* mat) {
+    if (!mat) return;
+    alea_material_clear(mat);
     free(mat);
 }
+
+/* Count only initialized entries so cleanup never follows source pointers. */
+#define COPY_STRING_VEC(field, type, string_field) do { \
+    size_t count = src->field.count; \
+    if (count) { \
+        dst->field.data = alea_calloc(count, sizeof(type)); \
+        if (!dst->field.data) goto copy_error; \
+        dst->field.capacity = count; \
+        for (size_t i = 0; i < count; i++) { \
+            dst->field.data[i] = src->field.data[i]; \
+            dst->field.data[i].string_field = alea_alloc_strdup(src->field.data[i].string_field); \
+            dst->field.count++; \
+            if (src->field.data[i].string_field && !dst->field.data[i].string_field) \
+                goto copy_error; \
+        } \
+    } \
+} while (0)
+
+int alea_material_copy_contents(alea_material_t* dst, const alea_material_t* src) {
+    *dst = *src;
+    alea_vec_init(&dst->nuclides);
+    alea_vec_init(&dst->elements);
+    alea_vec_init(&dst->thermal_laws);
+    dst->name = NULL;
+    dst->comments = NULL;
+    COPY_STRING_VEC(nuclides, alea_nuclide_t, library);
+    COPY_STRING_VEC(elements, alea_element_comp_t, library);
+    COPY_STRING_VEC(thermal_laws, alea_thermal_law_t, identifier);
+    dst->name = alea_alloc_strdup(src->name);
+    if (src->name && !dst->name) goto copy_error;
+    dst->comments = alea_alloc_strdup(src->comments);
+    if (src->comments && !dst->comments) goto copy_error;
+    return 0;
+
+copy_error:
+    alea_material_clear(dst);
+    return -1;
+}
+
+#undef COPY_STRING_VEC
 
 int alea_mat_add_nuclide(alea_material_t* mat, int zaid,
                              const char* library, double fraction) {
@@ -182,12 +229,41 @@ alea_mixture_t* alea_mixture_create(int mixture_id) {
     return mix;
 }
 
-void alea_mixture_destroy(alea_mixture_t* mix) {
+void alea_mixture_clear(alea_mixture_t* mix) {
     if (!mix) return;
     alea_vec_free(&mix->components);
     free(mix->name);
     free(mix->comments);
+    memset(mix, 0, sizeof(*mix));
+}
+
+void alea_mixture_destroy(alea_mixture_t* mix) {
+    if (!mix) return;
+    alea_mixture_clear(mix);
     free(mix);
+}
+
+int alea_mixture_copy_contents(alea_mixture_t* dst, const alea_mixture_t* src) {
+    *dst = *src;
+    alea_vec_init(&dst->components);
+    dst->name = NULL;
+    dst->comments = NULL;
+    size_t count = src->components.count;
+    if (count) {
+        dst->components.data = alea_calloc(count, sizeof(alea_mixture_comp_t));
+        if (!dst->components.data) goto copy_error;
+        memcpy(dst->components.data, src->components.data, count * sizeof(alea_mixture_comp_t));
+        dst->components.count = dst->components.capacity = count;
+    }
+    dst->name = alea_alloc_strdup(src->name);
+    if (src->name && !dst->name) goto copy_error;
+    dst->comments = alea_alloc_strdup(src->comments);
+    if (src->comments && !dst->comments) goto copy_error;
+    return 0;
+
+copy_error:
+    alea_mixture_clear(dst);
+    return -1;
 }
 
 int alea_mixture_add_component(alea_mixture_t* mix, int material_id,

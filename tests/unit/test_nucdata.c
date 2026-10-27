@@ -6128,4 +6128,92 @@ TEST(error_string_not_found) {
     ASSERT_NOT_NULL(s);
 }
 
+TEST(transport_binding_invalidates_after_density_and_void_edits) {
+    const char* path = "binding_revision_fixture.tmp";
+    ASSERT_TRUE(write_minimal_ascii_ace(path, 1));
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int material = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && material >= 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, material, 1001, ".80c", 1), 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, surface, -1), material, 0.05, 0), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    uint64_t geometry = alea_system_geometry_generation(sys);
+    alea_nuc_xsdir_t* xsdir = calloc(1, sizeof(*xsdir));
+    ASSERT_NOT_NULL(xsdir);
+    xsdir->entries = calloc(1, sizeof(*xsdir->entries));
+    ASSERT_NOT_NULL(xsdir->entries);
+    xsdir->count = 1;
+    snprintf(xsdir->entries[0].zaid, sizeof(xsdir->entries[0].zaid), "1001.80c");
+    snprintf(xsdir->entries[0].filename, sizeof(xsdir->entries[0].filename), "%s", path);
+    xsdir->entries[0].type = ALEA_NUC_TABLE_CONTINUOUS_NEUTRON;
+    xsdir->entries[0].file_type = xsdir->entries[0].address = 1;
+    alea_nuc_prepare_requirements_t req = {.required_capabilities = ALEA_NUC_CAP_RESTRICTED_NEUTRON};
+    alea_nuc_cell_bindings_t* binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir, ALEA_NUC_BIND_NEUTRON,
+        &req, NULL, &binding), ALEA_OK);
+    alea_nuc_particle_state_t particle = {ALEA_NUC_PARTICLE_NEUTRON, 2, {1,0,0}, 1, 0};
+    alea_nuc_evaluation_t before, after;
+    ASSERT_EQ(alea_nuc_evaluate(alea_nuc_cell_bindings_get(binding, 0,
+        ALEA_NUC_PARTICLE_NEUTRON), &particle, &before), ALEA_OK);
+    ASSERT_EQ(alea_cell_set_density(sys, 0, 0.10), 0);
+    ASSERT_FALSE(alea_nuc_cell_bindings_matches_geometry(binding, sys));
+    ASSERT_NULL(alea_nuc_cell_bindings_get(binding, 0, ALEA_NUC_PARTICLE_NEUTRON));
+    ASSERT_EQ(alea_system_geometry_generation(sys), geometry);
+    ASSERT_TRUE(alea_system_query_cache_ready(sys, ALEA_CACHE_ALL));
+    alea_nuc_cell_bindings_free(binding);
+    binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir, ALEA_NUC_BIND_NEUTRON,
+        &req, NULL, &binding), ALEA_OK);
+    ASSERT_EQ(alea_nuc_evaluate(alea_nuc_cell_bindings_get(binding, 0,
+        ALEA_NUC_PARTICLE_NEUTRON), &particle, &after), ALEA_OK);
+    ASSERT_NEAR(after.macro_total, 2 * before.macro_total, 1e-12);
+    ASSERT_EQ(alea_cell_set_material(sys, 0, ALEA_MATERIAL_VOID), 0);
+    ASSERT_FALSE(alea_nuc_cell_bindings_matches_geometry(binding, sys));
+    ASSERT_NULL(alea_nuc_cell_bindings_get(binding, 0, ALEA_NUC_PARTICLE_NEUTRON));
+    alea_nuc_cell_bindings_free(binding);
+    binding = NULL;
+    ASSERT_EQ(alea_nuc_cell_bindings_prepare(sys, xsdir, ALEA_NUC_BIND_NEUTRON,
+        &req, NULL, &binding), ALEA_OK);
+    ASSERT_NULL(alea_nuc_cell_bindings_get(binding, 0, ALEA_NUC_PARTICLE_NEUTRON));
+    alea_nuc_cell_bindings_free(binding);
+    alea_nuc_xsdir_free(xsdir);
+    alea_destroy(sys);
+    remove(path);
+}
+
+TEST(material_revisions_cover_composition_temperature_and_internal_edits) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int surface = alea_sphere_surface(sys, 1, 0, 0, 0, 1);
+    int mat = alea_add_material(sys, 1);
+    ASSERT(surface >= 0 && mat >= 0);
+    ASSERT_EQ(alea_add_cell(sys, 1, alea_halfspace(sys, surface, -1), mat, 0.05, 0), 0);
+    uint64_t previous = alea_system_material_generation(sys);
+#define CHECK_MATERIAL_EDIT(expression) do { \
+    ASSERT_EQ((expression), 0); \
+    ASSERT(alea_system_material_generation(sys) > previous); \
+    previous = alea_system_material_generation(sys); \
+} while (0)
+    CHECK_MATERIAL_EDIT(alea_material_add_nuclide(sys, mat, 1001, ".80c", 1));
+    CHECK_MATERIAL_EDIT(alea_material_add_element(sys, mat, 8, ".80c", 1));
+    CHECK_MATERIAL_EDIT(alea_material_set_density(sys, mat, 1));
+    CHECK_MATERIAL_EDIT(alea_material_set_weight_fraction(sys, mat, true));
+    CHECK_MATERIAL_EDIT(alea_material_expand_elements(sys, mat));
+    CHECK_MATERIAL_EDIT(alea_cell_set_temperature(sys, 0, 293.6));
+    CHECK_MATERIAL_EDIT(alea_cell_clear_temperature(sys, 0));
+    CHECK_MATERIAL_EDIT(alea_cell_set_material(sys, 0, mat));
+    int ids[] = {1}; double fractions[] = {1};
+    ASSERT_EQ(alea_create_mixture(sys, ids, fractions, 1, 2), 2);
+    previous = alea_system_material_generation(sys);
+    CHECK_MATERIAL_EDIT(alea_cell_set_mixture(sys, 0, 2));
+    CHECK_MATERIAL_EDIT(alea_offset_material_ids(sys, 10));
+    /* Internal thermal-data edits must explicitly publish their revision. */
+    alea_system_materials_changed(sys);
+    ASSERT(alea_system_material_generation(sys) > previous);
+#undef CHECK_MATERIAL_EDIT
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

@@ -5,6 +5,7 @@
 #ifndef ALEA_CELL_PARAMETER_H
 #define ALEA_CELL_PARAMETER_H
 
+#include "alea_alloc.h"
 #include "alea_model.h"
 #include <stdlib.h>
 #include <string.h>
@@ -132,7 +133,7 @@ static inline alea_detector_probability_t* alea_detector_probability_copy(
     const alea_detector_probability_t* entries, size_t count) {
     if (!count) return NULL;
     if (!entries || count > SIZE_MAX / sizeof(*entries)) return NULL;
-    alea_detector_probability_t* copy = malloc(count * sizeof(*copy));
+    alea_detector_probability_t* copy = alea_malloc(count * sizeof(*copy));
     if (copy) memcpy(copy, entries, count * sizeof(*copy));
     return copy;
 }

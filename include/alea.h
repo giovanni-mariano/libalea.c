@@ -761,6 +761,17 @@ int alea_carve_universe(alea_system_t* sys, int universe_id,
 int alea_split_union_cells(alea_system_t* sys);
 
 alea_system_t* alea_extract_universe(const alea_system_t* sys, int universe_id);
+
+/**
+ * Append source geometry, materials, and mixtures to target.
+ * Cell, surface, material, and mixture IDs are increased by id_offset;
+ * cell material indices and mixture component references are remapped.
+ * Attached model wrappers initialize appended cell metadata to defaults.
+ * Invalid material references and material or mixture ID collisions are
+ * rejected. On failure, appended cells, surfaces, materials, and mixtures
+ * are rolled back; query caches may need rebuilding.
+ * @return Number of appended cells, or -1 on error.
+ */
 int alea_merge(alea_system_t* target, const alea_system_t* source, int id_offset);
 
 /* ============================================================================

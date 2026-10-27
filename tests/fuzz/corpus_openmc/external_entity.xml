@@ -1,0 +1,1 @@
+<!DOCTYPE geometry [<!ENTITY e SYSTEM 'file:///nonexistent'>]><geometry>&e;</geometry>

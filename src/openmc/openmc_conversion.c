@@ -29,6 +29,9 @@
 #include "primitives/primitive_create.h"
 #include "util/alea_log.h"
 #include "util/compat.h"
+#include "util/alea_alloc.h"
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -393,6 +396,7 @@ static int convert_cell(alea_system_t* sys,
         mat_index = alea_find_material_by_id(sys, material_id);
         if (mat_index < 0) {
             mat_index = alea_add_material(sys, material_id);
+            if (mat_index < 0) return -1;
         }
     }
 
@@ -486,7 +490,10 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
     int mat_idx = alea_add_material(sys, id);
     if (mat_idx < 0) return -1;
     alea_material_t* mat = &sys->materials.data[mat_idx];
-    if (name) mat->name = alea_strdup(name);
+    if (name) {
+        mat->name = alea_alloc_strdup(name);
+        if (!mat->name) return -1;
+    }
 
     /* Pre-allocate nuclide array */
     int r = alea_vec_reserve(&mat->nuclides, 8, alea_nuclide_t);
@@ -516,7 +523,7 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
             int zaid = openmc_name_to_zaid(nuc_name);
             if (zaid > 0) {
                 double fraction = (wo != 0.0) ? wo : ao;
-                alea_mat_add_nuclide(mat, zaid, NULL, fraction);
+                if (alea_mat_add_nuclide(mat, zaid, NULL, fraction)) return -1;
             } else {
                 ALEA_LOG_WARN("Failed to parse nuclide name: %s", nuc_name);
             }
@@ -527,7 +534,8 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
     size_t sab_count = openmc_xml_count_children(mat_elem, "sab");
     if (sab_count > 0) {
         int rs = alea_vec_reserve(&mat->thermal_laws, sab_count, alea_thermal_law_t);
-        if (rs == 0) {
+        if (rs != 0) return -1;
+        {
             for (size_t i = 0; i < mat_elem->child_count && alea_vec_count(&mat->thermal_laws) < sab_count; i++) {
                 openmc_xml_element_t* child = mat_elem->children[i];
                 if (strcmp(child->tag_name, "sab") != 0) continue;
@@ -536,7 +544,8 @@ static int convert_material(alea_system_t* sys, openmc_xml_element_t* mat_elem) 
                 if (sab_name) {
                     alea_thermal_law_t* law = alea_vec_push_uninit(&mat->thermal_laws, alea_thermal_law_t);
                     if (law) {
-                        law->identifier = alea_strdup(sab_name);
+                        law->identifier = alea_alloc_strdup(sab_name);
+                        if (!law->identifier) return -1;
                         law->zaid_match = 0;
                     }
                 }
@@ -565,88 +574,115 @@ typedef struct {
     double lower_left[3];
 } openmc_lattice_t;
 
-/**
- * @brief Parse a single OpenMC lattice element
- */
-static openmc_lattice_t* parse_lattice(openmc_xml_element_t* lat_elem, arena_t* arena) {
-    int id = openmc_xml_get_attr_int(lat_elem, "id", -1);
-    if (id < 0) {
-        ALEA_LOG_WARN("Lattice missing id attribute");
+/* Bound both rectangular arrays and the padded hex grid before allocation. */
+#define OPENMC_MAX_LATTICE_ENTRIES 1000000u
+
+static void* conversion_array(arena_t* arena, size_t count, size_t size) {
+    if (size && count > SIZE_MAX / size) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "OpenMC conversion array is too large");
         return NULL;
     }
+    void* result = arena_alloc(arena, count * size);
+    if (!result && count) alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "OpenMC conversion allocation failed");
+    return result;
+}
 
-    openmc_lattice_t* lat = (openmc_lattice_t*)arena_alloc(arena, sizeof(openmc_lattice_t));
+static int lattice_product(size_t a, size_t b, size_t* result) {
+    if (!a || !b || a > OPENMC_MAX_LATTICE_ENTRIES / b) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "OpenMC lattice exceeds %u entries",
+                              OPENMC_MAX_LATTICE_ENTRIES);
+        return -1;
+    }
+    *result = a * b;
+    return 0;
+}
+
+/* Require a complete list: no trailing garbage, truncation, or numeric wrap. */
+static int lattice_values(const char* text, void* output, size_t capacity,
+                           size_t* count, int integers) {
+    *count = 0;
+    if (!text) return -1;
+    while (*text) {
+        while (isspace((unsigned char)*text) || *text == ',') text++;
+        if (!*text) break;
+        if (*count == capacity) return -1;
+        char* end;
+        errno = 0;
+        if (integers) {
+            long value = strtol(text, &end, 10);
+            if (end == text || errno || value < INT_MIN || value > INT_MAX) return -1;
+            ((int*)output)[(*count)++] = (int)value;
+        } else {
+            double value = strtod(text, &end);
+            if (end == text || errno || !isfinite(value)) return -1;
+            ((double*)output)[(*count)++] = value;
+        }
+        if (*end && !isspace((unsigned char)*end) && *end != ',') return -1;
+        text = end;
+    }
+    return 0;
+}
+
+static int lattice_int_attr(const openmc_xml_element_t* elem, const char* name,
+                             int fallback, int* value) {
+    const char* text = openmc_xml_get_attr(elem, name);
+    if (!text) { *value = fallback; return 0; }
+    size_t count;
+    return lattice_values(text, value, 1, &count, 1) || count != 1 ? -1 : 0;
+}
+
+static const char* lattice_text(const openmc_xml_element_t* elem, const char* name) {
+    const openmc_xml_element_t* child = openmc_xml_find_child(elem, name);
+    return child ? child->text_content : NULL;
+}
+
+static int lattice_outer(const openmc_xml_element_t* elem, int* outer) {
+    const char* text = lattice_text(elem, "outer");
+    if (text) {
+        size_t count;
+        if (lattice_values(text, outer, 1, &count, 1) || count != 1) return -1;
+    } else if (lattice_int_attr(elem, "outer", -1, outer)) return -1;
+    return *outer < -1 ? -1 : 0;
+}
+
+static openmc_lattice_t* lattice_invalid(void) {
+    alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "Invalid OpenMC lattice dimensions, pitch, or universe list");
+    return NULL;
+}
+
+static openmc_lattice_t* parse_lattice(openmc_xml_element_t* elem, arena_t* arena) {
+    int id;
+    if (lattice_int_attr(elem, "id", -1, &id) || id <= 0) return lattice_invalid();
+    openmc_lattice_t* lat = conversion_array(arena, 1, sizeof(*lat));
     if (!lat) return NULL;
     memset(lat, 0, sizeof(*lat));
     lat->id = id;
-    lat->lat_type = 1;  /* Default to rectangular */
+    lat->lat_type = 1;
     lat->outer_universe = -1;
-
-    /* Check for hex lattice type */
-    const char* type_str = openmc_xml_get_attr(lat_elem, "type");
-    if (type_str && strcmp(type_str, "hexagonal") == 0) {
-        lat->lat_type = 2;
+    /* Hex lattices have a separate schema and conversion below. */
+    const char* type = openmc_xml_get_attr(elem, "type");
+    if (type && strcmp(type, "rectangular")) return lattice_invalid();
+    int dims[3] = {1, 1, 1};
+    size_t dimensions, count, total = 1;
+    if (lattice_values(lattice_text(elem, "dimension"), dims, 3, &dimensions, 1) ||
+        dimensions < 1) return lattice_invalid();
+    for (size_t i = 0; i < 3; i++) {
+        if (dims[i] <= 0) return lattice_invalid();
+        if (lattice_product(total, (size_t)dims[i], &total)) return NULL;
+        lat->dims[2*i+1] = dims[i] - 1;
     }
-
-    /* Parse <dimension> */
-    openmc_xml_element_t* dim_elem = openmc_xml_find_child(lat_elem, "dimension");
-    if (dim_elem && dim_elem->text_content) {
-        int dims[3] = {1, 1, 1};
-        size_t ndims = openmc_parse_ints(dim_elem->text_content, dims, 3);
-        /* Convert to min:max format (0-based to MCNP-style indices) */
-        lat->dims[0] = 0;                   /* imin */
-        lat->dims[1] = dims[0] - 1;         /* imax */
-        lat->dims[2] = 0;                   /* jmin */
-        lat->dims[3] = (ndims >= 2) ? dims[1] - 1 : 0;  /* jmax */
-        lat->dims[4] = 0;                   /* kmin */
-        lat->dims[5] = (ndims >= 3) ? dims[2] - 1 : 0;  /* kmax */
-    }
-
-    /* Parse <pitch> */
-    openmc_xml_element_t* pitch_elem = openmc_xml_find_child(lat_elem, "pitch");
-    if (pitch_elem && pitch_elem->text_content) {
-        openmc_parse_doubles(pitch_elem->text_content, lat->pitch, 3);
-    }
-
-    /* Parse <lower_left> */
-    openmc_xml_element_t* ll_elem = openmc_xml_find_child(lat_elem, "lower_left");
-    if (ll_elem && ll_elem->text_content) {
-        openmc_parse_doubles(ll_elem->text_content, lat->lower_left, 3);
-    }
-
-    /* OpenMC writes rectangular-lattice outer as a child element.  Accept an
-     * attribute as well for compatibility with older/generated inputs. */
-    openmc_xml_element_t* outer_elem = openmc_xml_find_child(lat_elem, "outer");
-    if (outer_elem && outer_elem->text_content) {
-        int value = -1;
-        if (openmc_parse_ints(outer_elem->text_content, &value, 1) == 1)
-            lat->outer_universe = value;
-    } else {
-        lat->outer_universe = openmc_xml_get_attr_int(lat_elem, "outer", -1);
-    }
-
-    /* Parse <universes> */
-    openmc_xml_element_t* univ_elem = openmc_xml_find_child(lat_elem, "universes");
-    if (univ_elem && univ_elem->text_content) {
-        /* Count universes first */
-        int ni = lat->dims[1] - lat->dims[0] + 1;
-        int nj = lat->dims[3] - lat->dims[2] + 1;
-        int nk = lat->dims[5] - lat->dims[4] + 1;
-        size_t total = (size_t)(ni * nj * nk);
-        if (total > 0 && total < 1000000) {
-            lat->universes = (int*)malloc(total * sizeof(int));
-            if (lat->universes) {
-                lat->universe_count = openmc_parse_ints(univ_elem->text_content,
-                                                         lat->universes, total);
-            }
-        }
-    }
-
-    ALEA_LOG_DEBUG("Parsed lattice %d: type=%d, dims=[%d:%d %d:%d %d:%d], %zu universes",
-                 lat->id, lat->lat_type,
-                 lat->dims[0], lat->dims[1], lat->dims[2], lat->dims[3],
-                 lat->dims[4], lat->dims[5], lat->universe_count);
-
+    if (lattice_values(lattice_text(elem, "pitch"), lat->pitch, 3, &count, 0) ||
+        count != dimensions) return lattice_invalid();
+    for (size_t i = 0; i < dimensions; i++)
+        if (!(lat->pitch[i] > 0)) return lattice_invalid();
+    if (lattice_values(lattice_text(elem, "lower_left"), lat->lower_left, 3, &count, 0) ||
+        count != dimensions || lattice_outer(elem, &lat->outer_universe)) return lattice_invalid();
+    lat->universes = conversion_array(arena, total, sizeof(int));
+    if (!lat->universes) return NULL;
+    if (lattice_values(lattice_text(elem, "universes"), lat->universes, total, &count, 1) ||
+        count != total) return lattice_invalid();
+    for (size_t i = 0; i < count; i++) if (lat->universes[i] < 0) return lattice_invalid();
+    lat->universe_count = count;
     return lat;
 }
 
@@ -750,99 +786,50 @@ static void visual_rows_to_grid(const int* input, size_t n_input,
 /**
  * @brief Parse an OpenMC <hex_lattice> element
  */
-static openmc_lattice_t* parse_hex_lattice(openmc_xml_element_t* lat_elem, arena_t* arena) {
-    int id = openmc_xml_get_attr_int(lat_elem, "id", -1);
-    if (id < 0) {
-        ALEA_LOG_WARN("Hex lattice missing id attribute");
+static openmc_lattice_t* parse_hex_lattice(openmc_xml_element_t* elem, arena_t* arena) {
+    int id, rings, axial;
+    if (lattice_int_attr(elem, "id", -1, &id) || id <= 0 ||
+        lattice_int_attr(elem, "n_rings", -1, &rings) || rings < 1 ||
+        lattice_int_attr(elem, "n_axial", 1, &axial) || axial < 1) return lattice_invalid();
+    size_t side, grid_size, visual_count;
+    if ((size_t)rings > (OPENMC_MAX_LATTICE_ENTRIES + 1) / 2) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "OpenMC hex lattice is too large");
         return NULL;
     }
-
-    int n_rings = openmc_xml_get_attr_int(lat_elem, "n_rings", -1);
-    if (n_rings < 1) {
-        ALEA_LOG_WARN("Hex lattice %d: invalid n_rings", id);
-        return NULL;
-    }
-
-    int n_axial = openmc_xml_get_attr_int(lat_elem, "n_axial", 1);
-
-    openmc_lattice_t* lat = (openmc_lattice_t*)arena_alloc(arena, sizeof(openmc_lattice_t));
+    side = 2 * (size_t)rings - 1;
+    if (lattice_product(side, side, &grid_size) ||
+        lattice_product(grid_size, (size_t)axial, &grid_size)) return NULL;
+    /* grid_size bounds all intermediate products and int traversal indices. */
+    visual_count = (3 * (size_t)rings * ((size_t)rings - 1) + 1) * (size_t)axial;
+    openmc_lattice_t* lat = conversion_array(arena, 1, sizeof(*lat));
     if (!lat) return NULL;
     memset(lat, 0, sizeof(*lat));
     lat->id = id;
     lat->lat_type = 2;
     lat->outer_universe = -1;
-
-    /* Grid dims: symmetric around origin */
-    lat->dims[0] = -(n_rings - 1);  /* imin */
-    lat->dims[1] = n_rings - 1;     /* imax */
-    lat->dims[2] = -(n_rings - 1);  /* jmin */
-    lat->dims[3] = n_rings - 1;     /* jmax */
-    lat->dims[4] = 0;               /* kmin */
-    lat->dims[5] = n_axial - 1;     /* kmax */
-
-    /* Parse <pitch> — 1 value (2D) or 2 values (3D: xy-pitch + z-pitch) */
-    openmc_xml_element_t* pitch_elem = openmc_xml_find_child(lat_elem, "pitch");
-    if (pitch_elem && pitch_elem->text_content) {
-        double pvals[2] = {0, 0};
-        size_t np = openmc_parse_doubles(pitch_elem->text_content, pvals, 2);
-        lat->pitch[0] = pvals[0];
-        lat->pitch[1] = pvals[0];  /* hex uses same pitch for x and y */
-        lat->pitch[2] = (np >= 2) ? pvals[1] : 0;
-    }
-
-    /* Parse <center> — used as lower_left for internal storage */
-    openmc_xml_element_t* center_elem = openmc_xml_find_child(lat_elem, "center");
-    if (center_elem && center_elem->text_content) {
-        openmc_parse_doubles(center_elem->text_content, lat->lower_left, 3);
-    }
-
-    /* Parse <universes> — visual row layout, needs conversion to grid */
-    openmc_xml_element_t* univ_elem = openmc_xml_find_child(lat_elem, "universes");
-    if (univ_elem && univ_elem->text_content) {
-        /* Expected element count: 3*R*(R-1)+1 per axial layer */
-        size_t elements_per_layer = (size_t)(3 * n_rings * (n_rings - 1) + 1);
-        size_t total_visual = elements_per_layer * (size_t)n_axial;
-
-        /* Parse visual-order input */
-        int* visual_input = (int*)arena_alloc(arena, total_visual * sizeof(int));
-        if (!visual_input) return NULL;
-        size_t n_parsed = openmc_parse_ints(univ_elem->text_content,
-                                             visual_input, total_visual);
-
-        /* Allocate full grid (ni * nj * nk) */
-        int ni = 2 * n_rings - 1;
-        int nj = 2 * n_rings - 1;
-        int nk = n_axial;
-        size_t grid_size = (size_t)(ni * nj * nk);
-        lat->universes = (int*)malloc(grid_size * sizeof(int));
-        if (!lat->universes) return NULL;
-
-        /* Initialize grid with 0 (invalid positions) */
-        memset(lat->universes, 0, grid_size * sizeof(int));
-
-        /* Convert visual rows to grid */
-        visual_rows_to_grid(visual_input, n_parsed, n_rings, n_axial,
-                            lat->dims, lat->universes, grid_size);
-        lat->universe_count = grid_size;
-    }
-
-    /* Current OpenMC XML uses a child element; retain attribute support for
-     * legacy files such as early libalea fixtures. */
-    openmc_xml_element_t* outer_elem = openmc_xml_find_child(lat_elem, "outer");
-    if (outer_elem && outer_elem->text_content) {
-        int value = -1;
-        if (openmc_parse_ints(outer_elem->text_content, &value, 1) == 1)
-            lat->outer_universe = value;
-    } else {
-        lat->outer_universe = openmc_xml_get_attr_int(lat_elem, "outer", -1);
-    }
-
-    ALEA_LOG_DEBUG("Parsed hex_lattice %d: n_rings=%d, n_axial=%d, "
-                 "dims=[%d:%d %d:%d %d:%d], %zu grid entries",
-                 lat->id, n_rings, n_axial,
-                 lat->dims[0], lat->dims[1], lat->dims[2], lat->dims[3],
-                 lat->dims[4], lat->dims[5], lat->universe_count);
-
+    lat->dims[0] = lat->dims[2] = -(rings - 1);
+    lat->dims[1] = lat->dims[3] = rings - 1;
+    lat->dims[5] = axial - 1;
+    size_t count;
+    double pitch[2];
+    if (lattice_values(lattice_text(elem, "pitch"), pitch, 2, &count, 0) ||
+        count < 1 || (openmc_xml_get_attr(elem, "n_axial") && count != 2)) return lattice_invalid();
+    for (size_t i = 0; i < count; i++) if (!(pitch[i] > 0)) return lattice_invalid();
+    lat->pitch[0] = lat->pitch[1] = pitch[0];
+    lat->pitch[2] = count == 2 ? pitch[1] : 0;
+    size_t coordinates = count == 2 ? 3 : 2;
+    if (lattice_values(lattice_text(elem, "center"), lat->lower_left, 3, &count, 0) ||
+        count != coordinates || lattice_outer(elem, &lat->outer_universe)) return lattice_invalid();
+    int* visual = conversion_array(arena, visual_count, sizeof(int));
+    if (!visual) return NULL;
+    if (lattice_values(lattice_text(elem, "universes"), visual, visual_count, &count, 1) ||
+        count != visual_count) return lattice_invalid();
+    for (size_t i = 0; i < count; i++) if (visual[i] < 0) return lattice_invalid();
+    lat->universes = conversion_array(arena, grid_size, sizeof(int));
+    if (!lat->universes) return NULL;
+    memset(lat->universes, 0, grid_size * sizeof(int));
+    visual_rows_to_grid(visual, count, rings, axial, lat->dims, lat->universes, grid_size);
+    lat->universe_count = grid_size;
     return lat;
 }
 
@@ -979,7 +966,11 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
 
     /* Create arena for temporary allocations */
     arena_t arena;
-    arena_init(&arena);
+    if (!arena_init(&arena)) {
+        alea_system_destroy(sys);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Initializing OpenMC conversion arena");
+        return NULL;
+    }
 
     /* Initialize region context */
     openmc_region_ctx_t region_ctx;
@@ -989,8 +980,9 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
     size_t surface_count = openmc_xml_count_children(geometry, "surface");
     ALEA_LOG_INFO("Converting %zu surfaces...", surface_count);
 
-    openmc_xml_element_t** surfaces = (openmc_xml_element_t**)arena_alloc(
-        &arena, surface_count * sizeof(openmc_xml_element_t*));
+    openmc_xml_element_t** surfaces = conversion_array(
+        &arena, surface_count, sizeof(*surfaces));
+    if (surface_count && !surfaces) goto fail;
     openmc_xml_find_children(geometry, "surface", surfaces, surface_count);
 
     for (size_t i = 0; i < surface_count; i++) {
@@ -1010,7 +1002,10 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             fatal_error = 1;
             break;
         }
-        openmc_region_register_surface(&region_ctx, surface_id, pos_node, neg_node);
+        if (openmc_region_register_surface(&region_ctx, surface_id, pos_node, neg_node)) {
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Registering OpenMC surface");
+            goto fail;
+        }
     }
     if (fatal_error) goto fail;
 
@@ -1019,12 +1014,13 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
         size_t mat_count = openmc_xml_count_children(materials, "material");
         ALEA_LOG_INFO("Converting %zu materials...", mat_count);
 
-        openmc_xml_element_t** mat_elems = (openmc_xml_element_t**)arena_alloc(
-            &arena, mat_count * sizeof(openmc_xml_element_t*));
+        openmc_xml_element_t** mat_elems = (openmc_xml_element_t**)conversion_array(
+            &arena, mat_count, sizeof(openmc_xml_element_t*));
+        if (mat_count && !mat_elems) goto fail;
         openmc_xml_find_children(materials, "material", mat_elems, mat_count);
 
         for (size_t i = 0; i < mat_count; i++) {
-            convert_material(sys, mat_elems[i]);
+            if (convert_material(sys, mat_elems[i]) < 0) goto fail;
         }
     }
 
@@ -1036,27 +1032,33 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
         ALEA_LOG_INFO("Parsing %zu lattices (%zu rect, %zu hex)...",
                      lattice_count, rect_lat_count, hex_lat_count);
 
-        lattices = (openmc_lattice_t**)arena_alloc(
-            &arena, lattice_count * sizeof(openmc_lattice_t*));
+        lattices = (openmc_lattice_t**)conversion_array(
+            &arena, lattice_count, sizeof(openmc_lattice_t*));
+        if (lattice_count && !lattices) goto fail;
+        memset(lattices, 0, lattice_count * sizeof(*lattices));
         size_t lat_idx = 0;
 
         /* Parse rectangular <lattice> elements */
         if (rect_lat_count > 0) {
-            openmc_xml_element_t** lat_elems = (openmc_xml_element_t**)arena_alloc(
-                &arena, rect_lat_count * sizeof(openmc_xml_element_t*));
+            openmc_xml_element_t** lat_elems = conversion_array(
+                &arena, rect_lat_count, sizeof(*lat_elems));
+            if (!lat_elems) goto fail;
             openmc_xml_find_children(geometry, "lattice", lat_elems, rect_lat_count);
             for (size_t i = 0; i < rect_lat_count; i++) {
-                lattices[lat_idx++] = parse_lattice(lat_elems[i], &arena);
+                lattices[lat_idx] = parse_lattice(lat_elems[i], &arena);
+                if (!lattices[lat_idx++]) goto fail;
             }
         }
 
         /* Parse hex <hex_lattice> elements */
         if (hex_lat_count > 0) {
-            openmc_xml_element_t** hex_elems = (openmc_xml_element_t**)arena_alloc(
-                &arena, hex_lat_count * sizeof(openmc_xml_element_t*));
+            openmc_xml_element_t** hex_elems = conversion_array(
+                &arena, hex_lat_count, sizeof(*hex_elems));
+            if (!hex_elems) goto fail;
             openmc_xml_find_children(geometry, "hex_lattice", hex_elems, hex_lat_count);
             for (size_t i = 0; i < hex_lat_count; i++) {
-                lattices[lat_idx++] = parse_hex_lattice(hex_elems[i], &arena);
+                lattices[lat_idx] = parse_hex_lattice(hex_elems[i], &arena);
+                if (!lattices[lat_idx++]) goto fail;
             }
         }
     }
@@ -1065,8 +1067,9 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
     size_t cell_count = openmc_xml_count_children(geometry, "cell");
     ALEA_LOG_INFO("Converting %zu cells...", cell_count);
 
-    openmc_xml_element_t** cells = (openmc_xml_element_t**)arena_alloc(
-        &arena, cell_count * sizeof(openmc_xml_element_t*));
+    openmc_xml_element_t** cells = conversion_array(
+        &arena, cell_count, sizeof(*cells));
+    if (cell_count && !cells) goto fail;
     openmc_xml_find_children(geometry, "cell", cells, cell_count);
 
     for (size_t i = 0; i < cell_count; i++) {
@@ -1219,7 +1222,7 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
             sc->lat_outer_universe = lat->outer_universe;
             memcpy(sc->lat_fill_dims, lat->dims, sizeof(lat->dims));
             if (lat->universes && lat->universe_count > 0) {
-                sc->lat_fill = malloc(lat->universe_count * sizeof(int));
+                sc->lat_fill = alea_calloc(lat->universe_count, sizeof(int));
                 if (!sc->lat_fill) {
                     ALEA_LOG_ERROR("Failed to allocate lattice fill array for lattice %d", lat->id);
                     fatal_error = 1;
@@ -1248,36 +1251,20 @@ static alea_system_t* convert_document(openmc_xml_doc_t* doc) {
                            synth_cell_id, lat->id, lat->id);
         }
         /* Parent cells keep fill_universe → lattice ID (no apply_lattice_to_cell) */
-
-        /* Free lattice universe arrays (they were copied to synthetic cells) */
-        for (size_t i = 0; i < lattice_count; i++) {
-            if (lattices[i] && lattices[i]->universes) {
-                free(lattices[i]->universes);
-            }
-        }
     }
     if (fatal_error) goto fail;
 
-    /* Cleanup */
-    arena_free(&arena);
-
     /* Rebuild universe index to include any newly created cells (e.g., graveyard) */
     sys->universe_index_built = false;
-    alea_build_universe_index(sys);
+    if (alea_build_universe_index(sys)) goto fail;
 
     ALEA_LOG_INFO("Conversion complete: %zu surfaces, %zu cells, %zu materials",
                  alea_vec_count(&sys->surfaces), alea_vec_count(&sys->cells), alea_vec_count(&sys->materials));
 
+    arena_free(&arena);
     return sys;
 
 fail:
-    if (lattices && lattice_count > 0) {
-        for (size_t i = 0; i < lattice_count; i++) {
-            if (lattices[i] && lattices[i]->universes) {
-                free(lattices[i]->universes);
-            }
-        }
-    }
     arena_free(&arena);
     alea_system_destroy(sys);
     return NULL;
@@ -1299,7 +1286,8 @@ openmc_model_t* openmc_convert_to_model(const char* filename) {
         return NULL;
     }
 
-    if (!doc->root) {
+    if (!doc->root || openmc_xml_get_error(doc)) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "XML parse error: %s", openmc_xml_get_error(doc));
         ALEA_LOG_ERROR("XML parse error: %s", openmc_xml_get_error(doc));
         openmc_xml_doc_free(doc);
         return NULL;
@@ -1324,7 +1312,8 @@ openmc_model_t* openmc_convert_string_to_model(const char* xml_content, size_t l
     if (!xml_content) return NULL;
 
     openmc_xml_doc_t* doc = openmc_xml_parse_string(xml_content, length);
-    if (!doc || !doc->root) {
+    if (!doc || !doc->root || openmc_xml_get_error(doc)) {
+        alea_set_error_detail(ALEA_ERR_PARSE_ERROR, "XML parse error: %s", openmc_xml_get_error(doc));
         if (doc) openmc_xml_doc_free(doc);
         return NULL;
     }

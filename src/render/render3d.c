@@ -20,6 +20,9 @@
 #include "util/alea_parallel.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include "util/alea_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -1345,16 +1348,28 @@ int render_write_image(const char* filename, const uint8_t* pixels,
  * ============================================================================ */
 
 int render_write_aux(const char* base_filename, const render_framebuffer_t* fb) {
-    if (!fb) return -1;
+    if (!base_filename || !fb || fb->width <= 0 || fb->height <= 0 ||
+        !fb->cell_id || (size_t)fb->width > SIZE_MAX / (size_t)fb->height / 3) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid auxiliary image arguments");
+        return -1;
+    }
     int w = fb->width, h = fb->height;
     size_t npix = (size_t)w * h;
 
     /* Allocate pixel buffer */
     uint8_t* pixels = malloc(npix * 3);
-    if (!pixels) return -1;
+    if (!pixels) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating auxiliary image");
+        return -1;
+    }
 
     /* Strip extension from base filename */
     char base[512];
+    if (strlen(base_filename) >= sizeof(base)) {
+        free(pixels);
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Auxiliary image path is too long");
+        return -1;
+    }
     strncpy(base, base_filename, sizeof(base) - 1);
     base[sizeof(base) - 1] = '\0';
     char* dot = strrchr(base, '.');
@@ -1384,7 +1399,7 @@ int render_write_aux(const char* base_filename, const render_framebuffer_t* fb) 
             pixels[i * 3 + 2] = v;
         }
         snprintf(path, sizeof(path), "%s_depth.png", base);
-        render_write_png(path, pixels, w, h);
+        if (render_write_png(path, pixels, w, h) != 0) goto write_error;
     }
 
     /* Cell ID map */
@@ -1403,7 +1418,7 @@ int render_write_aux(const char* base_filename, const render_framebuffer_t* fb) 
             }
         }
         snprintf(path, sizeof(path), "%s_cellid.png", base);
-        render_write_png(path, pixels, w, h);
+        if (render_write_png(path, pixels, w, h) != 0) goto write_error;
     }
 
     /* Material ID map */
@@ -1421,7 +1436,7 @@ int render_write_aux(const char* base_filename, const render_framebuffer_t* fb) 
             }
         }
         snprintf(path, sizeof(path), "%s_matid.png", base);
-        render_write_png(path, pixels, w, h);
+        if (render_write_png(path, pixels, w, h) != 0) goto write_error;
     }
 
     /* Normal map */
@@ -1438,11 +1453,15 @@ int render_write_aux(const char* base_filename, const render_framebuffer_t* fb) 
             }
         }
         snprintf(path, sizeof(path), "%s_normal.png", base);
-        render_write_png(path, pixels, w, h);
+        if (render_write_png(path, pixels, w, h) != 0) goto write_error;
     }
 
     free(pixels);
     return 0;
+write_error:
+    free(pixels);
+    alea_set_error_detail(ALEA_ERR_FILE_WRITE, "Writing auxiliary image '%s' failed", path);
+    return -1;
 }
 
 /* ============================================================================
@@ -1456,37 +1475,55 @@ static int compare_color_entry_ids(const void* left, const void* right) {
 }
 
 int render_load_colors(const char* filename, render_config_t* cfg) {
+    if (!filename || !cfg) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG, "Invalid color file arguments");
+        return -1;
+    }
     FILE* f = fopen(filename, "r");
-    if (!f) return -1;
+    if (!f) {
+        alea_set_error_detail(ALEA_ERR_FILE_READ, "Opening color file '%s' failed", filename);
+        return -1;
+    }
 
-    int capacity = 64;
-    cfg->custom_colors = malloc(capacity * sizeof(render_color_entry_t));
-    cfg->num_custom_colors = 0;
+    size_t capacity = 64;
+    int count = 0;
+    render_color_entry_t* colors = alea_malloc(capacity * sizeof(*colors));
+    if (!colors) goto allocation_error;
 
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
-
         int id;
         float r, g, b;
-        if (sscanf(line, "%d %f %f %f", &id, &r, &g, &b) == 4) {
-            if (cfg->num_custom_colors >= capacity) {
-                capacity *= 2;
-                cfg->custom_colors = realloc(cfg->custom_colors,
-                                             capacity * sizeof(render_color_entry_t));
-            }
-            render_color_entry_t* e = &cfg->custom_colors[cfg->num_custom_colors++];
-            e->id = id;
-            e->r = r;
-            e->g = g;
-            e->b = b;
+        if (sscanf(line, "%d %f %f %f", &id, &r, &g, &b) != 4) continue;
+        if (count == INT_MAX) goto allocation_error;
+        if ((size_t)count >= capacity) {
+            if (capacity > SIZE_MAX / 2 / sizeof(*colors)) goto allocation_error;
+            size_t next = capacity * 2;
+            render_color_entry_t* grown = alea_realloc(colors, next * sizeof(*colors));
+            if (!grown) goto allocation_error;
+            colors = grown;
+            capacity = next;
         }
+        colors[count++] = (render_color_entry_t){.id=id, .r=r, .g=g, .b=b};
     }
-
-    fclose(f);
-    if (cfg->num_custom_colors > 1)
-        qsort(cfg->custom_colors, (size_t)cfg->num_custom_colors,
-              sizeof(render_color_entry_t), compare_color_entry_ids);
+    int failed = ferror(f);
+    if (fclose(f) != 0) failed = 1;
+    if (failed) {
+        free(colors);
+        alea_set_error_detail(ALEA_ERR_FILE_READ, "Reading color file '%s' failed", filename);
+        return -1;
+    }
+    if (count > 1) qsort(colors, (size_t)count, sizeof(*colors), compare_color_entry_ids);
+    free(cfg->custom_colors);
+    cfg->custom_colors = colors;
+    cfg->num_custom_colors = count;
     cfg->custom_colors_sorted = 1;
     return 0;
+
+allocation_error:
+    free(colors);
+    fclose(f);
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Loading color file '%s'", filename);
+    return -1;
 }

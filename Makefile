@@ -171,6 +171,8 @@ CORE_SRCS = \
 # Memory management and utilities
 UTIL_SRCS = \
 	$(UTIL_DIR)/arena.c \
+	$(UTIL_DIR)/alea_alloc.c \
+	$(UTIL_DIR)/xml_dom.c \
 	$(UTIL_DIR)/alea_parallel.c \
 	$(UTIL_DIR)/str_builder.c \
 	$(UTIL_DIR)/alea_log.c \
@@ -320,7 +322,6 @@ OPENMC_MODULE_SRCS = $(OPENMC_EXPO_SRCS) $(OPENMC_PARSE_SRCS) $(OPENMC_MODEL_SRC
 # Native ALEA XML model format
 ALEA_XML_MODULE_SRCS = \
 	$(ALEA_XML_DIR)/alea_xml.c \
-	$(ALEA_XML_DIR)/xml_dom.c \
 	$(ALEA_XML_DIR)/xml_writer.c \
 	$(ALEA_XML_DIR)/region.c
 
@@ -373,8 +374,20 @@ endif
 TINYPAR_SRCS = $(TINYPAR_SRC_DIR)/tinypar.c $(TINYPAR_PLATFORM_SRC)
 TINYPAR_OBJS = $(TINYPAR_SRCS:$(TINYPAR_SRC_DIR)/%.c=$(BUILD_DIR)/vendor/tinypar/%.o)
 
+# Shared XML adapter and pinned, statically linked Expat implementation.
+EXPAT_DIR = vendor/expat/lib
+EXPAT_SRCS = $(EXPAT_DIR)/xmlparse.c $(EXPAT_DIR)/xmlrole.c $(EXPAT_DIR)/xmltok.c $(EXPAT_DIR)/xcs.c
+ifeq ($(WINDOWS_GNU),1)
+  EXPAT_SRCS += $(EXPAT_DIR)/random_rand_s.c
+else ifneq ($(findstring emcc,$(CC)),)
+  EXPAT_SRCS += $(EXPAT_DIR)/random_getentropy.c
+else
+  EXPAT_SRCS += $(EXPAT_DIR)/random_dev_urandom.c
+endif
+EXPAT_OBJS = $(EXPAT_SRCS:$(EXPAT_DIR)/%.c=$(BUILD_DIR)/vendor/expat/%.o)
+
 # Core library objects (geometry engine + raycast/slice/render/mesh)
-CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS) $(TINYPAR_OBJS)
+CORE_LIB_OBJS = $(CORE_OBJS) $(UTIL_OBJS) $(PRIMITIVES_OBJS) $(RNG_OBJS) $(RAYCAST_OBJS) $(SLICE_OBJS) $(RENDER_OBJS) $(MESH_OBJS) $(GEO_VALIDATOR_OBJS) $(TINYPAR_OBJS) $(EXPAT_OBJS)
 
 # MCNP module objects
 MCNP_MODULE_OBJS = $(MCNP_PARSER_OBJS) $(MCNP_GEOM_OBJS) $(MCNP_CONV_OBJS) $(MCNP_EXPO_OBJS) $(MCNP_MODEL_OBJS)
@@ -520,7 +533,7 @@ BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
 	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
 	$(BUILD_DIR)/geo_validator \
 	$(BUILD_DIR)/cluster/local $(BUILD_DIR)/cluster/mpi \
-	$(BUILD_DIR)/vendor/tinypar $(BUILD_DIR)/lua_cluster_bind \
+	$(BUILD_DIR)/vendor/tinypar $(BUILD_DIR)/vendor/expat $(BUILD_DIR)/lua_cluster_bind \
 	$(BUILD_DIR)/lua $(BUILD_DIR)/lua_bind $(BUILD_DIR)/linenoise \
 	$(BIN_DIR) $(BIN_DIR)/lua $(BIN_DIR)/lua_cluster $(BIN_DIR)/tests/unit $(BIN_DIR)/tests/integration \
 	$(BIN_DIR)/tests/cluster
@@ -574,9 +587,10 @@ $(LIB_OPENMC): $(OPENMC_MODULE_OBJS) | $(BIN_DIR)
 	@echo "✓ Built OpenMC module: $@"
 
 # Native ALEA XML module
-$(LIB_ALEA_XML): $(ALEA_XML_MODULE_OBJS) | $(BIN_DIR)
+$(LIB_ALEA_XML): $(ALEA_XML_MODULE_OBJS) Makefile | $(BIN_DIR)
 	@echo "AR  $@"
-	@$(AR) rcs $@ $^
+	@$(RM) $@
+	@$(AR) rcs $@ $(ALEA_XML_MODULE_OBJS)
 	@echo "✓ Built ALEA XML module: $@"
 
 # Serpent module (optional)
@@ -607,6 +621,12 @@ $(BUILD_DIR)/core/%.o: $(CORE_DIR)/%.c | $(BUILD_DIR)/core
 $(BUILD_DIR)/util/%.o: $(UTIL_DIR)/%.c | $(BUILD_DIR)/util
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Expat headers and build configuration are private; public headers stay C-only.
+$(BUILD_DIR)/util/xml_dom.o: INCLUDES += -I$(EXPAT_DIR)
+$(BUILD_DIR)/vendor/expat/%.o: $(EXPAT_DIR)/%.c src/util/expat/expat_config.h src/util/expat/expat_prefix.h | $(BUILD_DIR)/vendor/expat
+	@echo "CC  $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) -DXML_STATIC -include src/util/expat/expat_prefix.h -Isrc/util/expat -I$(EXPAT_DIR) -c $< -o $@
 
 # Primitives
 $(BUILD_DIR)/primitives/%.o: $(PRIMITIVES_DIR)/%.c | $(BUILD_DIR)/primitives
@@ -1037,21 +1057,32 @@ test-valgrind: tests cli
 FUZZ_DIR = tests/fuzz
 FUZZ_CC = clang
 FUZZ_CFLAGS = -g -O1 -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+FUZZ_BUILD_DIR = $(BUILD_DIR)/fuzz
+FUZZ_BIN_DIR = $(BIN_DIR)/fuzz-lib
+FUZZ_LIB = $(FUZZ_BIN_DIR)/libalea_full.a
+FUZZ_LIBRARY_CFLAGS = $(filter-out -O0 -O3 -DNDEBUG,$(CFLAGS)) -O1 -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer
+
+# Keep ordinary artifacts separate from the instrumented library. FORCE lets
+# the recursive make discover changed sources and headers on every invocation.
+$(FUZZ_LIB): FORCE
+	@$(MAKE) CC="$(FUZZ_CC)" BUILD_DIR="$(FUZZ_BUILD_DIR)" BIN_DIR="$(FUZZ_BIN_DIR)" \
+		CFLAGS="$(FUZZ_LIBRARY_CFLAGS)" TINYPAR_BACKEND=$(TINYPAR_BACKEND) full
+
 
 # MCNP parser fuzzer
-$(BIN_DIR)/fuzz_mcnp: $(FUZZ_DIR)/fuzz_mcnp_parser.c $(LIB) | $(BIN_DIR)
+$(BIN_DIR)/fuzz_mcnp: $(FUZZ_DIR)/fuzz_mcnp_parser.c $(FUZZ_LIB) | $(BIN_DIR)
 	@echo "FUZZ  $@"
-	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(INCLUDES) $< $(LIB) $(LDFLAGS) -o $@
+	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(INCLUDES) $< $(FUZZ_LIB) $(LDFLAGS) -o $@
 
 # OpenMC parser fuzzer
-$(BIN_DIR)/fuzz_openmc: $(FUZZ_DIR)/fuzz_openmc_parser.c $(LIB) | $(BIN_DIR)
+$(BIN_DIR)/fuzz_openmc: $(FUZZ_DIR)/fuzz_openmc_parser.c $(FUZZ_LIB) | $(BIN_DIR)
 	@echo "FUZZ  $@"
-	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(INCLUDES) $< $(LIB) $(LDFLAGS) -o $@
+	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(INCLUDES) $< $(FUZZ_LIB) $(LDFLAGS) -o $@
 
 # Native ALEA XML parser fuzzer
-$(BIN_DIR)/fuzz_alea_xml: $(FUZZ_DIR)/fuzz_alea_xml.c $(LIB) | $(BIN_DIR)
+$(BIN_DIR)/fuzz_alea_xml: $(FUZZ_DIR)/fuzz_alea_xml.c $(FUZZ_LIB) | $(BIN_DIR)
 	@echo "FUZZ  $@"
-	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(INCLUDES) $< $(LIB) $(LDFLAGS) -o $@
+	@$(FUZZ_CC) $(FUZZ_CFLAGS) $(INCLUDES) $< $(FUZZ_LIB) $(LDFLAGS) -o $@
 
 # Legacy alias
 $(BIN_DIR)/fuzz_parser: $(BIN_DIR)/fuzz_mcnp
@@ -1165,6 +1196,7 @@ uninstall:
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_transport.a"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_nucdata.a"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_cluster.a"
+	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_compute.a"
 	@rm -f "$(DESTDIR)$(LIBDIR)/libalea_full.a"
 	@rm -f "$(DESTDIR)$(INCLUDEDIR)"/alea*.h
 	@rm -rf "$(DESTDIR)$(DOCDIR)"
@@ -1208,6 +1240,10 @@ help:
 	@echo "  transport        - Build transport and its geometry/nucdata dependencies"
 	@echo "  modules          - Build format, nucdata, and transport modules"
 	@echo "  cluster          - Build optional cluster module (USE_MPI=0 or 1)"
+	@echo "  compute          - Build optional rendering/compute library (USE_METAL=0 or 1)"
+	@echo "  test-compute     - Test the selected compute build, including GPU if enabled"
+	@echo "  benchmark-compute - Compare complete CPU/Metal batch times"
+	@echo "  benchmark-render-compute - Compare CPU/Metal frame times (USE_METAL=1)"
 	@echo "  full             - Build full library (core + all modules)"
 	@echo "  cli              - Build alea CLI"
 	@echo "  lua-module       - Build loadable Lua 5.5 module"
@@ -1221,6 +1257,7 @@ help:
 	@echo "  install          - Install libraries, headers, CLI, tools, and docs"
 	@echo "  install-libs     - Install static libraries and public headers"
 	@echo "  install-cluster  - Install optional cluster archive and header"
+	@echo "  install-compute  - Install the selected compute archive and header"
 	@echo "  install-cli      - Install alea CLI"
 	@echo "  install-lua-module - Install loadable Lua 5.5 module"
 	@echo "  install-lua-cluster-module - Install optional Lua cluster module"
@@ -1250,6 +1287,7 @@ help:
 	@echo "  INCLUDEDIR=$(INCLUDEDIR)"
 	@echo "  TINYPAR_BACKEND=native - Select native or serial TinyPar backend"
 	@echo "  USE_MPI=0        - Select local (0) or MPI (1) cluster backend"
+	@echo "  USE_METAL=0      - Add Metal to the optional compute library (macOS only)"
 	@echo "  MPICC=$(MPICC)"
 	@echo "  MPIEXEC=$(MPIEXEC)"
 	@echo "  RELEASE=1        - Optimized build"
@@ -1281,6 +1319,9 @@ help:
 # ============================================================================
 # Automatic Dependencies
 # ============================================================================
+
+# Optional rendering/compute module; CPU-only unless USE_METAL=1 is requested.
+include $(SRC_DIR)/compute/compute.mk
 
 # Include generated dependency files (ignore if they don't exist yet)
 -include $(ALL_DEPS)

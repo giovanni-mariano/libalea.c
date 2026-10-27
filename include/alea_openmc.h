@@ -49,6 +49,8 @@ typedef struct {
 
 /**
  * @brief Load an OpenMC XML file into an openmc_model_t
+ * Lattices require positive dimensions and pitches and complete universe lists.
+ * Rectangular arrays and padded hex grids are limited to 1,000,000 entries.
  * @param filename Path to OpenMC XML file (geometry.xml or model.xml)
  * @return Model on success, NULL on error
  */

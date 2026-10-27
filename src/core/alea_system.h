@@ -375,9 +375,12 @@ typedef struct alea_system {
 
     /* Cell event callbacks (NULL = no-op, set by module models) */
     void* cell_hook_userdata;
+    int (*on_cells_reserve)(void* ud, size_t total_count);
     void (*on_cell_added)(void* ud, size_t new_index);
-    void (*on_cell_copied)(void* ud, size_t dst_index, size_t src_index);
+    int (*on_cell_copied)(void* ud, size_t dst_index, size_t src_index);
     void (*on_cell_removed)(void* ud, size_t index);
+    /* Compact metadata in one pass before cells with invalid roots are removed. */
+    void (*on_cells_pruned)(void* ud);
 
     /* Surface BVH acceleration (prepared query cache) */
     struct alea_bvh* surface_bvh;
@@ -400,6 +403,7 @@ typedef struct alea_system {
     atomic_flag query_cache_build_lock;
     uint64_t system_id;
     atomic_uint_fast64_t geometry_generation;
+    atomic_uint_fast64_t material_generation;
 
     /* Source tracking - how this system was created */
     enum {
@@ -416,6 +420,13 @@ typedef struct alea_system {
 
 int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags);
 uint64_t alea_system_geometry_generation(const alea_system_t* sys);
+uint64_t alea_system_material_generation(const alea_system_t* sys);
+/* Call after direct internal edits to material/thermal data or cell physics.
+ * Public setters do this automatically; geometry caches remain usable. */
+void alea_system_materials_changed(alea_system_t* sys);
+/* Reserve sidecar capacity before publishing cells. Added/removed callbacks
+ * then perform no allocations; copied callbacks report allocation failures. */
+int alea_system_reserve_cell_metadata(alea_system_t* sys, size_t count);
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags);
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags);
 void alea_volume_path_index_free(struct alea_volume_path_index* idx);

@@ -6,29 +6,127 @@
 #include "sdl_view.h"
 
 typedef struct {
+    render_framebuffer_t* frames[2]; /* Only the serial render worker accesses these. */
+    render_framebuffer_t* display[2];
+    uint64_t preview_revision;
+    int preview_edge;
+} render_view_buffers_t;
+
+typedef struct {
     alea_system_t* sys;
-    render_config_t cfg, initial;
+    alea_compute_t* compute;
+    render_view_buffers_t* buffers;
+    int preview, progressive, progress_error;
+    alea_view_job_t* job;
+    Uint32 last_publish;
+    size_t published_pixels;
+    render_config_t cfg, initial, working;
     render_camera_t cam;
     const char* output;
 } render_viewer_t;
 
-static int render_view_draw(void* state, uint8_t** pixels) {
-    render_viewer_t* v = state;
-    *pixels = NULL;
-    render_framebuffer_t* fb = render_framebuffer_create(v->cfg.width, v->cfg.height, 1);
-    uint8_t* rgb = malloc((size_t)v->cfg.width * v->cfg.height * 3);
-    int rc = -1;
-    if (fb && rgb && render_camera_setup(&v->cam, &v->cfg, v->sys) == 0 &&
-        render_scene(v->sys, &v->cfg, &v->cam, fb) == 0) {
-        postprocess_frame(&v->cfg, fb);
-        render_tonemap(fb, rgb);
-        *pixels = rgb;
-        rgb = NULL;
-        rc = 0;
+/* Postprocessing is destructive. Keep raw progressive pixels separate so
+ * repeatedly displaying a partial image cannot repeatedly darken its edges. */
+static uint8_t* render_view_image(render_viewer_t* v, const render_config_t* cfg,
+                                 const render_framebuffer_t* raw) {
+    render_framebuffer_t** slot=&v->buffers->display[v->preview];
+    if(*slot && ((*slot)->width!=raw->width || (*slot)->height!=raw->height)) {
+        render_framebuffer_free(*slot);*slot=NULL;
     }
-    render_framebuffer_free(fb);
-    free(rgb);
+    if(!*slot)*slot=render_framebuffer_create(raw->width,raw->height,1);
+    render_framebuffer_t* fb=*slot;if(!fb)return NULL;
+    size_t n=(size_t)raw->width*raw->height;
+    memcpy(fb->color,raw->color,n*3*sizeof(float));
+    memcpy(fb->normal,raw->normal,n*3*sizeof(float));
+    memcpy(fb->depth,raw->depth,n*sizeof(float));
+    memcpy(fb->cell_id,raw->cell_id,n*sizeof(int));
+    memcpy(fb->material_id,raw->material_id,n*sizeof(int));
+    postprocess_frame(cfg,fb);
+    uint8_t* rgb=malloc((size_t)v->cfg.width*v->cfg.height*3);
+    if(!rgb)return NULL;
+    if(raw->width==v->cfg.width && raw->height==v->cfg.height)render_tonemap(fb,rgb);
+    else {
+        uint8_t* small=malloc(n*3);if(!small){free(rgb);return NULL;}
+        render_tonemap(fb,small);
+        for(int y=0;y<v->cfg.height;++y)for(int x=0;x<v->cfg.width;++x) {
+            size_t src=((size_t)y*raw->height/v->cfg.height*raw->width+(size_t)x*raw->width/v->cfg.width)*3;
+            memcpy(rgb+((size_t)y*v->cfg.width+x)*3,small+src,3);
+        }
+        free(small);
+    }
+    return rgb;
+}
+#ifdef ALEA_VIEW_METAL
+static int render_view_progress(void* user,const render_framebuffer_t* fb,size_t completed,size_t total) {
+    render_viewer_t* v=user;
+    if(alea_view_cancelled(v->job))return 1;
+    SDL_AtomicSet(&v->job->progress,(int)(100*completed/total));
+    if(completed==v->published_pixels || completed==total || SDL_GetTicks()-v->last_publish<50)return 0;
+    uint8_t* rgb=render_view_image(v,&v->working,fb);
+    if(!rgb){v->progress_error=1;return 1;}
+    alea_view_publish(v->job,rgb,(int)(100*completed/total));
+    v->last_publish=SDL_GetTicks();v->published_pixels=completed;
+    return alea_view_cancelled(v->job);
+}
+#endif
+static int render_view_draw(void* state, uint8_t** pixels) {
+    render_viewer_t* v=state;*pixels=NULL;
+    render_config_t cfg=v->cfg;
+    if(v->preview) {
+        if(v->progressive) {
+            int edge=v->buffers->preview_edge?v->buffers->preview_edge:96;
+            int longest=cfg.width>cfg.height?cfg.width:cfg.height;
+            if(longest>edge) {
+                cfg.width=(int)((double)cfg.width*edge/longest);if(cfg.width<1)cfg.width=1;
+                cfg.height=(int)((double)cfg.height*edge/longest);if(cfg.height<1)cfg.height=1;
+            }
+        } else {cfg.width=(cfg.width+1)/2;cfg.height=(cfg.height+1)/2;}
+        cfg.aa_samples=1;cfg.shadows=0;
+    }
+    render_framebuffer_t** slot=&v->buffers->frames[v->preview];
+    if(*slot && ((*slot)->width!=cfg.width || (*slot)->height!=cfg.height)) {
+        render_framebuffer_free(*slot);*slot=NULL;
+    }
+    if(!*slot)*slot=render_framebuffer_create(cfg.width,cfg.height,1);
+    render_framebuffer_t* fb=*slot;
+    if(!fb || render_camera_setup(&v->cam,&cfg,v->sys))return -1;
+    int rc;Uint32 start=SDL_GetTicks();v->working=cfg;
+#ifdef ALEA_VIEW_METAL
+    if(v->progressive && v->job && !v->job->saving) {
+        {
+            const render_framebuffer_t* seed=!v->preview && v->buffers->preview_revision==v->job->revision?v->buffers->frames[1]:NULL;
+            for(int y=0;y<fb->height;++y)for(int x=0;x<fb->width;++x) {
+                size_t i=(size_t)y*fb->width+x;
+                size_t j=seed?((size_t)y*seed->height/fb->height)*seed->width+(size_t)x*seed->width/fb->width:0;
+                fb->cell_id[i]=seed?seed->cell_id[j]:-1;fb->material_id[i]=seed?seed->material_id[j]:-1;
+                fb->depth[i]=seed?seed->depth[j]:INFINITY;
+                for(int a=0;a<3;++a){fb->color[3*i+a]=seed?seed->color[3*j+a]:cfg.background[a];fb->normal[3*i+a]=seed?seed->normal[3*j+a]:0;}
+            }
+        }
+        v->last_publish=start;v->published_pixels=0;v->progress_error=0;
+        rc=alea_compute_render_progressive(v->compute,&cfg,&v->cam,fb,render_view_progress,v);
+        if(v->progress_error)rc=-1;
+        if(rc==0 && v->preview) {
+            v->buffers->preview_revision=v->job->revision;
+            double elapsed=SDL_GetTicks()-start,edge=cfg.width>cfg.height?cfg.width:cfg.height;
+            if(elapsed>250)edge*=sqrt(150/elapsed);else if(elapsed<50)edge*=1.5;
+            v->buffers->preview_edge=(int)fmax(16,fmin(128,edge));
+        }
+    } else
+#endif
+        rc=render_selected(v->sys,v->compute,&cfg,&v->cam,fb);
+    (void)start;
+    if(rc==0){*pixels=render_view_image(v,&cfg,fb);if(!*pixels)rc=-1;}
+    if(rc<0)fprintf(stderr,"Rendering failed: %s\n",alea_error());
     return rc;
+}
+
+static void render_view_bind(void* state,alea_view_job_t* job) {
+    ((render_viewer_t*)state)->job=job;
+}
+
+static void render_view_prepare(void* state, int preview) {
+    ((render_viewer_t*)state)->preview = preview;
 }
 
 static int render_view_save(const void* state, const uint8_t* pixels) {
@@ -40,7 +138,7 @@ static int render_view_save(const void* state, const uint8_t* pixels) {
 
 static int render_view_active(const void* state, SDL_Keycode key) {
     const render_viewer_t* v = state;
-    return (key == SDLK_e && v->cfg.edges) || (key == SDLK_l && v->cfg.shadows);
+    return (key == SDLK_x && v->cfg.num_clips) || (key == SDLK_e && v->cfg.edges) || (key == SDLK_l && v->cfg.shadows);
 }
 
 /* Rotate a vector about a unit axis (Rodrigues' formula). */
@@ -81,9 +179,32 @@ static int render_view_input(void* state, const SDL_Event* event) {
     } else if (event->type == SDL_KEYDOWN) {
         switch (event->key.keysym.sym) {
         case SDLK_r: *cfg = v->initial; return 1;
-        case SDLK_c: cfg->color_mode = (cfg->color_mode + 1) % 4; return 1;
+        case SDLK_c: cfg->color_mode = (cfg->color_mode + 1) % (v->compute ? 2 : 4); return 1;
         case SDLK_e: cfg->edges = !cfg->edges; return 1;
-        case SDLK_l: cfg->shadows = !cfg->shadows; return 1;
+        case SDLK_l:
+            if (v->compute) { fprintf(stderr,"Shadows are not supported by Metal yet.\n"); return 0; }
+            cfg->shadows = !cfg->shadows; return 1;
+        case SDLK_x:
+            if (cfg->num_clips) cfg->num_clips=0;
+            else {
+                cfg->num_clips=1;
+                /* Retain a configured/moved plane when toggling it. */
+                render_clip_plane_t* p=&cfg->clips[0];
+                if (p->normal[0]==0 && p->normal[1]==0 && p->normal[2]==0) {
+                    p->normal[2]=1; p->d=-cfg->target[2];
+                }
+            }
+            return 1;
+        case SDLK_LEFTBRACKET: case SDLK_RIGHTBRACKET: {
+            if (!cfg->num_clips) return 0;
+            double distance=0;
+            for (int i=0;i<3;++i) distance+=pow(cfg->eye[i]-cfg->target[i],2);
+            render_clip_plane_t* p=&cfg->clips[0];
+            double scale=hypot(hypot(p->normal[0],p->normal[1]),p->normal[2]);
+            double step=(cfg->fov==0?cfg->ortho_height:sqrt(distance))*.02*scale;
+            p->d += event->key.keysym.sym==SDLK_LEFTBRACKET ? step : -step;
+            return 1;
+        }
         case SDLK_LEFT: yaw = 0.15; break;
         case SDLK_RIGHT: yaw = -0.15; break;
         case SDLK_UP: pitch = 0.15; break;
@@ -115,11 +236,13 @@ static int render_view_input(void* state, const SDL_Event* event) {
     return 1;
 }
 
-static int render_interactive(alea_system_t* sys, const render_config_t* cfg,
-                              const render_camera_t* cam, const char* output) {
+static int render_interactive(alea_system_t* sys, alea_compute_t* compute, const render_config_t* cfg,
+                              const render_camera_t* cam, const char* output, int progressive) {
     if (cfg->width < 1 || cfg->height < 1 || cfg->width > 16384 || cfg->height > 16384)
         return -1;
     render_viewer_t v = {0};
+    render_view_buffers_t buffers = {.preview_edge=alea_cell_count(sys)>10000?16:96};
+    v.buffers = &buffers; v.compute = compute;v.progressive=progressive;
     v.sys = sys; v.cfg = *cfg; v.cam = *cam; v.output = output;
     /* Freeze auto-fit so navigation is relative to the visible camera. */
     memcpy(v.cfg.eye, cam->eye, sizeof(v.cfg.eye));
@@ -133,15 +256,20 @@ static int render_interactive(alea_system_t* sys, const render_config_t* cfg,
         {"Zoom -", SDLK_MINUS}, {"Help", SDLK_h}, {"Quit", SDLK_q},
         {"Left", SDLK_LEFT}, {"Right", SDLK_RIGHT}, {"Up", SDLK_UP},
         {"Down", SDLK_DOWN}, {"Colors", SDLK_c}, {"Edges", SDLK_e},
+        {"Clip", SDLK_x}, {"Clip -", SDLK_LEFTBRACKET}, {"Clip +", SDLK_RIGHTBRACKET},
         {"Shadows", SDLK_l}
     };
-    return alea_sdl_view("Alea 3D",
+    int rc = alea_sdl_view_progressive(compute ? "Alea 3D - Metal" : "Alea 3D - CPU",
         "Left drag / arrows: orbit\n"
         "Right / middle drag: pan   Wheel / +/-: zoom\n"
-        "C: colors   E: edges   L: shadows\n"
+        "C: colors   E: edges   L: shadows (CPU)\n"
+        "X: toggle clip   [ / ]: move clip\n"
         "R: reset   S: save   H: help   Q / Esc: quit",
         cfg->width, cfg->height, &v, sizeof(v), render_view_draw,
         render_view_save, render_view_input, render_view_active,
-        buttons, (int)(sizeof(buttons)/sizeof(buttons[0])));
+        buttons, (int)(sizeof(buttons)/sizeof(buttons[0])), render_view_prepare, progressive?render_view_bind:NULL);
+    render_framebuffer_free(buffers.frames[0]); render_framebuffer_free(buffers.frames[1]);
+    render_framebuffer_free(buffers.display[0]);render_framebuffer_free(buffers.display[1]);
+    return rc;
 }
 #endif

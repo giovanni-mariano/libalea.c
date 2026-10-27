@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_system.h"
+#include "util/alea_alloc.h"
 #include "alea_types.h"
 #include "alea.h"
 #include "core/alea_eval.h"
@@ -85,6 +86,7 @@ alea_system_t* alea_system_create(void) {
     sys->source = ALEA_SOURCE_EMPTY;
     sys->system_id = atomic_fetch_add(&g_next_system_id, 1);
     atomic_init(&sys->geometry_generation, 1);
+    atomic_init(&sys->material_generation, 1);
     atomic_init(&sys->query_cache_state, 0);
     atomic_flag_clear(&sys->query_cache_build_lock);
     /* cell_refs is zero-initialized by calloc (equivalent to ALEA_VEC_INIT) */
@@ -126,6 +128,21 @@ uint64_t alea_system_geometry_generation(const alea_system_t* sys) {
     return atomic_load(&sys->geometry_generation);
 }
 
+uint64_t alea_system_material_generation(const alea_system_t* sys) {
+    return sys ? atomic_load(&sys->material_generation) : 0;
+}
+
+void alea_system_materials_changed(alea_system_t* sys) {
+    if (sys) atomic_fetch_add(&sys->material_generation, 1);
+}
+
+int alea_system_reserve_cell_metadata(alea_system_t* sys, size_t count) {
+    if (!sys->on_cells_reserve) return 0;
+    if (sys->on_cells_reserve(sys->cell_hook_userdata, count) == 0) return 0;
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Reserving cell metadata");
+    return -1;
+}
+
 static void alea_free_surface_lookup(alea_system_t* sys) {
     free(sys->surface_lookup);
     sys->surface_lookup = NULL;
@@ -159,38 +176,15 @@ static void alea_free_cell_dynamic_fields(alea_system_t* sys) {
     sys->cell_adjacency_built = false;
 }
 
-static void alea_free_material_contents(alea_material_t* m) {
-    for (size_t j = 0; j < alea_vec_count(&m->nuclides); j++) {
-        free(m->nuclides.data[j].library);
-    }
-    alea_vec_free(&m->nuclides);
-    for (size_t j = 0; j < alea_vec_count(&m->elements); j++) {
-        free(m->elements.data[j].library);
-    }
-    alea_vec_free(&m->elements);
-    for (size_t j = 0; j < alea_vec_count(&m->thermal_laws); j++) {
-        free(m->thermal_laws.data[j].identifier);
-    }
-    alea_vec_free(&m->thermal_laws);
-    free(m->name);
-    free(m->comments);
-}
-
 static void alea_free_all_material_contents(alea_system_t* sys) {
     for (size_t i = 0; i < alea_vec_count(&sys->materials); i++) {
-        alea_free_material_contents(&sys->materials.data[i]);
+        alea_material_clear(&sys->materials.data[i]);
     }
-}
-
-static void alea_free_mixture_contents(alea_mixture_t* m) {
-    alea_vec_free(&m->components);
-    free(m->name);
-    free(m->comments);
 }
 
 static void alea_free_all_mixture_contents(alea_system_t* sys) {
     for (size_t i = 0; i < alea_vec_count(&sys->mixtures); i++) {
-        alea_free_mixture_contents(&sys->mixtures.data[i]);
+        alea_mixture_clear(&sys->mixtures.data[i]);
     }
 }
 
@@ -450,6 +444,11 @@ void alea_system_destroy(alea_system_t* sys) {
 
 void alea_system_reset(alea_system_t* sys) {
     if (!sys) return;
+
+    if (sys->on_cell_removed) {
+        for (size_t i = sys->cells.count; i > 0; i--)
+            sys->on_cell_removed(sys->cell_hook_userdata, i - 1);
+    }
 
     atomic_store(&sys->query_cache_state, 0);
     atomic_fetch_add(&sys->geometry_generation, 1);
@@ -1454,6 +1453,7 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
         mat_idx = material_index;
     }
 
+    if (alea_system_reserve_cell_metadata(sys, sys->cells.count + 1)) return -1;
     int idx = (int)alea_vec_count(&sys->cells);
     alea_cell_entry_t* cell = alea_vec_push_uninit(&sys->cells, alea_cell_entry_t);
     if (!cell) {
@@ -1480,7 +1480,10 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
     }
 
     /* Insert into cell hash map */
-    cell_hashmap_put(&sys->cell_index, cell_id, idx);
+    if (!cell_hashmap_put(&sys->cell_index, cell_id, idx)) {
+        sys->cells.count--;
+        return -1;
+    }
 
     /* Notify module hooks */
     if (sys->on_cell_added)
@@ -1544,6 +1547,7 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
         mat_idx = material_index;
     }
 
+    if (alea_system_reserve_cell_metadata(sys, sys->cells.count + 1)) return -1;
     int idx = (int)alea_vec_count(&sys->cells);
     alea_cell_entry_t* cell = alea_vec_push_uninit(&sys->cells, alea_cell_entry_t);
     if (!cell) {
@@ -1565,7 +1569,10 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
     alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
 
     /* Insert into cell hash map */
-    cell_hashmap_put(&sys->cell_index, final_cell_id, idx);
+    if (!cell_hashmap_put(&sys->cell_index, final_cell_id, idx)) {
+        sys->cells.count--;
+        return -1;
+    }
 
     /* Notify module hooks */
     if (sys->on_cell_added)
@@ -1655,6 +1662,7 @@ int alea_add_mixture(alea_system_t* sys, const alea_mixture_t* mixture) {
     dst->name = mixture->name ? alea_strdup(mixture->name) : NULL;
     dst->comments = mixture->comments ? alea_strdup(mixture->comments) : NULL;
 
+    alea_system_materials_changed(sys);
     return (int)idx;
 }
 
@@ -2266,13 +2274,13 @@ static uint32_t find_surface_by_mc_id(const alea_system_t* sys, int mc_surface_i
  * due to primitive deduplication. Falls back to prim_to_surface if
  * mc_surface_id is not set.
  */
-static void collect_surfaces_recursive(alea_system_t* sys,
+static int collect_surfaces_recursive(alea_system_t* sys,
                                        alea_node_id_t node_id,
                                        uint32_t** surface_indices,
                                        size_t* count,
                                        size_t* capacity) {
     if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
-        return;
+        return 0;
 
     const alea_node_t* node = &sys->nodes.data[node_id];
     alea_operation_t op = ALEA_GET_OPERATION(node);
@@ -2308,8 +2316,10 @@ static void collect_surfaces_recursive(alea_system_t* sys,
                 /* Add to array */
                 if (*count >= *capacity) {
                     size_t new_cap = *capacity ? *capacity * 2 : 16;
-                    uint32_t* new_arr = realloc(*surface_indices, new_cap * sizeof(uint32_t));
-                    if (!new_arr) return;
+                    if (new_cap < *capacity || new_cap > SIZE_MAX / sizeof(uint32_t))
+                        return -1;
+                    uint32_t* new_arr = alea_realloc(*surface_indices, new_cap * sizeof(uint32_t));
+                    if (!new_arr) return -1;
                     *surface_indices = new_arr;
                     *capacity = new_cap;
                 }
@@ -2318,12 +2328,16 @@ static void collect_surfaces_recursive(alea_system_t* sys,
         }
     } else if (op == ALEA_OP_COMPLEMENT) {
         /* Complement has one child in left */
-        collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity);
+        if (collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity) != 0)
+            return -1;
     } else {
         /* Binary operation: union, intersection, difference */
-        collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity);
-        collect_surfaces_recursive(sys, node->operation.right, surface_indices, count, capacity);
+        if (collect_surfaces_recursive(sys, node->operation.left, surface_indices, count, capacity) != 0)
+            return -1;
+        if (collect_surfaces_recursive(sys, node->operation.right, surface_indices, count, capacity) != 0)
+            return -1;
     }
+    return 0;
 }
 
 /**
@@ -2338,6 +2352,9 @@ static void collect_surfaces_recursive(alea_system_t* sys,
  */
 int alea_build_cell_surface_index(alea_system_t* sys) {
     if (!sys) return -1;
+
+    /* A failed rebuild must never leave the ready bit set. */
+    atomic_fetch_and(&sys->query_cache_state, ~(unsigned)ALEA_CACHE_CELL_SURFACES);
 
     /* Build/update primitive->surface map */
     if (ensure_prim_to_surface_map(sys) != 0) {
@@ -2366,7 +2383,11 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
         size_t count = 0;
         size_t capacity = 0;
 
-        collect_surfaces_recursive(sys, cell->root_node_id, &indices, &count, &capacity);
+        if (collect_surfaces_recursive(sys, cell->root_node_id, &indices, &count, &capacity) != 0) {
+            free(indices);
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Building cell surface index");
+            return -1;
+        }
 
         /* Store result (shrink to exact size) */
         if (count > 0) {

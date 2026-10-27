@@ -20,7 +20,8 @@ extern "C" {
 /** Explicit, optional transport binding. Geometry loading, plotting and
  * validation never load nuclear data. Both inputs must outlive the binding.
  * Preparation is all-or-nothing and loads every requested table up front.
- * A geometry mutation invalidates lookups; recreate the binding afterwards.
+ * Geometry or material edits (including cell density, temperature, and material
+ * assignment) invalidate lookups; recreate the binding afterwards.
  */
 typedef struct alea_nuc_cell_bindings alea_nuc_cell_bindings_t;
 #define ALEA_NUC_BIND_NEUTRON (1u << 0)

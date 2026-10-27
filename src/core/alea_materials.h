@@ -247,6 +247,11 @@ alea_material_t* alea_material_create(int material_id);
  */
 void alea_material_destroy(alea_material_t* mat);
 
+/* Copy into an uninitialized destination. On failure the destination is empty.
+ * Clear releases contents without freeing the enclosing struct. */
+int alea_material_copy_contents(alea_material_t* dst, const alea_material_t* src);
+void alea_material_clear(alea_material_t* mat);
+
 /**
  * @brief Add a nuclide to a material (internal, operates on material pointer)
  */
@@ -284,6 +289,8 @@ alea_mixture_t* alea_mixture_create(int mixture_id);
  * @brief Destroy a mixture
  */
 void alea_mixture_destroy(alea_mixture_t* mix);
+int alea_mixture_copy_contents(alea_mixture_t* dst, const alea_mixture_t* src);
+void alea_mixture_clear(alea_mixture_t* mix);
 
 /**
  * @brief Add a material component to a mixture

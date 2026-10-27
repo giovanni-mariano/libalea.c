@@ -37,20 +37,31 @@ def main():
         else:
             libraries += ["-Wl,--whole-archive", path, "-Wl,--no-whole-archive"]
     libraries += [str(root / "bin/libalea.a"), "-lm", "-pthread"]
+    metal = os.environ.get("USE_METAL") == "1"
     with tempfile.TemporaryDirectory(prefix="alea-sdl-") as directory:
         tmp = Path(directory)
         shell_test = tmp / "shell-test"
         run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra",
             str(root / "tests/tools/test_sdl_view.c"), "-o", str(shell_test)] + flags)
-        for args in [[], ["close-during-render"]]:
+        for args in [[], ["close-during-render"], ["adaptive"], ["progressive"], ["progressive-close"]]:
             result = run([str(shell_test), *args], env=dict(os.environ, SDL_VIDEODRIVER="dummy"))
             print(result.stdout.strip())
         model = tmp / "model.i"
         model.write_text("Sphere\n1 1 -1 -1\n2 0 1\n\n1 so 5\n\n")
-        for name, source, options in [
+        nested_model = tmp / "nested.i"
+        nested_model.write_text(
+            "Nested elliptical torus\n1 0 -1 fill=1\n2 1 -1 -2 u=1\n"
+            "3 0 2 u=1\n4 0 1\n\n1 so 6\n2 tz 0 0 0 3 1 1.5\n\n")
+        viewers = [
             ("slice", "tools/mc_plotter.c", ["Z", "0", "-10", "10", "-10", "10", "64"]),
             ("render", "examples/c/render3d.c", ["--width", "64", "--height", "64"]),
-        ]:
+        ]
+        if metal:
+            viewers.append(("metal", "examples/c/render3d.c",
+                ["--width", "64", "--height", "64", "--backend", "metal"]))
+            viewers.append(("metal_nested", "examples/c/render3d.c",
+                ["--width", "64", "--height", "64", "--backend", "metal"]))
+        for name, source, options in viewers:
             wrapper = tmp / f"{name}.c"
             wrapper.write_text(f'''#define main viewer_main
 #include "{root / source}"
@@ -68,13 +79,18 @@ int main(int argc, char** argv) {{
 }}
 ''')
             exe = tmp / name
+            extra = (["-DALEA_VIEW_METAL", str(root / "bin/compute/metal/libalea_compute.a"),
+                "-framework", "Foundation", "-framework", "Metal"] if name.startswith("metal") else [])
             run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-DALEA_USE_SDL",
-                f"-I{root / 'include'}", str(wrapper), "-o", str(exe)] + libraries + flags)
+                f"-I{root / 'include'}", str(wrapper), "-o", str(exe)] + extra + libraries + flags)
             images = {}
-            for mode, keys in [("initial", "sq"), ("zoom", "+sq"), ("reset", "+rsq")]:
+            actions = [("initial", "sq"), ("zoom", "+sq"), ("reset", "+rsq")]
+            if name != "slice":
+                actions += [("clip", "xsq"), ("clip_move", "x]sq"), ("clip_reset", "x]rsq")]
+            for mode, keys in actions:
                 output = tmp / f"{name}-{mode}.bmp"
-                args = [str(exe), str(model), *options]
-                if name == "render": args += ["-o"]
+                args = [str(exe), str(nested_model if name == "metal_nested" else model), *options]
+                if name != "slice": args += ["-o"]
                 args += [str(output), "--interactive"]
                 env = dict(os.environ, SDL_VIDEODRIVER="dummy", ALEA_TEST_KEYS=keys)
                 run(args, env=env)
@@ -82,7 +98,11 @@ int main(int argc, char** argv) {{
                 assert images[mode][:2] == b"BM"
             assert images["initial"] != images["zoom"], f"{name}: zoom did not change image"
             assert images["initial"] == images["reset"], f"{name}: reset did not restore image"
-            print(f"{name}: save, zoom, reset, quit PASS")
+            if name != "slice":
+                assert images["clip"] != images["initial"], f"{name}: clip did not change image"
+                assert images["clip"] != images["clip_move"], f"{name}: clip did not move"
+                assert images["initial"] == images["clip_reset"], f"{name}: clip reset failed"
+            print(f"{name}: save, zoom, reset, clip (3D), quit PASS")
 
 
 if __name__ == "__main__":

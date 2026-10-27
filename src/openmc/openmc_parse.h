@@ -6,9 +6,8 @@
  * @file openmc_parse.h
  * @brief Minimal XML parser for OpenMC geometry files
  *
- * Custom XML parser following project style (no third-party deps).
- * Handles the subset of XML used by OpenMC: elements, attributes, text content.
- * No namespaces, CDATA, DTD, or entity references beyond basic escapes.
+ * OpenMC compatibility interface for the shared Expat-backed XML tree.
+ * DTDs, external entities, and namespaces are rejected. CDATA is text.
  */
 
 #ifndef OPENMC_PARSE_H
@@ -19,42 +18,10 @@
 #include "util/arena.h"
 
 
-/* ============================================================================
- * XML ATTRIBUTE
- * ============================================================================ */
-
-typedef struct {
-    char* name;
-    char* value;
-} openmc_xml_attr_t;
-
-/* ============================================================================
- * XML ELEMENT
- * ============================================================================ */
-
-typedef struct openmc_xml_element {
-    char* tag_name;
-    openmc_xml_attr_t* attrs;
-    size_t attr_count;
-    size_t attr_capacity;
-    struct openmc_xml_element** children;
-    size_t child_count;
-    size_t child_capacity;
-    char* text_content;
-    struct openmc_xml_element* parent;
-} openmc_xml_element_t;
-
-/* ============================================================================
- * XML DOCUMENT
- * ============================================================================ */
-
-typedef struct {
-    openmc_xml_element_t* root;
-    arena_t arena;
-    char error_msg[512];
-    int error_line;
-    int error_col;
-} openmc_xml_doc_t;
+#include "util/xml_dom.h"
+typedef alea_xml_dom_attr_t openmc_xml_attr_t;
+typedef alea_xml_dom_element_t openmc_xml_element_t;
+typedef alea_xml_dom_doc_t openmc_xml_doc_t;
 
 /* ============================================================================
  * PARSER API
@@ -63,7 +30,7 @@ typedef struct {
 /**
  * @brief Parse XML from file
  * @param filename Path to XML file
- * @return Parsed document or NULL on error
+ * @return Document (inspect get_error), or NULL on allocation/argument failure
  */
 openmc_xml_doc_t* openmc_xml_parse_file(const char* filename);
 
@@ -71,7 +38,7 @@ openmc_xml_doc_t* openmc_xml_parse_file(const char* filename);
  * @brief Parse XML from string
  * @param xml_string XML content
  * @param length String length (0 = null-terminated)
- * @return Parsed document or NULL on error
+ * @return Document (inspect get_error), or NULL on allocation/argument failure
  */
 openmc_xml_doc_t* openmc_xml_parse_string(const char* xml_string, size_t length);
 

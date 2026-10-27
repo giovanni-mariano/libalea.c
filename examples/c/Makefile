@@ -20,14 +20,21 @@ else
 endif
 
 # Libraries
+BIN_DIR = ../../bin
+UNAME_S := $(shell uname -s 2>/dev/null)
 LIBS_CORE = ../../bin/libalea.a $(THREAD_FLAGS) -lm
 LIBS_MCNP = -Wl,--whole-archive ../../bin/libalea_mcnp.a -Wl,--no-whole-archive
 LIBS_OPENMC = -Wl,--whole-archive ../../bin/libalea_openmc.a -Wl,--no-whole-archive
+ifeq ($(UNAME_S),Darwin)
+  LIBS_MCNP = -Wl,-force_load,../../bin/libalea_mcnp.a
+  LIBS_OPENMC = -Wl,-force_load,../../bin/libalea_openmc.a
+endif
 LIBS_ALL = $(LIBS_MCNP) $(LIBS_OPENMC) $(LIBS_CORE)
 LIBS_NUCDATA = ../../bin/libalea_nucdata.a $(LIBS_CORE)
 
 .DEFAULT_GOAL := all
 include ../../tools/sdl.mk
+include ../../tools/compute_view.mk
 
 EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo fusion_fixed_source adjoint_neutron
 
@@ -42,8 +49,8 @@ mcnp_roundtrip: mcnp_roundtrip.c
 mcnp_volume: mcnp_volume.c
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
 
-render3d: render3d.c ../../tools/render_view.h ../../tools/sdl_view.h viewer-config
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS)
+render3d: render3d.c ../../tools/render_view.h ../../tools/sdl_view.h viewer-config $(VIEW_COMPUTE_DEP)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) -O2 $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS)
 
 void_demo: void_demo.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)

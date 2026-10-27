@@ -76,4 +76,5 @@ nav:
       - C API: API.md
   - Development:
       - Architecture: ARCHITECTURE.md
+      - GPU compute: GPU_COMPUTE.md
       - Surface deduplication: SURFACE_DEDUP.md

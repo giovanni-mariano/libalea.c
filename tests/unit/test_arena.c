@@ -110,4 +110,43 @@ TEST(arena_strdup) {
     arena_free(&arena);
 }
 
+TEST(arena_reset_reuses_all_blocks) {
+    arena_t arena;
+    ASSERT_TRUE(arena_init_with_size(&arena, 64));
+    ASSERT_NOT_NULL(arena_alloc(&arena, 64));
+    ASSERT_NOT_NULL(arena_alloc(&arena, 64));
+    ASSERT_NOT_NULL(arena_alloc(&arena, 128));
+    arena_block_t* second = arena.head->next;
+    arena_block_t* third = second->next;
+    size_t allocated = arena_total_allocated(&arena);
+    for (int i = 0; i < 100; i++) {
+        arena_reset(&arena);
+        ASSERT_EQ(arena_used(&arena), 0);
+        ASSERT_NOT_NULL(arena_alloc(&arena, 64));
+        ASSERT_NOT_NULL(arena_alloc(&arena, 64));
+        ASSERT_NOT_NULL(arena_alloc(&arena, 128));
+        ASSERT(arena.head->next == second);
+        ASSERT(second->next == third);
+        ASSERT_EQ(arena_total_allocated(&arena), allocated);
+    }
+    /* A larger request must skip small retained blocks without losing them. */
+    arena_reset(&arena);
+    ASSERT_NOT_NULL(arena_alloc(&arena, 128));
+    ASSERT(arena.head->next == second);
+    ASSERT(second->next == third);
+    ASSERT_EQ(arena_total_allocated(&arena), allocated);
+    arena_free(&arena);
+}
+
+TEST(arena_rejects_overflow_and_invalid_alignment) {
+    arena_t arena;
+    ASSERT_TRUE(arena_init_with_size(&arena, 64));
+    ASSERT_NOT_NULL(arena_alloc(&arena, 8));
+    ASSERT_NULL(arena_alloc(&arena, SIZE_MAX));
+    ASSERT_NULL(arena_alloc_align(&arena, 8, 0));
+    ASSERT_NULL(arena_alloc_align(&arena, 8, 3));
+    ASSERT_EQ(arena_used(&arena), 8);
+    arena_free(&arena);
+}
+
 TEST_MAIN()

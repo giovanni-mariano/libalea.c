@@ -5,6 +5,7 @@
 #include "alea_model.h"
 #include "core/alea_system.h"
 #include "util/compat.h"
+#include "util/alea_alloc.h"
 #include "util/cell_parameter.h"
 #include <math.h>
 #include <stdlib.h>
@@ -44,12 +45,14 @@ static void cell_metadata_init(alea_model_cell_metadata_t* meta) {
 
 static int reserve_cells(alea_model_t* model, size_t needed) {
     if (needed <= model->cell_capacity) return 0;
+    const size_t max = SIZE_MAX / sizeof(*model->cells);
+    if (needed > max) return -1;
     size_t capacity = model->cell_capacity ? model->cell_capacity : 8;
     while (capacity < needed) {
-        if (capacity > SIZE_MAX / 2) return -1;
+        if (capacity > max / 2) { capacity = needed; break; }
         capacity *= 2;
     }
-    alea_model_cell_metadata_t* cells = realloc(
+    alea_model_cell_metadata_t* cells = alea_realloc(
         model->cells, capacity * sizeof(*cells));
     if (!cells) return -1;
     memset(cells + model->cell_capacity, 0,
@@ -59,20 +62,24 @@ static int reserve_cells(alea_model_t* model, size_t needed) {
     return 0;
 }
 
+static int model_cells_reserve(void* userdata, size_t count) {
+    return reserve_cells(userdata, count);
+}
+
 static void model_cell_added(void* userdata, size_t index) {
     alea_model_t* model = userdata;
-    if (!model || index != model->cell_count || reserve_cells(model, index + 1)) return;
+    if (!model || index != model->cell_count || index >= model->cell_capacity) return;
     cell_metadata_init(&model->cells[index]);
     model->cell_count++;
 }
 
-static void model_cell_copied(void* userdata, size_t dst, size_t src) {
+static int model_cell_copied(void* userdata, size_t dst, size_t src) {
     alea_model_t* model = userdata;
-    if (!model || src >= model->cell_count) return;
-    if (dst == src) return;
+    if (!model || src >= model->cell_count) return -1;
+    if (dst == src) return 0;
     if (dst >= model->cell_count) model_cell_added(userdata, dst);
-    if (dst >= model->cell_count) return;
-    char* name = model->cells[src].name ? alea_strdup(model->cells[src].name) : NULL;
+    if (dst >= model->cell_count) return -1;
+    char* name = model->cells[src].name ? alea_alloc_strdup(model->cells[src].name) : NULL;
     alea_detector_probability_t* probabilities = alea_detector_probability_copy(
         model->cells[src].detector_probabilities,
         model->cells[src].detector_probability_count);
@@ -81,12 +88,13 @@ static void model_cell_copied(void* userdata, size_t dst, size_t src) {
         free(name);
         free(probabilities);
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "copying cell parameters");
-        return;
+        return -1;
     }
     cell_metadata_free(&model->cells[dst]);
     model->cells[dst] = model->cells[src];
     model->cells[dst].name = name;
     model->cells[dst].detector_probabilities = probabilities;
+    return 0;
 }
 
 static void model_cell_removed(void* userdata, size_t index) {
@@ -101,9 +109,22 @@ static void model_cell_removed(void* userdata, size_t index) {
     memset(&model->cells[model->cell_count], 0, sizeof(*model->cells));
 }
 
+static void model_cells_pruned(void* userdata) {
+    alea_model_t* model = userdata;
+    size_t write = 0;
+    for (size_t i = 0; i < model->cell_count; i++) {
+        if (model->sys->cells.data[i].root_node_id == ALEA_NODE_ID_INVALID)
+            cell_metadata_free(&model->cells[i]);
+        else model->cells[write++] = model->cells[i];
+    }
+    if (write < model->cell_count)
+        memset(model->cells + write, 0, (model->cell_count - write) * sizeof(*model->cells));
+    model->cell_count = write;
+}
+
 static alea_model_t* model_create(alea_system_t* sys, int owns_sys) {
     if (!sys) return NULL;
-    if (sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed) {
+    if (sys->on_cells_reserve || sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed || sys->on_cells_pruned) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "system is already attached to a model wrapper");
         return NULL;
@@ -120,9 +141,11 @@ static alea_model_t* model_create(alea_system_t* sys, int owns_sys) {
     model->cell_count = count;
     for (size_t i = 0; i < count; i++) cell_metadata_init(&model->cells[i]);
     sys->cell_hook_userdata = model;
+    sys->on_cells_reserve = model_cells_reserve;
     sys->on_cell_added = model_cell_added;
     sys->on_cell_copied = model_cell_copied;
     sys->on_cell_removed = model_cell_removed;
+    sys->on_cells_pruned = model_cells_pruned;
     return model;
 }
 
@@ -133,9 +156,11 @@ static void model_unhook(alea_model_t* model) {
     if (!model || !model->sys) return;
     if (model->sys->cell_hook_userdata == model) {
         model->sys->cell_hook_userdata = NULL;
+        model->sys->on_cells_reserve = NULL;
         model->sys->on_cell_added = NULL;
         model->sys->on_cell_copied = NULL;
         model->sys->on_cell_removed = NULL;
+        model->sys->on_cells_pruned = NULL;
     }
 }
 

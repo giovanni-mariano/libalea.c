@@ -70,7 +70,7 @@ void arena_free(arena_t* arena);
  * Allocate memory from arena with alignment
  * @param arena Arena to allocate from
  * @param size Number of bytes to allocate
- * @param align Alignment requirement (must be power of 2)
+ * @param align Power-of-two alignment, at most _Alignof(max_align_t)
  * @return Pointer to allocated memory, or NULL on failure
  */
 void* arena_alloc_align(arena_t* arena, size_t size, size_t align);
