@@ -6,6 +6,7 @@
 #include "alea_mcnp.h"
 #include "alea_raycast.h"
 #include "raycast/raycast.h"
+#include "core/alea_system.h"
 
 TEST(ownership_tracks_preserve_thin_same_material_regions_and_occurrences) {
     alea_system_t* sys = alea_create();
@@ -232,6 +233,117 @@ TEST(navigation_restarts_near_transformed_lattice_cylinder_exit) {
     }
     alea_ray_navigator_destroy(nav);
     mcnp_model_destroy(model);
+}
+
+TEST(nearest_recovery_preserves_translated_aliases_and_close_surfaces) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_deep_translated_fills.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    /* Independently specified stress geometry: shared Boolean subexpressions
+     * repeat two coincident cards and a distinct nearby plane. Eight existing
+     * translations place the planes at world x=2 and x=2.00001. */
+    int alias = alea_plane_surface(sys, 99, 1, 0, 0, 0);
+    int close = alea_plane_surface(sys, 98, 1, 0, 0, -0.00001);
+    ASSERT(alias >= 0 && close >= 0);
+    int index = alea_cell_find(sys, 1);
+    ASSERT(index >= 0);
+    alea_node_id_t region = alea_intersection(sys,
+        alea_halfspace(sys, alias, -1),
+        alea_intersection(sys, sys->cells.data[index].root_node_id,
+                          alea_halfspace(sys, close, -1)));
+    for (int i = 0; i < 12; ++i) region = alea_intersection(sys, region, region);
+    ASSERT_EQ(alea_cell_set_region(sys, index, region), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_cell_entry_t* cell = &sys->cells.data[index];
+    ASSERT_EQ(cell->surface_index_count, 3);
+    const double origins[] = {1, 3, 2.000005};
+    const double directions[] = {1, -1, 1};
+    const double distances[] = {1, 0.99999, 0.000005};
+    const int surfaces[] = {99, 98, 98};
+    for (size_t i = 0; i < 3; ++i) {
+        alea_ray_t ray;
+        ASSERT_EQ(alea_ray_init(&ray, origins[i], 0, 0, directions[i], 0, 0), 0);
+        alea_raycast_result_t indexed, tree;
+        alea_raycast_result_init(&indexed);
+        alea_raycast_result_init(&tree);
+        indexed.breakpoint_nearest_only = tree.breakpoint_nearest_only = 1;
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+            sys, &ray, 0, 3, 1, &indexed), 0);
+        uint32_t* saved = cell->surface_indices;
+        cell->surface_indices = NULL;
+        const int rc = alea_raycast_validation_breakpoints_reuse_nocache(
+            sys, &ray, 0, 3, 1, &tree);
+        cell->surface_indices = saved;
+        ASSERT_EQ(rc, 0);
+        ASSERT_EQ(indexed.hits.count, 1);
+        ASSERT_EQ(tree.hits.count, 1);
+        ASSERT_NEAR(indexed.hits.data[0].t, distances[i], 1e-12);
+        ASSERT_EQ(indexed.hits.data[0].surface_id, surfaces[i]);
+        ASSERT_NEAR(indexed.hits.data[0].nx, 1, 1e-12);
+        ASSERT_EQ(indexed.hits.data[0].ny, 0);
+        ASSERT_EQ(indexed.hits.data[0].nz, 0);
+        ASSERT_EQ(indexed.hits.data[0].t, tree.hits.data[0].t);
+        ASSERT_EQ(indexed.hits.data[0].surface_id, tree.hits.data[0].surface_id);
+        ASSERT_EQ(indexed.hits.data[0].primitive_id, tree.hits.data[0].primitive_id);
+        ASSERT_EQ(indexed.hits.data[0].nx, tree.hits.data[0].nx);
+        ASSERT_EQ(indexed.hits.data[0].ny, tree.hits.data[0].ny);
+        ASSERT_EQ(indexed.hits.data[0].nz, tree.hits.data[0].nz);
+        ASSERT(indexed.surfaces_tested * 10 < tree.surfaces_tested);
+        alea_raycast_result_free(&indexed);
+        alea_raycast_result_free(&tree);
+    }
+    mcnp_model_destroy(model);
+}
+
+TEST(nearest_recovery_matches_tree_fallback_in_repeated_geometry) {
+    const char* models[] = {
+        "tests/data/mcnp_lattice_repeating.mcnp",
+        "tests/data/mcnp_nested_lattice_transformed.mcnp",
+        "tests/data/mcnp_deep_translated_fills.mcnp"
+    };
+    const double starts[] = {-4, 3, -4};
+    const double lengths[] = {8, 6, 10};
+    for (size_t m = 0; m < 3; ++m) {
+        mcnp_model_t* model = mcnp_load(models[m]);
+        ASSERT_NOT_NULL(model);
+        alea_system_t* sys = model->sys;
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        uint32_t** saved = malloc(sys->cells.count * sizeof(*saved));
+        ASSERT_NOT_NULL(saved);
+        for (size_t c = 0; c < sys->cells.count; ++c)
+            saved[c] = sys->cells.data[c].surface_indices;
+        for (int sign = -1; sign <= 1; sign += 2) {
+            alea_ray_t ray;
+            ASSERT_EQ(alea_ray_init(&ray, starts[m] + (sign < 0 ? lengths[m] : 0),
+                                    0.125, 0.0625, sign, 0, 0), 0);
+            alea_raycast_result_t indexed, tree;
+            alea_raycast_result_init(&indexed);
+            alea_raycast_result_init(&tree);
+            indexed.breakpoint_nearest_only = tree.breakpoint_nearest_only = 1;
+            const int indexed_rc = alea_raycast_validation_breakpoints_reuse_nocache(
+                sys, &ray, 0, lengths[m], 1, &indexed);
+            for (size_t c = 0; c < sys->cells.count; ++c)
+                sys->cells.data[c].surface_indices = NULL;
+            const int tree_rc = alea_raycast_validation_breakpoints_reuse_nocache(
+                sys, &ray, 0, lengths[m], 1, &tree);
+            for (size_t c = 0; c < sys->cells.count; ++c)
+                sys->cells.data[c].surface_indices = saved[c];
+            ASSERT_EQ(indexed_rc, 0);
+            ASSERT_EQ(tree_rc, 0);
+            ASSERT_EQ(indexed.hits.count, 1);
+            ASSERT_EQ(tree.hits.count, 1);
+            ASSERT_EQ(indexed.hits.data[0].t, tree.hits.data[0].t);
+            ASSERT_EQ(indexed.hits.data[0].surface_id, tree.hits.data[0].surface_id);
+            ASSERT_EQ(indexed.hits.data[0].primitive_id, tree.hits.data[0].primitive_id);
+            ASSERT_EQ(indexed.hits.data[0].nx, tree.hits.data[0].nx);
+            ASSERT_EQ(indexed.hits.data[0].ny, tree.hits.data[0].ny);
+            ASSERT_EQ(indexed.hits.data[0].nz, tree.hits.data[0].nz);
+            alea_raycast_result_free(&indexed);
+            alea_raycast_result_free(&tree);
+        }
+        free(saved);
+        mcnp_model_destroy(model);
+    }
 }
 
 TEST_MAIN()

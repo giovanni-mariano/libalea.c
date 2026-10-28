@@ -1129,8 +1129,16 @@ static void raycast_universe_surfaces(alea_system_t* sys,
             continue;
         }
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-        raycast_tree_primitives(sys, local_ray, cell->root_node_id,
-                                t_min, t_max, result, local_to_world);
+        if (result->breakpoint_nearest_only) {
+            /* Prepared surface lists retain first tree-occurrence order,
+             * including distinct cards sharing a primitive. Nearest-only
+             * recovery can skip repeated references without changing ties. */
+            raycast_cell_indexed_surface_hits(sys, local_ray, cell,
+                t_min, t_max, result, local_to_world);
+        } else {
+            raycast_tree_primitives(sys, local_ray, cell->root_node_id,
+                                    t_min, t_max, result, local_to_world);
+        }
     }
 }
 
