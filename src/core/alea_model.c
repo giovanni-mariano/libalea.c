@@ -122,9 +122,44 @@ static void model_cells_pruned(void* userdata) {
     model->cell_count = write;
 }
 
+static int model_cells_remapped(void* userdata, const size_t* sources, size_t count) {
+    alea_model_t* model = userdata;
+    for (size_t i = 0; i < count; i++) {
+        if (sources[i] >= model->cell_count) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Invalid cell metadata mapping");
+            return -1;
+        }
+    }
+    alea_model_t replacement = {0};
+    if (count && reserve_cells(&replacement, count)) goto fail;
+    for (size_t i = 0; i < count; i++) {
+        const alea_model_cell_metadata_t* src = &model->cells[sources[i]];
+        alea_model_cell_metadata_t* dst = &replacement.cells[i];
+        *dst = *src;
+        dst->name = alea_alloc_strdup(src->name);
+        dst->detector_probabilities = alea_detector_probability_copy(
+            src->detector_probabilities, src->detector_probability_count);
+        replacement.cell_count++;
+        if ((src->name && !dst->name) ||
+            (src->detector_probability_count && !dst->detector_probabilities)) goto fail;
+    }
+    for (size_t i = 0; i < model->cell_count; i++) cell_metadata_free(&model->cells[i]);
+    free(model->cells);
+    model->cells = replacement.cells;
+    model->cell_count = count;
+    model->cell_capacity = replacement.cell_capacity;
+    return 0;
+fail:
+    for (size_t i = 0; i < replacement.cell_count; i++)
+        cell_metadata_free(&replacement.cells[i]);
+    free(replacement.cells);
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Remapping cell metadata");
+    return -1;
+}
+
 static alea_model_t* model_create(alea_system_t* sys, int owns_sys) {
     if (!sys) return NULL;
-    if (sys->on_cells_reserve || sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed || sys->on_cells_pruned) {
+    if (sys->on_cells_reserve || sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed || sys->on_cells_pruned || sys->on_cells_remapped) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "system is already attached to a model wrapper");
         return NULL;
@@ -146,6 +181,7 @@ static alea_model_t* model_create(alea_system_t* sys, int owns_sys) {
     sys->on_cell_copied = model_cell_copied;
     sys->on_cell_removed = model_cell_removed;
     sys->on_cells_pruned = model_cells_pruned;
+    sys->on_cells_remapped = model_cells_remapped;
     return model;
 }
 
@@ -161,6 +197,7 @@ static void model_unhook(alea_model_t* model) {
         model->sys->on_cell_copied = NULL;
         model->sys->on_cell_removed = NULL;
         model->sys->on_cells_pruned = NULL;
+        model->sys->on_cells_remapped = NULL;
     }
 }
 

@@ -381,6 +381,10 @@ typedef struct alea_system {
     void (*on_cell_removed)(void* ud, size_t index);
     /* Compact metadata in one pass before cells with invalid roots are removed. */
     void (*on_cells_pruned)(void* ud);
+    /* Atomically replace sidecar entries with deep copies in output order.
+     * Geometry is baked, so imported transform provenance must be cleared.
+     * Failure leaves the old metadata intact; called before geometry commit. */
+    int (*on_cells_remapped)(void* ud, const size_t* sources, size_t count);
 
     /* Surface BVH acceleration (prepared query cache) */
     struct alea_bvh* surface_bvh;
@@ -417,6 +421,16 @@ typedef struct alea_system {
     /* Next auto-assigned cell ID (for programmatic creation) */
     int next_auto_cell_id;
 } alea_system_t;
+
+/* Defaults shared by cell constructors and bulk geometry operations. */
+static inline void alea_cell_entry_init(alea_cell_entry_t* cell) {
+    *cell = (alea_cell_entry_t){
+        .root_node_id = ALEA_NODE_ID_INVALID,
+        .original_root_node_id = ALEA_NODE_ID_INVALID,
+        .material_index = -1,
+        .lat_outer_universe = -1
+    };
+}
 
 int alea_system_query_cache_ready(const alea_system_t* sys, unsigned flags);
 uint64_t alea_system_geometry_generation(const alea_system_t* sys);

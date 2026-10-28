@@ -1460,8 +1460,7 @@ int alea_add_cell_with_id(alea_system_t* sys, int cell_id, alea_node_id_t root_n
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "alea_add_cell_with_id: failed to allocate cell %d", cell_id);
         return -1;
     }
-    memset(cell, 0, sizeof(*cell));
-    cell->lat_outer_universe = -1;
+    alea_cell_entry_init(cell);
 
     cell->mc_cell_id = cell_id;
     cell->root_node_id = root_node;
@@ -1554,8 +1553,7 @@ int alea_add_cell(alea_system_t* sys, int cell_id, alea_node_id_t root_node,
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "alea_add_cell: failed to allocate cell %d", final_cell_id);
         return -1;
     }
-    memset(cell, 0, sizeof(*cell));
-    cell->lat_outer_universe = -1;
+    alea_cell_entry_init(cell);
 
     cell->mc_cell_id = final_cell_id;
     cell->root_node_id = root_node;
@@ -1602,6 +1600,7 @@ int alea_set_cell_fill(alea_system_t* sys, int cell_index, int fill_universe, in
 
     sys->cells.data[cell_index].fill_universe = fill_universe;
     sys->cells.data[cell_index].fill_transform = fill_transform;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 

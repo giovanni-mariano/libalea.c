@@ -130,6 +130,55 @@ static void on_cells_pruned_cb(void* ud) {
     model->cell_params_count = write;
 }
 
+static int on_cells_remapped_cb(void* ud, const size_t* sources, size_t count) {
+    mcnp_model_t* model = ud;
+    for (size_t i = 0; i < count; i++) {
+        if (sources[i] >= model->cell_params_count) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Invalid MCNP cell mapping");
+            return -1;
+        }
+    }
+    mcnp_model_t replacement = {0};
+    if (count && mcnp_model_reserve_params(&replacement, count)) goto fail;
+    for (size_t i = 0; i < count; i++) {
+        const mcnp_cell_params_t* src = &model->cell_params[sources[i]];
+        mcnp_cell_params_t* dst = &replacement.cell_params[i];
+        *dst = *src;
+        /* The flattened CSG already contains the imported transformations. */
+        dst->has_trcl = 0;
+        dst->trcl = dst->trcl_inline = dst->trcl_degrees = dst->trcl_count = 0;
+        dst->trcl_inline_index = MCNP_INLINE_TRANSFORM_INVALID;
+        dst->fill_transform_inline = dst->fill_transform_degrees = dst->fill_transform_count = 0;
+        dst->fill_transform_index = MCNP_INLINE_TRANSFORM_INVALID;
+        dst->like_cell_id = 0;
+        memset(&dst->scoped, 0, sizeof(dst->scoped));
+        replacement.cell_names[i] = alea_alloc_strdup(model->cell_names[sources[i]]);
+        replacement.cell_params_count++;
+        if ((model->cell_names[sources[i]] && !replacement.cell_names[i]) ||
+            mcnp_scoped_params_copy(&dst->scoped, &src->scoped)) goto fail;
+    }
+    for (size_t i = 0; i < model->cell_params_count; i++) {
+        free(model->cell_names[i]);
+        mcnp_scoped_params_free(&model->cell_params[i].scoped);
+    }
+    free(model->cell_names);
+    free(model->cell_params);
+    model->cell_names = replacement.cell_names;
+    model->cell_params = replacement.cell_params;
+    model->cell_params_count = count;
+    model->cell_params_capacity = replacement.cell_params_capacity;
+    return 0;
+fail:
+    for (size_t i = 0; i < replacement.cell_params_count; i++) {
+        free(replacement.cell_names[i]);
+        mcnp_scoped_params_free(&replacement.cell_params[i].scoped);
+    }
+    free(replacement.cell_names);
+    free(replacement.cell_params);
+    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Remapping MCNP cell parameters");
+    return -1;
+}
+
 /* ============================================================================
  * PUBLIC API
  * ============================================================================ */
@@ -321,6 +370,7 @@ void mcnp_model_register_hooks(mcnp_model_t* model) {
     model->sys->on_cell_copied = on_cell_copied_cb;
     model->sys->on_cell_removed = on_cell_removed_cb;
     model->sys->on_cells_pruned = on_cells_pruned_cb;
+    model->sys->on_cells_remapped = on_cells_remapped_cb;
 }
 
 void mcnp_model_destroy(mcnp_model_t* model) {
@@ -334,6 +384,7 @@ void mcnp_model_destroy(mcnp_model_t* model) {
         model->sys->on_cell_copied = NULL;
         model->sys->on_cell_removed = NULL;
         model->sys->on_cells_pruned = NULL;
+        model->sys->on_cells_remapped = NULL;
         if (model->owns_sys) {
             alea_system_destroy(model->sys);
         }
@@ -370,6 +421,7 @@ alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
     sys->on_cell_copied = NULL;
     sys->on_cell_removed = NULL;
     sys->on_cells_pruned = NULL;
+    sys->on_cells_remapped = NULL;
 
     model->sys = NULL;
     model->owns_sys = 0;
@@ -378,7 +430,7 @@ alea_system_t* mcnp_model_take_system(mcnp_model_t* model) {
 
 mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     if (!sys) return NULL;
-    if (sys->on_cells_reserve || sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed || sys->on_cells_pruned) {
+    if (sys->on_cells_reserve || sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed || sys->on_cells_pruned || sys->on_cells_remapped) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,
                               "system is already attached to a model wrapper");
         return NULL;

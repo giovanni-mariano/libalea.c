@@ -272,6 +272,8 @@ extern const alea_flatten_config_t ALEA_FLATTEN_DEFAULT;
  * - All non-zero universes (content moved to universe 0)
  *
  * After this call, the system contains only terminal cells in universe 0.
+ * Attached model metadata follows the source terminal cells; repeated fills
+ * receive independent copies. On failure, geometry and metadata are preserved.
  *
  * @param sys System to flatten (modified in place)
  * @param config Configuration (NULL = defaults)

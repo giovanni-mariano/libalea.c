@@ -234,4 +234,51 @@ TEST(flatten_removes_empty_cells) {
     alea_destroy(sys);
 }
 
+TEST(flatten_preserves_material_indices_and_cell_bookkeeping) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int hydrogen = alea_add_material(sys, 10);
+    int uranium = alea_add_material(sys, 20);
+    ASSERT_EQ(alea_material_add_nuclide(sys, hydrogen, 1001, "80c", 1), 0);
+    ASSERT_EQ(alea_material_add_nuclide(sys, uranium, 92235, "80c", 1), 0);
+    for (int i = 0; i < 3; i++) {
+        int surface = alea_sphere_surface(sys, i + 1, i * 10, 0, 0, 1);
+        ASSERT_EQ(alea_add_cell(sys, 10 + i, alea_halfspace(sys, surface, -1),
+                  i == 2 ? ALEA_MATERIAL_VOID : i, -1, 0), i);
+    }
+    ASSERT_EQ(alea_cell_set_comment(sys, 1, "uranium"), 0);
+    for (int copy = 0; copy < 2; copy++) {
+        alea_flatten_config_t cfg = ALEA_FLATTEN_DEFAULT;
+        cfg.copy_materials = copy;
+        alea_system_t* flat = alea_flatten_to_new_system(sys, &cfg);
+        ASSERT_NOT_NULL(flat);
+        ASSERT_EQ(flat->cells.count, 3);
+        for (int i = 0; i < 3; i++) {
+            const alea_cell_entry_t* cell = &flat->cells.data[i];
+            ASSERT_EQ(alea_find_cell_by_id(flat, cell->mc_cell_id), i);
+            ASSERT_EQ(cell->material_id, i == 2 ? 0 : (i + 1) * 10);
+            ASSERT_EQ(cell->material_index, copy && i < 2 ? i : -1);
+            ASSERT_EQ(cell->original_root_node_id, ALEA_NODE_ID_INVALID);
+            ASSERT_EQ(cell->lat_outer_universe, -1);
+        }
+        ASSERT_STR_EQ(flat->cells.data[1].comments, "uranium");
+        if (copy) {
+            ASSERT_EQ(alea_material_get_id(flat, flat->cells.data[1].material_index), 20);
+            int added = alea_add_material(flat, 0);
+            ASSERT(alea_material_get_id(flat, added) > 20);
+        }
+        ASSERT_EQ(alea_add_cell(flat, 0, flat->cells.data[0].root_node_id,
+                               ALEA_MATERIAL_VOID, 0, 0), 3);
+        ASSERT(flat->cells.data[3].mc_cell_id > 12);
+        ASSERT_EQ(alea_find_cell_by_id(flat, flat->cells.data[3].mc_cell_id), 3);
+        alea_destroy(flat);
+    }
+    ASSERT_EQ(alea_flatten_in_place(sys, NULL), 3);
+    ASSERT_EQ(sys->cells.data[1].material_index, uranium);
+    ASSERT_EQ(alea_add_cell(sys, 0, sys->cells.data[0].root_node_id,
+                           ALEA_MATERIAL_VOID, 0, 0), 3);
+    ASSERT(sys->cells.data[3].mc_cell_id > 12);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

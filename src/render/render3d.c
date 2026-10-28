@@ -1157,13 +1157,11 @@ static void png_init_crc_table(void) {
     png_crc_table_ready = 1;
 }
 
-static uint32_t png_crc32(const uint8_t* data, size_t len) {
+static uint32_t png_crc32_update(uint32_t crc, const uint8_t* data, size_t len) {
     png_init_crc_table();
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; i++)
         crc = png_crc_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    }
-    return crc ^ 0xFFFFFFFF;
+    return crc;
 }
 
 static uint32_t png_adler32(const uint8_t* data, size_t len) {
@@ -1182,69 +1180,84 @@ static void png_write_be32(uint8_t* p, uint32_t v) {
     p[3] = v & 0xFF;
 }
 
-static void png_write_chunk(FILE* f, const char* type, const uint8_t* data, size_t len) {
-    uint8_t header[8];
+static int png_write_chunk(FILE* f, const char* type, const uint8_t* data, size_t len) {
+    uint8_t header[8], crc_bytes[4];
     png_write_be32(header, (uint32_t)len);
     memcpy(header + 4, type, 4);
-    fwrite(header, 1, 8, f);
+    uint32_t crc = png_crc32_update(0xFFFFFFFF, (const uint8_t*)type, 4);
+    crc = png_crc32_update(crc, data, len) ^ 0xFFFFFFFF;
+    png_write_be32(crc_bytes, crc);
+    if (fwrite(header, 1, sizeof(header), f) != sizeof(header) ||
+        (len && fwrite(data, 1, len, f) != len) ||
+        fwrite(crc_bytes, 1, sizeof(crc_bytes), f) != sizeof(crc_bytes)) return -1;
+    return 0;
+}
 
-    if (len > 0 && data) fwrite(data, 1, len, f);
-
-    uint8_t* crc_buf = malloc(4 + len);
-    if (crc_buf) {
-        memcpy(crc_buf, type, 4);
-        if (len > 0 && data) memcpy(crc_buf + 4, data, len);
-        uint32_t crc = png_crc32(crc_buf, 4 + len);
-        free(crc_buf);
-        uint8_t crc_bytes[4];
-        png_write_be32(crc_bytes, crc);
-        fwrite(crc_bytes, 1, 4, f);
+static int render_validate_image(const char* filename, const uint8_t* pixels,
+                                 int width, int height) {
+    if (!filename || !pixels || width <= 0 || height <= 0 ||
+        (size_t)width > SIZE_MAX / (size_t)height / 3) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Invalid render image arguments");
+        return -1;
     }
+    return 0;
+}
+
+static FILE* render_open_image(const char* filename) {
+    FILE* f = fopen(filename, "wb");
+    if (!f)
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
+                              "failed to open render output file '%s': %s",
+                              filename, strerror(errno));
+    return f;
+}
+
+/* fclose may be the first operation that actually flushes buffered bytes.
+ * Always call it, including after an earlier write failed. */
+static int render_close_image(FILE* f, const char* filename, int failed) {
+    if (ferror(f)) failed = 1;
+    int saved_errno = failed ? errno : 0;
+    if (fclose(f) != 0) {
+        if (!failed) saved_errno = errno;
+        failed = 1;
+    }
+    if (failed) {
+        alea_set_error_detail(ALEA_ERR_FILE_WRITE, "Writing render output file '%s': %s",
+                              filename, strerror(saved_errno ? saved_errno : EIO));
+        return -1;
+    }
+    return 0;
 }
 
 int render_write_png(const char* filename, const uint8_t* pixels,
                      int width, int height) {
-    FILE* f = fopen(filename, "wb");
-    if (!f) {
-        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
-                              "failed to open render output file '%s': %s",
-                              filename, strerror(errno));
+    if (render_validate_image(filename, pixels, width, height)) return -1;
+    if ((size_t)width > (SIZE_MAX - 1) / 3) goto size_error;
+    size_t raw_row = 1 + (size_t)width * 3;
+    if (raw_row > SIZE_MAX / (size_t)height) goto size_error;
+    size_t raw_size = raw_row * (size_t)height;
+    size_t num_blocks = raw_size / 65535 + (raw_size % 65535 != 0);
+    if (raw_size > UINT32_MAX || num_blocks > (UINT32_MAX - raw_size) / 5 ||
+        raw_size + num_blocks * 5 > UINT32_MAX - 6) goto size_error;
+    size_t zlib_size = 6 + raw_size + num_blocks * 5;
+    uint8_t* raw = alea_malloc(raw_size);
+    uint8_t* zlib = raw ? alea_malloc(zlib_size) : NULL;
+    if (!raw || !zlib) {
+        free(raw); free(zlib);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating PNG output buffers");
         return -1;
     }
-
-    static const uint8_t png_sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
-    fwrite(png_sig, 1, 8, f);
-
-    uint8_t ihdr[13];
-    png_write_be32(ihdr, width);
-    png_write_be32(ihdr + 4, height);
-    ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    png_write_chunk(f, "IHDR", ihdr, 13);
-
-    size_t raw_row = 1 + (size_t)width * 3;
-    size_t raw_size = raw_row * height;
-    uint8_t* raw = malloc(raw_size);
-    if (!raw) { fclose(f); return -1; }
-
     for (int y = 0; y < height; y++) {
-        raw[y * raw_row] = 0;
-        memcpy(raw + y * raw_row + 1, pixels + y * width * 3, width * 3);
+        raw[(size_t)y * raw_row] = 0;
+        memcpy(raw + (size_t)y * raw_row + 1,
+               pixels + (size_t)y * width * 3, (size_t)width * 3);
     }
-
-    size_t max_block = 65535;
-    size_t num_blocks = (raw_size + max_block - 1) / max_block;
-    size_t zlib_size = 2 + raw_size + num_blocks * 5 + 4;
-    uint8_t* zlib = malloc(zlib_size);
-    if (!zlib) { free(raw); fclose(f); return -1; }
-
     size_t zp = 0;
     zlib[zp++] = 0x78; zlib[zp++] = 0x01;
-
     size_t remaining = raw_size, src_pos = 0;
     while (remaining > 0) {
-        size_t block_size = (remaining > max_block) ? max_block : remaining;
-        int is_final = (remaining <= max_block) ? 1 : 0;
-        zlib[zp++] = is_final ? 0x01 : 0x00;
+        size_t block_size = remaining > 65535 ? 65535 : remaining;
+        zlib[zp++] = remaining <= 65535 ? 0x01 : 0x00;
         zlib[zp++] = block_size & 0xFF;
         zlib[zp++] = (block_size >> 8) & 0xFF;
         zlib[zp++] = (~block_size) & 0xFF;
@@ -1254,34 +1267,50 @@ int render_write_png(const char* filename, const uint8_t* pixels,
         src_pos += block_size;
         remaining -= block_size;
     }
-
-    uint32_t adler = png_adler32(raw, raw_size);
-    png_write_be32(zlib + zp, adler);
+    png_write_be32(zlib + zp, png_adler32(raw, raw_size));
     zp += 4;
-
-    png_write_chunk(f, "IDAT", zlib, zp);
-    free(zlib);
     free(raw);
 
-    png_write_chunk(f, "IEND", NULL, 0);
-    fclose(f);
-    return 0;
+    FILE* f = render_open_image(filename);
+    if (!f) { free(zlib); return -1; }
+    static const uint8_t png_sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    uint8_t ihdr[13] = {0};
+    png_write_be32(ihdr, (uint32_t)width);
+    png_write_be32(ihdr + 4, (uint32_t)height);
+    ihdr[8] = 8; ihdr[9] = 2;
+    int failed = fwrite(png_sig, 1, sizeof(png_sig), f) != sizeof(png_sig) ||
+                 png_write_chunk(f, "IHDR", ihdr, sizeof(ihdr)) ||
+                 png_write_chunk(f, "IDAT", zlib, zp) ||
+                 png_write_chunk(f, "IEND", NULL, 0);
+    int result = render_close_image(f, filename, failed);
+    free(zlib);
+    return result;
+
+size_error:
+    alea_set_error_detail(ALEA_ERR_OVERFLOW, "PNG output size overflow");
+    return -1;
 }
 
 int render_write_bmp(const char* filename, const uint8_t* pixels,
                      int width, int height) {
-    FILE* f = fopen(filename, "wb");
-    if (!f) {
-        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
-                              "failed to open render output file '%s': %s",
-                              filename, strerror(errno));
+    if (render_validate_image(filename, pixels, width, height)) return -1;
+    if ((size_t)width > (UINT32_MAX - 57) / 3) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "BMP output size overflow");
         return -1;
     }
-
-    int row_size = ((width * 3 + 3) / 4) * 4;
-    int data_size = row_size * height;
-    int file_size = 54 + data_size;
-
+    size_t row_size = ((size_t)width * 3 + 3) & ~(size_t)3;
+    if (row_size > (UINT32_MAX - 54) / (size_t)height) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "BMP output size overflow");
+        return -1;
+    }
+    uint32_t file_size = 54 + (uint32_t)(row_size * height);
+    uint8_t* row = alea_malloc(row_size);
+    if (!row) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating BMP output row");
+        return -1;
+    }
+    FILE* f = render_open_image(filename);
+    if (!f) { free(row); return -1; }
     uint8_t header[54] = {0};
     header[0] = 'B'; header[1] = 'M';
     header[2] = file_size & 0xFF;
@@ -1294,45 +1323,37 @@ int render_write_bmp(const char* filename, const uint8_t* pixels,
     header[22] = height & 0xFF; header[23] = (height >> 8) & 0xFF;
     header[24] = (height >> 16) & 0xFF; header[25] = (height >> 24) & 0xFF;
     header[26] = 1; header[28] = 24;
-
-    fwrite(header, 1, 54, f);
-
-    uint8_t* row = malloc(row_size);
-    for (int y = height - 1; y >= 0; y--) {
+    int failed = fwrite(header, 1, sizeof(header), f) != sizeof(header);
+    for (int y = height - 1; y >= 0 && !failed; y--) {
         memset(row, 0, row_size);
         for (int x = 0; x < width; x++) {
-            int src = (y * width + x) * 3;
-            int dst = x * 3;
-            row[dst + 0] = pixels[src + 2];  /* BGR */
+            size_t src = ((size_t)y * width + x) * 3;
+            size_t dst = (size_t)x * 3;
+            row[dst] = pixels[src + 2];
             row[dst + 1] = pixels[src + 1];
-            row[dst + 2] = pixels[src + 0];
+            row[dst + 2] = pixels[src];
         }
-        fwrite(row, 1, row_size, f);
+        failed = fwrite(row, 1, row_size, f) != row_size;
     }
-
+    int result = render_close_image(f, filename, failed);
     free(row);
-    fclose(f);
-    return 0;
+    return result;
 }
 
 int render_write_ppm(const char* filename, const uint8_t* pixels,
                      int width, int height) {
-    FILE* f = fopen(filename, "wb");
-    if (!f) {
-        alea_set_error_detail(ALEA_ERR_FILE_WRITE,
-                              "failed to open render output file '%s': %s",
-                              filename, strerror(errno));
-        return -1;
-    }
-
-    fprintf(f, "P6\n%d %d\n255\n", width, height);
-    fwrite(pixels, 1, (size_t)width * height * 3, f);
-    fclose(f);
-    return 0;
+    if (render_validate_image(filename, pixels, width, height)) return -1;
+    FILE* f = render_open_image(filename);
+    if (!f) return -1;
+    size_t size = (size_t)width * height * 3;
+    int failed = fprintf(f, "P6\n%d %d\n255\n", width, height) < 0 ||
+                 fwrite(pixels, 1, size, f) != size;
+    return render_close_image(f, filename, failed);
 }
 
 int render_write_image(const char* filename, const uint8_t* pixels,
                        int width, int height) {
+    if (render_validate_image(filename, pixels, width, height)) return -1;
     const char* ext = strrchr(filename, '.');
     if (!ext) return render_write_png(filename, pixels, width, height);
 

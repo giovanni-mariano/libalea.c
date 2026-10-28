@@ -10,6 +10,8 @@
 #include "alea.h"
 
 #include <math.h>
+#include "core/alea_system.h"
+#include "util/alea_alloc.h"
 
 /* Helper: create a system with one material (id=1) and one cell */
 static alea_system_t* make_simple_system(void) {
@@ -397,6 +399,84 @@ TEST(remove_then_add) {
     ASSERT_EQ(alea_cell_find(sys, 99), 0);
 
     alea_destroy(sys);
+}
+
+TEST(comment_setters_accept_borrowed_strings_and_preserve_on_failure) {
+    int (*setters[])(alea_system_t*, int, const char*) = {
+        alea_cell_set_comment, alea_cell_set_inline_comment
+    };
+    alea_system_t* sys = make_simple_system();
+    ASSERT_NOT_NULL(sys);
+    for (int field = 0; field < 2; field++) {
+        ASSERT_EQ(setters[field](sys, 0, "prefix comment"), 0);
+        alea_cell_info_t info;
+        ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+        const char* borrowed = field ? info.inline_comment : info.comments;
+        ASSERT_EQ(setters[field](sys, 0, borrowed), 0);
+        ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+        borrowed = field ? info.inline_comment : info.comments;
+        ASSERT_STR_EQ(borrowed, "prefix comment");
+        ASSERT_EQ(setters[field](sys, 0, borrowed + 7), 0);
+        ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+        borrowed = field ? info.inline_comment : info.comments;
+        ASSERT_STR_EQ(borrowed, "comment");
+        alea_alloc_fail_after(0);
+        int rc = setters[field](sys, 0, borrowed);
+        alea_alloc_fail_after(-1);
+        ASSERT_EQ(rc, -1);
+        ASSERT_EQ(alea_error_code(), ALEA_ERR_OUT_OF_MEMORY);
+        ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+        ASSERT_STR_EQ(field ? info.inline_comment : info.comments, "comment");
+        ASSERT_EQ(setters[field](sys, 0, NULL), 0);
+        ASSERT_EQ(alea_cell_get_info(sys, 0, &info), 0);
+        ASSERT_NULL(field ? info.inline_comment : info.comments);
+    }
+    alea_destroy(sys);
+}
+
+TEST(fill_changes_refresh_volume_paths_and_geometry_generation) {
+    int (*setters[])(alea_system_t*, int, int, int) = {alea_set_fill, alea_set_cell_fill};
+    for (int setter = 0; setter < 2; setter++) {
+        alea_system_t* sys = make_simple_system();
+        ASSERT_NOT_NULL(sys);
+        int m2 = alea_add_material(sys, 2);
+        int surface = alea_sphere_surface(sys, 2, 0, 0, 0, 1);
+        alea_node_id_t root = alea_halfspace(sys, surface, -1);
+        ASSERT_EQ(alea_add_cell(sys, 20, root, 0, -1, 1), 1);
+        ASSERT_EQ(alea_add_cell(sys, 30, root, m2, -2, 2), 2);
+        double translation[3] = {2, 0, 0};
+        ASSERT_EQ(alea_add_transform(sys, 1, translation, 3, 0), 0);
+        ASSERT_EQ(setters[setter](sys, 0, 1, 0), 0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        alea_volume_path_t path;
+        ASSERT_EQ(alea_volume_paths_get(sys, &path, 1), 1);
+        ASSERT_EQ(path.material_id, 1);
+        uint64_t generation = alea_system_geometry_generation(sys);
+        ASSERT_EQ(setters[setter](sys, 0, 2, 0), 0);
+        ASSERT(alea_system_geometry_generation(sys) > generation);
+        ASSERT_NULL(sys->volume_path_index);
+        ASSERT_EQ(alea_volume_paths_get(sys, &path, 1), 1);
+        ASSERT_EQ(path.material_id, 2);
+        ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 2);
+        generation = alea_system_geometry_generation(sys);
+        ASSERT_EQ(setters[setter](sys, 0, 2, 1), 0);
+        ASSERT(alea_system_geometry_generation(sys) > generation);
+        ASSERT_NULL(sys->volume_path_index);
+        ASSERT_EQ(alea_volume_path_resolve_at_point(sys, 2, 0, 0, &path), 1);
+        ASSERT_EQ(alea_material_at(sys, 2, 0, 0), 2);
+        ASSERT_EQ(path.material_id, 2);
+        alea_volume_path_t enumerated;
+        ASSERT_EQ(alea_volume_paths_get(sys, &enumerated, 1), 1);
+        ASSERT_EQ(enumerated.material_id, path.material_id);
+        ASSERT_EQ(memcmp(enumerated.world_to_local, path.world_to_local,
+                         sizeof(path.world_to_local)), 0);
+        ASSERT_EQ(setters[setter](sys, 0, 0, 0), 0);
+        ASSERT_NULL(sys->volume_path_index);
+        ASSERT_EQ(alea_volume_paths_get(sys, &path, 1), 1);
+        ASSERT_EQ(path.material_id, 1);
+        ASSERT_EQ(alea_material_at(sys, 0, 0, 0), 1);
+        alea_destroy(sys);
+    }
 }
 
 TEST_MAIN()

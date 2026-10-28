@@ -20,6 +20,8 @@
 #include "raycast/bvh.h"
 #include "util/compat.h"
 #include "util/alea_bitset.h"
+#include "util/alea_alloc.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -527,7 +529,7 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
 
         /* Traverse tree (stack-based traversal with dynamic stack) */
         alea_uint32_vec_t stack = ALEA_VEC_INIT;
-        alea_vec_push(&stack, root, alea_node_id_t);
+        if (alea_vec_push(&stack, root, alea_node_id_t) != 0) goto traversal_error;
 
         while (alea_vec_count(&stack) > 0) {
             alea_node_id_t node_id = alea_vec_pop(&stack);
@@ -547,12 +549,20 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
                 }
             } else {
                 if (op != ALEA_OP_COMPLEMENT) {
-                    alea_vec_push(&stack, node->operation.right, alea_node_id_t);
+                    if (alea_vec_push(&stack, node->operation.right, alea_node_id_t) != 0)
+                        goto traversal_error;
                 }
-                alea_vec_push(&stack, node->operation.left, alea_node_id_t);
+                if (alea_vec_push(&stack, node->operation.left, alea_node_id_t) != 0)
+                    goto traversal_error;
             }
         }
         alea_vec_free(&stack);
+        continue;
+traversal_error:
+        alea_vec_free(&stack);
+        alea_bitset_destroy(&prim_used);
+        free(preferred);
+        return -1;
     }
 
     /* Count used primitives */
@@ -717,7 +727,14 @@ static int build_primitive_to_surface_map_from_nodes(alea_system_t* sys) {
 
         /* Create surface entry using vector API */
         alea_surface_entry_t* surf = alea_vec_push_uninit(&sys->surfaces, alea_surface_entry_t);
-        if (!surf) continue;
+        if (!surf) {
+            alea_bitset_destroy(&prim_used);
+            free(prim_to_surf);
+            free(found_pos);
+            free(found_neg);
+            free(prim_inverted);
+            return -1;
+        }
         memset(surf, 0, sizeof(alea_surface_entry_t));
         surf->mc_surface_id = surf_id;
         surf->primitive_id = prim_id;
@@ -1110,6 +1127,7 @@ static int copy_materials(alea_system_t* dst, const alea_system_t* src) {
         }
     }
 
+    dst->next_auto_material_id = src->next_auto_material_id;
     return 0;
 
 cleanup:
@@ -1372,37 +1390,9 @@ typedef struct {
     primitive_remap_t* remap;
     /* Parent clone cache */
     parent_clone_vec_t parent_cache;
-    /* Used cell ID tracking for best-effort preservation */
-    uint32_t* used_cell_ids;     /* Bitset: bit N set => cell ID N is taken */
-    size_t used_cell_ids_size;   /* Number of uint32_t words in bitset */
+    /* Optional output-to-source mapping for wrapper metadata. */
+    alea_size_vec_t* source_indices;
 } flatten_context_t;
-
-/* Bitset helpers for cell ID tracking */
-static inline bool cell_id_is_used(const flatten_context_t* ctx, int id) {
-    if (id <= 0) return true;
-    size_t word = (size_t)id / 32;
-    if (word >= ctx->used_cell_ids_size) return false;
-    return (ctx->used_cell_ids[word] >> ((uint32_t)id % 32)) & 1;
-}
-
-static inline void cell_id_mark_used(flatten_context_t* ctx, int id) {
-    if (id <= 0) return;
-    size_t word = (size_t)id / 32;
-    if (word >= ctx->used_cell_ids_size) {
-        /* Grow bitset */
-        size_t new_size = word + 1;
-        if (new_size < 64) new_size = 64;  /* Min 2K words = ~64K IDs */
-        uint32_t* new_bits = realloc(ctx->used_cell_ids, new_size * sizeof(uint32_t));
-        if (!new_bits) return;
-        memset(new_bits + ctx->used_cell_ids_size, 0,
-               (new_size - ctx->used_cell_ids_size) * sizeof(uint32_t));
-        ctx->used_cell_ids = new_bits;
-        ctx->used_cell_ids_size = new_size;
-    }
-    ctx->used_cell_ids[word] |= (1u << ((uint32_t)id % 32));
-}
-
-
 
 /* ============================================================================
  * MATRIX OPERATIONS
@@ -2917,26 +2907,49 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
                 final_root = new_intersection;
             }
 
-            /* Add cell to destination */
+            /* Use the destination ID map for both collision checks and lookup. */
+            int output_id = cell->mc_cell_id;
+            if (output_id <= 0 || alea_find_cell_by_id(ctx->dst, output_id) >= 0) {
+                while (ctx->next_cell_id < INT_MAX &&
+                       alea_find_cell_by_id(ctx->dst, ctx->next_cell_id) >= 0)
+                    ctx->next_cell_id++;
+                output_id = ctx->next_cell_id;
+            }
+            if (output_id >= INT_MAX || ctx->dst->cells.count >= INT_MAX) {
+                alea_set_error_detail(ALEA_ERR_OVERFLOW, "Flattened cell IDs or count overflow");
+                ctx->error = -1;
+                return;
+            }
+            size_t output_index = ctx->dst->cells.count;
             alea_cell_entry_t* new_cell = alea_vec_push_uninit(&ctx->dst->cells, alea_cell_entry_t);
             if (!new_cell) {
                 ctx->error = -1;
                 return;
             }
-            memset(new_cell, 0, sizeof(*new_cell));
-
-            /* Best-effort: reuse original MCNP cell ID if available and not taken */
-            int preferred_id = cell->mc_cell_id;
-            if (preferred_id > 0 && !cell_id_is_used(ctx, preferred_id)) {
-                new_cell->mc_cell_id = preferred_id;
-            } else {
-                while (cell_id_is_used(ctx, ctx->next_cell_id))
-                    ctx->next_cell_id++;
-                new_cell->mc_cell_id = ctx->next_cell_id++;
+            alea_cell_entry_init(new_cell);
+            new_cell->mc_cell_id = output_id;
+            if (!cell_hashmap_put(&ctx->dst->cell_index, output_id, (int)output_index) ||
+                (ctx->source_indices &&
+                 alea_vec_push(ctx->source_indices, cell_idx, size_t) != 0)) {
+                ctx->error = -1;
+                return;
             }
-            cell_id_mark_used(ctx, new_cell->mc_cell_id);
+            if (output_id >= ctx->dst->next_auto_cell_id)
+                ctx->dst->next_auto_cell_id = output_id + 1;
             new_cell->root_node_id = final_root;
             new_cell->material_id = cell->material_id;
+            if (cell->material_id != 0 && cell->material_index >= 0 &&
+                (size_t)cell->material_index < ctx->dst->materials.count &&
+                ctx->dst->materials.data[cell->material_index].material_id == cell->material_id) {
+                new_cell->material_index = cell->material_index;
+            } else if (cell->material_id != 0) {
+                for (size_t m = 0; m < ctx->dst->materials.count; m++) {
+                    if (ctx->dst->materials.data[m].material_id == cell->material_id) {
+                        new_cell->material_index = (int)m;
+                        break;
+                    }
+                }
+            }
             new_cell->density = cell->density;
             new_cell->is_mass_density = cell->is_mass_density;
             new_cell->universe_id = 0;  /* All cells go to universe 0 */
@@ -2944,6 +2957,13 @@ static void flatten_recursive_to_new(flatten_context_t* ctx,
             new_cell->fill_transform = 0;
             new_cell->temperature = cell->temperature;
             new_cell->has_temperature = cell->has_temperature;
+            new_cell->comments = alea_alloc_strdup(cell->comments);
+            new_cell->inline_comment = alea_alloc_strdup(cell->inline_comment);
+            if ((cell->comments && !new_cell->comments) ||
+                (cell->inline_comment && !new_cell->inline_comment)) {
+                ctx->error = -1;
+                return;
+            }
         }
     }
     
@@ -2966,8 +2986,9 @@ static alea_node_id_t clone_tree_to_system_transformed(alea_system_t* dst,
     return clone_tree_impl(dst, src, src_root, mat, remap, 0);
 }
 
-alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
-                                          const alea_flatten_config_t* config) {
+static alea_system_t* flatten_to_new_system(alea_system_t* src,
+                                          const alea_flatten_config_t* config,
+                                          alea_size_vec_t* source_indices) {
     if (!src) return NULL;
     
     alea_flatten_config_t cfg = config ? *config : ALEA_FLATTEN_DEFAULT;
@@ -3007,49 +3028,81 @@ alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
         .dst = dst,
         .src = src,
         .config = &cfg,
-        .next_cell_id = cfg.starting_cell_id,
+        .next_cell_id = cfg.starting_cell_id > 0 ? cfg.starting_cell_id : 1,
         .error = 0,
         .parent_stack = NULL,
         .remap = remap,
         .parent_cache = ALEA_VEC_INIT,
-        .used_cell_ids = NULL,
-        .used_cell_ids_size = 0
+        .source_indices = source_indices
     };
 
     flatten_recursive_to_new(&ctx, cfg.starting_universe_id, NULL, 0);
     alea_vec_free(&ctx.parent_cache);
-    free(ctx.used_cell_ids);
     alea_destroy_remap_table(remap);
     if (ctx.error || g_alea_interrupted) {
         alea_system_destroy(dst);
-        alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Flatten operation interrupted");
+        if (g_alea_interrupted)
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Flatten operation interrupted");
+        else if (alea_error_code() == 0)
+            alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Building flattened cells");
         return NULL;
     }
     /* Build universe index in destination */
-    alea_build_universe_index(dst);
+    if (alea_build_universe_index(dst) < 0 ||
+        build_primitive_to_surface_map_from_nodes(dst) < 0) {
+        alea_system_destroy(dst);
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Building flattened system indices");
+        return NULL;
+    }
 
     ALEA_LOG_INFO("Flattened %zu cells from %zu universes into new system with %zu cells",
            alea_vec_count(&src->cells), alea_vec_count(&src->universes), alea_vec_count(&dst->cells));
-    build_primitive_to_surface_map_from_nodes(dst);
     return dst;
+}
+
+alea_system_t* alea_flatten_to_new_system(alea_system_t* src,
+                                          const alea_flatten_config_t* config) {
+    return flatten_to_new_system(src, config, NULL);
 }
 
 int alea_flatten_in_place(alea_system_t* sys,
                          const alea_flatten_config_t* config) {
     if (!sys) return -1;
 
-    /* Flatten to a new system */
-    alea_system_t* flat = alea_flatten_to_new_system(sys, config);
-    if (!flat) return -1;
+    alea_size_vec_t source_indices = ALEA_VEC_INIT;
+    alea_system_t* flat = flatten_to_new_system(sys, config, &source_indices);
+    if (!flat) {
+        alea_vec_free(&source_indices);
+        return -1;
+    }
+    size_t new_count = flat->cells.count;
+    if (sys->on_cells_remapped) {
+        if (sys->on_cells_remapped(sys->cell_hook_userdata, source_indices.data,
+                                   new_count)) goto fail;
+    } else if (sys->on_cell_added || sys->on_cell_copied || sys->on_cell_removed ||
+               sys->on_cells_pruned || sys->on_cells_reserve) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Missing cell metadata remapping callback");
+        goto fail;
+    }
 
-    int cell_count = (int)alea_vec_count(&flat->cells);
+    flat->cell_hook_userdata = sys->cell_hook_userdata;
+    flat->on_cells_reserve = sys->on_cells_reserve;
+    flat->on_cell_added = sys->on_cell_added;
+    flat->on_cell_copied = sys->on_cell_copied;
+    flat->on_cell_removed = sys->on_cell_removed;
+    flat->on_cells_pruned = sys->on_cells_pruned;
+    flat->on_cells_remapped = sys->on_cells_remapped;
+    atomic_store(&flat->geometry_generation, alea_system_geometry_generation(sys) + 1);
+    atomic_store(&flat->material_generation, alea_system_material_generation(sys) + 1);
 
-    /* Destroy old internals, then move flat's internals into sys */
     alea_system_destroy_internals(sys);
     *sys = *flat;
-
-    /* Free flat shell only — internals now owned by sys */
     free(flat);
+    alea_vec_free(&source_indices);
+    return (int)new_count;
 
-    return cell_count;
+fail:
+    alea_system_destroy(flat);
+    alea_vec_free(&source_indices);
+    return -1;
 }

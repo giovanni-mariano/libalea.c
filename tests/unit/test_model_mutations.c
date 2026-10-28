@@ -261,4 +261,103 @@ TEST(model_batch_pruning_preserves_owned_entries_for_alternating_cells) {
     }
 }
 
+TEST(model_flatten_remaps_owned_metadata_and_rolls_back_copy_failures) {
+    for (int kind = 0; kind < 2; kind++) {
+        int succeeded = 0;
+        for (long failure = 0; failure < 32; failure++) {
+            alea_system_t* sys = alea_create();
+            ASSERT_NOT_NULL(sys);
+            alea_node_id_t leaf = sphere(sys, 1, 0);
+            int boundary = alea_sphere_surface(sys, 2, 0, 0, 0, 10);
+            alea_node_id_t parent = alea_halfspace(sys, boundary, -1);
+            ASSERT_EQ(alea_add_cell(sys, 10, leaf, ALEA_MATERIAL_VOID, 0, 1), 0);
+            ASSERT_EQ(alea_add_cell(sys, 20, parent, ALEA_MATERIAL_VOID, 0, 0), 1);
+            ASSERT_EQ(alea_add_cell(sys, 30, sphere(sys, 3, 20), ALEA_MATERIAL_VOID, 0, 0), 2);
+            ASSERT_EQ(alea_add_cell(sys, 40, parent, ALEA_MATERIAL_VOID, 0, 0), 3);
+            ASSERT_EQ(alea_set_fill(sys, 1, 1, 0), 0);
+            ASSERT_EQ(alea_set_fill(sys, 3, 1, 0), 0);
+            wrapper_t w = wrap(sys, kind);
+            ASSERT(w.alea || w.mcnp);
+            const char* names[] = {"leaf", "container one", "outside", "container two"};
+            for (int i = 0; i < 4; i++) {
+                ASSERT_EQ(set_name(&w, i, names[i]), 0);
+                set_importance(&w, i, (i + 1) * 0.25);
+            }
+            if (w.alea) ASSERT_EQ(alea_model_cell_set_detector_probability(w.alea, 0, 4, 0.5), 0);
+            else {
+                mcnp_scoped_cell_params_t* params = &mcnp_cell_params(w.mcnp, 0)->scoped;
+                ASSERT_EQ(alea_detector_probability_store(&params->detector_probabilities,
+                    &params->detector_probability_count, 4, 0.5), 0);
+            }
+            if (w.mcnp) {
+                double identity[3] = {0};
+                ASSERT_EQ(alea_add_transform(sys, 99, identity, 3, 0), 0);
+                mcnp_cell_params(w.mcnp, 0)->has_trcl = 1;
+                mcnp_cell_params(w.mcnp, 0)->trcl = 99;
+            }
+            uint64_t generation = alea_system_geometry_generation(sys);
+            alea_alloc_fail_after(failure);
+            int result = alea_flatten(sys, 0);
+            alea_alloc_fail_after(-1);
+            if (result < 0) {
+                ASSERT_EQ(sys->cells.count, 4);
+                ASSERT_EQ(count(&w), 4);
+                ASSERT_EQ(alea_system_geometry_generation(sys), generation);
+                for (int i = 0; i < 4; i++) {
+                    ASSERT_STR_EQ(name_at(&w, i), names[i]);
+                    ASSERT_NEAR(importance(&w, i), (i + 1) * 0.25, 0);
+                    ASSERT_EQ(alea_find_cell_by_id(sys, (i + 1) * 10), i);
+                }
+                if (w.mcnp) ASSERT(mcnp_cell_params_const(w.mcnp, 0)->has_trcl);
+                ASSERT_EQ(alea_flatten(sys, 0), 3);
+            } else { ASSERT_EQ(result, 3); succeeded = 1; }
+            ASSERT(alea_system_geometry_generation(sys) > generation);
+            ASSERT_EQ(count(&w), 3);
+            ASSERT_STR_EQ(name_at(&w, 0), "leaf");
+            ASSERT_STR_EQ(name_at(&w, 1), "outside");
+            ASSERT_STR_EQ(name_at(&w, 2), "leaf");
+            ASSERT_NEAR(importance(&w, 0), 0.25, 0);
+            ASSERT_NEAR(importance(&w, 1), 0.75, 0);
+            ASSERT_NEAR(importance(&w, 2), 0.25, 0);
+            const alea_detector_probability_t* entries[2];
+            for (int n = 0; n < 2; n++) {
+                int i = n * 2;
+                size_t probabilities;
+                if (w.alea) {
+                    const alea_model_cell_metadata_t* meta = alea_model_cell_metadata(w.alea, i);
+                    entries[n] = meta->detector_probabilities;
+                    probabilities = meta->detector_probability_count;
+                } else {
+                    const mcnp_scoped_cell_params_t* scoped = &mcnp_cell_params_const(w.mcnp, i)->scoped;
+                    entries[n] = scoped->detector_probabilities;
+                    probabilities = scoped->detector_probability_count;
+                }
+                ASSERT_EQ(probabilities, 1);
+                ASSERT_EQ(entries[n][0].tally, 4);
+                ASSERT_NEAR(entries[n][0].probability, 0.5, 0);
+            }
+            ASSERT(entries[0] != entries[1]);
+            if (w.mcnp) {
+                ASSERT_FALSE(mcnp_cell_params_const(w.mcnp, 0)->has_trcl);
+                ASSERT_FALSE(mcnp_cell_params_const(w.mcnp, 2)->has_trcl);
+                ASSERT_EQ(mcnp_cell_params_const(w.mcnp, 0)->trcl, 0);
+            }
+            ASSERT_EQ(set_name(&w, 0, "independent"), 0);
+            ASSERT_STR_EQ(name_at(&w, 2), "leaf");
+            for (int i = 0; i < 3; i++)
+                ASSERT_EQ(alea_find_cell_by_id(sys, sys->cells.data[i].mc_cell_id), i);
+            ASSERT_EQ(alea_add_cell(sys, 0, sys->cells.data[0].root_node_id,
+                                   ALEA_MATERIAL_VOID, 0, 0), 3);
+            ASSERT_EQ(count(&w), 4);
+            ASSERT_NULL(name_at(&w, 3));
+            ASSERT_EQ(alea_cell_remove(sys, 1), 0);
+            ASSERT_EQ(count(&w), 3);
+            ASSERT_STR_EQ(name_at(&w, 1), "leaf");
+            destroy(&w);
+            if (succeeded) break;
+        }
+        ASSERT(succeeded);
+    }
+}
+
 TEST_MAIN()

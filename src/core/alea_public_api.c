@@ -1218,6 +1218,7 @@ int alea_set_fill(alea_system_t* sys, int cell_index, int fill_universe, int tra
 
     sys->cells.data[cell_index].fill_universe = fill_universe;
     sys->cells.data[cell_index].fill_transform = transform;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return 0;
 }
 
@@ -1225,8 +1226,13 @@ int alea_cell_set_comment(alea_system_t* sys, int cell_index, const char* commen
     if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
         return -1;
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    char* replacement = comment ? alea_alloc_strdup(comment) : NULL;
+    if (comment && !replacement) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Copying cell comment");
+        return -1;
+    }
     free(cell->comments);
-    cell->comments = comment ? alea_strdup(comment) : NULL;
+    cell->comments = replacement;
     return 0;
 }
 
@@ -1234,8 +1240,13 @@ int alea_cell_set_inline_comment(alea_system_t* sys, int cell_index, const char*
     if (!sys || cell_index < 0 || (size_t)cell_index >= alea_vec_count(&sys->cells))
         return -1;
     alea_cell_entry_t* cell = &sys->cells.data[cell_index];
+    char* replacement = comment ? alea_alloc_strdup(comment) : NULL;
+    if (comment && !replacement) {
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Copying cell inline comment");
+        return -1;
+    }
     free(cell->inline_comment);
-    cell->inline_comment = comment ? alea_strdup(comment) : NULL;
+    cell->inline_comment = replacement;
     return 0;
 }
 
