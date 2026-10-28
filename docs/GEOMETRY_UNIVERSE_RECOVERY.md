@@ -112,3 +112,6 @@ benefit and small retained storage, but this view is still not interactive.
 The next investigation should measure the remaining recovery intersection and
 ownership work with the prepared list active before choosing another index or
 parallel scheduling change.
+
+The [remaining recovery profile](GEOMETRY_REMAINING_RECOVERY.md) identifies
+intersection work across occurrences and measures the next torus-bound experiment.
