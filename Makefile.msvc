@@ -483,20 +483,22 @@ $(BUILD)\util\alea_alloc.obj: $(SRC)\util\alea_alloc.c dirs
 $(BUILD)\util\xml_dom.obj: $(SRC)\util\xml_dom.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /I $(EXPAT) /c /Fo$@ $(SRC)\util\xml_dom.c
 
+# /FI uses quoted-include lookup from the source file; resolve the basename
+# through /I instead of repeating a path relative to the repository root.
 $(BUILD)\vendor\expat\xmlparse.obj: $(EXPAT)\xmlparse.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
-	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmlparse.c
+	$(CC) $(CFLAGS) /DXML_STATIC /FI expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmlparse.c
 
 $(BUILD)\vendor\expat\xmlrole.obj: $(EXPAT)\xmlrole.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
-	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmlrole.c
+	$(CC) $(CFLAGS) /DXML_STATIC /FI expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmlrole.c
 
 $(BUILD)\vendor\expat\xmltok.obj: $(EXPAT)\xmltok.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
-	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmltok.c
+	$(CC) $(CFLAGS) /DXML_STATIC /FI expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xmltok.c
 
 $(BUILD)\vendor\expat\xcs.obj: $(EXPAT)\xcs.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
-	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xcs.c
+	$(CC) $(CFLAGS) /DXML_STATIC /FI expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\xcs.c
 
 $(BUILD)\vendor\expat\random_rand_s.obj: $(EXPAT)\random_rand_s.c $(SRC)\util\expat\expat_config.h $(SRC)\util\expat\expat_prefix.h dirs
-	$(CC) $(CFLAGS) /DXML_STATIC /FI $(SRC)\util\expat\expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\random_rand_s.c
+	$(CC) $(CFLAGS) /DXML_STATIC /FI expat_prefix.h /I $(SRC)\util\expat /I $(EXPAT) /c /Fo$@ $(EXPAT)\random_rand_s.c
 
 $(BUILD)\core\alea_system.obj: $(SRC)\core\alea_system.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_system.c
