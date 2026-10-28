@@ -5,6 +5,7 @@
 #include "alea.h"
 #include "alea_mcnp.h"
 #include "alea_raycast.h"
+#include "raycast/raycast.h"
 
 TEST(ownership_tracks_preserve_thin_same_material_regions_and_occurrences) {
     alea_system_t* sys = alea_create();
@@ -49,6 +50,59 @@ TEST(ownership_tracks_preserve_thin_same_material_regions_and_occurrences) {
     ASSERT_NEAR(exit[5], 1.5, 1e-12);
     alea_raycast_batch_result_destroy(tracks);
     alea_destroy(sys);
+}
+
+TEST(ownership_tracks_match_surface_tracks_for_lattice_paths) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    ASSERT_NOT_NULL(model);
+    const double origins[] = {-4, 0.1, 0.1, 4, 0.1, 0.1, 0.1, -4, 0.1};
+    const double directions[] = {1, 0, 0, -1, 0, 0, 0, 1, 0};
+    alea_raycast_batch_result_t* lean = alea_raycast_batch_result_create();
+    alea_raycast_batch_result_t* rich = alea_raycast_batch_result_create();
+    ASSERT_NOT_NULL(lean);
+    ASSERT_NOT_NULL(rich);
+    for (int paths = 0; paths < 2; ++paths) {
+        alea_raycast_batch_options_t options = {
+            .struct_size = sizeof(options),
+            .fields = ALEA_RAY_BATCH_MATERIAL | ALEA_RAY_BATCH_DENSITY |
+                      ALEA_RAY_BATCH_RESOLUTION_FLAGS,
+            .projected_depth = -1
+        };
+        if (paths) options.fields |= ALEA_RAY_BATCH_FULL_PATHS |
+                                    ALEA_RAY_BATCH_PROJECTED_OWNER;
+        ASSERT_EQ(alea_raycast_hier_batch(model->sys, origins, directions,
+                                          3, 8, &options, lean), 0);
+        options.fields |= ALEA_RAY_BATCH_SURFACES;
+        ASSERT_EQ(alea_raycast_hier_batch(model->sys, origins, directions,
+                                          3, 8, &options, rich), 0);
+        size_t count = alea_raycast_batch_segment_count(lean);
+        ASSERT_EQ(count, alea_raycast_batch_segment_count(rich));
+#define SAME_ARRAY(accessor, length) \
+        ASSERT(memcmp(accessor(lean), accessor(rich), \
+                      (length) * sizeof(*accessor(lean))) == 0)
+        SAME_ARRAY(alea_raycast_batch_ray_offsets, 4);
+        SAME_ARRAY(alea_raycast_batch_t_enter, count);
+        SAME_ARRAY(alea_raycast_batch_t_exit, count);
+        SAME_ARRAY(alea_raycast_batch_cell_ids, count);
+        SAME_ARRAY(alea_raycast_batch_material_ids, count);
+        SAME_ARRAY(alea_raycast_batch_densities, count);
+        SAME_ARRAY(alea_raycast_batch_resolution_flags, count);
+        if (paths) {
+            SAME_ARRAY(alea_raycast_batch_segment_path_offsets, count+1);
+            const uint64_t entries = alea_raycast_batch_segment_path_offsets(lean)[count];
+            SAME_ARRAY(alea_raycast_batch_path_occurrence_keys, entries);
+            SAME_ARRAY(alea_raycast_batch_projected_occurrence_keys, count);
+        }
+#undef SAME_ARRAY
+        alea_raycast_batch_work_stats_t a, b;
+        ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(lean, &a), 0);
+        ASSERT_EQ(alea_raycast_batch_result_get_work_stats_internal(rich, &b), 0);
+        ASSERT_EQ(a.max_boundary_event_enrichments, 0);
+        ASSERT(b.max_boundary_event_enrichments > 0);
+    }
+    alea_raycast_batch_result_destroy(lean);
+    alea_raycast_batch_result_destroy(rich);
+    mcnp_model_destroy(model);
 }
 
 TEST(deep_translated_tracks_and_navigation_match_analytic_world_interface) {

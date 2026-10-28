@@ -5726,17 +5726,18 @@ int alea_ray_navigator_advance(alea_ray_navigator_t* navigator,
 
 /* Stream selected intervals into the legacy segment vector without routing
  * normal no-hit production traces through the combined compatibility loop. */
-static int ray_selected_interval_trace(
+static int ray_selected_interval_trace_mode(
     alea_system_t* sys, const alea_ray_t* ray, double t_max,
-    bool emit_hits, alea_raycast_result_t* result) {
+    bool emit_hits, bool collect_boundary_groups, alea_raycast_result_t* result) {
     alea_ray_walk_t walk;
     alea_ray_walk_init(&walk);
     int published_prev_cell_idx = -2;
     int pending_enter_hit_index = -1;
     for (;;) {
         alea_ray_selected_interval_t interval;
-        const int rc = alea_ray_walk_next_selected(
-            sys, ray, t_max, result, &walk, &interval);
+        const int rc = alea_ray_walk_next_selected_mode(
+            sys, ray, t_max, result, &walk, &interval,
+            collect_boundary_groups);
         if (rc < 0) return -1;
         if (rc == 2) return 0;
         if (ray_selected_interval_publish(
@@ -5746,6 +5747,13 @@ static int ray_selected_interval_trace(
         walk.pending_enter_hit_index = pending_enter_hit_index;
         if (rc == 0) return 0;
     }
+}
+
+static int ray_selected_interval_trace(
+    alea_system_t* sys, const alea_ray_t* ray, double t_max,
+    bool emit_hits, alea_raycast_result_t* result) {
+    return ray_selected_interval_trace_mode(
+        sys, ray, t_max, emit_hits, true, result);
 }
 
 int alea_raycast_selected_boundary_events_with_options_nocache(
@@ -6447,12 +6455,13 @@ int alea_raycast_hier_any_hit_nocache(
 
 int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                        const alea_ray_t* ray,
-                                       double t_max,
+                                       double t_max, bool collect_boundary_groups,
                                        alea_raycast_result_t* result) {
     if (!sys || !ray || !result) return -1;
     double effective_t_max = (t_max <= 0) ? DBL_MAX : t_max;
     result->ray = *ray;
-    return ray_selected_interval_trace(sys, ray, effective_t_max, false, result);
+    return ray_selected_interval_trace_mode(
+        sys, ray, effective_t_max, false, collect_boundary_groups, result);
 }
 
 int alea_raycast_hier_visit_intervals_nocache(

@@ -578,7 +578,7 @@ static void batch_segment_worker_free(alea_batch_segment_worker_t* worker) {
 static int batch_segment_worker_build(
     alea_system_t* sys, const double* origins_xyz, const double* directions_xyz,
     size_t ray_count, double scalar_t_max, const double* t_mins,
-    const double* t_maxs, uint64_t max_segments,
+    const double* t_maxs, uint32_t fields, uint64_t max_segments,
     atomic_uint_fast64_t* live_segment_count,
     alea_batch_segment_worker_t* worker, size_t worker_index,
     size_t worker_count) {
@@ -607,7 +607,7 @@ static int batch_segment_worker_build(
         if (alea_ray_init(&ray, o[0], o[1], o[2], d[0], d[1], d[2]) != 0 ||
             alea_raycast_hier_segments_nocache(
                 sys, &ray, t_maxs ? t_maxs[row] : scalar_t_max,
-                &worker->trace) != 0) {
+                (fields & ALEA_RAY_BATCH_SURFACES) != 0, &worker->trace) != 0) {
             worker->status = -1;
             return -1;
         }
@@ -650,6 +650,7 @@ typedef struct {
     double scalar_t_max;
     const double* t_mins;
     const double* t_maxs;
+    uint32_t fields;
     uint64_t max_segments;
     atomic_uint_fast64_t* live_segment_count;
     alea_batch_segment_worker_t* workers;
@@ -664,7 +665,7 @@ static int batch_segment_build_range(void* opaque, size_t runtime_worker,
         context->workers[worker].status = batch_segment_worker_build(
             context->sys, context->origins_xyz, context->directions_xyz,
             context->ray_count, context->scalar_t_max, context->t_mins,
-            context->t_maxs, context->max_segments,
+            context->t_maxs, context->fields, context->max_segments,
             context->live_segment_count, &context->workers[worker], worker,
             context->worker_count);
     }
@@ -735,7 +736,7 @@ static int raycast_hier_batch_execute_common_arena(
 
     batch_segment_build_context_t build_context = {
         sys, origins_xyz, directions_xyz, ray_count, scalar_t_max, t_mins,
-        t_maxs, max_segments, live_segment_count, workers, worker_count
+        t_maxs, fields, max_segments, live_segment_count, workers, worker_count
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         worker_count, 1, worker_count, ALEA_PARALLEL_STATIC_BLOCK,
@@ -1015,7 +1016,8 @@ static int batch_trace_build_range(void* opaque, size_t worker,
         const double ray_t_max = context->t_maxs
             ? context->t_maxs[i] : context->scalar_t_max;
         temporary->status = alea_raycast_hier_segments_nocache(
-            context->sys, &ray, ray_t_max, &temporary->trace);
+            context->sys, &ray, ray_t_max,
+            (context->fields & ALEA_RAY_BATCH_SURFACES) != 0, &temporary->trace);
         if (temporary->status == 0 && context->t_mins &&
             context->t_mins[i] > 0.0) {
             const double ray_t_min = context->t_mins[i];

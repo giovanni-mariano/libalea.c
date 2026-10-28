@@ -869,7 +869,7 @@ static int mesh_ray_trace_range(void *opaque, size_t worker,
                 alea_raycast_hier_segments_nocache(
                     context->sys, &ray,
                     context->trace_max -
-                        origin[context->axis], &trace) != 0) {
+                        origin[context->axis], true, &trace) != 0) {
                 atomic_store(context->failed, 1);
                 continue;
             }
