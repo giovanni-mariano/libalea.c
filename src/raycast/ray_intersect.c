@@ -751,9 +751,7 @@ bool ray_torus_window_may_hit(const alea_ray_t* ray,
         torus->minor_radius <= 64.0 * sqrt(DBL_EPSILON) * torus->major_radius ||
         torus->axis < ALEA_AXIS_X ||
         torus->axis > ALEA_AXIS_Z) return true;
-    /* The current quartic uses minor_radius in the axial direction too.
-     * Cover both that circular surface and the elliptical geometry envelope. */
-    double axial = fmax(torus->minor_radius, torus->axial_semiwidth_B);
+    double axial = torus->axial_semiwidth_B;
     double radial = torus->major_radius + torus->minor_radius;
     if (!isfinite(radial)) return true;
     const double origins[] = {ray->ox, ray->oy, ray->oz};
@@ -775,7 +773,7 @@ int ray_intersect_torus(const alea_ray_t* ray,
     /*
      * Torus intersection by quartic equation.
      *
-     * Torus implicit equation (Z-axis): (√(x² + y²) - R)² + z² = r²
+     * After axial scaling, the torus equation (Z-axis) is: (√(x² + y²) - R)² + z² = r²
      * This can be rewritten as: (x² + y² + z² + R² - r²)² = 4R²(x² + y²)
      *
      * Squaring and rearranging gives a quartic in the ray parameter t.
@@ -814,11 +812,27 @@ int ray_intersect_torus(const alea_ray_t* ray,
         dz = ray->dy;
     }
 
-    /* Shift the origin to the closest approach to the torus center so that
-     * sum_od = 0. This zeroes the cubic coefficient, so Ferrari's depressed-
-     * quartic reduction (whose constant term otherwise cancels catastrophically
-     * as ~B^4 terms) stays well-conditioned for rays starting far from the
-     * torus. Roots are mapped back by t_shift after solving. */
+    /* Scale only the axial coordinate: ((rho-R)/r)^2 + (z/B)^2 = 1
+     * becomes a circular torus in this space. Renormalizing the transformed
+     * direction keeps the quartic well-scaled even for very unequal widths;
+     * map its roots back to the original ray parameter below. The circular
+     * path deliberately keeps its original operations and rounding. */
+    const bool elliptical = torus->axial_semiwidth_B != r;
+    double parameter_scale = 1.0;
+    if (elliptical) {
+        double axial_scale = torus->axial_semiwidth_B > 0.0
+            ? r / torus->axial_semiwidth_B : 0.0;
+        oz *= axial_scale;
+        dz *= axial_scale;
+        parameter_scale = hypot(hypot(dx, dy), dz);
+        if (!(parameter_scale > 0.0) || !isfinite(parameter_scale)) return 0;
+        dx /= parameter_scale;
+        dy /= parameter_scale;
+        dz /= parameter_scale;
+    }
+
+    /* Move to closest approach in the solving space to reduce cancellation
+     * for distant origins. Restore this parameter shift after solving. */
     double t_shift = -(ox*dx + oy*dy + oz*dz) / (dx*dx + dy*dy + dz*dz);
     ox += t_shift * dx;
     oy += t_shift * dy;
@@ -846,14 +860,42 @@ int ray_intersect_torus(const alea_ray_t* ray,
     double c2 = 2.0 * sum_d2 * k + 4.0 * sum_od * sum_od - 4.0 * R2 * (dx*dx + dy*dy);
     double c1 = 4.0 * sum_od * k - 8.0 * R2 * (ox*dx + oy*dy);
     double c0 = k * k - 4.0 * R2 * (ox*ox + oy*oy);
+    if (elliptical) {
+        /* Factoring avoids subtracting two O(R^4) terms for thin rings. */
+        double rho = hypot(ox, oy);
+        double lower = (rho - R)*(rho - R) + oz*oz - r2;
+        double upper = (rho + R)*(rho + R) + oz*oz - r2;
+        c0 = lower * upper;
+    }
 
     /* Solve quartic */
     double roots[4];
-    int n = alea_solve_quartic(c4, c3, c2, c1, c0, roots);
+    int n;
+    if (elliptical && R == 0.0) {
+        n = solve_quadratic_stable(sum_d2, 2.0 * sum_od, sum_o2 - r2, roots);
+    } else {
+        n = alea_solve_quartic(c4, c3, c2, c1, c0, roots);
+    }
+    if (elliptical && R > 0.0 && R < r) {
+        /* Squaring also introduces the opposite sheet for spindle tori.
+         * The evaluator requires q = 2 R rho >= 0, including roundoff. */
+        int kept = 0;
+        for (int i = 0; i < n; i++) {
+            double x = fma(roots[i], dx, ox);
+            double y = fma(roots[i], dy, oy);
+            double z = fma(roots[i], dz, oz);
+            double sum = x*x + y*y + z*z;
+            if (sum + R2 - r2 >= -64.0 * DBL_EPSILON * (sum + R2 + r2))
+                roots[kept++] = roots[i];
+        }
+        n = kept;
+    }
 
     /* Map roots back to the original (unshifted) ray parameter */
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
         roots[i] += t_shift;
+        if (elliptical) roots[i] /= parameter_scale;
+    }
 
     /* Filter positive roots */
     n = alea_filter_positive_roots(roots, n, RAY_EPSILON);
@@ -1279,6 +1321,16 @@ void primitive_normal_at(alea_primitive_type_t type,
             double gx_l = 4.0 * k * lx - 8.0 * R2 * lx;
             double gy_l = 4.0 * k * ly - 8.0 * R2 * ly;
             double gz_l = 4.0 * k * lz;
+            if (t->axial_semiwidth_B != r && r > 0.0) {
+                /* Gradient of the same unsquared elliptical equation used
+                 * by the point evaluator, before axis permutation. */
+                double rho = hypot(lx, ly);
+                double radial = ((rho - R) / r) / r;
+                gx_l = rho > 0.0 ? radial * (lx / rho) : 0.0;
+                gy_l = rho > 0.0 ? radial * (ly / rho) : 0.0;
+                gz_l = t->axial_semiwidth_B > 0.0
+                    ? (lz / t->axial_semiwidth_B) / t->axial_semiwidth_B : 0.0;
+            }
             /* Transform gradient back to world coords */
             double gx, gy, gz;
             if (t->axis == ALEA_AXIS_Z) {
@@ -1288,8 +1340,10 @@ void primitive_normal_at(alea_primitive_type_t type,
             } else {
                 gx = gx_l; gy = gz_l; gz = gy_l;
             }
-            double len = sqrt(gx * gx + gy * gy + gz * gz);
-            if (len > RAY_EPSILON) {
+            bool elliptical = t->axial_semiwidth_B != r;
+            double len = elliptical ? hypot(hypot(gx, gy), gz)
+                                    : sqrt(gx * gx + gy * gy + gz * gz);
+            if (len > (elliptical ? 0.0 : RAY_EPSILON)) {
                 *nx = gx / len; *ny = gy / len; *nz = gz / len;
             } else {
                 *nx = 0; *ny = 0; *nz = 1;

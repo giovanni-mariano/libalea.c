@@ -504,13 +504,13 @@ TEST(torus_window_certificate_preserves_crossings_and_boundary_cases) {
         ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
                                direction[0],direction[1],direction[2]),0);
         ASSERT(!ray_torus_window_may_hit(&ray,&torus,0,20));
-        /* Both elliptical and currently circular solver envelopes are kept. */
+        /* Keep the elliptical surface when the axial width differs. */
         torus.axial_semiwidth_B=3;
         ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
         torus.axial_semiwidth_B=.25; origin[axis]=.75;
         ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
                                direction[0],direction[1],direction[2]),0);
-        ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+        ASSERT(!ray_torus_window_may_hit(&ray,&torus,0,20));
     }
 }
 

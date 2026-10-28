@@ -101,3 +101,7 @@ matching completed outputs, passing independent/control checks, and no new
 persistent storage. The broader view is still not interactive. The identified
 elliptical-torus solver/evaluator discrepancy should receive a separate
 correctness investigation before broader physics-readiness claims.
+
+The subsequent [elliptical torus correction](GEOMETRY_ELLIPTICAL_TORUS.md) resolves
+the identified finite-width solver/evaluator discrepancy and updates the axial
+envelope, normals, and analytical slice curves accordingly.

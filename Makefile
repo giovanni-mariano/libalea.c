@@ -931,8 +931,9 @@ $(BIN_DIR)/geometry_slice_queries$(EXEEXT): benchmarks/geometry_slice_queries.c 
 	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
 
 .PHONY: test-geometry-queries
-test-geometry-queries: $(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT) $(BIN_DIR)/characteristic_tracks$(EXEEXT)
+test-geometry-queries: $(BIN_DIR)/tests/unit/test_torus_elliptical$(EXEEXT) $(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT) $(BIN_DIR)/characteristic_tracks$(EXEEXT)
 	@$(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT)
+	@$(BIN_DIR)/tests/unit/test_torus_elliptical$(EXEEXT)
 	@$(BIN_DIR)/characteristic_tracks$(EXEEXT)
 
 # Integration tests

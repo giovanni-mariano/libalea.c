@@ -1316,11 +1316,11 @@ static bool intersect_trc(const alea_trc_data_t* trc,
  * @brief Intersect torus with slice plane
  *
  * Torus equation (axis along Z):
- *   (sqrt(x² + y²) - R)² + z² = r²
- * where R = major radius, r = minor radius
+ *   ((sqrt(x² + y²) - R)/r)² + (z/B)² = 1
+ * where R = major radius, r = radial semiwidth, B = axial semiwidth
  *
  * Intersection with arbitrary plane is a quartic curve.
- * For axis-aligned planes through the center, we get circles.
+ * Perpendicular cuts give circles; central parallel cuts give ellipses.
  *
  * We handle special cases analytically and fall back to quartic for general case.
  */
@@ -1330,6 +1330,7 @@ static bool intersect_torus(const alea_torus_data_t* torus,
                             alea_curve_2d_t* curve) {
     double R = torus->major_radius;
     double r = torus->minor_radius;
+    double axial = torus->axial_semiwidth_B;
     double cx = torus->center_x;
     double cy = torus->center_y;
     double cz = torus->center_z;
@@ -1360,13 +1361,14 @@ static bool intersect_torus(const alea_torus_data_t* torus,
         /* Slice plane perpendicular to torus axis */
         double d = fabs(dist_to_plane);  /* Distance from torus center to plane */
 
-        if (d > r + EPSILON) {
+        if (axial > 0.0 && d > axial + EPSILON) {
             return false;  /* Plane doesn't intersect torus */
         }
 
         /* Intersection is two concentric circles (or one if tangent) */
-        /* Radii: R ± sqrt(r² - d²) */
-        double r_offset = sqrt(r*r - d*d);
+        /* Radii: R ± r*sqrt(1 - d²/B²). */
+        double r_offset = axial == r ? sqrt(r*r - d*d)
+            : axial > 0.0 ? r * sqrt(fmax(0.0, 1.0 - (d/axial)*(d/axial))) : r;
         double r_inner = R - r_offset;
         double r_outer = R + r_offset;
 
@@ -1401,7 +1403,7 @@ static bool intersect_torus(const alea_torus_data_t* torus,
     }
 
     /* Special case 2: Slice parallel to torus axis, passing through center */
-    if (abs_cos < EPSILON && fabs(dist_to_plane) < EPSILON) {
+    if (axial == r && abs_cos < EPSILON && fabs(dist_to_plane) < EPSILON) {
         /* Slice through the center, parallel to axis */
         /* This produces two circles of radius r, centered at distance R from center */
 
@@ -1460,6 +1462,7 @@ static bool intersect_torus(const alea_torus_data_t* torus,
     curve->data.torus.mode = 0;  /* general quartic */
     curve->data.torus.R = R;
     curve->data.torus.r = r;
+    curve->data.torus.axial_width = axial;
     curve->data.torus.Ox = v3arr_dot(d_center, local_x);
     curve->data.torus.Oy = v3arr_dot(d_center, local_y);
     curve->data.torus.Oz = v3arr_dot(d_center, local_z);
@@ -1938,6 +1941,16 @@ int alea_curve_scanline_intersect(const alea_curve_2d_t* curve,
                 /* x = Pvx + u*Ux, y = Pvy + u*Uy, z = Pvz + u*Uz */
 
                 double Ux = tor->Ux, Uy = tor->Uy, Uz = tor->Uz;
+                bool elliptical = tor->axial_width > 0.0 && tor->axial_width != rr;
+                double parameter_scale = 1.0;
+                if (elliptical) {
+                    double axial_scale = rr / tor->axial_width;
+                    Pvz *= axial_scale;
+                    Uz *= axial_scale;
+                    parameter_scale = hypot(hypot(Ux, Uy), Uz);
+                    if (!(parameter_scale > 0.0) || !isfinite(parameter_scale)) return 0;
+                    Ux /= parameter_scale; Uy /= parameter_scale; Uz /= parameter_scale;
+                }
 
                 /* Shift the line origin Pv to its closest approach to the
                  * torus center so that Pv·U = 0. This zeroes the cubic
@@ -1992,15 +2005,31 @@ int alea_curve_scanline_intersect(const alea_curve_2d_t* curve,
                 double a2 = s1*s1 + 2*s0*s2 - R2_4*rho2;
                 double a1 = 2*s0*s1 - R2_4*rho1;
                 double a0 = s0*s0 - R2_4*rho0;
+                if (elliptical) {
+                    double rho = hypot(Pvx, Pvy);
+                    double lower = (rho-R)*(rho-R) + Pvz*Pvz - r2;
+                    double upper = (rho+R)*(rho+R) + Pvz*Pvz - r2;
+                    a0 = lower * upper;
+                }
 
                 /* Solve quartic */
                 double roots[4];
-                int n_roots = alea_solve_quartic(a4, a3, a2, a1, a0, roots);
+                int n_roots = elliptical && R == 0.0
+                    ? alea_solve_quadratic(sig2, sig1, sig0 - r2, roots)
+                    : alea_solve_quartic(a4, a3, a2, a1, a0, roots);
 
                 /* Copy roots to output (up to max_intersections), mapping
                  * back to the unshifted parameter */
                 for (int i = 0; i < n_roots && count < max_intersections; i++) {
-                    u_out[count++] = roots[i] + u_shift;
+                    if (elliptical && R > 0.0 && R < rr) {
+                        double x = fma(roots[i], Ux, Pvx);
+                        double y = fma(roots[i], Uy, Pvy);
+                        double z = fma(roots[i], Uz, Pvz);
+                        double sum = x*x + y*y + z*z;
+                        if (sum + K < -64.0 * DBL_EPSILON * (sum + R2 + r2)) continue;
+                    }
+                    double u = roots[i] + u_shift;
+                    u_out[count++] = elliptical ? u / parameter_scale : u;
                 }
                 return count;
             }
@@ -2122,16 +2151,17 @@ void alea_curve_bbox(const alea_curve_2d_t* curve,
                 double R = tor->R;
                 double rr = tor->r;
                 double bound = R + rr;
+                double axial = tor->axial_width > 0.0 ? tor->axial_width : rr;
 
                 /* Sample the extreme points of the torus bounding box */
-                /* In local coords, torus is bounded by |x|,|y| <= R+r and |z| <= r */
+                /* Local bounds are |x|,|y| <= R+r and |z| <= axial width. */
                 /* We need to find the extent in (u,v) space */
                 /* Conservative: sample corners of the local bounding box */
                 double corners[8][3] = {
-                    {-bound, -bound, -rr}, {-bound, -bound, rr},
-                    {-bound, bound, -rr}, {-bound, bound, rr},
-                    {bound, -bound, -rr}, {bound, -bound, rr},
-                    {bound, bound, -rr}, {bound, bound, rr}
+                    {-bound, -bound, -axial}, {-bound, -bound, axial},
+                    {-bound, bound, -axial}, {-bound, bound, axial},
+                    {bound, -bound, -axial}, {bound, -bound, axial},
+                    {bound, bound, -axial}, {bound, bound, axial}
                 };
 
                 *u_min = *v_min = 1e10;
