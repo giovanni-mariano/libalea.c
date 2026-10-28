@@ -66,6 +66,11 @@ int ray_intersect_quadric(const alea_ray_t* ray,
                           const alea_quadric_data_t* quadric,
                           double* restrict t_out);
 
+/* Conservative complete-surface envelope; false certifies a window miss. */
+bool ray_torus_window_may_hit(const alea_ray_t* ray,
+                              const alea_torus_data_t* torus,
+                              double t_min, double t_max);
+
 /* Torus (expensive!) */
 int ray_intersect_torus(const alea_ray_t* ray,
                         const alea_torus_data_t* torus,

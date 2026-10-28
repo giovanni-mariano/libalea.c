@@ -717,6 +717,58 @@ int ray_intersect_rec(const alea_ray_t* ray, const alea_rec_data_t* rec,
  * TORUS (QUARTIC - EXPENSIVE)
  * ============================================================================ */
 
+/* A rejection certificate for a finite ray window. Check the axial slab first:
+ * most distant tori miss it. Endpoints enclose a linear coordinate; fma and
+ * a deliberately loose roundoff guard keep boundary cases on the solver path.
+ * No reciprocal direction or near-parallel cutoff is needed. */
+static bool torus_window_outside_slab(double origin, double direction,
+                                      double center, double extent,
+                                      double t_min, double t_max) {
+    double a = fma(t_min, direction, origin) - center;
+    double b = fma(t_max, direction, origin) - center;
+    double scale = fmax(1.0, fmax(fabs(origin), fabs(center)));
+    scale = fmax(scale, fmax(fabs(t_min * direction), fabs(t_max * direction)));
+    scale = fmax(scale, extent);
+    double guard = 64.0 * DBL_EPSILON * scale;
+    double bound = extent + guard;
+    if (!isfinite(a) || !isfinite(b) || !isfinite(bound)) return false;
+    return (a > bound && b > bound) || (a < -bound && b < -bound);
+}
+
+bool ray_torus_window_may_hit(const alea_ray_t* ray,
+                              const alea_torus_data_t* torus,
+                              double t_min, double t_max) {
+    if (!ray || !torus || !isfinite(t_min) || !isfinite(t_max) ||
+        t_min < 0 || t_max < t_min ||
+        !isfinite(ray->ox) || !isfinite(ray->oy) || !isfinite(ray->oz) ||
+        !isfinite(ray->dx) || !isfinite(ray->dy) || !isfinite(ray->dz) ||
+        !isfinite(torus->center_x) || !isfinite(torus->center_y) ||
+        !isfinite(torus->center_z) || !isfinite(torus->major_radius) ||
+        !isfinite(torus->minor_radius) || !isfinite(torus->axial_semiwidth_B) ||
+        torus->major_radius <= torus->minor_radius || torus->minor_radius <= 0 ||
+        torus->axial_semiwidth_B <= 0 ||
+        /* Very thin tubes lose r^2 in the current quartic coefficients. */
+        torus->minor_radius <= 64.0 * sqrt(DBL_EPSILON) * torus->major_radius ||
+        torus->axis < ALEA_AXIS_X ||
+        torus->axis > ALEA_AXIS_Z) return true;
+    /* The current quartic uses minor_radius in the axial direction too.
+     * Cover both that circular surface and the elliptical geometry envelope. */
+    double axial = fmax(torus->minor_radius, torus->axial_semiwidth_B);
+    double radial = torus->major_radius + torus->minor_radius;
+    if (!isfinite(radial)) return true;
+    const double origins[] = {ray->ox, ray->oy, ray->oz};
+    const double directions[] = {ray->dx, ray->dy, ray->dz};
+    const double centers[] = {torus->center_x, torus->center_y, torus->center_z};
+    int axis = torus->axis - ALEA_AXIS_X;
+    if (torus_window_outside_slab(origins[axis], directions[axis], centers[axis],
+                                  axial, t_min, t_max)) return false;
+    for (int i = 0; i < 3; i++) {
+        if (i != axis && torus_window_outside_slab(origins[i], directions[i],
+                            centers[i], radial, t_min, t_max)) return false;
+    }
+    return true;
+}
+
 int ray_intersect_torus(const alea_ray_t* ray,
                         const alea_torus_data_t* torus,
                         double* restrict t_out) {

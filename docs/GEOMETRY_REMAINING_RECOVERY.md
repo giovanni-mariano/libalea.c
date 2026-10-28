@@ -105,3 +105,6 @@ control regression above the existing 5% screening threshold.
 This bounded experiment needs no new persistent scene hierarchy. The remaining
 fill-cell traversal cost and possible exact local-ray reuse can be investigated
 after measuring how much torus rejection actually saves.
+
+The subsequent [torus rejection implementation](GEOMETRY_TORUS_RECOVERY.md)
+records its conservative envelope, compatibility limits, tests, and measurements.

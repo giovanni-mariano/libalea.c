@@ -6,6 +6,8 @@
 #include "alea_mcnp.h"
 #include "alea_raycast.h"
 #include "raycast/raycast.h"
+#include "raycast/ray_intersect.h"
+#include <float.h>
 #include "core/alea_system.h"
 
 /* Explicitly disable both prepared levels when comparing tree traversal. */
@@ -462,6 +464,161 @@ TEST(recovery_surface_cache_survives_clone_rebuild_and_geometry_edits) {
     ASSERT_EQ(result.hits.data[0].t, 1);
     alea_raycast_result_free(&result);
     alea_destroy(clone);
+}
+
+/* Independent analytic torus cases; the rejector encloses the complete
+ * surface, including roots outside any Boolean cell region. */
+TEST(torus_window_certificate_preserves_crossings_and_boundary_cases) {
+    for (int axis = ALEA_AXIS_X; axis <= ALEA_AXIS_Z; axis++) {
+        int radial = (axis + 1) % 3, other = (axis + 2) % 3;
+        alea_torus_data_t torus = {.axis=axis, .major_radius=5,
+                                   .minor_radius=1, .axial_semiwidth_B=1};
+        double origin[3]={0}, direction[3]={0};
+        origin[radial]=-10; direction[radial]=1;
+        alea_ray_t ray;
+        ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
+                               direction[0],direction[1],direction[2]),0);
+        double roots[4];
+        ASSERT_EQ(ray_intersect_torus(&ray,&torus,roots),4);
+        const double expected[]={4,6,14,16};
+        for (int j=0;j<4;j++) {
+            ASSERT_NEAR(roots[j],expected[j],1e-8);
+            ASSERT(ray_torus_window_may_hit(&ray,&torus,
+                                            expected[j]-1e-6,expected[j]+1e-6));
+        }
+        ASSERT(!ray_torus_window_may_hit(&ray,&torus,0,2));
+        ASSERT(ray_torus_window_may_hit(&ray,&torus,nextafter(4,0),nextafter(4,INFINITY)));
+        origin[other]=6; /* Outer tangent at radial coordinate zero. */
+        ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
+                               direction[0],direction[1],direction[2]),0);
+        ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+        origin[other]=nextafter(6,INFINITY);
+        ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
+                               direction[0],direction[1],direction[2]),0);
+        ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+        origin[other]=6.001;
+        ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
+                               direction[0],direction[1],direction[2]),0);
+        ASSERT(!ray_torus_window_may_hit(&ray,&torus,0,20));
+        origin[other]=0; origin[axis]=2;
+        ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
+                               direction[0],direction[1],direction[2]),0);
+        ASSERT(!ray_torus_window_may_hit(&ray,&torus,0,20));
+        /* Both elliptical and currently circular solver envelopes are kept. */
+        torus.axial_semiwidth_B=3;
+        ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+        torus.axial_semiwidth_B=.25; origin[axis]=.75;
+        ASSERT_EQ(alea_ray_init(&ray,origin[0],origin[1],origin[2],
+                               direction[0],direction[1],direction[2]),0);
+        ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+    }
+}
+
+TEST(torus_window_certificate_handles_tiny_directions_large_coordinates_and_fallback) {
+    alea_torus_data_t torus={.axis=ALEA_AXIS_Z,.major_radius=5,
+                             .minor_radius=1,.axial_semiwidth_B=1};
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray,5,0,2,0,0,-1),0);
+    ray.dz=-1e-20; /* Algebraic non-unit ray: never treat tiny as zero. */
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,1e20,3e20));
+    torus.center_x=1e12; torus.center_y=-1e12; torus.center_z=1e12;
+    ASSERT_EQ(alea_ray_init(&ray,1e12-10,-1e12,1e12,1,0,0),0);
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,3.999,4.001));
+    ASSERT(!ray_torus_window_may_hit(&ray,&torus,0,1));
+    /* Degenerate and non-finite inputs retain solver fallback. */
+    ASSERT_EQ(alea_ray_init(&ray,0,0,2,1,0,0),0);
+    torus.center_x=torus.center_y=torus.center_z=0;
+    torus.axial_semiwidth_B=0;
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+    torus.axial_semiwidth_B=1; torus.major_radius=0;
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+    torus.major_radius=5; torus.minor_radius=NAN;
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+    torus.minor_radius=1;
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,INFINITY));
+    torus.minor_radius=torus.axial_semiwidth_B=1e-200;
+    ASSERT_EQ(alea_ray_init(&ray,-10,0,1e-10,1,0,0),0);
+    /* Existing quartic can publish roots after r^2 underflows: retain fallback. */
+    double thin_roots[4];
+    ASSERT(ray_intersect_torus(&ray,&torus,thin_roots)>0);
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+    torus.minor_radius=torus.axial_semiwidth_B=1;
+    torus.major_radius=DBL_MAX; torus.minor_radius=DBL_MAX/2;
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+    torus.major_radius=5; torus.minor_radius=1;
+    ray.ox=INFINITY;
+    ASSERT(ray_torus_window_may_hit(&ray,&torus,0,20));
+}
+
+TEST(nearest_torus_recovery_matches_unpruned_tree_across_transformed_occurrences) {
+    alea_system_t* sys=alea_create();
+    ASSERT_NOT_NULL(sys);
+    int torus=alea_torus_z_surface(sys,1,0,0,0,5,1);
+    ASSERT(torus>=0);
+    ASSERT(alea_add_cell(sys,1,alea_halfspace(sys,torus,-1),ALEA_MATERIAL_VOID,0,1)>=0);
+    ASSERT(alea_add_cell(sys,2,alea_halfspace(sys,torus,1),ALEA_MATERIAL_VOID,0,1)>=0);
+    int box=alea_box_surface(sys,2,-100,100,-100,100,-100,100);
+    ASSERT(box>=0);
+    /* Overlapping diagnostic parents test geometric enumeration only. */
+    for (int i=0;i<2;i++) {
+        int parent=alea_add_cell(sys,10+i,alea_halfspace(sys,box,-1),ALEA_MATERIAL_VOID,0,0);
+        const double transform[]={i*20.0,0,0, 1,0,0, 0,0,-1, 0,1,0};
+        ASSERT_EQ(alea_add_transform(sys,10+i,transform,12,0),0);
+        ASSERT_EQ(alea_set_fill(sys,parent,1,10+i),0);
+    }
+    ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
+    for (int reverse=0;reverse<2;reverse++) for (int miss=0;miss<2;miss++) {
+        alea_ray_t ray;
+        ASSERT_EQ(alea_ray_init(&ray,reverse?30:-10,miss?2:0,miss?2:0,reverse?-1:1,0,0),0);
+        alea_raycast_result_t indexed,tree;
+        alea_raycast_result_init(&indexed); alea_raycast_result_init(&tree);
+        indexed.breakpoint_nearest_only=tree.breakpoint_nearest_only=1;
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys,&ray,0,40,1,&indexed),0);
+        uint32_t** lists=detach_recovery_lists(sys);
+        uint32_t* saved[2]={sys->cells.data[0].surface_indices,sys->cells.data[1].surface_indices};
+        sys->cells.data[0].surface_indices=sys->cells.data[1].surface_indices=NULL;
+        int rc=alea_raycast_validation_breakpoints_reuse_nocache(sys,&ray,0,40,1,&tree);
+        sys->cells.data[0].surface_indices=saved[0];sys->cells.data[1].surface_indices=saved[1];
+        restore_recovery_lists(sys,lists);
+        ASSERT_EQ(rc,0);ASSERT_EQ(indexed.hits.count,tree.hits.count);
+        ASSERT_EQ(indexed.hits.count,miss?0:1);
+        if (!miss) {
+            ASSERT_NEAR(indexed.hits.data[0].t,4,1e-8);
+            ASSERT_EQ(indexed.hits.data[0].t,tree.hits.data[0].t);
+            ASSERT_EQ(indexed.hits.data[0].surface_id,tree.hits.data[0].surface_id);
+            ASSERT_EQ(indexed.hits.data[0].nx,tree.hits.data[0].nx);
+            ASSERT_EQ(indexed.hits.data[0].ny,tree.hits.data[0].ny);
+            ASSERT_EQ(indexed.hits.data[0].nz,tree.hits.data[0].nz);
+        } else ASSERT(indexed.surfaces_tested<tree.surfaces_tested);
+        alea_raycast_result_free(&indexed);alea_raycast_result_free(&tree);
+    }
+    alea_destroy(sys);
+}
+
+TEST(torus_window_rejection_preserves_solver_roots_in_deterministic_sweep) {
+    uint64_t seed=123456789;
+    const double scales[]={1e-9,1e-6,1e-3,1,1e3,1e6};
+    for (int axis=ALEA_AXIS_X;axis<=ALEA_AXIS_Z;axis++)
+        for (size_t scale=0;scale<6;scale++) for (int i=0;i<512;i++) {
+            double values[6];
+            for (int j=0;j<6;j++) {
+                seed=seed*UINT64_C(6364136223846793005)+1;
+                values[j]=2.0*(double)(seed>>11)/9007199254740992.0-1;
+            }
+            double size=scales[scale];
+            alea_torus_data_t torus={.axis=axis,.major_radius=5*size,
+                .minor_radius=size,.axial_semiwidth_B=(i&1?0.5:2)*size};
+            alea_ray_t ray;
+            ASSERT_EQ(alea_ray_init(&ray,values[0]*12*size,values[1]*12*size,
+                values[2]*12*size,values[3],values[4],values[5]),0);
+            double roots[4];int count=ray_intersect_torus(&ray,&torus,roots);
+            double end=30*size;
+            if (!ray_torus_window_may_hit(&ray,&torus,0,end))
+                for (int j=0;j<count;j++) ASSERT(!(roots[j]>=0 && roots[j]<=end));
+            for (int j=0;j<count;j++) if (roots[j]>=0 && roots[j]<=end)
+                ASSERT(ray_torus_window_may_hit(&ray,&torus,
+                    nextafter(roots[j],0),nextafter(roots[j],INFINITY)));
+        }
 }
 
 TEST_MAIN()

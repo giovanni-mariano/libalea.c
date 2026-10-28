@@ -1080,6 +1080,12 @@ static void raycast_indexed_surface_hits(alea_system_t* sys,
             continue;
         }
 
+        if (result->breakpoint_nearest_only &&
+            prim->type >= ALEA_PRIMITIVE_TORUS_X &&
+            prim->type <= ALEA_PRIMITIVE_TORUS_Z &&
+            !ray_torus_window_may_hit(ray, &prim_data.torus, t_min, t_max))
+            continue;
+
         result->surfaces_tested++;
         double t[4];
         int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
