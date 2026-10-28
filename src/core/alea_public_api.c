@@ -384,6 +384,9 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         alea_vec_init(&clone->universes.data[i].cell_indices);
         alea_vec_init(&clone->universes.data[i].point_bvh_nodes);
         clone->universes.data[i].point_bvh_indices = NULL;
+        clone->universes.data[i].recovery_surfaces = NULL;
+        clone->universes.data[i].recovery_surface_count = 0;
+        clone->universes.data[i].recovery_surfaces_attempted = false;
         clone->universes.data[i].point_bvh_built = false;
         clone->universes.data[i].point_bvh_disabled = false;
     }

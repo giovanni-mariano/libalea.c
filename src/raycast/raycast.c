@@ -972,6 +972,7 @@ static void raycast_tree_primitives(alea_system_t* sys,
                                     double t_min, double t_max,
                                     alea_raycast_result_t* result,
                                     const alea_matrix_t* local_to_world) {
+    if (alea_interrupted()) { result->breakpoint_failed = 1; return; }
     if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
     if (result->breakpoint_nearest_only && result->hits.count)
         t_max = fmin(t_max, result->hits.data[0].t);
@@ -1034,9 +1035,9 @@ static void raycast_tree_primitives(alea_system_t* sys,
     }
 }
 
-static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
+static void raycast_indexed_surface_hits(alea_system_t* sys,
                                               const alea_ray_t* ray,
-                                              const alea_cell_entry_t* cell,
+                                              const uint32_t* indices, size_t count,
                                               double t_min,
                                               double t_max,
                                               alea_raycast_result_t* result,
@@ -1045,15 +1046,13 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
     if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
     if (result->breakpoint_nearest_only && result->hits.count)
         t_max = fmin(t_max, result->hits.data[0].t);
-    if (!cell->surface_indices || cell->surface_index_count == 0) {
-        raycast_tree_primitives(sys, ray, cell->root_node_id,
-                                t_min, t_max, result, local_to_world);
-        return;
-    }
-
-    for (size_t i = 0; i < cell->surface_index_count; i++) {
+    for (size_t i = 0; i < count; i++) {
+        if ((i & 1023) == 0 && alea_interrupted()) {
+            result->breakpoint_failed = 1;
+            return;
+        }
         if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
-        uint32_t surf_idx = cell->surface_indices[i];
+        uint32_t surf_idx = indices[i];
         if (surf_idx >= alea_vec_count(&sys->surfaces)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             continue;
@@ -1109,6 +1108,23 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
     }
 }
 
+static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
+                                              const alea_ray_t* ray,
+                                              const alea_cell_entry_t* cell,
+                                              double t_min,
+                                              double t_max,
+                                              alea_raycast_result_t* result,
+                                              const alea_matrix_t* local_to_world,
+                                              uint8_t* seen_surfaces) {
+    if (!cell->surface_indices || !cell->surface_index_count) {
+        raycast_tree_primitives(sys, ray, cell->root_node_id,
+                                t_min, t_max, result, local_to_world);
+        return;
+    }
+    raycast_indexed_surface_hits(sys, ray, cell->surface_indices,
+        cell->surface_index_count, t_min, t_max, result, local_to_world, seen_surfaces);
+}
+
 /**
  * Raycast all surfaces in a universe using a translated ray.
  * The ray is in element-local coordinates (origin shifted by -element_center).
@@ -1129,6 +1145,16 @@ static void raycast_universe_surfaces(alea_system_t* sys,
         return;
     }
 
+    /* Readers that prepare only a subset of caches must not observe a list
+     * while another thread is still publishing the optional recovery cache. */
+    if (result->breakpoint_nearest_only &&
+        alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_SURFACES) &&
+        univ->recovery_surfaces) {
+        raycast_indexed_surface_hits(sys, local_ray, univ->recovery_surfaces,
+            univ->recovery_surface_count, t_min, t_max, result, local_to_world, NULL);
+        return;
+    }
+
     /* Optional scratch is bounded and scoped to this occurrence, so distinct
      * transforms and lattice elements never share solved-surface state.
      * Allocation failure retains the original scan. */
@@ -1138,6 +1164,7 @@ static void raycast_universe_surfaces(alea_system_t* sys,
         univ->cell_indices.count > 1 && seen_bytes <= 1024 * 1024
         ? calloc(seen_bytes, 1) : NULL;
     for (size_t c = 0; c < univ->cell_indices.count; c++) {
+        if (alea_interrupted()) { result->breakpoint_failed = 1; break; }
         if (result->breakpoint_hit_limit && result->breakpoint_failed) break;
         size_t cell_idx = univ->cell_indices.data[c];
         if (cell_idx >= alea_vec_count(&sys->cells)) {

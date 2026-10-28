@@ -50,6 +50,10 @@ typedef struct {
     uint32_t* point_bvh_indices;
     bool point_bvh_built;
     bool point_bvh_disabled;
+    /* Optional ordered cards for nearest-only recovery, owned by this cache. */
+    uint32_t* recovery_surfaces;
+    size_t recovery_surface_count;
+    bool recovery_surfaces_attempted;
 } alea_universe_t;
 
 ALEA_VEC_DEFINE(alea_universe_vec, alea_universe_t);

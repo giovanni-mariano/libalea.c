@@ -88,3 +88,6 @@ The [complete-slice validation](GEOMETRY_SLICE_VALIDATION.md) measures the next
 end-to-end milestone: public frames and material-containing private detail views
 complete at 512 and 1024 square, while a broader focused view remains bounded
 by a tracing timeout.
+
+The subsequent [prepared-universe recovery experiment](GEOMETRY_UNIVERSE_RECOVERY.md)
+records the implementation and validation of this next step.

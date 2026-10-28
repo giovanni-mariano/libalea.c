@@ -8,6 +8,22 @@
 #include "raycast/raycast.h"
 #include "core/alea_system.h"
 
+/* Explicitly disable both prepared levels when comparing tree traversal. */
+static uint32_t** detach_recovery_lists(alea_system_t* sys) {
+    uint32_t** saved = malloc(sys->universes.count * sizeof(*saved));
+    if (!saved) abort();
+    for (size_t u = 0; u < sys->universes.count; u++) {
+        saved[u] = sys->universes.data[u].recovery_surfaces;
+        sys->universes.data[u].recovery_surfaces = NULL;
+    }
+    return saved;
+}
+static void restore_recovery_lists(alea_system_t* sys, uint32_t** saved) {
+    for (size_t u = 0; u < sys->universes.count; u++)
+        sys->universes.data[u].recovery_surfaces = saved[u];
+    free(saved);
+}
+
 TEST(ownership_tracks_preserve_thin_same_material_regions_and_occurrences) {
     alea_system_t* sys = alea_create();
     ASSERT_NOT_NULL(sys);
@@ -271,8 +287,10 @@ TEST(nearest_recovery_preserves_translated_aliases_and_close_surfaces) {
             sys, &ray, 0, 3, 1, &indexed), 0);
         uint32_t* saved = cell->surface_indices;
         cell->surface_indices = NULL;
+        uint32_t** lists = detach_recovery_lists(sys);
         const int rc = alea_raycast_validation_breakpoints_reuse_nocache(
             sys, &ray, 0, 3, 1, &tree);
+        restore_recovery_lists(sys, lists);
         cell->surface_indices = saved;
         ASSERT_EQ(rc, 0);
         ASSERT_EQ(indexed.hits.count, 1);
@@ -324,8 +342,10 @@ TEST(nearest_recovery_matches_tree_fallback_in_repeated_geometry) {
                 sys, &ray, 0, lengths[m], 1, &indexed);
             for (size_t c = 0; c < sys->cells.count; ++c)
                 sys->cells.data[c].surface_indices = NULL;
+            uint32_t** lists = detach_recovery_lists(sys);
             const int tree_rc = alea_raycast_validation_breakpoints_reuse_nocache(
                 sys, &ray, 0, lengths[m], 1, &tree);
+            restore_recovery_lists(sys, lists);
             for (size_t c = 0; c < sys->cells.count; ++c)
                 sys->cells.data[c].surface_indices = saved[c];
             ASSERT_EQ(indexed_rc, 0);
@@ -381,8 +401,10 @@ TEST(nearest_recovery_shares_solves_within_each_occurrence_only) {
         saved[c] = sys->cells.data[c].surface_indices;
         sys->cells.data[c].surface_indices = NULL;
     }
+    uint32_t** lists = detach_recovery_lists(sys);
     int rc = alea_raycast_validation_breakpoints_reuse_nocache(
         sys, &ray, 0, 3, 1, &fallback);
+    restore_recovery_lists(sys, lists);
     for (size_t c = 0; c < sys->cells.count; ++c)
         sys->cells.data[c].surface_indices = saved[c];
     free(saved);
@@ -398,6 +420,48 @@ TEST(nearest_recovery_shares_solves_within_each_occurrence_only) {
     alea_raycast_result_free(&indexed);
     alea_raycast_result_free(&fallback);
     mcnp_model_destroy(model);
+}
+
+TEST(recovery_surface_cache_survives_clone_rebuild_and_geometry_edits) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_deep_translated_fills.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    const alea_universe_t* univ = alea_get_universe(sys, 8);
+    ASSERT_NOT_NULL(univ);
+    ASSERT_NOT_NULL(univ->recovery_surfaces);
+    ASSERT_EQ(univ->recovery_surface_count, 1);
+    alea_system_t* clone = alea_clone(sys);
+    ASSERT_NOT_NULL(clone);
+    ASSERT_EQ(alea_prepare_query_acceleration(clone), 0);
+    const alea_universe_t* copied = alea_get_universe(clone, 8);
+    ASSERT_NOT_NULL(copied->recovery_surfaces);
+    ASSERT(copied->recovery_surfaces != univ->recovery_surfaces);
+    ASSERT_EQ(alea_build_cell_surface_index(sys), 0);
+    ASSERT(!alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_SURFACES));
+    ASSERT(univ->recovery_surfaces == NULL);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_NOT_NULL(alea_get_universe(sys, 8)->recovery_surfaces);
+    int surface = alea_plane_surface(sys, 999, 1, 0, 0, -0.25);
+    ASSERT(surface >= 0);
+    ASSERT_EQ(alea_cell_set_region(sys, alea_cell_find(sys, 1),
+                                  alea_halfspace(sys, surface, -1)), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_get_universe(sys, 8)->recovery_surface_count, 2);
+    ASSERT_EQ(alea_get_universe(clone, 8)->recovery_surface_count, 1);
+    /* Destroying either cache must leave the other usable. */
+    mcnp_model_destroy(model);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 1, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_t result;
+    alea_raycast_result_init(&result);
+    result.breakpoint_nearest_only = 1;
+    ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+        clone, &ray, 0, 3, 1, &result), 0);
+    ASSERT_EQ(result.hits.count, 1);
+    ASSERT_EQ(result.hits.data[0].t, 1);
+    alea_raycast_result_free(&result);
+    alea_destroy(clone);
 }
 
 TEST_MAIN()

@@ -197,3 +197,6 @@ subject to a measured memory/preparation budget and the same alias/occurrence
 checks. Recovery also needs finer interruption points before interactive
 progress can rely on short cancellation latency. Load balancing alone does not
 remove the substantial recovery work observed across the sampled rows.
+
+The subsequent [prepared-universe recovery experiment](GEOMETRY_UNIVERSE_RECOVERY.md)
+records the implementation and validation of this next step.

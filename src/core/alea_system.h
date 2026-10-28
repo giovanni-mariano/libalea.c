@@ -30,9 +30,11 @@ extern atomic_int g_alea_interrupted;
 #define ALEA_CACHE_SURFACE_BVH   (1u << 3)
 #define ALEA_CACHE_ADJACENCY     (1u << 4)
 #define ALEA_CACHE_HIER_SPATIAL  (1u << 5)
+/* Optional nearest-recovery lists have their own publication barrier. */
+#define ALEA_CACHE_RECOVERY_SURFACES (1u << 6)
 /* The hierarchical spatial index is the only spatial backend. */
 #define ALEA_CACHE_RAYCAST \
-    (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | \
+    (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_RECOVERY_SURFACES | \
      ALEA_CACHE_HIER_SPATIAL | ALEA_CACHE_SURFACE_BVH | \
      ALEA_CACHE_ADJACENCY)
 #define ALEA_CACHE_RAYCAST_HIER ALEA_CACHE_RAYCAST
