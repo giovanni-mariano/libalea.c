@@ -927,6 +927,9 @@ $(BIN_DIR)/geometry_queries$(EXEEXT): benchmarks/geometry_queries.c $(LIB_CORE) 
 $(BIN_DIR)/geometry_model_queries$(EXEEXT): benchmarks/geometry_model_queries.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
 
+$(BIN_DIR)/geometry_slice_queries$(EXEEXT): benchmarks/geometry_slice_queries.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
+
 .PHONY: test-geometry-queries
 test-geometry-queries: $(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT) $(BIN_DIR)/characteristic_tracks$(EXEEXT)
 	@$(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT)

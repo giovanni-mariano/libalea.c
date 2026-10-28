@@ -83,3 +83,8 @@ still warrants profiling before choosing another optimization.
 
 Private models, workload coordinates, comparison clients and raw logs remain
 outside publishable files. Only aggregate observations are recorded here.
+
+The [complete-slice validation](GEOMETRY_SLICE_VALIDATION.md) measures the next
+end-to-end milestone: public frames and material-containing private detail views
+complete at 512 and 1024 square, while a broader focused view remains bounded
+by a tracing timeout.
