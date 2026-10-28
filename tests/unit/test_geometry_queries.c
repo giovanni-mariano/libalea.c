@@ -159,4 +159,79 @@ TEST(deep_translated_tracks_and_navigation_match_analytic_world_interface) {
     mcnp_model_destroy(model);
 }
 
+TEST(navigation_preserves_short_flights_before_translated_interface) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_deep_translated_fills.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(nav);
+    /* The analytic world interface is x=2. Both starts and the midpoint of
+     * each short flight are representable, but the forward location sample
+     * crosses the plane. Preserve that short flight and its incident owner. */
+    const double delta = 0x1p-49;
+    for (int mode = ALEA_NAV_VALIDATE_STRICT; mode <= ALEA_NAV_VALIDATE_INTERVAL; ++mode) {
+        ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav, mode), 0);
+        for (int sign = -1; sign <= 1; sign += 2) {
+            double position[] = {2 - sign*delta, 0, 0};
+            double direction[] = {sign, 0, 0};
+            const int incident = sign > 0 ? 1 : 2;
+            const int outgoing = sign > 0 ? 2 : 1;
+            alea_nav_location_t location;
+            ASSERT_EQ(alea_ray_navigator_restart(nav, position, direction, &location), 0);
+            ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+            ASSERT_EQ(location.cell_id, incident);
+            /* Re-locating after a direction change must preserve the same
+             * pre-crossing owner, just as a fresh restart does. */
+            direction[0] = -sign;
+            ASSERT_EQ(alea_ray_navigator_set_direction(nav, direction), 0);
+            direction[0] = sign;
+            ASSERT_EQ(alea_ray_navigator_set_direction(nav, direction), 0);
+            alea_nav_event_t event;
+            ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 1, &event), 0);
+            ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+            ASSERT_EQ(event.before.cell_id, incident);
+            ASSERT_EQ(event.after.cell_id, outgoing);
+            ASSERT_EQ(event.surface_id, 1);
+            ASSERT(event.distance > 0);
+            ASSERT_NEAR(event.distance / delta, 1, 1e-12);
+            ASSERT_EQ(event.position[0], 2);
+            ASSERT_EQ(alea_ray_navigator_advance(nav, 0.125, 1, &event), 0);
+            ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+            ASSERT_EQ(event.before.cell_id, outgoing);
+            ASSERT_NEAR(event.position[0], 2 + sign*0.125, 1e-12);
+        }
+    }
+    alea_ray_navigator_destroy(nav);
+    mcnp_model_destroy(model);
+}
+
+TEST(navigation_restarts_near_transformed_lattice_cylinder_exit) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_nested_lattice_transformed.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_ray_navigator_t* nav = alea_ray_navigator_create(model->sys);
+    ASSERT_NOT_NULL(nav);
+    /* Public workload reproducer: two placements of the same cylinder.
+     * Require successful boundary handling and subsequent outward flight;
+     * the translated-plane test above supplies the analytic length oracle. */
+    const double starts[] = {6.5318492462042892, 4.5318478156928146};
+    const double direction[] = {-1, -0.25, 0.0625};
+    for (size_t i = 0; i < 2; ++i) {
+        double position[] = {starts[i], -0.69744837142309479, 0.030286056323686663};
+        alea_nav_location_t location;
+        ASSERT_EQ(alea_ray_navigator_restart(nav, position, direction, &location), 0);
+        ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+        alea_nav_event_t event;
+        ASSERT_EQ(alea_ray_navigator_advance(nav, 0.01, 0.1, &event), 0);
+        if (event.kind == ALEA_NAV_BOUNDARY) {
+            ASSERT_EQ(event.surface_id, 10);
+            ASSERT(event.distance < 1e-12);
+            ASSERT_EQ(event.after.cell_id, 2);
+            ASSERT_EQ(alea_ray_navigator_advance(nav, 0.01, 0.1, &event), 0);
+        }
+        ASSERT_EQ(event.kind, ALEA_NAV_COLLISION);
+        ASSERT_EQ(event.before.cell_id, 2);
+    }
+    alea_ray_navigator_destroy(nav);
+    mcnp_model_destroy(model);
+}
+
 TEST_MAIN()

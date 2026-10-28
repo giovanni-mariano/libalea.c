@@ -4795,13 +4795,16 @@ resolve_cell:;
 
         /* A rounding-safe boundary sample can overrun a very thin interval.
          * Re-resolve inside its known next crossing, without searching the
-         * rest of the model or moving the entry distance forward. */
-        if (state->entry_only && t_sample >= t_next) {
+         * rest of the model or moving the entry distance forward. Navigation
+         * must also resolve the pre-crossing owner: its forward sample can
+         * select the next cell when restarting very close to a boundary. */
+        if ((state->entry_only || state->fail_unverified_ownership) &&
+            t_sample >= t_next) {
             const double sample = t_current + 0.5 * (t_next - t_current);
             if (resolve_attempt >= 2 ||
                 !(sample > t_current && sample < t_next)) {
                 alea_set_error_detail(ALEA_ERR_INVALID_STATE,
-                    "render crossing has no stable interior sample");
+                    "ray crossing has no stable interior sample");
                 return -1;
             }
             recovery_hit.t = t_next;
