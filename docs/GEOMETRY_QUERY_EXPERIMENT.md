@@ -391,3 +391,8 @@ Future experiments should be independently scoped from measured costs. A second
 hardware backend, root cache, Boolean dependency engine, or mesh representation
 requires its own hypothesis, resource budget, and acceptance criteria. Preserve
 the independent GPU accuracy gate in the existing GPU plan.
+
+The [nearest-boundary recovery follow-up](GEOMETRY_RECOVERY_SEARCH.md) profiles
+the repaired, indexed baseline and evaluates sharing surface solves across cells
+within each universe occurrence. Its measurements and acceptance decision are
+recorded separately from this experiment.

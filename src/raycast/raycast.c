@@ -1040,7 +1040,8 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
                                               double t_min,
                                               double t_max,
                                               alea_raycast_result_t* result,
-                                              const alea_matrix_t* local_to_world) {
+                                              const alea_matrix_t* local_to_world,
+                                              uint8_t* seen_surfaces) {
     if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
     if (result->breakpoint_nearest_only && result->hits.count)
         t_max = fmin(t_max, result->hits.data[0].t);
@@ -1058,6 +1059,13 @@ static void raycast_cell_indexed_surface_hits(alea_system_t* sys,
             continue;
         }
 
+        /* The same occurrence uses one local ray and a shrinking hit bound.
+         * Repeated cards cannot add an earlier hit; distinct aliases remain. */
+        if (seen_surfaces) {
+            const uint8_t mask = (uint8_t)(1u << (surf_idx & 7));
+            if (seen_surfaces[surf_idx >> 3] & mask) continue;
+            seen_surfaces[surf_idx >> 3] |= mask;
+        }
         const alea_surface_entry_t* surf = &sys->surfaces.data[surf_idx];
         if (surf->primitive_id >= alea_vec_count(&sys->primitives)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1121,8 +1129,16 @@ static void raycast_universe_surfaces(alea_system_t* sys,
         return;
     }
 
+    /* Optional scratch is bounded and scoped to this occurrence, so distinct
+     * transforms and lattice elements never share solved-surface state.
+     * Allocation failure retains the original scan. */
+    const size_t seen_bytes = sys->surfaces.count / 8 +
+                              (sys->surfaces.count % 8 != 0);
+    uint8_t* seen_surfaces = result->breakpoint_nearest_only &&
+        univ->cell_indices.count > 1 && seen_bytes <= 1024 * 1024
+        ? calloc(seen_bytes, 1) : NULL;
     for (size_t c = 0; c < univ->cell_indices.count; c++) {
-        if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
+        if (result->breakpoint_hit_limit && result->breakpoint_failed) break;
         size_t cell_idx = univ->cell_indices.data[c];
         if (cell_idx >= alea_vec_count(&sys->cells)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
@@ -1134,12 +1150,13 @@ static void raycast_universe_surfaces(alea_system_t* sys,
              * including distinct cards sharing a primitive. Nearest-only
              * recovery can skip repeated references without changing ties. */
             raycast_cell_indexed_surface_hits(sys, local_ray, cell,
-                t_min, t_max, result, local_to_world);
+                t_min, t_max, result, local_to_world, seen_surfaces);
         } else {
             raycast_tree_primitives(sys, local_ray, cell->root_node_id,
                                     t_min, t_max, result, local_to_world);
         }
     }
+    free(seen_surfaces);
 }
 
 static bool system_has_lattice_cells(const alea_system_t* sys);
@@ -1288,7 +1305,7 @@ static int raycast_root_blas_surfaces(alea_system_t* sys,
                                     candidates[i].t_exit + RAY_EPSILON);
             raycast_cell_indexed_surface_hits(
                 sys, &local_ray, cell, local_min, local_max, result,
-                &placement->transform);
+                &placement->transform, NULL);
             if (cell->lat_type == 1 && cell->lat_fill) {
                 raycast_lattice_rect(sys, &local_ray, cell,
                                      local_min, local_max, 0, result,

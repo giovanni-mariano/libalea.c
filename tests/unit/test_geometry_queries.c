@@ -346,4 +346,58 @@ TEST(nearest_recovery_matches_tree_fallback_in_repeated_geometry) {
     }
 }
 
+TEST(nearest_recovery_shares_solves_within_each_occurrence_only) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_deep_translated_fills.mcnp");
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    int terminal = alea_cell_find(sys, 1);
+    ASSERT(terminal >= 0);
+    alea_node_id_t region = sys->cells.data[terminal].root_node_id;
+    /* Deliberate duplicate diagnostic cells stress mathematical crossing
+     * enumeration, rather than define a valid physical ownership model. */
+    for (int i = 0; i < 256; ++i)
+        ASSERT(alea_add_cell(sys, 1000+i, region, ALEA_MATERIAL_VOID, 0, 8) >= 0);
+    int box = alea_box_surface(sys, 999, -1, 5, -1, 1, -1, 1);
+    ASSERT(box >= 0);
+    int parent = alea_add_cell(sys, 999, alea_halfspace(sys, box, -1),
+                               ALEA_MATERIAL_VOID, 0, 0);
+    const double translation[] = {1, 0, 0};
+    ASSERT_EQ(alea_add_transform(sys, 999, translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 8, 999), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    /* The original occurrence has its plane at x=2. The later occurrence
+     * translates the same cards to x=1 and must replace the farther hit. */
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 0.5, 0, 0, 1, 0, 0), 0);
+    alea_raycast_result_t indexed, fallback;
+    alea_raycast_result_init(&indexed);
+    alea_raycast_result_init(&fallback);
+    indexed.breakpoint_nearest_only = fallback.breakpoint_nearest_only = 1;
+    ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+        sys, &ray, 0, 3, 1, &indexed), 0);
+    uint32_t** saved = malloc(sys->cells.count * sizeof(*saved));
+    ASSERT_NOT_NULL(saved);
+    for (size_t c = 0; c < sys->cells.count; ++c) {
+        saved[c] = sys->cells.data[c].surface_indices;
+        sys->cells.data[c].surface_indices = NULL;
+    }
+    int rc = alea_raycast_validation_breakpoints_reuse_nocache(
+        sys, &ray, 0, 3, 1, &fallback);
+    for (size_t c = 0; c < sys->cells.count; ++c)
+        sys->cells.data[c].surface_indices = saved[c];
+    free(saved);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(indexed.hits.count, 1);
+    ASSERT_EQ(fallback.hits.count, 1);
+    ASSERT_EQ(indexed.hits.data[0].t, 0.5);
+    ASSERT_EQ(indexed.hits.data[0].surface_id, 1);
+    ASSERT_EQ(indexed.hits.data[0].nx, 1);
+    ASSERT_EQ(indexed.hits.data[0].t, fallback.hits.data[0].t);
+    ASSERT_EQ(indexed.hits.data[0].surface_id, fallback.hits.data[0].surface_id);
+    ASSERT(indexed.surfaces_tested * 3 < fallback.surfaces_tested);
+    alea_raycast_result_free(&indexed);
+    alea_raycast_result_free(&fallback);
+    mcnp_model_destroy(model);
+}
+
 TEST_MAIN()
