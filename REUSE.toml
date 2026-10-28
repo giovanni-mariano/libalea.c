@@ -72,3 +72,35 @@ path = "tests/lua/**.lua"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Giovanni MARIANO"
 SPDX-License-Identifier = "MPL-2.0"
+
+# Metadata for unmodified vendored Expat files without SPDX headers.
+# The package-level notice in vendor/expat/COPYING covers these files.
+[[annotations]]
+path = [
+    "vendor/expat/Changes",
+    "vendor/expat/lib/libexpat.def.cmake",
+    "vendor/expat/lib/libexpat.map.in",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+    "1998-2000 Thai Open Source Software Center Ltd and Clark Cooper",
+    "2001-2025 Expat maintainers",
+]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "vendor/expat/lib/Makefile.am"
+precedence = "aggregate"
+SPDX-License-Identifier = "MIT"
+
+# The generated file includes both Expat's MIT notice and Automake's FSF notice.
+[[annotations]]
+path = "vendor/expat/lib/Makefile.in"
+precedence = "aggregate"
+SPDX-License-Identifier = "MIT AND FSFULLR"
+
+# Authorship is documented in the header; keep its existing CC0 identifier.
+[[annotations]]
+path = "vendor/expat/lib/siphash.h"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "William Ahern and contributors"

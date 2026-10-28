@@ -23,6 +23,18 @@
  * - Cache-friendly sequential allocation
  */
 
+/* MSVC's C headers omit max_align_t. Use the CRT malloc alignment guarantee
+ * there: 16 bytes on 64-bit targets, 8 bytes on 32-bit targets. */
+#if defined(_MSC_VER)
+#  if defined(_WIN64)
+#    define ARENA_MAX_ALIGNMENT 16u
+#  else
+#    define ARENA_MAX_ALIGNMENT 8u
+#  endif
+#else
+#  define ARENA_MAX_ALIGNMENT _Alignof(max_align_t)
+#endif
+
 #define ARENA_DEFAULT_ALIGNMENT sizeof(void*)
 #define ARENA_DEFAULT_BLOCK_SIZE (1024 * 1024) // 1MB per block
 
@@ -70,7 +82,7 @@ void arena_free(arena_t* arena);
  * Allocate memory from arena with alignment
  * @param arena Arena to allocate from
  * @param size Number of bytes to allocate
- * @param align Power-of-two alignment, at most _Alignof(max_align_t)
+ * @param align Power-of-two alignment, at most ARENA_MAX_ALIGNMENT
  * @return Pointer to allocated memory, or NULL on failure
  */
 void* arena_alloc_align(arena_t* arena, size_t size, size_t align);

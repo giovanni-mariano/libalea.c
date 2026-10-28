@@ -149,4 +149,27 @@ TEST(arena_rejects_overflow_and_invalid_alignment) {
     arena_free(&arena);
 }
 
+TEST(arena_max_alignment_survives_growth_and_reset) {
+    arena_t arena;
+    ASSERT_TRUE(arena_init_with_size(&arena, ARENA_MAX_ALIGNMENT * 3));
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < 8; i++) {
+            ASSERT_NOT_NULL(arena_alloc_align(&arena, 1, 1));
+            unsigned char* ptr = arena_alloc_align(&arena, ARENA_MAX_ALIGNMENT + 1,
+                                                    ARENA_MAX_ALIGNMENT);
+            ASSERT_NOT_NULL(ptr);
+            ASSERT_EQ((uintptr_t)ptr % ARENA_MAX_ALIGNMENT, 0);
+            ASSERT_EQ(ptr[0], 0);
+            ASSERT_EQ(ptr[ARENA_MAX_ALIGNMENT], 0);
+            memset(ptr, 0xAB, ARENA_MAX_ALIGNMENT + 1);
+        }
+        ASSERT_NOT_NULL(arena.head->next);
+        size_t used = arena_used(&arena);
+        ASSERT_NULL(arena_alloc_align(&arena, 1, ARENA_MAX_ALIGNMENT * 2));
+        ASSERT_EQ(arena_used(&arena), used);
+        arena_reset(&arena);
+    }
+    arena_free(&arena);
+}
+
 TEST_MAIN()

@@ -79,7 +79,7 @@ void* arena_alloc_align(arena_t* arena, size_t size, size_t align) {
     }
 
     if (align == 0 || (align & (align - 1)) != 0 ||
-        align > _Alignof(max_align_t)) return NULL;
+        align > ARENA_MAX_ALIGNMENT) return NULL;
 
     /* Reuse the existing chain after reset, without discarding smaller blocks. */
     arena_block_t* block = arena->current;
