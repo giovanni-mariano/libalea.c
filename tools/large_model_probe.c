@@ -134,6 +134,24 @@ static void print_ancestor_surface_instrumentation(
     }
 }
 
+static void print_owner_instrumentation(const alea_raycast_result_t* result) {
+    printf("  ownership: neighbor=%llu/%llu path=%llu/%llu root=%llu/%llu full=%llu/%llu\n",
+           (unsigned long long)result->owner_neighbor_hits,
+           (unsigned long long)result->owner_neighbor_attempts,
+           (unsigned long long)result->owner_path_hits,
+           (unsigned long long)result->owner_path_attempts,
+           (unsigned long long)result->owner_root_hits,
+           (unsigned long long)result->owner_root_queries,
+           (unsigned long long)result->owner_full_hits,
+           (unsigned long long)result->owner_full_queries);
+    printf("  query_work: intervals=%llu enrichment=%llu snapshots=%llu growths=%llu growth_bytes=%llu\n",
+           (unsigned long long)result->selected_intervals_yielded,
+           (unsigned long long)result->boundary_event_enrichments,
+           (unsigned long long)result->path_snapshot_copies,
+           (unsigned long long)result->result_buffer_growths,
+           (unsigned long long)result->result_buffer_growth_bytes);
+}
+
 static size_t point_bvh_threshold(void) {
     const char* env = getenv("ALEA_UNIVERSE_POINT_BVH_THRESHOLD");
     if (env && env[0]) {
@@ -512,6 +530,16 @@ static int run_hier_raycast(alea_system_t* sys,
     alea_raycast_result_t result;
     alea_raycast_result_init(&result);
 
+    /* Attribute lazy cache construction to preparation, before timing rays. */
+    double prepare_start = now_seconds();
+    if (alea_prepare_query_acceleration(sys) != 0) {
+        fprintf(stderr, "ray preparation failed: %s\n", alea_error());
+        return -1;
+    }
+    printf("Ray preparation: time=%.6f s peak_rss=%ld KiB\n",
+           now_seconds() - prepare_start, peak_rss_kib());
+    fflush(stdout);
+
     double t0 = now_seconds();
     int rc = blas_experimental
         ? alea_raycast_hier_blas_experimental(sys, ox, oy, oz, dx, dy, dz,
@@ -546,7 +574,9 @@ static int run_hier_raycast(alea_system_t* sys,
     print_surface_instrumentation(&result);
     print_lattice_entry_instrumentation(&result);
     print_ancestor_surface_instrumentation(&result);
+    print_owner_instrumentation(&result);
     print_cell_surface_index_stats(sys);
+    fflush(stdout);
     if (blas_experimental) {
         printf("  blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
                result.blas_placement_candidates,
@@ -595,6 +625,7 @@ static int run_hier_raycast(alea_system_t* sys,
         print_surface_instrumentation(&result);
         print_lattice_entry_instrumentation(&result);
         print_ancestor_surface_instrumentation(&result);
+        print_owner_instrumentation(&result);
         if (blas_experimental) {
             printf("  warm_last_blas_counts: placements=%zu pruned=%zu universe_queries=%zu cell_candidates=%zu cells_tested=%zu hits_pre_dedup=%zu\n",
                    result.blas_placement_candidates,

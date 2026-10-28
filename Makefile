@@ -918,6 +918,20 @@ mesh-benchmark: $(LIB_CORE) | $(BIN_DIR)
 	@$(CC) $(CFLAGS) $(INCLUDES) benchmarks/mesh_sampling.c $(LIB_CORE) $(LDFLAGS) \
 		-o $(BIN_DIR)/mesh_sampling_benchmark$(EXEEXT)
 
+$(BIN_DIR)/characteristic_tracks$(EXEEXT): examples/c/characteristic_tracks.c $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_CORE) $(LDFLAGS) -o $@
+
+$(BIN_DIR)/geometry_queries$(EXEEXT): benchmarks/geometry_queries.c $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_CORE) $(LDFLAGS) -o $@
+
+$(BIN_DIR)/geometry_model_queries$(EXEEXT): benchmarks/geometry_model_queries.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
+
+.PHONY: test-geometry-queries
+test-geometry-queries: $(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT) $(BIN_DIR)/characteristic_tracks$(EXEEXT)
+	@$(BIN_DIR)/tests/unit/test_geometry_queries$(EXEEXT)
+	@$(BIN_DIR)/characteristic_tracks$(EXEEXT)
+
 # Integration tests
 $(BIN_DIR)/tests/integration/%$(EXEEXT): $(INTEGRATION_TEST_DIR)/%.c $(LIB_CORE) $(LIB_MCNP) $(LIB_OPENMC) $(LIB_ALEA_XML) $(LIB_SERPENT) $(LIB_TRANSPORT) $(LIB_NUCDATA) | $(BIN_DIR)/tests/integration
 	@echo "LD  $@"

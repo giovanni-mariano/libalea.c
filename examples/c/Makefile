@@ -38,10 +38,15 @@ include ../../tools/compute_view.mk
 
 EXAMPLES = basic mcnp_roundtrip mcnp_volume render3d void_demo fusion_fixed_source adjoint_neutron
 
-all: $(EXAMPLES)
+all: $(EXAMPLES) characteristic_tracks
 
 basic: basic.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
+
+characteristic_tracks: $(BIN_DIR)/characteristic_tracks
+
+$(BIN_DIR)/characteristic_tracks: characteristic_tracks.c ../../bin/libalea.a
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_CORE)
 
 mcnp_roundtrip: mcnp_roundtrip.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL)
@@ -78,4 +83,4 @@ cluster_render: cluster_render.c ../../bin/libalea_cluster.a \
 clean:
 	rm -f $(EXAMPLES) slab_transport cluster_volumes cluster_render *.inp *.ppm *.bmp *.png
 
-.PHONY: all clean
+.PHONY: all clean characteristic_tracks
