@@ -111,10 +111,11 @@ int main(void) {
     alea_system_t* sys = scene();
     double* xyz = malloc(n*3*sizeof(*xyz));
     alea_compute_result_t* results = malloc(n*sizeof(*results));
+    alea_compute_selection_t* selected=malloc(n*sizeof(*selected));
     alea_compute_t* cpu = NULL; alea_compute_t* metal = NULL;
     render_framebuffer_t* fb = NULL;
     render_config_t cfg; render_config_init(&cfg);
-    if (!sys || !xyz || !results) goto done;
+    if (!sys || !xyz || !results || !selected) goto done;
     for (size_t i = 0; i < n; ++i) {
         xyz[3*i] = -8 + ((i%512)+.5)/32;
         xyz[3*i+1] = -8 + ((i/512)+.5)/32;
@@ -138,6 +139,25 @@ int main(void) {
         if (check_points(xyz,results,n)) {fprintf(stderr,"Point oracle mismatch\n");goto done;}
     }
     report("slice512","cpu",timings[0]);report("slice512","metal",timings[1]);
+    /* Matched ordered selection: prepared production core lookup, one CPU
+     * thread, versus one native Metal batch. Setup stays outside the timer. */
+    if(alea_prepare_query_acceleration(sys))goto done;
+    for(int pass=0;pass<PASSES;++pass)for(int order=0;order<2;++order) {
+        int backend=(pass+order)%2;start=seconds();
+        if(backend) {
+            if(alea_compute_select(metal,xyz,n,selected))goto done;
+        } else for(size_t i=0;i<n;++i) {
+            if(alea_find_cell_at(sys,xyz[3*i],xyz[3*i+1],xyz[3*i+2],
+                &selected[i].cell_id,&selected[i].material_id))goto done;
+            selected[i].depth=1;selected[i].status=ALEA_COMPUTE_FOUND;
+        }
+        timings[backend][pass]=seconds()-start;
+        for(size_t i=0;i<n;++i)if(selected[i].status!=ALEA_COMPUTE_FOUND || selected[i].depth!=1 ||
+            selected[i].cell_id!=results[i].cell_id || selected[i].material_id!=results[i].material_id) {
+            fprintf(stderr,"Selected ownership oracle mismatch\n");goto done;
+        }
+    }
+    report("selected512","cpu-core-serial",timings[0]);report("selected512","metal",timings[1]);
     cfg.width=512;cfg.height=384;cfg.aa_samples=1;cfg.log_level=0;
     cfg.eye_set=cfg.target_set=1;
     cfg.eye[0]=16;cfg.eye[1]=-20;cfg.eye[2]=18;
@@ -167,5 +187,5 @@ done:
     if (rc) fprintf(stderr,"%s\n",alea_error());
     render_framebuffer_free(fb);render_config_free(&cfg);
     alea_compute_destroy(cpu);alea_compute_destroy(metal);alea_destroy(sys);
-    free(xyz);free(results);return rc;
+    free(xyz);free(results);free(selected);return rc;
 }

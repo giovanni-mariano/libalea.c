@@ -25,6 +25,8 @@ int main(int argc, char** argv) {
     p.metal_backend = 1;
     p.compute = alea_compute_create(model.sys, ALEA_COMPUTE_METAL, ALEA_COMPUTE_FP32);
     assert(p.compute);
+    for(int selected=0;selected<2;++selected) {
+    p.selected_ownership=selected;
     uint8_t* baseline = NULL;
     assert(render_plot(model.sys, &p, 0, &baseline) == 0 && baseline);
     for (int stop = 1; stop <= 4; ++stop) {
@@ -40,6 +42,7 @@ int main(int argc, char** argv) {
         free(image);
     }
     free(baseline);
+    }
     alea_compute_destroy(p.compute);
     destroy_model(&model);
     puts("Metal slice: cancellation before/between submissions and before publication, reuse PASS");

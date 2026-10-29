@@ -214,3 +214,65 @@ programs. Selection does not emit classification profile records.
 
 The user-facing Metal plotter is rebuilt. CPU and Metal public image checks and
 SDL 2D/3D navigation, cancellation and reuse checks pass after this follow-up.
+
+## Explicit plotter operation and matched benchmarks
+
+`mc_plotter --backend=metal --ownership=selected|all` now dispatches the requested
+operation. Default Metal behavior remains all-owner classification. Selected
+undefined fills are yellow, uncontained samples orange, and terminal void white.
+Selected overlaps follow the first model-order path rather than displaying
+all-owner magenta. The initial geometry probe also uses the requested operation.
+Viewer publication, saving and navigation retain the chosen mode. CPU accepts
+explicit selected mode and rejects an all-owner request.
+
+The analytic benchmark now additionally compares the same 512x512 point array
+through prepared CPU core lookup (serial) and Metal selection, alternating one
+initial and five warm calls. IDs/materials match the analytic ownership fixture;
+Metal status/depth are checked. In this run, warm medians are 36.911 ms for serial
+CPU core and 26.547 ms for Metal. This measures generic point lookup, not optimized
+CPU grid traversal or complete plotting.
+
+The six-mode public complete-plotter benchmark uses five fresh-process trials,
+four CPU threads, 512x512 and profiling disabled. All complete images match on
+the nonoverlapping, fully populated public fixture:
+
+| Mode | Query median | Query range | Process wall median |
+| --- | ---: | ---: | ---: |
+| CPU grid | 6.200 ms | 5.800–7.100 ms | 15.1 ms |
+| CPU ray | 2.700 ms | 2.400–3.500 ms | 12.4 ms |
+| Metal all, scanner | 35.600 ms | 32.400–37.200 ms | 68.6 ms |
+| Metal all, candidates | 21.600 ms | 18.800–24.300 ms | 54.6 ms |
+| Metal selected, scanner | 28.300 ms | 26.000–30.400 ms | 59.9 ms |
+| Metal selected, candidates | 21.700 ms | 20.100–24.600 ms | 51.2 ms |
+
+Selected/all image equality on this fixture does not generalize to models with
+overlaps or undefined fills. The image checker tests those differing policies
+explicitly, including undefined fills winning before a later containing sibling.
+
+On the existing bounded private 128x128 view, one initial and five alternating
+warm selected frames include coordinate generation, staging, query preparation,
+all submissions and scattering. Scanner and candidate warm medians are 1.285 s
+(range 1.230–1.364) and 1.144 s (1.114–1.269). First frames take 1.341/1.207 s;
+snapshot preparation takes 11.791/9.828 s. All 16,384 result structs, including
+status and depth, match prepared CPU ordered lookup. Optimized CPU grid has a
+0.393 s warm median (0.376–0.418), while one serial CPU core-query pass takes
+19.691 s. The private results reinforce the need to distinguish point-call
+throughput from production grid traversal. Earlier all-owner timings are from
+a separate run and are not an alternating selected-versus-all speed ratio.
+
+No full-resolution private speed target is claimed. Private coordinates, images,
+probe sources and raw logs remain ignored/outside Git.
+
+The actual bounded private CLI check produces identical selected Metal images
+with candidates off/on. CPU grid, Metal selected scanning and Metal selected
+candidates query times are 377.5, 1302.4 and 1148.8 ms. Fresh-process wall times
+are 15.761, 21.999 and 22.826 s, respectively, in one run each. The candidate
+query improvement does not imply a cold-process improvement; loading/preparation
+dominate and vary between runs. No private CPU/Metal image-equality claim is
+made for undefined-fill presentation, which uses different colors.
+
+Validation: public analytic point/ray oracles, complete-image checks for both
+operations and candidate modes, overlap precedence, undefined-fill colors, option
+validation, CPU plotter regressions, both-mode cancellation/reuse and selected
+2D navigation/save checks pass. Existing 3D SDL regressions also pass. The Metal
+plotter is rebuilt.

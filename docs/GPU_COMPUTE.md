@@ -66,7 +66,8 @@ Overlapping siblings never override the first winning path. This differs from
 `alea_compute_classify()`, which counts every terminal owner and reports a hole
 in a fill as a gap. Each operation has its own result type. Selection currently
 uses ordered CPU enumeration and a native Metal single-path traversal; it is
-not yet connected to the plotter and has no new performance claim.
+connected to `mc_plotter --ownership=selected`. Matched point and complete-frame
+measurements are recorded in the native GPU implementation report.
 
 Snapshots, explicit precision and numerical limits remain as described above.
 Rectangular lattices are supported; hexagonal lattices and lattice-local fill
@@ -97,6 +98,24 @@ bin/mc_plotter examples/data/doc_shield.i Z 0 -12 12 -12 12 800x600 \
 Omit `--interactive` to write a PNG or BMP directly. CPU remains the default;
 `--backend metal` and `--backend=metal` are equivalent. Metal requires a build
 with `USE_METAL=1`; SDL is needed only for interactive use.
+
+Choose the ownership operation explicitly:
+
+```sh
+bin/mc_plotter model.mcnp Z 0 -10 10 -10 10 512 slice.bmp --backend=metal --ownership=selected
+bin/mc_plotter model.mcnp Z 0 -10 10 -10 10 512 slice.bmp --backend=metal --ownership=all
+```
+
+Metal defaults to `all`, preserving terminal-owner counting and overlap display.
+`selected` follows the first containing path in model order, including terminal
+void. Undefined fills return their container and appear yellow; uncontained
+points remain orange. Overlapping siblings do not override the winning path and
+are not marked magenta in selected mode. The viewer title, help and console
+identify the selected operation. The mode is fixed for that viewer session;
+navigation, saving and snapshot reuse preserve it. Both `--ownership=value` and
+`--ownership value` are accepted. CPU plotting supports explicit `selected`;
+requesting `all` on CPU is rejected. Existing CPU diagnostics remain separately
+selected through their normal options.
 
 Each pixel samples its center using approximate FP32 ownership. Unique material
 cells use the selected cell/material palette, terminal void is white, a sampled

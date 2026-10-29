@@ -30,7 +30,8 @@
         "all-terminal-owner counts and IDs",
         "first visible material/cell",
         "depth",
-        "normal"
+        "normal",
+        "selected model-order IDs/status/depth"
       ],
       "oracle": "independent circle and sphere-ray equations",
       "resolutions": [
@@ -48,7 +49,7 @@
         "cutaway",
         "closeup"
       ],
-      "cpu_comparison": "independent FP64 enumeration for points; no CPU ray performance comparison"
+      "cpu_comparison": "independent FP64 enumeration for all-owner points; serial prepared core lookup for selected points"
     },
     {
       "id": "public-complete-plotter",
@@ -63,7 +64,15 @@
       ],
       "cpu_comparison": "production selected-owner grid and ray raster versus Metal all-owner sampling on nonoverlapping fixture",
       "oracle": "complete image equality; analytic ownership checked by companion benchmark",
-      "measurement": "fresh process wall and complete slice query"
+      "measurement": "fresh process wall and complete slice query",
+      "modes": [
+        "cpu-grid",
+        "cpu-ray",
+        "metal-scan",
+        "metal-candidates",
+        "metal-selected",
+        "metal-selected-candidates"
+      ]
     },
     {
       "id": "public-complex-csg-progressive",

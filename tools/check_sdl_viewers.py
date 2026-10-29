@@ -71,6 +71,8 @@ def main():
             for name in ("metal_slice", "metal_slice_nested"):
                 viewers.append((name, "tools/mc_plotter.c",
                     ["Z", "0", "-10", "10", "-10", "10", "96", "--backend", "metal"]))
+            viewers.append(("metal_slice_selected", "tools/mc_plotter.c",
+                ["Z", "0", "-10", "10", "-10", "10", "96", "--backend=metal", "--ownership=selected"]))
             viewers.append(("metal_slice_lattice", "tools/mc_plotter.c",
                 ["Z", "0", "-10", "10", "-10", "10", "96", "--backend=metal"]))
         for name, source, options in viewers:

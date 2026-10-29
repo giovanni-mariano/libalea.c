@@ -60,6 +60,7 @@ def main():
                 cpu = run('cpu', ['--backend=cpu', *style], axis=axis, value=value)
                 gpu = metal_image('gpu', ['--backend', 'metal', *style], axis=axis, value=value)
                 assert cpu == gpu, (axis, style)
+                assert cpu == metal_image('gpu-selected', ['--backend=metal', '--ownership=selected', *style], axis=axis, value=value)
         rows = bitmap(metal_image('orientation', ['--backend=metal']))
         assert rows[57][52] != (255, 255, 255)  # Near world (1,2).
         assert rows[38][52] == (255, 255, 255)  # Near world (1,-2).
@@ -72,6 +73,26 @@ def main():
         assert rows[48][72] == (255, 255, 255), 'Unique void must be white'
         assert rows[10][10] == (255, 192, 128), 'Gap must be orange'
         assert rows[48][33] not in [(255, 0, 255), (255, 192, 128), (255, 255, 255)]
+
+        # Selected mode matches CPU precedence on overlaps; all-owner mode
+        # retains its overlap color. Candidate tiles must preserve both views.
+        selected = metal_image('selected', ['--backend=metal', '--ownership=selected'],
+                               source=ownership, value='0')
+        colors = bitmap(selected)
+        assert colors[48][43] != (255, 0, 255), 'Selected overlap must choose an owner'
+        cpu_selected = bitmap(run('cpu-selected', ['--backend=cpu'], source=ownership, value='0'))
+        assert colors[48][43] == cpu_selected[48][43]
+        assert colors[10][10] == (255, 192, 128)
+        hole = tmp / 'hole.i'
+        hole.write_text('Undefined fill\n1 0 -1 fill=1\n2 2 -1 -1\n10 1 -1 -2 u=1\n\n1 so 9\n2 so 2\n\n')
+        selected_hole = bitmap(metal_image('undefined', ['--backend=metal', '--ownership', 'selected'],
+                                          source=hole, value='0'))
+        assert selected_hole[48][65] == (255, 255, 0), 'Undefined fill must be yellow'
+        all_hole = bitmap(metal_image('all-hole', ['--backend=metal', '--ownership=all'], source=hole, value='0'))
+        assert all_hole[48][65] != (255, 255, 0)
+        for option in ['--ownership=wrong', '--ownership']:
+            run('bad-ownership', ['--backend=metal', option], error='ownership')
+        run('cpu-all', ['--backend=cpu', '--ownership=all'], error='requires')
 
         for option in ['--errors', '--method=ray', '--labels=surfaces', '--labels=all',
                        '--debug', '--trace=4,4']:

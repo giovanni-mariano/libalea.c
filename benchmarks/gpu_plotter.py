@@ -39,7 +39,7 @@ def main():
     args = parser.parse_args()
     if args.trials < 1 or args.threads < 1 or not 16 <= args.size <= 16384 or args.size % 16:
         parser.error('positive trials/threads and size a multiple of 16 in 16..16384 required')
-    timings = {m: [] for m in ('cpu-grid', 'cpu-ray', 'metal-scan', 'metal-candidates')}
+    timings = {m: [] for m in ('cpu-grid', 'cpu-ray', 'metal-scan', 'metal-candidates', 'metal-selected', 'metal-selected-candidates')}
     environment = {k: v for k, v in os.environ.items()
                    if not k.startswith(('ALEA_METAL_', 'ALEA_PLOT_', 'ALEA_GRID_'))}
     environment['ALEA_NUM_THREADS'] = str(args.threads)
@@ -53,8 +53,10 @@ def main():
             if trial % 2:
                 modes.reverse()
             for mode in modes:
-                env = dict(environment, ALEA_METAL_POINT_CANDIDATES=str(int(mode == 'metal-candidates')))
+                env = dict(environment, ALEA_METAL_POINT_CANDIDATES=str(int(mode.endswith('candidates'))))
                 options = ['--backend=metal'] if mode.startswith('metal') else ['--backend=cpu']
+                if mode.startswith('metal-selected'):
+                    options.append('--ownership=selected')
                 if mode == 'cpu-ray':
                     options.append('--method=ray')
                 output = tmp / 'slice.bmp'
