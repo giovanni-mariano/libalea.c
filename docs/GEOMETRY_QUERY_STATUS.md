@@ -9,6 +9,8 @@ Status reviewed on 2026-10-29. Production checkpoint: `0e9451e` on
 `experiment/geometry-recovery-search`; original baseline: `8c585eb`.
 This page records the current decision. Linked experiment reports preserve
 their original baselines, measurements, and historical conclusions.
+The subsequent [corrected-baseline measurement](GEOMETRY_CORRECTED_BASELINE.md)
+is complete and supplies the current performance profile.
 
 ## Decision
 
@@ -75,42 +77,40 @@ The subsequent torus-rejection experiment measured 10.126 s to 6.893 s across
 three alternating process pairs. These are separate measurements at different
 checkpoints; do not multiply them into a general library speedup.
 
-The latest broad private 512-view screen still exceeded a 60-second
-whole-process limit, including loading and preparation. That screen was run
-before the ellipse correction. It remains the latest broad-view observation;
-there is no fresh full-frame measurement at `0e9451e`. Completed material-detail
-views and sampled rows do not establish broad-view interactivity.
+The corrected-baseline broad private 512-view screen still exceeds a 60-second
+whole-process limit, including loading and preparation. Repeated completed
+material-detail views take about 2.9–3.0 s warm at 512 and 5.8 s at 1,024.
+Neither those views nor sampled rows establish broad-view interactivity.
 
-The earlier profile attributing about 89% of recovery time to indexed-list
-scanning predates torus rejection. It motivates a new profile but cannot identify
-the dominant cost of the corrected checkpoint. No new GPU code, GPU throughput
-claim, or device accuracy validation is part of this branch.
+The fresh coarse profile attributes about 87–90% of sampled row time to recovery
+and about 83% of recovery time to indexed scanning. A separate shadow diagnostic
+finds that 81.6% of indexed calls repeat an exact list/ray/transform context within
+one recovery, over a contained window. It skips no work and establishes an
+opportunity, not a speedup. No new GPU code, GPU throughput claim, or device
+accuracy validation is part of this branch.
 
 ## Next bounded investigation
 
-Measure the corrected checkpoint before choosing another index or backend.
-Use complete 512 and 1,024 slices for public controls and the existing private
-detail/broad views. Record loading, preparation, first frame, subsequent frames,
-trace/raster costs where available, process peak RSS, and cancellation separately.
-Run private processes sequentially; preserve the existing trace/storage budgets
-and external hard timeouts. A timeout is an incomplete result, not a frame time.
+The corrected-baseline measurement is complete. All public controls and
+independent ellipse pixel checks pass, as do 36 private detail frames and
+64 private rows against their prior outputs. The sampled 100 ms cancellation
+requests return in 103–105 ms with successful subsequent queries. The broad
+one-second warm-frame target remains unmet.
 
-The initial engineering target is a complete 512-by-512 broad slice within one
-second after preparation, with 100 ms requested cancellation returning within
-150 ms on the measured expensive workload. These are investigation targets,
-not achieved results or universal latency guarantees. Record the distance to
-the target even if no candidate is implemented. The current slice benchmark
-excludes display/upload and cannot establish application first-image latency
-or 3D render performance; those require separate consumer measurements.
+Test one candidate: avoid repeating an indexed scan within a single nearest
+recovery after an identical list/ray/transform context has completed successfully
+for a containing window. Preserve first-hit ties, aliases, world normals,
+recursive child traversal, and cancellation. Use exact keys, at most 1 MiB of
+optional per-recovery scratch, and the existing scan on allocation failure,
+saturation, or uncertain inputs. No cache crosses recovery calls or model edits.
 
-If the complete frame remains too expensive, use the existing bounded 32-row
-sets to profile actual recovery, occurrence traversal, primitive work, and
-ownership work on the corrected baseline. Separate diagnostic instrumentation
-from release timing. Select at most one candidate from that evidence. Require
-independent checks for any changed geometry decision, unchanged completed
-control outputs, a repeatable benefit exceeding run variability, no repeatable
-control regression above 5%, and explicit preparation/memory accounting.
-Failure to meet the target is grounds to narrow or reject a candidate.
+First establish the rule with independent synthetic cases and the uncached
+fallback. Require repeated release measurements, unchanged completed controls,
+no repeatable control regression above 5%, explicit memory accounting, and a
+new broad-frame screen before retaining an implementation. The shadow count of
+79% repeated references cannot be converted into an expected speedup. The
+slice benchmark excludes display/upload and does not establish 3D render or
+application first-image performance.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -128,6 +128,7 @@ conservation also need their own contracts.
 - [Historical remaining-cost profile](GEOMETRY_REMAINING_RECOVERY.md)
 - [Torus rejection](GEOMETRY_TORUS_RECOVERY.md)
 - [Elliptical torus correction](GEOMETRY_ELLIPTICAL_TORUS.md)
+- [Corrected baseline and repeated contexts](GEOMETRY_CORRECTED_BASELINE.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay
