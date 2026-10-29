@@ -18,6 +18,9 @@ The subsequent [indexed scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
 is measurement-only and identifies the plane-group hypothesis. The subsequent
 [plane-group implementation experiment](GEOMETRY_PLANE_GROUP_EXPERIMENT.md)
 is complete and not retained; production remains at `9375ed9`.
+The subsequent [captured-context scan replay](GEOMETRY_SCAN_COST_REPLAY.md)
+is complete and measurement-only; a direct plane-call implementation is the
+next bounded experiment.
 
 ## Decision
 
@@ -157,8 +160,16 @@ skipped 145.5 million per-card plane tests, but warm-frame medians improved only
 runs in both configurations. That is insufficient evidence of net benefit beyond
 variability. The candidate was archived locally and removed; previous production
 changes remain intact. The saved plan is marked complete and not retained.
-Further investigation should separate primitive-kernel cost from indexed dispatch
-and data access, or revisit the breadth of recovery, before adding another index.
+The subsequent captured-context replay finds substantial overhead around the
+kernels: pre-resolved records with the same union copy and generic dispatcher
+reduce replay time by 40.1-42.8%, excluding preparation and using extra memory.
+A simpler direct plane call through the original indexed lookup reduces replay
+time by 16.0-16.4% across three samples, without a prepared table. Sampled roots
+agree bit-for-bit and nearest-hit fields agree. Instrumented complete frames
+still use the original scan, so this is not a measured frame-time improvement.
+The next bounded experiment is the direct plane path, followed by full numerical
+and integration validation and paired complete-frame measurements. Production
+remains unchanged. See the replay report for sampling, storage, and timing limits.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -183,6 +194,7 @@ conservation also need their own contracts.
 - [Ordered recovery child cells](GEOMETRY_RECOVERY_CHILD_CELLS.md)
 - [Indexed surface scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
 - [Plane-group experiment: not retained](GEOMETRY_PLANE_GROUP_EXPERIMENT.md)
+- [Captured-context scan cost replay](GEOMETRY_SCAN_COST_REPLAY.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay
