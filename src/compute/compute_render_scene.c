@@ -181,6 +181,28 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
     int root=find_universe(univ,nu,0);
     if(root<0 && n){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"No root universe 0");goto fail;}
     if(root>=0 && check_universe(sys,univ,nu,order,root,0))goto fail;
+    /* Point queries share programs and transforms with rendering, but must
+     * enumerate terminal void and all overlapping occurrences. No spatial
+     * pruning is applied until its FP32 ownership contract is validated. */
+    scene->point_root = COMPUTE_NONE;
+    if (!nl && (nt || nu > 1)) {
+        scene->point_cells = calloc(n, sizeof(*scene->point_cells));
+        if (!scene->point_cells) goto memory;
+        if (root >= 0) scene->point_root = order[univ[root].first].cell;
+        for (size_t u = 0; u < nu; ++u) {
+            for (size_t j = univ[u].first; j < univ[u].first + univ[u].count; ++j) {
+                uint32_t i = order[j].cell;
+                metal_point_cell* point = &scene->point_cells[i];
+                point->next = j + 1 < univ[u].first + univ[u].count
+                    ? order[j + 1].cell : COMPUTE_NONE;
+                point->child = COMPUTE_NONE;
+                if (univ[u].state == 2 && sys->cells.data[i].fill_universe > 0) {
+                    int child = find_universe(univ, nu, sys->cells.data[i].fill_universe);
+                    point->child = order[univ[child].first].cell;
+                }
+            }
+        }
+    }
     /* Build only root-reachable universes. Unused input definitions are not
      * instances and must not appear in a rendered frame. */
     for(size_t u=0;u<nu;++u) {

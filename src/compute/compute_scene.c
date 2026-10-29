@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+_Static_assert(sizeof(metal_point_cell)==8,"Metal point links layout");
 _Static_assert(sizeof(compute_node)==8,"GPU instruction layout");
 _Static_assert(sizeof(compute_primitive)==56,"GPU primitive layout");
 _Static_assert(sizeof(compute_cell)==36,"GPU cell layout");
@@ -245,7 +246,7 @@ static void emit_node(pack_context* ctx,uint32_t id,size_t* at) {
 }
 
 void alea_compute_scene_free(compute_scene* s) {
-    free(s->nodes);free(s->primitives);free(s->cells);free(s->spatial);
+    free(s->nodes);free(s->primitives);free(s->cells);free(s->spatial);free(s->point_cells);
     alea_compute_render_free(&s->render);
     memset(s,0,sizeof(*s));
 }

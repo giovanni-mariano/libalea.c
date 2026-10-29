@@ -12,7 +12,8 @@ extern "C" {
 #endif
 
 /** Experimental, optional rendering and batch compute module (libalea_compute).
- * Rendering supports nested universes; batch point classification is flat-only.
+ * Native backends own their device layouts and execution; no GPU portability layer.
+ * Rendering and batch point classification support transformed fill hierarchies.
  */
 typedef struct alea_compute alea_compute_t;
 
@@ -29,7 +30,7 @@ typedef enum {
 typedef struct {
     int32_t cell_id;      /**< -1 unless exactly one cell owns the point. */
     int32_t material_id;  /**< -1 unless exactly one cell owns the point. */
-    uint32_t owner_count; /**< 0 = gap, 1 = unique, >1 = overlap. */
+    uint32_t owner_count; /**< Terminal occurrences: 0 = gap, 1 = unique, >1 = overlap. */
 } alea_compute_result_t;
 
 /** Return whether a backend was built and a suitable device is available.
@@ -55,12 +56,19 @@ alea_compute_t* alea_compute_create(const alea_system_t* sys,
 void alea_compute_destroy(alea_compute_t* compute);
 
 /** Synchronously classify count interleaved XYZ triples.
- * Requires flat universe-0 cells with no fills or lattices. This is a sampled
- * ownership query, not a geometry proof.
+ * Counts terminal owning occurrences from universe 0, including terminal void,
+ * under all containing fill ancestors. Repeated placements count separately.
+ * Containers are not owners; a gap in their contents remains a gap. IDs are -1
+ * unless ownership is unique. Supports transformed fills through 32 universe
+ * levels; lattice classification is currently rejected by both backends.
+ * This samples points, not complete intervals or thin-feature visibility.
+ * Metal uses approximate FP32 evaluation, including transformed coordinates.
  * All inputs must be finite; Metal inputs must also fit in float. Input and
  * output storage must not overlap. count == 0 permits NULL arrays.
  * One context must not be used concurrently. Different contexts are independent.
- * Metal buffers are reused between calls; geometry is uploaded only at create.
+ * Metal buffers are reused between calls; hierarchy buffers upload lazily once.
+ * Hierarchical Metal batches submit up to 4096 points at a time, checking
+ * cancellation between submissions; an individual submission has no time bound.
  * Returns 0 on success, -1 on error (output is unspecified on error).
  */
 int alea_compute_classify(alea_compute_t* compute, const double* xyz,

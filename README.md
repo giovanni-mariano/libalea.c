@@ -93,11 +93,13 @@ All builds use the vendored TinyPar backend by default and have no OpenMP
 runtime dependency.
 
 An experimental optional [GPU module](docs/GPU_COMPUTE.md) provides Metal FP32
-rendering for nested CSG models and CPU/Metal point classification for flat models. Build the
+rendering and CPU/Metal point classification for nested transformed fills.
+Point classification currently rejects lattices. Build the
 interactive viewer with `make tools USE_METAL=1 USE_SDL=1` and select
 `render3d --backend metal --interactive` for automatic coarse previews and
 cancellable tile refinement with automatic bounds. Metal supports transformed universes,
-rectangular lattices, quadrics, cones and tori. CUDA and HIP backends are planned.
+rectangular lattices, quadrics, cones and tori. CUDA and HIP backends are planned as separate native implementations, without
+a GPU portability framework. See the [native GPU roadmap](docs/NATIVE_GPU_GEOMETRY.md).
 
 The native CLI archives include `examples/lua` and `examples/python`.
 Python binding archives include the Python scripts under `examples/`.

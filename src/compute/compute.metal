@@ -115,4 +115,5 @@ kernel void alea_classify_points(device const compute_node* nodes [[buffer(0)]],
     results[index] = r;
 }
 
+#include "classify.metal"
 #include "render.metal"

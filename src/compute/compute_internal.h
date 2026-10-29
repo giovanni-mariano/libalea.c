@@ -20,6 +20,8 @@ typedef struct {
     size_t node_count, primitive_count, cell_count;
     compute_spatial_program* spatial;
     size_t spatial_count;
+    metal_point_cell* point_cells;
+    compute_uint point_root;
     compute_render_scene render;
 } compute_scene;
 int alea_compute_primitive_sign(const compute_primitive* primitive, const float bounds[6]);

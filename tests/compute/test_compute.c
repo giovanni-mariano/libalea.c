@@ -59,7 +59,7 @@ TEST(cpu_snapshot_and_validation) {
     alea_compute_destroy(NULL);
 }
 
-TEST(backend_precision_and_hierarchy_rejections) {
+TEST(backend_precision_and_missing_root_rejections) {
     alea_system_t* sys = sphere_scene();
     ASSERT_NULL(alea_compute_create(sys, ALEA_COMPUTE_METAL, ALEA_COMPUTE_FP64));
     ASSERT_EQ(alea_error_code(), ALEA_ERR_UNSUPPORTED);
@@ -75,7 +75,7 @@ TEST(backend_precision_and_hierarchy_rejections) {
     ASSERT_NOT_NULL(ctx);
     double xyz[3]={0};alea_compute_result_t result;
     ASSERT_EQ(alea_compute_classify(ctx,xyz,1,&result),-1);
-    ASSERT_EQ(alea_error_code(),ALEA_ERR_UNSUPPORTED);
+    ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_STATE);
     alea_compute_destroy(ctx);
     alea_destroy(sys);
 }
@@ -196,11 +196,122 @@ TEST(cpu_render_nested_owned_snapshot) {
     render_framebuffer_free(fb);render_config_free(&cfg);alea_compute_destroy(ctx);
 }
 
+/* Analytic nested translation/rotation: the material box is centered at
+ * world (1,1,0), the terminal void at (1,2.5,0). An ancestor clips z < 0. */
+static alea_system_t* point_hierarchy_scene(int overlap) {
+    alea_system_t* sys=alea_create();if(!sys)abort();
+    int material=alea_add_material(sys,7);
+    int outer=alea_box_surface(sys,1,-4,4,-4,4,-4,4);
+    int parent=alea_add_cell(sys,10,alea_halfspace(sys,outer,-1),ALEA_MATERIAL_VOID,0,0);
+    double translation[]={1,0,0};
+    if(alea_add_transform(sys,1,translation,3,0) || alea_set_fill(sys,parent,1,1))abort();
+    if(overlap) {
+        int duplicate=alea_add_cell(sys,11,alea_halfspace(sys,outer,-1),ALEA_MATERIAL_VOID,0,0);
+        if(alea_set_fill(sys,duplicate,1,1))abort();
+    }
+    int inner=alea_box_surface(sys,2,-3,3,-3,3,0,3);
+    int child=alea_add_cell(sys,20,alea_halfspace(sys,inner,-1),ALEA_MATERIAL_VOID,0,1);
+    double rotation[]={0,1,0,0,1,0,-1,0,0,0,0,1};
+    if(alea_add_transform(sys,2,rotation,12,0) || alea_set_fill(sys,child,2,2))abort();
+    int solid=alea_box_surface(sys,3,-.5,.5,-.5,.5,-.5,.5);
+    int empty=alea_box_surface(sys,4,1,2,-.5,.5,-.5,.5);
+    if(alea_add_cell(sys,42,alea_halfspace(sys,solid,-1),material,-1,2)<0 ||
+       alea_add_cell(sys,43,alea_halfspace(sys,empty,-1),ALEA_MATERIAL_VOID,0,2)<0 ||
+       alea_add_cell(sys,99,alea_halfspace(sys,outer,-1),material,-1,99)<0)abort();
+    return sys;
+}
+
+static void check_point_hierarchy(alea_compute_backend_t backend) {
+    const double points[]={1,1,.25, 1,2.5,.25, 1,1,-.25, 0,0,0, 100,0,0};
+    for(int overlap=0;overlap<2;++overlap) {
+        alea_system_t* sys=point_hierarchy_scene(overlap);
+        alea_compute_t* ctx=alea_compute_create(sys,backend,
+            backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+        ASSERT_MSG(ctx!=NULL,alea_error());
+        alea_destroy(sys);
+        /* Cross the native submission boundary and reuse buffers at two sizes. */
+        const size_t n=4101;
+        double* xyz=malloc(n*3*sizeof(*xyz));
+        alea_compute_result_t* results=malloc(n*sizeof(*results));
+        ASSERT_NOT_NULL(xyz);ASSERT_NOT_NULL(results);
+        for(size_t i=0;i<n;++i)memcpy(xyz+3*i,points+3*(i%5),3*sizeof(double));
+        for(int pass=0;pass<2;++pass) {
+            size_t count=pass?n:5;
+            ASSERT_MSG(alea_compute_classify(ctx,xyz,count,results)==0,alea_error());
+            for(size_t i=0;i<count;++i) {
+                unsigned owners=i%5<2?(unsigned)(overlap+1):0;
+                ASSERT_EQ(results[i].owner_count,owners);
+                ASSERT_EQ(results[i].cell_id,owners==1?(i%5==0?42:43):-1);
+                ASSERT_EQ(results[i].material_id,owners==1?(i%5==0?7:0):-1);
+            }
+        }
+        alea_interrupt();int rc=alea_compute_classify(ctx,xyz,n,results);alea_clear_interrupt();
+        ASSERT_EQ(rc,-1);
+        ASSERT_EQ(alea_compute_classify(ctx,xyz,n,results),0);
+        free(results);free(xyz);alea_compute_destroy(ctx);
+    }
+    /* A root terminal plus an unused universe is not a flat scene, but the
+     * unused definition must never be counted as a second owner. */
+    alea_system_t* sys=sphere_scene();
+    ASSERT(alea_add_cell(sys,99,sys->cells.data[0].root_node_id,0,0,99)>=0);
+    alea_compute_t* ctx=alea_compute_create(sys,backend,
+        backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+    ASSERT_MSG(ctx!=NULL,alea_error());double origin[]={0,0,0};alea_compute_result_t result;
+    ASSERT_EQ(alea_compute_classify(ctx,origin,1,&result),0);
+    ASSERT_EQ(result.owner_count,1);ASSERT_EQ(result.cell_id,42);
+    alea_compute_destroy(ctx);alea_destroy(sys);
+}
+
+static void check_point_depth_limit(alea_compute_backend_t backend) {
+    for(int levels=32;levels<=33;++levels) {
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+        int sphere=alea_sphere_surface(sys,1,0,0,0,2);
+        for(int level=0;level<levels;++level) {
+            int cell=alea_add_cell(sys,level+1,alea_halfspace(sys,sphere,-1),
+                level==levels-1?mat:ALEA_MATERIAL_VOID,0,level);
+            ASSERT(cell>=0);
+            if(level<levels-1)ASSERT_EQ(alea_set_fill(sys,cell,level+1,0),0);
+        }
+        alea_compute_t* ctx=alea_compute_create(sys,backend,
+            backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+        if(levels==33 && backend==ALEA_COMPUTE_METAL) {
+            ASSERT_NULL(ctx);ASSERT_EQ(alea_error_code(),ALEA_ERR_UNSUPPORTED);
+        } else {
+            ASSERT_MSG(ctx!=NULL,alea_error());
+            double point[]={0,0,0};alea_compute_result_t result;
+            int rc=alea_compute_classify(ctx,point,1,&result);
+            if(levels==32) {ASSERT_EQ(rc,0);ASSERT_EQ(result.owner_count,1);ASSERT_EQ(result.cell_id,32);}
+            else ASSERT_EQ(rc,-1);
+            alea_compute_destroy(ctx);
+        }
+        alea_destroy(sys);
+    }
+}
+
+TEST(cpu_point_depth_limit) {check_point_depth_limit(ALEA_COMPUTE_CPU);}
+
+TEST(cpu_classify_transformed_terminal_occurrences) {check_point_hierarchy(ALEA_COMPUTE_CPU);}
+
+TEST(cpu_classify_reports_hierarchy_limits) {
+    alea_system_t* sys=sphere_scene();
+    ASSERT_EQ(alea_set_fill(sys,0,1,0),0);
+    ASSERT(alea_add_cell(sys,43,sys->cells.data[0].root_node_id,ALEA_MATERIAL_VOID,0,1)>=0);
+    ASSERT_EQ(alea_set_fill(sys,1,1,0),0);
+    alea_compute_t* ctx=alea_compute_create(sys,ALEA_COMPUTE_CPU,ALEA_COMPUTE_FP64);
+    ASSERT_NOT_NULL(ctx);double xyz[]={0,0,0};alea_compute_result_t result;
+    ASSERT_EQ(alea_compute_classify(ctx,xyz,1,&result),-1);
+    alea_compute_destroy(ctx);alea_destroy(sys);
+}
+
 #ifdef ALEA_USE_METAL
 #include "compute/compute_internal.h"
 #include <unistd.h>
 /* A requested Metal test run must actually exercise the GPU; do not skip it
  * when the device is unavailable (including restricted execution sandboxes). */
+TEST(metal_point_depth_limit) {check_point_depth_limit(ALEA_COMPUTE_METAL);}
+
+TEST(metal_classify_transformed_terminal_occurrences) {check_point_hierarchy(ALEA_COMPUTE_METAL);}
+
 TEST(metal_matches_existing_evaluator) {
     ASSERT_TRUE(alea_compute_available(ALEA_COMPUTE_METAL));
     check_primitives_and_csg(ALEA_COMPUTE_METAL);
@@ -375,6 +486,31 @@ static void compare_render(alea_system_t* sys, alea_compute_t* gpu, render_confi
     render_framebuffer_free(cpu); render_framebuffer_free(metal);
 }
 
+static void test_camera(render_config_t* cfg);
+
+TEST(metal_point_and_render_share_snapshot_in_either_order) {
+    for(int render_first=0;render_first<2;++render_first) {
+        alea_system_t* sys=point_hierarchy_scene(0);
+        alea_compute_t* gpu=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);
+        ASSERT_MSG(gpu!=NULL,alea_error());alea_destroy(sys);
+        alea_system_t* reference=alea_create();int mat=alea_add_material(reference,7);
+        int box=alea_box_surface(reference,1,.5,1.5,.5,1.5,0,.5);
+        ASSERT(alea_add_cell(reference,42,alea_halfspace(reference,box,-1),mat,-1,0)>=0);
+        ASSERT_EQ(alea_prepare_query_acceleration(reference),0);
+        render_config_t cfg;test_camera(&cfg);
+        if(render_first)compare_render(reference,gpu,&cfg);
+        double points[]={1,1,.25,1,2.5,.25};alea_compute_result_t results[2];
+        ASSERT_EQ(alea_compute_classify(gpu,points,2,results),0);
+        ASSERT_EQ(results[0].cell_id,42);ASSERT_EQ(results[1].cell_id,43);
+        compare_render(reference,gpu,&cfg);
+        cfg.num_clips=1;cfg.clips[0]=(render_clip_plane_t){{0,1,0},-1};
+        compare_render(reference,gpu,&cfg);
+        ASSERT_EQ(alea_compute_classify(gpu,points,2,results),0);
+        ASSERT_EQ(results[1].owner_count,1);ASSERT_EQ(results[1].material_id,0);
+        render_config_free(&cfg);alea_compute_destroy(gpu);alea_destroy(reference);
+    }
+}
+
 TEST(metal_render_matches_cpu_csg_and_clips) {
     alea_system_t* sys=alea_create();
     int mat=alea_add_material(sys,7);
@@ -424,7 +560,6 @@ TEST(metal_render_matches_cpu_csg_and_clips) {
     alea_compute_destroy(gpu); alea_destroy(sys);
 }
 
-static void test_camera(render_config_t* cfg);
 typedef struct {size_t last,calls;int cancel,failed;} progressive_check;
 static int check_progress(void* user,const render_framebuffer_t* fb,size_t completed,size_t total) {
     progressive_check* check=user;
@@ -673,6 +808,9 @@ static void check_rectangular_lattices(void) {
         ASSERT_NOT_NULL(c->lat_fill);for(size_t j=0;j<c->lat_fill_count;++j)c->lat_fill[j]=2;
         if(!repeating && zero)c->lat_fill[4]=0;
         alea_compute_t* gpu=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_MSG(gpu!=NULL,alea_error());
+        double point[]={0,0,0};alea_compute_result_t result;
+        ASSERT_EQ(alea_compute_classify(gpu,point,1,&result),-1);
+        ASSERT_EQ(alea_error_code(),ALEA_ERR_UNSUPPORTED);
         alea_system_t* reference=alea_create();int rm=alea_add_material(reference,7);
         alea_node_id_t parts[9];int n=0;
         for(int x=-1;x<=1;++x)for(int y=-1;y<=1;++y) {

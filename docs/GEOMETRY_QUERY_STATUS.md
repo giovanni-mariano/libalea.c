@@ -190,6 +190,22 @@ characteristic-track consumers are useful; selected-owner tracks alone do not
 prove unique physical ownership. Deterministic mesh coupling and material
 conservation also need their own contracts.
 
+## Native GPU phase
+
+Subsequent work moves to `experiment/native-gpu-geometry`, preserving the CPU
+checkpoint `6cc16d8`. The [first native Metal increment](NATIVE_GPU_GEOMETRY.md)
+extends batch point classification to transformed fill hierarchies and shares
+primitive/CSG and transform resources with the existing 3D renderer. Void-aware
+query metadata is separate from visibility-only traversal. CUDA is planned as
+its own native implementation; no GPU portability framework is introduced.
+
+CPU-only and real-device Metal compute suites pass, along with analytic checks
+for a public 512x512 sampled slice and 512x384 exterior/cutaway frames. These are
+simple synthetic workloads, not the private broad ray-based slice. Classification
+still enumerates visited universes and rejects lattices; procedural lattices and
+then measured spatial pruning are next. No complex-model speedup or transport-grade
+GPU correctness claim follows. See the native report for scope and measurements.
+
 ## Evidence index and confidentiality
 
 - [Initial query experiment](GEOMETRY_QUERY_EXPERIMENT.md)

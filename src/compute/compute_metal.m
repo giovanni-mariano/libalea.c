@@ -19,6 +19,8 @@ typedef struct {
     id<MTLComputePipelineState> pipeline;
     id<MTLBuffer> nodes, primitives, cells, points, results;
     uint32_t cell_count;
+    int hierarchical;
+    id<MTLBuffer> point_cells;
     size_t capacity;
     compute_scene scene;
     id<MTLComputePipelineState> render_pipeline;
@@ -48,7 +50,7 @@ int alea_compute_metal_available(void) {
 void alea_compute_metal_destroy(void* state) {
     if (!state) return;
     metal_state* s = state;
-    [s->results release]; [s->points release];
+    [s->results release]; [s->points release]; [s->point_cells release];
     [s->cells release]; [s->nodes release]; [s->primitives release];
     [s->pipeline release]; [s->queue release]; [s->device release];
     [s->resume_pipeline release];[s->resume_states release];[s->resume_done release];[s->resume_pixels release];
@@ -116,7 +118,9 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
             alea_compute_metallib_len, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
         id<MTLLibrary> library = [s->device newLibraryWithData:data error:&error];
         dispatch_release(data);
-        id<MTLFunction> function = [library newFunctionWithName:@"alea_classify_points"];
+        s->hierarchical = scene.point_cells != NULL;
+        id<MTLFunction> function = [library newFunctionWithName:
+            s->hierarchical ? @"alea_classify_hierarchy" : @"alea_classify_points"];
         if (function) s->pipeline = [s->device newComputePipelineStateWithFunction:function error:&error];
         [function release]; [library release];
         if (!s->device || !s->queue || !s->pipeline) {
@@ -150,71 +154,111 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
     }
 }
 
+/* Classification and rendering share the transform upload. Query links are
+ * separate because the render BVH intentionally excludes terminal void. */
+static int prepare_classify(metal_state* s) {
+    if (!s->hierarchical || s->point_cells) return 0;
+    size_t bytes = s->scene.cell_count * sizeof(metal_point_cell);
+    size_t tb = (s->scene.render.transform_count ? s->scene.render.transform_count : 1)
+        * sizeof(compute_transform);
+    if (bytes > s->device.maxBufferLength || (!s->transforms && tb > s->device.maxBufferLength)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW, "Metal point hierarchy exceeds buffer limit");
+        return -1;
+    }
+    id<MTLBuffer> links = [s->device newBufferWithBytes:s->scene.point_cells
+        length:bytes options:MTLResourceStorageModeShared];
+    id<MTLBuffer> transforms = s->transforms ? [s->transforms retain] :
+        [s->device newBufferWithBytes:s->scene.render.transforms length:tb options:MTLResourceStorageModeShared];
+    if (!links || !transforms) {
+        [links release]; [transforms release];
+        alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Uploading Metal point hierarchy");
+        return -1;
+    }
+    s->point_cells = links;
+    [s->transforms release]; s->transforms = transforms;
+    free(s->scene.point_cells); s->scene.point_cells = NULL;
+    return 0;
+}
+
 int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                                 alea_compute_result_t* results) {
     @autoreleasepool {
         metal_state* s = state;
-        if (count > s->device.maxBufferLength / (3 * sizeof(float)) ||
-            count > s->device.maxBufferLength / sizeof(compute_result)) {
-            alea_set_error_detail(ALEA_ERR_OVERFLOW, "Metal batch exceeds maximum buffer size");
-            return -1;
-        }
-        if (count > s->capacity) {
-            id<MTLBuffer> points = [s->device newBufferWithLength:count * 3 * sizeof(float) options:MTLResourceStorageModeShared];
-            id<MTLBuffer> output = [s->device newBufferWithLength:count * sizeof(compute_result) options:MTLResourceStorageModeShared];
-            if (!points || !output) {
-                [points release]; [output release];
-                alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal batch buffers");
+        if (prepare_classify(s)) return -1;
+        const size_t total = count;
+        const size_t limit = s->hierarchical ? 4096 : count;
+        for (size_t first = 0; first < total; first += count) {
+            if (alea_interrupted()) {
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Metal batch interrupted"); return -1;
+            }
+            count = total - first < limit ? total - first : limit;
+            if (count > s->device.maxBufferLength / (3 * sizeof(float)) ||
+                count > s->device.maxBufferLength / sizeof(compute_result)) {
+                alea_set_error_detail(ALEA_ERR_OVERFLOW, "Metal batch exceeds maximum buffer size");
                 return -1;
             }
-            [s->points release]; [s->results release];
-            s->points = points; s->results = output; s->capacity = count;
-        }
-        float* points = s->points.contents;
-        for (size_t i = 0; i < count * 3; ++i) points[i] = (float)xyz[i];
-        id<MTLCommandBuffer> command = [s->queue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-        if (!command || !encoder) {
-            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Creating Metal command buffer");
-            return -1;
-        }
-        [encoder setComputePipelineState:s->pipeline];
-        [encoder setBuffer:s->nodes offset:0 atIndex:0];
-        [encoder setBuffer:s->cells offset:0 atIndex:1];
-        [encoder setBuffer:s->points offset:0 atIndex:2];
-        [encoder setBuffer:s->results offset:0 atIndex:3];
-        uint32_t point_count = (uint32_t)count;
-        [encoder setBytes:&s->cell_count length:sizeof(s->cell_count) atIndex:4];
-        [encoder setBytes:&point_count length:sizeof(point_count) atIndex:5];
-        [encoder setBuffer:s->primitives offset:0 atIndex:6];
-        NSUInteger width = MIN((NSUInteger)128, s->pipeline.maxTotalThreadsPerThreadgroup);
-        [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
-        [encoder endEncoding];
-        [command commit];
-        [command waitUntilCompleted];
-        if (command.status != MTLCommandBufferStatusCompleted) {
-            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Metal compute failed: %s",
-                command.error ? [[command.error localizedDescription] UTF8String] : "unknown command error");
-            return -1;
-        }
-        if (alea_interrupted()) {
-            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Metal batch interrupted");
-            return -1;
-        }
-        const compute_result* output = s->results.contents;
-        for (size_t i = 0; i < count; ++i) {
-            if (output[i].owner_count == UINT32_MAX) {
-                alea_set_error_detail(ALEA_ERR_OVERFLOW,
-                    "Non-finite FP32 evaluation at point %zu; use the CPU backend", i);
+            if (count > s->capacity) {
+                id<MTLBuffer> points = [s->device newBufferWithLength:count * 3 * sizeof(float) options:MTLResourceStorageModeShared];
+                id<MTLBuffer> output = [s->device newBufferWithLength:count * sizeof(compute_result) options:MTLResourceStorageModeShared];
+                if (!points || !output) {
+                    [points release]; [output release];
+                    alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal batch buffers");
+                    return -1;
+                }
+                [s->points release]; [s->results release];
+                s->points = points; s->results = output; s->capacity = count;
+            }
+            float* points = s->points.contents;
+            for (size_t i = 0; i < count * 3; ++i) points[i] = (float)xyz[3 * first + i];
+            id<MTLCommandBuffer> command = [s->queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+            if (!command || !encoder) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Creating Metal command buffer");
                 return -1;
             }
+            [encoder setComputePipelineState:s->pipeline];
+            [encoder setBuffer:s->nodes offset:0 atIndex:0];
+            [encoder setBuffer:s->cells offset:0 atIndex:1];
+            [encoder setBuffer:s->points offset:0 atIndex:2];
+            [encoder setBuffer:s->results offset:0 atIndex:3];
+            uint32_t point_count = (uint32_t)count;
+            uint32_t root_or_count = s->hierarchical ? s->scene.point_root : s->cell_count;
+            [encoder setBytes:&root_or_count length:sizeof(root_or_count) atIndex:4];
+            [encoder setBytes:&point_count length:sizeof(point_count) atIndex:5];
+            [encoder setBuffer:s->primitives offset:0 atIndex:6];
+            if (s->hierarchical) {
+                [encoder setBuffer:s->transforms offset:0 atIndex:7];
+                [encoder setBuffer:s->point_cells offset:0 atIndex:8];
+            }
+            NSUInteger width = MIN((NSUInteger)128, s->pipeline.maxTotalThreadsPerThreadgroup);
+            [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+            [encoder endEncoding];
+            [command commit];
+            [command waitUntilCompleted];
+            if (command.status != MTLCommandBufferStatusCompleted) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Metal compute failed: %s",
+                    command.error ? [[command.error localizedDescription] UTF8String] : "unknown command error");
+                return -1;
+            }
+            if (alea_interrupted()) {
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Metal batch interrupted");
+                return -1;
+            }
+            const compute_result* output = s->results.contents;
+            for (size_t i = 0; i < count; ++i) {
+                if (output[i].owner_count == UINT32_MAX) {
+                    alea_set_error_detail(ALEA_ERR_OVERFLOW,
+                        "FP32 evaluation or hierarchy limit failure at point %zu", first + i);
+                    return -1;
+                }
+            }
+            memcpy(results + first, output, count * sizeof(*results));
         }
-        memcpy(results, output, count * sizeof(*results));
         return 0;
     }
 }
 
-/* Upload render-only resources lazily; point queries need no device BVH or pixels. */
+/* Upload render-only resources lazily; transform buffers may already be shared. */
 static int prepare_render(metal_state* s) {
     if (s->render_pipeline) return 0;
     compute_render_scene r = s->scene.render;
@@ -252,7 +296,8 @@ static int prepare_render(metal_state* s) {
     }
     id<MTLBuffer> bvh = [s->device newBufferWithBytes:r.bvh length:bb options:MTLResourceStorageModeShared];
     id<MTLBuffer> colors = [s->device newBufferWithLength:color_bytes options:MTLResourceStorageModeShared];
-    id<MTLBuffer> transforms = [s->device newBufferWithBytes:r.transforms length:tb options:MTLResourceStorageModeShared];
+    id<MTLBuffer> transforms = s->transforms ? [s->transforms retain] :
+        [s->device newBufferWithBytes:r.transforms length:tb options:MTLResourceStorageModeShared];
     id<MTLBuffer> lattices = [s->device newBufferWithBytes:r.lattices length:ab options:MTLResourceStorageModeShared];
     id<MTLBuffer> fills = [s->device newBufferWithBytes:r.fills length:fb options:MTLResourceStorageModeShared];
     /* Commit ownership only after every allocation succeeds. A failed render
@@ -270,7 +315,7 @@ static int prepare_render(metal_state* s) {
     s->bvh_root=r.root;
     free(s->scene.spatial);s->scene.spatial=NULL;
     alea_compute_render_free(&s->scene.render);
-    s->transforms=transforms; s->lattices=lattices; s->fills=fills;
+    [s->transforms release]; s->transforms=transforms; s->lattices=lattices; s->fills=fills;
     s->render_pipeline=pipeline; s->bvh=bvh; s->colors=colors;
     if(s->trace)fprintf(stderr,"Metal device %s: %.2f MiB persistent render buffers\n",s->device.name.UTF8String,
         (s->nodes.length+s->primitives.length+s->cells.length+bvh.length+transforms.length+lattices.length+fills.length+colors.length+s->spatial.length)/1048576.0);

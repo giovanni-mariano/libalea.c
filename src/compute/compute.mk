@@ -33,7 +33,7 @@ $(COMPUTE_BUILD_DIR)/%.o: $(SRC_DIR)/compute/%.c | $(COMPUTE_BUILD_DIR)
 	@echo "CC  $< ($(COMPUTE_VARIANT))"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) -c $< -o $@
 
-$(COMPUTE_BUILD_DIR)/compute.air: $(SRC_DIR)/compute/compute.metal $(SRC_DIR)/compute/render.metal $(SRC_DIR)/compute/resume.metal $(SRC_DIR)/compute/intersect.metal $(SRC_DIR)/compute/compute_layout.h | $(COMPUTE_BUILD_DIR)
+$(COMPUTE_BUILD_DIR)/compute.air: $(SRC_DIR)/compute/compute.metal $(SRC_DIR)/compute/classify.metal $(SRC_DIR)/compute/render.metal $(SRC_DIR)/compute/resume.metal $(SRC_DIR)/compute/intersect.metal $(SRC_DIR)/compute/compute_layout.h | $(COMPUTE_BUILD_DIR)
 	@echo "METAL $<"
 	@xcrun --sdk macosx metal -std=macos-metal2.3 -fno-fast-math \
 		-fmodules-cache-path=$(abspath $(COMPUTE_BUILD_DIR))/module-cache -c $< -o $@
@@ -90,6 +90,14 @@ install-compute: compute
 -include $(COMPUTE_OBJS:.o=.d)
 
 ifeq ($(USE_METAL),1)
+$(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT): benchmarks/gpu_geometry.c $(LIB_COMPUTE) $(LIB_CORE)
+	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
+		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
+
+.PHONY: benchmark-gpu-geometry
+benchmark-gpu-geometry: compute $(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT)
+	@$(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT)
+
 $(COMPUTE_BIN_DIR)/benchmark_render$(EXEEXT): benchmarks/render_compute.c $(LIB_COMPUTE) $(LIB_CORE)
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
 		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@

@@ -4,6 +4,7 @@
 #include "compute_internal.h"
 #include "alea.h"
 #include "core/alea_system.h"
+#include "core/alea_transform.h"
 #include "util/alea_parallel.h"
 #include <float.h>
 #include <stdlib.h>
@@ -12,7 +13,7 @@ struct alea_compute {
     alea_compute_backend_t backend;
     alea_system_t* cpu;
     void* device;
-    int flat;
+    int flat, lattice;
 };
 
 int alea_compute_available(alea_compute_backend_t backend) {
@@ -49,9 +50,10 @@ alea_compute_t* alea_compute_create(const alea_system_t* sys,
         alea_set_error_detail(ALEA_ERR_OVERFLOW, "Too many compute cells");
         return NULL;
     }
-    int flat = 1;
+    int flat = 1, lattice = 0;
     for (size_t i = 0; i < sys->cells.count; ++i) {
         const alea_cell_entry_t* c = &sys->cells.data[i];
+        if (c->lat_type) lattice = 1;
         if (c->universe_id != 0 || c->fill_universe > 0 || c->lat_type != 0) flat = 0;
         if (c->root_node_id >= sys->nodes.count) {
             alea_set_error_detail(ALEA_ERR_INVALID_ID, "Invalid root for compute cell %d", c->mc_cell_id);
@@ -65,6 +67,7 @@ alea_compute_t* alea_compute_create(const alea_system_t* sys,
     }
     ctx->backend = backend;
     ctx->flat = flat;
+    ctx->lattice = lattice;
     if (backend == ALEA_COMPUTE_CPU) {
         ctx->cpu = alea_clone(sys);
         if (!ctx->cpu) {
@@ -95,7 +98,42 @@ typedef struct {
     const alea_system_t* sys;
     const double* xyz;
     alea_compute_result_t* results;
+    int hierarchical;
 } cpu_batch_t;
+
+/* Reference enumeration: count terminal occurrences, not fill containers.
+ * Keep this independent of Metal packing and of selected-owner traversal. */
+static int cpu_classify_universe(const alea_system_t* sys, int universe,
+                                double x, double y, double z, unsigned depth,
+                                alea_compute_result_t* result) {
+    if (depth >= 32 || alea_interrupted()) return -1;
+    const alea_universe_t* u = alea_get_universe(sys, universe);
+    if (!u) return -1;
+    for (size_t i = 0; i < u->cell_indices.count; ++i) {
+        if ((i & 1023) == 0 && alea_interrupted()) return -1;
+        const alea_cell_entry_t* c = &sys->cells.data[u->cell_indices.data[i]];
+        if (!alea_point_inside(sys, c->root_node_id, x, y, z)) continue;
+        if (c->fill_universe > 0) {
+            double lx = x, ly = y, lz = z;
+            if (c->fill_transform > 0) {
+                const alea_transform_t* tr = alea_get_transform(sys, c->fill_transform);
+                alea_matrix_t matrix;
+                if (!tr || !alea_matrix_from_mcnp(&matrix, tr->cosines,
+                        tr->value_count, false) || !alea_matrix_invert(&matrix)) return -1;
+                alea_matrix_transform_point_inverse(&matrix, &lx, &ly, &lz);
+                if (!isfinite(lx) || !isfinite(ly) || !isfinite(lz)) return -1;
+            }
+            if (cpu_classify_universe(sys, c->fill_universe, lx, ly, lz,
+                                      depth + 1, result)) return -1;
+        } else {
+            if (result->owner_count == UINT32_MAX - 1) return -1;
+            ++result->owner_count;
+            result->cell_id = c->mc_cell_id;
+            result->material_id = c->material_id;
+        }
+    }
+    return 0;
+}
 
 static int cpu_range(void* arg, size_t worker, size_t begin, size_t end) {
     (void)worker;
@@ -104,7 +142,9 @@ static int cpu_range(void* arg, size_t worker, size_t begin, size_t end) {
         if (alea_interrupted()) return -1;
         const double* p = batch->xyz + 3 * i;
         alea_compute_result_t r = {-1, -1, 0};
-        for (size_t j = 0; j < batch->sys->cells.count; ++j) {
+        if (batch->hierarchical) {
+            if (cpu_classify_universe(batch->sys, 0, p[0], p[1], p[2], 0, &r)) return -1;
+        } else for (size_t j = 0; j < batch->sys->cells.count; ++j) {
             const alea_cell_entry_t* c = &batch->sys->cells.data[j];
             if (alea_point_inside(batch->sys, c->root_node_id, p[0], p[1], p[2])) {
                 ++r.owner_count;
@@ -131,8 +171,8 @@ int alea_compute_classify(alea_compute_t* ctx, const double* xyz,
         return -1;
     }
     if (count == 0) return 0;
-    if (!ctx->flat) {
-        alea_set_error_detail(ALEA_ERR_UNSUPPORTED, "Batch classification requires flat universe-0 cells; hierarchical scenes support rendering");
+    if (ctx->lattice) {
+        alea_set_error_detail(ALEA_ERR_UNSUPPORTED, "Batch classification does not yet support lattices");
         return -1;
     }
     ALEA_CHECK_INTERRUPTED(-1);
@@ -147,7 +187,9 @@ int alea_compute_classify(alea_compute_t* ctx, const double* xyz,
     if (ctx->backend == ALEA_COMPUTE_METAL)
         return alea_compute_metal_classify(ctx->device, xyz, count, results);
 #endif
-    cpu_batch_t batch = {ctx->cpu, xyz, results};
+    if (!ctx->flat && !ctx->cpu->universe_index_built && alea_build_universe_index(ctx->cpu))
+        return -1;
+    cpu_batch_t batch = {ctx->cpu, xyz, results, !ctx->flat};
     alea_parallel_status_t status = alea_parallel_for(count, 256, 0,
         ALEA_PARALLEL_STATIC_BLOCK, cpu_range, &batch, NULL);
     if (status != ALEA_PARALLEL_OK) {

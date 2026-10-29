@@ -235,13 +235,29 @@ SDL_CONFIG="$PWD/build/deps/SDL2-2.32.10/install/bin/sdl2-config" \
 
 ## Point classification
 
-`alea_compute_classify()` classifies interleaved XYZ batches on a prepared
-snapshot. It currently requires flat universe-0 geometry and scans all cells;
-this is separate from hierarchical rendering and the core accelerated lookup.
+`alea_compute_classify()` classifies interleaved XYZ batches on an owned
+snapshot. CPU FP64 and native Metal FP32 support nested transformed fills through
+32 universe levels. Classification counts terminal owning occurrences, including
+void, under every containing ancestor. Repeated placements count separately;
+containers do not count as owners, and gaps in their contents remain gaps.
 An owner count of zero denotes a gap, one a unique owner, and larger counts an
-overlap. IDs are -1 unless ownership is unique. Empty batches are valid. Inputs
-must be finite and fit the selected backend's precision and allocation limits.
+overlap. IDs are -1 unless ownership is unique. Unreferenced definitions are
+ignored. Lattice classification is explicitly unsupported in this increment;
+3D rectangular-lattice rendering is unchanged.
 
-`make benchmark-compute USE_METAL=1` compares complete CPU/Metal batch costs.
+Metal shares primitive/CSG and transform buffers with its renderer, but uses
+separate point-traversal links that include void. These links upload lazily.
+Hierarchical queries submit up to 4,096 points at a time and check cancellation
+between submissions; per-submission execution time is not bounded. Both point
+implementations currently enumerate visited universes. They are separate from
+the core accelerated point lookup. Empty batches are valid. Inputs must be
+finite and fit the backend's precision/allocation limits. FP32 boundary and
+thin-feature limitations remain; sampled ownership is not interval coverage.
+
+`make benchmark-compute USE_METAL=1` compares complete flat CPU/Metal batch costs.
 `make benchmark-render-compute USE_METAL=1` compares the 64-sphere renderer.
-Batch agreement is sampled evidence, not a geometry proof.
+`make benchmark-gpu-geometry USE_METAL=1 RELEASE=1` checks and times hierarchical
+512x512 point-sampled slices and 512x384 exterior/cutaway frames against analytic
+references. Metal owns its kernels, device layouts and scheduling. Planned CUDA
+and other backends will have their own native implementations, sharing libalea's
+query contract and semantic fixtures rather than a GPU portability framework.
