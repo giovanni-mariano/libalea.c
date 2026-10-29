@@ -79,34 +79,63 @@ TEST(metal_point_upload_failure_and_shared_transform_ownership) {
         int parent=alea_add_cell(sys,10,alea_halfspace(sys,sphere,-1),ALEA_MATERIAL_VOID,0,0);
         ASSERT(alea_add_cell(sys,42,alea_halfspace(sys,sphere,-1),mat,-1,1)>=0);
         ASSERT_EQ(alea_set_fill(sys,parent,1,0),0);
-        for(NSUInteger failure=1;failure<=7;++failure) {
+        for(NSUInteger failure=1;failure<=9;++failure) {
             metal_state* s=calloc(1,sizeof(*s));ASSERT_NOT_NULL(s);
             ASSERT_EQ(alea_compute_pack(sys,&s->scene),0);
             s->hierarchical=1;s->cell_count=(uint32_t)s->scene.cell_count;
             UploadDevice* device=[UploadDevice alloc];device->target=MTLCreateSystemDefaultDevice();
             ASSERT_NOT_NULL(device->target);s->device=(id<MTLDevice>)device;
             metal_point_cell* original=s->scene.point_cells;
-            if(failure<=2) {
+            if(failure<=4) {
                 device->fail_at=failure;
                 ASSERT_EQ(prepare_classify(s),-1);ASSERT_EQ(live_buffers,0);
                 ASSERT_NULL(s->point_cells);ASSERT_NULL(s->transforms);
                 ASSERT_TRUE(s->scene.point_cells==original);
                 device->fail_at=0;
             }
-            ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(live_buffers,2);
+            ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(live_buffers,4);
             ASSERT_NULL(s->scene.point_cells);
             id<MTLBuffer> transforms=s->transforms;
             NSUInteger calls=device->calls;
             ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(device->calls,calls);
-            if(failure>2) {
-                device->fail_at=device->calls+failure-2;
-                ASSERT_EQ(prepare_render(s),-1);ASSERT_EQ(live_buffers,2);
+            if(failure>4) {
+                device->fail_at=device->calls+failure-4;
+                ASSERT_EQ(prepare_render(s),-1);ASSERT_EQ(live_buffers,4);
                 ASSERT_TRUE(s->transforms==transforms);ASSERT_NOT_NULL(s->scene.render.bvh);
                 device->fail_at=0;
             }
-            ASSERT_EQ(prepare_render(s),0);ASSERT_EQ(live_buffers,7);
+            ASSERT_EQ(prepare_render(s),0);ASSERT_EQ(live_buffers,9);
             ASSERT_TRUE(s->transforms==transforms);
             calls=device->calls;ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(device->calls,calls);
+            alea_compute_metal_destroy(s);ASSERT_EQ(live_buffers,0);
+        }
+        alea_destroy(sys);
+    }
+}
+
+TEST(metal_point_upload_after_render_failure_preserves_shared_buffers) {
+    @autoreleasepool {
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+        int sphere=alea_sphere_surface(sys,1,0,0,0,2);
+        int parent=alea_add_cell(sys,10,alea_halfspace(sys,sphere,-1),ALEA_MATERIAL_VOID,0,0);
+        ASSERT(alea_add_cell(sys,42,alea_halfspace(sys,sphere,-1),mat,-1,1)>=0);
+        ASSERT_EQ(alea_set_fill(sys,parent,1,0),0);
+        for(NSUInteger failure=1;failure<=3;++failure) {
+            metal_state* s=calloc(1,sizeof(*s));ASSERT_NOT_NULL(s);
+            ASSERT_EQ(alea_compute_pack(sys,&s->scene),0);
+            s->hierarchical=1;s->cell_count=(uint32_t)s->scene.cell_count;
+            UploadDevice* device=[UploadDevice alloc];device->target=MTLCreateSystemDefaultDevice();
+            ASSERT_NOT_NULL(device->target);s->device=(id<MTLDevice>)device;
+            ASSERT_EQ(prepare_render(s),0);ASSERT_EQ(live_buffers,6);
+            id<MTLBuffer> transforms=s->transforms;
+            metal_point_cell* original=s->scene.point_cells;
+            device->fail_at=device->calls+failure;
+            ASSERT_EQ(prepare_classify(s),-1);ASSERT_EQ(live_buffers,6);
+            ASSERT_TRUE(s->transforms==transforms);ASSERT_NULL(s->point_cells);
+            ASSERT_TRUE(s->scene.point_cells==original);ASSERT_NOT_NULL(s->scene.point_lattices);
+            device->fail_at=0;
+            ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(live_buffers,9);
+            ASSERT_TRUE(s->transforms==transforms);
             alea_compute_metal_destroy(s);ASSERT_EQ(live_buffers,0);
         }
         alea_destroy(sys);

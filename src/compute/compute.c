@@ -7,6 +7,7 @@
 #include "core/alea_transform.h"
 #include "util/alea_parallel.h"
 #include <float.h>
+#include <limits.h>
 #include <stdlib.h>
 
 struct alea_compute {
@@ -15,6 +16,36 @@ struct alea_compute {
     void* device;
     int flat, lattice;
 };
+
+/* Validate before compiling CSG or constructing render spatial programs. */
+int alea_compute_validate_rect_lattices(const alea_system_t* sys) {
+    for (size_t i = 0; i < sys->cells.count; ++i) {
+        const alea_cell_entry_t* c = &sys->cells.data[i];
+        if (!c->lat_type) continue;
+        if (c->lat_type != 1 || c->fill_transform > 0) {
+            alea_set_error_detail(ALEA_ERR_UNSUPPORTED,
+                "Compute requires rectangular lattices without lattice-local fill transforms (cell %d)", c->mc_cell_id);
+            return -1;
+        }
+        uint64_t count = 1;
+        for (int a = 0; a < 3; ++a) {
+            int64_t length = (int64_t)c->lat_fill_dims[2*a+1] - c->lat_fill_dims[2*a] + 1;
+            if (length < 1 || length > INT32_MAX || count > UINT32_MAX / (uint64_t)length ||
+                !isfinite(c->lat_pitch[a]) || c->lat_pitch[a] < 0 ||
+                !isfinite(c->lat_lower_left[a]) ||
+                ((a < 2 || length > 1) && c->lat_pitch[a] <= 0)) {
+                alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Invalid compute lattice bounds or pitch (cell %d)", c->mc_cell_id);
+                return -1;
+            }
+            count *= (uint64_t)length;
+        }
+        if (!c->lat_fill || c->lat_fill_count != (c->lat_fill_repeating ? 1 : count)) {
+            alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Invalid compute lattice fill table (cell %d)", c->mc_cell_id);
+            return -1;
+        }
+    }
+    return 0;
+}
 
 int alea_compute_available(alea_compute_backend_t backend) {
     if (backend == ALEA_COMPUTE_CPU) return 1;
@@ -60,6 +91,7 @@ alea_compute_t* alea_compute_create(const alea_system_t* sys,
             return NULL;
         }
     }
+    if (backend == ALEA_COMPUTE_METAL && lattice && alea_compute_validate_rect_lattices(sys)) return NULL;
     alea_compute_t* ctx = calloc(1, sizeof(*ctx));
     if (!ctx) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating compute context");
@@ -67,7 +99,7 @@ alea_compute_t* alea_compute_create(const alea_system_t* sys,
     }
     ctx->backend = backend;
     ctx->flat = flat;
-    ctx->lattice = lattice;
+    ctx->lattice = backend == ALEA_COMPUTE_CPU ? lattice : 0;
     if (backend == ALEA_COMPUTE_CPU) {
         ctx->cpu = alea_clone(sys);
         if (!ctx->cpu) {
@@ -101,6 +133,41 @@ typedef struct {
     int hierarchical;
 } cpu_batch_t;
 
+/* Independent FP64 element lookup. Empty/nonpositive fills are gaps. Active
+ * axes use floor (the upper element owns a shared face). As in core queries,
+ * finite singleton Y/Z windows include their upper face; untiled Z is unshifted
+ * in center coordinates. The enclosing fill CSG supplies ancestor clipping. */
+static int cpu_lattice_point(const alea_cell_entry_t* c, double p[3], int* child) {
+    int64_t relative[3];
+    int outside = 0;
+    for (int a = 0; a < 3; ++a) {
+        int64_t length = (int64_t)c->lat_fill_dims[2*a+1] - c->lat_fill_dims[2*a] + 1;
+        double pitch = c->lat_pitch[a], lower = c->lat_lower_left[a];
+        int tiled = a == 0 || length > 1 || (c->lat_fill_repeating && (a != 2 || pitch > 0));
+        if (!c->lat_fill_repeating && c->lat_outer_universe <= 0 && length == 1 && pitch > 0 &&
+            (p[a] < lower || p[a] > lower + pitch)) return 0;
+        double index = tiled ? floor((p[a] - lower) / pitch) : 0;
+        if (!isfinite(index) || index < INT32_MIN || index > INT32_MAX) return -1;
+        relative[a] = (int64_t)index;
+        int64_t logical = relative[a] + c->lat_fill_dims[2*a];
+        if (logical < INT32_MIN || logical > INT32_MAX) return -1;
+        outside |= relative[a] < 0 || relative[a] >= length;
+        double shift = c->lat_fill_zero_element_coords ? logical * pitch :
+            a == 2 && !tiled ? 0 : lower + (index + .5) * pitch;
+        p[a] -= shift;
+        if (!isfinite(p[a])) return -1;
+    }
+    if (c->lat_fill_repeating) *child = c->lat_fill[0];
+    else if (outside) *child = c->lat_outer_universe;
+    else {
+        size_t ny = (size_t)((int64_t)c->lat_fill_dims[3] - c->lat_fill_dims[2] + 1);
+        size_t nz = (size_t)((int64_t)c->lat_fill_dims[5] - c->lat_fill_dims[4] + 1);
+        size_t at = ((size_t)relative[0] * ny + (size_t)relative[1]) * nz + (size_t)relative[2];
+        *child = c->lat_fill[at];
+    }
+    return *child > 0;
+}
+
 /* Reference enumeration: count terminal occurrences, not fill containers.
  * Keep this independent of Metal packing and of selected-owner traversal. */
 static int cpu_classify_universe(const alea_system_t* sys, int universe,
@@ -112,6 +179,13 @@ static int cpu_classify_universe(const alea_system_t* sys, int universe,
     for (size_t i = 0; i < u->cell_indices.count; ++i) {
         if ((i & 1023) == 0 && alea_interrupted()) return -1;
         const alea_cell_entry_t* c = &sys->cells.data[u->cell_indices.data[i]];
+        if (c->lat_type) {
+            double p[3] = {x, y, z}; int child;
+            int found = cpu_lattice_point(c, p, &child);
+            if (found < 0) return -1;
+            if (found && cpu_classify_universe(sys, child, p[0], p[1], p[2], depth + 1, result)) return -1;
+            continue;
+        }
         if (!alea_point_inside(sys, c->root_node_id, x, y, z)) continue;
         if (c->fill_universe > 0) {
             double lx = x, ly = y, lz = z;
@@ -172,8 +246,8 @@ int alea_compute_classify(alea_compute_t* ctx, const double* xyz,
     }
     if (count == 0) return 0;
     if (ctx->lattice) {
-        alea_set_error_detail(ALEA_ERR_UNSUPPORTED, "Batch classification does not yet support lattices");
-        return -1;
+        if (alea_compute_validate_rect_lattices(ctx->cpu)) return -1;
+        ctx->lattice = 0;
     }
     ALEA_CHECK_INTERRUPTED(-1);
     for (size_t i = 0; i < count * 3; ++i) {

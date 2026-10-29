@@ -2009,7 +2009,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  --interactive           SDL viewer (build with USE_SDL=1); H for controls\n");
     fprintf(stderr, "  --backend=cpu|metal     Default CPU; Metal requires USE_METAL=1 (approximate FP32)\n");
-    fprintf(stderr, "                          Metal: sampled ownership, no lattices or batch mode\n");
+    fprintf(stderr, "                          Metal: sampled ownership, rectangular lattices; no batch mode\n");
     fprintf(stderr, "  --method=grid|ray       Sampling method (default: grid; errors use grid)\n");
     fprintf(stderr, "  --errors                Enable geometry diagnostics and error contours\n");
     fprintf(stderr, "  --labels=cells          Show cell ID labels\n");

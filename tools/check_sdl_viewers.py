@@ -71,6 +71,8 @@ def main():
             for name in ("metal_slice", "metal_slice_nested"):
                 viewers.append((name, "tools/mc_plotter.c",
                     ["Z", "0", "-10", "10", "-10", "10", "96", "--backend", "metal"]))
+            viewers.append(("metal_slice_lattice", "tools/mc_plotter.c",
+                ["Z", "0", "-10", "10", "-10", "10", "96", "--backend=metal"]))
         for name, source, options in viewers:
             is_slice = source == "tools/mc_plotter.c"
             wrapper = tmp / f"{name}.c"
@@ -104,7 +106,9 @@ int main(int argc, char** argv) {{
                 actions += [("clip", "xsq"), ("clip_move", "x]sq"), ("clip_reset", "x]rsq")]
             for mode, keys in actions:
                 output = tmp / f"{name}-{mode}.bmp"
-                args = [str(exe), str(nested_model if name.endswith("nested") else model), *options]
+                source_model = (root / "tests/data/mcnp_nested_lattice_transformed.mcnp"
+                    if name.endswith("lattice") else nested_model if name.endswith("nested") else model)
+                args = [str(exe), str(source_model), *options]
                 if not is_slice: args += ["-o"]
                 args += [str(output), "--interactive"]
                 env = dict(os.environ, SDL_VIDEODRIVER="dummy", ALEA_TEST_KEYS=keys)

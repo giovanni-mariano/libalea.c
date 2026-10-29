@@ -72,7 +72,8 @@ thin features can be missed. Contours, cell/material labels and ticks are drawn
 on the CPU from the classified grid. Pan, zoom, axis and slice controls reuse
 one geometry snapshot; `H` shows controls and the color legend.
 
-Metal slices currently reject lattices, batch files, ray sampling, surface
+Metal slices support finite/repeating rectangular lattices and outer fills.
+They reject hexagonal lattices, lattice-local fill transforms, batch files, ray sampling, surface
 labels, `--errors`, `--debug`, `--trace`, and the `ALEA_PLOT_*` coverage/error
 diagnostic settings. These requests fail explicitly without CPU fallback.
 The Ray and Errors controls are absent from the Metal viewer.
@@ -275,11 +276,25 @@ void, under every containing ancestor. Repeated placements count separately;
 containers do not count as owners, and gaps in their contents remain gaps.
 An owner count of zero denotes a gap, one a unique owner, and larger counts an
 overlap. IDs are -1 unless ownership is unique. Unreferenced definitions are
-ignored. Lattice classification is explicitly unsupported in this increment;
-3D rectangular-lattice rendering is unchanged.
+ignored. Finite/repeating rectangular lattices are traversed procedurally, including
+nested lattices, outer fills and zero-element coordinates. Element selection
+uses floor on tiled axes, assigning a shared face to the upper element. Finite
+singleton Y/Z windows include their upper face, matching core point lookup;
+untiled Z remains unshifted in center coordinates. Nonpositive element fills
+are gaps, while void-only fill universes remain unique owners. Ancestor fill
+CSG still clips the lattice. Hexagonal lattices and lattice-local fill transforms
+are rejected. Metal validates lattice type, dimensions, pitch and fill tables
+before CSG packing and rendering specialization. Spatial rendering programs
+are still prepared by snapshot creation; classification does not use them.
+
+Metal rejects logical or relative element indices with magnitude greater than
+16,777,215 rather than silently collapsing adjacent indices in FP32. CPU lookup
+uses checked 32-bit indices. These guards do not remove ordinary FP32 boundary
+sensitivity.
 
 Metal shares primitive/CSG and transform buffers with its renderer, but uses
-separate point-traversal links that include void. These links upload lazily.
+separate point-traversal and lattice-fill links that include void. These links
+upload lazily and survive either classification/rendering initialization order.
 Hierarchical queries submit up to 4,096 points at a time and check cancellation
 between submissions; per-submission execution time is not bounded. Both point
 implementations currently enumerate visited universes. They are separate from

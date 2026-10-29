@@ -202,14 +202,19 @@ its own native implementation; no GPU portability framework is introduced.
 CPU-only and real-device Metal compute suites pass, along with analytic checks
 for a public 512x512 sampled slice and 512x384 exterior/cutaway frames. These are
 simple synthetic workloads, not the private broad ray-based slice. Classification
-still enumerates visited universes and rejects lattices; procedural lattices and
-then measured spatial pruning are next. No complex-model speedup or transport-grade
+still enumerates visited universes. The subsequent increment adds procedural
+rectangular lattices; measured spatial pruning is next. No complex-model speedup or transport-grade
 GPU correctness claim follows. See the native report for scope and measurements.
 
 The follow-up exposes Metal classification in `mc_plotter --backend=metal`,
 including interactive navigation and static images. Public image, cancellation
 and SDL event-loop checks pass; CPU remains the default. This UI integration
-retains the same lattice, sampling, FP32 and performance limits.
+retains the sampling and FP32 limits. Rectangular lattice classification now
+passes its public fixtures and a private E-lite smoke comparison: all 256 sampled
+results agree with the CPU enumeration reference. Warm Metal query time is
+1.356 seconds for that small sample, so complex-model interactive performance
+remains unresolved. Private geometry, coordinates, images and raw logs remain
+outside Git.
 
 ## Evidence index and confidentiality
 

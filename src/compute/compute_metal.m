@@ -20,7 +20,7 @@ typedef struct {
     id<MTLBuffer> nodes, primitives, cells, points, results;
     uint32_t cell_count;
     int hierarchical;
-    id<MTLBuffer> point_cells;
+    id<MTLBuffer> point_cells, point_lattices, point_fills;
     size_t capacity;
     compute_scene scene;
     id<MTLComputePipelineState> render_pipeline;
@@ -51,6 +51,7 @@ void alea_compute_metal_destroy(void* state) {
     if (!state) return;
     metal_state* s = state;
     [s->results release]; [s->points release]; [s->point_cells release];
+    [s->point_lattices release]; [s->point_fills release];
     [s->cells release]; [s->nodes release]; [s->primitives release];
     [s->pipeline release]; [s->queue release]; [s->device release];
     [s->resume_pipeline release];[s->resume_states release];[s->resume_done release];[s->resume_pixels release];
@@ -161,7 +162,10 @@ static int prepare_classify(metal_state* s) {
     size_t bytes = s->scene.cell_count * sizeof(metal_point_cell);
     size_t tb = (s->scene.render.transform_count ? s->scene.render.transform_count : 1)
         * sizeof(compute_transform);
-    if (bytes > s->device.maxBufferLength || (!s->transforms && tb > s->device.maxBufferLength)) {
+    size_t lb = (s->scene.point_lattice_count ? s->scene.point_lattice_count : 1) * sizeof(compute_lattice);
+    size_t fb = (s->scene.point_fill_count ? s->scene.point_fill_count : 1) * sizeof(uint32_t);
+    if (bytes > s->device.maxBufferLength || lb > s->device.maxBufferLength || fb > s->device.maxBufferLength ||
+        (!s->transforms && tb > s->device.maxBufferLength)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW, "Metal point hierarchy exceeds buffer limit");
         return -1;
     }
@@ -169,12 +173,18 @@ static int prepare_classify(metal_state* s) {
         length:bytes options:MTLResourceStorageModeShared];
     id<MTLBuffer> transforms = s->transforms ? [s->transforms retain] :
         [s->device newBufferWithBytes:s->scene.render.transforms length:tb options:MTLResourceStorageModeShared];
-    if (!links || !transforms) {
-        [links release]; [transforms release];
+    id<MTLBuffer> lattices = [s->device newBufferWithBytes:s->scene.point_lattices
+        length:lb options:MTLResourceStorageModeShared];
+    id<MTLBuffer> fills = [s->device newBufferWithBytes:s->scene.point_fills
+        length:fb options:MTLResourceStorageModeShared];
+    if (!links || !transforms || !lattices || !fills) {
+        [links release]; [transforms release]; [lattices release]; [fills release];
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Uploading Metal point hierarchy");
         return -1;
     }
-    s->point_cells = links;
+    s->point_cells = links; s->point_lattices = lattices; s->point_fills = fills;
+    free(s->scene.point_lattices); s->scene.point_lattices = NULL;
+    free(s->scene.point_fills); s->scene.point_fills = NULL;
     [s->transforms release]; s->transforms = transforms;
     free(s->scene.point_cells); s->scene.point_cells = NULL;
     return 0;
@@ -229,6 +239,8 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
             if (s->hierarchical) {
                 [encoder setBuffer:s->transforms offset:0 atIndex:7];
                 [encoder setBuffer:s->point_cells offset:0 atIndex:8];
+                [encoder setBuffer:s->point_lattices offset:0 atIndex:9];
+                [encoder setBuffer:s->point_fills offset:0 atIndex:10];
             }
             NSUInteger width = MIN((NSUInteger)128, s->pipeline.maxTotalThreadsPerThreadgroup);
             [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];

@@ -247,12 +247,14 @@ static void emit_node(pack_context* ctx,uint32_t id,size_t* at) {
 
 void alea_compute_scene_free(compute_scene* s) {
     free(s->nodes);free(s->primitives);free(s->cells);free(s->spatial);free(s->point_cells);
+    free(s->point_lattices);free(s->point_fills);
     alea_compute_render_free(&s->render);
     memset(s,0,sizeof(*s));
 }
 
 int alea_compute_pack_geometry(const alea_system_t* sys,compute_scene* s,int accelerate) {
     memset(s,0,sizeof(*s));
+    if(alea_compute_validate_rect_lattices(sys))return -1;
     size_t nn=sys->nodes.count,nc=sys->cells.count,np=sys->primitives.count;
     if(nn>UINT32_MAX || nc>=UINT32_MAX || np>UINT32_MAX/2 ||
        nn>SIZE_MAX/sizeof(node_info) || np>SIZE_MAX/sizeof(compute_primitive) || nc>SIZE_MAX/sizeof(compute_cell)) {

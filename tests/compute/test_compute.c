@@ -303,11 +303,184 @@ TEST(cpu_classify_reports_hierarchy_limits) {
     alea_compute_destroy(ctx);alea_destroy(sys);
 }
 
+/* Analytic element fixtures use known logical indices, avoiding the production
+ * locator and an expanded lattice as the point-ownership oracle. */
+static alea_system_t* point_lattice_scene(int repeating, int zero, int outer, int duplicate) {
+    alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+    int box=alea_box_surface(sys,1,-8,8,-8,8,-8,8);
+    int parent=alea_add_cell(sys,10,alea_halfspace(sys,box,-1),ALEA_MATERIAL_VOID,0,0);
+    double tr[]={1,0,0,0,1,0,-1,0,0,0,0,1};
+    if(alea_add_transform(sys,1,tr,12,0) || alea_set_fill(sys,parent,1,1))abort();
+    int unit=alea_box_surface(sys,2,-.1,.1,-.1,.1,-.1,.1);
+    /* This CSG describes an element, not the envelope of all placements. */
+    for(int n=0;n<=duplicate;++n) {
+        int at=alea_add_cell(sys,20+n,alea_halfspace(sys,unit,-1),ALEA_MATERIAL_VOID,0,1);
+        alea_cell_entry_t* c=&sys->cells.data[at];
+        c->lat_type=1;c->lat_fill_repeating=repeating;c->lat_fill_zero_element_coords=zero;
+        c->lat_outer_universe=outer?3:-1;
+        for(int a=0;a<3;++a) {
+            c->lat_fill_dims[2*a]=-1;c->lat_fill_dims[2*a+1]=1;
+            c->lat_pitch[a]=2;c->lat_lower_left[a]=-3;
+        }
+        c->lat_lower_left[0]=zero?-2.75:-3;
+        c->lat_fill_count=repeating?1:27;
+        c->lat_fill=malloc(c->lat_fill_count*sizeof(int));if(!c->lat_fill)abort();
+        for(size_t j=0;j<c->lat_fill_count;++j)c->lat_fill[j]=repeating?2:(int[]){2,3,4,0}[j%4];
+    }
+    int sphere=alea_sphere_surface(sys,3,0,0,0,.6);
+    alea_node_id_t inside=alea_halfspace(sys,sphere,-1),outside=alea_halfspace(sys,sphere,1);
+    alea_node_id_t all=alea_union(sys,inside,outside);
+    if(alea_add_cell(sys,42,inside,mat,-1,2)<0 ||
+       alea_add_cell(sys,43,outside,ALEA_MATERIAL_VOID,0,2)<0 ||
+       alea_add_cell(sys,44,all,ALEA_MATERIAL_VOID,0,3)<0 ||
+       alea_add_cell(sys,45,all,mat,-1,4)<0 ||
+       alea_add_cell(sys,46,all,mat,-1,4)<0)abort();
+    return sys;
+}
+
+static void check_point_lattices(alea_compute_backend_t backend) {
+    for(int repeat=0;repeat<2;++repeat)for(int zero=0;zero<2;++zero)
+    for(int outer=0;outer<2;++outer)for(int duplicate=0;duplicate<2;++duplicate) {
+        alea_system_t* sys=point_lattice_scene(repeat,zero,outer,duplicate);
+        alea_compute_t* ctx=alea_compute_create(sys,backend,
+            backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+        ASSERT_MSG(ctx!=NULL,alea_error());alea_destroy(sys);
+        double xyz[251*3];alea_compute_result_t expected[251],got[251];size_t n=0;
+        for(int i=-2;i<=2;++i)for(int j=-2;j<=2;++j)for(int k=-2;k<=2;++k)
+        for(int sample=0;sample<2;++sample) {
+            double px=2*i+(zero?.25:0)+(sample?.8:0),py=2*j,pz=2*k;
+            xyz[3*n]=1-py;xyz[3*n+1]=px;xyz[3*n+2]=pz;
+            int in=i>=-1 && i<=1 && j>=-1 && j<=1 && k>=-1 && k<=1;
+            int fill=repeat?2:in?(int[]){2,3,4,0}[((i+1)*9+(j+1)*3+k+1)%4]:outer?3:0;
+            int solid=sample==0;
+            unsigned owners=(fill==0?0:fill==4?2:1)*(duplicate+1);
+            int id=fill==2?(solid?42:43):44;
+            expected[n]=(alea_compute_result_t){owners==1?id:-1,owners==1?(fill==2 && solid?7:0):-1,owners};
+            ++n;
+        }
+        /* The lattice must still respect the transformed ancestor's CSG. */
+        xyz[3*n]=9;xyz[3*n+1]=xyz[3*n+2]=0;
+        expected[n++]=(alea_compute_result_t){-1,-1,0};
+        ASSERT_EQ(alea_compute_classify(ctx,xyz,n,got),0);
+        for(size_t i=0;i<n;++i) {
+            ASSERT_EQ(got[i].owner_count,expected[i].owner_count);
+            ASSERT_EQ(got[i].cell_id,expected[i].cell_id);
+            ASSERT_EQ(got[i].material_id,expected[i].material_id);
+        }
+        alea_compute_destroy(ctx);
+    }
+}
+
+static void check_lattice_faces_and_layers(alea_compute_backend_t backend) {
+    alea_system_t* sys=point_lattice_scene(0,0,0,0);
+    alea_cell_entry_t* c=&sys->cells.data[1];
+    /* Two x elements, one y/z layer. Fill each with a distinct terminal. */
+    c->lat_fill_dims[0]=0;c->lat_fill_dims[1]=1;
+    c->lat_fill_dims[2]=c->lat_fill_dims[3]=c->lat_fill_dims[4]=c->lat_fill_dims[5]=0;
+    c->lat_fill_count=2;c->lat_fill[0]=3;c->lat_fill[1]=4;
+    for(int a=0;a<3;++a)c->lat_lower_left[a]=-1;
+    const double local[][3]={{-1,0,0},{1-0x1p-10,0,0},{1,0,0},{1+0x1p-10,0,0},
+        {3,0,0},{0,-1,0},{0,1,0},{0,1+0x1p-10,0},{0,0,-1},{0,0,1},
+        {0,0,1+0x1p-10}};
+    const unsigned expected[]={1,1,2,2,0,1,1,0,1,1,0};
+    for(int slab=0;slab<2;++slab) {
+        if(slab)c->lat_pitch[2]=0; /* An untiled 2D lattice is unbounded in Z. */
+        alea_compute_t* ctx=alea_compute_create(sys,backend,
+            backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+        ASSERT_MSG(ctx!=NULL,alea_error());
+        for(size_t i=0;i<sizeof(expected)/sizeof(expected[0]);++i) {
+            double xyz[]={1-local[i][1],local[i][0],local[i][2]};alea_compute_result_t r;
+            ASSERT_EQ(alea_compute_classify(ctx,xyz,1,&r),0);
+            ASSERT_EQ(r.owner_count,slab && i==10?1:expected[i]);
+        }
+        alea_compute_destroy(ctx);
+    }
+    alea_destroy(sys);
+}
+
+static void check_lattice_rejections(alea_compute_backend_t backend) {
+    for(int invalid=0;invalid<5;++invalid) {
+        alea_system_t* sys=point_lattice_scene(1,0,0,0);
+        alea_cell_entry_t* c=&sys->cells.data[1];
+        if(invalid==0)c->lat_type=2;
+        if(invalid==1)c->fill_transform=1;
+        if(invalid==2)c->lat_pitch[0]=0;
+        if(invalid==3)c->lat_fill_count=2;
+        if(invalid==4)c->lat_fill_dims[1]=-2;
+        alea_compute_t* ctx=alea_compute_create(sys,backend,
+            backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+        if(backend==ALEA_COMPUTE_METAL)ASSERT_NULL(ctx);
+        else {
+            ASSERT_NOT_NULL(ctx);double p[]={0,0,0};alea_compute_result_t r;
+            ASSERT_EQ(alea_compute_classify(ctx,p,1,&r),-1);alea_compute_destroy(ctx);
+        }
+        alea_destroy(sys);
+    }
+}
+
+TEST(cpu_classify_rectangular_lattices) {check_point_lattices(ALEA_COMPUTE_CPU);}
+TEST(cpu_classify_lattice_faces_and_layers) {check_lattice_faces_and_layers(ALEA_COMPUTE_CPU);}
+TEST(cpu_classify_lattice_rejections) {check_lattice_rejections(ALEA_COMPUTE_CPU);}
+
+static void check_nested_point_lattices(alea_compute_backend_t backend) {
+    alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+    int sphere=alea_sphere_surface(sys,1,0,0,0,.25);
+    alea_node_id_t inside=alea_halfspace(sys,sphere,-1);
+    for(int level=0;level<2;++level) {
+        int at=alea_add_cell(sys,10+level,inside,ALEA_MATERIAL_VOID,0,level);
+        alea_cell_entry_t* c=&sys->cells.data[at];c->lat_type=1;
+        c->lat_fill_dims[1]=1;c->lat_fill_count=2;c->lat_fill=malloc(2*sizeof(int));ASSERT_NOT_NULL(c->lat_fill);
+        c->lat_fill[0]=c->lat_fill[1]=level+1;
+        for(int a=0;a<3;++a){c->lat_pitch[a]=4;c->lat_lower_left[a]=-2;}
+        if(level)c->lat_pitch[0]=2;
+    }
+    ASSERT(alea_add_cell(sys,42,inside,mat,-1,2)>=0);
+    ASSERT(alea_add_cell(sys,43,alea_halfspace(sys,sphere,1),ALEA_MATERIAL_VOID,0,2)>=0);
+    alea_compute_t* ctx=alea_compute_create(sys,backend,
+        backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+    ASSERT_MSG(ctx!=NULL,alea_error());alea_destroy(sys);
+    double xyz[]={-1,0,0, 1,0,0, 3,0,0, 5,0,0, 0,0,0, 2,0,0, 4,0,0, 6,0,0};
+    alea_compute_result_t r[8];ASSERT_EQ(alea_compute_classify(ctx,xyz,8,r),0);
+    for(int i=0;i<8;++i){ASSERT_EQ(r[i].owner_count,i==7?0:1);ASSERT_EQ(r[i].cell_id,i==7?-1:i<4?42:43);}
+    alea_compute_destroy(ctx);
+}
+
+static void check_repeating_axial_lattice(alea_compute_backend_t backend) {
+    alea_system_t* sys=point_lattice_scene(1,1,0,0);
+    alea_cell_entry_t* c=&sys->cells.data[1];
+    for(int a=0;a<3;++a){c->lat_fill_dims[2*a]=c->lat_fill_dims[2*a+1]=0;c->lat_lower_left[a]=-1;}
+    /* Unbounded parent for testing distant element-index rejection. */
+    sys->cells.data[0].root_node_id=sys->cells.data[sys->cells.count-1].root_node_id;
+    alea_compute_t* ctx=alea_compute_create(sys,backend,
+        backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+    ASSERT_MSG(ctx!=NULL,alea_error());alea_destroy(sys);
+    const size_t n=4101;double* xyz=calloc(n*3,sizeof(double));
+    alea_compute_result_t* results=malloc(n*sizeof(*results));ASSERT_NOT_NULL(xyz);ASSERT_NOT_NULL(results);
+    for(size_t i=0;i<n;++i){xyz[3*i]=1;xyz[3*i+2]=i%2?2:-2;}
+    ASSERT_EQ(alea_compute_classify(ctx,xyz,n,results),0);
+    for(size_t i=0;i<n;++i){ASSERT_EQ(results[i].owner_count,1);ASSERT_EQ(results[i].cell_id,42);}
+    double far[]={1,0,backend==ALEA_COMPUTE_CPU?1e10:1e8};alea_compute_result_t r;
+    ASSERT_EQ(alea_compute_classify(ctx,far,1,&r),-1);
+    alea_interrupt();int rc=alea_compute_classify(ctx,xyz,n,results);alea_clear_interrupt();ASSERT_EQ(rc,-1);
+    ASSERT_EQ(alea_compute_classify(ctx,xyz,n,results),0);ASSERT_EQ(results[n-1].cell_id,42);
+    free(xyz);free(results);alea_compute_destroy(ctx);
+}
+
+TEST(cpu_classify_nested_lattices) {check_nested_point_lattices(ALEA_COMPUTE_CPU);}
+TEST(cpu_classify_repeating_axial_lattice) {check_repeating_axial_lattice(ALEA_COMPUTE_CPU);}
+
 #ifdef ALEA_USE_METAL
 #include "compute/compute_internal.h"
 #include <unistd.h>
 /* A requested Metal test run must actually exercise the GPU; do not skip it
  * when the device is unavailable (including restricted execution sandboxes). */
+TEST(metal_classify_rectangular_lattices) {check_point_lattices(ALEA_COMPUTE_METAL);}
+TEST(metal_classify_lattice_faces_and_layers) {check_lattice_faces_and_layers(ALEA_COMPUTE_METAL);}
+TEST(metal_classify_lattice_rejections) {check_lattice_rejections(ALEA_COMPUTE_METAL);}
+
+TEST(metal_classify_nested_lattices) {check_nested_point_lattices(ALEA_COMPUTE_METAL);}
+TEST(metal_classify_repeating_axial_lattice) {check_repeating_axial_lattice(ALEA_COMPUTE_METAL);}
+
 TEST(metal_point_depth_limit) {check_point_depth_limit(ALEA_COMPUTE_METAL);}
 
 TEST(metal_classify_transformed_terminal_occurrences) {check_point_hierarchy(ALEA_COMPUTE_METAL);}
@@ -809,8 +982,11 @@ static void check_rectangular_lattices(void) {
         if(!repeating && zero)c->lat_fill[4]=0;
         alea_compute_t* gpu=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_MSG(gpu!=NULL,alea_error());
         double point[]={0,0,0};alea_compute_result_t result;
-        ASSERT_EQ(alea_compute_classify(gpu,point,1,&result),-1);
-        ASSERT_EQ(alea_error_code(),ALEA_ERR_UNSUPPORTED);
+        unsigned expected=transformed?0:(!repeating && zero)?0:1;
+        if(!transformed) {
+            ASSERT_EQ(alea_compute_classify(gpu,point,1,&result),0);
+            ASSERT_EQ(result.owner_count,expected);
+        }
         alea_system_t* reference=alea_create();int rm=alea_add_material(reference,7);
         alea_node_id_t parts[9];int n=0;
         for(int x=-1;x<=1;++x)for(int y=-1;y<=1;++y) {
@@ -822,6 +998,9 @@ static void check_rectangular_lattices(void) {
         render_config_t cfg;test_camera(&cfg);compare_render(reference,gpu,&cfg);
         cfg.num_clips=1;cfg.clips[0]=(render_clip_plane_t){{1,0,0},-.2};compare_render(reference,gpu,&cfg);
         cfg.num_clips=0;cfg.eye[0]=0;cfg.eye[1]=0;cfg.eye[2]=8;compare_render(reference,gpu,&cfg);
+        /* Exercise both first-upload orders and reuse after rendering. */
+        ASSERT_EQ(alea_compute_classify(gpu,point,1,&result),0);
+        ASSERT_EQ(result.owner_count,expected);
         render_config_free(&cfg);alea_compute_destroy(gpu);alea_destroy(sys);alea_destroy(reference);
     }
 }

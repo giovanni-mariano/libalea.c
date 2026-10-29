@@ -3,6 +3,7 @@
 #ifndef ALEA_COMPUTE_INTERNAL_H
 #define ALEA_COMPUTE_INTERNAL_H
 #include "alea_compute.h"
+int alea_compute_validate_rect_lattices(const alea_system_t* sys);
 #ifdef ALEA_USE_METAL
 #include "compute_layout.h"
 typedef struct {
@@ -22,6 +23,9 @@ typedef struct {
     size_t spatial_count;
     metal_point_cell* point_cells;
     compute_uint point_root;
+    compute_lattice* point_lattices; /* Outer/fill links include terminal void. */
+    compute_uint* point_fills;
+    size_t point_lattice_count, point_fill_count;
     compute_render_scene render;
 } compute_scene;
 int alea_compute_primitive_sign(const compute_primitive* primitive, const float bounds[6]);

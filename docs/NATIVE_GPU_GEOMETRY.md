@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 SPDX-License-Identifier: MPL-2.0
 -->
 
-# Native GPU geometry: first Metal increment
+# Native GPU geometry: Metal hierarchy and lattice classification
 
 Implemented on `experiment/native-gpu-geometry`, starting from `6cc16d8`, on
 2026-10-29. The local roadmap is `plans/native-gpu-geometry.md`.
@@ -16,7 +16,7 @@ no GPU portability framework or common device execution layer. The current
 CUDA implementation and validation require an actual NVIDIA device and remain
 future work; no unavailable backend is advertised as implemented.
 
-## Implemented scope
+## First hierarchy increment (`97ed101`)
 
 `alea_compute_classify()` now supports nested transformed fills on CPU FP64 and
 native Metal FP32. Each point counts terminal owning occurrences from universe
@@ -116,7 +116,7 @@ make test-compute USE_METAL=1 RELEASE=1
 ALEA_NUM_THREADS=1 make benchmark-gpu-geometry USE_METAL=1 RELEASE=1
 ```
 
-## 2D plotter integration
+## 2D plotter integration (`3dda308`)
 
 The follow-up connects this classifier to `mc_plotter --backend=metal`, for
 static PNG/BMP output and the SDL viewer. CPU remains the default. The tool owns
@@ -147,17 +147,65 @@ viewer/cancellation check is `USE_METAL=1 python3 tools/check_sdl_viewers.py`
 (with `SDL_CONFIG` pointing to the local SDL installation if needed). No private
 geometry was used. This increment introduces no new performance claim.
 
+## Rectangular-lattice classification follow-up
+
+Native Metal FP32 and the CPU FP64 enumeration reference now classify finite
+and repeating rectangular lattices procedurally. The point traversal selects an
+element before descending, rather than testing the unit-element CSG as if it
+were the full lattice envelope. Ancestor CSG retains its clipping role. Nested
+lattices, transformed ancestor fills, outer universes, zero-element coordinates,
+terminal void, empty fills and overlapping occurrences preserve the terminal
+ownership contract. Unsupported lattice types, lattice-local fill transforms,
+malformed dimensions, pitches and fill tables fail Metal validation before CSG
+packing or spatial specialization.
+
+Point-specific lattice metadata uses the same dimensions and pitch as rendering,
+but its fill and outer links address complete universe cell lists, including
+void. Renderer BVHs intentionally omit void and cannot provide these links.
+The query uploads are lazy, independent of renderer lattice uploads, and retain
+shared transform ownership in either initialization order. No new public API,
+core point-lookup change, CUDA implementation, or render-kernel change is added.
+
+Tiled axes select with floor; shared element faces belong to the upper index.
+Finite singleton Y/Z windows include their upper face as in core point queries.
+Untiled Z remains unshifted in center coordinates. Nonpositive fill entries are
+gaps. Metal reports an error for relative/logical indices beyond the exactly
+adjacent FP32 integer range (magnitude 16,777,215); CPU uses checked 32-bit indices.
+Ordinary boundary rounding remains approximate and is not cured by these guards.
+
+Validation passes 15 CPU compute tests, 62 native Metal compute tests, the builder
+test and three upload-resource tests on Apple M1. Analytic public fixtures cover
+nested/transformed/finite/repeating lattices, outer void universes, zero-element
+coordinates, gaps/overlaps, faces on both sides of a boundary, finite singleton
+layers, unbounded Z, axial repetition, owned snapshots, batches crossing 4,096
+points, interruption/reuse and distant-index rejection. Existing rectangular
+3D render comparisons also classify on the same snapshot in both initialization
+orders. Injected allocation failures check retries and release of query buffers
+before and after render preparation. Plotter image and SDL navigation tests
+include public repeated and transformed nested lattices.
+
+A bounded private E-lite check completes with 256/256 ownership results agreeing
+between Metal FP32 and the CPU FP64 enumeration reference. It samples both void
+and material and includes overlaps. Metal snapshot preparation takes 9.828 s;
+first/warm queries take 1.465/1.356 s. CPU snapshot preparation takes 0.312 s and
+its query 0.678 s. These are one process, one first and one warm Metal query on a
+16x16 sample; they are not a full-resolution benchmark or independent proof of
+private-model correctness. The CPU result is faster for this sample. The lattice
+blocker is removed, but large interactive slices remain too expensive without
+point-specific spatial pruning. Raw inputs, coordinates, images, logs and the
+private probe remain ignored under `build/native-gpu/` or outside the repository.
+The rebuilt `mc_plotter` also completes a 16x16 E-lite PNG slice.
+Only aggregate observations are recorded here.
+
 ## Next increment
 
-Implement procedural rectangular-lattice point classification with independent
-tests for finite/repeating grids, outer fills, zero-element coordinates, and
-boundary ownership. Then measure Metal-specific spatial candidates, including
-void, without borrowing render-only pruning assumptions. Establish fresh 3D
+Measure Metal-specific spatial candidates, including void, without borrowing
+render-only pruning assumptions. Establish fresh 3D
 attribution on representative exterior/cutaway/close-up views before changing
 its traversal. Both consumers remain acceptance workloads throughout.
 
 Private models, coordinates, extracted geometry, raw hashes, and diagnostics
-remain ignored or outside Git. This increment uses only public synthetic
-geometry; no private model is loaded or published. Local logs are under ignored
-`build/native-gpu/`. This experimental report is not added to the public
+remain ignored or outside Git. Tracked fixtures use public synthetic geometry;
+private validation contributes only aggregate observations. Local logs and images
+are under ignored `build/native-gpu/`. This experimental report is not added to the public
 documentation-site allowlist.

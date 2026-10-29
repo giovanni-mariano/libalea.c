@@ -33,10 +33,11 @@ def main():
         model.write_text('Translated fill\n1 0 -1 fill=1 (1 2 3)\n2 0 1\n'
                          '10 1 -1 -2 u=1\n11 0 2 u=1\n\n1 so 9\n2 so 2\n\n')
 
-        def run(name, options=(), source=model, axis='Z', value='3', environment=env, error=None):
+        def run(name, options=(), source=model, axis='Z', value='3', environment=env, error=None,
+                bounds=('-10', '10', '-10', '10')):
             output = tmp / f'{name}.bmp'
             command = [str(root / 'bin/mc_plotter'), str(source), axis, value,
-                       '-10', '10', '-10', '10', '96', *options, str(output)]
+                       *bounds, '96', *options, str(output)]
             result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=60)
             if error:
                 assert result.returncode != 0, command
@@ -73,8 +74,14 @@ def main():
                     'ALEA_PLOT_ERROR_STATS', 'ALEA_PLOT_ERROR_VERIFY']:
             run('reject-env', ['--backend=metal'], environment=dict(env, **{key: '1'}),
                 error='do not support')
+        for fixture in ['mcnp_lattice_repeating.mcnp', 'mcnp_nested_lattice_transformed.mcnp']:
+            source = root / 'tests/data' / fixture
+            bounds = ('4.125', '7.875', '-.875', '.875') if 'nested' in fixture else ('-10', '10', '-10', '10')
+            cpu = run('lattice-cpu', ['--backend=cpu'], source=source, value='0', bounds=bounds)
+            gpu = run('lattice-gpu', ['--backend=metal'], source=source, value='0', bounds=bounds)
+            assert cpu == gpu, fixture
         run('reject-lattice', ['--backend=metal'],
-            source=root / 'tests/data/mcnp_lattice_repeating.mcnp', error='lattice')
+            source=root / 'tests/data/mcnp_hex_lattice.mcnp', error='rectangular')
         run('reject-backend', ['--backend=cuda'], error='unknown backend')
         run('reject-bounds', ['--backend=metal'], value='nan', error='finite')
         run('reject-batch', ['--backend=metal', '--batch=missing.txt'], error='combined')

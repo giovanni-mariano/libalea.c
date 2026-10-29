@@ -60,7 +60,13 @@ void alea_compute_destroy(alea_compute_t* compute);
  * under all containing fill ancestors. Repeated placements count separately.
  * Containers are not owners; a gap in their contents remains a gap. IDs are -1
  * unless ownership is unique. Supports transformed fills through 32 universe
- * levels; lattice classification is currently rejected by both backends.
+ * levels and finite/repeating rectangular lattices, including outer fills.
+ * Empty/nonpositive element fills are gaps; lattice containers are not owners.
+ * Element selection uses floor on tiled axes. Finite singleton Y/Z windows
+ * include the upper face, matching core point lookup; untiled Z remains
+ * unshifted in center coordinates. Hexagonal lattices and lattice-local fill
+ * transforms are rejected. Metal also rejects element indices whose magnitude
+ * exceeds 16777215 rather than aliasing adjacent FP32 indices.
  * This samples points, not complete intervals or thin-feature visibility.
  * Metal uses approximate FP32 evaluation, including transformed coordinates.
  * All inputs must be finite; Metal inputs must also fit in float. Input and
