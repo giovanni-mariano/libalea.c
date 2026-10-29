@@ -5,8 +5,8 @@ SPDX-License-Identifier: MPL-2.0
 
 # Geometry query experiment: integration checkpoint
 
-Status reviewed on 2026-10-29. Latest implementation: bounded recovery-context
-reuse, following production checkpoint `0e9451e`, on
+Status reviewed on 2026-10-29. Latest production checkpoint: `a8491e2`
+(ordered point queries following bounded recovery-context reuse), on
 `experiment/geometry-recovery-search`; original baseline: `8c585eb`.
 This page records the current decision. Linked experiment reports preserve
 their original baselines, measurements, and historical conclusions.
@@ -83,7 +83,7 @@ The final context-reuse build completes broad private 512 split and fused
 first frames in 44.699 s and 45.267 s of frame work, with matching fields.
 Loading and preparation are additional. These are single completion checks;
 there is no completed baseline broad frame for field or speed comparison and
-no broad warm-frame series. The one-second warm-frame objective remains
+no broad warm-frame series at that checkpoint. The one-second objective remains
 unachieved. Ordinary-resolution broad visualization is still slow.
 
 For the repeated 32-row workload at resolution 1,024, three alternating process
@@ -95,8 +95,15 @@ short recoveries. Full native/serial suites and fresh ellipse pixel oracles pass
 The subsequent [ordered point-query fix](GEOMETRY_POINT_QUERIES.md) removes the
 public single-point API's global hierarchy scan and uses ordered spatial
 candidates. Its synthetic measurements are separate; the broad-view timings
-above belong to the preceding recovery-context implementation and have not been
-rerun after the point-query change.
+above belong to the preceding recovery-context implementation. The current
+checkpoint is measured separately below.
+
+The [current broad-view profile](GEOMETRY_VISUALIZATION_PROFILE.md), measured at
+`a8491e2`, now rechecks those outputs: one-worker first/warm frames take about
+36.0/35.6 s, and four configured workers take 12.5/11.8 s. These are single-process
+observations. The complete-frame diagnostic still attributes about 92% of
+tracing to recovery, with 3.34 billion fill-loop cell visits. The next scoped
+hypothesis is optional ordered child-cell lists; it has not been implemented.
 
 ## Latest retained implementation and next investigation
 
@@ -108,11 +115,11 @@ allocation failure, saturation, or uncertain keys. Recursive children, aliases,
 first-hit ties, and cancellation retain their contracts. No record crosses a
 recovery call or geometry edit. See the implementation report for limitations.
 
-The next investigation should profile the final broad-view cost before selecting
-another optimization. The earlier profile and its 81.6% repeated-call count
-precede this change and cannot identify the remaining bottleneck. Measure
-loading, preparation, first and warm frames, and display/upload separately.
-Existing slice timings do not establish 3D rendering or new GPU performance.
+The new full-frame profile justifies testing ordered fill/lattice cell subsets
+for nearest recovery before another backend or representation. The earlier
+repeated-context profile predates reuse and should not identify current costs.
+The latest report specifies budgets, validation, repeated timing, and the
+remaining hardware/visualization limits. The one-second target remains unmet.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -132,6 +139,8 @@ conservation also need their own contracts.
 - [Elliptical torus correction](GEOMETRY_ELLIPTICAL_TORUS.md)
 - [Corrected baseline and repeated contexts](GEOMETRY_CORRECTED_BASELINE.md)
 - [Bounded recovery context reuse](GEOMETRY_RECOVERY_CONTEXT_REUSE.md)
+- [Ordered public point queries](GEOMETRY_POINT_QUERIES.md)
+- [Current broad-view profile](GEOMETRY_VISUALIZATION_PROFILE.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay
