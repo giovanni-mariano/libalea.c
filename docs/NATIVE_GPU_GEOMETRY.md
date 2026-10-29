@@ -255,12 +255,90 @@ with `ALEA_METAL_POINT_SPATIAL=0`; setting this does not suppress the renderer�
 spatial preprocessing. Private geometry, coordinates, images, probe sources and
 raw logs remain ignored or outside Git. Only aggregate observations are recorded.
 
+## Point-query cost attribution
+
+Opt-in `ALEA_METAL_POINT_PROFILE` now reports aggregate versioned JSONL for
+complete successful queries. The Metal shader function constant removes counters
+from normal pipelines. The profiler covers flat and hierarchical classification,
+counts actual bytecode/primitive execution, separates original and spatial
+programs, records original-program selection reasons and CSG rejection work,
+and reports bridge wall time separately from available GPU timestamps. Counters
+reset per query and aggregate across the existing bounded submissions. Report
+failures surface as errors without invalidating the context. See
+[the profiler contract](GPU_COMPUTE.md#point-query-profiling).
+
+Validation on Apple M1: 15 CPU, 67 Metal, 2 builder and 3 resource tests pass.
+New checks compare profiled and normal ownership, cover spatial and lattice
+accounting, multi-submission aggregation, interruption/nonfinite errors, empty
+calls, repeated use and report-write failure/retry. Public 512x512 point and
+512x384 exterior/cutaway analytic oracles pass with profiling off and on. The
+public warm slice medians are 30.658 ms off and 37.853 ms on (about 23.5% overhead);
+these are three warm calls per mode, measured sequentially. Profiling is a
+diagnostic option, not a performance improvement. No new 3D speedup is claimed.
+
+A private comparison keeps spatial selection enabled in both contexts,
+alternates profiling off/on across one initial and five warm queries per mode,
+and uses the same bounded 256-point sample as before. Only aggregate observations
+are retained here:
+
+| Measurement | Normal | Profiled |
+| --- | ---: | ---: |
+| Preparation | 9.541 s | 9.585 s |
+| First query | 1.386 s | 1.365 s |
+| Warm median | 1.226 s | 1.234 s |
+| Warm range | 1.207–1.369 s | 1.229–1.300 s |
+| Differences from CPU FP64 enumeration | 0 / 256 | 0 / 256 |
+
+The roughly 0.7% median overhead is smaller than the observed timing spread and
+is not an overhead guarantee. CPU enumeration takes 0.646 s. Profiled GPU time
+has a 1.230 s warm median; bridge work outside the GPU is small in this sample.
+All six reports parse as JSON, have identical work counts, and report no counter
+saturation:
+
+| Work over 256 points | Count |
+| --- | ---: |
+| Cell visits | 1,705,697 |
+| CSG rejections | 1,705,144 |
+| Original / spatial program calls | 942,296 / 763,401 |
+| No program / uncertified | 404,961 / 35,328 |
+| Outside certified domain / unchanged cache region | 474,849 / 27,158 |
+| Original / spatial instructions | 40,534,967 / 16,521,851 |
+| Rejected / accepted instructions | 56,962,030 / 94,788 |
+| Original / spatial primitive evaluations | 7,186,991 / 2,926,989 |
+| Universe descents / maximum depth | 269 / 2 |
+| Lattice visits | 0 |
+
+**99.83% of executed CSG instructions reject cells.** This is an instruction
+fraction, not a measured time attribution. It supports targeting rejection work
+before arithmetic tuning. The sample visits no lattice cells, so it does not
+establish lattice traversal cost; public lattice fixtures validate the counters
+and semantics separately. It also cannot predict full-resolution slice latency.
+
+The user-facing Metal plotter is rebuilt. CPU plotter regressions and Metal image
+checks pass, including 52 valid aggregate reports with profiling enabled. SDL
+dummy-driver checks pass for 2D/3D navigation, publication, cancellation and reuse.
+
 ## Next increment
 
-Reduce point-query candidate visits using tighter conservative proofs that can
-handle broad and uncertain cells without adding a traversal penalty. Establish fresh 3D
-attribution on representative exterior/cutaway/close-up views before changing
-its traversal. Both consumers remain acceptance workloads throughout.
+Prototype conservative candidate lists shared by coherent 2D tiles. Start with
+root-universe rejection, where per-point scans can repeat the same proof across
+a tile. Drop a candidate only when a conservative FP32 proof covers the complete
+query domain and preserves original nonfinite-error behavior; retain uncertain,
+unbounded and boundary-touching cells. Preserve all owners, including void,
+overlaps and transformed occurrences. Keep the current scanner as the reference
+and fallback. The previously rejected point BVH is not a starting performance
+assumption.
+
+Measure proof/list construction, upload, memory, candidate/instruction reduction,
+complete query time and cancellation latency separately. Any cache must be tied
+to the immutable snapshot and query domain. Establish a win on public fixtures
+and the bounded private sample before increasing private resolution. Counters
+are off for acceptance timing. Retain only a measured end-to-end improvement;
+the extra preparation cost can outweigh reduced scanning.
+
+Both 2D and 3D remain acceptance workloads. Establish separate 3D attribution on
+representative exterior/cutaway/close-up views before changing ray traversal;
+point-query costs do not justify a ray optimization by themselves.
 
 Private models, coordinates, extracted geometry, raw hashes, and diagnostics
 remain ignored or outside Git. Tracked fixtures use public synthetic geometry;

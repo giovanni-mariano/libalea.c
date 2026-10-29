@@ -74,6 +74,18 @@ typedef struct {
     float color[3], depth, normal[3];
     compute_int cell_id, material_id, error;
 } compute_render_pixel;
+/* Point profiler: per-thread counters, aggregated on the host after a complete
+ * query. No point coordinates or cell IDs are exported. */
+enum {
+    POINT_CELLS, POINT_UNIVERSES, POINT_LATTICES, POINT_DESCENTS,
+    POINT_ORIGINAL_CALLS, POINT_SPATIAL_CALLS, POINT_NO_PROGRAM,
+    POINT_UNCERTIFIED, POINT_OUTSIDE_DOMAIN, POINT_UNCHANGED_REGION, POINT_ORIGINAL_INSTRUCTIONS,
+    POINT_SPATIAL_INSTRUCTIONS, POINT_ORIGINAL_PRIMITIVES, POINT_SPATIAL_PRIMITIVES,
+    POINT_REJECTED, POINT_OWNERS, POINT_MAX_DEPTH,
+    POINT_REJECTED_INSTRUCTIONS, POINT_ACCEPTED_INSTRUCTIONS, POINT_COUNTER_COUNT
+};
+typedef struct { compute_uint v[POINT_COUNTER_COUNT]; } compute_point_profile;
+
 /* Saturating diagnostic counters; field order is also used by the Metal
  * atomic cell accumulator. Normal pipelines compile instrumentation out. */
 typedef struct {

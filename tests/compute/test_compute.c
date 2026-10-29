@@ -472,6 +472,7 @@ TEST(cpu_classify_repeating_axial_lattice) {check_repeating_axial_lattice(ALEA_C
 #ifdef ALEA_USE_METAL
 #include "compute/compute_internal.h"
 #include <unistd.h>
+#include <sys/stat.h>
 /* A requested Metal test run must actually exercise the GPU; do not skip it
  * when the device is unavailable (including restricted execution sandboxes). */
 TEST(metal_classify_rectangular_lattices) {check_point_lattices(ALEA_COMPUTE_METAL);}
@@ -556,6 +557,114 @@ TEST(metal_point_programs_preserve_nonfinite_errors_and_domain_fallback) {
     ASSERT_NULL(alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32));
     ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_ARG);
     ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_SPATIAL"),0);alea_destroy(sys);
+}
+
+static unsigned long long point_counter(const char* line,const char* name) {
+    char key[96];snprintf(key,sizeof(key),"\"%s\":",name);
+    const char* p=strstr(line,key);if(!p)abort();
+    return strtoull(p+strlen(key),NULL,10);
+}
+TEST(metal_point_profile_counts_reset_and_preserve_results) {
+    for(int hierarchy=0;hierarchy<2;++hierarchy) {
+        char path[160];snprintf(path,sizeof(path),"/tmp/alea-point-profile-%ld-%d.jsonl",(long)getpid(),hierarchy);unlink(path);
+        alea_system_t* sys=sphere_scene();
+        if(hierarchy) {
+            alea_node_id_t root=sys->cells.data[0].root_node_id;
+            sys->cells.data[0].material_id=0;ASSERT_EQ(alea_set_fill(sys,0,1,0),0);
+            ASSERT(alea_add_cell(sys,43,root,0,-1,1)>=0);
+            int sphere=alea_sphere_surface(sys,2,0,0,0,2);
+            ASSERT(alea_add_cell(sys,44,alea_halfspace(sys,sphere,1),ALEA_MATERIAL_VOID,0,0)>=0);
+        }
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_SPATIAL","0",1),0);
+        alea_compute_t* baseline=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(baseline);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_PROFILE",path,1),0);
+        alea_compute_t* profiled=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_MSG(profiled!=NULL,alea_error());
+        ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_PROFILE"),0);ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_SPATIAL"),0);
+        alea_destroy(sys);
+        double xyz[]={0,0,0, 3,0,0, 0,0,0};alea_compute_result_t a[3],b[3];
+        ASSERT_EQ(alea_compute_classify(baseline,xyz,3,a),0);
+        ASSERT_EQ(alea_compute_classify(profiled,xyz,3,b),0);ASSERT_EQ(memcmp(a,b,sizeof(a)),0);
+        ASSERT_EQ(alea_compute_classify(profiled,NULL,0,NULL),0);
+        alea_interrupt();int rc=alea_compute_classify(profiled,xyz,3,b);alea_clear_interrupt();ASSERT_EQ(rc,-1);
+        double invalid[]={1e30,0,0};ASSERT_EQ(alea_compute_classify(profiled,invalid,1,b),-1);
+        ASSERT_EQ(alea_compute_classify(profiled,xyz,1,b),0);
+        FILE* f=fopen(path,"r");ASSERT_NOT_NULL(f);char line[4096];ASSERT_NOT_NULL(fgets(line,sizeof(line),f));
+        ASSERT_EQ(point_counter(line,"points"),3);
+        ASSERT_EQ(point_counter(line,"cells"),hierarchy?8:3);
+        ASSERT_EQ(point_counter(line,"original_calls"),hierarchy?8:3);
+        ASSERT_EQ(point_counter(line,"original_instructions"),hierarchy?8:3);
+        ASSERT_EQ(point_counter(line,"original_primitives"),hierarchy?8:3);
+        ASSERT_EQ(point_counter(line,"universes"),hierarchy?5:3);
+        ASSERT_EQ(point_counter(line,"max_depth"),hierarchy?2:1);
+        ASSERT_EQ(point_counter(line,"descents"),hierarchy?2:0);
+        ASSERT_EQ(point_counter(line,"owners"),hierarchy?3:2);
+        ASSERT_EQ(point_counter(line,"rejected"),hierarchy?3:1);
+        ASSERT_EQ(point_counter(line,"spatial_calls"),0);ASSERT_EQ(point_counter(line,"lattices"),0);
+        ASSERT_EQ(point_counter(line,"counter_limit_points"),0);
+        ASSERT_EQ(point_counter(line,"rejected_instructions")+point_counter(line,"accepted_instructions"),hierarchy?8:3);
+        ASSERT_NOT_NULL(fgets(line,sizeof(line),f));ASSERT_EQ(point_counter(line,"points"),1);
+        ASSERT_EQ(point_counter(line,"cells"),hierarchy?3:1);ASSERT_NULL(fgets(line,sizeof(line),f));fclose(f);
+        if(hierarchy) {
+            size_t n=4105;double* points=calloc(n*3,sizeof(double));alea_compute_result_t* results=malloc(n*sizeof(*results));
+            ASSERT_NOT_NULL(points);ASSERT_NOT_NULL(results);ASSERT_EQ(alea_compute_classify(profiled,points,n,results),0);
+            f=fopen(path,"r");ASSERT_NOT_NULL(f);ASSERT_NOT_NULL(fgets(line,sizeof(line),f));ASSERT_NOT_NULL(fgets(line,sizeof(line),f));
+            ASSERT_NOT_NULL(fgets(line,sizeof(line),f));ASSERT_EQ(point_counter(line,"points"),n);
+            ASSERT_EQ(point_counter(line,"submissions"),2);ASSERT_EQ(point_counter(line,"max_depth"),2);
+            ASSERT_EQ(point_counter(line,"cells"),3*n);ASSERT_EQ(point_counter(line,"owners"),n);
+            fclose(f);free(points);free(results);
+        }
+        alea_compute_destroy(baseline);alea_compute_destroy(profiled);unlink(path);
+    }
+}
+
+TEST(metal_point_profile_spatial_and_lattice_accounting) {
+    for(int lattice=0;lattice<2;++lattice) {
+        char path[160];snprintf(path,sizeof(path),"/tmp/alea-point-costs-%ld.jsonl",(long)getpid());unlink(path);
+        alea_system_t* sys=lattice?point_lattice_scene(0,1,1,1):local_render_scene();
+        if(!lattice) {
+            sys->cells.data[0].material_id=0;ASSERT_EQ(alea_set_fill(sys,0,1,0),0);
+            int box=alea_box_surface(sys,0,-5,5,-5,5,-5,5),mat=alea_add_material(sys,8);
+            ASSERT(alea_add_cell(sys,43,alea_halfspace(sys,box,-1),mat,-1,1)>=0);
+        }
+        alea_compute_t* baseline=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(baseline);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_PROFILE",path,1),0);
+        alea_compute_t* profiled=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(profiled);
+        ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_PROFILE"),0);alea_destroy(sys);
+        enum {N=512};double xyz[N*3];alea_compute_result_t a[N],b[N];
+        uint32_t seed=17;
+        for(int i=0;i<N*3;++i){seed=1664525*seed+1013904223;xyz[i]=(double)(seed%8193)/512-8;}
+        ASSERT_EQ(alea_compute_classify(baseline,xyz,N,a),0);
+        ASSERT_EQ(alea_compute_classify(profiled,xyz,N,b),0);ASSERT_EQ(memcmp(a,b,sizeof(a)),0);
+        unsigned long long owners=0;for(int i=0;i<N;++i)owners+=a[i].owner_count;
+        FILE* f=fopen(path,"r");ASSERT_NOT_NULL(f);char line[4096];ASSERT_NOT_NULL(fgets(line,sizeof(line),f));fclose(f);
+        unsigned long long original=point_counter(line,"original_calls"),spatial=point_counter(line,"spatial_calls");
+        ASSERT_EQ(original+spatial+point_counter(line,"lattices"),point_counter(line,"cells"));
+        ASSERT_EQ(original,point_counter(line,"no_program")+point_counter(line,"uncertified")+
+                  point_counter(line,"outside_domain")+point_counter(line,"unchanged_region"));
+        ASSERT_EQ(point_counter(line,"original_instructions")+point_counter(line,"spatial_instructions"),
+                  point_counter(line,"accepted_instructions")+point_counter(line,"rejected_instructions"));
+        ASSERT_EQ(point_counter(line,"universes"),N+point_counter(line,"descents"));
+        ASSERT_EQ(point_counter(line,"owners"),owners);ASSERT_EQ(point_counter(line,"counter_limit_points"),0);
+        if(lattice)ASSERT_TRUE(point_counter(line,"lattices")>0);
+        else {ASSERT_TRUE(spatial>0);ASSERT_TRUE(point_counter(line,"outside_domain")>0);}
+        alea_compute_destroy(baseline);alea_compute_destroy(profiled);unlink(path);
+    }
+}
+
+TEST(metal_point_profile_write_failure_allows_retry) {
+    char path[160];snprintf(path,sizeof(path),"/tmp/alea-point-retry-%ld.jsonl",(long)getpid());unlink(path);
+    ASSERT_EQ(mkdir(path,0700),0);
+    ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_PROFILE",path,1),0);
+    alea_system_t* sys=sphere_scene();
+    alea_compute_t* ctx=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(ctx);
+    ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_PROFILE"),0);alea_destroy(sys);
+    double xyz[]={0,0,0};alea_compute_result_t result;
+    ASSERT_EQ(alea_compute_classify(ctx,xyz,1,&result),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_STATE);
+    ASSERT_EQ(rmdir(path),0);
+    ASSERT_EQ(alea_compute_classify(ctx,xyz,1,&result),0);ASSERT_EQ(result.cell_id,42);
+    FILE* f=fopen(path,"r");ASSERT_NOT_NULL(f);char line[4096];ASSERT_NOT_NULL(fgets(line,sizeof(line),f));
+    ASSERT_EQ(point_counter(line,"points"),1);ASSERT_NULL(fgets(line,sizeof(line),f));fclose(f);
+    alea_compute_destroy(ctx);unlink(path);
 }
 
 TEST(metal_point_depth_limit) {check_point_depth_limit(ALEA_COMPUTE_METAL);}

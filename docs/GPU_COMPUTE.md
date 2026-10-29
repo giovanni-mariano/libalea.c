@@ -318,6 +318,44 @@ the core accelerated point lookup. Empty batches are valid. Inputs must be
 finite and fit the backend's precision/allocation limits. FP32 boundary and
 thin-feature limitations remain; sampled ownership is not interval coverage.
 
+### Point-query profiling
+
+Set `ALEA_METAL_POINT_PROFILE=build/point-profile.jsonl` before creating a Metal
+context (or launching `mc_plotter --backend=metal`) to append aggregate JSONL
+reports. Create the output directory first. Unset or empty disables profiling;
+the normal pipeline specializes out the shader counters and allocates no counter
+buffer. CPU contexts ignore this option. It is separate from the 3D renderer's
+`ALEA_METAL_PROFILE` setting and does not instrument rays.
+
+Each successful nonempty classification appends one version-1 record covering
+all its internal submissions. Empty, interrupted and numerically failed queries
+do not report partial work. Report I/O failure returns an error; results are
+then unspecified, and an I/O failure can leave a partial report line. The context
+can be reused after fixing the path. Use separate paths for concurrently used
+contexts. Reports contain no coordinates, cell IDs or model identifiers.
+
+| Fields | Meaning |
+| --- | --- |
+| `points`, `submissions` | Input points and completed GPU submissions |
+| `cells`, `lattices` | Cell visits, and the subset selecting lattice elements rather than evaluating CSG |
+| `universes`, `descents`, `max_depth` | Root entries plus successful descents, descent count, and maximum universe depth (root = 1) |
+| `original_calls`, `spatial_calls` | Original versus changed spatial CSG program evaluations |
+| `no_program`, `uncertified`, `outside_domain`, `unchanged_region` | Reasons for original evaluations: no cache; no point certificate (also includes deliberately disabled selection); outside certified domain; selected cache leaf has the original program |
+| `original_instructions`, `spatial_instructions` | Actually executed bytecode, including skip instructions but excluding skipped operands |
+| `original_primitives`, `spatial_primitives` | Executed primitive evaluations |
+| `rejected`, `owners` | Positive CSG evaluations and terminal owning occurrences; lattice gaps are not CSG rejections |
+| `rejected_instructions`, `accepted_instructions` | Executed bytecode in rejecting versus containing CSG evaluations; containing ancestors are included |
+| `counter_limit_points` | Points with at least one saturated 32-bit counter; nonzero means counts can be lower bounds |
+| `wall_seconds` | Metal bridge time, including lazy uploads, conversion, waits, result copies and counter aggregation; excludes public input validation and final report writing |
+| `gpu_seconds`, `gpu_timed_submissions` | Sum of available command-buffer GPU durations and number of valid timestamp pairs; zero valid pairs means GPU time is unavailable |
+
+Host sums use 64-bit counters; `max_depth` is a maximum. Counter volume and
+instrumentation overhead depend on the workload: the buffer uses 76 bytes per
+submitted point, capped at 4,096 points for hierarchical queries. Flat queries
+retain their whole-batch submission. Measure performance with profiling disabled;
+in one public 512x512 run instrumentation increased the warm median from 30.658
+to 37.853 ms. Instruction fractions describe work, not elapsed-time fractions.
+
 `make benchmark-compute USE_METAL=1` compares complete flat CPU/Metal batch costs.
 `make benchmark-render-compute USE_METAL=1` compares the 64-sphere renderer.
 `make benchmark-gpu-geometry USE_METAL=1 RELEASE=1` checks and times hierarchical

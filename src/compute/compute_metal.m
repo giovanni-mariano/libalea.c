@@ -11,6 +11,8 @@
 #include <math.h>
 #include <float.h>
 #include <errno.h>
+#include <time.h>
+#include <inttypes.h>
 
 /* Manual ownership keeps Objective-C entirely inside this bridge. */
 typedef struct {
@@ -35,6 +37,9 @@ typedef struct {
     int resume_fixed;
     uint32_t lazy_threshold;
     char* profile_prefix;
+    char* point_profile_path;
+    id<MTLBuffer> point_costs;
+    size_t point_cost_capacity;
     id<MTLBuffer> ray_costs, cell_costs, spatial;
 } metal_state;
 
@@ -62,6 +67,8 @@ void alea_compute_metal_destroy(void* state) {
     alea_compute_scene_free(&s->scene);
     [s->ray_costs release]; [s->cell_costs release];
     [s->spatial release];
+    [s->point_costs release];
+    free(s->point_profile_path);
     free(s->profile_prefix);
     free(s);
 }
@@ -75,6 +82,11 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
             alea_compute_scene_free(&scene);
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal context");
             return NULL;
+        }
+        const char* point_profile=getenv("ALEA_METAL_POINT_PROFILE");
+        if(point_profile && *point_profile) {
+            s->point_profile_path=strdup(point_profile);
+            if(!s->point_profile_path){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Copying point profile path");goto fail;}
         }
         const char* profile=getenv("ALEA_METAL_PROFILE");
         if(profile && *profile) {
@@ -120,8 +132,12 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
         id<MTLLibrary> library = [s->device newLibraryWithData:data error:&error];
         dispatch_release(data);
         s->hierarchical = scene.point_cells != NULL;
+        MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];
+        bool point_profile_enabled=s->point_profile_path!=NULL;
+        [constants setConstantValue:&point_profile_enabled type:MTLDataTypeBool atIndex:5];
         id<MTLFunction> function = [library newFunctionWithName:
-            s->hierarchical ? @"alea_classify_hierarchy" : @"alea_classify_points"];
+            s->hierarchical ? @"alea_classify_hierarchy" : @"alea_classify_points" constantValues:constants error:&error];
+        [constants release];
         if (function) s->pipeline = [s->device newComputePipelineStateWithFunction:function error:&error];
         [function release]; [library release];
         if (!s->device || !s->queue || !s->pipeline) {
@@ -195,10 +211,34 @@ static int prepare_classify(metal_state* s) {
     return 0;
 }
 
+
+static double point_profile_clock(void) {
+    struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec*1e-9;
+}
+static int point_profile_write(const char* path,size_t points,uint64_t submissions,uint64_t timed,
+                               double wall,double gpu,const uint64_t* counts,uint64_t saturated) {
+    static const char* names[POINT_COUNTER_COUNT]={"cells","universes","lattices","descents",
+        "original_calls","spatial_calls","no_program","uncertified","outside_domain","unchanged_region",
+        "original_instructions","spatial_instructions","original_primitives","spatial_primitives",
+        "rejected","owners","max_depth","rejected_instructions","accepted_instructions"};
+    FILE* f=fopen(path,"a");
+    if(!f){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Opening point profile '%s' failed",path);return -1;}
+    fprintf(f,"{\"version\":1,\"points\":%zu,\"submissions\":%" PRIu64 ",\"gpu_timed_submissions\":%" PRIu64
+        ",\"wall_seconds\":%.9f,\"gpu_seconds\":%.9f,\"counter_limit_points\":%" PRIu64,
+        points,submissions,timed,wall,gpu,saturated);
+    for(unsigned j=0;j<POINT_COUNTER_COUNT;++j)fprintf(f,",\"%s\":%" PRIu64,names[j],counts[j]);
+    fputs("}\n",f);int failed=ferror(f);if(fclose(f)!=0)failed=1;
+    if(failed){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Writing point profile '%s' failed",path);return -1;}
+    return 0;
+}
+
 int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                                 alea_compute_result_t* results) {
     @autoreleasepool {
         metal_state* s = state;
+        const int profiling=s->point_profile_path!=NULL;
+        double start=profiling?point_profile_clock():0,gpu_seconds=0;
+        uint64_t counters[POINT_COUNTER_COUNT]={0},saturated=0,submissions=0,timed=0;
         if (prepare_classify(s)) return -1;
         const size_t total = count;
         const size_t limit = s->hierarchical ? 4096 : count;
@@ -222,6 +262,14 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                 }
                 [s->points release]; [s->results release];
                 s->points = points; s->results = output; s->capacity = count;
+            }
+            if(profiling && count>s->point_cost_capacity) {
+                if(count>s->device.maxBufferLength/sizeof(compute_point_profile)) {
+                    alea_set_error_detail(ALEA_ERR_OVERFLOW,"Metal point profile exceeds buffer limit");return -1;
+                }
+                id<MTLBuffer> costs=[s->device newBufferWithLength:count*sizeof(compute_point_profile) options:MTLResourceStorageModeShared];
+                if(!costs){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Allocating point profile buffer");return -1;}
+                [s->point_costs release];s->point_costs=costs;s->point_cost_capacity=count;
             }
             float* points = s->points.contents;
             for (size_t i = 0; i < count * 3; ++i) points[i] = (float)xyz[3 * first + i];
@@ -248,6 +296,7 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                 [encoder setBuffer:s->point_fills offset:0 atIndex:10];
                 [encoder setBuffer:s->spatial offset:0 atIndex:11];
             }
+            if(profiling)[encoder setBuffer:s->point_costs offset:0 atIndex:12];
             NSUInteger width = MIN((NSUInteger)128, s->pipeline.maxTotalThreadsPerThreadgroup);
             [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
             [encoder endEncoding];
@@ -271,7 +320,25 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                 }
             }
             memcpy(results + first, output, count * sizeof(*results));
+            if(profiling) {
+                ++submissions;
+                if(command.GPUEndTime>command.GPUStartTime && command.GPUStartTime>0) {
+                    gpu_seconds+=command.GPUEndTime-command.GPUStartTime;++timed;
+                }
+                const compute_point_profile* rows=s->point_costs.contents;
+                for(size_t i=0;i<count;++i) {
+                    int at_limit=0;
+                    for(unsigned j=0;j<POINT_COUNTER_COUNT;++j) {
+                        uint32_t value=rows[i].v[j];at_limit|=value==UINT32_MAX;
+                        if(j==POINT_MAX_DEPTH){if(value>counters[j])counters[j]=value;}
+                        else counters[j]+=value;
+                    }
+                    saturated+=at_limit;
+                }
+            }
         }
+        if(profiling && point_profile_write(s->point_profile_path,total,submissions,timed,
+            point_profile_clock()-start,gpu_seconds,counters,saturated))return -1;
         return 0;
     }
 }

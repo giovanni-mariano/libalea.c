@@ -217,6 +217,13 @@ from 1.456 to 1.175 seconds in an alternating five-query comparison on the same
 enumeration remains, and complex-model interactive performance is unresolved. Private geometry, coordinates, images and raw logs remain
 outside Git.
 
+Opt-in Metal point profiling now attributes 99.83% of executed CSG instructions
+to rejecting cells on that bounded private sample. Normal/profiled results both
+match CPU enumeration; the sample visits no lattice cells. This supports a
+conservative tile-candidate experiment, with proof construction and complete
+query cost included. It does not establish full-slice or 3D performance. See the
+[native GPU report](NATIVE_GPU_GEOMETRY.md#point-query-cost-attribution).
+
 ## Evidence index and confidentiality
 
 - [Initial query experiment](GEOMETRY_QUERY_EXPERIMENT.md)

@@ -11,15 +11,23 @@ struct point_frame {
 };
 
 static compute_cell point_program(compute_cell cell,float3 p,uint root,
-                                   device const compute_spatial_program* spatial) {
-    if(root==COMPUTE_NONE)return cell;
+                                   device const compute_spatial_program* spatial,thread uint& selection) {
+    if(root==COMPUTE_NONE) {
+        if(point_profile_enabled)selection=cell.spatial==COMPUTE_NONE?POINT_NO_PROGRAM:POINT_UNCERTIFIED;
+        return cell;
+    }
     for(uint a=0;a<3;++a)
-        if(p[a]<spatial[root].bounds[2*a] || p[a]>spatial[root].bounds[2*a+1])return cell;
+        if(p[a]<spatial[root].bounds[2*a] || p[a]>spatial[root].bounds[2*a+1]) {
+            if(point_profile_enabled)selection=POINT_OUTSIDE_DOMAIN;
+            return cell;
+        }
     uint id=root;
     while(spatial[id].child!=COMPUTE_NONE) {
         uint child=spatial[id].child,axis=spatial[id].axis;
         id=child+uint(p[axis]>=spatial[child+1].bounds[2*axis]);
     }
+    if(point_profile_enabled)selection=cell.root==spatial[id].root && cell.count==spatial[id].count?
+        POINT_UNCHANGED_REGION:POINT_SPATIAL_CALLS;
     cell.root=spatial[id].root;cell.count=spatial[id].count;
     return cell;
 }
@@ -67,6 +75,7 @@ kernel void alea_classify_hierarchy(
     device const compute_lattice* lattices [[buffer(9)]],
     device const uint* fills [[buffer(10)]],
     device const compute_spatial_program* spatial [[buffer(11)]],
+    device compute_point_profile* profiles [[buffer(12)]],
     uint index [[thread_position_in_grid]]) {
     if (index >= count) return;
     point_frame stack[COMPUTE_HIER_STACK];
@@ -74,6 +83,8 @@ kernel void alea_classify_hierarchy(
     stack[0].point = float3(xyz[3 * index], xyz[3 * index + 1], xyz[3 * index + 2]);
     stack[0].next = root;
     compute_result result = {-1, -1, 0};
+    compute_point_profile cost={};
+    if(point_profile_enabled){cost.v[POINT_UNIVERSES]=1;cost.v[POINT_MAX_DEPTH]=1;}
     while (true) {
         uint id = stack[top].next;
         if (id == COMPUTE_NONE) {
@@ -83,8 +94,10 @@ kernel void alea_classify_hierarchy(
         }
         stack[top].next = links[id].next;
         compute_cell cell = cells[id];
+        if(point_profile_enabled)point_add(cost.v[POINT_CELLS]);
         float3 p = stack[top].point;
         if (cell.lattice != COMPUTE_NONE) {
+            if(point_profile_enabled)point_add(cost.v[POINT_LATTICES]);
             bool error = false;
             uint child = point_lattice(lattices[cell.lattice], fills, p, error);
             if (error) { result.owner_count = COMPUTE_NONE; break; }
@@ -93,9 +106,26 @@ kernel void alea_classify_hierarchy(
             ++top;
             stack[top].point = p;
             stack[top].next = child;
+            if(point_profile_enabled) {
+                point_add(cost.v[POINT_DESCENTS]);point_add(cost.v[POINT_UNIVERSES]);
+                cost.v[POINT_MAX_DEPTH]=max(cost.v[POINT_MAX_DEPTH],top+1);
+            }
             continue;
         }
-        float value = evaluate(nodes, primitives, point_program(cell,p,links[id].spatial,spatial), p);
+        uint selection=POINT_NO_PROGRAM;
+        compute_cell program=point_program(cell,p,links[id].spatial,spatial,selection);
+        bool specialized=program.root!=cell.root || program.count!=cell.count;
+        if(point_profile_enabled) {
+            point_add(cost.v[specialized?POINT_SPATIAL_CALLS:POINT_ORIGINAL_CALLS]);
+            if(!specialized)point_add(cost.v[selection]);
+        }
+        uint slot=specialized?POINT_SPATIAL_INSTRUCTIONS:POINT_ORIGINAL_INSTRUCTIONS;
+        uint before=cost.v[slot];
+        float value = evaluate(nodes, primitives, program, p, cost, specialized);
+        if(point_profile_enabled) {
+            point_add(cost.v[value>0?POINT_REJECTED_INSTRUCTIONS:POINT_ACCEPTED_INSTRUCTIONS],cost.v[slot]-before);
+            if(value>0)point_add(cost.v[POINT_REJECTED]);
+        }
         if (!isfinite(value)) { result.owner_count = COMPUTE_NONE; break; }
         if (value > 0) continue;
         if (links[id].child != COMPUTE_NONE) {
@@ -108,13 +138,19 @@ kernel void alea_classify_hierarchy(
             ++top;
             stack[top].point = local;
             stack[top].next = links[id].child;
+            if(point_profile_enabled) {
+                point_add(cost.v[POINT_DESCENTS]);point_add(cost.v[POINT_UNIVERSES]);
+                cost.v[POINT_MAX_DEPTH]=max(cost.v[POINT_MAX_DEPTH],top+1);
+            }
         } else {
             if (result.owner_count == COMPUTE_NONE - 1) { result.owner_count = COMPUTE_NONE; break; }
             ++result.owner_count;
+            if(point_profile_enabled)point_add(cost.v[POINT_OWNERS]);
             result.cell_id = cell.cell_id;
             result.material_id = cell.material_id;
         }
     }
     if (result.owner_count != 1) result.cell_id = result.material_id = -1;
     results[index] = result;
+    if(point_profile_enabled)profiles[index]=cost;
 }
