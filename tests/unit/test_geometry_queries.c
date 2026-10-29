@@ -7,6 +7,7 @@
 #include "alea_raycast.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
+#include "raycast/recovery_context.h"
 #include <float.h>
 #include "core/alea_system.h"
 
@@ -619,6 +620,117 @@ TEST(torus_window_rejection_preserves_solver_roots_in_deterministic_sweep) {
                 ASSERT(ray_torus_window_may_hit(&ray,&torus,
                     nextafter(roots[j],0),nextafter(roots[j],INFINITY)));
         }
+}
+
+TEST(recovery_context_requires_exact_keys_and_contained_windows) {
+    recovery_context_t* table = recovery_context_create(1);
+    ASSERT_NOT_NULL(table);
+    ASSERT(recovery_context_create(0)==NULL);
+    ASSERT(recovery_context_create(8192)==NULL);
+    uint32_t cards[]={1,2};
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray,0,0,0,1,0,0),0);
+    alea_matrix_t matrix;
+    alea_matrix_identity(&matrix);
+    recovery_context_key_t key, changed;
+    ASSERT(recovery_context_key(&key,cards,2,&ray,&matrix));
+    recovery_context_entry_t* slot=recovery_context_find(table,&key);
+    ASSERT_NOT_NULL(slot);
+    ASSERT(!recovery_context_contains(slot,1,2)); /* Not yet completed. */
+    slot->key=key; slot->lo=1; slot->hi=3; slot->complete=true;
+    ASSERT(recovery_context_contains(slot,1,3));
+    ASSERT(recovery_context_contains(slot,2,2));
+    ASSERT(!recovery_context_contains(slot,nextafter(1,0),2));
+    ASSERT(!recovery_context_contains(slot,2,nextafter(3,INFINITY)));
+    ASSERT(!recovery_context_contains(slot,4,5));
+    ASSERT(!recovery_context_contains(slot,NAN,2));
+    ASSERT(!recovery_context_contains(slot,2,INFINITY));
+    changed=key; changed.count=1;
+    ASSERT(recovery_context_find(table,&changed)==NULL); /* Collision + full. */
+    changed=key; changed.values[0]=nextafter(0,1);
+    ASSERT(recovery_context_find(table,&changed)==NULL);
+    matrix.m[3]=1;
+    ASSERT(recovery_context_key(&changed,cards,2,&ray,&matrix));
+    ASSERT(recovery_context_find(table,&changed)==NULL);
+    ray.ox=NAN;
+    ASSERT(!recovery_context_key(&changed,cards,2,&ray,&matrix));
+    ASSERT(recovery_context_find(NULL,&key)==NULL);
+    free(table);
+}
+
+TEST(recovery_context_reuses_equal_parents_preserving_aliases_and_nearer_transforms) {
+    alea_system_t* sys=alea_create();
+    ASSERT_NOT_NULL(sys);
+    int plane=alea_plane_surface(sys,1,1,0,0,-2);
+    int alias=alea_plane_surface(sys,99,1,0,0,-2);
+    ASSERT(plane>=0 && alias>=0);
+    ASSERT(alea_add_cell(sys,1,alea_halfspace(sys,plane,-1),ALEA_MATERIAL_VOID,0,8)>=0);
+    ASSERT(alea_add_cell(sys,2,alea_halfspace(sys,alias,1),ALEA_MATERIAL_VOID,0,8)>=0);
+    int box=alea_box_surface(sys,3,-10,10,-2,2,-2,2);
+    for(int i=0;i<32;i++) {
+        int parent=alea_add_cell(sys,100+i,alea_halfspace(sys,box,-1),ALEA_MATERIAL_VOID,0,0);
+        ASSERT(parent>=0);
+        ASSERT_EQ(alea_set_fill(sys,parent,8,0),0);
+    }
+    const double translation[]={-1,0,0};
+    ASSERT_EQ(alea_add_transform(sys,9,translation,3,0),0);
+    int parent=alea_add_cell(sys,200,alea_halfspace(sys,box,-1),ALEA_MATERIAL_VOID,0,0);
+    ASSERT_EQ(alea_set_fill(sys,parent,8,9),0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
+    for(int pass=0;pass<4;pass++) {
+        alea_ray_t ray;
+        ASSERT_EQ(alea_ray_init(&ray,pass==1 ? 4 : 0.5,0,0,pass==1 ? -1 : 1,0,0),0);
+        alea_raycast_result_t cached, plain;
+        alea_raycast_result_init(&cached); alea_raycast_result_init(&plain);
+        cached.breakpoint_nearest_only=plain.breakpoint_nearest_only=1;
+        if(pass==3) cached.recovery_context_warmup=16;
+        else {
+            cached.recovery_context=recovery_context_create(pass==2 ? 1 : 2048);
+            ASSERT_NOT_NULL(cached.recovery_context);
+        }
+        if(pass==0) {
+            alea_interrupt();
+            ASSERT(alea_raycast_validation_breakpoints_reuse_nocache(
+                sys,&ray,0,5,1,&cached)!=0);
+            alea_clear_interrupt();
+        }
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys,&ray,0,5,1,&cached),0);
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys,&ray,0,5,1,&plain),0);
+        ASSERT_NOT_NULL(cached.recovery_context);
+        ASSERT_EQ(cached.hits.count,1); ASSERT_EQ(plain.hits.count,1);
+        ASSERT_EQ(cached.hits.data[0].t,pass==1 ? 2 : 0.5);
+        ASSERT_EQ(cached.hits.data[0].surface_id,1);
+        ASSERT_EQ(cached.hits.data[0].nx,1);
+        ASSERT_EQ(cached.hits.data[0].t,plain.hits.data[0].t);
+        ASSERT_EQ(cached.hits.data[0].surface_id,plain.hits.data[0].surface_id);
+        ASSERT(cached.surfaces_tested<plain.surfaces_tested);
+        free(cached.recovery_context); cached.recovery_context=NULL;
+        alea_raycast_result_free(&cached); alea_raycast_result_free(&plain);
+    }
+    alea_destroy(sys);
+}
+
+TEST(recovery_context_preserves_elliptical_hits_in_independent_queries) {
+    mcnp_model_t* model=mcnp_load("tests/data/mcnp_elliptical_torus.mcnp");
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_prepare_query_acceleration(model->sys),0);
+    for(int pass=0;pass<3;pass++) {
+        alea_ray_t ray;
+        ASSERT_EQ(alea_ray_init(&ray,5,0,pass==1 ? 3 : -3,0,0,pass==1 ? -1 : 1),0);
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
+        result.breakpoint_nearest_only=1;
+        result.recovery_context=recovery_context_create(2048);
+        ASSERT_NOT_NULL(result.recovery_context);
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(
+            model->sys,&ray,0,6,1,&result),0);
+        ASSERT_EQ(result.hits.count,1);
+        ASSERT_NEAR(result.hits.data[0].t,1,1e-12);
+        ASSERT_NEAR(result.hits.data[0].nz,pass==1 ? 1 : -1,1e-12);
+        free(result.recovery_context); result.recovery_context=NULL;
+        alea_raycast_result_free(&result);
+    }
+    mcnp_model_destroy(model);
 }
 
 TEST_MAIN()

@@ -5,12 +5,14 @@ SPDX-License-Identifier: MPL-2.0
 
 # Geometry query experiment: integration checkpoint
 
-Status reviewed on 2026-10-29. Production checkpoint: `0e9451e` on
+Status reviewed on 2026-10-29. Latest implementation: bounded recovery-context
+reuse, following production checkpoint `0e9451e`, on
 `experiment/geometry-recovery-search`; original baseline: `8c585eb`.
 This page records the current decision. Linked experiment reports preserve
 their original baselines, measurements, and historical conclusions.
 The subsequent [corrected-baseline measurement](GEOMETRY_CORRECTED_BASELINE.md)
-is complete and supplies the current performance profile.
+is complete. The subsequent [context reuse implementation](GEOMETRY_RECOVERY_CONTEXT_REUSE.md)
+records the latest changes, validation, and measurements.
 
 ## Decision
 
@@ -77,40 +79,34 @@ The subsequent torus-rejection experiment measured 10.126 s to 6.893 s across
 three alternating process pairs. These are separate measurements at different
 checkpoints; do not multiply them into a general library speedup.
 
-The corrected-baseline broad private 512-view screen still exceeds a 60-second
-whole-process limit, including loading and preparation. Repeated completed
-material-detail views take about 2.9–3.0 s warm at 512 and 5.8 s at 1,024.
-Neither those views nor sampled rows establish broad-view interactivity.
+The final context-reuse build completes broad private 512 split and fused
+first frames in 44.699 s and 45.267 s of frame work, with matching fields.
+Loading and preparation are additional. These are single completion checks;
+there is no completed baseline broad frame for field or speed comparison and
+no broad warm-frame series. The one-second warm-frame objective remains
+unachieved. Ordinary-resolution broad visualization is still slow.
 
-The fresh coarse profile attributes about 87–90% of sampled row time to recovery
-and about 83% of recovery time to indexed scanning. A separate shadow diagnostic
-finds that 81.6% of indexed calls repeat an exact list/ray/transform context within
-one recovery, over a contained window. It skips no work and establishes an
-opportunity, not a speedup. No new GPU code, GPU throughput claim, or device
-accuracy validation is part of this branch.
+For the repeated 32-row workload at resolution 1,024, three alternating process
+pairs reduce median total tracing time from 7.169 s to 3.264 s (54.5% less).
+All 256 comparison rows and eight detail frames match. Public control timing
+changes remain below the 5% regression screen after delaying allocation for
+short recoveries. Full native/serial suites and fresh ellipse pixel oracles pass.
 
-## Next bounded investigation
+## Latest retained implementation and next investigation
 
-The corrected-baseline measurement is complete. All public controls and
-independent ellipse pixel checks pass, as do 36 private detail frames and
-64 private rows against their prior outputs. The sampled 100 ms cancellation
-requests return in 103–105 ms with successful subsequent queries. The broad
-one-second warm-frame target remains unmet.
+Nearest recovery now avoids repeated successful indexed scans with an exact
+list/ray/transform key and a containing previously scanned window. Optional
+scratch is about 624 KiB on the tested ABI, allocated only after sixteen scans,
+bounded below 1 MiB, and freed within the recovery call. Existing scans handle
+allocation failure, saturation, or uncertain keys. Recursive children, aliases,
+first-hit ties, and cancellation retain their contracts. No record crosses a
+recovery call or geometry edit. See the implementation report for limitations.
 
-Test one candidate: avoid repeating an indexed scan within a single nearest
-recovery after an identical list/ray/transform context has completed successfully
-for a containing window. Preserve first-hit ties, aliases, world normals,
-recursive child traversal, and cancellation. Use exact keys, at most 1 MiB of
-optional per-recovery scratch, and the existing scan on allocation failure,
-saturation, or uncertain inputs. No cache crosses recovery calls or model edits.
-
-First establish the rule with independent synthetic cases and the uncached
-fallback. Require repeated release measurements, unchanged completed controls,
-no repeatable control regression above 5%, explicit memory accounting, and a
-new broad-frame screen before retaining an implementation. The shadow count of
-79% repeated references cannot be converted into an expected speedup. The
-slice benchmark excludes display/upload and does not establish 3D render or
-application first-image performance.
+The next investigation should profile the final broad-view cost before selecting
+another optimization. The earlier profile and its 81.6% repeated-call count
+precede this change and cannot identify the remaining bottleneck. Measure
+loading, preparation, first and warm frames, and display/upload separately.
+Existing slice timings do not establish 3D rendering or new GPU performance.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -129,6 +125,7 @@ conservation also need their own contracts.
 - [Torus rejection](GEOMETRY_TORUS_RECOVERY.md)
 - [Elliptical torus correction](GEOMETRY_ELLIPTICAL_TORUS.md)
 - [Corrected baseline and repeated contexts](GEOMETRY_CORRECTED_BASELINE.md)
+- [Bounded recovery context reuse](GEOMETRY_RECOVERY_CONTEXT_REUSE.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay

@@ -13,6 +13,7 @@
 #include "core/alea_occurrence.h"
 #include "alea.h"
 #include "ray_intersect.h"
+#include "recovery_context.h"
 #include "ray_epsilon.h"
 #include "ray_bbox.h"
 #include "bvh.h"
@@ -1035,7 +1036,7 @@ static void raycast_tree_primitives(alea_system_t* sys,
     }
 }
 
-static void raycast_indexed_surface_hits(alea_system_t* sys,
+static void raycast_indexed_surface_scan(alea_system_t* sys,
                                               const alea_ray_t* ray,
                                               const uint32_t* indices, size_t count,
                                               double t_min,
@@ -1111,6 +1112,53 @@ static void raycast_indexed_surface_hits(alea_system_t* sys,
                 }
             }
         }
+    }
+}
+
+/* Keep the larger key and table work off the ordinary indexed scan's stack. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+static void raycast_indexed_surface_hits_cached(alea_system_t* sys,
+    const alea_ray_t* ray, const uint32_t* indices, size_t count,
+    double t_min, double t_max, alea_raycast_result_t* result,
+    const alea_matrix_t* local_to_world) {
+    if (alea_interrupted()) { result->breakpoint_failed = 1; return; }
+    if (result->hits.count) t_max = fmin(t_max, result->hits.data[0].t);
+    recovery_context_key_t key;
+    recovery_context_entry_t* entry = NULL;
+    if (isfinite(t_min) && isfinite(t_max) && t_min >= 0 && t_max >= t_min &&
+        recovery_context_key(&key, indices, count, ray, local_to_world)) {
+        entry = recovery_context_find(result->recovery_context, &key);
+        if (recovery_context_contains(entry, t_min, t_max)) return;
+    }
+    raycast_indexed_surface_scan(sys, ray, indices, count, t_min, t_max,
+                                result, local_to_world, NULL);
+    if (entry && !result->breakpoint_failed && !alea_interrupted()) {
+        entry->key = key;
+        entry->lo = t_min;
+        entry->hi = t_max;
+        entry->complete = true;
+    }
+}
+
+static void raycast_indexed_surface_hits(alea_system_t* sys,
+    const alea_ray_t* ray, const uint32_t* indices, size_t count,
+    double t_min, double t_max, alea_raycast_result_t* result,
+    const alea_matrix_t* local_to_world, uint8_t* seen_surfaces) {
+    /* Short recoveries should not pay for a large optional table. Attempt
+     * allocation once, only after enough scans to amortize its initialization. */
+    if (result->breakpoint_nearest_only && result->recovery_context_warmup &&
+        --result->recovery_context_warmup == 0)
+        result->recovery_context = recovery_context_create(2048);
+    if (result->breakpoint_nearest_only && result->recovery_context && !seen_surfaces) {
+        raycast_indexed_surface_hits_cached(sys, ray, indices, count, t_min, t_max,
+                                           result, local_to_world);
+    } else {
+        raycast_indexed_surface_scan(sys, ray, indices, count, t_min, t_max,
+                                    result, local_to_world, seen_surfaces);
     }
 }
 
@@ -4360,6 +4408,7 @@ static int raycast_recovery_sample(alea_system_t* sys, const alea_ray_t* ray,
     alea_raycast_result_init(&crossings);
     crossings.breakpoint_nearest_only = 1;
     crossings.breakpoint_t_min = t_current;
+    crossings.recovery_context_warmup = 16;
     const int rc = alea_raycast_validation_breakpoints_reuse_nocache(
         sys, ray, t_current, t_max, 1, &crossings);
     double next = t_max;
@@ -4374,6 +4423,8 @@ static int raycast_recovery_sample(alea_system_t* sys, const alea_ray_t* ray,
             }
         }
     }
+    free(crossings.recovery_context);
+    crossings.recovery_context = NULL;
     alea_raycast_result_free(&crossings);
     if (rc != 0) return -1;
     *out_sample = t_current + 0.381966011250105 * (next - t_current);

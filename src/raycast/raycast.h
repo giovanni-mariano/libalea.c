@@ -274,6 +274,8 @@ struct alea_raycast_result {
     /* Fail-closed geometric breakpoint collection for particle validation. */
     /* Recovery retains only the nearest crossing strictly after this t. */
     uint8_t breakpoint_nearest_only;
+    uint8_t recovery_context_warmup; /* Allocate only after repeated scans. */
+    void* recovery_context; /* Borrowed scratch, scoped to one nearest recovery. */
     double breakpoint_t_min;
     size_t breakpoint_hit_limit;
     uint8_t breakpoint_failed;
