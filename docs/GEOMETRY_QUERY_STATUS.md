@@ -92,6 +92,12 @@ All 256 comparison rows and eight detail frames match. Public control timing
 changes remain below the 5% regression screen after delaying allocation for
 short recoveries. Full native/serial suites and fresh ellipse pixel oracles pass.
 
+The subsequent [ordered point-query fix](GEOMETRY_POINT_QUERIES.md) removes the
+public single-point API's global hierarchy scan and uses ordered spatial
+candidates. Its synthetic measurements are separate; the broad-view timings
+above belong to the preceding recovery-context implementation and have not been
+rerun after the point-query change.
+
 ## Latest retained implementation and next investigation
 
 Nearest recovery now avoids repeated successful indexed scans with an exact

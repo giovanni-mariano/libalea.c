@@ -1742,6 +1742,12 @@ int alea_universe_find(const alea_system_t* sys, int universe_id);
 
 /**
  * @brief Find cell and get both cell ID and material
+ *
+ * In each universe, select the first containing cell in model definition order,
+ * then descend through its fill or lattice. An undefined fill resolves to its
+ * container. Shared boundaries use the same ordering as volumetric overlaps.
+ * Call alea_prepare_query_acceleration() after geometry edits to prepare the
+ * indexes. Spatial acceleration preserves this selection order.
  */
 int alea_find_cell_at(alea_system_t* sys, double x, double y, double z,
                            int* out_cell_id, int* out_material);

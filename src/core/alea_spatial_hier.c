@@ -348,7 +348,16 @@ static int hier_cand_push(hier_cand_buf_t* b, uint32_t v) {
     return 0;
 }
 
+static int hier_cand_compare(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return (x > y) - (x < y);
+}
+
 static inline void hier_cand_sort(hier_cand_buf_t* b) {
+    if (b->count > 64) {
+        qsort(b->data, b->count, sizeof(*b->data), hier_cand_compare);
+        return;
+    }
     /* Insertion sort: candidate counts are almost always small (<= leaf size
      * times a few overlapping leaves). Avoids qsort's function-pointer cost. */
     for (size_t i = 1; i < b->count; i++) {
@@ -3300,6 +3309,19 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
     alea_hier_spatial_index_t* idx = sys->hier_spatial_index;
     if (!idx->built) return -2;
 
+    /* Preserve the cheap early winner for dense candidate sets. No hint is
+     * used by canonical point queries; the first model cell is authoritative. */
+    const alea_universe_t* first_univ = alea_get_universe(sys, universe_id);
+    if (crossed_mc_surface_id <= 0 && first_univ && first_univ->cell_indices.count) {
+        size_t first = first_univ->cell_indices.data[0];
+        if (hier_cell_contains_local(sys, &sys->cells.data[first], lx, ly, lz))
+            return (int)first;
+    }
+    /* Compact index bounds clamp to the finite float range. CSG may still
+     * accept double coordinates outside that range: use the ordered scan. */
+    if (!isfinite(lx) || !isfinite(ly) || !isfinite(lz) ||
+        fabs(lx) > FLT_MAX || fabs(ly) > FLT_MAX || fabs(lz) > FLT_MAX)
+        goto linear_scan;
     const hier_universe_blas_t* blas = find_blas(idx, universe_id);
     if (blas && blas->built && blas->node_count > 0) {
         hier_cand_buf_t candidates;
@@ -3313,6 +3335,13 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
         if (ctx.error) {
             hier_cand_free(&candidates);
             return -2;
+        }
+        /* Dense boxes provide little filtering. Preserve linear model-order
+         * search instead of sorting nearly the entire universe. */
+        if (crossed_mc_surface_id <= 0 && candidates.count > 64 &&
+            candidates.count > blas->cell_count / 2) {
+            hier_cand_free(&candidates);
+            goto linear_scan;
         }
         if (candidates.count > 1) {
             hier_cand_sort(&candidates);
@@ -3358,6 +3387,7 @@ int alea_hier_spatial_find_ordered_cell_in_universe(alea_system_t* sys,
         return result;
     }
 
+linear_scan:;
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
     int result = -1;
