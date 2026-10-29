@@ -29,6 +29,12 @@ typedef struct {
     compute_render_scene render;
 } compute_scene;
 int alea_compute_point_programs_pack(compute_scene* scene);
+typedef struct { uint64_t cells, rejected, instructions, primitives, budget_fallbacks; } compute_candidate_stats;
+/* Scratch signs and next links belong to the caller. Bounds enclose the actual
+ * converted FP32 inputs; only root-universe candidates are filtered. */
+int alea_compute_point_candidates(const compute_scene* scene,const float bounds[6],
+    int8_t* signs,uint32_t* next,uint32_t* root,compute_candidate_stats* stats);
+
 int alea_compute_primitive_sign_finite(const compute_primitive* primitive, const float bounds[6], int* finite);
 int alea_compute_primitive_sign(const compute_primitive* primitive, const float bounds[6]);
 int alea_compute_spatial_pack(compute_scene* scene);

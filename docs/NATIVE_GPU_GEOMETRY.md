@@ -318,27 +318,122 @@ The user-facing Metal plotter is rebuilt. CPU plotter regressions and Metal imag
 checks pass, including 52 valid aggregate reports with profiling enabled. SDL
 dummy-driver checks pass for 2D/3D navigation, publication, cancellation and reuse.
 
+## Opt-in tile candidate filtering
+
+The candidate prototype is retained behind `ALEA_METAL_POINT_CANDIDATES=1`
+(default off). It proves root-cell rejection over the bounding box of each
+converted FP32 input batch, reuses primitive interval proofs within that batch,
+and supplies an ordered candidate list to the native Metal classifier. Original
+CSG operands must all remain finite; unknown proofs, boundary contacts and
+lattice containers stay in the list. All-owner semantics, void and ancestor
+clipping are preserved. Child-universe scans are unchanged.
+
+The host reads the existing shared Metal geometry buffers. Scratch is one byte
+per packed primitive and four bytes per packed cell; lists are rebuilt per
+batch rather than cached by view. A 32-million-source-instruction budget bounds
+proof work, with unexamined cells retained. Cancellation checkpoints occur
+between cells and every 1,024 instructions. `mc_plotter` stages 64x64 tiles when
+the option is enabled and scatters results to the original pixels. The generic
+point API retains input order and caps candidate batches at 4,096 points.
+
+Validation: 15 CPU, 69 Metal, 4 builder and 4 resource tests pass. Candidate tests
+cover primitive/CSG semantics, transformed occurrences, void/overlap ownership,
+rectangular/repeating/nested lattices, exact boundaries, empty scenes, all-rejected
+lists, nonfinite operands, proof-budget fallback, interruption/retry, allocation
+failure and rebuilding lists between batches. The public Metal image checker
+compares scanning and candidates, including partial edge tiles. CPU plotter
+regressions and SDL 2D/3D navigation, cancellation, publication and reuse checks
+pass with candidates enabled. The user-facing Metal plotter is rebuilt. These checks
+retain the original FP32 accuracy limits; this is not transport-grade geometry.
+
+### Complete public plotter comparison
+
+`python3 benchmarks/gpu_plotter.py` generates the public 64-occurrence sphere/void
+fixture, checks complete image equality and measures the actual CPU grid/ray
+plotters against both Metal modes. Four fresh-process trials per mode, alternating
+order, Apple M1, four CPU threads, 512x512, profiling disabled:
+
+| Plotter path | Query median | Query range | Process wall median |
+| --- | ---: | ---: | ---: |
+| CPU grid | 6.450 ms | 6.300–6.500 ms | 16.2 ms |
+| CPU ray raster | 2.900 ms | 2.300–3.700 ms | 12.2 ms |
+| Metal scanner | 35.950 ms | 35.600–37.900 ms | 70.8 ms |
+| Metal tile candidates | 24.050 ms | 21.600–24.700 ms | 56.0 ms |
+
+All images agree. Metal query time improves about 33%, including candidate proof,
+staging and all submissions. The optimized CPU plotters remain faster. Process
+wall includes loading, acceleration preparation, drawing, output and shutdown;
+query timing does not. This comparison replaces neither the analytic compute
+oracle nor the separate 3D regression workload.
+
+### Bounded private frame comparison
+
+The private check was scaled from 256 sample points to a 32x32 view and then
+128x128; no 512x512 private run was attempted. At 32x32 the two Metal images match,
+and both classifiers match CPU FP64 enumeration on all 1,024 points. The CPU grid
+image differs because 85 samples have multiple terminal owners: Metal marks an
+overlap, whereas CPU grid plotting selects an owner. All 939 unique samples have
+the same CPU grid IDs/materials as the enumeration reference. There are no gaps.
+This is a semantic difference between plotting paths, not a candidate regression.
+
+At 128x128, an actual CLI run measures CPU grid at 0.385 s, Metal scanning at
+2.777 s and Metal candidates at 2.283 s; fresh-process wall times are respectively
+15.823, 22.453 and 21.776 s. The two Metal images are identical. Loading/preparation
+dominate fresh-process wall time.
+
+A separate in-process comparison retains each snapshot, alternates modes across
+one initial and five warm frames, and includes coordinate generation, staging,
+candidate proofs, all four submissions and scattering. Scanner input uses the
+existing row order; candidate input uses four 64x64 tiles. Profiling is disabled.
+
+| Measurement | Metal scanner | Metal tile candidates |
+| --- | ---: | ---: |
+| Snapshot preparation | 9.631 s | 9.547 s |
+| First frame | 2.870 s | 2.233 s |
+| Warm median | 2.722 s | 2.198 s |
+| Warm range | 2.658–2.928 s | 2.152–2.339 s |
+| Differences from CPU FP64 enumeration | 0 / 16,384 | 0 / 16,384 |
+
+The warm frame improves about 19.3%. Optimized CPU grid sampling has a 0.523 s
+warm median (0.443–0.677 s), but implements selected-owner semantics. Independent
+CPU all-owner compute enumeration takes 12.391 s. These CPU paths must not be
+conflated when making speed claims. The private geometry, coordinates, images,
+probe sources and raw logs remain ignored/outside Git.
+
+A separate instrumented frame comparison attributes the reduction:
+
+| Work per 128x128 frame | Scanner | Tile candidates |
+| --- | ---: | ---: |
+| GPU cell visits | 107,584,636 | 40,078,460 |
+| GPU executed CSG instructions | 3,671,369,563 | 1,678,030,131 |
+| Host root candidates examined / rejected | 0 / 0 | 22,648 / 16,481 |
+| Host source instructions / primitive proofs | 0 / 0 | 7,848,296 / 131,072 |
+| Candidate proof time | 0 | 0.092 s |
+| Largest GPU submission | 1.079 s | 0.723 s |
+
+All counters are unsaturated. Cell visits fall about 63% and CSG instruction
+execution about 54%, but elapsed-time improvement is smaller; instruction counts
+are not time fractions. The remaining GPU submissions still prevent a tight
+cancellation-latency guarantee.
+
+A smaller diagnostic split also demonstrates why coherent tiles alone are not
+enough: splitting the old 256-point sample into four 64-point calls takes 3.786 s
+with scanning and 2.220 s with candidates, versus roughly 1.2 s for the original
+single batch. This is not a reason to subdivide already small queries. The
+plotter's 64x64 tiles retain up to 4,096 points per submission.
+
 ## Next increment
 
-Prototype conservative candidate lists shared by coherent 2D tiles. Start with
-root-universe rejection, where per-point scans can repeat the same proof across
-a tile. Drop a candidate only when a conservative FP32 proof covers the complete
-query domain and preserves original nonfinite-error behavior; retain uncertain,
-unbounded and boundary-touching cells. Preserve all owners, including void,
-overlaps and transformed occurrences. Keep the current scanner as the reference
-and fallback. The previously rejected point BVH is not a starting performance
-assumption.
+Keep the option experimental and the optimized CPU plotter as the practical
+performance baseline. Investigate expensive surviving candidates and child
+universe scans before extending the proof machinery; use profiling only for
+attribution and disabled profiling for timing. Any extension must include proof
+construction, memory, complete frame latency and cancellation behavior in its
+acceptance criteria. The private 512x512 one-second target is still unmet.
 
-Measure proof/list construction, upload, memory, candidate/instruction reduction,
-complete query time and cancellation latency separately. Any cache must be tied
-to the immutable snapshot and query domain. Establish a win on public fixtures
-and the bounded private sample before increasing private resolution. Counters
-are off for acceptance timing. Retain only a measured end-to-end improvement;
-the extra preparation cost can outweigh reduced scanning.
-
-Both 2D and 3D remain acceptance workloads. Establish separate 3D attribution on
-representative exterior/cutaway/close-up views before changing ray traversal;
-point-query costs do not justify a ray optimization by themselves.
+Maintain 2D and 3D as regression consumers. Establish separate 3D attribution on
+exterior/cutaway/close-up views before changing ray traversal; the point candidate
+list is not a ray visibility structure.
 
 Private models, coordinates, extracted geometry, raw hashes, and diagnostics
 remain ignored or outside Git. Tracked fixtures use public synthetic geometry;

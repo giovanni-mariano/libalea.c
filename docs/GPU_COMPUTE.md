@@ -318,6 +318,51 @@ the core accelerated point lookup. Empty batches are valid. Inputs must be
 finite and fit the backend's precision/allocation limits. FP32 boundary and
 thin-feature limitations remain; sampled ownership is not interval coverage.
 
+### Experimental point candidates
+
+`ALEA_METAL_POINT_CANDIDATES=1` at snapshot creation enables conservative
+root-universe candidate filtering. It is **off by default**; `0` retains the
+scanner. For each batch of up to 4,096 points, the host bounds the actual converted
+FP32 inputs, proves which root cells cannot contain any of them, and uploads a
+linked candidate list through shared Metal storage. The kernel reuses that list
+across the batch. Child universes still use the existing traversal and certified
+spatial CSG programs. Both options can be used independently.
+
+The proof propagates strict signs through the original CSG bytecode and requires
+every original operand to evaluate finitely over the region, including operands
+that might be short-circuited. Unknown proofs, boundary-touching cells and lattice
+containers remain candidates. Void and overlapping cells stay eligible. Primitive
+proofs are reused within each batch; a 32-million-source-instruction budget leaves
+remaining programs unfiltered. Interrupt checks occur between cells and every
+1,024 source instructions. An individual GPU submission still has no latency
+guarantee.
+
+Candidate lists are rebuilt per batch and query; there is no view cache to
+invalidate. Scratch storage is four bytes per packed cell plus one byte per
+packed primitive, allocated lazily per context. Existing shared code/primitive
+buffers supply the host proofs without another geometry copy. Allocation failure
+returns an error and allows retry. Different contexts own independent scratch.
+
+For `mc_plotter`, the same option stages Metal pixels in 64x64 tiles, including
+partial edge tiles, and scatters results back into the image. This makes each
+proof cover a compact region. Generic `alea_compute_classify()` callers keep
+their supplied point order; broad or incoherent batches may gain little, and
+splitting a small batch can lose GPU parallelism. Profile and benchmark the
+complete query, including proof construction, before selecting this option.
+
+```sh
+ALEA_METAL_POINT_CANDIDATES=1 bin/mc_plotter model.mcnp Z 0 -10 10 -10 10 512 --backend=metal slice.bmp
+python3 benchmarks/gpu_plotter.py
+```
+
+The benchmark generates public geometry and compares complete images and timings
+for CPU grid/ray plotting and Metal scanning/candidates. It uses four CPU threads
+by default and reports query time separately from fresh-process wall time. Unlike
+the compute benchmark, its CPU measurements exercise the optimized plotter paths.
+CPU selected-owner plotting and Metal all-owner sampling have different overlap
+semantics; image equality on the public nonoverlapping fixture does not imply
+that arbitrary models will produce identical images.
+
 ### Point-query profiling
 
 Set `ALEA_METAL_POINT_PROFILE=build/point-profile.jsonl` before creating a Metal
@@ -345,6 +390,10 @@ contexts. Reports contain no coordinates, cell IDs or model identifiers.
 | `original_primitives`, `spatial_primitives` | Executed primitive evaluations |
 | `rejected`, `owners` | Positive CSG evaluations and terminal owning occurrences; lattice gaps are not CSG rejections |
 | `rejected_instructions`, `accepted_instructions` | Executed bytecode in rejecting versus containing CSG evaluations; containing ancestors are included |
+| `candidate_seconds` | Host time bounding inputs and building candidates, included in `wall_seconds` |
+| `candidate_cells`, `candidate_rejected` | Root cells examined by the host and cells removed from batch lists (not multiplied by point count) |
+| `candidate_instructions`, `candidate_primitives` | Host source-instruction visits and primitive interval proofs; these differ from executed GPU instructions |
+| `candidate_budget_fallbacks` | Root programs retained because the per-batch proof budget was insufficient |
 | `counter_limit_points` | Points with at least one saturated 32-bit counter; nonzero means counts can be lower bounds |
 | `wall_seconds` | Metal bridge time, including lazy uploads, conversion, waits, result copies and counter aggregation; excludes public input validation and final report writing |
 | `gpu_seconds`, `gpu_timed_submissions` | Sum of available command-buffer GPU durations and number of valid timestamp pairs; zero valid pairs means GPU time is unavailable |
@@ -352,7 +401,7 @@ contexts. Reports contain no coordinates, cell IDs or model identifiers.
 Host sums use 64-bit counters; `max_depth` is a maximum. Counter volume and
 instrumentation overhead depend on the workload: the buffer uses 76 bytes per
 submitted point, capped at 4,096 points for hierarchical queries. Flat queries
-retain their whole-batch submission. Measure performance with profiling disabled;
+retain their whole-batch submission unless candidate filtering is enabled. Measure performance with profiling disabled;
 in one public 512x512 run instrumentation increased the warm median from 30.658
 to 37.853 ms. Instruction fractions describe work, not elapsed-time fractions.
 

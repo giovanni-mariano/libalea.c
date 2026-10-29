@@ -877,12 +877,21 @@ static int metal_slice(const plot_params_t* p, const alea_slice_view_t* view,
     size_t total = (size_t)p->width * p->height;
     double du = (view->u_max - view->u_min) / p->width;
     double dv = (view->v_max - view->v_min) / p->height;
+    /* Coherent 64x64 inputs let the optional root candidate proof cover a
+     * compact region. Scatter results back to the original pixel positions. */
+    const char* candidates=getenv("ALEA_METAL_POINT_CANDIDATES");
+    int tiled=candidates && !strcmp(candidates,"1");
+    size_t columns=((size_t)p->width+63)/64;
+    size_t regions=tiled?columns*(((size_t)p->height+63)/64):(total+batch-1)/batch;
     int rc = 0;
-    for (size_t start = 0; start < total; start += batch) {
+    for (size_t region = 0; region < regions; ++region) {
+        size_t start=region*batch,x0=(region%columns)*64,y0=(region/columns)*64;
+        size_t width=tiled?((size_t)p->width-x0<64?(size_t)p->width-x0:64):0;
+        size_t height=tiled?((size_t)p->height-y0<64?(size_t)p->height-y0:64):0;
         if (plot_cancelled(p)) { rc = 1; break; }
-        size_t count = total - start < batch ? total - start : batch;
+        size_t count = tiled?width*height:total-start<batch?total-start:batch;
         for (size_t i = 0; i < count; ++i) {
-            size_t pixel = start + i;
+            size_t pixel = tiled?(y0+i/width)*p->width+x0+i%width:start+i;
             double u = view->u_min + (pixel % p->width + 0.5) * du;
             double v = view->v_min + (pixel / p->width + 0.5) * dv;
             for (int k = 0; k < 3; ++k)
@@ -894,9 +903,10 @@ static int metal_slice(const plot_params_t* p, const alea_slice_view_t* view,
             rc = -1; break;
         }
         for (size_t i = 0; i < count; ++i) {
-            cells[start+i] = results[i].cell_id;
-            materials[start+i] = results[i].material_id;
-            coverage[start+i] = results[i].owner_count == 0 ? ALEA_COVERAGE_NONE :
+            size_t pixel=tiled?(y0+i/width)*p->width+x0+i%width:start+i;
+            cells[pixel] = results[i].cell_id;
+            materials[pixel] = results[i].material_id;
+            coverage[pixel] = results[i].owner_count == 0 ? ALEA_COVERAGE_NONE :
                 results[i].owner_count == 1 ? ALEA_COVERAGE_ONE : ALEA_COVERAGE_MULTI;
         }
     }

@@ -224,6 +224,16 @@ conservative tile-candidate experiment, with proof construction and complete
 query cost included. It does not establish full-slice or 3D performance. See the
 [native GPU report](NATIVE_GPU_GEOMETRY.md#point-query-cost-attribution).
 
+The follow-up now retains opt-in root candidate filtering with 64x64 Metal slice
+tiles. The public 512x512 plotter query improves from 35.950 to 24.050 ms, while
+optimized CPU grid/ray plotting remains faster (6.450/2.900 ms). On a bounded
+private 128x128 view, warm Metal frames improve from 2.722 to 2.198 s; both modes
+match CPU FP64 all-owner enumeration on all 16,384 points. Optimized CPU grid
+sampling takes 0.523 s but selects an owner in overlaps. Candidate filtering is
+off by default, and the private full-resolution one-second target remains unmet.
+The [complete comparison](NATIVE_GPU_GEOMETRY.md#opt-in-tile-candidate-filtering)
+includes preparation, proof cost, semantic differences and cancellation limits.
+
 ## Evidence index and confidentiality
 
 - [Initial query experiment](GEOMETRY_QUERY_EXPERIMENT.md)

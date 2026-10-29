@@ -44,3 +44,64 @@ int alea_compute_point_programs_pack(compute_scene* s) {
     for(size_t i=0;i<s->cell_count;++i)s->point_cells[i].spatial=roots[i];
     free(roots);return 0;
 }
+
+/* Strict sign propagation over the original bytecode. Inspect all operands,
+ * including skipped ones, before accepting a rejection proof: a Boolean proof
+ * alone must never suppress a nonfinite error in the original evaluation.
+ * Signs are -1/0/+1; the two cache sentinels are never propagated into CSG.
+ * The source packer validates opcodes and the maximum value-stack depth. */
+enum { POINT_NONFINITE=2, POINT_UNCHECKED=3 };
+static int candidate_outside(const compute_scene* s,compute_cell cell,const float bounds[6],
+    int8_t* signs,compute_candidate_stats* stats) {
+    int stack[COMPUTE_STACK];unsigned top=0;
+    for(uint32_t i=0;i<cell.count;++i) {
+        if((i&1023)==0 && alea_interrupted())return -1;
+        compute_node n=s->nodes[cell.root+i];++stats->instructions;
+        if(n.op==COMPUTE_LEAF) {
+            uint32_t primitive=n.arg>>1;
+            if(signs[primitive]==POINT_UNCHECKED) {
+                int finite,sign=alea_compute_primitive_sign_finite(&s->primitives[primitive],bounds,&finite);
+                signs[primitive]=finite?sign:POINT_NONFINITE;++stats->primitives;
+            }
+            if(signs[primitive]==POINT_NONFINITE)return 0;
+            stack[top++]=(n.arg&1)?-signs[primitive]:signs[primitive];
+        } else if(n.op==COMPUTE_CONSTANT)stack[top++]=n.arg?1:-1;
+        else if(n.op==COMPUTE_COMPLEMENT)stack[top-1]=-stack[top-1];
+        else if(n.op==COMPUTE_SKIP_UNION || n.op==COMPUTE_SKIP_INTERSECTION || n.op==COMPUTE_SKIP_REVERSE_DIFFERENCE)continue;
+        else {
+            int right=stack[--top],left=stack[top-1];
+            if(n.op==COMPUTE_DIFFERENCE)right=-right;
+            if(n.op==COMPUTE_REVERSE_DIFFERENCE)left=-left;
+            stack[top-1]=n.op==COMPUTE_UNION?(left<right?left:right):(left>right?left:right);
+        }
+    }
+    return stack[0]>0;
+}
+int alea_compute_point_candidates(const compute_scene* s,const float bounds[6],
+    int8_t* signs,uint32_t* next,uint32_t* root,compute_candidate_stats* stats) {
+    memset(signs,POINT_UNCHECKED,s->primitive_count*sizeof(*signs));
+    *root=COMPUTE_NONE;uint32_t previous=COMPUTE_NONE;
+    size_t budget=POINT_PROOF_BUDGET;
+    uint32_t id=s->point_cells?s->point_root:s->cell_count?0:COMPUTE_NONE;
+    while(id!=COMPUTE_NONE) {
+        if(alea_interrupted())goto interrupted;
+        compute_cell cell=s->cells[id];int outside=0;++stats->cells;
+        /* A lattice's element CSG is not its placement envelope. Keep it. */
+        if(cell.lattice==COMPUTE_NONE) {
+            if(cell.count<=budget) {
+                budget-=cell.count;
+                outside=candidate_outside(s,cell,bounds,signs,stats);
+                if(outside<0)goto interrupted;
+            } else ++stats->budget_fallbacks;
+        }
+        if(outside)++stats->rejected;
+        else {
+            if(previous==COMPUTE_NONE)*root=id;else next[previous]=id;
+            next[id]=COMPUTE_NONE;previous=id;
+        }
+        id=s->point_cells?s->point_cells[id].next:id+1<s->cell_count?id+1:COMPUTE_NONE;
+    }
+    return 0;
+interrupted:
+    alea_set_error_detail(ALEA_ERR_INTERRUPTED,"Point candidate proof interrupted");return -1;
+}

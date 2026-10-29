@@ -15,11 +15,12 @@ static NSUInteger live_buffers;
 @end
 
 /* Pipeline creation uses the real device. Upload buffers are counted stand-ins;
- * these tests never submit them to a command encoder. */
+ * most tests never submit them. The candidate retry test forwards real buffers. */
 @interface UploadDevice : NSProxy {
 @public
     id<MTLDevice> target;
     NSUInteger calls,fail_at;
+    BOOL real_buffers;
 }
 @end
 @implementation UploadDevice
@@ -28,8 +29,8 @@ static NSUInteger live_buffers;
 }
 - (void)forwardInvocation:(NSInvocation*)invocation {[invocation invokeWithTarget:target];}
 - (id<MTLBuffer>)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options {
-    (void)options;
     if(++calls==fail_at)return nil;
+    if(real_buffers)return [target newBufferWithLength:length options:options];
     UploadBuffer* buffer=[[UploadBuffer alloc] init];buffer.length=length;
     return (id<MTLBuffer>)buffer;
 }
@@ -142,4 +143,23 @@ TEST(metal_point_upload_after_render_failure_preserves_shared_buffers) {
     }
 }
 
+TEST(metal_point_candidate_allocation_failure_retries) {
+    @autoreleasepool {
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+        int sphere=alea_sphere_surface(sys,1,0,0,0,2);
+        ASSERT(alea_add_cell(sys,42,alea_halfspace(sys,sphere,-1),mat,-1,0)>=0);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_CANDIDATES","1",1),0);
+        metal_state* s=alea_compute_metal_create(sys);ASSERT_NOT_NULL(s);
+        ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_CANDIDATES"),0);alea_destroy(sys);
+        UploadDevice* device=[UploadDevice alloc];device->target=s->device;
+        device->real_buffers=YES;device->fail_at=1;s->device=(id<MTLDevice>)device;
+        double point[]={0,0,0};alea_compute_result_t result;
+        ASSERT_EQ(alea_compute_metal_classify(s,point,1,&result),-1);
+        ASSERT_EQ(alea_error_code(),ALEA_ERR_OUT_OF_MEMORY);
+        ASSERT_NULL(s->point_candidates);ASSERT_NULL(s->point_signs);
+        device->fail_at=0;
+        ASSERT_EQ(alea_compute_metal_classify(s,point,1,&result),0);ASSERT_EQ(result.cell_id,42);
+        alea_compute_metal_destroy(s);
+    }
+}
 TEST_MAIN()

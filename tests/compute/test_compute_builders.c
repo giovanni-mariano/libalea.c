@@ -57,4 +57,42 @@ TEST(point_program_certification_preserves_errors_and_retries) {
     ASSERT_EQ(alea_compute_point_programs_pack(&s),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_ARG);
     ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_SPATIAL"),0);
 }
+TEST(point_candidates_keep_unknown_boundaries_and_retry) {
+    alea_system_t* sys=grid_scene();compute_scene s;
+    ASSERT_EQ(alea_compute_pack_geometry(sys,&s,0),0);alea_destroy(sys);
+    int8_t* signs=malloc(s.primitive_count);uint32_t* next=malloc(s.cell_count*sizeof(*next));
+    ASSERT_NOT_NULL(signs);ASSERT_NOT_NULL(next);
+    float bounds[]={-.1,.1,-.1,.1,-.1,.1};uint32_t root;compute_candidate_stats stats={0};
+    ASSERT_EQ(alea_compute_point_candidates(&s,bounds,signs,next,&root,&stats),0);
+    ASSERT_EQ(stats.cells,2048);ASSERT_EQ(stats.rejected,2047);ASSERT_EQ(root,0);ASSERT_EQ(next[0],COMPUTE_NONE);
+    bounds[0]=bounds[1]=.5f;stats=(compute_candidate_stats){0};
+    ASSERT_EQ(alea_compute_point_candidates(&s,bounds,signs,next,&root,&stats),0);ASSERT_EQ(root,0);
+    bounds[0]=bounds[1]=1e30f;stats=(compute_candidate_stats){0};
+    ASSERT_EQ(alea_compute_point_candidates(&s,bounds,signs,next,&root,&stats),0);ASSERT_EQ(stats.rejected,0);
+    checkpoints=0;interrupt_at=2;
+    ASSERT_EQ(alea_compute_point_candidates(&s,bounds,signs,next,&root,&stats),-1);
+    ASSERT_EQ(alea_error_code(),ALEA_ERR_INTERRUPTED);interrupt_at=0;
+    bounds[0]=-.1f;bounds[1]=.1f;stats=(compute_candidate_stats){0};
+    ASSERT_EQ(alea_compute_point_candidates(&s,bounds,signs,next,&root,&stats),0);ASSERT_EQ(stats.rejected,2047);
+    free(signs);free(next);alea_compute_scene_free(&s);
+}
+TEST(point_candidates_preserve_nonfinite_operands_and_budget_fallback) {
+    compute_primitive primitives[2]={
+        {.type=COMPUTE_SPHERE,.p={0,0,0,1e20}},
+        {.type=COMPUTE_BOX,.p={10,11,10,11,10,11}}};
+    compute_node nodes[]={{COMPUTE_LEAF,0},{COMPUTE_SKIP_INTERSECTION,2},
+                          {COMPUTE_LEAF,2},{COMPUTE_INTERSECTION,0}};
+    compute_cell cell={.root=0,.count=4,.lattice=COMPUTE_NONE};
+    compute_scene scene={.nodes=nodes,.primitives=primitives,.primitive_count=2,.cells=&cell,.cell_count=1};
+    const float bounds[]={-1,1,-1,1,-1,1};int8_t signs[2];uint32_t next,root;
+    compute_candidate_stats stats={0};
+    ASSERT_EQ(alea_compute_point_candidates(&scene,bounds,signs,&next,&root,&stats),0);
+    ASSERT_EQ(root,0);ASSERT_EQ(stats.rejected,0);
+    primitives[0].p[3]=2;stats=(compute_candidate_stats){0};
+    ASSERT_EQ(alea_compute_point_candidates(&scene,bounds,signs,&next,&root,&stats),0);
+    ASSERT_EQ(root,COMPUTE_NONE);ASSERT_EQ(stats.rejected,1);
+    cell.count=POINT_PROOF_BUDGET+1;stats=(compute_candidate_stats){0};
+    ASSERT_EQ(alea_compute_point_candidates(&scene,bounds,signs,&next,&root,&stats),0);
+    ASSERT_EQ(root,0);ASSERT_EQ(stats.instructions,0);ASSERT_EQ(stats.budget_fallbacks,1);
+}
 TEST_MAIN()

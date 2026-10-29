@@ -76,6 +76,7 @@ kernel void alea_classify_hierarchy(
     device const uint* fills [[buffer(10)]],
     device const compute_spatial_program* spatial [[buffer(11)]],
     device compute_point_profile* profiles [[buffer(12)]],
+    device const uint* candidates [[buffer(13)]],
     uint index [[thread_position_in_grid]]) {
     if (index >= count) return;
     point_frame stack[COMPUTE_HIER_STACK];
@@ -92,7 +93,7 @@ kernel void alea_classify_hierarchy(
             --top;
             continue;
         }
-        stack[top].next = links[id].next;
+        stack[top].next = point_candidates_enabled && top==0?candidates[id]:links[id].next;
         compute_cell cell = cells[id];
         if(point_profile_enabled)point_add(cost.v[POINT_CELLS]);
         float3 p = stack[top].point;

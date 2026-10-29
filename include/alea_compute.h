@@ -77,6 +77,10 @@ void alea_compute_destroy(alea_compute_t* compute);
  * original programs remain the fallback. All cells in visited universes remain
  * eligible, including void. ALEA_METAL_POINT_SPATIAL=0 at snapshot creation
  * disables point-program selection for comparison (default: enabled).
+ * ALEA_METAL_POINT_CANDIDATES=1 at snapshot creation additionally enables
+ * experimental root-universe candidate proofs over batches of up to 4096 points
+ * (default: off). Input order and results are preserved; coherent input regions
+ * can reduce repeated rejection work. Proof construction is included in the call.
  * ALEA_METAL_POINT_PROFILE=/path/report.jsonl at snapshot creation enables
  * aggregate query diagnostics (off by default). Successful nonempty calls append
  * a record; report I/O failure returns -1. Use a separate path per concurrent

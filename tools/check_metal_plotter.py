@@ -47,20 +47,27 @@ def main():
             assert result.returncode == 0, result.stdout + result.stderr
             return output.read_bytes()
 
+        def metal_image(name, options, **kwargs):
+            scan = run(name, options, environment=dict(env, ALEA_METAL_POINT_CANDIDATES='0'), **kwargs)
+            tiled = run(name + '-tiles', options,
+                        environment=dict(env, ALEA_METAL_POINT_CANDIDATES='1'), **kwargs)
+            assert scan == tiled, ('Candidate tiles changed pixels', name)
+            return tiled
+
         for axis, value in [('X', '1'), ('Y', '2'), ('Z', '3')]:
             for style in [[], ['--color=materials', '--contours=materials'],
                           ['--labels=cells,materials', '--ticks']]:
                 cpu = run('cpu', ['--backend=cpu', *style], axis=axis, value=value)
-                gpu = run('gpu', ['--backend', 'metal', *style], axis=axis, value=value)
+                gpu = metal_image('gpu', ['--backend', 'metal', *style], axis=axis, value=value)
                 assert cpu == gpu, (axis, style)
-        rows = bitmap(run('orientation', ['--backend=metal']))
+        rows = bitmap(metal_image('orientation', ['--backend=metal']))
         assert rows[57][52] != (255, 255, 255)  # Near world (1,2).
         assert rows[38][52] == (255, 255, 255)  # Near world (1,-2).
 
         ownership = tmp / 'ownership.i'
         ownership.write_text('Ownership\n1 1 -1 -1\n2 2 -1 -2\n3 0 -3\n\n'
                              '1 s -2 0 0 2\n2 s 0 0 0 2\n3 s 5 0 0 1\n\n')
-        rows = bitmap(run('ownership', ['--backend=metal'], source=ownership, value='0'))
+        rows = bitmap(metal_image('ownership', ['--backend=metal'], source=ownership, value='0'))
         assert rows[48][43] == (255, 0, 255), 'Overlap must be magenta'
         assert rows[48][72] == (255, 255, 255), 'Unique void must be white'
         assert rows[10][10] == (255, 192, 128), 'Gap must be orange'
@@ -78,14 +85,14 @@ def main():
             source = root / 'tests/data' / fixture
             bounds = ('4.125', '7.875', '-.875', '.875') if 'nested' in fixture else ('-10', '10', '-10', '10')
             cpu = run('lattice-cpu', ['--backend=cpu'], source=source, value='0', bounds=bounds)
-            gpu = run('lattice-gpu', ['--backend=metal'], source=source, value='0', bounds=bounds)
+            gpu = metal_image('lattice-gpu', ['--backend=metal'], source=source, value='0', bounds=bounds)
             assert cpu == gpu, fixture
         run('reject-lattice', ['--backend=metal'],
             source=root / 'tests/data/mcnp_hex_lattice.mcnp', error='rectangular')
         run('reject-backend', ['--backend=cuda'], error='unknown backend')
         run('reject-bounds', ['--backend=metal'], value='nan', error='finite')
         run('reject-batch', ['--backend=metal', '--batch=missing.txt'], error='combined')
-        print('Metal slices: axes/orientation, transformed fill, styles, ownership colors, explicit failures PASS')
+        print('Metal slices: axes/orientation, transformed fill, candidate tiles/edges, styles, ownership colors, explicit failures PASS')
 
 
 if __name__ == '__main__':

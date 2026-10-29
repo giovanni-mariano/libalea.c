@@ -6,6 +6,7 @@ using namespace metal;
 #include "compute_layout.h"
 
 constant bool point_profile_enabled [[function_constant(5)]];
+constant bool point_candidates_enabled [[function_constant(6)]];
 static void point_add(thread uint& counter,uint amount=1) {
     counter=amount>UINT_MAX-counter?UINT_MAX:counter+amount;
 }
@@ -101,6 +102,7 @@ kernel void alea_classify_points(device const compute_node* nodes [[buffer(0)]],
                                  constant uint& point_count [[buffer(5)]],
                                  device const compute_primitive* primitives [[buffer(6)]],
                                  device compute_point_profile* profiles [[buffer(12)]],
+                                 device const uint* candidates [[buffer(13)]],
                                  uint index [[thread_position_in_grid]]) {
     if (index >= point_count) return;
     size_t offset = size_t(index) * 3;
@@ -108,7 +110,9 @@ kernel void alea_classify_points(device const compute_node* nodes [[buffer(0)]],
     compute_result r = {-1, -1, 0};
     compute_point_profile cost={};
     if(point_profile_enabled){cost.v[POINT_UNIVERSES]=1;cost.v[POINT_MAX_DEPTH]=1;}
-    for (uint i = 0; i < cell_count; ++i) {
+    for (uint i = point_candidates_enabled?cell_count:0;
+         point_candidates_enabled?i!=COMPUTE_NONE:i<cell_count;
+         i=point_candidates_enabled?candidates[i]:i+1) {
         if(point_profile_enabled) {
             point_add(cost.v[POINT_CELLS]);point_add(cost.v[POINT_ORIGINAL_CALLS]);point_add(cost.v[POINT_NO_PROGRAM]);
         }
