@@ -1075,21 +1075,35 @@ static void raycast_indexed_surface_scan(alea_system_t* sys,
         const alea_primitive_entry_t* prim =
             &sys->primitives.data[surf->primitive_id];
         alea_primitive_data_t prim_data;
-        if (!raycast_primitive_copy_payload(sys, surf->primitive_id,
-                                            prim->type, &prim_data)) {
-            if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
-            continue;
-        }
-
-        if (result->breakpoint_nearest_only &&
-            prim->type >= ALEA_PRIMITIVE_TORUS_X &&
-            prim->type <= ALEA_PRIMITIVE_TORUS_Z &&
-            !ray_torus_window_may_hit(ray, &prim_data.torus, t_min, t_max))
-            continue;
-
-        result->surfaces_tested++;
+        const alea_plane_data_t* plane = NULL;
         double t[4];
-        int count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
+        int count;
+        if (result->breakpoint_nearest_only && prim->type == ALEA_PRIMITIVE_PLANE) {
+            /* Most recovery planes miss the window. Use the existing kernel
+             * directly and defer the normal payload copy until a root is kept. */
+            plane = alea_primitive_payload_const(sys, surf->primitive_id);
+            if (!plane) {
+                if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+                continue;
+            }
+            result->surfaces_tested++;
+            count = ray_intersect_plane(ray, plane, t, NULL, NULL, NULL);
+        } else {
+            if (!raycast_primitive_copy_payload(sys, surf->primitive_id,
+                                                prim->type, &prim_data)) {
+                if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
+                continue;
+            }
+
+            if (result->breakpoint_nearest_only &&
+                prim->type >= ALEA_PRIMITIVE_TORUS_X &&
+                prim->type <= ALEA_PRIMITIVE_TORUS_Z &&
+                !ray_torus_window_may_hit(ray, &prim_data.torus, t_min, t_max))
+                continue;
+
+            result->surfaces_tested++;
+            count = ray_intersect_primitive(ray, prim->type, &prim_data, t);
+        }
         for (int j = 0; j < count; j++) {
             if (t[j] >= t_min && t[j] <= t_max) {
                 alea_ray_hit_t hit;
@@ -1098,6 +1112,7 @@ static void raycast_indexed_surface_scan(alea_system_t* sys,
                 hit.primitive_id = surf->primitive_id;
                 double px, py, pz;
                 alea_ray_point_at(ray, t[j], &px, &py, &pz);
+                if (plane) prim_data.plane = *plane;
                 primitive_normal_at(prim->type, &prim_data, px, py, pz,
                                     &hit.nx, &hit.ny, &hit.nz);
                 if (local_to_world) {

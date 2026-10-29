@@ -5,8 +5,8 @@ SPDX-License-Identifier: MPL-2.0
 
 # Geometry query experiment: integration checkpoint
 
-Status reviewed on 2026-10-29. Latest retained implementation: ordered recovery
-child-cell lists following `a8491e2` (ordered point queries), on
+Status reviewed on 2026-10-29. Latest retained implementation: direct plane
+calls in nearest indexed scans, following ordered recovery child-cell lists, on
 `experiment/geometry-recovery-search`; original baseline: `8c585eb`.
 This page records the current decision. Linked experiment reports preserve
 their original baselines, measurements, and historical conclusions.
@@ -17,10 +17,12 @@ records that implementation, validation, and measurements. The latest
 The subsequent [indexed scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
 is measurement-only and identifies the plane-group hypothesis. The subsequent
 [plane-group implementation experiment](GEOMETRY_PLANE_GROUP_EXPERIMENT.md)
-is complete and not retained; production remains at `9375ed9`.
+is complete and not retained; that experiment left production at `9375ed9`.
 The subsequent [captured-context scan replay](GEOMETRY_SCAN_COST_REPLAY.md)
-is complete and measurement-only; a direct plane-call implementation is the
-next bounded experiment.
+is complete and measurement-only. The following
+[direct plane-call experiment](GEOMETRY_DIRECT_PLANE_SCANS.md) is complete and
+retained, with a repeatable one-worker benefit and inconclusive four-worker
+warm-frame results.
 
 ## Decision
 
@@ -167,9 +169,19 @@ A simpler direct plane call through the original indexed lookup reduces replay
 time by 16.0-16.4% across three samples, without a prepared table. Sampled roots
 agree bit-for-bit and nearest-hit fields agree. Instrumented complete frames
 still use the original scan, so this is not a measured frame-time improvement.
-The next bounded experiment is the direct plane path, followed by full numerical
-and integration validation and paired complete-frame measurements. Production
-remains unchanged. See the replay report for sampling, storage, and timing limits.
+The subsequent direct plane implementation is now retained after numerical,
+integration, and paired complete-frame checks. The existing payload accessor
+and scalar plane kernel replace the union copy and generic dispatch for nearest
+indexed planes; normal calculation still receives its payload when needed.
+No new cache or persistent storage is introduced. All three one-worker warm
+pairs improve, with median time falling from 23.815 s to 21.491 s (9.8%).
+Four-worker warm medians are 7.874/7.334 s, but two pairs are slightly slower and
+one is faster; that result does not establish a repeatable multithreaded gain.
+All compared outputs match, native/serial suites and independent ellipse oracles
+pass, and public timing changes stay within the 5% regression screen. The next
+investigation should reprofile the retained complete-frame path and examine the
+breadth of nearest recovery before adding another mechanism. See the direct
+plane report for full measurements and limits; the one-second target is unmet.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -195,6 +207,7 @@ conservation also need their own contracts.
 - [Indexed surface scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
 - [Plane-group experiment: not retained](GEOMETRY_PLANE_GROUP_EXPERIMENT.md)
 - [Captured-context scan cost replay](GEOMETRY_SCAN_COST_REPLAY.md)
+- [Direct plane calls in nearest scans](GEOMETRY_DIRECT_PLANE_SCANS.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay
