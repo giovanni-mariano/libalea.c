@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 #include "alea_test.h"
+#include <unistd.h>
 /* Exercise private upload ownership without adding failure hooks to the API.
  * This translation unit supplies the bridge symbols instead of the archive. */
 #include "../../src/compute/compute_metal.m"
@@ -160,6 +161,24 @@ TEST(metal_point_candidate_allocation_failure_retries) {
         device->fail_at=0;
         ASSERT_EQ(alea_compute_metal_classify(s,point,1,&result),0);ASSERT_EQ(result.cell_id,42);
         alea_compute_metal_destroy(s);
+    }
+}
+TEST(metal_selected_counter_allocation_failure_retries) {
+    @autoreleasepool {
+        char path[160];snprintf(path,sizeof(path),"/tmp/alea-selected-resource-%ld.jsonl",(long)getpid());unlink(path);
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+        int sphere=alea_sphere_surface(sys,1,0,0,0,2);
+        ASSERT(alea_add_cell(sys,42,alea_halfspace(sys,sphere,-1),mat,-1,0)>=0);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_SELECT_PROFILE",path,1),0);
+        metal_state* s=alea_compute_metal_create(sys);ASSERT_NOT_NULL(s);
+        ASSERT_EQ(alea_unsetenv("ALEA_METAL_SELECT_PROFILE"),0);alea_destroy(sys);
+        UploadDevice* device=[UploadDevice alloc];device->target=s->device;
+        device->real_buffers=YES;device->fail_at=1;s->device=(id<MTLDevice>)device;
+        double point[]={0,0,0};alea_compute_selection_t result;
+        ASSERT_EQ(alea_compute_metal_select(s,point,1,&result),-1);
+        ASSERT_EQ(alea_error_code(),ALEA_ERR_OUT_OF_MEMORY);ASSERT_NULL(s->select_costs);
+        device->fail_at=0;ASSERT_EQ(alea_compute_metal_select(s,point,1,&result),0);
+        ASSERT_EQ(result.cell_id,42);alea_compute_metal_destroy(s);unlink(path);
     }
 }
 TEST_MAIN()

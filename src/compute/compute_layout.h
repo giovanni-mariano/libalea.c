@@ -90,6 +90,11 @@ enum {
 };
 typedef struct { compute_uint v[POINT_COUNTER_COUNT]; } compute_point_profile;
 
+/* Selection attribution records are shared by the cell and depth tables. */
+enum { SELECT_CALLS, SELECT_INSTRUCTIONS, SELECT_PRIMITIVES, SELECT_REJECTED,
+       SELECT_SPATIAL, SELECT_LATTICES, SELECT_COUNTER_COUNT };
+typedef struct { compute_uint v[SELECT_COUNTER_COUNT]; } compute_select_cost;
+
 /* Saturating diagnostic counters; field order is also used by the Metal
  * atomic cell accumulator. Normal pipelines compile instrumentation out. */
 typedef struct {

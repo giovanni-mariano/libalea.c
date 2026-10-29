@@ -525,6 +525,37 @@ TEST(metal_selected_points_match_ordered_core) {
     ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_CANDIDATES"),0);
 }
 
+static unsigned long long point_counter(const char* line,const char* name);
+TEST(metal_selected_profile_counts_reset_and_preserve_results) {
+    char path[160];snprintf(path,sizeof(path),"/tmp/alea-selected-profile-%ld.jsonl",(long)getpid());unlink(path);
+    alea_system_t* sys=sphere_scene();int sphere=alea_sphere_surface(sys,2,10,0,0,2);
+    ASSERT(alea_add_cell(sys,99,alea_halfspace(sys,sphere,-1),0,-1,0)>=0);
+    ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_CANDIDATES","0",1),0);
+    alea_compute_t* baseline=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(alea_setenv("ALEA_METAL_SELECT_PROFILE",path,1),0);
+    alea_compute_t* profiled=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(profiled);
+    ASSERT_EQ(alea_unsetenv("ALEA_METAL_SELECT_PROFILE"),0);ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_CANDIDATES"),0);alea_destroy(sys);
+    double xyz[]={10,0,0, 0,0,0, 100,0,0};alea_compute_selection_t a[3],b[3];
+    ASSERT_EQ(alea_compute_select(baseline,xyz,3,a),0);ASSERT_EQ(alea_compute_select(profiled,xyz,3,b),0);
+    ASSERT_EQ(memcmp(a,b,sizeof(a)),0);ASSERT_EQ(alea_compute_select(profiled,NULL,0,NULL),0);
+    alea_interrupt();int rc=alea_compute_select(profiled,xyz,3,b);alea_clear_interrupt();ASSERT_EQ(rc,-1);
+    double bad[]={1e30,0,0};ASSERT_EQ(alea_compute_select(profiled,bad,1,b),-1);
+    ASSERT_EQ(alea_compute_select(profiled,xyz,1,b),0);
+    FILE* f=fopen(path,"r");ASSERT_NOT_NULL(f);char line[8192];ASSERT_NOT_NULL(fgets(line,sizeof(line),f));
+    ASSERT_EQ(point_counter(line,"points"),3);ASSERT_EQ(point_counter(line,"calls"),5);
+    ASSERT_EQ(point_counter(line,"instructions"),5);ASSERT_EQ(point_counter(line,"primitives"),5);
+    ASSERT_EQ(point_counter(line,"rejected"),3);ASSERT_EQ(point_counter(line,"counter_limit_records"),0);
+    ASSERT_NOT_NULL(fgets(line,sizeof(line),f));ASSERT_EQ(point_counter(line,"points"),1);
+    ASSERT_EQ(point_counter(line,"calls"),2);ASSERT_NULL(fgets(line,sizeof(line),f));fclose(f);
+    ASSERT_EQ(unlink(path),0);ASSERT_EQ(mkdir(path,0700),0);
+    ASSERT_EQ(alea_compute_select(profiled,xyz,1,b),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_STATE);
+    ASSERT_EQ(rmdir(path),0);ASSERT_EQ(alea_compute_select(profiled,xyz,1,b),0);
+    alea_compute_destroy(baseline);alea_compute_destroy(profiled);unlink(path);
+    ASSERT_EQ(alea_setenv("ALEA_METAL_SELECT_PROFILE",path,1),0);
+    check_selected_points(ALEA_COMPUTE_METAL);
+    ASSERT_EQ(alea_unsetenv("ALEA_METAL_SELECT_PROFILE"),0);unlink(path);
+}
+
 TEST(metal_selection_stops_before_later_nonfinite_program) {
     alea_system_t* sys=sphere_scene();int surface=alea_sphere_surface(sys,2,0,0,0,1e20);
     ASSERT(alea_add_cell(sys,99,alea_halfspace(sys,surface,-1),0,-1,0)>=0);

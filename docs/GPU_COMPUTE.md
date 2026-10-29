@@ -416,6 +416,52 @@ CPU selected-owner plotting and Metal all-owner sampling have different overlap
 semantics; image equality on the public nonoverlapping fixture does not imply
 that arbitrary models will produce identical images.
 
+### Selected-query attribution
+
+`ALEA_METAL_SELECT_PROFILE=build/selected.jsonl` at context creation enables
+selection-only cell/depth attribution. CPU contexts ignore it. The normal Metal
+selection pipeline specializes instrumentation out and allocates no attribution
+buffer. This setting is independent of `ALEA_METAL_POINT_PROFILE`, which continues
+to report classification only.
+
+Each successful nonempty selection appends one version-1 JSON record. Calls that
+fail or are interrupted before reporting emit no partial work. Report I/O errors
+return failure and may leave an incomplete line; fixing the path permits retry.
+Use separate files for concurrently used contexts. Counters reset per public call
+and accumulate across its internal submissions.
+
+`cells` contains visited packed cell indices, original program sizes and counts
+of calls, executed instructions, primitive evaluations, CSG rejections, changed
+spatial-program selections and lattice visits. `depths` reports the same counters
+by universe depth (root = 0). CSG instructions include executed skip instructions
+but exclude skipped operands. A lattice visit has zero CSG work; an outside
+lattice window is not a CSG rejection. Per-record counters saturate at UINT32_MAX;
+`counter_limit_records` counts saturated cell/depth records, whose values then
+provide lower bounds. Host analysis must sum into 64-bit values.
+
+Reports include bridge wall time, available command-buffer GPU time and valid
+timestamp-pair count, candidate preparation time, context buffer lengths, and
+selected geometry/counter buffer sizes. `device_process_allocated_bytes` is the
+Metal device's process-wide allocation figure, not a per-context or physical RAM
+measurement. Context buffer totals count each owned shared buffer once and
+exclude pipeline/driver memory and host geometry. Apple unified memory figures
+must not be added together as independent CPU and GPU memory pools.
+
+Attribution uses saturating GPU atomics and can be very expensive. On the bounded
+private 128x128 sample, normal candidate frames take about 1.3 s in the attribution
+run while instrumented frames take about 29–30 s. These times diagnose profiling
+overhead; use disabled profiling for acceptance measurements. Attribution storage
+is 24 bytes per packed cell plus 32 depth records, allocated lazily. The files can
+contain model-sensitive program/cell metadata: private-model reports belong in
+ignored `build/` or outside Git, with only aggregates retained in tracked reports.
+
+`make benchmark-metal-counters USE_METAL=1 RELEASE=1` enumerates native counter
+sets and samples supported sets on public synthetic work. It verifies execution
+and checks timestamp validity. A device exposing only timestamp counters does
+not supply occupancy or stall attribution through this API. See Apple's
+[counter sampling documentation](https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers)
+for the pass-boundary sampling mechanism.
+
 ### Point-query profiling
 
 Set `ALEA_METAL_POINT_PROFILE=build/point-profile.jsonl` before creating a Metal

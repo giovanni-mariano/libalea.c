@@ -114,4 +114,11 @@ $(COMPUTE_BIN_DIR)/benchmark_render_progressive$(EXEEXT): benchmarks/render_prog
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
 		$(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
 
+$(COMPUTE_BIN_DIR)/benchmark_metal_counters$(EXEEXT): benchmarks/metal_counters.m | $(COMPUTE_BIN_DIR)
+	@xcrun --sdk macosx clang $(CFLAGS) -fno-objc-arc $< $(COMPUTE_LDLIBS) -o $@
+
+.PHONY: benchmark-metal-counters
+benchmark-metal-counters: $(COMPUTE_BIN_DIR)/benchmark_metal_counters$(EXEEXT)
+	@$(COMPUTE_BIN_DIR)/benchmark_metal_counters$(EXEEXT)
+
 endif

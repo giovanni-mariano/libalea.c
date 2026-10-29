@@ -42,6 +42,8 @@ typedef struct {
     int8_t* point_signs;
     id<MTLComputePipelineState> select_pipeline;
     size_t output_stride;
+    char* select_profile_path;
+    id<MTLBuffer> select_costs;
     char* point_profile_path;
     id<MTLBuffer> point_costs;
     size_t point_cost_capacity;
@@ -75,6 +77,7 @@ void alea_compute_metal_destroy(void* state) {
     [s->spatial release];
     [s->point_candidates release];free(s->point_signs);
     [s->point_costs release];
+    [s->select_costs release];free(s->select_profile_path);
     free(s->point_profile_path);
     free(s->profile_prefix);
     free(s);
@@ -99,6 +102,11 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
         if(point_profile && *point_profile) {
             s->point_profile_path=strdup(point_profile);
             if(!s->point_profile_path){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Copying point profile path");goto fail;}
+        }
+        const char* selected_profile=getenv("ALEA_METAL_SELECT_PROFILE");
+        if(selected_profile && *selected_profile) {
+            s->select_profile_path=strdup(selected_profile);
+            if(!s->select_profile_path){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Copying selection profile path");goto fail;}
         }
         const char* profile=getenv("ALEA_METAL_PROFILE");
         if(profile && *profile) {
@@ -256,7 +264,7 @@ static int prepare_select(metal_state* s) {
     NSError* error=nil;
     dispatch_data_t data=dispatch_data_create(alea_compute_metallib,alea_compute_metallib_len,NULL,DISPATCH_DATA_DESTRUCTOR_DEFAULT);
     id<MTLLibrary> library=[s->device newLibraryWithData:data error:&error];dispatch_release(data);
-    MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];bool profile=false;
+    MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];bool profile=s->select_profile_path!=NULL;
     [constants setConstantValue:&profile type:MTLDataTypeBool atIndex:5];
     [constants setConstantValue:&s->point_candidates_enabled type:MTLDataTypeBool atIndex:6];
     id<MTLFunction> function=[library newFunctionWithName:s->hierarchical?@"alea_select_hierarchy":@"alea_select_points"
@@ -270,11 +278,56 @@ static int prepare_select(metal_state* s) {
     return 0;
 }
 _Static_assert(sizeof(compute_selection)==sizeof(alea_compute_selection_t),"Selection layout");
+static size_t context_buffer_bytes(const metal_state* s) {
+    id<MTLBuffer> buffers[]={s->nodes,s->primitives,s->cells,s->points,s->results,s->point_cells,
+        s->point_lattices,s->point_fills,s->spatial,s->transforms,s->point_candidates,s->select_costs,
+        s->point_costs,s->bvh,s->lattices,s->fills,s->colors,s->pixels,s->resume_states,s->resume_done,
+        s->resume_pixels,s->ray_costs,s->cell_costs};
+    size_t bytes=0;
+    for(size_t i=0;i<sizeof(buffers)/sizeof(*buffers);++i)if(buffers[i]) {
+        int duplicate=0;for(size_t j=0;j<i;++j)duplicate|=buffers[j]==buffers[i];
+        if(!duplicate)bytes+=buffers[i].length;
+    }
+    return bytes;
+}
+static int select_profile_write(metal_state* s,size_t points,double wall,double gpu,double proof,uint64_t timed) {
+    const compute_select_cost* records=s->select_costs.contents;
+    FILE* f=fopen(s->select_profile_path,"a");
+    if(!f){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Opening selection profile failed");return -1;}
+    fprintf(f,"{\"version\":1,\"operation\":\"select\",\"points\":%zu,\"wall_seconds\":%.9f,"
+        "\"gpu_seconds\":%.9f,\"gpu_timed_submissions\":%" PRIu64 ",\"candidate_seconds\":%.9f,"
+        "\"context_buffer_bytes\":%zu,\"device_process_allocated_bytes\":%lu,"
+        "\"code_bytes\":%lu,\"primitive_bytes\":%lu,\"cell_bytes\":%lu,\"spatial_bytes\":%lu,"
+        "\"query_links_bytes\":%lu,\"counter_bytes\":%lu,\"depths\":[",
+        points,wall,gpu,timed,proof,context_buffer_bytes(s),(unsigned long)s->device.currentAllocatedSize,
+        (unsigned long)s->nodes.length,(unsigned long)s->primitives.length,(unsigned long)s->cells.length,
+        (unsigned long)s->spatial.length,(unsigned long)s->point_cells.length,(unsigned long)s->select_costs.length);
+    uint64_t limits=0;
+    for(int table=0;table<2;++table) {
+        int comma=0;size_t n=table?s->cell_count:COMPUTE_HIER_STACK;
+        for(size_t i=0;i<n;++i) {
+            const compute_select_cost* row=records+(table?i:s->cell_count+i);
+            int limit=0;for(unsigned k=0;k<SELECT_COUNTER_COUNT;++k)limit|=row->v[k]==UINT32_MAX;
+            limits+=limit;if(!row->v[SELECT_CALLS])continue;
+            if(comma++)fputc(',',f);
+            if(table)fprintf(f,"{\"program_instructions\":%u,",s->scene.cells[i].count);
+            else fputc('{',f);
+            fprintf(f,"\"index\":%zu,\"calls\":%u,\"instructions\":%u,\"primitives\":%u,"
+                "\"rejected\":%u,\"spatial\":%u,\"lattices\":%u}",i,row->v[0],row->v[1],row->v[2],row->v[3],row->v[4],row->v[5]);
+        }
+        if(!table)fputs("],\"cells\":[",f);
+    }
+    fprintf(f,"],\"counter_limit_records\":%" PRIu64 "}\n",limits);
+    int failed=ferror(f);if(fclose(f))failed=1;
+    if(failed){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Writing selection profile failed");return -1;}
+    return 0;
+}
 static int metal_points(void* state,const double* xyz,size_t count,void* results,int selected) {
     @autoreleasepool {
         metal_state* s = state;
         const int profiling=!selected && s->point_profile_path!=NULL;
-        double start=profiling?point_profile_clock():0,gpu_seconds=0;
+        int select_profiling=selected && s->select_profile_path!=NULL;
+        double start=profiling || select_profiling?point_profile_clock():0,gpu_seconds=0;
         uint64_t counters[POINT_COUNTER_COUNT]={0},saturated=0,submissions=0,timed=0;
         compute_candidate_stats candidate_stats={0};double candidate_seconds=0;
         if (prepare_classify(s) || (selected && prepare_select(s))) return -1;
@@ -291,6 +344,15 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
                 [next release];free(signs);alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Allocating point candidates");return -1;
             }
             s->point_candidates=next;s->point_signs=signs;
+        }
+        if(select_profiling) {
+            size_t records=(size_t)s->cell_count+COMPUTE_HIER_STACK;
+            if(records>s->device.maxBufferLength/sizeof(compute_select_cost)) {
+                alea_set_error_detail(ALEA_ERR_OVERFLOW,"Selection counters exceed buffer limit");return -1;
+            }
+            if(!s->select_costs)s->select_costs=[s->device newBufferWithLength:records*sizeof(compute_select_cost) options:MTLResourceStorageModeShared];
+            if(!s->select_costs){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Allocating selection counters");return -1;}
+            memset(s->select_costs.contents,0,s->select_costs.length);
         }
         const size_t total = count;
         const size_t limit = selected || s->hierarchical || s->point_candidates_enabled ? 4096 : count;
@@ -327,7 +389,7 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
             for (size_t i = 0; i < count * 3; ++i) points[i] = (float)xyz[3 * first + i];
             uint32_t candidate_root=COMPUTE_NONE;
             if(s->point_candidates_enabled) {
-                double proof_start=profiling?point_profile_clock():0;
+                double proof_start=profiling || select_profiling?point_profile_clock():0;
                 float bounds[6]={INFINITY,-INFINITY,INFINITY,-INFINITY,INFINITY,-INFINITY};
                 for(size_t i=0;i<count;++i)for(int a=0;a<3;++a) {
                     bounds[2*a]=fminf(bounds[2*a],points[3*i+a]);
@@ -337,7 +399,7 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
                 host.point_cells=s->hierarchical?s->point_cells.contents:NULL;
                 if(alea_compute_point_candidates(&host,bounds,s->point_signs,s->point_candidates.contents,
                     &candidate_root,&candidate_stats))return -1;
-                if(profiling)candidate_seconds+=point_profile_clock()-proof_start;
+                if(profiling || select_profiling)candidate_seconds+=point_profile_clock()-proof_start;
             }
             id<MTLCommandBuffer> command = [s->queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
@@ -365,6 +427,10 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
             }
             if(profiling)[encoder setBuffer:s->point_costs offset:0 atIndex:12];
             if(s->point_candidates_enabled)[encoder setBuffer:s->point_candidates offset:0 atIndex:13];
+            if(select_profiling) {
+                [encoder setBuffer:s->select_costs offset:0 atIndex:14];
+                [encoder setBuffer:s->select_costs offset:(size_t)s->cell_count*sizeof(compute_select_cost) atIndex:15];
+            }
             NSUInteger width = MIN((NSUInteger)128, pipeline.maxTotalThreadsPerThreadgroup);
             [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
             [encoder endEncoding];
@@ -388,6 +454,9 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
                 }
             }
             memcpy((char*)results + first*stride,output,count*stride);
+            if(select_profiling && command.GPUEndTime>command.GPUStartTime && command.GPUStartTime>0) {
+                gpu_seconds+=command.GPUEndTime-command.GPUStartTime;++timed;
+            }
             if(profiling) {
                 ++submissions;
                 if(command.GPUEndTime>command.GPUStartTime && command.GPUStartTime>0) {
@@ -405,6 +474,7 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
                 }
             }
         }
+        if(select_profiling && select_profile_write(s,total,point_profile_clock()-start,gpu_seconds,candidate_seconds,timed))return -1;
         if(profiling && point_profile_write(s->point_profile_path,total,submissions,timed,
             point_profile_clock()-start,gpu_seconds,counters,saturated,candidate_seconds,&candidate_stats))return -1;
         return 0;

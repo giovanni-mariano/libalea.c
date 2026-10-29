@@ -53,6 +53,8 @@ typedef struct {
  * Supports the same rectangular lattice subset; root depth is zero. Metal
  * selection submits at most 4096 points at a time. Candidate/program switches
  * apply; ALEA_METAL_POINT_PROFILE reports classification only.
+ * ALEA_METAL_SELECT_PROFILE=/path/report.jsonl enables opt-in cell/depth
+ * attribution for selection (off by default; substantial instrumentation cost).
  * Returns 0 on success, -1 on failure (outputs unspecified on failure).
  */
 int alea_compute_select(alea_compute_t* compute,const double* xyz,size_t count,

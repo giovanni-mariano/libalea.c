@@ -276,3 +276,121 @@ operations and candidate modes, overlap precedence, undefined-fill colors, optio
 validation, CPU plotter regressions, both-mode cancellation/reuse and selected
 2D navigation/save checks pass. Existing 3D SDL regressions also pass. The Metal
 plotter is rebuilt.
+
+## Selected-query attribution and preparation memory
+
+`ALEA_METAL_SELECT_PROFILE` now enables selection-only per-cell and per-depth
+counters. Normal pipelines compile them out. The public counter tests check exact
+counts, matching output, resets, interruption/numerical failures, report I/O retry,
+hierarchy/lattice behavior and counter allocation failure/retry. Raw per-cell
+reports and all private measurements below remain ignored; only aggregates appear
+here. The report schema and profiling limitations are in `GPU_COMPUTE.md`.
+
+### Native hardware counter result
+
+The new public `benchmark-metal-counters` probe enumerates the device's exposed
+counter sets and actually samples a compute pass. On this Apple M1 it reports
+stage-boundary sampling supported, dispatch-boundary sampling unavailable, and
+one set containing only `GPUTimestamp`. Two timestamp samples resolve successfully;
+the sample delta agrees with the short command duration. The synthetic kernel's
+output is independently verified.
+
+This closes the question of whether native timestamp collection works. The public
+API on this device exposes no occupancy, cache-miss or stall set. The earlier
+empty System Trace exports do not prove the GPU did no work. Detailed hardware
+stall attribution remains unavailable through the tested interface; no claim of
+memory-bound or divergence-bound execution is made. Apple's
+[counter-sampling documentation](https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers)
+describes the pass attachment used by this probe.
+
+### Where selected work remains
+
+The bounded private 128x128 view was run twice with the same candidate tiles,
+comparing a normal context against an instrumented context. All 16,384 selected
+result structs agree between the two modes on both runs. Both profiles have
+identical counts, valid JSON, matching cell/depth totals and no saturated records.
+
+| Executed work per frame | Root depth 0 | Child depth 1 | Total |
+| --- | ---: | ---: | ---: |
+| Cell visits | 16,318,416 | 7,394,707 | 23,713,123 |
+| CSG instructions | 789,703,494 | 163,160,969 | 952,864,463 |
+| Primitive evaluations | 140,748,688 | 30,801,341 | 171,550,029 |
+| CSG rejections | 16,302,032 | 7,379,631 | 23,681,663 |
+| Changed spatial-program selections | 11,904,354 | 0 | 11,904,354 |
+| Lattice visits | 0 | 0 | 0 |
+
+Root traversal accounts for **82.88% of executed instructions**. Overall 99.87% of
+cell visits end in a positive CSG rejection on this sample. These are work
+fractions, not elapsed-time fractions; the sample still visits no lattice cells.
+There are 111,444 distinct visited packed cells across the frame. The most
+expensive cell contributes 0.393% of instructions; the top 5, 10, 50 and 100
+contribute respectively 1.730%, 2.794%, 7.978% and 13.017%. The work is broadly
+distributed, rather than concentrated in a few pathological cells.
+
+Normal frames take 1.246/1.303 s in this diagnostic run. Instrumented frames take
+30.065/28.795 s; summed GPU durations are 29.636/28.538 s and candidate preparation
+0.053/0.053 s. Global saturating atomics substantially perturb execution. These
+timings quantify profiling overhead, not the performance of the default kernels.
+No speed regression conclusion is drawn by comparing this two-frame diagnostic
+run with earlier five-frame medians.
+
+### Preparation and memory
+
+A separate single-context run reads Mach task resident and maximum-resident byte
+counts around load, snapshot creation, one instrumented point and destruction.
+Load takes 9.645 s and snapshot preparation 9.732 s. The resident size after load
+is 2,079,703,040 bytes; the maximum observed by Mach during the process reaches
+3,033,710,592 bytes (**2.825 GiB**). Resident memory after the query is
+2,693,103,616 bytes; allocator/framework retention after destruction is not
+classified as a leak from this observation alone.
+
+| Owned Metal buffers after one instrumented point | Bytes |
+| --- | ---: |
+| CSG bytecode (original and spatial programs) | 672,009,512 |
+| Primitives | 30,718,968 |
+| Cells | 16,223,328 |
+| Spatial tree | 6,832,840 |
+| Point hierarchy links | 5,407,776 |
+| Attribution counters | 10,816,320 |
+| Total distinct context buffers, including other query buffers | 744,077,548 |
+| Metal process-wide allocated size | 744,570,880 |
+
+The bytecode buffer alone is **640.88 MiB**, about 90% of the measured context
+buffer total. Counter storage is approximately 10.32 MiB. These are allocated
+buffer lengths; unified-memory CPU/GPU figures must not be added as separate
+physical pools. Host geometry, compiler/pipeline allocations and peak preparation
+scratch are not included in the context buffer sum; the Mach high-water mark
+captures the process-level peak. The 128x128 capture's larger staging arrays bring
+the context-buffer total to 744,192,208 bytes.
+
+Source inspection shows that `compute_scene.c` sums each cell's full compiled
+program count and emits a separate contiguous program per cell. This establishes
+where storage is produced, not how much could be eliminated safely. Exact shared
+roots and common subexpressions need an explicit reuse-opportunity audit before a
+new representation is selected. Small spatial-code measurements from earlier
+reports were not total bytecode-buffer measurements.
+
+### Decision and remaining M0 work
+
+Prioritize reducing broad root candidate/CSG work. Child-only optimization cannot
+remove the observed root instruction volume. Specializing a handful of expensive
+cells also leaves most work intact. The first representation experiment should
+measure reusable program ranges/subexpressions and its effect on preparation,
+code size and complete queries; instruction counts do not by themselves justify
+runtime code generation or another per-point BVH.
+
+For the named M1 private profile, use provisional regression budgets of 1 GiB in
+distinct context buffer lengths, 4 GiB process resident high-water mark for one
+loaded model/one context, and 15 s snapshot preparation (load reported separately).
+These are benchmark guardrails for subsequent experiments, not enforced allocation
+limits or universal backend guarantees. Record revisions explicitly. The measured
+baseline fits these guards but still misses the one-second full-slice objective.
+
+Fresh bounded private 3D exterior/cutaway/close-up profiling and final latency
+acceptance remain open before M0 closes. CUDA hardware remains unavailable.
+
+Validation for this checkpoint: 16 CPU and 73 Metal compute tests, 4 builder
+tests, 5 resource tests and public image checks with selected attribution enabled
+pass. All 99 emitted public JSON records parse and have matching cell/depth
+totals. The counter probe target collects valid timestamp samples. The plotter
+is rebuilt; normal kernels retain disabled instrumentation.
