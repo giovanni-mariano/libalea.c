@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Prepared universe surfaces for nearest recovery
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 Follow-up to [slice and row profiling](GEOMETRY_SLICE_VALIDATION.md), using
 `b859b99` as the baseline on `experiment/geometry-recovery-search`.
 

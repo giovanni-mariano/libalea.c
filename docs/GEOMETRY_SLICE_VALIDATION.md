@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Complete CPU slice validation
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 This pass tests complete square rasters after the occurrence-scoped recovery
 optimization at `8c8789f`, compared with its `bbf414d` baseline. See the
 [recovery findings](GEOMETRY_RECOVERY_SEARCH.md) for the isolated query results.

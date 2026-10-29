@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Shared geometry query experiment
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 Initial implementation and navigation follow-up, 28 October 2026. Branch: `experiment/geometry-queries`.
 Baseline: `8c585eb48e1cdba6f26e02345ab4b5df1c21a798`.
 

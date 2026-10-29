@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Conservative torus rejection in nearest recovery
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 Implementation following the [remaining recovery profile](GEOMETRY_REMAINING_RECOVERY.md),
 compared with production code at `5a43f40` (documentation checkpoint `0319988`).
 

@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Remaining recovery work after prepared universe lists
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 Profile of `5a43f40`, following [prepared universe recovery](GEOMETRY_UNIVERSE_RECOVERY.md).
 The production implementation is unchanged in this investigation.
 

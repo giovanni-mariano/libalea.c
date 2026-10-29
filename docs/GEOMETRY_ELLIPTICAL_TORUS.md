@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Elliptical torus intersections, normals, and slice curves
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 Correctness follow-up to `ba5a3ba` and the [torus recovery experiment](GEOMETRY_TORUS_RECOVERY.md).
 All new fixtures are independently specified, with no private model geometry.
 

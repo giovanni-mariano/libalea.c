@@ -5,6 +5,10 @@ SPDX-License-Identifier: MPL-2.0
 
 # Nearest-boundary recovery across shared cells
 
+For the consolidated decision and current limitations, see the
+[geometry query status](GEOMETRY_QUERY_STATUS.md). This report retains the
+baseline and conclusions of its own experiment.
+
 Follow-up on `experiment/geometry-recovery-search`, based on `bbf414d`.
 The [preceding experiment](GEOMETRY_QUERY_EXPERIMENT.md) establishes the
 navigation repair and per-cell indexed enumeration baseline.
