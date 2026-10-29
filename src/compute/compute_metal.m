@@ -164,7 +164,8 @@ static int prepare_classify(metal_state* s) {
         * sizeof(compute_transform);
     size_t lb = (s->scene.point_lattice_count ? s->scene.point_lattice_count : 1) * sizeof(compute_lattice);
     size_t fb = (s->scene.point_fill_count ? s->scene.point_fill_count : 1) * sizeof(uint32_t);
-    if (bytes > s->device.maxBufferLength || lb > s->device.maxBufferLength || fb > s->device.maxBufferLength ||
+    size_t sb = (s->scene.spatial_count ? s->scene.spatial_count : 1) * sizeof(compute_spatial_program);
+    if (sb > s->device.maxBufferLength || bytes > s->device.maxBufferLength || lb > s->device.maxBufferLength || fb > s->device.maxBufferLength ||
         (!s->transforms && tb > s->device.maxBufferLength)) {
         alea_set_error_detail(ALEA_ERR_OVERFLOW, "Metal point hierarchy exceeds buffer limit");
         return -1;
@@ -177,11 +178,15 @@ static int prepare_classify(metal_state* s) {
         length:lb options:MTLResourceStorageModeShared];
     id<MTLBuffer> fills = [s->device newBufferWithBytes:s->scene.point_fills
         length:fb options:MTLResourceStorageModeShared];
-    if (!links || !transforms || !lattices || !fills) {
-        [links release]; [transforms release]; [lattices release]; [fills release];
+    id<MTLBuffer> spatial = s->spatial ? [s->spatial retain] : s->scene.spatial_count ?
+        [s->device newBufferWithBytes:s->scene.spatial length:sb options:MTLResourceStorageModeShared] :
+        [s->device newBufferWithLength:sb options:MTLResourceStorageModeShared];
+    if (!links || !transforms || !lattices || !fills || !spatial) {
+        [links release]; [transforms release]; [lattices release]; [fills release]; [spatial release];
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Uploading Metal point hierarchy");
         return -1;
     }
+    [s->spatial release]; s->spatial = spatial;
     s->point_cells = links; s->point_lattices = lattices; s->point_fills = fills;
     free(s->scene.point_lattices); s->scene.point_lattices = NULL;
     free(s->scene.point_fills); s->scene.point_fills = NULL;
@@ -241,6 +246,7 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                 [encoder setBuffer:s->point_cells offset:0 atIndex:8];
                 [encoder setBuffer:s->point_lattices offset:0 atIndex:9];
                 [encoder setBuffer:s->point_fills offset:0 atIndex:10];
+                [encoder setBuffer:s->spatial offset:0 atIndex:11];
             }
             NSUInteger width = MIN((NSUInteger)128, s->pipeline.maxTotalThreadsPerThreadgroup);
             [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
@@ -318,12 +324,12 @@ static int prepare_render(metal_state* s) {
     if (!bvh || !colors || !transforms || !lattices || !fills) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal render scene");goto fail;
     }
-    spatial=spatial_bytes?[s->device newBufferWithBytes:s->scene.spatial length:spatial_bytes options:MTLResourceStorageModeShared]:
+    spatial=s->spatial?[s->spatial retain]:spatial_bytes?[s->device newBufferWithBytes:s->scene.spatial length:spatial_bytes options:MTLResourceStorageModeShared]:
         [s->device newBufferWithLength:sizeof(compute_spatial_program) options:MTLResourceStorageModeShared];
     if(!spatial) {
         alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Uploading spatial Metal programs");goto fail;
     }
-    s->spatial=spatial;
+    [s->spatial release]; s->spatial=spatial;
     s->bvh_root=r.root;
     free(s->scene.spatial);s->scene.spatial=NULL;
     alea_compute_render_free(&s->scene.render);

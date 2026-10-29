@@ -20,7 +20,7 @@ COMPUTE_BIN_DIR = $(BIN_DIR)/compute/$(COMPUTE_VARIANT)
 LIB_COMPUTE = $(COMPUTE_BIN_DIR)/libalea_compute.a
 COMPUTE_OBJS = $(COMPUTE_BUILD_DIR)/compute.o
 ifeq ($(USE_METAL),1)
-  COMPUTE_OBJS += $(COMPUTE_BUILD_DIR)/compute_scene.o $(COMPUTE_BUILD_DIR)/compute_render_scene.o $(COMPUTE_BUILD_DIR)/compute_bvh.o $(COMPUTE_BUILD_DIR)/compute_spatial.o $(COMPUTE_BUILD_DIR)/compute_local.o $(COMPUTE_BUILD_DIR)/compute_profile.o $(COMPUTE_BUILD_DIR)/compute_metal.o
+  COMPUTE_OBJS += $(COMPUTE_BUILD_DIR)/compute_scene.o $(COMPUTE_BUILD_DIR)/compute_render_scene.o $(COMPUTE_BUILD_DIR)/compute_bvh.o $(COMPUTE_BUILD_DIR)/compute_spatial.o $(COMPUTE_BUILD_DIR)/compute_local.o $(COMPUTE_BUILD_DIR)/compute_point.o $(COMPUTE_BUILD_DIR)/compute_profile.o $(COMPUTE_BUILD_DIR)/compute_metal.o
 endif
 
 .PHONY: compute test-compute benchmark-compute install-compute
@@ -66,7 +66,7 @@ ifeq ($(USE_METAL),1)
 
 test-compute: $(COMPUTE_BIN_DIR)/test_compute_builders $(COMPUTE_BIN_DIR)/test_metal_resources
 
-$(COMPUTE_BIN_DIR)/test_compute_builders: $(TEST_DIR)/compute/test_compute_builders.c $(SRC_DIR)/compute/compute_bvh.c $(SRC_DIR)/compute/compute_spatial.c $(LIB_COMPUTE) $(LIB_CORE)
+$(COMPUTE_BIN_DIR)/test_compute_builders: $(TEST_DIR)/compute/test_compute_builders.c $(SRC_DIR)/compute/compute_bvh.c $(SRC_DIR)/compute/compute_spatial.c $(SRC_DIR)/compute/compute_point.c $(LIB_COMPUTE) $(LIB_CORE)
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) -I$(TEST_DIR) $< \
 		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
 

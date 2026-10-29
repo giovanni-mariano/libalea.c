@@ -211,9 +211,10 @@ including interactive navigation and static images. Public image, cancellation
 and SDL event-loop checks pass; CPU remains the default. This UI integration
 retains the sampling and FP32 limits. Rectangular lattice classification now
 passes its public fixtures and a private E-lite smoke comparison: all 256 sampled
-results agree with the CPU enumeration reference. Warm Metal query time is
-1.356 seconds for that small sample, so complex-model interactive performance
-remains unresolved. Private geometry, coordinates, images and raw logs remain
+results agree with the CPU enumeration reference. The subsequent certified spatial-program increment reduces warm Metal time
+from 1.456 to 1.175 seconds in an alternating five-query comparison on the same
+256-point sample (about 19%). CPU enumeration takes 0.594 seconds. Candidate
+enumeration remains, and complex-model interactive performance is unresolved. Private geometry, coordinates, images and raw logs remain
 outside Git.
 
 ## Evidence index and confidentiality

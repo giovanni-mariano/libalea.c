@@ -73,6 +73,10 @@ void alea_compute_destroy(alea_compute_t* compute);
  * output storage must not overlap. count == 0 permits NULL arrays.
  * One context must not be used concurrently. Different contexts are independent.
  * Metal buffers are reused between calls; hierarchy buffers upload lazily once.
+ * Certified spatial CSG programs reduce expression work inside their domains;
+ * original programs remain the fallback. All cells in visited universes remain
+ * eligible, including void. ALEA_METAL_POINT_SPATIAL=0 at snapshot creation
+ * disables point-program selection for comparison (default: enabled).
  * Hierarchical Metal batches submit up to 4096 points at a time, checking
  * cancellation between submissions; an individual submission has no time bound.
  * Returns 0 on success, -1 on error (output is unspecified on error).

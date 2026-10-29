@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 SPDX-License-Identifier: MPL-2.0
 -->
 
-# Native GPU geometry: Metal hierarchy and lattice classification
+# Native GPU geometry: Metal classification
 
 Implemented on `experiment/native-gpu-geometry`, starting from `6cc16d8`, on
 2026-10-29. The local roadmap is `plans/native-gpu-geometry.md`.
@@ -147,7 +147,7 @@ viewer/cancellation check is `USE_METAL=1 python3 tools/check_sdl_viewers.py`
 (with `SDL_CONFIG` pointing to the local SDL installation if needed). No private
 geometry was used. This increment introduces no new performance claim.
 
-## Rectangular-lattice classification follow-up
+## Rectangular-lattice classification (`6570a4d`)
 
 Native Metal FP32 and the CPU FP64 enumeration reference now classify finite
 and repeating rectangular lattices procedurally. The point traversal selects an
@@ -197,10 +197,68 @@ private probe remain ignored under `build/native-gpu/` or outside the repository
 The rebuilt `mc_plotter` also completes a 16x16 E-lite PNG slice.
 Only aggregate observations are recorded here.
 
+## Certified point-program selection
+
+The Metal classifier now chooses an existing spatial CSG program when the
+FP32 point lies inside its domain and a point-specific certificate has proved
+all original primitive evaluations finite throughout that domain. It retains
+the original expression outside the domain or when certification is unavailable.
+All candidate cells remain eligible, including void and overlapping occurrences;
+no visibility BVH or child-content bound is used to reject a point owner.
+Lattice element selection and ancestor transforms retain their existing rules.
+
+The finite certificate matters because a Boolean simplification can otherwise
+hide a nonfinite operand that the original point evaluator would report as an
+error. It conservatively checks even operands that might short-circuit. Interval
+arithmetic encloses rounded FP32 intermediate values, and proof work is capped
+at 32 million source instructions per snapshot; remaining cells simply retain
+their original programs. No new CSG bytecode or spatial tree is built specifically
+for classification. The per-cell point link grows from 8 to 12 bytes. Transform
+and spatial-program GPU uploads are shared with the renderer, preserving retry
+and ownership in either initialization order. CPU queries are unchanged.
+
+An initial point-only candidate BVH was tested and discarded: broad conservative
+bounds increased the private sample’s warm time from 1.405 to 2.225 seconds.
+The final change retains the cell scan and reduces expression evaluation instead.
+This avoids enabling a traversal strategy that regressed the representative case.
+The prototype and raw diagnostics are retained only under ignored `build/`.
+
+Validation passes 15 CPU tests, 64 Metal compute tests, two builder tests and
+three resource tests. New comparisons exercise spatial selection on/off, voids,
+overlaps, transformed lattices, disconnected parents, bad source-bound hints,
+region faces and adjacent FP32 values, out-of-domain fallback, arithmetic errors,
+interruption and retry. Public image and SDL tests cover the actual plotter and
+both 2D/3D resource consumers.
+
+Apple M1 release build, one process, identical private 16x16 sample, two snapshots,
+one first query each followed by five timed warm queries per mode. Execution
+order alternates on each repetition; GPU calls run serially. API timing includes
+conversion, submissions, synchronization and copies, but excludes preparation.
+`ALEA_NUM_THREADS=1`. Both modes agree with the CPU FP64 enumeration reference
+on all 256 ownership results; this is agreement on a sample, not independent
+proof of complete private-model correctness.
+
+| Point mode | Snapshot preparation | First query | Warm median | Warm range |
+| --- | ---: | ---: | ---: | ---: |
+| Original scan | 9.570 s | 1.570 s | 1.456 s | 1.419–1.463 s |
+| Certified spatial programs | 10.723 s | 1.357 s | 1.175 s | 1.170–1.216 s |
+
+Warm query time decreases about 19.3% (1.24x throughput); preparation increases
+in this run. CPU enumeration takes 0.594 s for the same sample and remains faster.
+This is not the 512x512 one-second target. The public 64-occurrence analytic
+benchmark at 512x512 passes its independent equations in both modes: Metal warm
+medians are 32.898 ms off and 33.911 ms on, with overlapping ranges. No public
+simple-scene or 3D rendering speedup is claimed.
+
+The optimization is enabled by default. Reproduce the original point evaluator
+with `ALEA_METAL_POINT_SPATIAL=0`; setting this does not suppress the renderer’s
+spatial preprocessing. Private geometry, coordinates, images, probe sources and
+raw logs remain ignored or outside Git. Only aggregate observations are recorded.
+
 ## Next increment
 
-Measure Metal-specific spatial candidates, including void, without borrowing
-render-only pruning assumptions. Establish fresh 3D
+Reduce point-query candidate visits using tighter conservative proofs that can
+handle broad and uncertain cells without adding a traversal penalty. Establish fresh 3D
 attribution on representative exterior/cutaway/close-up views before changing
 its traversal. Both consumers remain acceptance workloads throughout.
 

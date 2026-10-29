@@ -481,6 +481,83 @@ TEST(metal_classify_lattice_rejections) {check_lattice_rejections(ALEA_COMPUTE_M
 TEST(metal_classify_nested_lattices) {check_nested_point_lattices(ALEA_COMPUTE_METAL);}
 TEST(metal_classify_repeating_axial_lattice) {check_repeating_axial_lattice(ALEA_COMPUTE_METAL);}
 
+static alea_system_t* local_render_scene(void);
+TEST(metal_point_programs_match_scan_and_keep_void_and_boundaries) {
+    for(int scene=0;scene<5;++scene) {
+        alea_system_t* sys=scene==1?point_hierarchy_scene(1):
+            scene==2?point_lattice_scene(0,1,1,1):scene==4?local_render_scene():sphere_scene();
+        if(scene==4) {
+            sys->cells.data[0].material_id=0;ASSERT_EQ(alea_set_fill(sys,0,1,0),0);
+            int box=alea_box_surface(sys,0,-5,5,-5,5,-5,5),mat=alea_add_material(sys,8);
+            ASSERT(alea_add_cell(sys,43,alea_halfspace(sys,box,-1),mat,-1,1)>=0);
+            ASSERT(alea_add_cell(sys,44,alea_halfspace(sys,box,1),ALEA_MATERIAL_VOID,0,1)>=0);
+        }
+        if(scene==0) {
+            int sphere=alea_sphere_surface(sys,2,0,0,0,2);
+            ASSERT(alea_add_cell(sys,43,alea_halfspace(sys,sphere,1),ALEA_MATERIAL_VOID,0,0)>=0);
+        }
+        if(scene==3)sys->nodes.data[sys->cells.data[0].root_node_id].bbox=(alea_node_bbox_t){100,101,100,101,100,101};
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_SPATIAL","0",1),0);
+        alea_compute_t* scan=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_MSG(scan!=NULL,alea_error());
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_SPATIAL","1",1),0);
+        alea_compute_t* indexed=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_MSG(indexed!=NULL,alea_error());
+        ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_SPATIAL"),0);
+        compute_scene packed={0};
+        if(scene==4) {
+            ASSERT_EQ(alea_compute_pack(sys,&packed),0);
+            ASSERT_TRUE(packed.point_cells[0].spatial!=COMPUTE_NONE);
+            ASSERT_TRUE(packed.spatial[packed.point_cells[0].spatial].child!=COMPUTE_NONE);
+        }
+        alea_destroy(sys);
+        size_t count=4105;double* xyz=malloc(count*3*sizeof(*xyz));
+        alea_compute_result_t* a=malloc(count*sizeof(*a)),*b=malloc(count*sizeof(*b));
+        ASSERT_NOT_NULL(xyz);ASSERT_NOT_NULL(a);ASSERT_NOT_NULL(b);
+        uint32_t seed=17;
+        for(size_t i=0;i<count*3;++i){seed=1664525*seed+1013904223;xyz[i]=(double)(seed%8193)/512-8;}
+        const double special[][3]={{0,0,0},{2,0,0},{nextafterf(2,INFINITY),0,0},{nextafterf(2,-INFINITY),0,0},
+            {1048576.0f,0,0},{nextafterf(1048576.0f,INFINITY),0,0},
+            {-2*1048576.0f,0,0},{1,1,.25},{1,2.5,.25}};
+        memcpy(xyz,special,sizeof(special));
+        size_t at=sizeof(special)/sizeof(special[0]);
+        for(size_t region=0;region<packed.spatial_count;++region)
+        for(int face=0;face<6;++face)for(int side=-1;side<=1;++side)if(at<count) {
+            const float* bounds=packed.spatial[region].bounds;
+            for(int axis=0;axis<3;++axis)xyz[3*at+axis]=.5*((double)bounds[2*axis]+bounds[2*axis+1]);
+            xyz[3*at+face/2]=side?nextafterf(bounds[face],side>0?INFINITY:-INFINITY):bounds[face];++at;
+        }
+        alea_compute_scene_free(&packed);
+        ASSERT_EQ(alea_compute_classify(scan,xyz,count,a),0);
+        ASSERT_EQ(alea_compute_classify(indexed,xyz,count,b),0);
+        ASSERT_EQ(memcmp(a,b,count*sizeof(*a)),0);
+        if(scene==0) {ASSERT_EQ(b[0].cell_id,42);ASSERT_EQ(b[1].owner_count,2);ASSERT_EQ(b[2].cell_id,43);ASSERT_EQ(b[5].cell_id,43);}
+        if(scene==3)ASSERT_EQ(b[0].cell_id,42);
+        free(xyz);free(a);free(b);alea_compute_destroy(scan);alea_compute_destroy(indexed);
+    }
+}
+TEST(metal_point_programs_preserve_nonfinite_errors_and_domain_fallback) {
+    for(int bounded=0;bounded<2;++bounded)for(int mode=0;mode<2;++mode) {
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,1);
+        int sphere=alea_sphere_surface(sys,1,0,0,0,bounded?1e20:2);
+        alea_node_id_t root=alea_halfspace(sys,sphere,-1);
+        if(bounded) {
+            int box=alea_box_surface(sys,2,100,101,100,101,100,101);
+            root=alea_intersection(sys,root,alea_halfspace(sys,box,-1));
+        }
+        ASSERT(alea_add_cell(sys,1,root,mat,-1,0)>=0);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_SPATIAL",mode?"1":"0",1),0);
+        alea_compute_t* gpu=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_MSG(gpu!=NULL,alea_error());
+        double p[]={bounded?0:1e30,0,0};alea_compute_result_t r;
+        ASSERT_EQ(alea_compute_classify(gpu,p,1,&r),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_OVERFLOW);
+        alea_compute_destroy(gpu);alea_destroy(sys);
+    }
+    ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_SPATIAL"),0);
+    alea_system_t* sys=sphere_scene();
+    ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_SPATIAL","invalid",1),0);
+    ASSERT_NULL(alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32));
+    ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_ARG);
+    ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_SPATIAL"),0);alea_destroy(sys);
+}
+
 TEST(metal_point_depth_limit) {check_point_depth_limit(ALEA_COMPUTE_METAL);}
 
 TEST(metal_classify_transformed_terminal_occurrences) {check_point_hierarchy(ALEA_COMPUTE_METAL);}

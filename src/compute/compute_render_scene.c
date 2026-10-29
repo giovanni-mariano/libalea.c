@@ -182,8 +182,8 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
     if(root<0 && n){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"No root universe 0");goto fail;}
     if(root>=0 && check_universe(sys,univ,nu,order,root,0))goto fail;
     /* Point queries share programs and transforms with rendering, but must
-     * enumerate terminal void and all overlapping occurrences. No spatial
-     * pruning is applied until its FP32 ownership contract is validated. */
+     * retain terminal void and all overlapping occurrences. Point-program
+     * certification is separate from render-only visibility bounds. */
     scene->point_root = COMPUTE_NONE;
     if (nl || nt || nu > 1) {
         scene->point_cells = calloc(n, sizeof(*scene->point_cells));
@@ -196,6 +196,7 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
                 point->next = j + 1 < univ[u].first + univ[u].count
                     ? order[j + 1].cell : COMPUTE_NONE;
                 point->child = COMPUTE_NONE;
+                point->spatial = COMPUTE_NONE;
                 if (univ[u].state == 2 && !sys->cells.data[i].lat_type && sys->cells.data[i].fill_universe > 0) {
                     int child = find_universe(univ, nu, sys->cells.data[i].fill_universe);
                     point->child = order[univ[child].first].cell;

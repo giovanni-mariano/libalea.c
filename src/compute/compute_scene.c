@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-_Static_assert(sizeof(metal_point_cell)==8,"Metal point links layout");
+_Static_assert(sizeof(metal_point_cell)==12,"Metal point links layout");
 _Static_assert(sizeof(compute_node)==8,"GPU instruction layout");
 _Static_assert(sizeof(compute_primitive)==56,"GPU primitive layout");
 _Static_assert(sizeof(compute_cell)==36,"GPU cell layout");
@@ -289,6 +289,7 @@ int alea_compute_pack_geometry(const alea_system_t* sys,compute_scene* s,int acc
     free(info);free(map);info=NULL;map=NULL;
     if(alea_compute_render_pack(sys,s))goto fail;
     if(accelerate && alea_compute_spatial_pack(s))goto fail;
+    if(alea_compute_point_programs_pack(s))goto fail;
     if(accelerate && alea_compute_bvh_rebuild(s))goto fail;
     return 0;
 memory:

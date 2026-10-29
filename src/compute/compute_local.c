@@ -41,7 +41,8 @@ static interval root(interval a) {
     r.hi=nextafterf(nextafterf((float)r.hi,INFINITY),INFINITY);return r;
 }
 static interval maximum(interval a,interval b) {return (interval){fmax(a.lo,b.lo),fmax(a.hi,b.hi)};}
-int alea_compute_primitive_sign(const compute_primitive* primitive,const float b[6]) {
+int alea_compute_primitive_sign_finite(const compute_primitive* primitive,const float b[6],int* finite) {
+    *finite=0;
     const float* a=primitive->p;interval p[3];
     for(int i=0;i<13;++i)if(a[i]!=0 && fabsf(a[i])<FLT_MIN)return 0;
     for(int i=0;i<6;++i)if(b[i]!=0 && fabsf(b[i])<FLT_MIN)return 0;
@@ -97,7 +98,12 @@ int alea_compute_primitive_sign(const compute_primitive* primitive,const float b
     }
     default:break;
     }
+    *finite=isfinite(v.lo) && isfinite(v.hi);
     return v.lo>0?1:v.hi<0?-1:0;
+}
+int alea_compute_primitive_sign(const compute_primitive* primitive,const float b[6]) {
+    int finite;
+    return alea_compute_primitive_sign_finite(primitive,b,&finite);
 }
 
 typedef struct { uint32_t op,arg,left,right,count; int sign; } expr;

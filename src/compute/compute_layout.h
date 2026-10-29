@@ -29,7 +29,7 @@ enum { COMPUTE_PLANE, COMPUTE_SPHERE, COMPUTE_CYL_X, COMPUTE_CYL_Y,
  * LEAF arg packs the primitive index and halfspace flip in its low bit. */
 /* Metal-private point traversal links, separate from visibility-only BVHs.
  * Every cell, including terminal void, remains eligible for ownership. */
-typedef struct { compute_uint next, child; } metal_point_cell;
+typedef struct { compute_uint next, child, spatial; } metal_point_cell;
 typedef struct { compute_uint op, arg; } compute_node;
 typedef struct { compute_uint type; float p[13]; } compute_primitive;
 typedef struct {

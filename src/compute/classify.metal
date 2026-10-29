@@ -3,11 +3,26 @@
 
 /* Native Metal point traversal. These links include void; render BVHs do not.
  * One thread owns a point and counts every terminal occurrence under matching
- * ancestors. Keep the original CSG program, without render-only simplification. */
+ * ancestors. Select only point-certified spatial programs; retain the original
+ * expression outside their domains. Render visibility bounds never reject owners. */
 struct point_frame {
     float3 point;
     uint next;
 };
+
+static compute_cell point_program(compute_cell cell,float3 p,uint root,
+                                   device const compute_spatial_program* spatial) {
+    if(root==COMPUTE_NONE)return cell;
+    for(uint a=0;a<3;++a)
+        if(p[a]<spatial[root].bounds[2*a] || p[a]>spatial[root].bounds[2*a+1])return cell;
+    uint id=root;
+    while(spatial[id].child!=COMPUTE_NONE) {
+        uint child=spatial[id].child,axis=spatial[id].axis;
+        id=child+uint(p[axis]>=spatial[child+1].bounds[2*axis]);
+    }
+    cell.root=spatial[id].root;cell.count=spatial[id].count;
+    return cell;
+}
 
 /* Point ownership uses floor, without the directional crossing bias used by
  * ray traversal. Select one element; its terminal cells still count separately. */
@@ -51,6 +66,7 @@ kernel void alea_classify_hierarchy(
     device const metal_point_cell* links [[buffer(8)]],
     device const compute_lattice* lattices [[buffer(9)]],
     device const uint* fills [[buffer(10)]],
+    device const compute_spatial_program* spatial [[buffer(11)]],
     uint index [[thread_position_in_grid]]) {
     if (index >= count) return;
     point_frame stack[COMPUTE_HIER_STACK];
@@ -79,7 +95,7 @@ kernel void alea_classify_hierarchy(
             stack[top].next = child;
             continue;
         }
-        float value = evaluate(nodes, primitives, cell, p);
+        float value = evaluate(nodes, primitives, point_program(cell,p,links[id].spatial,spatial), p);
         if (!isfinite(value)) { result.owner_count = COMPUTE_NONE; break; }
         if (value > 0) continue;
         if (links[id].child != COMPUTE_NONE) {

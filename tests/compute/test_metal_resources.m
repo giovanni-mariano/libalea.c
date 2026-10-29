@@ -86,21 +86,21 @@ TEST(metal_point_upload_failure_and_shared_transform_ownership) {
             UploadDevice* device=[UploadDevice alloc];device->target=MTLCreateSystemDefaultDevice();
             ASSERT_NOT_NULL(device->target);s->device=(id<MTLDevice>)device;
             metal_point_cell* original=s->scene.point_cells;
-            if(failure<=4) {
+            if(failure<=5) {
                 device->fail_at=failure;
                 ASSERT_EQ(prepare_classify(s),-1);ASSERT_EQ(live_buffers,0);
                 ASSERT_NULL(s->point_cells);ASSERT_NULL(s->transforms);
                 ASSERT_TRUE(s->scene.point_cells==original);
                 device->fail_at=0;
             }
-            ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(live_buffers,4);
+            ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(live_buffers,5);
             ASSERT_NULL(s->scene.point_cells);
             id<MTLBuffer> transforms=s->transforms;
             NSUInteger calls=device->calls;
             ASSERT_EQ(prepare_classify(s),0);ASSERT_EQ(device->calls,calls);
-            if(failure>4) {
-                device->fail_at=device->calls+failure-4;
-                ASSERT_EQ(prepare_render(s),-1);ASSERT_EQ(live_buffers,4);
+            if(failure>5) {
+                device->fail_at=device->calls+failure-5;
+                ASSERT_EQ(prepare_render(s),-1);ASSERT_EQ(live_buffers,5);
                 ASSERT_TRUE(s->transforms==transforms);ASSERT_NOT_NULL(s->scene.render.bvh);
                 device->fail_at=0;
             }

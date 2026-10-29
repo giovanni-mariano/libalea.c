@@ -81,8 +81,9 @@ The Ray and Errors controls are absent from the Metal viewer.
 The worker checks cancellation between batches of 4,096 samples and before
 publishing a complete image. One GPU submission has no latency bound; no partial
 slice is published. Saving uses a complete frame for the requested view.
-This integration makes the hierarchy classifier available for use; it does not
-add spatial pruning or establish complex-model interactive performance.
+The classifier now selects certified spatial CSG programs to reduce expression
+work. It still enumerates the cells of each visited universe. Complex-model
+interactive performance remains unresolved.
 
 ## Geometry and precision
 
@@ -284,17 +285,32 @@ untiled Z remains unshifted in center coordinates. Nonpositive element fills
 are gaps, while void-only fill universes remain unique owners. Ancestor fill
 CSG still clips the lattice. Hexagonal lattices and lattice-local fill transforms
 are rejected. Metal validates lattice type, dimensions, pitch and fill tables
-before CSG packing and rendering specialization. Spatial rendering programs
-are still prepared by snapshot creation; classification does not use them.
+before CSG packing and rendering specialization. Spatial CSG programs are prepared by snapshot creation. Classification now
+selects them only after a separate finite-arithmetic certificate establishes
+that simplification cannot hide an error in the original expression.
 
 Metal rejects logical or relative element indices with magnitude greater than
 16,777,215 rather than silently collapsing adjacent indices in FP32. CPU lookup
 uses checked 32-bit indices. These guards do not remove ordinary FP32 boundary
 sensitivity.
 
-Metal shares primitive/CSG and transform buffers with its renderer, but uses
+Metal shares primitive/CSG, transform and spatial-program buffers with its renderer, but uses
 separate point-traversal and lattice-fill links that include void. These links
 upload lazily and survive either classification/rendering initialization order.
+Inside a certified region, the kernel selects a shorter spatial CSG program;
+outside it, or when certification is unavailable, it evaluates the original
+expression. Certification inspects every original primitive, including potentially
+short-circuited operands, using outward-rounded FP32 interval bounds. A bounded
+certification budget leaves remaining cells on their original programs. The
+renderer’s visibility BVH and content bounds do not reject point-query owners.
+
+`ALEA_METAL_POINT_SPATIAL=0` disables point-program selection at snapshot creation
+for comparison; the default is enabled. This does not disable the renderer’s
+spatial preprocessing. `ALEA_METAL_SPATIAL=0` disables that preprocessing itself,
+which also leaves no spatial programs for classification. Neither switch changes
+backend or precision. The simple public 512x512 fixture remains around 33–34 ms;
+the measured private 256-point sample improves about 19% in warm query time, but
+is still too slow to establish interactive performance on large slices.
 Hierarchical queries submit up to 4,096 points at a time and check cancellation
 between submissions; per-submission execution time is not bounded. Both point
 implementations currently enumerate visited universes. They are separate from

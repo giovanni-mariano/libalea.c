@@ -28,6 +28,8 @@ typedef struct {
     size_t point_lattice_count, point_fill_count;
     compute_render_scene render;
 } compute_scene;
+int alea_compute_point_programs_pack(compute_scene* scene);
+int alea_compute_primitive_sign_finite(const compute_primitive* primitive, const float bounds[6], int* finite);
 int alea_compute_primitive_sign(const compute_primitive* primitive, const float bounds[6]);
 int alea_compute_spatial_pack(compute_scene* scene);
 int alea_compute_bvh_rebuild(compute_scene* scene);
