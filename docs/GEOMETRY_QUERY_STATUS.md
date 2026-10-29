@@ -14,6 +14,8 @@ The subsequent [corrected-baseline measurement](GEOMETRY_CORRECTED_BASELINE.md)
 is complete. The subsequent [context reuse implementation](GEOMETRY_RECOVERY_CONTEXT_REUSE.md)
 records that implementation, validation, and measurements. The latest
 [ordered child-cell experiment](GEOMETRY_RECOVERY_CHILD_CELLS.md) is complete.
+The subsequent [indexed scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
+is measurement-only and identifies the next bounded hypothesis.
 
 ## Decision
 
@@ -139,6 +141,18 @@ surface-scan cost and recovery strategy. These are instrumented timing shares,
 not release throughput measurements or justification for a GPU backend by
 themselves. The one-second target remains unmet.
 
+The subsequent indexed attribution finds distributed cost: the busiest list
+accounts for only 7.49% of references, while planes account for 60.67%. An
+observational exact-normal plane-group filter identifies 145.8 million visits
+(17.87%) that could be skipped, with zero observed in-window root exclusions.
+This is potential candidate reduction, not measured release speedup. A separate
+synthetic probe supports the hypothesis, and a terminal-cell-box counterexample
+rules out simply replacing the scan with cell spatial candidates under its
+current contract. The next saved plan is exact-normal plane groups of at least
+sixteen members, with bounded metadata, the existing scalar kernel, original
+card order, conservative fallback, and paired release acceptance criteria.
+It is not yet implemented in production.
+
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
 restart behavior need independent expected outcomes. Existing fixed-source and
@@ -160,6 +174,7 @@ conservation also need their own contracts.
 - [Ordered public point queries](GEOMETRY_POINT_QUERIES.md)
 - [Broad-view profile before child lists](GEOMETRY_VISUALIZATION_PROFILE.md)
 - [Ordered recovery child cells](GEOMETRY_RECOVERY_CHILD_CELLS.md)
+- [Indexed surface scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay
