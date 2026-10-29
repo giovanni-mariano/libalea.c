@@ -440,3 +440,14 @@ remain ignored or outside Git. Tracked fixtures use public synthetic geometry;
 private validation contributes only aggregate observations. Local logs and images
 are under ignored `build/native-gpu/`. This experimental report is not added to the public
 documentation-site allowlist.
+
+## Complete implementation roadmap: M0 checkpoint
+
+The [M0 inventory and contracts](NATIVE_GPU_M0.md) distinguish imported analytic
+macrobody lowering from raw primitive support, selected-owner resolution from
+all-owner classification, and measured work from unavailable hardware counters.
+The public analytic benchmark now includes a close-up and five warm repetitions;
+all point/depth/normal checks pass. The machine-readable workload inventory is
+`benchmarks/native_gpu_workloads.json`. M0 remains open for hardware attribution,
+resource budgets and fresh bounded private 3D measurements. CUDA execution work
+awaits NVIDIA hardware; its semantic contract follows the same fixtures.

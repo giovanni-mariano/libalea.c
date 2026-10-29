@@ -90,12 +90,18 @@ static int check_render(const render_config_t* cfg, const render_camera_t* cam,
     return 0;
 }
 
-static void report(const char* task, const char* backend, const double time[4]) {
-    double a=time[1], b=time[2], c=time[3];
-    double median=fmax(fmin(a,b),fmin(fmax(a,b),c));
+enum { PASSES = 6 }; /* One initial call and five warm calls. */
+static int time_order(const void* a,const void* b) {
+    double x=*(const double*)a,y=*(const double*)b;return (x>y)-(x<y);
+}
+static void report(const char* task, const char* backend, const double time[PASSES]) {
+    double warm[PASSES-1];
+    for(int i=1;i<PASSES;++i)warm[i-1]=time[i];
+    qsort(warm,PASSES-1,sizeof(*warm),time_order);
+    double median=warm[(PASSES-1)/2];
     printf("task=%s backend=%s first_ms=%.3f warm_median_ms=%.3f warm_min_ms=%.3f warm_max_ms=%.3f\n",
            task, backend, time[0]*1000, median*1000,
-           fmin(a,fmin(b,c))*1000, fmax(a,fmax(b,c))*1000);
+           warm[0]*1000, warm[PASSES-2]*1000);
     fflush(stdout);
 }
 
@@ -123,8 +129,8 @@ int main(void) {
     if (!metal) goto done;
     printf("backend=metal setup_ms=%.3f\n",(seconds()-start)*1000);
     printf("Point reference enumerates each universe; it is not the core spatial lookup.\n");
-    double timings[2][4];
-    for (int pass=0;pass<4;++pass) for (int order=0;order<2;++order) {
+    double timings[2][PASSES];
+    for (int pass=0;pass<PASSES;++pass) for (int order=0;order<2;++order) {
         int backend=(pass+order)%2;
         start=seconds();
         if (alea_compute_classify(backend?metal:cpu,xyz,n,results)) goto done;
@@ -140,16 +146,21 @@ int main(void) {
     if (render_camera_setup(&cam,&cfg,sys)) goto done;
     fb=render_framebuffer_create(cfg.width,cfg.height,1);
     if (!fb) goto done;
-    for (int clipped=0;clipped<2;++clipped) {
-        cfg.num_clips=clipped;cfg.clips[0]=(render_clip_plane_t){{0,1,0},0};
-        double time[4];
-        for (int pass=0;pass<4;++pass) {
+    for (int view=0;view<3;++view) {
+        if(view==2) {
+            cfg.eye[0]=0;cfg.eye[1]=-3;cfg.eye[2]=3;
+            cfg.target[0]=1;cfg.target[1]=-1;cfg.target[2]=0;
+            if(render_camera_setup(&cam,&cfg,sys))goto done;
+        }
+        cfg.num_clips=view==1;cfg.clips[0]=(render_clip_plane_t){{0,1,0},0};
+        double time[PASSES];
+        for (int pass=0;pass<PASSES;++pass) {
             start=seconds();
             if (alea_compute_render(metal,&cfg,&cam,fb)) goto done;
             time[pass]=seconds()-start;
             if (check_render(&cfg,&cam,fb)) {fprintf(stderr,"Ray oracle mismatch\n");goto done;}
         }
-        report(clipped?"cutaway512x384":"exterior512x384","metal",time);
+        report(view==2?"closeup512x384":view==1?"cutaway512x384":"exterior512x384","metal",time);
     }
     puts("All sampled ownership and analytic ray checks passed.");rc=0;
 done:

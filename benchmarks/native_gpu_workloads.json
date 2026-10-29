@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "d3b7bff",
+  "cpu_threads": 4,
+  "timing_policy": {
+    "profiling": false,
+    "initial_calls": 1,
+    "warm_calls": 5,
+    "release_percentiles_minimum_samples": 20,
+    "private_artifacts": "ignored build/ or outside Git"
+  },
+  "environment": {
+    "ALEA_NUM_THREADS": "4",
+    "ALEA_METAL_POINT_CANDIDATES": "0"
+  },
+  "unset_environment_prefixes": [
+    "ALEA_METAL_",
+    "ALEA_PLOT_",
+    "ALEA_GRID_"
+  ],
+  "environment_order": "unset prefixes first, then apply environment and per-workload overrides",
+  "workloads": [
+    {
+      "id": "public-analytic-points-and-three-ray-views",
+      "status": "implemented-measured",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_gpu_geometry"
+      ],
+      "outputs": [
+        "all-terminal-owner counts and IDs",
+        "first visible material/cell",
+        "depth",
+        "normal"
+      ],
+      "oracle": "independent circle and sphere-ray equations",
+      "resolutions": [
+        [
+          512,
+          512
+        ],
+        [
+          512,
+          384
+        ]
+      ],
+      "views": [
+        "exterior",
+        "cutaway",
+        "closeup"
+      ],
+      "cpu_comparison": "independent FP64 enumeration for points; no CPU ray performance comparison"
+    },
+    {
+      "id": "public-complete-plotter",
+      "status": "implemented-measured-previous-increment",
+      "argv": [
+        "python3",
+        "benchmarks/gpu_plotter.py",
+        "--trials",
+        "5",
+        "--threads",
+        "4"
+      ],
+      "cpu_comparison": "production selected-owner grid and ray raster versus Metal all-owner sampling on nonoverlapping fixture",
+      "oracle": "complete image equality; analytic ownership checked by companion benchmark",
+      "measurement": "fresh process wall and complete slice query"
+    },
+    {
+      "id": "public-complex-csg-progressive",
+      "status": "implemented-trace-captured",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_render_model",
+        "synthetic:mixed",
+        "p-balanced",
+        "128",
+        "96",
+        "5"
+      ],
+      "oracle": "baseline/accelerated regression equality, not independent accuracy proof",
+      "views": [
+        "synthetic benchmark camera"
+      ],
+      "note": "private camera VIEW argument is overridden for synthetic inputs; do not claim three synthetic views from that argument"
+    },
+    {
+      "id": "public-rectangular-lattice-semantics",
+      "status": "implemented",
+      "argv": [
+        "python3",
+        "tools/check_metal_plotter.py"
+      ],
+      "fixtures": [
+        "tests/data/mcnp_lattice_repeating.mcnp",
+        "tests/data/mcnp_nested_lattice_transformed.mcnp"
+      ],
+      "purpose": "semantic and tile-scatter regression; not a performance benchmark"
+    },
+    {
+      "id": "private-complex-2d",
+      "status": "bounded-128x128-measured-previous-increment",
+      "target_resolution": [
+        512,
+        512
+      ],
+      "target_warm_seconds": 1,
+      "operation": "all-terminal-owner sampled classification",
+      "view_definition": "local ignored workload ledger; never copy coordinates here",
+      "next_resolution": [
+        256,
+        256
+      ]
+    },
+    {
+      "id": "private-three-ray-views",
+      "status": "fresh-m0-measurements-pending",
+      "views": [
+        "exterior",
+        "cutaway",
+        "component-closeup"
+      ],
+      "initial_resolution": [
+        16,
+        12
+      ],
+      "budget_seconds_per_process": 90,
+      "view_definition": "local ignored workload ledger"
+    },
+    {
+      "id": "cuda-native-parity",
+      "status": "pending-nvidia-hardware",
+      "operations": [
+        "selected-owner",
+        "all-owner",
+        "2D sampled/interval slices",
+        "3D ordinary/progressive"
+      ],
+      "oracle": "same semantic fixtures with CUDA-native execution"
+    }
+  ]
+}
