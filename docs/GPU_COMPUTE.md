@@ -51,6 +51,40 @@ to incorporate geometry changes. Serialize calls on a context; independent
 contexts can be used independently. Failed calls return an error rather than a
 partial success. CPU contexts use `ALEA_COMPUTE_FP64`.
 
+## Ordered batch selection
+
+`alea_compute_select()` is a separate CPU FP64 / Metal FP32 operation for selecting
+one cell in original model order. It returns `alea_compute_selection_t` with cell
+and material IDs, root-based depth and a per-point status:
+
+- `ALEA_COMPUTE_FOUND`: terminal material or terminal void.
+- `ALEA_COMPUTE_NOT_FOUND`: no containing root cell; IDs/depth are -1.
+- `ALEA_COMPUTE_UNDEFINED_FILL`: the winning container has no child at the point;
+  return that container and stop, including empty rectangular lattice slots.
+
+Overlapping siblings never override the first winning path. This differs from
+`alea_compute_classify()`, which counts every terminal owner and reports a hole
+in a fill as a gap. Each operation has its own result type. Selection currently
+uses ordered CPU enumeration and a native Metal single-path traversal; it is
+not yet connected to the plotter and has no new performance claim.
+
+Snapshots, explicit precision and numerical limits remain as described above.
+Rectangular lattices are supported; hexagonal lattices and lattice-local fill
+transforms remain rejected. Metal selection reuses the geometry, transforms,
+spatial programs and optional root candidate lists; its pipeline is prepared
+lazily. Selection and classification may alternate on a serialized context.
+Result buffers grow for either layout and remain reusable after errors. Selection
+submits at most 4,096 points at a time, with no per-submission time guarantee.
+`ALEA_METAL_POINT_PROFILE` continues to report classification calls only.
+
+```c
+alea_compute_selection_t result;
+double xyz[3] = {0, 0, 0};
+if (alea_compute_select(gpu, xyz, 1, &result) == 0) {
+    /* Inspect result.status before consuming cell_id/material_id/depth. */
+}
+```
+
 ## 2D Metal slices
 
 The plotter now uses the native point classifier with explicit backend selection:

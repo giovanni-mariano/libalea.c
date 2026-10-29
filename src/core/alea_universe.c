@@ -1986,10 +1986,11 @@ static int find_cell_recursive(const alea_system_t* sys,
             double ely = ly - location.oy;
             double elz = lz - location.oz;
 
-            int result = find_cell_recursive(
+            /* Empty lattice slots are undefined fills, never universe zero. */
+            int result = location.fill_universe > 0 ? find_cell_recursive(
                 sys, elx, ely, elz, location.fill_universe,
                 NULL, depth + 1, max_depth,
-                out_cell_index, out_cell_id, out_material, out_depth);
+                out_cell_index, out_cell_id, out_material, out_depth) : -1;
             if (result == 0) return 0;
 
             /* Undefined fill inside a contained lattice element: the

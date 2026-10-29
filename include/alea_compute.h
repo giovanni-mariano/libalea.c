@@ -33,6 +33,31 @@ typedef struct {
     uint32_t owner_count; /**< Terminal occurrences: 0 = gap, 1 = unique, >1 = overlap. */
 } alea_compute_result_t;
 
+/** Ordered selection status; undefined fills return the winning container. */
+typedef enum {
+    ALEA_COMPUTE_NOT_FOUND = 0,
+    ALEA_COMPUTE_FOUND = 1,
+    ALEA_COMPUTE_UNDEFINED_FILL = 2
+} alea_compute_selection_status_t;
+typedef struct {
+    int32_t cell_id, material_id; /**< -1 for NOT_FOUND. */
+    int32_t depth;                /**< Root = 0; -1 for NOT_FOUND. */
+    uint32_t status;              /**< alea_compute_selection_status_t. */
+} alea_compute_selection_t;
+
+/** Select the first containing cell in model order, descending its fill path.
+ * A hole in the winning fill returns its container with UNDEFINED_FILL; later
+ * overlapping siblings are not considered. Terminal void is FOUND. NOT_FOUND
+ * is a valid per-point result. This is separate from all-owner classification.
+ * Snapshot, precision, storage, empty-batch and error rules match classify().
+ * Supports the same rectangular lattice subset; root depth is zero. Metal
+ * selection submits at most 4096 points at a time. Candidate/program switches
+ * apply; ALEA_METAL_POINT_PROFILE reports classification only.
+ * Returns 0 on success, -1 on failure (outputs unspecified on failure).
+ */
+int alea_compute_select(alea_compute_t* compute,const double* xyz,size_t count,
+                        alea_compute_selection_t* results);
+
 /** Return whether a backend was built and a suitable device is available.
  * Does not guarantee that a particular geometry or allocation is supported.
  */

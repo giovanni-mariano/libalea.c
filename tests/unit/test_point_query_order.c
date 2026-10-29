@@ -121,4 +121,17 @@ TEST(point_query_dense_candidates_preserve_last_winner) {
     check_point(s,0,0,0); check_point(s,2,0,0); check_point(s,20,0,0);
     alea_destroy(s);
 }
+TEST(empty_lattice_slot_does_not_reenter_root_universe) {
+    alea_system_t* s=alea_create();int box=alea_box_surface(s,1,-1,1,-1,1,-1,1);
+    int at=alea_add_cell(s,20,alea_halfspace(s,box,-1),ALEA_MATERIAL_VOID,0,0);
+    ASSERT(at>=0);alea_cell_entry_t* c=&s->cells.data[at];
+    c->lat_type=1;c->lat_fill_count=1;c->lat_fill=calloc(1,sizeof(int));ASSERT_NOT_NULL(c->lat_fill);
+    for(int a=0;a<3;++a){c->lat_pitch[a]=2;c->lat_lower_left[a]=-1;c->lat_fill_dims[2*a]=c->lat_fill_dims[2*a+1]=0;}
+    ASSERT(add_sphere(s,99,0,2,0)>=0);
+    ASSERT_EQ(alea_prepare_query_acceleration(s),0);alea_cell_hit_t hit;
+    ASSERT_EQ(alea_find_deepest_cell_hit_at_point(s,0,0,0,&hit),0);
+    ASSERT_EQ(hit.cell_id,20);ASSERT_EQ(hit.depth,0);
+    ASSERT_TRUE(hit.resolution_flags&ALEA_RESOLVE_UNDEFINED_FILL);
+    alea_destroy(s);
+}
 TEST_MAIN()

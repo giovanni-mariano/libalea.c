@@ -274,6 +274,77 @@ int alea_compute_classify(alea_compute_t* ctx, const double* xyz,
     return 0;
 }
 
+/* Ordered CPU reference, independent of Metal packing/candidate traversal. */
+static int cpu_select_universe(const alea_system_t* sys,int universe,const double p[3],
+    unsigned depth,alea_compute_selection_t* result) {
+    if(depth>=32 || alea_interrupted())return -1;
+    const alea_universe_t* u=alea_get_universe(sys,universe);
+    if(!u)return 0;
+    for(size_t i=0;i<u->cell_indices.count;++i) {
+        if(alea_interrupted())return -1;
+        const alea_cell_entry_t* c=&sys->cells.data[u->cell_indices.data[i]];
+        double local[3]={p[0],p[1],p[2]};int child=c->fill_universe;
+        if(c->lat_type) {
+            double checked[3]={p[0],p[1],p[2]};int checked_child;
+            if(cpu_lattice_point(c,checked,&checked_child)<0)return -1;
+            alea_lattice_location_t loc;
+            int found=alea_lattice_locate_point(sys,c,p[0],p[1],p[2],&loc);
+            if(found<0)return -1;
+            if(!found)continue;
+            local[0]-=loc.ox;local[1]-=loc.oy;local[2]-=loc.oz;child=loc.fill_universe;
+        } else {
+            if(!alea_point_inside(sys,c->root_node_id,p[0],p[1],p[2]))continue;
+            if(child>0 && c->fill_transform>0) {
+                const alea_transform_t* tr=alea_get_transform(sys,c->fill_transform);alea_matrix_t matrix;
+                if(!tr || !alea_matrix_from_mcnp(&matrix,tr->cosines,tr->value_count,false) ||
+                   !alea_matrix_invert(&matrix))return -1;
+                alea_matrix_transform_point_inverse(&matrix,&local[0],&local[1],&local[2]);
+            }
+        }
+        if(!isfinite(local[0]) || !isfinite(local[1]) || !isfinite(local[2]))return -1;
+        *result=(alea_compute_selection_t){c->mc_cell_id,c->material_id,(int32_t)depth,
+            c->lat_type || child>0?ALEA_COMPUTE_UNDEFINED_FILL:ALEA_COMPUTE_FOUND};
+        if(child>0) {
+            alea_compute_selection_t descendant={-1,-1,-1,ALEA_COMPUTE_NOT_FOUND};
+            if(cpu_select_universe(sys,child,local,depth+1,&descendant))return -1;
+            if(descendant.status!=ALEA_COMPUTE_NOT_FOUND)*result=descendant;
+        }
+        return 0;
+    }
+    return 0;
+}
+int alea_compute_select(alea_compute_t* ctx,const double* xyz,size_t count,alea_compute_selection_t* results) {
+    if(!ctx || (count && (!xyz || !results))) {
+        alea_set_error_detail(ALEA_ERR_NULL_ARG,"Invalid selection storage");return -1;
+    }
+    if(count>SIZE_MAX/(3*sizeof(double)) || count>SIZE_MAX/sizeof(*results) ||
+       (ctx->backend==ALEA_COMPUTE_METAL && count>UINT32_MAX)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,"Selection batch is too large");return -1;
+    }
+    if(!count)return 0;
+    ALEA_CHECK_INTERRUPTED(-1);
+    for(size_t i=0;i<count*3;++i)if(!isfinite(xyz[i]) ||
+        (ctx->backend==ALEA_COMPUTE_METAL && fabs(xyz[i])>FLT_MAX)) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG,"Selection coordinate out of range");return -1;
+    }
+#ifdef ALEA_USE_METAL
+    if(ctx->backend==ALEA_COMPUTE_METAL)return alea_compute_metal_select(ctx->device,xyz,count,results);
+#endif
+    if(ctx->lattice) {
+        if(alea_compute_validate_rect_lattices(ctx->cpu))return -1;
+        ctx->lattice=0;
+    }
+    if(!ctx->cpu->universe_index_built && alea_build_universe_index(ctx->cpu))return -1;
+    for(size_t i=0;i<count;++i) {
+        results[i]=(alea_compute_selection_t){-1,-1,-1,ALEA_COMPUTE_NOT_FOUND};
+        if(cpu_select_universe(ctx->cpu,0,xyz+3*i,0,&results[i])) {
+            alea_set_error_detail(alea_interrupted()?ALEA_ERR_INTERRUPTED:ALEA_ERR_OVERFLOW,
+                                  "CPU selection failed at point %zu",i);return -1;
+        }
+    }
+    return 0;
+}
+
 static int compute_render(alea_compute_t* ctx, const render_config_t* cfg,
                         const render_camera_t* cam, render_framebuffer_t* fb,
                         alea_compute_render_progress_t progress, void* user) {

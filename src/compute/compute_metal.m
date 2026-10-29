@@ -40,6 +40,8 @@ typedef struct {
     bool point_candidates_enabled;
     id<MTLBuffer> point_candidates;
     int8_t* point_signs;
+    id<MTLComputePipelineState> select_pipeline;
+    size_t output_stride;
     char* point_profile_path;
     id<MTLBuffer> point_costs;
     size_t point_cost_capacity;
@@ -61,6 +63,7 @@ void alea_compute_metal_destroy(void* state) {
     [s->results release]; [s->points release]; [s->point_cells release];
     [s->point_lattices release]; [s->point_fills release];
     [s->cells release]; [s->nodes release]; [s->primitives release];
+    [s->select_pipeline release];
     [s->pipeline release]; [s->queue release]; [s->device release];
     [s->resume_pipeline release];[s->resume_states release];[s->resume_done release];[s->resume_pixels release];
     [s->render_pipeline release];
@@ -248,15 +251,35 @@ static int point_profile_write(const char* path,size_t points,uint64_t submissio
     return 0;
 }
 
-int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
-                                alea_compute_result_t* results) {
+static int prepare_select(metal_state* s) {
+    if(s->select_pipeline)return 0;
+    NSError* error=nil;
+    dispatch_data_t data=dispatch_data_create(alea_compute_metallib,alea_compute_metallib_len,NULL,DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    id<MTLLibrary> library=[s->device newLibraryWithData:data error:&error];dispatch_release(data);
+    MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];bool profile=false;
+    [constants setConstantValue:&profile type:MTLDataTypeBool atIndex:5];
+    [constants setConstantValue:&s->point_candidates_enabled type:MTLDataTypeBool atIndex:6];
+    id<MTLFunction> function=[library newFunctionWithName:s->hierarchical?@"alea_select_hierarchy":@"alea_select_points"
+        constantValues:constants error:&error];[constants release];
+    if(function)s->select_pipeline=[s->device newComputePipelineStateWithFunction:function error:&error];
+    [function release];[library release];
+    if(!s->select_pipeline) {
+        alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Creating Metal selection pipeline: %s",
+            error?[[error localizedDescription] UTF8String]:"unavailable");return -1;
+    }
+    return 0;
+}
+_Static_assert(sizeof(compute_selection)==sizeof(alea_compute_selection_t),"Selection layout");
+static int metal_points(void* state,const double* xyz,size_t count,void* results,int selected) {
     @autoreleasepool {
         metal_state* s = state;
-        const int profiling=s->point_profile_path!=NULL;
+        const int profiling=!selected && s->point_profile_path!=NULL;
         double start=profiling?point_profile_clock():0,gpu_seconds=0;
         uint64_t counters[POINT_COUNTER_COUNT]={0},saturated=0,submissions=0,timed=0;
         compute_candidate_stats candidate_stats={0};double candidate_seconds=0;
-        if (prepare_classify(s)) return -1;
+        if (prepare_classify(s) || (selected && prepare_select(s))) return -1;
+        id<MTLComputePipelineState> pipeline=selected?s->select_pipeline:s->pipeline;
+        size_t stride=selected?sizeof(compute_selection):sizeof(compute_result);
         if(s->point_candidates_enabled && !s->point_candidates) {
             size_t bytes=(s->scene.cell_count?s->scene.cell_count:1)*sizeof(uint32_t);
             if(bytes>s->device.maxBufferLength) {
@@ -270,27 +293,27 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
             s->point_candidates=next;s->point_signs=signs;
         }
         const size_t total = count;
-        const size_t limit = s->hierarchical || s->point_candidates_enabled ? 4096 : count;
+        const size_t limit = selected || s->hierarchical || s->point_candidates_enabled ? 4096 : count;
         for (size_t first = 0; first < total; first += count) {
             if (alea_interrupted()) {
                 alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Metal batch interrupted"); return -1;
             }
             count = total - first < limit ? total - first : limit;
             if (count > s->device.maxBufferLength / (3 * sizeof(float)) ||
-                count > s->device.maxBufferLength / sizeof(compute_result)) {
+                count > s->device.maxBufferLength / stride) {
                 alea_set_error_detail(ALEA_ERR_OVERFLOW, "Metal batch exceeds maximum buffer size");
                 return -1;
             }
-            if (count > s->capacity) {
+            if (count > s->capacity || stride > s->output_stride) {
                 id<MTLBuffer> points = [s->device newBufferWithLength:count * 3 * sizeof(float) options:MTLResourceStorageModeShared];
-                id<MTLBuffer> output = [s->device newBufferWithLength:count * sizeof(compute_result) options:MTLResourceStorageModeShared];
+                id<MTLBuffer> output = [s->device newBufferWithLength:count * stride options:MTLResourceStorageModeShared];
                 if (!points || !output) {
                     [points release]; [output release];
                     alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal batch buffers");
                     return -1;
                 }
                 [s->points release]; [s->results release];
-                s->points = points; s->results = output; s->capacity = count;
+                s->points = points; s->results = output; s->capacity = count; s->output_stride=stride;
             }
             if(profiling && count>s->point_cost_capacity) {
                 if(count>s->device.maxBufferLength/sizeof(compute_point_profile)) {
@@ -322,7 +345,7 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                 alea_set_error_detail(ALEA_ERR_INVALID_STATE, "Creating Metal command buffer");
                 return -1;
             }
-            [encoder setComputePipelineState:s->pipeline];
+            [encoder setComputePipelineState:pipeline];
             [encoder setBuffer:s->nodes offset:0 atIndex:0];
             [encoder setBuffer:s->cells offset:0 atIndex:1];
             [encoder setBuffer:s->points offset:0 atIndex:2];
@@ -342,7 +365,7 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
             }
             if(profiling)[encoder setBuffer:s->point_costs offset:0 atIndex:12];
             if(s->point_candidates_enabled)[encoder setBuffer:s->point_candidates offset:0 atIndex:13];
-            NSUInteger width = MIN((NSUInteger)128, s->pipeline.maxTotalThreadsPerThreadgroup);
+            NSUInteger width = MIN((NSUInteger)128, pipeline.maxTotalThreadsPerThreadgroup);
             [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
             [encoder endEncoding];
             [command commit];
@@ -358,13 +381,13 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
             }
             const compute_result* output = s->results.contents;
             for (size_t i = 0; i < count; ++i) {
-                if (output[i].owner_count == UINT32_MAX) {
+                if (selected?((const compute_selection*)output)[i].status==UINT32_MAX:output[i].owner_count==UINT32_MAX) {
                     alea_set_error_detail(ALEA_ERR_OVERFLOW,
                         "FP32 evaluation or hierarchy limit failure at point %zu", first + i);
                     return -1;
                 }
             }
-            memcpy(results + first, output, count * sizeof(*results));
+            memcpy((char*)results + first*stride,output,count*stride);
             if(profiling) {
                 ++submissions;
                 if(command.GPUEndTime>command.GPUStartTime && command.GPUStartTime>0) {
@@ -386,6 +409,13 @@ int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
             point_profile_clock()-start,gpu_seconds,counters,saturated,candidate_seconds,&candidate_stats))return -1;
         return 0;
     }
+}
+
+int alea_compute_metal_classify(void* state,const double* xyz,size_t count,alea_compute_result_t* results) {
+    return metal_points(state,xyz,count,results,0);
+}
+int alea_compute_metal_select(void* state,const double* xyz,size_t count,alea_compute_selection_t* results) {
+    return metal_points(state,xyz,count,results,1);
 }
 
 /* Upload render-only resources lazily; transform buffers may already be shared. */

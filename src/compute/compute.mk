@@ -33,7 +33,7 @@ $(COMPUTE_BUILD_DIR)/%.o: $(SRC_DIR)/compute/%.c | $(COMPUTE_BUILD_DIR)
 	@echo "CC  $< ($(COMPUTE_VARIANT))"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) -c $< -o $@
 
-$(COMPUTE_BUILD_DIR)/compute.air: $(SRC_DIR)/compute/compute.metal $(SRC_DIR)/compute/classify.metal $(SRC_DIR)/compute/render.metal $(SRC_DIR)/compute/resume.metal $(SRC_DIR)/compute/intersect.metal $(SRC_DIR)/compute/compute_layout.h | $(COMPUTE_BUILD_DIR)
+$(COMPUTE_BUILD_DIR)/compute.air: $(SRC_DIR)/compute/compute.metal $(SRC_DIR)/compute/classify.metal $(SRC_DIR)/compute/select.metal $(SRC_DIR)/compute/render.metal $(SRC_DIR)/compute/resume.metal $(SRC_DIR)/compute/intersect.metal $(SRC_DIR)/compute/compute_layout.h | $(COMPUTE_BUILD_DIR)
 	@echo "METAL $<"
 	@xcrun --sdk macosx metal -std=macos-metal2.3 -fno-fast-math \
 		-fmodules-cache-path=$(abspath $(COMPUTE_BUILD_DIR))/module-cache -c $< -o $@

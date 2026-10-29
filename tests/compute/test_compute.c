@@ -469,12 +469,75 @@ static void check_repeating_axial_lattice(alea_compute_backend_t backend) {
 TEST(cpu_classify_nested_lattices) {check_nested_point_lattices(ALEA_COMPUTE_CPU);}
 TEST(cpu_classify_repeating_axial_lattice) {check_repeating_axial_lattice(ALEA_COMPUTE_CPU);}
 
+static void check_selected_points(alea_compute_backend_t backend) {
+    for(int scene=0;scene<4;++scene) {
+        alea_system_t* sys=scene==0?sphere_scene():scene==1?point_hierarchy_scene(1):point_lattice_scene(scene==3,1,0,1);
+        if(scene==0)ASSERT(alea_add_cell(sys,99,sys->cells.data[0].root_node_id,0,-1,0)>=0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
+        enum {N=4105};double* xyz=malloc(N*3*sizeof(double));
+        alea_compute_selection_t* expected=malloc(N*sizeof(*expected)),*got=malloc(N*sizeof(*got));
+        ASSERT_NOT_NULL(xyz);ASSERT_NOT_NULL(expected);ASSERT_NOT_NULL(got);
+        for(int i=0;i<N;++i) {
+            xyz[3*i]=(i%17-8)*.5;xyz[3*i+1]=(i/17%17-8)*.5;xyz[3*i+2]=(i/289%17-8)*.5;
+            if(i==0)xyz[0]=xyz[1]=xyz[2]=100;
+            alea_cell_hit_t hit;
+            if(alea_find_deepest_cell_hit_at_point(sys,xyz[3*i],xyz[3*i+1],xyz[3*i+2],&hit)==0)
+                expected[i]=(alea_compute_selection_t){hit.cell_id,hit.material_id,hit.depth,
+                    hit.resolution_flags&ALEA_RESOLVE_UNDEFINED_FILL?ALEA_COMPUTE_UNDEFINED_FILL:ALEA_COMPUTE_FOUND};
+            else expected[i]=(alea_compute_selection_t){-1,-1,-1,ALEA_COMPUTE_NOT_FOUND};
+        }
+        alea_compute_t* ctx=alea_compute_create(sys,backend,backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);
+        ASSERT_MSG(ctx!=NULL,alea_error());alea_destroy(sys);
+        ASSERT_EQ(alea_compute_select(ctx,NULL,0,NULL),0);
+        ASSERT_EQ(alea_compute_select(NULL,xyz,1,got),-1);
+        ASSERT_EQ(alea_compute_select(ctx,NULL,1,got),-1);
+        ASSERT_EQ(alea_compute_select(ctx,xyz,1,NULL),-1);
+        ASSERT_EQ(alea_compute_select(ctx,xyz,SIZE_MAX,got),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_OVERFLOW);
+        ASSERT_MSG(alea_compute_select(ctx,xyz,N,got)==0,alea_error());
+        for(int i=0;i<N;++i) {
+            ASSERT_EQ(got[i].status,expected[i].status);ASSERT_EQ(got[i].cell_id,expected[i].cell_id);
+            ASSERT_EQ(got[i].material_id,expected[i].material_id);ASSERT_EQ(got[i].depth,expected[i].depth);
+        }
+        alea_compute_result_t before,after;
+        ASSERT_EQ(alea_compute_classify(ctx,xyz+3,1,&before),0);
+        ASSERT_EQ(alea_compute_select(ctx,xyz+3,1,got),0);
+        ASSERT_EQ(alea_compute_classify(ctx,xyz+3,1,&after),0);ASSERT_EQ(memcmp(&before,&after,sizeof(before)),0);
+        alea_interrupt();int rc=alea_compute_select(ctx,xyz,N,got);alea_clear_interrupt();ASSERT_EQ(rc,-1);
+        ASSERT_EQ(alea_compute_select(ctx,xyz,1,got),0);
+        double invalid[]={NAN,0,0};ASSERT_EQ(alea_compute_select(ctx,invalid,1,got),-1);
+        ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_ARG);
+        free(xyz);free(expected);free(got);alea_compute_destroy(ctx);
+    }
+}
+TEST(cpu_selected_points_match_ordered_core) {check_selected_points(ALEA_COMPUTE_CPU);}
+
 #ifdef ALEA_USE_METAL
 #include "compute/compute_internal.h"
 #include <unistd.h>
 #include <sys/stat.h>
 /* A requested Metal test run must actually exercise the GPU; do not skip it
  * when the device is unavailable (including restricted execution sandboxes). */
+TEST(metal_selected_points_match_ordered_core) {
+    for(int candidates=0;candidates<2;++candidates) {
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_CANDIDATES",candidates?"1":"0",1),0);
+        check_selected_points(ALEA_COMPUTE_METAL);
+    }
+    ASSERT_EQ(alea_unsetenv("ALEA_METAL_POINT_CANDIDATES"),0);
+}
+
+TEST(metal_selection_stops_before_later_nonfinite_program) {
+    alea_system_t* sys=sphere_scene();int surface=alea_sphere_surface(sys,2,0,0,0,1e20);
+    ASSERT(alea_add_cell(sys,99,alea_halfspace(sys,surface,-1),0,-1,0)>=0);
+    alea_compute_t* ctx=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(ctx);alea_destroy(sys);
+    double p[]={0,0,0};alea_compute_selection_t selected;alea_compute_result_t all;
+    ASSERT_EQ(alea_compute_select(ctx,p,1,&selected),0);ASSERT_EQ(selected.cell_id,42);
+    ASSERT_EQ(selected.status,ALEA_COMPUTE_FOUND);ASSERT_EQ(selected.depth,0);
+    ASSERT_EQ(alea_compute_classify(ctx,p,1,&all),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_OVERFLOW);
+    p[0]=3;ASSERT_EQ(alea_compute_select(ctx,p,1,&selected),-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_OVERFLOW);
+    p[0]=0;ASSERT_EQ(alea_compute_select(ctx,p,1,&selected),0);
+    alea_compute_destroy(ctx);
+}
+
 TEST(metal_classify_rectangular_lattices) {check_point_lattices(ALEA_COMPUTE_METAL);}
 TEST(metal_classify_lattice_faces_and_layers) {check_lattice_faces_and_layers(ALEA_COMPUTE_METAL);}
 TEST(metal_classify_lattice_rejections) {check_lattice_rejections(ALEA_COMPUTE_METAL);}
@@ -588,6 +651,7 @@ TEST(metal_point_profile_counts_reset_and_preserve_results) {
         alea_interrupt();int rc=alea_compute_classify(profiled,xyz,3,b);alea_clear_interrupt();ASSERT_EQ(rc,-1);
         double invalid[]={1e30,0,0};ASSERT_EQ(alea_compute_classify(profiled,invalid,1,b),-1);
         ASSERT_EQ(alea_compute_classify(profiled,xyz,1,b),0);
+        alea_compute_selection_t selected;ASSERT_EQ(alea_compute_select(profiled,xyz,1,&selected),0);
         FILE* f=fopen(path,"r");ASSERT_NOT_NULL(f);char line[4096];ASSERT_NOT_NULL(fgets(line,sizeof(line),f));
         ASSERT_EQ(point_counter(line,"points"),3);
         ASSERT_EQ(point_counter(line,"cells"),hierarchy?8:3);

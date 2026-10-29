@@ -35,7 +35,8 @@ static compute_cell point_program(compute_cell cell,float3 p,uint root,
 /* Point ownership uses floor, without the directional crossing bias used by
  * ray traversal. Select one element; its terminal cells still count separately. */
 static uint point_lattice(device const compute_lattice& l, device const uint* fills,
-                          thread float3& p, thread bool& error) {
+                          thread float3& p, thread bool& error,thread bool& located) {
+    located=false;
     int3 relative;
     bool outside = false;
     for (uint a = 0; a < 3; ++a) {
@@ -56,6 +57,8 @@ static uint point_lattice(device const compute_lattice& l, device const uint* fi
         p[a] -= shift;
         if (!isfinite(p[a])) { error = true; return COMPUTE_NONE; }
     }
+    if(!l.repeating && outside && l.outer==COMPUTE_NONE)return COMPUTE_NONE;
+    located=true;
     if (l.repeating) return fills[l.offset];
     if (outside) return l.outer;
     uint ny = uint(l.dims[3] - l.dims[2] + 1), nz = uint(l.dims[5] - l.dims[4] + 1);
@@ -99,8 +102,8 @@ kernel void alea_classify_hierarchy(
         float3 p = stack[top].point;
         if (cell.lattice != COMPUTE_NONE) {
             if(point_profile_enabled)point_add(cost.v[POINT_LATTICES]);
-            bool error = false;
-            uint child = point_lattice(lattices[cell.lattice], fills, p, error);
+            bool error = false,located;
+            uint child = point_lattice(lattices[cell.lattice], fills, p, error,located);
             if (error) { result.owner_count = COMPUTE_NONE; break; }
             if (child == COMPUTE_NONE) continue;
             if (top + 1 == COMPUTE_HIER_STACK) { result.owner_count = COMPUTE_NONE; break; }

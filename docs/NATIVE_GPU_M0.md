@@ -5,8 +5,8 @@
 
 Checkpoint: `d3b7bff`, plus the M0 benchmark extension. Updated 2026-10-29.
 This records the first implementation work package from the local native GPU
-roadmap. Contracts below are design decisions; new selected-owner/capability APIs
-are not implemented yet. Metal is active; CUDA device work awaits NVIDIA hardware.
+roadmap. Selected-owner semantics below are now implemented by the follow-up recorded at
+the end of this report; the capability API remains a design decision. Metal is active; CUDA device work awaits NVIDIA hardware.
 
 ## Audited geometry and feature gaps
 
@@ -27,7 +27,7 @@ not prove that an imported model using that macrobody is unsupported.
 | Rectangular lattices | Finite/repeating/nested, outer fills, empty slots, zero coordinates | Preserve face/window/index rules in all query modes |
 | Hexagonal lattices | Rejected | Implement procedural element lookup, windows, ray crossings and numerical tests |
 | Lattice-local fill transforms | Rejected | Define transform application order against core; implement both point and ray paths |
-| Selected-owner compute query | Absent | Implement the separate contract below; benchmark against optimized CPU selection |
+| Selected-owner compute query | Implemented by follow-up on CPU/Metal | Benchmark against optimized CPU selection and integrate the chosen frontend mode |
 | All-owner compute query | Implemented; includes terminal void and repeated occurrences | Accelerate child-universe scans; preserve counts and ancestor clipping |
 | 2D interval/ray-row GPU slicing | Absent | Dedicated query and rasterization operation with explicit overlap policy |
 | 2D static/interactive sampling | Implemented, arbitrary planes; optional 64x64 candidate tiles | Bound long submissions and complete remaining frontend workflows |
@@ -56,9 +56,8 @@ not a claim of tested macrobody coverage from this source audit alone.
 ### Selected-owner points
 
 Add a separate batch operation; do not change `alea_compute_classify()` to stop
-at the first owner. Proposed C name: `alea_compute_select()`. Its planned per-point
-result has cell ID, material ID, depth and resolution status. Exact ABI layout is
-reviewed with the implementing change; the following semantics are fixed:
+at the first owner. C name: `alea_compute_select()`. Its per-point
+result has cell ID, material ID, depth and resolution status. The public layout is in `alea_compute.h`; the following semantics are fixed:
 
 1. Start at universe zero. Visit candidates in the original universe/model order.
 2. Choose the first containing cell, then resolve its fill/lattice path. Do not
@@ -188,3 +187,30 @@ CPU-only/Metal builds remain independent of CUDA tooling. No unavailable CUDA
 backend is advertised. Private models, paths, coordinates, hashes, captures,
 generated geometry-specific code, images and raw logs remain ignored/outside Git.
 Only aggregate private observations enter tracked reports.
+
+## Selected-owner API implementation follow-up
+
+`alea_compute_select()` now implements the selected-owner contract on CPU FP64
+and native Metal FP32. Its public result is `alea_compute_selection_t`, with
+cell/material IDs, zero-based depth and FOUND/NOT_FOUND/UNDEFINED_FILL status.
+The CPU implementation is an ordered recursive reference. The Metal path follows
+one winning occurrence without sibling backtracking, shares existing geometry
+and optional candidates, and prepares its selection pipeline lazily. Current
+snapshot geometry/precision limits remain applicable. Plotter integration and
+matched performance measurements are still pending.
+
+Selection testing exposed a core ordered-lookup defect: a zero lattice fill
+could recurse into root universe zero. Ordered CPU lookup now returns the lattice
+container as undefined fill immediately, matching its existing undefined-child
+rule. A core regression checks both the returned cell and root depth.
+
+Validation: 16 CPU and 72 Metal compute tests, 4 builder tests, 4 resource tests,
+6 core ordered-point tests and 3 universe-BVH tests pass. Selection comparisons span
+4,105 points
+per scene, transformed overlaps, finite/repeating lattices, empty slots, source
+lifetime, buffer reuse across both operations, candidate modes, cancellation,
+invalid storage/counts/coordinates, and short-circuiting before later nonfinite
+programs. Selection does not emit classification profile records.
+
+The user-facing Metal plotter is rebuilt. CPU and Metal public image checks and
+SDL 2D/3D navigation, cancellation and reuse checks pass after this follow-up.

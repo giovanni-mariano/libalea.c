@@ -48,6 +48,10 @@ typedef struct {
     compute_int cell_id, material_id;
     compute_uint owner_count;
 } compute_result;
+typedef struct {
+    compute_int cell_id, material_id, depth;
+    compute_uint status; /* 0 not found, 1 terminal, 2 undefined fill, NONE error. */
+} compute_selection;
 /* Concatenated per-universe BVHs; child refers to the root of another BVH.
  * Escape links identify subtree ends and the right child during near-first traversal. */
 typedef struct {
