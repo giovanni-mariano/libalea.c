@@ -15,7 +15,9 @@ is complete. The subsequent [context reuse implementation](GEOMETRY_RECOVERY_CON
 records that implementation, validation, and measurements. The latest
 [ordered child-cell experiment](GEOMETRY_RECOVERY_CHILD_CELLS.md) is complete.
 The subsequent [indexed scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
-is measurement-only and identifies the next bounded hypothesis.
+is measurement-only and identifies the plane-group hypothesis. The subsequent
+[plane-group implementation experiment](GEOMETRY_PLANE_GROUP_EXPERIMENT.md)
+is complete and not retained; production remains at `9375ed9`.
 
 ## Decision
 
@@ -148,10 +150,15 @@ observational exact-normal plane-group filter identifies 145.8 million visits
 This is potential candidate reduction, not measured release speedup. A separate
 synthetic probe supports the hypothesis, and a terminal-cell-box counterexample
 rules out simply replacing the scan with cell spatial candidates under its
-current contract. The next saved plan is exact-normal plane groups of at least
-sixteen members, with bounded metadata, the existing scalar kernel, original
-card order, conservative fallback, and paired release acceptance criteria.
-It is not yet implemented in production.
+current contract. The subsequent exact-normal plane-group implementation passed
+its targeted/native/serial validation and preserved every compared frame. It
+skipped 145.5 million per-card plane tests, but warm-frame medians improved only
+2.2% with one worker and 2.7% with four, with substantially slower third candidate
+runs in both configurations. That is insufficient evidence of net benefit beyond
+variability. The candidate was archived locally and removed; previous production
+changes remain intact. The saved plan is marked complete and not retained.
+Further investigation should separate primitive-kernel cost from indexed dispatch
+and data access, or revisit the breadth of recovery, before adding another index.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -175,6 +182,7 @@ conservation also need their own contracts.
 - [Broad-view profile before child lists](GEOMETRY_VISUALIZATION_PROFILE.md)
 - [Ordered recovery child cells](GEOMETRY_RECOVERY_CHILD_CELLS.md)
 - [Indexed surface scan attribution](GEOMETRY_INDEXED_SCAN_PROFILE.md)
+- [Plane-group experiment: not retained](GEOMETRY_PLANE_GROUP_EXPERIMENT.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay
