@@ -206,6 +206,11 @@ still enumerates visited universes and rejects lattices; procedural lattices and
 then measured spatial pruning are next. No complex-model speedup or transport-grade
 GPU correctness claim follows. See the native report for scope and measurements.
 
+The follow-up exposes Metal classification in `mc_plotter --backend=metal`,
+including interactive navigation and static images. Public image, cancellation
+and SDL event-loop checks pass; CPU remains the default. This UI integration
+retains the same lattice, sampling, FP32 and performance limits.
+
 ## Evidence index and confidentiality
 
 - [Initial query experiment](GEOMETRY_QUERY_EXPERIMENT.md)

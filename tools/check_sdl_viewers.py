@@ -52,6 +52,13 @@ def main():
         nested_model.write_text(
             "Nested elliptical torus\n1 0 -1 fill=1\n2 1 -1 -2 u=1\n"
             "3 0 2 u=1\n4 0 1\n\n1 so 6\n2 tz 0 0 0 3 1 1.5\n\n")
+        if metal:
+            cancellation_test = tmp / "metal-slice-cancel"
+            run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-DALEA_VIEW_METAL",
+                f"-I{root / 'include'}", str(root / "tests/tools/test_metal_slice.c"),
+                "-o", str(cancellation_test), str(root / "bin/compute/metal/libalea_compute.a"),
+                "-framework", "Foundation", "-framework", "Metal"] + libraries)
+            print(run([str(cancellation_test), str(nested_model)]).stdout.strip())
         viewers = [
             ("slice", "tools/mc_plotter.c", ["Z", "0", "-10", "10", "-10", "10", "64"]),
             ("render", "examples/c/render3d.c", ["--width", "64", "--height", "64"]),
@@ -61,7 +68,11 @@ def main():
                 ["--width", "64", "--height", "64", "--backend", "metal"]))
             viewers.append(("metal_nested", "examples/c/render3d.c",
                 ["--width", "64", "--height", "64", "--backend", "metal"]))
+            for name in ("metal_slice", "metal_slice_nested"):
+                viewers.append((name, "tools/mc_plotter.c",
+                    ["Z", "0", "-10", "10", "-10", "10", "96", "--backend", "metal"]))
         for name, source, options in viewers:
+            is_slice = source == "tools/mc_plotter.c"
             wrapper = tmp / f"{name}.c"
             wrapper.write_text(f'''#define main viewer_main
 #include "{root / source}"
@@ -72,7 +83,7 @@ int main(int argc, char** argv) {{
     for (; keys && *keys; ++keys) {{
         SDL_Event event = {{0}};
         event.type = SDL_KEYDOWN;
-        event.key.keysym.sym = *keys;
+        event.key.keysym.sym = *keys == '>' ? SDLK_PAGEUP : *keys;
         if (SDL_PushEvent(&event) != 1) return 3;
     }}
     return viewer_main(argc, argv);
@@ -85,12 +96,16 @@ int main(int argc, char** argv) {{
                 f"-I{root / 'include'}", str(wrapper), "-o", str(exe)] + extra + libraries + flags)
             images = {}
             actions = [("initial", "sq"), ("zoom", "+sq"), ("reset", "+rsq")]
-            if name != "slice":
+            if name.startswith("metal_slice"):
+                actions += [("cpu_keys", "mesq"), ("slice_move", ">sq")]
+                if name.endswith("nested"):
+                    actions += [("axis", "xsq")]
+            if not is_slice:
                 actions += [("clip", "xsq"), ("clip_move", "x]sq"), ("clip_reset", "x]rsq")]
             for mode, keys in actions:
                 output = tmp / f"{name}-{mode}.bmp"
-                args = [str(exe), str(nested_model if name == "metal_nested" else model), *options]
-                if name != "slice": args += ["-o"]
+                args = [str(exe), str(nested_model if name.endswith("nested") else model), *options]
+                if not is_slice: args += ["-o"]
                 args += [str(output), "--interactive"]
                 env = dict(os.environ, SDL_VIDEODRIVER="dummy", ALEA_TEST_KEYS=keys)
                 run(args, env=env)
@@ -98,10 +113,15 @@ int main(int argc, char** argv) {{
                 assert images[mode][:2] == b"BM"
             assert images["initial"] != images["zoom"], f"{name}: zoom did not change image"
             assert images["initial"] == images["reset"], f"{name}: reset did not restore image"
-            if name != "slice":
+            if not is_slice:
                 assert images["clip"] != images["initial"], f"{name}: clip did not change image"
                 assert images["clip"] != images["clip_move"], f"{name}: clip did not move"
                 assert images["initial"] == images["clip_reset"], f"{name}: clip reset failed"
+            if name.startswith("metal_slice"):
+                assert images["initial"] == images["cpu_keys"], "CPU-only keys changed Metal view"
+                assert images["initial"] != images["slice_move"], "Slice did not move"
+                if name.endswith("nested"):
+                    assert images["initial"] != images["axis"], "Slice axis did not change"
             print(f"{name}: save, zoom, reset, clip (3D), quit PASS")
 
 

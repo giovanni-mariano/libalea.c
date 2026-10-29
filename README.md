@@ -94,8 +94,10 @@ runtime dependency.
 
 An experimental optional [GPU module](docs/GPU_COMPUTE.md) provides Metal FP32
 rendering and CPU/Metal point classification for nested transformed fills.
-Point classification currently rejects lattices. Build the
-interactive viewer with `make tools USE_METAL=1 USE_SDL=1` and select
+Point classification currently rejects lattices. The 2D plotter exposes it via
+`mc_plotter ... --backend=metal --interactive`, with explicit sampled gap/overlap
+colors. Build the
+interactive viewers with `make tools USE_METAL=1 USE_SDL=1` and select
 `render3d --backend metal --interactive` for automatic coarse previews and
 cancellable tile refinement with automatic bounds. Metal supports transformed universes,
 rectangular lattices, quadrics, cones and tori. CUDA and HIP backends are planned as separate native implementations, without

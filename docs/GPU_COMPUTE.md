@@ -23,7 +23,7 @@ interactive viewer; see [Installation](INSTALLATION.md) for the local fallback.
 ```sh
 make compute USE_METAL=0 RELEASE=1
 make compute USE_METAL=1 RELEASE=1
-make -C tools ../bin/render3d USE_METAL=1 USE_SDL=1 RELEASE=1
+make -C tools ../bin/render3d ../bin/mc_plotter USE_METAL=1 USE_SDL=1 RELEASE=1
 bin/render3d examples/data/doc_shield.i --backend metal --interactive \
     --width 800 --height 600 --eye 20,-30,20 --target 0,0,0 --clip-y=0
 ```
@@ -50,6 +50,38 @@ The source may change or be freed after snapshot creation. Recreate the context
 to incorporate geometry changes. Serialize calls on a context; independent
 contexts can be used independently. Failed calls return an error rather than a
 partial success. CPU contexts use `ALEA_COMPUTE_FP64`.
+
+## 2D Metal slices
+
+The plotter now uses the native point classifier with explicit backend selection:
+
+```sh
+bin/mc_plotter examples/data/doc_shield.i Z 0 -12 12 -12 12 800x600 \
+    slice.png --backend=metal --interactive
+```
+
+Omit `--interactive` to write a PNG or BMP directly. CPU remains the default;
+`--backend metal` and `--backend=metal` are equivalent. Metal requires a build
+with `USE_METAL=1`; SDL is needed only for interactive use.
+
+Each pixel samples its center using approximate FP32 ownership. Unique material
+cells use the selected cell/material palette, terminal void is white, a sampled
+gap is orange, and a sampled overlap is magenta. These are point samples, not
+verified geometry diagnostics: boundaries may differ from CPU evaluation and
+thin features can be missed. Contours, cell/material labels and ticks are drawn
+on the CPU from the classified grid. Pan, zoom, axis and slice controls reuse
+one geometry snapshot; `H` shows controls and the color legend.
+
+Metal slices currently reject lattices, batch files, ray sampling, surface
+labels, `--errors`, `--debug`, `--trace`, and the `ALEA_PLOT_*` coverage/error
+diagnostic settings. These requests fail explicitly without CPU fallback.
+The Ray and Errors controls are absent from the Metal viewer.
+
+The worker checks cancellation between batches of 4,096 samples and before
+publishing a complete image. One GPU submission has no latency bound; no partial
+slice is published. Saving uses a complete frame for the requested view.
+This integration makes the hierarchy classifier available for use; it does not
+add spatial pruning or establish complex-model interactive performance.
 
 ## Geometry and precision
 
@@ -231,6 +263,7 @@ Metal device. Viewer checks use SDL's dummy driver:
 ```sh
 SDL_CONFIG="$PWD/build/deps/SDL2-2.32.10/install/bin/sdl2-config" \
     USE_METAL=1 python3 tools/check_sdl_viewers.py
+python3 tools/check_metal_plotter.py
 ```
 
 ## Point classification

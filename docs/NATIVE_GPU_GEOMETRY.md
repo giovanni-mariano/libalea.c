@@ -116,6 +116,37 @@ make test-compute USE_METAL=1 RELEASE=1
 ALEA_NUM_THREADS=1 make benchmark-gpu-geometry USE_METAL=1 RELEASE=1
 ```
 
+## 2D plotter integration
+
+The follow-up connects this classifier to `mc_plotter --backend=metal`, for
+static PNG/BMP output and the SDL viewer. CPU remains the default. The tool owns
+one snapshot across frames and classifies pixel centers in batches of 4,096,
+checking worker cancellation between batches and before complete-frame publication.
+Cancellation does not set a process-wide interrupt, and the same snapshot can be
+reused immediately. No partial slice is published or saved.
+
+Sampled terminal void, gaps and overlaps remain distinct: white, orange and
+magenta respectively. Cell/material colors, contours, labels and ticks use the
+returned grid. Unsupported CPU diagnostics, ray sampling, surface labels, batch
+mode and lattices fail explicitly. The Metal viewer hides CPU-only controls.
+This is approximate FP32 visualization, with the classifier's existing sampling
+and performance limits; the query kernels are unchanged.
+
+Validation on the Apple M1 passes the existing CPU plotter regression suite,
+native Metal image tests, and the SDL dummy-driver viewer tests. Public fixtures
+exercise all three axes and image orientation, translated fills, styles,
+void/gap/overlap colors, option/environment/lattice rejection without output,
+zoom/reset, axis/slice movement, save and quit. A direct plotter test cancels
+before the first submission, between submissions and before publication, checks
+that no image escapes, and compares the next frame with the original baseline.
+The existing CPU and Metal 3D viewer checks remain passing. The CPU-only plotter
+also builds and rejects a Metal request explicitly.
+
+The new device check is `python3 tools/check_metal_plotter.py`; the shared
+viewer/cancellation check is `USE_METAL=1 python3 tools/check_sdl_viewers.py`
+(with `SDL_CONFIG` pointing to the local SDL installation if needed). No private
+geometry was used. This increment introduces no new performance claim.
+
 ## Next increment
 
 Implement procedural rectangular-lattice point classification with independent
