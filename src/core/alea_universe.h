@@ -54,6 +54,10 @@ typedef struct {
     uint32_t* recovery_surfaces;
     size_t recovery_surface_count;
     bool recovery_surfaces_attempted;
+    /* Ordered fill/lattice cells; ready also represents a complete empty list. */
+    size_t* recovery_child_cells;
+    size_t recovery_child_count;
+    bool recovery_children_ready;
 } alea_universe_t;
 
 ALEA_VEC_DEFINE(alea_universe_vec, alea_universe_t);

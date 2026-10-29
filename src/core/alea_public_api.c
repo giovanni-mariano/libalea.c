@@ -387,6 +387,9 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         clone->universes.data[i].recovery_surfaces = NULL;
         clone->universes.data[i].recovery_surface_count = 0;
         clone->universes.data[i].recovery_surfaces_attempted = false;
+        clone->universes.data[i].recovery_child_cells = NULL;
+        clone->universes.data[i].recovery_child_count = 0;
+        clone->universes.data[i].recovery_children_ready = false;
         clone->universes.data[i].point_bvh_built = false;
         clone->universes.data[i].point_bvh_disabled = false;
     }

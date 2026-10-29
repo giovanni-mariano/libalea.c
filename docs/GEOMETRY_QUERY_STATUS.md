@@ -5,14 +5,15 @@ SPDX-License-Identifier: MPL-2.0
 
 # Geometry query experiment: integration checkpoint
 
-Status reviewed on 2026-10-29. Latest production checkpoint: `a8491e2`
-(ordered point queries following bounded recovery-context reuse), on
+Status reviewed on 2026-10-29. Latest retained implementation: ordered recovery
+child-cell lists following `a8491e2` (ordered point queries), on
 `experiment/geometry-recovery-search`; original baseline: `8c585eb`.
 This page records the current decision. Linked experiment reports preserve
 their original baselines, measurements, and historical conclusions.
 The subsequent [corrected-baseline measurement](GEOMETRY_CORRECTED_BASELINE.md)
 is complete. The subsequent [context reuse implementation](GEOMETRY_RECOVERY_CONTEXT_REUSE.md)
-records the latest changes, validation, and measurements.
+records that implementation, validation, and measurements. The latest
+[ordered child-cell experiment](GEOMETRY_RECOVERY_CHILD_CELLS.md) is complete.
 
 ## Decision
 
@@ -102,10 +103,25 @@ The [current broad-view profile](GEOMETRY_VISUALIZATION_PROFILE.md), measured at
 `a8491e2`, now rechecks those outputs: one-worker first/warm frames take about
 36.0/35.6 s, and four configured workers take 12.5/11.8 s. These are single-process
 observations. The complete-frame diagnostic still attributes about 92% of
-tracing to recovery, with 3.34 billion fill-loop cell visits. The next scoped
-hypothesis is optional ordered child-cell lists; it has not been implemented.
+tracing to recovery, with 3.34 billion fill-loop cell visits. The subsequent
+[ordered child-cell experiment](GEOMETRY_RECOVERY_CHILD_CELLS.md) implements
+that hypothesis and measures three alternating complete-frame process pairs.
+One-worker median warm time falls from 35.275 s to 24.961 s (29.2% less).
+Four-worker median warm time falls from 12.779 s to 9.608 s, but the ranges
+overlap and one candidate run is slower than its paired baseline. All 24 paired
+broad frames match. These paired results supersede the exploratory timings
+for evaluating this particular change; the one-second objective remains unmet.
 
 ## Latest retained implementation and next investigation
+
+Nearest recovery now iterates optional ordered fill/lattice cell lists, skipping
+terminal entries. Index allocations are capped at 8 MiB per model; unavailable
+lists retain the original scan. Empty lists, publication, interruption, rebuilds,
+clones, edits, budget exhaustion, and allocation failure have explicit coverage.
+Final native unit/integration/Lua and serial unit/integration suites pass, as do
+288 public frame comparisons, 256 private comparison rows, eight detail frames,
+independent ellipse pixel oracles, and cancellation followed by reuse. The private
+cache retains 44,344 bytes of indices plus 6,144 bytes of struct metadata.
 
 Nearest recovery now avoids repeated successful indexed scans with an exact
 list/ray/transform key and a containing previously scanned window. Optional
@@ -115,11 +131,13 @@ allocation failure, saturation, or uncertain keys. Recursive children, aliases,
 first-hit ties, and cancellation retain their contracts. No record crosses a
 recovery call or geometry edit. See the implementation report for limitations.
 
-The new full-frame profile justifies testing ordered fill/lattice cell subsets
-for nearest recovery before another backend or representation. The earlier
-repeated-context profile predates reuse and should not identify current costs.
-The latest report specifies budgets, validation, repeated timing, and the
-remaining hardware/visualization limits. The one-second target remains unmet.
+The final diagnostic confirms that fill-loop cell visits fall from 3.34 billion
+to 2.64 million, with all other recorded work counters unchanged. Indexed scans
+still consume about 88% of recovery and 76% of total diagnostic tracing time,
+with 815 million indexed references. Further work should target that remaining
+surface-scan cost and recovery strategy. These are instrumented timing shares,
+not release throughput measurements or justification for a GPU backend by
+themselves. The one-second target remains unmet.
 
 Transport validation remains a separate track: complete coverage, gaps,
 overlaps, close/coincident boundaries, transformed occurrences, and navigator
@@ -140,7 +158,8 @@ conservation also need their own contracts.
 - [Corrected baseline and repeated contexts](GEOMETRY_CORRECTED_BASELINE.md)
 - [Bounded recovery context reuse](GEOMETRY_RECOVERY_CONTEXT_REUSE.md)
 - [Ordered public point queries](GEOMETRY_POINT_QUERIES.md)
-- [Current broad-view profile](GEOMETRY_VISUALIZATION_PROFILE.md)
+- [Broad-view profile before child lists](GEOMETRY_VISUALIZATION_PROFILE.md)
+- [Ordered recovery child cells](GEOMETRY_RECOVERY_CHILD_CELLS.md)
 
 Public fixtures are independently constructed. Private model inputs, paths,
 coordinates, extracted geometry, raw hashes, diagnostic sources, and logs stay

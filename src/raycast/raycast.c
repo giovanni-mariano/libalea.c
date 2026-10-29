@@ -1459,12 +1459,22 @@ static void raycast_fill_universe_hits_recursive(alea_system_t* sys,
         return;
     }
 
+    bool use_children = result->breakpoint_nearest_only &&
+        alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_CHILDREN) &&
+        univ->recovery_children_ready;
+    size_t count = use_children ? univ->recovery_child_count : univ->cell_indices.count;
+    const size_t* indices = use_children ? univ->recovery_child_cells : univ->cell_indices.data;
+
     alea_ray_t parent_local_ray;
     transform_ray_inverse(accumulated, global_ray, &parent_local_ray);
 
-    for (size_t i = 0; i < univ->cell_indices.count; i++) {
+    for (size_t i = 0; i < count; i++) {
+        if ((i & 1023) == 0 && alea_interrupted()) {
+            result->breakpoint_failed = 1;
+            return;
+        }
         if (result->breakpoint_hit_limit && result->breakpoint_failed) return;
-        size_t cell_idx = univ->cell_indices.data[i];
+        size_t cell_idx = indices[i];
         if (cell_idx >= alea_vec_count(&sys->cells)) {
             if (result->breakpoint_hit_limit) result->breakpoint_failed = 1;
             continue;
