@@ -492,3 +492,97 @@ and retry, real-buffer size, independent context formats and invalid-option
 recovery. Compact-mode public plotter image checks and real SDL 2D/3D navigation,
 progressive publication, cancellation and reuse checks pass. Both user-facing
 viewers are rebuilt. Private artifacts remain ignored.
+
+## Ordered packet-candidate experiment: not retained
+
+Evaluated after `c764c61` on Apple M1. The experiment implemented conservative
+strict-sign/finite-arithmetic proofs for groups within the existing 4,096-point
+submission. It reused primitive proofs through 64-bit host masks and consumed
+ordered per-group root lists in native Metal, retaining existing child traversal.
+The source program was decoded once per root, with 32-million-instruction and
+2-million-interval-test additional budgets per submission. Unknown proofs and
+lattice roots remained eligible. No new GPU path or option is retained.
+
+### Opportunity versus complete-query benefit
+
+The bounded private 128x128 probe uses four 64x64 tiles. For 16x16 groups it
+reduces coarse candidate memberships from 25,260,032 to 584,192 (97.69%). Host
+coarse proofs take 0.0297 s and additional group proofs 0.0546 s across the frame.
+For 8x8 groups it reduces memberships to 142,336 (99.44%) but additional proof
+work rises to 0.1907 s. These are candidate memberships, not actual selected
+visits or measured instruction savings. Selection can stop before visiting many
+memberships. The probe performs 1,835,567 source decodes per frame in either
+case, with respectively 544,864 and 2,179,456 interval tests across four batches.
+
+Two native implementations were measured with profiling disabled. Both use
+identical coherent 16x16-block input order in baseline and experimental modes,
+compact bytecode, candidate proofs and four submissions. Timings include staging,
+proof construction, GPU work and result scattering. Each run has one first frame
+and five alternating warm frames; these are separate runs, not a cross-run
+comparison of the two experimental representations.
+
+| Private selected 128x128 | Matched coarse baseline | Packet prototype |
+| --- | ---: | ---: |
+| Root masks, warm median | 1.160 s | 1.046 s |
+| Root masks, warm range | 1.147-1.165 s | 1.007-1.059 s |
+| Compact ordered lists, warm median | 1.095 s | 0.922 s |
+| Compact ordered lists, warm range | 1.088-1.187 s | 0.882-1.002 s |
+| Compact ordered lists, first frame | 1.242 s | 1.012 s |
+| Compact ordered lists, snapshot preparation | 10.023 s | 9.881 s |
+
+Both prototype result arrays equal their corresponding baseline arrays. Both
+paths also match CPU core selected lookup on all 16,384 samples in each run.
+In the ordered-list run the optimized CPU grid median is 0.321 s and serial core
+lookup takes 20.723 s. Ordered lists improve the matched median about **15.8%**,
+short of the plan's required 20% repeatable improvement. A subsecond 128x128
+frame does not satisfy the separate 512x512 one-second target. No larger private
+resolution or release-tail claim follows from this experiment.
+
+### Public positive and adverse cases
+
+An independently constructed 1,024-box grid has an analytic owner derived from
+floor(x), floor(y). An overlap variant places all 1,024 boxes over the complete
+sample domain: all-owner classification must count all boxes and return no unique
+IDs, whereas selection must return the first cell. Both use 128x128 well-separated
+pixel centers. The ordered-list prototype passes both oracles for both operations.
+One initial call and five warm calls give these diagnostic medians:
+
+| Public case / operation | Coarse baseline ms | Ordered packets ms |
+| --- | ---: | ---: |
+| Grid / all-owner | 4.524 | 2.225 |
+| Grid / selected | 4.533 | 2.402 |
+| Full overlap / all-owner | 6.430 | 6.738 |
+| Full overlap / selected | 1.079 | 1.502 |
+
+The overlap-selected case increases about 39% in this run. It is an adverse
+signal rather than a statistically established release regression. It demonstrates
+why pruning success on a sparse fixture cannot establish general query benefit.
+No hardware bottleneck or time fraction is inferred from instruction counts or
+these timings.
+
+### Decision and retained deliverables
+
+Remove the production proof builder, buffers, options and kernel branches. The
+private improvement misses the retention gate and an inexpensive selected query
+can pay more preparation cost. Do not loosen the gate or add automatic selection
+heuristics to retain this prototype. Its limited validation does not establish
+full geometry or lifecycle parity.
+
+Retain `benchmarks/many_root_points.c` and `make benchmark-many-root-points
+USE_METAL=1 RELEASE=1`. This public benchmark compares the existing scanner and
+coarse candidate paths on both grid and full-overlap fixtures, verifies analytic
+results for all-owner and selected queries, and reports five warm repetitions.
+It includes staging/oracle work in its wall interval and runs the modes in
+sequence; it is a diagnostic fixture rather than a release benchmark protocol.
+It does not implement or enable the discarded packet path.
+
+The removed prototype patch, probe sources, private inputs and raw measurements
+remain in ignored local storage. Reports contain aggregates only. Next, complete
+the bounded private 3D exterior/cutaway/close-up attribution already outstanding
+in M0. Use that evidence plus the adverse point case to choose further execution
+or query algorithms. CPU parity and validated physics navigation remain open.
+
+Final retained-state validation: 16 CPU, 73 Metal, 5 builder and 6 resource tests
+pass after restoring production code. The public benchmark's eight combinations
+(two fixtures, two traversal modes and two ownership operations) pass in both
+wide and compact instruction storage. No packet-specific production code remains.

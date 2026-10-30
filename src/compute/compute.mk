@@ -94,6 +94,15 @@ $(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT): benchmarks/gpu_geometry.c $(
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
 		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
 
+$(COMPUTE_BIN_DIR)/benchmark_many_root_points$(EXEEXT): benchmarks/many_root_points.c $(LIB_COMPUTE) $(LIB_CORE)
+	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
+		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
+
+.PHONY: benchmark-many-root-points
+benchmark-many-root-points: compute $(COMPUTE_BIN_DIR)/benchmark_many_root_points$(EXEEXT)
+	@$(COMPUTE_BIN_DIR)/benchmark_many_root_points$(EXEEXT)
+	@$(COMPUTE_BIN_DIR)/benchmark_many_root_points$(EXEEXT) overlap
+
 .PHONY: benchmark-gpu-geometry
 benchmark-gpu-geometry: compute $(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT)
 	@$(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT)

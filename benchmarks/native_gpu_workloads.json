@@ -144,6 +144,33 @@
         "3D ordinary/progressive"
       ],
       "oracle": "same semantic fixtures with CUDA-native execution"
+    },
+    {
+      "id": "public-many-root-points",
+      "status": "implemented-diagnostic",
+      "argv": [
+        "make",
+        "benchmark-many-root-points",
+        "USE_METAL=1",
+        "RELEASE=1"
+      ],
+      "fixtures": [
+        "1024-cell analytic box grid",
+        "1024 fully overlapping boxes"
+      ],
+      "operations": [
+        "selected model-order IDs/status/depth",
+        "all-terminal-owner counts and IDs"
+      ],
+      "oracle": "floor-based grid owner; 1024 overlap owners with no unique IDs versus first selected cell",
+      "resolutions": [
+        [
+          128,
+          128
+        ]
+      ],
+      "timing_note": "one initial and five warm calls; scanner and coarse candidates in sequence; includes staging and oracle checks; not release-tail acceptance",
+      "experiment_outcome": "finer packet prototype removed after missing private performance retention gate"
     }
   ]
 }
