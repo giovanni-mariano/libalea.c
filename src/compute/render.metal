@@ -23,7 +23,7 @@ static bool ray_expression(device const compute_node* code,device const compute_
         thread float& next,thread uint& surface,thread uint& at_cursor,thread bool& error,thread compute_profile& cost) {
     int values[COMPUTE_STACK];float until[COMPUTE_STACK];uint boundaries[COMPUTE_STACK];uint sp=0;
     for(uint i=0;i<cell.count;++i) {
-        compute_node n=code[cell.root+i];
+        compute_node n=code_at(code,cell.root+i);
         if(profile_enabled)cost.instructions=profile_sum(cost.instructions,1);
         if(n.op==COMPUTE_CONSTANT) {
             values[sp]=n.arg?1:-1;until[sp]=end;boundaries[sp]=COMPUTE_NONE;++sp;

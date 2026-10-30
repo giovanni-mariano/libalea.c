@@ -301,3 +301,22 @@ fail:
 int alea_compute_pack(const alea_system_t* sys,compute_scene* s) {
     return alea_compute_pack_geometry(sys,s,1);
 }
+
+/* Exact encoding; all arguments retain their bits. A wider argument or future
+ * opcode keeps the existing format instead of truncating or rejecting input. */
+int alea_compute_code_compact(const compute_node* code,size_t count,uint32_t* output) {
+    for(size_t i=0;i<count;++i) {
+        if((i&65535)==0 && alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,"Code encoding interrupted");return -1;
+        }
+        if(code[i].op>15 || code[i].arg>0x0fffffffu)return 0;
+    }
+    for(size_t i=0;i<count;++i) {
+        if((i&65535)==0 && alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,"Code encoding interrupted");return -1;
+        }
+        compute_node node=code[i];
+        output[i]=(node.arg<<4)|node.op;
+    }
+    return 1;
+}

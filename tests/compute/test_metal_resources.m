@@ -41,6 +41,48 @@ static NSUInteger live_buffers;
 - (void)dealloc {[target release];[super dealloc];}
 @end
 
+TEST(metal_compact_storage_and_independent_context_formats) {
+    @autoreleasepool {
+        const char* flag=getenv("ALEA_METAL_COMPACT_CODE");char* saved=flag?strdup(flag):NULL;
+        const char* candidates=getenv("ALEA_METAL_POINT_CANDIDATES");char* saved_candidates=candidates?strdup(candidates):NULL;
+        ASSERT_EQ(alea_setenv("ALEA_METAL_POINT_CANDIDATES","1",1),0);
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+        int box=alea_box_surface(sys,1,-2,2,-2,2,-2,2);
+        int sphere=alea_sphere_surface(sys,2,0,0,0,1);
+        alea_node_id_t root=alea_intersection(sys,alea_halfspace(sys,box,-1),alea_halfspace(sys,sphere,1));
+        alea_add_cell(sys,42,root,mat,-1,0);
+        metal_state* contexts[2];
+        for(unsigned format=0;format<2;++format) {
+            ASSERT_EQ(alea_setenv("ALEA_METAL_COMPACT_CODE",format?"1":"0",1),0);
+            contexts[format]=alea_compute_metal_create(sys);ASSERT_NOT_NULL(contexts[format]);
+            ASSERT_EQ(contexts[format]->compact_code,format);
+        }
+        ASSERT_EQ(contexts[0]->nodes.length,2*contexts[1]->nodes.length);
+        /* Switch formats between contexts after creation and use the real host
+         * proof as well as both GPU point pipelines on the same immutable code. */
+        double xyz[]={0,0,0, 1.5,0,0, 3,0,0};
+        for(unsigned pass=0;pass<2;++pass)for(unsigned format=0;format<2;++format) {
+            metal_state* s=contexts[format];
+            alea_compute_result_t classified[3];alea_compute_selection_t selected[3];
+            ASSERT_EQ(alea_compute_metal_classify(s,xyz,3,classified),0);
+            ASSERT_EQ(alea_compute_metal_select(s,xyz,3,selected),0);
+            for(unsigned i=0;i<3;++i) {
+                ASSERT_EQ(classified[i].owner_count,i==1);ASSERT_EQ(selected[i].status,i==1?ALEA_COMPUTE_FOUND:ALEA_COMPUTE_NOT_FOUND);
+                ASSERT_EQ(selected[i].cell_id,i==1?42:-1);
+            }
+        }
+        for(unsigned format=0;format<2;++format)alea_compute_metal_destroy(contexts[format]);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_COMPACT_CODE","invalid",1),0);
+        ASSERT_NULL(alea_compute_metal_create(sys));ASSERT_EQ(alea_error_code(),ALEA_ERR_INVALID_ARG);
+        ASSERT_EQ(alea_setenv("ALEA_METAL_COMPACT_CODE","1",1),0);
+        metal_state* retry=alea_compute_metal_create(sys);ASSERT_NOT_NULL(retry);
+        alea_compute_metal_destroy(retry);alea_destroy(sys);
+        ASSERT_EQ(saved?alea_setenv("ALEA_METAL_COMPACT_CODE",saved,1):alea_unsetenv("ALEA_METAL_COMPACT_CODE"),0);
+        ASSERT_EQ(saved_candidates?alea_setenv("ALEA_METAL_POINT_CANDIDATES",saved_candidates,1):alea_unsetenv("ALEA_METAL_POINT_CANDIDATES"),0);
+        free(saved);free(saved_candidates);
+    }
+}
+
 TEST(metal_upload_failure_releases_buffers_and_retries) {
     @autoreleasepool {
         alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);

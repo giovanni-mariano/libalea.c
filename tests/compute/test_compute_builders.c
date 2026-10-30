@@ -95,4 +95,35 @@ TEST(point_candidates_preserve_nonfinite_operands_and_budget_fallback) {
     ASSERT_EQ(alea_compute_point_candidates(&scene,bounds,signs,&next,&root,&stats),0);
     ASSERT_EQ(root,0);ASSERT_EQ(stats.instructions,0);ASSERT_EQ(stats.budget_fallbacks,1);
 }
+TEST(compact_code_exact_in_place_and_wide_fallback) {
+    compute_node original[]={{COMPUTE_LEAF,0x0fffffffu},{COMPUTE_SKIP_UNION,12345},
+        {COMPUTE_CONSTANT,1},{COMPUTE_COMPLEMENT,0},{15,0}};
+    enum {N=sizeof(original)/sizeof(*original)};
+    compute_node nodes[N];memcpy(nodes,original,sizeof(nodes));
+    uint32_t words[N];
+    ASSERT_EQ(alea_compute_code_compact(nodes,N,words),1);
+    compute_scene scene={.compact_nodes=words};
+    for(size_t i=0;i<N;++i) {
+        compute_node decoded=alea_compute_node_at(&scene,i);
+        ASSERT_EQ(decoded.op,original[i].op);ASSERT_EQ(decoded.arg,original[i].arg);
+    }
+    ASSERT_EQ(memcmp(nodes,original,sizeof(nodes)),0);
+    ASSERT_EQ(alea_compute_code_compact(nodes,N,(uint32_t*)nodes),1);
+    ASSERT_EQ(memcmp(nodes,words,sizeof(words)),0);
+    for(unsigned invalid=0;invalid<2;++invalid) {
+        memcpy(nodes,original,sizeof(nodes));
+        if(invalid)nodes[N-1].op=16;else nodes[N-1].arg=0x10000000u;
+        compute_node copy[N];memcpy(copy,nodes,sizeof(copy));
+        ASSERT_EQ(alea_compute_code_compact(nodes,N,(uint32_t*)nodes),0);
+        ASSERT_EQ(memcmp(nodes,copy,sizeof(nodes)),0);
+    }
+    memcpy(nodes,original,sizeof(nodes));alea_interrupt();
+    int result=alea_compute_code_compact(nodes,N,(uint32_t*)nodes);
+    alea_clear_interrupt();
+    ASSERT_EQ(result,-1);ASSERT_EQ(alea_error_code(),ALEA_ERR_INTERRUPTED);
+    ASSERT_EQ(memcmp(nodes,original,sizeof(nodes)),0);
+    ASSERT_EQ(alea_compute_code_compact(nodes,N,(uint32_t*)nodes),1);
+    ASSERT_EQ(memcmp(nodes,words,sizeof(words)),0);
+    ASSERT_EQ(alea_compute_code_compact(NULL,0,NULL),1);
+}
 TEST_MAIN()

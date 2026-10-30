@@ -30,7 +30,7 @@ static int resume_expression_step(device const compute_node* code,device const c
         thread resume_expression& e,float3 o,float3 d,float cursor,
         thread bool& error,thread compute_profile& cost) {
     float end=e.end;
-    compute_node n=code[e.program.root+e.pc];
+    compute_node n=code_at(code,e.program.root+e.pc);
     if(profile_enabled)cost.instructions=profile_sum(cost.instructions,1);
     if(n.op==COMPUTE_CONSTANT) {
         e.values[e.sp]=n.arg?1:-1;e.until[e.sp]=end;e.boundaries[e.sp]=COMPUTE_NONE;++e.sp;

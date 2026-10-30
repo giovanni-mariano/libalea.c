@@ -37,6 +37,7 @@ typedef struct {
     int resume_fixed;
     uint32_t lazy_threshold;
     char* profile_prefix;
+    bool compact_code;
     bool point_candidates_enabled;
     id<MTLBuffer> point_candidates;
     int8_t* point_signs;
@@ -92,6 +93,18 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
             alea_compute_scene_free(&scene);
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal context");
             return NULL;
+        }
+        const char* compact=getenv("ALEA_METAL_COMPACT_CODE");
+        if(compact && strcmp(compact,"0") && strcmp(compact,"1")) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,"ALEA_METAL_COMPACT_CODE must be 0 or 1");goto fail;
+        }
+        s->compact_code=compact && !strcmp(compact,"1");
+        if(s->compact_code) {
+            /* Reuse the host allocation for encoding, avoiding another full
+             * stream-sized allocation. Complete the fit check before writing. */
+            int encoded=alea_compute_code_compact(scene.nodes,scene.node_count,(uint32_t*)scene.nodes);
+            if(encoded<0)goto fail;
+            s->compact_code=encoded!=0;
         }
         const char* candidates=getenv("ALEA_METAL_POINT_CANDIDATES");
         if(candidates && strcmp(candidates,"0") && strcmp(candidates,"1")) {
@@ -156,6 +169,7 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
         bool point_profile_enabled=s->point_profile_path!=NULL;
         [constants setConstantValue:&point_profile_enabled type:MTLDataTypeBool atIndex:5];
         [constants setConstantValue:&s->point_candidates_enabled type:MTLDataTypeBool atIndex:6];
+        [constants setConstantValue:&s->compact_code type:MTLDataTypeBool atIndex:7];
         id<MTLFunction> function = [library newFunctionWithName:
             s->hierarchical ? @"alea_classify_hierarchy" : @"alea_classify_points" constantValues:constants error:&error];
         [constants release];
@@ -166,7 +180,8 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
                 error ? [[error localizedDescription] UTF8String] : "device or pipeline unavailable");
             goto fail;
         }
-        size_t node_bytes = (scene.node_count ? scene.node_count : 1) * sizeof(compute_node);
+        size_t node_bytes = (scene.node_count ? scene.node_count : 1) * (s->compact_code?sizeof(uint32_t):sizeof(compute_node));
+        if(node_bytes<sizeof(compute_node))node_bytes=sizeof(compute_node);
         size_t primitive_bytes = (scene.primitive_count ? scene.primitive_count : 1) * sizeof(compute_primitive);
         size_t cell_bytes = (scene.cell_count ? scene.cell_count : 1) * sizeof(compute_cell);
         if (node_bytes > s->device.maxBufferLength || primitive_bytes > s->device.maxBufferLength || cell_bytes > s->device.maxBufferLength) {
@@ -267,6 +282,7 @@ static int prepare_select(metal_state* s) {
     MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];bool profile=s->select_profile_path!=NULL;
     [constants setConstantValue:&profile type:MTLDataTypeBool atIndex:5];
     [constants setConstantValue:&s->point_candidates_enabled type:MTLDataTypeBool atIndex:6];
+    [constants setConstantValue:&s->compact_code type:MTLDataTypeBool atIndex:7];
     id<MTLFunction> function=[library newFunctionWithName:s->hierarchical?@"alea_select_hierarchy":@"alea_select_points"
         constantValues:constants error:&error];[constants release];
     if(function)s->select_pipeline=[s->device newComputePipelineStateWithFunction:function error:&error];
@@ -395,7 +411,9 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
                     bounds[2*a]=fminf(bounds[2*a],points[3*i+a]);
                     bounds[2*a+1]=fmaxf(bounds[2*a+1],points[3*i+a]);
                 }
-                compute_scene host=s->scene;host.nodes=s->nodes.contents;host.primitives=s->primitives.contents;
+                compute_scene host=s->scene;
+                if(s->compact_code)host.compact_nodes=s->nodes.contents;else host.nodes=s->nodes.contents;
+                host.primitives=s->primitives.contents;
                 host.point_cells=s->hierarchical?s->point_cells.contents:NULL;
                 if(alea_compute_point_candidates(&host,bounds,s->point_signs,s->point_candidates.contents,
                     &candidate_root,&candidate_stats))return -1;
@@ -500,6 +518,7 @@ static int prepare_render(metal_state* s) {
     MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];
     bool profile=s->profile_prefix!=NULL;
     [constants setConstantValue:&profile type:MTLDataTypeBool atIndex:0];
+    [constants setConstantValue:&s->compact_code type:MTLDataTypeBool atIndex:7];
     [constants setConstantValue:&s->lazy_threshold type:MTLDataTypeUInt atIndex:2];
     bool refill=s->refill;
     [constants setConstantValue:&refill type:MTLDataTypeBool atIndex:4];
@@ -566,6 +585,7 @@ static int prepare_resume(metal_state* s) {
     MTLFunctionConstantValues* constants=[[MTLFunctionConstantValues alloc] init];
     bool profile=s->profile_prefix!=NULL;
     [constants setConstantValue:&profile type:MTLDataTypeBool atIndex:0];
+    [constants setConstantValue:&s->compact_code type:MTLDataTypeBool atIndex:7];
     [constants setConstantValue:&s->lazy_threshold type:MTLDataTypeUInt atIndex:2];
     bool refill=s->refill;
     [constants setConstantValue:&refill type:MTLDataTypeBool atIndex:4];

@@ -5,6 +5,12 @@
 using namespace metal;
 #include "compute_layout.h"
 
+constant bool compact_programs [[function_constant(7)]];
+static compute_node code_at(device const compute_node* code,uint index) {
+    if(compact_programs){uint word=((device const uint*)code)[index];return {word&15u,word>>4};}
+    return code[index];
+}
+
 constant bool point_profile_enabled [[function_constant(5)]];
 constant bool point_candidates_enabled [[function_constant(6)]];
 static void point_add(thread uint& counter,uint amount=1) {
@@ -69,7 +75,7 @@ static float evaluate(device const compute_node* code,
                       compute_cell cell,float3 p,thread compute_point_profile& cost,bool spatial) {
     float values[COMPUTE_STACK];uint sp=0;
     for(uint i=0;i<cell.count;++i) {
-        compute_node n=code[cell.root+i];
+        compute_node n=code_at(code,cell.root+i);
         if(point_profile_enabled)point_add(cost.v[spatial?POINT_SPATIAL_INSTRUCTIONS:POINT_ORIGINAL_INSTRUCTIONS]);
         if(n.op==COMPUTE_CONSTANT)values[sp++]=n.arg?1:-1;
         else if(n.op==COMPUTE_LEAF) {

@@ -51,6 +51,26 @@ to incorporate geometry changes. Serialize calls on a context; independent
 contexts can be used independently. Failed calls return an error rather than a
 partial success. CPU contexts use `ALEA_COMPUTE_FP64`.
 
+## Experimental compact Metal instructions
+
+Set `ALEA_METAL_COMPACT_CODE=1` before snapshot creation to store each CSG
+instruction in one 32-bit word instead of two. The default remains `0` for
+comparison. Classification, selection, host candidate proofs and both render
+paths use the context's chosen format. Independent contexts may use different
+formats; changing the environment does not modify existing contexts.
+
+The encoding preserves instruction order, logical addresses and arguments. It
+uses 4 opcode bits and 28 argument bits. If any instruction does not fit, the
+whole context retains the wide format without truncation or a new geometry
+rejection. Both formats use the same FP32 arithmetic and retain its accuracy
+limits. Invalid settings fail context creation.
+
+On the measured private workload, compact storage halves the code buffer and
+reduces total context buffers by about 45%. Host preprocessing still builds wide
+instructions, so process peak memory does not halve. Query speed is workload
+specific; use complete queries with profiling disabled for comparisons. Aggregate
+measurements and remaining work are in [the M0 report](NATIVE_GPU_M0.md).
+
 ## Ordered batch selection
 
 `alea_compute_select()` is a separate CPU FP64 / Metal FP32 operation for selecting

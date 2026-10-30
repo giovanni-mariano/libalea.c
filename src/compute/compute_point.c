@@ -13,7 +13,7 @@
 #define POINT_PROOF_BUDGET (32u*1024u*1024u)
 static int program_finite(const compute_scene* s,compute_cell cell,const float b[6]) {
     for(uint32_t i=0;i<cell.count;++i) {
-        compute_node n=s->nodes[cell.root+i];
+        compute_node n=alea_compute_node_at(s,cell.root+i);
         if(n.op==COMPUTE_LEAF) {
             int finite;
             alea_compute_primitive_sign_finite(&s->primitives[n.arg>>1],b,&finite);
@@ -56,7 +56,7 @@ static int candidate_outside(const compute_scene* s,compute_cell cell,const floa
     int stack[COMPUTE_STACK];unsigned top=0;
     for(uint32_t i=0;i<cell.count;++i) {
         if((i&1023)==0 && alea_interrupted())return -1;
-        compute_node n=s->nodes[cell.root+i];++stats->instructions;
+        compute_node n=alea_compute_node_at(s,cell.root+i);++stats->instructions;
         if(n.op==COMPUTE_LEAF) {
             uint32_t primitive=n.arg>>1;
             if(signs[primitive]==POINT_UNCHECKED) {

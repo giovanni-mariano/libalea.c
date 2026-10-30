@@ -16,6 +16,7 @@ typedef struct {
 } compute_render_scene;
 typedef struct {
     compute_node* nodes;
+    const uint32_t* compact_nodes; /* Borrowed Metal buffer view for host proofs. */
     compute_primitive* primitives;
     compute_cell* cells;
     size_t node_count, primitive_count, cell_count;
@@ -28,6 +29,14 @@ typedef struct {
     size_t point_lattice_count, point_fill_count;
     compute_render_scene render;
 } compute_scene;
+/* Logical instruction addresses are unchanged by the Metal storage format. */
+static inline compute_node alea_compute_node_at(const compute_scene* s,size_t i) {
+    if(s->compact_nodes){uint32_t word=s->compact_nodes[i];return (compute_node){word&15u,word>>4};}
+    return s->nodes[i];
+}
+/* Returns 1 when encoded, 0 without writing if any instruction needs the wide
+ * format, or -1 on interruption. Input and output may share an allocation. */
+int alea_compute_code_compact(const compute_node* code,size_t count,uint32_t* output);
 int alea_compute_point_programs_pack(compute_scene* scene);
 typedef struct { uint64_t cells, rejected, instructions, primitives, budget_fallbacks; } compute_candidate_stats;
 /* Scratch signs and next links belong to the caller. Bounds enclose the actual

@@ -3,7 +3,7 @@
 
 # Native GPU implementation: M0 contracts and baseline
 
-Checkpoint: `d3b7bff`, plus the M0 benchmark extension. Updated 2026-10-29.
+Checkpoint: `d3b7bff`, plus the M0 benchmark extension. Updated 2026-10-30.
 This records the first implementation work package from the local native GPU
 roadmap. Selected-owner semantics below are now implemented by the follow-up recorded at
 the end of this report; the capability API remains a design decision. Metal is active; CUDA device work awaits NVIDIA hardware.
@@ -394,3 +394,101 @@ tests, 5 resource tests and public image checks with selected attribution enable
 pass. All 99 emitted public JSON records parse and have matching cell/depth
 totals. The counter probe target collects valid timestamp samples. The plotter
 is rebuilt; normal kernels retain disabled instrumentation.
+
+## Representation audit and compact Metal storage
+
+Follow-up measured on Apple M1, 2026-10-30. The source-root audit finds 450,648
+packed cells with 450,648 distinct source roots: identity-based whole-program
+sharing saves nothing on this private workload. Grouping original emitted
+programs by their hashes suggests an upper bound of about **0.72%** original
+bytecode savings. Hash matches alone are not proof of equality; this estimate
+would require exact comparisons before implementing sharing. Common-subexpression
+reuse remains unaudited. These results do not justify a global interning pass.
+Only aggregates are recorded; geometry, hashes, coordinates, probes and raw logs
+remain ignored or outside Git.
+
+The retained experiment is lossless instruction compaction, enabled by
+`ALEA_METAL_COMPACT_CODE=1` at context creation (default `0`). Each instruction
+uses one 32-bit word: 4 opcode bits and 28 argument bits. A complete fit check
+precedes in-place host encoding. A wider opcode/argument retains the existing
+8-byte format for the entire context. Logical instruction addresses, skip counts,
+primitive references and instruction order remain unchanged. Host candidate proofs
+and all four Metal pipeline variants decode the chosen representation. The CPU
+backend and FP32 numerical contract are unchanged.
+
+### Single-context memory comparison
+
+Separate fresh processes load the same private model, prepare one context and
+query one instrumented selected point with candidates enabled. This is a buffer
+and memory observation, not a query-speed benchmark. Load times are 9.659 s wide
+and 9.584 s compact. Profile counters are included in both buffer totals.
+
+| Measurement | Wide | Compact |
+| --- | ---: | ---: |
+| Bytecode buffer bytes | 672,009,512 | 336,004,756 |
+| Bytecode buffer MiB | 640.88 | 320.44 |
+| Total distinct context buffer bytes | 744,077,548 | 408,072,792 |
+| Total distinct context buffers MiB | 709.61 | 389.17 |
+| Metal process-wide allocated bytes | 744,570,880 | 408,567,808 |
+| Process resident high-water mark bytes | 3,834,413,056 | 3,500,474,368 |
+| Snapshot preparation | 9.212 s | 9.131 s |
+
+Code storage halves; total context buffers decrease **45.16%**. Process peak
+falls only about 8.7%: host packing still uses the wide representation and other
+model/preparation allocations remain. These process peaks differ from the earlier
+checkpoint, so use this paired observation for the comparison rather than
+subtracting results across increments. Both fit the provisional 4 GiB process,
+1 GiB context-buffer and 15 s preparation guards. Buffer lengths and resident
+memory are different measures of shared system memory and must not be added.
+
+### Complete-query comparison
+
+A separate retained-context benchmark prepares both formats, alternates them
+through one initial and five warm 128x128 selected frames, and disables all
+profiling. Both use the same four 64x64 candidate tiles. Timing includes coordinate
+generation, proof construction, staging, all submissions and result scattering.
+
+| Private selected frame | Wide | Compact |
+| --- | ---: | ---: |
+| Context preparation | 9.429 s | 9.243 s |
+| First frame | 1.324 s | 1.204 s |
+| Warm median | 1.234 s | 1.178 s |
+| Warm range | 1.202-1.251 s | 1.164-1.351 s |
+| Differences from prepared CPU core lookup | 0 / 16,384 | 0 / 16,384 |
+
+The two Metal result arrays also match exactly. The modest median improvement
+has overlapping ranges; this is not a robust speedup claim. In the same run the
+optimized CPU grid median is 0.323 s and serial core lookup takes 20.250 s.
+Compaction reduces storage rather than the number of executed CSG instructions.
+The full-slice latency objective remains unmet.
+
+The public analytic benchmark independently checks 512x512 all-owner/selected
+points and 512x384 exterior/cutaway/close-up depths, normals and IDs in both
+formats. One initial and five warm calls produce these Metal medians:
+
+| Public operation | Wide ms | Compact ms |
+| --- | ---: | ---: |
+| All-owner points | 36.868 | 35.203 |
+| Selected points | 26.368 | 27.017 |
+| Exterior render | 8.480 | 7.953 |
+| Cutaway render | 4.581 | 4.630 |
+| Close-up render | 13.112 | 11.673 |
+
+All independent checks pass. These small workloads do not establish a universal
+performance improvement. To reproduce either format, run
+`ALEA_METAL_COMPACT_CODE=0` or `=1` with `make benchmark-gpu-geometry USE_METAL=1
+RELEASE=1`; the benchmark reports its complete initial/warm ranges.
+
+Keep compaction opt-in. The next performance work remains broad root rejection
+and ordered traversal, with exact boundary, overlap, unbounded/nonfinite and
+undefined-fill behavior preserved. Another point hierarchy or subexpression
+interpreter needs evidence beyond these storage measurements. Fresh bounded
+private 3D attribution remains an M0 gate; CUDA execution awaits NVIDIA hardware.
+
+Validation: CPU-only build passes 16 tests. Each Metal format passes 73 compute,
+5 builder and 6 resource tests. Added checks cover exact decode at encoding
+limits, skip arguments, in-place encoding, untouched wide fallback, interruption
+and retry, real-buffer size, independent context formats and invalid-option
+recovery. Compact-mode public plotter image checks and real SDL 2D/3D navigation,
+progressive publication, cancellation and reuse checks pass. Both user-facing
+viewers are rebuilt. Private artifacts remain ignored.
