@@ -586,3 +586,21 @@ Final retained-state validation: 16 CPU, 73 Metal, 5 builder and 6 resource test
 pass after restoring production code. The public benchmark's eight combinations
 (two fixtures, two traversal modes and two ownership operations) pass in both
 wide and compact instruction storage. No packet-specific production code remains.
+
+## Fresh bounded 3D evaluation follow-up
+
+The [three-view evaluation](NATIVE_GPU_3D_EVALUATION.md) now records ordinary and
+progressive 16x12 timing, five-warm-call CPU comparisons, separate 4x3 software
+attribution, buffer/process memory and external cancellation/reuse. Ordinary and
+progressive Metal outputs match byte-for-byte on all three private views.
+Progressive complete frames still take about 15-27 seconds while native commands
+stay around 26-31 ms maximum. Warm CPU medians are 0.441/0.698/0.0312 s for
+exterior/cutaway/close-up. These are bounded observations, not release percentiles.
+
+CPU parity remains open: the auxiliary normal orientation convention differs,
+and cutaway hit/depth/RGB differences remain unresolved. Fresh 3D observation is
+no longer pending; numerical discrepancy classification, the normal-output
+contract and latency acceptance now block M0 closure. Preserve those reproductions
+and establish public regressions before further ray optimization. The public
+analytic benchmark still passes all ownership/depth/normal checks; it does not
+cover every private-model condition.

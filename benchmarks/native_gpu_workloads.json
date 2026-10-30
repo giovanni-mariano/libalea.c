@@ -121,7 +121,7 @@
     },
     {
       "id": "private-three-ray-views",
-      "status": "fresh-m0-measurements-pending",
+      "status": "bounded-timing-and-attribution-measured-cpu-differences-open",
       "views": [
         "exterior",
         "cutaway",
@@ -132,7 +132,21 @@
         12
       ],
       "budget_seconds_per_process": 90,
-      "view_definition": "local ignored workload ledger"
+      "view_definition": "local ignored workload ledger",
+      "environment": {
+        "ALEA_METAL_COMPACT_CODE": "1"
+      },
+      "modes": [
+        "ordinary",
+        "progressive"
+      ],
+      "attribution_resolution": [
+        4,
+        3
+      ],
+      "correctness": "ordinary/progressive byte equality; CPU normal convention mismatch and unresolved cutaway hit/depth differences",
+      "scaling": "held at 16x12 after bounded latency/correctness findings",
+      "report": "docs/NATIVE_GPU_3D_EVALUATION.md"
     },
     {
       "id": "cuda-native-parity",
