@@ -144,9 +144,10 @@
         4,
         3
       ],
-      "correctness": "ordinary/progressive byte equality; CPU normal convention mismatch and unresolved cutaway hit/depth differences",
+      "correctness": "ordinary/progressive byte equality; auxiliary normal orientation aligned with CPU; cutaway classification and CPU first-visible reference limitations remain open",
       "scaling": "held at 16x12 after bounded latency/correctness findings",
-      "report": "docs/NATIVE_GPU_3D_EVALUATION.md"
+      "report": "docs/NATIVE_GPU_3D_EVALUATION.md",
+      "auxiliary_normal_convention": "source-surface orientation; separate camera-facing shading copy"
     },
     {
       "id": "cuda-native-parity",

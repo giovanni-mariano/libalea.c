@@ -126,6 +126,10 @@ int alea_compute_classify(alea_compute_t* compute, const double* xyz,
  * material/cell colors, and up to 4x4 supersampling. Shadows,
  * X-ray rendering, density/universe colors and selection filters are rejected.
  * Edge darkening and depth/ID visualization remain caller-side postprocessing.
+ * Auxiliary normals preserve source-surface orientation as in render_scene();
+ * camera-facing orientation is applied only for shading. Clip faces use the
+ * negative clipping-plane normal. These are visualization normals, not a
+ * validated physical-boundary orientation contract.
  * Config and derived camera must match framebuffer dimensions. Returns 0/-1.
  */
 int alea_compute_render(alea_compute_t* compute, const render_config_t* config,

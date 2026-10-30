@@ -604,3 +604,15 @@ contract and latency acceptance now block M0 closure. Preserve those reproductio
 and establish public regressions before further ray optimization. The public
 analytic benchmark still passes all ownership/depth/normal checks; it does not
 cover every private-model condition.
+
+## Auxiliary normals follow-up
+
+Metal auxiliary normals now retain source-surface orientation, with a separate
+camera-facing shading copy in both ordinary/progressive paths. The new independent
+public plane/translated-fill/clip regression exposes the old sign mismatch and
+covers both instruction formats. The [3D report](NATIVE_GPU_3D_EVALUATION.md)
+records the fix and ongoing reference investigation. Private cutaway ID/depth
+classification remains open; recursive FP64 point checks support earlier material
+hits missed by the optimized CPU first-visible path, without certifying complete
+ray intervals. Correct the public undefined-fill CPU reference case before forcing
+Metal hit behavior to match that path.

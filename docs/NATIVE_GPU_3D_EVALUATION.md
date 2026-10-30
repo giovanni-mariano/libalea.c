@@ -162,3 +162,68 @@ cost distribution. Retain complete-frame, first-pixel, submission, cancellation
 and memory checks. The point-packet prototype's pruning counts do not justify a
 ray index or a new caching policy. Final M0 accuracy classification and latency
 acceptance remain open; CUDA execution still awaits NVIDIA hardware.
+
+## Auxiliary-normal compatibility fix and reference investigation
+
+Follow-up to `8fc7868`: both ordinary and resumable Metal shading now preserve
+an independent copy of the source-oriented auxiliary normal. Only the shading
+copy is oriented toward the camera. This changes auxiliary normal output while
+retaining the existing RGB calculation, hit IDs and depth. The public API comment
+now states this visualization convention explicitly; it is not an outward physical
+boundary orientation guarantee.
+
+An independently constructed public regression uses equivalent plane halfspaces
+with opposite coefficients, a translated occurrence and a clipping face. It
+checks analytic depths and CPU reference IDs/materials/normals/RGB in both render
+paths and both instruction formats. Before the fix, the first case returns -Y
+instead of the CPU reference's +Y. The full double-precision reference helper now
+preserves source orientation separately from shading; an older parent-hole test
+also checks the exposed sphere gradient (+Y) rather than its facing shading copy.
+
+The translated test uses an independently expanded world-space CPU reference.
+Rendering the filled source directly with the optimized CPU renderer misses its
+material child after an undefined prefix. This is a public counterexample to using
+that optimized path as the only geometry oracle, consistent with limitations
+already noted by the existing full-segment test helper. The corresponding CPU
+walk needs a dedicated regression/fix, including transformed boundary provenance,
+before using it to decide all private hit discrepancies.
+
+Private point checks, made recursively in FP64 on both original and quantized
+rays, confirm material at samples near two earlier Metal hits that the optimized
+CPU first-visible query skips. A third case is sensitive to ray quantization at a
+sample just past the Metal entry. These samples support investigating the CPU
+reference; they do not prove the exact first boundary or complete intervening
+interval. An exhaustive full-segment reference exceeded the 90-second process
+budget and provides no completed accuracy result.
+
+The production cutaway image retains its saved ID/depth discrepancies after the
+normal fix. A local isolated-ray diagnostic gives different results from the full
+entry point even after checking matching geometry-buffer and parameter
+fingerprints; it is not a validated substitute for the full-frame reproduction.
+A diagnostic shader returning ray components also changes results, so no conclusion
+about a particular compiler defect is drawn. A local variant disabling implicit
+floating-point contraction does not resolve the full-frame discrepancy and is not
+retained. Production compiler settings and traversal remain unchanged.
+
+A bounded full cutaway run also completes with [Apple's Metal API/shader validation](https://developer.apple.com/documentation/xcode/validating-your-apps-metal-shader-usage)
+enabled, with no invalid access reported; its hit discrepancies remain. This is a
+validation observation, not a proof of correct numerical or interval behavior.
+All raw captures, fingerprints, parameter dumps and probe variants remain ignored.
+
+The next correctness dependency is a reliable CPU first-visible/interval oracle,
+starting with the independently constructed undefined-fill prefix. Continue the
+private cutaway classification afterward; do not waive the discrepancy or alter
+Metal to imitate an unverified reference.
+
+
+Acceptance for the normal correction: all three private 16x12 views were rerun
+in ordinary and progressive modes with compact storage. Each mode pair is
+byte-identical after the change, and IDs, depth and RGB are byte-identical to
+its saved pre-fix image. Matching-hit normal differences above 0.01 fall from
+2 to 0 exterior, 161 to 0 close-up and 36 to 2 cutaway. The two remaining cutaway
+normal differences accompany the unresolved hit/depth investigation; they are
+not simple orientation flips. Public checks pass: 74 Metal compute tests in each
+instruction format, 5 builder tests, 6 resource tests, 16 CPU compute tests and
+the independent analytic 2D/three-view 3D benchmark. Viewer event-loop,
+progressive publication, cancellation and reuse checks pass. Both viewers are
+rebuilt. No speculative floating-point or ray-traversal change is retained.

@@ -416,7 +416,10 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
     if(chosen==COMPUTE_NONE)return out;
     float3 normal=chosen_normal,base(colors[3*chosen],colors[3*chosen+1],colors[3*chosen+2]);
     bool cut=p.clip_enabled && begin>0 && best==begin;
-    if(cut)normal=-normalize(clip);if(dot(normal,world_d)>0)normal=-normal;
+    if(cut)normal=-normalize(clip);
+    /* Match CPU auxiliary output; only shading needs a facing normal. */
+    float3 output_normal=normal;
+    if(dot(normal,world_d)>0)normal=-normal;
     float3 color;
     if(cut)color=base*p.tint;
     else {
@@ -427,7 +430,7 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
     }
     if(!all(isfinite(color)) || !all(isfinite(normal))){out.error=1;return out;}
     color=clamp(color,0.0f,1.0f);
-    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=normal[a];}
+    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=output_normal[a];}
     out.depth=best;out.cell_id=cells[chosen].cell_id;out.material_id=cells[chosen].material_id;return out;
 }
 

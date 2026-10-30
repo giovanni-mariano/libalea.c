@@ -945,8 +945,9 @@ static int reference_render(alea_system_t* sys,render_config_t* cfg,
             for(int a=0;a<3;++a)sum[a]+=rgb[a];
             if(sx==cfg->aa_samples/2 && sy==cfg->aa_samples/2) {
                 fb->cell_id[pixel]=cell;fb->material_id[pixel]=material;fb->depth[pixel]=depth;
-                double facing=0;for(int a=0;a<3;++a)facing+=normal[a]*d[a];
-                for(int a=0;a<3;++a)fb->normal[3*pixel+a]=facing>0?-normal[a]:normal[a];
+                /* Auxiliary output retains source orientation; shading above
+                 * uses its own camera-facing copy, as render_scene does. */
+                for(int a=0;a<3;++a)fb->normal[3*pixel+a]=normal[a];
             }
         }
         for(int a=0;a<3;++a)fb->color[3*pixel+a]=sum[a]/(cfg->aa_samples*cfg->aa_samples);
@@ -992,6 +993,63 @@ static void compare_render(alea_system_t* sys, alea_compute_t* gpu, render_confi
 }
 
 static void test_camera(render_config_t* cfg);
+
+TEST(metal_auxiliary_normals_match_cpu_without_changing_shading) {
+    const char* env=getenv("ALEA_METAL_COMPACT_CODE");char* saved=env?strdup(env):NULL;
+    for(int compact=0;compact<2;++compact)for(int moved=0;moved<2;++moved)for(int reversed=0;reversed<2;++reversed) {
+        ASSERT_EQ(alea_setenv("ALEA_METAL_COMPACT_CODE",compact?"1":"0",1),0);
+        alea_system_t* sys=alea_create();int mat=alea_add_material(sys,7);
+        int box=alea_box_surface(sys,1,-2,2,-2,2,-2,2);
+        int plane=alea_plane_surface(sys,2,0,reversed?-1:1,0,0);
+        alea_node_id_t root=alea_intersection(sys,alea_halfspace(sys,box,-1),alea_halfspace(sys,plane,reversed?-1:1));
+        if(moved) {
+            double translation[]={3,0,1};
+            ASSERT_EQ(alea_add_transform(sys,1,translation,3,0),0);
+            int bound=alea_box_surface(sys,3,1,5,-2,2,-1,3);
+            int parent=alea_add_cell(sys,10,alea_halfspace(sys,bound,-1),ALEA_MATERIAL_VOID,0,0);
+            ASSERT_EQ(alea_set_fill(sys,parent,1,1),0);
+        }
+        alea_add_cell(sys,42,root,mat,-1,moved?1:0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
+        /* Expand the translated occurrence independently for the CPU oracle.
+         * The optimized CPU walk can skip the material entry after this fill's
+         * undefined prefix; it must not be the only geometry reference. */
+        alea_system_t* reference=sys;
+        if(moved) {
+            reference=alea_create();int rm=alea_add_material(reference,7);
+            int rb=alea_box_surface(reference,1,1,5,-2,2,-1,3);
+            int rp=alea_plane_surface(reference,2,0,reversed?-1:1,0,0);
+            alea_add_cell(reference,42,alea_intersection(reference,alea_halfspace(reference,rb,-1),alea_halfspace(reference,rp,reversed?-1:1)),rm,-1,0);
+            ASSERT_EQ(alea_prepare_query_acceleration(reference),0);
+        }
+        alea_compute_t* gpu=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(gpu);
+        render_config_t cfg;render_config_init(&cfg);cfg.width=cfg.height=1;cfg.log_level=0;
+        cfg.eye_set=cfg.target_set=1;cfg.eye[0]=cfg.target[0]=moved?3:0;
+        cfg.eye[1]=-4;cfg.target[1]=1;cfg.eye[2]=cfg.target[2]=moved?1:0;
+        render_framebuffer_t* cpu=render_framebuffer_create(1,1,1);
+        render_framebuffer_t* out=render_framebuffer_create(1,1,1);
+        for(int clipped=0;clipped<2;++clipped) {
+            cfg.num_clips=clipped;cfg.clips[0]=(render_clip_plane_t){{0,1,0},-.5};
+            render_camera_t cam;ASSERT_EQ(render_camera_setup(&cam,&cfg,sys),0);
+            ASSERT_EQ(render_scene(reference,&cfg,&cam,cpu),0);
+            ASSERT_EQ(cpu->cell_id[0],42);
+            ASSERT_NEAR(cpu->depth[0],clipped?4.5:4,1e-5);
+            for(int progressive=0;progressive<2;++progressive) {
+                int calls=0;
+                ASSERT_EQ(progressive?alea_compute_render_progressive(gpu,&cfg,&cam,out,count_progress,&calls):alea_compute_render(gpu,&cfg,&cam,out),0);
+                ASSERT_EQ(out->cell_id[0],42);ASSERT_EQ(out->material_id[0],7);
+                ASSERT_NEAR(out->depth[0],cpu->depth[0],1e-5);
+                for(int a=0;a<3;++a) {
+                    ASSERT_NEAR(out->normal[a],cpu->normal[a],1e-5);
+                    ASSERT_NEAR(out->color[a],cpu->color[a],1e-5);
+                }
+            }
+        }
+        render_framebuffer_free(cpu);render_framebuffer_free(out);render_config_free(&cfg);
+        alea_compute_destroy(gpu);if(reference!=sys)alea_destroy(reference);alea_destroy(sys);
+    }
+    ASSERT_EQ(saved?alea_setenv("ALEA_METAL_COMPACT_CODE",saved,1):alea_unsetenv("ALEA_METAL_COMPACT_CODE"),0);free(saved);
+}
 
 TEST(metal_point_and_render_share_snapshot_in_either_order) {
     for(int render_first=0;render_first<2;++render_first) {
@@ -1833,7 +1891,8 @@ TEST(metal_lazy_parent_reuses_rejected_range) {
     render_framebuffer_t* fb=render_framebuffer_create(1,1,1);ASSERT_NOT_NULL(fb);
     for(int progressive=0;progressive<2;++progressive) {
         int callbacks=0;ASSERT_EQ(progressive?alea_compute_render_progressive(gpu,&cfg,&camera,fb,count_progress,&callbacks):alea_compute_render(gpu,&cfg,&camera,fb),0);
-        ASSERT_EQ(fb->cell_id[0],43);ASSERT_NEAR(fb->depth[0],13,1e-5);ASSERT_NEAR(fb->normal[1],-1,1e-5);
+        /* The parent hole exits at y=3: preserve its sphere gradient (+Y). */
+        ASSERT_EQ(fb->cell_id[0],43);ASSERT_NEAR(fb->depth[0],13,1e-5);ASSERT_NEAR(fb->normal[1],1,1e-5);
         snprintf(path,sizeof(path),"%s-rays.csv",prefix);FILE* f=fopen(path,"r");ASSERT_NOT_NULL(f);
         char header[256];ASSERT_NOT_NULL(fgets(header,sizeof(header),f));unsigned values[11];
         ASSERT_EQ(fscanf(f,"%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",values,values+1,values+2,values+3,values+4,values+5,values+6,values+7,values+8,values+9,values+10),11);fclose(f);

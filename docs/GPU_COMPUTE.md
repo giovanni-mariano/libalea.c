@@ -51,6 +51,11 @@ to incorporate geometry changes. Serialize calls on a context; independent
 contexts can be used independently. Failed calls return an error rather than a
 partial success. CPU contexts use `ALEA_COMPUTE_FP64`.
 
+Auxiliary render normals retain the source-surface orientation used by the CPU
+renderer; shading applies camera-facing orientation to a separate copy. Clipping
+faces use the negative clipping-plane normal. These visualization outputs do not
+establish outward CSG boundary orientation for physics navigation.
+
 ## Experimental compact Metal instructions
 
 Set `ALEA_METAL_COMPACT_CODE=1` before snapshot creation to store each CSG

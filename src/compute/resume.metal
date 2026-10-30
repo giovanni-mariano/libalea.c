@@ -295,7 +295,10 @@ static void resume_shade(thread resume_ray& s,device const compute_cell* cells,
     thread compute_render_pixel& out=s.out;
     float3 normal=s.chosen_normal,base(colors[3*s.chosen],colors[3*s.chosen+1],colors[3*s.chosen+2]);
     bool cut=p.clip_enabled && s.begin>0 && s.best==s.begin;
-    if(cut)normal=-normalize(s.clip);if(dot(normal,s.world_d)>0)normal=-normal;
+    if(cut)normal=-normalize(s.clip);
+    /* Match CPU auxiliary output; only shading needs a facing normal. */
+    float3 output_normal=normal;
+    if(dot(normal,s.world_d)>0)normal=-normal;
     float3 color;
     if(cut)color=base*p.tint;
     else {
@@ -306,7 +309,7 @@ static void resume_shade(thread resume_ray& s,device const compute_cell* cells,
     }
     if(!all(isfinite(color)) || !all(isfinite(normal))){out.error=1;return;}
     color=clamp(color,0.0f,1.0f);
-    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=normal[a];}
+    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=output_normal[a];}
     out.depth=s.best;out.cell_id=cells[s.chosen].cell_id;out.material_id=cells[s.chosen].material_id;return;
 }
 kernel void alea_render_resume(device const compute_node* code [[buffer(0)]],
