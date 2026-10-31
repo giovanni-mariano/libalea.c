@@ -3663,6 +3663,79 @@ static double raycast_hier_path_ancestor_surfaces(alea_system_t* sys,
     return closest_t;
 }
 
+/* An unresolved ordinary fill owns the current point, but none of its
+ * immediate children does. Its own surfaces cannot bound that undefined span:
+ * a child may start before the container exits. Search only that universe in
+ * its placed frame, stopping at the already known ancestor/container boundary.
+ * Further descent happens after ownership is resolved at the next crossing. */
+typedef struct {
+    alea_system_t* sys;
+    const alea_ray_t* ray;
+    alea_raycast_result_t* result;
+    double t_min;
+    double closest_t;
+    int surface_id;
+    uint32_t primitive_id;
+} undefined_fill_crossing_t;
+
+static int visit_undefined_fill_child(uint32_t cell_index,
+                                      double t_enter, double t_exit,
+                                      void* context) {
+    (void)t_exit;
+    undefined_fill_crossing_t* query = context;
+    if (t_enter > query->closest_t) return 0;
+    if ((size_t)cell_index >= query->sys->cells.count) return -1;
+    const alea_cell_entry_t* child = &query->sys->cells.data[cell_index];
+    int surface_id = -1;
+    uint32_t primitive_id = ALEA_PRIMITIVE_ID_INVALID;
+    double t = raycast_cell_surfaces(query->sys, query->ray, child,
+        query->t_min, query->closest_t, query->result,
+        &surface_id, &primitive_id);
+    if (t < query->closest_t) {
+        query->closest_t = t;
+        query->surface_id = surface_id;
+        query->primitive_id = primitive_id;
+    }
+    return 0;
+}
+
+static int raycast_undefined_fill_crossing(
+    alea_system_t* sys, const alea_ray_t* ray,
+    const alea_hier_ray_path_t* path, double t_min, double t_max,
+    alea_raycast_result_t* result, alea_raycast_boundary_event_t* event) {
+    if (!path || path->count == 0) return 0;
+    const alea_hier_ray_path_entry_t* parent = &path->entries[path->count - 1];
+    if ((size_t)parent->cell_index >= sys->cells.count) return -1;
+    const alea_cell_entry_t* cell = &sys->cells.data[parent->cell_index];
+    /* Lattice element transitions retain their dedicated DDA handling. */
+    if (parent->is_lattice || cell->fill_universe <= 0) return 0;
+    const alea_matrix_t* fill =
+        alea_hier_spatial_get_cell_fill_matrix(sys, parent->cell_index);
+    if (!fill) return -1;
+    alea_matrix_t transform;
+    alea_matrix_multiply(&transform, &parent->transform, fill);
+    if (!alea_matrix_invert(&transform)) return -1;
+    alea_ray_t local_ray;
+    transform_ray_inverse(&transform, ray, &local_ray);
+    undefined_fill_crossing_t query = {
+        .sys = sys, .ray = &local_ray, .result = result,
+        .t_min = t_min, .closest_t = t_max, .surface_id = -1,
+        .primitive_id = ALEA_PRIMITIVE_ID_INVALID
+    };
+    if (alea_hier_spatial_visit_universe_ray(sys, cell->fill_universe,
+            local_ray.ox, local_ray.oy, local_ray.oz,
+            local_ray.inv_dx, local_ray.inv_dy, local_ray.inv_dz,
+            t_min, t_max, visit_undefined_fill_child, &query) < 0) return -1;
+    if (!(query.closest_t < t_max)) return 0;
+    event->t = query.closest_t;
+    event->surface_id = query.surface_id;
+    event->primitive_id = query.primitive_id;
+    event->transform = transform;
+    event->has_physical_surface = query.surface_id > 0;
+    event->is_synthetic_lattice_boundary = false;
+    return 1;
+}
+
 static double lattice_rect_next_boundary(const alea_ray_t* ray,
                                          const alea_cell_entry_t* lat_cell,
                                          double t_min,
@@ -4860,6 +4933,22 @@ resolve_cell:;
                 bevent.has_physical_surface = (hit_surface_id > 0);
                 bevent.is_synthetic_lattice_boundary = false;
                 alea_matrix_identity(&bevent.transform);
+            }
+        }
+
+        if (use_hier_lookup && cell_idx >= 0 &&
+            alea_cell_entry_is_container(&sys->cells.data[cell_idx])) {
+            alea_raycast_boundary_event_t child_event = {0};
+            if (need_boundary_event) child_event = bevent;
+            int child_crossing = raycast_undefined_fill_crossing(
+                sys, ray, current_path, nextafter(t_current, INFINITY),
+                fmin(t_next, effective_t_max), result, &child_event);
+            if (child_crossing < 0) return -1;
+            if (child_crossing > 0) {
+                t_next = child_event.t;
+                hit_surface_id = child_event.surface_id;
+                next_enter_surface_id = child_event.surface_id;
+                if (need_boundary_event) bevent = child_event;
             }
         }
 

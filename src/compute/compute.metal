@@ -4,6 +4,21 @@
 #include <metal_stdlib>
 using namespace metal;
 #include "compute_layout.h"
+#include "groups.metal"
+
+#ifndef COMPUTE_GROUP_PARAMETERS
+#define COMPUTE_GROUP_PARAMETERS
+#define COMPUTE_GROUP_ARGUMENTS
+#define COMPUTE_GROUP_LOCAL
+#define COMPUTE_GROUP_BUFFER
+#define COMPUTE_GROUP_RECORD
+#endif
+
+#ifndef COMPUTE_EXECUTE_SETUP
+#define COMPUTE_EXECUTE_SETUP
+#define COMPUTE_EXECUTE_STEP
+#define COMPUTE_EXECUTE_LEAF(arg)
+#endif
 
 constant bool compact_programs [[function_constant(7)]];
 static compute_node code_at(device const compute_node* code,uint index) {
@@ -72,14 +87,25 @@ static float primitive_value(device const compute_primitive& n, float3 p) {
  * it must reorder a deep branch to stay within the checked value-stack bound. */
 static float evaluate(device const compute_node* code,
                       device const compute_primitive* primitives,
-                      compute_cell cell,float3 p,thread compute_point_profile& cost,bool spatial) {
+                      compute_cell cell,float3 p,thread compute_point_profile& cost,bool spatial COMPUTE_GROUP_PARAMETERS COMPUTE_NATIVE_PARAMETERS) {
     float values[COMPUTE_STACK];uint sp=0;
+    COMPUTE_EXECUTE_SETUP
+    COMPUTE_NATIVE_SETUP
+#ifdef ALEA_GROUP_WORK_AUDIT
+    uint2 group_index=group_find(group_ranges,cell.root,cell.count);
+#endif
     for(uint i=0;i<cell.count;++i) {
+        COMPUTE_EXECUTE_STEP
+        COMPUTE_NATIVE_STEP
         compute_node n=code_at(code,cell.root+i);
+#ifdef ALEA_GROUP_WORK_AUDIT
+        group_visit(group_ranges,group_index,cell.root+i,n.op,group_work);
+#endif
         if(point_profile_enabled)point_add(cost.v[spatial?POINT_SPATIAL_INSTRUCTIONS:POINT_ORIGINAL_INSTRUCTIONS]);
         if(n.op==COMPUTE_CONSTANT)values[sp++]=n.arg?1:-1;
         else if(n.op==COMPUTE_LEAF) {
             if(point_profile_enabled)point_add(cost.v[spatial?POINT_SPATIAL_PRIMITIVES:POINT_ORIGINAL_PRIMITIVES]);
+            COMPUTE_EXECUTE_LEAF(n.arg)
             float v=primitive_value(primitives[n.arg>>1],p);
             if(!isfinite(v))return NAN;
             values[sp++]=(n.arg&1)?-v:v;
@@ -109,7 +135,7 @@ kernel void alea_classify_points(device const compute_node* nodes [[buffer(0)]],
                                  device const compute_primitive* primitives [[buffer(6)]],
                                  device compute_point_profile* profiles [[buffer(12)]],
                                  device const uint* candidates [[buffer(13)]],
-                                 uint index [[thread_position_in_grid]]) {
+                                 COMPUTE_GROUP_BUFFER COMPUTE_NATIVE_BUFFER uint index [[thread_position_in_grid]]) {
     if (index >= point_count) return;
     size_t offset = size_t(index) * 3;
     float3 p(xyz[offset], xyz[offset+1], xyz[offset+2]);
@@ -123,7 +149,8 @@ kernel void alea_classify_points(device const compute_node* nodes [[buffer(0)]],
             point_add(cost.v[POINT_CELLS]);point_add(cost.v[POINT_ORIGINAL_CALLS]);point_add(cost.v[POINT_NO_PROGRAM]);
         }
         uint before=cost.v[POINT_ORIGINAL_INSTRUCTIONS];
-        float value = evaluate(nodes, primitives, cells[i], p, cost, false);
+        COMPUTE_GROUP_LOCAL
+        float value = evaluate(nodes, primitives, cells[i], p, cost, false COMPUTE_GROUP_ARGUMENTS COMPUTE_NATIVE_ARGUMENTS);
         if(point_profile_enabled)point_add(cost.v[value>0?POINT_REJECTED_INSTRUCTIONS:POINT_ACCEPTED_INSTRUCTIONS],cost.v[POINT_ORIGINAL_INSTRUCTIONS]-before);
         if (!isfinite(value)) {
             r.owner_count = 0xffffffffu;

@@ -80,7 +80,10 @@ kernel void alea_classify_hierarchy(
     device const compute_spatial_program* spatial [[buffer(11)]],
     device compute_point_profile* profiles [[buffer(12)]],
     device const uint* candidates [[buffer(13)]],
-    uint index [[thread_position_in_grid]]) {
+#ifdef ALEA_POINT_WORK_AUDIT
+    device atomic_uint* audit [[buffer(14)]],
+#endif
+    COMPUTE_GROUP_BUFFER COMPUTE_NATIVE_BUFFER uint index [[thread_position_in_grid]]) {
     if (index >= count) return;
     point_frame stack[COMPUTE_HIER_STACK];
     uint top = 0;
@@ -125,7 +128,15 @@ kernel void alea_classify_hierarchy(
         }
         uint slot=specialized?POINT_SPATIAL_INSTRUCTIONS:POINT_ORIGINAL_INSTRUCTIONS;
         uint before=cost.v[slot];
-        float value = evaluate(nodes, primitives, program, p, cost, specialized);
+#ifdef ALEA_POINT_WORK_AUDIT
+        uint primitives_before=cost.v[specialized?POINT_SPATIAL_PRIMITIVES:POINT_ORIGINAL_PRIMITIVES];
+#endif
+        COMPUTE_GROUP_LOCAL
+        float value = evaluate(nodes, primitives, program, p, cost, specialized COMPUTE_GROUP_ARGUMENTS COMPUTE_NATIVE_ARGUMENTS);
+#ifdef ALEA_POINT_WORK_AUDIT
+        audit_record(audit,id,selection,specialized,program,uint(top),cost.v[slot]-before,
+            cost.v[specialized?POINT_SPATIAL_PRIMITIVES:POINT_ORIGINAL_PRIMITIVES]-primitives_before,value COMPUTE_GROUP_RECORD);
+#endif
         if(point_profile_enabled) {
             point_add(cost.v[value>0?POINT_REJECTED_INSTRUCTIONS:POINT_ACCEPTED_INSTRUCTIONS],cost.v[slot]-before);
             if(value>0)point_add(cost.v[POINT_REJECTED]);

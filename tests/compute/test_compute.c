@@ -1011,9 +1011,8 @@ TEST(metal_auxiliary_normals_match_cpu_without_changing_shading) {
         }
         alea_add_cell(sys,42,root,mat,-1,moved?1:0);
         ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
-        /* Expand the translated occurrence independently for the CPU oracle.
-         * The optimized CPU walk can skip the material entry after this fill's
-         * undefined prefix; it must not be the only geometry reference. */
+        /* Keep an independent expanded oracle for both CPU and Metal traversal
+         * through the translated fill's undefined prefix. */
         alea_system_t* reference=sys;
         if(moved) {
             reference=alea_create();int rm=alea_add_material(reference,7);
@@ -1034,6 +1033,14 @@ TEST(metal_auxiliary_normals_match_cpu_without_changing_shading) {
             ASSERT_EQ(render_scene(reference,&cfg,&cam,cpu),0);
             ASSERT_EQ(cpu->cell_id[0],42);
             ASSERT_NEAR(cpu->depth[0],clipped?4.5:4,1e-5);
+            ASSERT_EQ(render_scene(sys,&cfg,&cam,out),0);
+            ASSERT_EQ(out->cell_id[0],cpu->cell_id[0]);
+            ASSERT_EQ(out->material_id[0],cpu->material_id[0]);
+            ASSERT_NEAR(out->depth[0],cpu->depth[0],1e-5);
+            for(int a=0;a<3;++a) {
+                ASSERT_NEAR(out->normal[a],cpu->normal[a],1e-5);
+                ASSERT_NEAR(out->color[a],cpu->color[a],1e-5);
+            }
             for(int progressive=0;progressive<2;++progressive) {
                 int calls=0;
                 ASSERT_EQ(progressive?alea_compute_render_progressive(gpu,&cfg,&cam,out,count_progress,&calls):alea_compute_render(gpu,&cfg,&cam,out),0);
@@ -2058,6 +2065,70 @@ TEST(metal_resume_errors_and_validation) {
     cfg.num_clips=1;cfg.clips[0]=(render_clip_plane_t){{0,-1,0},-20};
     ASSERT_EQ(alea_compute_render_progressive(gpu,&cfg,&cam,fb,count_progress,&calls),0);ASSERT_EQ(fb->cell_id[0],-1);
     render_framebuffer_free(fb);render_config_free(&cfg);alea_compute_destroy(gpu);alea_destroy(sys);
+}
+
+#include "compute/compute_groups.h"
+TEST(metal_packaged_groups_cover_owned_point_features) {
+    const char* keys[]={"ALEA_METAL_CSG_GROUPS","ALEA_METAL_COMPACT_CODE","ALEA_METAL_JUMP_THREADING"};char* saved[3]={0};
+    for(unsigned k=0;k<3;++k){const char* s=getenv(keys[k]);saved[k]=s?strdup(s):NULL;}
+    enum {N=4105};double xyz[N*3];alea_compute_result_t expected[N],plain[N],grouped[N];
+    alea_compute_selection_t selected[N],a[N],b[N];
+    for(unsigned i=0;i<N;++i){xyz[3*i]=(int)(i%17)*.25-2;xyz[3*i+1]=(int)(i/17%17)*.25-2;xyz[3*i+2]=(int)(i/289%17)*.25-2;}
+    xyz[0]=100;xyz[1]=xyz[2]=0;
+    for(unsigned format=0;format<2;++format)for(unsigned model=0;model<5;++model) {
+        alea_system_t* sys=model==0?sphere_scene():model==1?point_hierarchy_scene(1):
+            model<4?point_lattice_scene(model==3,1,1,1):alea_create();ASSERT_NOT_NULL(sys);
+        if(model==0){int sphere=alea_sphere_surface(sys,2,0,0,0,2);ASSERT(alea_add_cell(sys,43,alea_halfspace(sys,sphere,1),0,-1,0)>=0);ASSERT(alea_add_cell(sys,44,sys->cells.data[0].root_node_id,0,-1,0)>=0);}
+        if(model==4){int plane=alea_plane_surface(sys,1,1,0,0,0),mat=alea_add_material(sys,7);ASSERT(alea_add_cell(sys,42,alea_halfspace(sys,plane,-1),mat,-1,0)>=0);ASSERT(alea_add_cell(sys,43,alea_halfspace(sys,plane,1),0,-1,0)>=0);}
+        for(size_t i=0;i<sys->cells.count;++i){alea_node_id_t root=sys->cells.data[i].root_node_id;if(ALEA_GET_OPERATION(&sys->nodes.data[root])==ALEA_OP_PRIMITIVE)sys->cells.data[i].root_node_id=alea_intersection(sys,root,root);}
+        compute_scene snapshot;ASSERT_EQ(alea_compute_pack(sys,&snapshot),0);compute_group_plan plan;
+        ASSERT_EQ(alea_compute_groups_plan(&snapshot,64*1024*1024,&plan),1);ASSERT_TRUE(plan.span_count>0);
+        alea_compute_groups_free(&plan);alea_compute_scene_free(&snapshot);
+        alea_compute_t* cpu=alea_compute_create(sys,ALEA_COMPUTE_CPU,ALEA_COMPUTE_FP64);ASSERT_NOT_NULL(cpu);
+        ASSERT_EQ(alea_setenv(keys[1],format?"1":"0",1),0);ASSERT_EQ(alea_setenv(keys[2],format?"1":"0",1),0);
+        ASSERT_EQ(alea_setenv(keys[0],"0",1),0);alea_compute_t* generic=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(generic);
+        ASSERT_EQ(alea_setenv(keys[0],"1",1),0);alea_compute_t* fast=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(fast);
+        alea_destroy(sys);ASSERT_EQ(alea_setenv(keys[0],"0",1),0);
+        ASSERT_EQ(alea_compute_classify(cpu,xyz,N,expected),0);ASSERT_EQ(alea_compute_select(cpu,xyz,N,selected),0);
+        for(unsigned pass=0;pass<2;++pass) {
+            size_t n=pass?5:N;
+            ASSERT_EQ(alea_compute_classify(generic,xyz,n,plain),0);ASSERT_EQ(alea_compute_classify(fast,xyz,n,grouped),0);
+            ASSERT_EQ(memcmp(expected,plain,n*sizeof(*plain)),0);ASSERT_EQ(memcmp(expected,grouped,n*sizeof(*grouped)),0);
+            ASSERT_EQ(alea_compute_select(generic,xyz,n,a),0);ASSERT_EQ(alea_compute_select(fast,xyz,n,b),0);
+            ASSERT_EQ(memcmp(selected,a,n*sizeof(*a)),0);ASSERT_EQ(memcmp(selected,b,n*sizeof(*b)),0);
+        }
+        alea_compute_destroy(cpu);alea_compute_destroy(generic);alea_compute_destroy(fast);
+    }
+    for(unsigned k=0;k<3;++k){ASSERT_EQ(saved[k]?alea_setenv(keys[k],saved[k],1):alea_unsetenv(keys[k]),0);free(saved[k]);}
+}
+
+TEST(metal_packaged_ray_groups_owned_geometry_and_resume_parity) {
+    const char* keys[]={"ALEA_METAL_RAY_GROUPS","ALEA_METAL_COMPACT_CODE","ALEA_METAL_JUMP_THREADING","ALEA_METAL_CSG_GROUPS"};char* saved[4]={0};
+    for(unsigned k=0;k<4;++k){const char* v=getenv(keys[k]);saved[k]=v?strdup(v):NULL;}
+    ASSERT_EQ(alea_setenv(keys[3],"0",1),0);
+    for(unsigned format=0;format<2;++format)for(unsigned model=0;model<6;++model) {
+        alea_system_t* sys=model==0?sphere_scene():model==1?point_hierarchy_scene(1):model<4?point_lattice_scene(model==3,1,1,1):alea_create();ASSERT_NOT_NULL(sys);
+        if(model==4){int plane=alea_plane_surface(sys,1,1,0,0,0),mat=alea_add_material(sys,7);ASSERT(alea_add_cell(sys,42,alea_halfspace(sys,plane,-1),mat,-1,0)>=0);}
+        if(model==5){int mat=alea_add_material(sys,7),box=alea_box_surface(sys,1,-2,2,-2,2,-2,2),sphere=alea_sphere_surface(sys,2,0,0,0,1);ASSERT(alea_add_cell(sys,42,alea_intersection(sys,alea_halfspace(sys,box,-1),alea_halfspace(sys,sphere,1)),mat,-1,0)>=0);}
+        for(size_t i=0;i<sys->cells.count;++i){alea_node_id_t root=sys->cells.data[i].root_node_id;if(ALEA_GET_OPERATION(&sys->nodes.data[root])==ALEA_OP_PRIMITIVE)sys->cells.data[i].root_node_id=alea_intersection(sys,root,root);}
+        ASSERT_EQ(alea_setenv(keys[1],format?"1":"0",1),0);ASSERT_EQ(alea_setenv(keys[2],format?"1":"0",1),0);
+        ASSERT_EQ(alea_setenv(keys[0],"0",1),0);alea_compute_t* generic=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(generic);
+        ASSERT_EQ(alea_setenv(keys[0],"1",1),0);alea_compute_t* grouped=alea_compute_create(sys,ALEA_COMPUTE_METAL,ALEA_COMPUTE_FP32);ASSERT_NOT_NULL(grouped);
+        render_config_t cfg;test_camera(&cfg);cfg.width=17;cfg.height=13;render_camera_t camera;ASSERT_EQ(render_camera_setup(&camera,&cfg,sys),0);
+        alea_destroy(sys);ASSERT_EQ(alea_setenv(keys[0],"0",1),0);
+        render_framebuffer_t* a=render_framebuffer_create(17,13,1),*c=render_framebuffer_create(17,13,1),*d=render_framebuffer_create(17,13,1);ASSERT_NOT_NULL(a);ASSERT_NOT_NULL(c);ASSERT_NOT_NULL(d);
+        for(unsigned pass=0;pass<2;++pass) {
+            cfg.aa_samples=pass?2:1;cfg.num_clips=pass;cfg.clips[0]=(render_clip_plane_t){{0,1,0},0};
+            ASSERT_EQ(alea_compute_render(generic,&cfg,&camera,a),0);ASSERT_EQ(alea_compute_render(grouped,&cfg,&camera,c),0);int calls=0;
+            ASSERT_EQ(alea_compute_render_progressive(grouped,&cfg,&camera,d,count_progress,&calls),0);ASSERT_TRUE(calls>0);
+            for(unsigned other=0;other<2;++other){render_framebuffer_t* actual=other?d:c;
+                ASSERT_EQ(memcmp(a->cell_id,actual->cell_id,221*sizeof(int)),0);ASSERT_EQ(memcmp(a->material_id,actual->material_id,221*sizeof(int)),0);
+                ASSERT_EQ(memcmp(a->depth,actual->depth,221*sizeof(float)),0);ASSERT_EQ(memcmp(a->normal,actual->normal,663*sizeof(float)),0);ASSERT_EQ(memcmp(a->color,actual->color,663*sizeof(float)),0);
+            }
+        }
+        render_framebuffer_free(a);render_framebuffer_free(c);render_framebuffer_free(d);render_config_free(&cfg);alea_compute_destroy(generic);alea_compute_destroy(grouped);
+    }
+    for(unsigned k=0;k<4;++k){ASSERT_EQ(saved[k]?alea_setenv(keys[k],saved[k],1):alea_unsetenv(keys[k]),0);free(saved[k]);}
 }
 
 #endif

@@ -4,6 +4,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "compute_internal.h"
+#include "compute_groups.h"
+#include "compute_root_reuse.h"
 #include "alea.h"
 #include "compute_metallib.h"
 #include <stdlib.h>
@@ -38,6 +40,8 @@ typedef struct {
     uint32_t lazy_threshold;
     char* profile_prefix;
     bool compact_code;
+    bool groups_enabled,ray_groups_enabled;
+    id<MTLBuffer> group_maps,group_refs;
     bool point_candidates_enabled;
     id<MTLBuffer> point_candidates;
     int8_t* point_signs;
@@ -49,7 +53,10 @@ typedef struct {
     id<MTLBuffer> point_costs;
     size_t point_cost_capacity;
     id<MTLBuffer> ray_costs, cell_costs, spatial;
+    char* root_reuse_path;
+    id<MTLBuffer> root_reuse;
 } metal_state;
+#include "compute_groups_metal.h"
 
 int alea_compute_metal_available(void) {
     @autoreleasepool {
@@ -66,6 +73,7 @@ void alea_compute_metal_destroy(void* state) {
     [s->results release]; [s->points release]; [s->point_cells release];
     [s->point_lattices release]; [s->point_fills release];
     [s->cells release]; [s->nodes release]; [s->primitives release];
+    [s->group_maps release];[s->group_refs release];
     [s->select_pipeline release];
     [s->pipeline release]; [s->queue release]; [s->device release];
     [s->resume_pipeline release];[s->resume_states release];[s->resume_done release];[s->resume_pixels release];
@@ -81,6 +89,7 @@ void alea_compute_metal_destroy(void* state) {
     [s->select_costs release];free(s->select_profile_path);
     free(s->point_profile_path);
     free(s->profile_prefix);
+    free(s->root_reuse_path);[s->root_reuse release];
     free(s);
 }
 
@@ -93,6 +102,34 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
             alea_compute_scene_free(&scene);
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "Allocating Metal context");
             return NULL;
+        }
+        const char* groups=getenv("ALEA_METAL_CSG_GROUPS");
+        if(groups && strcmp(groups,"0") && strcmp(groups,"1")) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,"ALEA_METAL_CSG_GROUPS must be 0 or 1");goto fail;
+        }
+        const char* ray_groups=getenv("ALEA_METAL_RAY_GROUPS");
+        if(ray_groups && strcmp(ray_groups,"0") && strcmp(ray_groups,"1")) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,"ALEA_METAL_RAY_GROUPS must be 0 or 1");goto fail;
+        }
+        bool point_requested=groups && !strcmp(groups,"1"),ray_requested=ray_groups && !strcmp(ray_groups,"1");
+        if(point_requested || ray_requested) {
+            s->device=MTLCreateSystemDefaultDevice();
+            if(!s->device){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Metal device unavailable");goto fail;}
+            int grouped=prepare_groups(s,&scene);if(grouped<0)goto fail;
+            s->groups_enabled=grouped && point_requested;s->ray_groups_enabled=grouped && ray_requested;
+            if(!grouped)fprintf(stderr,"Metal CSG groups: using generic programs (no groups or allocation limit)\n");
+        }
+        const char* threading=getenv("ALEA_METAL_JUMP_THREADING");
+        if(threading && strcmp(threading,"0") && strcmp(threading,"1")) {
+            alea_set_error_detail(ALEA_ERR_INVALID_ARG,"ALEA_METAL_JUMP_THREADING must be 0 or 1");goto fail;
+        }
+        if(threading && !strcmp(threading,"1")) {
+            size_t rewritten;struct timespec begin,end;
+            clock_gettime(CLOCK_MONOTONIC,&begin);
+            if(alea_compute_thread_jumps(&scene,&rewritten))goto fail;
+            clock_gettime(CLOCK_MONOTONIC,&end);
+            double ms=(end.tv_sec-begin.tv_sec)*1000.0+(end.tv_nsec-begin.tv_nsec)*1e-6;
+            fprintf(stderr,"Metal jump threading: rewritten=%zu pass_ms=%.3f\n",rewritten,ms);
         }
         const char* compact=getenv("ALEA_METAL_COMPACT_CODE");
         if(compact && strcmp(compact,"0") && strcmp(compact,"1")) {
@@ -126,6 +163,11 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
             s->profile_prefix=strdup(profile);
             if(!s->profile_prefix) {alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Copying profile path");goto fail;}
         }
+        const char* reuse=getenv("ALEA_METAL_ROOT_REUSE");
+        if(reuse && *reuse) {
+            s->root_reuse_path=strdup(reuse);
+            if(!s->root_reuse_path){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Copying root reuse path");goto fail;}
+        }
         const char* batch_env=getenv("ALEA_METAL_BATCH_PIXELS");
         if(batch_env) {
             char* end;errno=0;unsigned long long value=strtoull(batch_env,&end,10);
@@ -157,7 +199,7 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
             }
             s->resume_work=(uint32_t)value;s->resume_fixed=1;
         }
-        s->device = MTLCreateSystemDefaultDevice();
+        if(!s->device)s->device = MTLCreateSystemDefaultDevice();
         s->queue = [s->device newCommandQueue];
         NSError* error = nil;
         dispatch_data_t data = dispatch_data_create(alea_compute_metallib,
@@ -170,6 +212,7 @@ void* alea_compute_metal_create(const alea_system_t* sys) {
         [constants setConstantValue:&point_profile_enabled type:MTLDataTypeBool atIndex:5];
         [constants setConstantValue:&s->point_candidates_enabled type:MTLDataTypeBool atIndex:6];
         [constants setConstantValue:&s->compact_code type:MTLDataTypeBool atIndex:7];
+        [constants setConstantValue:&s->groups_enabled type:MTLDataTypeBool atIndex:9];
         id<MTLFunction> function = [library newFunctionWithName:
             s->hierarchical ? @"alea_classify_hierarchy" : @"alea_classify_points" constantValues:constants error:&error];
         [constants release];
@@ -253,7 +296,7 @@ static double point_profile_clock(void) {
 }
 static int point_profile_write(const char* path,size_t points,uint64_t submissions,uint64_t timed,
                                double wall,double gpu,const uint64_t* counts,uint64_t saturated,
-                               double candidate_seconds,const compute_candidate_stats* candidates) {
+                               double candidate_seconds,const compute_candidate_stats* candidates,bool grouped) {
     static const char* names[POINT_COUNTER_COUNT]={"cells","universes","lattices","descents",
         "original_calls","spatial_calls","no_program","uncertified","outside_domain","unchanged_region",
         "original_instructions","spatial_instructions","original_primitives","spatial_primitives",
@@ -263,6 +306,7 @@ static int point_profile_write(const char* path,size_t points,uint64_t submissio
     fprintf(f,"{\"version\":1,\"points\":%zu,\"submissions\":%" PRIu64 ",\"gpu_timed_submissions\":%" PRIu64
         ",\"wall_seconds\":%.9f,\"gpu_seconds\":%.9f,\"counter_limit_points\":%" PRIu64,
         points,submissions,timed,wall,gpu,saturated);
+    fprintf(f,",\"csg_groups\":%s,\"instruction_unit\":\"%s\"",grouped?"true":"false",grouped?"bytecode_and_group_ops":"bytecode");
     for(unsigned j=0;j<POINT_COUNTER_COUNT;++j)fprintf(f,",\"%s\":%" PRIu64,names[j],counts[j]);
     fprintf(f,",\"candidate_seconds\":%.9f,\"candidate_cells\":%" PRIu64
         ",\"candidate_rejected\":%" PRIu64 ",\"candidate_instructions\":%" PRIu64
@@ -283,6 +327,7 @@ static int prepare_select(metal_state* s) {
     [constants setConstantValue:&profile type:MTLDataTypeBool atIndex:5];
     [constants setConstantValue:&s->point_candidates_enabled type:MTLDataTypeBool atIndex:6];
     [constants setConstantValue:&s->compact_code type:MTLDataTypeBool atIndex:7];
+    [constants setConstantValue:&s->groups_enabled type:MTLDataTypeBool atIndex:9];
     id<MTLFunction> function=[library newFunctionWithName:s->hierarchical?@"alea_select_hierarchy":@"alea_select_points"
         constantValues:constants error:&error];[constants release];
     if(function)s->select_pipeline=[s->device newComputePipelineStateWithFunction:function error:&error];
@@ -298,7 +343,7 @@ static size_t context_buffer_bytes(const metal_state* s) {
     id<MTLBuffer> buffers[]={s->nodes,s->primitives,s->cells,s->points,s->results,s->point_cells,
         s->point_lattices,s->point_fills,s->spatial,s->transforms,s->point_candidates,s->select_costs,
         s->point_costs,s->bvh,s->lattices,s->fills,s->colors,s->pixels,s->resume_states,s->resume_done,
-        s->resume_pixels,s->ray_costs,s->cell_costs};
+        s->resume_pixels,s->ray_costs,s->cell_costs,s->root_reuse,s->group_maps,s->group_refs};
     size_t bytes=0;
     for(size_t i=0;i<sizeof(buffers)/sizeof(*buffers);++i)if(buffers[i]) {
         int duplicate=0;for(size_t j=0;j<i;++j)duplicate|=buffers[j]==buffers[i];
@@ -314,10 +359,11 @@ static int select_profile_write(metal_state* s,size_t points,double wall,double 
         "\"gpu_seconds\":%.9f,\"gpu_timed_submissions\":%" PRIu64 ",\"candidate_seconds\":%.9f,"
         "\"context_buffer_bytes\":%zu,\"device_process_allocated_bytes\":%lu,"
         "\"code_bytes\":%lu,\"primitive_bytes\":%lu,\"cell_bytes\":%lu,\"spatial_bytes\":%lu,"
-        "\"query_links_bytes\":%lu,\"counter_bytes\":%lu,\"depths\":[",
+        "\"query_links_bytes\":%lu,\"counter_bytes\":%lu,\"csg_groups\":%s,\"instruction_unit\":\"%s\",\"depths\":[",
         points,wall,gpu,timed,proof,context_buffer_bytes(s),(unsigned long)s->device.currentAllocatedSize,
         (unsigned long)s->nodes.length,(unsigned long)s->primitives.length,(unsigned long)s->cells.length,
-        (unsigned long)s->spatial.length,(unsigned long)s->point_cells.length,(unsigned long)s->select_costs.length);
+        (unsigned long)s->spatial.length,(unsigned long)s->point_cells.length,(unsigned long)s->select_costs.length,
+        s->groups_enabled?"true":"false",s->groups_enabled?"bytecode_and_group_ops":"bytecode");
     uint64_t limits=0;
     for(int table=0;table<2;++table) {
         int comma=0;size_t n=table?s->cell_count:COMPUTE_HIER_STACK;
@@ -443,6 +489,10 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
                 [encoder setBuffer:s->point_fills offset:0 atIndex:10];
                 [encoder setBuffer:s->spatial offset:0 atIndex:11];
             }
+            if(s->groups_enabled) {
+                [encoder setBuffer:s->group_maps offset:0 atIndex:17];
+                [encoder setBuffer:s->group_refs offset:0 atIndex:18];
+            }
             if(profiling)[encoder setBuffer:s->point_costs offset:0 atIndex:12];
             if(s->point_candidates_enabled)[encoder setBuffer:s->point_candidates offset:0 atIndex:13];
             if(select_profiling) {
@@ -494,7 +544,7 @@ static int metal_points(void* state,const double* xyz,size_t count,void* results
         }
         if(select_profiling && select_profile_write(s,total,point_profile_clock()-start,gpu_seconds,candidate_seconds,timed))return -1;
         if(profiling && point_profile_write(s->point_profile_path,total,submissions,timed,
-            point_profile_clock()-start,gpu_seconds,counters,saturated,candidate_seconds,&candidate_stats))return -1;
+            point_profile_clock()-start,gpu_seconds,counters,saturated,candidate_seconds,&candidate_stats,s->groups_enabled))return -1;
         return 0;
     }
 }
@@ -522,6 +572,9 @@ static int prepare_render(metal_state* s) {
     [constants setConstantValue:&s->lazy_threshold type:MTLDataTypeUInt atIndex:2];
     bool refill=s->refill;
     [constants setConstantValue:&refill type:MTLDataTypeBool atIndex:4];
+    bool reuse=s->root_reuse_path!=NULL;
+    [constants setConstantValue:&reuse type:MTLDataTypeBool atIndex:8];
+    [constants setConstantValue:&s->ray_groups_enabled type:MTLDataTypeBool atIndex:10];
     id<MTLFunction> function = [library newFunctionWithName:@"alea_render_image" constantValues:constants error:&error];
     [constants release];
     id<MTLComputePipelineState> pipeline = function ?
@@ -705,7 +758,45 @@ static int render_resumable(metal_state* s,compute_render_params* p,render_frame
     if(s->trace)fprintf(stderr,"Metal schedule: %zu submissions, %.3f GPU seconds, %.1f active slots/submission, %.2f GiB continuation traffic upper bound\n",
         submissions,gpu_seconds,submissions?(double)active_samples/submissions:0,2.0*s->resume_stride*active_samples/(1024.0*1024*1024));
     if(s->profile_prefix && alea_compute_profile_write(s->profile_prefix,s->ray_costs.contents,
-        s->cell_costs.contents,s->scene.cells,s->cell_count,p->width,p->height))return -1;
+        s->cell_costs.contents,s->scene.cells,s->cell_count,p->width,p->height,0))return -1;
+    return 0;
+}
+
+/* This diagnostic owns bounded scratch independently of cell/profile counts.
+ * It never changes intersection results and is not a timing mode. */
+static int prepare_root_reuse(metal_state* s,size_t count) {
+    size_t bytes=count*sizeof(compute_root_reuse);
+    if(count>ROOT_REUSE_MAX_PIXELS || bytes>s->device.maxBufferLength) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,"Root reuse diagnostic supports at most %u pixels",ROOT_REUSE_MAX_PIXELS);return -1;
+    }
+    if(!s->root_reuse || s->root_reuse.length<bytes) {
+        id<MTLBuffer> buffer=[s->device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+        if(!buffer){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Allocating root reuse diagnostic");return -1;}
+        [s->root_reuse release];s->root_reuse=buffer;
+    }
+    memset(s->root_reuse.contents,0,bytes);
+    return 0;
+}
+static int root_reuse_write(metal_state* s,size_t pixels,uint32_t aa) {
+    uint64_t totals[ROOT_REUSE_FAMILIES][ROOT_REUSE_COUNTERS]={{0}};
+    size_t saturated=0;
+    const compute_root_reuse* rows=s->root_reuse.contents;
+    for(size_t i=0;i<pixels;++i) {
+        saturated+=rows[i].saturated!=0;
+        for(unsigned f=0;f<ROOT_REUSE_FAMILIES;++f)for(unsigned c=0;c<ROOT_REUSE_COUNTERS;++c)
+            totals[f][c]+=rows[i].counts[f][c];
+    }
+    FILE* out=fopen(s->root_reuse_path,"w");
+    if(!out){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Opening root reuse diagnostic output");return -1;}
+    int failed=fprintf(out,"family,capacity,pixels,aa_axis,scratch_bytes,requests,errors,nonfinite,hits,misses,evictions,saturated_pixels\n")<0;
+    for(unsigned f=0;f<ROOT_REUSE_FAMILIES;++f)for(unsigned c=0;c<ROOT_REUSE_CAPACITIES;++c) {
+        uint64_t requests=totals[f][ROOT_REQUESTS],errors=totals[f][ROOT_ERRORS],nonfinite=totals[f][ROOT_NONFINITE],hits=totals[f][ROOT_HITS+c];
+        failed|=fprintf(out,"%u,%u,%zu,%u,%zu,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%zu\n",
+            f,root_reuse_capacity(c),pixels,aa,(size_t)s->root_reuse.length,requests,errors,nonfinite,hits,
+            requests>=errors+nonfinite+hits?requests-errors-nonfinite-hits:0,totals[f][ROOT_EVICTIONS+c],saturated)<0;
+    }
+    failed|=fclose(out)!=0;
+    if(failed){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Writing root reuse diagnostic output");return -1;}
     return 0;
 }
 
@@ -714,6 +805,12 @@ int alea_compute_metal_render(void* state, const render_config_t* cfg,
                               alea_compute_render_progress_t progress, void* user) {
     @autoreleasepool {
         metal_state* s=state;
+        if(s->root_reuse_path && progress) {
+            alea_set_error_detail(ALEA_ERR_UNSUPPORTED,"Root reuse diagnostic supports ordinary renders only");return -1;
+        }
+        if(s->root_reuse_path && (size_t)fb->width*fb->height>ROOT_REUSE_MAX_PIXELS) {
+            alea_set_error_detail(ALEA_ERR_OVERFLOW,"Root reuse diagnostic supports at most %u pixels",ROOT_REUSE_MAX_PIXELS);return -1;
+        }
         if (cfg->num_clips<0 || cfg->num_clips>1 || cfg->shadows || cfg->aa_adaptive ||
             cfg->render_mode<RENDER_MODE_SOLID || cfg->render_mode>RENDER_MODE_MATID ||
             cfg->render_mode==RENDER_MODE_XRAY ||
@@ -776,6 +873,7 @@ int alea_compute_metal_render(void* state, const render_config_t* cfg,
             }
             memset(s->cell_costs.contents,0,cb);
         }
+        if(s->root_reuse_path && prepare_root_reuse(s,count))return -1;
         float* colors=s->colors.contents;
         for (uint32_t i=0;i<s->cell_count;++i) {
             int id=cfg->color_mode==RENDER_COLOR_CELL?s->scene.cells[i].cell_id:s->scene.cells[i].material_id;
@@ -805,6 +903,14 @@ int alea_compute_metal_render(void* state, const render_config_t* cfg,
             [encoder setBuffer:s->transforms offset:0 atIndex:7];
             [encoder setBuffer:s->lattices offset:0 atIndex:8];
             [encoder setBuffer:s->fills offset:0 atIndex:9];
+            if(s->root_reuse_path)[encoder setBuffer:s->root_reuse offset:0 atIndex:14];
+            if(s->ray_groups_enabled) {
+                [encoder setBuffer:s->group_maps offset:0 atIndex:19];
+                [encoder setBuffer:s->group_refs offset:0 atIndex:20];
+            }
+#ifdef COMPUTE_RENDER_DIAGNOSTIC_BIND
+            COMPUTE_RENDER_DIAGNOSTIC_BIND(encoder);
+#endif
             tile.offset=(uint32_t)first;
             [encoder setBytes:&tile length:sizeof(tile) atIndex:10];
             [encoder setBuffer:s->spatial offset:0 atIndex:15];
@@ -839,8 +945,9 @@ int alea_compute_metal_render(void* state, const render_config_t* cfg,
             first+=batch;
             }
         }
+        if(s->root_reuse_path && root_reuse_write(s,count,p.aa))return -1;
         if(s->profile_prefix && alea_compute_profile_write(s->profile_prefix,
-            s->ray_costs.contents,s->cell_costs.contents,s->scene.cells,s->cell_count,p.width,p.height))return -1;
+            s->ray_costs.contents,s->cell_costs.contents,s->scene.cells,s->cell_count,p.width,p.height,s->ray_groups_enabled))return -1;
         return 0;
     }
 }

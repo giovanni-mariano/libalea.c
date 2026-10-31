@@ -36,6 +36,8 @@ static inline compute_node alea_compute_node_at(const compute_scene* s,size_t i)
 }
 /* Returns 1 when encoded, 0 without writing if any instruction needs the wide
  * format, or -1 on interruption. Input and output may share an allocation. */
+/* Mutates unpublished wide code; discard the snapshot after failure. */
+int alea_compute_thread_jumps(compute_scene* scene,size_t* rewritten);
 int alea_compute_code_compact(const compute_node* code,size_t count,uint32_t* output);
 int alea_compute_point_programs_pack(compute_scene* scene);
 typedef struct { uint64_t cells, rejected, instructions, primitives, budget_fallbacks; } compute_candidate_stats;
@@ -59,7 +61,7 @@ int alea_compute_render_pack(const alea_system_t* sys, compute_scene* scene);
 void alea_compute_render_free(compute_render_scene* render);
 int alea_compute_profile_write(const char* prefix, const compute_profile* rays,
     const compute_profile* costs, const compute_cell* cells, size_t cell_count,
-    unsigned width, unsigned height);
+    unsigned width, unsigned height, int grouped);
 int alea_compute_metal_available(void);
 void* alea_compute_metal_create(const alea_system_t* sys);
 void alea_compute_metal_destroy(void* state);

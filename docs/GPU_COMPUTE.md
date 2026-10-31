@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 SPDX-License-Identifier: MPL-2.0
 -->
 
-# Experimental GPU rendering and batch compute
+# GPU rendering and batch compute
 
 `alea_compute.h` provides an optional CPU/Metal geometry snapshot and rendering
 API. CPU evaluation uses double precision; Metal uses approximate FP32 analytic
@@ -55,6 +55,51 @@ Auxiliary render normals retain the source-surface orientation used by the CPU
 renderer; shading applies camera-facing orientation to a separate copy. Clipping
 faces use the negative clipping-plane normal. These visualization outputs do not
 establish outward CSG boundary orientation for physics navigation.
+
+## Intersection-group execution
+
+The compute package includes native Metal execution of pure intersection subtrees
+as ordered signed-leaf lists. Enable it before creating a context or launching a
+tool:
+
+```sh
+ALEA_METAL_CSG_GROUPS=1 bin/mc_plotter model.mcnp Z 0 -10 10 -10 10 512 slice.bmp --backend=metal
+```
+
+This applies to `alea_compute_classify()` and `alea_compute_select()`, including
+`mc_plotter`'s all-owner and selected ownership modes. It is a supported package
+option; no benchmark harness or extra metallib is needed. Group buffers are owned
+by each immutable context, so different contexts remain independent after the
+source model is changed or freed.
+
+The default is `0`: preparation and up to 64 MiB of additional maps/lists can be
+worthwhile for large CSG models, while small expressions can be slower. Values
+other than `0` or `1` fail context creation. If no eligible groups exist or optional
+storage cannot fit its budget/device limits, the same Metal context uses generic
+bytecode. Cancellation and malformed geometry still report errors. Grouping is
+compatible with compact code, jump threading, spatial programs and point
+candidates, and preserves evaluation order, finite errors, void and overlaps.
+
+Point and selection profile records include `csg_groups` and `instruction_unit`.
+When groups are active, `bytecode_and_group_ops` counts remaining bytecode plus
+one group dispatch and its visited list entries. These counts are not directly
+comparable to bytecode-only instruction totals. Primitive-evaluation counts keep
+the same meaning. The ray evaluator remains independent of this point option.
+Ray-group contract and coverage are documented in
+[the ray report](NATIVE_GPU_RAY_GROUPS.md).
+
+See [integration and validation](NATIVE_GPU_CSG_GROUPS.md) and the earlier
+[controlled measurements](NATIVE_GPU_GROUP_EXECUTION.md).
+
+## Native intersection groups for ordinary rays
+
+`ALEA_METAL_RAY_GROUPS=1` at context creation enables supported native group
+execution in `alea_compute_render()` and static `render3d --backend metal` output.
+Its default is `0`. It is independent of the point-group option; both share one
+bounded context-owned data set. Generic Metal evaluation handles missing groups
+or unavailable optional storage. Progressive rendering keeps its generic
+resumable evaluator. See [the package guide](NATIVE_GPU_RAY_GROUPS_PACKAGE.md) for
+ownership, profiling units, validation and measured tradeoffs.
 
 ## Experimental compact Metal instructions
 

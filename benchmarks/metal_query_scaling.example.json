@@ -1,0 +1,12 @@
+{
+  "variants": [
+    {"name":"all-owner-64","argv":["bin/compute/metal/benchmark_metal_query_scaling","all-owner","64","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"all-owner-4096","argv":["bin/compute/metal/benchmark_metal_query_scaling","all-owner","4096","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"selected-64","argv":["bin/compute/metal/benchmark_metal_query_scaling","selected","64","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"selected-4096","argv":["bin/compute/metal/benchmark_metal_query_scaling","selected","4096","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"rays-64","argv":["bin/compute/metal/benchmark_metal_query_scaling","rays","64","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"rays-full","argv":["bin/compute/metal/benchmark_metal_query_scaling","rays","24576","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"resume-4096","argv":["bin/compute/metal/benchmark_metal_query_scaling","resume","4096","6"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"preview-detail","argv":["bin/compute/metal/benchmark_metal_query_scaling","interactive","4096","3"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "variants": [
+    {"name":"generic-wide", "argv":["build/native-gpu/bin/compute/metal/benchmark_metal_ray_execute","build/native-gpu/ray-execute/generic-wide.csv"], "env":{"ALEA_BENCH_RAY_GROUPS":"0","ALEA_BENCH_RAY_VALIDATE":"1","ALEA_METAL_COMPACT_CODE":"0","MTL_DEBUG_LAYER":"1"}},
+    {"name":"grouped-wide", "argv":["build/native-gpu/bin/compute/metal/benchmark_metal_ray_execute","build/native-gpu/ray-execute/grouped-wide.csv"], "env":{"ALEA_BENCH_RAY_GROUPS":"1","ALEA_BENCH_RAY_VALIDATE":"1","ALEA_METAL_COMPACT_CODE":"0","MTL_DEBUG_LAYER":"1"}},
+    {"name":"grouped-compact", "argv":["build/native-gpu/bin/compute/metal/benchmark_metal_ray_execute","build/native-gpu/ray-execute/grouped-compact.csv"], "env":{"ALEA_BENCH_RAY_GROUPS":"1","ALEA_BENCH_RAY_VALIDATE":"1","ALEA_METAL_COMPACT_CODE":"1","MTL_DEBUG_LAYER":"1"}}
+  ]
+}

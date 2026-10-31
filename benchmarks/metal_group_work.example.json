@@ -1,0 +1,51 @@
+{
+  "variants": [
+    {
+      "name": "simple",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_group_work",
+        "build/native-gpu/group-execution/simple.csv"
+      ],
+      "env": {
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "mixed-wide",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_group_work",
+        "build/native-gpu/group-execution/mixed-wide.csv"
+      ],
+      "env": {
+        "ALEA_BENCH_CSG_GROUPS": "1",
+        "ALEA_METAL_COMPACT_CODE": "0",
+        "MTL_DEBUG_LAYER": "1"
+      }
+    },
+    {
+      "name": "mixed-chain",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_group_work",
+        "build/native-gpu/group-execution/mixed-chain.csv"
+      ],
+      "env": {
+        "ALEA_BENCH_CSG_GROUPS": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "selected-mixed",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_group_work",
+        "build/native-gpu/group-execution/selected-mixed.csv"
+      ],
+      "env": {
+        "ALEA_BENCH_CSG_GROUPS": "1",
+        "ALEA_BENCH_REGION_SELECT": "1",
+        "MTL_DEBUG_LAYER": "1",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    }
+  ]
+}

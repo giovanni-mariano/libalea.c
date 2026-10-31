@@ -1,0 +1,8 @@
+{
+  "variants": [
+    {
+      "name": "reprojection",
+      "argv": ["build/native-gpu/bin/compute/metal/benchmark_metal_reprojection", "build/native-gpu/reprojection/public-comparison.png"]
+    }
+  ]
+}

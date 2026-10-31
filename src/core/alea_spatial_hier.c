@@ -10,6 +10,7 @@
 #include "core/alea_occurrence.h"
 #include "primitives/bbox.h"
 #include "alea_types.h"
+#include "alea.h"
 #include "util/alea_hashmap.h"
 #include "util/alea_log.h"
 #include "util/compat.h"
@@ -3655,8 +3656,10 @@ static int query_universe_ray_blas_node(alea_system_t* sys,
                                         double t_max,
                                         alea_hier_ray_candidate_t* out_hits,
                                         size_t max_hits,
-                                        size_t* hit_count) {
-    if (node_index >= blas->node_count) return -1;
+                                        size_t* hit_count,
+                                        alea_hier_universe_ray_visitor_t visitor,
+                                        void* context) {
+    if (alea_interrupted() || node_index >= blas->node_count) return -1;
 
     const hier_bvh_node_t* node = &blas->nodes[node_index];
     double node_enter, node_exit;
@@ -3690,7 +3693,7 @@ static int query_universe_ray_blas_node(alea_system_t* sys,
                                              inv_dx, inv_dy, inv_dz,
                                              t_min, t_max,
                                              out_hits, max_hits,
-                                             hit_count) != 0) {
+                                             hit_count, visitor, context) != 0) {
                 return -1;
             }
             return query_universe_ray_blas_node(sys, blas, node->left_or_first,
@@ -3698,7 +3701,7 @@ static int query_universe_ray_blas_node(alea_system_t* sys,
                                                 inv_dx, inv_dy, inv_dz,
                                                 t_min, t_max,
                                                 out_hits, max_hits,
-                                                hit_count);
+                                                hit_count, visitor, context);
         }
         if (hit_left) {
             if (query_universe_ray_blas_node(sys, blas, node->left_or_first,
@@ -3706,7 +3709,7 @@ static int query_universe_ray_blas_node(alea_system_t* sys,
                                              inv_dx, inv_dy, inv_dz,
                                              t_min, t_max,
                                              out_hits, max_hits,
-                                             hit_count) != 0) {
+                                             hit_count, visitor, context) != 0) {
                 return -1;
             }
         }
@@ -3716,7 +3719,7 @@ static int query_universe_ray_blas_node(alea_system_t* sys,
                                                 inv_dx, inv_dy, inv_dz,
                                                 t_min, t_max,
                                                 out_hits, max_hits,
-                                                hit_count);
+                                                hit_count, visitor, context);
         }
         return 0;
     }
@@ -3732,15 +3735,20 @@ static int query_universe_ray_blas_node(alea_system_t* sys,
                                        &t_enter, &t_exit)) {
             continue;
         }
-        insert_ray_candidate_sorted(sys, blas_cell->cell_index,
-                                    t_enter, t_exit,
-                                    out_hits, max_hits, hit_count);
+        if (visitor) {
+            if (visitor(blas_cell->cell_index, t_enter, t_exit, context) < 0)
+                return -1;
+        } else {
+            insert_ray_candidate_sorted(sys, blas_cell->cell_index,
+                                        t_enter, t_exit,
+                                        out_hits, max_hits, hit_count);
+        }
     }
 
     return 0;
 }
 
-int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
+static int query_universe_ray(alea_system_t* sys,
                                          int universe_id,
                                          double ox,
                                          double oy,
@@ -3754,11 +3762,13 @@ int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
                                          double t_min,
                                          double t_max,
                                          alea_hier_ray_candidate_t* out_hits,
-                                         size_t max_hits) {
+                                         size_t max_hits,
+                                         alea_hier_universe_ray_visitor_t visitor,
+                                         void* context) {
     (void)dx;
     (void)dy;
     (void)dz;
-    if (!sys || !out_hits || max_hits == 0) return -1;
+    if (!sys || (!visitor && (!out_hits || max_hits == 0))) return -1;
     if (!sys->hier_spatial_index || !sys->hier_spatial_index->built) {
         if (alea_hier_spatial_index_build(sys) != 0) return -1;
     }
@@ -3772,12 +3782,13 @@ int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
                                               inv_dx, inv_dy, inv_dz,
                                               t_min, t_max,
                                               out_hits, max_hits,
-                                              &hit_count);
+                                              &hit_count, visitor, context);
         if (rc != 0) return -1;
     } else {
         const alea_universe_t* univ = alea_get_universe(sys, universe_id);
         if (!univ) return 0;
         for (size_t i = 0; i < univ->cell_indices.count; i++) {
+            if (alea_interrupted()) return -1;
             uint32_t cell_index = (uint32_t)univ->cell_indices.data[i];
             const alea_cell_entry_t* cell = &sys->cells.data[cell_index];
             alea_bbox_t bbox = (cell->lat_type != 0 && cell->lat_fill)
@@ -3791,12 +3802,35 @@ int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
                                            &t_enter, &t_exit)) {
                 continue;
             }
-            insert_ray_candidate_sorted(sys, cell_index, t_enter, t_exit,
-                                        out_hits, max_hits, &hit_count);
+            if (visitor) {
+                if (visitor(cell_index, t_enter, t_exit, context) < 0) return -1;
+            } else {
+                insert_ray_candidate_sorted(sys, cell_index, t_enter, t_exit,
+                                            out_hits, max_hits, &hit_count);
+            }
         }
     }
 
     return (int)hit_count;
+}
+
+int alea_hier_spatial_query_universe_ray(
+    alea_system_t* sys, int universe_id,
+    double ox, double oy, double oz, double dx, double dy, double dz,
+    double inv_dx, double inv_dy, double inv_dz, double t_min, double t_max,
+    alea_hier_ray_candidate_t* out_hits, size_t max_hits) {
+    return query_universe_ray(sys, universe_id, ox, oy, oz, dx, dy, dz,
+        inv_dx, inv_dy, inv_dz, t_min, t_max, out_hits, max_hits, NULL, NULL);
+}
+
+int alea_hier_spatial_visit_universe_ray(
+    alea_system_t* sys, int universe_id,
+    double ox, double oy, double oz,
+    double inv_dx, double inv_dy, double inv_dz, double t_min, double t_max,
+    alea_hier_universe_ray_visitor_t visitor, void* context) {
+    if (!visitor) return -1;
+    return query_universe_ray(sys, universe_id, ox, oy, oz, 0, 0, 0,
+        inv_dx, inv_dy, inv_dz, t_min, t_max, NULL, 0, visitor, context);
 }
 
 static int insert_placement_ray_candidate_sorted(

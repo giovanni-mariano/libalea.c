@@ -31,7 +31,11 @@ kernel void alea_select_hierarchy(
     device const uint* fills [[buffer(10)]],
     device const compute_spatial_program* spatial [[buffer(11)]],
     device const uint* candidates [[buffer(13)]],
-    device atomic_uint* costs [[buffer(14)]],device atomic_uint* depths [[buffer(15)]],uint index [[thread_position_in_grid]]) {
+    device atomic_uint* costs [[buffer(14)]],device atomic_uint* depths [[buffer(15)]],
+#ifdef ALEA_REGION_WORK_AUDIT
+    device atomic_uint* audit [[buffer(16)]],
+#endif
+    COMPUTE_GROUP_BUFFER COMPUTE_NATIVE_BUFFER uint index [[thread_position_in_grid]]) {
     if(index>=count)return;
     float3 p(xyz[3*index],xyz[3*index+1],xyz[3*index+2]);
     uint id=root,depth=0;compute_selection result={-1,-1,-1,0};
@@ -53,7 +57,12 @@ kernel void alea_select_hierarchy(
         } else {
             uint selection=0;compute_cell program=point_program(cell,p,links[id].spatial,spatial,selection);
             unused={};
-            float value=evaluate(nodes,primitives,program,p,unused,false);
+            COMPUTE_GROUP_LOCAL
+            float value=evaluate(nodes,primitives,program,p,unused,false COMPUTE_GROUP_ARGUMENTS COMPUTE_NATIVE_ARGUMENTS);
+#ifdef ALEA_REGION_WORK_AUDIT
+            audit_record(audit,id,selection,program.root!=cell.root || program.count!=cell.count,
+                program,depth,unused.v[POINT_ORIGINAL_INSTRUCTIONS],unused.v[POINT_ORIGINAL_PRIMITIVES],value COMPUTE_GROUP_RECORD);
+#endif
             if(point_profile_enabled)select_record(costs,depths,id,depth,unused,value>0,
                 program.root!=cell.root || program.count!=cell.count,false);
             if(!isfinite(value)){result.status=COMPUTE_NONE;break;}
@@ -79,7 +88,7 @@ kernel void alea_select_points(
     constant uint& root_or_count [[buffer(4)]],constant uint& count [[buffer(5)]],
     device const compute_primitive* primitives [[buffer(6)]],
     device const uint* candidates [[buffer(13)]],
-    device atomic_uint* costs [[buffer(14)]],device atomic_uint* depths [[buffer(15)]],uint index [[thread_position_in_grid]]) {
+    device atomic_uint* costs [[buffer(14)]],device atomic_uint* depths [[buffer(15)]],COMPUTE_GROUP_BUFFER COMPUTE_NATIVE_BUFFER uint index [[thread_position_in_grid]]) {
     if(index>=count)return;
     float3 p(xyz[3*index],xyz[3*index+1],xyz[3*index+2]);
     compute_selection result={-1,-1,-1,0};compute_point_profile unused={};
@@ -87,7 +96,8 @@ kernel void alea_select_points(
         point_candidates_enabled?id!=COMPUTE_NONE:id<root_or_count;
         id=point_candidates_enabled?candidates[id]:id+1) {
         unused={};
-        float v=evaluate(nodes,primitives,cells[id],p,unused,false);
+        COMPUTE_GROUP_LOCAL
+        float v=evaluate(nodes,primitives,cells[id],p,unused,false COMPUTE_GROUP_ARGUMENTS COMPUTE_NATIVE_ARGUMENTS);
         if(point_profile_enabled)select_record(costs,depths,id,0,unused,v>0,false,false);
         if(!isfinite(v)){result.status=COMPUTE_NONE;break;}
         if(v<=0){result={cells[id].cell_id,cells[id].material_id,0,1};break;}

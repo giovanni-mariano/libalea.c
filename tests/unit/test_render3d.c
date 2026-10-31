@@ -8,6 +8,7 @@
 
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_raycast.h"
 #include "alea_mcnp.h"
 #include "render/render3d.h"
 #include "core/alea_system.h"
@@ -999,6 +1000,208 @@ TEST(render_first_hit_through_translated_fill) {
     alea_destroy(sys);
 }
 
+TEST(render_first_hit_through_undefined_translated_fill) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int outer = alea_sphere_surface(sys, 1, 5, 0, 0, 2);
+    int core = alea_sphere_surface(sys, 2, 0, 0, 0, 1);
+    int mat = alea_add_material(sys, 1);
+    int parent = alea_add_cell(sys, 1, alea_surface_at(sys, outer)->neg_node,
+                               ALEA_MATERIAL_VOID, 0, 0);
+    ASSERT(alea_add_cell(sys, 2, alea_surface_at(sys, core)->neg_node,
+                         mat, 1, 10) >= 0);
+    const double translation[] = {5, 0, 0};
+    ASSERT_EQ(alea_add_transform(sys, 1, translation, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, parent, 10, 1), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    alea_ray_t ray;
+    alea_ray_init(&ray, 0, 0, 0, 1, 0, 0);
+    alea_raycast_result_t scratch;
+    alea_raycast_result_init(&scratch);
+    alea_ray_first_visible_result_t hit;
+    ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+        sys, &ray, 10, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_NEAR(hit.t, 4, 1e-10);
+    ASSERT_NEAR(hit.nx, -1, 1e-10);
+    alea_raycast_result_free(&scratch);
+    alea_destroy(sys);
+}
+
+
+/* The undefined prefix must end at the child's physical entry, and the
+ * material interval must end at its exit, in either a direct or nested frame. */
+typedef struct {
+    int material_intervals;
+    int undefined_intervals;
+    double enter, exit;
+    bool verified;
+} undefined_fill_intervals_t;
+
+static int collect_undefined_fill_intervals(
+    void* context, const alea_raycast_selected_interval_view_t* interval) {
+    undefined_fill_intervals_t* seen = context;
+    if (interval->resolution_flags & ALEA_RESOLVE_UNDEFINED_FILL)
+        seen->undefined_intervals++;
+    if (interval->cell_id == 30) {
+        seen->material_intervals++;
+        seen->enter = interval->t_enter;
+        seen->exit = interval->t_exit;
+        seen->verified = interval->containment_verified;
+    }
+    return 0;
+}
+
+TEST(undefined_fill_child_boundaries_preserve_placed_geometry) {
+    for (int mode = 0; mode < 4; mode++) {
+        alea_system_t* sys = alea_create();
+        ASSERT_NOT_NULL(sys);
+        const double tx = mode ? 5 : 0, ty = mode ? 2 : 0;
+        const int rotated = mode >= 2;
+        int outer = alea_box_surface(sys, 1,
+            tx - 4, tx + 4, ty - 4, ty + 4, -4, 4);
+        int child = alea_box_surface(sys, 2, 0, 1, -1, 1, -1, 1);
+        int mat = alea_add_material(sys, 1);
+        int parent = alea_add_cell(sys, 10, alea_surface_at(sys, outer)->neg_node,
+                                   ALEA_MATERIAL_VOID, 0, 0);
+        ASSERT(parent >= 0);
+        double placement[12] = {tx, ty, 0, 0, -1, 0, 1, 0, 0, 0, 0, 1};
+        ASSERT_EQ(alea_add_transform(sys, 1, placement,
+                                    rotated && mode != 3 ? 12 : 3, 0), 0);
+        ASSERT_EQ(alea_set_fill(sys, parent, 10, mode ? 1 : 0), 0);
+        if (mode == 3) {
+            int inner = alea_box_surface(sys, 3, -2, 2, -2, 2, -2, 2);
+            int middle = alea_add_cell(sys, 20,
+                alea_surface_at(sys, inner)->neg_node, ALEA_MATERIAL_VOID, 0, 10);
+            ASSERT(middle >= 0);
+            placement[0] = placement[1] = 0;
+            ASSERT_EQ(alea_add_transform(sys, 2, placement, 12, 0), 0);
+            ASSERT_EQ(alea_set_fill(sys, middle, 20, 2), 0);
+        }
+        ASSERT(alea_add_cell(sys, 30, alea_surface_at(sys, child)->neg_node,
+                             mat, 1, mode == 3 ? 20 : 10) >= 0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        alea_ray_t ray;
+        alea_ray_init(&ray, rotated ? tx : tx - 3, rotated ? ty + 3 : ty, 0,
+                      rotated ? 0 : 1, rotated ? -1 : 0, 0);
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        for (int verified = 0; verified < 2; verified++) {
+            alea_ray_first_visible_result_t hit;
+            ASSERT_EQ(verified
+                ? alea_raycast_hier_first_visible_nocache(
+                    sys, &ray, 0, 6, -1, 1, &scratch, &hit)
+                : alea_raycast_render_first_visible_nocache(
+                    sys, &ray, 6, 1, NULL, NULL, &scratch, &hit), 0);
+            ASSERT(hit.found);
+            ASSERT_EQ(hit.cell_id, 30);
+            ASSERT_EQ(hit.surface_id, 2);
+            ASSERT_EQ(hit.primitive_id, alea_surface_at(sys, child)->primitive_id);
+            ASSERT_NEAR(hit.t, 3, 1e-10);
+            ASSERT_NEAR(hit.nx, rotated ? 0 : -1, 1e-10);
+            ASSERT_NEAR(hit.ny, rotated ? 1 : 0, 1e-10);
+            ASSERT_NEAR(hit.nz, 0, 1e-10);
+        }
+        undefined_fill_intervals_t seen = {0};
+        ASSERT_EQ(alea_raycast_hier_visit_intervals_nocache(
+            sys, &ray, 6, &scratch, collect_undefined_fill_intervals, &seen), 0);
+        ASSERT_EQ(seen.material_intervals, 1);
+        ASSERT(seen.undefined_intervals >= 2);
+        ASSERT(seen.verified);
+        ASSERT_NEAR(seen.enter, 3, 1e-10);
+        ASSERT_NEAR(seen.exit, 4, 1e-10);
+
+        alea_ray_boundary_event_options_t options;
+        alea_ray_boundary_event_options_init(&options);
+        options.t_max = 6;
+        options.include_occurrence_provenance = 1;
+        options.fields = ALEA_RAY_BOUNDARY_EVENT_NORMAL |
+                         ALEA_RAY_BOUNDARY_EVENT_PRIMITIVE_ID;
+        alea_ray_boundary_event_query_result_t* events =
+            alea_ray_boundary_event_query_result_create();
+        ASSERT_NOT_NULL(events);
+        ASSERT_EQ(alea_ray_boundary_event_query(sys, ray.ox, ray.oy, ray.oz,
+            ray.dx, ray.dy, ray.dz, &options, events), 0);
+        int child_boundaries = 0;
+        for (size_t i = 0; i < alea_ray_boundary_event_count(events); i++) {
+            double t, nx, ny, nz;
+            int before, after, surface, kind;
+            uint32_t primitive;
+            ASSERT_EQ(alea_ray_boundary_event_get(events, i, &t, &kind,
+                &surface, &before, &after, NULL, NULL, NULL,
+                &primitive, &nx, &ny, &nz), 0);
+            if (before != 30 && after != 30) continue;
+            child_boundaries++;
+            ASSERT_EQ(kind, ALEA_RAY_EVENT_PHYSICAL);
+            ASSERT_EQ(surface, 2);
+            ASSERT_EQ(primitive, alea_surface_at(sys, child)->primitive_id);
+            const double sign = after == 30 ? -1 : 1;
+            ASSERT_NEAR(t, after == 30 ? 3 : 4, 1e-10);
+            ASSERT_NEAR(nx, rotated ? 0 : sign, 1e-10);
+            ASSERT_NEAR(ny, rotated ? -sign : 0, 1e-10);
+            ASSERT_NEAR(nz, 0, 1e-10);
+        }
+        ASSERT_EQ(child_boundaries, 2);
+        alea_ray_boundary_event_query_result_destroy(events);
+        /* Rendering may cross an undefined fill; transport must continue to
+         * report it explicitly and refuse to advance through it. */
+        for (int validation = ALEA_NAV_VALIDATE_STRICT;
+             validation <= ALEA_NAV_VALIDATE_INTERVAL; validation++) {
+            alea_ray_navigator_t* nav = alea_ray_navigator_create(sys);
+            ASSERT_NOT_NULL(nav);
+            ASSERT_EQ(alea_ray_navigator_set_validation_mode(nav, validation), 0);
+            double position[] = {ray.ox, ray.oy, ray.oz};
+            const double direction[] = {ray.dx, ray.dy, ray.dz};
+            alea_nav_location_t location;
+            ASSERT_EQ(alea_ray_navigator_restart(nav, position, direction, &location), 0);
+            ASSERT_EQ(location.kind, ALEA_NAV_UNDEFINED_FILL);
+            alea_nav_event_t event;
+            ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 1, &event), -1);
+            for (int axis = 0; axis < 3; axis++) position[axis] += 3.5 * direction[axis];
+            ASSERT_EQ(alea_ray_navigator_restart(nav, position, direction, &location), 0);
+            ASSERT_EQ(location.kind, ALEA_NAV_MATERIAL);
+            ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 1, &event), 0);
+            ASSERT_EQ(event.kind, ALEA_NAV_BOUNDARY);
+            ASSERT_EQ(event.surface_id, 2);
+            ASSERT_NEAR(event.distance, .5, 1e-10);
+            ASSERT_EQ(event.after.kind, ALEA_NAV_UNDEFINED_FILL);
+            ASSERT_EQ(alea_ray_navigator_advance(nav, INFINITY, 1, &event), -1);
+            alea_ray_navigator_destroy(nav);
+        }
+
+        alea_raycast_result_free(&scratch);
+        alea_destroy(sys);
+    }
+}
+
+TEST(undefined_fill_child_search_respects_parent_and_ray_limits) {
+    for (int child_inside = 0; child_inside <= 1; child_inside++) {
+        alea_system_t* sys = alea_create();
+        ASSERT_NOT_NULL(sys);
+        int outer = alea_box_surface(sys, 1, -2, 2, -2, 2, -2, 2);
+        int child = alea_box_surface(sys, 2,
+            child_inside ? 0 : 3, child_inside ? 1 : 4, -1, 1, -1, 1);
+        int mat = alea_add_material(sys, 1);
+        int parent = alea_add_cell(sys, 10, alea_surface_at(sys, outer)->neg_node,
+                                   ALEA_MATERIAL_VOID, 0, 0);
+        ASSERT(parent >= 0);
+        ASSERT_EQ(alea_set_fill(sys, parent, 10, 0), 0);
+        ASSERT(alea_add_cell(sys, 30, alea_surface_at(sys, child)->neg_node,
+                             mat, 1, 10) >= 0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        alea_ray_t ray;
+        alea_ray_init(&ray, -1, 0, 0, 1, 0, 0);
+        alea_raycast_result_t scratch;
+        alea_raycast_result_init(&scratch);
+        alea_ray_first_visible_result_t hit;
+        ASSERT_EQ(alea_raycast_render_first_visible_nocache(
+            sys, &ray, child_inside ? 0.5 : 6, 1, NULL, NULL, &scratch, &hit), 0);
+        ASSERT(!hit.found);
+        alea_raycast_result_free(&scratch);
+        alea_destroy(sys);
+    }
+}
 
 TEST(render_first_hit_lattice_matches_verified_walk) {
     mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_eval.mcnp");

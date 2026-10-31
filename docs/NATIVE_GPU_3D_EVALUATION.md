@@ -227,3 +227,95 @@ instruction format, 5 builder tests, 6 resource tests, 16 CPU compute tests and
 the independent analytic 2D/three-view 3D benchmark. Viewer event-loop,
 progressive publication, cancellation and reuse checks pass. Both viewers are
 rebuilt. No speculative floating-point or ray-traversal change is retained.
+
+
+## CPU undefined-fill traversal correction
+
+The public missed-child case above is fixed in the shared selected-interval
+walker. When an ordinary fill has no containing child at the current point, the
+walker now searches that selected child universe for the next surface crossing,
+limited by the current container/ancestor crossing and the requested ray range.
+It uses the existing universe BVH through a streaming visitor, retaining the
+linear fallback without a fixed candidate-array limit. It does not enumerate
+unrelated fills or descend into every child universe. The event retains its
+physical surface, primitive and composed placement transform for world normals.
+Lattice element transitions retain their existing DDA handling.
+
+The translated regression fails before the change and passes afterward. Public
+coverage includes identity, translated, rotated and nested fills, child entry
+and exit, parent/ray limits, verified intervals and physical event normals.
+Transport still reports undefined-fill ownership and refuses to advance through
+it. A 200-candidate visitor regression checks complete traversal, range filtering
+and callback failure in both indexed and linear modes. The earlier Metal normal
+fixture now also checks the filled CPU source directly against the independently
+expanded reference.
+
+Validation: 310 tests across rendering, raycasting, numerical, traversal-work,
+geometry-query and spatial-index suites; 16 CPU compute tests; 74 Metal compute
+tests in each instruction format; 5 builder and 6 resource tests. Both viewers
+are rebuilt with CPU/Metal support.
+
+The three private CPU views were rerun at 16x12, with four CPU threads and a
+90-second process budget, and compared against the saved post-normal-fix Metal
+frames. CPU IDs and depths are unchanged in every view. Exterior still has two
+ID/material differences with near-equal depths; close-up has none; cutaway still
+has one ID/material difference and two matching-ID depth differences above 0.01
+(maximum 5.89746), accompanied by two normal differences above 0.01. No new Metal
+performance measurement is claimed. All private outputs and logs remain ignored.
+
+This correction establishes the public undefined-prefix case; it does not certify
+the CPU renderer as a universal oracle or resolve the private cutaway differences.
+The next investigation remains a bounded first-boundary reference for those rays,
+with original and quantized ray inputs kept distinct, before further Metal
+performance changes.
+
+
+## Point-query preparation experiment
+
+A temporary Metal prototype tested CPU-prepared rejection certificates for both
+root and child cell scans. Six closed outside slabs, within a finite local
+coordinate envelope, were checked against original CSG with finite operands.
+Unknown proofs and coordinates outside the envelope retained original evaluation.
+The bounded proof budget certified 529 of 450648 private cells (about 0.12%).
+Extra point-link metadata grew from 12 to 40 bytes per packed cell.
+
+Separate, sequential processes measured one context each on the established
+128x128 selected workload, compact storage and root candidates enabled. The
+prototype took 11.389 s preparation and 1.578 s warm median (five calls,
+1.461-1.889 s); the subsequent original-backend process took 11.717 s preparation
+and 2.206 s warm median (1.893-2.399 s). All 16384 selection records match exactly.
+These are sequential process observations, without alternating order; earlier
+measurements were faster than either run. They do not establish a causal speedup.
+The prototype has not passed production acceptance and is parked under ignored
+build files; no device layout, kernel branch or environment option is retained.
+
+The retained public benchmark now accepts `hierarchy`: a translated fill holding
+1024 analytic grid boxes, with independent selected/all-owner expectations. It
+isolates child scanning because root-only candidates cannot remove that work.
+The prototype certified no bounds on this fixture, and its results matched the
+analytic oracle. The unchanged production backend also passes the fixture.
+Future experiments should measure reusable preparation and substantial eliminated
+work while keeping the CPU responsible for import/preparation and native device
+kernels responsible for batched geometry queries.
+
+### Execution audit: measured primitive-root reuse
+
+The [execution audit](NATIVE_GPU_EXECUTION_AUDIT.md#bounded-root-reuse-diagnostic)
+now includes an opt-in, bounded ordinary-ray diagnostic. In three private 4x3
+samples a simulated 128-entry cache captures 79–86% of root requests while output
+remains bit-identical. This supports a narrowly scoped native Metal cache
+experiment; it is not an implemented cache or a demonstrated speedup. Public
+analytic checks, error/reset tests and both code formats pass. The private
+accuracy blocker and the separate 2D attribution work remain open.
+
+### Root cache evaluated and parked
+
+The native ordinary/resumable Metal root-cache experiment is complete. It eliminated
+85.64% of root solves in the private exterior sample but improved warm medians by
+only 0.58% and 0.07% in forward/reversed comparisons; public ordinary and progressive
+renders regressed. Outputs remained bit-identical and the prototype passed its
+geometry/lifecycle tests. It failed the performance gate and was parked locally;
+the previous renderer and reuse diagnostic are restored. See the
+[execution audit](NATIVE_GPU_EXECUTION_AUDIT.md#root-cache-prototype-implemented-tested-parked)
+for measurements and limitations. Next work should measure and reduce executed CSG
+program/interval work, with separate 2D and 3D attribution.

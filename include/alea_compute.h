@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/** Experimental, optional rendering and batch compute module (libalea_compute).
+/** Optional rendering and batch compute module (libalea_compute).
  * Native backends own their device layouts and execution; no GPU portability layer.
  * Rendering and batch point classification support transformed fill hierarchies.
  */
@@ -108,6 +108,13 @@ void alea_compute_destroy(alea_compute_t* compute);
  * experimental root-universe candidate proofs over batches of up to 4096 points
  * (default: off). Input order and results are preserved; coherent input regions
  * can reduce repeated rejection work. Proof construction is included in the call.
+ * ALEA_METAL_CSG_GROUPS=1 at snapshot creation enables ordered signed-leaf
+ * execution for pure intersection subtrees (default: off). Maps and lists belong
+ * to this context, with a 64 MiB optional preparation/storage budget. Unsupported
+ * or unavailable group storage retains generic Metal bytecode evaluation.
+ * The same option applies to select(); it does not change the ray evaluator.
+ * It can improve large CSG workloads while adding preparation and small-query
+ * overhead. Instruction profiles mark grouped operations separately by unit.
  * ALEA_METAL_POINT_PROFILE=/path/report.jsonl at snapshot creation enables
  * aggregate query diagnostics (off by default). Successful nonempty calls append
  * a record; report I/O failure returns -1. Use a separate path per concurrent
@@ -130,6 +137,14 @@ int alea_compute_classify(alea_compute_t* compute, const double* xyz,
  * camera-facing orientation is applied only for shading. Clip faces use the
  * negative clipping-plane normal. These are visualization normals, not a
  * validated physical-boundary orientation contract.
+ * ALEA_METAL_RAY_GROUPS=1 at snapshot creation enables native ordered
+ * intersection-group execution for ordinary Metal renders (default: off).
+ * It shares the optional 64 MiB maps/lists budget with point grouping, while
+ * enabling ray and point execution independently. Missing or unavailable group
+ * data retains generic Metal evaluation. Settings and buffers are context-owned.
+ * Short expressions can be slower. Ray CSV profiles append csg_groups and
+ * instruction_unit; primitive counts retain their meaning. Progressive renders
+ * continue to use generic resumable expressions and report bytecode units.
  * Config and derived camera must match framebuffer dimensions. Returns 0/-1.
  */
 int alea_compute_render(alea_compute_t* compute, const render_config_t* config,
