@@ -78,8 +78,8 @@ all: $(TOOLS)
 $(BIN_DIR)/mc_convert$(EXEEXT): mc_convert.c
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)
 
-$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c sdl_view.h viewer-config
-	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) -o $@ $< $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
+$(BIN_DIR)/mc_plotter$(EXEEXT): mc_plotter.c sdl_view.h viewer-config $(VIEW_COMPUTE_DEP)
+	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)
 
 $(BIN_DIR)/render3d$(EXEEXT): ../examples/c/render3d.c render_view.h sdl_view.h viewer-config $(VIEW_COMPUTE_DEP)
 	$(CC) $(CFLAGS) $(THREAD_FLAGS) $(INCLUDES) $(SDL_CFLAGS) $(VIEW_COMPUTE_CFLAGS) -o $@ $< $(VIEW_COMPUTE_LIBS) $(LIBS_ALL) $(SDL_LIBS) $(LDFLAGS)

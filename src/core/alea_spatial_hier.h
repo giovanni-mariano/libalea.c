@@ -374,6 +374,17 @@ int alea_hier_spatial_visit_universe_region(
     alea_system_t* sys, int universe_id, const alea_bbox_t* local_bbox,
     alea_hier_spatial_universe_region_visitor_t visitor, void* userdata,
     size_t* out_visited);
+/* Stream every ray candidate in one universe without a fixed-capacity result
+ * array. The callback returns zero to continue or negative to fail. Bounds
+ * are conservative; callers still intersect the candidate's actual surfaces. */
+typedef int (*alea_hier_universe_ray_visitor_t)(
+    uint32_t cell_index, double t_enter, double t_exit, void* context);
+int alea_hier_spatial_visit_universe_ray(
+    alea_system_t* sys, int universe_id,
+    double ox, double oy, double oz,
+    double inv_dx, double inv_dy, double inv_dz,
+    double t_min, double t_max,
+    alea_hier_universe_ray_visitor_t visitor, void* context);
 int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
                                          int universe_id,
                                          double ox,

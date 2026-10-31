@@ -1,0 +1,166 @@
+{
+  "variants": [
+    {
+      "name": "all-owner-chain0-thread0",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "all-owner",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "0",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "rays-chain0-thread0",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "rays",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "0",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "resume-chain0-thread0",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "resume",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "0",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "all-owner-chain1-thread0",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "all-owner",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "0",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1"
+      }
+    },
+    {
+      "name": "rays-chain1-thread0",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "rays",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "0",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1"
+      }
+    },
+    {
+      "name": "resume-chain1-thread0",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "resume",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "0",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1"
+      }
+    },
+    {
+      "name": "all-owner-chain0-thread1",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "all-owner",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "1",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "rays-chain0-thread1",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "rays",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "1",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "resume-chain0-thread1",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "resume",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "1",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "all-owner-chain1-thread1",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "all-owner",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "1",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1"
+      }
+    },
+    {
+      "name": "rays-chain1-thread1",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "rays",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "1",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1"
+      }
+    },
+    {
+      "name": "resume-chain1-thread1",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_query_scaling",
+        "resume",
+        "4096",
+        "4"
+      ],
+      "env": {
+        "ALEA_METAL_JUMP_THREADING": "1",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1"
+      }
+    }
+  ]
+}

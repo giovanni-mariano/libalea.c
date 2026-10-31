@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+_Static_assert(sizeof(metal_point_cell)==12,"Metal point links layout");
 _Static_assert(sizeof(compute_node)==8,"GPU instruction layout");
 _Static_assert(sizeof(compute_primitive)==56,"GPU primitive layout");
 _Static_assert(sizeof(compute_cell)==36,"GPU cell layout");
@@ -245,13 +246,15 @@ static void emit_node(pack_context* ctx,uint32_t id,size_t* at) {
 }
 
 void alea_compute_scene_free(compute_scene* s) {
-    free(s->nodes);free(s->primitives);free(s->cells);free(s->spatial);
+    free(s->nodes);free(s->primitives);free(s->cells);free(s->spatial);free(s->point_cells);
+    free(s->point_lattices);free(s->point_fills);
     alea_compute_render_free(&s->render);
     memset(s,0,sizeof(*s));
 }
 
 int alea_compute_pack_geometry(const alea_system_t* sys,compute_scene* s,int accelerate) {
     memset(s,0,sizeof(*s));
+    if(alea_compute_validate_rect_lattices(sys))return -1;
     size_t nn=sys->nodes.count,nc=sys->cells.count,np=sys->primitives.count;
     if(nn>UINT32_MAX || nc>=UINT32_MAX || np>UINT32_MAX/2 ||
        nn>SIZE_MAX/sizeof(node_info) || np>SIZE_MAX/sizeof(compute_primitive) || nc>SIZE_MAX/sizeof(compute_cell)) {
@@ -286,6 +289,7 @@ int alea_compute_pack_geometry(const alea_system_t* sys,compute_scene* s,int acc
     free(info);free(map);info=NULL;map=NULL;
     if(alea_compute_render_pack(sys,s))goto fail;
     if(accelerate && alea_compute_spatial_pack(s))goto fail;
+    if(alea_compute_point_programs_pack(s))goto fail;
     if(accelerate && alea_compute_bvh_rebuild(s))goto fail;
     return 0;
 memory:
@@ -296,4 +300,85 @@ fail:
 
 int alea_compute_pack(const alea_system_t* sys,compute_scene* s) {
     return alea_compute_pack_geometry(sys,s,1);
+}
+
+/* Exact encoding; all arguments retain their bits. A wider argument or future
+ * opcode keeps the existing format instead of truncating or rejecting input. */
+int alea_compute_code_compact(const compute_node* code,size_t count,uint32_t* output) {
+    for(size_t i=0;i<count;++i) {
+        if((i&65535)==0 && alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,"Code encoding interrupted");return -1;
+        }
+        if(code[i].op>15 || code[i].arg>0x0fffffffu)return 0;
+    }
+    for(size_t i=0;i<count;++i) {
+        if((i&65535)==0 && alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED,"Code encoding interrupted");return -1;
+        }
+        compute_node node=code[i];
+        output[i]=(node.arg<<4)|node.op;
+    }
+    return 1;
+}
+
+/* Called only after all structured-program consumers have finished. */
+typedef struct { uint32_t root,count; } jump_range;
+static int jump_range_order(const void* a,const void* b) {
+    const jump_range* x=a,*y=b;
+    if(x->root!=y->root)return x->root<y->root?-1:1;
+    return (x->count>y->count)-(x->count<y->count);
+}
+int alea_compute_thread_jumps(compute_scene* s,size_t* rewritten) {
+    *rewritten=0;
+    size_t capacity=s->cell_count+s->spatial_count;
+    if(capacity<s->cell_count || capacity>64*1024*1024/sizeof(jump_range)) {
+        alea_set_error_detail(ALEA_ERR_OVERFLOW,"Jump range scratch exceeds 64 MiB");return -1;
+    }
+    jump_range* ranges=malloc((capacity?capacity:1)*sizeof(*ranges));
+    if(!ranges){alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY,"Allocating jump ranges");return -1;}
+    size_t n=0;
+    for(size_t i=0;i<s->cell_count;++i)ranges[n++]=(jump_range){s->cells[i].root,s->cells[i].count};
+    for(size_t i=0;i<s->spatial_count;++i)if(s->spatial[i].child==COMPUTE_NONE)
+        ranges[n++]=(jump_range){s->spatial[i].root,s->spatial[i].count};
+    qsort(ranges,n,sizeof(*ranges),jump_range_order);
+    size_t unique=0;
+    for(size_t i=0;i<n;++i) {
+        jump_range r=ranges[i];
+        if((uint64_t)r.root+r.count>s->node_count)goto invalid;
+        if(unique && r.root==ranges[unique-1].root && r.count==ranges[unique-1].count)continue;
+        ranges[unique++]=r;
+    }
+    /* Validate every branch before changing any instruction. */
+    for(size_t i=0;i<unique;++i)for(uint32_t pc=0;pc<ranges[i].count;++pc) {
+        if((pc&65535)==0 && alea_interrupted())goto interrupted;
+        compute_node node=s->nodes[(size_t)ranges[i].root+pc];
+        if(node.op==COMPUTE_SKIP_UNION || node.op==COMPUTE_SKIP_INTERSECTION || node.op==COMPUTE_SKIP_REVERSE_DIFFERENCE)
+            if((uint64_t)pc+node.arg+1>ranges[i].count)goto invalid;
+    }
+    for(size_t first=0;first<unique;) {
+        size_t last=first+1;uint64_t end=(uint64_t)ranges[first].root+ranges[first].count;
+        while(last<unique && ranges[last].root<end) {
+            uint64_t next=(uint64_t)ranges[last].root+ranges[last].count;if(next>end)end=next;++last;
+        }
+        /* Nonidentical overlapping programs retain their original branches. */
+        if(last==first+1) {
+            jump_range r=ranges[first];
+            for(uint32_t pc=r.count;pc-->0;) {
+                if((pc&65535)==0 && alea_interrupted())goto interrupted;
+                compute_node* node=&s->nodes[(size_t)r.root+pc];
+                if(node->op!=COMPUTE_SKIP_UNION && node->op!=COMPUTE_SKIP_INTERSECTION)continue;
+                uint64_t target=(uint64_t)pc+node->arg+1;
+                if(target>=r.count)continue;
+                compute_node next=s->nodes[(size_t)r.root+target];
+                uint64_t arg=(uint64_t)node->arg+next.arg+1;
+                if(next.op==node->op && arg<=0x0fffffffu){node->arg=(uint32_t)arg;++*rewritten;}
+            }
+        }
+        first=last;
+    }
+    free(ranges);return 0;
+interrupted:
+    free(ranges);alea_set_error_detail(ALEA_ERR_INTERRUPTED,"Jump threading interrupted; discard snapshot");return -1;
+invalid:
+    free(ranges);alea_set_error_detail(ALEA_ERR_INVALID_STATE,"Invalid jump program range");return -1;
 }

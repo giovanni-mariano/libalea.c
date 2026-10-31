@@ -30,7 +30,7 @@ static int resume_expression_step(device const compute_node* code,device const c
         thread resume_expression& e,float3 o,float3 d,float cursor,
         thread bool& error,thread compute_profile& cost) {
     float end=e.end;
-    compute_node n=code[e.program.root+e.pc];
+    compute_node n=code_at(code,e.program.root+e.pc);
     if(profile_enabled)cost.instructions=profile_sum(cost.instructions,1);
     if(n.op==COMPUTE_CONSTANT) {
         e.values[e.sp]=n.arg?1:-1;e.until[e.sp]=end;e.boundaries[e.sp]=COMPUTE_NONE;++e.sp;
@@ -295,7 +295,10 @@ static void resume_shade(thread resume_ray& s,device const compute_cell* cells,
     thread compute_render_pixel& out=s.out;
     float3 normal=s.chosen_normal,base(colors[3*s.chosen],colors[3*s.chosen+1],colors[3*s.chosen+2]);
     bool cut=p.clip_enabled && s.begin>0 && s.best==s.begin;
-    if(cut)normal=-normalize(s.clip);if(dot(normal,s.world_d)>0)normal=-normal;
+    if(cut)normal=-normalize(s.clip);
+    /* Match CPU auxiliary output; only shading needs a facing normal. */
+    float3 output_normal=normal;
+    if(dot(normal,s.world_d)>0)normal=-normal;
     float3 color;
     if(cut)color=base*p.tint;
     else {
@@ -306,7 +309,7 @@ static void resume_shade(thread resume_ray& s,device const compute_cell* cells,
     }
     if(!all(isfinite(color)) || !all(isfinite(normal))){out.error=1;return;}
     color=clamp(color,0.0f,1.0f);
-    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=normal[a];}
+    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=output_normal[a];}
     out.depth=s.best;out.cell_id=cells[s.chosen].cell_id;out.material_id=cells[s.chosen].material_id;return;
 }
 kernel void alea_render_resume(device const compute_node* code [[buffer(0)]],

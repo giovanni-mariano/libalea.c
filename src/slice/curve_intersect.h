@@ -116,7 +116,8 @@ typedef struct {
  *
  * Stores parameters needed to evaluate torus-plane intersection.
  * The torus equation in local coords (axis along Z):
- *   (sqrt(x² + y²) - R)² + z² = r²
+ *   ((sqrt(x*x + y*y) - R)/r)^2 + (z/B)^2 = 1
+ * where B is axial_width; zero retains legacy circular data with B=r.
  *
  * For scanline intersection, we substitute P(u,v) = O + u*U + v*V
  * and solve the resulting quartic in u for fixed v.
@@ -124,6 +125,7 @@ typedef struct {
 typedef struct {
     double R;               /* Major radius */
     double r;               /* Minor radius */
+    double axial_width;     /* Positive B; zero keeps legacy circular data */
     double Ox, Oy, Oz;      /* Slice origin in torus-local coords */
     double Ux, Uy, Uz;      /* Slice U-axis in torus-local coords */
     double Vx, Vy, Vz;      /* Slice V-axis in torus-local coords */

@@ -1,0 +1,13 @@
+{
+  "variants": [
+    {
+      "name": "bounds",
+      "argv": ["build/native-gpu/bin/compute/metal/benchmark_metal_bounds_preview", "build/native-gpu/bounds-preview/public"]
+    },
+    {
+      "name": "validation",
+      "argv": ["build/native-gpu/bin/compute/metal/benchmark_metal_bounds_preview"],
+      "env": {"MTL_DEBUG_LAYER": "1"}
+    }
+  ]
+}

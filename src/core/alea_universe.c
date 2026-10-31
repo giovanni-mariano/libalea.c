@@ -1965,9 +1965,15 @@ static int find_cell_recursive(const alea_system_t* sys,
     const alea_universe_t* univ = alea_get_universe(sys, universe_id);
     if (!univ) return -1;
     
-    /* Test each cell in universe */
-    for (size_t i = 0; i < univ->cell_indices.count; i++) {
-        size_t cell_idx = univ->cell_indices.data[i];
+    /* An unhinted ordered lookup preserves model precedence, including
+     * overlaps. Unavailable acceleration or candidate allocation failure keeps
+     * the original ordered scan. Hierarchy is decided only for the winner. */
+    int selected = alea_hier_spatial_find_ordered_cell_in_universe(
+        (alea_system_t*)sys, universe_id, lx, ly, lz, -1);
+    if (selected == -1) return -1;
+    size_t count = selected >= 0 ? 1 : univ->cell_indices.count;
+    for (size_t i = 0; i < count; i++) {
+        size_t cell_idx = selected >= 0 ? (size_t)selected : univ->cell_indices.data[i];
         const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
         
         /* Lattice cell: element lookup + window containment */
@@ -1980,10 +1986,11 @@ static int find_cell_recursive(const alea_system_t* sys,
             double ely = ly - location.oy;
             double elz = lz - location.oz;
 
-            int result = find_cell_recursive(
+            /* Empty lattice slots are undefined fills, never universe zero. */
+            int result = location.fill_universe > 0 ? find_cell_recursive(
                 sys, elx, ely, elz, location.fill_universe,
                 NULL, depth + 1, max_depth,
-                out_cell_index, out_cell_id, out_material, out_depth);
+                out_cell_index, out_cell_id, out_material, out_depth) : -1;
             if (result == 0) return 0;
 
             /* Undefined fill inside a contained lattice element: the
@@ -2228,40 +2235,6 @@ int alea_find_deepest_cell_hit_at_point(alea_system_t* sys,
                                        double x, double y, double z,
                                        alea_cell_hit_t* out_hit) {
     if (!sys || !out_hit) return -1;
-
-    bool has_hierarchy = false;
-    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        const alea_cell_entry_t* cell = &sys->cells.data[i];
-        if (cell->fill_universe > 0 || (cell->lat_type != 0 && cell->lat_fill)) {
-            has_hierarchy = true;
-            break;
-        }
-    }
-
-    if (!has_hierarchy) {
-        const alea_universe_t* base = alea_get_universe(sys, 0);
-        if (!base) return -1;
-
-        for (size_t i = 0; i < base->cell_indices.count; i++) {
-            size_t cell_idx = base->cell_indices.data[i];
-            const alea_cell_entry_t* cell = &sys->cells.data[cell_idx];
-            if (!alea_contains_point(sys, cell->root_node_id, x, y, z)) continue;
-
-            out_hit->cell_id = cell->mc_cell_id;
-            out_hit->cell_index = (int)cell_idx;
-            out_hit->material_id = cell->material_id;
-            out_hit->universe_id = cell->universe_id;
-            out_hit->fill_universe = cell->fill_universe;
-            out_hit->depth = 0;
-            out_hit->local_x = x;
-            out_hit->local_y = y;
-            out_hit->local_z = z;
-            out_hit->resolution_flags = 0;
-            return 0;
-        }
-
-        return -1;
-    }
 
     if (!sys->universe_index_built) {
         alea_set_error_detail(ALEA_ERR_INVALID_STATE,

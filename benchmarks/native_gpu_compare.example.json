@@ -1,0 +1,14 @@
+{
+  "variants": [
+    {
+      "name": "wide",
+      "argv": ["bin/compute/metal/benchmark_gpu_geometry"],
+      "env": {"ALEA_METAL_COMPACT_CODE": "0"}
+    },
+    {
+      "name": "compact",
+      "argv": ["bin/compute/metal/benchmark_gpu_geometry"],
+      "env": {"ALEA_METAL_COMPACT_CODE": "1"}
+    }
+  ]
+}

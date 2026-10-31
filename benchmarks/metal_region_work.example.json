@@ -1,0 +1,60 @@
+{
+  "variants": [
+    {
+      "name": "compact",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_region_work",
+        "build/native-gpu/region-execution/compact.csv"
+      ],
+      "env": {
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "wide-validation",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_region_work",
+        "build/native-gpu/region-execution/wide-validation.csv"
+      ],
+      "env": {
+        "ALEA_METAL_COMPACT_CODE": "0",
+        "MTL_DEBUG_LAYER": "1"
+      }
+    },
+    {
+      "name": "chain",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_region_work",
+        "build/native-gpu/region-execution/chain.csv"
+      ],
+      "env": {
+        "ALEA_BENCH_CSG_CHAIN": "1",
+        "ALEA_METAL_COMPACT_CODE": "1"
+      }
+    },
+    {
+      "name": "selected",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_region_work",
+        "build/native-gpu/region-execution/selected.csv"
+      ],
+      "env": {
+        "ALEA_BENCH_REGION_SELECT": "1",
+        "ALEA_METAL_COMPACT_CODE": "1",
+        "MTL_DEBUG_LAYER": "1"
+      }
+    },
+    {
+      "name": "selected-chain",
+      "argv": [
+        "build/native-gpu/bin/compute/metal/benchmark_metal_region_work",
+        "build/native-gpu/region-execution/selected-chain.csv"
+      ],
+      "env": {
+        "ALEA_BENCH_REGION_SELECT": "1",
+        "ALEA_BENCH_CSG_CHAIN": "1",
+        "ALEA_METAL_COMPACT_CODE": "0"
+      }
+    }
+  ]
+}

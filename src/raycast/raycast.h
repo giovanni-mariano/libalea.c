@@ -274,6 +274,8 @@ struct alea_raycast_result {
     /* Fail-closed geometric breakpoint collection for particle validation. */
     /* Recovery retains only the nearest crossing strictly after this t. */
     uint8_t breakpoint_nearest_only;
+    uint8_t recovery_context_warmup; /* Allocate only after repeated scans. */
+    void* recovery_context; /* Borrowed scratch, scoped to one nearest recovery. */
     double breakpoint_t_min;
     size_t breakpoint_hit_limit;
     uint8_t breakpoint_failed;
@@ -815,11 +817,15 @@ int alea_raycast_hier_any_hit_nocache(
  *
  * Like alea_raycast_hier_with_hits_nocache() but skips boundary-hit
  * reconstruction; produces material/path segments only. Use when surface
- * normals are not needed (e.g. x-ray accumulation).
+ * normals are not needed (e.g. x-ray accumulation). Set collect_boundary_groups
+ * when published surface IDs must include coincident crossing provenance.
+ * Ownership-only consumers can skip that enrichment; traversal and path
+ * verification remain identical.
  */
 int alea_raycast_hier_segments_nocache(alea_system_t* sys,
                                        const alea_ray_t* ray,
                                        double t_max,
+                                       bool collect_boundary_groups,
                                        alea_raycast_result_t* result);
 
 /* Internal scalar streaming adapter for consumers that need selected material

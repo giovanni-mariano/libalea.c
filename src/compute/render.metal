@@ -1,6 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
 #include "intersect.metal"
+#include "compute_root_reuse.h"
+
+#ifndef COMPUTE_RAY_AUDIT_PARAMETERS
+#define COMPUTE_RAY_AUDIT_PARAMETERS
+#define COMPUTE_RAY_AUDIT_ARGUMENTS
+#define COMPUTE_RAY_AUDIT_BEGIN
+#define COMPUTE_RAY_AUDIT_STEP
+#define COMPUTE_RAY_AUDIT_BUFFER
+#define COMPUTE_RAY_AUDIT_LOCAL
+#define COMPUTE_RAY_AUDIT_STORE
+#endif
+
+constant bool root_reuse_enabled [[function_constant(8)]];
 
 constant bool profile_enabled [[function_constant(0)]];
 constant uint lazy_threshold [[function_constant(2)]];
@@ -13,6 +26,8 @@ static void profile_atomic_add(device atomic_uint* p,uint value) {
 }
 
 
+#include "ray_groups.metal"
+
 /* Evaluate a CSG program over the open ray interval beginning at cursor.
  * Each value carries the next crossing up to which its truth is constant.
  * Short-circuiting also skips surface intersections: a failed intersection
@@ -20,17 +35,29 @@ static void profile_atomic_add(device atomic_uint* p,uint value) {
  * This avoids sorting every surface in large cell expressions. */
 static bool ray_expression(device const compute_node* code,device const compute_primitive* primitives,
         compute_cell cell,float3 o,float3 d,float cursor,float end,
-        thread float& next,thread uint& surface,thread uint& at_cursor,thread bool& error,thread compute_profile& cost) {
+        thread float& next,thread uint& surface,thread uint& at_cursor,thread bool& error,thread compute_profile& cost,device compute_root_reuse* reuse COMPUTE_RAY_AUDIT_PARAMETERS COMPUTE_RAY_EXECUTE_PARAMETERS) {
+    COMPUTE_RAY_EXECUTE_SETUP
+    COMPUTE_RAY_AUDIT_BEGIN
     int values[COMPUTE_STACK];float until[COMPUTE_STACK];uint boundaries[COMPUTE_STACK];uint sp=0;
     for(uint i=0;i<cell.count;++i) {
-        compute_node n=code[cell.root+i];
+        COMPUTE_RAY_EXECUTE_STEP
+        compute_node n=code_at(code,cell.root+i);
+        COMPUTE_RAY_AUDIT_STEP
         if(profile_enabled)cost.instructions=profile_sum(cost.instructions,1);
         if(n.op==COMPUTE_CONSTANT) {
             values[sp]=n.arg?1:-1;until[sp]=end;boundaries[sp]=COMPUTE_NONE;++sp;
         } else if(n.op==COMPUTE_LEAF) {
             uint id=n.arg>>1;float4 roots;float crossing=end;uint boundary=COMPUTE_NONE;
             if(profile_enabled)cost.primitives=profile_sum(cost.primitives,1);
-            uint count=primitive_roots(primitives[id],o,d,roots,error);if(error)return false;
+            uint count=primitive_roots(primitives[id],o,d,roots,error);
+            if(root_reuse_enabled) {
+                uint key[7]={id,as_type<uint>(o.x),as_type<uint>(o.y),as_type<uint>(o.z),
+                    as_type<uint>(d.x),as_type<uint>(d.y),as_type<uint>(d.z)};
+                uint rejected=uint(error);
+                if(!error)for(uint j=0;j<count;++j)if(!isfinite(roots[j]))rejected=2;
+                root_reuse_record(reuse,key,primitives[id].type,rejected);
+            }
+            if(error)return false;
             for(uint j=0;j<count;++j) {
                 if(roots[j]==cursor)at_cursor=id;
                 if(roots[j]>cursor && roots[j]<crossing){crossing=roots[j];boundary=id;}
@@ -100,7 +127,7 @@ static bool cell_interval_impl(device const compute_node* code,device const comp
         compute_cell cell,
         float3 o,float3 d,float begin,float end,bool want_exit,
         thread float& enter,thread float& exit,thread uint& surface,thread bool& error,
-        thread compute_profile& cost,device const compute_spatial_program* spatial) {
+        thread compute_profile& cost,device const compute_spatial_program* spatial,device compute_root_reuse* reuse COMPUTE_RAY_AUDIT_PARAMETERS COMPUTE_RAY_EXECUTE_PARAMETERS) {
     float cursor=begin,segment_end=begin;uint entering=COMPUTE_NONE;bool found=false;uint steps=0;
     compute_cell program=cell;
     while(cursor<end) {
@@ -112,7 +139,7 @@ static bool cell_interval_impl(device const compute_node* code,device const comp
         if(cursor>=segment_end) {
             segment_end=end;program=spatial_segment(cell,o,d,cursor,segment_end,spatial);
         }
-        bool inside=ray_expression(code,primitives,program,o,d,cursor,segment_end,next,boundary,at_cursor,error,cost);
+        bool inside=ray_expression(code,primitives,program,o,d,cursor,segment_end,next,boundary,at_cursor,error,cost,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS);
         if(error)return false;
         if(entering==COMPUTE_NONE)entering=at_cursor;
         if(inside && !found) {
@@ -130,9 +157,9 @@ static bool cell_interval(device const compute_node* code,device const compute_p
         compute_cell cell,float3 o,float3 d,float begin,float end,bool want_exit,
         thread float& enter,thread float& exit,thread uint& surface,thread bool& error,
         thread compute_profile& ray,device compute_profile* cells,uint id,
-        device const compute_spatial_program* spatial) {
+        device const compute_spatial_program* spatial,device compute_root_reuse* reuse COMPUTE_RAY_AUDIT_PARAMETERS COMPUTE_RAY_EXECUTE_PARAMETERS) {
     compute_profile cost={};
-    bool hit=cell_interval_impl(code,primitives,cell,o,d,begin,end,want_exit,enter,exit,surface,error,cost,spatial);
+    bool hit=cell_interval_impl(code,primitives,cell,o,d,begin,end,want_exit,enter,exit,surface,error,cost,spatial,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS);
     if(profile_enabled) {
         ray.cells=profile_sum(ray.cells,1);
         ray.instructions=profile_sum(ray.instructions,cost.instructions);
@@ -175,7 +202,7 @@ static bool defer_parent(compute_cell c) {
 static bool parent_truth(device const compute_node* code,device const compute_primitive* primitives,
         device const compute_cell* cells,thread render_frame& cache,thread const render_frame& owner,
         float cursor,float limit,thread bool& error,thread compute_profile& cost,
-        device compute_profile* cell_costs,device const compute_spatial_program* spatial) {
+        device compute_profile* cell_costs,device const compute_spatial_program* spatial,device compute_root_reuse* reuse COMPUTE_RAY_AUDIT_PARAMETERS COMPUTE_RAY_EXECUTE_PARAMETERS) {
     if(profile_enabled)cost.parents=profile_sum(cost.parents,1);
     if(cursor>=cache.guard_lo && cursor<cache.guard_hi) {
         if(profile_enabled)cost.cache_hits=profile_sum(cost.cache_hits,1);
@@ -183,7 +210,7 @@ static bool parent_truth(device const compute_node* code,device const compute_pr
     }
     float end=limit;compute_cell program=spatial_segment(cells[cache.guard],owner.o,owner.d,cursor,end,spatial);
     uint surface,at_cursor=COMPUTE_NONE;float next;compute_profile work={};
-    bool inside=ray_expression(code,primitives,program,owner.o,owner.d,cursor,end,next,surface,at_cursor,error,work);
+    bool inside=ray_expression(code,primitives,program,owner.o,owner.d,cursor,end,next,surface,at_cursor,error,work,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS);
     if(error || next<=cursor){error=true;return false;}
     uint entering=cache.guard_hi==cursor && cache.guard_boundary!=COMPUTE_NONE?cache.guard_boundary:at_cursor;
     cache.guard_lo=cursor;cache.guard_hi=next;cache.guard_inside=inside;
@@ -273,7 +300,7 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
         device const compute_lattice* lattices,device const uint* fills,
         device const float* colors,constant compute_render_params& p,float2 pixel,
         thread compute_profile& cost,device compute_profile* cell_costs,
-        device const compute_spatial_program* spatial) {
+        device const compute_spatial_program* spatial,device compute_root_reuse* reuse COMPUTE_RAY_AUDIT_PARAMETERS COMPUTE_RAY_EXECUTE_PARAMETERS) {
     float3 world_o(p.eye[0],p.eye[1],p.eye[2]),world_d(p.forward[0],p.forward[1],p.forward[2]);
     float3 right(p.right[0],p.right[1],p.right[2]),up(p.up[0],p.up[1],p.up[2]);
     float u=(2*pixel.x/p.width-1)*p.half_width,v=(1-2*pixel.y/p.height)*p.half_height;
@@ -317,7 +344,7 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
                 if(lo>f.begin)normal=to_world_normal(f,local_normal);
             } else if(!lazy) {
                 if(profile_enabled)cost.parents=profile_sum(cost.parents,1);
-                if(!cell_interval(code,primitives,c,f.o,f.d,lo,limit,true,lo,hi,surface,error,cost,cell_costs,id,spatial)) {
+                if(!cell_interval(code,primitives,c,f.o,f.d,lo,limit,true,lo,hi,surface,error,cost,cell_costs,id,spatial,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS)) {
                     if(error){out.error=1;return out;}f.pending=COMPUTE_NONE;continue;
                 }
                 if(surface!=COMPUTE_NONE)normal=to_world_normal(f,surface_normal(primitives[surface],f.o+lo*f.d));
@@ -394,13 +421,13 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
          * never substitutes for a physical surface or its shading normal. */
         float padding=max(.001f,max(abs(boxlo),abs(boxhi))*1e-5f);
         float cell_begin=max(f.begin,boxlo-padding),cell_end=min(limit,boxhi+padding);
-        while(cell_begin<cell_end && cell_interval(code,primitives,c,f.o,f.d,cell_begin,cell_end,false,lo,hi,surface,error,cost,cell_costs,id,spatial)) {
+        while(cell_begin<cell_end && cell_interval(code,primitives,c,f.o,f.d,cell_begin,cell_end,false,lo,hi,surface,error,cost,cell_costs,id,spatial,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS)) {
             float3 normal=surface==COMPUTE_NONE?f.entry_normal:
                 to_world_normal(f,surface_normal(primitives[surface],f.o+lo*f.d));
             bool accepted=true;
             if(lazy_threshold)for(int a=1;a<=top;++a) {
                 thread render_frame& guard=stack[a];if(guard.guard==COMPUTE_NONE)continue;
-                if(!parent_truth(code,primitives,cells,guard,stack[a-1],lo,cell_end,error,cost,cell_costs,spatial)) {
+                if(!parent_truth(code,primitives,cells,guard,stack[a-1],lo,cell_end,error,cost,cell_costs,spatial,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS)) {
                     if(profile_enabled)cost.rejected=profile_sum(cost.rejected,1);
                     cell_begin=guard.guard_hi;accepted=false;break;
                 }
@@ -416,7 +443,10 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
     if(chosen==COMPUTE_NONE)return out;
     float3 normal=chosen_normal,base(colors[3*chosen],colors[3*chosen+1],colors[3*chosen+2]);
     bool cut=p.clip_enabled && begin>0 && best==begin;
-    if(cut)normal=-normalize(clip);if(dot(normal,world_d)>0)normal=-normal;
+    if(cut)normal=-normalize(clip);
+    /* Match CPU auxiliary output; only shading needs a facing normal. */
+    float3 output_normal=normal;
+    if(dot(normal,world_d)>0)normal=-normal;
     float3 color;
     if(cut)color=base*p.tint;
     else {
@@ -427,7 +457,7 @@ static compute_render_pixel trace_pixel(device const compute_node* code,
     }
     if(!all(isfinite(color)) || !all(isfinite(normal))){out.error=1;return out;}
     color=clamp(color,0.0f,1.0f);
-    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=normal[a];}
+    for(uint a=0;a<3;++a){out.color[a]=color[a];out.normal[a]=output_normal[a];}
     out.depth=best;out.cell_id=cells[chosen].cell_id;out.material_id=cells[chosen].material_id;return out;
 }
 
@@ -440,21 +470,31 @@ kernel void alea_render_image(device const compute_node* code [[buffer(0)]],
         device compute_profile* ray_costs [[buffer(11)]],
         device compute_profile* cell_costs [[buffer(12)]],
         device const compute_spatial_program* spatial [[buffer(15)]],
+        device compute_root_reuse* reuse_states [[buffer(14)]],
+        COMPUTE_RAY_AUDIT_BUFFER
+        COMPUTE_RAY_EXECUTE_BUFFER
         uint index [[thread_position_in_grid]]) {
     index+=tile.offset;
     index=(tile.y+index/tile.width)*p.width+tile.x+index%tile.width;
     if(index>=p.width*p.height)return;
+    device compute_root_reuse* reuse=nullptr;
+    if(root_reuse_enabled)reuse=reuse_states+index;
+    COMPUTE_RAY_AUDIT_LOCAL
     compute_profile cost={};
     float2 origin(index%p.width,index/p.width);compute_render_pixel output={};float3 sum(0);int error=0;
     for(uint y=0;y<p.aa;++y)for(uint x=0;x<p.aa;++x) {
+        if(root_reuse_enabled)root_reuse_reset(reuse);
         compute_render_pixel sample=trace_pixel(code,primitives,cells,bvh,transforms,lattices,fills,colors,p,
-            origin+(float2(x,y)+.5f)/float(p.aa),cost,cell_costs,spatial);
+            origin+(float2(x,y)+.5f)/float(p.aa),cost,cell_costs,spatial,reuse COMPUTE_RAY_AUDIT_ARGUMENTS COMPUTE_RAY_EXECUTE_ARGUMENTS);
         sum+=float3(sample.color[0],sample.color[1],sample.color[2]);error=max(error,sample.error);
         if(x==p.aa/2 && y==p.aa/2)output=sample;
     }
     for(uint a=0;a<3;++a)output.color[a]=sum[a]/float(p.aa*p.aa);
     output.error=error;pixels[index]=output;
+    COMPUTE_RAY_AUDIT_STORE
     if(profile_enabled)ray_costs[index]=cost;
 }
 
+#ifndef COMPUTE_RENDER_NO_RESUME
 #include "resume.metal"
+#endif

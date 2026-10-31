@@ -1,0 +1,26 @@
+Eight translated fill levels ending at an analytic planar interface
+c Every fill translates the child by 0.25 along x. The terminal interface
+c is therefore x=2 in world coordinates. All containers clip the child.
+100 0 -100 FILL=1 (0.25 0 0)
+101 0 -101 U=1 FILL=2 (0.25 0 0)
+102 0 -102 U=2 FILL=3 (0.25 0 0)
+103 0 -103 U=3 FILL=4 (0.25 0 0)
+104 0 -104 U=4 FILL=5 (0.25 0 0)
+105 0 -105 U=5 FILL=6 (0.25 0 0)
+106 0 -106 U=6 FILL=7 (0.25 0 0)
+107 0 -107 U=7 FILL=8 (0.25 0 0)
+1 1 -1 -1 U=8
+2 2 -1 1 U=8
+
+100 so 20
+101 so 19
+102 so 18
+103 so 17
+104 so 16
+105 so 15
+106 so 14
+107 so 13
+1 px 0
+
+m1 1001 1
+m2 8016 1

@@ -11,8 +11,9 @@
 extern "C" {
 #endif
 
-/** Experimental, optional rendering and batch compute module (libalea_compute).
- * Rendering supports nested universes; batch point classification is flat-only.
+/** Optional rendering and batch compute module (libalea_compute).
+ * Native backends own their device layouts and execution; no GPU portability layer.
+ * Rendering and batch point classification support transformed fill hierarchies.
  */
 typedef struct alea_compute alea_compute_t;
 
@@ -29,8 +30,35 @@ typedef enum {
 typedef struct {
     int32_t cell_id;      /**< -1 unless exactly one cell owns the point. */
     int32_t material_id;  /**< -1 unless exactly one cell owns the point. */
-    uint32_t owner_count; /**< 0 = gap, 1 = unique, >1 = overlap. */
+    uint32_t owner_count; /**< Terminal occurrences: 0 = gap, 1 = unique, >1 = overlap. */
 } alea_compute_result_t;
+
+/** Ordered selection status; undefined fills return the winning container. */
+typedef enum {
+    ALEA_COMPUTE_NOT_FOUND = 0,
+    ALEA_COMPUTE_FOUND = 1,
+    ALEA_COMPUTE_UNDEFINED_FILL = 2
+} alea_compute_selection_status_t;
+typedef struct {
+    int32_t cell_id, material_id; /**< -1 for NOT_FOUND. */
+    int32_t depth;                /**< Root = 0; -1 for NOT_FOUND. */
+    uint32_t status;              /**< alea_compute_selection_status_t. */
+} alea_compute_selection_t;
+
+/** Select the first containing cell in model order, descending its fill path.
+ * A hole in the winning fill returns its container with UNDEFINED_FILL; later
+ * overlapping siblings are not considered. Terminal void is FOUND. NOT_FOUND
+ * is a valid per-point result. This is separate from all-owner classification.
+ * Snapshot, precision, storage, empty-batch and error rules match classify().
+ * Supports the same rectangular lattice subset; root depth is zero. Metal
+ * selection submits at most 4096 points at a time. Candidate/program switches
+ * apply; ALEA_METAL_POINT_PROFILE reports classification only.
+ * ALEA_METAL_SELECT_PROFILE=/path/report.jsonl enables opt-in cell/depth
+ * attribution for selection (off by default; substantial instrumentation cost).
+ * Returns 0 on success, -1 on failure (outputs unspecified on failure).
+ */
+int alea_compute_select(alea_compute_t* compute,const double* xyz,size_t count,
+                        alea_compute_selection_t* results);
 
 /** Return whether a backend was built and a suitable device is available.
  * Does not guarantee that a particular geometry or allocation is supported.
@@ -55,12 +83,44 @@ alea_compute_t* alea_compute_create(const alea_system_t* sys,
 void alea_compute_destroy(alea_compute_t* compute);
 
 /** Synchronously classify count interleaved XYZ triples.
- * Requires flat universe-0 cells with no fills or lattices. This is a sampled
- * ownership query, not a geometry proof.
+ * Counts terminal owning occurrences from universe 0, including terminal void,
+ * under all containing fill ancestors. Repeated placements count separately.
+ * Containers are not owners; a gap in their contents remains a gap. IDs are -1
+ * unless ownership is unique. Supports transformed fills through 32 universe
+ * levels and finite/repeating rectangular lattices, including outer fills.
+ * Empty/nonpositive element fills are gaps; lattice containers are not owners.
+ * Element selection uses floor on tiled axes. Finite singleton Y/Z windows
+ * include the upper face, matching core point lookup; untiled Z remains
+ * unshifted in center coordinates. Hexagonal lattices and lattice-local fill
+ * transforms are rejected. Metal also rejects element indices whose magnitude
+ * exceeds 16777215 rather than aliasing adjacent FP32 indices.
+ * This samples points, not complete intervals or thin-feature visibility.
+ * Metal uses approximate FP32 evaluation, including transformed coordinates.
  * All inputs must be finite; Metal inputs must also fit in float. Input and
  * output storage must not overlap. count == 0 permits NULL arrays.
  * One context must not be used concurrently. Different contexts are independent.
- * Metal buffers are reused between calls; geometry is uploaded only at create.
+ * Metal buffers are reused between calls; hierarchy buffers upload lazily once.
+ * Certified spatial CSG programs reduce expression work inside their domains;
+ * original programs remain the fallback. All cells in visited universes remain
+ * eligible, including void. ALEA_METAL_POINT_SPATIAL=0 at snapshot creation
+ * disables point-program selection for comparison (default: enabled).
+ * ALEA_METAL_POINT_CANDIDATES=1 at snapshot creation additionally enables
+ * experimental root-universe candidate proofs over batches of up to 4096 points
+ * (default: off). Input order and results are preserved; coherent input regions
+ * can reduce repeated rejection work. Proof construction is included in the call.
+ * ALEA_METAL_CSG_GROUPS=1 at snapshot creation enables ordered signed-leaf
+ * execution for pure intersection subtrees (default: off). Maps and lists belong
+ * to this context, with a 64 MiB optional preparation/storage budget. Unsupported
+ * or unavailable group storage retains generic Metal bytecode evaluation.
+ * The same option applies to select(); it does not change the ray evaluator.
+ * It can improve large CSG workloads while adding preparation and small-query
+ * overhead. Instruction profiles mark grouped operations separately by unit.
+ * ALEA_METAL_POINT_PROFILE=/path/report.jsonl at snapshot creation enables
+ * aggregate query diagnostics (off by default). Successful nonempty calls append
+ * a record; report I/O failure returns -1. Use a separate path per concurrent
+ * context. Profiling adds overhead; disable it for performance comparisons.
+ * Hierarchical Metal batches submit up to 4096 points at a time, checking
+ * cancellation between submissions; an individual submission has no time bound.
  * Returns 0 on success, -1 on error (output is unspecified on error).
  */
 int alea_compute_classify(alea_compute_t* compute, const double* xyz,
@@ -73,6 +133,18 @@ int alea_compute_classify(alea_compute_t* compute, const double* xyz,
  * material/cell colors, and up to 4x4 supersampling. Shadows,
  * X-ray rendering, density/universe colors and selection filters are rejected.
  * Edge darkening and depth/ID visualization remain caller-side postprocessing.
+ * Auxiliary normals preserve source-surface orientation as in render_scene();
+ * camera-facing orientation is applied only for shading. Clip faces use the
+ * negative clipping-plane normal. These are visualization normals, not a
+ * validated physical-boundary orientation contract.
+ * ALEA_METAL_RAY_GROUPS=1 at snapshot creation enables native ordered
+ * intersection-group execution for ordinary Metal renders (default: off).
+ * It shares the optional 64 MiB maps/lists budget with point grouping, while
+ * enabling ray and point execution independently. Missing or unavailable group
+ * data retains generic Metal evaluation. Settings and buffers are context-owned.
+ * Short expressions can be slower. Ray CSV profiles append csg_groups and
+ * instruction_unit; primitive counts retain their meaning. Progressive renders
+ * continue to use generic resumable expressions and report bytecode units.
  * Config and derived camera must match framebuffer dimensions. Returns 0/-1.
  */
 int alea_compute_render(alea_compute_t* compute, const render_config_t* config,

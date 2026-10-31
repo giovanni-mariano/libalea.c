@@ -1,0 +1,6 @@
+{
+  "variants": [
+    {"name":"compact","argv":["build/native-gpu/bin/compute/metal/benchmark_metal_point_work","build/native-gpu/work-audit/public-compact.csv"],"env":{"ALEA_METAL_COMPACT_CODE":"1"}},
+    {"name":"wide-validation","argv":["build/native-gpu/bin/compute/metal/benchmark_metal_point_work","build/native-gpu/work-audit/public-wide.csv"],"env":{"ALEA_METAL_COMPACT_CODE":"0","MTL_DEBUG_LAYER":"1"}}
+  ]
+}

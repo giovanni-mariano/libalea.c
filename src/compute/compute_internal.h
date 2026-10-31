@@ -3,6 +3,7 @@
 #ifndef ALEA_COMPUTE_INTERNAL_H
 #define ALEA_COMPUTE_INTERNAL_H
 #include "alea_compute.h"
+int alea_compute_validate_rect_lattices(const alea_system_t* sys);
 #ifdef ALEA_USE_METAL
 #include "compute_layout.h"
 typedef struct {
@@ -15,13 +16,37 @@ typedef struct {
 } compute_render_scene;
 typedef struct {
     compute_node* nodes;
+    const uint32_t* compact_nodes; /* Borrowed Metal buffer view for host proofs. */
     compute_primitive* primitives;
     compute_cell* cells;
     size_t node_count, primitive_count, cell_count;
     compute_spatial_program* spatial;
     size_t spatial_count;
+    metal_point_cell* point_cells;
+    compute_uint point_root;
+    compute_lattice* point_lattices; /* Outer/fill links include terminal void. */
+    compute_uint* point_fills;
+    size_t point_lattice_count, point_fill_count;
     compute_render_scene render;
 } compute_scene;
+/* Logical instruction addresses are unchanged by the Metal storage format. */
+static inline compute_node alea_compute_node_at(const compute_scene* s,size_t i) {
+    if(s->compact_nodes){uint32_t word=s->compact_nodes[i];return (compute_node){word&15u,word>>4};}
+    return s->nodes[i];
+}
+/* Returns 1 when encoded, 0 without writing if any instruction needs the wide
+ * format, or -1 on interruption. Input and output may share an allocation. */
+/* Mutates unpublished wide code; discard the snapshot after failure. */
+int alea_compute_thread_jumps(compute_scene* scene,size_t* rewritten);
+int alea_compute_code_compact(const compute_node* code,size_t count,uint32_t* output);
+int alea_compute_point_programs_pack(compute_scene* scene);
+typedef struct { uint64_t cells, rejected, instructions, primitives, budget_fallbacks; } compute_candidate_stats;
+/* Scratch signs and next links belong to the caller. Bounds enclose the actual
+ * converted FP32 inputs; only root-universe candidates are filtered. */
+int alea_compute_point_candidates(const compute_scene* scene,const float bounds[6],
+    int8_t* signs,uint32_t* next,uint32_t* root,compute_candidate_stats* stats);
+
+int alea_compute_primitive_sign_finite(const compute_primitive* primitive, const float bounds[6], int* finite);
 int alea_compute_primitive_sign(const compute_primitive* primitive, const float bounds[6]);
 int alea_compute_spatial_pack(compute_scene* scene);
 int alea_compute_bvh_rebuild(compute_scene* scene);
@@ -36,12 +61,13 @@ int alea_compute_render_pack(const alea_system_t* sys, compute_scene* scene);
 void alea_compute_render_free(compute_render_scene* render);
 int alea_compute_profile_write(const char* prefix, const compute_profile* rays,
     const compute_profile* costs, const compute_cell* cells, size_t cell_count,
-    unsigned width, unsigned height);
+    unsigned width, unsigned height, int grouped);
 int alea_compute_metal_available(void);
 void* alea_compute_metal_create(const alea_system_t* sys);
 void alea_compute_metal_destroy(void* state);
 int alea_compute_metal_classify(void* state, const double* xyz, size_t count,
                                 alea_compute_result_t* results);
+int alea_compute_metal_select(void* state,const double* xyz,size_t count,alea_compute_selection_t* results);
 int alea_compute_metal_render(void* state, const render_config_t* cfg,
                               const render_camera_t* cam, render_framebuffer_t* fb,
                               alea_compute_render_progress_t progress, void* user);

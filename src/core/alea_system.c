@@ -192,6 +192,14 @@ static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         alea_vec_free(&sys->universes.data[i].cell_indices);
         alea_vec_free(&sys->universes.data[i].point_bvh_nodes);
+        free(sys->universes.data[i].recovery_surfaces);
+        sys->universes.data[i].recovery_surfaces = NULL;
+        sys->universes.data[i].recovery_surface_count = 0;
+        sys->universes.data[i].recovery_surfaces_attempted = false;
+        free(sys->universes.data[i].recovery_child_cells);
+        sys->universes.data[i].recovery_child_cells = NULL;
+        sys->universes.data[i].recovery_child_count = 0;
+        sys->universes.data[i].recovery_children_ready = false;
         free(sys->universes.data[i].point_bvh_indices);
         sys->universes.data[i].point_bvh_indices = NULL;
         sys->universes.data[i].point_bvh_built = false;
@@ -217,6 +225,22 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
         alea_clear_universe_cache(sys, free_universe_vector);
     }
 
+    if (flags & ALEA_CACHE_RECOVERY_CHILDREN) {
+        for (size_t i = 0; i < sys->universes.count; i++) {
+            free(sys->universes.data[i].recovery_child_cells);
+            sys->universes.data[i].recovery_child_cells = NULL;
+            sys->universes.data[i].recovery_child_count = 0;
+            sys->universes.data[i].recovery_children_ready = false;
+        }
+    }
+    if (flags & ALEA_CACHE_RECOVERY_SURFACES) {
+        for (size_t i = 0; i < sys->universes.count; i++) {
+            free(sys->universes.data[i].recovery_surfaces);
+            sys->universes.data[i].recovery_surfaces = NULL;
+            sys->universes.data[i].recovery_surface_count = 0;
+            sys->universes.data[i].recovery_surfaces_attempted = false;
+        }
+    }
     if (flags & ALEA_CACHE_CELL_SURFACES) {
         for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
             free(sys->cells.data[i].surface_indices);
@@ -265,6 +289,10 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys || flags == 0) return;
 
+    if (flags & (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES))
+        flags |= ALEA_CACHE_RECOVERY_SURFACES;
+    if (flags & ALEA_CACHE_UNIVERSE)
+        flags |= ALEA_CACHE_RECOVERY_CHILDREN;
     unsigned invalidated_flags = flags;
 
     unsigned prev_state = atomic_fetch_and(&sys->query_cache_state, ~flags);
@@ -285,6 +313,121 @@ void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     alea_free_query_cache_storage(sys, flags, false);
 }
 
+/* Build optional first-occurrence card lists while the cache lock is held.
+ * A missing/oversized list always retains the per-cell recovery scan. */
+static int prepare_recovery_surfaces(alea_system_t* sys) {
+    if (!alea_system_query_cache_ready(sys, ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES))
+        return 0;
+    const size_t budget = 64 * 1024 * 1024;
+    const size_t bytes = sys->surfaces.count / 8 + (sys->surfaces.count % 8 != 0);
+    if (!bytes || bytes > 1024 * 1024) return 0;
+    size_t used = 0;
+    for (size_t u = 0; u < sys->universes.count; u++)
+        used += sys->universes.data[u].recovery_surface_count * sizeof(uint32_t);
+    uint8_t* seen = calloc(bytes, 1);
+    if (!seen) return 0;
+    for (size_t u = 0; u < sys->universes.count; u++) {
+        alea_universe_t* univ = &sys->universes.data[u];
+        if (univ->recovery_surfaces_attempted) continue;
+        univ->recovery_surfaces_attempted = true;
+        if (univ->cell_indices.count < 2) continue;
+        memset(seen, 0, bytes);
+        uint32_t* cards = NULL;
+        size_t count = 0, capacity = 0;
+        bool complete = true;
+        for (size_t c = 0; c < univ->cell_indices.count && complete; c++) {
+            size_t ci = univ->cell_indices.data[c];
+            if (ci >= sys->cells.count) { complete = false; break; }
+            const alea_cell_entry_t* cell = &sys->cells.data[ci];
+            if (!cell->surface_indices || !cell->surface_index_count) {
+                complete = false; break;
+            }
+            for (size_t i = 0; i < cell->surface_index_count; i++) {
+                if ((i & 1023) == 0 && alea_interrupted()) {
+                    free(cards); free(seen);
+                    univ->recovery_surfaces_attempted = false;
+                    alea_set_error_detail(ALEA_ERR_INTERRUPTED, "preparing recovery surfaces interrupted");
+                    return -1;
+                }
+                uint32_t index = cell->surface_indices[i];
+                if (index >= sys->surfaces.count) { complete = false; break; }
+                uint8_t mask = (uint8_t)(1u << (index & 7));
+                if (seen[index >> 3] & mask) continue;
+                seen[index >> 3] |= mask;
+                if (count == capacity) {
+                    size_t next = capacity ? capacity * 2 : 64;
+                    size_t limit = (budget - used) / sizeof(uint32_t);
+                    if (next > limit) next = limit;
+                    if (next <= count) { complete = false; break; }
+                    uint32_t* grown = realloc(cards, next * sizeof(uint32_t));
+                    if (!grown) { complete = false; break; }
+                    cards = grown; capacity = next;
+                }
+                cards[count++] = index;
+            }
+        }
+        if (complete && count) {
+            uint32_t* shrunk = realloc(cards, count * sizeof(uint32_t));
+            /* Optional cache: discard on shrink failure to keep the cap exact. */
+            if (!shrunk) { free(cards); continue; }
+            univ->recovery_surfaces = shrunk;
+            univ->recovery_surface_count = count;
+            used += count * sizeof(uint32_t);
+        } else free(cards);
+    }
+    free(seen);
+    return 0;
+}
+
+/* Called under the preparation lock. Two passes keep retained storage exact;
+ * unavailable lists preserve the original scan, including invalid cell indices. */
+static int prepare_recovery_children(alea_system_t* sys) {
+    const size_t budget = 8 * 1024 * 1024;
+    size_t used = 0;
+    for (size_t u = 0; u < sys->universes.count; u++)
+        used += sys->universes.data[u].recovery_child_count * sizeof(size_t);
+    for (size_t u = 0; u < sys->universes.count; u++) {
+        ALEA_CHECK_INTERRUPTED(-1);
+        alea_universe_t* univ = &sys->universes.data[u];
+        if (univ->recovery_children_ready) continue;
+        size_t count = 0;
+        bool complete = true;
+        for (size_t i = 0; i < univ->cell_indices.count; i++) {
+            if ((i & 1023) == 0) { ALEA_CHECK_INTERRUPTED(-1); }
+            size_t ci = univ->cell_indices.data[i];
+            if (ci >= sys->cells.count) { complete = false; break; }
+            const alea_cell_entry_t* cell = &sys->cells.data[ci];
+            if (cell->fill_universe > 0 || (cell->lat_type != 0 && cell->lat_fill)) {
+                if (count == (budget - used) / sizeof(size_t)) {
+                    complete = false;
+                    break;
+                }
+                count++;
+            }
+        }
+        if (!complete) continue;
+        size_t* children = count ? alea_malloc(count * sizeof(size_t)) : NULL;
+        if (count && !children) continue;
+        size_t next = 0;
+        for (size_t i = 0; i < univ->cell_indices.count; i++) {
+            if ((i & 1023) == 0 && alea_interrupted()) {
+                free(children);
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED, "preparing recovery children interrupted");
+                return -1;
+            }
+            size_t ci = univ->cell_indices.data[i];
+            const alea_cell_entry_t* cell = &sys->cells.data[ci];
+            if (cell->fill_universe > 0 || (cell->lat_type != 0 && cell->lat_fill))
+                children[next++] = ci;
+        }
+        univ->recovery_child_cells = children;
+        univ->recovery_child_count = count;
+        univ->recovery_children_ready = true;
+        used += count * sizeof(size_t);
+    }
+    return 0;
+}
+
 int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys) {
         alea_set_error_detail(ALEA_ERR_NULL_ARG,
@@ -295,6 +438,10 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
     if (flags == ALEA_CACHE_ALL) {
         flags = ALEA_CACHE_UNIVERSE | ALEA_CACHE_RAYCAST;
     }
+    if (flags & ALEA_CACHE_RECOVERY_CHILDREN)
+        flags |= ALEA_CACHE_UNIVERSE;
+    if (flags & ALEA_CACHE_RECOVERY_SURFACES)
+        flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_HIER_SPATIAL)
         flags |= ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES;
     if (flags & ALEA_CACHE_ADJACENCY)
@@ -374,6 +521,17 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_ADJACENCY);
     }
 
+    if ((flags & ALEA_CACHE_RECOVERY_CHILDREN) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_CHILDREN)) {
+        if (prepare_recovery_children(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_CHILDREN);
+    }
+
+    if ((flags & ALEA_CACHE_RECOVERY_SURFACES) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_RECOVERY_SURFACES)) {
+        if (prepare_recovery_surfaces(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_SURFACES);
+    }
     atomic_flag_clear(&sys->query_cache_build_lock);
     return 0;
 
@@ -1719,10 +1877,20 @@ int alea_build_universe_index(alea_system_t* sys) {
         return -1;
     }
 
+    atomic_fetch_and(&sys->query_cache_state,
+                     ~(unsigned)(ALEA_CACHE_RECOVERY_SURFACES | ALEA_CACHE_RECOVERY_CHILDREN));
     // Clear existing index (free internal arrays first)
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         alea_vec_free(&sys->universes.data[i].cell_indices);
         alea_vec_free(&sys->universes.data[i].point_bvh_nodes);
+        free(sys->universes.data[i].recovery_surfaces);
+        sys->universes.data[i].recovery_surfaces = NULL;
+        sys->universes.data[i].recovery_surface_count = 0;
+        sys->universes.data[i].recovery_surfaces_attempted = false;
+        free(sys->universes.data[i].recovery_child_cells);
+        sys->universes.data[i].recovery_child_cells = NULL;
+        sys->universes.data[i].recovery_child_count = 0;
+        sys->universes.data[i].recovery_children_ready = false;
         free(sys->universes.data[i].point_bvh_indices);
     }
     alea_vec_clear(&sys->universes);
@@ -2351,6 +2519,14 @@ static int collect_surfaces_recursive(alea_system_t* sys,
  */
 int alea_build_cell_surface_index(alea_system_t* sys) {
     if (!sys) return -1;
+    atomic_fetch_and(&sys->query_cache_state, ~(unsigned)ALEA_CACHE_RECOVERY_SURFACES);
+
+    for (size_t u = 0; u < sys->universes.count; u++) {
+        free(sys->universes.data[u].recovery_surfaces);
+        sys->universes.data[u].recovery_surfaces = NULL;
+        sys->universes.data[u].recovery_surface_count = 0;
+        sys->universes.data[u].recovery_surfaces_attempted = false;
+    }
 
     /* A failed rebuild must never leave the ready bit set. */
     atomic_fetch_and(&sys->query_cache_state, ~(unsigned)ALEA_CACHE_CELL_SURFACES);

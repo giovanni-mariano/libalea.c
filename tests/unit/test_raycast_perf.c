@@ -981,7 +981,7 @@ TEST(perf_xray_camera_tiles_compact_vs_reusable_scalar) {
             alea_ray_t ray;
             ASSERT_EQ(alea_ray_init(&ray, ox, oy, oz, dx, dy, dz), 0);
             alea_raycast_result_clear(&scratch);
-            ASSERT_EQ(alea_raycast_hier_segments_nocache(sys, &ray, 0, &scratch), 0);
+            ASSERT_EQ(alea_raycast_hier_segments_nocache(sys, &ray, 0, true, &scratch), 0);
             scalar_segments += scratch.segments.count;
         }
         BENCH_END("X-ray camera reusable scalar segments", width * height);
@@ -1224,7 +1224,7 @@ TEST(perf_selected_segment_publication_vs_streaming) {
         BENCH_START();
         for (int i = 0; i < iterations; i++) {
             alea_raycast_result_clear(&rich);
-            ASSERT_EQ(alea_raycast_hier_segments_nocache(sys, &ray, 100.0,
+            ASSERT_EQ(alea_raycast_hier_segments_nocache(sys, &ray, 100.0, true,
                                                           &rich), 0);
             rich_segments += rich.segments.count;
         }

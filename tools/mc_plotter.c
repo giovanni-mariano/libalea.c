@@ -84,6 +84,7 @@ static double get_time_ms(void) {
 #endif
 
 #include "alea.h"
+#include "alea_compute.h"
 #include "alea_mcnp.h"
 #include "alea_openmc.h"
 #include "alea_slice.h"  /* Includes alea_slice_curve_set_debug() */
@@ -808,6 +809,8 @@ typedef enum {
     CONTOUR_BY_MATERIAL = 1
 } contour_mode_t;
 
+enum { PLOT_SELECTED_UNDEFINED = 3 }; /* Plot-local status, not coverage count. */
+
 typedef struct {
     slice_type_t type;
     double value;           /* Axis value for Z/Y/X slices */
@@ -821,6 +824,11 @@ typedef struct {
     int show_ticks;         /* Draw axis tick labels */
     int show_errors;        /* Draw analytical error lines (overlaps/gaps) */
     int ray_method;         /* Ray-row rasterization for non-diagnostic views */
+    int metal_backend;
+    int selected_ownership;
+    alea_compute_t* compute; /* Borrowed snapshot, serialized by the viewer worker. */
+    int (*cancelled)(void*);
+    void* cancel_data;
 
     /* For arbitrary planes */
     double origin[3];
@@ -852,6 +860,71 @@ static void build_view_from_params(const plot_params_t* p, alea_slice_view_t* vi
             break;
     }
 }
+
+static int plot_cancelled(const plot_params_t* p) {
+    return p->cancelled && p->cancelled(p->cancel_data);
+}
+
+#ifdef ALEA_VIEW_METAL
+/* Bound staging storage and check per-frame cancellation between submissions. */
+static int metal_slice(const plot_params_t* p, const alea_slice_view_t* view,
+                       int* cells, int* materials, uint8_t* coverage) {
+    const size_t batch = 4096;
+    double* xyz = malloc(batch * 3 * sizeof(*xyz));
+    void* results = malloc(batch * (p->selected_ownership?sizeof(alea_compute_selection_t):sizeof(alea_compute_result_t)));
+    if (!xyz || !results) {
+        free(xyz); free(results);
+        fprintf(stderr, "Error: Failed to allocate Metal slice staging buffers\n");
+        return -1;
+    }
+    size_t total = (size_t)p->width * p->height;
+    double du = (view->u_max - view->u_min) / p->width;
+    double dv = (view->v_max - view->v_min) / p->height;
+    /* Coherent 64x64 inputs let the optional root candidate proof cover a
+     * compact region. Scatter results back to the original pixel positions. */
+    const char* candidates=getenv("ALEA_METAL_POINT_CANDIDATES");
+    int tiled=candidates && !strcmp(candidates,"1");
+    size_t columns=((size_t)p->width+63)/64;
+    size_t regions=tiled?columns*(((size_t)p->height+63)/64):(total+batch-1)/batch;
+    int rc = 0;
+    for (size_t region = 0; region < regions; ++region) {
+        size_t start=region*batch,x0=(region%columns)*64,y0=(region/columns)*64;
+        size_t width=tiled?((size_t)p->width-x0<64?(size_t)p->width-x0:64):0;
+        size_t height=tiled?((size_t)p->height-y0<64?(size_t)p->height-y0:64):0;
+        if (plot_cancelled(p)) { rc = 1; break; }
+        size_t count = tiled?width*height:total-start<batch?total-start:batch;
+        for (size_t i = 0; i < count; ++i) {
+            size_t pixel = tiled?(y0+i/width)*p->width+x0+i%width:start+i;
+            double u = view->u_min + (pixel % p->width + 0.5) * du;
+            double v = view->v_min + (pixel / p->width + 0.5) * dv;
+            for (int k = 0; k < 3; ++k)
+                xyz[3*i+k] = view->plane.origin[k] +
+                    u * view->plane.u_axis[k] + v * view->plane.v_axis[k];
+        }
+        if ((p->selected_ownership?alea_compute_select(p->compute,xyz,count,results):
+             alea_compute_classify(p->compute,xyz,count,results)) != 0) {
+            fprintf(stderr, "Error: Metal slice query failed: %s\n", alea_error());
+            rc = -1; break;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            size_t pixel=tiled?(y0+i/width)*p->width+x0+i%width:start+i;
+            if(p->selected_ownership) {
+                const alea_compute_selection_t* r=results;
+                cells[pixel]=r[i].cell_id;materials[pixel]=r[i].material_id;
+                coverage[pixel]=r[i].status==ALEA_COMPUTE_NOT_FOUND?ALEA_COVERAGE_NONE:
+                    r[i].status==ALEA_COMPUTE_UNDEFINED_FILL?PLOT_SELECTED_UNDEFINED:ALEA_COVERAGE_ONE;
+            } else {
+                const alea_compute_result_t* r=results;
+                cells[pixel]=r[i].cell_id;materials[pixel]=r[i].material_id;
+                coverage[pixel]=r[i].owner_count==0?ALEA_COVERAGE_NONE:
+                    r[i].owner_count==1?ALEA_COVERAGE_ONE:ALEA_COVERAGE_MULTI;
+            }
+        }
+    }
+    free(xyz); free(results);
+    return rc;
+}
+#endif
 
 /* ============================================================================
  * TICK LABEL RENDERING
@@ -1049,6 +1122,15 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
         full_exact_coverage || tile_exact_coverage || path_exact_coverage ||
         plot_error_stats || verify_interval > 0;
 
+    if (p->metal_backend && (need_coverage || p->ray_method || p->labels.show_surfaces)) {
+        fprintf(stderr, "Metal slices do not support CPU diagnostics, ray sampling, "
+                        "or surface labels (including ALEA_PLOT_* diagnostic settings).\n");
+        return -1;
+    }
+    if (p->width < 1 || p->height < 1 || p->width > 16384 || p->height > 16384) {
+        fprintf(stderr, "Slice dimensions must be between 1 and 16384.\n");
+        return -1;
+    }
     int num_pixels = p->width * p->height;
     int* cell_ids = malloc(num_pixels * sizeof(int));
     int* material_ids = malloc(num_pixels * sizeof(int));
@@ -1056,11 +1138,11 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
     uint32_t* path_ids = NULL;
     alea_slice_path_table_t path_table = {0};
     uint8_t* errors = need_coverage ? malloc(num_pixels) : NULL;
-    uint8_t* coverage = need_coverage ? malloc(num_pixels) : NULL;
+    uint8_t* coverage = (need_coverage || p->metal_backend) ? malloc(num_pixels) : NULL;
     uint8_t* pixels = malloc(num_pixels * 3);
 
     if (!cell_ids || !material_ids || !pixels ||
-        (need_coverage && (!errors || !coverage))) {
+        (need_coverage && (!errors || !coverage)) || (p->metal_backend && !coverage)) {
         fprintf(stderr, "Error: Failed to allocate buffers\n");
         free(cell_ids); free(material_ids); free(secondary_ids); free(path_ids);
         alea_slice_path_table_free(&path_table);
@@ -1101,6 +1183,11 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
     if (secondary_ids) coverage_flags |= ALEA_GRID_SECONDARY_CELL_IDS;
     if (path_exact_coverage) coverage_flags |= ALEA_GRID_PATH_IDS;
     int rc;
+#ifdef ALEA_VIEW_METAL
+    if (p->metal_backend) {
+        rc = metal_slice(p, &view, cell_ids, material_ids, coverage);
+    } else
+#endif
     if (!need_coverage && p->ray_method) {
         alea_slice_raster_t raster;
         alea_slice_raster_init(&raster);
@@ -1129,7 +1216,7 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
     t1 = get_time_ms();
 
     if (rc != 0) {
-        fprintf(stderr, "Error: Slice query failed\n");
+        if (rc < 0) fprintf(stderr, "Error: Slice query failed\n");
         free(cell_ids); free(material_ids); free(secondary_ids); free(path_ids);
         alea_slice_path_table_free(&path_table);
         free(errors); free(coverage); free(pixels);
@@ -1138,6 +1225,7 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
 
     if (verbose) {
         printf("    %s query: %.1f ms (%.2f Mpx/s)\n",
+               p->metal_backend ? (p->selected_ownership?"Metal FP32 selected ownership":"Metal FP32 all ownership") :
                need_coverage ? "Grid coverage" : p->ray_method ? "Ray raster" : "Grid",
                t1 - t0, (t1 > t0) ? num_pixels / (t1 - t0) / 1000.0 : 0.0);
         if (need_coverage && p->ray_method)
@@ -1269,7 +1357,13 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
             int id = color_ids[gy * p->width + x];
             int mat = material_ids[gy * p->width + x];
             int pidx = (y * p->width + x) * 3;
-            if (id < 0 || mat == 0) {
+            if (p->metal_backend && coverage[gy * p->width + x] != ALEA_COVERAGE_ONE) {
+                int sample=coverage[gy * p->width + x];
+                int gap = sample == ALEA_COVERAGE_NONE;
+                pixels[pidx + 0] = 255;
+                pixels[pidx + 1] = sample==PLOT_SELECTED_UNDEFINED?255:gap?192:0;
+                pixels[pidx + 2] = sample==PLOT_SELECTED_UNDEFINED?0:gap?128:255;
+            } else if (id < 0 || mat == 0) {
                 pixels[pidx + 0] = 255;
                 pixels[pidx + 1] = 255;
                 pixels[pidx + 2] = 255;
@@ -1477,8 +1571,9 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
     }
 
     /* Write output */
-    rc = image ? 0 : write_image(p->output, pixels, p->width, p->height);
-    if (image) { *image = pixels; pixels = NULL; }
+    rc = plot_cancelled(p) ? 1 :
+        image ? 0 : write_image(p->output, pixels, p->width, p->height);
+    if (rc == 0 && image) { *image = pixels; pixels = NULL; }
 
     free(cell_ids);
     free(material_ids);
@@ -1490,7 +1585,7 @@ static int render_plot(alea_system_t* sys, const plot_params_t* p, int verbose,
     free(pixels);
 
     if (rc != 0) {
-        fprintf(stderr, "Error: Failed to write %s\n", p->output);
+        if (rc < 0) fprintf(stderr, "Error: Failed to write %s\n", p->output);
         return -1;
     }
 
@@ -1537,6 +1632,10 @@ static void parse_resolution(const char* str, int* width, int* height) {
 
 /* Parse batch line options (labels, color, ticks) */
 static int parse_options(const char* line, plot_params_t* p) {
+    if (strstr(line,"ownership=") || strstr(line,"--ownership") || strstr(line, "backend=") || strstr(line, "--backend")) {
+        fprintf(stderr, "Backend and ownership selection are not supported in batch lines.\n");
+        return -1;
+    }
     const char* method_ptr = strstr(line, "method=");
     if (method_ptr) {
         char method[32];
@@ -1798,6 +1897,16 @@ static int plot_view_draw(void* state, uint8_t** pixels) {
     return render_plot(v->sys, &v->view, 0, pixels);
 }
 
+static int plot_job_cancelled(void* job) {
+    return alea_view_cancelled((alea_view_job_t*)job);
+}
+
+static void plot_view_bind(void* state, alea_view_job_t* job) {
+    plot_params_t* p = &((plot_viewer_t*)state)->view;
+    p->cancelled = plot_job_cancelled;
+    p->cancel_data = job;
+}
+
 static int plot_view_save(const void* state, const uint8_t* pixels) {
     const plot_viewer_t* v = state;
     int rc = write_image(v->view.output, pixels, v->view.width, v->view.height);
@@ -1832,6 +1941,7 @@ static int plot_view_input(void* state, const SDL_Event* event) {
         switch (event->key.keysym.sym) {
         case SDLK_r: *p = v->initial; return 1;
         case SDLK_m:
+            if (p->metal_backend) return 0;
             p->ray_method = p->show_errors ? 1 : !p->ray_method;
             p->show_errors = 0;
             return 1;
@@ -1843,7 +1953,9 @@ static int plot_view_input(void* state, const SDL_Event* event) {
         case SDLK_c: p->color_mode = !p->color_mode; return 1;
         case SDLK_l: p->labels.show_cells = !p->labels.show_cells; return 1;
         case SDLK_t: p->show_ticks = !p->show_ticks; return 1;
-        case SDLK_e: p->show_errors = !p->show_errors; return 1;
+        case SDLK_e:
+            if (p->metal_backend) return 0;
+            p->show_errors = !p->show_errors; return 1;
         case SDLK_LEFT: pan_u = -0.1 * du; break;
         case SDLK_RIGHT: pan_u = 0.1 * du; break;
         case SDLK_UP: pan_v = 0.1 * dv; break;
@@ -1879,6 +1991,30 @@ static int plot_interactive(alea_system_t* sys, const plot_params_t* p) {
         {"Slice +", SDLK_PAGEUP}, {"Slice -", SDLK_PAGEDOWN},
         {"Ray", SDLK_m}, {"Colors", SDLK_c}, {"Labels", SDLK_l}, {"Ticks", SDLK_t}, {"Errors", SDLK_e}
     };
+    alea_view_button_t metal_buttons[sizeof(buttons)/sizeof(buttons[0])];
+    int metal_count = 0;
+    if (p->metal_backend) {
+        for (size_t i = 0; i < sizeof(buttons)/sizeof(buttons[0]); ++i)
+            if (buttons[i].key != SDLK_m && buttons[i].key != SDLK_e)
+                metal_buttons[metal_count++] = buttons[i];
+        return alea_sdl_view_progressive(p->selected_ownership?"Alea slice - Metal FP32 selected":"Alea slice - Metal FP32 all",
+            p->selected_ownership?
+            "Selected ownership: first model-order path\n"
+            "Drag / arrows: pan   Wheel / +/-: zoom\n"
+            "X/Y/Z: axis   Page Up/Down: slice   C: colors   L: labels   T: ticks\n"
+            "Orange: not found   Yellow: undefined fill   White: void\n"
+            "Approximate FP32; thin features can be missed\n"
+            "R: reset   S: save   H: help   Q / Esc: quit":
+            "All ownership: terminal counts\n"
+            "Drag / arrows: pan   Wheel / +/-: zoom\n"
+            "X/Y/Z: axis   Page Up/Down: slice   C: colors   L: labels   T: ticks\n"
+            "Orange: gap   Magenta: overlap   White: void\n"
+            "Approximate FP32; thin features can be missed\n"
+            "R: reset   S: save   H: help   Q / Esc: quit",
+            p->width, p->height, &state, sizeof(state), plot_view_draw,
+            plot_view_save, plot_view_input, plot_view_active,
+            metal_buttons, metal_count, NULL, plot_view_bind);
+    }
     return alea_sdl_view("Alea slice",
         "Drag / arrows: pan   Wheel / +/-: zoom\n"
         "X / Y / Z: axis   Page Up / Down: slice\n"
@@ -1901,6 +2037,9 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "\nResolution: 800 (square) or 800x600 (width x height)\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  --interactive           SDL viewer (build with USE_SDL=1); H for controls\n");
+    fprintf(stderr, "  --backend=cpu|metal     Default CPU; Metal requires USE_METAL=1 (approximate FP32)\n");
+    fprintf(stderr, "                          Metal: sampled ownership, rectangular lattices; no batch mode\n");
+    fprintf(stderr,"  --ownership=selected|all  Metal default: all; CPU supports selected only\n");
     fprintf(stderr, "  --method=grid|ray       Sampling method (default: grid; errors use grid)\n");
     fprintf(stderr, "  --errors                Enable geometry diagnostics and error contours\n");
     fprintf(stderr, "  --labels=cells          Show cell ID labels\n");
@@ -1936,6 +2075,49 @@ int main(int argc, char** argv) {
 
     const char* input_file = argv[1];
 
+    int metal_backend = 0,selected_ownership=0,ownership_set=0;
+    for (int i = 2; i < argc; ++i) {
+        const char* backend = NULL;
+        if (strncmp(argv[i], "--backend=", 10) == 0) backend = argv[i] + 10;
+        else if (strcmp(argv[i], "--backend") == 0) {
+            if (++i == argc) {
+                fprintf(stderr, "--backend requires cpu or metal.\n");
+                return 1;
+            }
+            backend = argv[i];
+        }
+        if (backend) {
+            if (strcmp(backend, "metal") == 0) metal_backend = 1;
+            else if (strcmp(backend, "cpu") == 0) metal_backend = 0;
+            else {
+                fprintf(stderr, "Unknown backend: %s (use cpu or metal)\n", backend);
+                return 1;
+            }
+        }
+    }
+    for(int i=2;i<argc;++i) {
+        const char* ownership=NULL;
+        if(!strncmp(argv[i],"--ownership=",12))ownership=argv[i]+12;
+        else if(!strcmp(argv[i],"--ownership")) {
+            if(++i==argc){fprintf(stderr,"--ownership requires selected or all.\n");return 1;}
+            ownership=argv[i];
+        }
+        if(ownership) {
+            if(strcmp(ownership,"selected") && strcmp(ownership,"all")) {
+                fprintf(stderr,"Unknown ownership: %s (use selected or all)\n",ownership);return 1;
+            }
+            selected_ownership=!strcmp(ownership,"selected");ownership_set=1;
+        }
+    }
+    if(ownership_set && !metal_backend && !selected_ownership) {
+        fprintf(stderr,"--ownership=all requires --backend=metal. CPU plotting selects an owner.\n");return 1;
+    }
+#ifndef ALEA_VIEW_METAL
+    if (metal_backend) {
+        fprintf(stderr, "Metal support is disabled; rebuild with USE_METAL=1.\n");
+        return 1;
+    }
+#endif
     int interactive = 0;
     for (int i = 2; i < argc; ++i)
         if (strcmp(argv[i], "--interactive") == 0) interactive = 1;
@@ -1948,8 +2130,8 @@ int main(int argc, char** argv) {
     /* Check for batch mode */
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "--batch=", 8) == 0) {
-            if (interactive) {
-                fprintf(stderr, "--interactive cannot be combined with --batch.\n");
+            if (interactive || metal_backend) {
+                fprintf(stderr, "--interactive and --backend=metal cannot be combined with --batch.\n");
                 return 1;
             }
             return run_batch(argv[i] + 8, input_file);
@@ -1965,6 +2147,8 @@ int main(int argc, char** argv) {
     /* Parse axis type */
     plot_params_t plot;
     memset(&plot, 0, sizeof(plot));
+    plot.metal_backend = metal_backend;
+    plot.selected_ownership = selected_ownership;
 
     const char* axis_str = argv[2];
     if (strcasecmp(axis_str, "Z") == 0) {
@@ -1988,6 +2172,7 @@ int main(int argc, char** argv) {
     /* Find output file (first non-option argument after resolution) */
     const char* output_file = "plot.png";
     for (int i = 9; i < argc; i++) {
+        if (!strcmp(argv[i],"--backend") || !strcmp(argv[i],"--ownership")) { ++i; continue; }
         if (strncmp(argv[i], "--", 2) != 0) {
             output_file = argv[i];
             break;
@@ -2031,8 +2216,36 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (metal_backend) {
+        int diagnostic_env = 0;
+        const char* names[] = {"ALEA_PLOT_EXACT_COVERAGE", "ALEA_PLOT_FULL_EXACT_COVERAGE",
+            "ALEA_PLOT_TILE_COVERAGE", "ALEA_PLOT_PATH_COVERAGE", "ALEA_PLOT_ERROR_STATS",
+            "ALEA_PLOT_ERROR_VERIFY"};
+        for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); ++i)
+            if (getenv(names[i])) diagnostic_env = 1;
+        if (plot.ray_method || plot.show_errors || plot.labels.show_surfaces ||
+            debug_curves || trace_px >= 0 || trace_py >= 0 || diagnostic_env) {
+            fprintf(stderr, "Metal slices do not support CPU diagnostics, ray sampling, "
+                            "surface labels, --debug or --trace.\n");
+            return 1;
+        }
+        if (!isfinite(plot.value) || !isfinite(plot.u_min) || !isfinite(plot.u_max) ||
+            !isfinite(plot.v_min) || !isfinite(plot.v_max) ||
+            plot.u_min >= plot.u_max || plot.v_min >= plot.v_max ||
+            plot.width < 1 || plot.height < 1 || plot.width > 16384 || plot.height > 16384) {
+            fprintf(stderr, "Metal slices require finite, increasing bounds and dimensions 1..16384.\n");
+            return 1;
+        }
+    }
+
     const char* axis_names[] = {"Z", "Y", "X"};
     printf("CSG Slice Plotter\n");
+    printf("Backend:    %s\n", metal_backend ? "Metal FP32 (approximate sampled ownership)" : "CPU");
+    if (metal_backend) {
+        printf("Ownership:  %s\n",selected_ownership?"selected (first model-order path)":"all (terminal owner count)");
+        printf("Samples:    %s\n",selected_ownership?"orange = not found, yellow = undefined fill, white = terminal void":
+               "orange = gap, magenta = overlap, white = terminal void");
+    }
     printf("==========================================\n");
     printf("Input:      %s\n", input_file);
     printf("%s plane:   %.4g\n", axis_names[plot.type], plot.value);
@@ -2070,20 +2283,38 @@ int main(int argc, char** argv) {
     printf("  [RSS after load: %.1f MB]\n", get_rss_mb());
     fflush(stdout);
 
-    /* Prepare query acceleration */
-    printf("Preparing query acceleration... ");
-    fflush(stdout);
-    t0 = get_time_ms();
+    /* Own one snapshot across all frames; reject unsupported queries before SDL. */
+#ifdef ALEA_VIEW_METAL
+    if (metal_backend) {
+        plot.compute = alea_compute_create(sys, ALEA_COMPUTE_METAL, ALEA_COMPUTE_FP32);
+        double probe[3] = {0, 0, 0};
+        alea_compute_result_t result;
+        alea_compute_selection_t selection;
+        if (!plot.compute || (plot.selected_ownership?alea_compute_select(plot.compute,probe,1,&selection):
+                              alea_compute_classify(plot.compute,probe,1,&result)) != 0) {
+            fprintf(stderr, "Metal slice preparation failed: %s\n", alea_error());
+            alea_compute_destroy(plot.compute);
+            destroy_model(&model);
+            return 1;
+        }
+    } else
+#endif
+    {
+        /* Prepare query acceleration */
+        printf("Preparing query acceleration... ");
+        fflush(stdout);
+        t0 = get_time_ms();
 
-    if (alea_prepare_query_acceleration(sys) != 0) {
-        printf("FAILED: %s\n", alea_error());
-        destroy_model(&model);
-        return 1;
+        if (alea_prepare_query_acceleration(sys) != 0) {
+            printf("FAILED: %s\n", alea_error());
+            destroy_model(&model);
+            return 1;
+        }
+
+        t1 = get_time_ms();
+        printf("OK (%.1f ms)\n", t1 - t0);
+        printf("  [RSS after query acceleration: %.1f MB]\n\n", get_rss_mb());
     }
-
-    t1 = get_time_ms();
-    printf("OK (%.1f ms)\n", t1 - t0);
-    printf("  [RSS after query acceleration: %.1f MB]\n\n", get_rss_mb());
 
     /* Enable curve debug output if requested */
     if (debug_curves) {
@@ -2125,6 +2356,9 @@ int main(int argc, char** argv) {
 #ifdef ALEA_USE_SDL
     if (interactive) {
         int rc = plot_interactive(sys, &plot);
+#ifdef ALEA_VIEW_METAL
+        alea_compute_destroy(plot.compute);
+#endif
         destroy_model(&model);
         return rc == 0 ? 0 : 1;
     }
@@ -2132,7 +2366,9 @@ int main(int argc, char** argv) {
     /* Render the plot */
     printf("Rendering...\n");
     int rc = render_plot(sys, &plot, 1, NULL);
-
+#ifdef ALEA_VIEW_METAL
+    alea_compute_destroy(plot.compute);
+#endif
     destroy_model(&model);
 
     if (rc == 0) {

@@ -181,6 +181,29 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
     int root=find_universe(univ,nu,0);
     if(root<0 && n){alea_set_error_detail(ALEA_ERR_INVALID_STATE,"No root universe 0");goto fail;}
     if(root>=0 && check_universe(sys,univ,nu,order,root,0))goto fail;
+    /* Point queries share programs and transforms with rendering, but must
+     * retain terminal void and all overlapping occurrences. Point-program
+     * certification is separate from render-only visibility bounds. */
+    scene->point_root = COMPUTE_NONE;
+    if (nl || nt || nu > 1) {
+        scene->point_cells = calloc(n, sizeof(*scene->point_cells));
+        if (!scene->point_cells) goto memory;
+        if (root >= 0) scene->point_root = order[univ[root].first].cell;
+        for (size_t u = 0; u < nu; ++u) {
+            for (size_t j = univ[u].first; j < univ[u].first + univ[u].count; ++j) {
+                uint32_t i = order[j].cell;
+                metal_point_cell* point = &scene->point_cells[i];
+                point->next = j + 1 < univ[u].first + univ[u].count
+                    ? order[j + 1].cell : COMPUTE_NONE;
+                point->child = COMPUTE_NONE;
+                point->spatial = COMPUTE_NONE;
+                if (univ[u].state == 2 && !sys->cells.data[i].lat_type && sys->cells.data[i].fill_universe > 0) {
+                    int child = find_universe(univ, nu, sys->cells.data[i].fill_universe);
+                    point->child = order[univ[child].first].cell;
+                }
+            }
+        }
+    }
     /* Build only root-reachable universes. Unused input definitions are not
      * instances and must not appear in a rendered frame. */
     for(size_t u=0;u<nu;++u) {
@@ -199,7 +222,9 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
     out->transforms=calloc(nt?nt:1,sizeof(*out->transforms));
     out->lattices=calloc(nl?nl:1,sizeof(*out->lattices));
     out->fills=calloc(nf?nf:1,sizeof(*out->fills));
-    if(!out->transforms || !out->lattices || !out->fills)goto memory;
+    scene->point_lattices=calloc(nl?nl:1,sizeof(*scene->point_lattices));
+    scene->point_fills=calloc(nf?nf:1,sizeof(*scene->point_fills));
+    if(!out->transforms || !out->lattices || !out->fills || !scene->point_lattices || !scene->point_fills)goto memory;
     for(size_t i=0;i<n;++i) {
         const alea_cell_entry_t* c=&sys->cells.data[i];
         int u=find_universe(univ,nu,c->universe_id);if(u<0 || univ[u].state!=2)continue;
@@ -215,9 +240,12 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
             l->offset=(uint32_t)out->fill_count;l->repeating=c->lat_fill_repeating;l->zero_coords=c->lat_fill_zero_element_coords;l->outer=COMPUTE_NONE;
             for(size_t j=0;j<c->lat_fill_count;++j) {
                 int child=c->lat_fill[j]>0?find_universe(univ,nu,c->lat_fill[j]):-1;
+                scene->point_fills[out->fill_count]=child>=0?order[univ[child].first].cell:COMPUTE_NONE;
                 out->fills[out->fill_count++]=child>=0?univ[child].root:COMPUTE_NONE;
             }
             int child=c->lat_outer_universe>0?find_universe(univ,nu,c->lat_outer_universe):-1;if(child>=0)l->outer=univ[child].root;
+            scene->point_lattices[dst->lattice]=*l;
+            scene->point_lattices[dst->lattice].outer=child>=0?order[univ[child].first].cell:COMPUTE_NONE;
         } else if(c->fill_universe>0) {
             int child=find_universe(univ,nu,c->fill_universe);
             dst->child=univ[child].root;
@@ -235,6 +263,8 @@ int alea_compute_render_pack(const alea_system_t* sys,compute_scene* scene) {
             }}
         }
     }
+    scene->point_lattice_count=out->lattice_count;
+    scene->point_fill_count=out->fill_count;
     if(out->bvh_count) {
         uint32_t* memo=malloc(out->bvh_count*sizeof(*memo));if(!memo)goto memory;
         memset(memo,255,out->bvh_count*sizeof(*memo));

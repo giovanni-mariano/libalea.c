@@ -2577,4 +2577,53 @@ TEST(hier_with_hits_skips_synthetic_lattice_boundaries) {
     alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
 }
 
+typedef struct {
+    size_t count;
+    uint64_t index_sum;
+    int fail;
+} universe_ray_visit_test_t;
+
+static int count_universe_ray_candidate(uint32_t cell_index,
+                                        double t_enter, double t_exit,
+                                        void* context) {
+    universe_ray_visit_test_t* seen = context;
+    if (seen->fail || !(t_exit >= t_enter)) return -1;
+    seen->count++;
+    seen->index_sum += cell_index;
+    return 0;
+}
+
+TEST(universe_ray_visitor_streams_all_candidates_and_propagates_errors) {
+    for (int linear = 0; linear < 2; linear++) {
+        alea_setenv("ALEA_HIER_BLAS_THRESHOLD", linear ? "999" : "1", 1);
+        alea_system_t* sys = alea_create();
+        ASSERT_NOT_NULL(sys);
+        for (int i = 0; i < 200; i++) {
+            int surface = alea_box_surface(sys, i + 1,
+                i * 2, i * 2 + 1, -1, 1, -1, 1);
+            ASSERT(alea_add_cell(sys, i + 1,
+                alea_surface_at(sys, surface)->neg_node,
+                ALEA_MATERIAL_VOID, 0, 0) >= 0);
+        }
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        universe_ray_visit_test_t seen = {0};
+        ASSERT_EQ(alea_hier_spatial_visit_universe_ray(sys, 0,
+            -1, 0, 0, 1, INFINITY, INFINITY, 0, 500,
+            count_universe_ray_candidate, &seen), 0);
+        ASSERT_EQ(seen.count, (size_t)200);
+        ASSERT_EQ(seen.index_sum, (uint64_t)(199 * 200 / 2));
+        seen = (universe_ray_visit_test_t){0};
+        ASSERT_EQ(alea_hier_spatial_visit_universe_ray(sys, 0,
+            -1, 0, 0, 1, INFINITY, INFINITY, 0, 2.5,
+            count_universe_ray_candidate, &seen), 0);
+        ASSERT_EQ(seen.count, (size_t)1);
+        seen.fail = 1;
+        ASSERT_EQ(alea_hier_spatial_visit_universe_ray(sys, 0,
+            -1, 0, 0, 1, INFINITY, INFINITY, 0, 500,
+            count_universe_ray_candidate, &seen), -1);
+        alea_destroy(sys);
+        alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    }
+}
+
 TEST_MAIN()
