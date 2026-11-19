@@ -164,9 +164,12 @@ unsigned long long alea_strtoull(const char* nptr, char** endptr, int base);
 /**
  * @brief Create and open a temporary file with a unique name
  * @param path_out Buffer to receive the temp file path (at least 256 bytes)
- * @return FILE* open for writing, or NULL on failure. Caller must fclose().
+ * @return FILE* open for binary writing, or NULL on failure. Caller must fclose().
  */
 FILE* alea_tmpfile(char* path_out);
+
+/** Check if a target could refer to the same existing file as the input. */
+int alea_paths_may_alias(const char* input, const char* target);
 
 /** Create a temporary file in the target file's directory. */
 FILE* alea_sibling_tmpfile(const char* target, char* path_out, size_t capacity);

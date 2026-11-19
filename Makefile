@@ -146,7 +146,7 @@ INTEGRATION_TEST_DIR = $(TEST_DIR)/integration
 # ============================================================================
 
 
-# Core system 
+# Core system
 CORE_SRCS = \
 	$(CORE_DIR)/alea_system.c \
 	$(CORE_DIR)/alea_export.c \
@@ -155,9 +155,12 @@ CORE_SRCS = \
 	$(CORE_DIR)/alea_materials.c \
 	$(CORE_DIR)/alea_elements_data.c \
 	$(CORE_DIR)/alea_error.c \
+	$(CORE_DIR)/alea_fingerprint.c \
+	$(CORE_DIR)/alea_snapshot.c \
 	$(CORE_DIR)/alea_model.c \
 	$(CORE_DIR)/alea_public_api.c \
 	$(CORE_DIR)/alea_eval.c \
+	$(CORE_DIR)/alea_regional.c \
 	$(CORE_DIR)/alea_ops.c \
 	$(CORE_DIR)/alea_simplify.c \
 	$(CORE_DIR)/alea_universe.c \
@@ -170,6 +173,9 @@ CORE_SRCS = \
 
 # Memory management and utilities
 UTIL_SRCS = \
+	$(UTIL_DIR)/alea_mcnp_input.c \
+	$(UTIL_DIR)/alea_digest.c \
+	$(UTIL_DIR)/ray_profile.c \
 	$(UTIL_DIR)/arena.c \
 	$(UTIL_DIR)/alea_alloc.c \
 	$(UTIL_DIR)/xml_dom.c \
@@ -185,10 +191,11 @@ PRIMITIVES_SRCS = \
 	$(PRIMITIVES_DIR)/primitive_eval.c \
 	$(PRIMITIVES_DIR)/primitive_create.c \
 	$(PRIMITIVES_DIR)/primitive_desc.c \
+	$(PRIMITIVES_DIR)/primitive_codec.c \
 	$(PRIMITIVES_DIR)/bbox.c
 
 
-	
+
 
 # MCNP parser
 MCNP_PARSER_SRCS = \
@@ -211,6 +218,7 @@ MCNP_EXPO_SRCS = \
 	$(MCNP_EXPO_DIR)/mcnp_export.c
 
 MCNP_MODEL_SRCS = \
+	$(MCNP_MODEL_DIR)/mcnp_cache.c \
 	$(MCNP_MODEL_DIR)/mcnp_model.c
 
 # Nuclear data module
@@ -263,6 +271,8 @@ OPENMC_PARSE_SRCS = \
 # Raycast module
 RAYCAST_SRCS = \
 	$(RAYCAST_DIR)/raycast.c \
+	$(RAYCAST_DIR)/regional/regional_trace.c \
+	$(RAYCAST_DIR)/regional/interval_build.c \
 	$(RAYCAST_DIR)/ray_request.c \
 	$(RAYCAST_DIR)/ray_coverage.c \
 	$(RAYCAST_DIR)/ray_coverage_api.c \
@@ -530,7 +540,7 @@ BUILD_DIRS = $(BUILD_DIR)/core $(BUILD_DIR)/util $(BUILD_DIR)/primitives \
 	$(BUILD_DIR)/nucdata $(BUILD_DIR)/transport $(BUILD_DIR)/rng \
 	$(BUILD_DIR)/mcnp/parser $(BUILD_DIR)/mcnp/geometry $(BUILD_DIR)/mcnp/conversion \
 	$(BUILD_DIR)/mcnp/exporter $(BUILD_DIR)/mcnp $(BUILD_DIR)/openmc $(BUILD_DIR)/alea_xml $(BUILD_DIR)/serpent \
-	$(BUILD_DIR)/raycast $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
+	$(BUILD_DIR)/raycast $(BUILD_DIR)/raycast/regional $(BUILD_DIR)/slice $(BUILD_DIR)/render $(BUILD_DIR)/mesh \
 	$(BUILD_DIR)/geo_validator \
 	$(BUILD_DIR)/cluster/local $(BUILD_DIR)/cluster/mpi \
 	$(BUILD_DIR)/vendor/tinypar $(BUILD_DIR)/vendor/expat $(BUILD_DIR)/lua_cluster_bind \
@@ -689,6 +699,7 @@ $(BUILD_DIR)/alea_xml/%.o: $(ALEA_XML_DIR)/%.c | $(BUILD_DIR)/alea_xml
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # Raycast
+$(BUILD_DIR)/raycast/regional/interval_build.o $(BUILD_DIR)/raycast/regional/regional_trace.o: | $(BUILD_DIR)/raycast/regional
 $(BUILD_DIR)/raycast/%.o: $(RAYCAST_DIR)/%.c | $(BUILD_DIR)/raycast
 	@echo "CC  $<"
 	@$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
@@ -1177,6 +1188,7 @@ install-lua-cluster-module: lua-cluster-module
 
 install-tools: tools
 	@$(MKDIR_P) "$(DESTDIR)$(BINDIR)"
+	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_compare$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_convert$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/mc_plotter$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
 	@$(INSTALL_PROGRAM) $(BIN_DIR)/render3d$(EXEEXT) "$(DESTDIR)$(BINDIR)/"
@@ -1194,6 +1206,8 @@ uninstall:
 	@rm -f "$(DESTDIR)$(BINDIR)/alea.exe"
 	@rm -f "$(DESTDIR)$(LUACMODDIR)/alea.so"
 	@rm -f "$(DESTDIR)$(LUACMODDIR)/alea_cluster.so"
+	@rm -f "$(DESTDIR)$(BINDIR)/mc_compare"
+	@rm -f "$(DESTDIR)$(BINDIR)/mc_compare.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_convert.exe"
 	@rm -f "$(DESTDIR)$(BINDIR)/mc_plotter"
@@ -1345,3 +1359,46 @@ include $(SRC_DIR)/compute/compute.mk
 -include $(ALL_DEPS)
 
 .PHONY: all full lib-core modules cluster test-cluster test-cluster-mpi cli lua-module lua-cluster-module tools wasm wasm-threaded wasm-demo test-wasm test-wasm-threaded tests test test-unit test-integration test-lua test-lua-module test-lua-cluster test-valgrind install install-libs install-cluster install-cli install-lua-module install-lua-cluster-module install-tools install-doc uninstall clean distclean tree help structure fuzz-build fuzz-mcnp fuzz-openmc fuzz-alea-xml fuzz FORCE
+
+# Snapshot compatibility changes whenever engine or format sources change.
+# The helper runs on the build host, including when CC targets WASM or MinGW.
+HOSTCC ?= cc
+HASH_TOOL = $(BUILD_DIR)/core/generate_engine_hash$(HOSTEXEEXT)
+HASH_SOURCES = tools/generate_engine_hash.c src/util/alea_digest.c src/util/compat.c
+ifeq ($(OS),Windows_NT)
+HOSTEXEEXT ?= .exe
+endif
+$(HASH_TOOL): $(HASH_SOURCES) src/util/alea_digest.h src/util/compat.h | $(BUILD_DIR)/core
+	$(HOSTCC) -std=c11 -O2 -Isrc $(HASH_SOURCES) -o $@
+$(BUILD_DIR)/core/alea_engine_hash.h: $(HASH_TOOL) FORCE
+	@$(HASH_TOOL) $@
+$(BUILD_DIR)/core/alea_snapshot.o: $(BUILD_DIR)/core/alea_engine_hash.h
+
+INCLUDES += -I$(BUILD_DIR)/core
+
+$(BIN_DIR)/plane_bounds$(EXEEXT): benchmarks/plane_bounds.c $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_CORE) $(LDFLAGS) -o $@
+.PHONY: plane-bounds-benchmark
+plane-bounds-benchmark: $(BIN_DIR)/plane_bounds$(EXEEXT)
+	$(BIN_DIR)/plane_bounds$(EXEEXT)
+
+$(BIN_DIR)/model_lifecycle$(EXEEXT): benchmarks/model_lifecycle.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
+
+$(BIN_DIR)/regional_render_scaling$(EXEEXT): benchmarks/regional_render_scaling.c $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
+
+$(BIN_DIR)/compare_parent_interval$(EXEEXT): benchmarks/parent_interval.c benchmarks/interval_image.c benchmarks/interval_image.h benchmarks/interval_memory.h $(LIB_MCNP) $(LIB_CORE) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< benchmarks/interval_image.c $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) -o $@
+
+.PHONY: check-parent-intervals
+check-parent-intervals: $(BIN_DIR)/compare_parent_interval$(EXEEXT)
+	python3 tools/check_parent_intervals.py $<
+
+.PHONY: check-mc-compare
+check-mc-compare: tools
+	python3 tools/check_mc_compare.py $(BIN_DIR)/mc_compare$(EXEEXT)
+
+.PHONY: check-model-lifecycle
+check-model-lifecycle: $(BIN_DIR)/model_lifecycle$(EXEEXT)
+	python3 tools/check_model_lifecycle.py $(BIN_DIR)/model_lifecycle$(EXEEXT)

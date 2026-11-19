@@ -12,6 +12,7 @@
 
 #define _USE_MATH_DEFINES
 #include "render3d.h"
+#include "raycast/regional/interval_index.h"
 #include "render_tiles_internal.h"
 #include "raycast/raycast.h"
 #include "raycast/ray_intersect.h"
@@ -539,8 +540,18 @@ void render_framebuffer_free(render_framebuffer_t* fb) {
  * PER-PIXEL RENDERING (SOLID MODE)
  * ============================================================================ */
 
+static int render_first_visible(alea_system_t* sys, regional_worker_t* worker,
+        const alea_ray_t* ray, double limit, int normal, const render_config_t* cfg,
+        alea_raycast_result_t* scratch, alea_ray_first_visible_result_t* visible) {
+    if (worker)
+        return alea_regional_render_visible(worker, ray, limit, normal, render_accept_hit,
+                                            (void*)cfg, scratch, visible);
+    return alea_raycast_render_first_visible_nocache(sys, ray, limit, normal, render_accept_hit,
+                                                     (void*)cfg, scratch, visible);
+}
+
 static int render_shadow_occluded_nocache(
-        alea_system_t* sys,
+        alea_system_t* sys, regional_worker_t* worker,
         const render_config_t* cfg,
         alea_raycast_result_t* scratch,
         double ox, double oy, double oz,
@@ -558,8 +569,8 @@ static int render_shadow_occluded_nocache(
                           oz + start * dz, dx, dy, dz) != 0)
             return 0;
         alea_ray_first_visible_result_t visible;
-        if (alea_raycast_render_first_visible_nocache(
-                sys, &ray, end - start, 0, render_accept_hit, (void*)cfg,
+        if (render_first_visible(
+                sys, worker, &ray, end - start, 0, cfg,
                 scratch, &visible) != 0)
             return 0;
         if (visible.found) return 1;
@@ -571,7 +582,7 @@ static int render_shadow_occluded_nocache(
  * Render a single pixel in solid/cutaway mode.
  * Uses a thread-local alea_raycast_result_t for buffer reuse.
  */
-static void render_pixel_solid(alea_system_t* sys,
+static void render_pixel_solid(alea_system_t* sys, regional_worker_t* worker,
                                const render_config_t* cfg,
                                const render_camera_t* cam,
                                double px, double py,
@@ -637,8 +648,8 @@ static void render_pixel_solid(alea_system_t* sys,
         alea_ray_t ray;
         alea_ray_init_normalized(
             &ray, trace_ox, trace_oy, trace_oz, dx, dy, dz);
-        if (alea_raycast_render_first_visible_nocache(
-                sys, &ray, trace_t_max, 1, render_accept_hit, (void*)cfg,
+        if (render_first_visible(
+                sys, worker, &ray, trace_t_max, 1, cfg,
                 result, &visible) != 0)
             return;
         if (visible.found) {
@@ -696,7 +707,7 @@ static void render_pixel_solid(alea_system_t* sys,
             const double sl_dz = -light_dir[2];
 
             if (render_shadow_occluded_nocache(
-                    sys, cfg, result, sp_ox, sp_oy, sp_oz,
+                    sys, worker, cfg, result, sp_ox, sp_oy, sp_oz,
                     sl_dx, sl_dy, sl_dz, 1e6)) {
                 const float shadow_factor = 0.5f;
                 out_color[0] *= shadow_factor;
@@ -905,12 +916,14 @@ typedef struct {
     atomic_int* progress_done;
     size_t first_tile;
     int compact;
+    alea_prepared_queries_t* prepared;
 } render_scene_parallel_context_t;
 
 static int render_scene_tile_range(void* opaque, size_t worker,
                                    size_t begin, size_t end) {
-    (void)worker;
     render_scene_parallel_context_t* context = opaque;
+    regional_worker_t* regional = context->prepared
+        ? alea_regional_worker(context->prepared, worker) : NULL;
     const render_config_t* cfg = context->cfg;
     render_framebuffer_t* fb = context->framebuffer;
     const int width = context->width, height = context->height;
@@ -944,7 +957,7 @@ static int render_scene_tile_range(void* opaque, size_t worker,
                             x + 0.5, y + 0.5, width, height, &result, color,
                             &cell_id);
                     } else {
-                        render_pixel_solid(context->sys, cfg, context->camera,
+                        render_pixel_solid(context->sys, regional, cfg, context->camera,
                             x + 0.5, y + 0.5, width, height, &result, color,
                             &cell_id, &material_id, &depth, normal);
                     }
@@ -978,7 +991,7 @@ static int render_scene_tile_range(void* opaque, size_t worker,
                                     context->camera, px, py, width, height,
                                     &result, color, &cell_id);
                             } else {
-                                render_pixel_solid(context->sys, cfg,
+                                render_pixel_solid(context->sys, regional, cfg,
                                     context->camera, px, py, width, height,
                                     &result, color, &cell_id, &material_id,
                                     &depth, normal);
@@ -1008,6 +1021,10 @@ static int render_scene_tile_range(void* opaque, size_t worker,
                 }
             }
         }
+        if (context->prepared && alea_interrupted()) {
+            alea_raycast_result_free(&result);
+            return -1;
+        }
         if (context->progress_done)
             atomic_fetch_add(context->progress_done, 1);
     }
@@ -1015,7 +1032,7 @@ static int render_scene_tile_range(void* opaque, size_t worker,
     return 0;
 }
 
-int render_scene(alea_system_t* sys,
+static int render_scene_impl(alea_system_t* sys, alea_prepared_queries_t* prepared,
                  const render_config_t* cfg,
                  const render_camera_t* cam,
                  render_framebuffer_t* fb) {
@@ -1034,6 +1051,7 @@ int render_scene(alea_system_t* sys,
 
     size_t worker_count = alea_parallel_effective_workers(
         (size_t)n_tiles, 1, cfg->threads > 0 ? (size_t)cfg->threads : 0);
+    if (prepared && alea_regional_reserve_workers(prepared, worker_count)) return -1;
     int num_threads = (int)worker_count;
 
     if (cfg->log_level > 0)
@@ -1052,17 +1070,37 @@ int render_scene(alea_system_t* sys,
     atomic_int progress_done;
     atomic_init(&progress_done, 0);
     render_scene_parallel_context_t parallel_context = {
-        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done, 0, 0
+        sys, cfg, cam, fb, w, h, tile, tiles_x, aa, &progress_done, 0, 0, prepared
     };
     alea_parallel_status_t parallel_status = alea_parallel_for(
         (size_t)n_tiles, 1, worker_count, ALEA_PARALLEL_DYNAMIC,
         render_scene_tile_range, &parallel_context, NULL);
-    if (parallel_status != ALEA_PARALLEL_OK) return -1;
+    if (parallel_status != ALEA_PARALLEL_OK) {
+        if (prepared && alea_interrupted())
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "Regional rendering interrupted");
+        return -1;
+    }
 
     if (cfg->log_level > 0)
         fprintf(stderr, "\rrender: %d/%d tiles (100%%)\n", n_tiles, n_tiles);
 
     return 0;
+}
+
+int render_scene(alea_system_t* sys, const render_config_t* cfg,
+                 const render_camera_t* cam, render_framebuffer_t* fb) {
+    return render_scene_impl(sys, NULL, cfg, cam, fb);
+}
+
+int alea_render_scene_prepared(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                               const render_config_t* cfg, const render_camera_t* cam,
+                               render_framebuffer_t* fb) {
+    if (!alea_regional_render_ready(prepared, sys)) return -1;
+    if (cfg && cfg->render_mode == RENDER_MODE_XRAY) {
+        alea_set_error_detail(ALEA_ERR_INVALID_ARG, "Regional rendering requires a surface render mode");
+        return -1;
+    }
+    return render_scene_impl(sys, prepared, cfg, cam, fb);
 }
 
 int alea_render_scene_tile_span(alea_system_t* sys,
@@ -1083,7 +1121,7 @@ int alea_render_scene_tile_span(alea_system_t* sys,
     render_scene_parallel_context_t context = {
         sys, cfg, cam, compact, cfg->width, cfg->height, tile,
         (int)tiles_x, cfg->aa_samples > 0 ? cfg->aa_samples : 1,
-        NULL, first_tile, 1
+        NULL, first_tile, 1, NULL
     };
     return alea_parallel_for(tile_count, 1,
         cfg->threads > 0 ? (size_t)cfg->threads : 0,

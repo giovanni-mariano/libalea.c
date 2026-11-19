@@ -265,8 +265,10 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol);
  * Numerically tighten a cell's bounding box.
  *
  * Uses two complementary strategies:
- * 1. LP vertex enumeration — for pure plane intersections, enumerate
- *    triple-plane intersection vertices via Cramer's rule.
+ * 1. Deterministic linear relaxations with independently checked interval dual
+ *    bounds for planes, supported sphere/RPP/cylinder interiors and certified
+ *    quadric/slab enclosures
+ *    (up to 65,536 constraints).
  * 2. Octree recursive bisection — for general cells, recursively
  *    subdivide a large search box and discard empty sub-boxes.
  *
@@ -286,7 +288,8 @@ int alea_tighten_bbox_numerical(const alea_system_t* sys,
 
 /**
  * Discover a finite bbox for a bounded pure intersection of plane
- * half-spaces. Unlike the legacy numerical fallback, this rejects constraint
+ * half-spaces. Uncertain results leave the output unchanged. Unlike the legacy
+ * numerical fallback, this rejects constraint
  * systems with a non-zero recession direction.
  */
 int alea_tighten_bbox_plane_constraints(const alea_system_t* sys,
@@ -294,5 +297,17 @@ int alea_tighten_bbox_plane_constraints(const alea_system_t* sys,
                                          double tol,
                                          alea_bbox_t* out);
 
+
+/* Certified global relaxation for intersections of planes, sphere/RPP interiors,
+ * axis-aligned cylinder interiors and selected quadrics. Interval-certified
+ * positive-definite quadrics supply global boxes; exact opposite plane pairs
+ * can close rotated cylinders using a certified quadratic/slab enclosure.
+ * At most four quadrics and four slabs from the first 64 linear constraints
+ * are tried. Uncertain/unsupported conjuncts are ignored;
+ * unions/complements contribute no constraints, differences retain only the
+ * left operand. No caller-supplied search window is used. Failure leaves out
+ * unchanged. This does not mutate the model or any query cache. */
+int alea_tighten_bbox_mixed_constraints(const alea_system_t* sys,
+                                       alea_node_id_t root,alea_bbox_t* out);
 
 #endif // BBOX_H

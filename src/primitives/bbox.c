@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "bbox.h"
+#include "alea.h"
 #include "primitive_desc.h"
 #include "core/alea_eval.h"
 #include "core/alea_universe.h"  /* for alea_matrix_t (struct alea_matrix) */
@@ -406,7 +407,7 @@ alea_bbox_t alea_halfspace_bbox(
 }
 
 /* Forward declaration for numerical tightening (defined below) */
-static int tighten_bbox_vertex_enum(const alea_system_t* sys,
+static int tighten_bbox_plane_lp(const alea_system_t* sys,
                                     alea_node_id_t root,
                                     alea_bbox_t* out);
 
@@ -609,9 +610,9 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
         double dy = box->max_y - box->min_y;
         double dz = box->max_z - box->min_z;
         if (dx > 9e5 || dy > 9e5 || dz > 9e5) {
-            /* Try LP vertex enumeration only (fast, no octree) */
+            /* Use globally certified mixed constraints, never a clipped search domain. */
             alea_bbox_t lp_box;
-            if (tighten_bbox_vertex_enum(sys, cell->root_node_id, &lp_box) == 0) {
+            if (alea_tighten_bbox_mixed_constraints(sys, cell->root_node_id, &lp_box) == 0) {
                 alea_bbox_t tight;
                 alea_tighten_tree_bbox(sys, cell->root_node_id, &lp_box, tol, &tight);
                 if (tight.min_x < tight.max_x &&
@@ -638,6 +639,7 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
         }
     }
 
+    if (tightened) alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL & ~ALEA_CACHE_CELL_SURFACES);
     return tightened;
 }
 
@@ -645,204 +647,400 @@ int alea_tighten_all_bboxes(alea_system_t* sys, double tol) {
  * NUMERICAL BOUNDING BOX TIGHTENING
  *
  * Two strategies for cells with infinite analytical bboxes:
- * 1. LP vertex enumeration (fast, exact for pure plane intersections)
+ * 1. certified plane LP (fast, exact for pure plane intersections)
  * 2. Octree recursive bisection (general-purpose fallback)
  * ============================================================================ */
 
-/* Maximum planes for vertex enumeration */
-#define MAX_LP_PLANES 64
+/* Deterministic incremental linear programs in at most three dimensions.
+ * The optimizer proposes extrema; nonnegative dual combinations independently
+ * certify enclosing bounds. Artificial box faces are never accepted as global
+ * bounds. Uncertain, empty and unbounded systems leave the caller's box alone. */
+#define LP_MAX_PLANES 65536u
+#define LP_MAX_WORK 16000000u
+#define LP_BIG 1e12
 
-/* Half-space constraint: n·x <= d  (i.e. eff_sense*(ax+by+cz+d) <= 0) */
-typedef struct {
-    double a, b, c, d;  /* n·x <= d  means  a*x + b*y + c*z <= d */
-} halfspace_t;
+typedef struct { double a[3], b; } lp_constraint;
+typedef struct { size_t work; lp_constraint* scratch[2]; } lp_workspace;
 
-/**
- * Collect plane half-space constraints from a pure intersection tree.
- * Returns the number of planes collected, or -1 if the tree contains
- * non-plane primitives or union/difference nodes.
- */
-static int collect_plane_constraints(
-    const alea_system_t* sys,
-    alea_node_id_t node_id,
-    halfspace_t* planes,
-    int max_planes,
-    int count
-) {
-    if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
-        return -1;
-
-    const alea_node_t* node = &sys->nodes.data[node_id];
-    alea_operation_t op = ALEA_GET_OPERATION(node);
-
-    if (op == ALEA_OP_INTERSECTION) {
-        count = collect_plane_constraints(sys, node->operation.left, planes, max_planes, count);
-        if (count < 0) return -1;
-        count = collect_plane_constraints(sys, node->operation.right, planes, max_planes, count);
-        return count;
-    }
-
-    if (op != ALEA_OP_PRIMITIVE) return -1;  /* union/difference/complement */
-    if (node->primitive.prim_type != ALEA_PRIMITIVE_PLANE) return -1;
-
-    if (count >= max_planes) return -1;
-
-    uint32_t prim_id = node->primitive.primitive_id;
-    if (prim_id >= alea_vec_count(&sys->primitives)) return -1;
-
-    alea_primitive_data_t data;
-    if (!alea_primitive_copy_data(sys, prim_id, &data)) return -1;
-    const alea_plane_data_t* p = &data.plane;
-    int8_t eff_sense = node->primitive.sense;
-    if (node->primitive.inverted) eff_sense = -eff_sense;
-
-    /* Half-space convention:
-     * eff_sense = -1 (negative side): ax+by+cz+d <= 0 → ax+by+cz <= -d
-     * eff_sense = +1 (positive side): ax+by+cz+d >= 0 → -ax-by-cz <= d
-     * Unified: (-eff_sense*a)*x + (-eff_sense*b)*y + (-eff_sense*c)*z
-     *          <= -(-eff_sense*d) = eff_sense*d (wait, let's be explicit):
-     * Store as: n·x <= rhs where n = -eff_sense*(a,b,c), rhs = eff_sense*d */
-    double ns = -(double)eff_sense;
-    planes[count].a = ns * p->a;
-    planes[count].b = ns * p->b;
-    planes[count].c = ns * p->c;
-    planes[count].d = (double)eff_sense * p->d;  /* RHS */
-    count++;
-    return count;
-}
-
-/**
- * Check if a point satisfies all half-space constraints.
- */
-static bool point_feasible(const halfspace_t* planes, int n, vec3 pt) {
-    for (int i = 0; i < n; i++) {
-        double val = planes[i].a * pt.x + planes[i].b * pt.y + planes[i].c * pt.z;
-        if (val > planes[i].d + 1e-9) return false;
-    }
-    return true;
-}
-
-static bool recession_direction_feasible(const halfspace_t* planes, int n,
-                                          double x, double y, double z) {
-    double norm = sqrt(x*x + y*y + z*z);
-    if (norm <= 1e-12) return false;
-    x /= norm; y /= norm; z /= norm;
-    for (int i = 0; i < n; i++) {
-        if (planes[i].a*x + planes[i].b*y + planes[i].c*z > 1e-10)
-            return false;
-    }
-    return true;
-}
-
-/* A non-trivial three-dimensional polyhedral recession cone has either a
- * lineality direction or an extreme ray at the intersection of two facet
- * planes. Check those candidates, plus coordinate/tangent directions for
- * rank-deficient constraint sets. */
-static bool has_nonzero_recession_direction(const halfspace_t* planes, int n) {
-    static const double axes[3][3] = {
-        {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}
-    };
-    for (int a = 0; a < 3; a++) {
-        for (int sign = -1; sign <= 1; sign += 2) {
-            if (recession_direction_feasible(planes, n,
-                    sign*axes[a][0], sign*axes[a][1], sign*axes[a][2]))
-                return true;
+static int lp_solve(int d, const lp_constraint* h, size_t n,
+                    const double c[3], const double bounds[3][2],
+                    double x[3], lp_workspace* w) {
+    if (alea_interrupted()) return -1;
+    if (d == 1) {
+        double lo=bounds[0][0], hi=bounds[0][1];
+        for(size_t i=0;i<n;i++) {
+            if (++w->work>LP_MAX_WORK) return -1;
+            double a=h[i].a[0], b=h[i].b;
+            if(a==0) { if(b<0) return -1; }
+            else if(a>0) hi=fmin(hi,b/a);
+            else lo=fmax(lo,b/a);
         }
+        if(lo>hi || !isfinite(lo) || !isfinite(hi)) return -1;
+        x[0]=c[0]<0?hi:lo; return 0;
     }
-    for (int i = 0; i < n; i++) {
-        for (int a = 0; a < 3; a++) {
-            double x = planes[i].b*axes[a][2] - planes[i].c*axes[a][1];
-            double y = planes[i].c*axes[a][0] - planes[i].a*axes[a][2];
-            double z = planes[i].a*axes[a][1] - planes[i].b*axes[a][0];
-            if (recession_direction_feasible(planes, n, x, y, z) ||
-                recession_direction_feasible(planes, n, -x, -y, -z))
-                return true;
+    for(int k=0;k<d;k++) x[k]=bounds[k][c[k]<0];
+    for(size_t i=0;i<n;i++) {
+        if(++w->work>LP_MAX_WORK) return -1;
+        double v=0,mag=fabs(h[i].b);
+        for(int k=0;k<d;k++){v+=h[i].a[k]*x[k];mag+=fabs(h[i].a[k]*x[k]);}
+        if(v<=h[i].b+32*DBL_EPSILON*(1+mag)) continue;
+        int pivot=0, keep[2],nk=0;
+        for(int k=1;k<d;k++) if(fabs(h[i].a[k])>fabs(h[i].a[pivot]))pivot=k;
+        if(h[i].a[pivot]==0) return -1;
+        for(int k=0;k<d;k++) if(k!=pivot) keep[nk++]=k;
+        double r[2], origin=h[i].b/h[i].a[pivot];
+        for(int k=0;k<nk;k++) r[k]=h[i].a[keep[k]]/h[i].a[pivot];
+        lp_constraint* sub=w->scratch[d-2];
+        for(size_t j=0;j<i;j++) {
+            sub[j]=(lp_constraint){{0,0,0}, h[j].b-h[j].a[pivot]*origin};
+            for(int k=0;k<nk;k++)sub[j].a[k]=h[j].a[keep[k]]-h[j].a[pivot]*r[k];
         }
-        for (int j = i + 1; j < n; j++) {
-            double x = planes[i].b*planes[j].c - planes[i].c*planes[j].b;
-            double y = planes[i].c*planes[j].a - planes[i].a*planes[j].c;
-            double z = planes[i].a*planes[j].b - planes[i].b*planes[j].a;
-            if (recession_direction_feasible(planes, n, x, y, z) ||
-                recession_direction_feasible(planes, n, -x, -y, -z))
-                return true;
+        sub[i]=(lp_constraint){{0,0,0},bounds[pivot][1]-origin};
+        sub[i+1]=(lp_constraint){{0,0,0},origin-bounds[pivot][0]};
+        double nc[3]={0},nb[3][2]={{0}},y[3]={0};
+        for(int k=0;k<nk;k++) {
+            sub[i].a[k]=-r[k];sub[i+1].a[k]=r[k];
+            nc[k]=c[keep[k]]-c[pivot]*r[k];
+            nb[k][0]=bounds[keep[k]][0];nb[k][1]=bounds[keep[k]][1];
         }
+        if(lp_solve(d-1,sub,i+2,nc,nb,y,w))return -1;
+        x[pivot]=origin;
+        for(int k=0;k<nk;k++){x[keep[k]]=y[k];x[pivot]-=r[k]*y[k];}
     }
-    return false;
-}
-
-/**
- * LP vertex enumeration: enumerate all triple-plane intersection vertices,
- * keep feasible ones, compute their bounding box.
- *
- * Returns 0 on success, -1 on failure.
- */
-static int tighten_bbox_vertex_enum(
-    const alea_system_t* sys,
-    alea_node_id_t root,
-    alea_bbox_t* out
-) {
-    halfspace_t planes[MAX_LP_PLANES];
-    int n = collect_plane_constraints(sys, root, planes, MAX_LP_PLANES, 0);
-    if (n < 3) return -1;  /* Need at least 3 planes for a vertex */
-
-    alea_bbox_t result = alea_bbox_empty();
-    int n_feasible = 0;
-
-    for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            for (int k = j + 1; k < n; k++) {
-                /* Build 3x3 system: row r = plane normal, RHS = d */
-                mat3 A;
-                /* Column-major: A.m[col][row] */
-                A.m[0][0] = planes[i].a; A.m[1][0] = planes[i].b; A.m[2][0] = planes[i].c;
-                A.m[0][1] = planes[j].a; A.m[1][1] = planes[j].b; A.m[2][1] = planes[j].c;
-                A.m[0][2] = planes[k].a; A.m[1][2] = planes[k].b; A.m[2][2] = planes[k].c;
-
-                vec3 rhs = { planes[i].d, planes[j].d, planes[k].d };
-                vec3 pt;
-                if (mat3_solve_cramer(A, rhs, &pt) != 0) continue;
-
-                if (point_feasible(planes, n, pt)) {
-                    /* Expand result bbox */
-                    if (pt.x < result.min_x) result.min_x = pt.x;
-                    if (pt.x > result.max_x) result.max_x = pt.x;
-                    if (pt.y < result.min_y) result.min_y = pt.y;
-                    if (pt.y > result.max_y) result.max_y = pt.y;
-                    if (pt.z < result.min_z) result.min_z = pt.z;
-                    if (pt.z > result.max_z) result.max_z = pt.z;
-                    n_feasible++;
-                }
-            }
-        }
-    }
-
-    if (n_feasible == 0) return -1;
-
-    /* Add small margin for numerical safety */
-    double margin = 1.0;
-    result.min_x -= margin;
-    result.max_x += margin;
-    result.min_y -= margin;
-    result.max_y += margin;
-    result.min_z -= margin;
-    result.max_z += margin;
-
-    *out = result;
+    for(int k=0;k<d;k++)if(!isfinite(x[k]))return -1;
     return 0;
 }
 
+/* Directed interval operations used only for the independent certificate.
+ * Each elementary result is widened by one representable number. */
+typedef struct { double lo,hi; } lp_interval;
+static lp_interval lp_add(lp_interval a,lp_interval b) {
+    return (lp_interval){nextafter(a.lo+b.lo,-INFINITY),nextafter(a.hi+b.hi,INFINITY)};
+}
+static lp_interval lp_product(double a,double b) {
+    double p=a*b;return (lp_interval){nextafter(p,-INFINITY),nextafter(p,INFINITY)};
+}
+
+static lp_interval lp_neg(lp_interval a) { return (lp_interval){-a.hi,-a.lo}; }
+static lp_interval lp_mul(lp_interval a,lp_interval b) {
+    double p[4]={a.lo*b.lo,a.lo*b.hi,a.hi*b.lo,a.hi*b.hi};
+    double lo=p[0],hi=p[0];
+    for(int i=0;i<4;i++) {
+        if(!isfinite(p[i]))return (lp_interval){-INFINITY,INFINITY};
+        lo=fmin(lo,p[i]);hi=fmax(hi,p[i]);
+    }
+    return (lp_interval){nextafter(lo,-INFINITY),nextafter(hi,INFINITY)};
+}
+static lp_interval lp_sub(lp_interval a,lp_interval b) { return lp_add(a,lp_neg(b)); }
+static lp_interval lp_scale(lp_interval a,double b) {
+    return lp_mul(a,(lp_interval){b,b});
+}
+
+/* A certified slab l <= a.x <= u can close an otherwise unbounded quadric.
+ * For q(x)<=0, q(x)+mu*(a.x-mid)^2-mu*radius^2<=0 is necessary.
+ * If that new quadratic is provably positive definite, its ellipsoid is a
+ * GLOBAL enclosure of the conjunction. No small eigenvalue is erased and no
+ * artificial LP search box or user window participates in this proof.
+ * Interval Sylvester minors certify definiteness; an interval inverse and
+ * completing the square enclose the center and coordinate support radii. */
+static int lp_quadric_enclosure(const double coeff[10],double sense,
+                                const lp_constraint* slab,double lower,
+                                alea_bbox_t* out) {
+    double q[10],scale=0;
+    for(int i=0;i<10;i++) {
+        q[i]=-sense*coeff[i];
+        if(!isfinite(q[i]))return -1;
+        if(i<6)scale=fmax(scale,fabs(q[i]));
+    }
+    lp_interval a[3][3],b[3],constant={q[9],q[9]};
+    for(int i=0;i<3;i++) { a[i][i]=(lp_interval){q[i],q[i]};b[i]=(lp_interval){q[6+i],q[6+i]}; }
+    a[0][1]=a[1][0]=lp_product(q[3],0.5);
+    a[1][2]=a[2][1]=lp_product(q[4],0.5);
+    a[0][2]=a[2][0]=lp_product(q[5],0.5);
+    if(slab) {
+        double norm=0;for(int i=0;i<3;i++)norm+=slab->a[i]*slab->a[i];
+        double mu=scale/norm,upper=slab->b;
+        if(!isfinite(mu) || mu<=0 || !isfinite(lower) || lower>upper)return -1;
+        double mid=lower/2+upper/2;
+        lp_interval dl=lp_sub((lp_interval){lower,lower},(lp_interval){mid,mid});
+        lp_interval du=lp_sub((lp_interval){upper,upper},(lp_interval){mid,mid});
+        double radius=fmax(fmax(fabs(dl.lo),fabs(dl.hi)),fmax(fabs(du.lo),fabs(du.hi)));
+        /* Subtract an upper radius squared: enlarging the ellipsoid is safe. */
+        double r2=lp_product(radius,radius).hi;
+        constant=lp_add(constant,lp_scale(lp_sub(lp_product(mid,mid),(lp_interval){r2,r2}),mu));
+        for(int i=0;i<3;i++) {
+            b[i]=lp_sub(b[i],lp_scale(lp_scale(lp_product(mid,slab->a[i]),mu),2));
+            for(int j=i;j<3;j++)
+                a[j][i]=a[i][j]=lp_add(a[i][j],lp_scale(lp_product(slab->a[i],slab->a[j]),mu));
+        }
+    }
+    lp_interval cof[3][3];
+    cof[0][0]=lp_sub(lp_mul(a[1][1],a[2][2]),lp_mul(a[1][2],a[1][2]));
+    cof[1][1]=lp_sub(lp_mul(a[0][0],a[2][2]),lp_mul(a[0][2],a[0][2]));
+    cof[2][2]=lp_sub(lp_mul(a[0][0],a[1][1]),lp_mul(a[0][1],a[0][1]));
+    cof[0][1]=cof[1][0]=lp_sub(lp_mul(a[0][2],a[1][2]),lp_mul(a[0][1],a[2][2]));
+    cof[0][2]=cof[2][0]=lp_sub(lp_mul(a[0][1],a[1][2]),lp_mul(a[0][2],a[1][1]));
+    cof[1][2]=cof[2][1]=lp_sub(lp_mul(a[0][1],a[0][2]),lp_mul(a[0][0],a[1][2]));
+    lp_interval det={0,0};
+    for(int i=0;i<3;i++)det=lp_add(det,lp_mul(a[0][i],cof[0][i]));
+    if(!(a[0][0].lo>0 && cof[2][2].lo>0 && det.lo>0) || !isfinite(det.hi))return -1;
+    lp_interval reciprocal={nextafter(1/det.hi,-INFINITY),nextafter(1/det.lo,INFINITY)};
+    lp_interval inverse[3][3],center[3],radius2=lp_neg(constant);
+    for(int i=0;i<3;i++) {
+        lp_interval row={0,0};
+        for(int j=0;j<3;j++) {
+            inverse[i][j]=lp_mul(cof[i][j],reciprocal);
+            row=lp_add(row,lp_mul(inverse[i][j],b[j]));
+        }
+        center[i]=lp_scale(row,-0.5);
+        radius2=lp_add(radius2,lp_scale(lp_mul(b[i],row),0.25));
+    }
+    if(!isfinite(radius2.hi) || radius2.hi<0)return -1; /* No empty-set claim. */
+    double lo[3],hi[3];
+    for(int i=0;i<3;i++) {
+        double support2=lp_product(radius2.hi,inverse[i][i].hi).hi;
+        if(!isfinite(support2) || support2<0)return -1;
+        double support=nextafter(sqrt(support2),INFINITY);
+        lo[i]=nextafter(center[i].lo-support,-INFINITY);
+        hi[i]=nextafter(center[i].hi+support,INFINITY);
+        if(!isfinite(lo[i]) || !isfinite(hi[i]) || lo[i]>hi[i])return -1;
+    }
+    *out=(alea_bbox_t){lo[0],hi[0],lo[1],hi[1],lo[2],hi[2]};return 0;
+}
+
+static int lp_certificate(const lp_constraint* h,size_t n,const double x[3],
+                          int axis,int sign,double* upper,double* residual) {
+    size_t active[32],count=0;
+    for(size_t i=0;i<n && count<32;i++) {
+        double v=0,mag=fabs(h[i].b);
+        for(int k=0;k<3;k++){v+=h[i].a[k]*x[k];mag+=fabs(h[i].a[k]*x[k]);}
+        if(fabs(v-h[i].b)<=1e-7*(1+mag))active[count++]=i;
+    }
+    /* Zero columns allow certificates supported on one or two constraints. */
+    for(size_t i=0;i<count;i++)for(size_t j=i;j<count;j++)for(size_t k=j;k<count;k++) {
+        size_t ids[3]={active[i],active[j],active[k]};
+        double lambda[3]={0};
+        int m=(i==j&&j==k)?1:(i==j||j==k)?2:3;
+        if(m==2){ids[0]=active[i];ids[1]=active[k];}
+        if(m==1) {
+            double a=h[ids[0]].a[axis];if(a==0)continue;
+            lambda[0]=sign/a;
+        } else if(m==2) {
+            double best=0;int p=0,q=1;
+            for(int a=0;a<3;a++)for(int b=a+1;b<3;b++) {
+                double det=h[ids[0]].a[a]*h[ids[1]].a[b]-h[ids[1]].a[a]*h[ids[0]].a[b];
+                if(fabs(det)>fabs(best)){best=det;p=a;q=b;}
+            }
+            if(best==0)continue;
+            double cp=p==axis?sign:0,cq=q==axis?sign:0;
+            lambda[0]=(cp*h[ids[1]].a[q]-cq*h[ids[1]].a[p])/best;
+            lambda[1]=(cq*h[ids[0]].a[p]-cp*h[ids[0]].a[q])/best;
+        } else {
+            mat3 A;
+            for(int col=0;col<3;col++)for(int row=0;row<3;row++)A.m[col][row]=h[ids[col]].a[row];
+            vec3 c={axis==0?sign:0,axis==1?sign:0,axis==2?sign:0},v;
+            if(mat3_solve_cramer(A,c,&v))continue;
+            lambda[0]=v.x;lambda[1]=v.y;lambda[2]=v.z;
+        }
+        int valid=1;for(int t=0;t<m;t++)if(lambda[t]<0 || !isfinite(lambda[t]))valid=0;
+        if(!valid)continue;
+        lp_interval sum={0,0};
+        for(int t=0;t<m;t++)sum=lp_add(sum,lp_product(lambda[t],h[ids[t]].b));
+        double error=0;
+        for(int a=0;a<3;a++) {
+            lp_interval r={a==axis?sign:0,a==axis?sign:0};
+            for(int t=0;t<m;t++)r=lp_add(r,lp_product(-lambda[t],h[ids[t]].a[a]));
+            double err=fmax(fabs(r.lo),fabs(r.hi));
+            error=nextafter(error+err,INFINITY);
+        }
+        if(isfinite(sum.hi) && error<0.25){*upper=sum.hi;*residual=error;return 0;}
+    }
+    return -1;
+}
+
+/* Necessary constraints only: an enclosing box for a curved primitive is a
+ * relaxation, never an approximation of its membership predicate. */
+static size_t lp_primitive_constraints(const alea_primitive_data_t* data,
+        alea_primitive_type_t type, double sense, lp_constraint h[6]) {
+    if(type==ALEA_PRIMITIVE_PLANE) {
+        h[0]=(lp_constraint){{-sense*data->plane.a,-sense*data->plane.b,
+                              -sense*data->plane.c},sense*data->plane.d};
+        return 1;
+    }
+    if(sense>=0)return 0; /* Exterior curved half-spaces have no such bounds. */
+    double center[3]={0},radius=0,lo[3],hi[3];
+    int skip=-1;
+    switch(type) {
+    case ALEA_PRIMITIVE_SPHERE:
+        center[0]=data->sphere.center_x;center[1]=data->sphere.center_y;
+        center[2]=data->sphere.center_z;radius=data->sphere.radius;break;
+    case ALEA_PRIMITIVE_CYLINDER_X:
+        skip=0;center[1]=data->cyl_x.center_y;center[2]=data->cyl_x.center_z;
+        radius=data->cyl_x.radius;break;
+    case ALEA_PRIMITIVE_CYLINDER_Y:
+        skip=1;center[0]=data->cyl_y.center_x;center[2]=data->cyl_y.center_z;
+        radius=data->cyl_y.radius;break;
+    case ALEA_PRIMITIVE_CYLINDER_Z:
+        skip=2;center[0]=data->cyl_z.center_x;center[1]=data->cyl_z.center_y;
+        radius=data->cyl_z.radius;break;
+    case ALEA_PRIMITIVE_RPP:
+        lo[0]=data->box.min_x;hi[0]=data->box.max_x;
+        lo[1]=data->box.min_y;hi[1]=data->box.max_y;
+        lo[2]=data->box.min_z;hi[2]=data->box.max_z;break;
+    default:return 0;
+    }
+    if(type!=ALEA_PRIMITIVE_RPP) {
+        if(!isfinite(radius) || radius<=0)return 0;
+        for(int k=0;k<3;k++) {
+            lo[k]=nextafter(center[k]-radius,-INFINITY);
+            hi[k]=nextafter(center[k]+radius,INFINITY);
+        }
+    }
+    size_t n=0;
+    for(int k=0;k<3;k++)if(k!=skip) {
+        if(!isfinite(lo[k]) || !isfinite(hi[k]) || lo[k]>hi[k])return 0;
+        h[n]=(lp_constraint){{0},hi[k]};h[n++].a[k]=1;
+        h[n]=(lp_constraint){{0},-lo[k]};h[n++].a[k]=-1;
+    }
+    return n;
+}
+
+static int tighten_bbox_lp(const alea_system_t* sys,
+                           alea_node_id_t root,alea_bbox_t* out,int mixed) {
+    /* Iterative collection bounds both memory and pathological DAG expansion. */
+    size_t capacity=64,n=0,top=0,visits=0;
+    /* Bounded extra work: at most four quadrics and four exact opposite slabs.
+     * Unsupported or uncertain candidates simply contribute no constraints. */
+    alea_node_id_t quadrics[4];size_t quadric_count=0;
+    lp_constraint* h=malloc(capacity*sizeof(*h));
+    alea_node_id_t* stack=malloc(LP_MAX_PLANES*sizeof(*stack));
+    if(!h || !stack){free(h);free(stack);return -1;}
+    stack[top++]=root;int status=-1;
+    while(top) {
+        if(++visits>2*LP_MAX_PLANES || alea_interrupted())goto done;
+        alea_node_id_t id=stack[--top];if(id>=sys->nodes.count)goto done;
+        const alea_node_t* node=&sys->nodes.data[id];
+        alea_operation_t op=ALEA_GET_OPERATION(node);
+        if(op==ALEA_OP_INTERSECTION) {
+            if(top+2>LP_MAX_PLANES)goto done;
+            stack[top++]=node->operation.right;stack[top++]=node->operation.left;continue;
+        }
+        if(mixed && op==ALEA_OP_DIFFERENCE) {
+            /* A minus B is contained in A. No constraints from B are valid. */
+            stack[top++]=node->operation.left;continue;
+        }
+        if(op!=ALEA_OP_PRIMITIVE) {
+            if(mixed)continue; /* Do not descend into unions or complements. */
+            goto done;
+        }
+        if(!mixed && node->primitive.prim_type!=ALEA_PRIMITIVE_PLANE)goto done;
+        alea_primitive_data_t data;
+        if(!alea_primitive_copy_data(sys,node->primitive.primitive_id,&data))goto done;
+        double sense=node->primitive.sense*(node->primitive.inverted?-1:1);
+        if(mixed && node->primitive.prim_type==ALEA_PRIMITIVE_QUADRIC && quadric_count<4) {
+            int negative=0;
+            for(int k=0;k<3;k++)if(-sense*data.quadric.coeffs[k]<0)negative++;
+            if(negative<2)quadrics[quadric_count++]=id;
+        }
+        lp_constraint leaf[6];
+        size_t count=lp_primitive_constraints(&data,node->primitive.prim_type,sense,leaf);
+        if(n+count>LP_MAX_PLANES)goto done;
+        if(n+count>capacity){capacity*=2;void* grown=realloc(h,capacity*sizeof(*h));if(!grown)goto done;h=grown;}
+        for(size_t j=0;j<count;j++) {
+            for(int k=0;k<3;k++)if(!isfinite(leaf[j].a[k]))goto done;
+            if(!isfinite(leaf[j].b))goto done;
+            h[n++]=leaf[j];
+        }
+    }
+    if(quadric_count) {
+        lp_constraint slabs[4];double lowers[4];size_t slab_count=0;
+        size_t search=n<64?n:64;
+        for(size_t i=0;i<search && slab_count<4;i++)for(size_t j=i+1;j<search && slab_count<4;j++) {
+            int opposite=1,nonzero=0;
+            for(int k=0;k<3;k++) {
+                if(h[i].a[k]!=-h[j].a[k])opposite=0;
+                if(h[i].a[k]!=0)nonzero=1;
+            }
+            if(opposite && nonzero && -h[j].b<=h[i].b) {
+                slabs[slab_count]=h[i];lowers[slab_count++]=-h[j].b;
+            }
+        }
+        for(size_t q=0;q<quadric_count;q++) {
+            const alea_node_t* node=&sys->nodes.data[quadrics[q]];
+            alea_primitive_data_t data;
+            if(!alea_primitive_copy_data(sys,node->primitive.primitive_id,&data))goto done;
+            double sense=node->primitive.sense*(node->primitive.inverted?-1:1);
+            alea_bbox_t enclosure;int bounded=0;
+            for(size_t s=0;s<=slab_count;s++) {
+                alea_bbox_t box;
+                if(lp_quadric_enclosure(data.quadric.coeffs,sense,s?&slabs[s-1]:NULL,
+                                        s?lowers[s-1]:0,&box))continue;
+                enclosure=bounded?alea_bbox_intersection(&enclosure,&box):box;bounded=1;
+            }
+            if(!bounded || !alea_bbox_is_valid(&enclosure))continue;
+            if(n+6>LP_MAX_PLANES)goto done;
+            if(n+6>capacity) {
+                capacity*=2;void* grown=realloc(h,capacity*sizeof(*h));
+                if(!grown)goto done;
+                h=grown;
+            }
+            double lo[3]={enclosure.min_x,enclosure.min_y,enclosure.min_z};
+            double hi[3]={enclosure.max_x,enclosure.max_y,enclosure.max_z};
+            for(int k=0;k<3;k++) {
+                h[n]=(lp_constraint){{0},hi[k]};h[n++].a[k]=1;
+                h[n]=(lp_constraint){{0},-lo[k]};h[n++].a[k]=-1;
+            }
+        }
+    }
+    if(n<4)goto done;
+    uint64_t seed=UINT64_C(0x2545f4914f6cdd1d);
+    for(size_t i=n-1;i>0;i--){seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;size_t j=seed%(i+1);lp_constraint tmp=h[i];h[i]=h[j];h[j]=tmp;}
+    lp_workspace w={0};
+    w.scratch[0]=malloc((n+4)*sizeof(*h));w.scratch[1]=malloc((n+4)*sizeof(*h));
+    if(!w.scratch[0] || !w.scratch[1]){free(w.scratch[0]);free(w.scratch[1]);goto done;}
+    double bounds[3][2]={{-LP_BIG,LP_BIG},{-LP_BIG,LP_BIG},{-LP_BIG,LP_BIG}},v[6],errors[6];
+    int ok=1;
+    for(int axis=0;axis<3 && ok;axis++)for(int side=0;side<2;side++) {
+        int sign=side?1:-1;double c[3]={0},x[3]={0},u;
+        c[axis]=-sign;
+        if(lp_solve(3,h,n,c,bounds,x,&w) || lp_certificate(h,n,x,axis,sign,&u,&errors[2*axis+side])){ok=0;break;}
+        v[2*axis+side]=u;
+    }
+    free(w.scratch[0]);free(w.scratch[1]);
+    if(ok) {
+        /* For every feasible point, M=max |x_i| satisfies
+         * M <= max(rhs) + max(residual)*M. This closes the bound
+         * without assuming that the artificial search box encloses it. */
+        double rhs=0,error=0;
+        for(int i=0;i<6;i++){rhs=fmax(rhs,fabs(v[i]));error=fmax(error,errors[i]);}
+        double denominator=nextafter(1-error,-INFINITY);
+        double extent=nextafter(rhs/denominator,INFINITY);
+        if(!isfinite(extent))goto done;
+        for(int i=0;i<6;i++)v[i]=nextafter(v[i]+nextafter(errors[i]*extent,INFINITY),INFINITY);
+        alea_bbox_t result={-v[0],v[1],-v[2],v[3],-v[4],v[5]};
+        if(alea_bbox_is_valid(&result)){*out=result;status=0;}
+    }
+done:
+    free(h);free(stack);return status;
+}
+
+static int tighten_bbox_plane_lp(const alea_system_t* sys,
+                                 alea_node_id_t root,alea_bbox_t* out) {
+    return tighten_bbox_lp(sys,root,out,0);
+}
+
+int alea_tighten_bbox_mixed_constraints(const alea_system_t* sys,
+                                       alea_node_id_t root,alea_bbox_t* out) {
+    if(!sys || !out)return -1;
+    return tighten_bbox_lp(sys,root,out,1);
+}
+
 int alea_tighten_bbox_plane_constraints(const alea_system_t* sys,
-                                         alea_node_id_t root,
-                                         double tol,
-                                         alea_bbox_t* out) {
-    if (!sys || !out || tol <= 0.0) return -1;
-    halfspace_t planes[MAX_LP_PLANES];
-    int n = collect_plane_constraints(sys, root, planes, MAX_LP_PLANES, 0);
-    if (n < 3 || has_nonzero_recession_direction(planes, n)) return -1;
-    alea_bbox_t coarse;
-    if (tighten_bbox_vertex_enum(sys, root, &coarse) != 0) return -1;
-    alea_tighten_tree_bbox(sys, root, &coarse, tol, out);
-    return alea_bbox_is_valid(out) ? 0 : -1;
+                                       alea_node_id_t root,double tol,
+                                       alea_bbox_t* out) {
+    if(!sys || !out || !isfinite(tol) || tol<=0)return -1;
+    /* The LP certificates already establish global enclosure. */
+    return tighten_bbox_plane_lp(sys,root,out);
 }
 
 /**
@@ -921,8 +1119,8 @@ int alea_tighten_bbox_numerical(
 
     alea_bbox_t coarse;
 
-    /* Strategy 1: LP vertex enumeration (fast, exact for plane-only) */
-    if (tighten_bbox_vertex_enum(sys, root, &coarse) == 0) {
+    /* Strategy 1: globally certified plane and mixed-primitive bounds */
+    if (alea_tighten_bbox_mixed_constraints(sys, root, &coarse) == 0) {
         /* Refine with binary search */
         alea_tighten_tree_bbox(sys, root, &coarse, tol, out);
         return 0;

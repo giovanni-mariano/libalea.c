@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MPL-2.0
 
 build/
+.venv/
+.uv-python/
 dist/
 .pytest_cache/
 __pycache__/

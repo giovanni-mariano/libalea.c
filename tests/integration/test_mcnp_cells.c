@@ -745,4 +745,30 @@ TEST(cell_difference_roundtrip) {
     remove(tmpfile);
 }
 
+TEST(reused_ordered_expressions_preserve_independent_cell_edits) {
+    const char* input =
+        "Shared MCNP subexpressions\n"
+        "1 0 -1 2\n"
+        "2 0 -1 2\n"
+        "3 0 2 -1\n"
+        "4 0 #1 -3\n\n"
+        "1 so 4\n2 px 0\n3 so 8\n\n";
+    mcnp_model_t* model = parse_mcnp(input);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys = model->sys;
+    alea_node_id_t first = sys->cells.data[0].root_node_id;
+    ASSERT_EQ(sys->cells.data[1].root_node_id, first);
+    alea_node_id_t reversed = sys->cells.data[2].root_node_id;
+    ASSERT(first != reversed);
+    ASSERT_EQ(alea_node_left(sys, first), alea_node_right(sys, reversed));
+    ASSERT_EQ(alea_node_right(sys, first), alea_node_left(sys, reversed));
+    ASSERT_EQ(alea_cell_set_region(sys, 0, alea_node_left(sys, first)), 0);
+    ASSERT_EQ(sys->cells.data[1].root_node_id, first);
+    int cell;
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_find_cell_at(sys, -2, 0, 0, &cell, NULL), 0);
+    ASSERT_EQ(cell, 1);
+    mcnp_model_destroy(model);
+}
+
 TEST_MAIN()

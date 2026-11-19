@@ -18,9 +18,14 @@ endif
 COMPUTE_BUILD_DIR = $(BUILD_DIR)/compute/$(COMPUTE_VARIANT)
 COMPUTE_BIN_DIR = $(BIN_DIR)/compute/$(COMPUTE_VARIANT)
 LIB_COMPUTE = $(COMPUTE_BIN_DIR)/libalea_compute.a
+COMPUTE_PREPARE_NAMES = compute_scene compute_groups compute_render_scene compute_bvh compute_spatial compute_local compute_point compute_profile
+COMPUTE_PREPARE_OBJS = $(addprefix $(COMPUTE_BUILD_DIR)/,$(addsuffix .o,$(COMPUTE_PREPARE_NAMES)))
+# Private archive for host preparation tests/tools; not installed or pulled into
+# ordinary CPU compute builds. The Metal archive retains the same objects.
+LIB_COMPUTE_PREPARE = $(COMPUTE_BIN_DIR)/libalea_compute_prepare.a
 COMPUTE_OBJS = $(COMPUTE_BUILD_DIR)/compute.o
 ifeq ($(USE_METAL),1)
-  COMPUTE_OBJS += $(COMPUTE_BUILD_DIR)/compute_scene.o $(COMPUTE_BUILD_DIR)/compute_groups.o $(COMPUTE_BUILD_DIR)/compute_render_scene.o $(COMPUTE_BUILD_DIR)/compute_bvh.o $(COMPUTE_BUILD_DIR)/compute_spatial.o $(COMPUTE_BUILD_DIR)/compute_local.o $(COMPUTE_BUILD_DIR)/compute_point.o $(COMPUTE_BUILD_DIR)/compute_profile.o $(COMPUTE_BUILD_DIR)/compute_metal.o
+  COMPUTE_OBJS += $(COMPUTE_PREPARE_OBJS) $(COMPUTE_BUILD_DIR)/compute_metal.o
 endif
 
 .PHONY: compute test-compute benchmark-compute install-compute
@@ -54,21 +59,38 @@ $(LIB_COMPUTE): $(COMPUTE_OBJS) $(SRC_DIR)/compute/compute.mk | $(COMPUTE_BIN_DI
 	@$(AR) rcs $@.tmp $(COMPUTE_OBJS)
 	@mv $@.tmp $@
 
+$(LIB_COMPUTE_PREPARE): $(COMPUTE_PREPARE_OBJS) $(SRC_DIR)/compute/compute.mk | $(COMPUTE_BIN_DIR)
+	@$(RM) $@.tmp
+	@$(AR) rcs $@.tmp $(COMPUTE_PREPARE_OBJS)
+	@mv $@.tmp $@
+
 $(COMPUTE_BIN_DIR)/test_compute$(EXEEXT): $(TEST_DIR)/compute/test_compute.c $(LIB_COMPUTE) $(LIB_CORE)
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) -I$(TEST_DIR) $< \
 		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
 
 test-compute: check-public-headers compute $(COMPUTE_BIN_DIR)/test_compute$(EXEEXT)
 	@$(COMPUTE_BIN_DIR)/test_compute$(EXEEXT)
-ifeq ($(USE_METAL),1)
-	@$(COMPUTE_BIN_DIR)/test_compute_builders
-	@$(COMPUTE_BIN_DIR)/test_metal_resources
 
-test-compute: $(COMPUTE_BIN_DIR)/test_compute_builders $(COMPUTE_BIN_DIR)/test_metal_resources
+.PHONY: test-compute-builders
+test-compute: test-compute-builders
+test-compute-builders: $(COMPUTE_BIN_DIR)/test_compute_builders$(EXEEXT)
+	@$(COMPUTE_BIN_DIR)/test_compute_builders$(EXEEXT)
 
-$(COMPUTE_BIN_DIR)/test_compute_builders: $(TEST_DIR)/compute/test_compute_builders.c benchmarks/region_program_audit.h benchmarks/region_group_audit.h $(SRC_DIR)/compute/compute_bvh.c $(SRC_DIR)/compute/compute_spatial.c $(SRC_DIR)/compute/compute_point.c $(LIB_COMPUTE) $(LIB_CORE)
+.PHONY: compute-prepare-inventory
+compute-prepare-inventory: $(COMPUTE_BIN_DIR)/compute_prepare$(EXEEXT)
+$(COMPUTE_BIN_DIR)/compute_prepare$(EXEEXT): benchmarks/compute_prepare.c $(LIB_COMPUTE_PREPARE) $(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE)
+	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) $< \
+		$(LIB_COMPUTE_PREPARE) $(LIB_COMPUTE) $(LIB_MCNP) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
+
+$(COMPUTE_BIN_DIR)/test_compute_builders$(EXEEXT): $(TEST_DIR)/compute/test_compute_builders.c benchmarks/region_program_audit.h benchmarks/region_group_audit.h $(SRC_DIR)/compute/compute_bvh.c $(SRC_DIR)/compute/compute_groups.c $(SRC_DIR)/compute/compute_point.c $(LIB_COMPUTE_PREPARE) $(LIB_COMPUTE) $(LIB_CORE)
 	@$(CC) $(CFLAGS) $(COMPUTE_CPPFLAGS) $(INCLUDES) -I$(TEST_DIR) $< \
-		$(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
+		$(LIB_COMPUTE_PREPARE) $(LIB_COMPUTE) $(LIB_CORE) $(LDFLAGS) $(COMPUTE_LDLIBS) -o $@
+
+ifeq ($(USE_METAL),1)
+test-compute: test-compute-metal-resources
+.PHONY: test-compute-metal-resources
+test-compute-metal-resources: $(COMPUTE_BIN_DIR)/test_metal_resources
+	@$(COMPUTE_BIN_DIR)/test_metal_resources
 
 $(COMPUTE_BUILD_DIR)/group_eval_probe.air: $(TEST_DIR)/compute/group_eval_probe.metal $(COMPUTE_BUILD_DIR)/compute.air
 	@xcrun --sdk macosx metal -std=macos-metal2.3 -fno-fast-math -fmodules-cache-path=$(abspath $(COMPUTE_BUILD_DIR))/module-cache -c $< -o $@
@@ -96,7 +118,7 @@ install-compute: compute
 	@$(INSTALL_DATA) $(LIB_COMPUTE) "$(DESTDIR)$(LIBDIR)/"
 	@$(INSTALL_DATA) $(INCLUDE_DIR)/alea_compute.h "$(DESTDIR)$(INCLUDEDIR)/"
 
--include $(COMPUTE_OBJS:.o=.d)
+-include $(COMPUTE_OBJS:.o=.d) $(COMPUTE_PREPARE_OBJS:.o=.d)
 
 ifeq ($(USE_METAL),1)
 $(COMPUTE_BIN_DIR)/benchmark_gpu_geometry$(EXEEXT): benchmarks/gpu_geometry.c benchmarks/gpu_geometry_fixture.h $(LIB_COMPUTE) $(LIB_CORE)

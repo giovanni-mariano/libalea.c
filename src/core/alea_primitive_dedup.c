@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "alea_system.h"
+#include "util/alea_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -296,12 +297,12 @@ uint64_t alea_compute_primitive_hash(alea_primitive_type_t type, const alea_prim
 // ============================================================================
 
 primitive_hash_table_t* primitive_hash_table_create(void) {
-    primitive_hash_table_t* table = malloc(sizeof(primitive_hash_table_t));
+    primitive_hash_table_t* table = alea_malloc(sizeof(primitive_hash_table_t));
     if (!table) return NULL;
     
     table->bucket_count = PRIMITIVE_HASH_INITIAL_SIZE;
     table->entry_count = 0;
-    table->buckets = calloc(table->bucket_count, sizeof(primitive_hash_entry_t*));
+    table->buckets = alea_calloc(table->bucket_count, sizeof(primitive_hash_entry_t*));
     
     if (!table->buckets) {
         free(table);
@@ -329,7 +330,7 @@ void primitive_hash_table_destroy(primitive_hash_table_t* table) {
 
 static void primitive_hash_table_resize(primitive_hash_table_t* table) {
     size_t new_bucket_count = table->bucket_count * 2;
-    primitive_hash_entry_t** new_buckets = calloc(new_bucket_count, sizeof(primitive_hash_entry_t*));
+    primitive_hash_entry_t** new_buckets = alea_calloc(new_bucket_count, sizeof(primitive_hash_entry_t*));
     
     if (!new_buckets) return; // Continue with current size
     
@@ -383,7 +384,7 @@ void primitive_hash_table_insert(primitive_hash_table_t* table, uint32_t primiti
     
     size_t bucket = hash % table->bucket_count;
     
-    primitive_hash_entry_t* entry = malloc(sizeof(primitive_hash_entry_t));
+    primitive_hash_entry_t* entry = alea_malloc(sizeof(primitive_hash_entry_t));
     if (!entry) return;
     
     entry->primitive_id = primitive_id;

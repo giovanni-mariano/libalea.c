@@ -41,6 +41,29 @@ alea_node_id_t parse_geometry_expression(geometry_lexer_t* lexer) {
     return result;
 }
 
+/* Keep operand order and compare complete keys against the immutable node.
+ * Hash collisions only replace a cache entry. Unresolved #cell placeholders
+ * have distinct IDs and stay independently resolvable. */
+static alea_node_id_t binary_expression(geometry_lexer_t* lexer, alea_operation_t op,
+                                        alea_node_id_t left, alea_node_id_t right) {
+    mcnp_expression_cache_t cache = lexer->expressions;
+    size_t slot = 0;
+    if (cache.slots) {
+        uint32_t hash = (left * UINT32_C(0x9e3779b1)) ^ (right * UINT32_C(0x85ebca77)) ^ op;
+        slot = (hash ^ (hash >> 16)) & cache.mask;
+        uint32_t entry = cache.slots[slot];
+        if (entry) {
+            const alea_node_t* n = &lexer->system->nodes.data[entry - 1];
+            if (ALEA_GET_OPERATION(n) == op && n->operation.left == left && n->operation.right == right)
+                return entry - 1;
+        }
+    }
+    alea_node_id_t id = op == ALEA_OP_UNION ? alea_create_union(lexer->system, left, right)
+                                            : alea_create_intersection(lexer->system, left, right);
+    if (cache.slots && id != ALEA_NODE_ID_INVALID) cache.slots[slot] = id + 1;
+    return id;
+}
+
 /**
  * @brief Parse union operations (lowest precedence)
  * 
@@ -59,7 +82,7 @@ static alea_node_id_t parse_union_expression(geometry_lexer_t* lexer) {
             break;
         }
         
-        alea_node_id_t union_node = alea_create_union(lexer->system, left, right);
+        alea_node_id_t union_node = binary_expression(lexer, ALEA_OP_UNION, left, right);
         if (union_node == ALEA_NODE_ID_INVALID) {
             return left; // Return what we have so far
         }
@@ -90,7 +113,7 @@ static alea_node_id_t parse_intersection_expression(geometry_lexer_t* lexer) {
             break; // Can't parse right operand, return what we have
         }
         
-        alea_node_id_t intersection_node = alea_create_intersection(lexer->system, left, right);
+        alea_node_id_t intersection_node = binary_expression(lexer, ALEA_OP_INTERSECTION, left, right);
         if (intersection_node == ALEA_NODE_ID_INVALID) {
             return left; // Return what we have
         }
@@ -315,7 +338,8 @@ alea_node_id_t parse_mcnp_geometry_with_like(
     const char* geometry_expr,
     int cell_id,
     int* out_like_cell_id,
-    const char** out_but_clause
+    const char** out_but_clause,
+    mcnp_expression_cache_t expressions
 ) {
     if (out_like_cell_id) *out_like_cell_id = 0;
     if (out_but_clause) *out_but_clause = NULL;
@@ -340,6 +364,7 @@ alea_node_id_t parse_mcnp_geometry_with_like(
     // Initialize lexer
     geometry_lexer_t lexer;
     geom_lexer_init(&lexer, geometry_expr, system);
+    lexer.expressions = expressions;
 
     // Set cell context
     lexer.current_cell_id = cell_id;

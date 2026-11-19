@@ -1,5 +1,6 @@
 bin/*
 build/*
+/local_benchmarks/
 /bindings/python/build/
 /bindings/python/dist/
 /bindings/python/package/pyalea/_alea*.so
@@ -20,7 +21,7 @@ tools/mc_plotter
 
 # Test temp files
 *_tmp.*
-plans/*
+/plans/
 docs/PLAN_CLUSTER_EXTENSIONS.md
 docs/PLAN_LUA_IMPLEMENTATION.md
 examples/c/cluster_volumes

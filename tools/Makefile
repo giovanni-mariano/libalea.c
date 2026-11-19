@@ -71,7 +71,7 @@ endif
 include sdl.mk
 include compute_view.mk
 
-TOOLS = $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/render3d$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/nuc_inventory$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
+TOOLS = $(BIN_DIR)/mc_compare$(EXEEXT) $(BIN_DIR)/mc_convert$(EXEEXT) $(BIN_DIR)/mc_plotter$(EXEEXT) $(BIN_DIR)/render3d$(EXEEXT) $(BIN_DIR)/nuc_plot$(EXEEXT) $(BIN_DIR)/nuc_inventory$(EXEEXT) $(BIN_DIR)/large_model_probe$(EXEEXT)
 
 all: $(TOOLS)
 
@@ -99,3 +99,6 @@ clean:
 	rm -f $(TOOLS)
 
 .PHONY: all clean
+
+$(BIN_DIR)/mc_compare$(EXEEXT): mc_compare.c $(BIN_DIR)/libalea.a $(BIN_DIR)/libalea_mcnp.a $(BIN_DIR)/libalea_openmc.a $(BIN_DIR)/libalea_xml.a $(BIN_DIR)/libalea_serpent.a
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $< $(LIBS_ALL) $(LDFLAGS)

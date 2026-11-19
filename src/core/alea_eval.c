@@ -13,8 +13,10 @@
  * - Primitive evaluation dispatch
  */
 
+#include "util/ray_profile.h"
 #include "alea_eval.h"
 #include "core/alea_system.h"
+#include "core/alea_regional.h"
 #include "primitives/primitive_eval.h"
 #include "primitives/bbox.h"
 #include "util/compat.h"
@@ -44,6 +46,7 @@ static inline double eval_primitive_node(
     double x, double y, double z
 ) {
     g_alea_perf.primitive_evaluations++;
+    RAY_PROFILE_COUNT(csg_primitives);
 
     // Get primitive data directly from system array
     if (node->primitive.primitive_id >= alea_vec_count(&sys->primitives)) {
@@ -94,6 +97,7 @@ double alea_evaluate_point(
     alea_node_id_t node_id,
     double x, double y, double z
 ) {
+    RAY_PROFILE_COUNT(csg_nodes);
     if (!sys || node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes)) {
         return 1.0; // Outside
     }
@@ -164,11 +168,40 @@ double alea_evaluate_point(
     }
 }
 
+#ifdef ALEA_RAY_PROFILE
+static bool alea_contains_point_profile_impl(
+    const alea_system_t* sys,
+    alea_node_id_t node_id,
+    double x, double y, double z
+);
 bool alea_contains_point(
     const alea_system_t* sys,
     alea_node_id_t node_id,
     double x, double y, double z
 ) {
+    int previous=alea_ray_profile_enter(RAY_MEMBERSHIP);
+    double started=previous>=0?alea_monotonic_seconds():0;
+    bool result=alea_contains_point_profile_impl(sys, node_id, x, y, z);
+    alea_ray_profile_leave(previous);
+    if(previous>=0)alea_ray_profile_root_record(node_id,alea_monotonic_seconds()-started);
+    return result;
+}
+static bool alea_contains_point_profile_impl(
+    const alea_system_t* sys,
+    alea_node_id_t node_id,
+    double x, double y, double z
+) {
+#else
+bool alea_contains_point(
+    const alea_system_t* sys,
+    alea_node_id_t node_id,
+    double x, double y, double z
+) {
+#endif
+    bool inside;
+    if (sys && (atomic_load(&sys->query_cache_state) & ALEA_CACHE_REGIONAL) &&
+        alea_regional_contains(sys, node_id, x, y, z, &inside))
+        return inside;
     return alea_evaluate_point(sys, node_id, x, y, z) <= 0.0;
 }
 

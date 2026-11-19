@@ -87,21 +87,22 @@ Download pre-built binaries from [GitHub Releases](https://github.com/giovanni-m
 | Windows x64 (MSVC) | `alea-windows-msvc-x64.zip` |
 
 The Linux, macOS, and MinGW/UCRT Windows archives package the `alea` CLI,
-`mc_convert`, `mc_plotter`, `render3d`, `nuc_plot`, `nuc_inventory`, `large_model_probe`, static libraries,
+`mc_convert`, `mc_compare`, `mc_plotter`, `render3d`, `nuc_plot`, `nuc_inventory`, `large_model_probe`, static libraries,
 and headers. The MSVC archives package the `.lib` static libraries and headers.
 All builds use the vendored TinyPar backend by default and have no OpenMP
 runtime dependency.
 
-An experimental optional [GPU module](docs/GPU_COMPUTE.md) provides Metal FP32
-rendering and CPU/Metal point classification for nested transformed fills.
-Finite/repeating rectangular lattices are supported. The 2D plotter exposes classification via
-`mc_plotter ... --backend=metal --interactive`, with explicit sampled gap/overlap
-colors. Build the
-interactive viewers with `make tools USE_METAL=1 USE_SDL=1` and select
-`render3d --backend metal --interactive` for automatic coarse previews and
-cancellable tile refinement with automatic bounds. Metal supports transformed universes,
-rectangular lattices, quadrics, cones and tori. CUDA and HIP backends are planned as separate native implementations, without
-a GPU portability framework. See the [native GPU roadmap](docs/NATIVE_GPU_GEOMETRY.md).
+Build the interactive CPU viewer with `make tools USE_SDL=1`. Run
+`bin/render3d model.i --backend regional --interactive` to prepare a regional
+index once and reuse it for surface and shadow rays as you move the camera.
+Both CPU backends render tiles in parallel. Set `--threads N` to limit the
+worker count. Use the default CPU backend for X-ray rendering.
+
+The optional compute module provides Metal FP32 surface rendering and CPU/Metal
+point classification for nested transformed fills and rectangular lattices.
+On macOS, build with `make tools USE_METAL=1 USE_SDL=1` for interactive
+3D rendering and 2D slices. See the [viewer commands](docs/INSTALLATION.md#optional-rendering-and-batch-compute)
+and [compute API](docs/API.md#optional-rendering-and-batch-compute).
 
 The native CLI archives include `examples/lua` and `examples/python`.
 Python binding archives include the Python scripts under `examples/`.
@@ -160,6 +161,7 @@ for setup and API examples.
 
 | Tool | Purpose |
 |------|---------|
+| `mc_compare` | Fingerprint models and compare geometry/material revisions |
 | `mc_convert` | Convert MCNP, OpenMC, and ALEA XML models; export to Serpent |
 | `mc_plotter` | Generate 2D cross-section images |
 | `render3d` | Render shaded 3D images and cutaways |

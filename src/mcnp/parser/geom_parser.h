@@ -64,7 +64,8 @@ alea_node_id_t parse_mcnp_geometry_with_like(
     const char* geometry_expr,
     int cell_id,
     int* out_like_cell_id,
-    const char** out_but_clause
+    const char** out_but_clause,
+    mcnp_expression_cache_t expressions
 );
 
 #endif // GEOM_PARSER_H

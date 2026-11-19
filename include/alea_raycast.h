@@ -6,7 +6,7 @@
  * @file alea_raycast.h
  * @brief Alea Raycast Module API
  *
- * Optional raycast functionality. Requires linking with libalea_raycast.a
+ * CPU ray queries are included in libalea.a.
  */
 
 #ifndef ALEA_RAYCAST_H
@@ -24,6 +24,33 @@ extern "C" {
 
 /** Opaque raycast result type */
 typedef struct alea_raycast_result alea_raycast_result_t;
+
+/** Prepared accelerator for ordered cell ownership on an editable model. */
+typedef struct interval_index alea_prepared_queries_t;
+typedef struct { double x, y, z; } alea_query_point_t;
+typedef struct { int status, cell_id, material_id; } alea_point_owner_t;
+typedef struct { double origin[3], direction[3], distance; } alea_segment_ray_t;
+
+/** Prepare frequent queries in a finite world-space box. Queries outside the box
+ * use the native hierarchy. The caller owns sys and keeps it alive until destroy.
+ * Recreate the accelerator after geometry or material edits. A handle owns its
+ * traversal scratch and supports one caller at a time. */
+alea_prepared_queries_t* alea_prepared_queries_create(alea_system_t* sys, const alea_bbox_t* domain);
+void alea_prepared_queries_destroy(alea_prepared_queries_t* prepared);
+
+/** Return the deepest ordered owner for each finite point, in input order.
+ * Each status is zero for an owner, -1 if no cell was found. The function
+ * returns zero for a completed batch and -1 on failure. */
+int alea_prepared_locate_points(alea_prepared_queries_t* prepared, const alea_query_point_t* points,
+                                size_t count, alea_point_owner_t* owners);
+
+/** Partition each finite ray by selected owner, in input order, measuring
+ * distance along its normalized direction. Each output must be a distinct
+ * caller-owned raycast result. Segments carry cell, material, density and
+ * crossing surface IDs. Hit lists and occurrence paths are outside this
+ * contract. Returns zero on success or -1 on failure. */
+int alea_prepared_trace_rays(alea_prepared_queries_t* prepared, const alea_segment_ray_t* rays,
+                             size_t count, alea_raycast_result_t** results);
 
 /** Opaque compact result for a batch of hierarchical ray traces. */
 typedef struct alea_raycast_batch_result alea_raycast_batch_result_t;

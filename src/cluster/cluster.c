@@ -192,7 +192,8 @@ uint64_t alea_cluster_system_fingerprint(const alea_system_t* sys) {
         hash = HASH_FIELD(hash, op);
         if (op == ALEA_OP_PRIMITIVE) {
             hash = HASH_FIELD(hash, node->primitive.primitive_id);
-            hash = HASH_FIELD(hash, node->primitive.prim_type);
+            alea_primitive_type_t type = node->primitive.prim_type;
+            hash = HASH_FIELD(hash, type);
             hash = HASH_FIELD(hash, node->primitive.sense);
             hash = HASH_FIELD(hash, node->primitive.inverted);
             hash = HASH_FIELD(hash, node->primitive.mc_surface_id);

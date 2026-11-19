@@ -405,7 +405,13 @@ static void check_lattice_rejections(alea_compute_backend_t backend) {
         if(invalid==0)c->lat_type=2;
         if(invalid==1)c->fill_transform=1;
         if(invalid==2)c->lat_pitch[0]=0;
-        if(invalid==3)c->lat_fill_count=2;
+        if(invalid==3) {
+            /* Invalid repeating-fill metadata, but a valid backing allocation:
+             * CPU snapshot creation copies the declared array before query
+             * validation rejects a repeating lattice with two entries. */
+            int* fill=realloc(c->lat_fill,2*sizeof(*fill));ASSERT_NOT_NULL(fill);
+            c->lat_fill=fill;c->lat_fill[1]=2;c->lat_fill_count=2;
+        }
         if(invalid==4)c->lat_fill_dims[1]=-2;
         alea_compute_t* ctx=alea_compute_create(sys,backend,
             backend==ALEA_COMPUTE_CPU?ALEA_COMPUTE_FP64:ALEA_COMPUTE_FP32);

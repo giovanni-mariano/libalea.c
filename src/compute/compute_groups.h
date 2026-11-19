@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #ifndef ALEA_COMPUTE_GROUPS_H
 #define ALEA_COMPUTE_GROUPS_H
-#include "compute_internal.h"
+#include "compute_prepare.h"
 typedef struct {uint32_t begin,end;} compute_group_span;
 typedef int (*compute_group_emit)(void*,compute_group_span);
 typedef struct {uint32_t root,count,offset,groups;} compute_group_program;

@@ -745,9 +745,7 @@ static void assert_universe_ray_query_three_spheres(const char* threshold) {
     alea_hier_ray_candidate_t hits[8];
     int n = alea_hier_spatial_query_universe_ray(
         sys, 0,
-        ray.ox, ray.oy, ray.oz,
-        ray.dx, ray.dy, ray.dz,
-        ray.inv_dx, ray.inv_dy, ray.inv_dz,
+        &ray,
         0.0, 20.0,
         hits, 8);
     ASSERT_EQ(n, 3);
@@ -767,6 +765,57 @@ static void assert_universe_ray_query_three_spheres(const char* threshold) {
 TEST(hier_spatial_universe_ray_query_returns_ordered_candidates) {
     assert_universe_ray_query_three_spheres("1");
     assert_universe_ray_query_three_spheres("99");
+}
+
+TEST(hier_ray_closed_slabs_in_universe_and_fill_placement) {
+    for (int linear = 0; linear <= 1; linear++) {
+        alea_setenv("ALEA_HIER_BLAS_THRESHOLD", linear ? "99" : "1", 1);
+        alea_system_t* sys = alea_create();
+        ASSERT_NOT_NULL(sys);
+        int surface = alea_box_surface(sys, 1, 1, 2, 4, 5, 0, 1);
+        ASSERT(surface >= 0);
+        alea_node_id_t box = alea_surface_at(sys, surface)->neg_node;
+        int container = alea_add_cell(sys, 1, box, ALEA_MATERIAL_VOID, 0, 0);
+        ASSERT(container >= 0);
+        ASSERT(alea_add_cell(sys, 2, box, ALEA_MATERIAL_VOID, 0, 10) >= 0);
+        ASSERT_EQ(alea_set_cell_fill(sys, container, 10, 0), 0);
+        ASSERT_EQ(alea_hier_spatial_index_build(sys), 0);
+
+        alea_ray_t ray;
+        alea_hier_ray_candidate_t cell;
+        alea_hier_placement_ray_candidate_t placements[2];
+        ASSERT_EQ(alea_ray_init(&ray, 0, 0, 0.5, 1, 1, 0), 0);
+        ASSERT_EQ(alea_hier_spatial_query_universe_ray(sys, 10, &ray, 0, 10, &cell, 1), 0);
+        int n = alea_hier_spatial_query_placements_ray(sys, &ray, 0, 10, placements, 2);
+        ASSERT(n >= 0);
+        for (int i = 0; i < n; i++) ASSERT(placements[i].universe_id != 10);
+
+        /* Measure each stored lower x face. Hierarchy boxes round outward,
+         * so a ray at the primitive's x=1 would miss the parallel-face case. */
+        alea_ray_init_normalized(&ray, 0, 4.5, 0.5, 1, 0, 0);
+        ASSERT_EQ(alea_hier_spatial_query_universe_ray(sys, 10, &ray, 0, 10, &cell, 1), 1);
+        double cell_face = cell.t_enter;
+        n = alea_hier_spatial_query_placements_ray(sys, &ray, 0, 10, placements, 2);
+        ASSERT_EQ(n, 2);
+        int fill = placements[0].universe_id == 10 ? 0 : 1;
+        ASSERT_EQ(placements[fill].universe_id, 10);
+        double fill_face = placements[fill].t_enter;
+
+        alea_ray_init_normalized(&ray, cell_face, 0, 0.5, -0.0, 1, 0);
+        ASSERT_EQ(alea_hier_spatial_query_universe_ray(sys, 10, &ray, 4.25, 4.75, &cell, 1), 1);
+        ASSERT(cell.t_enter == 4.25);
+        ASSERT(cell.t_exit == 4.75);
+        ray.ox = fill_face;
+        n = alea_hier_spatial_query_placements_ray(sys, &ray, 4.25, 4.75, placements, 2);
+        ASSERT(n > 0);
+        fill = placements[0].universe_id == 10 ? 0 : 1;
+        ASSERT(fill < n);
+        ASSERT_EQ(placements[fill].universe_id, 10);
+        ASSERT(placements[fill].t_enter == 4.25);
+        ASSERT(placements[fill].t_exit == 4.75);
+        alea_destroy(sys);
+        alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");
+    }
 }
 
 TEST(hier_spatial_ordered_universe_lookup_preserves_cell_order) {
@@ -837,9 +886,7 @@ TEST(hier_spatial_placement_ray_query_returns_root_and_fill) {
     alea_hier_placement_ray_candidate_t hits[8];
     int n = alea_hier_spatial_query_placements_ray(
         sys,
-        ray.ox, ray.oy, ray.oz,
-        ray.dx, ray.dy, ray.dz,
-        ray.inv_dx, ray.inv_dy, ray.inv_dz,
+        &ray,
         0.0, 24.0,
         hits, 8);
     ASSERT(n >= 2);
@@ -2606,20 +2653,22 @@ TEST(universe_ray_visitor_streams_all_candidates_and_propagates_errors) {
                 ALEA_MATERIAL_VOID, 0, 0) >= 0);
         }
         ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        alea_ray_t ray;
+        alea_ray_init_normalized(&ray, -1, 0, 0, 1, 0, 0);
         universe_ray_visit_test_t seen = {0};
         ASSERT_EQ(alea_hier_spatial_visit_universe_ray(sys, 0,
-            -1, 0, 0, 1, INFINITY, INFINITY, 0, 500,
+            &ray, 0, 500,
             count_universe_ray_candidate, &seen), 0);
         ASSERT_EQ(seen.count, (size_t)200);
         ASSERT_EQ(seen.index_sum, (uint64_t)(199 * 200 / 2));
         seen = (universe_ray_visit_test_t){0};
         ASSERT_EQ(alea_hier_spatial_visit_universe_ray(sys, 0,
-            -1, 0, 0, 1, INFINITY, INFINITY, 0, 2.5,
+            &ray, 0, 2.5,
             count_universe_ray_candidate, &seen), 0);
         ASSERT_EQ(seen.count, (size_t)1);
         seen.fail = 1;
         ASSERT_EQ(alea_hier_spatial_visit_universe_ray(sys, 0,
-            -1, 0, 0, 1, INFINITY, INFINITY, 0, 500,
+            &ray, 0, 500,
             count_universe_ray_candidate, &seen), -1);
         alea_destroy(sys);
         alea_unsetenv("ALEA_HIER_BLAS_THRESHOLD");

@@ -71,7 +71,7 @@ LUA   = vendor\lua\src
 TINYPAR = vendor\tinypar
 EXPAT = vendor\expat\lib
 
-INCLUDES = /I include /I $(SRC) /I $(TINYPAR)\include
+INCLUDES = /I include /I $(SRC) /I $(TINYPAR)\include /I $(BUILD)\core
 LUA_INCLUDES = $(INCLUDES) /I $(LUA)
 
 # ----------------------------------------------------------------------------
@@ -123,9 +123,12 @@ CORE_OBJS = \
 	$(BUILD)\core\alea_materials.obj \
 	$(BUILD)\core\alea_elements_data.obj \
 	$(BUILD)\core\alea_error.obj \
+	$(BUILD)\core\alea_fingerprint.obj \
+	$(BUILD)\core\alea_snapshot.obj \
 	$(BUILD)\core\alea_model.obj \
 	$(BUILD)\core\alea_public_api.obj \
 	$(BUILD)\core\alea_eval.obj \
+	$(BUILD)\core\alea_regional.obj \
 	$(BUILD)\core\alea_ops.obj \
 	$(BUILD)\core\alea_simplify.obj \
 	$(BUILD)\core\alea_universe.obj \
@@ -137,6 +140,8 @@ CORE_OBJS = \
 	$(BUILD)\core\alea_spatial_hier.obj
 
 UTIL_OBJS = \
+	$(BUILD)\util\alea_mcnp_input.obj \
+	$(BUILD)\util\alea_digest.obj \
 	$(BUILD)\util\arena.obj \
 	$(BUILD)\util\alea_alloc.obj \
 	$(BUILD)\util\xml_dom.obj \
@@ -155,6 +160,7 @@ PRIMITIVES_OBJS = \
 	$(BUILD)\primitives\primitive_eval.obj \
 	$(BUILD)\primitives\primitive_create.obj \
 	$(BUILD)\primitives\primitive_desc.obj \
+	$(BUILD)\primitives\primitive_codec.obj \
 	$(BUILD)\primitives\bbox.obj
 
 RNG_OBJS = \
@@ -163,6 +169,8 @@ RNG_OBJS = \
 
 RAYCAST_OBJS = \
 	$(BUILD)\raycast\raycast.obj \
+	$(BUILD)\raycast\regional_trace.obj \
+	$(BUILD)\raycast\interval_build.obj \
 	$(BUILD)\raycast\ray_request.obj \
 	$(BUILD)\raycast\ray_coverage.obj \
 	$(BUILD)\raycast\ray_coverage_api.obj \
@@ -206,6 +214,7 @@ MCNP_OBJS = \
 	$(BUILD)\mcnp\conversion\cell_conv.obj \
 	$(BUILD)\mcnp\exporter\mcnp_str.obj \
 	$(BUILD)\mcnp\exporter\mcnp_export.obj \
+	$(BUILD)\mcnp\mcnp_cache.obj \
 	$(BUILD)\mcnp\mcnp_model.obj
 
 # --- OpenMC module ---------------------------------------------------------
@@ -346,6 +355,8 @@ ALL_OBJS = $(TRANSPORT_OBJS) $(CORE_LIB_OBJS) $(MCNP_OBJS) $(OPENMC_OBJS) $(ALEA
 # dependency-only object rules as complete rules and then skips `.c -> .obj`
 # inference. Regenerate: `find include src -name '*.h' | grep -v lua_bind`.
 HEADERS = \
+	include\alea_fingerprint.h \
+	include\alea_snapshot.h \
 	include\alea.h \
 	include\alea_log.h \
 	include\alea_model.h \
@@ -369,6 +380,7 @@ HEADERS = \
 	src\core\alea_cell.h \
 	src\core\alea_cell_complement.h \
 	src\core\alea_eval.h \
+	src\core\alea_regional.h \
 	src\core\alea_export.h \
 	src\core\alea_macrobody.h \
 	src\core\alea_materials.h \
@@ -530,6 +542,9 @@ $(BUILD)\core\alea_model.obj: $(SRC)\core\alea_model.c dirs
 $(BUILD)\core\alea_eval.obj: $(SRC)\core\alea_eval.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_eval.c
 
+$(BUILD)\core\alea_regional.obj: $(SRC)\core\alea_regional.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_regional.c
+
 $(BUILD)\core\alea_ops.obj: $(SRC)\core\alea_ops.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_ops.c
 
@@ -607,6 +622,12 @@ $(BUILD)\rng\alea_rng.obj: $(SRC)\rng\alea_rng.c dirs
 
 $(BUILD)\rng\alea_rng_distribution.obj: $(SRC)\rng\alea_rng_distribution.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\rng\ $(SRC)\rng\alea_rng_distribution.c
+
+$(BUILD)\raycast\interval_build.obj: $(SRC)\raycast\regional\interval_build.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\regional\interval_build.c
+
+$(BUILD)\raycast\regional_trace.obj: $(SRC)\raycast\regional\regional_trace.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\regional\regional_trace.c
 
 $(BUILD)\raycast\ray_request.obj: $(SRC)\raycast\ray_request.c dirs
 	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\raycast\ $(SRC)\raycast\ray_request.c
@@ -1036,3 +1057,32 @@ clean:
 	@if exist $(LIB_FULL) del /q $(LIB_FULL)
 	@if exist $(ALEA_CLI) del /q $(ALEA_CLI)
 	@if exist $(BIN)\tests rmdir /s /q $(BIN)\tests
+
+$(BUILD)\core\alea_fingerprint.obj: $(SRC)\core\alea_fingerprint.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_fingerprint.c
+
+$(BUILD)\core\alea_snapshot.obj: $(SRC)\core\alea_snapshot.c $(BUILD)\core\alea_engine_hash.h dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\core\ $(SRC)\core\alea_snapshot.c
+
+$(BUILD)\util\alea_digest.obj: $(SRC)\util\alea_digest.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $(SRC)\util\alea_digest.c
+
+$(BUILD)\primitives\primitive_codec.obj: $(SRC)\primitives\primitive_codec.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\primitives\ $(SRC)\primitives\primitive_codec.c
+
+$(BUILD)\mcnp\mcnp_cache.obj: $(SRC)\mcnp\mcnp_cache.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\mcnp\ $(SRC)\mcnp\mcnp_cache.c
+
+!IFNDEF HOSTCC
+HOSTCC = $(CC)
+!ENDIF
+HASH_TOOL = $(BUILD)\core\generate_engine_hash.exe
+$(HASH_TOOL): tools\generate_engine_hash.c src\util\alea_digest.c src\util\alea_digest.h src\util\compat.c src\util\compat.h dirs
+	$(HOSTCC) /nologo /std:c11 /O2 /Isrc /Fo$(BUILD)\core\ /Fe$@ tools\generate_engine_hash.c src\util\alea_digest.c src\util\compat.c
+
+FORCE:
+$(BUILD)\core\alea_engine_hash.h: $(HASH_TOOL) FORCE dirs
+	@$(HASH_TOOL) $@
+
+$(BUILD)\util\alea_mcnp_input.obj: $(SRC)\util\alea_mcnp_input.c dirs
+	$(CC) $(CFLAGS) $(INCLUDES) /c /Fo$(BUILD)\util\ $(SRC)\util\alea_mcnp_input.c

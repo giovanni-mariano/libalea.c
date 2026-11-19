@@ -705,7 +705,7 @@ int parse_cell_parameters(const char* params_str, alea_cell_params_t* out_params
 // CELL CONVERSION
 
 uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
-                           mcnp_model_t* model) {
+                           mcnp_model_t* model, mcnp_expression_cache_t expressions) {
     if (!sys || !cell) return UINT32_MAX;
     int profile = cell_profile_enabled();
     double t0 = 0.0;
@@ -722,7 +722,7 @@ uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
         cell->geometry_definition,
         cell->cell_id,
         &like_cell_id,
-        &but_clause
+        &but_clause, expressions
     );
     if (profile) {
         t1 = cell_profile_now();

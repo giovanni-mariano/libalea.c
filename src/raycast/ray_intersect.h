@@ -66,6 +66,12 @@ int ray_intersect_quadric(const alea_ray_t* ray,
                           const alea_quadric_data_t* quadric,
                           double* restrict t_out);
 
+enum { RAY_QUADRIC_LANES = 8 };
+typedef struct { double coeffs[10 * RAY_QUADRIC_LANES]; } ray_quadric_packet_t;
+/* Unused lanes in the final packet are zero-initialized during preparation. */
+void ray_intersect_quadric_packet(const alea_ray_t* ray, const ray_quadric_packet_t* packet,
+                                  unsigned count, int hits[], double roots[][2]);
+
 /* Conservative complete-surface envelope; false certifies a window miss. */
 bool ray_torus_window_may_hit(const alea_ray_t* ray,
                               const alea_torus_data_t* torus,

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "alea_test.h"
 #include "alea.h"
+#include "alea_mcnp.h"
+#include "util/alea_alloc.h"
 #include "core/alea_system.h"
 #include "core/alea_eval.h"
 #include "core/alea_spatial_hier.h"
@@ -133,5 +135,106 @@ TEST(empty_lattice_slot_does_not_reenter_root_universe) {
     ASSERT_EQ(hit.cell_id,20);ASSERT_EQ(hit.depth,0);
     ASSERT_TRUE(hit.resolution_flags&ALEA_RESOLVE_UNDEFINED_FILL);
     alea_destroy(s);
+}
+TEST(world_grid_prunes_before_containment_and_preserves_order) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int plane = alea_plane_surface(sys, 1, 1, 1, 0, 0);
+    alea_node_id_t negative = alea_halfspace(sys, plane, -1);
+    for (int i = 0; i < 80; i++)
+        ASSERT(alea_add_cell(sys, 900 - i, negative, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT(add_sphere(sys, 10, 2.5, 1, 0) >= 0);
+    ASSERT(add_sphere(sys, 11, 2.5, 1, 0) >= 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    int id;
+    alea_hier_debug_candidates_reset();
+    ASSERT_EQ(alea_find_cell_at(sys, 2.5, 0.5, 0, &id, NULL), 0);
+    size_t baseline = alea_hier_debug_candidates_get();
+    alea_bbox_t domain = {-4, 4, -4, 4, -4, 4};
+    alea_point_grid_stats_t stats;
+    ASSERT_EQ(alea_prepare_world_point_grid(sys, &domain, &stats), 0);
+    ASSERT_EQ(stats.tiles, 512);
+    ASSERT(stats.candidate_entries < 512 * sys->cells.count);
+    alea_hier_debug_candidates_reset();
+    ASSERT_EQ(alea_find_cell_at(sys, 2.5, 0.5, 0, &id, NULL), 0);
+    ASSERT_EQ(id, 10);
+    ASSERT(alea_hier_debug_candidates_get() < baseline);
+    alea_cell_hit_t hits[3];
+    ASSERT_EQ(alea_find_all_cells(sys, 2.5, 0.5, 0, hits, 3), 2);
+    ASSERT_EQ(hits[0].cell_id, 10);
+    ASSERT_EQ(hits[1].cell_id, 11);
+    for (int edge = -4; edge <= 4; edge++) {
+        check_point(sys, edge, -edge, 0);
+        check_point(sys, nextafter(edge, -INFINITY), -edge, 0);
+        check_point(sys, nextafter(edge, INFINITY), -edge, 0);
+    }
+    /* A failed replacement must leave the previous grid usable. */
+    alea_bbox_t shifted = {-3, 5, -3, 5, -3, 5};
+    alea_alloc_fail_after(1);
+    int rc = alea_prepare_world_point_grid(sys, &shifted, NULL);
+    alea_alloc_fail_after(-1);
+    ASSERT_EQ(rc, -1);
+    alea_interrupt();
+    rc = alea_prepare_world_point_grid(sys, &shifted, NULL);
+    alea_clear_interrupt();
+    ASSERT_EQ(rc, -1);
+    alea_hier_debug_candidates_reset();
+    ASSERT_EQ(alea_find_cell_at(sys, 2.5, 0.5, 0, &id, NULL), 0);
+    ASSERT(alea_hier_debug_candidates_get() < baseline);
+    ASSERT_EQ(alea_cell_set_region(sys, 1, alea_halfspace(sys, plane, 1)), 0);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+    ASSERT_EQ(alea_find_cell_at(sys, 2.5, 0.5, 0, &id, NULL), 0);
+    ASSERT_EQ(id, 899);
+    ASSERT_EQ(alea_prepare_world_point_grid(sys, &domain, NULL), 0);
+    check_point(sys, 2.5, 0.5, 0);
+    alea_destroy(sys);
+}
+
+TEST(world_grid_falls_back_for_an_unfinished_tile) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int sphere = alea_sphere_surface(sys, 1, 0, 0, 0, 10);
+    alea_node_id_t outside = alea_halfspace(sys, sphere, 1);
+    for (int i = 0; i < 3000; i++)
+        ASSERT(alea_add_cell(sys, i + 1, outside, ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    ASSERT(alea_add_cell(sys, 3001, alea_halfspace(sys, sphere, -1),
+                         ALEA_MATERIAL_VOID, 0, 0) >= 0);
+    const alea_bbox_t domain = {-1, 1, -1, 1, -1, 1};
+    alea_point_grid_stats_t stats;
+    ASSERT_EQ(alea_prepare_world_point_grid(sys, &domain, &stats), 0);
+    ASSERT(stats.tiles > 0 && stats.tiles < 512);
+    ASSERT_EQ(stats.candidate_entries, stats.tiles * 3001);
+    /* The last cell must still be reachable past the discarded partial list. */
+    check_point(sys, 0.9, 0.9, 0.9);
+    check_point(sys, -0.9, -0.9, -0.9);
+    alea_destroy(sys);
+}
+
+TEST(world_grid_preserves_repeating_lattice_outside_element) {
+    mcnp_model_t* model = mcnp_load("tests/data/mcnp_lattice_repeating.mcnp");
+    ASSERT_NOT_NULL(model);
+    ASSERT_EQ(alea_prepare_query_acceleration(model->sys), 0);
+    alea_bbox_t domain = {-8, 8, -4, 4, -4, 4};
+    const double x[] = {-8, -6, -3, 0, 1, 4, 7.5, 8};
+    int ids[8], counts[8];
+    alea_cell_hit_t before[8][4], after[4];
+    for (size_t i = 0; i < 8; i++) {
+        ASSERT_EQ(alea_find_cell_at(model->sys, x[i], 0, 0, &ids[i], NULL), 0);
+        counts[i] = alea_find_all_cells(model->sys, x[i], 0, 0, before[i], 4);
+        ASSERT(counts[i] > 0);
+    }
+    ASSERT_EQ(alea_prepare_world_point_grid(model->sys, &domain, NULL), 0);
+    for (size_t i = 0; i < 8; i++) {
+        int id;
+        ASSERT_EQ(alea_find_cell_at(model->sys, x[i], 0, 0, &id, NULL), 0);
+        ASSERT_EQ(id, ids[i]);
+        ASSERT_EQ(alea_find_all_cells(model->sys, x[i], 0, 0, after, 4), counts[i]);
+        for (int j = 0; j < counts[i]; j++) {
+            ASSERT_EQ(after[j].cell_id, before[i][j].cell_id);
+            ASSERT_EQ(after[j].depth, before[i][j].depth);
+            ASSERT_EQ(after[j].local_x, before[i][j].local_x);
+        }
+    }
+    mcnp_model_destroy(model);
 }
 TEST_MAIN()

@@ -45,7 +45,8 @@ int alea_compute_group_program(const compute_scene* s,compute_cell c,
 }
 
 void alea_compute_groups_free(compute_group_plan* p) {
-    if(!p)return;free(p->programs);free(p->spans);memset(p,0,sizeof(*p));
+    if(!p)return;
+    free(p->programs);free(p->spans);memset(p,0,sizeof(*p));
 }
 static int compare_programs(const void* x,const void* y) {
     const compute_group_program* a=x,*b=y;
@@ -81,7 +82,8 @@ int alea_compute_groups_plan(const compute_scene* scene,size_t budget,compute_gr
         compute_cell c={0};
         if(i<scene->cell_count)c=scene->cells[i];else {
             const compute_spatial_program* s=scene->spatial+i-scene->cell_count;
-            if(s->child!=COMPUTE_NONE)continue;c.root=s->root;c.count=s->count;
+            if(s->child!=COMPUTE_NONE)continue;
+            c.root=s->root;c.count=s->count;
         }
         p.programs[p.program_count++]=(compute_group_program){c.root,c.count,0,0};
     }

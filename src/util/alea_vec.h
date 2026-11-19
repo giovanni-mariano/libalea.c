@@ -18,6 +18,7 @@
 #define ALEA_VEC_H
 
 #include "alea_types.h"
+#include "alea_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>  /* SIZE_MAX */
@@ -93,7 +94,7 @@
                     _new_cap *= 2;                                          \
                 }                                                           \
             }                                                               \
-            void* _new_data = realloc((vec)->data,                          \
+            void* _new_data = alea_realloc((vec)->data,                          \
                                        _new_cap * sizeof(elem_type));       \
             if (!_new_data) {                                              \
                 _res = -1;                                                  \
@@ -193,7 +194,7 @@
             (vec)->data = NULL;                                             \
             (vec)->capacity = 0;                                            \
         } else {                                                            \
-            void* _nd = realloc((vec)->data,                                \
+            void* _nd = alea_realloc((vec)->data,                                \
                                 (vec)->count * sizeof(elem_type));          \
             if (_nd) {                                                      \
                 (vec)->data = _nd;                                          \

@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "alea_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,7 +67,7 @@ static inline name##_t name##_create(size_t initial_cap) { \
         return map; \
     } \
     map.capacity = _cap; \
-    map.entries = (name##_entry_t*)malloc(map.capacity * sizeof(name##_entry_t)); \
+    map.entries = (name##_entry_t*)alea_malloc(map.capacity * sizeof(name##_entry_t)); \
     if (map.entries) { \
         for (size_t _i = 0; _i < map.capacity; _i++) { \
             map.entries[_i].key = (empty_key); \
@@ -109,7 +110,7 @@ static inline bool name##_resize(name##_t* map, size_t new_cap) { \
     if (new_cap == 0 || new_cap > SIZE_MAX / sizeof(name##_entry_t)) return false; \
     name##_entry_t* old = map->entries; \
     size_t old_cap = map->capacity; \
-    map->entries = (name##_entry_t*)malloc(new_cap * sizeof(name##_entry_t)); \
+    map->entries = (name##_entry_t*)alea_malloc(new_cap * sizeof(name##_entry_t)); \
     if (!map->entries) { map->entries = old; return false; } \
     map->capacity = new_cap; \
     map->count = 0; \

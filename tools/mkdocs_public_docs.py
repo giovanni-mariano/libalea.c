@@ -21,7 +21,6 @@ PUBLIC_DOCUMENTS = frozenset(
         "TRANSPORT_TALLIES.md",
         "API.md",
         "ARCHITECTURE.md",
-        "GPU_COMPUTE.md",
         "NUCDATA_CAPABILITIES.md",
         "SURFACE_DEDUP.md",
     }

@@ -146,7 +146,7 @@
       ],
       "correctness": "ordinary/progressive byte equality; auxiliary normal orientation aligned with CPU; cutaway classification and CPU first-visible reference limitations remain open",
       "scaling": "held at 16x12 after bounded latency/correctness findings",
-      "report": "docs/NATIVE_GPU_3D_EVALUATION.md",
+      "report": "plans/NATIVE_GPU_3D_EVALUATION.md",
       "auxiliary_normal_convention": "source-surface orientation; separate camera-facing shading copy"
     },
     {

@@ -14,4 +14,16 @@ void* alea_calloc(size_t count, size_t size);
 void* alea_realloc(void* pointer, size_t size);
 char* alea_alloc_strdup(const char* string);
 
+/* Thread-local scopes bound cumulative requested bytes, including full realloc
+ * capacities and temporary allocations. Freeing storage does not refund bytes.
+ * Nested scopes charge all active budgets. These are allocation limits, not RSS
+ * limits: allocator overhead, stack, stdio buffers and mappings are excluded. */
+typedef struct alea_alloc_budget {
+    size_t limit, requested;
+    int failed, exceeded;
+    struct alea_alloc_budget* previous;
+} alea_alloc_budget_t;
+void alea_alloc_budget_begin(alea_alloc_budget_t* budget, size_t limit);
+void alea_alloc_budget_end(alea_alloc_budget_t* budget);
+
 #endif

@@ -436,7 +436,7 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
         return NULL;
     }
 
-    mcnp_model_t* model = calloc(1, sizeof(mcnp_model_t));
+    mcnp_model_t* model = alea_calloc(1, sizeof(mcnp_model_t));
     if (!model) return NULL;
 
     model->sys = sys;
@@ -447,7 +447,7 @@ mcnp_model_t* mcnp_model_wrap(alea_system_t* sys) {
     size_t n = alea_vec_count(&sys->cells);
     if (n > 0) {
         if (mcnp_model_reserve_params(model, n) < 0) {
-            free(model);
+            mcnp_model_destroy(model);
             return NULL;
         }
         for (size_t i = 0; i < n; i++) {

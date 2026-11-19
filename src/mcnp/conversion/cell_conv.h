@@ -8,6 +8,7 @@
 #include "core/alea_system.h"
 #include "mcnp/mcnp_model.h"
 #include "mcnp/parser/mcnp_parser.h"
+#include "mcnp/parser/geom_lexer.h"
 #include <stddef.h>
 #include <ctype.h>
 
@@ -97,7 +98,7 @@ void alea_cell_params_free(alea_cell_params_t* params);
  * @return Root node ID of the CSG tree, or UINT32_MAX on failure
  */
 uint32_t alea_convert_cell(alea_system_t* sys, const mcnp_cell_t* cell,
-                           mcnp_model_t* model);
+                           mcnp_model_t* model, mcnp_expression_cache_t expressions);
 
 void alea_cell_conversion_profile_reset(void);
 void alea_cell_conversion_profile_print(void);

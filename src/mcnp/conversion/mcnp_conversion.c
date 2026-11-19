@@ -330,10 +330,8 @@ static int detect_vacuum_boundaries(alea_system_t* sys, const mcnp_model_t* mode
 /**
  * Count operand tokens in an MCNP geometry string.
  *
- * Only surface/cell references create CSG leaf nodes; the ':' union operator
- * is a pure delimiter and must NOT be counted.  For N operands the CSG binary
- * tree has exactly 2N-1 nodes (N leaves + N-1 internal), so the caller
- * multiplies this count by 2 to get a tight upper bound.
+ * Count references to estimate binary operations. Surface half-space leaves
+ * are created once per surface during conversion and reused by the parser.
  *
  * Excluded from count: whitespace, '(', ')', ':'.
  */
@@ -358,14 +356,17 @@ static size_t count_tokens(const char* str) {
  * Pre-allocate vectors based on MCNP context to avoid reallocations.
  */
 static void reserve_from_mcnp(alea_system_t* sys, const mcnp_context_t* mcnp) {
-    // Cells: tokens (excluding parens) become primitive refs + operation nodes
-    // N tokens → N primitive refs + (N-1) operators ≈ 2N nodes
-    size_t estimated_nodes = 0;
+    /* Each binary operation joins two existing operands. The signed surface
+     * leaves are shared. Extra complement nodes and expansions grow normally. */
+    size_t estimated_nodes = mcnp->surface_count <= SIZE_MAX / 2 ? 2 * mcnp->surface_count : 0;
     for (size_t i = 0; i < mcnp->cell_count; i++) {
         size_t tokens = count_tokens(mcnp->cells[i]->geometry_definition);
-        estimated_nodes += tokens * 2;
+        if (tokens > SIZE_MAX - estimated_nodes) {
+            estimated_nodes = 0;
+            break;
+        }
+        estimated_nodes += tokens;
     }
-
     alea_vec_reserve(&sys->nodes, estimated_nodes, alea_node_t);
     alea_vec_reserve(&sys->surfaces, mcnp->surface_count, alea_surface_entry_t);
     alea_vec_reserve(&sys->primitives, mcnp->surface_count, alea_primitive_entry_t);
@@ -528,7 +529,11 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
 
     // Build surface lookup table
     t0 = alea_monotonic_seconds();
-    alea_build_surface_lookup(sys);
+    if (alea_build_surface_lookup(sys) < 0) {
+        mcnp_model_destroy(model);
+        mcnp_context_destroy(mcnp);
+        return NULL;
+    }
     t1 = alea_monotonic_seconds();
     load_profile_stage("build_surface_lookup", t0, t1);
 
@@ -549,9 +554,16 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
     ALEA_LOG_INFO("\nConverting cells...\n");
     alea_cell_conversion_profile_reset();
     t0 = alea_monotonic_seconds();
+    size_t slots = 1;
+    while (slots < mcnp->cell_count && slots < (1u << 18)) slots *= 2;
+    mcnp_expression_cache_t expressions = {calloc(slots, sizeof(alea_node_id_t)), slots - 1};
     for (size_t i = 0; i < mcnp->cell_count; i++) {
-        if (g_alea_interrupted) goto interrupted;
-        if (alea_convert_cell(sys, mcnp->cells[i], model) == UINT32_MAX) {
+        if (g_alea_interrupted) {
+            free(expressions.slots);
+            goto interrupted;
+        }
+        if (alea_convert_cell(sys, mcnp->cells[i], model, expressions) == UINT32_MAX) {
+            free(expressions.slots);
             ALEA_LOG_ERROR("Failed to convert cell %d",
                            mcnp->cells[i]->cell_id);
             mcnp_model_destroy(model);
@@ -560,6 +572,7 @@ static mcnp_model_t* mcnp_context_to_model(mcnp_context_t* mcnp,
         }
     }
     t1 = alea_monotonic_seconds();
+    free(expressions.slots);
     load_profile_stage("convert_cells", t0, t1);
     alea_cell_conversion_profile_print();
 

@@ -10,6 +10,7 @@
 #include "alea_types.h"
 #include "alea_universe.h"  /* alea_matrix_t */
 
+typedef struct alea_ray alea_ray_t;
 typedef struct alea_system alea_system_t;
 typedef struct alea_hier_spatial_index alea_hier_spatial_index_t;
 
@@ -381,35 +382,18 @@ typedef int (*alea_hier_universe_ray_visitor_t)(
     uint32_t cell_index, double t_enter, double t_exit, void* context);
 int alea_hier_spatial_visit_universe_ray(
     alea_system_t* sys, int universe_id,
-    double ox, double oy, double oz,
-    double inv_dx, double inv_dy, double inv_dz,
+    const alea_ray_t* ray,
     double t_min, double t_max,
     alea_hier_universe_ray_visitor_t visitor, void* context);
 int alea_hier_spatial_query_universe_ray(alea_system_t* sys,
                                          int universe_id,
-                                         double ox,
-                                         double oy,
-                                         double oz,
-                                         double dx,
-                                         double dy,
-                                         double dz,
-                                         double inv_dx,
-                                         double inv_dy,
-                                         double inv_dz,
+                                         const alea_ray_t* ray,
                                          double t_min,
                                          double t_max,
                                          alea_hier_ray_candidate_t* out_hits,
                                          size_t max_hits);
 int alea_hier_spatial_query_placements_ray(alea_system_t* sys,
-                                           double ox,
-                                           double oy,
-                                           double oz,
-                                           double dx,
-                                           double dy,
-                                           double dz,
-                                           double inv_dx,
-                                           double inv_dy,
-                                           double inv_dz,
+                                           const alea_ray_t* ray,
                                            double t_min,
                                            double t_max,
                                            alea_hier_placement_ray_candidate_t* out_hits,
@@ -438,8 +422,7 @@ typedef int (*alea_hier_lattice_ancestor_visitor_t)(
     void* userdata);
 int alea_hier_spatial_visit_lattice_placements_ray(
     alea_system_t* sys,
-    double ox, double oy, double oz,
-    double inv_dx, double inv_dy, double inv_dz,
+    const alea_ray_t* ray,
     double t_min, double t_max,
     alea_hier_lattice_placement_ray_visitor_t visitor,
     alea_hier_lattice_placement_ray_stats_t* stats,
@@ -491,6 +474,12 @@ bool alea_hier_spatial_index_needs_rebuild(const alea_system_t* sys);
 /* Debug: total candidates pushed across all universes in the current query. */
 void alea_hier_debug_candidates_reset(void);
 size_t alea_hier_debug_candidates_get(void);
+/* Optional thread-local attribution of BLAS point-candidate emissions, including
+ * point probes made by rays. Excludes linear scans, hints and exact membership
+ * work. Storage is caller-owned; clear with (NULL,NULL,0) before freeing it or
+ * destroying the system. Queries never allocate storage for this observer. */
+void alea_hier_debug_candidate_cells_set(const alea_system_t* sys,
+                                        uint64_t* counts,size_t count);
 int alea_hier_spatial_query_region(alea_system_t* sys,
                                    const alea_bbox_t* query_bbox,
                                    alea_spatial_hit_t* out_hits,

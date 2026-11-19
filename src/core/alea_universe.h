@@ -51,6 +51,7 @@ typedef struct {
     bool point_bvh_built;
     bool point_bvh_disabled;
     /* Optional ordered cards for nearest-only recovery, owned by this cache. */
+    struct recovery_plane_index* recovery_planes;
     uint32_t* recovery_surfaces;
     size_t recovery_surface_count;
     bool recovery_surfaces_attempted;

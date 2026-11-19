@@ -25,11 +25,11 @@ typedef struct alea_transition_workspace alea_transition_workspace_t;
  * DATA STRUCTURES
  * ============================================================================ */
 
-typedef struct {
+struct alea_ray {
     double ox, oy, oz;
     double dx, dy, dz;
     double inv_dx, inv_dy, inv_dz;  /* 1.0/d* — IEEE 754 inf for zero components */
-} alea_ray_t;
+};
 
 typedef struct {
     double t;
@@ -276,7 +276,9 @@ struct alea_raycast_result {
     uint8_t breakpoint_nearest_only;
     uint8_t recovery_context_warmup; /* Allocate only after repeated scans. */
     void* recovery_context; /* Borrowed scratch, scoped to one nearest recovery. */
+    void* recovery_roots; /* Owned optional roots, scoped to one ray/walk. */
     double breakpoint_t_min;
+    double breakpoint_t_max; /* End of the requested recovery, before nearest-hit clipping. */
     size_t breakpoint_hit_limit;
     uint8_t breakpoint_failed;
     int surfaces_tested;

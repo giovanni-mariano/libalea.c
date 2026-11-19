@@ -197,6 +197,26 @@ int alea_build_universe_index(alea_system_t* sys);
  */
 int alea_prepare_query_acceleration(alea_system_t* sys);
 
+/** Prepare experimental CPU containment expressions for bounded cell regions.
+ * Geometry edits discard these programs. Call again to prepare the edited model.
+ * Returns zero on success (including when no expressions simplify), -1 on error.
+ * The editable CSG and signed evaluation always use the full expression. */
+int alea_prepare_regional_queries(alea_system_t* sys);
+
+typedef struct {
+    size_t tiles;              /**< Completed tiles with candidate lists. */
+    size_t candidate_entries;  /**< Total positions stored across tiles. */
+    size_t bytes;              /**< Retained allocation capacity in bytes. */
+    size_t node_visits;        /**< CSG node inspections during preparation. */
+} alea_point_grid_stats_t;
+
+/** Prepare an experimental point-query grid in universe 0 over a finite box.
+ * Preparation requires exclusive model access. Successful calls replace the
+ * previous grid. Geometry edits discard it. Uncovered queries use the ordinary
+ * spatial index. Stats may be NULL. Returns 0 on success, -1 on error. */
+int alea_prepare_world_point_grid(alea_system_t* sys, const alea_bbox_t* domain,
+                                 alea_point_grid_stats_t* stats);
+
 typedef struct {
     bool built;
 

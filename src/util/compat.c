@@ -19,11 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
 #else
+#include <errno.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/time.h>
@@ -61,9 +64,10 @@ int alea_file_map(const char* path, alea_mapped_file_t* mf) {
                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (mf->_file == INVALID_HANDLE_VALUE) return 0;
 
-    DWORD sz = GetFileSize((HANDLE)mf->_file, NULL);
-    if (sz == INVALID_FILE_SIZE) { CloseHandle((HANDLE)mf->_file); return 0; }
-    mf->size = sz;
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx((HANDLE)mf->_file, &sz) || sz.QuadPart <= 0 ||
+        (uint64_t)sz.QuadPart > SIZE_MAX) { CloseHandle((HANDLE)mf->_file); return 0; }
+    mf->size = (size_t)sz.QuadPart;
 
     mf->_mapping = CreateFileMapping((HANDLE)mf->_file, NULL, PAGE_READONLY, 0, 0, NULL);
     if (mf->_mapping == NULL) { CloseHandle((HANDLE)mf->_file); return 0; }
@@ -79,7 +83,8 @@ int alea_file_map(const char* path, alea_mapped_file_t* mf) {
     if (mf->_fd == -1) return 0;
 
     struct stat s;
-    if (fstat(mf->_fd, &s) == -1) { close(mf->_fd); return 0; }
+    if (fstat(mf->_fd, &s) == -1 || s.st_size <= 0 ||
+        (uintmax_t)s.st_size > SIZE_MAX) { close(mf->_fd); return 0; }
     mf->size = (size_t)s.st_size;
 
     mf->data = (const char*)mmap(NULL, mf->size, PROT_READ, MAP_PRIVATE, mf->_fd, 0);
@@ -106,9 +111,9 @@ double alea_monotonic_seconds(void) {
     QueryPerformanceCounter(&counter);
     return (double)counter.QuadPart / (double)freq.QuadPart;
 #else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec * 1e-6;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 #endif
 }
 
@@ -145,14 +150,45 @@ FILE* alea_tmpfile(char* path_out) {
     char tmp_dir[MAX_PATH];
     if (GetTempPathA(MAX_PATH, tmp_dir) == 0) return NULL;
     if (GetTempFileNameA(tmp_dir, "alea", 0, path_out) == 0) return NULL;
-    return fopen(path_out, "w");
+    FILE* f = fopen(path_out, "wb");
+    if (!f) DeleteFileA(path_out);
+    return f;
 #else
     strcpy(path_out, "/tmp/alea_XXXXXX");
     int fd = mkstemp(path_out);
     if (fd < 0) return NULL;
-    FILE* f = fdopen(fd, "w");
+    FILE* f = fdopen(fd, "wb");
     if (!f) { close(fd); remove(path_out); return NULL; }
     return f;
+#endif
+}
+
+int alea_paths_may_alias(const char* input, const char* target) {
+    if (strcmp(input, target) == 0) return 1;
+#ifdef _WIN32
+    DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    HANDLE dst = CreateFileA(target, 0, share, NULL, OPEN_EXISTING, 0, NULL);
+    if (dst == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        return error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND;
+    }
+    HANDLE src = CreateFileA(input, 0, share, NULL, OPEN_EXISTING, 0, NULL);
+    int may_alias = 1;
+    if (src != INVALID_HANDLE_VALUE) {
+        BY_HANDLE_FILE_INFORMATION a, b;
+        if (GetFileInformationByHandle(src, &a) && GetFileInformationByHandle(dst, &b)) {
+            may_alias = a.dwVolumeSerialNumber == b.dwVolumeSerialNumber &&
+                        a.nFileIndexHigh == b.nFileIndexHigh &&
+                        a.nFileIndexLow == b.nFileIndexLow;
+        }
+        CloseHandle(src);
+    }
+    CloseHandle(dst);
+    return may_alias;
+#else
+    struct stat a, b;
+    if (stat(target, &b) != 0) return errno != ENOENT && errno != ENOTDIR;
+    return stat(input, &a) != 0 || (a.st_dev == b.st_dev && a.st_ino == b.st_ino);
 #endif
 }
 
@@ -177,7 +213,7 @@ FILE* alea_sibling_tmpfile(const char* target, char* path_out, size_t capacity) 
         return NULL;
     }
     memcpy(path_out, generated, generated_length);
-    FILE* result = fopen(path_out, "w");
+    FILE* result = fopen(path_out, "w+b");
     if (!result) DeleteFileA(path_out);
     return result;
 #else
@@ -185,7 +221,7 @@ FILE* alea_sibling_tmpfile(const char* target, char* path_out, size_t capacity) 
     if (n < 0 || (size_t)n >= capacity) return NULL;
     int fd = mkstemp(path_out);
     if (fd < 0) return NULL;
-    FILE* result = fdopen(fd, "w");
+    FILE* result = fdopen(fd, "w+b");
     if (!result) { close(fd); remove(path_out); }
     return result;
 #endif

@@ -13,6 +13,7 @@
 #include "alea_raycast.h"
 #include "alea_slice.h"
 #include "raycast/raycast.h"
+#include "raycast/ray_bbox.h"
 #include "raycast/ray_intersect.h"
 #include "core/alea_system.h"
 #include "core/alea_spatial_hier.h"
@@ -281,6 +282,52 @@ TEST(ray_normalization) {
     /* Check magnitude is 1 */
     double mag = sqrt(ray.dx*ray.dx + ray.dy*ray.dy + ray.dz*ray.dz);
     ASSERT_NEAR(mag, 1.0, EPS);
+}
+
+TEST(ray_box_closed_slab_intervals) {
+    const alea_bbox_t cube = {0, 1, 0, 1, 0, 1};
+    const struct {
+        double ox, oy, dx, dy, t_min, t_max;
+        int hit;
+        double enter, exit;
+    } cases[] = {
+        {0, -1, 0.0, 1, 0, 5, 1, 1, 2},        /* along min face */
+        {1, 2, -0.0, -1, 0, 5, 1, 1, 2},       /* along max face */
+        {-1, -1, -0.0, 1, 0, 5, 0, 0, 0},      /* parallel outside */
+        {-1, -3, 1, 1, 0, 5, 0, 0, 0},         /* separate slab intervals */
+        {-1, -2, 1, 1, 0, 5, 1, 2, 2},         /* touches one edge */
+        {0.5, -1, 0, 1, 1.25, 1.75, 1, 1.25, 1.75},
+        {0.5, -1, 0, 1, 2, 2, 1, 2, 2},        /* closed window endpoint */
+        {0.5, -1, 0, 1, 2, 1, 0, 0, 0}
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        /* Keep t in units of the specified direction for the diagonal cases. */
+        alea_ray_t ray = {.ox = cases[i].ox, .oy = cases[i].oy, .oz = 0.5,
+                          .dx = cases[i].dx, .dy = cases[i].dy,
+                          .inv_dx = 1.0 / cases[i].dx, .inv_dy = 1.0 / cases[i].dy,
+                          .inv_dz = INFINITY};
+        double enter = -1, exit = -1;
+        ASSERT_EQ(ray_bbox_slab(&ray, &cube, cases[i].t_min, cases[i].t_max), cases[i].hit);
+        ASSERT_EQ(ray_bbox_slab_enter_exit(&ray, &cube, cases[i].t_min,
+                                          cases[i].t_max, &enter, &exit), cases[i].hit);
+        if (cases[i].hit) {
+            ASSERT(enter == cases[i].enter);
+            ASSERT(exit == cases[i].exit);
+        }
+    }
+
+    /* A tiny nonzero x component reaches the face at t=1, even though
+     * its cached reciprocal overflows. */
+    double tiny = nextafter(0.0, 1.0);
+    alea_ray_t ray;
+    alea_ray_init_normalized(&ray, -tiny, -1, 0.5, tiny, 1, 0);
+    double enter, exit;
+    ASSERT(ray_bbox_slab_enter_exit(&ray, &cube, 0, 3, &enter, &exit));
+    ASSERT(enter == 1.0);
+    ASSERT(exit == 2.0);
+    alea_bbox_t empty = cube;
+    empty.max_x = -1;
+    ASSERT_EQ(ray_bbox_slab(&ray, &empty, 0, 3), 0);
 }
 
 TEST(cauchy_crofton_rays_are_deterministic_and_bound_to_sphere) {
@@ -1317,9 +1364,9 @@ TEST(raycast_path_length) {
     alea_raycast_result_init(&result);
 
     /* Manually create some segments */
-    alea_ray_segment_t seg1 = {0, 5, 1, 1, -2.7, -1, -1, -1};
-    alea_ray_segment_t seg2 = {5, 10, 2, 2, -8.0, -1, -1, -1};
-    alea_ray_segment_t seg3 = {10, 15, 3, 1, -2.7, -1, -1, -1};
+    alea_ray_segment_t seg1 = {0, 5, 1, 1, -2.7, -1, -1, -1, 0, UINT32_MAX};
+    alea_ray_segment_t seg2 = {5, 10, 2, 2, -8.0, -1, -1, -1, 0, UINT32_MAX};
+    alea_ray_segment_t seg3 = {10, 15, 3, 1, -2.7, -1, -1, -1, 0, UINT32_MAX};
 
     result.segments.data = malloc(3 * sizeof(alea_ray_segment_t));
     ASSERT_NOT_NULL(result.segments.data);
@@ -1422,6 +1469,42 @@ TEST(surface_reference_csr_preserves_exact_cards_and_all_references) {
     ASSERT_EQ(alea_surface_cell_references(sys, 302, refs, 2, &count), 0);
     ASSERT_EQ(count, (size_t)2);
     alea_destroy(sys);
+}
+
+TEST(adjacency_reuses_surface_index_and_keeps_oriented_reference_order) {
+    mcnp_model_t* model=mcnp_load_string(
+        "oriented references\n"
+        "11 0 (-101:101):(-101:101) u=7\n"
+        "22 0 101 u=7\n"
+        "33 0 -101 u=7\n"
+        "44 0 (-101:101) u=8\n\n101 px 0\n\n",0);
+    ASSERT_NOT_NULL(model);
+    alea_system_t* sys=model->sys;
+    ASSERT_EQ(alea_build_cell_surface_index(sys),0);
+    uint32_t* indices=sys->cells.data[0].surface_indices;
+    ASSERT_EQ(alea_build_cell_adjacency(sys),0);
+    ASSERT(sys->cells.data[0].surface_indices==indices);
+    alea_surface_cell_reference_t refs[6];size_t count=0;
+    ASSERT_EQ(alea_surface_cell_references(sys,101,refs,6,&count),0);
+    ASSERT_EQ(count,6);
+    const int cells[]={11,11,22,33,44,44};
+    const int senses[]={-1,1,1,-1,-1,1};
+    for(size_t i=0;i<count;i++) {
+        ASSERT_EQ(refs[i].cell_id,cells[i]);ASSERT_EQ(refs[i].sense,senses[i]);
+    }
+    ASSERT_EQ(sys->cells.data[0].neighbor_count,2);
+    ASSERT_EQ(sys->cells.data[0].neighbors[0].neighbor_cell_id,22);
+    ASSERT_EQ(sys->cells.data[0].neighbors[0].our_sense,-1);
+    ASSERT_EQ(sys->cells.data[0].neighbors[1].neighbor_cell_id,33);
+    ASSERT_EQ(sys->cells.data[0].neighbors[1].our_sense,1);
+    ASSERT_EQ(sys->cells.data[3].neighbor_count,0);
+    /* Repeat after publication/invalidation to catch stale per-cell marks. */
+    alea_system_invalidate_query_caches(sys,ALEA_CACHE_ADJACENCY);
+    ASSERT_EQ(alea_build_cell_adjacency(sys),0);
+    ASSERT_EQ(alea_surface_cell_references(sys,101,refs,6,&count),0);
+    ASSERT_EQ(count,6);
+    ASSERT_EQ(sys->cells.data[0].neighbor_count,2);
+    mcnp_model_destroy(model);
 }
 
 TEST(point_coverage_classifies_competing_unequal_depth_leaves) {

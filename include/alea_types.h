@@ -179,7 +179,7 @@ extern const alea_config_t ALEA_CONFIG_DEFAULT;
 // CSG OPERATION TYPES
 
 /**
- * @brief CSG operation types (used in packed type_and_flags)
+ * @brief CSG operation types
  */
 typedef enum {
     ALEA_OP_PRIMITIVE = 0,      // Leaf node (primitive)

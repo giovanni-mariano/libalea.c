@@ -83,6 +83,20 @@ a fresh native query each time.
 
 ## Unix development build
 
+To create an isolated development environment with `uv`, run from the repository
+root:
+
+```sh
+export UV_PYTHON_INSTALL_DIR="$PWD/bindings/python/.uv-python"
+uv venv --managed-python --python 3.14 bindings/python/.venv
+uv pip install --python bindings/python/.venv/bin/python 'numpy==2.3.3' pytest
+make -C bindings/python test PYTHON="$PWD/bindings/python/.venv/bin/python"
+```
+
+The managed interpreter includes the development headers needed to compile the
+extension. NumPy 2.3.3 matches the Python 3.14 release-build baseline. Both the
+interpreter and environment are ignored by Git and survive `make clean`.
+
 Install NumPy and pytest for the selected interpreter, then run:
 
 ```sh

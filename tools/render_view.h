@@ -15,6 +15,7 @@ typedef struct {
 typedef struct {
     alea_system_t* sys;
     alea_compute_t* compute;
+    alea_prepared_queries_t* prepared;
     render_view_buffers_t* buffers;
     int preview, progressive, progress_error;
     alea_view_job_t* job;
@@ -114,7 +115,7 @@ static int render_view_draw(void* state, uint8_t** pixels) {
         }
     } else
 #endif
-        rc=render_selected(v->sys,v->compute,&cfg,&v->cam,fb);
+        rc=render_selected(v->sys,v->compute,v->prepared,&cfg,&v->cam,fb);
     (void)start;
     if(rc==0){*pixels=render_view_image(v,&cfg,fb);if(!*pixels)rc=-1;}
     if(rc<0)fprintf(stderr,"Rendering failed: %s\n",alea_error());
@@ -236,14 +237,14 @@ static int render_view_input(void* state, const SDL_Event* event) {
     return 1;
 }
 
-static int render_interactive(alea_system_t* sys, alea_compute_t* compute, const render_config_t* cfg,
+static int render_interactive(alea_system_t* sys, alea_compute_t* compute, alea_prepared_queries_t* prepared, const render_config_t* cfg,
                               const render_camera_t* cam, const char* output, int progressive) {
     if (cfg->width < 1 || cfg->height < 1 || cfg->width > 16384 || cfg->height > 16384)
         return -1;
     render_viewer_t v = {0};
     render_view_buffers_t buffers = {.preview_edge=alea_cell_count(sys)>10000?16:96};
     v.buffers = &buffers; v.compute = compute;v.progressive=progressive;
-    v.sys = sys; v.cfg = *cfg; v.cam = *cam; v.output = output;
+    v.prepared = prepared; v.sys = sys; v.cfg = *cfg; v.cam = *cam; v.output = output;
     /* Freeze auto-fit so navigation is relative to the visible camera. */
     memcpy(v.cfg.eye, cam->eye, sizeof(v.cfg.eye));
     memcpy(v.cfg.target, cam->target, sizeof(v.cfg.target));
@@ -259,7 +260,9 @@ static int render_interactive(alea_system_t* sys, alea_compute_t* compute, const
         {"Clip", SDLK_x}, {"Clip -", SDLK_LEFTBRACKET}, {"Clip +", SDLK_RIGHTBRACKET},
         {"Shadows", SDLK_l}
     };
-    int rc = alea_sdl_view_progressive(compute ? "Alea 3D - Metal" : "Alea 3D - CPU",
+    const char* title = compute ? "Alea 3D - Metal" :
+                        prepared ? "Alea 3D - Regional CPU" : "Alea 3D - CPU";
+    int rc = alea_sdl_view_progressive(title,
         "Left drag / arrows: orbit\n"
         "Right / middle drag: pan   Wheel / +/-: zoom\n"
         "C: colors   E: edges   L: shadows (CPU)\n"

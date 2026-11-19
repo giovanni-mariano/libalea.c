@@ -371,6 +371,15 @@ TEST(roundtrip_c_z) {
 /* Cone tests                                                                */
 /* ========================================================================= */
 
+TEST(rejects_invalid_cone_sheet) {
+    const char* cards[] = {"KX 0 1 0.5", "K/Z 0 0 0 1 2", "KY 0 1 -1e100"};
+    for (size_t i = 0; i < sizeof(cards) / sizeof(cards[0]); i++) {
+        char input[100];
+        snprintf(input, sizeof(input), "Invalid cone sheet\n1 0 -1\n\n1 %s\n\n", cards[i]);
+        ASSERT_NULL(mcnp_load_string(input, strlen(input)));
+    }
+}
+
 TEST(roundtrip_kx) {
     const char* input =
         "Test KX\n"

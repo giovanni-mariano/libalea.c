@@ -57,13 +57,14 @@ static double get_time_ms(void) {
 typedef void alea_compute_t;
 #endif
 
-static int render_selected(alea_system_t* sys, alea_compute_t* compute,
+static int render_selected(alea_system_t* sys, alea_compute_t* compute, alea_prepared_queries_t* prepared,
         const render_config_t* cfg, const render_camera_t* cam, render_framebuffer_t* fb) {
 #ifdef ALEA_VIEW_METAL
     if (compute) return alea_compute_render(compute, cfg, cam, fb);
 #else
     (void)compute;
 #endif
+    if (prepared) return alea_render_scene_prepared(sys, prepared, cfg, cam, fb);
     return render_scene(sys, cfg, cam, fb);
 }
 
@@ -142,7 +143,8 @@ static void print_usage(const char* prog) {
 "  --aa N                       Supersampling NxN (default: 1)\n"
 "\n"
 "PERFORMANCE:\n"
-"  --backend cpu|metal           Renderer (default: cpu)\n"
+"  --backend cpu|regional|metal  Renderer (default: cpu)\n"
+"      Regional: prepared CPU surface queries, parallel tiles\n"
 "      Interactive metal: automatic preview and tile refinement\n"
 "  --threads N                  Thread count (default: all cores)\n"
 "  --tile-size N                Tile size in pixels (default: 32)\n"
@@ -239,7 +241,8 @@ int main(int argc, char** argv) {
     render_config_t cfg;
     render_config_init(&cfg);
 
-    int interactive = 0, use_metal = 0;
+    int interactive = 0, use_metal = 0, use_regional = 0;
+    alea_prepared_queries_t* prepared = NULL;
     alea_compute_t* compute = NULL;
 
     /* Parse arguments */
@@ -254,9 +257,10 @@ int main(int argc, char** argv) {
         if (strcmp(arg, "--interactive") == 0) {
             interactive = 1;
         } else if (strcmp(arg, "--backend") == 0) {
-            if (++i >= argc || (strcmp(argv[i], "cpu") && strcmp(argv[i], "metal"))) {
-                fprintf(stderr, "--backend expects cpu or metal\n"); return 1;
+            if (++i >= argc || (strcmp(argv[i], "cpu") && strcmp(argv[i], "metal") && strcmp(argv[i], "regional"))) {
+                fprintf(stderr, "--backend expects cpu, regional, or metal\n"); return 1;
             }
+            use_regional = !strcmp(argv[i], "regional");
             use_metal = !strcmp(argv[i], "metal");
         } else if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
             if (++i < argc) output_file = argv[i];
@@ -411,6 +415,11 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Error: invalid image dimensions %dx%d\n", cfg.width, cfg.height);
         return 1;
     }
+    if (use_regional && cfg.render_mode == RENDER_MODE_XRAY) {
+        fprintf(stderr, "X-ray rendering requires --backend cpu\n");
+        render_config_free(&cfg);
+        return 1;
+    }
     if (cfg.aa_samples < 1) cfg.aa_samples = 1;
     if (cfg.aa_samples > RENDER_MAX_AA) cfg.aa_samples = RENDER_MAX_AA;
 
@@ -431,7 +440,9 @@ int main(int argc, char** argv) {
         omc_model = openmc_load(input_file);
         if (omc_model) sys = omc_model->sys;
     } else {
-        model = mcnp_load(input_file);
+        const char* cache = getenv("ALEA_CACHE_FILE");
+        model = (cache || getenv("ALEA_CACHE_DIR"))
+            ? mcnp_load_cached(input_file, cache, NULL) : mcnp_load(input_file);
         if (model) sys = model->sys;
     }
 
@@ -463,9 +474,14 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Renderer: Metal (approximate FP32), scene preparation %.1f ms\n", get_time_ms()-prepare_start);
     }
 #endif
-    /* Build query caches (hierarchical spatial index is the only backend) */
+    /* Prepare the model hierarchy used by CPU traversal. */
     alea_build_universe_index(sys);
-    if (!compute) alea_prepare_query_acceleration(sys);
+    if (!compute && alea_prepare_query_acceleration(sys) != 0) {
+        fprintf(stderr, "Cannot prepare CPU ray queries: %s\n", alea_error());
+        if (model) mcnp_model_destroy(model); else openmc_model_destroy(omc_model);
+        render_config_free(&cfg);
+        return 1;
+    }
 
     /* Print summary */
     alea_print_summary(sys);
@@ -477,9 +493,31 @@ int main(int argc, char** argv) {
     render_camera_t cam;
     if (render_camera_setup(&cam, &cfg, sys) != 0) {
         fprintf(stderr, "Error: camera setup failed\n");
+        alea_prepared_queries_destroy(prepared);
         destroy_compute(compute);
         if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
+    }
+
+    if (use_regional) {
+        /* Center the index on the initial view. Orbit/zoom reuse it, and
+         * rays outside the indexed region use the native hierarchy. */
+        double dx = cam.eye[0] - cam.target[0], dy = cam.eye[1] - cam.target[1];
+        double dz = cam.eye[2] - cam.target[2];
+        double span = 2 * fmax(hypot(hypot(dx, dy), dz), cam.ortho_height);
+        alea_bbox_t domain = {cam.target[0]-span, cam.target[0]+span,
+                              cam.target[1]-span, cam.target[1]+span,
+                              cam.target[2]-span, cam.target[2]+span};
+        double start = get_time_ms();
+        prepared = alea_prepared_queries_create(sys, &domain);
+        if (!prepared) {
+            fprintf(stderr, "Cannot prepare regional surface renderer: %s\n", alea_error());
+            if (model) mcnp_model_destroy(model); else openmc_model_destroy(omc_model);
+            render_config_free(&cfg);
+            return 1;
+        }
+        fprintf(stderr, "Renderer: CPU regional first-visible, preparation %.1f ms\n",
+                get_time_ms() - start);
     }
 
     fprintf(stderr, "Camera: eye=(%.1f, %.1f, %.1f) target=(%.1f, %.1f, %.1f) fov=%.0f%s\n",
@@ -493,8 +531,9 @@ int main(int argc, char** argv) {
 
 #ifdef ALEA_USE_SDL
     if (interactive) {
-        int rc = render_interactive(sys, compute, &cfg, &cam, output_file, use_metal);
+        int rc = render_interactive(sys, compute, prepared, &cfg, &cam, output_file, use_metal);
         render_config_free(&cfg);
+        alea_prepared_queries_destroy(prepared);
         destroy_compute(compute);
         if (model) mcnp_model_destroy(model);
         else if (omc_model) openmc_model_destroy(omc_model);
@@ -522,7 +561,7 @@ int main(int argc, char** argv) {
             render_framebuffer_create(preview_cfg.width, preview_cfg.height, 0);
         if (preview_fb) {
             double tp0 = get_time_ms();
-            int preview_rc = render_selected(sys, compute, &preview_cfg, &preview_cam, preview_fb);
+            int preview_rc = render_selected(sys, compute, prepared, &preview_cfg, &preview_cam, preview_fb);
             double tp1 = get_time_ms();
 
             if (preview_rc) fprintf(stderr,"Preview failed: %s\n",alea_error());
@@ -562,18 +601,20 @@ int main(int argc, char** argv) {
     if (!fb) {
         fprintf(stderr, "Error: failed to allocate framebuffer (%dx%d)\n",
                 cfg.width, cfg.height);
+        alea_prepared_queries_destroy(prepared);
         destroy_compute(compute);
         if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
     }
 
     double tr0 = get_time_ms();
-    int rc = render_selected(sys, compute, &cfg, &cam, fb);
+    int rc = render_selected(sys, compute, prepared, &cfg, &cam, fb);
     double tr1 = get_time_ms();
 
     if (rc != 0) {
         fprintf(stderr, "Error: rendering failed: %s\n", alea_error());
         render_framebuffer_free(fb);
+        alea_prepared_queries_destroy(prepared);
         destroy_compute(compute);
         if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
@@ -591,6 +632,7 @@ int main(int argc, char** argv) {
     if (!pixels) {
         fprintf(stderr, "Error: failed to allocate pixel buffer\n");
         render_framebuffer_free(fb);
+        alea_prepared_queries_destroy(prepared);
         destroy_compute(compute);
         if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
         return 1;
@@ -623,6 +665,7 @@ int main(int argc, char** argv) {
     free(pixels);
     render_framebuffer_free(fb);
     render_config_free(&cfg);
+    alea_prepared_queries_destroy(prepared);
     destroy_compute(compute);
     if (model) mcnp_model_destroy(model); else if (omc_model) openmc_model_destroy(omc_model); else alea_destroy(sys);
 

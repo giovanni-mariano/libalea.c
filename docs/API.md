@@ -15,6 +15,7 @@ temporarily differ.
 | `alea_slice.h` | Slice views, grid/raster queries, analytical curves, labels, and boundary provenance |
 | `alea_geo_validator.h` | Occurrence-aware ray, slice, transition, and compact ray-slice diagnostics |
 | `alea_render.h` | CPU 3D rendering and image output |
+| `alea_compute.h` | Optional snapshot-based rendering and batch point queries for CPU and Metal |
 | `alea_mesh.h` | Structured sampling, streaming, and adaptive octree export |
 | `alea_mcnp.h` | MCNP load/export and model ownership |
 | `alea_openmc.h` | OpenMC XML load/export and model ownership |
@@ -301,6 +302,43 @@ related caches) explicitly before point, spatial, raycast, slice, render, or
 mesh queries. Query paths do not lazily build shared caches. Geometry mutation
 invalidates prepared caches; call this again after adding/removing/changing
 surfaces, transforms, or cells.
+
+### alea_prepare_regional_queries
+
+```c
+int alea_prepare_regional_queries(alea_system_t* sys);
+```
+
+Call this experimental option alongside `alea_prepare_query_acceleration()` to
+prepare simplified containment expressions for bounded cell regions. Each
+cell keeps its full CSG for signed evaluation, editing and export. Point queries
+and ray membership checks can use the regional form in local coordinates.
+Original surface definitions supply ray crossings. After a geometry edit or
+snapshot load, call the function again to enable the optimization. Preparation
+returns zero on success, including when no region qualifies, and -1 on failure.
+
+### alea_prepare_world_point_grid
+
+```c
+int alea_prepare_world_point_grid(alea_system_t* sys, const alea_bbox_t* domain,
+                                 alea_point_grid_stats_t* stats);
+```
+
+Prepare an experimental candidate grid for repeated CPU point queries in a
+finite world-coordinate box. Choose the box that covers the region you intend
+to query. The function prepares the required hierarchy and then divides the box
+into eight intervals per axis. It can exclude a cell throughout a tile using
+its bounding box or a strict plane or general-quadric sign proof. A tile lists
+the remaining candidates in model order. Outside the box or an unfinished tile the query follows
+the ordinary spatial index. Ray traversal can also use the grid when locating
+a cell at a point.
+
+Prepare with exclusive access to the model. Afterward readers can share the
+grid. A successful call replaces the preceding grid. Geometry edits discard it,
+and loading a snapshot requires a new call to enable it. The optional statistics
+report completed tiles, stored candidate entries, retained bytes and inspected
+CSG nodes. The function returns zero on success and -1 on invalid input,
+interruption or preparation failure.
 
 ### alea_query_acceleration_stats
 
@@ -1704,6 +1742,41 @@ from the callback are unsupported.
 
 Ray tracing through CSG geometry.
 
+### Prepared point ownership and finite ray batches
+
+For repeated queries on a large editable model, create an
+`alea_prepared_queries_t` with a finite world-space box covering the region
+you expect to query. Creation prepares the hierarchy and the regional index.
+The box guides subdivision. Queries can extend beyond it, and ray distances
+are measured in model units along the normalized direction.
+
+```c
+alea_bbox_t box = {-2048, 2048, -2048, 2048, -2048, 2048};
+alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &box);
+if (!prepared) return -1;
+
+alea_query_point_t points[] = {{0, 0, 0}, {100, 20, 0}};
+alea_point_owner_t owners[2];
+int rc = alea_prepared_locate_points(prepared, points, 2, owners);
+alea_prepared_queries_destroy(prepared);
+return rc;
+```
+
+On success, each point result has a status of zero for a selected cell or
+−1 for an unowned point, in input order. For ray batches, pass
+`alea_segment_ray_t` inputs and one caller-owned `alea_raycast_result_t*`
+per input to `alea_prepared_trace_rays`. Read the ordered segments with
+`alea_raycast_segment_get`. Each segment includes its interval, selected
+cell and material, density, and crossing surface IDs. Use the navigation and
+diagnostic APIs when you need occurrence paths, simultaneous owners or a full
+surface-hit list.
+
+Keep the model alive for the handle's lifetime. Each handle owns mutable
+traversal scratch and serves one caller at a time. Geometry edits, ID changes
+and material edits can invalidate a handle. Destroy it and prepare again
+before querying the edited model. Index construction can be expensive on large
+models, so reuse the handle across batches or frames.
+
 ### alea_raycast_result_create
 
 ```c
@@ -2118,6 +2191,22 @@ int render_scene(alea_system_t* sys,
 
 Main render function. The system must be loaded and indexed.
 
+#### alea_render_scene_prepared
+
+```c
+int alea_render_scene_prepared(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                               const render_config_t* cfg, const render_camera_t* cam,
+                               render_framebuffer_t* fb);
+```
+
+Render a surface frame with a handle created by `alea_prepared_queries_create`
+for this model. Camera and filter changes reuse the index. Primary and shadow
+rays use the native hierarchy when the indexed part of the ray is insufficient.
+Set `cfg->threads` to limit tile workers. They share one index and reuse
+private ray buffers across frames. The handle retains storage for the largest
+worker count used until it is destroyed. Use it from one caller at a time
+and recreate it after a geometry or material edit. Use `render_scene` for X-ray images.
+
 #### render_framebuffer_create
 
 ```c
@@ -2186,6 +2275,77 @@ int render_load_colors(const char* filename, render_config_t* cfg);
 ```
 
 Load custom color palette from file.
+
+---
+
+## Optional rendering and batch compute
+
+The optional `alea_compute.h` module takes an owned geometry snapshot. Create
+a context with `alea_compute_create` using `ALEA_COMPUTE_CPU` with
+`ALEA_COMPUTE_FP64` or `ALEA_COMPUTE_METAL` with `ALEA_COMPUTE_FP32`.
+`alea_compute_available` checks whether a backend was built and has a suitable
+device. Creation can still fail for unsupported geometry or allocation errors.
+See the [build and linking instructions](INSTALLATION.md#optional-rendering-and-batch-compute).
+
+The source model may be edited or freed after creation. To pick up geometry
+changes, create a new context. Serialize calls on each context. Independent
+contexts can run separately.
+
+### Surface rendering
+
+Use the existing [3D rendering functions](#3d-rendering-alea_renderh) to
+initialize the configuration, camera, and framebuffer before rendering.
+
+```c
+#include <alea_compute.h>
+
+/* sys is loaded, and config, camera, and framebuffer are initialized. */
+alea_compute_t* compute = alea_compute_create(sys, ALEA_COMPUTE_METAL,
+                                              ALEA_COMPUTE_FP32);
+if (!compute) return -1; /* Inspect alea_error(). */
+int rc = alea_compute_render(compute, &config, &camera, framebuffer);
+alea_compute_destroy(compute);
+return rc;
+```
+
+Reuse the context across frames to retain its prepared geometry and buffers.
+Metal supports perspective and orthographic cameras, one clipping plane,
+material and cell colors, and up to 4×4 supersampling. The caller handles
+edge darkening and depth or ID visualization from the auxiliary channels.
+Metal rejects shadows, X-ray, density and universe colors, and selection
+filters. Auxiliary normals follow the source surface orientation. Clipping
+faces use the negative clipping-plane normal.
+
+For progressive Metal rendering, call `alea_compute_render_progressive`
+with a callback. It runs on the calling thread before work and after GPU
+submissions. Seed the framebuffer before displaying unfinished pixels.
+Returning nonzero from the callback cancels the frame and leaves completed
+pixels available. The function returns 0 for completion, 1 for cancellation,
+or −1 for an error. The context can be reused after cancellation.
+
+### Batch point queries
+
+Pass interleaved XYZ triples and one result per point to either operation.
+Both return 0 for a completed batch and −1 on error. Inputs must be finite
+and fit the chosen precision. Empty batches are valid.
+
+| Function | Result |
+|----------|--------|
+| `alea_compute_classify` | Counts terminal owning occurrences, including void. Zero denotes a gap, one a unique owner, and a larger count an overlap. Cell and material IDs are −1 unless ownership is unique. |
+| `alea_compute_select` | Follows the first containing cell at each fill level in model order. `ALEA_COMPUTE_FOUND` includes terminal void. `ALEA_COMPUTE_NOT_FOUND` returns IDs and depth of −1. `ALEA_COMPUTE_UNDEFINED_FILL` returns the winning container when the fill has no child at the point. Root depth is zero. |
+
+### Metal geometry and precision
+
+Metal supports planes, spheres, axis-aligned cylinders and cones, general
+quadrics, RPP boxes, RCC cylinders, and circular or elliptical tori.
+Transformed fills support up to 32 universe levels, including finite and
+repeating rectangular lattices. Hexagonal lattices and lattice-local fill
+transforms are rejected.
+
+FP32 rounding can change ownership near boundaries or erase small features.
+Use Metal for approximate visualization and the [geometry validation APIs](#validation)
+for verified diagnostics. Metal surface rendering leaves solid overlap ownership
+unspecified. Batch classification reports sampled ownership counts.
 
 ---
 
@@ -3385,3 +3545,284 @@ executes fresh ownership traces for that depth. Lua options accept
 `projected_depth`, `include_agreements`, `absolute_tolerance`, and
 `relative_tolerance`; C callers use `alea_ray_slice_validation_options_t` and
 its documented interval/path/output budgets.
+
+
+## Model fingerprints and binary snapshots
+
+Include `alea_fingerprint.h` for `alea_fingerprints(sys)` and
+`alea_fingerprint_diff(before, after)`. Returned objects are owned by the caller;
+release them with `alea_fingerprints_destroy` and `alea_model_diff_destroy`.
+Fingerprints carry `ALEA_FINGERPRINT_VERSION` and SHA-256 digests for every cell
+and universe. Geometry includes CSG primitives and senses, fill transforms,
+ordered lattice entries, and descendant universes. Content additionally includes
+material composition/library references, density convention, and temperature.
+Names, comments, boundary conditions and wrapper-specific transport parameters
+are excluded from these comparison digests. Snapshots preserve these fields.
+
+Canonicalization ignores IDs, Boolean child order/association for AND/OR, duplicate
+AND/OR terms, and plane/quadric coefficient scaling/sign. Exact floating-point
+values are used; equivalent alternate primitive types, differently normalized
+material fractions, arbitrary Boolean rewrites, and tiny coefficient changes can
+produce different digests. Equality is a comparison aid, not a general geometric
+equivalence proof. Duplicate unmatched content is reported as ambiguous rather
+than assigned an arbitrary renumbering. General recursive fills are refused;
+lattice self-fill is encoded explicitly. Calls must exclude concurrent mutation.
+Fingerprint version 2 also collapses a duplicate-only AND/OR to its remaining
+term, so `A AND A` and `A OR A` have the same digest as `A`. Digests from different
+versions cannot be compared.
+
+```sh
+bin/mc_compare model.inp
+bin/mc_compare --json before.inp after.inp
+```
+
+The comparison tool supports MCNP, OpenMC XML, and `.alea.xml`. Exit codes are 0
+for an unchanged comparison, 1 for differences (including renumbering), and 2 for
+errors. JSON output has a version and numeric IDs; `-1` denotes a missing ID.
+
+```python
+before = pyalea.load_mcnp("before.inp")
+after = pyalea.load_mcnp("after.inp")
+print(before.fingerprints()["cells"])
+print(before.compare(after))
+model = pyalea.load_mcnp("model.inp", cache_path="model.cache")
+```
+
+Include `alea_snapshot.h` for `alea_snapshot_write`/`alea_snapshot_read`, which
+save a geometry system. Use `mcnp_snapshot_write`/`mcnp_snapshot_read` from
+`alea_mcnp.h` to also preserve the MCNP wrapper: names, comments, importances,
+typed cell parameters, inline transform provenance, and export settings.
+Restored systems remain editable and wrapper callbacks are reconnected.
+Snapshot format 3 preserves the counters returned by `alea_stats()` and rejects
+invalid transform lengths on both writing and reading. Earlier snapshot files
+are incompatible; the cached loader rebuilds them from the source.
+Snapshots retain an existing prepared hierarchical spatial index. Surface BVHs,
+adjacency, volume-path indices and thread-local query state rebuild on demand.
+Other format wrappers currently have no dedicated snapshot entry points.
+
+`mcnp_load_cached(input, cache_file, &hit)` provides an explicit single-entry disk
+cache. It expands nested `READ FILE` cards using paths relative to each containing
+file and hashes the expanded input, source filename and query-index options.
+Dependency errors fail the load; a changed dependency forces rebuilding. A cache
+path aliasing any input file is bypassed. Missing, stale, corrupt and unwritable
+cache entries fall back to ordinary loading. A cache miss prepares the hierarchy
+before saving it. This preparation adds work on the first cached load.
+
+The plotter and renderer accept `ALEA_CACHE_FILE=/path/to/model.cache` to enable
+this cache. `ALEA_CACHE=off` bypasses cache reads and writes. Each chosen cache file
+holds one model, with a 2 GiB file limit. Alternatively, set `ALEA_CACHE_DIR`
+to manage separate entries per input/engine/options, including from Python.
+`ALEA_CACHE_GB` sets the directory budget (default 8 GiB); older entries are
+evicted first. The directory itself is created if its parent exists.
+Snapshot readers also accept an explicit file-size limit. Floating-point values are encoded
+explicitly in little-endian order; integers use checked variable-length encodings.
+Files include a format version, engine-source digest,
+SHA-256 checksum and checked counts/indices. Incompatible engine sources invalidate
+an entry. Writes use a sibling temporary file and atomic replacement. Python 3's
+standard library generates the engine-source digest during the native build.
+
+Snapshot reads also enforce a separate decoded-allocation budget. Existing
+`alea_snapshot_read` and `mcnp_snapshot_read` calls retain their file-size argument
+and use an 8 GiB allocation budget, capped at `SIZE_MAX` on smaller platforms.
+Use the options-based entry points to choose both limits:
+
+```c
+alea_snapshot_read_options_t options = ALEA_SNAPSHOT_READ_OPTIONS_INIT;
+options.max_file_bytes = (size_t)128 * 1024 * 1024;
+options.max_decoded_bytes = (size_t)512 * 1024 * 1024;
+mcnp_model_t* model = mcnp_snapshot_read_with_options("model.abin", &options);
+```
+
+`alea_snapshot_read_with_options` applies the same contract to geometry-only
+snapshots. Initialize `struct_size` with the macro above or `sizeof(options)`.
+A NULL options pointer or zero limits selects defaults: 2 GiB for file size and
+8 GiB for decoded allocations. `SIZE_MAX` selects the largest representable limit.
+Malformed options are rejected before reading the file.
+
+The allocation budget counts cumulative requested heap bytes: decoded vectors,
+strings, wrapper metadata, rebuilt lookup/universe indexes, stored hierarchy,
+and validation scratch space. A reallocation charges its full new capacity;
+freeing memory does not refund bytes. Checks precede allocation and use
+overflow-safe arithmetic. Buffered and mapped readers enforce the same budget.
+Exhaustion returns NULL with an allocation-budget error and destroys partial
+state. The budget is local to the reading thread and ends before returning.
+
+This is a conservative allocation-request limit, not a process RSS limit. It
+excludes allocator overhead, stack, stdio buffers, mapped file pages and query
+acceleration prepared after loading. It also does not change the historical
+memory counters restored by `alea_stats()`. With `ALEA_PROFILE_LOAD=1`, the
+`[alea-snapshot-allocation]` log reports requested bytes, the limit and whether
+it was exceeded. This accounting is independent of snapshot file size.
+
+`mcnp_load_cached_with_options(input, cache_file, &hit, &options)` limits reading
+the cached snapshot. Budget exhaustion is a cache miss and falls back to source
+parsing; these options do **not** bound the source parser, cache writing or later
+query preparation. Invalid options return NULL without attempting the load.
+The existing cached loader, including Python callers, uses the default budget.
+Snapshot format 3 and its two checksum validations are unchanged; the engine
+source token changes as usual, so older managed entries rebuild from source.
+
+Cache benefit depends on model complexity. The first cached load includes writing
+the entry; compare warm cached and uncached load-plus-preparation times on the
+models used by your application. Caching is opt-in.
+
+### Semantic material comparison
+
+The existing `alea_fingerprints()` remains the version-2 legacy profile.
+For normalized material comparison, initialize `alea_fingerprint_options_t`
+with `struct_size = sizeof(options)` and
+`profile = ALEA_FINGERPRINT_SEMANTIC`, then call
+`alea_fingerprint_set_create(sys, &options)`. Access its borrowed read-only
+values with `alea_fingerprint_set_values`, compare compatible sets with
+`alea_fingerprint_set_diff`, and release it with
+`alea_fingerprint_set_destroy`. Semantic sets use algorithm version 3.
+Sets with different profiles cannot be compared.
+
+The semantic profile merges duplicate composition entries and normalizes their
+fractions jointly across nuclides and elements. It also merges equivalent
+mixture components and normalizes mixture fractions. Atom/weight conventions,
+libraries, thermal laws, densities and temperatures remain significant. Invalid
+negative, nonfinite, or entirely zero fraction lists are rejected. Empty
+composition records remain distinct from void. Source models are never mutated.
+This initial semantic profile does not quantize numeric values or equate
+alternative primitive types; it must not be used to authorize acceleration reuse.
+Library strings currently remain case-sensitive in both profiles.
+
+```sh
+bin/mc_compare --json --profile semantic before.i after.i
+make check-mc-compare
+```
+
+Python exposes the same opt-in profile through
+`system.fingerprints(profile="semantic")` and
+`system.compare(other, profile="semantic")`. Omitting the keyword preserves
+legacy comparison.
+
+### Large-model lifecycle benchmark
+
+Build a separate optimized binary so existing debug objects cannot silently be
+reused with release flags:
+
+```sh
+make -j4 RELEASE=1 BUILD_DIR=build/perf BIN_DIR=bin/perf bin/perf/model_lifecycle
+python3 tools/model_lifecycle_benchmark.py model.i \
+    --binary bin/perf/model_lifecycle --output build/perf/baseline.json \
+    --bounds 500 1500 -500 500 -500 500 --repeats 5 \
+    --build-label 'RELEASE=1 -O3 -march=native'
+make check-model-lifecycle
+```
+
+Each scenario runs in a separate process. The report includes fresh time to
+ready, primed disk-cache and explicit snapshot loading, checksum and decoding,
+parsing and geometry construction, universe/cell-surface/hierarchy/surface-BVH/
+adjacency/recovery preparation, first query, point and ray replay, and peak RSS.
+BLAS, TLAS and placement timings are reported separately. Some parser and
+construction stage timers are nested: do not sum every reported stage. Snapshot
+decoding includes its second integrity check and index reconstruction; it still
+allocates the editable model. RSS includes process startup and the workload,
+and is unavailable on Windows. It is not an allocation budget or a measurement
+of unique model-owned bytes. Logs remain available while each subprocess runs.
+
+`--snapshot-io mapped` opts into direct mapped decoding for snapshot/cache reads
+(`ALEA_SNAPSHOT_IO=mapped` for library callers). It retains both integrity checks,
+releases the mapping before returning, and falls back to buffered I/O if mapping
+is unavailable. Files must remain stable during mapped reads: publish snapshots
+with atomic replacement rather than truncating/overwriting an active file.
+The editable model is still allocated, and resident mapped pages can increase
+peak RSS. Buffered I/O remains the default; mapping requires a demonstrated
+end-to-end benefit for the target workload. Reports log the backend actually used.
+
+The default workload uses deterministic points and axis rays in the explicit
+box. It is independent of computed geometry bounds. Supply `--workload file`
+for application recordings, with one `p x y z` or
+`r ox oy oz dx dy dz max_distance` per line. Rays require finite positive
+distances and nonzero directions. The default ray API is the hierarchical
+segment tracer; use `--ray-api global` to measure the global-surface raycast
+instead. Reports record the API and workloads cannot be compared across APIs.
+Replay digests cover point status/ownership and ray distances, cell/material/
+density, boundary IDs and resolution flags. The reported candidate counters
+cover hierarchical point candidate lists (including point lookups during rays),
+not all primitive tests or ray candidates. Legacy point-path counters may be zero.
+
+`--edited-model replacement.i` measures a fresh replacement and a replacement
+loaded while the previous snapshot remains alive. This is a full-rebuild
+baseline including old-snapshot cost and dual-model peak memory; it does not
+implement reuse. Compare this overhead with reusable construction time before
+introducing copying/remapping. A missing edited model leaves this scenario out.
+
+`--mixed-bounds` adds an experimental certified-bound scenario. It supports
+plane constraints, enclosing constraints from sphere, RPP and axis-cylinder
+interiors, and selected quadric enclosures. Interval arithmetic must prove that
+a quadric's quadratic part is positive definite before its ellipsoid supplies
+a global box. Exact opposite plane pairs can also close a rotated cylinder:
+adding a bounded squared slab coordinate yields a containing ellipsoid, whose
+definiteness, inverse, center and support bounds are checked with outward-rounded
+intervals. Small negative eigenvalues are never discarded. At most four quadrics
+and four slabs from the first 64 linear constraints are tried per request;
+uncertain arithmetic and unsupported cases retain the conservative fallback.
+Unsupported conjuncts are relaxed, union/complement branches supply
+no constraints, and differences retain only their left operand. Output is used
+only after a global enclosure certificate succeeds, and dependent query caches
+are invalidated. The existing explicit numerical/all-cell tightening APIs also
+try these mixed constraints before their established fallback. Default loading
+does not enable the extra bound pass.
+
+Add `--candidate-profile` to the runner or lifecycle executable to attribute
+emitted BLAS point candidates to individual cells. Each record gains a
+`candidate_profile` array with cell index/ID, universe, point/ray-probe counts,
+surface count and a primitive-type bitmask (bit N corresponds to
+`alea_primitive_type_t` value N). Counts sum to `point_candidates` and
+`ray_point_candidates`. The ray column counts point probes made during ray
+queries, not ray/primitive intersections. Linear scans, hints and exact CSG
+evaluation work are outside this observer's coverage. Primitive combinations
+describe referenced surfaces, not proof that each surface was evaluated.
+The observer is thread-local; the benchmark runs sequential queries and excludes
+the warm-up query. Profiling adds two per-cell counter arrays and counter writes;
+disable it for throughput/peak-memory comparisons. Fixed query and ordered
+acceleration digests still guard correctness with profiling enabled.
+
+The runner checks exact query replay for every fresh/cache/snapshot/bound variant.
+New reports also include `acceleration_digest`, covering ordered cell-to-surface
+references, oriented surface-to-cell references, and every neighbor entry.
+These checks run outside the timed query replay. Comparisons with older reports
+remain possible; `baseline_acceleration_checked` records whether the older
+report supplies this additional evidence.
+It checks edited variants against a fresh load of the edited input. `--baseline
+previous.json` additionally checks an earlier report; optional
+`--max-ready-ratio 1.10 --max-memory-ratio 1.10` enforce median regression limits.
+Choose limits using measured run-to-run noise. Reports include individual runs,
+medians and min/max, executable/source/workload hashes, platform and a supplied
+build label. The source hash covers the entry file; track external READ files
+alongside it. Cache keys themselves include expanded dependencies. The runner
+alternates scenario order, primes its own temporary disk entry, and leaves OS
+page-cache state uncontrolled. It makes no cold-OS-cache claim. Temporary large
+snapshots live beside the output report rather than in a potentially small tmpfs.
+
+With `ALEA_PROFILE_LOAD=1`, adjacency logs separate surface-index preparation,
+reference counting/filling, inversion, and neighbor counting/filling. Snapshot
+logs separate primitives, nodes, surfaces/transforms, materials, cells, lookup
+indexes, graph validation and hierarchy restoration. `snapshot_decode_checksum`
+is the second checksum pass, nested inside decoding (and, for buffered input,
+inside the individual decoding stages); do not add it again to the total.
+
+Adjacency reuses a valid cell-surface index and deduplicates oriented references
+with temporary per-surface marks while preserving encounter order. Snapshot
+numeric readers consume contiguous buffered/mapped fields directly, falling
+back to the checked byte reader at buffer boundaries. Node storage is reserved
+from the validated wire count, with a minimum-payload check before allocation.
+The wire encoding, two integrity checks and owned editable-model contract are
+unchanged. Exact reservation limits unused node capacity; it does not promise
+lower peak RSS or replace a decoded-allocation budget.
+
+For a small analytic pruning workload:
+
+```sh
+python3 tools/generate_lifecycle_fixture.py build/caps.i build/caps.workload --cells 128
+python3 tools/model_lifecycle_benchmark.py build/caps.i \
+    --workload build/caps.workload --mixed-bounds --output build/caps.json
+```
+
+Pass `--rotated-quadrics` to the fixture generator for cylinders expressed as
+general quadrics and closed by oblique slabs. This fixture is also exercised by
+`make check-model-lifecycle`, including fresh/cache/snapshot replay, tightened
+bounds and candidate attribution.

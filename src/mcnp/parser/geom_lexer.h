@@ -56,11 +56,18 @@ typedef struct {
     const char* end;         // End position in input
 } geometry_token_t;
 
+/* A load-local direct-mapped cache of exact ordered Boolean nodes. */
+typedef struct {
+    alea_node_id_t* slots;
+    size_t mask;
+} mcnp_expression_cache_t;
+
 // Lexer state
 typedef struct geometry_lexer {
     const char* input;           // Original input string
     const char* current;         // Current position
     const char* end;             // End of input
+    mcnp_expression_cache_t expressions;
     geometry_token_t token;      // Current token
     // Conversion context (unused, kept for reference)
     alea_system_t* system;           //

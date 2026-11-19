@@ -31,6 +31,7 @@
 /* Public API headers */
 #include "alea.h"
 #include "alea_mcnp.h"
+#include "alea_fingerprint.h"
 #include "alea_openmc.h"
 #include "alea_serpent.h"
 #include "alea_xml.h"
@@ -471,6 +472,7 @@ static alea_slice_curves_t* get_slice_curves_allow_threads(
  * ============================================================================ */
 
 #include "_bind_core.c"
+#include "_bind_identity.c"
 #include "_bind_geometry.c"
 #include "_bind_io.c"
 #include "_bind_util.c"
@@ -499,6 +501,10 @@ static PyGetSetDef PyAleaSystem_getsetters[] = {
  * ============================================================================ */
 
 static PyMethodDef PyAleaSystem_methods[] = {
+    {"fingerprints", (PyCFunction)PyAleaSystem_fingerprints, METH_VARARGS | METH_KEYWORDS,
+     "Return versioned cell and universe geometry/content digests."},
+    {"compare", (PyCFunction)PyAleaSystem_compare, METH_VARARGS | METH_KEYWORDS,
+     "Compare this model with another System, including unchanged entries."},
     /* Queries */
     {"find_cell", (PyCFunction)PyAleaSystem_find_cell, METH_VARARGS,
      "find_cell(x, y, z) -> (cell_index, material_id, resolution_flags) or None\n\n"

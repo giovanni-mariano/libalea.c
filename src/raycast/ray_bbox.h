@@ -13,62 +13,51 @@
  * @file ray_bbox.h
  * @brief Shared ray-AABB slab test
  *
- * Branchless slab test using IEEE 754 inf from precomputed inv_dir.
- * Used by BVH traversal, surface culling, and lattice entry/exit.
+ * Shared by hierarchy traversal, surface culling, and lattice entry/exit.
  */
 
-/**
- * @brief Test if ray intersects an AABB within [t_min, t_max].
- * @return 1 if ray hits, 0 if miss
- */
-static inline int ray_bbox_slab(const alea_ray_t* ray, const alea_bbox_t* bbox,
-                                double t_min, double t_max) {
-    double t1x = (bbox->min_x - ray->ox) * ray->inv_dx;
-    double t2x = (bbox->max_x - ray->ox) * ray->inv_dx;
-    double tmin = fmin(t1x, t2x);
-    double tmax = fmax(t1x, t2x);
+static inline int ray_bbox_clip_axis(double lo, double hi, double origin,
+                                    double dir, double inv_dir,
+                                    double* enter, double* exit) {
+    if (!(lo <= hi)) return 0;
+    if (dir == 0.0) return lo <= origin && origin <= hi;
 
-    double t1y = (bbox->min_y - ray->oy) * ray->inv_dy;
-    double t2y = (bbox->max_y - ray->oy) * ray->inv_dy;
-    tmin = fmax(tmin, fmin(t1y, t2y));
-    tmax = fmin(tmax, fmax(t1y, t2y));
-
-    double t1z = (bbox->min_z - ray->oz) * ray->inv_dz;
-    double t2z = (bbox->max_z - ray->oz) * ray->inv_dz;
-    tmin = fmax(tmin, fmin(t1z, t2z));
-    tmax = fmin(tmax, fmax(t1z, t2z));
-
-    return (tmin <= t_max) && (tmax >= t_min);
+    double near_delta = (dir > 0.0 ? lo : hi) - origin;
+    double far_delta = (dir > 0.0 ? hi : lo) - origin;
+    /* A nonzero subnormal direction can overflow its reciprocal. */
+    double near_t, far_t;
+    if (isinf(inv_dir)) {
+        near_t = near_delta / dir;
+        far_t = far_delta / dir;
+    } else {
+        near_t = near_delta * inv_dir;
+        far_t = far_delta * inv_dir;
+    }
+    if (near_t > *enter) *enter = near_t;
+    if (far_t < *exit) *exit = far_t;
+    return *enter <= *exit;
 }
 
-/**
- * @brief Test ray-AABB and return entry/exit t values.
- * @return 1 if ray hits (out_enter/out_exit set), 0 if miss
- */
+/* Intersect the three closed slabs with the caller's closed ray interval. */
 static inline int ray_bbox_slab_enter_exit(const alea_ray_t* ray, const alea_bbox_t* bbox,
                                            double t_min, double t_max,
                                            double* out_enter, double* out_exit) {
-    double t1x = (bbox->min_x - ray->ox) * ray->inv_dx;
-    double t2x = (bbox->max_x - ray->ox) * ray->inv_dx;
-    double tmin = fmin(t1x, t2x);
-    double tmax = fmax(t1x, t2x);
-
-    double t1y = (bbox->min_y - ray->oy) * ray->inv_dy;
-    double t2y = (bbox->max_y - ray->oy) * ray->inv_dy;
-    tmin = fmax(tmin, fmin(t1y, t2y));
-    tmax = fmin(tmax, fmax(t1y, t2y));
-
-    double t1z = (bbox->min_z - ray->oz) * ray->inv_dz;
-    double t2z = (bbox->max_z - ray->oz) * ray->inv_dz;
-    tmin = fmax(tmin, fmin(t1z, t2z));
-    tmax = fmin(tmax, fmax(t1z, t2z));
-
-    if (tmin > t_max || tmax < t_min) return 0;
-    if (tmin < t_min) tmin = t_min;
-    if (tmax > t_max) tmax = t_max;
-    *out_enter = tmin;
-    *out_exit = tmax;
+    if (!(t_min <= t_max) ||
+        !ray_bbox_clip_axis(bbox->min_x, bbox->max_x, ray->ox, ray->dx, ray->inv_dx,
+                            &t_min, &t_max) ||
+        !ray_bbox_clip_axis(bbox->min_y, bbox->max_y, ray->oy, ray->dy, ray->inv_dy,
+                            &t_min, &t_max) ||
+        !ray_bbox_clip_axis(bbox->min_z, bbox->max_z, ray->oz, ray->dz, ray->inv_dz,
+                            &t_min, &t_max))
+        return 0;
+    if (out_enter) *out_enter = t_min;
+    if (out_exit) *out_exit = t_max;
     return 1;
+}
+
+static inline int ray_bbox_slab(const alea_ray_t* ray, const alea_bbox_t* bbox,
+                                double t_min, double t_max) {
+    return ray_bbox_slab_enter_exit(ray, bbox, t_min, t_max, NULL, NULL);
 }
 
 #endif /* RAY_BBOX_H */

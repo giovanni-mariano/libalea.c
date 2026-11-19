@@ -10,6 +10,7 @@
  * All functions assume ray direction is normalized.
  */
 
+#include "util/ray_profile.h"
 #include "ray_intersect.h"
 #include "ray_epsilon.h"
 #include "primitives/primitive_eval.h"
@@ -18,59 +19,17 @@
 #include <math.h>
 #include <float.h>
 
-/**
- * Numerically stable quadratic solver using Vieta's formula.
- * Avoids catastrophic cancellation in (-b ± sqrt(disc)) / (2a).
- * Returns number of real roots (0, 1, or 2) in t_out[].
- */
-static inline int solve_quadratic_stable(double a, double b, double c,
-                                         double* t_out) {
-    /* A small quadratic coefficient is not necessarily negligible: for a ray
-     * almost parallel to a cylinder/cone axis it represents a real, distant
-     * crossing.  Only reduce an actually linear equation. */
-    if (a == 0.0) {
-        if (b == 0.0) return 0;
-        t_out[0] = -c / b;
-        return 1;
-    }
-
-    double ac4 = 4.0 * a * c;
-    double discriminant = fma(b, b, -ac4);
-    double discriminant_scale = fabs(b * b) + fabs(ac4);
-    double discriminant_tol = 16.0 * DBL_EPSILON * discriminant_scale;
-    if (discriminant < -discriminant_tol) return 0;
-    if (discriminant < 0) discriminant = 0;
-
-    double sqrt_disc = sqrt(discriminant);
-    double q = -0.5 * (b + copysign(sqrt_disc, b));
-
-    if (q == 0.0) {
-        /* Double root fallback */
-        t_out[0] = -b / (2.0 * a);
-        t_out[1] = t_out[0];
-        return 2;
-    }
-
-    t_out[0] = q / a;
-    t_out[1] = c / q;
-
-    /* Ensure t_out[0] <= t_out[1] */
-    if (t_out[0] > t_out[1]) {
-        double tmp = t_out[0];
-        t_out[0] = t_out[1];
-        t_out[1] = tmp;
-    }
-    return 2;
-}
+#include "ray_quadratic.h"
 
 /* ============================================================================
  * PLANE
  * ============================================================================ */
 
-int ray_intersect_plane(const alea_ray_t* ray,
+RAY_PROFILE_FUNCTION(int, ray_intersect_plane, (const alea_ray_t* ray,
                         const alea_plane_data_t* plane,
                         double* restrict t_out,
-                        double* restrict nx, double* restrict ny, double* restrict nz) {
+                        double* restrict nx, double* restrict ny, double* restrict nz),
+    (ray, plane, t_out, nx, ny, nz), RAY_INTERSECTION) {
     /*
      * Plane: ax + by + cz + d = 0
      * Ray: P = O + t*D
@@ -323,36 +282,25 @@ int ray_intersect_box(const alea_ray_t* ray,
  * GENERAL QUADRIC
  * ============================================================================ */
 
-int ray_intersect_quadric(const alea_ray_t* ray,
-                          const alea_quadric_data_t* q,
+int ray_intersect_quadric(const alea_ray_t* ray, const alea_quadric_data_t* q,
                           double* restrict t_out) {
-    /*
-     * Quadric: Ax^2 + By^2 + Cz^2 + Dxy + Eyz + Fxz + Gx + Hy + Iz + J = 0
-     * Coefficients: q->coeffs[0..9] = A, B, C, D, E, F, G, H, I, J
-     *
-     * Substitute ray P = O + t*D, get quadratic in t.
-     */
-    double A = q->coeffs[0], B = q->coeffs[1], C = q->coeffs[2];
-    double D = q->coeffs[3], E = q->coeffs[4], F = q->coeffs[5];
-    double G = q->coeffs[6], H = q->coeffs[7], I = q->coeffs[8];
-    double J = q->coeffs[9];
+    ray_quadratic_t p = quadric_polynomial(ray, q->coeffs, 1);
+    return solve_quadratic_stable(p.a, p.b, p.c, t_out);
+}
 
-    double ox = ray->ox, oy = ray->oy, oz = ray->oz;
-    double dx = ray->dx, dy = ray->dy, dz = ray->dz;
-
-    /* Quadratic coefficients: a*t^2 + b*t + c = 0 */
-    double a = A * dx * dx + B * dy * dy + C * dz * dz +
-               D * dx * dy + E * dy * dz + F * dx * dz;
-
-    double b = 2.0 * A * ox * dx + 2.0 * B * oy * dy + 2.0 * C * oz * dz +
-               D * (ox * dy + oy * dx) + E * (oy * dz + oz * dy) +
-               F * (ox * dz + oz * dx) + G * dx + H * dy + I * dz;
-
-    double c = A * ox * ox + B * oy * oy + C * oz * oz +
-               D * ox * oy + E * oy * oz + F * ox * oz +
-               G * ox + H * oy + I * oz + J;
-
-    return solve_quadratic_stable(a, b, c, t_out);
+void ray_intersect_quadric_packet(const alea_ray_t* ray, const ray_quadric_packet_t* packet,
+                                  unsigned count, int hits[], double roots[][2]) {
+#ifdef ALEA_RAY_PROFILE
+    int previous = alea_ray_profile_enter(RAY_INTERSECTION);
+#endif
+    ray_quadratic_t p[RAY_QUADRIC_LANES];
+    for (unsigned i = 0; i < RAY_QUADRIC_LANES; i++)
+        p[i] = quadric_polynomial(ray, packet->coeffs + i, RAY_QUADRIC_LANES);
+    for (unsigned i = 0; i < count; i++)
+        hits[i] = solve_quadratic_stable(p[i].a, p[i].b, p[i].c, roots[i]);
+#ifdef ALEA_RAY_PROFILE
+    alea_ray_profile_leave(previous);
+#endif
 }
 
 /* ============================================================================
@@ -1057,10 +1005,30 @@ static int ray_intersect_arb(const alea_ray_t* ray, const alea_arb_data_t* arb,
  * DISPATCH
  * ============================================================================ */
 
+#ifdef ALEA_RAY_PROFILE
+static int ray_intersect_primitive_profile_impl(const alea_ray_t* ray,
+                            alea_primitive_type_t type,
+                            const alea_primitive_data_t* data,
+                            double* restrict t_out);
 int ray_intersect_primitive(const alea_ray_t* ray,
                             alea_primitive_type_t type,
                             const alea_primitive_data_t* data,
                             double* restrict t_out) {
+    int previous=alea_ray_profile_enter(RAY_INTERSECTION);
+    int result=ray_intersect_primitive_profile_impl(ray, type, data, t_out);
+    alea_ray_profile_leave(previous);
+    return result;
+}
+static int ray_intersect_primitive_profile_impl(const alea_ray_t* ray,
+                            alea_primitive_type_t type,
+                            const alea_primitive_data_t* data,
+                            double* restrict t_out) {
+#else
+int ray_intersect_primitive(const alea_ray_t* ray,
+                            alea_primitive_type_t type,
+                            const alea_primitive_data_t* data,
+                            double* restrict t_out) {
+#endif
     switch (type) {
         case ALEA_PRIMITIVE_PLANE:
             return ray_intersect_plane(ray, &data->plane, t_out, NULL, NULL, NULL);

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Giovanni MARIANO
 // SPDX-License-Identifier: MPL-2.0
-#include "compute_internal.h"
+#include "compute_prepare.h"
 #include "core/alea_universe.h"
 #include <float.h>
 #include <math.h>

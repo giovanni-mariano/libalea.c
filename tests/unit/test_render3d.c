@@ -12,6 +12,7 @@
 #include "alea_mcnp.h"
 #include "render/render3d.h"
 #include "core/alea_system.h"
+#include "raycast/regional/interval_index.h"
 #include "raycast/raycast.h"
 #include "core/alea_universe.h"
 
@@ -277,6 +278,90 @@ TEST(render_filters_reveal_geometry_behind_and_or_clips_union) {
     alea_destroy(sys);
 }
 
+
+TEST(regional_surface_frames_match_cpu_after_camera_and_visibility_changes) {
+    alea_system_t* sys = create_test_scene();
+    ASSERT_NOT_NULL(sys);
+    alea_bbox_t domain = {-32,32,-32,32,-32,32};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+    ASSERT_NOT_NULL(prepared);
+    render_config_t cfg;
+    render_config_init(&cfg);
+    cfg.tile_size = 4;
+    cfg.width = 32;
+    cfg.height = 24;
+    cfg.eye_set = cfg.target_set = 1;
+    cfg.eye[1] = -20;
+    cfg.target[0] = 5;
+    render_framebuffer_t* cpu = render_framebuffer_create(cfg.width, cfg.height, 1);
+    render_framebuffer_t* regional = render_framebuffer_create(cfg.width, cfg.height, 1);
+    ASSERT_NOT_NULL(cpu);
+    ASSERT_NOT_NULL(regional);
+    render_camera_t cam;
+    int hidden = 1;
+    for (int frame = 0; frame < 4; ++frame) {
+        if (frame == 1) {
+            cfg.num_clips = 1;
+            cfg.clips[0].normal[0] = 1;
+            cfg.clips[0].d = -1;
+            cfg.aa_samples = 2;
+            cfg.shadows = 1;
+        } else if (frame == 2) {
+            cfg.cell_filter.mode = RENDER_FILTER_EXCLUDE;
+            cfg.cell_filter.ids = &hidden;
+            cfg.cell_filter.count = 1;
+            cfg.eye[0] = 15;
+        } else if (frame == 3) {
+            cfg.eye[1] = -120; /* Outside the regional envelope. */
+            cfg.target[0] = 13;
+        }
+        cfg.threads = 1;
+        ASSERT_EQ(render_camera_setup(&cam, &cfg, sys), 0);
+        ASSERT_EQ(render_scene(sys, &cfg, &cam, cpu), 0);
+        ASSERT_EQ(alea_render_scene_prepared(sys, prepared, &cfg, &cam, regional), 0);
+        size_t hits = 0;
+        for (int i = 0; i < cfg.width * cfg.height; ++i) {
+            ASSERT_EQ(regional->cell_id[i], cpu->cell_id[i]);
+            ASSERT_EQ(regional->material_id[i], cpu->material_id[i]);
+            if (cpu->cell_id[i] >= 0) {
+                ++hits;
+                ASSERT_NEAR(regional->depth[i], cpu->depth[i], 1e-5);
+            }
+            for (int k = 0; k < 3; ++k) {
+                ASSERT_NEAR(regional->normal[3*i+k], cpu->normal[3*i+k], 1e-5);
+                ASSERT_NEAR(regional->color[3*i+k], cpu->color[3*i+k], 1e-5);
+            }
+        }
+        ASSERT(hits > 0);
+        /* CPU parity is checked above. Now use that buffer for threaded
+         * replays and compare every output bit with the serial regional frame. */
+        size_t n = (size_t)cfg.width * cfg.height;
+        for (cfg.threads = 2; cfg.threads <= 8; cfg.threads *= 2) {
+            ASSERT_EQ(alea_render_scene_prepared(sys, prepared, &cfg, &cam, cpu), 0);
+            ASSERT_EQ(memcmp(cpu->cell_id, regional->cell_id, n * sizeof(int)), 0);
+            ASSERT_EQ(memcmp(cpu->material_id, regional->material_id, n * sizeof(int)), 0);
+            ASSERT_EQ(memcmp(cpu->color, regional->color, 3 * n * sizeof(float)), 0);
+            ASSERT_EQ(memcmp(cpu->normal, regional->normal, 3 * n * sizeof(float)), 0);
+            ASSERT_EQ(memcmp(cpu->depth, regional->depth, n * sizeof(float)), 0);
+        }
+    }
+    alea_interrupt();
+    int interrupted = alea_render_scene_prepared(sys, prepared, &cfg, &cam, regional);
+    alea_clear_interrupt();
+    ASSERT_EQ(interrupted, -1);
+    ASSERT_EQ(alea_get_last_error(), ALEA_ERR_INTERRUPTED);
+    cfg.render_mode = RENDER_MODE_XRAY;
+    ASSERT_EQ(alea_render_scene_prepared(sys, prepared, &cfg, &cam, regional), -1);
+    cfg.render_mode = RENDER_MODE_SOLID;
+    ASSERT_EQ(alea_cell_set_density(sys, 0, -5), 0);
+    ASSERT_EQ(alea_render_scene_prepared(sys, prepared, &cfg, &cam, regional), -1);
+    cfg.cell_filter.ids = NULL;
+    render_config_free(&cfg);
+    render_framebuffer_free(cpu);
+    render_framebuffer_free(regional);
+    alea_prepared_queries_destroy(prepared);
+    alea_destroy(sys);
+}
 
 TEST(render_solid_basic) {
     alea_system_t* sys = create_test_scene();
@@ -898,6 +983,20 @@ TEST(render_first_hit_filters_keep_distance_and_normal_in_one_walk) {
     ASSERT_EQ(alea_raycast_render_first_visible_nocache(
         sys, &ray, 19, 0, accept_render_cell, &target, &scratch, &hit), 0);
     ASSERT(!hit.found);
+    /* The prefix ends before the accepted box. An unbounded camera ray
+     * must still find it, while a clipped ray must respect its far plane. */
+    alea_bbox_t domain = {-13,-7,-3,3,-3,3};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+    ASSERT_NOT_NULL(prepared);
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 1e15, 1,
+        accept_render_cell, &target, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 2);
+    ASSERT_NEAR(hit.t, 20, 1e-10);
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 19, 0,
+        accept_render_cell, &target, &scratch, &hit), 0);
+    ASSERT(!hit.found);
+    alea_prepared_queries_destroy(prepared);
     alea_ray_init(&ray, 12, 0, 0, 1, 0, 0);
     ASSERT_EQ(alea_raycast_render_first_visible_nocache(
         sys, &ray, 10, 1, accept_render_cell, &target, &scratch, &hit), 0);
@@ -965,6 +1064,21 @@ TEST(render_first_hit_through_void_shell_matches_analytic_core_entry) {
     ASSERT_NEAR(hit.nx, ray.ox + hit.t * ray.dx, 1e-10);
     ASSERT_NEAR(hit.ny, ray.oy + hit.t * ray.dy, 1e-10);
     ASSERT_NEAR(hit.nz, ray.oz + hit.t * ray.dz, 1e-10);
+    alea_bbox_t domain = {-64,64,-64,64,-64,64};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+    ASSERT_NOT_NULL(prepared);
+    ASSERT_EQ(alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 100, 1, NULL, NULL, &scratch, &hit), 0);
+    ASSERT(hit.found);
+    ASSERT_EQ(hit.cell_id, 1);
+    ASSERT_EQ(hit.primitive_id, alea_surface_at(sys, core)->primitive_id);
+    ASSERT_NEAR(hit.t, expected, 1e-10);
+    ASSERT_NEAR(hit.nx, ray.ox + hit.t * ray.dx, 1e-10);
+    ASSERT_NEAR(hit.ny, ray.oy + hit.t * ray.dy, 1e-10);
+    ASSERT_NEAR(hit.nz, ray.oz + hit.t * ray.dz, 1e-10);
+    ASSERT(scratch.blas_cell_candidates > 0);
+    ASSERT_EQ(scratch.crossed_cell_count, 0); /* No native replay through the shell. */
+    ASSERT_EQ(scratch.segments.count, 0);
+    alea_prepared_queries_destroy(prepared);
     alea_raycast_result_free(&scratch);
     alea_destroy(sys);
 }
@@ -1087,9 +1201,14 @@ TEST(undefined_fill_child_boundaries_preserve_placed_geometry) {
                       rotated ? 0 : 1, rotated ? -1 : 0, 0);
         alea_raycast_result_t scratch;
         alea_raycast_result_init(&scratch);
-        for (int verified = 0; verified < 2; verified++) {
+        alea_bbox_t domain = {-20,20,-20,20,-20,20};
+        alea_prepared_queries_t* prepared = alea_prepared_queries_create(sys, &domain);
+        ASSERT_NOT_NULL(prepared);
+        for (int backend = 0; backend < 3; backend++) {
             alea_ray_first_visible_result_t hit;
-            ASSERT_EQ(verified
+            ASSERT_EQ(backend == 2
+                ? alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 6, 1, NULL, NULL, &scratch, &hit)
+                : backend == 1
                 ? alea_raycast_hier_first_visible_nocache(
                     sys, &ray, 0, 6, -1, 1, &scratch, &hit)
                 : alea_raycast_render_first_visible_nocache(
@@ -1103,6 +1222,7 @@ TEST(undefined_fill_child_boundaries_preserve_placed_geometry) {
             ASSERT_NEAR(hit.ny, rotated ? 1 : 0, 1e-10);
             ASSERT_NEAR(hit.nz, 0, 1e-10);
         }
+        alea_prepared_queries_destroy(prepared);
         undefined_fill_intervals_t seen = {0};
         ASSERT_EQ(alea_raycast_hier_visit_intervals_nocache(
             sys, &ray, 6, &scratch, collect_undefined_fill_intervals, &seen), 0);
@@ -1210,6 +1330,9 @@ TEST(render_first_hit_lattice_matches_verified_walk) {
     alea_raycast_result_t reference, scratch;
     alea_raycast_result_init(&reference);
     alea_raycast_result_init(&scratch);
+    alea_bbox_t domain = {-20,20,-20,20,-20,20};
+    alea_prepared_queries_t* prepared = alea_prepared_queries_create(model->sys, &domain);
+    ASSERT_NOT_NULL(prepared);
     for (int direction = -1; direction <= 1; direction += 2) {
         for (int i = -8; i <= 24; i++) {
             alea_ray_t ray;
@@ -1218,18 +1341,23 @@ TEST(render_first_hit_lattice_matches_verified_walk) {
             alea_ray_first_visible_result_t expected, actual;
             ASSERT_EQ(alea_raycast_hier_first_visible_nocache(
                 model->sys, &ray, 0, 20, -1, 1, &reference, &expected), 0);
-            ASSERT_EQ(alea_raycast_render_first_visible_nocache(
-                model->sys, &ray, 20, 1, NULL, NULL, &scratch, &actual), 0);
-            ASSERT_EQ(actual.found, expected.found);
-            if (!actual.found) continue;
-            ASSERT_EQ(actual.cell_id, expected.cell_id);
-            ASSERT_EQ(actual.material_id, expected.material_id);
-            ASSERT_NEAR(actual.t, expected.t, 1e-9);
-            ASSERT_NEAR(actual.nx, expected.nx, 1e-9);
-            ASSERT_NEAR(actual.ny, expected.ny, 1e-9);
-            ASSERT_NEAR(actual.nz, expected.nz, 1e-9);
+            for (int regional = 0; regional < 2; ++regional) {
+                ASSERT_EQ(regional
+                    ? alea_regional_render_visible(alea_regional_worker(prepared, 0), &ray, 20, 1, NULL, NULL, &scratch, &actual)
+                    : alea_raycast_render_first_visible_nocache(
+                        model->sys, &ray, 20, 1, NULL, NULL, &scratch, &actual), 0);
+                ASSERT_EQ(actual.found, expected.found);
+                if (!actual.found) continue;
+                ASSERT_EQ(actual.cell_id, expected.cell_id);
+                ASSERT_EQ(actual.material_id, expected.material_id);
+                ASSERT_NEAR(actual.t, expected.t, 1e-9);
+                ASSERT_NEAR(actual.nx, expected.nx, 1e-9);
+                ASSERT_NEAR(actual.ny, expected.ny, 1e-9);
+                ASSERT_NEAR(actual.nz, expected.nz, 1e-9);
+            }
         }
     }
+    alea_prepared_queries_destroy(prepared);
     alea_raycast_result_free(&reference);
     alea_raycast_result_free(&scratch);
     mcnp_model_destroy(model);

@@ -7,12 +7,15 @@
 #include "alea_types.h"
 #include "alea.h"
 #include "core/alea_eval.h"
+#include "core/alea_regional.h"
 #include "core/alea_ops.h"
 #include "core/alea_universe.h"
 #include "core/alea_spatial_hier.h"
 #include "util/alea_log.h"
 #include "util/compat.h"
+#include "util/load_profile.h"
 #include "raycast/bvh.h"
+#include "raycast/recovery_planes.h"
 #include "primitives/primitive_desc.h"
 #include "primitives/bbox.h"
 #include <stdlib.h>
@@ -75,7 +78,7 @@ const alea_config_t ALEA_CONFIG_DEFAULT = {
 // ============================================================================
 
 alea_system_t* alea_system_create(void) {
-    alea_system_t* sys = calloc(1, sizeof(alea_system_t));
+    alea_system_t* sys = alea_calloc(1, sizeof(alea_system_t));
     if (!sys) return NULL;
 
     /* All vectors are zero-initialized by calloc and grow automatically */
@@ -101,6 +104,10 @@ alea_system_t* alea_system_create(void) {
     // Create hash maps for cell and universe ID lookup
     sys->cell_index = cell_hashmap_create(256);
     sys->universe_index = universe_hashmap_create(64);
+    if (!sys->cell_index.entries || !sys->universe_index.entries) {
+        alea_system_destroy(sys);
+        return NULL;
+    }
 
     // Set default configuration
     sys->config = ALEA_CONFIG_DEFAULT;
@@ -189,9 +196,14 @@ static void alea_free_all_mixture_contents(alea_system_t* sys) {
 }
 
 static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
+    free(sys->lattice_cells);
+    sys->lattice_cells = NULL;
+    sys->lattice_cell_count = 0;
     for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
         alea_vec_free(&sys->universes.data[i].cell_indices);
         alea_vec_free(&sys->universes.data[i].point_bvh_nodes);
+        free(sys->universes.data[i].recovery_planes);
+        sys->universes.data[i].recovery_planes = NULL;
         free(sys->universes.data[i].recovery_surfaces);
         sys->universes.data[i].recovery_surfaces = NULL;
         sys->universes.data[i].recovery_surface_count = 0;
@@ -215,6 +227,10 @@ static void alea_clear_universe_cache(alea_system_t* sys, bool free_vector) {
 
 static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
                                           bool free_universe_vector) {
+    if (flags & ALEA_CACHE_REGIONAL) {
+        alea_regional_free(sys->regional_cache);
+        sys->regional_cache = NULL;
+    }
     if ((flags & ALEA_CACHE_HIER_SPATIAL) &&
         sys->volume_path_index) {
         alea_volume_path_index_free(sys->volume_path_index);
@@ -235,6 +251,8 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
     }
     if (flags & ALEA_CACHE_RECOVERY_SURFACES) {
         for (size_t i = 0; i < sys->universes.count; i++) {
+            free(sys->universes.data[i].recovery_planes);
+            sys->universes.data[i].recovery_planes = NULL;
             free(sys->universes.data[i].recovery_surfaces);
             sys->universes.data[i].recovery_surfaces = NULL;
             sys->universes.data[i].recovery_surface_count = 0;
@@ -288,6 +306,7 @@ static void alea_free_query_cache_storage(alea_system_t* sys, unsigned flags,
 
 void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     if (!sys || flags == 0) return;
+    flags |= ALEA_CACHE_REGIONAL;
 
     if (flags & (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES))
         flags |= ALEA_CACHE_RECOVERY_SURFACES;
@@ -313,6 +332,51 @@ void alea_system_invalidate_query_caches(alea_system_t* sys, unsigned flags) {
     alea_free_query_cache_storage(sys, flags, false);
 }
 
+/* Append coefficient-major packets to a validated card list. Keeping all
+ * ordinals, including aliases, preserves the original order at query time.
+ * A failed optional allocation leaves the previously prepared index usable. */
+static void prepare_recovery_quadrics(const alea_system_t* sys, alea_universe_t* univ,
+                                      size_t* remaining) {
+    recovery_plane_index_t* index = univ->recovery_planes;
+    if (!index || index->quadric_count || *remaining < sizeof(recovery_quadric_group_t)) return;
+    const uint32_t* cards = univ->recovery_surfaces;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < index->cards; i++) {
+        uint32_t id = sys->surfaces.data[cards[i]].primitive_id;
+        const alea_primitive_entry_t* prim = &sys->primitives.data[id];
+        if (prim->type != ALEA_PRIMITIVE_QUADRIC) continue;
+        if (prim->payload_index >= sys->primitive_quadrics.count) return;
+        count++;
+    }
+    if (count < RAY_QUADRIC_LANES) return;
+    size_t groups = (count + RAY_QUADRIC_LANES - 1) / RAY_QUADRIC_LANES;
+    size_t extra = groups * sizeof(recovery_quadric_group_t);
+    if (extra > *remaining) return;
+    size_t offset = index->bytes;
+    index = alea_realloc(index, offset + extra);
+    if (!index) return;
+    univ->recovery_planes = index;
+    recovery_quadric_group_t* packets = (recovery_quadric_group_t*)((char*)index + offset);
+    memset(&packets[groups - 1], 0, sizeof(*packets));
+    uint32_t pos = 0;
+    for (uint32_t i = 0; i < index->cards; i++) {
+        uint32_t id = sys->surfaces.data[cards[i]].primitive_id;
+        const alea_primitive_entry_t* prim = &sys->primitives.data[id];
+        if (prim->type != ALEA_PRIMITIVE_QUADRIC) continue;
+        const alea_quadric_data_t* q = &sys->primitive_quadrics.data[prim->payload_index];
+        unsigned lane = pos % RAY_QUADRIC_LANES;
+        recovery_quadric_group_t* group = &packets[pos / RAY_QUADRIC_LANES];
+        group->ordinals[lane] = i;
+        for (unsigned k = 0; k < 10; k++)
+            group->packet.coeffs[k * RAY_QUADRIC_LANES + lane] = q->coeffs[k];
+        pos++;
+    }
+    index->quadric_offset = offset;
+    index->quadric_count = count;
+    index->bytes += extra;
+    *remaining -= extra;
+}
+
 /* Build optional first-occurrence card lists while the cache lock is held.
  * A missing/oversized list always retains the per-cell recovery scan. */
 static int prepare_recovery_surfaces(alea_system_t* sys) {
@@ -322,8 +386,11 @@ static int prepare_recovery_surfaces(alea_system_t* sys) {
     const size_t bytes = sys->surfaces.count / 8 + (sys->surfaces.count % 8 != 0);
     if (!bytes || bytes > 1024 * 1024) return 0;
     size_t used = 0;
-    for (size_t u = 0; u < sys->universes.count; u++)
+    for (size_t u = 0; u < sys->universes.count; u++) {
         used += sys->universes.data[u].recovery_surface_count * sizeof(uint32_t);
+        if (sys->universes.data[u].recovery_planes)
+            used += sys->universes.data[u].recovery_planes->bytes;
+    }
     uint8_t* seen = calloc(bytes, 1);
     if (!seen) return 0;
     for (size_t u = 0; u < sys->universes.count; u++) {
@@ -373,9 +440,26 @@ static int prepare_recovery_surfaces(alea_system_t* sys) {
             univ->recovery_surfaces = shrunk;
             univ->recovery_surface_count = count;
             used += count * sizeof(uint32_t);
+            univ->recovery_planes = recovery_plane_build(sys, shrunk, count, budget-used);
+            if (univ->recovery_planes) used += univ->recovery_planes->bytes;
+            if (alea_interrupted()) {
+                free(seen);
+                alea_set_error_detail(ALEA_ERR_INTERRUPTED,
+                                      "preparing recovery plane index interrupted");
+                return -1;
+            }
         } else free(cards);
     }
     free(seen);
+    /* Give surface lists and plane pruning first use of the shared budget. */
+    size_t remaining = budget - used;
+    for (size_t u = 0; u < sys->universes.count; u++) {
+        if (alea_interrupted()) {
+            alea_set_error_detail(ALEA_ERR_INTERRUPTED, "preparing recovery quadrics interrupted");
+            return -1;
+        }
+        prepare_recovery_quadrics(sys, &sys->universes.data[u], &remaining);
+    }
     return 0;
 }
 
@@ -532,6 +616,11 @@ int alea_system_prepare_query_caches(alea_system_t* sys, unsigned flags) {
         if (prepare_recovery_surfaces(sys) != 0) goto fail;
         atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_RECOVERY_SURFACES);
     }
+    if ((flags & ALEA_CACHE_REGIONAL) &&
+        !alea_system_query_cache_ready(sys, ALEA_CACHE_REGIONAL)) {
+        if (alea_regional_build(sys) != 0) goto fail;
+        atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_REGIONAL);
+    }
     atomic_flag_clear(&sys->query_cache_build_lock);
     return 0;
 
@@ -542,6 +631,10 @@ fail:
 
 int alea_prepare_query_acceleration(alea_system_t* sys) {
     return alea_system_prepare_query_caches(sys, ALEA_CACHE_ALL);
+}
+
+int alea_prepare_regional_queries(alea_system_t* sys) {
+    return alea_system_prepare_query_caches(sys, ALEA_CACHE_REGIONAL);
 }
 
 void alea_system_destroy_internals(alea_system_t* sys) {
@@ -1878,23 +1971,10 @@ int alea_build_universe_index(alea_system_t* sys) {
     }
 
     atomic_fetch_and(&sys->query_cache_state,
-                     ~(unsigned)(ALEA_CACHE_RECOVERY_SURFACES | ALEA_CACHE_RECOVERY_CHILDREN));
-    // Clear existing index (free internal arrays first)
-    for (size_t i = 0; i < alea_vec_count(&sys->universes); i++) {
-        alea_vec_free(&sys->universes.data[i].cell_indices);
-        alea_vec_free(&sys->universes.data[i].point_bvh_nodes);
-        free(sys->universes.data[i].recovery_surfaces);
-        sys->universes.data[i].recovery_surfaces = NULL;
-        sys->universes.data[i].recovery_surface_count = 0;
-        sys->universes.data[i].recovery_surfaces_attempted = false;
-        free(sys->universes.data[i].recovery_child_cells);
-        sys->universes.data[i].recovery_child_cells = NULL;
-        sys->universes.data[i].recovery_child_count = 0;
-        sys->universes.data[i].recovery_children_ready = false;
-        free(sys->universes.data[i].point_bvh_indices);
-    }
-    alea_vec_clear(&sys->universes);
-    universe_hashmap_clear(&sys->universe_index);
+                     ~(unsigned)(ALEA_CACHE_UNIVERSE | ALEA_CACHE_RECOVERY_SURFACES | ALEA_CACHE_RECOVERY_CHILDREN));
+    alea_clear_universe_cache(sys, false);
+    bool has_populated_lattice = false, has_fill = false;
+    size_t lattice_count = 0;
 
     // Build index
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
@@ -1911,6 +1991,11 @@ int alea_build_universe_index(alea_system_t* sys) {
             alea_set_error_detail(ALEA_ERR_OUT_OF_MEMORY, "alea_build_universe_index: failed to add cell to universe %d", cell->universe_id);
             return -1;
         }
+        if (cell->fill_universe > 0) has_fill = true;
+        if (cell->lat_type != 0 && cell->lat_fill) {
+            ++lattice_count;
+            if (cell->lat_fill_count > 0) has_populated_lattice = true;
+        }
 
         // Expand universe bbox with cell bbox
         if (cell->root_node_id < alea_vec_count(&sys->nodes)) {
@@ -1924,14 +2009,24 @@ int alea_build_universe_index(alea_system_t* sys) {
         }
     }
 
-    /* Check if any cell has a lattice */
-    sys->has_lattice = false;
-    for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
-        if (sys->cells.data[i].lat_type != 0 && sys->cells.data[i].lat_fill) {
-            sys->has_lattice = true;
-            break;
+    /* Dense models can use the original sequential scan. Limit the optional
+     * sparse table to 8 MiB even for very large inputs. */
+    if (lattice_count && lattice_count <= sys->cells.count / 2 &&
+        lattice_count <= (8 * 1024 * 1024) / sizeof(size_t)) {
+        sys->lattice_cells = alea_malloc(lattice_count * sizeof(size_t));
+        if (sys->lattice_cells) {
+            size_t next = 0;
+            for (size_t i = 0; next < lattice_count; ++i) {
+                if ((i & 1023) == 0) { ALEA_CHECK_INTERRUPTED(-1); }
+                const alea_cell_entry_t* cell = &sys->cells.data[i];
+                if (cell->lat_type != 0 && cell->lat_fill) sys->lattice_cells[next++] = i;
+            }
         }
     }
+    sys->has_lattice = lattice_count != 0;
+    sys->has_populated_lattice = has_populated_lattice;
+    sys->has_fill = has_fill;
+    sys->lattice_cell_count = lattice_count;
 
     sys->universe_index_built = true;
     atomic_fetch_or(&sys->query_cache_state, ALEA_CACHE_UNIVERSE);
@@ -2522,6 +2617,8 @@ int alea_build_cell_surface_index(alea_system_t* sys) {
     atomic_fetch_and(&sys->query_cache_state, ~(unsigned)ALEA_CACHE_RECOVERY_SURFACES);
 
     for (size_t u = 0; u < sys->universes.count; u++) {
+        free(sys->universes.data[u].recovery_planes);
+        sys->universes.data[u].recovery_planes = NULL;
         free(sys->universes.data[u].recovery_surfaces);
         sys->universes.data[u].recovery_surfaces = NULL;
         sys->universes.data[u].recovery_surface_count = 0;
@@ -2600,7 +2697,8 @@ static int collect_cell_surface_senses(const alea_system_t* sys,
                                        int current_sense,
                                        cell_surface_sense_t** out_senses,
                                        size_t* count,
-                                       size_t* capacity) {
+                                       size_t* capacity,
+                                       unsigned char* seen_senses) {
     if (node_id == ALEA_NODE_ID_INVALID || node_id >= alea_vec_count(&sys->nodes))
         return 0;
 
@@ -2624,14 +2722,14 @@ static int collect_cell_surface_senses(const alea_system_t* sys,
         if (surf_idx != UINT32_MAX) {
             /* Preserve both senses if a card appears in both branches, while
              * suppressing repeated uses of the same oriented halfspace. */
-            for (size_t i = 0; i < *count; i++) {
-                if ((*out_senses)[i].surface_idx == surf_idx &&
-                    (*out_senses)[i].sense == final_sense) {
-                    return 0;
-                }
-            }
+            if (surf_idx >= sys->surfaces.count ||
+                (final_sense != -1 && final_sense != 1)) return -1;
+            unsigned char bit = final_sense < 0 ? 1 : 2;
+            if (seen_senses[surf_idx] & bit) return 0;
             if (*count >= *capacity) {
                 size_t new_cap = *capacity ? *capacity * 2 : 16;
+                if (new_cap < *capacity || new_cap > SIZE_MAX / sizeof(cell_surface_sense_t))
+                    return -1;
                 cell_surface_sense_t* new_arr = realloc(*out_senses,
                     new_cap * sizeof(cell_surface_sense_t));
                 if (!new_arr) return -1;
@@ -2641,16 +2739,17 @@ static int collect_cell_surface_senses(const alea_system_t* sys,
             (*out_senses)[*count].surface_idx = surf_idx;
             (*out_senses)[*count].sense = final_sense;
             (*count)++;
+            seen_senses[surf_idx] |= bit;
         }
     } else if (op == ALEA_OP_COMPLEMENT) {
         if (collect_cell_surface_senses(sys, node->operation.left, -current_sense,
-                                        out_senses, count, capacity) != 0)
+                                        out_senses, count, capacity, seen_senses) != 0)
             return -1;
     } else {
         if (collect_cell_surface_senses(sys, node->operation.left, current_sense,
-                                        out_senses, count, capacity) != 0 ||
+                                        out_senses, count, capacity, seen_senses) != 0 ||
             collect_cell_surface_senses(sys, node->operation.right, current_sense,
-                                        out_senses, count, capacity) != 0)
+                                        out_senses, count, capacity, seen_senses) != 0)
             return -1;
     }
     return 0;
@@ -2662,10 +2761,15 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     /* Early exit if already built */
     if (sys->cell_adjacency_built) return 0;
 
+    double stage_start = alea_load_profile_start();
     /* Ensure surface index is built */
-    if (alea_build_cell_surface_index(sys) != 0) {
+    if (!alea_system_query_cache_ready(sys, ALEA_CACHE_CELL_SURFACES) &&
+        alea_build_cell_surface_index(sys) != 0) {
         return -1;
     }
+
+    alea_load_profile_end("adj_surface_index", stage_start);
+    stage_start = alea_load_profile_start();
 
     /* Free existing adjacency data */
     if (sys->neighbor_pool) {
@@ -2694,10 +2798,14 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     /* Reusable senses buffer across all cells */
     cell_surface_sense_t* senses_buf = NULL;
     size_t senses_cap = 0;
+    /* One byte per surface, cleared only at references touched by this cell.
+     * The output keeps DFS order and both orientations, as before. */
+    unsigned char* seen_senses = calloc(num_surfaces ? num_surfaces : 1, 1);
+    if (!seen_senses) return -1;
 
     /* Pass 1a: Count how many cell refs each surface will have */
     size_t* surf_counts = calloc(num_surfaces, sizeof(size_t));
-    if (!surf_counts) { free(senses_buf); return -1; }
+    if (!surf_counts) { free(senses_buf); free(seen_senses); return -1; }
 
     for (size_t ci = 0; ci < num_cells; ci++) {
         alea_cell_entry_t* cell = &sys->cells.data[ci];
@@ -2706,20 +2814,24 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         size_t sense_count = 0;
         if (collect_cell_surface_senses(sys, cell->root_node_id, 1,
                                         &senses_buf, &sense_count,
-                                        &senses_cap) != 0) {
-            free(surf_counts); free(senses_buf); return -1;
+                                        &senses_cap, seen_senses) != 0) {
+            free(surf_counts); free(senses_buf); free(seen_senses); return -1;
         }
 
         for (size_t si = 0; si < sense_count; si++) {
             uint32_t surf_idx = senses_buf[si].surface_idx;
+            seen_senses[surf_idx] = 0;
             if (surf_idx < num_surfaces)
                 surf_counts[surf_idx]++;
         }
     }
 
+    alea_load_profile_end("adj_reference_count", stage_start);
+    stage_start = alea_load_profile_start();
+
     /* Compute prefix-sum offsets and single allocation for all refs */
     size_t* surf_offsets = malloc((num_surfaces + 1) * sizeof(size_t));
-    if (!surf_offsets) { free(surf_counts); free(senses_buf); return -1; }
+    if (!surf_offsets) { free(surf_counts); free(senses_buf); free(seen_senses); return -1; }
 
     size_t total_refs = 0;
     for (size_t i = 0; i < num_surfaces; i++) {
@@ -2732,7 +2844,7 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
     if (total_refs > 0) {
         all_refs = malloc(total_refs * sizeof(alea_surface_cell_ref_t));
         if (!all_refs) {
-            free(surf_offsets); free(surf_counts); free(senses_buf);
+            free(surf_offsets); free(surf_counts); free(senses_buf); free(seen_senses);
             return -1;
         }
     }
@@ -2748,11 +2860,12 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         size_t sense_count = 0;
         if (collect_cell_surface_senses(sys, cell->root_node_id, 1,
                                         &senses_buf, &sense_count,
-                                        &senses_cap) != 0)
+                                        &senses_cap, seen_senses) != 0)
             goto cleanup;
 
         for (size_t si = 0; si < sense_count; si++) {
             uint32_t surf_idx = senses_buf[si].surface_idx;
+            seen_senses[surf_idx] = 0;
             if (surf_idx >= num_surfaces) continue;
 
             size_t idx = surf_offsets[surf_idx] + surf_counts[surf_idx];
@@ -2762,8 +2875,11 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         }
     }
 
-    free(senses_buf);
-    senses_buf = NULL;
+    alea_load_profile_end("adj_reference_fill", stage_start);
+    stage_start = alea_load_profile_start();
+
+    free(senses_buf); free(seen_senses);
+    senses_buf = NULL; seen_senses = NULL;
 
     /* ------------------------------------------------------------------ *
      * Phase 2: Build neighbor lists — two passes, zero pair materialization.
@@ -2824,6 +2940,9 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         }
     }
 
+    alea_load_profile_end("adj_invert_references", stage_start);
+    stage_start = alea_load_profile_start();
+
     /* Surfaces shared by very many cells (e.g. a plane cutting through
      * the entire reactor) create O(n²) neighbor cliques that are useless
      * for local adjacency walking and dominate memory.  Skip them. */
@@ -2882,6 +3001,9 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
         for (size_t d = 0; d < n_dirty; d++)
             seen[dirty_words[d]] = 0;
     }
+
+    alea_load_profile_end("adj_neighbor_count", stage_start);
+    stage_start = alea_load_profile_start();
 
     /* Compute pool size and offsets */
     size_t total_neighbors = 0;
@@ -2958,6 +3080,9 @@ int alea_build_cell_adjacency(alea_system_t* sys) {
             seen[dirty_words[d]] = 0;
     }
 
+    alea_load_profile_end("adj_neighbor_fill", stage_start);
+    stage_start = alea_load_profile_start();
+
     sys->neighbor_pool = pool;
     sys->surface_cell_offsets = surf_offsets;
     sys->surface_cell_refs = all_refs;
@@ -2982,7 +3107,7 @@ cleanup:
     free(all_refs);
     free(surf_offsets);
     free(surf_counts);
-    free(senses_buf);
+    free(senses_buf); free(seen_senses);
 
     return sys->cell_adjacency_built ? 0 : -1;
 }

@@ -56,15 +56,13 @@ make install
 make PREFIX=/opt/libalea install
 ```
 
+A clean core build compiles a small host tool to generate the snapshot
+compatibility hash using libalea's SHA-256 implementation. Cross builds
+can set `HOSTCC` to a C compiler that produces executables for the build
+machine. Python is optional for the core library.
+
 Windows MSVC builds use `build-msvc.ps1` or `build-msvc.bat`.
 See the platform-specific instructions below for toolchain setup.
-
-The experimental [GPU rendering and batch compute module](GPU_COMPUTE.md) is built separately:
-`make compute` for CPU, or `make compute USE_METAL=1` for CPU and Metal on macOS.
-It is not included in the default or full archives, or the pre-built releases.
-For the interactive Metal viewer, use `make tools USE_METAL=1 USE_SDL=1` and
-`bin/render3d model.i --backend metal --interactive`. See the module guide for
-supported geometry and rendering features.
 
 ## Link an application
 
@@ -82,6 +80,40 @@ cc -o myapp myapp.c -Iinclude bin/libalea_full.a -lm
 ```
 
 Continue with the [C tutorial](TUTORIAL.md) or [Lua tutorial](LUA_TUTORIAL.md).
+
+## Optional rendering and batch compute
+
+Build the optional compute archive separately from the core and full libraries.
+The macOS Metal build requires Xcode with the Metal toolchain.
+
+```sh
+make compute USE_METAL=0 RELEASE=1    # CPU FP64
+make compute USE_METAL=1 RELEASE=1    # CPU FP64 and Metal FP32 on macOS
+```
+
+The archives are `bin/compute/cpu/libalea_compute.a` and
+`bin/compute/metal/libalea_compute.a`. Link the selected compute archive
+before `libalea.a`. The Metal build also needs `-framework Foundation -framework Metal`.
+Run `make install-compute USE_METAL=0` or `make install-compute USE_METAL=1`
+to install the corresponding archive and `alea_compute.h`.
+
+Build the interactive Metal viewers with
+`make tools USE_METAL=1 USE_SDL=1 RELEASE=1`. The build uses installed SDL2
+or fetches and builds a local copy. Then select the backend explicitly.
+
+```sh
+bin/render3d examples/data/doc_shield.i --backend metal --interactive \
+    --width 800 --height 600 --eye 20,-30,20 --target 0,0,0 --clip-y=0
+bin/mc_plotter examples/data/doc_shield.i Z 0 -12 12 -12 12 800x600 \
+    slice.png --backend=metal --ownership=all --interactive
+```
+
+For file output, build with `make tools USE_METAL=1 RELEASE=1` and omit
+`--interactive`. The plotter defaults to `--ownership=all` on Metal and uses
+orange for sampled gaps and magenta for sampled overlaps. Use
+`--ownership=selected` to follow the first containing cell at each fill level.
+See the [compute API](API.md#optional-rendering-and-batch-compute)
+for supported geometry, rendering options, and precision limits.
 
 ## Build options
 

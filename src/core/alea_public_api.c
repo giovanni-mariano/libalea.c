@@ -312,7 +312,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
     if (!sys) return NULL;
 
     alea_system_t* clone = alea_system_create();
-    if (!clone) return NULL;
+    if (!clone) goto clone_error;
 
     /* Clone vectors without internal pointers (safe shallow copy) */
     CLONE_VEC(clone->nodes, sys->nodes, alea_node_t);
@@ -384,6 +384,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         alea_vec_init(&clone->universes.data[i].cell_indices);
         alea_vec_init(&clone->universes.data[i].point_bvh_nodes);
         clone->universes.data[i].point_bvh_indices = NULL;
+        clone->universes.data[i].recovery_planes = NULL;
         clone->universes.data[i].recovery_surfaces = NULL;
         clone->universes.data[i].recovery_surface_count = 0;
         clone->universes.data[i].recovery_surfaces_attempted = false;
@@ -450,6 +451,7 @@ alea_system_t* alea_clone(const alea_system_t* sys) {
         if (!alea_primitive_copy_data(clone, (uint32_t)i, &data)) goto clone_error;
         uint64_t hash = alea_compute_primitive_hash(p->type, &data, &clone->config);
         primitive_hash_table_insert(clone->primitive_index, (uint32_t)i, hash);
+        if (clone->primitive_index->entry_count != i + 1) goto clone_error;
     }
 
     /* Note: instance_cache, surface_bvh, spatial_index, hier_spatial_index
@@ -3157,6 +3159,7 @@ int alea_tighten_cell_bbox_numerical(alea_system_t* sys, int cell_index) {
         return -1;
 
     alea_node_bbox_set(&sys->nodes.data[cell->root_node_id].bbox, &tight);
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL & ~ALEA_CACHE_CELL_SURFACES);
     return 0;
 }
 
@@ -3971,6 +3974,7 @@ int alea_renumber_cells(alea_system_t* sys, int start_id) {
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     }
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_REGIONAL);
     return 0;
 }
 
@@ -3993,6 +3997,7 @@ int alea_renumber_surfaces(alea_system_t* sys, int start_id) {
     free(sys->mc_id_to_surface);
     sys->mc_id_to_surface = NULL;
     sys->mc_id_to_surface_size = 0;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_REGIONAL);
     return 0;
 }
 
@@ -4008,6 +4013,7 @@ int alea_offset_cell_ids(alea_system_t* sys, int offset) {
     for (size_t i = 0; i < alea_vec_count(&sys->cells); i++) {
         cell_hashmap_put(&sys->cell_index, sys->cells.data[i].mc_cell_id, (int)i);
     }
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_REGIONAL);
     return 0;
 }
 
@@ -4022,6 +4028,7 @@ int alea_offset_surface_ids(alea_system_t* sys, int offset) {
     free(sys->mc_id_to_surface);
     sys->mc_id_to_surface = NULL;
     sys->mc_id_to_surface_size = 0;
+    alea_system_invalidate_query_caches(sys, ALEA_CACHE_REGIONAL);
     return 0;
 }
 
@@ -4149,6 +4156,7 @@ int alea_expand_macrobodies_in_system(alea_system_t* sys) {
             count++;
         }
     }
+    if (count) alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     return count;
 }
 

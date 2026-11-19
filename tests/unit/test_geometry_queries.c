@@ -667,10 +667,15 @@ TEST(recovery_context_reuses_equal_parents_preserving_aliases_and_nearer_transfo
     ASSERT(alea_add_cell(sys,1,alea_halfspace(sys,plane,-1),ALEA_MATERIAL_VOID,0,8)>=0);
     ASSERT(alea_add_cell(sys,2,alea_halfspace(sys,alias,1),ALEA_MATERIAL_VOID,0,8)>=0);
     int box=alea_box_surface(sys,3,-10,10,-2,2,-2,2);
+    /* Alternate IDs for the same frame so the adjacent-sibling shortcut
+     * leaves repeated surface work for the occurrence cache to eliminate. */
+    const double identity_translation[]={0,0,0};
+    ASSERT_EQ(alea_add_transform(sys,7,identity_translation,3,0),0);
+    ASSERT_EQ(alea_add_transform(sys,8,identity_translation,3,0),0);
     for(int i=0;i<32;i++) {
         int parent=alea_add_cell(sys,100+i,alea_halfspace(sys,box,-1),ALEA_MATERIAL_VOID,0,0);
         ASSERT(parent>=0);
-        ASSERT_EQ(alea_set_fill(sys,parent,8,0),0);
+        ASSERT_EQ(alea_set_fill(sys,parent,8,7+(i%2)),0);
     }
     const double translation[]={-1,0,0};
     ASSERT_EQ(alea_add_transform(sys,9,translation,3,0),0);

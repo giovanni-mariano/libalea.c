@@ -22,6 +22,7 @@
 
 #ifndef ALEA_MCNP_H
 #define ALEA_MCNP_H
+#include "alea_snapshot.h"
 
 #include "alea.h"
 #include "alea_model.h"
@@ -167,6 +168,27 @@ mcnp_model_t* mcnp_load(const char* filename);
  * @return Model on success, NULL on error
  */
 mcnp_model_t* mcnp_load_string(const char* input, size_t len);
+
+/** Binary MCNP snapshot preserving geometry, names, comments, cell parameters,
+ * inline transforms and export settings. max_bytes=0 uses 2 GiB. */
+int mcnp_snapshot_write(const mcnp_model_t* model,const char* path);
+mcnp_model_t* mcnp_snapshot_read(const char* path,size_t max_bytes);
+/** Options and allocation accounting match alea_snapshot_read_with_options(). */
+mcnp_model_t* mcnp_snapshot_read_with_options(
+    const char* path,const alea_snapshot_read_options_t* options);
+/** Explicit single-entry cache. Expands READ FILE dependencies before hashing.
+ * Reuses cache_path only for exactly matching input and engine sources. Missing,
+ * stale, corrupt or unwritable cache files fall back to loading. ALEA_CACHE=off
+ * bypasses cache I/O. Each caller-selected path holds at most one entry.
+ * With cache_path=NULL, ALEA_CACHE_DIR selects a managed directory and
+ * ALEA_CACHE_GB limits its entries (default 8 GiB, least-recently-used eviction). */
+mcnp_model_t* mcnp_load_cached(const char* filename,const char* cache_path,int* cache_hit);
+/** Limits apply only to reading the cached snapshot. A rejected entry falls
+ * back to ordinary source parsing, which is not bounded by these options.
+ * Invalid options return NULL before source parsing or cache I/O. */
+mcnp_model_t* mcnp_load_cached_with_options(const char* filename,const char* cache_path,
+    int* cache_hit,const alea_snapshot_read_options_t* options);
+
 
 /* ============================================================================
  * EXPORT

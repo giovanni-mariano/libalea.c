@@ -23,6 +23,7 @@
  */
 void geom_lexer_init(geometry_lexer_t* lexer, const char* input,
                      alea_system_t* system) {
+    lexer->expressions = (mcnp_expression_cache_t){0};
     lexer->input = input;
     lexer->current = input;
     lexer->end = input + strlen(input);

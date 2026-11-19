@@ -14,15 +14,17 @@
  * Module-level Functions
  * ============================================================================ */
 
-static PyObject* mod_load_mcnp(PyObject* self, PyObject* args) {
+static PyObject* mod_load_mcnp(PyObject* self, PyObject* args, PyObject* kwds) {
     (void)self;
     const char* filename;
-    if (!PyArg_ParseTuple(args, "s", &filename)) return NULL;
+    const char* cache_path=NULL;
+    static char* keywords[]={"filename","cache_path",NULL};
+    if (!PyArg_ParseTupleAndKeywords(args,kwds,"s|z",keywords,&filename,&cache_path)) return NULL;
 
     mcnp_model_t* model;
     sighandler_func old_sigint = install_sigint();
     Py_BEGIN_ALLOW_THREADS
-    model = mcnp_load(filename);
+    model = cache_path || getenv("ALEA_CACHE_DIR")?mcnp_load_cached(filename,cache_path,NULL):mcnp_load(filename);
     Py_END_ALLOW_THREADS
     if (restore_sigint(old_sigint)) {
         if (model) mcnp_model_destroy(model);
@@ -631,7 +633,7 @@ static PyMethodDef mod_methods[] = {
     {"cluster_finalize", mod_cluster_finalize, METH_NOARGS, NULL},
     {"cluster_create", mod_cluster_create, METH_O, NULL},
 #endif
-    {"load_mcnp", mod_load_mcnp, METH_VARARGS,
+    {"load_mcnp", (PyCFunction)mod_load_mcnp, METH_VARARGS | METH_KEYWORDS,
      "load_mcnp(filename) -> System\n\nLoad MCNP input file."},
     {"load_mcnp_string", mod_load_mcnp_string, METH_VARARGS,
      "load_mcnp_string(input) -> System\n\nLoad MCNP from string."},

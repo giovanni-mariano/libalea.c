@@ -587,4 +587,267 @@ TEST(cell_volume_adaptive_search_recovers_missing_stored_bbox) {
     alea_destroy(sys);
 }
 
+/* More than the former 64-plane limit, with redundant oblique faces. */
+TEST(plane_lp_many_constraints_and_conservative_enclosure) {
+    alea_system_t* sys=create_tetrahedron();
+    ASSERT_NOT_NULL(sys);
+    alea_node_id_t root=sys->cells.data[0].root_node_id;
+    for(int i=0;i<128;i++) {
+        double a=1+(i%7),b=1+(i%11),c=1+(i%13);
+        int sid=alea_plane_surface(sys,0,a,b,c,-10*fmax(a,fmax(b,c))-1);
+        root=alea_intersection(sys,root,alea_halfspace(sys,sid,-1));
+    }
+    alea_bbox_t out;
+    ASSERT_EQ(alea_tighten_bbox_plane_constraints(sys,root,1e-8,&out),0);
+    ASSERT_TRUE(out.min_x<=0 && out.min_y<=0 && out.min_z<=0);
+    ASSERT_TRUE(out.max_x>=10 && out.max_y>=10 && out.max_z>=10);
+    ASSERT_TRUE(out.max_x<10.01 && out.min_x>-.01);
+    alea_destroy(sys);
+}
+
+TEST(plane_lp_rejects_unbounded_polyhedron_with_vertex) {
+    alea_system_t* sys=alea_create();
+    int x=alea_plane_surface(sys,0,1,0,0,0);
+    int y=alea_plane_surface(sys,0,0,1,0,0);
+    int z=alea_plane_surface(sys,0,0,0,1,0);
+    alea_node_id_t root=alea_intersection(sys,alea_halfspace(sys,x,1),
+        alea_intersection(sys,alea_halfspace(sys,y,1),alea_halfspace(sys,z,1)));
+    /* A redundant fourth face gives a vertex but no upper bounds. */
+    int q=alea_plane_surface(sys,0,1,1,1,1);
+    root=alea_intersection(sys,root,alea_halfspace(sys,q,1));
+    alea_bbox_t out={1,2,3,4,5,6},before=out;
+    ASSERT_EQ(alea_tighten_bbox_plane_constraints(sys,root,1e-8,&out),-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    alea_destroy(sys);
+}
+
+TEST(plane_lp_large_translated_rotated_box) {
+    alea_system_t* sys=alea_create();
+    double center[3]={1e9,-2e9,3e9};
+    double axes[3][3]={{.6,.8,0},{-.8,.6,0},{0,0,1}};
+    alea_node_id_t root=ALEA_NODE_ID_INVALID;
+    for(int a=0;a<3;a++)for(int side=-1;side<=1;side+=2) {
+        double d=-(axes[a][0]*center[0]+axes[a][1]*center[1]+axes[a][2]*center[2]+side*10);
+        int id=alea_plane_surface(sys,0,axes[a][0],axes[a][1],axes[a][2],d);
+        alea_node_id_t half=alea_halfspace(sys,id,-side);
+        root=root==ALEA_NODE_ID_INVALID?half:alea_intersection(sys,root,half);
+    }
+    alea_bbox_t out;
+    ASSERT_EQ(alea_tighten_bbox_plane_constraints(sys,root,1e-8,&out),0);
+    ASSERT_TRUE(out.min_x<=center[0]-14 && out.max_x>=center[0]+14);
+    ASSERT_TRUE(out.min_y<=center[1]-14 && out.max_y>=center[1]+14);
+    ASSERT_TRUE(out.min_z<=center[2]-10 && out.max_z>=center[2]+10);
+    ASSERT_TRUE(out.max_x-out.min_x<29);
+    alea_destroy(sys);
+}
+
+TEST(plane_lp_empty_and_interrupted_leave_output_untouched) {
+    alea_system_t* sys=create_tetrahedron();
+    int sid=alea_plane_surface(sys,0,1,1,1,-20);
+    alea_node_id_t root=alea_intersection(sys,sys->cells.data[0].root_node_id,alea_halfspace(sys,sid,1));
+    alea_bbox_t out={1,2,3,4,5,6},before=out;
+    ASSERT_EQ(alea_tighten_bbox_plane_constraints(sys,root,1e-8,&out),-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    alea_interrupt();
+    int interrupted=alea_tighten_bbox_plane_constraints(sys,sys->cells.data[0].root_node_id,1e-8,&out);
+    alea_clear_interrupt();
+    ASSERT_EQ(interrupted,-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    alea_destroy(sys);
+}
+
+TEST(mixed_cylinder_oblique_caps_enclose_analytic_extrema) {
+    alea_system_t* sys=alea_create();
+    int cylinder=alea_cylinder_z_surface(sys,0,0,0,2);
+    int lower=alea_plane_surface(sys,0,-1,0,1,0);
+    int upper=alea_plane_surface(sys,0,-1,0,1,-3);
+    alea_node_id_t root=alea_intersection(sys,alea_halfspace(sys,cylinder,-1),
+        alea_intersection(sys,alea_halfspace(sys,lower,1),alea_halfspace(sys,upper,-1)));
+    alea_bbox_t out={0};
+    ASSERT_EQ(alea_tighten_bbox_plane_constraints(sys,root,1e-8,&out),-1);
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&out),0);
+    ASSERT(out.min_x<=-2 && out.max_x>=2 && out.min_y<=-2 && out.max_y>=2);
+    ASSERT(out.min_z<=-2 && out.max_z>=5);
+    ASSERT(out.max_z<5.000001 && out.min_z> -2.000001);
+    /* Independently generated points on both oblique caps and the cylinder. */
+    for(int i=0;i<100;i++) {
+        double angle=i*6.283185307179586/100,x=2*cos(angle),y=2*sin(angle);
+        ASSERT(alea_bbox_contains_point(&out,x,y,x));
+        ASSERT(alea_bbox_contains_point(&out,x,y,x+3));
+    }
+    alea_destroy(sys);
+}
+
+TEST(mixed_constraints_boolean_relaxation_and_unbounded_fallback) {
+    alea_system_t* sys=alea_create();
+    int sphere=alea_sphere_surface(sys,0,10,20,30,2);
+    int remote=alea_sphere_surface(sys,0,100,200,300,3);
+    alea_node_id_t inside=alea_halfspace(sys,sphere,-1);
+    alea_node_id_t other=alea_halfspace(sys,remote,-1);
+    alea_bbox_t out={1,2,3,4,5,6},before=out;
+    /* Taking just one union branch would incorrectly exclude the other. */
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,alea_union(sys,inside,other),&out),-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,alea_halfspace(sys,sphere,1),&out),-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    alea_node_id_t diff=alea_difference(sys,inside,other);
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,diff,&out),0);
+    ASSERT(out.min_x<=8 && out.max_x>=12 && out.min_z<=28 && out.max_z>=32);
+    ASSERT(out.max_x<12.000001);
+    alea_node_id_t restricted=alea_intersection(sys,inside,alea_union(sys,inside,other));
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,restricted,&out),0);
+    ASSERT(out.min_x<=8 && out.max_x>=12);
+    int cylinder=alea_cylinder_z_surface(sys,0,0,0,2);
+    out=before;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,alea_halfspace(sys,cylinder,-1),&out),-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    alea_interrupt();
+    int status=alea_tighten_bbox_mixed_constraints(sys,inside,&out);
+    alea_clear_interrupt();
+    ASSERT_EQ(status,-1);
+    ASSERT_EQ(memcmp(&before,&out,sizeof(out)),0);
+    alea_destroy(sys);
+}
+
+TEST(tightened_bounds_preserve_surface_references_and_rebuild_spatial_caches) {
+    alea_system_t* sys=create_tetrahedron();
+    ASSERT_NOT_NULL(sys);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
+    const void* surface_indices=sys->cells.data[0].surface_indices;
+    ASSERT_NOT_NULL(surface_indices);
+    ASSERT(alea_tighten_all_bboxes(sys,1e-6)>0);
+    ASSERT(alea_system_query_cache_ready(sys,ALEA_CACHE_CELL_SURFACES));
+    ASSERT(!alea_system_query_cache_ready(sys,ALEA_CACHE_HIER_SPATIAL));
+    ASSERT(surface_indices==sys->cells.data[0].surface_indices);
+    ASSERT_EQ(alea_prepare_query_acceleration(sys),0);
+    int cell,material;
+    ASSERT_EQ(alea_find_cell_at(sys,1,1,1,&cell,&material),0);
+    ASSERT(alea_find_cell_at(sys,11,1,1,&cell,&material)!=0);
+    alea_destroy(sys);
+}
+
+TEST(mixed_quadric_slab_encloses_rotated_cylinder) {
+    alea_system_t* sys=alea_create();ASSERT_NOT_NULL(sys);
+    /* (x-y)^2 + 2*z^2 <= 8, 0 <= x+y <= 10. Exact coefficients avoid
+     * an assumed rank or eigenvalue threshold in the independent oracle. */
+    int q=alea_quadric_surface(sys,0,1,1,2,-2,0,0,0,0,0,-8);
+    int low=alea_plane_surface(sys,0,1,1,0,0);
+    int high=alea_plane_surface(sys,0,1,1,0,-10);
+    alea_node_id_t cylinder=alea_halfspace(sys,q,-1);
+    alea_node_id_t root=alea_intersection(sys,cylinder,
+        alea_intersection(sys,alea_halfspace(sys,low,1),alea_halfspace(sys,high,-1)));
+    alea_bbox_t untouched={1,2,3,4,5,6},box=untouched;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,cylinder,&box),-1);
+    ASSERT_EQ(memcmp(&box,&untouched,sizeof(box)),0);
+    ASSERT_EQ(alea_tighten_bbox_plane_constraints(sys,root,1e-8,&box),-1);
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&box),0);
+    ASSERT(box.min_x> -3 && box.max_x<8 && box.min_z> -5 && box.max_z<5);
+    for(int t=0;t<=10;t++)for(int i=0;i<360;i++) {
+        double angle=i*6.283185307179586/360;
+        double d=sqrt(8.0)*cos(angle),z=2*sin(angle);
+        ASSERT(alea_bbox_contains_point(&box,(t+d)/2,(t-d)/2,z));
+    }
+    /* Reversing one cap gives an unbounded half-cylinder. */
+    root=alea_intersection(sys,cylinder,
+        alea_intersection(sys,alea_halfspace(sys,low,1),alea_halfspace(sys,high,1)));
+    box=untouched;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&box),-1);
+    ASSERT_EQ(memcmp(&box,&untouched,sizeof(box)),0);
+    alea_destroy(sys);
+}
+
+TEST(mixed_quadric_global_ellipsoid_and_exterior_fallback) {
+    alea_system_t* sys=alea_create();ASSERT_NOT_NULL(sys);
+    /* 4*(x-10)^2 + (y+20)^2 + 16*(z-30)^2 <= 16. */
+    int q=alea_quadric_surface(sys,0,4,1,16,0,0,0,-80,40,-960,15184);
+    alea_node_id_t root=alea_halfspace(sys,q,-1);
+    alea_bbox_t box={0};
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&box),0);
+    ASSERT(box.min_x<=8 && box.max_x>=12 && box.min_y<=-24 && box.max_y>=-16);
+    ASSERT(box.min_z<=29 && box.max_z>=31);
+    ASSERT(box.min_x>7.999999 && box.max_z<31.000001);
+    alea_bbox_t before=box;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,alea_halfspace(sys,q,1),&box),-1);
+    ASSERT_EQ(memcmp(&box,&before,sizeof(box)),0);
+    /* Negated coefficients with positive sense describe the same interior. */
+    int reverse=alea_quadric_surface(sys,0,-4,-1,-16,0,0,0,80,-40,960,-15184);
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,alea_halfspace(sys,reverse,1),&box),0);
+    ASSERT(box.min_x<=8 && box.max_z>=31);
+    alea_destroy(sys);
+}
+
+TEST(mixed_quadric_does_not_erase_negative_eigenvalue) {
+    alea_system_t* sys=alea_create();ASSERT_NOT_NULL(sys);
+    /* x^2+y^2-1e-12*z^2 <= 1 is unbounded, however close it looks to a cylinder. */
+    int q=alea_quadric_surface(sys,0,1,1,-1e-12,0,0,0,0,0,0,-1);
+    alea_node_id_t interior=alea_halfspace(sys,q,-1);
+    alea_bbox_t box={1,2,3,4,5,6},before=box;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,interior,&box),-1);
+    ASSERT_EQ(memcmp(&box,&before,sizeof(box)),0);
+    /* A slab in x still leaves the z recession direction open. */
+    int xl=alea_plane_surface(sys,0,1,0,0,2),xh=alea_plane_surface(sys,0,1,0,0,-2);
+    alea_node_id_t wrong=alea_intersection(sys,interior,
+        alea_intersection(sys,alea_halfspace(sys,xl,1),alea_halfspace(sys,xh,-1)));
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,wrong,&box),-1);
+    int zl=alea_plane_surface(sys,0,0,0,1,100),zh=alea_plane_surface(sys,0,0,0,1,-100);
+    alea_node_id_t capped=alea_intersection(sys,interior,
+        alea_intersection(sys,alea_halfspace(sys,zl,1),alea_halfspace(sys,zh,-1)));
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,capped,&box),0);
+    for(int i=-100;i<=100;i++) {
+        double r=sqrt(1+1e-12*i*i);
+        ASSERT(alea_bbox_contains_point(&box,r,0,i));
+        ASSERT(alea_bbox_contains_point(&box,-r,0,i));
+    }
+    /* Constraints inside a union must not be used to restrict another branch. */
+    alea_node_id_t unbounded=alea_union(sys,capped,interior);
+    box=before;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,unbounded,&box),-1);
+    ASSERT_EQ(memcmp(&box,&before,sizeof(box)),0);
+    alea_destroy(sys);
+}
+
+TEST(mixed_quadric_translated_oblique_slab_samples) {
+    for(int translated=0;translated<2;translated++) {
+        alea_system_t* sys=alea_create();ASSERT_NOT_NULL(sys);
+        double center[3]={translated?1e6:100,translated?-2e6:-200,translated?3e6:300};
+        /* Mutually orthogonal integer directions of length three. */
+        double u[3]={1,2,2},v[3]={2,1,-2},w[3]={-2,2,-1};
+        double uc=0,vc=0,wc=0;
+        for(int k=0;k<3;k++){uc+=u[k]*center[k];vc+=v[k]*center[k];wc+=w[k]*center[k];}
+        int q=alea_quadric_surface(sys,0,5,5,8,8,4,-4,
+            -2*(u[0]*uc+v[0]*vc),-2*(u[1]*uc+v[1]*vc),-2*(u[2]*uc+v[2]*vc),
+            uc*uc+vc*vc-16);
+        int low=alea_plane_surface(sys,0,w[0],w[1],w[2],-wc+6);
+        int high=alea_plane_surface(sys,0,w[0],w[1],w[2],-wc-6);
+        alea_node_id_t root=alea_intersection(sys,alea_halfspace(sys,q,-1),
+            alea_intersection(sys,alea_halfspace(sys,low,1),alea_halfspace(sys,high,-1)));
+        alea_bbox_t box;
+        ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&box),0);
+        ASSERT(box.max_x-box.min_x<20);
+        for(int axial=-6;axial<=6;axial++)for(int angle=0;angle<360;angle++) {
+            double a=angle*6.283185307179586/360,p[3];
+            for(int k=0;k<3;k++)p[k]=center[k]+(4*cos(a)*u[k]+4*sin(a)*v[k]+axial*w[k])/9;
+            ASSERT(alea_bbox_contains_point(&box,p[0],p[1],p[2]));
+        }
+        alea_destroy(sys);
+    }
+}
+
+TEST(mixed_quadric_uncertain_arithmetic_preserves_output) {
+    alea_system_t* sys=alea_create();ASSERT_NOT_NULL(sys);
+    int q=alea_quadric_surface(sys,0,1,1,2,-2,0,0,0,0,0,-8);
+    int low=alea_plane_surface(sys,0,1,1,0,0);
+    int high=alea_plane_surface(sys,0,1+1e-9,1,0,-10);
+    alea_node_id_t root=alea_intersection(sys,alea_halfspace(sys,q,-1),
+        alea_intersection(sys,alea_halfspace(sys,low,1),alea_halfspace(sys,high,-1)));
+    alea_bbox_t box={1,2,3,4,5,6},before=box;
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&box),-1);
+    ASSERT_EQ(memcmp(&box,&before,sizeof(box)),0);
+    alea_interrupt();
+    ASSERT_EQ(alea_tighten_bbox_mixed_constraints(sys,root,&box),-1);
+    alea_clear_interrupt();
+    ASSERT_EQ(memcmp(&box,&before,sizeof(box)),0);
+    alea_destroy(sys);
+}
+
 TEST_MAIN()

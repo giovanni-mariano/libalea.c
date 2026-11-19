@@ -16,7 +16,7 @@ static void compare_scan(alea_system_t* sys, const alea_ray_t* ray,
     int a = alea_raycast_validation_breakpoints_reuse_nocache(
         sys, ray, 0, limit, nearest ? 1 : 100000, &prepared);
     unsigned state = atomic_fetch_and(&sys->query_cache_state,
-                                      ~ALEA_CACHE_RECOVERY_CHILDREN);
+                                      ~(ALEA_CACHE_RECOVERY_CHILDREN | ALEA_CACHE_UNIVERSE));
     int b = alea_raycast_validation_breakpoints_reuse_nocache(
         sys, ray, 0, limit, nearest ? 1 : 100000, &fallback);
     atomic_store(&sys->query_cache_state, state);
@@ -47,6 +47,16 @@ TEST(recovery_children_preserve_nested_fills_and_rectangular_hex_lattices) {
         ASSERT_NOT_NULL(model);
         alea_system_t* sys = model->sys;
         ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        size_t lattice_count = 0;
+        for (size_t i = 0; i < sys->cells.count; ++i) {
+            const alea_cell_entry_t* c = &sys->cells.data[i];
+            if (c->lat_type && c->lat_fill) {
+                if (sys->lattice_cells) ASSERT_EQ(sys->lattice_cells[lattice_count], i);
+                ++lattice_count;
+            }
+        }
+        ASSERT_EQ(sys->lattice_cell_count, lattice_count);
+        if (p == 1) ASSERT_NOT_NULL(sys->lattice_cells);
         for (size_t u = 0; u < sys->universes.count; u++) {
             const alea_universe_t* univ = &sys->universes.data[u];
             ASSERT(univ->recovery_children_ready);
@@ -222,6 +232,42 @@ TEST(recovery_children_budget_incomplete_and_interrupted_preparation_fallback) {
     ASSERT(root->recovery_children_ready);
     compare_scan(sys,&ray,3,1);
     mcnp_model_destroy(model);
+}
+
+TEST(repeated_sibling_fill_keeps_nearest_hit_and_reduces_surface_tests) {
+    alea_system_t* sys = alea_create();
+    ASSERT_NOT_NULL(sys);
+    int plane = alea_plane_surface(sys, 1, 1, 0, 0, -2);
+    int box = alea_box_surface(sys, 2, -30, 30, -2, 2, -2, 2);
+    ASSERT(plane >= 0 && box >= 0);
+    ASSERT(alea_add_cell(sys, 1, alea_halfspace(sys, plane, -1), ALEA_MATERIAL_VOID, 0, 8) >= 0);
+    alea_node_id_t region = alea_halfspace(sys, box, -1);
+    int first = alea_add_cell(sys, 2, region, ALEA_MATERIAL_VOID, 0, 0);
+    int second = alea_add_cell(sys, 3, region, ALEA_MATERIAL_VOID, 0, 0);
+    const double shift[] = {10, 0, 0};
+    ASSERT_EQ(alea_add_transform(sys, 1, shift, 3, 0), 0);
+    ASSERT_EQ(alea_add_transform(sys, 2, shift, 3, 0), 0);
+    ASSERT_EQ(alea_set_fill(sys, first, 8, 1), 0);
+    alea_ray_t ray;
+    ASSERT_EQ(alea_ray_init(&ray, 0, 0, 0, 1, 0, 0), 0);
+    size_t tests[2];
+    for (int i = 0; i < 2; ++i) {
+        /* Equal transforms under distinct IDs exercise the ordinary second
+         * visit. Sharing the ID also shares the proof from the first. */
+        ASSERT_EQ(alea_set_fill(sys, second, 8, 2-i), 0);
+        ASSERT_EQ(alea_prepare_query_acceleration(sys), 0);
+        alea_raycast_result_t result;
+        alea_raycast_result_init(&result);
+        result.breakpoint_nearest_only = 1;
+        ASSERT_EQ(alea_raycast_validation_breakpoints_reuse_nocache(sys, &ray, 0, 20, 1, &result), 0);
+        ASSERT_EQ(result.hits.count, 1);
+        ASSERT_EQ(result.hits.data[0].t, 2);
+        ASSERT_EQ(result.hits.data[0].surface_id, 1);
+        tests[i] = result.surfaces_tested;
+        alea_raycast_result_free(&result);
+    }
+    ASSERT(tests[1] < tests[0]);
+    alea_destroy(sys);
 }
 
 TEST_MAIN()

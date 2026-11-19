@@ -162,6 +162,7 @@ int alea_resolve_cell_complements(alea_system_t* sys) {
         resolved++;
     }
     
+    if (resolved) alea_system_invalidate_query_caches(sys, ALEA_CACHE_ALL);
     if (errors > 0) {
         ALEA_LOG_ERROR("%d cell complement references could not be resolved", errors);
         return -1;

@@ -42,6 +42,17 @@ static double parse_coefficient(const char** cursor) {
     return value;
 }
 
+static bool parse_cone_sheet(const char** cursor, int surface_id, int* selection) {
+    double sheet = parse_coefficient(cursor);
+    if (sheet != -1.0 && sheet != 0.0 && sheet != 1.0) {
+        ALEA_LOG_ERROR("Surface %d: invalid cone sheet %g (expected -1, 0, or 1)",
+                       surface_id, sheet);
+        return false;
+    }
+    *selection = (int)sheet;
+    return true;
+}
+
 static bool torus_major_is_zero(double major_radius, double axial_semiwidth,
                                 double minor_radius) {
     if (axial_semiwidth <= 0.0 || minor_radius <= 0.0) return false;
@@ -505,6 +516,10 @@ static bool build_axisymmetric_surface(
 
 int alea_build_surface_lookup(alea_system_t* sys) {
     if (!sys) return -1;
+    if (alea_vec_count(&sys->surfaces) > UINT32_MAX) {
+        alea_set_error(ALEA_ERR_INVALID_ARG, "Too many surfaces for the lookup table");
+        return -1;
+    }
 
     // Find maximum surface ID
     int max_id = 0;
@@ -515,8 +530,12 @@ int alea_build_surface_lookup(alea_system_t* sys) {
     }
 
     // Allocate lookup table
-    size_t table_size = (size_t)(max_id + 1);
-    sys->surface_lookup = malloc(table_size * sizeof(size_t));
+    size_t table_size = (size_t)max_id + 1;
+    if (table_size > SIZE_MAX / sizeof(*sys->surface_lookup)) {
+        alea_set_error(ALEA_ERR_OUT_OF_MEMORY, "Surface lookup exceeds addressable memory");
+        return -1;
+    }
+    sys->surface_lookup = malloc(table_size * sizeof(*sys->surface_lookup));
     if (!sys->surface_lookup) {
         alea_set_error(ALEA_ERR_OUT_OF_MEMORY, "Failed to allocate surface lookup");
         return -1;
@@ -531,7 +550,7 @@ int alea_build_surface_lookup(alea_system_t* sys) {
     // Fill lookup table
     for (size_t i = 0; i < alea_vec_count(&sys->surfaces); i++) {
         int id = sys->surfaces.data[i].mc_surface_id;
-        sys->surface_lookup[id] = i;
+        sys->surface_lookup[id] = (alea_node_id_t)i;
     }
 
     ALEA_LOG_INFO("Built surface lookup: %zu entries, max_id=%d",
@@ -765,7 +784,7 @@ static bool surface_to_primitive(
             return false;
         }
         out_data->cone_x.tan_angle_sq = t_sq;
-        out_data->cone_x.sheet_selection = parse_coefficient(&cursor);
+        if (!parse_cone_sheet(&cursor, surf->surface_id, &out_data->cone_x.sheet_selection)) return false;
         
     } else if (alea_strcasecmp(mnemonic, "ky") == 0) {
         *out_type = ALEA_PRIMITIVE_CONE_Y;
@@ -779,7 +798,7 @@ static bool surface_to_primitive(
             return false;
         }
         out_data->cone_y.tan_angle_sq = t_sq;
-        out_data->cone_y.sheet_selection = parse_coefficient(&cursor);
+        if (!parse_cone_sheet(&cursor, surf->surface_id, &out_data->cone_y.sheet_selection)) return false;
         
     } else if (alea_strcasecmp(mnemonic, "kz") == 0) {
         *out_type = ALEA_PRIMITIVE_CONE_Z;
@@ -793,7 +812,7 @@ static bool surface_to_primitive(
             return false;
         }
         out_data->cone_z.tan_angle_sq = t_sq;
-        out_data->cone_z.sheet_selection = parse_coefficient(&cursor);
+        if (!parse_cone_sheet(&cursor, surf->surface_id, &out_data->cone_z.sheet_selection)) return false;
     
     // ========================================================================
     // CONE SURFACES (off-axis)
@@ -811,7 +830,7 @@ static bool surface_to_primitive(
             return false;
         }
         out_data->cone_x.tan_angle_sq = t_sq;
-        out_data->cone_x.sheet_selection = parse_coefficient(&cursor);
+        if (!parse_cone_sheet(&cursor, surf->surface_id, &out_data->cone_x.sheet_selection)) return false;
         
     } else if (alea_strcasecmp(mnemonic, "k/y") == 0) {
         *out_type = ALEA_PRIMITIVE_CONE_Y;
@@ -825,7 +844,7 @@ static bool surface_to_primitive(
             return false;
         }
         out_data->cone_y.tan_angle_sq = t_sq;
-        out_data->cone_y.sheet_selection = parse_coefficient(&cursor);
+        if (!parse_cone_sheet(&cursor, surf->surface_id, &out_data->cone_y.sheet_selection)) return false;
         
     } else if (alea_strcasecmp(mnemonic, "k/z") == 0) {
         *out_type = ALEA_PRIMITIVE_CONE_Z;
@@ -839,7 +858,7 @@ static bool surface_to_primitive(
             return false;
         }
         out_data->cone_z.tan_angle_sq = t_sq;
-        out_data->cone_z.sheet_selection = parse_coefficient(&cursor);
+        if (!parse_cone_sheet(&cursor, surf->surface_id, &out_data->cone_z.sheet_selection)) return false;
     
     // ========================================================================
     // BOX SURFACE (RPP)

@@ -242,6 +242,14 @@ int render_scene(alea_system_t* sys,
                  const render_camera_t* cam,
                  render_framebuffer_t* fb);
 
+/** Render a surface frame with a reusable regional query handle for this model.
+ * Tiles share the regional index and use private traversal scratch. cfg->threads
+ * controls the worker count. Call from one thread at a time. Camera and
+ * visibility settings may change between frames. Use render_scene for X-ray. */
+int alea_render_scene_prepared(alea_system_t* sys, alea_prepared_queries_t* prepared,
+                               const render_config_t* cfg, const render_camera_t* cam,
+                               render_framebuffer_t* fb);
+
 /**
  * @brief Post-process: darken edges where cell ID changes
  */

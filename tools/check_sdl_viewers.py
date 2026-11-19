@@ -62,6 +62,7 @@ def main():
         viewers = [
             ("slice", "tools/mc_plotter.c", ["Z", "0", "-10", "10", "-10", "10", "64"]),
             ("render", "examples/c/render3d.c", ["--width", "64", "--height", "64"]),
+            ("regional", "examples/c/render3d.c", ["--width", "64", "--height", "64", "--backend", "regional"]),
         ]
         if metal:
             viewers.append(("metal", "examples/c/render3d.c",
@@ -123,6 +124,10 @@ int main(int argc, char** argv) {{
                 assert images["clip"] != images["initial"], f"{name}: clip did not change image"
                 assert images["clip"] != images["clip_move"], f"{name}: clip did not move"
                 assert images["initial"] == images["clip_reset"], f"{name}: clip reset failed"
+            if name == "render":
+                cpu_images = images
+            if name == "regional":
+                assert images == cpu_images, "Regional frames differ from CPU frames"
             if name.startswith("metal_slice"):
                 assert images["initial"] == images["cpu_keys"], "CPU-only keys changed Metal view"
                 assert images["initial"] != images["slice_move"], "Slice did not move"

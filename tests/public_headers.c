@@ -8,6 +8,8 @@
  * test_cluster_mpi_groups.c under mpicc.
  */
 #include "alea.h"
+#include "alea_fingerprint.h"
+#include "alea_snapshot.h"
 #include "alea_compute.h"
 #include "alea_model.h"
 #include "alea_xml.h"

@@ -272,7 +272,9 @@ static int load_model(const char* path, loaded_model_t* m) {
         if (!m->openmc) return -1;
         m->sys = m->openmc->sys;
     } else {
-        m->mcnp = mcnp_load(path);
+        const char* cache = getenv("ALEA_CACHE_FILE");
+        m->mcnp = (cache || getenv("ALEA_CACHE_DIR"))
+            ? mcnp_load_cached(path, cache, NULL) : mcnp_load(path);
         if (!m->mcnp) return -1;
         m->sys = m->mcnp->sys;
     }

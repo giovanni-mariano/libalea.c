@@ -33,6 +33,7 @@ extern atomic_int g_alea_interrupted;
 /* Optional nearest-recovery lists have their own publication barrier. */
 #define ALEA_CACHE_RECOVERY_SURFACES (1u << 6)
 #define ALEA_CACHE_RECOVERY_CHILDREN (1u << 7)
+#define ALEA_CACHE_REGIONAL (1u << 8)
 /* The hierarchical spatial index is the only spatial backend. */
 #define ALEA_CACHE_RAYCAST \
     (ALEA_CACHE_UNIVERSE | ALEA_CACHE_CELL_SURFACES | ALEA_CACHE_RECOVERY_SURFACES | \
@@ -133,11 +134,9 @@ ALEA_VEC_DEFINE(alea_arb_data_vec, alea_arb_data_t);
 // CSG TREE NODES
 // ============================================================================
 
-// Macros for accessing packed operation field
-#define ALEA_GET_OPERATION(node) ((alea_operation_t)((node)->type_and_flags & 0xFF))
-#define ALEA_SET_OPERATION(node, op) ((node)->type_and_flags = ((node)->type_and_flags & 0xFFFFFF00) | (op))
-
-
+/* Both members of the node union start with the same one-byte operation. */
+#define ALEA_GET_OPERATION(node) ((alea_operation_t)((node)->operation.type))
+#define ALEA_SET_OPERATION(node, op) ((node)->operation.type = (uint8_t)(op))
 
 /**
  * @brief Compact float bounding box stored per CSG node.
@@ -197,14 +196,10 @@ static inline void alea_node_bbox_set(alea_node_bbox_t* dst, const alea_bbox_t* 
  * Nodes are stored in a flat array. Child nodes are referenced by ID,
  * not by pointer, allowing the array to grow without invalidating references.
  *
- * The node uses a packed type_and_flags field to save space:
- * - Lower 8 bits: operation type
- * - Upper 24 bits: flags (for future use)
+ * The primitive type and sense fit alongside the operation tag in one word.
+ * Boolean nodes use the same initial tag followed by two child IDs.
  */
 typedef struct alea_node {
-    // Node type and flags (packed)
-    uint32_t type_and_flags;  // Operation type (8 bits) + flags (24 bits)
-
     // Material ID
     alea_material_id_t material_id;
 
@@ -215,16 +210,18 @@ typedef struct alea_node {
     union {
         // For primitive nodes (ALEA_OP_PRIMITIVE)
         struct {
-            alea_primitive_id_t primitive_id;
-            alea_primitive_type_t prim_type;
+            uint8_t type;
+            uint8_t prim_type;
             int8_t sense;               /* +1 outside, -1 inside */
-            int8_t inverted;            /* 1 if normal was flipped during canonicalization */
+            int8_t inverted;            /* canonicalization flipped the normal */
+            alea_primitive_id_t primitive_id;
             int mc_surface_id;        /* MCNP surface ID for export */
         } primitive;
 
         // For operation nodes (union/intersection/difference)
         // NOTE: Uses node IDs instead of pointers to allow pool reallocation
         struct {
+            uint8_t type;
             alea_node_id_t left;
             alea_node_id_t right;
         } operation;
@@ -369,6 +366,10 @@ typedef struct alea_system {
     universe_hashmap_t  universe_index;  // O(1) universe_id -> vec index
     bool universe_index_built;
     bool has_lattice;  // True if any cell has lat_type != 0
+    bool has_populated_lattice;
+    bool has_fill;
+    size_t lattice_cell_count;
+    size_t* lattice_cells;  /* Optional sparse list, in original cell order. */
 
     // Configuration
     alea_config_t config;
@@ -408,6 +409,7 @@ typedef struct alea_system {
     atomic_int spatial_build_state;  /* 0=pending, 1=building, 2=done */
     atomic_uint query_cache_state;
     atomic_flag query_cache_build_lock;
+    struct alea_regional_cache* regional_cache;
     uint64_t system_id;
     atomic_uint_fast64_t geometry_generation;
     atomic_uint_fast64_t material_generation;
